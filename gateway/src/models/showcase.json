@@ -1,0 +1,260 @@
+{
+    "$comment": "Каталог моделей пульта: распознавание (asr) и голос (tts). Карточки — как их показывает панель; url — прямые ссылки открытых хранилищ (HuggingFace). Редактируется руками: это витрина, а не код.",
+    "asr": [
+        {
+            "id": "yandex",
+            "model": "yandex",
+            "title": "Яндекс — как на колонке",
+            "description": "Распознавание Яндекса, как до шлюза: колонка целиком уходит в режим «Яндекс».",
+            "badge": "как было",
+            "license": "—"
+        },
+        {
+            "id": "gigaam-v3-e2e",
+            "recommended": true,
+            "model": "v3_e2e_rnnt",
+            "title": "GigaAM v3 — конец-в-конец",
+            "description": "Пунктуация и заглавные из коробки, самый точный из быстрых. Рекомендуемый.",
+            "badge": "рекомендуем",
+            "license": "MIT · Сбережение (Сбер)",
+            "source": "huggingface:salute-developers/GigaAM"
+        },
+        {
+            "id": "gigaam-v3-e2e-ctc",
+            "recommended": true,
+            "model": "v3_e2e_ctc",
+            "title": "GigaAM v3 e2e CTC",
+            "description": "Конец-в-конец с пунктуацией, голова CTC: быстрее e2e RNNT, чуть проще.",
+            "license": "MIT · Сбережение (Сбер)",
+            "source": "huggingface:salute-developers/GigaAM"
+        },
+        {
+            "id": "gigaam-v3-rnnt",
+            "recommended": true,
+            "model": "v3_rnnt",
+            "title": "GigaAM v3 RNNT",
+            "description": "Та же точность распознавания, без пунктуации: чуть быстрее.",
+            "license": "MIT · Сбережение (Сбер)",
+            "source": "huggingface:salute-developers/GigaAM"
+        },
+        {
+            "id": "gigaam-v3-ctc",
+            "recommended": true,
+            "model": "v3_ctc",
+            "title": "GigaAM v3 CTC",
+            "description": "Простейшая голова: быстрее всех, без пунктуации.",
+            "license": "MIT · Сбережение (Сбер)",
+            "source": "huggingface:salute-developers/GigaAM"
+        },
+        {
+            "id": "gigaam-multilingual",
+            "model": "multilingual_ctc",
+            "title": "GigaAM мультиязычная",
+            "description": "Не только русский: понимает несколько языков. Тяжелее русской, без пунктуации.",
+            "badge": "мультиязык",
+            "license": "MIT · Сбережение (Сбер)",
+            "source": "huggingface:salute-developers/GigaAM"
+        },
+        {
+            "id": "gigaam-multilingual-large",
+            "model": "multilingual_large_ctc",
+            "title": "GigaAM мультиязычная — большая",
+            "description": "Максимум точности на многих языках. Самая тяжёлая из семейства.",
+            "badge": "мультиязык",
+            "license": "MIT · Сбережение (Сбер)",
+            "source": "huggingface:salute-developers/GigaAM"
+        },
+        {
+            "id": "gigaam-v2-rnnt",
+            "model": "v2_rnnt",
+            "title": "GigaAM v2 RNNT",
+            "description": "Предыдущее поколение: легче, если v3 не влезает.",
+            "license": "MIT · Сбережение (Сбер)",
+            "source": "huggingface:salute-developers/GigaAM"
+        },
+        {
+            "id": "gigaam-v2-ctc",
+            "model": "v2_ctc",
+            "title": "GigaAM v2 CTC",
+            "description": "v2 с быстрой головой CTC: самая лёгкая из взрослых.",
+            "license": "MIT · Сбережение (Сбер)",
+            "source": "huggingface:salute-developers/GigaAM"
+        },
+        {
+            "id": "gigaam-v1-rnnt",
+            "model": "v1_rnnt",
+            "title": "GigaAM v1 RNNT",
+            "description": "Первое поколение: историческая, для слабого железа.",
+            "badge": "старая",
+            "license": "MIT · Сбережение (Сбер)",
+            "source": "huggingface:salute-developers/GigaAM"
+        },
+        {
+            "id": "gigaam-v1-ctc",
+            "model": "v1_ctc",
+            "title": "GigaAM v1 CTC",
+            "description": "Первое поколение с головой CTC: легче некуда.",
+            "badge": "старая",
+            "license": "MIT · Сбережение (Сбер)",
+            "source": "huggingface:salute-developers/GigaAM"
+        },
+        {
+            "id": "parakeet-v3",
+            "model": "parakeet-0.6b-v3",
+            "title": "Parakeet TDT v3 — 25 языков",
+            "description": "Мультиязычная NVIDIA: быстрый TDT-декодер, живёт на Apple Silicon. Пунктуация из коробки.",
+            "badge": "мультиязык",
+            "size": "2.3 ГБ",
+            "license": "CC-BY-4.0 · NVIDIA",
+            "source": "huggingface:nvidia/parakeet-tdt-0.6b-v3"
+        },
+        {
+            "id": "whisper-large-v3-turbo",
+            "model": "whisper-large-v3-turbo",
+            "title": "Whisper Large v3 Turbo",
+            "description": "Мультиязычная (99 языков), точная и быстрая — как у Handy. Самая умная из практичных.",
+            "badge": "мультиязык",
+            "size": "1.6 ГБ",
+            "license": "MIT · OpenAI",
+            "source": "huggingface:Systran/faster-whisper-large-v3-turbo"
+        },
+        {
+            "id": "whisper-large-v3",
+            "model": "whisper-large-v3",
+            "title": "Whisper Large v3",
+            "description": "Флагман OpenAI: максимум точности на любом языке. Тяжёлая и медленная.",
+            "badge": "мультиязык",
+            "size": "3 ГБ",
+            "license": "MIT · OpenAI",
+            "source": "huggingface:Systran/faster-whisper-large-v3"
+        },
+        {
+            "id": "whisper-medium",
+            "model": "whisper-medium",
+            "title": "Whisper Medium",
+            "description": "Мультиязычная, баланс точности и веса. Пунктуация из коробки.",
+            "badge": "мультиязык",
+            "size": "1.5 ГБ",
+            "license": "MIT · OpenAI",
+            "source": "huggingface:Systran/faster-whisper-medium"
+        },
+        {
+            "id": "whisper-small",
+            "model": "whisper-small",
+            "title": "Whisper Small",
+            "description": "Мультиязычная, лёгкая и шустрая: хороший русский для ежедневных фраз.",
+            "badge": "мультиязык",
+            "size": "470 МБ",
+            "license": "MIT · OpenAI",
+            "source": "huggingface:Systran/faster-whisper-small"
+        },
+        {
+            "id": "whisper-base",
+            "model": "whisper-base",
+            "title": "Whisper Base",
+            "description": "Компактная мультиязычная: для слабого железа и быстрых проверок.",
+            "badge": "мультиязык",
+            "size": "145 МБ",
+            "license": "MIT · OpenAI",
+            "source": "huggingface:Systran/faster-whisper-base"
+        },
+        {
+            "id": "whisper-tiny",
+            "model": "whisper-tiny",
+            "title": "Whisper Tiny",
+            "description": "Крошечная и мгновенная: попробовать Whisper без загрузок heavyweight.",
+            "badge": "мультиязык",
+            "size": "75 МБ",
+            "license": "MIT · OpenAI",
+            "source": "huggingface:Systran/faster-whisper-tiny"
+        }
+    ],
+    "tts": [
+        {
+            "id": "yandex",
+            "engine": "yandex",
+            "title": "Яндекс — голос Алисы",
+            "description": "Как на колонке из коробки: отвечает голосом Алисы, своим движком Яндекса.",
+            "badge": "как было",
+            "license": "—",
+            "installed": true,
+            "locale": "ru"
+        },
+        {
+            "id": "silero",
+            "engine": "silero",
+            "title": "Silero v4 — пять голосов в одном",
+            "description": "Голоса aidar, baya, kseniya, xenia, eugene, самый быстрый отклик. Качается с официального CDN Silero.",
+            "badge": "быстрый",
+            "license": "CC BY-NC 4.0 · silero.ai",
+            "size": "38 МБ",
+            "url": "https://models.silero.ai/models/tts/ru/v4_ru.pt",
+            "file": "v4_ru.pt",
+            "locale": "ru"
+        },
+        {
+            "id": "silero-v5",
+            "engine": "silero",
+            "title": "Silero v5 — качественнее",
+            "description": "Новое поколение, те же пять голосов, звук богаче. Тяжелее и чуть медленнее v4; при установке заменит v4.",
+            "badge": "новее",
+            "license": "CC BY-NC 4.0 · silero.ai",
+            "size": "139 МБ",
+            "url": "https://models.silero.ai/models/tts/ru/v5_ru.pt",
+            "file": "v5_ru.pt",
+            "locale": "ru"
+        },
+        {
+            "id": "piper-denis",
+            "engine": "piper",
+            "voice": "denis",
+            "title": "Денис (Piper)",
+            "description": "Спокойный мужской. Нейросетевой, работает даже без GPU.",
+            "size": "60 МБ",
+            "license": "CC0 · rhasspy/piper-voices",
+            "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/denis/medium/ru_RU-denis-medium.onnx",
+            "file": "ru_RU-denis-medium.onnx",
+            "locale": "ru_RU",
+            "quality": "medium"
+        },
+        {
+            "id": "piper-dmitri",
+            "engine": "piper",
+            "voice": "dmitri",
+            "title": "Дмитрий (Piper)",
+            "description": "Мужской, чуть ниже. Нейросетевой, работает даже без GPU.",
+            "size": "60 МБ",
+            "license": "CC0 · rhasspy/piper-voices",
+            "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/dmitri/medium/ru_RU-dmitri-medium.onnx",
+            "file": "ru_RU-dmitri-medium.onnx",
+            "locale": "ru_RU",
+            "quality": "medium"
+        },
+        {
+            "id": "piper-irina",
+            "engine": "piper",
+            "voice": "irina",
+            "title": "Ирина (Piper)",
+            "description": "Женский. Нейросетевой, работает даже без GPU.",
+            "size": "60 МБ",
+            "license": "лицензия не указана (RHVoice) · rhasspy/piper-voices",
+            "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/irina/medium/ru_RU-irina-medium.onnx",
+            "file": "ru_RU-irina-medium.onnx",
+            "locale": "ru_RU",
+            "quality": "medium"
+        },
+        {
+            "id": "piper-ruslan",
+            "engine": "piper",
+            "voice": "ruslan",
+            "title": "Руслан (Piper)",
+            "description": "Мужской, мягкий. Нейросетевой, работает даже без GPU.",
+            "size": "60 МБ",
+            "license": "CC BY-NC-SA 4.0 · некоммерчески · rhasspy/piper-voices",
+            "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/ruslan/medium/ru_RU-ruslan-medium.onnx",
+            "file": "ru_RU-ruslan-medium.onnx",
+            "locale": "ru_RU",
+            "quality": "medium"
+        }
+    ]
+}

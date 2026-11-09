@@ -1,0 +1,25 @@
+{
+    "name": "panel",
+    "private": true,
+    "version": "0.2.0",
+    "type": "module",
+    "scripts": {
+        "dev": "vite --port 5173 --strictPort",
+        "build": "vite build",
+        "preview": "vite preview",
+        "icons": "node scripts/brand-icons.mjs"
+    },
+    "dependencies": {
+        "preact": "^10.27.0"
+    },
+    "devDependencies": {
+        "@fontsource/inter": "^5.3.0",
+        "@fontsource/inter-tight": "^5.3.0",
+        "@fontsource/jetbrains-mono": "^5.3.0",
+        "@fontsource/manrope": "^5.2.5",
+        "@preact/preset-vite": "^2.10.2",
+        "@types/node": "^20.3.1",
+        "typescript": "^5.9.3",
+        "vite": "^7.3.0"
+    }
+}

@@ -1,0 +1,16 @@
+# The recognition server's environment, pinned to the set that works on the owner's Mac (06.11); constraints.txt
+# holds every package beneath these at its tested version too:
+#   uv pip install -p .venv/bin/python -r requirements.txt -c constraints.txt
+# torch and torchaudio come from PyPI on a Mac. On Linux PyPI's torch is the CUDA build (gigabytes): for a processor
+# install the pair first from https://download.pytorch.org/whl/cpu, for an NVIDIA card from a CUDA index (cu126…
+# cu132) — the Dockerfile does that by its TORCH argument.
+torch==2.15.0
+torchaudio==2.11.1
+# GigaAM (MIT, salute-developers) at a tested commit, as an archive: no git needed. [torch] pulls torch and
+# torchaudio: without them `import gigaam` fails.
+gigaam[torch] @ https://github.com/salute-developers/GigaAM/archive/7447938d791c4f3e643386ee22c33777004293a5.tar.gz
+numpy==2.5.4
+# Parakeet TDT v3 (CC BY 4.0) through transformers; its mel filters come from librosa.
+transformers==5.22.1
+librosa==1.0.0
+# Whisper is apart, in requirements-whisper.txt: faster-whisper's PyAV bundles FFmpeg with GPL x264 and x265.

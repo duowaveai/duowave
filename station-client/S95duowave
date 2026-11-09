@@ -1,0 +1,20 @@
+#!/bin/sh
+# DuoWave's one file on the firmware's partition: /etc/init.d/S95duowave, before Alice (S99quasar). Everything it runs
+# lives in /data/opt/duowave — where the voice goes (voice.sh: our copy of quasar.cfg mounted over the firmware's) and
+# the gateway on the station (gateway.sh) — so a reset of the station, which wipes /data and not this file, leaves it
+# nothing to do: the station is the usual Alice. Written by the gateway; `duowave station remove` takes it away.
+DIR=${DUOWAVE_DIR:-/data/opt/duowave}
+
+case "${1:-}" in
+    start)
+        [ -f "$DIR/voice.sh" ] && sh "$DIR/voice.sh" boot
+        [ -f "$DIR/gateway.sh" ] && sh "$DIR/gateway.sh" start
+        ;;
+    stop)
+        [ -f "$DIR/gateway.sh" ] && sh "$DIR/gateway.sh" stop
+        ;;
+    restart | status)
+        [ -f "$DIR/gateway.sh" ] && sh "$DIR/gateway.sh" "$1"
+        ;;
+esac
+exit 0

@@ -1,0 +1,22 @@
+# Docker Desktop на macOS не даёт контейнеру настоящий сетевой режим host (это сеть его Linux-VM, порты наружу не
+# пробрасываются) — поэтому маковский вариант: обычная сеть с портами. ARI — только этому компьютеру (127.0.0.1),
+# SIP и RTP — домашней сети для телефонов; http.mac.conf слушает 0.0.0.0 внутри контейнера, наружу всё равно
+# решает проброс. Аудио со шлюзом: в пульте адрес шлюза для звука — host.docker.internal.
+#
+#   docker compose -f docker-compose.mac.yml up -d
+services:
+  asterisk:
+    image: andrius/asterisk:20
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8088:8088" # ARI для шлюза на этом компьютере
+      - "5060:5060/udp" # SIP для телефонов семьи
+      - "20000-20100:20000-20100/udp" # RTP для звука телефонов
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./pjsip.conf:/etc/asterisk/pjsip.conf:ro
+      - ./extensions.conf:/etc/asterisk/extensions.conf:ro
+      - ./ari.conf:/etc/asterisk/ari.conf:ro
+      - ./http.mac.conf:/etc/asterisk/http.conf:ro
+      - ./rtp.conf:/etc/asterisk/rtp.conf:ro

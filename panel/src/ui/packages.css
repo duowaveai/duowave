@@ -1,0 +1,238 @@
+/* Персонажи и пакеты (screens/characters.tsx, screens/catalog.tsx, ui/needs.tsx): галерея плитками, аватары, тоны,
+   строки каталога, разница текста при обновлении. Цвета — токены темы; цвет персонажа — его данные (--char-color,
+   ставит экран из пакета). Отступы — по плотности темы. */
+
+/* ─── Галерея ─────────────────────────────────────────────────── */
+.char-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: var(--s-sm);
+    margin-top: var(--s-xs);
+}
+.char-grid-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; margin-top: var(--s-sm); }
+
+.char-tile {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    border-radius: 20px;
+    border: 1px solid var(--glass-border);
+    background: var(--icon-bg);
+    transition: border-color 0.15s;
+}
+.char-tile:hover { border-color: var(--accent); }
+/* Говорит сейчас — кольцо выбора (DESIGN.md, Shadow Vocabulary). */
+.char-tile.is-active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+/* Не пойдёт здесь или нужна подпись — приглушена, но открывается: причина внутри. */
+.char-tile.is-dim .char-open { opacity: 0.55; }
+.char-tile.is-add { border-style: dashed; background: transparent; }
+
+.char-open {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: calc(8px * var(--density, 1));
+    width: 100%;
+    min-height: 168px;
+    padding: calc(14px * var(--density, 1));
+    border-radius: inherit;
+    text-align: left;
+    color: var(--text);
+}
+.char-name { max-width: 100%; font-size: 15px; line-height: 20px; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.char-line {
+    font-size: 12px;
+    line-height: 16px;
+    color: var(--sub);
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+.char-pills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: auto; max-width: 100%; }
+.char-pills .pill { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+
+/* ▶ послушать — круг в углу плитки, цель 36px. */
+.char-play {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    color: var(--text);
+}
+.char-play[aria-pressed='true'] { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+/* В строке (карточка персонажа, окно пакета) — не в углу, а в потоке. */
+.char-play.is-inline { position: static; flex: none; }
+
+/* ─── Аватар: картинка пакета или первая буква на цвете персонажа ─── */
+.char-avatar {
+    flex: none;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    font-weight: 800;
+    color: #FFFFFF;
+    background: var(--char-color, var(--bar-off));
+    box-shadow: inset 0 0 0 2px var(--glass-border);
+}
+.char-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Свой знак вместо буквы (встроенная «Алиса» — волна): круг рисует сам знак, фон и кольцо аватара не нужны. */
+.char-avatar-mark { background: none; box-shadow: none; }
+.char-mark { width: 100%; height: 100%; display: block; }
+.char-avatar-sm { width: 40px; height: 40px; font-size: 15px; }
+.char-avatar-lg { width: 96px; height: 96px; font-size: 34px; }
+.char-avatar-add { background: transparent; color: var(--sub); box-shadow: inset 0 0 0 1.5px var(--glass-border); }
+
+/* «Сейчас отвечает» на главном экране: строка-кнопка, ведёт в карточку персонажа. */
+.now-char { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 44px; text-align: left; color: var(--text); border-radius: 16px; }
+.now-char-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+/* ─── Карточка персонажа ──────────────────────────────────────── */
+.char-hero { display: flex; align-items: center; gap: var(--s-md); }
+.char-hero-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.char-greeting { margin: 0; font-size: 15px; line-height: 22px; font-weight: 700; }
+.char-block { display: flex; flex-direction: column; gap: 6px; padding-top: var(--s-sm); border-top: 1px solid var(--divider); }
+.char-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+/* Регулятор тона: капсула положений, выбранное — как сегмент режима (seg-btn). */
+.tone-row { display: flex; flex-direction: column; gap: 4px; }
+.tone-seg {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    gap: 4px;
+    padding: 4px;
+    border-radius: var(--r-pill);
+    background: var(--icon-bg);
+}
+.tone-seg .seg-btn { min-height: 36px; padding: 0 8px; font-size: 13px; }
+
+/* Что поменяется в характере: убранное — зачёркнуто кораллом, новое — акцентом, прежнее — подписью. */
+.diff {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 40vh;
+    overflow-y: auto;
+    padding: 10px 12px;
+    border-radius: 16px;
+    background: var(--icon-bg);
+    font-size: 13px;
+    line-height: 18px;
+}
+.diff-same { color: var(--sub); }
+.diff-del { color: var(--dot-offline); text-decoration: line-through; }
+.diff-add { color: var(--accent-text); font-weight: 700; }
+
+/* Текст характера только для чтения. */
+.prompt-view {
+    margin: 0;
+    max-height: 32vh;
+    overflow-y: auto;
+    padding: 10px 12px;
+    border-radius: 16px;
+    background: var(--icon-bg);
+    font-size: 13px;
+    line-height: 18px;
+    white-space: pre-wrap;
+}
+
+/* ─── Каталог пакетов ─────────────────────────────────────────── */
+.pkg-row { display: flex; flex-direction: column; gap: 6px; padding: calc(10px * var(--density, 1)) 0; border-top: 1px solid var(--divider); }
+.pkg-row:first-of-type { border-top-color: transparent; }
+.pkg-main { display: flex; align-items: center; gap: 12px; }
+.pkg-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.pkg-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-weight: 700; }
+.pkg-actions { flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
+/* Нельзя поставить (не пойдёт здесь, нужна подпись): серым, причина под именем. */
+.pkg-row.is-dim .pkg-main > :not(.pkg-actions) { opacity: 0.55; }
+.pkg-thumb {
+    flex: none;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--sub);
+    background: var(--icon-bg);
+}
+.pkg-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pkg-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 2px 0 8px; }
+.pkg-switch { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--divider); }
+
+/* Окно «нужна модель» и отложенный голос. */
+.needs-facts { margin: 0; font-size: 15px; line-height: 22px; }
+.needs-actions { display: flex; flex-direction: column; gap: 8px; }
+.needs-actions > button { justify-content: center; min-height: 44px; }
+.pending-row { display: flex; flex-direction: column; gap: 8px; padding: 10px 0 4px; }
+
+@media (prefers-reduced-motion: reduce) {
+    .char-tile { transition: none; }
+}
+
+/* ─── Память колонки (screens/memory.tsx) ─────────────────────── */
+.mem-bar { display: flex; height: 12px; border-radius: var(--r-pill, 999px); overflow: hidden; background: var(--track, rgba(127, 127, 127, 0.18)); }
+.mem-seg { display: block; height: 100%; min-width: 2px; }
+.mem-system { background: var(--bar-off); }
+.mem-gateway { background: var(--bar-yandex); }
+.mem-plugins { background: var(--accent); }
+.mem-free { background: transparent; box-shadow: inset 0 0 0 1px var(--glass-border); }
+.mem-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0; padding: 0; list-style: none; font-size: 13px; }
+.mem-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.mem-dot { width: 10px; height: 10px; border-radius: 50%; }
+
+/* ─── Мастерская (screens/workshop.tsx) ───────────────────────── */
+/* Мастерская («Плагины» → «Мастерская»). Редактор — во всю ширину карточки и по высоте кода (до 70% экрана), строки не
+   переносятся: длинная строка прокручивается внутри поля, а не рамка карточки. */
+.ws-editor { min-height: 240px; max-height: 70vh; font-size: 13px; line-height: 1.5; tab-size: 2; white-space: pre; overflow-wrap: normal; overflow: auto; margin: 8px 0; }
+.ws-code { font-size: 12px; line-height: 1.5; tab-size: 2; white-space: pre; overflow-wrap: normal; overflow: auto; }
+.ws-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 3px; border-radius: 16px; background: var(--icon-bg); }
+.ws-tab { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 6px 12px; border-radius: 12px; font: 600 13px/18px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--sub); }
+.ws-tab.on { background: var(--seg-on-bg, var(--glass-bg)); color: var(--seg-on-fg, var(--text)); }
+.ws-tab-new { font-family: inherit; font-weight: 700; }
+.ws-dirty { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.ws-block { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; border-top: 1px solid var(--divider); }
+.ws-block:first-of-type { border-top: 0; padding-top: 4px; }
+.ws-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
+.ws-row > .ws-grow { flex: 1 1 220px; min-width: 0; }
+.ws-row > .pill { flex: none; }
+.ws-label { display: flex; flex-direction: column; gap: 4px; }
+.ws-form { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.ws-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ws-chips > .pill { white-space: normal; text-align: left; }
+.ws-results { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.ws-result { display: flex; gap: 10px; align-items: flex-start; }
+.ws-mark { flex: none; width: 18px; font-weight: 800; }
+.ws-trial { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; padding: 12px 14px; border-radius: 16px; background: var(--pill-agent-bg); color: var(--text); }
+.ws-versions { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.ws-version { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 28px; }
+.ws-model { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.ws-hint { padding: 10px 12px; border-radius: 14px; background: var(--pill-yandex-bg); color: var(--pill-yandex-fg); }
+.pkg-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 8px; }
+.ws-pre { margin: 0; padding: 10px 12px; border-radius: 12px; background: var(--icon-bg); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ws-log { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; max-height: 280px; overflow: auto; }
+.ws-log li { overflow-wrap: anywhere; }
+.ws-chat { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow: auto; }
+.ws-msg { padding: 8px 12px; border-radius: 14px; font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; white-space: pre-wrap; }
+.ws-me { align-self: flex-end; background: var(--pill-own-bg); color: var(--pill-own-fg); }
+.ws-agent { align-self: flex-start; background: var(--icon-bg); }
+.ws-tool { align-self: flex-start; font-size: 12px; color: var(--text-dim, inherit); opacity: 0.8; padding: 2px 12px; }
+.ws-error { align-self: flex-start; font-size: 12px; color: var(--dot-offline); padding: 2px 12px; }
+.font-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.line-through { text-decoration: line-through; }

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>DuoWave</title>
+    <link rel="stylesheet" href="splash.css">
+    <script src="splash.js" defer></script>
+</head>
+<body data-phase="starting">
+    <main>
+        <!-- ДиВи, DuoWave's mark (DESIGN.md): while the gateway starts or stops he listens, both eyes open, blinking; at rest he
+             winks; when it fails, the left eye shrinks and he sways, «не расслышал». -->
+        <svg class="mark" viewBox="0 0 256 256" aria-hidden="true">
+            <g class="body">
+                <path class="skin" d="M116 40H140A68 68 0 0 1 208 108V148A68 68 0 0 1 140 216H116A68 68 0 0 1 48 148V108A68 68 0 0 1 116 40Z"/>
+                <path class="eye left" d="M81.2 110A16.8 16.8 0 0 1 114.8 110V138A16.8 16.8 0 0 1 81.2 138Z"/>
+                <path class="eye right open" d="M141.2 110A16.8 16.8 0 0 1 174.8 110V138A16.8 16.8 0 0 1 141.2 138Z"/>
+                <path class="eye right smile" d="M132.91 123.5A30.32 30.32 0 0 1 183.09 123.5A9.8 9.8 0 0 1 166.87 134.5A10.72 10.72 0 0 0 149.13 134.5A9.8 9.8 0 0 1 132.91 123.5Z"/>
+            </g>
+        </svg>
+        <h1>
+            <svg class="wordmark" viewBox="0 0 944 224" aria-hidden="true"><path fill-rule="evenodd" d="M50 49H66A50 50 0 0 1 116 99V125A50 50 0 0 1 66 175H50A50 50 0 0 1 0 125V99A50 50 0 0 1 50 49ZM50 73H66A26 26 0 0 1 92 99V125A26 26 0 0 1 66 151H50A26 26 0 0 1 24 125V99A26 26 0 0 1 50 73Z"/><path d="M92 0H116V172H92V0Z"/><path d="M138 52V125A50 50 0 0 0 188 175H204A50 50 0 0 0 254 125V52H230V125A26 26 0 0 1 204 151H188A26 26 0 0 1 162 125V52Z"/><path d="M230 52H254V172H230V52Z"/><path fill-rule="evenodd" d="M326 49H342A50 50 0 0 1 392 99V125A50 50 0 0 1 342 175H326A50 50 0 0 1 276 125V99A50 50 0 0 1 326 49ZM326 73H342A26 26 0 0 1 368 99V125A26 26 0 0 1 342 151H326A26 26 0 0 1 300 125V99A26 26 0 0 1 326 73Z"/><path d="M406 52H428V136.5A16.5 16.5 0 0 0 461 136.5V76H483V136.5A16.5 16.5 0 0 0 516 136.5V52H538V136.5A38.5 38.5 0 0 1 472 163.44A38.5 38.5 0 0 1 406 136.5Z"/><path fill-rule="evenodd" d="M602 49H618A50 50 0 0 1 668 99V125A50 50 0 0 1 618 175H602A50 50 0 0 1 552 125V99A50 50 0 0 1 602 49ZM602 73H618A26 26 0 0 1 644 99V125A26 26 0 0 1 618 151H602A26 26 0 0 1 576 125V99A26 26 0 0 1 602 73Z"/><path d="M644 52H668V172H644V52Z"/><path d="M690 52L715.49 52L748 142.71L780.51 52L806 52L763 172L733 172Z"/><path fill-rule="evenodd" d="M878 49H894A50 50 0 0 1 944 99V122H852V125A26 26 0 0 0 878 151H894A26 26 0 0 0 908.3 146.71L908.3 172.91A50 50 0 0 1 894 175H878A50 50 0 0 1 828 125V99A50 50 0 0 1 878 49ZM878 73H894A26 26 0 0 1 920 99V98H852V99A26 26 0 0 1 878 73Z"/></svg>
+            <span class="name">DuoWave</span>
+        </h1>
+        <p id="title" role="status" aria-live="polite">Шлюз запускается…</p>
+        <div id="advice"></div>
+        <div id="actions" hidden>
+            <button id="port" type="button" hidden>Взять свободный порт</button>
+            <button id="retry" type="button">Запустить снова</button>
+            <button id="log" type="button" class="quiet">Журнал</button>
+            <button id="data" type="button" class="quiet">Папка с данными</button>
+        </div>
+    </main>
+</body>
+</html>

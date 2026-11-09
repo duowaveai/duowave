@@ -1,0 +1,5 @@
+# The build context is this folder (compose.yaml): the local environment and choice stay out of the image.
+.venv
+chosen-model
+**/__pycache__
+*.wav

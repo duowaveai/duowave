@@ -1,0 +1,100 @@
+# The voice gateway in Docker: Linux, a NAS, a Raspberry Pi 4/5 (64-bit), and Windows or a Mac through Docker Desktop.
+#
+#   docker compose up -d                    # the gateway and its panel: http://<this machine>/panel
+#   docker compose --profile full up -d     # + our recognition (GigaAM) and voices (Silero, Piper) on the processor
+#   docker compose --profile gpu up -d      # the same on an NVIDIA card (amd64, NVIDIA Container Toolkit)
+#   docker compose -f compose.yaml -f compose.calls.yaml up -d   # + calls through the station (Linux only)
+#
+# Settings: the panel keeps them (models, keys, routes, people) in the data volume. A .env beside this file is
+# optional, for what the panel does not set — see .env.example; the paths below win over it.
+# The gateway is one static program with its panel inside (Dockerfile.prod); `duowave health` is its health check.
+# Where things are: docker compose logs gateway — the log (the first setup's code too); the volume gateway-data —
+# everything the gateway keeps; back it up with: docker run --rm -v duowave_gateway-data:/data -v "$PWD":/out
+# busybox tar czf /out/gateway-data.tgz -C /data .
+name: duowave
+
+services:
+  gateway:
+    image: ${GATEWAY_IMAGE:-duowave:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+    # The panel and the station's voice connection on this machine's port 7780 (GATEWAY_PORT in .env for another):
+    # the station dials whatever port its uniProxyUrl names, and an uncommon one is free on most machines.
+    ports:
+      - '${GATEWAY_PORT:-7780}:3000'
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Always the volume, whatever .env says: a source checkout's .env names folders beside the code.
+      DATA_DIR: /data
+      PORT: '3000'
+      # What the station dials: the published port, which the gateway cannot see from inside the container.
+      PUBLIC_PORT: ${GATEWAY_PORT:-7780}
+      RECORDER_DIR: /data/sessions
+      STATE_DIR: /data/state
+      CONTENT_DIR: /data/content
+      VOICE_LAB_DIR: /data/voice-lab
+      TTS_MODELS_DIR: /data/voices
+      # Our model servers by their service names: they answer when the full or gpu profile runs. A name without a
+      # dot counts as home (gateway/src/operations/networks.rs): nothing sent there leaves the house.
+      ASR_BASE_URL: ${ASR_BASE_URL:-http://asr:8090/v1}
+      TTS_OWN_URL: ${TTS_OWN_URL:-http://tts:8091/v1}
+    volumes:
+      - gateway-data:/data
+      # The voices the panel downloads, read by the voice server.
+      - voices:/data/voices
+
+  # --- full: our models on the processor -------------------------------------------------------------------------
+  asr:
+    profiles: [full]
+    image: ${ASR_IMAGE:-duowave-asr:local}
+    build:
+      context: ./asr-server
+      args:
+        TORCH: cpu
+    restart: unless-stopped
+    volumes:
+      - asr-cache:/cache
+
+  tts:
+    profiles: [full, gpu]
+    image: ${TTS_IMAGE:-duowave-tts:local}
+    build:
+      context: ./tts-server
+      args:
+        TORCH: cpu
+    restart: unless-stopped
+    volumes:
+      - voices:/models
+      - tts-cache:/cache
+
+  # --- gpu: recognition on NVIDIA under the same name --------------------------------------------------------------
+  asr-gpu:
+    profiles: [gpu]
+    image: ${ASR_GPU_IMAGE:-duowave-asr:local-cuda}
+    build:
+      context: ./asr-server
+      args:
+        TORCH: cu126
+    restart: unless-stopped
+    networks:
+      default:
+        aliases: [asr]
+    volumes:
+      - asr-cache:/cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  gateway-data:
+  voices:
+  asr-cache:
+  tts-cache:

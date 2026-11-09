@@ -1,0 +1,8 @@
+; The gateway's ARI user: copy to ari.conf, set a password, put the same into ARI_PASSWORD in the gateway's .env.
+[general]
+enabled = yes
+
+[duowave]
+type = user
+read_only = no
+password = CHANGE-ME-ARI

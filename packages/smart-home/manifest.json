@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "kind": "plugin",
+  "id": "smart-home",
+  "version": "1.0.0",
+  "title": "Умный дом",
+  "description": "Свет и устройства Home Assistant голосом: «включи свет на кухне», «выключи свет», и что включено дома — для «Мозга». Подключение и его ключ — в «Дом» → «Коннекторы», плагин их не видит. Встроенный плагин: без него умным домом управляет встроенный навык.",
+  "api": "^1.1",
+  "runs": ["pc", "station", "stationServer"],
+  "budget": { "memoryMb": 4, "storageMb": 1 },
+  "permissions": ["voice.intents", "llm.tools", "smart_home"],
+  "contributes": {
+    "intents": [
+      {
+        "phrases": ["включи свет", "включи свет {place}", "выключи свет", "выключи свет {place}", "погаси свет", "погаси свет {place}", "зажги свет {place}"],
+        "handler": "light",
+        "capability": "smart_home"
+      }
+    ],
+    "tools": [
+      {
+        "name": "smart_home_status",
+        "description": "Устройства умного дома и их состояние: что включено, температура, яркость. Только чтение.",
+        "input": { "type": "object", "properties": { "words": { "type": "string", "description": "Что интересует: «свет», «кухня»; пусто — всё" } } },
+        "handler": "status",
+        "capability": "smart_home",
+        "annotations": { "readOnlyHint": true }
+      }
+    ]
+  }
+}

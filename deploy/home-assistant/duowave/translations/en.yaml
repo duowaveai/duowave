@@ -1,0 +1,4 @@
+configuration:
+  port:
+    name: Port
+    description: The panel's and the station's port. Any free one; after a change, re-point the station — the panel offers it.

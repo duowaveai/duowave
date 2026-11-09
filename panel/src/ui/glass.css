@@ -1,0 +1,1014 @@
+/* «Стекло» — дизайн-система пульта (docs/design/glass, DESIGN.md). Цвета, шрифт, плотность и скругления — токены
+   темы: их пишет src/shell/themes.ts (тема по умолчанию вшита в index.html, выбранная — <style id="theme">). Здесь —
+   только то, что от темы не зависит, и сами элементы. Режим темы — data-theme="dark" | "light" на <html>. */
+
+:root {
+    --r-pill: 999px;
+
+    /* Отступы — по плотности темы (--density, 1 — как в DESIGN.md) */
+    --s-xxs: calc(4px * var(--density, 1));
+    --s-xs: calc(8px * var(--density, 1));
+    --s-sm: calc(12px * var(--density, 1));
+    --s-md: calc(16px * var(--density, 1));
+    --s-lg: calc(20px * var(--density, 1));
+    --s-xl: calc(24px * var(--density, 1));
+}
+
+/* ─── База ────────────────────────────────────────────────────── */
+* { box-sizing: border-box; }
+
+html, body { margin: 0; padding: 0; }
+
+body {
+    font-family: var(--font);
+    font-size: 15px;
+    line-height: 22px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+    background-color: var(--bg);
+    background-image: var(--aurora);
+    background-attachment: fixed;
+    min-height: 100dvh;
+    -webkit-font-smoothing: antialiased;
+}
+
+button {
+    font: inherit;
+    color: inherit;
+    border: 0;
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    cursor: pointer;
+}
+
+input, textarea, select {
+    font: inherit;
+    color: var(--text);
+}
+
+/* Фокус с клавиатуры виден всегда: лаймовое кольцо поверх стекла (DESIGN.md: одно свечение — фокус). */
+:focus { outline: none; }
+:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* Поле ввода пульта: пилюля на стекле. */
+.field {
+    padding: 8px 14px;
+    border-radius: var(--r-pill);
+    border: 1px solid var(--glass-border);
+    background: var(--icon-bg);
+    min-height: 36px;
+}
+.field:focus-visible { outline-offset: 0; }
+/* Многострочное поле — не капсула: в скруглении капсулы текст в углах обрезается. Малое скругление, во всю ширину,
+   высота тянется вниз. Капсулой остаются однострочные поля. */
+textarea.field {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    border-radius: var(--r-field, 14px);
+    padding: 10px 14px;
+    line-height: 1.45;
+    resize: vertical;
+}
+
+.talk-btn:disabled { opacity: 0.45; cursor: default; }
+
+/* ─── Типографика ─────────────────────────────────────────────── */
+.t-display { font-size: 34px; line-height: 40px; font-weight: 800; letter-spacing: -0.03em; }
+.t-title { font-size: 20px; line-height: 26px; font-weight: 800; letter-spacing: -0.01em; }
+.t-title-xs { font-size: 15px; line-height: 20px; font-weight: 800; }
+.t-body-sm { font-size: 14px; line-height: 20px; }
+.t-meta { font-size: 13px; line-height: 18px; color: var(--sub); }
+.t-caption { font-size: 12px; line-height: 16px; color: var(--sub); }
+
+/* ─── Стекло ──────────────────────────────────────────────────── */
+.glass {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    box-shadow: inset 0 1px 0 var(--glass-hi), var(--glass-shadow);
+    backdrop-filter: blur(var(--glass-blur)) saturate(160%);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(160%);
+}
+
+.glass-strong {
+    background: var(--strong-bg);
+    border: 1px solid var(--strong-border);
+    box-shadow: inset 0 1px 0 var(--strong-hi), var(--strong-shadow);
+    backdrop-filter: blur(var(--strong-blur)) saturate(160%);
+    -webkit-backdrop-filter: blur(var(--strong-blur)) saturate(160%);
+}
+
+/* Выпадающее окно списков: как сильное стекло, но плотнее — текст под ним не читается. */
+.menu {
+    background: var(--menu-bg);
+    border: 1px solid var(--strong-border);
+    box-shadow: inset 0 1px 0 var(--strong-hi), var(--strong-shadow);
+    backdrop-filter: blur(var(--strong-blur)) saturate(160%);
+    -webkit-backdrop-filter: blur(var(--strong-blur)) saturate(160%);
+}
+
+.card {
+    border-radius: var(--r-panel);
+    padding: var(--s-md);
+}
+
+/* ─── Пилюли ──────────────────────────────────────────────────── */
+.pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 10px;
+    border-radius: var(--r-pill);
+    font-size: 12px;
+    line-height: 18px;
+    font-weight: 800;
+    white-space: nowrap;
+}
+
+.pill-own { background: var(--pill-own-bg); color: var(--pill-own-fg); }
+.pill-yandex { background: var(--pill-yandex-bg); color: var(--pill-yandex-fg); }
+.pill-agent { background: var(--pill-agent-bg); color: var(--pill-agent-fg); }
+.pill-off { background: var(--pill-off-bg); color: var(--pill-off-fg); }
+/* Беда — единственный коралл: «нет связи». */
+.pill-error { background: rgba(255, 138, 128, 0.16); color: var(--dot-offline); }
+
+/* ─── Кнопки ──────────────────────────────────────────────────── */
+.icon-btn {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+}
+
+.talk-btn {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--accent);
+    color: var(--on-accent);
+    box-shadow: var(--talk-shadow); /* One-Glow: единственное сияние на экране */
+}
+
+/* ─── Каркас экрана ───────────────────────────────────────────── */
+.screen {
+    /* Поле по бокам: его же берёт сцена дашборда, чтобы выйти до края экрана. */
+    --pad-x: calc(16px * var(--density, 1));
+    max-width: 480px;
+    margin: 0 auto;
+    min-height: 100dvh;
+    padding: calc(22px * var(--density, 1)) var(--pad-x) calc(104px + env(safe-area-inset-bottom));
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-md);
+}
+
+.top-head {
+    display: flex;
+    align-items: center;
+    gap: calc(12px * var(--density, 1));
+    min-height: 48px;
+}
+
+.tabbar {
+    position: fixed;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: calc(18px + env(safe-area-inset-bottom));
+    width: min(480px - 32px, calc(100vw - 32px));
+    height: 68px;
+    border-radius: var(--r-bar);
+    display: grid;
+    /* Ячейки: разделы и круг «Сказать» (оболочка ставит --cells по числу разделов). */
+    grid-template-columns: repeat(var(--cells, 5), minmax(0, 1fr));
+    align-items: center;
+    padding: 0 6px;
+    z-index: 10;
+}
+
+.tabbar .talk-btn { justify-self: center; }
+
+.tab {
+    min-height: 52px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    font-size: 11px;
+    line-height: 14px;
+    font-weight: 600;
+    color: var(--sub);
+}
+
+.tab[aria-current='page'] {
+    font-weight: 800;
+    color: var(--accent-text);
+}
+
+.tab:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+/* Меню «Ещё» над панелью вкладок: разделы, которые в неё не поместились (журнал, мастерская, разделы плагинов). */
+.tab-more-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+}
+
+.tab-more {
+    position: fixed;
+    right: max(16px, calc(50vw - 224px));
+    bottom: calc(18px + 68px + 10px + env(safe-area-inset-bottom));
+    min-width: 200px;
+    max-height: 60vh;
+    overflow-y: auto;
+    border-radius: var(--r-panel);
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    z-index: 11;
+}
+
+.tab-more-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+    padding: 0 12px;
+    border-radius: 12px;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    text-align: left;
+}
+
+.tab-more-item:hover {
+    background: var(--strong-hi);
+}
+
+.tab-more-item[aria-current='page'] {
+    color: var(--accent-text);
+    font-weight: 800;
+}
+
+/* ─── Боковая панель (SidebarShell) ───────────────────────────── */
+/* Широкий экран: панель плотного стекла плавает слева (DESIGN.md: The Strong-Glass-Floats Rule), содержимое — справа
+   колонкой до 720 точек. Узкий: сверху полоса с меню, колонкой и кругом «Сказать», разделы выезжают слева. */
+.side-shell {
+    --pad-x: calc(16px * var(--density, 1));
+    min-height: 100dvh;
+}
+.side-panel {
+    display: flex;
+    flex-direction: column;
+    gap: calc(14px * var(--density, 1));
+    padding: calc(14px * var(--density, 1));
+    border-radius: var(--r-panel-desk);
+}
+@media (min-width: 900px) {
+    .side-shell {
+        display: grid;
+        grid-template-columns: 280px minmax(0, 1fr);
+        gap: 24px;
+        padding: 16px 24px 16px 16px;
+    }
+    .side-shell > .side-panel {
+        position: sticky;
+        top: 16px;
+        height: calc(100dvh - 32px);
+        overflow-y: auto;
+    }
+}
+.side-station { display: flex; min-height: 48px; }
+/* Капсула разговора компьютера (DESIGN.md, button-talk-desk): 44 точки, иконка 18, единственное лаймовое свечение. */
+.side-talk {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 18px 0 14px;
+    border-radius: var(--r-pill);
+    background: var(--accent);
+    color: var(--on-accent);
+    font-size: 14px;
+    font-weight: 800;
+    box-shadow: var(--talk-shadow);
+}
+.side-talk:disabled { opacity: 0.45; cursor: default; }
+.side-nav { display: flex; flex-direction: column; gap: 4px; }
+/* Раздел — капсула; открытый — выбранный сегмент: лайм в тёмном режиме, чернила в светлом (The Ink-Selection Rule). */
+.side-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 44px;
+    padding: 0 14px;
+    border-radius: var(--r-pill);
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--sub);
+    text-align: left;
+}
+.side-item:hover { color: var(--text); background: var(--icon-bg); }
+.side-item[aria-current='page'] { font-weight: 800; color: var(--seg-on-fg); background: var(--seg-on-bg); }
+.side-item-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-sep { height: 1px; margin: 6px 14px; background: var(--divider); }
+.side-foot { margin-top: auto; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+
+.side-main {
+    min-width: 0;
+    width: 100%;
+    max-width: 720px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-md);
+    padding: calc(18px * var(--density, 1)) var(--pad-x) calc(40px + env(safe-area-inset-bottom));
+}
+@media (min-width: 900px) {
+    .side-main { padding-top: 6px; }
+}
+
+/* Узкий экран: полоса сверху плавает над прокруткой. */
+.side-top {
+    position: sticky;
+    top: calc(10px + env(safe-area-inset-top));
+    z-index: 10;
+    margin: 10px 12px 0;
+    min-height: 60px;
+    padding: 8px;
+    border-radius: var(--r-bar);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.side-talk-round { width: 44px; height: 44px; }
+
+/* Разделы на узком экране: панель выезжает слева поверх затемнения. */
+.side-layer { position: fixed; inset: 0; z-index: 30; }
+.side-scrim { position: absolute; inset: 0; width: 100%; height: 100%; background: var(--scrim); }
+.side-drawer {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(300px, 84vw);
+    border-radius: 0 var(--r-panel-desk) var(--r-panel-desk) 0;
+    padding-top: calc(16px + env(safe-area-inset-top));
+    overflow-y: auto;
+    animation: side-in 0.22s ease-out;
+}
+@keyframes side-in { from { transform: translateX(-24px); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+    .side-drawer { animation: none; }
+}
+
+/* Окно колонок выпадает под переключателем в боковой панели, шиты встают над содержимым, а не над панелью. */
+@media (min-width: 900px) {
+    html[data-shell='sidebar'] .picker { top: 84px; left: 16px; right: auto; width: 440px; }
+    html[data-shell='sidebar'] .sheet-backdrop { padding-left: 320px; }
+}
+
+/* Вид пульта (Дом → Доступ): схема раскладки темы её цветами, режим — сегментом под списком тем. */
+.theme-glyph { flex: none; display: block; }
+.theme-modes { margin: 4px 0 4px; }
+
+/* ─── Список маршрутов ────────────────────────────────────────── */
+.route-row {
+    display: flex;
+    align-items: center;
+    gap: var(--s-sm);
+    min-height: 58px;
+    border-top: 1px solid var(--divider);
+}
+
+.route-row:first-of-type { border-top-color: transparent; }
+
+.route-icon {
+    flex: none;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--icon-bg);
+}
+
+/* ─── Полоса распределения ────────────────────────────────────── */
+.alloc-bar {
+    display: flex;
+    gap: 3px;
+    height: 10px;
+}
+
+.alloc-bar > span {
+    height: 10px;
+    border-radius: 5px;
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+.alloc-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px var(--s-lg);
+}
+
+.alloc-legend > span {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    line-height: 18px;
+}
+
+.alloc-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: none;
+}
+
+/* ─── Прочее ──────────────────────────────────────────────────── */
+.divider { border-top: 1px solid var(--divider); }
+
+/* Карточка голоса: наведение мышью подсвечивает рамкой, как в Handy */
+.voice-card:hover {
+    border-color: var(--accent);
+    background: var(--icon-bg);
+}
+
+/* Маленький лоадер: спокойное кольцо в цвет акцента */
+.spinner {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 2px solid var(--track);
+    border-top-color: var(--accent);
+    animation: glass-spin 0.7s linear infinite;
+    flex: none;
+}
+
+@keyframes glass-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex: none;
+}
+
+.sheet-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    background: rgba(0, 0, 0, 0.30);
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+}
+
+.sheet {
+    width: min(480px, 100vw);
+    border-radius: var(--r-panel-desk) var(--r-panel-desk) 0 0;
+    padding: var(--s-lg) var(--s-md) calc(var(--s-lg) + env(safe-area-inset-bottom));
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-sm);
+}
+
+.banner-offline {
+    border-radius: var(--r-pill);
+    padding: 8px 16px;
+    font-size: 13px;
+    line-height: 18px;
+    font-weight: 700;
+    background: rgba(255, 138, 128, 0.16);
+    color: var(--dot-offline);
+    border: 1px solid rgba(255, 138, 128, 0.25);
+}
+
+/* Мета-пилюля статуса (VAD/ASR/…) */
+.stat-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: 100%;
+    padding: 4px 12px;
+    border-radius: var(--r-pill);
+    background: var(--icon-bg);
+    font-size: 13px;
+    line-height: 18px;
+}
+
+.stat-chip b { font-weight: 800; }
+
+.stat-chip .val {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--sub);
+}
+
+/* Заголовок раздела с подписью справа: на узком экране подпись уходит под заголовок, не наезжая на него. */
+.section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 2px 12px;
+    min-height: 44px;
+    padding-top: 10px;
+}
+.section-head > h2 { margin: 0; }
+
+/* Вкладки внутри раздела («Мозг», «Голос», «Дом»): капсула во всю ширину, выбранная залита лаймом. */
+.section-tabs {
+    display: grid;
+    gap: 4px;
+    padding: 4px;
+    border-radius: var(--r-pill);
+}
+.section-tab {
+    min-height: 40px;
+    min-width: 0;
+    padding: 0 6px;
+    border-radius: var(--r-pill);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--sub);
+    background: transparent;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+.section-tab[aria-selected='true'] {
+    font-weight: 800;
+    color: var(--on-accent);
+    background: var(--accent);
+}
+.section-tab-icon { display: inline-flex; flex: none; }
+.section-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Три вкладки на телефоне: подписи важнее значков. */
+@media (max-width: 420px) {
+    .section-tabs[data-count='3'] .section-tab-icon,
+    .section-tabs-many .section-tab-icon { display: none; }
+}
+/* Больше трёх вкладок (вкладки плагинов): ряд по ширине подписей, лишнее прокручивается вбок. */
+.section-tabs-many { display: flex; overflow-x: auto; scrollbar-width: none; }
+.section-tabs-many::-webkit-scrollbar { display: none; }
+.section-tabs-many > .section-tab { flex: 1 0 auto; padding: 0 12px; }
+
+/* ─── Дашборд колонки ─────────────────────────────────────────── */
+/* Сцена во всю ширину экрана, посчитанная под него (dash-scene.ts): орбита и колонка — по высоте до панели вкладок,
+   подписи узлов — всегда одного размера. Уже 390 точек сцена уменьшается целиком. Координаты — от подписи мозга. */
+.dash-stage { position: relative; margin: 0 calc(-1 * var(--pad-x, 16px)); }
+.dash-board { position: absolute; top: 0; transform-origin: 50% 0; }
+.dash-orbit { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.dash-track { fill: none; stroke: var(--orbit); stroke-width: 1; }
+.dash-spark { fill: none; stroke: var(--orbit-hi); stroke-width: 2; stroke-linecap: round; opacity: 0.7; animation: gd-orbit 20s linear infinite; }
+.dash-comet { fill: none; stroke: var(--tone-line); stroke-linecap: round; animation: gd-comet 1.1s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
+
+.dash-art { position: absolute; }
+.dash-speaker { position: absolute; }
+/* Карточка ответа под колонкой — на стекле подписи узла: точка цвета того, кто работает, что он делает и что
+   услышал или ответил; пока колонка говорит — волна голоса его цвета. */
+.dash-caption {
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 12px 9px;
+    border-radius: 16px;
+    text-align: left;
+    pointer-events: none;
+    background: var(--label-bg);
+    border: 1px solid var(--label-border);
+    box-shadow: inset 0 1px 0 var(--label-hi), var(--label-shadow);
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+}
+.dash-caption-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.dash-caption-head::before { content: ''; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--tone-line); transition: background 0.6s; }
+.dash-caption b { flex: 1; min-width: 0; font-size: 13px; line-height: 18px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dash-caption-sub { font-size: 12px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--sub); }
+/* Волна голоса: пять полосок, 4 → 15 px — масштабом, без пересчёта раскладки. */
+.dash-wave { flex: none; display: flex; align-items: center; gap: 2px; height: 16px; }
+.dash-wave i { display: block; width: 3px; height: 15px; border-radius: 2px; background: var(--wave, var(--tone-line)); transform: scaleY(0.27); animation: dash-bar 0.8s ease-in-out infinite; }
+.dash-wave i:nth-child(2) { animation-delay: 0.12s; }
+.dash-wave i:nth-child(3) { animation-delay: 0.24s; }
+.dash-wave i:nth-child(4) { animation-delay: 0.08s; }
+.dash-wave i:nth-child(5) { animation-delay: 0.3s; }
+@keyframes dash-bar { 0%, 100% { transform: scaleY(0.27); } 50% { transform: scaleY(1); } }
+
+/* Узел орбиты: подпись на стекле и круг цвета исполнителя; горящий — в обводке своей полосы и чуть крупнее. */
+.dash-node { position: absolute; display: flex; flex-direction: column; align-items: center; gap: 6px; color: var(--text); }
+.dash-node:focus-visible { outline-offset: 4px; border-radius: 18px; }
+.dash-label {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    max-width: 150px;
+    padding: 3px 10px;
+    border-radius: 14px;
+    background: var(--label-bg);
+    border: 1px solid var(--label-border);
+    box-shadow: inset 0 1px 0 var(--label-hi), var(--label-shadow);
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+}
+.dash-label small { font-size: 12px; line-height: 16px; color: var(--sub); }
+.dash-label b { max-width: 130px; font-size: 13px; line-height: 18px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Оттенок исполнителя для узлов, спутников и комет (облако красится как Яндекс). */
+.tone-own { --tone-fg: var(--pill-own-fg); --tone-bg: var(--pill-own-bg); --tone-line: var(--bar-own); --tone-soft: var(--soft-own); }
+.tone-yandex { --tone-fg: var(--pill-yandex-fg); --tone-bg: var(--pill-yandex-bg); --tone-line: var(--bar-yandex); --tone-soft: var(--soft-yandex); }
+.tone-agent { --tone-fg: var(--pill-agent-fg); --tone-bg: var(--pill-agent-bg); --tone-line: var(--bar-agent); --tone-soft: var(--soft-agent); }
+.tone-off { --tone-fg: var(--pill-off-fg); --tone-bg: var(--pill-off-bg); --tone-line: var(--bar-off); --tone-soft: var(--soft-off); }
+
+.dash-circle,
+.dash-sat {
+    position: relative;
+    flex: none;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--tone-bg);
+    border: 1.5px solid var(--tone-soft);
+    color: var(--tone-fg);
+    box-shadow: inset 0 1px 0 var(--node-hi), var(--node-shadow);
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+    transition: background 0.3s, border-color 0.3s, color 0.3s, transform 0.3s;
+}
+.dash-circle { width: 52px; height: 52px; }
+.dash-circle.on { border-color: var(--tone-line); transform: scale(1.08); }
+.dash-pulse { position: absolute; inset: -4px; border-radius: 50%; border: 2px solid var(--tone-line); animation: gd-ring 1.1s ease-out infinite; }
+.dash-sheet-icon { width: 44px; height: 44px; }
+
+/* Спутники — плоские круги в ряд внутри капсулы подключений: без своего стекла и тени, их несёт капсула. */
+.dash-sat { width: 28px; height: 28px; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.dash-badge {
+    position: absolute;
+    right: -6px;
+    top: -6px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: var(--r-pill);
+    font-size: 10px;
+    line-height: 16px;
+    font-weight: 800;
+    text-align: center;
+    background: var(--tone-line);
+    color: var(--on-badge);
+}
+/* Капсула подключений на низу орбиты: стекло подписи, спутники в ряд и «Подключено · N». */
+.dash-links {
+    position: absolute;
+    height: 40px;
+    padding: 0 14px 0 6px;
+    border-radius: var(--r-pill);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    white-space: nowrap;
+    transform: translateX(-50%);
+    color: var(--text);
+    background: var(--label-bg);
+    border: 1px solid var(--label-border);
+    box-shadow: inset 0 1px 0 var(--label-hi), var(--label-shadow);
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+}
+.dash-links:focus-visible { outline-offset: 3px; }
+.dash-sats { display: flex; gap: 4px; }
+.dash-links > span:last-child { font-size: 13px; line-height: 18px; font-weight: 800; }
+
+/* Шит узла: выбор, «Станет … вместо …», заметки, «Готово». */
+.dash-scrim { background: var(--scrim); }
+.dash-sheet {
+    padding: 10px 16px calc(24px + env(safe-area-inset-bottom));
+    gap: 14px;
+    max-height: 88dvh;
+    overflow-y: auto;
+    animation: gd-sheet 0.28s ease-out;
+}
+.dash-grabber { flex: none; align-self: center; width: 40px; height: 4px; border-radius: 2px; background: var(--grabber); }
+.dash-option {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 60px;
+    padding: 8px 2px;
+    border-top: 1px solid var(--divider);
+    text-align: left;
+    color: var(--text);
+}
+.dash-option:first-child { border-top-color: transparent; }
+.dash-option:disabled { cursor: default; }
+.dash-option.pending { margin: 0 -8px; padding: 8px 10px; border-radius: 18px; border-top-color: transparent; background: var(--icon-bg); }
+.dash-option-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.dash-option-text b { font-weight: 800; }
+.dash-radio {
+    flex: none;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid var(--radio-off);
+}
+.dash-radio.on { border: 0; background: var(--radio-on-bg); color: var(--radio-on-fg); }
+.dash-confirm { padding: 12px 14px; border-radius: 18px; background: var(--pill-yandex-bg); color: var(--pill-yandex-fg); }
+.dash-confirm p { margin: 0 0 10px; font-size: 13px; line-height: 18px; font-weight: 700; }
+.dash-confirm-btn { cursor: pointer; padding: 8px 14px; }
+/* Нажать пока нельзя — приглушена, как Action; занятая своим делом (aria-busy) остаётся яркой. */
+.dash-confirm-btn:disabled { cursor: default; }
+.dash-confirm-btn:disabled:not([aria-busy='true']) { opacity: 0.45; }
+.dash-sheet-link { align-self: flex-start; min-height: 44px; font-size: 14px; font-weight: 700; color: var(--accent-text); }
+.dash-done { flex: none; min-height: 48px; border-radius: var(--r-pill); font-size: 15px; font-weight: 800; background: var(--accent); color: var(--on-accent); }
+
+@keyframes gd-orbit { from { stroke-dashoffset: 0; } to { stroke-dashoffset: -100; } }
+@keyframes gd-comet { from { stroke-dashoffset: 14; } to { stroke-dashoffset: -100; } }
+@keyframes gd-ring { from { transform: scale(1); opacity: 0.9; } to { transform: scale(1.55); opacity: 0; } }
+@keyframes gd-sheet { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+    .dash-anim,
+    .dash-wave i,
+    .dash-sheet { animation: none !important; }
+    .dash-circle,
+    .dash-sat { transition: none; }
+}
+
+/* ─── Колонки: переключатель в шапке, окно «Колонки», вид, первая настройка ── */
+.station-switch { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; text-align: left; color: var(--text); border-radius: 26px; }
+.station-switch-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.station-switch-name { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.station-switch-name > span {
+    font-size: 17px;
+    line-height: 22px;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.station-switch-name > svg { flex: none; color: var(--sub); }
+
+/* Окно выпадает из шапки (макет: 12px от краёв, 74px сверху); на широком экране — по ширине колонки пульта. */
+.picker-layer { position: fixed; inset: 0; z-index: 30; }
+.picker-scrim { position: absolute; inset: 0; width: 100%; height: 100%; background: var(--scrim); }
+.picker {
+    position: absolute;
+    top: 74px;
+    left: max(12px, calc(50% - 228px));
+    right: max(12px, calc(50% - 228px));
+    max-height: calc(100dvh - 90px);
+    overflow-y: auto;
+    border-radius: 28px;
+    padding: 14px 16px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    animation: gd-drop 0.22s ease-out;
+}
+.picker-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.picker-row {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 56px;
+    padding: 6px 2px;
+    border-top: 1px solid var(--divider);
+    text-align: left;
+    color: var(--text);
+}
+.picker-row:first-child { border-top-color: transparent; }
+.picker-add { min-height: 52px; }
+.picker-glyph { flex: none; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--icon-bg); }
+.picker-add-icon {
+    flex: none;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1.5px dashed var(--track);
+    color: var(--accent-text);
+}
+.picker-hint { padding: 10px 12px; border-radius: 16px; background: var(--icon-bg); font-size: 13px; line-height: 18px; }
+.picker-hint code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; overflow-wrap: anywhere; }
+
+.look-row { display: flex; align-items: center; gap: 12px; }
+/* Рисунок 116 точек, как в макете; на узком телефоне уступает место сегменту модели. */
+.look-preview { flex: none; width: clamp(84px, 35%, 116px); }
+.look-side { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.look-seg { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 3px; border-radius: var(--r-pill); }
+.look-seg button {
+    min-height: 34px;
+    border-radius: var(--r-pill);
+    padding: 0 3px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    color: var(--seg-off-fg);
+    transition: background 0.2s;
+}
+.look-seg button[aria-checked='true'] { background: var(--seg-on-bg); color: var(--seg-on-fg); font-weight: 800; }
+.look-seg button:disabled { cursor: default; }
+.look-name { display: flex; flex-direction: column; }
+.look-name b { font-size: 13px; line-height: 18px; font-weight: 800; }
+.look-colors { display: flex; flex-direction: column; gap: 8px; }
+.look-sticker { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.look-swatches { display: flex; flex-wrap: wrap; gap: 10px; }
+.look-swatch {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #FFFFFF;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.14);
+}
+.look-swatch.on { box-shadow: 0 0 0 2px var(--menu-bg), 0 0 0 4px var(--text); }
+.look-swatch:disabled { cursor: default; }
+
+.setup-banner { display: flex; align-items: center; gap: 12px; padding: 12px 12px 12px 14px; }
+.setup-go { cursor: pointer; padding: 8px 14px; flex: none; }
+.banner-hide {
+    flex: none; width: 32px; height: 32px; margin-left: -4px; border-radius: var(--r-pill);
+    font-size: 20px; line-height: 1; color: var(--sub); background: transparent; cursor: pointer;
+}
+.banner-hide:hover { color: var(--text); background: var(--glass-hi); }
+
+/* Точка-метка: там ждёт новая версия шлюза. На вкладке «Дом» — у значка, на «Шлюз» — после подписи. */
+.badge-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--dot-offline); }
+.tab-icon { position: relative; display: inline-flex; }
+.tab-icon .badge-dot { position: absolute; top: -1px; right: -3px; }
+.name-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.dash-chip { cursor: pointer; padding: 6px 12px; font-size: 13px; }
+.dash-actions { display: flex; flex-direction: column; gap: 8px; }
+.dash-wide { justify-content: center; min-height: 44px; font-size: 14px; cursor: pointer; }
+
+@keyframes gd-drop { from { transform: translateY(-8px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+    .picker { animation: none !important; }
+}
+
+/* Как колонку слышно (presence.ts): полная точка — на связи, кольцо — голос ждёт «Алиса», мигает — переподключается. */
+.status-dot.dot-online { background: var(--accent); }
+.status-dot.dot-waiting { background: transparent; box-shadow: inset 0 0 0 2px var(--accent); }
+.status-dot.dot-reconnecting { background: var(--bar-off); animation: gd-blink 1.2s ease-in-out infinite; }
+.status-dot.dot-offline { background: var(--dot-offline); }
+.status-dot.dot-unknown { background: var(--bar-off); }
+
+
+/* Журнал запросов: время, слова, итог; под ними полоска пути цветом исполнителей. */
+.req-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.req-row { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-top: 1px solid var(--divider); }
+.req-head {
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 10px;
+    width: 100%;
+    text-align: left;
+    color: var(--text);
+    border-radius: 10px;
+}
+.req-head:focus-visible { outline-offset: 3px; }
+.req-time { padding-top: 2px; font-variant-numeric: tabular-nums; }
+.req-words { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.req-words b { font-weight: 700; overflow-wrap: anywhere; }
+.req-words span { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.req-bar { display: flex; gap: 2px; height: 4px; margin-left: 44px; border-radius: 2px; overflow: hidden; }
+.req-seg { flex: 1 1 0; min-width: 4px; background: var(--tone-line); }
+.req-seg.going { animation: gd-blink 1.2s ease-in-out infinite; }
+.req-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: 44px; }
+.req-steps { margin: 2px 0 0 44px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.req-steps b { color: var(--text); font-weight: 700; }
+.req-error { color: var(--dot-offline); overflow-wrap: anywhere; }
+.req-going { animation: gd-blink 1.6s ease-in-out infinite; }
+.keep-choice { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--divider); }
+.keep-seg { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.keep-seg.keep-seg-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.keep-confirm { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+
+@keyframes gd-blink { 50% { opacity: 0.35; } }
+
+@media (prefers-reduced-motion: reduce) {
+    .status-dot.dot-reconnecting,
+    .req-seg.going,
+    .req-going { animation: none; }
+}
+
+/* ─── Переключатель (DESIGN.md): дорожка 46×28, ручка 22; включено — лайм с тёмной ручкой, в светлой — lime-deep-light с белой ─── */
+.switch {
+    position: relative;
+    width: 46px;
+    height: 28px;
+    flex: none;
+    border: none;
+    padding: 0;
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.16);
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+.switch::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #FFFFFF;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    transition: transform 0.15s ease;
+}
+.switch[aria-checked='true'] { background: var(--accent); }
+.switch[aria-checked='true']::after { transform: translateX(18px); background: #0B0F0A; }
+.switch:disabled { cursor: default; background: rgba(255, 255, 255, 0.07); }
+.switch:disabled::after { opacity: 0.5; }
+html[data-theme='light'] .switch { background: rgba(13, 17, 23, 0.16); }
+html[data-theme='light'] .switch[aria-checked='true'] { background: #65A30D; }
+html[data-theme='light'] .switch[aria-checked='true']::after { background: #FFFFFF; }
+html[data-theme='light'] .switch:disabled { background: rgba(13, 17, 23, 0.07); }
+@media (prefers-reduced-motion: reduce) {
+    .switch, .switch::after { transition: none; }
+}
+
+/* Строки программы: моноширинно, переносами */
+.t-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; overflow-wrap: anywhere; white-space: pre-wrap; }
+
+/* Мастер «Подключить колонку» (screens/connect.tsx): шаги галочками, что изменится, команда для «Сделаю сам» */
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.connect-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.connect-step { display: flex; align-items: center; gap: 10px; font-size: 14px; line-height: 20px; color: var(--sub); }
+.connect-step.is-running, .connect-step.is-done { color: var(--text); }
+.connect-step.is-failed { color: var(--dot-offline); }
+.connect-mark { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--icon-bg); font-size: 13px; font-weight: 800; }
+.connect-step.is-done .connect-mark { background: var(--accent); color: var(--on-accent); }
+.connect-step.is-failed .connect-mark { background: var(--dot-offline); color: var(--on-accent); }
+.connect-step.is-running .connect-mark { box-shadow: inset 0 0 0 2px var(--accent); animation: connect-pulse 1.2s ease-in-out infinite; }
+@keyframes connect-pulse { 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .connect-step.is-running .connect-mark { animation: none; } }
+.connect-plan { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; line-height: 18px; }
+.connect-plan code, .connect-command textarea, .sheet code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; overflow-wrap: anywhere; }
+.connect-command { display: flex; flex-direction: column; gap: 8px; }
+.connect-command textarea { resize: none; min-height: 72px; }
+.connect-warning { color: var(--pill-yandex-fg); }
+/* Длинный шаг переносится, а не уходит за край листа. */
+.connect-step > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+
+/* ДиВи ведёт вход и мастер подключения: крупный и по центру (screens/auth.tsx, screens/connect.tsx). */
+.auth-hero, .connect-hero { display: flex; justify-content: center; }
+.auth-hero { padding-top: 4px; }
+.auth-head { text-align: center; }
+
+/* «Колонка подключена»: кто отвечает сейчас и что дальше — карточками с примером фразы. */
+.connect-now { display: flex; align-items: flex-start; gap: 10px; }
+.connect-now .pill { flex: none; }
+.connect-next { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.connect-next li { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; border-radius: 18px; background: var(--icon-bg); box-shadow: inset 0 0 0 1px var(--divider); }
+.connect-next-icon { flex: none; width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--on-accent); }
+.connect-next-body { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.connect-next-body b { font-size: 14px; line-height: 20px; font-weight: 800; color: var(--text); }
+.connect-say { padding: 5px 12px; border-radius: 14px 14px 14px 4px; background: var(--pill-own-bg); color: var(--pill-own-fg); font-size: 13px; line-height: 18px; font-weight: 600; }
+.connect-path { display: inline-block; margin-right: 4px; padding: 1px 8px; border-radius: var(--r-pill); background: var(--pill-off-bg); color: var(--pill-off-fg); font-size: 12px; font-weight: 700; white-space: nowrap; }
+
+/* «Подключите колонку» на главном, пока колонок нет (screens/connect.tsx, ConnectFirstCard) */
+.connect-first-steps { display: flex; flex-direction: column; gap: 6px; padding-left: 20px; }

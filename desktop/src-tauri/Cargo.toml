@@ -1,0 +1,40 @@
+[package]
+name = "duowave-desktop"
+version = "0.2.0"
+description = "The voice gateway in the tray: runs the gateway (the Rust engine, crate duowave, inside the app) and shows its panel"
+edition = "2021"
+publish = false
+
+# A workspace of its own, apart from the gateway's in the repository root (which excludes this folder): its own
+# Cargo.lock and target/, and a checkout nested in another one (a git worktree) does not find the outer workspace.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# The gateway itself, in this process (docs/plans/rust-gateway.md, stage 7).
+duowave = { path = "../../gateway" }
+tokio = { version = "1", features = ["sync", "net", "time"] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Where the app keeps its data, known before Tauri starts (the same folder as Tauri's app_data_dir).
+dirs = "7"
+tauri-plugin-notification = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Thin LTO over the default codegen units: the app's dependency tree is large, and fat LTO with one unit, the slowest
+# build there is, bought speed the app does not need, on each of five systems.
+[profile.release]
+lto = "thin"
+strip = true

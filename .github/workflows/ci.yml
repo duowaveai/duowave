@@ -1,0 +1,156 @@
+# Checks every push and pull request, a job for each part:
+#   rust             the gateway (gateway/, Rust, crate duowave): format, lints (the station's build too), unit and
+#                    e2e tests
+#   rust-station     the gateway's build that runs on the station: static aarch64 musl through zig, its size, and
+#                    the computer's build carrying it (DUOWAVE_STATION_PAYLOAD)
+#   rust-windows     that the gateway compiles on Windows
+#   desktop          the desktop app with the gateway inside (desktop/src-tauri): format, lints, tests
+#   panel            the panel's types and build
+#   private          that nothing private (keys, home paths, a household's addresses) is in the tree
+#   python           the model servers' syntax
+#   station-scripts  the scripts we ship for the station, under busybox sh
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  panel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+      - run: npm install -g pnpm@11
+      - run: pnpm install --frozen-lockfile
+      - name: Types
+        run: cd panel && npx tsc --noEmit -p .
+      - name: Build
+        run: pnpm --filter panel build
+
+  private:
+    # The tracked files, as the public snapshot would take them: Node's built-in modules only, no packages.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+      - name: Nothing private
+        run: node scripts/release/check-private.mjs
+
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Syntax of the model servers
+        run: python -m py_compile asr-server/server.py tts-server/server.py clone-server/server.py
+
+  station-scripts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # The station runs busybox sh: check the scripts we ship for it against busybox too.
+      - run: sudo apt-get update && sudo apt-get install -y busybox
+      - name: busybox sh -n
+        run: |
+          for script in station-client/*.sh station-client/S99zduowave station-client/S95duowave station-client/tests/*.sh station-client/yam/duowave station-client/yam/duowave-postinstall station-client/yam/build.sh deploy/linux/*.sh; do
+            busybox sh -n "$script" && echo "ok $script"
+          done
+      # voice.sh's bind mount over a file on a read-only partition, the boot script and gateway.sh's pid files, on a
+      # real kernel and busybox: a privileged container stands for the station (station-client/tests/station-check.sh).
+      - name: The station's scripts on a real kernel
+        run: |
+          docker run --rm --privileged --network none -v "$PWD/station-client:/w:ro" -e STATION_CHECK_SANDBOX=1 \
+            busybox:1.36 sh /w/tests/station-check.sh /w
+
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt -p duowave --check
+      - name: Lints
+        run: cargo clippy -p duowave --all-targets -- -D warnings
+      - name: Lints, the station's build
+        run: cargo clippy -p duowave --no-default-features --features station -- -D warnings
+      - name: Tests
+        run: cargo test -p duowave
+
+  rust-station:
+    # The build that runs on the station: static aarch64 musl, cross-compiled with zig, size reported.
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+      - uses: swatinem/rust-cache@v2
+        with:
+          key: station
+      - uses: mlugg/setup-zig@v2
+      - run: cargo install cargo-zigbuild --locked
+      - run: cargo zigbuild -p duowave --profile station --target aarch64-unknown-linux-musl --no-default-features --features station
+      - run: ls -l target/aarch64-unknown-linux-musl/station/duowave
+      # The computer's build carries the station's (gateway/build.rs): built in, the program found inside. The signature
+      # is a placeholder — the release signs; this checks the carrying.
+      - name: The station's build inside the computer's
+        run: |
+          tar -czf duowave-station-aarch64.tar.gz -C target/aarch64-unknown-linux-musl/station duowave
+          echo "untrusted comment: CI, not signed" > duowave-station-aarch64.tar.gz.sig
+          DUOWAVE_STATION_PAYLOAD=$PWD/duowave-station-aarch64.tar.gz cargo test -p duowave --lib placement::payload
+
+  rust-windows:
+    # Windows builds come from CI later; this only checks that the code compiles there.
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+      - run: cargo check -p duowave --all-targets
+
+  desktop:
+    # The desktop app (desktop/src-tauri, a Cargo workspace of its own) with the Rust gateway inside: format, lints
+    # and tests, the gateway started and stopped in the app's process among them. The panel is not built here:
+    # without panel/dist the gateway builds with an empty one.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: desktop/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tauri's system packages
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - name: Format
+        run: cargo fmt --check
+      - name: Lints
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test

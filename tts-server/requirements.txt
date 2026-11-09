@@ -1,0 +1,8 @@
+# The voice server's own environment, pinned to the set that works on the owner's Mac (06.11), where the
+# asr-server's environment serves this server too. Piper is not here: it is GPL-3.0 and runs as its own command line,
+# from an environment of its own (requirements-piper.txt).
+numpy==2.5.4
+# Silero only: torch, and scipy (its v5 package imports scipy.signal). On Linux take torch's CPU build first
+# (--index-url https://download.pytorch.org/whl/cpu): PyPI's is the CUDA one, gigabytes.
+torch==2.15.0
+scipy==1.18.1

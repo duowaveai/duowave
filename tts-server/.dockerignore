@@ -1,0 +1,5 @@
+# The build context is this folder (compose.yaml): local environments and voices stay out of the image.
+.venv*
+models
+**/__pycache__
+*.wav

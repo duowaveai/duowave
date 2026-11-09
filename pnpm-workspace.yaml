@@ -1,0 +1,7 @@
+# The panel (panel/) is the one package; the root holds its wrappers and scripts/release. The gateway is Rust
+# (gateway/, cargo). esbuild (panel/vite) places its platform binary at install: the one install script we allow.
+packages:
+  - .
+  - panel
+allowBuilds:
+  esbuild: true

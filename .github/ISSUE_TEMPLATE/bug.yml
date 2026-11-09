@@ -1,0 +1,35 @@
+name: Ошибка
+description: Шлюз или пульт ведёт себя не так
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Без идентификаторов: ни токенов и ключей, ни device_id, uid и серийных номеров, ни Wi-Fi, ни записей голоса,
+        ни координат. Журнал шлюза хеширует идентификаторы сам (`RECORDER_REDACT`), но кусок журнала проверьте глазами.
+  - type: textarea
+    id: what
+    attributes:
+      label: Что делали и что вышло
+      description: Шаги, что ждали, что получили.
+    validations:
+      required: true
+  - type: input
+    id: station
+    attributes:
+      label: Колонка и прошивка
+      placeholder: Лайт 2, прошивка 1.2.3
+  - type: dropdown
+    id: install
+    attributes:
+      label: Как поставлен шлюз
+      options: [Docker, приложение, служба Linux, macOS (launchd), из исходников]
+  - type: input
+    id: version
+    attributes:
+      label: Версия шлюза
+  - type: textarea
+    id: log
+    attributes:
+      label: Кусок журнала
+      render: text

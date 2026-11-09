@@ -1,0 +1,117 @@
+# syntax=docker/dockerfile:1.7
+# The gateway with its panel — what compose.yaml runs and the Home Assistant add-on builds on: one static program,
+# duowave (gateway/), in a small Alpine image. amd64 and arm64 (a Raspberry Pi 4 or 5 on a 64-bit system, most NAS).
+# The program is cross-compiled on the build machine (musl, through zig), so an arm64 image needs no emulated
+# compiler; only the last stage runs on the target platform. It is the release's Linux build (default features): a
+# static build has no ONNX Runtime, so the end of speech is heard by energy, not Silero, and the call page (WebRTC)
+# and LiveKit are not in it.
+ARG NODE_VERSION=26
+ARG RUST_VERSION=1.90
+ARG ALPINE_VERSION=3.22
+# Where the program comes from: gateway builds it here (compose, the Home Assistant add-on); prebuilt takes the
+# release's own build from deploy/prebuilt (the release workflow builds each Linux program once, for its archive, and
+# its image carries the same one).
+ARG GATEWAY=gateway
+
+# ---------------------------------------
+# The panel: static files, built into the program
+# ---------------------------------------
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-bookworm-slim AS panel
+WORKDIR /src
+RUN npm install -g pnpm@11
+ENV CI=true \
+    PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false
+# Manifests first, for the layer cache; only the panel's dependencies are installed.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY panel/package.json panel/
+RUN pnpm install --frozen-lockfile --filter panel
+COPY panel panel
+RUN pnpm --filter panel build
+
+# ---------------------------------------
+# The gateway: a static musl program for the target's architecture
+# ---------------------------------------
+FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-bookworm AS gateway
+ARG TARGETARCH
+# zig and cargo-zigbuild from PyPI, prebuilt: the same cross build as the release (gateway/README.md, «Builds»).
+ARG CARGO_ZIGBUILD_VERSION=0.24.1
+# The release feed built into the program (the release workflow passes the repository's latest.json): the gateway
+# then offers new versions in the panel and leaves installing them to the image. Empty: no checks.
+ARG DUOWAVE_UPDATE_FEED=
+RUN apt-get update && apt-get install -y --no-install-recommends python3-venv && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/zig && /opt/zig/bin/pip install --no-cache-dir "cargo-zigbuild==${CARGO_ZIGBUILD_VERSION}"
+ENV PATH=/opt/zig/bin:$PATH
+RUN case "$TARGETARCH" in \
+        amd64) triple=x86_64-unknown-linux-musl ;; \
+        arm64) triple=aarch64-unknown-linux-musl ;; \
+        *) echo "no gateway build for $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && echo "$triple" > /triple \
+    && rustup target add "$triple"
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY gateway gateway
+# What a new content folder starts with, built into the program (gateway/src/config/data_dir.rs).
+COPY content/radio.json content/README.md content/
+# And what else it carries inside (include_str!, rust-embed; .dockerignore lets in just these): the built-in packages,
+# the station's service script, the plugin workshop's guides.
+COPY packages packages
+COPY station-client/S99zgateway station-client/
+COPY docs/plugins/AUTHORING.md docs/plugins/panel-sdk.d.ts docs/plugins/
+COPY docs/plugins/skill docs/plugins/skill
+COPY docs/design/glass/THEMES.md docs/design/glass/
+COPY --from=panel /src/panel/dist panel/dist
+# The station's signed build, when the release put it there: built into the program (gateway/build.rs).
+COPY deploy/station-payload deploy/station-payload
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/src/target,sharing=locked \
+    triple=$(cat /triple) \
+    && if [ -f deploy/station-payload/duowave-station-aarch64.tar.gz.sig ]; then \
+           export DUOWAVE_STATION_PAYLOAD=/src/deploy/station-payload/duowave-station-aarch64.tar.gz; fi \
+    && cargo zigbuild -p duowave --release --locked --target "$triple" \
+    && install -D -m 755 "target/$triple/release/duowave" /out/duowave
+
+# ---------------------------------------
+# Or the program the release already built: deploy/prebuilt/<amd64|arm64>/duowave, the static musl build of its
+# archive for that architecture, with the feed and the station's build inside (GATEWAY=prebuilt)
+# ---------------------------------------
+FROM scratch AS prebuilt
+ARG TARGETARCH
+COPY deploy/prebuilt/${TARGETARCH}/duowave /out/duowave
+
+FROM ${GATEWAY} AS program
+
+# ---------------------------------------
+# Runtime
+# ---------------------------------------
+FROM alpine:${ALPINE_VERSION} AS production
+# The gateway's user: uid and gid 1000, as the Node image's was, so a data volume from it stays writable.
+RUN addgroup -g 1000 duowave && adduser -D -H -u 1000 -G duowave -h /data -s /sbin/nologin duowave
+COPY --from=program /out/duowave /usr/local/bin/duowave
+# A port below 1024 without root, should one be chosen on the host network of compose.calls.yaml (7780 by default; in a
+# bridge network 3000 is published instead).
+RUN apk add --no-cache --virtual .setcap libcap \
+    && setcap cap_net_bind_service=+ep /usr/local/bin/duowave \
+    && apk del .setcap
+
+# Everything the gateway writes goes to /data (gateway/src/config/data_dir.rs): one volume to keep and back up.
+# DUOWAVE_MANAGED: updates come with a new image, the gateway only offers them. VAD_ENGINE: what this build has.
+ENV DATA_DIR=/data \
+    PORT=3000 \
+    VAD_ENGINE=energy \
+    DUOWAVE_MANAGED=docker
+
+# /data/voices exists in the image, so the voices volume mounted there starts owned by the gateway's user.
+RUN mkdir -p /data/voices && chown -R duowave:duowave /data
+USER duowave
+# The working folder is the data folder: a relative path the gateway writes lands in the volume too.
+WORKDIR /data
+VOLUME /data
+
+# HTTP: the panel, its API, /health, /generate_204 and the station's voice WebSocket (/uni.ws). compose publishes it
+# on the host's port 7780 (GATEWAY_PORT) and tells the gateway so (PUBLIC_PORT): that is the port the station dials.
+EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 CMD ["duowave", "health"]
+
+CMD ["duowave", "serve"]

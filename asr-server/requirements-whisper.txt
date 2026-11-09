@@ -1,0 +1,7 @@
+# Whisper through faster-whisper (CTranslate2), optional: its PyAV bundles FFmpeg built with GPL x264 and x265, so
+# an image or an install that ships it ships GPL code (and owes its sources). The Docker image takes it only with
+# --build-arg WHISPER=1. After requirements.txt, with the same constraints:
+#   uv pip install -p .venv/bin/python -r requirements-whisper.txt -c constraints.txt
+faster-whisper==1.2.1
+ctranslate2==4.8.5
+av==19.0.2

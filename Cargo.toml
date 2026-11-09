@@ -1,0 +1,42 @@
+# The voice gateway in Rust (gateway/) and, once it runs the Rust engine inside, the desktop app.
+[workspace]
+resolver = "2"
+members = ["gateway"]
+# yam: YAM's own repository, checked out there by the release to pack the station's package (release.yml,
+# yam-registry.yml) — a package of its own, not a member.
+exclude = ["desktop/src-tauri", "yam"]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+# A computer's build: thin LTO over the default codegen units, most of fat LTO's speed for much less build time (the
+# release builds it on five platforms). The station's build keeps fat LTO and one unit (below).
+[profile.release]
+lto = "thin"
+strip = true
+panic = "abort"
+
+# Tests sign in often: a password hash (scrypt, 16 MB of mixing) takes a second unoptimised, ~50 ms optimised.
+[profile.dev.package.scrypt]
+opt-level = 3
+
+[profile.dev.package.salsa20]
+opt-level = 3
+
+[profile.dev.package.pbkdf2]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3
+
+# The station: the smallest binary that still runs well (cargo build --profile station).
+# Fat LTO and one codegen unit, as before the computer's build went thin: the station's flash and memory are small, and
+# its build is one target.
+[profile.station]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1

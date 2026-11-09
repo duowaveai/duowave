@@ -1,0 +1,4 @@
+# The gateway's own image (Dockerfile.prod, published by the release workflow) is the base; the add-on adds its start.
+build_from:
+  aarch64: "ghcr.io/duowaveai/duowave/gateway:0.2.0"
+  amd64: "ghcr.io/duowaveai/duowave/gateway:0.2.0"

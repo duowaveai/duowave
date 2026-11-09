@@ -1,0 +1,38 @@
+# Calls through the station: WebRTC on random UDP ports and LiveKit need the host's network — Linux only (Docker
+# Desktop on a Mac or Windows gives containers no host network).
+#
+#   cp deploy/livekit/livekit.yaml.example deploy/livekit/livekit.yaml    # set the key and the secret
+#   # .env: LIVEKIT_API_KEY and LIVEKIT_API_SECRET as in livekit.yaml — read at the gateway's first start only;
+#   # after that LiveKit is set up in the panel («Дом» → «Коннекторы» → LiveKit)
+#   docker compose -f compose.yaml -f compose.calls.yaml up -d
+#
+# On the host network the gateway listens on port 7780 itself (GATEWAY_PORT for another; the image lets duowave
+# bind a port below 1024 without root too) and finds
+# our model servers on 127.0.0.1. The image's static build has the calls hub, the station's microphone, SIP through
+# Asterisk and Telegram; the call page in a browser (WebRTC) and LiveKit are not in it yet (the gateway's webrtc and
+# livekit features), and their pages say so.
+services:
+  gateway:
+    network_mode: host
+    ports: !reset []
+    environment:
+      PORT: ${GATEWAY_PORT:-7780}
+      PUBLIC_PORT: ${GATEWAY_PORT:-7780}
+      ASR_BASE_URL: ${ASR_BASE_URL:-http://127.0.0.1:8090/v1}
+      TTS_OWN_URL: ${TTS_OWN_URL:-http://127.0.0.1:8091/v1}
+      LIVEKIT_URL: ${LIVEKIT_URL:-ws://127.0.0.1:7880}
+
+  asr:
+    ports: ['127.0.0.1:8090:8090']
+  asr-gpu:
+    ports: ['127.0.0.1:8090:8090']
+  tts:
+    ports: ['127.0.0.1:8091:8091']
+
+  livekit:
+    image: livekit/livekit-server:v1.13.10
+    restart: unless-stopped
+    network_mode: host
+    command: --config /etc/livekit.yaml
+    volumes:
+      - ./deploy/livekit/livekit.yaml:/etc/livekit.yaml:ro

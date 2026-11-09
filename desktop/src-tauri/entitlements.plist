@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Used only when the app is signed with a Developer ID (hardened runtime): the panel's window records takes from
+     the microphone. The engine is Rust inside the app, so no JIT and no libraries of another signature (those were
+     for Node and its native modules). Unsigned local builds ignore this file. -->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>

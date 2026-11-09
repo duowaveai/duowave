@@ -1,0 +1,545 @@
+# A release: on a tag v*, the images for amd64 and arm64 go to the GitHub Container Registry — the gateway, our
+# recognition and our voice (CPU), and recognition on CUDA (amd64 only) — and a draft release gets the desktop app's
+# installers for each system, the station's YAM package (duowave/gateway), the Rust gateway alone for each platform (signed for its
+# updater) and latest.json, the feed the app and the gateway check for updates. The owner publishes the draft.
+# Builds read the feed at updates.duowave.dev/latest.json, our own domain: it redirects to this repository's latest
+# release, so installed gateways keep updating if the repository ever moves.
+#
+# The station's build comes first: every computer build — the gateway alone, the desktop app, the gateway's image —
+# carries it signed (DUOWAVE_STATION_PAYLOAD, gateway/build.rs), so the panel moves the gateway onto a station without
+# a file to find, and the YAM package carries the program itself.
+#
+# The model images (recognition and our voice) need none of that and start at once, each architecture on its own
+# machine (arm64 on GitHub's arm64 runners, no emulation), joined into one image per name after; their layers are
+# cached in the registry (the tag buildcache-<arch>), so a release whose model servers did not change rebuilds nothing.
+# The gateway's image takes the Linux programs gateway-binaries built instead of compiling them again.
+#
+# A tag's run cannot read another tag's Actions cache, only its own and main's: the Rust caches are made on main
+# (warm-cache.yml) under the same shared-key as here, and a release only reads them (save-if: false — what a tag
+# saved no later release could use).
+#
+# Signing needs the secret TAURI_SIGNING_PRIVATE_KEY (the contents of the owner's ~/.tauri/duowave-updates.key; its
+# password, TAURI_SIGNING_PRIVATE_KEY_PASSWORD, is empty). Without it the archives are built but not signed, and no
+# gateway installs them.
+#
+# The station's YAM package goes to the YAM registry (repo.yse.wtf) when the owner publishes the release:
+# yam-registry.yml, with its own secrets.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  station-build:
+    # The gateway for the station itself, signed: what every computer build carries and the YAM package holds.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DUOWAVE_UPDATE_FEED: https://updates.duowave.dev/latest.json
+      SIGNING: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      # Every later job needs this one, so a tag the code does not carry stops the whole release here: a gateway
+      # built from it would offer the same release forever.
+      - name: The tag is the code's version
+        run: scripts/release/version.sh --check "${GITHUB_REF_NAME}"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+      - run: npm install -g pnpm@11 && pnpm install --frozen-lockfile && pnpm --filter panel build
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+      - uses: swatinem/rust-cache@v2
+        with:
+          shared-key: station-aarch64
+          save-if: false
+      - uses: mlugg/setup-zig@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+      - run: cargo zigbuild -p duowave --target aarch64-unknown-linux-musl --profile station --no-default-features --features station
+      - run: tar -czf duowave-station-aarch64.tar.gz -C target/aarch64-unknown-linux-musl/station duowave
+      - name: Sign for the updater
+        if: env.SIGNING == 'true'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx --yes @tauri-apps/cli@^2 signer sign duowave-station-aarch64.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gateway-duowave-station-aarch64
+          path: duowave-station-aarch64.tar.gz*
+          if-no-files-found: error
+
+  station-package:
+    # The YAM 0.2 package duowave/gateway (station-client/yam): a .yampkg per target, checked by installing it into a
+    # folder, put into the release. The registry gets it when the owner publishes the release (yam-registry.yml).
+    needs: station-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # YAM's own repository, at a known commit: yam-publish packs and signs, yam checks the package installs.
+      YAM_REF: 5c06c9f95de97276cc035e9673fe52e52b1c7052
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: nyakokitsu/yam
+          ref: ${{ env.YAM_REF }}
+          path: yam
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: yam
+          key: yam-${{ env.YAM_REF }}
+      - run: cargo build --manifest-path yam/Cargo.toml --release --locked --bin yam --bin yam-publish
+      - uses: actions/download-artifact@v4
+        with:
+          name: gateway-duowave-station-aarch64
+          path: station-build
+      - name: The package
+        run: |
+          mkdir -p station-program && tar -xzf station-build/duowave-station-aarch64.tar.gz -C station-program
+          GATEWAY_BIN=$PWD/station-program/duowave YAM_PUBLISH=$PWD/yam/target/release/yam-publish \
+            YAM_PROFILES=$PWD/yam/platforms station-client/yam/build.sh dist-station
+      # Off the station the postinstall hook starts nothing: this checks the archive, its links and hashes.
+      - name: It installs
+        run: |
+          for package in dist-station/*.yampkg; do
+            target=${package##*-}; target=${target%.yampkg}
+            root=$RUNNER_TEMP/yam-root-$target
+            yam/target/release/yam --profiles yam/platforms --platform "$target" --root "$root" install --yes "$package"
+            yam/target/release/yam --profiles yam/platforms --platform "$target" --root "$root" doctor
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: station
+          path: dist-station/*.yampkg
+          if-no-files-found: error
+
+  gateway-binaries:
+    # The gateway alone — for a PC, a server, a Raspberry Pi — an archive per platform with the feed and the station's
+    # build inside; signed, it is what the gateway's own updater installs. The station's own is station-build.
+    needs: station-build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, key: duowave-linux-x86_64, target: x86_64-unknown-linux-musl, zig: true, args: --release, out: release }
+          - { os: ubuntu-latest, key: duowave-linux-aarch64, target: aarch64-unknown-linux-musl, zig: true, args: --release, out: release }
+          # Apple Silicon on the Intel Mac: GitHub had no macOS arm64 runners to give (capacity, 09–10.11.2026), and an
+          # Intel Mac builds aarch64-apple-darwin as well.
+          - { os: macos-15-intel, key: duowave-darwin-aarch64, target: aarch64-apple-darwin, zig: false, args: --release, out: release }
+          - { os: macos-15-intel, key: duowave-darwin-x86_64, target: x86_64-apple-darwin, zig: false, args: --release, out: release }
+          - { os: windows-latest, key: duowave-windows-x86_64, target: x86_64-pc-windows-msvc, zig: false, args: --release, out: release }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      DUOWAVE_UPDATE_FEED: https://updates.duowave.dev/latest.json
+      # A step's `if` cannot read secrets: whether there is a key, as a plain variable.
+      SIGNING: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      # The station's signed build, built into this one (only when it is signed: an unsigned one no gateway takes).
+      - uses: actions/download-artifact@v4
+        with:
+          name: gateway-duowave-station-aarch64
+          path: station-build
+      - name: The station's build inside
+        shell: bash
+        run: |
+          if [ -f station-build/duowave-station-aarch64.tar.gz.sig ]; then
+            echo "DUOWAVE_STATION_PAYLOAD=${{ github.workspace }}/station-build/duowave-station-aarch64.tar.gz" >> "$GITHUB_ENV"
+          fi
+      # The panel is built into the program.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+      - run: npm install -g pnpm@11 && pnpm install --frozen-lockfile && pnpm --filter panel build
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.key }}
+          save-if: false
+      - if: matrix.zig
+        uses: mlugg/setup-zig@v2
+      - if: matrix.zig
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+      - if: matrix.zig
+        run: cargo zigbuild -p duowave --target ${{ matrix.target }} ${{ matrix.args }}
+      - if: ${{ !matrix.zig }}
+        run: cargo build -p duowave --target ${{ matrix.target }} ${{ matrix.args }}
+      - name: Archive
+        shell: bash
+        run: |
+          program=duowave; [ "${{ runner.os }}" = Windows ] && program=duowave.exe
+          tar -czf ${{ matrix.key }}.tar.gz -C target/${{ matrix.target }}/${{ matrix.out }} "$program"
+      - name: Sign for the updater
+        if: env.SIGNING == 'true'
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx --yes @tauri-apps/cli@^2 signer sign ${{ matrix.key }}.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gateway-${{ matrix.key }}
+          path: ${{ matrix.key }}.tar.gz*
+          if-no-files-found: error
+
+  desktop:
+    # Each system builds its own: the app with the Rust gateway inside (crate duowave, compiled into the app) and
+    # the panel built into that. No DUOWAVE_UPDATE_FEED here: the gateway inside checks the app's own feed
+    # (plugins.updater.endpoints in tauri.conf.json), so the panel and the tray offer the same version. The station's
+    # build goes inside too.
+    needs: station-build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Apple Silicon built on the Intel Mac (target aarch64-apple-darwin): GitHub had no macOS arm64 runners to
+          # give (capacity, 09–10.11.2026). `name` keeps the two Macs' artifacts and caches apart.
+          - { os: macos-15-intel, name: macos-aarch64, target: aarch64-apple-darwin }
+          - { os: macos-15-intel, name: macos-15-intel }   # Intel
+          - { os: windows-latest, name: windows-latest }
+          - { os: ubuntu-22.04, name: ubuntu-22.04 }
+          - { os: ubuntu-24.04-arm, name: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      # With the key the app ships its update archives too (tauri.release.conf.json turns them on: a local build
+      # without the key keeps them off), and the feed carries them under Tauri's keys (darwin-aarch64, …).
+      SIGNING: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+      # Where Tauri puts the bundles: under the target's own folder when one is named.
+      BUNDLE: desktop/src-tauri/target/${{ matrix.target && format('{0}/', matrix.target) || '' }}release/bundle
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: gateway-duowave-station-aarch64
+          path: station-build
+      - name: The station's build inside
+        shell: bash
+        run: |
+          if [ -f station-build/duowave-station-aarch64.tar.gz.sig ]; then
+            echo "DUOWAVE_STATION_PAYLOAD=${{ github.workspace }}/station-build/duowave-station-aarch64.tar.gz" >> "$GITHUB_ENV"
+          fi
+      # Node and pnpm for the panel only: tauri build runs `pnpm --filter panel build` first (beforeBuildCommand).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+      - run: npm install -g pnpm@11 && pnpm install --frozen-lockfile
+      - name: Tauri's system packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+          shared-key: release-desktop-${{ matrix.name }}
+          save-if: false
+      # The bundlers' own tools — WiX and NSIS on Windows, AppRun and linuxdeploy for the AppImage — fetched here with
+      # retries into the cache tauri-bundler 2.10 reads (dirs::cache_dir()/tauri), at the URLs and with the checksums it
+      # uses itself: it downloads each once, without a retry, and v0.1.4 failed three times on GitHub's 504s for them.
+      # Found in place, they are not downloaded again. Should this step fail, the bundler still tries on its own.
+      - name: The bundlers' tools, with retries (Linux)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: |
+          set -eu
+          case "${{ runner.arch }}" in ARM64) arch=aarch64 ;; *) arch=x86_64 ;; esac
+          tools="${XDG_CACHE_HOME:-$HOME/.cache}/tauri"
+          mkdir -p "$tools"
+          get() { curl -fsSL --retry 8 --retry-all-errors --retry-delay 15 -o "$2" "$1" && chmod +x "$2"; }
+          get "https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-$arch" "$tools/AppRun-$arch"
+          get "https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy-07333c6/linuxdeploy-$arch.AppImage" \
+            "$tools/linuxdeploy-07333c6-$arch.AppImage"
+          get "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-$arch.AppImage" \
+            "$tools/linuxdeploy-plugin-appimage.AppImage" || echo "the AppImage plugin is optional: linuxdeploy has its own"
+          ls -l "$tools"
+      - name: The bundlers' tools, with retries (Windows)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tools = Join-Path $env:LOCALAPPDATA 'tauri'
+          New-Item -ItemType Directory -Force $tools | Out-Null
+          function Get-Checked($url, $file, $algorithm, $hash) {
+            Invoke-WebRequest $url -OutFile $file -MaximumRetryCount 8 -RetryIntervalSec 15
+            if ((Get-FileHash $file -Algorithm $algorithm).Hash -ne $hash) { throw "checksum of $url" }
+          }
+          $wix = Join-Path $tools 'WixTools314'
+          if (-not (Test-Path (Join-Path $wix 'light.exe'))) {
+            Get-Checked 'https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip' "$tools\wix.zip" SHA256 '6AC824E1642D6F7277D0ED7EA09411A508F6116BA6FAE0AA5F2C7DAA2FF43D31'
+            Expand-Archive "$tools\wix.zip" $wix -Force
+          }
+          $nsis = Join-Path $tools 'NSIS'
+          if (-not (Test-Path (Join-Path $nsis 'makensis.exe'))) {
+            Get-Checked 'https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.13/nsis-3.13.zip' "$tools\nsis.zip" SHA1 'DB14F8AF2EA346B786C6AE19343F61AAF5E09B8E'
+            Expand-Archive "$tools\nsis.zip" $tools -Force
+            Move-Item (Join-Path $tools 'nsis-3.13') $nsis
+          }
+          $additional = Join-Path $nsis 'Plugins\x86-unicode\additional'
+          New-Item -ItemType Directory -Force $additional | Out-Null
+          Get-Checked 'https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v0.5.3/nsis_tauri_utils.dll' (Join-Path $additional 'nsis_tauri_utils.dll') SHA1 '75197FEE3C6A814FE035788D1C34EAD39349B860'
+          Get-ChildItem $tools
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # The AppImage: linuxdeploy's own strip cannot read what Ubuntu 24.04's linker writes (ubuntu-24.04-arm failed
+          # «failed to run linuxdeploy» twice in v0.1.4), so nothing is stripped there (the program is stripped by Cargo,
+          # profile.release strip = true); and linuxdeploy, an AppImage itself, unpacks instead of mounting where FUSE is
+          # missing. Elsewhere both are ignored.
+          NO_STRIP: 'true'
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+        with:
+          projectPath: desktop/src-tauri
+          tauriScript: npx --yes @tauri-apps/cli@^2
+          # --verbose: the bundlers' own output (linuxdeploy, WiX) in the log when one fails.
+          args: --verbose ${{ matrix.target && format('--target {0}', matrix.target) || '' }} ${{ env.SIGNING == 'true' && format('--config {0}/desktop/src-tauri/tauri.release.conf.json', github.workspace) || '' }}
+      # The update archive under one name per system and processor, so the two Macs' DuoWave.app.tar.gz do not meet:
+      # duowave-app-<os>-<arch>.<ext> and its .sig, which feed.mjs puts under Tauri's key <os>-<arch>.
+      - name: The app's update archive
+        if: env.SIGNING == 'true'
+        shell: bash
+        run: |
+          bundle=$BUNDLE
+          case "${{ runner.os }}" in macOS) os=darwin ;; Windows) os=windows ;; *) os=linux ;; esac
+          # The processor the app is for: the named target's (Apple Silicon built on the Intel Mac), else the machine's.
+          target='${{ matrix.target }}'
+          case "${target:-${{ runner.arch }}}" in aarch64-*|ARM64) arch=aarch64 ;; *) arch=x86_64 ;; esac
+          mkdir -p updater
+          for file in "$bundle"/macos/*.app.tar.gz "$bundle"/nsis/*-setup.exe "$bundle"/appimage/*.AppImage; do
+            [ -f "$file.sig" ] || continue
+            case "$file" in *.app.tar.gz) ext=app.tar.gz ;; *) ext=${file##*.} ;; esac
+            cp "$file" "updater/duowave-app-$os-$arch.$ext"
+            cp "$file.sig" "updater/duowave-app-$os-$arch.$ext.sig"
+          done
+          ls updater
+      - uses: actions/upload-artifact@v4
+        if: env.SIGNING == 'true'
+        with:
+          name: app-updater-${{ matrix.name }}
+          path: updater/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.name }}
+          path: |
+            ${{ env.BUNDLE }}/dmg/*.dmg
+            ${{ env.BUNDLE }}/nsis/*.exe
+            ${{ env.BUNDLE }}/msi/*.msi
+            ${{ env.BUNDLE }}/deb/*.deb
+            ${{ env.BUNDLE }}/rpm/*.rpm
+            ${{ env.BUNDLE }}/appimage/*.AppImage
+          if-no-files-found: error
+
+  publish:
+    needs: [station-build, station-package, desktop, gateway-binaries]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # Only the release's own artifacts, by name: the run has others too (the images' build records, *.dockerbuild,
+      # which are not archives and failed the download of everything in v0.1.0).
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gateway-*
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: app-updater-*
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: station
+          path: release
+      # The feed: the gateway's signed archives (and the app's, once it ships updater archives); none signed, none.
+      - name: latest.json
+        run: |
+          if ls release/*.tar.gz.sig >/dev/null 2>&1; then
+            # Written beside the folder, then moved in: the shell creates the output file before node runs, and inside
+            # release/ feed.mjs would read that empty file as the app's own latest.json.
+            node scripts/release/feed.mjs release "${GITHUB_REF_NAME}" "https://github.com/${{ github.repository }}/releases/download/${GITHUB_REF_NAME}" > latest.json
+            mv latest.json release/latest.json
+          else
+            echo "no signatures (no TAURI_SIGNING_PRIVATE_KEY): no feed in this release"
+          fi
+      # A draft: unsigned installers make the systems warn (desktop/README.md, «Подпись»); the owner looks first.
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: release/**/*
+
+  gateway-image:
+    # The gateway's image for amd64 and arm64: the very programs of gateway-binaries' Linux archives (static musl, the
+    # feed and the station's build inside), put into Dockerfile.prod's runtime stage (GATEWAY=prebuilt). Only that stage
+    # runs on arm64 under QEMU: an apk and a setcap. Only the two Linux programs matter here, so another platform's
+    # failed build does not hold the image back.
+    needs: gateway-binaries
+    if: ${{ !cancelled() && needs.gateway-binaries.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gateway-duowave-linux-*
+          path: linux-builds
+          merge-multiple: true
+      - name: The Linux programs
+        run: |
+          mkdir -p deploy/prebuilt/amd64 deploy/prebuilt/arm64
+          tar -xzf linux-builds/duowave-linux-x86_64.tar.gz -C deploy/prebuilt/amd64
+          tar -xzf linux-builds/duowave-linux-aarch64.tar.gz -C deploy/prebuilt/arm64
+          file deploy/prebuilt/*/duowave
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Image names must be lowercase, and an owner's login need not be (DuoWaveAI → duowaveai).
+      - name: The image's name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/gateway" >> "$GITHUB_ENV"
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+      - uses: docker/build-push-action@v6
+        env:
+          # No build record among the run's artifacts: publish takes the release's own by name, and it is noise there.
+          DOCKER_BUILD_RECORD_UPLOAD: false
+        with:
+          context: .
+          file: Dockerfile.prod
+          platforms: linux/amd64,linux/arm64
+          build-args: GATEWAY=prebuilt
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  images:
+    # The model servers, an architecture per machine: each pushes its image by digest, images-manifest joins them.
+    # Nothing here needs the station's build, so these start with the release — and check the tag themselves.
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: asr, context: asr-server, args: TORCH=cpu, arch: amd64, runner: ubuntu-latest }
+          - { image: asr, context: asr-server, args: TORCH=cpu, arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: tts, context: tts-server, args: TORCH=cpu, arch: amd64, runner: ubuntu-latest }
+          - { image: tts, context: tts-server, args: TORCH=cpu, arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: asr-cuda, context: asr-server, args: TORCH=cu126, arch: amd64, runner: ubuntu-latest }
+    steps:
+      - uses: actions/checkout@v4
+      # As in station-build: no image under a tag the code does not carry.
+      - name: The tag is the code's version
+        run: scripts/release/version.sh --check "${GITHUB_REF_NAME}"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Image names must be lowercase, and an owner's login need not be (DuoWaveAI → duowaveai).
+      - name: The image's name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/${{ matrix.image }}" >> "$GITHUB_ENV"
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+      # Pushed by digest, without a tag: the tags go onto the joined image. The layer cache lives in the registry
+      # under buildcache-<arch> — an Actions cache made on a tag no later tag could read — with every stage's layers
+      # (mode=max), so the builder's PyTorch install is found too, not only the final image's layers.
+      - id: build
+        uses: docker/build-push-action@v6
+        env:
+          # No build record among the run's artifacts: publish takes the release's own by name, and it is noise there.
+          DOCKER_BUILD_RECORD_UPLOAD: false
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.context }}/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          build-args: ${{ matrix.args }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache-${{ matrix.arch }},mode=max
+      - name: The digest
+        run: mkdir -p digests && touch "digests/${DIGEST#sha256:}"
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+      - uses: actions/upload-artifact@v4
+        with:
+          # The image's name last: the pattern below then ends with it, and asr's does not take asr-cuda's digest.
+          name: digest-${{ matrix.arch }}-${{ matrix.image }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  images-manifest:
+    # Each model image under its tags (0.1.0, 0.1, latest): one index over its architectures' digests.
+    needs: images
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [asr, tts, asr-cuda]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*-${{ matrix.image }}
+          path: digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: The image's name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/${{ matrix.image }}" >> "$GITHUB_ENV"
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+      - name: One image over the architectures
+        working-directory: digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "$IMAGE@sha256:%s " *)
+          docker buildx imagetools inspect "$IMAGE:${{ steps.meta.outputs.version }}"

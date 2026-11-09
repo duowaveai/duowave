@@ -1,0 +1,16 @@
+# Copy to livekit.yaml and set a key and a secret of your own (the secret: 32+ random characters).
+# livekit.yaml stays out of git.
+port: 7880
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50100
+  # On a machine with a public address; at home behind the router keep it false.
+  use_external_ip: false
+  # Docker Desktop (a Mac): the address clients send audio to, or they get the container's own and hear nothing.
+  # 127.0.0.1 for the page on this Mac; the Mac's address in the home network for phones at home.
+  # node_ip: 127.0.0.1
+keys:
+  CHANGE-ME-KEY: CHANGE-ME-SECRET-32-OR-MORE-CHARACTERS
+logging:
+  level: info

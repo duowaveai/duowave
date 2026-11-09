@@ -1,0 +1,32 @@
+# The DuoWave package for YAM 0.2 (repo.yse.wtf): the voice gateway on the station itself and the `duowave` command.
+# station-client/yam/build.sh stages the files beside this and writes the workspace's version into it; the paths on
+# the right are the stage's.
+#
+# After `yam install duowave/gateway` the gateway runs and, once it answers, starts with the station (bin/duowave-
+# postinstall, through the program's own `duowave station install`: its service in /data/opt/duowave and the boot
+# script /etc/init.d/S95duowave); the station's voice stays with Yandex until it is pointed here — the panel's button or
+# `duowave station point local --reboot` — and even then the firmware's quasar.cfg stays as it is: our copy is mounted
+# over it (voice.sh). `yam remove` leaves the usual Alice: without the program the copy is not mounted at boot.
+name: duowave/gateway
+version: 0.0.0
+license: Apache-2.0
+description: 'DuoWave — свой голосовой шлюз прямо на колонке: свой мозг, голос, звонки и пульт в браузере; голос колонки переключается только по кнопке, вернуть как было — одной командой'
+homepage: https://github.com/duowaveai/duowave
+targets: [plum]
+files:
+  bin/duowave: duowave
+  bin/duowave-postinstall: duowave-postinstall
+  share/duowave.gateway/gateway: gateway
+  share/duowave.gateway/voice.sh: voice.sh
+  share/duowave.gateway/S95duowave: S95duowave
+  share/duowave.gateway/call-client.sh: call-client.sh
+  share/duowave.gateway/S99zduowave: S99zduowave
+# Declared for a host that starts YAM services; YAM 0.2 itself only keeps it, so the postinstall hook starts the gateway.
+services:
+  gateway:
+    exec: [share/duowave.gateway/gateway, serve]
+    restart: always
+    after: [network]
+    env:
+      DATA_DIR: /data/opt/duowave/gateway
+postinstall: [bin/duowave-postinstall]

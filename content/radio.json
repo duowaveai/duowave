@@ -1,0 +1,9 @@
+[
+    {
+        "id": "studio21",
+        "title": "Студия 21",
+        "aliases": ["studio 21", "студио 21"],
+        "url": "https://hls.studio21.ru/studio21/playlist.m3u8",
+        "format": "HLS"
+    }
+]

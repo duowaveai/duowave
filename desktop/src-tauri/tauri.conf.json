@@ -1,0 +1,66 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DuoWave",
+  "version": "0.2.0",
+  "identifier": "app.duowave.desktop",
+  "build": {
+    "frontendDist": "../src",
+    "beforeBuildCommand": {
+      "script": "pnpm --filter panel build",
+      "cwd": "../.."
+    },
+    "beforeDevCommand": {
+      "script": "pnpm --filter panel build",
+      "cwd": "../..",
+      "wait": true
+    }
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Utility",
+    "shortDescription": "Голосовой шлюз для колонки: работает с Яндекс Станцией",
+    "longDescription": "Шлюз между колонкой и своими моделями: распознавание, ответы и голос. Работает в трее, пульт открывается в своём окне.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../../clone-server/server.py": "clone-server/server.py",
+      "../../clone-server/imprint.py": "clone-server/imprint.py",
+      "../../clone-server/README.md": "clone-server/README.md",
+      "../../clone-server/requirements/*.txt": "clone-server/requirements/",
+      "../../clone-server/voicelab/*.py": "clone-server/voicelab/"
+    },
+    "createUpdaterArtifacts": false,
+    "macOS": {
+      "minimumSystemVersion": "13.5",
+      "entitlements": "entitlements.plist",
+      "signingIdentity": "-"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["Russian", "English"]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJENjcwMDQ4MjQyMjlBNEMKUldSTW1pSWtTQUJuTFF0c3NYSFJoWi9XTnhHdlM5ZUVnbHRSaENxaENyVS85eXN2UVV3ZHgvL0sK",
+      "endpoints": [
+        "https://updates.duowave.dev/{{current_version}}/latest.json",
+        "https://updates.duowave.dev/latest.json"
+      ]
+    }
+  }
+}

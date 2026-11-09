@@ -1,0 +1,52 @@
+/* Сгенерировано скриптом panel/scripts/brand-icons.mjs — руками не править.
+   Цвет знака сервиса в каждой теме (данные — brand-icons.ts): цвет бренда или currentColor — цвет текста там, где
+   бренд даёт на значке строки меньше 3:1. Селекторы — как у токенов тем в ui/glass.css; читает BrandMark (ui/brand.tsx). */
+
+:root,
+html[data-theme='dark'] {
+    --brand-claude: #D97757;
+    --brand-anthropic: currentColor;
+    --brand-openai: currentColor;
+    --brand-openrouter: #94A3B8;
+    --brand-ollama: currentColor;
+    --brand-lmstudio: currentColor;
+    --brand-gemini: #8E75B2;
+    --brand-deepseek: #5786FE;
+    --brand-mistral: #FA520F;
+    --brand-groq: currentColor;
+    --brand-homeassistant: #18BCF2;
+    --brand-notion: currentColor;
+    --brand-todoist: #E44332;
+    --brand-brave: #FB542B;
+    --brand-tavily: #468BFF;
+    --brand-mcp: currentColor;
+    --brand-telegram: #26A5E4;
+    --brand-livekit: #FFFFFF;
+    --brand-asterisk: #F68F1E;
+    --brand-huggingface: #FFD21E;
+    --brand-rss: #FFA500;
+}
+
+html[data-theme='light'] {
+    --brand-claude: #D97757;
+    --brand-anthropic: #191919;
+    --brand-openai: currentColor;
+    --brand-openrouter: currentColor;
+    --brand-ollama: #000000;
+    --brand-lmstudio: #000000;
+    --brand-gemini: #8E75B2;
+    --brand-deepseek: #5786FE;
+    --brand-mistral: #FA520F;
+    --brand-groq: currentColor;
+    --brand-homeassistant: currentColor;
+    --brand-notion: #000000;
+    --brand-todoist: #E44332;
+    --brand-brave: #FB542B;
+    --brand-tavily: #468BFF;
+    --brand-mcp: #000000;
+    --brand-telegram: currentColor;
+    --brand-livekit: currentColor;
+    --brand-asterisk: currentColor;
+    --brand-huggingface: currentColor;
+    --brand-rss: currentColor;
+}

@@ -1,0 +1,85 @@
+# The station's YAM package goes to the YAM registry (repo.yse.wtf) when the owner publishes a release: release.yml
+# builds duowave-gateway-<version>-<target>.yampkg into the draft, this signs and uploads each one. Until then no
+# station sees the new version, as with the gateway's own feed. By hand for a published release (a failed upload, the
+# secrets set later): Actions → YAM registry → Run workflow with its tag.
+#
+# Secrets: YAM_AUTHOR_KEY — the contents of the Ed25519 PEM downloaded when the namespace duowave was claimed on
+# repo.yse.wtf; YAM_PUBLISH_TOKEN — the registry profile's publish token. Without them nothing is uploaded. A version
+# in the registry cannot be replaced: a broken one needs the next version; one already there is skipped.
+name: YAM registry
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'The published release (vX.Y.Z)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      # YAM's own repository, at the commit release.yml packs with.
+      YAM_REF: 5c06c9f95de97276cc035e9673fe52e52b1c7052
+      PUBLISHING: ${{ secrets.YAM_PUBLISH_TOKEN != '' && secrets.YAM_AUTHOR_KEY != '' }}
+    steps:
+      - name: Secrets
+        if: env.PUBLISHING != 'true'
+        run: echo "no YAM_PUBLISH_TOKEN or YAM_AUTHOR_KEY in the repository's secrets, nothing goes to the registry"
+      - uses: actions/checkout@v4
+        if: env.PUBLISHING == 'true'
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/checkout@v4
+        if: env.PUBLISHING == 'true'
+        with:
+          repository: nyakokitsu/yam
+          ref: ${{ env.YAM_REF }}
+          path: yam
+      - uses: dtolnay/rust-toolchain@stable
+        if: env.PUBLISHING == 'true'
+      - uses: swatinem/rust-cache@v2
+        if: env.PUBLISHING == 'true'
+        with:
+          workspaces: yam
+          key: yam-${{ env.YAM_REF }}
+      - if: env.PUBLISHING == 'true'
+        run: cargo build --manifest-path yam/Cargo.toml --release --locked --bin yam-publish
+      - name: The release's packages
+        if: env.PUBLISHING == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'duowave-gateway-*.yampkg' --dir dist
+      - name: Upload
+        if: env.PUBLISHING == 'true'
+        env:
+          YAM_PUBLISH_TOKEN: ${{ secrets.YAM_PUBLISH_TOKEN }}
+          YAM_AUTHOR_KEY: ${{ secrets.YAM_AUTHOR_KEY }}
+        run: |
+          version=${TAG#v}
+          # The source yam-publish signs for: the package's name and this version, as station-client/yam/build.sh wrote.
+          mkdir -p "$RUNNER_TEMP/source"
+          sed "s/^version: .*/version: $version/" station-client/yam/yam.yaml > "$RUNNER_TEMP/source/yam.yaml"
+          key=$RUNNER_TEMP/yam-author-key.pem
+          (umask 077 && printf '%s\n' "$YAM_AUTHOR_KEY" > "$key")
+          trap 'rm -f "$key"' EXIT
+          curl -fsS https://repo.yse.wtf/v2/packages/duowave/gateway/index.json > "$RUNNER_TEMP/published.json" 2>/dev/null \
+            || echo '{"versions": {}}' > "$RUNNER_TEMP/published.json"
+          for package in dist/duowave-gateway-"$version"-*.yampkg; do
+            target=${package##*-}; target=${target%.yampkg}
+            if python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); sys.exit(0 if sys.argv[3] in d.get("versions", {}).get(sys.argv[2], {}).get("artifacts", {}) else 1)' \
+              "$RUNNER_TEMP/published.json" "$version" "$target"; then
+              echo "duowave/gateway $version for $target is in the registry already"
+              continue
+            fi
+            yam/target/release/yam-publish publish --artifact "$package" --source "$RUNNER_TEMP/source" \
+              --target "$target" --key "$key"
+            echo "duowave/gateway $version for $target: published"
+          done

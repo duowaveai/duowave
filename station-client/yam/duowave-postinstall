@@ -1,0 +1,42 @@
+#!/bin/sh
+# YAM's postinstall hook for duowave/gateway: run as root after every install and upgrade, YAM_ROOT set. YAM 0.2 starts
+# no services, so on the station this turns the gateway on through the program's own `duowave station install` — the
+# same files the panel writes over SSH: the service /data/opt/duowave/gateway.sh (with the safety net), the gateway's
+# .env, gateway-bin naming this package's stable link (an upgrade only restarts it), and, once the started gateway
+# answers /health, the boot script /etc/init.d/S95duowave that starts it with the station. The station's voice is not
+# touched: it goes to the gateway only from the panel or with `duowave station point local --reboot`.
+#
+# Left alone: an install off the station (yam --root on a computer), a gateway installed another way (the panel's copy
+# in /data/opt/duowave/bin, an old yse package), and a gateway turned off with `duowave gateway remove`.
+set -eu
+CFG=/system/vendor/quasar/quasar.cfg
+STATE=/data/opt/duowave
+
+if [ ! -f "$CFG" ]; then
+    echo "duowave: not a station (no $CFG): the gateway is not started"
+    exit 0
+fi
+root=$(cd "${YAM_ROOT:?YAM_ROOT is required}" && pwd -P)
+# The path `duowave gateway install` names too: the stable link, not this version's folder.
+program=$root/share/duowave.gateway/gateway
+[ -x "$program" ] || { echo "duowave: no program at $program" >&2; exit 1; }
+
+if [ -f "$STATE/yam-off" ]; then
+    echo "duowave: the gateway is off here; duowave gateway install turns it on"
+    exit 0
+fi
+current=$(cat "$STATE/gateway-bin" 2>/dev/null || true)
+if [ -n "$current" ] && [ "$current" != "$program" ] && [ -x "$current" ]; then
+    echo "duowave: the gateway here was installed another way ($current) and stays; duowave gateway install puts this package's in its place"
+    exit 0
+fi
+
+# A gateway that does not come up leaves the package installed: `duowave connect|restore` work without it.
+if ! "$program" station install --managed yam --program "$program" --in-place; then
+    echo "duowave: the gateway did not start; try again: duowave gateway install" >&2
+    exit 0
+fi
+port=$(sed -n 's/^PORT=\([0-9]*\).*/\1/p' "$STATE/gateway/.env" 2>/dev/null | tail -n 1)
+address=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1)
+echo "duowave: the panel — http://${address:-<the station>}:${port:-8790}"
+echo "duowave: the station's voice still goes to Yandex; to the gateway — the panel's button or: duowave station point local --reboot"

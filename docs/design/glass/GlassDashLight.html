@@ -1,0 +1,766 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Стекло — дашборд колонки, светлая тема</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;display=swap">
+<style>body{margin:0}</style>
+
+
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;display=swap">
+<style>
+body{margin:0}
+@keyframes gd-orbit{from{stroke-dashoffset:0}to{stroke-dashoffset:-100}}
+@keyframes gd-comet{from{stroke-dashoffset:14}to{stroke-dashoffset:-100}}
+@keyframes gd-ring{from{transform:scale(1);opacity:.9}to{transform:scale(1.55);opacity:0}}
+@keyframes gd-sheet{from{transform:translateY(24px);opacity:0}to{transform:none;opacity:1}}
+@keyframes gd-drop{from{transform:translateY(-8px);opacity:0}to{transform:none;opacity:1}}
+@media (prefers-reduced-motion:reduce){.gd-anim{animation:none!important}}
+</style>
+
+
+<style>
+body{margin:0}
+@keyframes st2-breathe{0%,100%{opacity:.6}50%{opacity:1}}
+@keyframes st2-pulse{0%,100%{opacity:.7}50%{opacity:1}}
+@keyframes st2-blink{0%,49%{opacity:1}50%,100%{opacity:.18}}
+@keyframes st2-spin{from{stroke-dashoffset:0}to{stroke-dashoffset:-100}}
+@keyframes st2-listen{0%{transform:scale(1);opacity:.9}100%{transform:scale(3.3);opacity:0}}
+@keyframes st2-ripple{0%{transform:scale(.94);opacity:.75}100%{transform:scale(1.42);opacity:0}}
+@media (prefers-reduced-motion:reduce){.st2-anim{animation:none!important}}
+</style>
+</head>
+<body><div id="root"></div>
+<template id="tpl-GlassDashLight">
+
+<div style="width: 390px; height: 844px;">
+<dc-import name="GlassDash" theme="light" hint-size="390px,844px"></dc-import>
+</div>
+</template>
+<template id="tpl-GlassDash">
+
+<div style="width: 390px; height: 844px; box-sizing: border-box; position: relative; overflow: hidden; font-family: 'Manrope', system-ui, sans-serif; font-size: 15px; line-height: 22px; font-variant-numeric: tabular-nums; color: {{t.text}}; background-color: {{t.bg}}; background-image: {{t.aurora}};">
+
+<svg aria-hidden="true" width="390" height="844" viewBox="0 0 390 844" style="position: absolute; left: 0; top: 0; pointer-events: none;">
+<defs><filter id="gd-blur-{{uid}}" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="3"></feGaussianBlur></filter></defs>
+<path d="M195 234A150 230 0 1 1 195 694A150 230 0 1 1 195 234Z" fill="none" stroke="{{t.orbit}}" stroke-width="1"></path>
+<path class="gd-anim" d="M195 234A150 230 0 1 1 195 694A150 230 0 1 1 195 234Z" fill="none" stroke="{{t.orbitHi}}" stroke-width="2" stroke-linecap="round" pathLength="100" stroke-dasharray="8 92" opacity="0.7" style="animation: gd-orbit 20s linear infinite;"></path>
+<sc-if value="{{isThink}}" hint-placeholder-val="{{false}}">
+<path class="gd-anim" d="M59.1 561.2A150 230 0 0 1 195 234" fill="none" stroke="{{cometThink}}" stroke-width="9" stroke-linecap="round" pathLength="100" stroke-dasharray="14 100" stroke-dashoffset="14" opacity="0.5" filter="url(#gd-blur-{{uid}})" style="animation: gd-comet 1.1s cubic-bezier(0.4, 0, 0.2, 1) forwards;"></path>
+<path class="gd-anim" d="M59.1 561.2A150 230 0 0 1 195 234" fill="none" stroke="{{cometThink}}" stroke-width="3" stroke-linecap="round" pathLength="100" stroke-dasharray="14 100" stroke-dashoffset="14" style="animation: gd-comet 1.1s cubic-bezier(0.4, 0, 0.2, 1) forwards;"></path>
+</sc-if>
+<sc-if value="{{isSpeak}}" hint-placeholder-val="{{false}}">
+<path class="gd-anim" d="M195 234A150 230 0 0 1 330.9 561.2" fill="none" stroke="{{cometSpeak}}" stroke-width="9" stroke-linecap="round" pathLength="100" stroke-dasharray="14 100" stroke-dashoffset="14" opacity="0.5" filter="url(#gd-blur-{{uid}})" style="animation: gd-comet 1.1s cubic-bezier(0.4, 0, 0.2, 1) forwards;"></path>
+<path class="gd-anim" d="M195 234A150 230 0 0 1 330.9 561.2" fill="none" stroke="{{cometSpeak}}" stroke-width="3" stroke-linecap="round" pathLength="100" stroke-dasharray="14 100" stroke-dashoffset="14" style="animation: gd-comet 1.1s cubic-bezier(0.4, 0, 0.2, 1) forwards;"></path>
+</sc-if>
+</svg>
+
+<div style="position: absolute; left: 75px; top: 357px; width: 240px; height: 200px;">
+<dc-import name="StationLite2" skin="{{cur.skin}}" clock="{{cur.clock}}" ring="{{ringColor}}" stage="{{speakerStage}}" theme="{{themeName}}" hint-size="240px,200px"></dc-import>
+</div>
+<button aria-label="Показать путь вопроса" onClick="{{play}}" style="position: absolute; left: 92px; top: 374px; width: 206px; height: 176px; border: 0; margin: 0; padding: 0; border-radius: 48px; background: transparent; cursor: pointer;"></button>
+<div aria-live="polite" style="position: absolute; left: 97px; top: 562px; width: 196px; display: flex; flex-direction: column; align-items: center; text-align: center; pointer-events: none;">
+<span style="font-size: 13px; line-height: 16px; font-weight: 800; white-space: nowrap;">{{cap1}}</span>
+<span style="font-size: 12px; line-height: 16px; white-space: nowrap; color: {{t.sub}};">{{cap2}}</span>
+</div>
+
+<span aria-hidden="true" style="position: absolute; left: 104px; top: 647px; width: 32px; height: 32px; box-sizing: border-box; border-radius: 50%; display: flex; align-items: center; justify-content: center; {{sat.home.circle}}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V20a1.5 1.5 0 0 1-1.5 1.5H15v-6H9v6H4.5A1.5 1.5 0 0 1 3 20z"></path></svg></span>
+<span aria-hidden="true" style="position: absolute; left: 140px; top: 670px; width: 32px; height: 32px; box-sizing: border-box; border-radius: 50%; display: flex; align-items: center; justify-content: center; {{sat.mcp.circle}}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"></circle><circle cx="18" cy="6" r="2.5"></circle><circle cx="12" cy="18" r="2.5"></circle><path d="M8.5 6h7M7.3 8.2l3.5 7.6M16.7 8.2l-3.5 7.6"></path></svg><sc-if value="{{sat.mcp.badge}}" hint-placeholder-val="{{true}}"><span style="position: absolute; right: -6px; top: -6px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box; border-radius: 999px; font-size: 10px; line-height: 16px; font-weight: 800; text-align: center; background: {{sat.mcp.line}}; color: {{t.onBadge}};">{{sat.mcp.count}}</span></sc-if><sc-if value="{{sat.mcp.active}}" hint-placeholder-val="{{false}}"><span class="gd-anim" style="position: absolute; inset: -4px; border-radius: 50%; border: 2px solid {{sat.mcp.line}}; animation: gd-ring 1.1s ease-out infinite;"></span></sc-if></span>
+<span aria-hidden="true" style="position: absolute; left: 179px; top: 678px; width: 32px; height: 32px; box-sizing: border-box; border-radius: 50%; display: flex; align-items: center; justify-content: center; {{sat.agent.circle}}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="8" width="14" height="11" rx="3"></rect><path d="M12 8V5"></path><circle cx="12" cy="4" r="1"></circle><line x1="9.5" y1="13" x2="9.51" y2="13"></line><line x1="14.5" y1="13" x2="14.51" y2="13"></line></svg></span>
+<span aria-hidden="true" style="position: absolute; left: 218px; top: 670px; width: 32px; height: 32px; box-sizing: border-box; border-radius: 50%; display: flex; align-items: center; justify-content: center; {{sat.calls.circle}}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"></path></svg></span>
+<span aria-hidden="true" style="position: absolute; left: 254px; top: 647px; width: 32px; height: 32px; box-sizing: border-box; border-radius: 50%; display: flex; align-items: center; justify-content: center; {{sat.chats.circle}}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"></path><path d="M22 2 15 22l-4-9-9-4z"></path></svg></span>
+<button aria-label="{{linksAria}}" onClick="{{openLinks}}" style="position: absolute; left: 96px; top: 638px; width: 198px; height: 108px; box-sizing: border-box; border: 0; margin: 0; padding: 0 0 4px; border-radius: 24px; background: transparent; cursor: pointer; font: inherit; display: flex; align-items: flex-end; justify-content: center;">
+<span style="font-size: 13px; line-height: 18px; font-weight: 800; color: {{linksCapColor}};">{{linksCap}}</span>
+</button>
+
+<button aria-label="{{brain.aria}}" onClick="{{brain.open}}" style="position: absolute; left: 135px; top: 162px; width: 120px; display: flex; flex-direction: column; align-items: center; gap: 6px; border: 0; margin: 0; padding: 0; background: transparent; cursor: pointer; font: inherit; color: {{t.text}};">
+<span style="display: flex; flex-direction: column; align-items: center; padding: 3px 10px; border-radius: 14px; {{t.labelGlass}}"><span style="font-size: 12px; line-height: 16px; color: {{t.sub}};">Мозг</span><span style="font-size: 13px; line-height: 18px; font-weight: 800; white-space: nowrap;">{{brain.value}}</span></span>
+<span style="position: relative; width: 52px; height: 52px; box-sizing: border-box; border-radius: 50%; display: flex; align-items: center; justify-content: center; {{brain.circle}}"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path><path d="M19 15.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"></path></svg><sc-if value="{{brain.active}}" hint-placeholder-val="{{false}}"><span class="gd-anim" style="position: absolute; inset: -4px; border-radius: 50%; border: 2px solid {{brain.line}}; animation: gd-ring 1.1s ease-out infinite;"></span></sc-if></span>
+</button>
+
+<button aria-label="{{persona.aria}}" onClick="{{persona.open}}" style="position: absolute; left: 16px; top: 295px; width: 98px; display: flex; flex-direction: column; align-items: center; gap: 6px; border: 0; margin: 0; padding: 0; background: transparent; cursor: pointer; font: inherit; color: {{t.text}};">
+<span style="display: flex; flex-direction: column; align-items: center; padding: 3px 10px; border-radius: 14px; {{t.labelGlass}}"><span style="font-size: 12px; line-height: 16px; color: {{t.sub}};">Характер</span><span style="font-size: 13px; line-height: 18px; font-weight: 800; white-space: nowrap;">{{persona.value}}</span></span>
+<span style="position: relative; width: 52px; height: 52px; box-sizing: border-box; border-radius: 50%; display: flex; align-items: center; justify-content: center; {{persona.circle}}"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8.5 14.5a4.5 4.5 0 0 0 7 0"></path><line x1="9" y1="9.5" x2="9.01" y2="9.5"></line><line x1="15" y1="9.5" x2="15.01" y2="9.5"></line></svg><sc-if value="{{persona.active}}" hint-placeholder-val="{{false}}"><span class="gd-anim" style="position: absolute; inset: -4px; border-radius: 50%; border: 2px solid {{persona.line}}; animation: gd-ring 1.1s ease-out infinite;"></span></sc-if></span>
+</button>
+
+<button aria-label="{{think.aria}}" onClick="{{think.open}}" style="position: absolute; left: 276px; top: 295px; width: 98px; display: flex; flex-direction: column; align-items: center; gap: 6px; border: 0; margin: 0; padding: 0; background: transparent; cursor: pointer; font: inherit; color: {{t.text}};">
+<span style="display: flex; flex-direction: column; align-items: center; padding: 3px 10px; border-radius: 14px; {{t.labelGlass}}"><span style="font-size: 12px; line-height: 16px; color: {{t.sub}};">Мышление</span><span style="font-size: 13px; line-height: 18px; font-weight: 800; white-space: nowrap;">{{think.value}}</span></span>
+<span style="position: relative; width: 52px; height: 52px; box-sizing: border-box; border-radius: 50%; display: flex; align-items: center; justify-content: center; {{think.circle}}"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17a8 8 0 1 1 16 0"></path><path d="M12 17l4.5-5"></path><circle cx="12" cy="17" r="1.2"></circle></svg><sc-if value="{{think.active}}" hint-placeholder-val="{{false}}"><span class="gd-anim" style="position: absolute; inset: -4px; border-radius: 50%; border: 2px solid {{think.line}}; animation: gd-ring 1.1s ease-out infinite;"></span></sc-if></span>
+</button>
+
+<button aria-label="{{ear.aria}}" onClick="{{ear.open}}" style="position: absolute; left: 16px; top: 535px; width: 98px; display: flex; flex-direction: column; align-items: center; gap: 6px; border: 0; margin: 0; padding: 0; background: transparent; cursor: pointer; font: inherit; color: {{t.text}};">
+<span style="position: relative; width: 52px; height: 52px; box-sizing: border-box; border-radius: 50%; display: flex; align-items: center; justify-content: center; {{ear.circle}}"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8.5a6 6 0 0 1 12 0c0 3.2-2.2 4.2-3.2 5.6-.8 1.1-.9 2.6-1.9 3.7a3 3 0 0 1-4.9-1.3"></path><path d="M9.2 9a2.8 2.8 0 0 1 5.6 0c0 1.4-1 2-1.8 2.6"></path></svg><sc-if value="{{ear.active}}" hint-placeholder-val="{{false}}"><span class="gd-anim" style="position: absolute; inset: -4px; border-radius: 50%; border: 2px solid {{ear.line}}; animation: gd-ring 1.1s ease-out infinite;"></span></sc-if></span>
+<span style="display: flex; flex-direction: column; align-items: center; padding: 3px 10px; border-radius: 14px; {{t.labelGlass}}"><span style="font-size: 12px; line-height: 16px; color: {{t.sub}};">Слух</span><span style="font-size: 13px; line-height: 18px; font-weight: 800; white-space: nowrap;">{{ear.value}}</span></span>
+</button>
+
+<button aria-label="{{voice.aria}}" onClick="{{voice.open}}" style="position: absolute; left: 276px; top: 535px; width: 98px; display: flex; flex-direction: column; align-items: center; gap: 6px; border: 0; margin: 0; padding: 0; background: transparent; cursor: pointer; font: inherit; color: {{t.text}};">
+<span style="position: relative; width: 52px; height: 52px; box-sizing: border-box; border-radius: 50%; display: flex; align-items: center; justify-content: center; {{voice.circle}}"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="10" x2="4" y2="14"></line><line x1="8" y1="6" x2="8" y2="18"></line><line x1="12" y1="3" x2="12" y2="21"></line><line x1="16" y1="6" x2="16" y2="18"></line><line x1="20" y1="10" x2="20" y2="14"></line></svg><sc-if value="{{voice.active}}" hint-placeholder-val="{{false}}"><span class="gd-anim" style="position: absolute; inset: -4px; border-radius: 50%; border: 2px solid {{voice.line}}; animation: gd-ring 1.1s ease-out infinite;"></span></sc-if></span>
+<span style="display: flex; flex-direction: column; align-items: center; padding: 3px 10px; border-radius: 14px; {{t.labelGlass}}"><span style="font-size: 12px; line-height: 16px; color: {{t.sub}};">Голос</span><span style="font-size: 13px; line-height: 18px; font-weight: 800; white-space: nowrap;">{{voice.value}}</span></span>
+</button>
+
+<header style="position: absolute; left: 16px; right: 16px; top: 22px; display: flex; align-items: center; gap: 12px; min-height: 48px;">
+<button aria-label="{{speakerAria}}" aria-haspopup="dialog" aria-expanded="{{pickerOpen}}" onClick="{{openPicker}}" style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; border: 0; margin: 0; padding: 0; background: transparent; cursor: pointer; font: inherit; color: {{t.text}}; text-align: left;">
+<span aria-hidden="true" style="flex: none; width: 44px; height: 44px; box-sizing: border-box; border-radius: 50%; display: flex; align-items: center; justify-content: center; {{t.glass}}"><svg width="28" height="24" viewBox="0 0 28 24"><path d="M3 8V16.5A11 4.5 0 0 0 25 16.5V8Z" fill="{{cur.body}}"></path><ellipse cx="14" cy="8" rx="11" ry="4.5" fill="{{cur.top}}"></ellipse></svg></span>
+<span style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
+<span style="display: flex; align-items: center; gap: 4px; min-width: 0;"><span style="font-size: 17px; line-height: 22px; font-weight: 800; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{cur.name}}</span><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="flex: none; color: {{t.sub}};"><path d="M6 9l6 6 6-6"></path></svg></span>
+<span style="display: flex; align-items: center; gap: 6px; font-size: 13px; line-height: 18px; color: {{t.sub}};"><span aria-hidden="true" style="width: 7px; height: 7px; border-radius: 50%; background: {{statusDot}};"></span>{{status}}</span>
+</span>
+</button>
+<button aria-label="{{themeLabel}}" onClick="{{toggleTheme}}" style="flex: none; width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0; padding: 0; cursor: pointer; font: inherit; color: {{t.text}}; {{t.glass}}">
+<sc-if value="{{isDark}}" hint-placeholder-val="{{true}}"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.5"></circle><line x1="12" y1="1.5" x2="12" y2="3.5"></line><line x1="12" y1="20.5" x2="12" y2="22.5"></line><line x1="4.6" y1="4.6" x2="6" y2="6"></line><line x1="18" y1="18" x2="19.4" y2="19.4"></line><line x1="1.5" y1="12" x2="3.5" y2="12"></line><line x1="20.5" y1="12" x2="22.5" y2="12"></line><line x1="4.6" y1="19.4" x2="6" y2="18"></line><line x1="18" y1="6" x2="19.4" y2="4.6"></line></svg></sc-if>
+<sc-if value="{{isLight}}" hint-placeholder-val="{{false}}"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg></sc-if>
+</button>
+</header>
+
+<div style="position: absolute; left: 16px; right: 16px; top: 82px;">
+<div role="radiogroup" aria-label="Режим колонки" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 4px; border-radius: 999px; {{t.glass}}">
+<sc-for list="{{modes}}" as="m" hint-placeholder-count="3">
+<button role="radio" aria-checked="{{m.on}}" onClick="{{m.pick}}" style="min-height: 40px; border-radius: 999px; border: 0; margin: 0; padding: 0 8px; cursor: pointer; font: inherit; font-size: 14px; transition: background 0.2s; {{m.style}}">{{m.label}}</button>
+</sc-for>
+</div>
+<p style="margin: 8px 6px 0; font-size: 13px; line-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: {{noteColor}};">{{modeNote}}</p>
+</div>
+
+<nav aria-label="Разделы" style="position: absolute; left: 16px; right: 16px; bottom: 18px; height: 68px; box-sizing: border-box; border-radius: 34px; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: center; padding: 0 6px; z-index: 10; {{t.glassStrong}}">
+<button aria-current="page" style="min-height: 52px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border: 0; margin: 0; padding: 0; background: transparent; cursor: pointer; font: inherit; font-size: 11px; line-height: 14px; font-weight: 800; color: {{t.accentText}};"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V20a1.5 1.5 0 0 1-1.5 1.5H15v-6H9v6H4.5A1.5 1.5 0 0 1 3 20z"></path></svg>Колонка</button>
+<button style="min-height: 52px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border: 0; margin: 0; padding: 0; background: transparent; cursor: pointer; font: inherit; font-size: 11px; line-height: 14px; font-weight: 600; color: {{t.sub}};"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="3"></circle><circle cx="19" cy="18" r="3"></circle><path d="M8 6h5a4 4 0 0 1 4 4v5"></path></svg>Маршруты</button>
+<button aria-label="Сказать через колонку" style="justify-self: center; width: 56px; height: 56px; border-radius: 50%; border: 0; margin: 0; padding: 0; cursor: pointer; display: flex; align-items: center; justify-content: center; background: {{t.accent}}; color: {{t.onAccent}}; box-shadow: {{t.talkShadow}};"><svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="22"></line></svg></button>
+<button style="min-height: 52px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border: 0; margin: 0; padding: 0; background: transparent; cursor: pointer; font: inherit; font-size: 11px; line-height: 14px; font-weight: 600; color: {{t.sub}};"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="10" x2="4" y2="14"></line><line x1="8" y1="6" x2="8" y2="18"></line><line x1="12" y1="3" x2="12" y2="21"></line><line x1="16" y1="6" x2="16" y2="18"></line><line x1="20" y1="10" x2="20" y2="14"></line></svg>Голос</button>
+<button style="min-height: 52px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border: 0; margin: 0; padding: 0; background: transparent; cursor: pointer; font: inherit; font-size: 11px; line-height: 14px; font-weight: 600; color: {{t.sub}};"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><path d="M14 2v6h6"></path><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>Журнал</button>
+</nav>
+
+<sc-if value="{{sheetOpen}}" hint-placeholder-val="{{false}}">
+<div style="position: absolute; inset: 0; z-index: 20;">
+<button aria-label="Закрыть" onClick="{{closeSheet}}" style="position: absolute; inset: 0; width: 100%; height: 100%; border: 0; margin: 0; padding: 0; cursor: pointer; background: {{t.scrim}};"></button>
+<section role="dialog" aria-modal="true" aria-labelledby="gd-sheet-h" class="gd-anim" style="position: absolute; left: 0; right: 0; bottom: 0; box-sizing: border-box; border-radius: 32px 32px 0 0; padding: 10px 16px 24px; display: flex; flex-direction: column; gap: 14px; animation: gd-sheet 0.28s ease-out; {{t.glassStrong}}">
+<span aria-hidden="true" style="align-self: center; width: 40px; height: 4px; border-radius: 2px; background: {{t.track}};"></span>
+<div style="display: flex; align-items: center; gap: 12px;">
+<span aria-hidden="true" style="flex: none; width: 44px; height: 44px; box-sizing: border-box; border-radius: 50%; display: flex; align-items: center; justify-content: center; {{sheet.circle}}">
+<sc-if value="{{sheet.is.brain}}" hint-placeholder-val="{{true}}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path><path d="M19 15.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"></path></svg></sc-if>
+<sc-if value="{{sheet.is.think}}" hint-placeholder-val="{{false}}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17a8 8 0 1 1 16 0"></path><path d="M12 17l4.5-5"></path><circle cx="12" cy="17" r="1.2"></circle></svg></sc-if>
+<sc-if value="{{sheet.is.voice}}" hint-placeholder-val="{{false}}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="10" x2="4" y2="14"></line><line x1="8" y1="6" x2="8" y2="18"></line><line x1="12" y1="3" x2="12" y2="21"></line><line x1="16" y1="6" x2="16" y2="18"></line><line x1="20" y1="10" x2="20" y2="14"></line></svg></sc-if>
+<sc-if value="{{sheet.is.ear}}" hint-placeholder-val="{{false}}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8.5a6 6 0 0 1 12 0c0 3.2-2.2 4.2-3.2 5.6-.8 1.1-.9 2.6-1.9 3.7a3 3 0 0 1-4.9-1.3"></path><path d="M9.2 9a2.8 2.8 0 0 1 5.6 0c0 1.4-1 2-1.8 2.6"></path></svg></sc-if>
+<sc-if value="{{sheet.is.persona}}" hint-placeholder-val="{{false}}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8.5 14.5a4.5 4.5 0 0 0 7 0"></path><line x1="9" y1="9.5" x2="9.01" y2="9.5"></line><line x1="15" y1="9.5" x2="15.01" y2="9.5"></line></svg></sc-if>
+<sc-if value="{{sheet.is.links}}" hint-placeholder-val="{{false}}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-5"></path><path d="M9 8V2"></path><path d="M15 8V2"></path><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"></path></svg></sc-if>
+</span>
+<div style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
+<h2 id="gd-sheet-h" style="margin: 0; font-size: 20px; line-height: 26px; font-weight: 800; letter-spacing: -0.01em;">{{sheet.title}}</h2>
+<span style="font-size: 13px; line-height: 18px; color: {{t.sub}};">{{sheet.about}}</span>
+</div>
+</div>
+<sc-if value="{{sheet.isOptions}}" hint-placeholder-val="{{true}}">
+<div role="radiogroup" aria-labelledby="gd-sheet-h" style="display: flex; flex-direction: column;">
+<sc-for list="{{sheet.options}}" as="o" hint-placeholder-count="3">
+<button role="radio" aria-checked="{{o.on}}" disabled="{{o.disabled}}" onClick="{{o.pick}}" style="display: flex; align-items: center; gap: 12px; min-height: 60px; padding: 8px 2px; border: 0; border-top: 1px solid {{o.divider}}; margin: 0; background: transparent; cursor: pointer; font: inherit; color: {{t.text}}; text-align: left; opacity: {{o.opacity}};">
+<span style="flex: 1; min-width: 0; display: flex; flex-direction: column;"><span style="font-weight: 800;">{{o.name}}</span><span style="font-size: 12px; line-height: 16px; color: {{t.sub}};">{{o.sub}}</span></span>
+<sc-if value="{{o.hasPill}}" hint-placeholder-val="{{true}}"><span style="flex: none; padding: 2px 10px; border-radius: 999px; font-size: 12px; line-height: 18px; font-weight: 800; background: {{o.pillBg}}; color: {{o.pillFg}};">{{o.pill}}</span></sc-if>
+<span aria-hidden="true" style="flex: none; width: 22px; height: 22px; box-sizing: border-box; border-radius: 50%; display: flex; align-items: center; justify-content: center; {{o.radio}}"><sc-if value="{{o.on}}" hint-placeholder-val="{{false}}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.2 4.2L19 7"></path></svg></sc-if></span>
+</button>
+</sc-for>
+</div>
+</sc-if>
+<sc-if value="{{sheet.isLinks}}" hint-placeholder-val="{{false}}">
+<div style="display: flex; flex-direction: column;">
+<sc-for list="{{sheet.links}}" as="l" hint-placeholder-count="7">
+<div style="display: flex; align-items: center; gap: 12px; min-height: 54px; border-top: 1px solid {{l.divider}};">
+<span style="flex: 1; min-width: 0; display: flex; flex-direction: column;"><span style="font-weight: 800;">{{l.name}}</span><span style="font-size: 12px; line-height: 16px; color: {{t.sub}};">{{l.sub}}</span></span>
+<span style="flex: none; padding: 2px 10px; border-radius: 999px; font-size: 12px; line-height: 18px; font-weight: 800; background: {{l.pillBg}}; color: {{l.pillFg}};">{{l.pill}}</span>
+<button role="switch" aria-checked="{{l.on}}" aria-label="{{l.name}}" aria-disabled="{{l.disabled}}" onClick="{{l.toggle}}" style="flex: none; position: relative; width: 46px; height: 28px; border-radius: 14px; border: 0; margin: 0; padding: 0; cursor: pointer; {{l.trackStyle}}"><span aria-hidden="true" style="position: absolute; top: 3px; width: 22px; height: 22px; border-radius: 50%; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3); transition: left 0.2s; {{l.knobStyle}}"></span></button>
+</div>
+</sc-for>
+<button style="display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 2px; border: 0; border-top: 1px solid {{t.divider}}; margin: 0; background: transparent; cursor: pointer; font: inherit; font-size: 14px; font-weight: 800; color: {{t.accentText}}; text-align: left;"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>Добавить подключение</button>
+</div>
+</sc-if>
+<button onClick="{{closeSheet}}" style="min-height: 48px; border-radius: 999px; border: 0; margin: 0; cursor: pointer; font: inherit; font-size: 15px; font-weight: 800; background: {{t.accent}}; color: {{t.onAccent}};">Готово</button>
+</section>
+</div>
+</sc-if>
+
+<sc-if value="{{pickerOpen}}" hint-placeholder-val="{{false}}">
+<div style="position: absolute; inset: 0; z-index: 30;">
+<button aria-label="Закрыть" onClick="{{closePicker}}" style="position: absolute; inset: 0; width: 100%; height: 100%; border: 0; margin: 0; padding: 0; cursor: pointer; background: {{t.scrim}};"></button>
+<section role="dialog" aria-modal="true" aria-labelledby="gd-picker-h" class="gd-anim" style="position: absolute; left: 12px; right: 12px; top: 74px; box-sizing: border-box; border-radius: 28px; padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 12px; animation: gd-drop 0.22s ease-out; {{t.menu}}">
+<div style="display: flex; align-items: baseline; justify-content: space-between; gap: 8px;">
+<h2 id="gd-picker-h" style="margin: 0; font-size: 20px; line-height: 26px; font-weight: 800; letter-spacing: -0.01em;">Колонки</h2>
+<span style="font-size: 13px; line-height: 18px; color: {{t.sub}};">{{onlineText}}</span>
+</div>
+<div style="display: flex; flex-direction: column;">
+<div role="radiogroup" aria-labelledby="gd-picker-h" style="display: flex; flex-direction: column;">
+<sc-for list="{{speakers}}" as="sp" hint-placeholder-count="2">
+<button role="radio" aria-checked="{{sp.on}}" onClick="{{sp.pick}}" style="display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 6px 2px; border: 0; border-top: 1px solid {{sp.divider}}; margin: 0; background: transparent; cursor: pointer; font: inherit; color: {{t.text}}; text-align: left;">
+<span aria-hidden="true" style="flex: none; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: {{t.iconBg}};"><svg width="26" height="22" viewBox="0 0 28 24"><path d="M3 8V16.5A11 4.5 0 0 0 25 16.5V8Z" fill="{{sp.body}}"></path><ellipse cx="14" cy="8" rx="11" ry="4.5" fill="{{sp.top}}"></ellipse></svg></span>
+<span style="flex: 1; min-width: 0; display: flex; flex-direction: column;"><span style="font-weight: 800;">{{sp.name}}</span><span style="font-size: 12px; line-height: 16px; color: {{t.sub}};">{{sp.sub}}</span></span>
+<span aria-hidden="true" style="flex: none; width: 7px; height: 7px; border-radius: 50%; background: {{sp.dot}};"></span>
+<span aria-hidden="true" style="flex: none; width: 22px; height: 22px; box-sizing: border-box; border-radius: 50%; display: flex; align-items: center; justify-content: center; {{sp.radio}}"><sc-if value="{{sp.on}}" hint-placeholder-val="{{false}}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.2 4.2L19 7"></path></svg></sc-if></span>
+</button>
+</sc-for>
+</div>
+<button style="display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 6px 2px; border: 0; border-top: 1px solid {{t.divider}}; margin: 0; background: transparent; cursor: pointer; font: inherit; color: {{t.text}}; text-align: left;">
+<span aria-hidden="true" style="flex: none; width: 40px; height: 40px; box-sizing: border-box; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 1.5px dashed {{t.track}}; color: {{t.accentText}};"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg></span>
+<span style="flex: 1; min-width: 0; display: flex; flex-direction: column;"><span style="font-weight: 800; color: {{t.accentText}};">Добавить колонку</span><span style="font-size: 12px; line-height: 16px; color: {{t.sub}};">новая появится здесь — останется её одобрить</span></span>
+</button>
+</div>
+<div style="border-top: 1px solid {{t.divider}};"></div>
+<div style="display: flex; align-items: center; gap: 12px;">
+<div style="flex: none; width: 116px;"><dc-import name="StationLite2" skin="{{cur.skin}}" clock="{{cur.clock}}" ring="{{ringColor}}" stage="idle" theme="{{themeName}}" hint-size="116px,97px"></dc-import></div>
+<div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px;">
+<span style="font-size: 12px; line-height: 16px; color: {{t.sub}};">Модель</span>
+<div role="radiogroup" aria-label="Модель колонки" style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 3px; border-radius: 999px; {{t.glass}}">
+<sc-for list="{{models}}" as="md" hint-placeholder-count="2">
+<button role="radio" aria-checked="{{md.on}}" onClick="{{md.pick}}" style="min-height: 34px; border-radius: 999px; border: 0; margin: 0; padding: 0 6px; cursor: pointer; font: inherit; font-size: 13px; white-space: nowrap; transition: background 0.2s; {{md.style}}">{{md.label}}</button>
+</sc-for>
+</div>
+<span style="display: flex; flex-direction: column;"><span style="font-size: 13px; line-height: 18px; font-weight: 800;">{{cur.lookName}}</span><span style="font-size: 12px; line-height: 16px; color: {{t.sub}};">{{cur.lookHow}}</span></span>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px;">
+<span style="font-size: 12px; line-height: 16px; color: {{t.sub}};">Цвет</span>
+<div role="radiogroup" aria-label="Цвет колонки" style="display: flex; flex-wrap: wrap; gap: 10px;">
+<sc-for list="{{colors}}" as="c" hint-placeholder-count="4">
+<button role="radio" aria-checked="{{c.on}}" aria-label="{{c.label}}" onClick="{{c.pick}}" style="width: 40px; height: 40px; box-sizing: border-box; border-radius: 50%; border: 0; margin: 0; padding: 0; cursor: pointer; display: flex; align-items: center; justify-content: center; background: {{c.swatch}}; {{c.ring}}"><sc-if value="{{c.on}}" hint-placeholder-val="{{false}}"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.2 4.2L19 7"></path></svg></sc-if></button>
+</sc-for>
+</div>
+</div>
+<p style="margin: 0; font-size: 12px; line-height: 16px; color: {{t.sub}};">Шлюз узнаёт Лайт 2, но часы и цвет не видит — выберите, как у вас. Пока не выбрано, стоит первый вариант.</p>
+<button onClick="{{closePicker}}" style="min-height: 48px; border-radius: 999px; border: 0; margin: 0; cursor: pointer; font: inherit; font-size: 15px; font-weight: 800; background: {{t.accent}}; color: {{t.onAccent}};">Готово</button>
+</section>
+</div>
+</sc-if>
+
+</div>
+</template>
+<template id="tpl-StationLite2">
+
+<div style="width: 100%; aspect-ratio: 6 / 5; position: relative;">
+<svg role="img" aria-label="{{label}}" width="100%" height="100%" viewBox="0 0 240 200" style="display: block; overflow: visible;">
+<defs>
+<linearGradient id="st2-body-{{uid}}" x1="0" y1="0" x2="1" y2="0">
+<stop offset="0" stop-color="{{s.bodyA}}"></stop>
+<stop offset="0.24" stop-color="{{s.bodyB}}"></stop>
+<stop offset="0.64" stop-color="{{s.bodyC}}"></stop>
+<stop offset="1" stop-color="{{s.bodyD}}"></stop>
+</linearGradient>
+<linearGradient id="st2-shade-{{uid}}" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0" stop-color="#FFFFFF" stop-opacity="0.16"></stop>
+<stop offset="0.42" stop-color="#FFFFFF" stop-opacity="0"></stop>
+<stop offset="1" stop-color="#000000" stop-opacity="0.2"></stop>
+</linearGradient>
+<linearGradient id="st2-top-{{uid}}" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0" stop-color="{{s.topA}}"></stop>
+<stop offset="1" stop-color="{{s.topB}}"></stop>
+</linearGradient>
+<linearGradient id="st2-band-{{uid}}" x1="0" y1="0" x2="1" y2="0">
+<stop offset="0" stop-color="{{s.bandA}}"></stop>
+<stop offset="1" stop-color="{{s.bandB}}"></stop>
+</linearGradient>
+<radialGradient id="st2-spec-{{uid}}" cx="0.5" cy="0.5" r="0.5">
+<stop offset="0" stop-color="#FFFFFF" stop-opacity="0.5"></stop>
+<stop offset="1" stop-color="#FFFFFF" stop-opacity="0"></stop>
+</radialGradient>
+<filter id="st2-soft-{{uid}}" x="-30%" y="-90%" width="160%" height="280%"><feGaussianBlur stdDeviation="5"></feGaussianBlur></filter>
+<filter id="st2-glow-{{uid}}" x="-40%" y="-90%" width="180%" height="280%"><feGaussianBlur stdDeviation="2.4"></feGaussianBlur></filter>
+<clipPath id="st2-clip-{{uid}}"><path d="M26 46C22 52 21 62 21 74L22 146A98 24 0 0 0 218 146L219 74C219 62 218 52 214 46A94 22 0 0 0 26 46Z"></path></clipPath>
+</defs>
+<ellipse cx="120" cy="189" rx="98" ry="9" fill="#000000" opacity="{{s.shadow}}" filter="url(#st2-soft-{{uid}})"></ellipse>
+<sc-if value="{{isSpeak}}" hint-placeholder-val="{{false}}">
+<ellipse class="st2-anim" cx="120" cy="168" rx="100" ry="24" fill="none" stroke="{{ring}}" stroke-width="2" style="transform-box: fill-box; transform-origin: center; animation: st2-ripple 1.8s ease-out infinite;"></ellipse>
+<ellipse class="st2-anim" cx="120" cy="168" rx="100" ry="24" fill="none" stroke="{{ring}}" stroke-width="2" style="opacity: 0; transform-box: fill-box; transform-origin: center; animation: st2-ripple 1.8s ease-out 0.9s infinite;"></ellipse>
+</sc-if>
+<ellipse cx="120" cy="168" rx="90" ry="22" fill="{{s.plate}}"></ellipse>
+<path d="M25 140L27 160A93 22 0 0 0 213 160L215 140Z" fill="url(#st2-band-{{uid}})"></path>
+<path d="M26 46C22 52 21 62 21 74L22 146A98 24 0 0 0 218 146L219 74C219 62 218 52 214 46A94 22 0 0 0 26 46Z" fill="url(#st2-body-{{uid}})"></path>
+<g clip-path="url(#st2-clip-{{uid}})">
+<rect x="0" y="20" width="240" height="160" fill="url(#st2-shade-{{uid}})"></rect>
+<ellipse cx="58" cy="96" rx="30" ry="64" fill="url(#st2-spec-{{uid}})" opacity="0.55"></ellipse>
+</g>
+<path d="M22 146A98 24 0 0 0 218 146" fill="none" stroke="#000000" stroke-opacity="0.22" stroke-width="1.2"></path>
+<path d="M24 149A96 23 0 0 0 216 149" fill="none" stroke="#FFFFFF" stroke-opacity="0.12" stroke-width="1"></path>
+<ellipse cx="120" cy="46" rx="94" ry="22" fill="url(#st2-top-{{uid}})"></ellipse>
+<ellipse cx="120" cy="46" rx="94" ry="22" fill="none" stroke="#FFFFFF" stroke-opacity="0.26" stroke-width="1"></ellipse>
+<path d="M30 47A90 20 0 0 0 210 47" fill="none" stroke="#000000" stroke-opacity="0.07" stroke-width="2"></path>
+<ellipse cx="86" cy="40" rx="44" ry="9" fill="url(#st2-spec-{{uid}})" opacity="0.5"></ellipse>
+<line x1="46" y1="46" x2="58" y2="46" stroke="{{s.mark}}" stroke-width="1.6" stroke-linecap="round"></line>
+<line x1="182" y1="46" x2="194" y2="46" stroke="{{s.mark}}" stroke-width="1.6" stroke-linecap="round"></line>
+<line x1="188" y1="43" x2="188" y2="49" stroke="{{s.mark}}" stroke-width="1.6" stroke-linecap="round"></line>
+<circle cx="120" cy="30" r="1.2" fill="{{s.dot}}"></circle>
+<circle cx="120" cy="62" r="1.2" fill="{{s.dot}}"></circle>
+<g class="st2-anim" style="{{ringAnim}}">
+<ellipse cx="120" cy="46" rx="18" ry="7" fill="{{ring}}" opacity="0.5" filter="url(#st2-glow-{{uid}})"></ellipse>
+<ellipse cx="120" cy="46" rx="11.5" ry="4.6" fill="none" stroke="{{ring}}" stroke-width="2.6"></ellipse>
+<ellipse cx="120" cy="46" rx="5" ry="2" fill="{{ring}}" opacity="0.5"></ellipse>
+</g>
+<sc-if value="{{hasClock}}" hint-placeholder-val="{{true}}">
+<path d="{{clock.all}}" fill="{{s.led}}" opacity="0.035"></path>
+<path d="{{clock.lit}}" fill="{{s.ledGlow}}" opacity="0.85" filter="url(#st2-glow-{{uid}})"></path>
+<path d="{{clock.lit}}" fill="{{s.led}}"></path>
+<g class="st2-anim" style="animation: st2-blink 2s linear infinite;">
+<rect x="118" y="112.2" width="4" height="4" rx="1.2" fill="{{s.ledGlow}}" filter="url(#st2-glow-{{uid}})"></rect>
+<rect x="118" y="125.8" width="4" height="4" rx="1.2" fill="{{s.ledGlow}}" filter="url(#st2-glow-{{uid}})"></rect>
+<rect x="118" y="112.2" width="4" height="4" rx="1.2" fill="{{s.led}}"></rect>
+<rect x="118" y="125.8" width="4" height="4" rx="1.2" fill="{{s.led}}"></rect>
+</g>
+</sc-if>
+<sc-if value="{{isListen}}" hint-placeholder-val="{{false}}">
+<ellipse class="st2-anim" cx="120" cy="46" rx="11.5" ry="4.6" fill="none" stroke="{{ring}}" stroke-width="1.4" style="transform-box: fill-box; transform-origin: center; animation: st2-listen 1.2s ease-out infinite;"></ellipse>
+<ellipse class="st2-anim" cx="120" cy="46" rx="11.5" ry="4.6" fill="none" stroke="{{ring}}" stroke-width="1.4" style="opacity: 0; transform-box: fill-box; transform-origin: center; animation: st2-listen 1.2s ease-out 0.6s infinite;"></ellipse>
+</sc-if>
+<sc-if value="{{isThink}}" hint-placeholder-val="{{false}}">
+<path class="st2-anim" d="M108.5 46A11.5 4.6 0 1 1 131.5 46A11.5 4.6 0 1 1 108.5 46Z" fill="none" stroke="#FFFFFF" stroke-opacity="0.92" stroke-width="2.6" stroke-linecap="round" pathLength="100" stroke-dasharray="24 76" style="animation: st2-spin 0.9s linear infinite;"></path>
+</sc-if>
+</svg>
+</div>
+</template>
+<script>
+class DCLogic { constructor(p) { this.props = p || {}; this.state = {}; }
+  setState(p) { Object.assign(this.state, typeof p === 'function' ? p(this.state, this.props) : p); schedule(); }
+  forceUpdate() { schedule(); } }
+const REG = {}; let ROOT = null; const INST = new Map(); let fresh = []; let queued = false;
+function schedule() { if (queued) return; queued = true; Promise.resolve().then(() => { queued = false; render(); }); }
+function camel(s) { return s.replace(/-([a-z])/g, (_, c) => c.toUpperCase()); }
+function lookup(ctx, p) { p = p.trim(); if (p === 'true') return true; if (p === 'false') return false;
+  if (/^-?\d+(\.\d+)?$/.test(p)) return Number(p); return p.split('.').reduce((o, k) => (o == null ? undefined : o[k]), ctx); }
+function interp(s, ctx) { const m = s.match(/^\s*\{\{([^}]+)\}\}\s*$/); if (m) return lookup(ctx, m[1]);
+  return s.replace(/\{\{([^}]+)\}\}/g, (_, p) => { const v = lookup(ctx, p); return v == null ? '' : String(v); }); }
+function comp(name, props, key, out) {
+  const r = REG[name]; if (!r) { out.appendChild(document.createTextNode('[нет ' + name + ']')); return; }
+  let inst = INST.get(key);
+  if (!inst) { inst = new r.Cls(props); INST.set(key, inst); fresh.push(inst); } else inst.props = props;
+  const vals = inst.renderVals();
+  r.tpl.content.childNodes.forEach((ch, i) => build(ch, vals, out, key + '/' + i));
+}
+function build(n, ctx, out, key) {
+  if (n.nodeType === 3) { const v = interp(n.nodeValue, ctx); out.appendChild(document.createTextNode(v == null ? '' : String(v))); return; }
+  if (n.nodeType !== 1) return;
+  const tag = n.localName;
+  if (tag === 'sc-for') { const list = interp(n.getAttribute('list'), ctx) || []; const as = n.getAttribute('as');
+    list.forEach((item, i) => { const c = Object.assign(Object.create(ctx), { [as]: item, $index: i });
+      n.childNodes.forEach((ch, j) => build(ch, c, out, key + '[' + i + ']' + j)); }); return; }
+  if (tag === 'sc-if') { if (interp(n.getAttribute('value'), ctx)) n.childNodes.forEach((ch, j) => build(ch, ctx, out, key + '?' + j)); return; }
+  if (tag === 'dc-import') { const props = {};
+    for (const a of n.attributes) { if (a.name === 'name' || a.name.startsWith('hint-')) continue; props[camel(a.name)] = interp(a.value, ctx); }
+    const box = document.createElement('div'); box.style.display = 'contents'; out.appendChild(box);
+    comp(n.getAttribute('name'), props, key + '>', box); return; }
+  const el = n.namespaceURI && n.namespaceURI !== 'http://www.w3.org/1999/xhtml' ? document.createElementNS(n.namespaceURI, tag) : document.createElement(tag);
+  for (const a of n.attributes) { if (a.name.startsWith('hint-')) continue; const v = interp(a.value, ctx);
+    if (a.name.startsWith('on') && typeof v === 'function') { (el.__h || (el.__h = {}))[a.name.slice(2)] = v; el.addEventListener(a.name.slice(2), v); }
+    else if (v !== false && v != null) el.setAttribute(a.name, v === true ? 'true' : String(v)); }
+  n.childNodes.forEach((ch, j) => build(ch, ctx, el, key + '/' + j)); out.appendChild(el);
+}
+function patch(oldP, newP) {
+  const o = Array.from(oldP.childNodes), n = Array.from(newP.childNodes);
+  n.forEach((b, i) => { const a = o[i];
+    if (!a) { oldP.appendChild(b); return; }
+    if (a.nodeType !== b.nodeType || a.nodeName !== b.nodeName || a.namespaceURI !== b.namespaceURI) { oldP.replaceChild(b, a); return; }
+    if (a.nodeType === 3) { if (a.nodeValue !== b.nodeValue) a.nodeValue = b.nodeValue; return; }
+    if (a.nodeType !== 1) return;
+    for (const at of Array.from(a.attributes)) if (!b.hasAttribute(at.name)) a.removeAttribute(at.name);
+    for (const at of Array.from(b.attributes)) if (a.getAttribute(at.name) !== at.value) a.setAttribute(at.name, at.value);
+    if (a.__h) for (const ev in a.__h) a.removeEventListener(ev, a.__h[ev]);
+    a.__h = b.__h; if (b.__h) for (const ev in b.__h) a.addEventListener(ev, b.__h[ev]);
+    patch(a, b); });
+  for (let i = o.length - 1; i >= n.length; i--) oldP.removeChild(o[i]);
+}
+function render() {
+  const root = document.getElementById('root'); const next = document.createElement('div'); fresh = [];
+  comp(ROOT, {}, 'r', next);
+  if (!root.firstChild) { while (next.firstChild) root.appendChild(next.firstChild); } else patch(root, next);
+  const born = fresh; fresh = []; born.forEach((i) => i.componentDidMount && i.componentDidMount());
+}
+
+REG["GlassDashLight"] = { tpl: document.getElementById('tpl-GlassDashLight'), Cls: (function () {
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+
+return Component; })() };
+REG["GlassDash"] = { tpl: document.getElementById('tpl-GlassDash'), Cls: (function () {
+class Component extends DCLogic {
+  componentWillUnmount() {
+    (this.timers || []).forEach(clearTimeout);
+  }
+
+  // One question around the orbit: the ear hears it, the brain thinks, the voice answers.
+  play() {
+    (this.timers || []).forEach(clearTimeout);
+    this.setState({ stage: 'idle', sheet: null, picker: false });
+    const at = (ms, stage) => setTimeout(() => this.setState({ stage: stage }), ms);
+    this.timers = [at(60, 'listen'), at(1460, 'think'), at(3260, 'speak'), at(5560, 'done'), at(9560, 'idle')];
+  }
+
+  themes() {
+    const glass = (bg, border, highlight, shadow, blur) => 'background: ' + bg + '; border: 1px solid ' + border + '; box-shadow: inset 0 1px 0 ' + highlight + ', ' + shadow + '; backdrop-filter: blur(' + blur + 'px) saturate(160%); -webkit-backdrop-filter: blur(' + blur + 'px) saturate(160%);';
+    return {
+      dark: {
+        bg: '#090C10',
+        aurora: 'radial-gradient(120% 70% at 0% 0%, rgba(182, 243, 106, 0.30) 0%, rgba(182, 243, 106, 0) 55%), radial-gradient(90% 60% at 100% 38%, rgba(63, 224, 197, 0.24) 0%, rgba(63, 224, 197, 0) 60%), radial-gradient(110% 60% at 20% 100%, rgba(139, 108, 255, 0.26) 0%, rgba(139, 108, 255, 0) 62%)',
+        text: '#F3F6F8', sub: 'rgba(243, 246, 248, 0.68)',
+        glass: glass('rgba(255, 255, 255, 0.07)', 'rgba(255, 255, 255, 0.13)', 'rgba(255, 255, 255, 0.10)', '0 12px 32px rgba(0, 0, 0, 0.35)', 24),
+        glassStrong: glass('rgba(16, 20, 27, 0.62)', 'rgba(255, 255, 255, 0.14)', 'rgba(255, 255, 255, 0.10)', '0 16px 40px rgba(0, 0, 0, 0.45)', 28),
+        labelGlass: glass('rgba(16, 20, 27, 0.5)', 'rgba(255, 255, 255, 0.10)', 'rgba(255, 255, 255, 0.08)', '0 6px 18px rgba(0, 0, 0, 0.28)', 16),
+        hi: 'rgba(255, 255, 255, 0.12)', nodeShadow: '0 10px 24px rgba(0, 0, 0, 0.35)',
+        divider: 'rgba(255, 255, 255, 0.08)', track: 'rgba(255, 255, 255, 0.18)',
+        accent: '#B6F36A', onAccent: '#0B0F0A', onBadge: '#0B0F0A', accentText: '#B6F36A', talkShadow: '0 8px 24px rgba(182, 243, 106, 0.35)',
+        segOn: 'background: #B6F36A; color: #0B0F0A; font-weight: 800;', segOff: 'background: transparent; color: rgba(243, 246, 248, 0.72); font-weight: 600;',
+        orbit: 'rgba(255, 255, 255, 0.16)', orbitHi: '#B6F36A', scrim: 'rgba(4, 6, 9, 0.55)', warn: '#FFB547',
+        menu: glass('rgba(14, 18, 24, 0.95)', 'rgba(255, 255, 255, 0.14)', 'rgba(255, 255, 255, 0.10)', '0 20px 50px rgba(0, 0, 0, 0.55)', 28),
+        menuBg: '#0E1218', iconBg: 'rgba(255, 255, 255, 0.09)', dotOff: '#FF8A80',
+        radioOn: 'background: #B6F36A; color: #0B0F0A;', radioOff: 'border: 2px solid rgba(255, 255, 255, 0.3);',
+        trackOn: '#B6F36A', trackOff: 'rgba(255, 255, 255, 0.16)', trackDis: 'rgba(255, 255, 255, 0.07)', knob: '#F3F6F8', knobOn: '#0B0F0A',
+        own: ['#B6F36A', 'rgba(182, 243, 106, 0.16)'], yandex: ['#FFB547', 'rgba(255, 181, 71, 0.16)'],
+        agent: ['#C2A8FF', 'rgba(183, 155, 255, 0.18)'], off: ['#AEB6C1', 'rgba(174, 182, 193, 0.14)'],
+        bar: { own: '#B6F36A', yandex: '#FFB547', agent: '#C2A8FF', off: '#AEB6C1' },
+        soft: { own: 'rgba(182, 243, 106, 0.42)', yandex: 'rgba(255, 181, 71, 0.42)', agent: 'rgba(194, 168, 255, 0.42)', off: 'rgba(174, 182, 193, 0.30)' }
+      },
+      light: {
+        bg: '#EDF1EF',
+        aurora: 'radial-gradient(120% 70% at 0% 0%, rgba(163, 230, 53, 0.45) 0%, rgba(163, 230, 53, 0) 55%), radial-gradient(90% 60% at 100% 38%, rgba(45, 212, 191, 0.34) 0%, rgba(45, 212, 191, 0) 60%), radial-gradient(110% 60% at 20% 100%, rgba(167, 139, 250, 0.34) 0%, rgba(167, 139, 250, 0) 62%)',
+        text: '#0D1117', sub: 'rgba(13, 17, 23, 0.66)',
+        glass: glass('rgba(255, 255, 255, 0.58)', 'rgba(255, 255, 255, 0.85)', 'rgba(255, 255, 255, 0.9)', '0 10px 30px rgba(30, 41, 59, 0.10)', 24),
+        glassStrong: glass('rgba(255, 255, 255, 0.74)', 'rgba(255, 255, 255, 0.9)', 'rgba(255, 255, 255, 0.95)', '0 14px 36px rgba(30, 41, 59, 0.16)', 28),
+        labelGlass: glass('rgba(255, 255, 255, 0.66)', 'rgba(255, 255, 255, 0.9)', 'rgba(255, 255, 255, 0.95)', '0 6px 16px rgba(30, 41, 59, 0.10)', 16),
+        hi: 'rgba(255, 255, 255, 0.9)', nodeShadow: '0 8px 20px rgba(30, 41, 59, 0.14)',
+        divider: 'rgba(13, 17, 23, 0.07)', track: 'rgba(13, 17, 23, 0.14)',
+        accent: '#A3E635', onAccent: '#0D1117', onBadge: '#FFFFFF', accentText: '#3F6212', talkShadow: '0 8px 22px rgba(101, 163, 13, 0.30)',
+        segOn: 'background: #0D1117; color: #F3F6F8; font-weight: 800;', segOff: 'background: transparent; color: rgba(13, 17, 23, 0.7); font-weight: 600;',
+        orbit: 'rgba(13, 17, 23, 0.16)', orbitHi: '#65A30D', scrim: 'rgba(13, 17, 23, 0.24)', warn: '#9A4A05',
+        menu: glass('rgba(255, 255, 255, 0.97)', 'rgba(255, 255, 255, 0.9)', 'rgba(255, 255, 255, 0.95)', '0 18px 44px rgba(30, 41, 59, 0.18)', 28),
+        menuBg: '#FFFFFF', iconBg: 'rgba(13, 17, 23, 0.05)', dotOff: '#B42318',
+        radioOn: 'background: #0D1117; color: #FFFFFF;', radioOff: 'border: 2px solid rgba(13, 17, 23, 0.26);',
+        trackOn: '#65A30D', trackOff: 'rgba(13, 17, 23, 0.16)', trackDis: 'rgba(13, 17, 23, 0.07)', knob: '#FFFFFF', knobOn: '#FFFFFF',
+        own: ['#3F6212', '#E2F7C2'], yandex: ['#9A4A05', '#FDE8C8'],
+        agent: ['#5B21B6', '#ECE5FF'], off: ['#4B5563', '#E6E8EC'],
+        bar: { own: '#84CC16', yandex: '#F59E0B', agent: '#8B5CF6', off: '#9CA3AF' },
+        soft: { own: 'rgba(101, 163, 13, 0.45)', yandex: 'rgba(217, 119, 6, 0.42)', agent: 'rgba(124, 58, 237, 0.35)', off: 'rgba(75, 85, 99, 0.28)' }
+      }
+    };
+  }
+
+  renderVals() {
+    const st = this.state || {};
+    const themeName = st.theme || this.props.theme || 'dark';
+    const t = this.themes()[themeName] || this.themes().dark;
+    const mode = st.mode || 'gateway';
+    const stage = st.stage || 'idle';
+    const sel = Object.assign({ brain: 'claude', think: 'fast', voice: 'baya', ear: 'gigaam', persona: 'standard' }, st.sel);
+    const on = Object.assign({ calendar: true, maps: true, openclaw: true, hermes: false, ha: true, calls: true, telegram: true }, st.links);
+    if (!this.uid) this.uid = 'g' + Math.random().toString(36).slice(2, 8);
+
+    const TONE = { own: t.own, cloud: t.yandex, yandex: t.yandex, agent: t.agent, off: t.off };
+    const LINE = { own: t.bar.own, cloud: t.bar.yandex, yandex: t.bar.yandex, agent: t.bar.agent, off: t.bar.off };
+    const SOFT = { own: t.soft.own, cloud: t.soft.yandex, yandex: t.soft.yandex, agent: t.soft.agent, off: t.soft.off };
+    const WHERE = { own: 'дома', cloud: 'облако', yandex: 'Яндекс', agent: 'помощник' };
+    const LABEL = { brain: 'Мозг', think: 'Мышление', voice: 'Голос', ear: 'Слух', persona: 'Характер', links: 'Подключено' };
+
+    // Колонки и их вид. Шлюз узнаёт семейство (plum — Лайт 2), но не видит часы и цвет: их выбирает человек,
+    // а пока не выбрал — стоит первый вариант. У другой модели будут свои варианты и свои цвета.
+    const MODELS = {
+      clock: { name: 'Лайт 2 с часами', label: 'С часами', clock: true, colors: ['azure', 'lilac', 'pink', 'graphite'] },
+      plain: { name: 'Лайт 2', label: 'Без часов', clock: false, colors: ['azure', 'lilac', 'green', 'pink', 'coral'] }
+    };
+    const MODEL_ORDER = ['clock', 'plain'];
+    const COLORS = {
+      azure: { name: 'синяя', label: 'Синий', body: '#1E9FEF', top: '#7FDFFF' },
+      lilac: { name: 'фиолетовая', label: 'Фиолетовый', body: '#8176E7', top: '#C3BDFF' },
+      pink: { name: 'розовая', label: 'Розовый', body: '#E659A2', top: '#FFA6D2' },
+      green: { name: 'зелёная', label: 'Зелёный', body: '#52B134', top: '#A2E577' },
+      coral: { name: 'коралловая', label: 'Коралловый', body: '#F37042', top: '#FFB490' },
+      graphite: { name: 'графитовая', label: 'Графит', body: '#30363F', top: '#6E7783' }
+    };
+    const SPEAKERS = [{ id: 'kitchen', name: 'Кухня', online: true }, { id: 'kids', name: 'Детская', online: true }];
+    const looks = Object.assign({ kids: { model: 'plain', color: 'pink' } }, st.looks);
+    const lookOf = (id) => {
+      const chosen = looks[id] || {};
+      const modelId = MODELS[chosen.model] ? chosen.model : MODEL_ORDER[0];
+      const model = MODELS[modelId];
+      const autoColor = model.colors.indexOf(chosen.color) < 0;
+      const colorId = autoColor ? model.colors[0] : chosen.color;
+      const how = !chosen.model && autoColor ? 'по умолчанию' : autoColor ? 'цвет по умолчанию' : 'выбрано вами';
+      return { modelId: modelId, model: model, colorId: colorId, color: COLORS[colorId], how: how };
+    };
+    const setLook = (id, patch) => {
+      const next = Object.assign({}, looks);
+      next[id] = Object.assign({}, looks[id], patch);
+      this.setState({ looks: next });
+    };
+    const curId = SPEAKERS.some((sp) => sp.id === st.speaker) ? st.speaker : SPEAKERS[0].id;
+    const curSpeaker = SPEAKERS.find((sp) => sp.id === curId);
+    const look = lookOf(curId);
+    const cur = {
+      name: curSpeaker.name, skin: look.colorId, clock: look.model.clock, body: look.color.body, top: look.color.top,
+      lookName: look.model.name + ', ' + look.color.name, lookHow: look.how
+    };
+    const speakers = SPEAKERS.map((sp, i) => {
+      const lk = lookOf(sp.id);
+      return {
+        name: sp.name, sub: lk.model.name + ' · ' + lk.color.name, on: sp.id === curId,
+        body: lk.color.body, top: lk.color.top, dot: sp.online ? t.accent : t.dotOff,
+        divider: i === 0 ? 'transparent' : t.divider, radio: sp.id === curId ? t.radioOn : t.radioOff,
+        pick: () => this.setState({ speaker: sp.id })
+      };
+    });
+    const models = MODEL_ORDER.map((m) => ({
+      label: MODELS[m].label, on: m === look.modelId, style: m === look.modelId ? t.segOn : t.segOff,
+      pick: () => setLook(curId, { model: m })
+    }));
+    const colors = look.model.colors.map((c, i) => ({
+      label: COLORS[c].label + (i === 0 ? ', по умолчанию' : ''), on: c === look.colorId,
+      swatch: 'linear-gradient(160deg, ' + COLORS[c].top + ' 0%, ' + COLORS[c].body + ' 75%)',
+      ring: c === look.colorId ? 'box-shadow: 0 0 0 2px ' + t.menuBg + ', 0 0 0 4px ' + t.text + ';' : 'box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.14);',
+      pick: () => setLook(curId, { color: c })
+    }));
+    const onlineCount = SPEAKERS.filter((sp) => sp.online).length;
+
+    const OPTS = {
+      brain: [
+        { id: 'claude', name: 'Claude', sub: 'Haiku 5.5 · Anthropic', where: 'cloud' },
+        { id: 'gpt', name: 'ChatGPT', sub: 'OpenAI', where: 'cloud' },
+        { id: 'llama', name: 'Llama', sub: 'Ollama на Mac, без интернета', where: 'own' },
+        { id: 'alice', name: 'Алиса', sub: 'отвечает Яндекс', where: 'yandex' }
+      ],
+      think: [
+        { id: 'fast', name: 'Быстро', sub: 'коротко, за секунду', pill: '≈ 1 с' },
+        { id: 'smart', name: 'С умом', sub: 'сложное — умной модели', pill: '1–3 с' },
+        { id: 'deep', name: 'Глубоко', sub: 'дольше думает, точнее', pill: '3–8 с' }
+      ],
+      voice: [
+        { id: 'baya', name: 'Бая', sub: 'Silero v5 на Mac', where: 'own' },
+        { id: 'denis', name: 'Денис', sub: 'Piper на Mac', where: 'own' },
+        { id: 'alice', name: 'Алиса', sub: 'голос Яндекса', where: 'yandex' }
+      ],
+      ear: [
+        { id: 'gigaam', name: 'GigaAM v3', sub: 'на Mac, запись не уходит', where: 'own' },
+        { id: 'whisper', name: 'Whisper', sub: 'на Mac, много языков', where: 'own' },
+        { id: 'yandex', name: 'Яндекс', sub: 'колонка уходит к Яндексу целиком', where: 'yandex' }
+      ],
+      persona: [
+        { id: 'standard', name: 'Стандартная', sub: 'коротко и по делу' },
+        { id: 'captain', name: 'Капитан', sub: 'старый морской волк' },
+        { id: 'nanny', name: 'Няня', sub: 'мягко и просто, для детей' }
+      ]
+    };
+    const chosen = (k) => OPTS[k].find((o) => o.id === sel[k]) || OPTS[k][0];
+
+    // What each node really runs on once the mode has had its say.
+    const relay = mode === 'relay';
+    const own = mode === 'own';
+    const brainYandex = relay || sel.brain === 'alice';
+    const eff = {};
+    eff.brain = relay ? { value: 'Алиса', tone: 'yandex' } : own && sel.brain === 'alice' ? { value: 'нет', tone: 'off' } : { value: chosen('brain').name, tone: chosen('brain').where };
+    eff.think = brainYandex ? (own ? { value: 'нет', tone: 'off' } : { value: 'у Яндекса', tone: 'yandex' }) : { value: chosen('think').name, tone: chosen('brain').where };
+    eff.persona = brainYandex ? (own ? { value: 'нет', tone: 'off' } : { value: 'у Яндекса', tone: 'yandex' }) : { value: chosen('persona').name, tone: 'own' };
+    eff.voice = relay ? { value: 'Алиса', tone: 'yandex' } : { value: chosen('voice').name, tone: chosen('voice').where };
+    eff.ear = relay ? { value: 'Яндекс', tone: 'yandex' } : own && sel.ear === 'yandex' ? { value: 'нет', tone: 'off' } : { value: chosen('ear').name, tone: chosen('ear').where };
+
+    const circle = (tone, active) => 'background: ' + TONE[tone][1] + '; border: 1.5px solid ' + (active ? LINE[tone] : SOFT[tone]) + '; color: ' + TONE[tone][0] + '; box-shadow: inset 0 1px 0 ' + t.hi + ', ' + t.nodeShadow + '; backdrop-filter: blur(16px) saturate(160%); -webkit-backdrop-filter: blur(16px) saturate(160%); transition: background 0.3s, border-color 0.3s, color 0.3s, transform 0.3s; transform: scale(' + (active ? 1.08 : 1) + ');';
+
+    // Helpers on the lower arc: one satellite per kind of connection.
+    const LINKS = [
+      { id: 'calendar', group: 'mcp', name: 'Календарь', sub: 'MCP-сервер на Mac', where: 'own' },
+      { id: 'maps', group: 'mcp', name: 'Карты', sub: 'MCP-сервер в облаке', where: 'cloud' },
+      { id: 'openclaw', group: 'agent', name: 'OpenClaw', sub: 'помощник: дела по дому', where: 'agent' },
+      { id: 'hermes', group: 'agent', name: 'Hermes', sub: 'второй помощник, на пробу', where: 'agent' },
+      { id: 'ha', group: 'home', name: 'Home Assistant', sub: 'умный дом, хаб на Mac', where: 'own' },
+      { id: 'calls', group: 'calls', name: 'Звонки', sub: 'LiveKit, свой сервер на Mac', where: 'own' },
+      { id: 'telegram', group: 'chats', name: 'Telegram', sub: 'сообщения и голосовые', where: 'cloud' }
+    ];
+    const sleeping = relay;
+    const enabled = LINKS.filter((l) => on[l.id]);
+    const usesMaps = !sleeping && !brainYandex && Boolean(on.maps);
+    const sat = {};
+    ['home', 'mcp', 'agent', 'calls', 'chats'].forEach((g) => {
+      const items = enabled.filter((l) => l.group === g);
+      const tone = sleeping || !items.length ? 'off' : items.some((l) => l.where === 'cloud') ? 'cloud' : items.some((l) => l.where === 'agent') ? 'agent' : 'own';
+      const active = g === 'mcp' && stage === 'think' && usesMaps;
+      sat[g] = { circle: circle(tone, active), line: LINE[tone], active: active, badge: !sleeping && items.length > 1, count: String(items.length) };
+    });
+
+    // The question's trip: who is lit at each step and what the caption says.
+    const ACTIVE = { listen: ['ear'], think: ['brain', 'think', 'persona'], speak: ['voice'] }[stage] || [];
+    const node = (k) => ({
+      value: eff[k].value,
+      circle: circle(eff[k].tone, ACTIVE.indexOf(k) >= 0),
+      line: LINE[eff[k].tone],
+      active: ACTIVE.indexOf(k) >= 0,
+      aria: LABEL[k] + ': ' + eff[k].value + (WHERE[eff[k].tone] ? ', ' + WHERE[eff[k].tone] : '') + '. Изменить',
+      open: () => this.setState({ sheet: k })
+    });
+    const idleRing = relay ? LINE.yandex : LINE.own;
+    const ringColor = { listen: LINE[eff.ear.tone], think: LINE[eff.brain.tone], speak: LINE[eff.voice.tone] }[stage] || idleRing;
+
+    const outside = [];
+    if (eff.ear.tone === 'yandex') outside.push('слух');
+    if (eff.brain.tone === 'cloud' || eff.brain.tone === 'yandex') outside.push(eff.brain.value);
+    if (usesMaps) outside.push('Карты');
+    if (eff.voice.tone === 'yandex') outside.push('голос');
+    const joined = outside.length < 2 ? outside.join('') : outside.slice(0, -1).join(', ') + ' и ' + outside[outside.length - 1];
+    const doneText = relay ? 'всё ответил Яндекс' : outside.length ? 'наружу: ' + joined : 'всё осталось дома';
+    const think2 = eff.brain.tone === 'off' ? 'мозг не выбран' : brainYandex ? 'думает Алиса' : usesMaps ? eff.brain.value + ' смотрит Карты' : 'думает ' + eff.brain.value + ' · ' + eff.think.value.toLowerCase();
+    const CAP = {
+      idle: ['Нажмите на колонку —', 'покажу путь вопроса'],
+      listen: ['Слушает…', 'слух: ' + eff.ear.value],
+      think: ['«Долго ехать до работы?»', think2],
+      speak: ['«Минут двадцать»', 'говорит ' + eff.voice.value],
+      done: ['Ответ за 1,9 с', doneText]
+    }[stage];
+    const MODE_WORD = { relay: 'Яндекс', gateway: 'шлюз', own: 'свой' };
+    const STATUS = { listen: 'слушает…', think: 'думает…', speak: 'говорит…', done: 'ответила за 1,9 с' };
+
+    const MODES = [['relay', 'Яндекс'], ['gateway', 'Шлюз'], ['own', 'Свой']];
+    const modes = MODES.map((m) => ({ label: m[1], on: m[0] === mode, style: m[0] === mode ? t.segOn : t.segOff, pick: () => this.setState({ mode: m[0] }) }));
+    const voiceWarn = own && eff.voice.tone === 'yandex';
+    const NOTE = { relay: 'Всё отвечает Яндекс, как до шлюза.', gateway: 'Сначала свой, остальное подхватит Яндекс.', own: 'Без Яндекса: его навыки и радио не работают.' };
+
+    // The sheet a node opens: choices for a node, switches for the helpers.
+    const kind = st.sheet || null;
+    let sheet = { title: '', about: '', circle: '', is: {}, isOptions: false, isLinks: false, options: [], links: [] };
+    if (kind && kind !== 'links') {
+      const ABOUT = { brain: 'Кто думает над ответом.', think: 'Сколько думать перед ответом.', voice: 'Чем колонка произносит ответ.', ear: 'Кто превращает речь в текст.', persona: 'Кем колонка отвечает, со следующего вопроса.' };
+      const options = OPTS[kind].map((o, i) => {
+        const where = kind === 'think' || kind === 'persona' ? null : o.where;
+        const blocked = relay || (own && o.where === 'yandex' && kind !== 'voice');
+        const isOn = sel[kind] === o.id;
+        const pillTone = where || 'off';
+        return {
+          name: o.name, sub: blocked && !relay ? 'нельзя в режиме «Свой»' : o.sub,
+          on: isOn, disabled: blocked, opacity: blocked ? 0.45 : 1,
+          divider: i === 0 ? 'transparent' : t.divider,
+          hasPill: Boolean(o.pill || where), pill: o.pill || WHERE[where] || '',
+          pillFg: TONE[pillTone][0], pillBg: TONE[pillTone][1],
+          radio: isOn ? t.radioOn : t.radioOff,
+          pick: () => {
+            if (blocked) return;
+            const next = Object.assign({}, sel);
+            next[kind] = o.id;
+            // Yandex hearing takes the whole speaker to Yandex, as in the panel.
+            this.setState(kind === 'ear' && o.id === 'yandex' ? { sel: next, mode: 'relay' } : { sel: next });
+          }
+        };
+      });
+      sheet = {
+        title: LABEL[kind], about: relay ? 'В режиме «Яндекс» всё решает Яндекс.' : ABOUT[kind],
+        circle: circle(eff[kind].tone, false), is: { [kind]: true },
+        isOptions: true, isLinks: false, options: options, links: []
+      };
+    }
+    if (kind === 'links') {
+      const links = LINKS.map((l, i) => {
+        const isOn = !sleeping && Boolean(on[l.id]);
+        return {
+          name: l.name, sub: l.sub, on: isOn, disabled: sleeping,
+          divider: i === 0 ? 'transparent' : t.divider,
+          pill: WHERE[l.where], pillFg: TONE[l.where][0], pillBg: TONE[l.where][1],
+          trackStyle: 'background: ' + (sleeping ? t.trackDis : isOn ? t.trackOn : t.trackOff) + ';',
+          knobStyle: (isOn ? 'left: 21px; background: ' + t.knobOn + ';' : 'left: 3px; background: ' + t.knob + ';') + (sleeping ? ' opacity: 0.5;' : ''),
+          toggle: () => {
+            if (sleeping) return;
+            const next = Object.assign({}, on);
+            next[l.id] = !on[l.id];
+            this.setState({ links: next });
+          }
+        };
+      });
+      sheet = {
+        title: LABEL.links, about: sleeping ? 'В режиме «Яндекс» подключения спят.' : 'Кого колонка может позвать на помощь.',
+        circle: circle(sleeping ? 'off' : 'own', false), is: { links: true },
+        isOptions: false, isLinks: true, options: [], links: links
+      };
+    }
+
+    return {
+      t, uid: this.uid, themeName,
+      cur, speakers, models, colors,
+      onlineText: 'в сети ' + onlineCount + ' из ' + SPEAKERS.length,
+      speakerAria: 'Колонка «' + cur.name + '», ' + look.model.name + ', ' + look.color.name + '. Сменить колонку или её вид',
+      pickerOpen: Boolean(st.picker),
+      openPicker: () => this.setState({ picker: true, sheet: null }),
+      closePicker: () => this.setState({ picker: false }),
+      isDark: themeName === 'dark', isLight: themeName === 'light',
+      themeLabel: themeName === 'dark' ? 'Светлая тема' : 'Тёмная тема',
+      toggleTheme: () => this.setState({ theme: themeName === 'dark' ? 'light' : 'dark' }),
+      status: STATUS[stage] || 'в сети · ' + MODE_WORD[mode],
+      statusDot: stage === 'idle' ? t.accent : ringColor,
+      modes, modeNote: voiceWarn ? 'Без Яндекса, но голос пока его.' : NOTE[mode], noteColor: voiceWarn ? t.warn : t.sub,
+      brain: node('brain'), think: node('think'), voice: node('voice'), ear: node('ear'), persona: node('persona'),
+      sat, linksCap: sleeping ? 'Подключения спят' : 'Подключено · ' + enabled.length, linksCapColor: sleeping ? t.sub : t.text,
+      linksAria: (sleeping ? 'Подключения спят в режиме «Яндекс»' : 'Подключено ' + enabled.length + ': ' + enabled.map((l) => l.name).join(', ')) + '. Открыть',
+      openLinks: () => this.setState({ sheet: 'links' }),
+      ringColor, speakerStage: stage === 'done' ? 'idle' : stage,
+      isThink: stage === 'think', isSpeak: stage === 'speak',
+      cometThink: LINE[eff.brain.tone], cometSpeak: LINE[eff.voice.tone],
+      cap1: CAP[0], cap2: CAP[1],
+      play: () => this.play(),
+      sheetOpen: Boolean(kind), sheet, closeSheet: () => this.setState({ sheet: null })
+    };
+  }
+}
+
+return Component; })() };
+REG["StationLite2"] = { tpl: document.getElementById('tpl-StationLite2'), Cls: (function () {
+class Component extends DCLogic {
+  componentDidMount() {
+    this.minute = new Date().getMinutes();
+    this.timer = setInterval(() => {
+      const m = new Date().getMinutes();
+      if (m !== this.minute) { this.minute = m; this.forceUpdate(); }
+    }, 5000);
+  }
+
+  componentWillUnmount() {
+    clearInterval(this.timer);
+  }
+
+  skins() {
+    return {
+      azure: { bodyA: '#63D9FF', bodyB: '#22B0F5', bodyC: '#1592E3', bodyD: '#0B6AC2', topA: '#80E0FF', topB: '#38BBF7', bandA: '#1B98E7', bandB: '#0A5DAE', plate: '#0A519A', mark: 'rgba(255, 255, 255, 0.82)', dot: 'rgba(0, 40, 90, 0.45)', led: '#C8F7FF', ledGlow: '#3FD3FF' },
+      lilac: { bodyA: '#C3BDFF', bodyB: '#9F96F6', bodyC: '#8176E7', bodyD: '#5C51C6', topA: '#D6D2FF', topB: '#A9A1F8', bandA: '#776CDF', bandB: '#4B40A9', plate: '#403594', mark: 'rgba(255, 255, 255, 0.85)', dot: 'rgba(30, 20, 90, 0.4)', led: '#FFFFFF', ledGlow: '#E2DEFF' },
+      pink: { bodyA: '#FFA6D2', bodyB: '#F878B9', bodyC: '#E659A2', bodyD: '#C23C82', topA: '#FFBDDC', topB: '#FA89C2', bandA: '#DC4F97', bandB: '#A82E6D', plate: '#942661', mark: 'rgba(255, 255, 255, 0.85)', dot: 'rgba(90, 0, 40, 0.4)', led: '#FFFFFF', ledGlow: '#FFC6E3' },
+      green: { bodyA: '#A2E577', bodyB: '#71CC49', bodyC: '#52B134', bodyD: '#368B21', topA: '#B8EE93', topB: '#7ED356', bandA: '#4AA62F', bandB: '#2D7B1C', plate: '#266C17', mark: 'rgba(255, 255, 255, 0.85)', dot: 'rgba(10, 50, 0, 0.4)', led: '#FFFFFF', ledGlow: '#E3FFD0' },
+      coral: { bodyA: '#FFB490', bodyB: '#FF8D60', bodyC: '#F37042', bodyD: '#CD5025', topA: '#FFC6AA', topB: '#FF9C6D', bandA: '#E96432', bandB: '#B5461B', plate: '#9F3B16', mark: 'rgba(255, 255, 255, 0.85)', dot: 'rgba(90, 30, 0, 0.4)', led: '#FFFFFF', ledGlow: '#FFDCC6' },
+      graphite: { bodyA: '#6E7783', bodyB: '#474F5A', bodyC: '#30363F', bodyD: '#1C2027', topA: '#5C6571', topB: '#3D444E', bandA: '#2D333B', bandB: '#181B20', plate: '#14171B', mark: 'rgba(255, 255, 255, 0.7)', dot: 'rgba(0, 0, 0, 0.55)', led: '#F4F8FC', ledGlow: '#A8BCD2' }
+    };
+  }
+
+  // Seven-segment digits as path data: each lit segment is a long hexagon, the way LED clocks draw them.
+  clock(now) {
+    const f = (n) => Math.round(n * 10) / 10;
+    const MAP = { '0': 'abcdef', '1': 'bc', '2': 'abged', '3': 'abgcd', '4': 'fgbc', '5': 'afgcd', '6': 'afgedc', '7': 'abc', '8': 'abcdefg', '9': 'abcdfg', ' ': '' };
+    const digit = (x, lit) => {
+      const y = 104, w = 20, h = 34, th = 4.6, gap = 0.9, k = th / 2;
+      const xl = x + k, xr = x + w - k, yt = y + k, ym = y + h / 2, yb = y + h - k;
+      const hs = (x1, x2, c) => 'M' + f(x1) + ' ' + f(c) + 'L' + f(x1 + k) + ' ' + f(c - k) + 'L' + f(x2 - k) + ' ' + f(c - k) + 'L' + f(x2) + ' ' + f(c) + 'L' + f(x2 - k) + ' ' + f(c + k) + 'L' + f(x1 + k) + ' ' + f(c + k) + 'Z';
+      const vs = (c, y1, y2) => 'M' + f(c) + ' ' + f(y1) + 'L' + f(c + k) + ' ' + f(y1 + k) + 'L' + f(c + k) + ' ' + f(y2 - k) + 'L' + f(c) + ' ' + f(y2) + 'L' + f(c - k) + ' ' + f(y2 - k) + 'L' + f(c - k) + ' ' + f(y1 + k) + 'Z';
+      const seg = {
+        a: hs(xl + gap, xr - gap, yt), g: hs(xl + gap, xr - gap, ym), d: hs(xl + gap, xr - gap, yb),
+        f: vs(xl, yt + gap, ym - gap), b: vs(xr, yt + gap, ym - gap), e: vs(xl, ym + gap, yb - gap), c: vs(xr, ym + gap, yb - gap)
+      };
+      return { lit: lit.split('').map((s) => seg[s]).join(''), all: 'abcdefg'.split('').map((s) => seg[s]).join('') };
+    };
+    const hh = now.getHours();
+    const mm = now.getMinutes();
+    const chars = [hh >= 10 ? String(Math.floor(hh / 10)) : ' ', String(hh % 10), String(Math.floor(mm / 10)), String(mm % 10)];
+    const xs = [67, 93, 127, 153];
+    const ds = chars.map((c, i) => digit(xs[i], MAP[c]));
+    return { lit: ds.map((d) => d.lit).join(''), all: ds.map((d) => d.all).join(''), text: hh + ':' + String(mm).padStart(2, '0') };
+  }
+
+  renderVals() {
+    if (!this.uid) this.uid = 'u' + Math.random().toString(36).slice(2, 8);
+    const skins = this.skins();
+    const s = Object.assign({}, skins[this.props.skin] || skins.azure);
+    s.shadow = (this.props.theme || 'dark') === 'light' ? 0.22 : 0.5;
+    const stage = this.props.stage || 'idle';
+    const ring = this.props.ring || '#B6F36A';
+    const clock = this.clock(new Date());
+    // Лайт 2 бывает с часами и без: без них спереди только ткань.
+    const hasClock = this.props.clock !== false && this.props.clock !== 'false';
+    const ANIM = { idle: 'animation: st2-breathe 3.2s ease-in-out infinite;', speak: 'animation: st2-pulse 0.6s ease-in-out infinite;' };
+    const WORD = { idle: 'ждёт', listen: 'слушает', think: 'думает', speak: 'говорит' };
+    return {
+      uid: this.uid, s, ring, clock, hasClock,
+      ringAnim: ANIM[stage] || '',
+      isListen: stage === 'listen', isThink: stage === 'think', isSpeak: stage === 'speak',
+      label: (hasClock ? 'Станция Лайт 2 с часами, на часах ' + clock.text : 'Станция Лайт 2') + ', ' + (WORD[stage] || 'ждёт')
+    };
+  }
+}
+
+return Component; })() };
+ROOT = "GlassDashLight"; render();</script></body></html>

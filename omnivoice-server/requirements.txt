@@ -1,0 +1,5 @@
+numpy>=1.26
+torch==2.8.0
+torchaudio==2.8.0
+omnivoice
+soundfile

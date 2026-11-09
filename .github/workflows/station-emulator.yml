@@ -1,0 +1,58 @@
+# The station's scripts in the station emulator KUYASE: a Станция 2 (and a Мини) from a public OTA pinned by SHA-256,
+# in QEMU, its own busybox and root file system — station-client/tests/station-check.sh runs inside it (voice.sh's
+# bind mount over the firmware's quasar.cfg, the boot script, gateway.sh's pid files). The Lite 2 has no emulator
+# board yet; the CI's privileged container covers the rest. scripts/emulator/README.md says how to run it by hand.
+name: station emulator
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - station-client/**
+      - scripts/emulator/**
+      - .github/workflows/station-emulator.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: station-emulator-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  emulator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [station2, yandexmini]
+    steps:
+      - uses: actions/checkout@v4
+      - name: What the emulator needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libx11-dev libxi-dev \
+            libxkbcommon-dev libgl1-mesa-dev libwayland-dev qemu-system-arm ipxe-qemu adb libegl1 libxkbcommon0
+          rustup toolchain install stable --profile minimal
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install ubi-reader==0.8.16
+      - name: The emulator, from its pinned source
+        run: bash scripts/emulator/build.sh "$RUNNER_TEMP/kuyase"
+      - name: The firmware, from its pinned OTA
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" scripts/emulator/prepare.py --board "${{ matrix.board }}" \
+            --emulator "$RUNNER_TEMP/kuyase" --output "$RUNNER_TEMP/firmware"
+      - name: The station's scripts in it
+        run: |
+          python3 scripts/emulator/run.py --board "${{ matrix.board }}" --emulator "$RUNNER_TEMP/kuyase" \
+            --output "results/${{ matrix.board }}"
+      - name: What the emulator said
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: station-emulator-${{ matrix.board }}
+          path: results/
+          if-no-files-found: warn
+          retention-days: 7

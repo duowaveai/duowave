@@ -1,0 +1,42 @@
+#!/bin/sh
+# Our call client with the station: /etc/init.d/S99zduowave, after S99quasar and S99zdropbear. The station is a party
+# of the gateway's calls without an SSH session from the gateway's machine (station-client/README.md).
+# To remove: stop, then delete this file and /data/opt/duowave.
+DIR=/data/opt/duowave
+CLIENT=$DIR/call-client.sh
+LOG=$DIR/client.log
+PID=$DIR/client.pid
+# The gateway's address, written at install: echo http://<gateway> > /data/opt/duowave/gateway
+GATEWAY=$(cat "$DIR/gateway" 2>/dev/null)
+
+# The client of this boot: a pid left from the last one may belong to another process now.
+running() {
+  pid=$(cat "$PID" 2>/dev/null) || return 1
+  grep -q call-client "/proc/$pid/cmdline" 2>/dev/null
+}
+
+start() {
+  # /data wiped (a factory reset): nothing to start.
+  [ -r "$CLIENT" ] || return 0
+  [ -n "$GATEWAY" ] || { echo "no $DIR/gateway: the gateway's address is not set" >> "$LOG"; return 0; }
+  running && return 0
+  # Two lines a call: kept under 64 KB.
+  [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 65536 ] && mv "$LOG" "$LOG.old"
+  # Every stream away from the caller: rcS (or an SSH session) goes on at once.
+  DAEMON=1 GATEWAY=$GATEWAY sh "$CLIENT" </dev/null >>"$LOG" 2>&1 &
+  echo $! > "$PID"
+}
+
+# TERM: the client asks the gateway to let the station go and ends its bridge; a call's pipeline plays to the end
+# of its stream and closes the speaker by itself (never killed: README).
+stop() {
+  running && kill "$(cat "$PID")"
+  rm -f "$PID"
+}
+
+case "$1" in
+  start)   start ;;
+  stop)    stop ;;
+  restart) stop; sleep 1; start ;;
+esac
+exit 0

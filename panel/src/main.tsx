@@ -1,0 +1,39 @@
+import { render } from 'preact';
+
+import '@fontsource/manrope/400.css';
+import '@fontsource/manrope/600.css';
+import '@fontsource/manrope/700.css';
+import '@fontsource/manrope/800.css';
+// «Минимал»: заголовки — Inter Tight 300, код — JetBrains Mono 400, текст — Inter 400/500 (ui/fonts-minimal.css).
+// Файлы шрифтов в сборке пульта: он работает дома и без интернета.
+import '@fontsource/inter-tight/300.css';
+import '@fontsource/jetbrains-mono/400.css';
+import './ui/fonts-minimal.css';
+
+import './ui/glass.css';
+import './ui/packages.css';
+import './ui/duowave.css';
+import { App } from './app';
+// После стилей экранов: классы вместо инлайн-стилей перекрывают их, как перекрывал style="…".
+import './ui/utilities.css';
+// Материал «Минимал» — последним: его правила под html[data-look='minimal'] перекрывают элементы «Стекла».
+import './ui/minimal.css';
+import { installSdk } from './sdk';
+import { registerPlugin } from './shell/registry';
+import { applyTheme } from './shell/theme';
+import core from './builtin';
+import { ConfirmHost } from './ui/confirm';
+
+// Встроенное — тем же путём, что плагины: разделы, слоты и темы приходят в реестр, тема применяется до первой отрисовки.
+registerPlugin(core);
+applyTheme();
+// Плагины пакетов (panel.js) берут Preact и SDK пульта — они должны быть на месте до первого из них.
+installSdk();
+
+render(
+    <>
+        <App />
+        <ConfirmHost />
+    </>,
+    document.getElementById('root')!,
+);

@@ -1,0 +1,10 @@
+# Piper's command line (piper-tts, GPL-3.0, with espeak-ng inside) in an environment of its own: the voice server only
+# starts it as a process and never imports it. Pinned to tts-server/.venv-piper on the owner's Mac (06.11):
+#   python3.12 -m venv .venv-piper && .venv-piper/bin/pip install -r requirements-piper.txt
+piper-tts==1.8.0
+onnxruntime==1.31.1
+numpy==2.5.4
+pathvalidate==3.3.1
+flatbuffers==25.12.19
+packaging==26.3
+protobuf==7.36.2

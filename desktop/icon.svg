@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- The app icon: ДиВи, DuoWave's mark (DESIGN.md), inverted — the whole plate is the face, night with lime eyes,
+       winking. Dark rather than lime: macOS 26 darkens an icon's plate in the Dock's dark mode, and dark eyes on a
+       lime plate vanished there. The 100 px margin is macOS's icon grid (824 px plate, radius 184). Source for
+       `cargo tauri icon ../icon.svg` in src-tauri/ (desktop/README.md). -->
+  <defs>
+    <linearGradient id="night" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1A222C"/>
+      <stop offset="1" stop-color="#090C10"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="184" fill="url(#night)"/>
+  <path transform="translate(100 100) scale(3.21875)" fill="#B6F36A" d="M81.2 110A16.8 16.8 0 0 1 114.8 110V138A16.8 16.8 0 0 1 81.2 138ZM132.91 123.5A30.32 30.32 0 0 1 183.09 123.5A9.8 9.8 0 0 1 166.87 134.5A10.72 10.72 0 0 0 149.13 134.5A9.8 9.8 0 0 1 132.91 123.5Z"/>
+</svg>

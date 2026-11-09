@@ -1,0 +1,134 @@
+{
+  "schema": 1,
+  "kind": "plugin",
+  "id": "radio",
+  "version": "1.1.0",
+  "title": "Радио",
+  "description": "Радиостанции голосом: свой список популярных станций и открытый каталог Radio Browser. «Включи радио джаз», поиск и включение станций для «Мозга», источник радио для плеера шлюза; станцию, на которой колонка молчит, запоминает и включает следующую.",
+  "api": "^1.1",
+  "runs": [
+    "pc",
+    "station",
+    "stationServer"
+  ],
+  "budget": {
+    "memoryMb": 4,
+    "storageMb": 1
+  },
+  "permissions": [
+    "net:*.api.radio-browser.info",
+    "voice.intents",
+    "llm.tools",
+    "media.source",
+    "kv",
+    "events"
+  ],
+  "settings": [
+    {
+      "key": "country",
+      "type": "string",
+      "title": "Страна для поиска в каталоге",
+      "description": "Код страны (RU, DE, US…): её станции в каталоге идут первыми",
+      "default": "RU"
+    },
+    {
+      "key": "catalog",
+      "type": "boolean",
+      "title": "Искать в каталоге Radio Browser",
+      "description": "Выключено — только свой список станций, без сети",
+      "default": true
+    }
+  ],
+  "contributes": {
+    "intents": [
+      {
+        "phrases": [
+          "включи радио {station}",
+          "поставь радио {station}",
+          "запусти радио {station}",
+          "включи радиостанцию {station}",
+          "включи станцию {station}",
+          "включи радио",
+          "поставь радио",
+          "запусти радио"
+        ],
+        "handler": "playStation",
+        "capability": "radio"
+      }
+    ],
+    "tools": [
+      {
+        "name": "radio_search",
+        "description": "Ищет радиостанции по названию, жанру или настроению (джаз, рок, спокойное, новости). Возвращает список станций; включить найденную — инструментом radio_play с её названием.",
+        "input": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Название, жанр или настроение"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            }
+          },
+          "required": [
+            "query"
+          ]
+        },
+        "handler": "radioSearch",
+        "annotations": {
+          "readOnlyHint": true
+        }
+      },
+      {
+        "name": "radio_play",
+        "description": "Включает радиостанцию на колонке по названию, жанру или настроению — сразу, без отдельного поиска. Возвращает, что включено.",
+        "input": {
+          "type": "object",
+          "properties": {
+            "station": {
+              "type": "string",
+              "description": "Название, жанр или настроение"
+            }
+          },
+          "required": [
+            "station"
+          ]
+        },
+        "handler": "radioPlay",
+        "capability": "radio"
+      }
+    ],
+    "media": [
+      {
+        "id": "stations",
+        "kind": "radio",
+        "handler": "stations"
+      }
+    ],
+    "events": [
+      {
+        "name": "player.started",
+        "handler": "onPlayer"
+      },
+      {
+        "name": "player.silent",
+        "handler": "onPlayer"
+      },
+      {
+        "name": "player.failed",
+        "handler": "onPlayer"
+      }
+    ],
+    "panel": {
+      "slots": [
+        "home.cards"
+      ],
+      "calls": [
+        "panelStations"
+      ]
+    }
+  }
+}

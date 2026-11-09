@@ -1,0 +1,545 @@
+// Minimal interoperability subset of the station's uniproxy protobuf protocol ("AAPI" frames).
+// Written for this project: only the fields the gateway reads or writes, by wire number and type.
+// Message-typed fields we do not interpret are declared as `bytes`, so the debug log can show
+// their raw structure without a schema. Tokens (OAuth, API key) are deliberately not declared.
+syntax = "proto3";
+
+package duowave.station;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/duration.proto";
+
+message Empty {}
+
+message EventHeader {
+    string message_id = 1;
+    string ref_message_id = 2;
+    int64 stream_id = 4;
+    int64 ack = 5;
+}
+
+// ---------------------------------------------------------------- client -> server
+
+message ClientMessage {
+    ClientEvent event = 1;
+    StreamControl stream_control = 2;
+}
+
+message ClientEvent {
+    EventHeader header = 1;
+    AliceRequest text_input = 2;
+    AliceRequest voice_input = 3;
+    AliceRequest music_input = 4;
+    SynchronizeStateRequest synchronize_state_request = 5;
+    LogSpotter log_spotter = 6;
+    AliceRequest matched_user = 7;
+    bytes sync_push_response = 8;
+    Ack ack = 9;
+    bytes continue_request = 10;
+    CancelRequest cancel_request = 11;
+    bytes asr_recognize = 12;
+    TtsGenerate tts_generate = 13;
+    bytes data_proxy_input = 14;
+    bytes file_upload_request = 16;
+    bytes capability_update_state = 17;
+    bytes speech_input = 18;
+    TtsUpdateState tts_update_state = 19;
+    bytes record_input = 22;
+    bytes client_subscription_state = 25;
+    RequestStat request_stat = 28;
+    bytes translate_input = 29;
+    bytes audio_transcription_input_request = 31;
+    bytes finish_request = 32;
+    Ping ping = 33;
+    bytes deferred_tts_generate = 34;
+}
+
+message SynchronizeStateRequest {
+    ClientInfo application = 3;
+    repeated string supported_features = 4;
+}
+
+message ClientInfo {
+    string app_id = 1;
+    string app_version = 2;
+    string os_version = 3;
+    string platform = 4;
+    string uuid = 5;
+    string device_id = 6;
+    string lang = 7;
+    string client_time = 8;
+    string timezone = 9;
+    string epoch = 10;
+    string device_model = 11;
+    string device_manufacturer = 12;
+    string device_color = 14;
+    string quasmodrom_group = 16;
+    string firmware_version = 26;
+}
+
+message AliceRequest {
+    AliceRequestHeader header = 1;
+    ClientInfo application = 2;
+    AliceRequestBody request = 3;
+    bool enable_spotter_validation = 15;
+    string spotter_phrase = 16;
+    string lang = 18;
+    string topic = 19;
+    bool punctuation = 21;
+    string format = 22;
+}
+
+message AliceRequestHeader {
+    string request_id = 1;
+    string prev_req_id = 2;
+    uint32 sequence_number = 3;
+    string dialog_id = 4;
+}
+
+message AliceRequestBody {
+    AliceEvent event = 1;
+    bool voice_session = 6;
+    bool reset_session = 7;
+    string activation_type = 14;
+}
+
+enum EventType {
+    EVENT_TYPE_UNKNOWN = 0;
+    voice_input = 1;
+    text_input = 2;
+    suggested_input = 3;
+    image_input = 4;
+    music_input = 5;
+    server_action = 6;
+    hybrid_asr_partial_result = 7;
+    file_input = 8;
+    speech_input = 9;
+}
+
+message AliceEvent {
+    EventType type = 1;
+    bool end_of_utterance = 3;
+    string text = 5;
+    google.protobuf.Struct payload = 8;
+    string name = 9;
+    bool ignore_answer = 10;
+    bool asr_whisper = 16;
+    bytes payload_raw = 24;
+}
+
+message LogSpotter {
+    string format = 2;
+    string transcript = 3;
+    string source = 4;
+    string firmware = 5;
+    string lang = 6;
+    string vins_message_id = 7;
+}
+
+message Ack {
+    EventHeader received_header = 1;
+}
+
+message Ping {
+    uint32 timestamp = 1;
+    uint32 ping_timeout_milli_seconds = 2;
+    uint32 pong_timeout_milli_seconds = 3;
+}
+
+message CancelRequest {
+    string request_message_id = 1;
+    Empty user_stop = 2;
+    Empty interruption = 3;
+    bytes local_execution = 4;
+}
+
+message TtsGenerate {
+    string lang = 1;
+    string emotion = 2;
+    string format = 3;
+    string quality = 4;
+    double speed = 5;
+    string tag = 6;
+    string text = 7;
+    string voice = 8;
+    double volume = 9;
+    bool is_streaming = 12;
+}
+
+enum TtsReportReason {
+    TTS_REPORT_UNKNOWN = 0;
+    TTS_REPORT_INTERRUPTION = 1;
+    TTS_REPORT_FINISH = 2;
+}
+
+message TtsState {
+    google.protobuf.Duration played_tts_duration = 1;
+    bool is_playing = 2;
+}
+
+message TtsUpdateState {
+    string request_message_id = 1;
+    TtsState state = 2;
+    TtsReportReason report_reason = 3;
+    uint32 sub_stream_id = 4;
+}
+
+message RequestStat {
+    bytes timestamps = 1;
+    string request_message_id = 2;
+    string error = 3;
+}
+
+// ---------------------------------------------------------------- both directions
+
+enum CloseReason {
+    CLOSE_OK = 0;
+    CLOSE_INTERNAL_ERROR = 1;
+    CLOSE_STOP_RECORDING = 2;
+    CLOSE_AUDIO_SOURCE_STOPPED = 3;
+    CLOSE_CANCEL = 4;
+    CLOSE_NO_SPEECH = 5;
+}
+
+message StreamClose {
+    CloseReason reason = 1;
+}
+
+message LazyTts {
+    int64 chunk_size = 1;
+}
+
+message StreamControl {
+    int64 stream_id = 1;
+    string message_id = 2;
+    StreamClose close = 3;
+    Empty spotter_end = 4;
+    LazyTts lazy_tts = 5;
+}
+
+// ---------------------------------------------------------------- server -> client
+
+message ServerMessage {
+    ServerEvent event = 1;
+    StreamControl stream_control = 2;
+}
+
+message ServerEvent {
+    EventHeader header = 1;
+    AliceResponse alice_response = 2;
+    // Seen in relay mode (docs/research/original-alice.md). The names are ours; contents stay raw.
+    bytes streaming_response = 3;   // a generative answer: the text grows event by event
+    bytes push = 5;                 // notify after sync, server_action pushes (e.g. a call)
+    bytes sync_push = 8;            // the station answers with sync_push_response
+    bytes tts_timings = 18;         // phonemes and words with start times, for the speech being played
+    bytes music_recognition = 19;   // JSON results of start_music_recognizer
+    InputStartAck input_start_ack = 10;
+    Empty log_ack = 11;
+    AsrResult asr_result = 13;
+    TtsSpeak tts_speak = 14;
+    SpotterValidation spotter_validation = 16;
+    SynchronizeStateResponse synchronize_state_response = 24;
+    Empty request_stat_ack = 36;
+}
+
+message InputStartAck {
+    uint64 request_start_time = 1;
+}
+
+enum AsrResponseCode {
+    ASR_OK = 0;
+    ASR_INTERNAL_ERROR = 1;
+}
+
+message AsrWord {
+    string value = 1;
+    float confidence = 2;
+}
+
+message AsrRecognition {
+    float confidence = 1;
+    repeated AsrWord words = 2;
+    string normalized = 3;
+    string parent_model = 4;
+}
+
+message AsrResult {
+    AsrResponseCode response_code = 1;
+    uint32 messages_count = 2;
+    bool end_of_utt = 3;
+    repeated AsrRecognition recognition = 4;
+}
+
+enum SpotterValidationResult {
+    SPOTTING_REJECTED = 0;
+    SPOTTING_OK = 1;
+}
+
+message SpotterValidation {
+    SpotterValidationResult result = 1;
+}
+
+message SynchronizeStateResponse {
+    string session_id = 1;
+}
+
+message TtsSpeak {
+    string format = 1;
+    bool lazy_tts_streaming = 2;
+}
+
+message AliceResponse {
+    AliceResponseHeader header = 1;
+    VoiceResponse voice_response = 2;
+    ResponseBody response = 3;
+}
+
+message AliceResponseHeader {
+    string request_id = 1;
+    string response_id = 2;
+    uint32 sequence_number = 3;
+    string dialog_id = 4;
+    string parent_request_id = 7;
+}
+
+message VoiceResponse {
+    OutputSpeech output_speech = 1;
+    bool should_listen = 2;
+    bool has_voice_response = 9;
+}
+
+message OutputSpeech {
+    string text = 2;
+}
+
+message ResponseBody {
+    repeated Card cards = 1;
+    repeated Directive directives = 2;
+    bool is_streaming = 11;
+}
+
+message Card {
+    string type = 1;
+    string text = 2;
+    string card_id = 6;
+}
+
+message Directive {
+    string type = 1;
+    string name = 2;
+    string analytics_type = 3;
+    bool ignore_answer = 4;
+    google.protobuf.Struct payload = 5;
+    bool is_led_silent = 8;
+    // A typed payload instead of the Struct, e.g. set_timer_capability_directive or an animation.
+    bytes typed_payload = 15;
+}
+
+// A server_action push as Yandex sends one to make the station ask (a reminder that rings): field numbers
+// from the relay journal of 31.10.2026, the names ours. The station answers it with a server_action
+// TextInput of the directive's name and payload, and the answer to that request is spoken.
+message PushView {
+    string id = 1;
+    string source = 2;          // notificator-internal-<uuid>
+    Directive directive = 3;
+    PushRequest request = 4;
+}
+
+message PushRequest {
+    string id = 1;
+}
+
+// ---------------------------------------------------------------- the station's state in its requests
+
+// Every VoiceInput and TextInput carries the device state; only the path to it is declared here and it is
+// decoded on its own, so the rest of the request (Wi-Fi networks around the station among it) never reaches
+// the journal. Field numbers are from the relay journal of 31.10.2026; the names are ours.
+message RequestStateView {
+    RequestEventView event = 1;
+}
+
+message RequestEventView {
+    RequestView text_input = 2;
+    RequestView voice_input = 3;
+}
+
+message RequestView {
+    RequestBodyView request = 3;
+}
+
+message RequestBodyView {
+    DeviceState device_state = 18;
+    EnvironmentState environment_state = 19;
+}
+
+message DeviceState {
+    uint32 sound_level = 2;
+    bool sound_muted = 3;
+    AudioPlayerState audio_player = 22;
+    uint32 sound_max_level = 32;
+}
+
+message AudioPlayerState {
+    uint32 player_state = 1;   // seen: 1 idle, 2 playing, 5 stopped
+    uint64 offset_ms = 2;
+    PlayerTrack current_track = 3;
+}
+
+message PlayerTrack {
+    string id = 1;
+    string title = 3;
+    string type = 5;           // FmRadio, …
+}
+
+message EnvironmentState {
+    EndpointState endpoint = 3;
+}
+
+message EndpointState {
+    repeated CapabilityState capabilities = 5;
+}
+
+message CapabilityState {
+    bytes capability = 1;      // the capability message: meta (1), parameters (2), state (3)
+    uint32 type = 2;
+}
+
+// Capability type 21, alarms and timers. Its meta lists the typed commands it takes (112–115, 276, 32, 132,
+// 116): the numbers the wiki gives. Its state lists every alarm and timer the station holds (relay journal, 02.11):
+// alarms in the shape of alarm_add_directive plus `ringing` and `rung`, timers in the shape of timer_set_directive
+// plus `paused`; field 3 is the ringing sound's settings.
+message AlarmCapability {
+    AlarmCapabilityState state = 3;
+}
+
+message AlarmCapabilityState {
+    repeated AlarmSpec alarms = 1;
+    repeated TimerSpec timers = 2;
+}
+
+// ---------------------------------------------------------------- typed commands: field 15 of a directive
+
+// timer_set_directive as Yandex sent it to our station (relay journal, 31.10): its name, then the timer.
+message TimerSetPayload {
+    string name = 1;
+    TimerSpec timer = 2;
+}
+
+message TimerSpec {
+    string timer_id = 1;
+    uint64 start_timestamp = 2;     // unix seconds
+    uint64 duration = 3;            // seconds
+    uint64 remaining = 4;           // seconds
+    bool paused = 6;                // the station's state only
+    uint64 changed_timestamp = 9;   // the station's state only: unix seconds of the last start, pause or resume
+}
+
+// timer_stop_directive as Yandex sent it: the timer's id in field 2, no name. Cancel, pause and resume (relay
+// journal, 02.11) carry their name in field 1: cancel_timer_capability_directive, pause_…, resume_….
+message TimerIdPayload {
+    string name = 1;
+    string timer_id = 2;
+}
+
+// Alarms: Yandex's own numbers (relay journal, 02.11) for one-time alarms; activation days by weekday are the
+// wiki's and not yet seen. alarm_add_directive carries its name in field 1; an alarm edited in the app comes as a
+// push with alarm_cancel_directive and alarm_add_directive of the same id and no name.
+message AlarmAddPayload {
+    string name = 1;
+    AlarmSpec alarm = 2;
+}
+
+message AlarmSpec {
+    string alarm_id = 1;
+    LocalTime local_time = 2;
+    bool ringing = 3;               // the station's state only: it rings now
+    repeated ActivationDay activation_days = 5;
+    AlarmTimezone timezone = 7;
+    bool rung = 9;                  // the station's state only: a one-time alarm that has rung stays listed
+    uint64 edit_timestamp = 11;     // unix seconds; a snoozed alarm's copy keeps the original's
+}
+
+message LocalTime {
+    uint32 hours = 1;
+    uint32 minutes = 2;
+    uint32 seconds = 3;
+}
+
+message AlarmTimezone {
+    string timezone_name = 1;
+    int32 offset_seconds = 2;
+}
+
+enum Weekday {
+    WEEKDAY_UNKNOWN = 0;
+    MONDAY = 1;
+    TUESDAY = 2;
+    WEDNESDAY = 3;
+    THURSDAY = 4;
+    FRIDAY = 5;
+    SATURDAY = 6;
+    SUNDAY = 7;
+}
+
+message ActivationDay {
+    Weekday weekday = 1;
+    CalendarDate date = 2;
+}
+
+message CalendarDate {
+    uint32 year = 1;
+    uint32 month = 2;
+    uint32 day = 3;
+}
+
+// draw_animation_directive (relay journal, 02.11): animations played in turn, each one of Yandex's files by URL
+// (animations/weather/cloudy, animations/player_pause) or frames inline. Inline frames are gzipped and in base64
+// (format 2): per frame, 37 brightness bytes for the display's lights and its duration in ms, 2 bytes big-endian.
+message DrawAnimationPayload {
+    repeated Animation animations = 1;
+    uint32 policy = 2;              // 1 in the alarm animations; what it sets is not known
+    uint32 speaking = 3;            // 1 in the weather animation, which came with speech; what it sets is not known
+    string name = 1000;
+}
+
+message Animation {
+    InlineAnimation frames = 1;
+    AnimationFile file = 2;
+}
+
+message InlineAnimation {
+    uint32 format = 1;
+    string data = 2;
+}
+
+message AnimationFile {
+    string base_url = 1;
+    string path = 2;
+}
+
+// alarm_cancel_directive. Yandex never sent alarm_snooze_directive: «отложи будильник» is alarm_stop_directive and
+// a new one-time alarm ten minutes on.
+message AlarmIdPayload {
+    string name = 1;
+    string alarm_id = 2;
+}
+
+// alarm_stop_directive: stop_alarm_capability_directive in field 1 for «отложи будильник», no name for «стоп» while
+// an alarm rings; field 2 was 1 both times, its meaning is not known.
+message AlarmStopPayload {
+    string name = 1;
+    uint32 kind = 2;
+}
+
+// For «выключи режим не беспокоить» Yandex sent 1 with the name in field 1000; for «включи» it sent no command at
+// all, only speech. ForceEnable = 2 is a guess, so do-not-disturb stays Yandex's.
+enum ForceDoNotDisturbState {
+    DND_UNKNOWN = 0;
+    ForceDisable = 1;
+    ForceEnable = 2;
+}
+
+message DoNotDisturbPayload {
+    ForceDoNotDisturbState force_do_not_disturb_state = 1;
+    string name = 1000;
+}

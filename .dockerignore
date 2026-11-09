@@ -1,0 +1,36 @@
+# The gateway's image (Dockerfile.prod) is built from the Rust gateway and the panel alone: only they go into the
+# build context. Everything else stays out — recorded sessions, voices, keys and local env copies, logs, people's
+# messages, model caches, and the builds (target/ is gigabytes).
+*
+!Cargo.toml
+!Cargo.lock
+!gateway
+!content/radio.json
+!content/README.md
+# What the program carries inside besides its own folder (include_str!, rust-embed): the built-in packages, the
+# station's service script, the plugin workshop's guides.
+!packages
+!station-client/S99zgateway
+!docs/plugins/AUTHORING.md
+!docs/plugins/panel-sdk.d.ts
+!docs/plugins/skill
+!docs/design/glass/THEMES.md
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!panel
+!deploy/station-payload
+!deploy/prebuilt
+
+# Inside what is let in: nothing built, nothing private.
+panel/node_modules
+panel/dist
+panel/.impeccable
+**/.DS_Store
+**/*.pem
+**/*.key
+**/*.wav
+**/*.ogg
+**/*.opus
+**/*.pcm
+**/*.mp3

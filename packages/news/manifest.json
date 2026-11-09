@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "kind": "plugin",
+  "id": "news",
+  "version": "1.0.0",
+  "title": "Новости",
+  "description": "Заголовки новостей голосом: главное или по теме — из лент, выбранных в «Дом» → «Коннекторы» → «Новости», а без выбора — из каталога лент. Встроенный плагин: если он выключен или не ответил, новости говорит встроенный навык шлюза.",
+  "api": "^1.1",
+  "runs": [
+    "pc",
+    "station",
+    "stationServer"
+  ],
+  "budget": {
+    "memoryMb": 4,
+    "storageMb": 1
+  },
+  "permissions": [
+    "net:3dnews.ru",
+    "net:dtf.ru",
+    "net:elementy.ru",
+    "net:feeds.bbci.co.uk",
+    "net:habr.com",
+    "net:hightech.plus",
+    "net:indicator.ru",
+    "net:lenta.ru",
+    "net:naked-science.ru",
+    "net:nplus1.ru",
+    "net:rg.ru",
+    "net:ria.ru",
+    "net:rss.dw.com",
+    "net:rss.stopgame.ru",
+    "net:rssexport.rbc.ru",
+    "net:tass.ru",
+    "net:vz.ru",
+    "net:www.championat.com",
+    "net:www.cnews.ru",
+    "net:www.gazeta.ru",
+    "net:www.igromania.ru",
+    "net:www.interfax.ru",
+    "net:www.ixbt.com",
+    "net:www.kommersant.ru",
+    "net:www.mirf.ru",
+    "net:www.mk.ru",
+    "net:www.sport-express.ru",
+    "net:www.vedomosti.ru",
+    "voice.intents",
+    "llm.tools"
+  ],
+  "contributes": {
+    "intents": [
+      {
+        "phrases": [
+          "новости",
+          "новости {topic}",
+          "какие новости",
+          "какие новости {topic}",
+          "расскажи новости",
+          "расскажи новости {topic}",
+          "включи новости",
+          "скажи новости",
+          "главные новости",
+          "что нового",
+          "что нового {topic}"
+        ],
+        "handler": "headlines",
+        "capability": "news"
+      }
+    ],
+    "tools": [
+      {
+        "name": "news_headlines",
+        "description": "Свежие заголовки новостей: главное или по теме (экономика, наука, спорт, технологии, в мире…). Возвращает нумерованный список заголовков.",
+        "input": {
+          "type": "object",
+          "properties": {
+            "topic": {
+              "type": "string",
+              "description": "Тема; пусто — главное"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            }
+          }
+        },
+        "handler": "newsHeadlines",
+        "annotations": {
+          "readOnlyHint": true
+        }
+      }
+    ]
+  }
+}

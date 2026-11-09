@@ -1,0 +1,4 @@
+# VoxCPM (OpenBMB, Apache-2.0 — the code and the weights; VoxCPM2, 2.3B) from PyPI (09.11.2026), Python 3.11.
+# torch and torchaudio 2.8.0 are installed first, from the index that suits the machine (CUDA, CPU or PyPI on a Mac).
+# The wheel drags its whole declared dependency tree (gradio, funasr, modelscope…) — heavy, but it runs offline.
+voxcpm==2.0.3

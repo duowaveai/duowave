@@ -1,0 +1,32 @@
+name: Новая модель колонки
+description: Шлюз с колонкой, которую он ещё не знает — что работает, что нет
+labels: [station]
+body:
+  - type: markdown
+    attributes:
+      value: По образцу вики hackalice. Без идентификаторов колонки и аккаунта.
+  - type: input
+    id: model
+    attributes:
+      label: Модель и прошивка
+      placeholder: Миди, прошивка 1.2.3
+    validations:
+      required: true
+  - type: textarea
+    id: root
+    attributes:
+      label: Как получен root и SSH
+  - type: checkboxes
+    id: works
+    attributes:
+      label: Что работает
+      options:
+        - label: Подключение из пульта
+        - label: Ответы «Яндекс» через шлюз
+        - label: Своё распознавание и голос
+        - label: Звонки
+        - label: Откат к Яндексу
+  - type: textarea
+    id: notes
+    attributes:
+      label: Что не так и что заметили

@@ -1,0 +1,139 @@
+# The Node gateway's old build (the gateway is Rust now; a local dist/ may stay behind) and pnpm's packages
+/dist
+/node_modules
+
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# OS
+.DS_Store
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# dotenv environment variable files: every local copy, only the template is in git
+.env*
+!.env.example
+
+# temp directory
+.temp
+.tmp
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Diagnostic reports (https://nodejs.org/api/report.html)
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# NPM
+.npmrc
+
+# yalc
+/.yalc
+/.yalc/*
+.yalc
+yalc.lock
+# Session journals and recorded station audio
+/data
+
+# ASR server environment, and the model the panel chose for it
+asr-server/.venv
+asr-server/chosen-model
+__pycache__/
+
+# Own media for the station's player (content/README.md): only the radio list is in git
+/content/music
+/content/tales
+/content/animations
+# Voice messages from Telegram contacts: people's voices, never in git
+/content/messages
+# Videos for the README and the site (docs/media/README.md): too heavy for git, they live next to it and go out with
+# the site and the releases; the GIFs and screenshots stay in git
+/docs/media/*.mp4
+
+# Asterisk configs with passwords (deploy/asterisk/*.example are the templates)
+/deploy/asterisk/pjsip.conf
+/deploy/asterisk/ari.conf
+
+# TLS certificates and keys for the call page
+/certs
+/deploy/livekit/livekit.yaml
+
+# Own speech: models and engines downloaded by hand (tts-server/README.md)
+tts-server/models/
+tts-server/.venv*/
+
+# Own cloned voices: the engines' environments and weights, installed from the panel (clone-server/README.md).
+# The owner's takes and imprints live in /data/voice-lab: people's voices, never in git.
+clone-server/runtime/
+
+# Local env copies and stray run output
+.env.before-relay
+nohup.out
+
+# The panel's build and its pnpm links (built by pnpm --filter panel build)
+panel/dist
+panel/node_modules
+
+# OmniVoice server: its environment, the weights' cache (a link to an absolute path) and the voices made from
+# people's recordings — a voice sample and its imprint are biometrics, never in git.
+omnivoice-server/env/
+omnivoice-server/hf-cache
+omnivoice-server/models/
+
+# Recorded sound, voice imprints and model weights anywhere. A synthetic test fixture is added with git add -f.
+*.wav
+*.ogg
+*.opus
+*.pcm
+*.mp3
+*.pt
+*.safetensors
+
+# Keys and certificates anywhere, not only in /certs
+*.pem
+*.key
+
+# Impeccable's local state: caches with absolute paths
+.impeccable/hook.cache.json
+.impeccable/hook.pending.json
+.impeccable/config.local.json
+panel/.impeccable/hook.cache.json
+panel/.impeccable/hook.pending.json
+panel/.impeccable/config.local.json
+
+# The household's private terms for scripts/release/check-private.mjs: kept here, never in git.
+.private-terms
+
+# The station's YAM package (station-client/yam/build.sh): built, not kept.
+dist-station/
+
+# Rust builds
+/target
+
+# Working copies of parallel agents (Claude Code)
+/.claude/worktrees/
+# The copy of the repository the adversarial review takes
+/.claude/review-snapshot/

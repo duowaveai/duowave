@@ -1,0 +1,246 @@
+/* The splash while the gateway starts or when it cannot: the panel's palette (DESIGN.md), both themes. */
+:root {
+    color-scheme: dark light;
+    --bg: #090c10;
+    --text: #f3f6f8;
+    --sub: rgba(243, 246, 248, 0.66);
+    --accent: #b6f36a;
+    --on-accent: #0b0f0a;
+    --quiet: rgba(255, 255, 255, 0.07);
+    --line: rgba(255, 255, 255, 0.08);
+    --danger: #ff8a80;
+}
+
+@media (prefers-color-scheme: light) {
+    :root {
+        --bg: #edf1ef;
+        --text: #0d1117;
+        --sub: rgba(13, 17, 23, 0.66);
+        --accent: #3f6212;
+        --on-accent: #ffffff;
+        --quiet: rgba(13, 17, 23, 0.06);
+        --line: rgba(13, 17, 23, 0.07);
+        --danger: #b42318;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    height: 100%;
+    margin: 0;
+}
+
+body {
+    display: grid;
+    place-items: center;
+    padding: 24px 16px;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/22px Manrope, system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+main {
+    width: min(100%, 520px);
+    text-align: center;
+}
+
+.mark {
+    width: 88px;
+    height: 88px;
+    display: block;
+    margin: 0 auto;
+}
+
+/* The brand's own colours in both themes: lime body, dark eyes (DESIGN.md). */
+.mark .skin {
+    fill: #b6f36a;
+}
+
+.mark .eye {
+    fill: #0b0f0a;
+    transform-box: fill-box;
+    transform-origin: center;
+}
+
+.mark .body {
+    transform-box: view-box;
+    transform-origin: 128px 216px;
+}
+
+/* At rest: the wink — the left eye open, the right a smiling arc. */
+.mark .eye.right.open {
+    display: none;
+}
+
+/* Starting or stopping: listening — both eyes open, a blink every few seconds (down 80 ms, up 130 ms). */
+[data-phase="starting"] .mark .eye.right.open,
+[data-phase="stopping"] .mark .eye.right.open {
+    display: inline;
+}
+
+[data-phase="starting"] .mark .eye.right.smile,
+[data-phase="stopping"] .mark .eye.right.smile {
+    display: none;
+}
+
+[data-phase="starting"] .mark .eye,
+[data-phase="stopping"] .mark .eye {
+    animation: blink 2.6s ease-in-out infinite;
+}
+
+@keyframes blink {
+    0%,
+    90% {
+        transform: scaleY(1);
+    }
+    93% {
+        transform: scaleY(0.08);
+    }
+    98%,
+    100% {
+        transform: scaleY(1);
+    }
+}
+
+/* Failed: «не расслышал» — the left eye smaller, the body sways once (−6°, 5°, −4°, 2°, 0°). */
+[data-phase="failed"] .mark .eye.left {
+    transform: scale(0.72);
+}
+
+[data-phase="failed"] .mark .eye.right.open {
+    display: inline;
+}
+
+[data-phase="failed"] .mark .eye.right.smile {
+    display: none;
+}
+
+[data-phase="failed"] .mark .body {
+    animation: sway 0.6s ease-in-out 1;
+}
+
+@keyframes sway {
+    20% {
+        transform: rotate(-6deg);
+    }
+    40% {
+        transform: rotate(5deg);
+    }
+    60% {
+        transform: rotate(-4deg);
+    }
+    80% {
+        transform: rotate(2deg);
+    }
+}
+
+/* Asked for less motion: no movement, the wink. */
+@media (prefers-reduced-motion: reduce) {
+    .mark .eye,
+    .mark .body {
+        animation: none !important;
+    }
+
+    .mark .eye.right.open {
+        display: none !important;
+    }
+
+    .mark .eye.right.smile {
+        display: inline !important;
+    }
+}
+
+h1 {
+    margin: 12px 0 8px;
+    line-height: 0;
+}
+
+/* «duowave»: the site's wordmark (svg.lp-wordmark); the name stays in the text for screen readers. */
+.wordmark {
+    height: 26px;
+    width: auto;
+    fill: var(--text);
+}
+
+.name {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+#title {
+    margin: 0;
+    color: var(--sub);
+}
+
+[data-phase="failed"] #title {
+    color: var(--danger);
+    font-weight: 600;
+}
+
+#advice {
+    margin-top: 16px;
+    text-align: left;
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+#advice p {
+    margin: 0 0 12px;
+    white-space: pre-line;
+}
+
+#advice code {
+    display: block;
+    margin: 0 0 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 14px; /* DESIGN.md rounded.tile */
+    background: var(--quiet);
+    font: 13px/18px ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    overflow-wrap: anywhere;
+}
+
+#actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 20px;
+}
+
+#actions[hidden] {
+    display: none;
+}
+
+button {
+    min-height: 40px;
+    padding: 0 18px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--on-accent);
+    font: inherit;
+    font-weight: 800;
+    cursor: pointer;
+}
+
+button.quiet {
+    background: var(--quiet);
+    color: var(--text);
+    font-weight: 600;
+}
+
+button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}

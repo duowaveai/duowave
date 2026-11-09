@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "kind": "plugin",
+  "id": "music",
+  "version": "1.0.0",
+  "title": "Своя музыка",
+  "description": "Музыка из папки дома (content/music): «включи мою музыку», по исполнителю, альбому или песне; источник музыки для плеера шлюза. Встроенный плагин: если он выключен, папку играет встроенный навык.",
+  "api": "^1.1",
+  "runs": ["pc", "station", "stationServer"],
+  "budget": { "memoryMb": 4, "storageMb": 1 },
+  "permissions": ["content:music", "media.source", "voice.intents"],
+  "contributes": {
+    "intents": [
+      {
+        "phrases": [
+          "включи мою музыку",
+          "включи мою музыку {query}",
+          "поставь мою музыку",
+          "поставь мою музыку {query}",
+          "включи свою музыку",
+          "включи музыку из папки",
+          "включи из моей музыки {query}"
+        ],
+        "handler": "playMine",
+        "capability": "music"
+      }
+    ],
+    "media": [{ "id": "library", "kind": "music", "handler": "library" }]
+  }
+}

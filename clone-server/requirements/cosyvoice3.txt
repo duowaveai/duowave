@@ -1,0 +1,28 @@
+# CosyVoice 3 (FunAudioLLM, Apache-2.0), repository at 074ca6dc, as it runs on the bench (05.11.2026), Python 3.10.
+# Installed separately: torch/torchaudio 2.3.1 (index by machine), onnxruntime or onnxruntime-gpu 1.18.0 (by GPU),
+# openai-whisper 20250625 without build isolation (the frontend takes its mel filters; no Whisper model is loaded).
+conformer==0.3.2
+diffusers==0.29.0
+hydra-core==1.3.2
+HyperPyYAML==1.2.3
+inflect==7.3.1
+librosa==0.10.2
+numpy==1.26.4
+omegaconf==2.3.0
+onnx==1.16.0
+protobuf==4.25
+pydantic==2.7.0
+pyworld==0.3.4
+rich==13.7.1
+soundfile==0.12.1
+transformers==4.51.3
+x-transformers==2.11.24
+wetext==0.0.4
+lightning==2.2.4
+networkx==3.1
+pyarrow==18.1.0
+tensorboard==2.14.0
+modelscope==1.20.0
+matplotlib
+gdown
+wget

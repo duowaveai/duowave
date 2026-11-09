@@ -1,0 +1,222 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Колонка — Станция Лайт 2</title>
+<style>
+body{margin:0}
+@keyframes st2-breathe{0%,100%{opacity:.6}50%{opacity:1}}
+@keyframes st2-pulse{0%,100%{opacity:.7}50%{opacity:1}}
+@keyframes st2-blink{0%,49%{opacity:1}50%,100%{opacity:.18}}
+@keyframes st2-spin{from{stroke-dashoffset:0}to{stroke-dashoffset:-100}}
+@keyframes st2-listen{0%{transform:scale(1);opacity:.9}100%{transform:scale(3.3);opacity:0}}
+@keyframes st2-ripple{0%{transform:scale(.94);opacity:.75}100%{transform:scale(1.42);opacity:0}}
+@media (prefers-reduced-motion:reduce){.st2-anim{animation:none!important}}
+</style>
+</head>
+<body><div id="root"></div>
+<template id="tpl-StationLite2">
+
+<div style="width: 100%; aspect-ratio: 6 / 5; position: relative;">
+<svg role="img" aria-label="{{label}}" width="100%" height="100%" viewBox="0 0 240 200" style="display: block; overflow: visible;">
+<defs>
+<linearGradient id="st2-body-{{uid}}" x1="0" y1="0" x2="1" y2="0">
+<stop offset="0" stop-color="{{s.bodyA}}"></stop>
+<stop offset="0.24" stop-color="{{s.bodyB}}"></stop>
+<stop offset="0.64" stop-color="{{s.bodyC}}"></stop>
+<stop offset="1" stop-color="{{s.bodyD}}"></stop>
+</linearGradient>
+<linearGradient id="st2-shade-{{uid}}" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0" stop-color="#FFFFFF" stop-opacity="0.16"></stop>
+<stop offset="0.42" stop-color="#FFFFFF" stop-opacity="0"></stop>
+<stop offset="1" stop-color="#000000" stop-opacity="0.2"></stop>
+</linearGradient>
+<linearGradient id="st2-top-{{uid}}" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0" stop-color="{{s.topA}}"></stop>
+<stop offset="1" stop-color="{{s.topB}}"></stop>
+</linearGradient>
+<linearGradient id="st2-band-{{uid}}" x1="0" y1="0" x2="1" y2="0">
+<stop offset="0" stop-color="{{s.bandA}}"></stop>
+<stop offset="1" stop-color="{{s.bandB}}"></stop>
+</linearGradient>
+<radialGradient id="st2-spec-{{uid}}" cx="0.5" cy="0.5" r="0.5">
+<stop offset="0" stop-color="#FFFFFF" stop-opacity="0.5"></stop>
+<stop offset="1" stop-color="#FFFFFF" stop-opacity="0"></stop>
+</radialGradient>
+<filter id="st2-soft-{{uid}}" x="-30%" y="-90%" width="160%" height="280%"><feGaussianBlur stdDeviation="5"></feGaussianBlur></filter>
+<filter id="st2-glow-{{uid}}" x="-40%" y="-90%" width="180%" height="280%"><feGaussianBlur stdDeviation="2.4"></feGaussianBlur></filter>
+<clipPath id="st2-clip-{{uid}}"><path d="M26 46C22 52 21 62 21 74L22 146A98 24 0 0 0 218 146L219 74C219 62 218 52 214 46A94 22 0 0 0 26 46Z"></path></clipPath>
+</defs>
+<ellipse cx="120" cy="189" rx="98" ry="9" fill="#000000" opacity="{{s.shadow}}" filter="url(#st2-soft-{{uid}})"></ellipse>
+<sc-if value="{{isSpeak}}" hint-placeholder-val="{{false}}">
+<ellipse class="st2-anim" cx="120" cy="168" rx="100" ry="24" fill="none" stroke="{{ring}}" stroke-width="2" style="transform-box: fill-box; transform-origin: center; animation: st2-ripple 1.8s ease-out infinite;"></ellipse>
+<ellipse class="st2-anim" cx="120" cy="168" rx="100" ry="24" fill="none" stroke="{{ring}}" stroke-width="2" style="opacity: 0; transform-box: fill-box; transform-origin: center; animation: st2-ripple 1.8s ease-out 0.9s infinite;"></ellipse>
+</sc-if>
+<ellipse cx="120" cy="168" rx="90" ry="22" fill="{{s.plate}}"></ellipse>
+<path d="M25 140L27 160A93 22 0 0 0 213 160L215 140Z" fill="url(#st2-band-{{uid}})"></path>
+<path d="M26 46C22 52 21 62 21 74L22 146A98 24 0 0 0 218 146L219 74C219 62 218 52 214 46A94 22 0 0 0 26 46Z" fill="url(#st2-body-{{uid}})"></path>
+<g clip-path="url(#st2-clip-{{uid}})">
+<rect x="0" y="20" width="240" height="160" fill="url(#st2-shade-{{uid}})"></rect>
+<ellipse cx="58" cy="96" rx="30" ry="64" fill="url(#st2-spec-{{uid}})" opacity="0.55"></ellipse>
+</g>
+<path d="M22 146A98 24 0 0 0 218 146" fill="none" stroke="#000000" stroke-opacity="0.22" stroke-width="1.2"></path>
+<path d="M24 149A96 23 0 0 0 216 149" fill="none" stroke="#FFFFFF" stroke-opacity="0.12" stroke-width="1"></path>
+<ellipse cx="120" cy="46" rx="94" ry="22" fill="url(#st2-top-{{uid}})"></ellipse>
+<ellipse cx="120" cy="46" rx="94" ry="22" fill="none" stroke="#FFFFFF" stroke-opacity="0.26" stroke-width="1"></ellipse>
+<path d="M30 47A90 20 0 0 0 210 47" fill="none" stroke="#000000" stroke-opacity="0.07" stroke-width="2"></path>
+<ellipse cx="86" cy="40" rx="44" ry="9" fill="url(#st2-spec-{{uid}})" opacity="0.5"></ellipse>
+<line x1="46" y1="46" x2="58" y2="46" stroke="{{s.mark}}" stroke-width="1.6" stroke-linecap="round"></line>
+<line x1="182" y1="46" x2="194" y2="46" stroke="{{s.mark}}" stroke-width="1.6" stroke-linecap="round"></line>
+<line x1="188" y1="43" x2="188" y2="49" stroke="{{s.mark}}" stroke-width="1.6" stroke-linecap="round"></line>
+<circle cx="120" cy="30" r="1.2" fill="{{s.dot}}"></circle>
+<circle cx="120" cy="62" r="1.2" fill="{{s.dot}}"></circle>
+<g class="st2-anim" style="{{ringAnim}}">
+<ellipse cx="120" cy="46" rx="18" ry="7" fill="{{ring}}" opacity="0.5" filter="url(#st2-glow-{{uid}})"></ellipse>
+<ellipse cx="120" cy="46" rx="11.5" ry="4.6" fill="none" stroke="{{ring}}" stroke-width="2.6"></ellipse>
+<ellipse cx="120" cy="46" rx="5" ry="2" fill="{{ring}}" opacity="0.5"></ellipse>
+</g>
+<sc-if value="{{hasClock}}" hint-placeholder-val="{{true}}">
+<path d="{{clock.all}}" fill="{{s.led}}" opacity="0.035"></path>
+<path d="{{clock.lit}}" fill="{{s.ledGlow}}" opacity="0.85" filter="url(#st2-glow-{{uid}})"></path>
+<path d="{{clock.lit}}" fill="{{s.led}}"></path>
+<g class="st2-anim" style="animation: st2-blink 2s linear infinite;">
+<rect x="118" y="112.2" width="4" height="4" rx="1.2" fill="{{s.ledGlow}}" filter="url(#st2-glow-{{uid}})"></rect>
+<rect x="118" y="125.8" width="4" height="4" rx="1.2" fill="{{s.ledGlow}}" filter="url(#st2-glow-{{uid}})"></rect>
+<rect x="118" y="112.2" width="4" height="4" rx="1.2" fill="{{s.led}}"></rect>
+<rect x="118" y="125.8" width="4" height="4" rx="1.2" fill="{{s.led}}"></rect>
+</g>
+</sc-if>
+<sc-if value="{{isListen}}" hint-placeholder-val="{{false}}">
+<ellipse class="st2-anim" cx="120" cy="46" rx="11.5" ry="4.6" fill="none" stroke="{{ring}}" stroke-width="1.4" style="transform-box: fill-box; transform-origin: center; animation: st2-listen 1.2s ease-out infinite;"></ellipse>
+<ellipse class="st2-anim" cx="120" cy="46" rx="11.5" ry="4.6" fill="none" stroke="{{ring}}" stroke-width="1.4" style="opacity: 0; transform-box: fill-box; transform-origin: center; animation: st2-listen 1.2s ease-out 0.6s infinite;"></ellipse>
+</sc-if>
+<sc-if value="{{isThink}}" hint-placeholder-val="{{false}}">
+<path class="st2-anim" d="M108.5 46A11.5 4.6 0 1 1 131.5 46A11.5 4.6 0 1 1 108.5 46Z" fill="none" stroke="#FFFFFF" stroke-opacity="0.92" stroke-width="2.6" stroke-linecap="round" pathLength="100" stroke-dasharray="24 76" style="animation: st2-spin 0.9s linear infinite;"></path>
+</sc-if>
+</svg>
+</div>
+</template>
+<script>
+class DCLogic { constructor(p) { this.props = p || {}; this.state = {}; }
+  setState(p) { Object.assign(this.state, typeof p === 'function' ? p(this.state, this.props) : p); schedule(); }
+  forceUpdate() { schedule(); } }
+const REG = {}; let ROOT = null; const INST = new Map(); let fresh = []; let queued = false;
+function schedule() { if (queued) return; queued = true; Promise.resolve().then(() => { queued = false; render(); }); }
+function camel(s) { return s.replace(/-([a-z])/g, (_, c) => c.toUpperCase()); }
+function lookup(ctx, p) { p = p.trim(); if (p === 'true') return true; if (p === 'false') return false;
+  if (/^-?\d+(\.\d+)?$/.test(p)) return Number(p); return p.split('.').reduce((o, k) => (o == null ? undefined : o[k]), ctx); }
+function interp(s, ctx) { const m = s.match(/^\s*\{\{([^}]+)\}\}\s*$/); if (m) return lookup(ctx, m[1]);
+  return s.replace(/\{\{([^}]+)\}\}/g, (_, p) => { const v = lookup(ctx, p); return v == null ? '' : String(v); }); }
+function comp(name, props, key, out) {
+  const r = REG[name]; if (!r) { out.appendChild(document.createTextNode('[нет ' + name + ']')); return; }
+  let inst = INST.get(key);
+  if (!inst) { inst = new r.Cls(props); INST.set(key, inst); fresh.push(inst); } else inst.props = props;
+  const vals = inst.renderVals();
+  r.tpl.content.childNodes.forEach((ch, i) => build(ch, vals, out, key + '/' + i));
+}
+function build(n, ctx, out, key) {
+  if (n.nodeType === 3) { const v = interp(n.nodeValue, ctx); out.appendChild(document.createTextNode(v == null ? '' : String(v))); return; }
+  if (n.nodeType !== 1) return;
+  const tag = n.localName;
+  if (tag === 'sc-for') { const list = interp(n.getAttribute('list'), ctx) || []; const as = n.getAttribute('as');
+    list.forEach((item, i) => { const c = Object.assign(Object.create(ctx), { [as]: item, $index: i });
+      n.childNodes.forEach((ch, j) => build(ch, c, out, key + '[' + i + ']' + j)); }); return; }
+  if (tag === 'sc-if') { if (interp(n.getAttribute('value'), ctx)) n.childNodes.forEach((ch, j) => build(ch, ctx, out, key + '?' + j)); return; }
+  if (tag === 'dc-import') { const props = {};
+    for (const a of n.attributes) { if (a.name === 'name' || a.name.startsWith('hint-')) continue; props[camel(a.name)] = interp(a.value, ctx); }
+    const box = document.createElement('div'); box.style.display = 'contents'; out.appendChild(box);
+    comp(n.getAttribute('name'), props, key + '>', box); return; }
+  const el = n.namespaceURI && n.namespaceURI !== 'http://www.w3.org/1999/xhtml' ? document.createElementNS(n.namespaceURI, tag) : document.createElement(tag);
+  for (const a of n.attributes) { if (a.name.startsWith('hint-')) continue; const v = interp(a.value, ctx);
+    if (a.name.startsWith('on') && typeof v === 'function') { (el.__h || (el.__h = {}))[a.name.slice(2)] = v; el.addEventListener(a.name.slice(2), v); }
+    else if (v !== false && v != null) el.setAttribute(a.name, v === true ? 'true' : String(v)); }
+  n.childNodes.forEach((ch, j) => build(ch, ctx, el, key + '/' + j)); out.appendChild(el);
+}
+function patch(oldP, newP) {
+  const o = Array.from(oldP.childNodes), n = Array.from(newP.childNodes);
+  n.forEach((b, i) => { const a = o[i];
+    if (!a) { oldP.appendChild(b); return; }
+    if (a.nodeType !== b.nodeType || a.nodeName !== b.nodeName || a.namespaceURI !== b.namespaceURI) { oldP.replaceChild(b, a); return; }
+    if (a.nodeType === 3) { if (a.nodeValue !== b.nodeValue) a.nodeValue = b.nodeValue; return; }
+    if (a.nodeType !== 1) return;
+    for (const at of Array.from(a.attributes)) if (!b.hasAttribute(at.name)) a.removeAttribute(at.name);
+    for (const at of Array.from(b.attributes)) if (a.getAttribute(at.name) !== at.value) a.setAttribute(at.name, at.value);
+    if (a.__h) for (const ev in a.__h) a.removeEventListener(ev, a.__h[ev]);
+    a.__h = b.__h; if (b.__h) for (const ev in b.__h) a.addEventListener(ev, b.__h[ev]);
+    patch(a, b); });
+  for (let i = o.length - 1; i >= n.length; i--) oldP.removeChild(o[i]);
+}
+function render() {
+  const root = document.getElementById('root'); const next = document.createElement('div'); fresh = [];
+  comp(ROOT, {}, 'r', next);
+  if (!root.firstChild) { while (next.firstChild) root.appendChild(next.firstChild); } else patch(root, next);
+  const born = fresh; fresh = []; born.forEach((i) => i.componentDidMount && i.componentDidMount());
+}
+
+REG["StationLite2"] = { tpl: document.getElementById('tpl-StationLite2'), Cls: (function () {
+class Component extends DCLogic {
+  componentDidMount() {
+    this.minute = new Date().getMinutes();
+    this.timer = setInterval(() => {
+      const m = new Date().getMinutes();
+      if (m !== this.minute) { this.minute = m; this.forceUpdate(); }
+    }, 5000);
+  }
+
+  componentWillUnmount() {
+    clearInterval(this.timer);
+  }
+
+  skins() {
+    return {
+      azure: { bodyA: '#63D9FF', bodyB: '#22B0F5', bodyC: '#1592E3', bodyD: '#0B6AC2', topA: '#80E0FF', topB: '#38BBF7', bandA: '#1B98E7', bandB: '#0A5DAE', plate: '#0A519A', mark: 'rgba(255, 255, 255, 0.82)', dot: 'rgba(0, 40, 90, 0.45)', led: '#C8F7FF', ledGlow: '#3FD3FF' },
+      lilac: { bodyA: '#C3BDFF', bodyB: '#9F96F6', bodyC: '#8176E7', bodyD: '#5C51C6', topA: '#D6D2FF', topB: '#A9A1F8', bandA: '#776CDF', bandB: '#4B40A9', plate: '#403594', mark: 'rgba(255, 255, 255, 0.85)', dot: 'rgba(30, 20, 90, 0.4)', led: '#FFFFFF', ledGlow: '#E2DEFF' },
+      pink: { bodyA: '#FFA6D2', bodyB: '#F878B9', bodyC: '#E659A2', bodyD: '#C23C82', topA: '#FFBDDC', topB: '#FA89C2', bandA: '#DC4F97', bandB: '#A82E6D', plate: '#942661', mark: 'rgba(255, 255, 255, 0.85)', dot: 'rgba(90, 0, 40, 0.4)', led: '#FFFFFF', ledGlow: '#FFC6E3' },
+      green: { bodyA: '#A2E577', bodyB: '#71CC49', bodyC: '#52B134', bodyD: '#368B21', topA: '#B8EE93', topB: '#7ED356', bandA: '#4AA62F', bandB: '#2D7B1C', plate: '#266C17', mark: 'rgba(255, 255, 255, 0.85)', dot: 'rgba(10, 50, 0, 0.4)', led: '#FFFFFF', ledGlow: '#E3FFD0' },
+      coral: { bodyA: '#FFB490', bodyB: '#FF8D60', bodyC: '#F37042', bodyD: '#CD5025', topA: '#FFC6AA', topB: '#FF9C6D', bandA: '#E96432', bandB: '#B5461B', plate: '#9F3B16', mark: 'rgba(255, 255, 255, 0.85)', dot: 'rgba(90, 30, 0, 0.4)', led: '#FFFFFF', ledGlow: '#FFDCC6' },
+      graphite: { bodyA: '#6E7783', bodyB: '#474F5A', bodyC: '#30363F', bodyD: '#1C2027', topA: '#5C6571', topB: '#3D444E', bandA: '#2D333B', bandB: '#181B20', plate: '#14171B', mark: 'rgba(255, 255, 255, 0.7)', dot: 'rgba(0, 0, 0, 0.55)', led: '#F4F8FC', ledGlow: '#A8BCD2' }
+    };
+  }
+
+  // Seven-segment digits as path data: each lit segment is a long hexagon, the way LED clocks draw them.
+  clock(now) {
+    const f = (n) => Math.round(n * 10) / 10;
+    const MAP = { '0': 'abcdef', '1': 'bc', '2': 'abged', '3': 'abgcd', '4': 'fgbc', '5': 'afgcd', '6': 'afgedc', '7': 'abc', '8': 'abcdefg', '9': 'abcdfg', ' ': '' };
+    const digit = (x, lit) => {
+      const y = 104, w = 20, h = 34, th = 4.6, gap = 0.9, k = th / 2;
+      const xl = x + k, xr = x + w - k, yt = y + k, ym = y + h / 2, yb = y + h - k;
+      const hs = (x1, x2, c) => 'M' + f(x1) + ' ' + f(c) + 'L' + f(x1 + k) + ' ' + f(c - k) + 'L' + f(x2 - k) + ' ' + f(c - k) + 'L' + f(x2) + ' ' + f(c) + 'L' + f(x2 - k) + ' ' + f(c + k) + 'L' + f(x1 + k) + ' ' + f(c + k) + 'Z';
+      const vs = (c, y1, y2) => 'M' + f(c) + ' ' + f(y1) + 'L' + f(c + k) + ' ' + f(y1 + k) + 'L' + f(c + k) + ' ' + f(y2 - k) + 'L' + f(c) + ' ' + f(y2) + 'L' + f(c - k) + ' ' + f(y2 - k) + 'L' + f(c - k) + ' ' + f(y1 + k) + 'Z';
+      const seg = {
+        a: hs(xl + gap, xr - gap, yt), g: hs(xl + gap, xr - gap, ym), d: hs(xl + gap, xr - gap, yb),
+        f: vs(xl, yt + gap, ym - gap), b: vs(xr, yt + gap, ym - gap), e: vs(xl, ym + gap, yb - gap), c: vs(xr, ym + gap, yb - gap)
+      };
+      return { lit: lit.split('').map((s) => seg[s]).join(''), all: 'abcdefg'.split('').map((s) => seg[s]).join('') };
+    };
+    const hh = now.getHours();
+    const mm = now.getMinutes();
+    const chars = [hh >= 10 ? String(Math.floor(hh / 10)) : ' ', String(hh % 10), String(Math.floor(mm / 10)), String(mm % 10)];
+    const xs = [67, 93, 127, 153];
+    const ds = chars.map((c, i) => digit(xs[i], MAP[c]));
+    return { lit: ds.map((d) => d.lit).join(''), all: ds.map((d) => d.all).join(''), text: hh + ':' + String(mm).padStart(2, '0') };
+  }
+
+  renderVals() {
+    if (!this.uid) this.uid = 'u' + Math.random().toString(36).slice(2, 8);
+    const skins = this.skins();
+    const s = Object.assign({}, skins[this.props.skin] || skins.azure);
+    s.shadow = (this.props.theme || 'dark') === 'light' ? 0.22 : 0.5;
+    const stage = this.props.stage || 'idle';
+    const ring = this.props.ring || '#B6F36A';
+    const clock = this.clock(new Date());
+    // Лайт 2 бывает с часами и без: без них спереди только ткань.
+    const hasClock = this.props.clock !== false && this.props.clock !== 'false';
+    const ANIM = { idle: 'animation: st2-breathe 3.2s ease-in-out infinite;', speak: 'animation: st2-pulse 0.6s ease-in-out infinite;' };
+    const WORD = { idle: 'ждёт', listen: 'слушает', think: 'думает', speak: 'говорит' };
+    return {
+      uid: this.uid, s, ring, clock, hasClock,
+      ringAnim: ANIM[stage] || '',
+      isListen: stage === 'listen', isThink: stage === 'think', isSpeak: stage === 'speak',
+      label: (hasClock ? 'Станция Лайт 2 с часами, на часах ' + clock.text : 'Станция Лайт 2') + ', ' + (WORD[stage] || 'ждёт')
+    };
+  }
+}
+
+return Component; })() };
+ROOT = "StationLite2"; render();</script></body></html>

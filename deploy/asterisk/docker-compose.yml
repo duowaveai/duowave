@@ -1,0 +1,21 @@
+# Our own SIP server for calls without Yandex (phase 7 of docs/plans/integration.md): SIP phones (apps on the
+# family's phones) register here, calls to extension 100 go to the gateway's Stasis app over ARI, the gateway
+# dials contacts back. A SIP operator for real numbers is one more endpoint (a trunk) in pjsip.conf.
+#
+#   cp pjsip.conf.example pjsip.conf && cp ari.conf.example ari.conf   # then set the passwords
+#   docker compose up -d
+#
+# Then the gateway's panel, «Дом» → «Коннекторы» → «Телефония (SIP)»: ARI at http://127.0.0.1:8088, its user and
+# password (as in ari.conf), this Mac's address as the container sees it for RTP, the contacts. (ARI_* and SIP_* in
+# the gateway's .env are read at its first start only.)
+services:
+  asterisk:
+    image: andrius/asterisk:20
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./pjsip.conf:/etc/asterisk/pjsip.conf:ro
+      - ./extensions.conf:/etc/asterisk/extensions.conf:ro
+      - ./ari.conf:/etc/asterisk/ari.conf:ro
+      - ./http.conf:/etc/asterisk/http.conf:ro
+      - ./rtp.conf:/etc/asterisk/rtp.conf:ro

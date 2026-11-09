@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged into the app's Info.plist by tauri build. Without a microphone description macOS ends the app when the
+     panel records a take for an own voice (getUserMedia in the window); the local network one is the text of the
+     prompt the gateway's connections to devices at home bring. -->
+<plist version="1.0">
+<dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Пульт записывает ваш голос, чтобы колонка научилась говорить им.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Шлюз находит колонку в домашней сети и разговаривает с ней.</string>
+</dict>
+</plist>

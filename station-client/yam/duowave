@@ -1,0 +1,131 @@
+#!/bin/sh
+# duowave — this station and the voice gateway, from the station's own shell (the YAM package duowave/gateway).
+#   duowave connect <gateway>[:port]    the station's voice to the gateway: our copy of quasar.cfg mounted over the
+#                                       firmware's own (which stays as it is), restore.sh, a reboot
+#   duowave restore                     back to how it was before the gateway (the firmware's own config), a reboot
+#   duowave status                      where the station's voice goes now, our copy, and the way back
+#   duowave client install <gateway>    the call client, started with the station
+#   duowave client remove               the call client gone
+#   duowave gateway install [port]      the voice gateway on this station, started with it (yam install does it;
+#                                       default port 8790)
+#   duowave gateway start|stop|status   the gateway on this station
+#   duowave gateway remove              the gateway off, upgrades leave it off; its data in /data/opt/duowave/gateway
+#                                       stays. Before `yam remove duowave/gateway` while the voice goes to it:
+#                                       duowave station point previous --reboot
+#   duowave station …                   the gateway program's own commands (duowave station help): point the
+#                                       voice, status, the safety net
+set -eu
+# This script is a link YAM made ($YAM_ROOT/bin/duowave → pkgs/duowave/gateway/<version>/bin/duowave): its version
+# folder holds the files; the gateway runs from the stable link $YAM_ROOT/share/duowave.gateway/gateway, which an
+# upgrade moves to the new version.
+self=$0
+while [ -L "$self" ]; do
+    link=$(readlink "$self")
+    case "$link" in /*) self=$link ;; *) self=$(dirname "$self")/$link ;; esac
+done
+PAYLOAD=$(cd "$(dirname "$self")/.." && pwd -P)
+HERE=$PAYLOAD/share/duowave.gateway
+ROOT=$(cd "$PAYLOAD/../../../.." && pwd -P)
+PROGRAM=$ROOT/share/duowave.gateway/gateway
+CFG=/system/vendor/quasar/quasar.cfg
+STATE=/data/opt/duowave
+
+usage() {
+    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+    exit 2
+}
+
+address() {
+    case "${1:-}" in
+        '' | *[!A-Za-z0-9.:-]*) echo "not a gateway address: '${1:-}' (an IP or a name, maybe :port)" >&2; exit 2 ;;
+    esac
+}
+
+case "${1:-}" in
+    connect)
+        address "${2:-}"
+        script=/tmp/duowave-connect.sh
+        # The gateway writes the script with its own address, as this station reaches it (plain HTTP: busybox has no TLS).
+        if ! wget -qO "$script" "http://$2/station/connect.sh"; then
+            rm -f "$script"
+            echo "the gateway at $2 does not answer" >&2
+            exit 1
+        fi
+        if ! head -n 1 "$script" | grep -q '^#!/bin/sh'; then
+            rm -f "$script"
+            echo "$2 gave no script: is it the voice gateway?" >&2
+            exit 1
+        fi
+        exec sh "$script"
+        ;;
+    restore)
+        if [ -f "$STATE/restore.sh" ]; then exec sh "$STATE/restore.sh"; fi
+        # No restore.sh: our copy (if any) goes all the same, with the package's voice.sh.
+        sh "$HERE/voice.sh" drop
+        echo "back to the firmware's own voice server; rebooting"
+        exec reboot
+        ;;
+    status)
+        sh "$HERE/voice.sh" status
+        echo "the way back: duowave restore"
+        if [ -f "$STATE/gateway.sh" ]; then sh "$STATE/gateway.sh" status; else echo "gateway: not installed (duowave gateway install)"; fi
+        if [ -f /etc/init.d/S99zduowave ]; then echo "call client: installed, gateway $(cat "$STATE/gateway" 2>/dev/null || echo '?')"; else echo "call client: not installed"; fi
+        ;;
+    client)
+        case "${2:-}" in
+            install)
+                address "${3:-}"
+                mkdir -p "$STATE"
+                cp "$HERE/call-client.sh" "$STATE/call-client.sh"
+                echo "http://$3" > "$STATE/gateway"
+                mount -o remount,rw /
+                cp "$HERE/S99zduowave" /etc/init.d/S99zduowave
+                chmod +x /etc/init.d/S99zduowave
+                sync
+                mount -o remount,ro / 2>/dev/null || true
+                /etc/init.d/S99zduowave start
+                echo "call client installed for http://$3"
+                ;;
+            remove)
+                [ -f /etc/init.d/S99zduowave ] && /etc/init.d/S99zduowave stop
+                mount -o remount,rw /
+                rm -f /etc/init.d/S99zduowave
+                sync
+                mount -o remount,ro / 2>/dev/null || true
+                rm -f "$STATE/call-client.sh" "$STATE/gateway" "$STATE/client.log" "$STATE/client.log.old" "$STATE/client.pid"
+                echo "call client removed"
+                ;;
+            *) usage ;;
+        esac
+        ;;
+    gateway)
+        # The Rust gateway built for the station, in this package: its own commands do the work (the same the
+        # computer's panel runs over SSH); the program stays in the package — `yam upgrade duowave/gateway` updates it.
+        [ -x "$PROGRAM" ] || { echo "this package has no gateway program ($PROGRAM)" >&2; exit 1; }
+        case "${2:-}" in
+            install)
+                port=${3:-8790}
+                case "$port" in '' | *[!0-9]*) echo "not a port: '$port'" >&2; exit 2 ;; esac
+                rm -f "$STATE/yam-off"
+                exec "$PROGRAM" station install --port "$port" --managed yam --program "$PROGRAM" --in-place
+                ;;
+            start | stop | status)
+                [ -f "$STATE/gateway.sh" ] || { echo "the gateway is not installed: duowave gateway install" >&2; exit 1; }
+                sh "$STATE/gateway.sh" "$2"
+                ;;
+            remove)
+                "$PROGRAM" station remove --keep-data
+                # Upgrades (bin/duowave-postinstall) leave it off until `duowave gateway install`.
+                mkdir -p "$STATE"
+                : > "$STATE/yam-off"
+                ;;
+            *) usage ;;
+        esac
+        ;;
+    station)
+        [ -x "$PROGRAM" ] || { echo "this package has no gateway program ($PROGRAM)" >&2; exit 1; }
+        shift
+        exec "$PROGRAM" station "$@"
+        ;;
+    *) usage ;;
+esac

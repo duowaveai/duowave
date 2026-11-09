@@ -1,0 +1,20 @@
+# Our own LiveKit server for calls through LiveKit (an optional bridge, phase 7 of docs/plans/integration.md).
+# At home it carries calls inside the home network; for calls from outside it belongs on a machine with a public
+# address and a domain with TLS (see README), or LiveKit Cloud is used instead.
+#
+#   cp livekit.yaml.example livekit.yaml    # then set the key and the secret
+#   docker compose up -d
+#
+# Then the gateway's panel, «Дом» → «Коннекторы» → LiveKit: ws://<this machine>:7880, the key and the secret as in
+# livekit.yaml. (LIVEKIT_* in the gateway's .env are read at its first start only.)
+services:
+  livekit:
+    image: livekit/livekit-server:v1.13.10
+    restart: unless-stopped
+    command: --config /etc/livekit.yaml
+    ports:
+      - '7880:7880'
+      - '7881:7881'
+      - '50000-50100:50000-50100/udp'
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro

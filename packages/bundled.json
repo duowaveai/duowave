@@ -1,0 +1,35 @@
+{
+  "_": "Пакеты, вшитые в сборку шлюза (gateway/src/plugins/bundled.rs): вид и включён ли пакет при первом запуске. system — нельзя ни выключить, ни удалить; bundled — можно выключить, удалить нельзя: обновляется вместе со шлюзом. Пакета нет в этом списке — он в сборку не входит.",
+  "radio": {
+    "origin": "bundled",
+    "enabled": true
+  },
+  "weather": {
+    "origin": "bundled",
+    "enabled": true
+  },
+  "news": {
+    "origin": "bundled",
+    "enabled": true
+  },
+  "music": {
+    "origin": "bundled",
+    "enabled": true
+  },
+  "tales": {
+    "origin": "bundled",
+    "enabled": true
+  },
+  "games": {
+    "origin": "bundled",
+    "enabled": true
+  },
+  "morning": {
+    "origin": "bundled",
+    "enabled": true
+  },
+  "smart-home": {
+    "origin": "bundled",
+    "enabled": true
+  }
+}

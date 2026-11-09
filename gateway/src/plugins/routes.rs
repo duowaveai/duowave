@@ -1,0 +1,443 @@
+//! `/api/v1/packages`: the packages for the panel, of every kind. Whoever sees the connectors sees them: their
+//! state, budget, rights, whether a plugin's code is loaded, its calls and last error. Switching one on or off,
+//! reloading it, changing its settings and trying a plugin's tools is the admin's alone, a person at home: a plugin
+//! is code that runs in the gateway with the rights its manifest asks for.
+//!
+//! The catalog (`/api/v1/packages/catalog`) is seen by whoever sees the station; installing, updating and removing a
+//! package is by its kind: a character — who may change the character (`persona.edit`), a theme — who changes the
+//! gateway's settings (`settings.edit`), a plugin or an app — the admin at home (`plugins.manage`).
+
+use std::sync::Arc;
+
+use axum::extract::{DefaultBodyLimit, Path, RawQuery, State};
+use axum::http::{header, HeaderValue};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post, put};
+use axum::Router;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
+
+use super::budget::ResourcesView;
+use super::catalog::CatalogView;
+use super::controller::{PackageView, PackagesView};
+use super::manifest::PackageKind;
+use crate::app::App;
+use crate::core::events::Actor;
+use crate::core::identity::permissions::use_of;
+use crate::core::identity::permissions::{
+    CONNECTORS_VIEW, PERSONA_EDIT, PLUGINS_MANAGE, PLUGINS_MCP, SETTINGS_EDIT, STATION_VIEW,
+};
+use crate::core::identity::{PrincipalKind, Role};
+use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Zone};
+use crate::skills::capabilities::CapabilityName;
+
+/// A body is read before the route asks who calls: kept small.
+const BODY_LIMIT: usize = 64 * 1024;
+
+pub fn routes() -> Router<Arc<App>> {
+    Router::new()
+        .route("/api/v1/packages", get(list))
+        .route("/api/v1/packages/resources", get(resources))
+        .route("/api/v1/packages/themes", get(themes))
+        .route("/api/v1/packages/panel", get(panel_parts))
+        .route("/api/v1/packages/{id}/call/{function}", post(panel_call))
+        .route("/api/v1/packages/{id}/fork", post(fork))
+        .route("/panel-plugins/{id}/{version}/{file}", get(panel_file))
+        .route("/mcp/plugins", post(mcp_plugins))
+        .route("/api/v1/packages/catalog", get(catalog).put(catalog_switch))
+        .route("/api/v1/packages/catalog/{id}/preview/{which}", get(preview))
+        .route("/api/v1/packages/{id}", get(one).delete(remove))
+        .route("/api/v1/packages/{id}/install", post(install))
+        .route("/api/v1/packages/{id}/update", post(update))
+        .route("/api/v1/packages/{id}/enable", post(enable))
+        .route("/api/v1/packages/{id}/disable", post(disable))
+        .route("/api/v1/packages/{id}/reload", post(reload))
+        .route("/api/v1/packages/{id}/rollback", post(rollback))
+        .route("/api/v1/packages/{id}/settings", put(settings))
+        .route("/api/v1/packages/{id}/tools/{name}/try", post(try_tool))
+        .layer(DefaultBodyLimit::max(BODY_LIMIT))
+}
+
+/// The admin, a person, at home — and not one whose right to plugins was taken away.
+pub(crate) fn admin(caller: &Caller) -> Result<Option<Actor>, ApiError> {
+    caller.zone_at_least(Zone::Home)?;
+    let principal = caller.permitted(PLUGINS_MANAGE)?;
+    if principal.kind != PrincipalKind::User || principal.role != Some(Role::Admin) {
+        return Err(ApiError::forbidden("Пакетами управляет только администратор."));
+    }
+    Ok(caller.actor())
+}
+
+/// Who may install, update or remove a package of this kind; an unknown one is the admin's.
+fn may_handle(caller: &Caller, kind: Option<PackageKind>) -> Result<Option<Actor>, ApiError> {
+    match kind {
+        Some(PackageKind::Character) => caller.permitted(PERSONA_EDIT)?,
+        Some(PackageKind::Theme) => caller.permitted(SETTINGS_EDIT)?,
+        Some(PackageKind::Plugin | PackageKind::App) | None => return admin(caller),
+    };
+    Ok(caller.actor())
+}
+
+fn refresh(query: Option<&str>) -> bool {
+    url::form_urlencoded::parse(query.unwrap_or("").as_bytes())
+        .any(|(key, value)| key == "refresh" && matches!(value.as_ref(), "1" | "true" | ""))
+}
+
+/// The catalog with how each package stands here; `?refresh=1` reads the feed again now.
+async fn catalog(State(app): State<Arc<App>>, caller: Caller, RawQuery(query): RawQuery) -> ApiResult<CatalogView> {
+    caller.permitted(STATION_VIEW)?;
+    Ok(ok(app.catalog.view(refresh(query.as_deref())).await))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CatalogSwitch {
+    enabled: bool,
+}
+
+/// The owner's switch: `{enabled}`. Off, the gateway does not ask the network for the catalog.
+async fn catalog_switch(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Body(body): Body<CatalogSwitch>,
+) -> ApiResult<CatalogView> {
+    caller.permitted(SETTINGS_EDIT)?;
+    app.catalog.set_enabled(body.enabled, caller.actor())?;
+    Ok(ok(app.catalog.view(false).await))
+}
+
+/// A package's preview from the copy here: `image`, or a phrase by its number from 1.
+async fn preview(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path((id, which)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    caller.permitted(STATION_VIEW)?;
+    let (file, kind) = app.catalog.preview(&id, &which).await?;
+    let bytes = tokio::fs::read(&file).await.map_err(|_| ApiError::not_found("Нет такого превью."))?;
+    let mut response = bytes.into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=3600"));
+    Ok(response)
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct InstallBody {
+    #[serde(default)]
+    version: Option<String>,
+}
+
+/// From the catalog: `{version?}` — the newest without it.
+async fn install(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path(id): Path<String>,
+    Body(body): Body<InstallBody>,
+) -> ApiResult<PackageView> {
+    let actor = may_handle(&caller, app.catalog.kind_of(&id).await)?;
+    let view = app.catalog.install(&id, body.version.as_deref(), false, actor).await?;
+    app.characters.sync();
+    Ok(created(view))
+}
+
+/// The newest version from the catalog over the installed one.
+async fn update(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<PackageView> {
+    let actor = may_handle(&caller, app.catalog.kind_of(&id).await)?;
+    let view = app.catalog.install(&id, None, true, actor).await?;
+    app.characters.sync();
+    Ok(created(view))
+}
+
+/// Every version of a package and its row; a character's voices with it.
+async fn remove(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
+    let kind = app.catalog.kind_of(&id).await;
+    let actor = may_handle(&caller, kind)?;
+    app.characters.before_removal(&id)?;
+    app.catalog.remove(&id, actor).await?;
+    app.characters.sync();
+    Ok(ok(json!({ "deleted": true })))
+}
+
+async fn list(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<PackagesView> {
+    caller.permitted(CONNECTORS_VIEW)?;
+    Ok(ok(app.plugins.view().await))
+}
+
+/// The themes of the installed packages, for «Вид пульта». Whoever sees the panel picks a theme.
+async fn themes(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+    caller.permitted(STATION_VIEW)?;
+    Ok(ok(json!({ "themes": app.plugins.themes() })))
+}
+
+/// The plugins' panel parts to load: every panel that sees the station loads them.
+async fn panel_parts(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+    caller.permitted(STATION_VIEW)?;
+    Ok(ok(json!({ "parts": app.plugins.panel_parts() })))
+}
+
+/// A plugin's panel part calls its backend (`useApi`): whoever may use the plugins, with the function's input.
+async fn panel_call(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path((id, function)): Path<(String, String)>,
+    Body(input): Body<Value>,
+) -> ApiResult<Value> {
+    caller.permitted(&use_of(CapabilityName::Plugins))?;
+    Ok(ok(json!({ "result": app.plugins.panel_call(&id, &function, input).await? })))
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ForkBody {
+    #[serde(default)]
+    id: Option<String>,
+}
+
+/// «Сделать свою копию»: `{id?}` — `my-<id>` without it.
+async fn fork(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path(id): Path<String>,
+    Body(body): Body<ForkBody>,
+) -> ApiResult<PackageView> {
+    let actor = admin(&caller)?;
+    Ok(created(app.plugins.fork(&id, body.id.as_deref(), actor).await?))
+}
+
+/// A plugin's part of the panel: `panel.js` (an ES module the panel imports) and `panel.css`, of a plugin that is on,
+/// of the version in force. Served like the panel's own files — a module script carries no key — and only these two:
+/// nothing else of a package runs on the panel's origin. Its rights are its manifest's, checked by the API it calls.
+async fn panel_file(
+    State(app): State<Arc<App>>,
+    Path((id, version, file)): Path<(String, String, String)>,
+) -> Result<Response, ApiError> {
+    let path = app.plugins.panel_file(&id, &version, &file).ok_or_else(|| ApiError::not_found("Not Found"))?;
+    let bytes = tokio::fs::read(&path).await.map_err(|_| ApiError::not_found("Not Found"))?;
+    let kind = if file.ends_with(".js") { "text/javascript; charset=utf-8" } else { "text/css; charset=utf-8" };
+    let mut response = bytes.into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    Ok(response)
+}
+
+/// The plugins' tools as the gateway's MCP server (docs/plans/plugins.md, «MCP в обе стороны»): what the plugins that
+/// are on give «Мозг», for Claude Code and other agents — `tools/list` and `tools/call` over JSON-RPC, each tool with
+/// the right its use needs, as for a person. The key needs `plugins.mcp`.
+async fn mcp_plugins(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Body(request): Body<Value>,
+) -> Result<Response, ApiError> {
+    let principal = caller.permitted(PLUGINS_MCP)?.clone();
+    let id = request.get("id").cloned().unwrap_or(Value::Null);
+    if request.get("id").is_none() {
+        return Ok(axum::http::StatusCode::ACCEPTED.into_response());
+    }
+    let method = request.get("method").and_then(Value::as_str).unwrap_or_default();
+    let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+    let allowed = |permission: &str| crate::core::identity::can(Some(&principal), permission);
+    let result = match method {
+        "initialize" => Ok(json!({
+            "protocolVersion": params.get("protocolVersion").and_then(Value::as_str).unwrap_or("2025-06-18"),
+            "capabilities": { "tools": { "listChanged": false } },
+            "serverInfo": { "name": "duowave-plugins", "version": crate::VERSION },
+        })),
+        "ping" => Ok(json!({})),
+        "tools/list" => {
+            let tools: Vec<Value> = app
+                .plugins
+                .tool_contributions()
+                .into_iter()
+                .filter(|tool| allowed(&tool.permission))
+                .map(|tool| {
+                    json!({
+                        "name": tool.tool.name,
+                        "description": tool.tool.description,
+                        "inputSchema": tool.tool.parameters,
+                        "annotations": { "readOnlyHint": tool.read_only },
+                    })
+                })
+                .collect();
+            Ok(json!({ "tools": tools }))
+        }
+        "tools/call" => {
+            let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
+            let arguments = params.get("arguments").and_then(Value::as_object).cloned().unwrap_or_default();
+            match app.plugins.tool_contributions().into_iter().find(|tool| tool.tool.name == name) {
+                Some(tool) if allowed(&tool.permission) => {
+                    let context = crate::core::connectors::ToolContext {
+                        principal: principal.clone(),
+                        cancel: tokio_util::sync::CancellationToken::new(),
+                        station: None,
+                    };
+                    let (text, failed) = match (tool.run)(arguments, context).await {
+                        Ok(text) => (text, false),
+                        Err(error) => (format!("error: {error}"), true),
+                    };
+                    Ok(json!({ "content": [{ "type": "text", "text": text }], "isError": failed }))
+                }
+                Some(_) => Err((-32001, format!("нет права на {name}"))),
+                None => Err((-32602, format!("нет инструмента {name}"))),
+            }
+        }
+        other => Err((-32601, format!("method {other} is not here"))),
+    };
+    let answer = match result {
+        Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+        Err((code, message)) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }),
+    };
+    Ok(axum::Json(answer).into_response())
+}
+
+/// The plugins' memory and room: «Память колонки» and the plugins' list.
+async fn resources(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<ResourcesView> {
+    caller.permitted(CONNECTORS_VIEW)?;
+    Ok(ok(app.plugins.resources().await))
+}
+
+async fn one(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<PackageView> {
+    caller.permitted(CONNECTORS_VIEW)?;
+    app.plugins.rescan();
+    Ok(ok(app.plugins.view_one(&id).await?))
+}
+
+async fn enable(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<PackageView> {
+    let actor = admin(&caller)?;
+    Ok(ok(app.plugins.enable(&id, actor).await?))
+}
+
+async fn disable(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<PackageView> {
+    let actor = admin(&caller)?;
+    Ok(ok(app.plugins.disable(&id, actor).await?))
+}
+
+async fn reload(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<PackageView> {
+    let actor = admin(&caller)?;
+    Ok(ok(app.plugins.reload(&id, actor).await?))
+}
+
+/// Back to the version before.
+async fn rollback(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<PackageView> {
+    let actor = admin(&caller)?;
+    Ok(ok(app.plugins.rollback(&id, actor).await?))
+}
+
+/// The values of the package's settings by key; null puts one back to its default.
+async fn settings(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path(id): Path<String>,
+    Body(values): Body<Map<String, Value>>,
+) -> ApiResult<PackageView> {
+    let actor = admin(&caller)?;
+    Ok(ok(app.plugins.set_settings(&id, &values, actor).await?))
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct TryBody {
+    #[serde(default)]
+    arguments: Option<Map<String, Value>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TryAnswer {
+    content: String,
+}
+
+async fn try_tool(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path((id, name)): Path<(String, String)>,
+    Body(body): Body<TryBody>,
+) -> ApiResult<TryAnswer> {
+    admin(&caller)?;
+    let input = Value::Object(body.arguments.unwrap_or_default());
+    Ok(ok(TryAnswer { content: app.plugins.try_tool(&id, &name, input).await? }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, Env};
+    use crate::core::identity::principal::user_principal;
+    use crate::plugins::catalog::tests::{arthur, site};
+    use crate::plugins::install::tests::{character_manifest, vgp};
+    use axum::http::StatusCode;
+
+    fn status<T>(result: ApiResult<T>) -> StatusCode {
+        match result {
+            Ok(answer) => answer.0,
+            Err(error) => error.status,
+        }
+    }
+
+    #[tokio::test]
+    async fn installs_and_removes_by_the_packages_kind_and_never_code_from_an_unsigned_catalog() {
+        let site = site().await;
+        let mut theme = arthur("1.0.0");
+        theme["id"] = json!("dusk");
+        theme["kind"] = json!("theme");
+        let mut plugin = arthur("1.0.0");
+        // Not a built-in's id: «Радио» is laid out by the build itself.
+        plugin["id"] = json!("clock");
+        plugin["kind"] = json!("plugin");
+        let mut dusk = character_manifest("dusk", "1.0.0");
+        dusk["kind"] = json!("theme");
+        dusk["contributes"] = json!({ "themes": [] });
+        site.publish(&[
+            (arthur("1.2.0"), vgp(&character_manifest("arthur", "1.2.0"))),
+            (theme, vgp(&dusk)),
+            (plugin, b"code".to_vec()),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let text = |sub: &str| dir.path().join(sub).to_string_lossy().into_owned();
+        let env = Env::from_pairs([
+            ("STATE_DIR", String::new()),
+            ("PACKAGES_DIR", text("packages")),
+            ("VOICE_LAB_DIR", text("voice-lab")),
+            ("TTS_MODELS_DIR", text("voices")),
+            ("DATA_DIR", text("data")),
+            ("PACKAGES_FEED_URL", site.url.clone()),
+        ]);
+        let app = crate::app::App::build(Config::for_tests(&env)).unwrap();
+        let admin = || Caller::local(app.clone(), Some(user_principal("u1", "Админ", Role::Admin, None)));
+        let member = || Caller::local(app.clone(), Some(user_principal("u2", "Аня", Role::Member, None)));
+        let body = || Body(InstallBody::default());
+
+        let listed = catalog(State(app.clone()), member(), RawQuery(None)).await.unwrap().1;
+        assert_eq!(listed.packages.len(), 3);
+        let installing = install(State(app.clone()), member(), Path("arthur".into()), body()).await;
+        assert_eq!(status(installing), StatusCode::FORBIDDEN, "a character is who may change the character's");
+        let installed = install(State(app.clone()), admin(), Path("arthur".into()), body()).await.unwrap();
+        assert_eq!((installed.0, installed.1.source.as_str()), (StatusCode::CREATED, "catalog"));
+        assert!(app.characters.character("arthur:arthur").is_some(), "its characters at once");
+        assert_eq!(
+            status(install(State(app.clone()), member(), Path("dusk".into()), body()).await),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status(install(State(app.clone()), admin(), Path("dusk".into()), body()).await),
+            StatusCode::CREATED
+        );
+        let unsigned = install(State(app.clone()), admin(), Path("clock".into()), body()).await;
+        assert_eq!(status(unsigned), StatusCode::CONFLICT);
+        assert!(!dir.path().join("packages/clock").exists());
+        // The built-in «Радио» is there from the build, and it is not removed.
+        assert!(dir.path().join("packages/radio").is_dir());
+        assert_eq!(status(remove(State(app.clone()), admin(), Path("radio".into())).await), StatusCode::CONFLICT);
+
+        // The owner's switch: off, nothing installs.
+        let off = catalog_switch(State(app.clone()), admin(), Body(CatalogSwitch { enabled: false })).await.unwrap();
+        assert!(!off.1.enabled);
+        assert_eq!(status(update(State(app.clone()), admin(), Path("arthur".into())).await), StatusCode::CONFLICT);
+        let switched = catalog_switch(State(app.clone()), member(), Body(CatalogSwitch { enabled: true })).await;
+        assert_eq!(status(switched), StatusCode::FORBIDDEN);
+
+        assert_eq!(status(remove(State(app.clone()), member(), Path("arthur".into())).await), StatusCode::FORBIDDEN);
+        assert_eq!(status(remove(State(app.clone()), admin(), Path("arthur".into())).await), StatusCode::OK);
+        assert!(app.characters.character("arthur:arthur").is_none());
+        let image = preview(State(app.clone()), member(), Path(("arthur".into(), "image".into()))).await.unwrap();
+        assert_eq!(image.headers()[header::CONTENT_TYPE], "image/webp");
+    }
+}

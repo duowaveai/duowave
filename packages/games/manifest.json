@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "kind": "plugin",
+  "id": "games",
+  "version": "1.0.0",
+  "title": "Игры",
+  "description": "Голосовые игры с моделью шлюза: викторина, города, загадки. Колонка слушает ходы без «Алиса», пока игрок не скажет «хватит». Встроенный плагин: если он выключен, игры ведёт встроенный навык.",
+  "api": "^1.1",
+  "runs": ["pc", "station", "stationServer"],
+  "budget": { "memoryMb": 4, "storageMb": 1 },
+  "permissions": ["voice.intents", "llm.chat", "kv"],
+  "contributes": {
+    "intents": [
+      {
+        "phrases": ["давай поиграем", "давай поиграем в {game}", "поиграем в {game}", "давай сыграем в {game}", "сыграем в {game}", "запусти игру {game}", "давай игру {game}"],
+        "handler": "start",
+        "capability": "games"
+      }
+    ]
+  }
+}

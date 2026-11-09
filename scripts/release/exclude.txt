@@ -1,0 +1,18 @@
+# What the public tree leaves out (docs/plans/open-source.md, section 2): the working notes, the reviews, the journal of
+# live checks, and the owner's own README — the public one (docs/open-source/README.md) takes its place.
+docs/plans
+docs/reviews
+docs/SUMMARY.md
+docs/research/original-alice.md
+.impeccable
+panel/.impeccable
+README.md
+# The owner's own guide (his Mac, his services): the public README covers installing; links to it lose their target.
+docs/GUIDE.md
+# The promo video (9–10 MB each) goes to the site and the release, not into every clone; the poster and GIFs stay.
+docs/media/duowave-promo.mp4
+docs/media/duowave-promo-vertical.mp4
+docs/media/duowave-promo-light.mp4
+docs/media/duowave-promo-light-vertical.mp4
+# Notes on the media for the owner (sources outside the repository, the voice-over licence to check).
+docs/media/README.md

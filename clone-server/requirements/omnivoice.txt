@@ -1,0 +1,10 @@
+# OmniVoice (k2-fsa, Apache-2.0) as it runs on the bench (self-voice-tests, 05.11.2026), Python 3.11.
+# torch and torchaudio 2.8.0 are installed first, from the index that suits the machine (CUDA, CPU or PyPI on a Mac).
+omnivoice==0.2.1
+transformers==5.22.1
+accelerate==1.15.0
+huggingface-hub==2.4.0
+safetensors==0.8.0
+librosa==0.11.0
+soundfile==0.14.0
+numpy==2.4.6

@@ -1,0 +1,289 @@
+/* Классы вместо инлайн-стилей экранов. Отступы и промежутки — по плотности темы (--density), цвета — токенами темы,
+   поэтому тема меняет их, не трогая экраны. Подключается после стилей экранов (main.tsx).
+
+   Утилиты внизу — перевод прежних style="…" один к одному, с !important: инлайн-стиль перекрывал любое правило
+   класса, утилита перекрывает так же, и вид не меняется. Новое лучше собирать смысловыми классами, как сверху. */
+
+/* ─── Частые сочетания ─────────────────────────────────────────── */
+/* Пилюля-кнопка: действие в строке («разрешить», «выйти», «обновить») — крупнее простой пилюли-метки. */
+.pill-btn { cursor: pointer; padding: calc(8px * var(--density, 1)) calc(14px * var(--density, 1)); }
+.pill-btn-sm { cursor: pointer; padding: calc(6px * var(--density, 1)) calc(12px * var(--density, 1)); }
+
+/* Панель-список: строки идут до её края (DESIGN.md: «панели-списки — 4px 16px 8px / 12px»). */
+.card-list { padding: calc(4px * var(--density, 1)) calc(16px * var(--density, 1)) calc(12px * var(--density, 1)); }
+.card-list-tight { padding-bottom: calc(8px * var(--density, 1)); }
+
+/* Шапка панели: заголовок слева, действие справа, цель нажатия 44px. */
+.card-head { display: flex; align-items: center; justify-content: space-between; min-height: 44px; }
+
+/* Строка списка с разделителем сверху; на узком экране кнопки переносятся под текст. */
+.list-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: calc(12px * var(--density, 1));
+    padding: calc(10px * var(--density, 1)) 0;
+    border-top: 1px solid var(--divider);
+}
+
+/* Сегмент режима колонки («Яндекс / Шлюз / Свой»): выбранный — лайм в тёмной теме и чернила в светлой
+   (DESIGN.md: The Ink-Selection Rule); недоступный режим бледнее, весь сегмент — пока переключается. */
+.seg-btn {
+    min-height: 40px;
+    border-radius: var(--r-pill);
+    font-size: 14px;
+    font-weight: 600;
+    background: transparent;
+    color: var(--seg-off-fg);
+    cursor: pointer;
+    transition: opacity 0.2s, background 0.2s;
+}
+.seg-btn[aria-checked='true'] { font-weight: 800; background: var(--seg-on-bg); color: var(--seg-on-fg); }
+.seg-btn:disabled { cursor: default; }
+.seg-btn[aria-disabled='true'] { opacity: 0.4; }
+[aria-busy='true'] > .seg-btn { opacity: 0.6; }
+
+/* Выпадающий список (ui/dropdown.tsx): капсула-кнопка, меню почти плотного стекла, строки по 40px. */
+.dd-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    min-height: 38px;
+    border-radius: var(--r-pill);
+    border: 1px solid var(--glass-border);
+    background: var(--icon-bg);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+/* Открыт или что-то выбрано — рамка акцентом. */
+.dd-trigger.on { border-color: var(--accent); }
+.dd-chevron { flex: none; transition: transform 0.15s; }
+.dd-trigger[aria-expanded='true'] .dd-chevron { transform: rotate(180deg); }
+.dd-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 30;
+    width: min(280px, calc(100vw - 64px));
+    /* Целых семь рядов: верхний паддинг, 40 ряд, 2 промежуток — восьмой скрыт целиком */
+    max-height: calc(6px + 7 * 40px + 6 * 2px);
+    overflow-y: auto;
+    border-radius: 16px;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.dd-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 40px;
+    padding: 9px 12px;
+    border-radius: 10px;
+    cursor: pointer;
+    background: transparent;
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 600;
+    text-align: left;
+}
+.dd-option[aria-selected='true'] { background: var(--pill-own-bg); color: var(--pill-own-fg); font-weight: 800; }
+
+/* Заполнение полосы прогресса: высота и скругление — дорожки, ширина — процент (инлайн, это данные). */
+.progress-fill { height: 8px; border-radius: inherit; background: var(--accent); }
+
+/* Спиннер внутри кнопки-пилюли. */
+.spinner-sm { width: 12px; height: 12px; }
+
+/* ─── Утилиты ──────────────────────────────────────────────────── */
+/* Раскладка */
+.break-all { word-break: break-all !important; }
+.cursor-default { cursor: default !important; }
+.cursor-pointer { cursor: pointer !important; }
+.flex { display: flex !important; }
+.flex-1 { flex: 1 !important; }
+.flex-1-1-100p { flex: 1 1 100% !important; }
+.flex-1-1-160 { flex: 1 1 160px !important; }
+.flex-1-1-200 { flex: 1 1 200px !important; }
+.flex-1-1-220 { flex: 1 1 220px !important; }
+.flex-col { flex-direction: column !important; }
+.flex-none { flex: none !important; }
+.flex-wrap { flex-wrap: wrap !important; }
+.grid { display: grid !important; }
+.grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+.grid-fill-220 { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)) !important; }
+.grid-pair-36 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 36px !important; }
+.hidden { display: none !important; }
+.inline-flex { display: inline-flex !important; }
+.items-baseline { align-items: baseline !important; }
+.items-center { align-items: center !important; }
+.justify-between { justify-content: space-between !important; }
+.justify-center { justify-content: center !important; }
+.justify-end { justify-content: flex-end !important; }
+.nowrap { white-space: nowrap !important; }
+.overflow-auto { overflow: auto !important; }
+.overflow-hidden { overflow: hidden !important; }
+.overflow-y-auto { overflow-y: auto !important; }
+.pre-line { white-space: pre-line !important; }
+.pre-wrap { white-space: pre-wrap !important; }
+.relative { position: relative !important; }
+.resize-y { resize: vertical !important; }
+.self-center { align-self: center !important; }
+.self-end { align-self: flex-end !important; }
+.self-start { align-self: flex-start !important; }
+.text-center { text-align: center !important; }
+.text-ellipsis { text-overflow: ellipsis !important; }
+.text-left { text-align: left !important; }
+.underline { text-decoration: underline !important; }
+.wrap-anywhere { overflow-wrap: anywhere !important; }
+
+/* Промежутки — по плотности темы */
+.gap-2 { gap: calc(2px * var(--density, 1)) !important; }
+.gap-4 { gap: calc(4px * var(--density, 1)) !important; }
+.gap-6 { gap: calc(6px * var(--density, 1)) !important; }
+.gap-8 { gap: calc(8px * var(--density, 1)) !important; }
+.gap-10 { gap: calc(10px * var(--density, 1)) !important; }
+.gap-12 { gap: calc(12px * var(--density, 1)) !important; }
+.gap-14 { gap: calc(14px * var(--density, 1)) !important; }
+
+/* Поля — по плотности темы */
+.m-0 { margin: 0 !important; }
+.mx-0 { margin-left: 0 !important; margin-right: 0 !important; }
+.mx-4 { margin-left: calc(4px * var(--density, 1)) !important; margin-right: calc(4px * var(--density, 1)) !important; }
+.mx-6 { margin-left: calc(6px * var(--density, 1)) !important; margin-right: calc(6px * var(--density, 1)) !important; }
+.mx-n8 { margin-left: calc(-8px * var(--density, 1)) !important; margin-right: calc(-8px * var(--density, 1)) !important; }
+.my-0 { margin-top: 0 !important; margin-bottom: 0 !important; }
+.my-4 { margin-top: calc(4px * var(--density, 1)) !important; margin-bottom: calc(4px * var(--density, 1)) !important; }
+.my-8 { margin-top: calc(8px * var(--density, 1)) !important; margin-bottom: calc(8px * var(--density, 1)) !important; }
+.mb-0 { margin-bottom: 0 !important; }
+.mb-2 { margin-bottom: calc(2px * var(--density, 1)) !important; }
+.mb-4 { margin-bottom: calc(4px * var(--density, 1)) !important; }
+.mb-6 { margin-bottom: calc(6px * var(--density, 1)) !important; }
+.mb-8 { margin-bottom: calc(8px * var(--density, 1)) !important; }
+.mb-10 { margin-bottom: calc(10px * var(--density, 1)) !important; }
+.ml-6 { margin-left: calc(6px * var(--density, 1)) !important; }
+.mt-4 { margin-top: calc(4px * var(--density, 1)) !important; }
+.mt-8 { margin-top: calc(8px * var(--density, 1)) !important; }
+.mt-10 { margin-top: calc(10px * var(--density, 1)) !important; }
+.mt-12 { margin-top: calc(12px * var(--density, 1)) !important; }
+
+/* Отступы — по плотности темы */
+.p-0 { padding: 0 !important; }
+.p-4 { padding: calc(4px * var(--density, 1)) !important; }
+.p-24 { padding: calc(24px * var(--density, 1)) !important; }
+.px-0 { padding-left: 0 !important; padding-right: 0 !important; }
+.py-0 { padding-top: 0 !important; padding-bottom: 0 !important; }
+.px-2 { padding-left: calc(2px * var(--density, 1)) !important; padding-right: calc(2px * var(--density, 1)) !important; }
+.px-8 { padding-left: calc(8px * var(--density, 1)) !important; padding-right: calc(8px * var(--density, 1)) !important; }
+.px-12 { padding-left: calc(12px * var(--density, 1)) !important; padding-right: calc(12px * var(--density, 1)) !important; }
+.px-14 { padding-left: calc(14px * var(--density, 1)) !important; padding-right: calc(14px * var(--density, 1)) !important; }
+.px-16 { padding-left: calc(16px * var(--density, 1)) !important; padding-right: calc(16px * var(--density, 1)) !important; }
+.px-18 { padding-left: calc(18px * var(--density, 1)) !important; padding-right: calc(18px * var(--density, 1)) !important; }
+.px-20 { padding-left: calc(20px * var(--density, 1)) !important; padding-right: calc(20px * var(--density, 1)) !important; }
+.py-2 { padding-top: calc(2px * var(--density, 1)) !important; padding-bottom: calc(2px * var(--density, 1)) !important; }
+.py-4 { padding-top: calc(4px * var(--density, 1)) !important; padding-bottom: calc(4px * var(--density, 1)) !important; }
+.py-6 { padding-top: calc(6px * var(--density, 1)) !important; padding-bottom: calc(6px * var(--density, 1)) !important; }
+.py-8 { padding-top: calc(8px * var(--density, 1)) !important; padding-bottom: calc(8px * var(--density, 1)) !important; }
+.py-10 { padding-top: calc(10px * var(--density, 1)) !important; padding-bottom: calc(10px * var(--density, 1)) !important; }
+.py-12 { padding-top: calc(12px * var(--density, 1)) !important; padding-bottom: calc(12px * var(--density, 1)) !important; }
+.pb-6 { padding-bottom: calc(6px * var(--density, 1)) !important; }
+.pb-8 { padding-bottom: calc(8px * var(--density, 1)) !important; }
+.pb-12 { padding-bottom: calc(12px * var(--density, 1)) !important; }
+.pb-14 { padding-bottom: calc(14px * var(--density, 1)) !important; }
+.pl-8 { padding-left: calc(8px * var(--density, 1)) !important; }
+.pl-50 { padding-left: calc(50px * var(--density, 1)) !important; }
+.pr-8 { padding-right: calc(8px * var(--density, 1)) !important; }
+.pt-2 { padding-top: calc(2px * var(--density, 1)) !important; }
+.pt-4 { padding-top: calc(4px * var(--density, 1)) !important; }
+.pt-8 { padding-top: calc(8px * var(--density, 1)) !important; }
+.pt-10 { padding-top: calc(10px * var(--density, 1)) !important; }
+.pt-14 { padding-top: calc(14px * var(--density, 1)) !important; }
+
+/* Размеры */
+.h-8 { height: 8px !important; }
+.w-32 { width: 32px !important; }
+.h-32 { height: 32px !important; }
+.w-132 { width: 132px !important; }
+.min-h-48 { min-height: 48px !important; }
+.min-h-52 { min-height: 52px !important; }
+.min-h-96 { min-height: 96px !important; }
+.h-36 { height: 36px !important; }
+.h-38 { height: 38px !important; }
+.h-48 { height: 48px !important; }
+.max-h-40vh { max-height: 40vh !important; }
+.max-h-52vh-460 { max-height: min(52vh, 460px) !important; }
+.max-h-120 { max-height: 120px !important; }
+.max-w-85p { max-width: 85% !important; }
+.max-w-92p { max-width: 92% !important; }
+.max-w-full { max-width: 100% !important; }
+.min-h-36 { min-height: 36px !important; }
+.min-h-44 { min-height: 44px !important; }
+.min-h-54 { min-height: 54px !important; }
+.min-h-56 { min-height: 56px !important; }
+.min-h-64 { min-height: 64px !important; }
+.min-h-72 { min-height: 72px !important; }
+.min-h-screen { min-height: 100dvh !important; }
+.min-w-0 { min-width: 0 !important; }
+.min-w-120 { min-width: 120px !important; }
+.min-w-140 { min-width: 140px !important; }
+.min-w-160 { min-width: 160px !important; }
+.min-w-180 { min-width: 180px !important; }
+.min-w-200 { min-width: 200px !important; }
+.w-14 { width: 14px !important; }
+.w-36 { width: 36px !important; }
+.w-38 { width: 38px !important; }
+.w-48 { width: 48px !important; }
+.w-full { width: 100% !important; }
+
+/* Текст */
+.fs-13 { font-size: 13px !important; }
+.fs-14 { font-size: 14px !important; }
+.fs-15 { font-size: 15px !important; }
+.fs-18 { font-size: 18px !important; }
+.fw-600 { font-weight: 600 !important; }
+.fw-700 { font-weight: 700 !important; }
+.fw-800 { font-weight: 800 !important; }
+.lh-18 { line-height: 18px !important; }
+.lh-20 { line-height: 20px !important; }
+.lh-22 { line-height: 22px !important; }
+.line-clamp-2 { display: -webkit-box !important; -webkit-line-clamp: 2 !important; -webkit-box-orient: vertical !important; }
+
+/* Цвета — токенами темы */
+.bg-brand { background: linear-gradient(135deg, #B6F36A 0%, #3FE0C5 100%) !important; }
+.bg-accent { background: var(--accent) !important; }
+.bg-none { background: transparent !important; }
+.c-on-accent { color: var(--on-accent) !important; }
+.bg-divider { background: var(--divider) !important; }
+.bg-icon-bg { background: var(--icon-bg) !important; }
+.bg-pill-yandex-bg { background: var(--pill-yandex-bg) !important; }
+.bg-track { background: var(--track) !important; }
+.c-accent-text { color: var(--accent-text) !important; }
+.c-dot-offline { color: var(--dot-offline) !important; }
+.c-on-lime { color: #0B0F0A !important; }
+.c-pill-yandex-fg { color: var(--pill-yandex-fg) !important; }
+.c-sub { color: var(--sub) !important; }
+.c-text { color: var(--text) !important; }
+
+/* Рамки и скругления */
+.border-glass { border: 1px solid var(--glass-border) !important; }
+.bt-divider { border-top: 1px solid var(--divider) !important; }
+.r-4 { border-radius: 4px !important; }
+.r-12 { border-radius: 12px !important; }
+.r-16 { border-radius: 16px !important; }
+.r-panel { border-radius: var(--r-panel) !important; }
+.r-pill { border-radius: var(--r-pill) !important; }
+
+/* Прочее */
+.opacity-70 { opacity: 0.7 !important; }
+.opacity-80 { opacity: 0.8 !important; }
+.opacity-45 { opacity: 0.45 !important; }
+.opacity-50 { opacity: 0.5 !important; }
+.opacity-55 { opacity: 0.55 !important; }
+.outline-none { outline: none !important; }
+.outline-accent { outline: 2px solid var(--accent) !important; }
+.shadow-talk { box-shadow: var(--talk-shadow) !important; }

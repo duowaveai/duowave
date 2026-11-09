@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="40 40 176 176">
+  <!-- The macOS menu-bar glyph: ДиВи in one colour, the eyes cut out of the body (DESIGN.md, the mono variant), black on
+       transparent — a template image, macOS colours it. Rendered at 44 px by `cargo tauri icon` with the png option
+       (README), saved as src-tauri/icons/tray-template.png. -->
+  <path fill="#000" fill-rule="evenodd" d="M116 40H140A68 68 0 0 1 208 108V148A68 68 0 0 1 140 216H116A68 68 0 0 1 48 148V108A68 68 0 0 1 116 40ZM81.2 110A16.8 16.8 0 0 1 114.8 110V138A16.8 16.8 0 0 1 81.2 138ZM132.91 123.5A30.32 30.32 0 0 1 183.09 123.5A9.8 9.8 0 0 1 166.87 134.5A10.72 10.72 0 0 0 149.13 134.5A9.8 9.8 0 0 1 132.91 123.5Z"/>
+</svg>

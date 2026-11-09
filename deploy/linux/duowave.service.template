@@ -1,0 +1,31 @@
+# The gateway (duowave) as a systemd service: starts at boot, restarts when it exits. Rendered by install.sh
+# (__USER__, __DIR__). Log: journalctl -u duowave (the first setup's code is there too).
+[Unit]
+Description=DuoWave, the voice gateway for a rooted Yandex Station
+Documentation=file://__DIR__/deploy/linux/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+# The checkout: its .env is read after the data folder's, and the Silero model is its assets/silero_vad.onnx.
+WorkingDirectory=__DIR__
+# Everything the gateway writes; its own settings in /var/lib/duowave/.env.
+Environment=DATA_DIR=/var/lib/duowave
+StateDirectory=duowave
+StateDirectoryMode=0750
+ExecStart=/opt/duowave/duowave serve
+Restart=on-failure
+RestartSec=5
+# A port below 1024 (PORT=80 in .env, as before 0.1.1) needs the right to bind it: that, and no other privilege.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+# The data, and the program's folder: an update from the panel replaces the program there.
+ReadWritePaths=/var/lib/duowave /opt/duowave
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
