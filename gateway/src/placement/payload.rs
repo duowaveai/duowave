@@ -172,6 +172,10 @@ mod tests {
 
     #[test]
     fn finds_the_release_of_this_very_version() {
+        // A build with the station's program inside offers that one first (CI's rust-station step, every release).
+        if built_in().is_some() {
+            return;
+        }
         // The addresses themselves are feed::versioned's, tested there; here that the source follows them.
         let versioned =
             Config::for_tests(&Env::from_pairs([("UPDATE_FEED_URL", "https://updates.duowave.dev/latest.json")]));
