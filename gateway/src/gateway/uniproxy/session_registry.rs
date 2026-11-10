@@ -263,7 +263,7 @@ impl SessionRegistry {
     }
 
     /// The newest live session of a device (`*`: any) that can speak.
-    fn speaking_on(&self, device_tag: &str) -> Option<Arc<StationSession>> {
+    pub fn speaking_on(&self, device_tag: &str) -> Option<Arc<StationSession>> {
         let active = self.lock().active.clone();
         active.into_iter().rev().find_map(|session| match session {
             AnySession::Station(station)

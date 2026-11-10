@@ -1,9 +1,10 @@
 #!/bin/sh
 # The public repository from this one: the public tree (snapshot.sh: HEAD without the private, checked for anything
 # private) laid over a clone of the public repository and committed there as the project — «DuoWave
-# <hello@duowave.app>», time in UTC — so the working history, its authors and their time zone stay here. The first
+# <hello@duowave.ai>», time in UTC — so the working history, its authors and their time zone stay here. The first
 # run makes the repository (git init); every later one adds a commit with what changed since. It never pushes: it
-# prints the commands, and pushing is the owner's step (docs/plans/open-source.md, «Порядок: путь до публикации»).
+# prints the commands, and pushing is the owner's step, by the owner's own hand from their terminal — never an agent's
+# (docs/plans/open-source.md, «Порядок: путь до публикации»; the public clone's pre-push asks the owner for «да»).
 #
 #   scripts/release/publish.sh <public clone folder>          commit the tree as it is at HEAD
 #   scripts/release/publish.sh <public clone folder> --tag    and tag it v<version> (scripts/release/version.sh)
@@ -37,14 +38,14 @@ if git diff --cached --quiet; then
     echo "nothing changed since the last publish"
 else
     if git rev-parse -q --verify HEAD >/dev/null; then message=${MESSAGE:-"DuoWave $VERSION"}; else message="DuoWave $VERSION: the first public version"; fi
-    TZ=UTC GIT_AUTHOR_NAME=DuoWave GIT_AUTHOR_EMAIL=hello@duowave.app GIT_COMMITTER_NAME=DuoWave \
-        GIT_COMMITTER_EMAIL=hello@duowave.app git commit -q -m "$message"
+    TZ=UTC GIT_AUTHOR_NAME=DuoWave GIT_AUTHOR_EMAIL=hello@duowave.ai GIT_COMMITTER_NAME=DuoWave \
+        GIT_COMMITTER_EMAIL=hello@duowave.ai git commit -q -m "$message"
     echo "committed: $(git log --oneline -1)"
 fi
 
 if [ "$TAG" = --tag ]; then
     git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null && { echo "v$VERSION is already tagged: raise the version" >&2; exit 1; }
-    TZ=UTC GIT_COMMITTER_NAME=DuoWave GIT_COMMITTER_EMAIL=hello@duowave.app git tag -a "v$VERSION" -m "DuoWave $VERSION"
+    TZ=UTC GIT_COMMITTER_NAME=DuoWave GIT_COMMITTER_EMAIL=hello@duowave.ai git tag -a "v$VERSION" -m "DuoWave $VERSION"
     echo "tagged: v$VERSION"
 fi
 

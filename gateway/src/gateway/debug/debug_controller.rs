@@ -34,7 +34,10 @@ pub fn router() -> Router<Arc<App>> {
             .route(&format!("{base}/unsupported"), get(unsupported))
             .route(&format!("{base}/sessions/{{id}}/events"), get(events))
             .route(&format!("{base}/sessions/{{id}}/say"), post(say))
-            .route(&format!("{base}/sessions/{{id}}/tts"), post(tts));
+            .route(&format!("{base}/sessions/{{id}}/tts"), post(tts))
+            .route(&format!("{base}/timers"), get(timers))
+            .route(&format!("{base}/player"), get(player))
+            .route(&format!("{base}/player/{{action}}"), post(player_command));
     }
     // Express's JSON limit, before the access checks as there: a body over 100 KB is not read, whoever sends it.
     router.layer(DefaultBodyLimit::max(crate::access::controller::BODY_LIMIT))
@@ -163,6 +166,93 @@ async fn events(
 #[derive(Serialize)]
 struct Said {
     outcome: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TimersView {
+    device: Option<String>,
+    timers: Vec<crate::skills::own::timers_skill::TimerView>,
+}
+
+/// The device a widget means when it names none (the helper's pass does not): the one heard from last, else the
+/// station on the line now, else one with timers of ours — after a restart the states the requests carried are gone
+/// until the next one.
+fn widget_device(app: &App, query: &HashMap<String, String>) -> Option<String> {
+    let live = || app.sessions.speaking_on("*").map(|session| session.device_tag.clone());
+    app.skills.device_for_panel(query.get("device").map(String::as_str), live, crate::utils::time::now_ms())
+}
+
+/// The station's timers for the panel's widget: ours with their names, and the station's own it reported.
+async fn timers(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    uri: OriginalUri,
+    Query(query): Query<HashMap<String, String>>,
+) -> ApiResult<TimersView> {
+    gate(&app, &caller, &uri)?;
+    caller.permitted(STATION_VIEW)?;
+    let device = widget_device(&app, &query);
+    let timers = device.as_deref().map(|device| app.skills.timer_views(device, crate::utils::time::now_ms())).unwrap_or_default();
+    Ok(ok(TimersView { device, timers }))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlayerView {
+    device: Option<String>,
+    #[serde(flatten)]
+    now: crate::skills::skills_service::NowPlaying,
+}
+
+/// What plays on the station, for the panel's widget.
+async fn player(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    uri: OriginalUri,
+    Query(query): Query<HashMap<String, String>>,
+) -> ApiResult<PlayerView> {
+    gate(&app, &caller, &uri)?;
+    caller.permitted(STATION_VIEW)?;
+    let device = widget_device(&app, &query);
+    let now = match device.as_deref() {
+        Some(device) => app.skills.now_playing(device, crate::utils::time::now_ms()),
+        None => app.skills.now_playing("", crate::utils::time::now_ms()),
+    };
+    Ok(ok(PlayerView { device, now }))
+}
+
+#[derive(Serialize)]
+struct Pushed {
+    pushed: usize,
+}
+
+/// The player from the panel: pause, resume, next, previous, stop, like — pushed to the station's live session as
+/// the voice commands would answer them. What Yandex plays while its session is up is refused with the words to say
+/// (the voice command goes to Yandex; the panel cannot send it there).
+async fn player_command(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    uri: OriginalUri,
+    Path(action): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> ApiResult<Pushed> {
+    gate(&app, &caller, &uri)?;
+    caller.permitted(STATION_SAY)?;
+    if !matches!(action.as_str(), "pause" | "resume" | "next" | "previous" | "stop" | "like" | "dislike") {
+        return Err(ApiError::bad_request("action: pause, resume, next, previous, stop, like или dislike"));
+    }
+    let device = app.skills.device_or_latest(query.get("device").map(String::as_str)).unwrap_or_else(|| "*".into());
+    let Some(session) = app.sessions.speaking_on(&device) else {
+        return Err(ApiError::conflict("Колонка не на связи."));
+    };
+    let yandex = app.modes.yandex_allowed() && session.yandex_connected();
+    let directives = app.skills.player_command(&session.device_tag, &action, yandex).await?;
+    let pushed = directives.len();
+    for directive in directives {
+        session.push(directive);
+    }
+    Ok(ok(Pushed { pushed }))
 }
 
 /// Speaks `text` on the station; `latest` picks the station's main connection.

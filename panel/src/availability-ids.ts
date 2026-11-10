@@ -14,6 +14,7 @@ export const FEATURE_IDS = [
     'mcp.http',
     'mcp.programs',
     'connectors',
+    'messages',
     'calls',
     'stations.connect',
     'voice.lab',

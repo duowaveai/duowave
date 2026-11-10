@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "kind": "plugin",
+  "id": "calendar",
+  "version": "1.1.1",
+  "title": "Календарь",
+  "description": "Ваш календарь голосом и виджетом на столе пульта: что сегодня, завтра и на неделе. Календарь — по ссылке iCal (.ics), её дают Google, Яндекс и iCloud; без входа в аккаунт, только чтение. Ссылка — в настройках плагина. Время — по поясу календаря, «сегодня» голосом — по поясу колонки.",
+  "api": "^1.1",
+  "runs": ["pc", "station", "stationServer"],
+  "budget": { "memoryMb": 8, "storageMb": 1 },
+  "permissions": [
+    "net:calendar.google.com",
+    "net:calendar.yandex.ru",
+    "net:*.icloud.com",
+    "net:outlook.live.com",
+    "net:outlook.office365.com",
+    "voice.intents",
+    "llm.tools",
+    "kv"
+  ],
+  "settings": [
+    {
+      "key": "ics",
+      "type": "string",
+      "secret": true,
+      "title": "Ссылка на календарь (iCal, .ics)",
+      "description": "Google: настройки календаря → «Секретный адрес в формате iCal». Яндекс: календарь → «Экспорт» → ссылка ICS. iCloud: «Поделиться» → «Открытый календарь» (webcal:// подойдёт)."
+    }
+  ],
+  "contributes": {
+    "intents": [
+      {
+        "phrases": [
+          "что у меня сегодня",
+          "что у меня завтра",
+          "какие планы на сегодня",
+          "какие планы на завтра",
+          "что сегодня в календаре",
+          "что завтра в календаре",
+          "что в календаре",
+          "какие дела сегодня",
+          "какие дела на завтра",
+          "что у меня на неделе"
+        ],
+        "handler": "agendaSay"
+      }
+    ],
+    "tools": [
+      {
+        "name": "calendar_events",
+        "description": "События календаря владельца: на сегодня, завтра или ближайшие дни, с начала сегодняшнего дня. У события — название, место, день недели; время — местное со сдвигом пояса (2026-11-11T18:30+07:00), событие на весь день — датой (date, а если дней несколько — lastDate). today — сегодняшняя дата в этом поясе.",
+        "input": {
+          "type": "object",
+          "properties": {
+            "days": { "type": "integer", "minimum": 1, "maximum": 14, "description": "Сколько дней вперёд, считая сегодня" },
+            "timezone": { "type": "string", "description": "Часовой пояс колонки (Europe/Moscow): по нему «сегодня» и время; пусто — пояс календаря" }
+          }
+        },
+        "handler": "calendarEvents",
+        "annotations": { "readOnlyHint": true }
+      }
+    ],
+    "panel": {
+      "slots": ["desk.widgets"],
+      "calls": ["panelEvents"]
+    }
+  }
+}

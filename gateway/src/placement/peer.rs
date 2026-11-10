@@ -1,7 +1,8 @@
 //! The pair: the computer's gateway and the station's. The computer reaches the station's gateway with the pair's key
-//! (PEER_KEY in the station's .env, written at install; on the computer a secret): its settings package, its updates,
-//! a restart. Only from the home network. The station reaches the computer's — its home server — with a key of the
-//! computer's own (an API key with the right `home.models`, src/home_server).
+//! (PEER_KEY in the station's .env, written at install, or the one the station made and gave its admin; on the computer
+//! a secret, each station's own): its settings package, its updates, a restart. Only from the home network. The
+//! station reaches the computer's — its home server — with a key of the computer's own (an API key with the right
+//! `home.models`, src/home_server).
 
 use std::time::Duration;
 
@@ -12,8 +13,27 @@ use subtle::ConstantTimeEq;
 use super::transfer::{self, Bundle};
 use crate::platform::http::{ApiError, Caller, Zone};
 
-/// The secret the computer keeps the pair's key under.
+/// The computer's one pair key from before each station got its own (`station_secret`): the key of the stations moved
+/// or linked before then, which they open with until their next move gives them their own. New moves neither set it
+/// nor install it; the computer only reads it, for those stations and their copies (watch.rs `pair_key`, `open_copy`).
 pub const PEER_SECRET: &str = "placement:peer";
+/// The header of the helper's pass: who is at the computer (src/placement/proxy.rs).
+pub const HELPER_PERSON: &str = "x-duowave-helper";
+/// The pass's other header: that person's role on the computer — admin, member or guest. The station believes it only
+/// beside the pair's key: «Помощник» has that role's rights there, and without it a member's (platform/http/caller.rs).
+/// The computer's own calls carry none: they ask with the pair's key itself (`from_peer`), not with a role's rights.
+pub const HELPER_ROLE: &str = "x-duowave-helper-role";
+
+/// The secret a station's own pair key is kept under on the computer: each station gives its own
+/// (`POST /api/v1/placement/pair`), and linking a second one leaves the first one's as it is.
+pub fn station_secret(station: &str) -> String {
+    format!("{PEER_SECRET}:{station}")
+}
+
+/// A person's request through the helper's pass, not the computer's own call: the pass names who is at the computer.
+pub fn through_pass(caller: &Caller) -> bool {
+    caller.headers.contains_key(HELPER_PERSON) || caller.headers.contains_key(HELPER_ROLE)
+}
 
 /// Whether the request carries the pair's key, from the home network.
 pub fn from_peer(caller: &Caller, peer_key: Option<&str>) -> bool {
@@ -60,6 +80,11 @@ impl PeerClient {
         &self.base
     }
 
+    /// The pair's key: the helper's pass sends the panel's requests with it (src/placement/proxy.rs).
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
     async fn call(
         &self,
         method: reqwest::Method,
@@ -94,6 +119,14 @@ impl PeerClient {
     /// The station's settings, opened with the pair's key.
     pub async fn settings(&self) -> Result<Bundle, String> {
         let sealed = self.call(reqwest::Method::GET, "/api/v1/transfer", None, Duration::from_secs(20)).await?;
+        transfer::open(&sealed, &self.key)
+    }
+
+    /// The station's settings with its plugins' state (`?plugins=1`): a move back takes both. A station of a build
+    /// before it gives the settings alone (`Bundle::plugins` None).
+    pub async fn settings_and_plugins(&self) -> Result<Bundle, String> {
+        let sealed =
+            self.call(reqwest::Method::GET, "/api/v1/transfer?plugins=1", None, Duration::from_secs(30)).await?;
         transfer::open(&sealed, &self.key)
     }
 

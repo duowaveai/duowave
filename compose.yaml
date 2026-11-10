@@ -1,6 +1,7 @@
 # The voice gateway in Docker: Linux, a NAS, a Raspberry Pi 4/5 (64-bit), and Windows or a Mac through Docker Desktop.
 #
-#   docker compose up -d                    # the gateway and its panel: http://<this machine>/panel
+#   docker compose up -d                    # the gateway and its panel: http://<this machine>:7780/panel
+#   docker compose pull && docker compose up -d   # a new version of the gateway (the panel says when there is one)
 #   docker compose --profile full up -d     # + our recognition (GigaAM) and voices (Silero, Piper) on the processor
 #   docker compose --profile gpu up -d      # the same on an NVIDIA card (amd64, NVIDIA Container Toolkit)
 #   docker compose -f compose.yaml -f compose.calls.yaml up -d   # + calls through the station (Linux only)
@@ -15,7 +16,10 @@ name: duowave
 
 services:
   gateway:
-    image: ${GATEWAY_IMAGE:-duowave:local}
+    # The release's image, pulled: nothing to compile (a build from source compiles some 600 crates, on a Raspberry Pi
+    # too). From source instead: docker compose build gateway, then up -d — the local build takes this name and is
+    # used until the next pull.
+    image: ${GATEWAY_IMAGE:-ghcr.io/duowaveai/duowave/gateway:latest}
     build:
       context: .
       dockerfile: Dockerfile.prod

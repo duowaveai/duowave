@@ -1,9 +1,10 @@
 //! The computer's watch over the station's gateway (docs/plans/station-placement.md, sections 6, 7 and 10): every
 //! 30 s it asks the station's /health with the pair's key — whether it answers, its version and API, memory and
-//! space, its home server, where the station's voice goes, its settings revision. The sync is the computer's, the
-//! station stays passive: a new revision there and the settings live on the station — the computer takes a copy; the
-//! settings live on the computer and its own changed — it sends them. A newer station build inside this one — it
-//! offers the update, or installs it when the household said «автоматически».
+//! space, its home server, where the station's voice goes, its settings revision, the settings schema its import
+//! knows. The sync is the computer's, the station stays passive: a new revision there and the settings live on the
+//! station — the computer takes a copy; the settings live on the computer and its own changed — it sends them, the way
+//! the station's build takes them. A newer station build inside this one — it offers the update, or installs it when
+//! the household said «автоматически».
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -14,7 +15,7 @@ use serde_json::Value;
 
 use super::backup::{BackupEntry, Backups};
 use super::payload::{self, PayloadInfo};
-use super::peer::{PeerClient, PEER_SECRET};
+use super::peer::{station_secret, PeerClient, PEER_SECRET};
 use super::transfer;
 use crate::config::Config;
 use crate::core::availability::Placement;
@@ -48,15 +49,37 @@ pub struct Live {
     /// The computer's own settings revision last sent (settings on the computer).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sent_revision: Option<u64>,
+    /// What was sent then, by its fingerprint: a new revision that changes nothing of it — the computer's own mode,
+    /// which the routine sending leaves out — sends nothing and leaves the station not behind (`station_behind`).
+    #[serde(skip)]
+    pub sent_print: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sent_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sync_error: Option<String>,
+    /// The station's gateway refused what the computer sent for its schema all the same (`STATION_OLDER`): that print
+    /// does not go to it again until its /health says another version or schema (`held_back`).
+    #[serde(skip)]
+    pub refused: Option<Refusal>,
     /// The station's gateway being updated from here, and how the last one went.
     pub updating: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update_error: Option<String>,
 }
+
+/// A sending the station's gateway refused for its schema: what it was (the print of the routine package), and the
+/// station as its /health said then — its version, the schema its import knows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    pub print: String,
+    pub version: Option<String>,
+    pub schema: u32,
+}
+
+/// The card's words when the station's gateway refuses the computer's settings for their schema all the same — its
+/// /health said it knew the schema, and it is older (rolled back since, say). «Вернуть» asks it anew first.
+pub const STATION_OLDER: &str =
+    "Шлюз на колонке старше компьютера и не берёт его настройки: обновите колонку или верните настройки на неё.";
 
 /// Something about the station's gateway the household should know.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -103,7 +126,8 @@ pub struct StationGatewayView {
     pub warnings: Vec<Warning>,
     /// The settings live on the station and the last copy is older than a day: «Mac не видел колонку …».
     pub copy_stale: bool,
-    /// The settings live on the computer and the station has not got the last change yet.
+    /// The settings live on the computer and the station has not got the last change yet: what the routine sending
+    /// would carry now is not what was sent last (the computer's own mode is not in it).
     pub station_behind: bool,
 }
 
@@ -183,16 +207,32 @@ impl StationGateway {
         let mut record = self.on_station().ok_or("шлюз не на колонке")?;
         let client = self.client().ok_or("нет ключа пары")?;
         let mut body = serde_json::json!({ "enabled": on });
-        if let Some((secret, id)) = key {
-            body["url"] = Value::String(self.home_url().ok_or("не вижу адрес этого ПК в домашней сети")?);
-            body["key"] = Value::String(secret);
-            record.home_key_id = Some(id);
-        }
+        self.helper_body(&mut body, key, &mut record)?;
         client.post("/api/v1/home-server/link", body).await?;
         record.placement = if on { Placement::StationServer } else { Placement::Station };
         self.store(&record, actor).map_err(|error| error.message)?;
         self.events.emit(GatewayEvent::PlacementChanged { what: "helper".into() });
         self.poll().await;
+        Ok(())
+    }
+
+    /// «Что даю колонке»: what the station does not take from this computer — "asr", "tts", "llm", "messages"
+    /// (docs/plans/desk.md, stage 4). The switch itself stays as it is.
+    pub async fn set_helper_parts(&self, without: Vec<String>, actor: Option<Actor>) -> Result<(), String> {
+        let _ = actor;
+        let client = self.client().ok_or("нет ключа пары")?;
+        client.post("/api/v1/home-server/link", serde_json::json!({ "without": without })).await?;
+        self.events.emit(GatewayEvent::PlacementChanged { what: "helper".into() });
+        self.poll().await;
+        Ok(())
+    }
+
+    fn helper_body(&self, body: &mut Value, key: Option<(String, String)>, record: &mut StationPlacement) -> Result<(), String> {
+        if let Some((secret, id)) = key {
+            body["url"] = Value::String(self.home_url().ok_or("не вижу адрес этого ПК в домашней сети")?);
+            body["key"] = Value::String(secret);
+            record.home_key_id = Some(id);
+        }
         Ok(())
     }
 
@@ -248,7 +288,7 @@ impl StationGateway {
     /// Of these addresses, the one where the station's gateway opens with the pair's key becomes the record's.
     pub async fn find_among(&self, addresses: Vec<String>) -> Option<String> {
         let mut record = self.on_station()?;
-        let key = self.secrets.get(PEER_SECRET)?;
+        let key = self.pair_key()?;
         for address in addresses.into_iter().filter(|address| *address != record.address) {
             let client = PeerClient::new(&address, record.port, &key);
             let Ok(health) = client.health().await else { continue };
@@ -275,13 +315,15 @@ impl StationGateway {
     /// What the household should know about the station's gateway now.
     pub fn warnings(&self) -> Vec<Warning> {
         let mut warnings = Vec::new();
-        if self.on_station().is_none() {
-            return warnings;
-        }
+        let Some(record) = self.on_station() else { return warnings };
         let live = self.live();
+        // The 2 minutes count from the move too: a fresh record has not heard the station yet, and it reboots for a
+        // minute after a move (live, 10.11: «не отвечает» came at once).
+        let quiet = |at: Option<&str>| at.is_none_or(|at| older_than(at, SILENT_AFTER));
         let silent = live.checked_at.is_some()
             && !live.reachable
-            && live.seen_at.as_deref().is_none_or(|seen| older_than(seen, SILENT_AFTER));
+            && quiet(live.seen_at.as_deref())
+            && quiet(record.moved_at.as_deref());
         if silent {
             let since = live.seen_at.as_deref().map(local_time).map(|at| format!(" с {at}")).unwrap_or_default();
             warnings.push(Warning {
@@ -355,6 +397,13 @@ impl StationGateway {
         self.record().filter(|record| record.placement.on_station())
     }
 
+    /// The station's name as this computer's list of stations has it («Детская»): /health says it beside the
+    /// placement, the panels name the station by it (the helper's widgets, the station's window).
+    pub fn name(&self) -> Option<String> {
+        let device = self.record()?.device?;
+        super::service::station_name(&self.db, &device)
+    }
+
     pub fn set_record(&self, record: Option<&StationPlacement>, actor: Option<Actor>) -> Result<(), ApiError> {
         match record {
             Some(record) => self.store(record, actor)?,
@@ -362,6 +411,8 @@ impl StationGateway {
                 let mut all = self.settings.get(&STATION_PLACEMENTS, None).unwrap_or_default();
                 if all.remove(&self.key).is_some() {
                     self.settings.set(&STATION_PLACEMENTS, &all, actor)?;
+                    // What the station showed through the helper's pass goes with it.
+                    super::proxy::forget_copies(self.config.skills.state_dir.as_deref(), &self.key);
                 }
             }
         }
@@ -370,14 +421,52 @@ impl StationGateway {
         Ok(())
     }
 
-    /// The pair's key: made once and kept, so a station installed again — after a reset — opens the old copies.
+    /// This station's pair key: its own — the one it gave when it was linked (`link`), or the one a move from here
+    /// installed on it — else the computer's one key from before, which a station moved or linked before each had its
+    /// own still opens with.
+    pub fn pair_key(&self) -> Option<String> {
+        self.secrets.get(&station_secret(&self.key)).or_else(|| self.secrets.get(PEER_SECRET))
+    }
+
+    /// The station's own pair key, when it has one: the one it gave when it was linked, or the one a move installed.
+    /// A move installs it again (a station installed again after a reset gets the same); a station without one gets a
+    /// new one, kept once it has it (`keep_key`). Never the computer's one key (`PEER_SECRET`): every station moved
+    /// before opens with that one, and the admin of one station, who may take its key (`/api/v1/placement/pair`),
+    /// would be the admin of them all (review S2). A station on that key gets its own at its next move.
+    pub fn own_key(&self) -> Option<String> {
+        self.secrets.get(&station_secret(&self.key))
+    }
+
+    /// The key a move installed on the station, kept as its own: this computer opens it with it from now.
+    pub fn keep_key(&self, key: &str) -> Result<(), ApiError> {
+        self.secrets.set(&station_secret(&self.key), Some(key))
+    }
+
+    /// The station's own key, made now and kept when it has none — for a station set up with it (the tests' pretend
+    /// ones). Not for a station that opens with the computer's one key: it would not open with this.
     pub fn peer_key(&self) -> Result<String, ApiError> {
-        if let Some(key) = self.secrets.get(PEER_SECRET) {
+        if let Some(key) = self.own_key() {
             return Ok(key);
         }
         let key = super::peer::new_key();
-        self.secrets.set(PEER_SECRET, Some(&key))?;
+        self.keep_key(&key)?;
         Ok(key)
+    }
+
+    /// A kept copy, opened: with the station's key, else with the computer's one key — a copy sealed before the station
+    /// had its own.
+    fn open_copy(&self, id: &str) -> Result<transfer::Bundle, String> {
+        let sealed = self.backups.read(id)?;
+        let mut keys: Vec<String> = [self.pair_key(), self.secrets.get(PEER_SECRET)].into_iter().flatten().collect();
+        keys.dedup();
+        let mut problem = "нет ключа пары".to_string();
+        for key in keys {
+            match transfer::open(&sealed, &key) {
+                Ok(bundle) => return Ok(bundle),
+                Err(error) => problem = error,
+            }
+        }
+        Err(problem)
     }
 
     /// Links to a gateway on the station put there by hand: it must answer as the station's, with this key.
@@ -403,7 +492,8 @@ impl StationGateway {
             Some("pc") => SettingsHome::Pc,
             _ => SettingsHome::Station,
         };
-        self.secrets.set(PEER_SECRET, Some(key)).map_err(|error| error.message)?;
+        // This station's own: another station linked later keeps its own beside it.
+        self.secrets.set(&station_secret(&self.key), Some(key)).map_err(|error| error.message)?;
         let record = StationPlacement {
             placement,
             address: address.to_string(),
@@ -422,7 +512,7 @@ impl StationGateway {
 
     pub fn client(&self) -> Option<PeerClient> {
         let record = self.on_station()?;
-        let key = self.secrets.get(PEER_SECRET)?;
+        let key = self.pair_key()?;
         Some(PeerClient::new(&record.address, record.port, &key))
     }
 
@@ -442,6 +532,14 @@ impl StationGateway {
 
     fn station_revision(&self) -> Option<u64> {
         self.lock().health.as_ref()?.pointer("/placement/settingsRevision")?.as_u64()
+    }
+
+    /// The settings schema the station's import knows, as its /health says it (`build.settingsSchema`). A build from
+    /// before it was said knows schema 1 — and so is taken a station not heard yet: the whole package with its own
+    /// mode and waiting voice goes in at any build (`push`).
+    fn station_schema(&self) -> u32 {
+        let said = self.lock().health.as_ref().and_then(|health| health.pointer("/build/settingsSchema")?.as_u64());
+        said.and_then(|schema| u32::try_from(schema).ok()).unwrap_or(1)
     }
 
     /// What the panel hears about when it changes: reachable, the version, the revision. Each lock taken alone.
@@ -468,11 +566,9 @@ impl StationGateway {
         let copy_stale = record.as_ref().is_some_and(|record| record.placement.on_station())
             && settings_home == SettingsHome::Station
             && backups.first().is_none_or(|latest| older_than(&latest.at, Duration::from_secs(86_400)));
-        let own = transfer::revision(&self.db, &self.secrets).ok();
         let station_behind = settings_home == SettingsHome::Pc
             && record.as_ref().is_some_and(|record| record.placement.on_station())
-            && own.is_some()
-            && live.sent_revision != own;
+            && self.latest().is_ok_and(|(_, print)| live.sent_print.as_deref() != Some(print.as_str()));
         StationGatewayView {
             key: self.key.clone(),
             warnings: self.warnings(),
@@ -491,9 +587,34 @@ impl StationGateway {
     /// One look at the station's gateway, and the sync it calls for.
     pub async fn poll(&self) {
         let Some(client) = self.client() else { return };
+        let answered = self.look(&client).await.is_ok();
+        self.tell_news();
+        if !answered {
+            self.maybe_search().await;
+            return;
+        }
+        self.misses.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).0 = 0;
+        self.keep_links(&client).await;
+        match self.sync(&client).await {
+            Ok(()) => self.lock().sync_error = None,
+            Err(error) => {
+                // Into the journal once while it holds: a sending held back says the same every look.
+                let again = self.lock().sync_error.as_deref() == Some(error.as_str());
+                if !again {
+                    tracing::warn!("placement: the settings sync with the station: {error}");
+                }
+                self.lock().sync_error = Some(error);
+            }
+        }
+        self.auto_update().await;
+    }
+
+    /// The station gateway's /health, asked now and kept: whether it answers and what it says. The panel hears when
+    /// that changed (`signature`).
+    async fn look(&self, client: &PeerClient) -> Result<(), String> {
         let before = self.signature();
         let answer = client.health().await;
-        {
+        let outcome = {
             let mut live = self.lock();
             live.checked_at = Some(now_iso());
             match answer {
@@ -502,35 +623,35 @@ impl StationGateway {
                     live.seen_at = live.checked_at.clone();
                     live.error = None;
                     live.health = Some(health);
+                    Ok(())
                 }
                 Err(error) => {
                     live.reachable = false;
-                    live.error = Some(error);
+                    live.error = Some(error.clone());
+                    Err(error)
                 }
             }
-        }
+        };
         if before != self.signature() {
             self.events.emit(GatewayEvent::PlacementChanged { what: "station".into() });
         }
-        self.tell_news();
-        let reachable = self.lock().reachable;
-        if !reachable {
-            self.maybe_search().await;
-            return;
-        }
-        self.misses.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).0 = 0;
-        self.keep_links(&client).await;
-        if let Err(error) = self.sync(&client).await {
-            tracing::warn!("placement: the settings sync with the station: {error}");
-            self.lock().sync_error = Some(error);
-        } else {
-            self.lock().sync_error = None;
-        }
-        self.auto_update().await;
+        outcome
+    }
+
+    /// The computer's settings as they would go now — the whole package — and the fingerprint of what of them is the
+    /// computer's to send: the routine package's (`transfer::routine`), without the mode, the station's own. A station
+    /// of an earlier build gets them with its own mode and waiting voice in them instead (`push`): the computer's part
+    /// is the same, and the fingerprint kept for what was sent (`sent_print`) is this one either way.
+    fn latest(&self) -> Result<(transfer::Bundle, String), String> {
+        let whole = transfer::export(&self.db, &self.secrets, "pc").map_err(|error| error.to_string())?;
+        let print = transfer::fingerprint(&transfer::routine(whole.clone()));
+        Ok((whole, print))
     }
 
     /// The settings' way between the two: a copy here when they live on the station and its revision is new; sent
-    /// there when they live here and changed.
+    /// there when they live here and the computer's part changed (`latest`), the way the station's build takes them
+    /// (`push`). A refusal for the schema all the same is said plainly (`STATION_OLDER`), and the same print does not
+    /// go to the same station again every look (`held_back`).
     async fn sync(&self, client: &PeerClient) -> Result<(), String> {
         let Some(record) = self.on_station() else { return Ok(()) };
         match record.settings_home {
@@ -546,9 +667,71 @@ impl StationGateway {
                 if self.lock().sent_revision == Some(own) {
                     return Ok(());
                 }
-                self.send_own(client, own).await
+                let (whole, print) = self.latest()?;
+                // Only what the station does not get changed here (the computer's own mode): nothing to send, and
+                // its gateway does not start again for it.
+                let same = self.lock().sent_print.as_deref() == Some(print.as_str());
+                if same {
+                    self.lock().sent_revision = Some(own);
+                    return Ok(());
+                }
+                if self.held_back(&print) {
+                    return Err(STATION_OLDER.into());
+                }
+                self.push(client, whole, own, print).await
             }
         }
+    }
+
+    /// The station refused this very print for its schema, and its /health says the same version and schema still:
+    /// not sent again every look — once the station is updated or rolled back, or the settings change, it goes.
+    fn held_back(&self, print: &str) -> bool {
+        let now = Refusal { print: print.to_string(), version: self.station_version(), schema: self.station_schema() };
+        self.lock().refused.as_ref() == Some(&now)
+    }
+
+    /// The computer's settings to the station, the way its build takes them (its /health as last asked). A station
+    /// that knows schema 2 gets the routine package (`transfer::routine`): its import keeps its own mode. An earlier
+    /// one, whose import knows schema 1 and removes each setting a package lacks, gets the whole package with its own
+    /// mode and waiting voice in it, as its own package says them (`transfer::for_earlier`, read with the pair's GET of
+    /// it, there in every build): its import leaves it both. What remains of it: a mode switched at the station between
+    /// this read and its restart on the package is overwritten with the one read — only at an earlier station, until
+    /// it is updated. A refusal for the schema all the same is said plainly and kept (`held_back`).
+    async fn push(
+        &self,
+        client: &PeerClient,
+        whole: transfer::Bundle,
+        revision: u64,
+        print: String,
+    ) -> Result<(), String> {
+        let (version, schema) = (self.station_version(), self.station_schema());
+        let bundle = if schema >= transfer::SCHEMA {
+            transfer::routine(whole)
+        } else {
+            let theirs = client.settings().await?;
+            transfer::for_earlier(whole, &theirs)
+        };
+        match self.send_own(client, bundle, revision, print.clone()).await {
+            Err(error) if error.contains(transfer::NOT_FOR_THIS_GATEWAY) => {
+                tracing::warn!("placement: the station's gateway (schema {schema} by its /health) refused: {error}");
+                self.lock().refused = Some(Refusal { print, version, schema });
+                Err(STATION_OLDER.into())
+            }
+            outcome => outcome,
+        }
+    }
+
+    /// The computer's latest to the station when it has not got it yet — what it would get now is not what was sent
+    /// last — the way its build takes it (`push`), its /health asked anew first: a station updated or rolled back
+    /// since the last look gets the package its build takes now.
+    async fn deliver(&self, client: &PeerClient) -> Result<(), String> {
+        let (whole, print) = self.latest()?;
+        if self.lock().sent_print.as_deref() == Some(print.as_str()) {
+            return Ok(());
+        }
+        self.look(client).await?;
+        let revision = transfer::revision(&self.db, &self.secrets).map_err(|error| error.to_string())?;
+        self.push(client, whole, revision, print).await
     }
 
     /// Takes a copy of the station's settings now.
@@ -559,20 +742,27 @@ impl StationGateway {
 
     async fn backup_from(&self, client: &PeerClient) -> Result<BackupEntry, String> {
         let bundle = client.settings().await?;
-        let key = self.secrets.get(PEER_SECRET).ok_or("нет ключа пары")?;
+        let key = self.pair_key().ok_or("нет ключа пары")?;
         let entry = self.backups.save(&transfer::seal(&bundle, &key), bundle.revision)?;
         tracing::info!("placement: a copy of the station's settings, revision {}", bundle.revision);
         self.events.emit(GatewayEvent::PlacementChanged { what: "backup".into() });
         Ok(entry)
     }
 
-    async fn send_own(&self, client: &PeerClient, revision: u64) -> Result<(), String> {
-        let mut bundle = transfer::export(&self.db, &self.secrets, "pc").map_err(|error| error.to_string())?;
+    async fn send_own(
+        &self,
+        client: &PeerClient,
+        mut bundle: transfer::Bundle,
+        revision: u64,
+        print: String,
+    ) -> Result<(), String> {
         bundle.revision = revision;
         client.send_settings(&bundle).await?;
         let mut live = self.lock();
         live.sent_revision = Some(revision);
+        live.sent_print = Some(print);
         live.sent_at = Some(now_iso());
+        live.refused = None;
         drop(live);
         self.events.emit(GatewayEvent::PlacementChanged { what: "sent".into() });
         Ok(())
@@ -581,17 +771,36 @@ impl StationGateway {
     /// Sends a kept copy back to the station: it applies it at a restart.
     pub async fn restore(&self, id: &str, actor: Option<Actor>) -> Result<(), String> {
         let client = self.client().ok_or("шлюз не на колонке")?;
-        let key = self.secrets.get(PEER_SECRET).ok_or("нет ключа пары")?;
-        let bundle = transfer::open(&self.backups.read(id)?, &key)?;
+        let bundle = self.open_copy(id)?;
         client.send_settings(&bundle).await?;
         self.events.emit(GatewayEvent::GatewayStateChanged { what: format!("restore {id}"), actor });
         Ok(())
     }
 
-    /// Where the main settings live: the station (a copy here) or here (sent there). Told to the station too.
+    /// Where the main settings live: the station (a copy here) or here (sent there). Told to the station too. Back to
+    /// the station («Вернуть настройки на колонку», its confirmation promises the computer's latest goes there): the
+    /// latest goes first when the station has not got it yet (`deliver`), and only then is the station told and the
+    /// record changed. The station starts again on the package a second after it answered — the word «station» reaches
+    /// it before; should it not, a second press only tells it, the package is not sent again. Not taken: the record
+    /// stays «на ПК», the station as it was, and the person hears why.
     pub async fn set_settings_home(&self, home: SettingsHome, actor: Option<Actor>) -> Result<(), String> {
         let mut record = self.on_station().ok_or("шлюз не на колонке")?;
-        if let Some(client) = self.client() {
+        let client = self.client();
+        if record.settings_home == SettingsHome::Pc && home == SettingsHome::Station {
+            let delivered = match &client {
+                Some(client) => self.deliver(client).await,
+                None => Err("нет ключа пары".to_string()),
+            };
+            delivered.map_err(|error| {
+                let why = if error == STATION_OLDER {
+                    "шлюз на колонке старше компьютера и не берёт его настройки — обновите колонку"
+                } else {
+                    error.as_str()
+                };
+                format!("Колонка не приняла последние настройки компьютера: {why}")
+            })?;
+        }
+        if let Some(client) = &client {
             let word = match home {
                 SettingsHome::Station => "station",
                 SettingsHome::Pc => "pc",
@@ -600,7 +809,12 @@ impl StationGateway {
         }
         record.settings_home = home;
         self.store(&record, actor).map_err(|error| error.message)?;
-        self.lock().sent_revision = None;
+        {
+            let mut live = self.lock();
+            live.sent_revision = None;
+            live.sent_print = None;
+            live.refused = None;
+        }
         self.events.emit(GatewayEvent::PlacementChanged { what: "settingsHome".into() });
         Ok(())
     }
@@ -783,6 +997,12 @@ impl StationGateways {
         self.lock().values().filter(|watch| watch.record().is_some()).cloned().collect()
     }
 
+    /// The station with a placement here under this key, without making a watch for a key nobody knows (the helper's
+    /// pass takes any key from the address).
+    pub fn find(&self, key: &str) -> Option<Arc<StationGateway>> {
+        self.all().into_iter().find(|watch| watch.key() == key)
+    }
+
     /// The station asked about; with none named, the one with a placement here — when it is the only one.
     pub fn pick(&self, key: Option<&str>) -> Option<Arc<StationGateway>> {
         match key.filter(|key| !key.is_empty()) {
@@ -803,6 +1023,30 @@ impl StationGateways {
         self.all().iter().map(|watch| watch.view()).collect()
     }
 
+    /// No station of this computer's is to come to its /uni.ws: some station's record says its gateway runs on it, and
+    /// every station approved here has such a record. The station watch is silent about «не подключена» then
+    /// (src/operations/station_watch.rs): the station talks to its own gateway (live, 10.11, it warned all the same).
+    pub fn none_here(&self) -> bool {
+        let records = self.settings.get(&STATION_PLACEMENTS, None).unwrap_or_default();
+        let elsewhere: Vec<(&String, &StationPlacement)> =
+            records.iter().filter(|(_, record)| record.placement.on_station()).collect();
+        if elsewhere.is_empty() {
+            return false;
+        }
+        let approved: Vec<String> = self
+            .db
+            .with(|connection| {
+                connection
+                    .prepare("SELECT device FROM stations WHERE status = 'approved'")?
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect()
+            })
+            .unwrap_or_default();
+        approved.iter().all(|device| {
+            elsewhere.iter().any(|(key, record)| *key == device || record.device.as_deref() == Some(device.as_str()))
+        })
+    }
+
     pub fn set_teller(&self, teller: Teller) {
         let _ = self.teller.set(teller.clone());
         for watch in self.lock().values() {
@@ -815,16 +1059,6 @@ impl StationGateways {
         for watch in self.lock().values() {
             watch.set_home_addresses(addresses.clone());
         }
-    }
-
-    /// The pair's key: one for the computer, every station's gateway opens with it.
-    pub fn peer_key(&self) -> Result<String, ApiError> {
-        if let Some(key) = self.secrets.get(PEER_SECRET) {
-            return Ok(key);
-        }
-        let key = super::peer::new_key();
-        self.secrets.set(PEER_SECRET, Some(&key))?;
-        Ok(key)
     }
 
     /// A gateway put on a station by hand: its watch is by its address until the station is known by its device.
@@ -892,23 +1126,91 @@ mod tests {
 
     use super::*;
     use crate::config::Env;
-    use crate::settings::definitions::{ModeSetting, PanelMode, MODE};
+    use crate::settings::definitions::{ModeSetting, PanelMode, KEEP_REQUESTS, MODE};
 
-    /// A pretend station gateway: /health with a revision, its settings sealed with the pair's key, and what it was
-    /// sent.
+    /// A pretend station gateway of this build: /health with a revision, its settings sealed with the pair's key, and
+    /// what it was sent.
     async fn station(key: &str, revision: Arc<AtomicUsize>, received: Arc<Mutex<Vec<transfer::Bundle>>>) -> u16 {
+        pretend(key, Pretend::current(revision, received)).await
+    }
+
+    /// What a pretend station gateway says and holds, and what the computer asked of it.
+    struct Pretend {
+        revision: Arc<AtomicUsize>,
+        received: Arc<Mutex<Vec<transfer::Bundle>>>,
+        version: Mutex<String>,
+        /// The schema its import knows: a package that needs a newer one is refused as every build's route refuses it
+        /// (routes.rs, `import`), before anything is kept.
+        knows: AtomicUsize,
+        /// What its /health says it knows (`build.settingsSchema`): a build from before it was said, nothing.
+        says: Mutex<Option<u32>>,
+        /// Its own settings as its package carries them. At an earlier build a package taken goes into them as that
+        /// build's import applies it (`transfer::earlier_import`).
+        own: Mutex<BTreeMap<String, Value>>,
+        /// «GET transfer», «POST transfer», «refused», «home station»: what the computer asked of it, in order.
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl Pretend {
+        /// A station's gateway of this build: it knows schema 2 and says so.
+        fn current(revision: Arc<AtomicUsize>, received: Arc<Mutex<Vec<transfer::Bundle>>>) -> Arc<Pretend> {
+            Arc::new(Pretend {
+                revision,
+                received,
+                version: Mutex::new("0.0.1".into()),
+                knows: AtomicUsize::new(transfer::SCHEMA as usize),
+                says: Mutex::new(Some(transfer::SCHEMA)),
+                own: Mutex::new(BTreeMap::new()),
+                calls: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn fresh() -> Arc<Pretend> {
+            Pretend::current(Arc::new(AtomicUsize::new(1)), Arc::new(Mutex::new(Vec::new())))
+        }
+
+        /// A station's gateway of an earlier build (the release 0.2.0): its import knows schema 1, its /health says
+        /// nothing of it, and its package carries these settings of its own — its mode, its waiting voice.
+        fn earlier(own: &[(&str, Value)]) -> Arc<Pretend> {
+            let station = Pretend::fresh();
+            station.knows.store(1, Ordering::Relaxed);
+            *station.says.lock().unwrap() = None;
+            station.own.lock().unwrap().extend(own.iter().map(|(key, value)| (key.to_string(), value.clone())));
+            station
+        }
+
+        fn received(&self) -> Vec<transfer::Bundle> {
+            self.received.lock().unwrap().clone()
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+
+        fn own(&self, key: &str) -> Option<Value> {
+            self.own.lock().unwrap().get(key).cloned()
+        }
+    }
+
+    async fn pretend(key: &str, station: Arc<Pretend>) -> u16 {
         let db = Arc::new(Db::memory());
         let secrets = Arc::new(SecretsService::new(db.clone(), None).unwrap());
-        let (health_revision, key_out, key_in) = (revision.clone(), key.to_string(), key.to_string());
+        let (key_out, key_in) = (key.to_string(), key.to_string());
+        let (seen, read, sent, told) = (station.clone(), station.clone(), station.clone(), station);
         let router = Router::new()
             .route(
                 "/health",
                 get(move || {
-                    let revision = health_revision.load(Ordering::Relaxed);
+                    let version = seen.version.lock().unwrap().clone();
+                    let mut build = serde_json::json!({"version": version, "peerApi": PEER_API});
+                    if let Some(schema) = *seen.says.lock().unwrap() {
+                        build["settingsSchema"] = serde_json::json!(schema);
+                    }
+                    let revision = seen.revision.load(Ordering::Relaxed);
                     async move {
                         axum::Json(serde_json::json!({"message": {
                             "status": "ok",
-                            "build": {"version": "0.0.1", "peerApi": PEER_API},
+                            "build": build,
                             "placement": {"role": "station", "settingsRevision": revision}
                         }}))
                     }
@@ -917,19 +1219,41 @@ mod tests {
             .route(
                 "/api/v1/transfer",
                 get(move || {
+                    read.calls.lock().unwrap().push("GET transfer".into());
                     let mut bundle = transfer::export(&db, &secrets, "station").unwrap();
-                    bundle.revision = revision.load(Ordering::Relaxed) as u64;
+                    bundle.revision = read.revision.load(Ordering::Relaxed) as u64;
+                    bundle.settings.extend(read.own.lock().unwrap().clone());
                     let sealed = transfer::seal(&bundle, &key_out);
                     async move { axum::Json(serde_json::json!({ "message": sealed })) }
                 })
                 .post(move |axum::Json(sealed): axum::Json<Value>| {
-                    received.lock().unwrap().push(transfer::open(&sealed, &key_in).unwrap());
-                    async { axum::Json(serde_json::json!({"message": {"applied": "restart"}})) }
+                    let bundle = transfer::open(&sealed, &key_in).unwrap();
+                    let knows = sent.knows.load(Ordering::Relaxed);
+                    let newer = bundle.schema as usize > knows;
+                    sent.calls.lock().unwrap().push(if newer { "refused" } else { "POST transfer" }.into());
+                    if !newer {
+                        if knows < transfer::SCHEMA as usize {
+                            transfer::earlier_import(&mut sent.own.lock().unwrap(), &bundle).unwrap();
+                        }
+                        sent.received.lock().unwrap().push(bundle);
+                    }
+                    async move {
+                        if newer {
+                            let refusal = serde_json::json!({ "message": transfer::NOT_FOR_THIS_GATEWAY });
+                            (axum::http::StatusCode::BAD_REQUEST, axum::Json(refusal))
+                        } else {
+                            let applied = serde_json::json!({"message": {"applied": "restart"}});
+                            (axum::http::StatusCode::CREATED, axum::Json(applied))
+                        }
+                    }
                 }),
             )
             .route(
                 "/api/v1/placement/settings-home",
-                post(|| async { axum::Json(serde_json::json!({"message": {}})) }),
+                post(move |axum::Json(body): axum::Json<Value>| {
+                    told.calls.lock().unwrap().push(format!("home {}", body["home"].as_str().unwrap_or("?")));
+                    async { axum::Json(serde_json::json!({"message": {}})) }
+                }),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1038,22 +1362,233 @@ mod tests {
         watch.poll().await;
         assert_eq!(watch.backups.latest().unwrap().revision, 4);
 
-        // The settings live here: sent when they change, once.
+        // The settings live here: sent when they change, once — without the mode, which the station switches itself
+        // (by voice, from either panel); a change of the computer's own mode sends nothing (review G1).
+        settings.set(&MODE, &ModeSetting { mode: PanelMode::Gateway }, None).unwrap();
         watch.set_settings_home(SettingsHome::Pc, None).await.unwrap();
+        assert!(watch.view().station_behind, "nothing sent yet");
         watch.poll().await;
         watch.poll().await;
         assert_eq!(received.lock().unwrap().len(), 1);
         assert!(!watch.view().station_behind);
-        settings.set(&MODE, &ModeSetting { mode: PanelMode::Relay }, None).unwrap();
+        settings.set(&KEEP_REQUESTS, &7, None).unwrap();
         assert!(watch.view().station_behind, "changed here, not there yet");
         watch.poll().await;
         assert_eq!(received.lock().unwrap().len(), 2);
-        assert_eq!(received.lock().unwrap()[1].settings["gateway_mode"], serde_json::json!({"mode": "relay"}));
+        assert_eq!(received.lock().unwrap()[1].settings["requests_keep_days"], serde_json::json!(7));
+        settings.set(&MODE, &ModeSetting { mode: PanelMode::Relay }, None).unwrap();
+        assert!(!watch.view().station_behind, "the computer's own mode is nothing the station lacks, before any look");
+        watch.poll().await;
+        assert_eq!(received.lock().unwrap().len(), 2, "the computer's own mode: nothing sent, no restart there");
+        assert!(!watch.view().station_behind);
+        assert!(received.lock().unwrap().iter().all(|sent| !sent.settings.contains_key("gateway_mode")));
 
         // A kept copy goes back.
         let copy = watch.backups.latest().unwrap();
         watch.restore(&copy.id, None).await.unwrap();
         assert_eq!(received.lock().unwrap().len(), 3);
+    }
+
+    /// The computer's settings «на ПК» with this station (the record says so) and its own settings as they are now.
+    fn settings_on_the_computer(watch: &StationGateway, port: u16) {
+        let mut record = on_station(port, Placement::Station, None);
+        record.settings_home = SettingsHome::Pc;
+        watch.set_record(Some(&record), None).unwrap();
+    }
+
+    /// Review G1, round five: a station's gateway of an earlier build (the release 0.2.0: its /health says no schema)
+    /// knows schema 1 and its import removes each setting a package lacks. It gets the whole package with its own
+    /// mode and waiting voice in it, read from its own package each time — its import leaves it both — and the
+    /// computer's later edits reach it; the computer's own mode, or the station's, sends nothing.
+    #[tokio::test]
+    async fn an_earlier_station_gets_the_whole_package_with_its_own_mode_and_waiting_voice() {
+        let dir = tempfile::tempdir().unwrap();
+        let (watch, settings) = computer(dir.path());
+        let key = watch.peer_key().unwrap();
+        let (relay, voice) = (serde_json::json!({ "mode": "relay" }), serde_json::json!({ "modelId": "the-voice" }));
+        let station = Pretend::earlier(&[("gateway_mode", relay.clone()), ("voice_pending", voice.clone())]);
+        let port = pretend(&key, station.clone()).await;
+        settings_on_the_computer(&watch, port);
+        settings.set(&MODE, &ModeSetting { mode: PanelMode::Own }, None).unwrap();
+        settings.set(&KEEP_REQUESTS, &7, None).unwrap();
+
+        watch.poll().await;
+        let sent = station.received();
+        assert_eq!(sent.len(), 1, "{:?}", watch.live().sync_error);
+        assert_eq!(sent[0].schema, transfer::WHOLE, "a package its import takes");
+        assert_eq!((&sent[0].settings["gateway_mode"], &sent[0].settings["voice_pending"]), (&relay, &voice));
+        assert_eq!(sent[0].settings["requests_keep_days"], serde_json::json!(7));
+        assert_eq!(station.calls(), vec!["GET transfer", "POST transfer"], "its own package read first");
+        assert_eq!((station.own("gateway_mode"), station.own("voice_pending")), (Some(relay), Some(voice.clone())));
+        assert_eq!(station.own("requests_keep_days"), Some(serde_json::json!(7)), "the computer's settings taken");
+        let view = watch.view();
+        assert!(view.live.sync_error.is_none() && !view.station_behind);
+
+        // The station switches its own mode, the computer its own: nothing of the computer's to send.
+        let gateway = serde_json::json!({ "mode": "gateway" });
+        station.own.lock().unwrap().insert("gateway_mode".into(), gateway.clone());
+        settings.set(&MODE, &ModeSetting { mode: PanelMode::Relay }, None).unwrap();
+        assert!(!watch.view().station_behind);
+        watch.poll().await;
+        assert_eq!(station.received().len(), 1, "no restart there for either mode");
+
+        // A later edit of the computer reaches it, with the mode it has now.
+        settings.set(&KEEP_REQUESTS, &9, None).unwrap();
+        assert!(watch.view().station_behind, "changed here, not there yet");
+        watch.poll().await;
+        let sent = station.received();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1].settings["requests_keep_days"], serde_json::json!(9));
+        assert_eq!((&sent[1].settings["gateway_mode"], &sent[1].settings["voice_pending"]), (&gateway, &voice));
+        assert_eq!((station.own("gateway_mode"), station.own("voice_pending")), (Some(gateway), Some(voice)));
+        assert!(!watch.view().station_behind);
+
+        // Nothing of its own stored there: nothing of the computer's goes in its place.
+        station.own.lock().unwrap().retain(|key, _| key != "gateway_mode" && key != "voice_pending");
+        settings.set(&KEEP_REQUESTS, &11, None).unwrap();
+        watch.poll().await;
+        let sent = station.received();
+        assert_eq!(sent.len(), 3);
+        assert!(!sent[2].settings.contains_key("gateway_mode") && !sent[2].settings.contains_key("voice_pending"));
+        assert_eq!(station.own("gateway_mode"), None, "it keeps going by its .env's");
+    }
+
+    /// A station's gateway that says it knows schema 2 gets the routine package, its own package not read.
+    #[tokio::test]
+    async fn a_station_that_knows_schema_2_gets_the_routine_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let (watch, settings) = computer(dir.path());
+        let key = watch.peer_key().unwrap();
+        let station = Pretend::fresh();
+        station.own.lock().unwrap().insert("gateway_mode".into(), serde_json::json!({ "mode": "relay" }));
+        let port = pretend(&key, station.clone()).await;
+        settings_on_the_computer(&watch, port);
+        settings.set(&MODE, &ModeSetting { mode: PanelMode::Own }, None).unwrap();
+        settings.set(&KEEP_REQUESTS, &7, None).unwrap();
+
+        watch.poll().await;
+        let sent = station.received();
+        assert_eq!(sent.iter().map(|sent| sent.schema).collect::<Vec<_>>(), vec![transfer::SCHEMA]);
+        assert!(!sent[0].settings.contains_key("gateway_mode"), "its import keeps its own mode");
+        assert_eq!(sent[0].settings["requests_keep_days"], serde_json::json!(7));
+        assert_eq!(station.calls(), vec!["POST transfer"]);
+    }
+
+    /// A refusal for the schema all the same — a station's gateway whose /health says it knows schema 2 and refuses it
+    /// (rolled back since) — is said plainly on the card and not sent again every look; once its /health says another
+    /// version or schema, it goes again, the way that build takes it.
+    #[tokio::test]
+    async fn a_refusal_is_said_plainly_and_not_sent_again_until_the_station_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (watch, settings) = computer(dir.path());
+        let key = watch.peer_key().unwrap();
+        let station = Pretend::fresh();
+        station.knows.store(1, Ordering::Relaxed);
+        let port = pretend(&key, station.clone()).await;
+        settings_on_the_computer(&watch, port);
+        settings.set(&KEEP_REQUESTS, &7, None).unwrap();
+
+        watch.poll().await;
+        let view = watch.view();
+        assert_eq!(view.live.sync_error.as_deref(), Some(STATION_OLDER));
+        assert!(view.station_behind && view.live.sent_revision.is_none() && station.received().is_empty());
+        watch.poll().await;
+        watch.poll().await;
+        assert_eq!(station.calls(), vec!["refused"], "the same print to the same station: not again");
+        assert_eq!(watch.live().sync_error.as_deref(), Some(STATION_OLDER), "and the card still says why");
+
+        // Another version by its /health: tried again (refused again here).
+        *station.version.lock().unwrap() = "0.0.2".into();
+        watch.poll().await;
+        watch.poll().await;
+        assert_eq!(station.calls(), vec!["refused", "refused"]);
+        // A new edit of the computer is tried once too.
+        settings.set(&KEEP_REQUESTS, &9, None).unwrap();
+        watch.poll().await;
+        watch.poll().await;
+        assert_eq!(station.calls().len(), 3);
+
+        // Its /health says no schema now (its build is an earlier one): the whole package, taken.
+        *station.says.lock().unwrap() = None;
+        watch.poll().await;
+        assert_eq!(station.calls()[3..], ["GET transfer", "POST transfer"]);
+        let sent = station.received();
+        assert_eq!((sent.len(), sent[0].schema), (1, transfer::WHOLE));
+        assert_eq!(sent[0].settings["requests_keep_days"], serde_json::json!(9));
+        let view = watch.view();
+        assert!(view.live.sync_error.is_none() && !view.station_behind && view.live.refused.is_none());
+    }
+
+    /// «Вернуть настройки на колонку»: an edit of the computer made after the last sending goes to the station first,
+    /// the way its build takes it — the routine package, or the whole one with its own mode and waiting voice — and
+    /// only then is the station told and the record changed. With nothing new, the station is only told.
+    #[tokio::test]
+    async fn back_to_the_station_the_computers_latest_goes_first() {
+        let (relay, voice) = (serde_json::json!({ "mode": "relay" }), serde_json::json!({ "modelId": "the-voice" }));
+        for earlier in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let (watch, settings) = computer(dir.path());
+            let key = watch.peer_key().unwrap();
+            let station = if earlier {
+                Pretend::earlier(&[("gateway_mode", relay.clone()), ("voice_pending", voice.clone())])
+            } else {
+                Pretend::fresh()
+            };
+            let port = pretend(&key, station.clone()).await;
+            settings_on_the_computer(&watch, port);
+            settings.set(&MODE, &ModeSetting { mode: PanelMode::Own }, None).unwrap();
+            settings.set(&KEEP_REQUESTS, &7, None).unwrap();
+            watch.poll().await;
+            assert_eq!(station.received().len(), 1, "earlier: {earlier}");
+
+            settings.set(&KEEP_REQUESTS, &9, None).unwrap();
+            watch.set_settings_home(SettingsHome::Station, None).await.unwrap();
+            let sent = station.received();
+            assert_eq!(sent.len(), 2, "earlier: {earlier}");
+            assert_eq!(sent[1].settings["requests_keep_days"], serde_json::json!(9), "earlier: {earlier}");
+            if earlier {
+                assert_eq!(sent[1].schema, transfer::WHOLE);
+                assert_eq!((&sent[1].settings["gateway_mode"], &sent[1].settings["voice_pending"]), (&relay, &voice));
+            } else {
+                assert!(sent[1].schema == transfer::SCHEMA && !sent[1].settings.contains_key("gateway_mode"));
+            }
+            let calls = station.calls();
+            assert_eq!(calls[calls.len() - 2..], ["POST transfer", "home station"], "earlier: {earlier}");
+            assert_eq!(watch.record().unwrap().settings_home, SettingsHome::Station);
+
+            // Back «на ПК» and sent; returned with nothing new since: the station is only told.
+            watch.set_settings_home(SettingsHome::Pc, None).await.unwrap();
+            watch.poll().await;
+            let before = station.received().len();
+            watch.set_settings_home(SettingsHome::Station, None).await.unwrap();
+            assert_eq!(station.received().len(), before, "earlier: {earlier}");
+            assert_eq!(station.calls().last().map(String::as_str), Some("home station"));
+        }
+    }
+
+    /// «Вернуть» while the station's gateway does not answer, or does not take the latest: the record stays «на ПК»,
+    /// the station is not told, and the person hears why.
+    #[tokio::test]
+    async fn back_to_a_station_that_does_not_take_the_latest_the_record_stays_on_the_computer() {
+        let dir = tempfile::tempdir().unwrap();
+        let (watch, settings) = computer(dir.path());
+        let key = watch.peer_key().unwrap();
+        settings_on_the_computer(&watch, 9);
+        settings.set(&KEEP_REQUESTS, &7, None).unwrap();
+        let error = watch.set_settings_home(SettingsHome::Station, None).await.unwrap_err();
+        assert!(error.starts_with("Колонка не приняла последние настройки компьютера: "), "{error}");
+        assert_eq!(watch.record().unwrap().settings_home, SettingsHome::Pc);
+
+        // One that answers, says it knows schema 2 and refuses the package (rolled back since).
+        let station = Pretend::fresh();
+        station.knows.store(1, Ordering::Relaxed);
+        settings_on_the_computer(&watch, pretend(&key, station.clone()).await);
+        let error = watch.set_settings_home(SettingsHome::Station, None).await.unwrap_err();
+        let older = "Колонка не приняла последние настройки компьютера: шлюз на колонке старше компьютера и не берёт \
+                     его настройки — обновите колонку";
+        assert_eq!(error, older);
+        assert_eq!(station.calls(), vec!["refused"], "the station is not told");
+        assert_eq!(watch.record().unwrap().settings_home, SettingsHome::Pc);
     }
 
     #[tokio::test]
@@ -1084,6 +1619,117 @@ mod tests {
         assert!(view.copy_stale, "no copy at all");
         assert_eq!(view.warnings.iter().map(|warning| warning.kind).collect::<Vec<_>>(), vec!["silent"]);
         assert_eq!(told.lock().unwrap().len(), 1, "told once while it holds");
+    }
+
+    /// Live, 10.11: «Шлюз на колонке не отвечает» came right after the move — the fresh record had heard nothing yet,
+    /// and the station reboots for a minute. The 2 minutes count from the move.
+    #[tokio::test]
+    async fn a_station_just_moved_is_not_silent_before_two_minutes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (watch, _) = computer(dir.path());
+        watch.peer_key().unwrap();
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let heard = told.clone();
+        watch.set_teller(Arc::new(move |text| heard.lock().unwrap().push(text)));
+        let mut record = placed("127.0.0.1", Some("dev1"), Placement::StationServer);
+        record.port = 9;
+        record.moved_at = Some(now_iso());
+        watch.set_record(Some(&record), None).unwrap();
+        watch.poll().await;
+        assert!(!watch.live().reachable);
+        assert!(watch.warnings().is_empty(), "{:?}", watch.warnings());
+        assert!(told.lock().unwrap().is_empty());
+
+        let long_ago = (chrono::Utc::now() - chrono::Duration::minutes(3)).to_rfc3339();
+        record.moved_at = Some(long_ago);
+        watch.set_record(Some(&record), None).unwrap();
+        watch.poll().await;
+        assert_eq!(watch.warnings().iter().map(|warning| warning.kind).collect::<Vec<_>>(), vec!["silent"]);
+        assert_eq!(told.lock().unwrap().len(), 1);
+    }
+
+    /// Live, 10.11: the computer's station watch told «не подключена» while the station talked to its own gateway.
+    /// No station is to come to this computer's /uni.ws while each approved one has its gateway on it.
+    #[test]
+    fn no_station_is_expected_here_while_each_runs_its_own_gateway() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::memory());
+        let settings = Arc::new(SettingsService::new(db.clone(), EventBus::new()));
+        let approve = |device: &str| {
+            db.with(|c| {
+                c.execute(
+                    "INSERT INTO stations (device, name, status, first_seen, last_seen) VALUES (?1, 'Детская', 'approved', 'then', 'then')",
+                    rusqlite::params![device],
+                )
+            })
+            .unwrap();
+        };
+        approve("h:nursery");
+        let all = gateways(dir.path(), settings.clone(), db.clone());
+        assert!(!all.none_here(), "no record: the station comes here");
+        all.watch("h:nursery").set_record(Some(&placed("192.0.2.23", Some("h:nursery"), Placement::Pc)), None).unwrap();
+        assert!(!all.none_here(), "its record says «pc»");
+        all.watch("h:nursery")
+            .set_record(Some(&placed("192.0.2.23", Some("h:nursery"), Placement::StationServer)), None)
+            .unwrap();
+        assert!(all.none_here(), "its gateway is on it");
+        assert_eq!(all.watch("h:nursery").name().as_deref(), Some("Детская"));
+        // A second station approved here, its voice at this computer: it is missed again.
+        approve("h:kitchen");
+        assert!(!all.none_here());
+    }
+
+    #[tokio::test]
+    async fn a_second_station_linked_keeps_its_own_pair_key_beside_the_firsts() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::memory());
+        let settings = Arc::new(SettingsService::new(db.clone(), EventBus::new()));
+        let all = gateways(dir.path(), settings, db);
+        let keys = ["the-kitchens-own-pair-key-0123456789", "the-bedrooms-own-pair-key-0123456789"];
+        let mut watches = Vec::new();
+        for (name, key) in ["h:kitchen", "h:bedroom"].into_iter().zip(keys) {
+            let port = station(key, Arc::new(AtomicUsize::new(1)), Arc::new(Mutex::new(Vec::new()))).await;
+            let watch = all.watch(name);
+            watch.link("127.0.0.1", port, key, None).await.unwrap();
+            watches.push(watch);
+        }
+        for (watch, key) in watches.iter().zip(keys) {
+            assert_eq!(watch.pair_key().as_deref(), Some(key));
+            assert!(watch.client().unwrap().settings().await.is_ok(), "{} opens with its own key", watch.key());
+            watch.poll().await;
+            assert!(watch.live().reachable && watch.live().sync_error.is_none(), "{:?}", watch.live());
+        }
+        assert!(watches[0].secrets.get(PEER_SECRET).is_none(), "the computer's own key is not touched");
+
+        // A station from before each kept its own: it opens with the computer's key, so do its copies.
+        let before = "the-computers-one-key-from-before-0123";
+        let port = station(before, Arc::new(AtomicUsize::new(1)), Arc::new(Mutex::new(Vec::new()))).await;
+        watches[0].secrets.set(PEER_SECRET, Some(before)).unwrap();
+        let hall = all.watch("h:hall");
+        hall.set_record(Some(&on_station(port, Placement::Station, None)), None).unwrap();
+        assert_eq!(hall.pair_key().as_deref(), Some(before));
+        assert!(hall.client().unwrap().settings().await.is_ok());
+        hall.poll().await;
+        let copy = hall.backups.latest().expect("a copy sealed with the computer's key");
+        assert_eq!(watches[0].pair_key().as_deref(), Some(keys[0]), "its own before the computer's");
+
+        // Its next move gives it a key of its own (kept once installed), never the computer's one: whoever is the
+        // admin of one station (and may take its key) is not the admin of every station this computer moved (S2).
+        assert_eq!(hall.own_key(), None, "none of its own yet");
+        let own = crate::placement::peer::new_key();
+        hall.keep_key(&own).unwrap();
+        assert_eq!(hall.pair_key().as_deref(), Some(own.as_str()));
+        assert_eq!(hall.secrets.get(PEER_SECRET).as_deref(), Some(before), "the computer's one key is not touched");
+        assert!(hall.open_copy(&copy.id).is_ok(), "a copy from before opens still");
+        let porch = all.watch("h:porch");
+        let porchs = porch.peer_key().unwrap();
+        assert!(porchs != own && porchs != before, "each station its own");
+        assert_eq!(porch.own_key(), Some(porchs));
+
+        // The pass asks by any key: one nobody linked makes no watch.
+        assert!(all.find("h:nobody").is_none());
+        assert!(!all.lock().contains_key("h:nobody"));
+        assert_eq!(all.find("h:hall").map(|watch| watch.key().to_string()).as_deref(), Some("h:hall"));
     }
 
     #[tokio::test]

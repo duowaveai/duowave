@@ -16,3 +16,6 @@ docs/media/duowave-promo-light.mp4
 docs/media/duowave-promo-light-vertical.mp4
 # Notes on the media for the owner (sources outside the repository, the voice-over licence to check).
 docs/media/README.md
+# Design mockups and their canvas sources (glass, roles): working drafts with links to the owner's private canvases, not for
+# strangers (the owner, 11.11.2026).
+docs/design

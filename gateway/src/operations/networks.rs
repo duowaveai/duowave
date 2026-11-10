@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn matches_networks_both_families() {
-        assert!(in_networks("192.168.1.100", &nets(&["private"])));
+        assert!(in_networks("192.168.1.30", &nets(&["private"])));
         assert!(in_networks("::ffff:192.168.1.5", &nets(&["192.168.1.0/24"])));
         assert!(in_networks("::1", &nets(&["private"])));
         assert!(!in_networks("8.8.8.8", &nets(&["private"])));

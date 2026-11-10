@@ -64,9 +64,11 @@ export function ConfirmHost() {
         };
     }, []);
     if (!current) return null;
+    // Слой вопросов — над всем: над «+», окном раздела на телефоне и шитом, из которого спросили.
     return (
         <Sheet
             key={queue.length + current.title}
+            layer="confirm"
             title={current.title}
             onClose={() => current.answer(false)}
             footer={

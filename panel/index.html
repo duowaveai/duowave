@@ -14,20 +14,25 @@
         // The theme before the bundle loads, so a dark page never flashes light and a chosen theme never flashes the
         // default one. The choice (panel-theme): { v: 2, id, mode }, null where the person never picked. Older builds
         // stored { id: 'glass', mode } by themselves, without a pick: that is the default theme in its own mode now;
-        // any other theme id there was a real pick. The default theme's id and mode are on <style id="theme-boot">,
-        // its tokens are built into this page (vite.config.ts); the cached CSS of the very theme and mode follows.
+        // any other theme id there was a real pick. «Стекло», «Простор» and «Минимал · панель» are gone (10.11.2026):
+        // a pick of them is the default theme, and the two with a sidebar leave the sidebar view (panel-view) behind.
+        // The default theme's id and mode are on <style id="theme-boot">, its tokens are built into this page
+        // (vite.config.ts); the cached CSS of the very theme and mode follows.
         try {
             const boot = document.getElementById('theme-boot');
             const fallbackId = (boot && boot.dataset.id) || '';
             const fallbackMode = boot && boot.dataset.mode;
             const okMode = (value) => value === 'light' || value === 'dark';
+            const retired = { glass: 'desk', prostor: 'sidebar', 'minimal-panel': 'sidebar' };
             let raw = null;
             try {
                 raw = JSON.parse(localStorage.getItem('panel-theme') || 'null');
             } catch (e) {}
             const fresh = !!raw && raw.v === 2;
-            const id = raw && typeof raw.id === 'string' && raw.id && (fresh || raw.id !== 'glass') ? raw.id : null;
-            const picked = raw && okMode(raw.mode) && (fresh || id) ? raw.mode : null;
+            const was = raw && typeof raw.id === 'string' ? raw.id : '';
+            const id = was && (fresh || was !== 'glass') && !retired[was] ? was : null;
+            // An old automatic { id: 'glass', mode } is no pick; a retired «Простор» or «Минимал · панель» was one.
+            const picked = raw && okMode(raw.mode) && (fresh || id || (retired[was] && was !== 'glass')) ? raw.mode : null;
             const mode = picked
                 || (!id && okMode(fallbackMode) ? fallbackMode : (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'));
             const root = document.documentElement;
@@ -35,15 +40,15 @@
             root.dataset.themePick = id || '';
             root.dataset.modePick = picked || '';
             root.dataset.themeId = id || fallbackId;
-            if (!id && boot && boot.dataset.look) root.dataset.look = boot.dataset.look;
+            root.dataset.look = 'minimal';
+            const view = localStorage.getItem('panel-view');
+            root.dataset.shell = view === 'sidebar' || view === 'desk' ? view : (retired[was] || 'desk');
             const cached = JSON.parse(localStorage.getItem('panel-theme-css') || 'null');
             if (cached && cached.id === (id || fallbackId) && cached.mode === mode && typeof cached.css === 'string') {
                 const style = document.createElement('style');
                 style.id = 'theme';
                 style.textContent = cached.css;
                 document.head.appendChild(style);
-                if (typeof cached.look === 'string') root.dataset.look = cached.look;
-                if (typeof cached.layout === 'string') root.dataset.shell = cached.layout;
             }
         } catch (e) {
             document.documentElement.dataset.theme = 'dark';

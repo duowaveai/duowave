@@ -1,8 +1,15 @@
 //! Updates (new in the Rust gateway): the gateway learns of a new version from the release feed, offers it — in the
 //! panel and, in the desktop app, in the tray menu — and installs it only when a person with `system.update` agrees.
-//! A gateway that something else manages (the desktop app, a Docker image, a Home Assistant add-on) offers the
-//! update and leaves installing it to that manager: the app installs through its own updater (a hook it sets), an
-//! image or an add-on is updated where it came from.
+//! An urgent release is the exception: the feed marks the versions it fixes (critical_below), and a gateway below
+//! that installs it by itself on its next check (UPDATE_AUTO_CRITICAL turns that off) — the people who never open the
+//! panel get the fix too. A gateway that something else manages (the desktop app, a Docker image, a Home Assistant
+//! add-on) offers the update and leaves installing it to that manager: the app installs through its own updater (a
+//! hook it sets, urgent releases included), an image or an add-on is updated where it came from.
+//!
+//! The feed is not signed, the archives are: each carries release.json with its version and platform, under the same
+//! signature as the program, and a gateway installs an archive only as that very version, built for it, and newer
+//! than its own (`install::check_release`) — a feed in the wrong hands cannot take it back to an older release.
+//! Feed and archives come over https only (`feed::secure`).
 
 pub mod feed;
 pub mod install;
@@ -57,6 +64,9 @@ pub struct Offer {
     pub notes: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date: Option<String>,
+    /// Urgent for this version (`feed::is_critical`): the panel says so loudly, and a gateway that installs its own
+    /// updates installs it by itself.
+    pub critical: bool,
     #[serde(skip)]
     asset: Option<Asset>,
 }
@@ -81,6 +91,9 @@ pub struct UpdateStatus {
     pub managed_by: Option<String>,
     /// Whether «Обновить» can install the offered version here.
     pub can_install: bool,
+    /// Whether an urgent release installs here by itself: UPDATE_AUTO_CRITICAL is on and this gateway (or the app
+    /// around it) installs its own updates. Off in Docker, Home Assistant, a package: there the panel says what to do.
+    pub auto_critical: bool,
     /// What to do instead, when the gateway cannot install it itself.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
@@ -115,6 +128,8 @@ pub struct UpdatesService {
     station: std::sync::atomic::AtomicBool,
     downloads: PathBuf,
     check_every: Option<Duration>,
+    /// UPDATE_AUTO_CRITICAL.
+    auto_critical: bool,
     events: EventBus,
     state: Mutex<Progress>,
     installer: OnceLock<Arc<dyn Installer>>,
@@ -151,6 +166,7 @@ impl UpdatesService {
             downloads,
             check_every: (config.updates.check_hours > 0)
                 .then(|| Duration::from_secs(config.updates.check_hours * 3600)),
+            auto_critical: config.updates.auto_critical,
             events,
             state: Mutex::new(Progress::default()),
             installer: OnceLock::new(),
@@ -200,6 +216,7 @@ impl UpdatesService {
                 .or_else(|| state.error.clone()),
             managed_by: self.managed(),
             can_install: can_install && state.available.is_some() && !state.installing,
+            auto_critical: self.auto_critical && can_install,
             hint,
         }
     }
@@ -238,17 +255,19 @@ impl UpdatesService {
         let Some(url) = self.feed_url.clone() else {
             return Ok(self.status());
         };
-        let outcome = ask_feed(&url, &self.current()).await;
+        let current = self.current();
+        let outcome = ask_feed(&url, &current).await;
         let announce = {
             let mut state = self.state.lock().unwrap();
             state.checked_at = Some(now_iso());
             match outcome {
                 Ok(feed) => {
                     state.error = None;
-                    state.available = feed::is_newer(&feed.version, &self.current()).then(|| Offer {
+                    state.available = feed::is_newer(&feed.version, &current).then(|| Offer {
                         version: feed.version.trim_start_matches('v').to_string(),
                         notes: feed.notes.clone(),
                         date: feed.pub_date.clone(),
+                        critical: feed::is_critical(&feed, &current),
                         asset: feed.platforms.get(&self.platform).cloned(),
                     });
                 }
@@ -322,6 +341,7 @@ impl UpdatesService {
         let keys = self.keys.as_ref().map_err(Clone::clone)?;
         let archive = install::download(&asset.url).await?;
         verify::verify_any(keys, &archive, &asset.signature)?;
+        install::check_release(&archive, &self.platform, &offer.version, &self.current())?;
         std::fs::create_dir_all(&self.downloads).map_err(|error| format!("{}: {error}", self.downloads.display()))?;
         let _ = std::fs::write(self.downloads.join(format!("duowave-{}.tar.gz", offer.version)), &archive);
         let program = install::unpack(&archive)?;
@@ -362,8 +382,9 @@ impl UpdatesService {
     }
 
     /// The computer sends the station's gateway its update (`POST /api/v1/updates/upload`, the pair's key): the
-    /// signature checked with this gateway's own key, room checked, the program put in place beside the one before,
-    /// then the gateway becomes the new program. No internet on the station needed.
+    /// signature checked with this gateway's own key, the archive's release.json too (this platform, the version sent,
+    /// newer than this one: no way back to an older release from here either), room checked, the program put in place
+    /// beside the one before, then the gateway becomes the new program. No internet on the station needed.
     pub fn install_upload(
         self: &Arc<Self>,
         version: &str,
@@ -372,6 +393,7 @@ impl UpdatesService {
     ) -> Result<UpdateStatus, ApiError> {
         let keys = self.keys.as_ref().map_err(|error| ApiError::conflict(error.clone()))?;
         verify::verify_any(keys, archive, signature).map_err(ApiError::bad_request)?;
+        install::check_release(archive, &self.platform, version, &self.current()).map_err(ApiError::bad_request)?;
         let program = install::unpack_named(archive, "duowave").map_err(ApiError::bad_request)?;
         let current = std::env::current_exe().map_err(ApiError::internal)?;
         if self.on_station() {
@@ -439,6 +461,7 @@ impl UpdatesService {
     }
 
     /// Checks half a minute after start (the gateway is up by then) and then every UPDATE_CHECK_HOURS, while there is a feed.
+    /// An urgent release found there installs at once (`install_if_critical`).
     pub fn spawn_checks(self: &Arc<Self>) {
         if self.feed_url.is_none() {
             return;
@@ -448,12 +471,38 @@ impl UpdatesService {
             tokio::time::sleep(Duration::from_secs(30)).await;
             loop {
                 let _ = service.check().await;
+                service.install_if_critical();
                 match service.check_every {
                     Some(every) => tokio::time::sleep(every).await,
                     None => break,
                 }
             }
         });
+    }
+
+    /// An urgent release offered here installs without waiting for «Обновить» — where this gateway (or the app around
+    /// it) installs its own updates and UPDATE_AUTO_CRITICAL is on. One that fails is tried again at the next check.
+    /// True when an install started.
+    fn install_if_critical(self: &Arc<Self>) -> bool {
+        let status = self.status();
+        let Some(offer) = status.available.filter(|offer| offer.critical) else {
+            return false;
+        };
+        if !status.auto_critical || !status.can_install {
+            return false;
+        }
+        tracing::warn!(
+            "update: {} is urgent for {} — installing it without waiting for a click",
+            offer.version,
+            status.current
+        );
+        match self.install() {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::warn!("update {}: {}", offer.version, error.message);
+                false
+            }
+        }
     }
 }
 
@@ -473,7 +522,8 @@ async fn ask_feed(url: &str, current: &str) -> Result<Feed, String> {
 }
 
 async fn fetch_feed(url: &str) -> Result<Feed, String> {
-    let response = crate::utils::http::client()
+    feed::secure(url).map_err(|error| format!("feed: {error}"))?;
+    let response = feed::client()
         .get(url)
         .timeout(Duration::from_secs(20))
         .send()
@@ -674,6 +724,73 @@ mod tests {
         let older = service(&url);
         older.set_installer(Arc::new(App("0.1.0")));
         assert_eq!(older.check().await.unwrap().available.map(|offer| offer.version).as_deref(), Some("0.2.0"));
+    }
+
+    #[tokio::test]
+    async fn an_urgent_release_installs_by_itself_where_the_gateway_installs_its_own() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let platform = feed::platform_key();
+        let release = |floor: &str| {
+            format!(
+                r#"{{"version":"99.0.0",{floor}"platforms":{{"{platform}":{{"signature":"x","url":"http://127.0.0.1:9/v.tar.gz"}}}}}}"#
+            )
+        };
+        let url = feed_server(release(r#""critical_below":"99.0.0","#)).await;
+        struct Counting(Arc<AtomicUsize>);
+        impl Installer for Counting {
+            fn install(&self, _version: String) -> BoxFuture<'static, Result<(), String>> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Ok(()) })
+            }
+        }
+        let installs = Arc::new(AtomicUsize::new(0));
+
+        // The app installs its own updates: the urgent one goes at once, without a click.
+        let app = service(&url);
+        app.set_installer(Arc::new(Counting(installs.clone())));
+        let status = app.check().await.unwrap();
+        assert!(status.available.as_ref().unwrap().critical);
+        assert!(status.auto_critical);
+        assert!(app.install_if_critical());
+        for _ in 0..100 {
+            if installs.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(installs.load(Ordering::SeqCst), 1);
+
+        // UPDATE_AUTO_CRITICAL=false: offered as urgent, installed only by a click.
+        let config =
+            Config::for_tests(&Env::from_pairs([("UPDATE_FEED_URL", url.as_str()), ("UPDATE_AUTO_CRITICAL", "false")]));
+        let off = Arc::new(UpdatesService::new(&config, EventBus::new()));
+        off.set_installer(Arc::new(Counting(installs.clone())));
+        let status = off.check().await.unwrap();
+        assert!(status.available.unwrap().critical);
+        assert!(!status.auto_critical);
+        assert!(!off.install_if_critical());
+
+        // In Docker the image is updated where it came from: urgent, but only said, never installed from here.
+        let docker = service(&url);
+        *docker.managed_by.write().unwrap() = Some("docker".into());
+        let status = docker.check().await.unwrap();
+        assert!(status.available.unwrap().critical);
+        assert!(!status.auto_critical);
+        assert!(!docker.install_if_critical());
+
+        // An ordinary release waits for a click, as before.
+        let ordinary = service(&feed_server(release("")).await);
+        ordinary.set_installer(Arc::new(Counting(installs.clone())));
+        assert!(!ordinary.check().await.unwrap().available.unwrap().critical);
+        assert!(!ordinary.install_if_critical());
+        assert_eq!(installs.load(Ordering::SeqCst), 1, "only the urgent one installed by itself");
+    }
+
+    #[tokio::test]
+    async fn a_feed_over_plain_http_elsewhere_is_refused() {
+        let status = service("http://updates.example.com/latest.json").check().await.unwrap();
+        assert!(status.error.unwrap().contains("https"), "not even asked");
+        assert_eq!(status.available, None);
     }
 
     #[test]

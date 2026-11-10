@@ -44,6 +44,9 @@ pub struct BuildInfo {
     pub modes: Vec<PanelMode>,
     /// The API a computer's gateway and a station's speak to each other.
     pub peer_api: u32,
+    /// The settings package's schema this build's import knows (src/placement/transfer.rs): the computer sends the
+    /// station's gateway what its import takes. A build from before it was said knows schema 1 (placement/watch.rs).
+    pub settings_schema: u32,
 }
 
 pub fn build_info(gate: &dyn ModeGate) -> BuildInfo {
@@ -58,6 +61,7 @@ pub fn build_info(gate: &dyn ModeGate) -> BuildInfo {
             .filter(|mode| gate.check(*mode).is_ok())
             .collect(),
         peer_api: crate::core::build::PEER_API,
+        settings_schema: crate::placement::transfer::SCHEMA,
     }
 }
 
@@ -236,6 +240,7 @@ mod tests {
         let build = bare.as_object_mut().unwrap().remove("build").expect("the build is always said");
         assert_eq!(bare, json!({"status": "ok", "mode": "gateway", "panelMode": "own"}));
         assert_eq!(build["version"], crate::VERSION);
+        assert_eq!(build["settingsSchema"], crate::placement::transfer::SCHEMA, "what the computer sends it goes by");
         assert_eq!(build["station"], cfg!(feature = "station"));
         assert_eq!(build["features"].as_array().unwrap().iter().any(|f| f == "models"), cfg!(feature = "pc"));
         health.set_sources(Arc::new(Parts));

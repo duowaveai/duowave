@@ -205,7 +205,11 @@ export function OwnVoiceRows({
                                     onInput={(event) => setRenaming({ id: own.id, name: (event.target as HTMLInputElement).value })}
                                     onKeyDown={(event) => {
                                         if (event.key === 'Enter') void rename(card);
-                                        if (event.key === 'Escape') setRenaming(null);
+                                        if (event.key === 'Escape') {
+                                            // Esc отменяет имя, а не закрывает окно «Голос».
+                                            event.preventDefault();
+                                            setRenaming(null);
+                                        }
                                     }}
                                 />
                                 <Action tone="on" label="сохранить" onClick={() => void rename(card)} />

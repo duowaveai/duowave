@@ -138,6 +138,9 @@ impl App {
         self.home_server.start();
         #[cfg(feature = "pc")]
         self.station_gateway.start();
+        // The live channel of each station whose gateway runs on it, relayed to this gateway's panels.
+        #[cfg(feature = "pc")]
+        crate::placement::relay::StationRelay::start(self.station_gateway.clone(), &self.live, &self.events);
         self.station_watch.start();
         self.retention.start();
         self.updates.spawn_checks();
@@ -381,7 +384,19 @@ impl App {
         };
 
         // The skills (skills.module.ts): the dialog for tales and games, the calls on a PC (none on the station),
-        // and the calls' events told to the calls skill.
+        // and the calls' events told to the calls skill. Without a bot here, «передай …» goes through the computer's
+        // while it helps the station (src/home_server/messenger.rs).
+        #[cfg(feature = "pc")]
+        let calls_links = links::calls::calls_links(&calls);
+        #[cfg(not(feature = "pc"))]
+        let calls_links = crate::skills::CallsLinks::none();
+        let calls_links = crate::skills::CallsLinks {
+            messenger: crate::home_server::messenger::HomeMessenger::new(
+                calls_links.messenger.clone(),
+                home_server.clone(),
+            ),
+            ..calls_links
+        };
         let skills = SkillsService::new(SkillsDeps {
             config: config.skills.clone(),
             tts_markup: config.gateway.tts.markup,
@@ -389,10 +404,7 @@ impl App {
             settings: settings.clone(),
             events: events.clone(),
             dialog: Arc::new(links::dialog::SkillsDialog(dialog.clone())),
-            #[cfg(feature = "pc")]
-            calls: links::calls::calls_links(&calls),
-            #[cfg(not(feature = "pc"))]
-            calls: crate::skills::CallsLinks::none(),
+            calls: calls_links,
             connectors: Arc::new(links::connectors::SkillSettings(connector_settings.clone())),
         });
         #[cfg(feature = "pc")]
@@ -460,6 +472,8 @@ impl App {
         // The workshop: drafts in DATA_DIR/packages-dev, installed into the packages through the plugin host; by voice
         // too («давай сделаем навык»), through the plugins' skill and a rule of the router.
         let workshop = crate::plugins::workshop::Workshop::new(config.plugins.dev_dir.clone(), plugins.clone());
+        // The agent's steps reach the panel as `workshop.changed` (the plaque «Делаю виджет», the workshop's log).
+        workshop.activity().attach_events(events.clone());
         // A trial left running before a restart is still taken back on its time.
         workshop.resume_trials();
         let voice_workshop =
@@ -476,6 +490,7 @@ impl App {
         skills.player_watch.set_sink(Arc::new(links::playback::PlaybackLinks {
             requests: requests.clone(),
             plugins: Arc::downgrade(&plugins),
+            events: events.clone(),
         }));
 
         // The packages' catalog and installer over the plugin host; the characters over the packages and the persona,
@@ -584,6 +599,13 @@ impl App {
                 let watch = watch.clone();
                 tokio::spawn(async move { watch.tell(&text).await });
             }));
+            // While every station's gateway runs on it, none is missing at this computer's /uni.ws. Weak: the watches
+            // hold the station watch already (its teller), and an engine started again leaves neither behind.
+            let gateways = Arc::downgrade(&station_gateway);
+            station_watch
+                .set_elsewhere(Arc::new(move || gateways.upgrade().is_some_and(|gateways| gateways.none_here())));
+            // The bot's messages reach the stations this computer helps: they are not at its /uni.ws (live 11.11).
+            skills.calls.attach_relay(crate::placement::messages::StationMessages::new(&station_gateway));
         }
         {
             let watch = station_watch.clone();
@@ -726,6 +748,9 @@ pub fn router(app: Arc<App>) -> Router {
     // Our calls are a PC's part: the station's build has no /calls.
     #[cfg(feature = "pc")]
     let routes = routes.merge(crate::calls::router());
+    // The helper's pass to the station's gateway (src/placement/proxy.rs): a PC's part too.
+    #[cfg(feature = "pc")]
+    let routes = routes.merge(crate::placement::proxy::routes());
     routes
         .fallback(not_found)
         // After every route: a path that exists with another method is Express's 404 too, not 405.

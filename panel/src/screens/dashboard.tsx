@@ -36,7 +36,6 @@ import {
 } from '../icons';
 import { StationDrawing, StationStage } from '../stations';
 import { shade, useReducedMotion } from '../stations/kit';
-import { useTheme } from '../shell/theme';
 import { safeColor } from '../ui/media';
 import { useAvailability } from '../availability';
 import { BrandMark } from '../ui/brand';
@@ -143,6 +142,11 @@ interface Props {
     /** Строка «Слышит · Думает · Говорит» раскрыта: по умолчанию скрыта, открывается словом в конце статуса. */
     whoOpen: boolean;
     onToggleWho: () => void;
+    /**
+     * Высота сцены, если она своя (стол: колонка в середине поля): без неё сцена занимает то, что остаётся до панели,
+     * прижатой к низу экрана.
+     */
+    room?: number;
 }
 
 let probe: HTMLDivElement | null = null;
@@ -158,8 +162,11 @@ function smallViewport(): number {
     return Math.min(window.innerHeight, probe.offsetHeight || window.innerHeight);
 }
 
-/** Сцена под экран: ширина — от коробки, высота — сколько остаётся до панели вкладок, пока страница вверху. */
-function useScene(): [preact.RefObject<HTMLDivElement>, Scene] {
+/**
+ * Сцена под экран: ширина — от коробки, высота — сколько остаётся до панели вкладок, пока страница вверху; на столе —
+ * своя высота (`fixed`).
+ */
+function useScene(fixed?: number): [preact.RefObject<HTMLDivElement>, Scene] {
     const box = useRef<HTMLDivElement>(null);
     const [size, setSize] = useState({ width: 390, room: Number.POSITIVE_INFINITY });
     const measure = (): void => {
@@ -175,7 +182,7 @@ function useScene(): [preact.RefObject<HTMLDivElement>, Scene] {
             const rect = bar.getBoundingClientRect();
             bottom = screen - (window.innerHeight - rect.bottom) - rect.height - 12;
         }
-        const room = Math.round(bottom - top);
+        const room = fixed ?? Math.round(bottom - top);
         setSize((old) => (old.width === width && old.room === room ? old : { width, room }));
     };
     // После каждой отрисовки: над сценой мог появиться баннер настройки или перенестись пояснение режима.
@@ -192,7 +199,7 @@ function useScene(): [preact.RefObject<HTMLDivElement>, Scene] {
     return [box, useMemo(() => sceneOf(size.width, size.room), [size.width, size.room])];
 }
 
-export function Dashboard({ health, session, drawing, online, trip, skew = 0, version = 0, onOpenSettings, onOpenHouse, whoOpen, onToggleWho }: Props) {
+export function Dashboard({ health, session, drawing, online, trip, skew = 0, version = 0, onOpenSettings, onOpenHouse, whoOpen, onToggleWho, room }: Props) {
     const mode: PanelMode = health?.panelMode ?? (health?.mode === 'relay' ? 'relay' : 'gateway');
     const [models, setModels] = useState<ModelsView | null>(null);
     // На колонке слух и голос — по списку шлюза: у компьютера, в облаке, у Яндекса.
@@ -204,9 +211,10 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
     const [stage, setStage] = useState<TripStage>('idle');
     const [sheet, setSheet] = useState<NodeKey | 'links' | null>(null);
     const [, setTick] = useState(0);
-    const minimal = useTheme().theme.look === 'minimal';
+    // Материал один — «Минимал» (docs/plans/desk.md): свечение, полёт персонажа, выезд новой модели — всегда.
+    const minimal = true;
     const reduced = useReducedMotion();
-    const [box, scene] = useScene();
+    const [box, scene] = useScene(room);
     // Персонажи нужны только сцене «Минимала»: цвет того, кто влетает в колонку.
     const wantCharacters = useRef(minimal);
     wantCharacters.current = minimal;

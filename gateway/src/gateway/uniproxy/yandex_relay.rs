@@ -14,6 +14,7 @@ use serde_json::Value;
 use tokio::sync::watch;
 use tokio::time::Instant;
 
+use super::relay_trips::recognition_text;
 use crate::core::requests::{new_owner, Owner};
 use crate::gateway::protocol::proto_edit::{edit_frame, get_bytes, get_string, restream, FrameEdit};
 use crate::gateway::protocol::proto_object::{is_js_space, value_bytes};
@@ -66,6 +67,9 @@ pub struct YandexAnswer {
     pub directives: Vec<String>,
     /// The answer's text: the card's, the streamed text, or the speech without markup.
     pub text: String,
+    /// What Yandex heard: its final recognition of the voice it was given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heard: Option<String>,
     pub streams: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -82,6 +86,7 @@ impl Default for YandexAnswer {
             ends_dialog: false,
             directives: Vec::new(),
             text: String::new(),
+            heard: None,
             streams: 0,
             error: None,
         }
@@ -90,6 +95,7 @@ impl Default for YandexAnswer {
 
 pub type OnResponse = Box<dyn Fn(&YandexAnswer) + Send + Sync>;
 pub type Revoice = Box<dyn Fn(String) + Send + Sync>;
+pub type OnAsr = Box<dyn Fn(&Value) + Send + Sync>;
 
 pub struct YandexRelayOptions {
     /// The station's message id Yandex's replies go to; unchanged when the request was the station's own frame.
@@ -105,11 +111,22 @@ pub struct YandexRelayOptions {
     /// Yandex's speech said in our voice instead (TTS_PROVIDER=own): its speech stream stays here, and its text, the
     /// response's speech or the streamed text, goes to this when the speech begins.
     pub revoice: Option<Revoice>,
+    /// Yandex's recognition of the voice it was given (each AsrResult, partial and final): nothing here heard it, so
+    /// the request's words are Yandex's.
+    pub on_asr: Option<OnAsr>,
 }
 
 impl YandexRelayOptions {
     pub fn new(drop: &'static [&'static str], timeout_ms: u64) -> YandexRelayOptions {
-        YandexRelayOptions { station_ref: None, drop, quiet: false, timeout_ms, on_response: None, revoice: None }
+        YandexRelayOptions {
+            station_ref: None,
+            drop,
+            quiet: false,
+            timeout_ms,
+            on_response: None,
+            revoice: None,
+            on_asr: None,
+        }
     }
 }
 
@@ -283,6 +300,19 @@ impl YandexRelay {
         state.answer.text = if card.is_empty() { speech } else { card };
     }
 
+    /// Yandex's recognition: its final text kept with the answer. False once the relay is cancelled.
+    fn hear(&self, asr_result: &Value) -> bool {
+        let mut state = self.lock();
+        if state.cancelled {
+            return false;
+        }
+        let text = recognition_text(Some(asr_result));
+        if asr_result.get("endOfUtt").and_then(Value::as_bool).unwrap_or(false) && !text.is_empty() {
+            state.answer.heard = Some(text);
+        }
+        true
+    }
+
     fn settle_if_done(&self, state: &mut State) {
         if !state.answer.responded || !state.open.is_empty() {
             return;
@@ -379,6 +409,13 @@ impl ExchangeHandler for YandexRelay {
     fn on_event(&self, frame: &Bytes, kind: &str, decoded: &Value) -> Result<()> {
         let empty = Value::Object(Default::default());
         let event = decoded.get("event").unwrap_or(&empty);
+        if kind == "asrResult" {
+            let asr_result = event.get("asrResult").unwrap_or(&empty);
+            // Out of our lock, as the response's: the session follows the request's trip.
+            if let (true, Some(on_asr)) = (self.hear(asr_result), &self.options.on_asr) {
+                on_asr(asr_result);
+            }
+        }
         if kind == "aliceResponse" {
             let answer = {
                 let mut state = self.lock();

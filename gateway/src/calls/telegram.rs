@@ -210,6 +210,11 @@ impl TelegramMessenger {
         scored.first().map(|(_, name, chat_id)| Contact { name: (*name).clone(), chat_id: (*chat_id).clone() })
     }
 
+    /// The contacts' names as set up, without their chats: what the station's gateway may know (src/home_server).
+    pub fn contact_names(&self) -> Vec<String> {
+        self.current().map(|config| config.contacts.into_iter().map(|(name, _)| name).collect()).unwrap_or_default()
+    }
+
     pub fn start(self: &Arc<Self>) {
         let Some(config) = self.current().filter(|_| self.enabled()) else { return };
         if self.running.swap(true, Ordering::SeqCst) {

@@ -96,6 +96,7 @@ nohup.out
 # The panel's build and its pnpm links (built by pnpm --filter panel build)
 panel/dist
 panel/node_modules
+scripts/release/tauri-cli/node_modules
 
 # OmniVoice server: its environment, the weights' cache (a link to an absolute path) and the voices made from
 # people's recordings — a voice sample and its imprint are biometrics, never in git.

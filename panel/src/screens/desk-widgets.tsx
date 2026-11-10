@@ -1,0 +1,535 @@
+// Встроенные виджеты стола (docs/plans/desk.md): то, что уже знает пульт, — режим колонки, последние вопросы, кто
+// сколько ответил, чего пока не умеем; у помощника — что он даёт колонке, как присматривает за ней и его мастерская;
+// у шлюза на колонке — его помощник. Регистрируются в слот `desk.widgets` (builtin.tsx) тем же путём, что виджеты
+// плагинов.
+
+import { useEffect, useState } from 'preact/hooks';
+
+import { ApiError, DraftView, HelperPart, HelperServed, PlacementView, RequestView, api, can, problemOf } from '../api';
+import { CAPABILITY_TITLES } from '../capabilities';
+import { SETTLE_MS, usePoll } from '../poll';
+import { useSettledVersion } from '../shell/agent-plaque';
+import { usePanel } from '../shell/context';
+import { timeAgo } from '../time';
+import { Switch } from '../ui/switch';
+import { AllocPanel, ModeCard } from './home';
+import { readStationRequests } from './station-widgets';
+import { feltMs, seconds } from './trip';
+
+/** Строка «Слышит · Думает · Говорит» на сцене стола: её раскрывает «подробнее» у режима. Общая для сцены и виджета. */
+let whoOpen = false;
+const whoListeners = new Set<() => void>();
+export function useWhoOpen(): [boolean, () => void] {
+    const [, rerender] = useState(0);
+    useEffect(() => {
+        const update = () => rerender((n) => n + 1);
+        whoListeners.add(update);
+        return () => {
+            whoListeners.delete(update);
+        };
+    }, []);
+    return [
+        whoOpen,
+        () => {
+            whoOpen = !whoOpen;
+            for (const listener of [...whoListeners]) listener();
+        },
+    ];
+}
+
+/** «Кто отвечает»: Яндекс, Шлюз или Свой — сегментом, с объяснением режима. */
+export function ModeWidget() {
+    const panel = usePanel();
+    const [open, toggle] = useWhoOpen();
+    return <ModeCard health={panel.health} onOpenSettings={() => panel.go('models', 'voice')} detailsOpen={open} onToggleDetails={toggle} />;
+}
+
+const hhmm = (iso: string): string => new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+
+/**
+ * Через проход отказала сама колонка, а не проход компьютера. Тело ошибки шлюза называет путь, как его видел тот, кто
+ * отказал (platform/http/api.rs, error_bodies): у прохода это /station/<колонка>/…, у колонки — её /api/v1/….
+ */
+function refusedByStation(error: ApiError): boolean {
+    try {
+        const path = (JSON.parse(error.body) as { path?: unknown } | null)?.path;
+        return typeof path === 'string' && !path.startsWith('/station/');
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * «Последние вопросы»: время, что спросили, через сколько колонка заговорила. Весь журнал — по нажатию. У помощника —
+ * вопросы колонки из её журнала, через проход; колонка даёт человеку права его роли, и журнал свой она показывает
+ * только администратору (403) — виджет так и говорит. Отказал сам проход компьютера (пульт открыт не из дома, нет
+ * права смотреть колонку) — виджет говорит его словами.
+ */
+export function RecentWidget() {
+    const panel = usePanel();
+    const device = panel.current?.device;
+    const station = panel.role.role === 'helper' ? panel.role.station?.key : undefined;
+    const [stationList, setStationList] = useState<RequestView[] | null>(null);
+    /** Почему журнал колонки не прочитать (403); null — читается. */
+    const [refused, setRefused] = useState<string | null>(null);
+    // Раз в 15 с и по переменам — без наложений (poll.ts): проход к колонке, что не отвечает, ждёт ответа до 8 с.
+    usePoll({
+        on: !!station,
+        deps: [station],
+        every: 15_000,
+        version: panel.version,
+        read: (signal) =>
+            readStationRequests(station ?? '', signal)
+                .then((fresh) => {
+                    if (signal.aborted) return;
+                    setStationList(fresh);
+                    setRefused(null);
+                })
+                .catch((e) => {
+                    if (signal.aborted || !(e instanceof ApiError) || e.status !== 403) return;
+                    setRefused(refusedByStation(e) ? 'Журнал колонки виден администратору.' : problemOf(e));
+                }),
+    });
+    if (station && refused) return <p class="w-cap m-0">{refused}</p>;
+    const list = station
+        ? (stationList ?? []).slice(0, 4)
+        : panel.feed.requests.filter((request) => !device || request.device === device).slice(0, 4);
+    if (list.length === 0) return <p class="w-cap m-0">Скажите что-нибудь колонке — вопросы появятся здесь.</p>;
+    // У помощника это вопросы колонки — и журнал её: окно колонки, а не журнал компьютера, где их нет.
+    const openJournal = () => (station ? panel.go('journal', undefined, undefined, { on: 'station' }) : panel.go('journal'));
+    return (
+        <div class="w-rows">
+            {list.map((request) => {
+                const ms = request.status === 'active' ? undefined : feltMs(request);
+                return (
+                    <button key={request.id} class="w-row w-row-btn" onClick={openJournal}>
+                        <span class="w-cap w-time">{hhmm(request.startedAt)}</span>
+                        <span class="w-text">{request.text ?? (request.kind === 'say' ? 'сказала сама' : 'вопрос голосом')}</span>
+                        <span class="w-cap">{request.status === 'active' ? 'идёт…' : ms !== undefined ? seconds(ms) : ''}</span>
+                    </button>
+                );
+            })}
+        </div>
+    );
+}
+
+/** «Кто сколько ответил»: полоса своё / Яндекс / выключено и сколько обслужено с запуска. Своя карточка. */
+export function AllocWidget() {
+    const panel = usePanel();
+    return <AllocPanel health={panel.health} catalog={panel.catalog} />;
+}
+
+/** «Пока не умеем»: что спросили, а ответить было некому. */
+export function UnsupportedWidget() {
+    const panel = usePanel();
+    const list = panel.debug.unsupported;
+    if (list.length === 0) return <p class="w-cap m-0">Всё, о чём спрашивали, колонка умеет.</p>;
+    return (
+        <div class="w-rows">
+            {list.slice(0, 3).map((entry) => (
+                <button key={entry.at + entry.text} class="w-row w-row-btn w-row-col" onClick={() => panel.go('journal')}>
+                    <span class="w-text">«{entry.text}»</span>
+                    <span class="w-cap">
+                        {timeAgo(entry.at)} · {entry.reason}
+                    </span>
+                </button>
+            ))}
+        </div>
+    );
+}
+
+// ─── Помощник ──────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Размещение глазами компьютера — одно на все виджеты помощника: читается раз в полминуты и по переменам — не чаще
+ * раза в несколько секунд и одним запросом на всех.
+ */
+let placement: PlacementView | null = null;
+let placementAt = 0;
+let placementVersion = -1;
+let reading: Promise<void> | null = null;
+let placementTimer = 0;
+const placementListeners = new Set<() => void>();
+
+function readPlacement(): Promise<void> {
+    reading ??= api
+        .placement()
+        .then((view) => {
+            placement = view;
+        })
+        .catch(() => undefined)
+        .finally(() => {
+            placementAt = Date.now();
+            reading = null;
+            for (const listener of [...placementListeners]) listener();
+        });
+    return reading;
+}
+
+/** Перечитать размещение, но не раньше, чем через несколько секунд от прошлого чтения. */
+function readPlacementSoon(): void {
+    if (placementTimer) return;
+    const wait = placementAt + SETTLE_MS - Date.now();
+    if (wait <= 0) return void readPlacement();
+    placementTimer = window.setTimeout(() => {
+        placementTimer = 0;
+        void readPlacement();
+    }, wait);
+}
+
+export function usePlacementView(): [PlacementView | null, () => Promise<void>] {
+    const panel = usePanel();
+    const [, rerender] = useState(0);
+    useEffect(() => {
+        const update = () => rerender((n) => n + 1);
+        placementListeners.add(update);
+        // Виджетов несколько, а чтение — одно: каждый лишь напоминает, если прочитанное старше полуминуты.
+        const id = window.setInterval(() => Date.now() - placementAt >= 30_000 && void readPlacement(), 10_000);
+        return () => {
+            placementListeners.delete(update);
+            window.clearInterval(id);
+        };
+    }, []);
+    useEffect(() => {
+        if (placementVersion !== panel.version || Date.now() - placementAt > 30_000) {
+            placementVersion = panel.version;
+            readPlacementSoon();
+        }
+    }, [panel.version]);
+    return [placement, readPlacement];
+}
+
+/** Выбранная колонка помощника в его размещении. */
+function stationOf(view: PlacementView | null, device?: string) {
+    if (!view) return undefined;
+    return (device ? view.stations?.find((entry) => entry.record?.device === device) : undefined) ?? view.station;
+}
+
+const mb = (kb?: number): string => (kb === undefined ? '—' : `${Math.round(kb / 1024)}`);
+
+/** «214 вопросов», «198 фраз», «31 ответ». */
+function counted(count: number, one: string, few: string, many: string): string {
+    const mod10 = count % 10;
+    const mod100 = count % 100;
+    const word = mod10 === 1 && mod100 !== 11 ? one : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14) ? few : many;
+    return `${count} ${word}`;
+}
+
+const PARTS: Array<{ id: HelperPart; title: string; served: (n: number) => string; without: string }> = [
+    { id: 'asr', title: 'Слух', served: (n) => counted(n, 'вопрос', 'вопроса', 'вопросов'), without: 'облако' },
+    { id: 'tts', title: 'Голос', served: (n) => counted(n, 'фраза', 'фразы', 'фраз'), without: 'Алиса' },
+    { id: 'llm', title: 'Модель', served: (n) => counted(n, 'ответ', 'ответа', 'ответов'), without: 'Алиса' },
+    // Бот Telegram этого компьютера для колонки, в обе стороны: «Передай маме, что…» и сообщения контактов. У колонки
+    // своего бота нет. Один переключатель на оба направления; счёт — тоже за оба.
+    { id: 'messages', title: 'Сообщения', served: (n) => counted(n, 'сообщение', 'сообщения', 'сообщений'), without: 'никто' },
+];
+
+/**
+ * «Что даю колонке» (docs/plans/desk.md, этап 4; макет SpaceHelper): помощь целиком и по отдельности — слух, голос,
+ * модель, сообщения — со счётом за сегодня и тем, чем колонка обходится без компьютера.
+ */
+export function HelperWidget() {
+    const panel = usePanel();
+    const [view, reread] = usePlacementView();
+    const [served, setServed] = useState<HelperServed | null>(null);
+    const [busy, setBusy] = useState<string | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    usePoll({
+        every: 30_000,
+        version: panel.version,
+        read: (signal) => api.helperServed(signal).then((fresh) => !signal.aborted && setServed(fresh)),
+    });
+    const station = stationOf(view, panel.current?.device);
+    const helping = station?.record?.placement === 'stationServer';
+    const reachable = station?.live.reachable ?? panel.role.station?.reachable ?? false;
+    const home = station?.live.health?.placement?.homeServer;
+    const without = home?.without ?? [];
+    const mayManage = can('stations.manage');
+    const run = (what: string, job: () => Promise<unknown>) => {
+        setBusy(what);
+        setError(null);
+        void job()
+            .then(() => reread())
+            .catch((e) => setError(problemOf(e)))
+            .finally(() => setBusy(null));
+    };
+    return (
+        <div class="flex flex-col gap-10">
+            <label class="w-toggle">
+                <span class="flex-1 min-w-0 flex flex-col">
+                    <span class="w-strong">Помогать колонке</span>
+                    <span class="w-cap">
+                        {!helping
+                            ? 'выключено: колонка обходится без компьютера'
+                            : home?.state === 'down'
+                              ? 'колонка не дотягивается до компьютера: отвечает через облако'
+                              : 'даю колонке слух, голос, модель и сообщения'}
+                    </span>
+                </span>
+                <Switch
+                    on={helping}
+                    label="Помогать колонке"
+                    disabled={!mayManage || busy !== null || !reachable}
+                    onChange={(on) => run('all', () => api.setStationHelper(on, station?.key))}
+                />
+            </label>
+            <div class="w-rows">
+                {PARTS.map((part) => {
+                    const on = helping && !without.includes(part.id);
+                    const today = served?.[part.id];
+                    return (
+                        <div key={part.id} class="w-row">
+                            <span class={`w-dot ${on ? 'w-dot-own' : 'w-dot-off'}`} aria-hidden="true" />
+                            <span class="w-text">
+                                {part.title}
+                                <span class="w-cap">
+                                    {' · '}
+                                    {on
+                                        ? today && today.count > 0
+                                            ? `${part.served(today.count)} · ${seconds(today.avgMs)}`
+                                            : 'здесь'
+                                        : `сейчас ${part.without}`}
+                                </span>
+                            </span>
+                            <span class="w-cap">иначе {part.without}</span>
+                            <Switch
+                                on={on}
+                                label={`Давать колонке: ${part.title.toLowerCase()}`}
+                                disabled={!mayManage || busy !== null || !reachable || !helping}
+                                onChange={(next) =>
+                                    run(part.id, () =>
+                                        api.setHelperParts(next ? without.filter((id) => id !== part.id) : [...without, part.id], station?.key),
+                                    )
+                                }
+                            />
+                        </div>
+                    );
+                })}
+            </div>
+            {served && <p class="w-cap m-0">Счёт — за сегодня, с запуска DuoWave на этом компьютере.</p>}
+            <KeepAwake />
+            {error && (
+                <p class="w-cap c-dot-offline m-0" role="alert">
+                    {error}
+                </p>
+            )}
+        </div>
+    );
+}
+
+/**
+ * «Не давать компьютеру спать» (макет Main): уснёт — колонка не замолчит (слышит облако, говорит Алиса), но «Свой»
+ * вернётся, только когда помощник проснётся. Настройка приложения DuoWave: в браузере вне его её нет.
+ */
+function KeepAwake() {
+    const [state, setState] = useState<{ managed: boolean; keepAwake?: boolean } | null>(null);
+    const [busy, setBusy] = useState(false);
+    useEffect(() => {
+        let alive = true;
+        void api
+            .desktopAwake()
+            .then((fresh) => alive && setState(fresh))
+            .catch(() => alive && setState({ managed: false }));
+        return () => {
+            alive = false;
+        };
+    }, []);
+    if (!state?.managed) return null;
+    return (
+        <label class="w-toggle">
+            <span class="flex-1 min-w-0 flex flex-col">
+                <span class="w-strong">Не давать компьютеру спать</span>
+                <span class="w-cap">уснёт — колонка обойдётся облаком и голосом Алисы, «Свой» вернётся с ним</span>
+            </span>
+            <Switch
+                on={state.keepAwake !== false}
+                label="Не давать компьютеру спать"
+                disabled={busy || !can('settings.edit')}
+                onChange={(on) => {
+                    setBusy(true);
+                    void api
+                        .setDesktopAwake(on)
+                        .then(setState)
+                        .catch(() => undefined)
+                        .finally(() => setBusy(false));
+                }}
+            />
+        </label>
+    );
+}
+
+/** «Присматриваю за колонкой»: копия настроек, обновления, страховка, память. «Открыть» — всё о размещении. */
+export function WatchWidget() {
+    const panel = usePanel();
+    const [view, reread] = usePlacementView();
+    const [busy, setBusy] = useState<string | null>(null);
+    const [note, setNote] = useState<string | null>(null);
+    const station = stationOf(view, panel.current?.device);
+    if (!station) return <p class="w-cap m-0">{view ? 'Колонки со своим шлюзом нет.' : 'Читаю…'}</p>;
+    const health = station.live.health?.placement;
+    const last = station.backups[0];
+    const memory = health?.memory;
+    const mayManage = can('stations.manage');
+    const act = (what: string, run: () => Promise<unknown>, done: string) => {
+        setBusy(what);
+        setNote(null);
+        void run()
+            .then(() => {
+                setNote(done);
+                return reread();
+            })
+            .catch((e) => setNote(problemOf(e)))
+            .finally(() => setBusy(null));
+    };
+    return (
+        <div class="flex flex-col gap-8">
+            <div class="w-rows">
+                <div class="w-row">
+                    <span class="w-text">Копия настроек</span>
+                    <span class="w-cap">{last ? timeAgo(last.at) : 'ещё нет'}</span>
+                </div>
+                <div class="w-row">
+                    <span class="w-text">Обновления</span>
+                    <span class="w-cap">{station.update ? `есть ${station.update}` : `${station.version ?? '—'} — последняя`}</span>
+                </div>
+                <div class="w-row">
+                    <span class="w-text">Страховка</span>
+                    <span class="w-cap">{health?.safety === false ? 'выключена' : 'включена'}</span>
+                </div>
+                <div class="w-row">
+                    <span class="w-text">Память колонки</span>
+                    <span class="w-cap">
+                        {memory?.rssKb !== undefined ? `${mb(memory.rssKb)}${memory.totalKb ? ` из ${mb(memory.totalKb)}` : ''} МБ` : '—'}
+                    </span>
+                </div>
+            </div>
+            {station.warnings.map((warning) => (
+                <p key={warning.kind} class="w-cap c-pill-yandex-fg m-0">
+                    {warning.text}
+                </p>
+            ))}
+            <div class="w-actions">
+                {mayManage && station.live.reachable && (
+                    <button class="w-btn" disabled={busy !== null} onClick={() => act('copy', () => api.backupStation(station.key), 'Копия взята.')}>
+                        {busy === 'copy' ? 'Беру копию…' : 'Взять копию'}
+                    </button>
+                )}
+                {mayManage && station.update && (
+                    <button
+                        class="w-btn w-btn-ink"
+                        disabled={busy !== null}
+                        onClick={() => act('update', () => api.updateStationGateway(station.key), 'Колонка обновляется.')}
+                    >
+                        {busy === 'update' ? 'Обновляю…' : `Обновить до ${station.update}`}
+                    </button>
+                )}
+                <button class="w-btn" onClick={() => panel.go('house', 'gateway')}>
+                    Открыть
+                </button>
+            </div>
+            {note && (
+                <p class="w-cap m-0" role="status">
+                    {note}
+                </p>
+            )}
+        </div>
+    );
+}
+
+/** «Мастерская»: последний черновик — что это, какая версия, что на колонке; «Открыть» — окно мастерской. */
+export function WorkshopWidget() {
+    const panel = usePanel();
+    // Каждый шаг агента — перемена (workshop.changed): список черновиков — раз на пачку перемен.
+    const version = useSettledVersion();
+    const [drafts, setDrafts] = useState<DraftView[] | null>(null);
+    usePoll({
+        version,
+        settle: 1000,
+        read: (signal) =>
+            api
+                .workshop(signal)
+                .then((view) => !signal.aborted && setDrafts(view.drafts))
+                .catch(() => !signal.aborted && setDrafts([])),
+    });
+    const open = (id?: string) => panel.go('plugins', 'workshop', id);
+    if (!drafts) return <p class="w-cap m-0">Читаю…</p>;
+    const draft = drafts[0];
+    if (!draft)
+        return (
+            <div class="flex flex-col gap-8">
+                <p class="w-cap m-0">Черновиков нет. Здесь пишутся плагины, а работают они на колонке — и без компьютера.</p>
+                <div class="w-actions">
+                    <button class="w-btn" onClick={() => open()}>
+                        Открыть
+                    </button>
+                </div>
+            </div>
+        );
+    return (
+        <div class="flex flex-col gap-8">
+            <div class="w-rows">
+                {drafts.slice(0, 2).map((entry) => (
+                    <button key={entry.id} class="w-row w-row-btn w-row-col" onClick={() => open(entry.id)}>
+                        <span class="w-text">
+                            {entry.title ?? entry.id} <span class="w-cap">{entry.version ?? ''}</span>
+                        </span>
+                        <span class="w-cap">
+                            {entry.trial
+                                ? `проба до ${hhmm(entry.trial.until)}`
+                                : entry.problems.length > 0
+                                  ? 'черновик с ошибками'
+                                  : entry.installed
+                                    ? `стоит ${entry.installed}`
+                                    : 'черновик'}
+                        </span>
+                    </button>
+                ))}
+            </div>
+            <div class="w-actions">
+                <button class="w-btn" onClick={() => open(draft.id)}>
+                    Открыть
+                </button>
+            </div>
+        </div>
+    );
+}
+
+/** У шлюза на колонке — его помощник: на связи ли он и что даёт; «Открыть помощника» — пульт компьютера. */
+export function HelperCardWidget() {
+    const panel = usePanel();
+    const home = panel.health?.placement?.homeServer;
+    if (!home?.url) return <p class="w-cap m-0">Помощника нет: колонка отвечает сама.</p>;
+    let panelUrl: string | null = null;
+    try {
+        panelUrl = `${new URL(home.url).origin}/panel`;
+    } catch {
+        panelUrl = null;
+    }
+    const up = home.state === 'up' && home.enabled !== false;
+    return (
+        <div class="flex flex-col gap-8">
+            <div class="w-row">
+                <span class={`w-dot ${up ? 'w-dot-own' : 'w-dot-off'}`} aria-hidden="true" />
+                <span class="w-text">
+                    {home.enabled === false ? 'помощь выключена' : up ? 'на связи' : 'не на связи'}
+                    {home.since && <span class="w-cap"> · с {hhmm(home.since)}</span>}
+                </span>
+            </div>
+            <p class="w-cap m-0">
+                {up
+                    ? 'Слух, голос и модель — у компьютера. На нём же мастерская плагинов, лаборатория голоса и копии настроек этой колонки.'
+                    : 'Пока его нет, колонка отвечает сама: слышит облако, говорит Алиса.'}
+            </p>
+            {panelUrl && (
+                <div class="w-actions">
+                    <a class="w-btn" href={panelUrl} target="_blank" rel="noreferrer">
+                        Открыть помощника ↗
+                    </a>
+                </div>
+            )}
+        </div>
+    );
+}
+
+/** Подписи возможностей — для виджетов плагинов, которым нужны имена (журнал вопросов). */
+export const capabilityTitle = (id: string): string => CAPABILITY_TITLES[id] ?? id;

@@ -13,9 +13,11 @@
 //!
 //! - `/home/v1/plugins`, `/home/v1/plugins/<id>/call` — the plugins that are on here, and a call of one for the station
 //!   (docs/plans/plugins.md, stage 7: a plugin with `prefer: home` runs on the computer while it is up).
+//! - `/home/v1/messenger/contacts`, `/home/v1/messenger/send` — this computer's Telegram bot for the station's
+//!   «передай …» (messenger.rs): its contacts by name only, their chats stay here; a text to one of them.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, State};
@@ -50,7 +52,55 @@ pub fn router() -> Router<Arc<App>> {
         .route("/home/v1/catalog", get(catalog))
         .route("/home/v1/catalog/file", get(catalog_file))
         .route("/home/v1/plugins/{id}/call", post(plugin_call))
+        .route("/home/v1/messenger/contacts", get(messenger_contacts))
+        .route("/home/v1/messenger/send", post(messenger_send))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
+}
+
+/// What the computer gave the station today: how many times and how fast — the helper's «Что даю колонке»
+/// (docs/plans/desk.md, stage 4). Counted since the gateway started, by the computer's own day.
+#[derive(Default)]
+struct Served {
+    day: String,
+    counts: [(u64, u64); 4],
+}
+
+static SERVED: Mutex<Option<Served>> = Mutex::new(None);
+
+fn today() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// One answered request: 0 — hearing, 1 — voice, 2 — the model, 3 — a message passed on.
+fn count(which: usize, started: Instant) {
+    let mut served = SERVED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let day = today();
+    let served = served.get_or_insert_with(Served::default);
+    if served.day != day {
+        *served = Served { day, ..Served::default() };
+    }
+    served.counts[which].0 += 1;
+    served.counts[which].1 += started.elapsed().as_millis() as u64;
+}
+
+/// A contact's message handed to a station (src/placement/messages.rs): «Сообщения» count both ways.
+pub(crate) fn count_message(started: Instant) {
+    count(3, started);
+}
+
+/// Today's counts: `{day, asr: {count, avgMs}, tts: …, llm: …, messages: …}`.
+pub fn served_today() -> Value {
+    let served = SERVED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let day = today();
+    let counts = served.as_ref().filter(|served| served.day == day).map(|served| served.counts).unwrap_or_default();
+    let one = |(count, ms): (u64, u64)| json!({ "count": count, "avgMs": ms.checked_div(count).unwrap_or(0) });
+    json!({
+        "day": day,
+        "asr": one(counts[0]),
+        "tts": one(counts[1]),
+        "llm": one(counts[2]),
+        "messages": one(counts[3]),
+    })
 }
 
 fn allowed(caller: &Caller) -> Result<(), ApiError> {
@@ -122,6 +172,49 @@ async fn plugin_call(
         .await
         .map_err(|error| ApiError::bad_gateway(format!("Плагин не ответил: {error}.")))?;
     Ok(axum::Json(json!({ "result": answer })).into_response())
+}
+
+pub const NO_BOT: &str = "На этом компьютере не настроен бот Telegram: «Дом» → «Коннекторы» → Telegram.";
+const SEND_SHAPE: &str = "JSON: {contact, text} — кому и что передать";
+
+/// The names of this computer's Telegram contacts, for the station's «передай …»: no chats.
+async fn messenger_contacts(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
+    allowed(&caller)?;
+    let bot = &app.calls.telegram;
+    if !bot.enabled() {
+        return Err(ApiError::unavailable(NO_BOT));
+    }
+    Ok(axum::Json(json!({ "contacts": bot.contact_names() })).into_response())
+}
+
+/// The station's «передай маме, что …»: a text to a contact of this computer's bot.
+async fn messenger_send(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
+    allowed(&caller)?;
+    let request: Value = serde_json::from_slice(&body).map_err(|_| ApiError::bad_request(SEND_SHAPE))?;
+    let field = |name: &str| request.get(name).and_then(Value::as_str).map(str::trim).unwrap_or_default().to_string();
+    let (contact, text) = (field("contact"), field("text"));
+    if contact.is_empty() || text.is_empty() {
+        return Err(ApiError::bad_request(SEND_SHAPE));
+    }
+    let started = Instant::now();
+    let name = pass_on(&app.calls.telegram, &contact, &text).await?;
+    count(3, started);
+    tracing::info!("home server: a message from the station passed on to «{name}»");
+    Ok(axum::Json(json!({ "sent": true, "contact": name })).into_response())
+}
+
+/// The bot's part of a send: the contact by the name the station gives, then Telegram. The contact's name.
+async fn pass_on(bot: &crate::calls::TelegramMessenger, contact: &str, text: &str) -> Result<String, ApiError> {
+    if !bot.enabled() {
+        return Err(ApiError::unavailable(NO_BOT));
+    }
+    let found = bot
+        .contact(contact)
+        .ok_or_else(|| ApiError::not_found(format!("У бота Telegram на этом компьютере нет контакта «{contact}».")))?;
+    bot.send_text(&found.chat_id, text, None)
+        .await
+        .map_err(|error| ApiError::bad_gateway(format!("Telegram не принял сообщение: {error:#}.")))?;
+    Ok(found.name)
 }
 
 /// This computer's recognition server, when it is its own (at home): a cloud's is never handed on.
@@ -209,7 +302,8 @@ async fn transcribe(
     let (base, key) =
         recognition(&app).ok_or_else(|| ApiError::unavailable("На этом компьютере нет своего распознавания."))?;
     let wait = Duration::from_millis(app.config.speech.asr.timeout_ms.max(5000));
-    forward(
+    let started = Instant::now();
+    let answer = forward(
         reqwest::Method::POST,
         format!("{base}/audio/transcriptions"),
         key,
@@ -217,7 +311,11 @@ async fn transcribe(
         Some(body),
         wait,
     )
-    .await
+    .await?;
+    if answer.status().is_success() {
+        count(0, started);
+    }
+    Ok(answer)
 }
 
 async fn asr_models(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
@@ -240,10 +338,12 @@ async fn speak(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Resu
         .own_speech()
         .cloned()
         .ok_or_else(|| ApiError::unavailable("На этом компьютере нет своего голоса."))?;
+    let started = Instant::now();
     let spoken = own
         .synthesize(&text, &CancellationToken::new())
         .await
         .map_err(|error| ApiError::new(StatusCode::BAD_GATEWAY, format!("голос этого компьютера: {error:#}")))?;
+    count(1, started);
     Ok(([(header::CONTENT_TYPE, "audio/ogg")], spoken.audio).into_response())
 }
 
@@ -255,7 +355,8 @@ async fn chat(
 ) -> Result<Response, ApiError> {
     allowed(&caller)?;
     let (base, key) = own_model(&app).ok_or_else(|| ApiError::unavailable("На этом компьютере нет своей модели."))?;
-    forward(
+    let started = Instant::now();
+    let answer = forward(
         reqwest::Method::POST,
         format!("{base}/chat/completions"),
         key,
@@ -263,11 +364,149 @@ async fn chat(
         Some(body),
         Duration::from_secs(300),
     )
-    .await
+    .await?;
+    // A stream counts by its first word: how soon the model began to answer.
+    if answer.status().is_success() {
+        count(2, started);
+    }
+    Ok(answer)
 }
 
 async fn llm_models(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
     allowed(&caller)?;
     let (base, key) = own_model(&app).ok_or_else(|| ApiError::unavailable("На этом компьютере нет своей модели."))?;
     forward(reqwest::Method::GET, format!("{base}/models"), key, None, None, Duration::from_secs(10)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+    use std::sync::Mutex as StdMutex;
+
+    use axum::body::Body as HttpBody;
+    use axum::extract::ConnectInfo;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use serde_json::Map;
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::calls::TelegramMessenger;
+    use crate::config::{Config, Env, TelegramConfig};
+
+    /// The computer's gateway, its .env with these; its bot never started (no Telegram here).
+    fn computer(vars: &[(&str, &str)]) -> Arc<App> {
+        let env = Env::from_pairs([("STATE_DIR", "")].into_iter().chain(vars.iter().copied()));
+        App::build(Config::for_tests(&env)).unwrap()
+    }
+
+    fn key(app: &App, grants: &[&str]) -> String {
+        let input =
+            Map::from_iter([("name".into(), json!("Колонка: домашний сервер")), ("grants".into(), json!(grants))]);
+        format!("Bearer {}", app.access.keys.create(&input, None).unwrap().secret)
+    }
+
+    /// A request from the home network, with the key when given.
+    async fn send(app: &Arc<App>, method: &str, uri: &str, key: Option<&str>, body: Value) -> (StatusCode, Value) {
+        let mut request = Request::builder().method(method).uri(uri).header("content-type", "application/json");
+        if let Some(key) = key {
+            request = request.header("authorization", key);
+        }
+        let mut request = request.body(HttpBody::from(body.to_string())).unwrap();
+        request.extensions_mut().insert(ConnectInfo(SocketAddr::new("192.168.1.20".parse().unwrap(), 5000)));
+        let response = crate::app::router(app.clone()).oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    const CONTACTS: &str = "/home/v1/messenger/contacts";
+    const SEND: &str = "/home/v1/messenger/send";
+
+    #[tokio::test]
+    async fn the_station_reads_the_bots_contacts_by_name_only_with_its_key() {
+        let app = computer(&[("TELEGRAM_BOT_TOKEN", "123:test"), ("TELEGRAM_CONTACTS", "Мама=42; Бабушка=43")]);
+        let station = key(&app, &["home.models"]);
+        let (status, body) = send(&app, "GET", CONTACTS, Some(&station), Value::Null).await;
+        assert_eq!((status, &body), (StatusCode::OK, &json!({ "contacts": ["мама", "бабушка"] })), "no chats");
+
+        // Without a key, or with one that has no right to the computer's models: closed, as the other /home/v1.
+        let (status, _) = send(&app, "GET", CONTACTS, None, Value::Null).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let other = key(&app, &["station.view"]);
+        let (status, _) = send(&app, "GET", CONTACTS, Some(&other), Value::Null).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let message = json!({ "contact": "мама", "text": "Я задержусь" });
+        let (status, _) = send(&app, "POST", SEND, Some(&other), message).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn a_send_says_plainly_what_went_wrong_before_telegram() {
+        let app = computer(&[("TELEGRAM_BOT_TOKEN", "123:test"), ("TELEGRAM_CONTACTS", "мама=42")]);
+        let station = key(&app, &["home.models"]);
+        let unknown = json!({ "contact": "Пете", "text": "Привет" });
+        let (status, body) = send(&app, "POST", SEND, Some(&station), unknown).await;
+        assert_eq!(
+            (status, body["message"].as_str()),
+            (StatusCode::NOT_FOUND, Some("У бота Telegram на этом компьютере нет контакта «Пете»."))
+        );
+        let (status, body) = send(&app, "POST", SEND, Some(&station), json!({ "contact": "мама" })).await;
+        assert_eq!((status, body["message"].as_str()), (StatusCode::BAD_REQUEST, Some(SEND_SHAPE)));
+
+        // No bot on the computer: its contacts and its sends say so.
+        let app = computer(&[]);
+        let station = key(&app, &["home.models"]);
+        let (status, body) = send(&app, "GET", CONTACTS, Some(&station), Value::Null).await;
+        assert_eq!((status, body["message"].as_str()), (StatusCode::SERVICE_UNAVAILABLE, Some(NO_BOT)));
+        let message = json!({ "contact": "мама", "text": "Я задержусь" });
+        let (status, body) = send(&app, "POST", SEND, Some(&station), message).await;
+        assert_eq!((status, body["message"].as_str()), (StatusCode::SERVICE_UNAVAILABLE, Some(NO_BOT)));
+    }
+
+    /// A Bot API server of our own: what was sent to it; `refuse` answers 400 as Telegram does to a bad chat.
+    async fn bot_api(refuse: bool) -> (String, Arc<StdMutex<Vec<Value>>>) {
+        let sent: Arc<StdMutex<Vec<Value>>> = Arc::default();
+        let kept = sent.clone();
+        let router = axum::Router::new().route(
+            "/{bot}/sendMessage",
+            post(move |axum::Json(body): axum::Json<Value>| {
+                let kept = kept.clone();
+                async move {
+                    if refuse {
+                        return Err(StatusCode::BAD_REQUEST);
+                    }
+                    kept.lock().unwrap().push(body);
+                    Ok(axum::Json(json!({ "ok": true, "result": {} })))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, router).await });
+        (base, sent)
+    }
+
+    fn bot(api: &str) -> Arc<TelegramMessenger> {
+        let config = TelegramConfig {
+            token: "123:test".into(),
+            contacts: vec![("мама".to_string(), "42".to_string()), ("бабушка".to_string(), "43".to_string())],
+            inbox_dir: std::env::temp_dir(),
+            alert_chat: None,
+        };
+        TelegramMessenger::with_api(Some(config), api)
+    }
+
+    #[tokio::test]
+    async fn the_bot_passes_the_stations_message_on_or_says_telegram_refused() {
+        let (api, sent) = bot_api(false).await;
+        assert_eq!(pass_on(&bot(&api), "Бабушке", "Купи хлеба.").await.unwrap(), "бабушка");
+        assert_eq!(*sent.lock().unwrap(), [json!({ "chat_id": "43", "text": "Купи хлеба." })]);
+
+        let (api, _) = bot_api(true).await;
+        let refused = pass_on(&bot(&api), "мама", "Я задержусь").await.unwrap_err();
+        assert_eq!(refused.status, StatusCode::BAD_GATEWAY);
+        assert!(refused.message.starts_with("Telegram не принял сообщение"), "{}", refused.message);
+        assert!(!refused.message.contains("123:test"), "never the bot's token");
+    }
 }

@@ -78,7 +78,8 @@ pub async fn security(State(names): State<Arc<AllowedHosts>>, request: Request, 
     let headers = response.headers_mut();
     headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
     headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
-    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    // Framed only by itself: the helper's windows of the station are the panel again (docs/plans/desk.md, stage 4).
+    headers.insert("x-frame-options", HeaderValue::from_static("SAMEORIGIN"));
     if media {
         // Our files for the station's player: never a page that runs.
         headers.insert("content-security-policy", HeaderValue::from_static("sandbox; default-src 'none'"));
@@ -94,7 +95,7 @@ mod tests {
     fn answers_addresses_local_names_and_listed_ones() {
         let names = vec!["gw.example.com".to_string()];
         assert!(allowed_host(None, &names));
-        assert!(allowed_host(Some("192.168.1.100:3000"), &names));
+        assert!(allowed_host(Some("192.168.1.30:3000"), &names));
         assert!(allowed_host(Some("[::1]:3000"), &names));
         assert!(allowed_host(Some("alice.local"), &names));
         assert!(allowed_host(Some("raspberrypi:80"), &names));

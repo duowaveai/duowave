@@ -5,9 +5,12 @@
 //! a look every 15 s, and the ways down when it is away — recognition from the computer to the cloud to Yandex, the
 //! voice from the computer to the cloud to Alice's (chain.rs). The gateway's own switch out of «Свой» and back is
 //! here too (section 8): two looks in a row without an answer and «Свой» gives way to «Шлюз»; a minute of answers and
-//! it comes back — only while the switch was the gateway's own.
+//! it comes back — only while the switch was the gateway's own. The computer's Telegram bot passes the station's
+//! «передай …» on (messenger.rs): each look also reads the names of its contacts; and the bot's messages from them
+//! come back to the station's `/api/v1/home-server/message`.
 
 pub mod chain;
+pub mod messenger;
 #[cfg(feature = "pc")]
 pub mod serve;
 
@@ -42,6 +45,17 @@ pub const DOWN_AFTER: u32 = 2;
 pub const RETURN_AFTER: Duration = Duration::from_secs(60);
 pub const AWAY: &str = "компьютер не на связи";
 pub const BACK: &str = "компьютер снова на связи";
+/// «Что даю колонке» without hearing or voice, and no cloud for it in the station's .env: «Свой» has no Yandex to
+/// fall back on, so it gives way to «Шлюз» as when the computer is away. The panel says «Сейчас «Шлюз»: слух
+/// компьютера выключен с … Вернусь в «Свой», когда он появится».
+pub const NO_HEARING: &str = "слух компьютера выключен";
+pub const NO_VOICE: &str = "голос компьютера выключен";
+/// The part given again: «Свой» comes back by itself.
+pub const GIVEN: &str = "компьютер снова даёт колонке слух и голос";
+/// «Модель» off while «Мозг» on the station answers with the computer's model: the station would go on asking the
+/// computer (the provider cannot leave while a choice answers with it), so the switch is refused.
+pub const MODEL_ANSWERS: &str =
+    "Модель компьютера сейчас отвечает в «Мозге» колонки — сначала выберите там другую модель.";
 
 #[derive(Debug, Clone, Default)]
 struct Watch {
@@ -69,6 +83,25 @@ pub struct HomeServerStatus {
     pub since: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// What the station does not take from the computer: "asr", "tts", "llm", "messages".
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub without: Vec<String>,
+}
+
+/// What the computer can give the station: hearing, voice, the model, and its Telegram bot for «передай …».
+pub const SERVES: &[&str] = &["asr", "tts", "llm", "messages"];
+
+/// The computer's Telegram bot as the station last saw it (`/home/v1/messenger/contacts`). Kept while the computer
+/// is away: «передай маме…» is still ours then, and says the computer is away.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Messenger {
+    /// Not read yet, or the computer has no such route (an older one).
+    #[default]
+    Unknown,
+    /// The computer has no bot set up.
+    NoBot,
+    /// The names of its contacts, as its bot has them: no chats.
+    Contacts(Vec<String>),
 }
 
 /// The computer's side, built for an address and a key.
@@ -87,6 +120,7 @@ pub struct HomeServerService {
     watch: Mutex<Watch>,
     built: Mutex<Option<Built>>,
     modes: OnceLock<Arc<ModeService>>,
+    messenger: Mutex<Messenger>,
 }
 
 impl HomeServerService {
@@ -108,6 +142,7 @@ impl HomeServerService {
             watch: Mutex::new(Watch::default()),
             built: Mutex::new(None),
             modes: OnceLock::new(),
+            messenger: Mutex::new(Messenger::Unknown),
         });
         if let (Some(url), Some(key)) =
             (service.config.placement.home_server_url.clone(), service.config.placement.home_server_key.clone())
@@ -117,7 +152,7 @@ impl HomeServerService {
                 hex::encode(Sha256::digest(format!("{url}\n{key}").as_bytes()))
             };
             if service.secrets.get(FROM_ENV_SECRET).as_deref() != Some(brought.as_str()) {
-                let _ = service.settings.set(&CONNECTOR_HOME_SERVER, &HomeServerSetting { url, enabled: true }, None);
+                let _ = service.settings.set(&CONNECTOR_HOME_SERVER, &HomeServerSetting { url, enabled: true, without: Vec::new() }, None);
                 let _ = service.secrets.set(KEY_SECRET, Some(&key));
                 let _ = service.secrets.set(FROM_ENV_SECRET, Some(&brought));
             }
@@ -160,6 +195,7 @@ impl HomeServerService {
         HomeServerStatus {
             configured: known.is_some() && self.secrets.has(KEY_SECRET),
             enabled: known.as_ref().is_some_and(|setting| setting.enabled),
+            without: known.as_ref().map(|setting| setting.without.clone()).unwrap_or_default(),
             url: known.map(|setting| setting.url),
             key: self.secrets.mask(KEY_SECRET),
             state: self.state(),
@@ -197,11 +233,13 @@ impl HomeServerService {
                 }
                 let url = url.trim_end_matches('/').to_string();
                 let enabled = self.known().is_none_or(|setting| setting.enabled);
-                self.settings.set(&CONNECTOR_HOME_SERVER, &HomeServerSetting { url, enabled }, actor.clone())?;
+                self.settings.set(&CONNECTOR_HOME_SERVER, &HomeServerSetting { url, enabled, without: self.known().map(|setting| setting.without).unwrap_or_default() }, actor.clone())?;
             }
         }
         *self.lock() = Watch::default();
         *self.built.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        // Another computer, or none: its bot is read again.
+        *self.messenger.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Messenger::Unknown;
         self.events.emit(GatewayEvent::HomeServerChanged { configured: self.configured().is_some(), actor });
         Ok(self.status())
     }
@@ -213,6 +251,7 @@ impl HomeServerService {
         url: Option<&str>,
         key: Option<&str>,
         enabled: Option<bool>,
+        without: Option<Vec<String>>,
         actor: Option<Actor>,
     ) -> Result<HomeServerStatus, ApiError> {
         let url = url.map(str::trim).filter(|url| !url.is_empty());
@@ -236,26 +275,73 @@ impl HomeServerService {
                 setting.enabled = on;
                 self.settings.set(&CONNECTOR_HOME_SERVER, &setting, actor.clone())?;
                 *self.lock() = Watch::default();
-                self.events.emit(GatewayEvent::HomeServerChanged { configured: on, actor });
+                self.events.emit(GatewayEvent::HomeServerChanged { configured: on, actor: actor.clone() });
                 if !on {
-                    self.leave_svoi();
+                    self.leave_svoi(AWAY);
                 }
+            }
+        }
+        // «Что даю колонке»: слух, голос, модель и сообщения по отдельности.
+        if let Some(without) = without {
+            let mut without: Vec<String> = without.into_iter().filter(|what| SERVES.contains(&what.as_str())).collect();
+            without.sort();
+            without.dedup();
+            let Some(mut setting) = self.known() else {
+                return Err(ApiError::bad_request("Колонка ещё не знает ПК: сначала включите «ПК помогает колонке»."));
+            };
+            if setting.without != without {
+                setting.without = without;
+                self.settings.set(&CONNECTOR_HOME_SERVER, &setting, actor.clone())?;
+                self.events.emit(GatewayEvent::HomeServerChanged { configured: setting.enabled, actor });
+                // In «Свой» a part not given may leave the station deaf or mute: it goes as when the computer is away.
+                self.keep_svoi();
             }
         }
         Ok(self.status())
     }
 
-    /// The computer's recognition, while it is up.
+    /// Whether the station would take the model from the computer no more: `without` names it, the stored one not.
+    pub fn takes_model_away(&self, without: &[String]) -> bool {
+        without.iter().any(|what| what == "llm")
+            && self.known().is_some_and(|setting| !setting.without.iter().any(|off| off == "llm"))
+    }
+
+    /// What «Свой» would lack now: the computer's hearing or voice not taken («Что даю колонке») and no cloud for it
+    /// in the station's .env — without Yandex there it would hear or say nothing. On the station only (a computer's
+    /// gateway hears and speaks itself), and only while it leans on the computer: with the help off «Свой» has gone
+    /// already, as with a computer away.
+    pub fn svoi_lacks(&self) -> Option<&'static str> {
+        if !crate::core::build::Profile::for_role(self.config.placement.role.as_deref()).station {
+            return None;
+        }
+        self.configured()?;
+        let cloud = |url: &str| !crate::operations::networks::is_local_url(Some(url));
+        let asr = &self.config.speech.asr;
+        if !self.serves("asr") && !(asr.enabled && cloud(&asr.base_url)) {
+            return Some(NO_HEARING);
+        }
+        if !self.serves("tts") && !self.config.gateway.tts.own.as_ref().is_some_and(|own| cloud(&own.base_url)) {
+            return Some(NO_VOICE);
+        }
+        None
+    }
+
+    /// Whether the station takes this from the computer now: "asr", "tts", "llm", "messages".
+    pub fn serves(&self, what: &str) -> bool {
+        self.known().is_some_and(|setting| setting.enabled && !setting.without.iter().any(|off| off == what))
+    }
+
+    /// The computer's recognition, while it is up and the station takes it.
     pub fn recognizer(&self) -> Option<Arc<dyn SpeechRecognizer>> {
-        if self.state() != HomeServer::Up {
+        if self.state() != HomeServer::Up || !self.serves("asr") {
             return None;
         }
         self.built().map(|built| built.0)
     }
 
-    /// The computer's voice — its own choice, a voice lab's voice too — while it is up.
+    /// The computer's voice — its own choice, a voice lab's voice too — while it is up and the station takes it.
     pub fn speech(&self) -> Option<Arc<OwnSpeech>> {
-        if self.state() != HomeServer::Up {
+        if self.state() != HomeServer::Up || !self.serves("tts") {
             return None;
         }
         self.built().map(|built| built.1)
@@ -321,7 +407,49 @@ impl HomeServerService {
             Err(error) if error.is_timeout() => Err("компьютер не ответил вовремя".into()),
             Err(_) => Err(AWAY.into()),
         };
+        let up = outcome.is_ok();
         self.seen(&url, outcome);
+        if up && self.serves("messages") {
+            self.read_contacts(&url, &key).await;
+        }
+    }
+
+    /// The computer's Telegram bot as the station last saw it.
+    pub fn messenger(&self) -> Messenger {
+        self.messenger.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+    }
+
+    /// The names of the computer's contacts, or that it has no bot. A miss keeps what was seen.
+    async fn read_contacts(&self, url: &str, key: &str) {
+        let answer = crate::utils::http::client()
+            .get(format!("{url}/home/v1/messenger/contacts"))
+            .bearer_auth(key)
+            .timeout(Duration::from_secs(3))
+            .send()
+            .await;
+        let seen = match answer {
+            Ok(response) if response.status().is_success() => match response.json::<Value>().await {
+                Ok(body) => Messenger::Contacts(
+                    body.get("contacts")
+                        .and_then(Value::as_array)
+                        .map(|names| names.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                        .unwrap_or_default(),
+                ),
+                Err(_) => return,
+            },
+            Ok(response) if response.status().as_u16() == 503 => Messenger::NoBot,
+            // A computer of an older version: no messages through it.
+            Ok(response) if response.status().as_u16() == 404 => Messenger::Unknown,
+            Ok(response) => {
+                tracing::debug!("home server: its contacts: HTTP {}", response.status().as_u16());
+                return;
+            }
+            Err(error) => {
+                tracing::debug!("home server: its contacts: {error}");
+                return;
+            }
+        };
+        *self.messenger.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = seen;
     }
 
     /// A look's outcome: the state, the events, the gateway's own switch.
@@ -363,33 +491,48 @@ impl HomeServerService {
                 let reason = self.lock().error.clone().unwrap_or_else(|| AWAY.into());
                 tracing::warn!("home server: {url} is away: {reason}");
                 self.events.emit(GatewayEvent::HomeServerDown { url: url.to_string(), reason });
-                self.leave_svoi();
+                self.leave_svoi(AWAY);
             }
         }
         if up {
-            self.maybe_return();
+            self.keep_svoi();
         }
     }
 
-    /// The computer went: «Свой» gives way to «Шлюз», kept as the gateway's own switch.
-    fn leave_svoi(&self) {
+    /// The computer went, or «Свой» would be deaf or mute without a part of it: «Свой» gives way to «Шлюз», kept as
+    /// the gateway's own switch, with why.
+    fn leave_svoi(&self, reason: &str) {
         let Some(modes) = self.modes.get() else { return };
-        match modes.leave_by_itself(PanelMode::Own, PanelMode::Gateway, AWAY) {
-            Ok(true) => tracing::warn!("mode: «Свой» → «Шлюз» by itself: {AWAY}"),
+        match modes.leave_by_itself(PanelMode::Own, PanelMode::Gateway, reason) {
+            Ok(true) => tracing::warn!("mode: «Свой» → «Шлюз» by itself: {reason}"),
             Ok(false) => {}
             Err(error) => tracing::warn!("mode: «Свой» not left: {}", error.message),
         }
     }
 
-    /// A minute of answers: «Свой» back, if the switch out of it was the gateway's own.
+    /// With the computer up: «Свой» stays only with hearing and voice — the computer's or the cloud's. The mode switch
+    /// does not offer it without them (the registry asks `own_lacks`); one kept from before gives way at the next
+    /// look, and once they are given again it comes back, as after a computer away.
+    fn keep_svoi(&self) {
+        match self.svoi_lacks() {
+            Some(reason) => self.leave_svoi(reason),
+            None => self.maybe_return(),
+        }
+    }
+
+    /// A minute of answers: «Свой» back, if the switch out of it was the gateway's own — never while it would lack
+    /// hearing or voice there.
     fn maybe_return(&self) {
         let Some(modes) = self.modes.get() else { return };
         let long_enough = self.lock().up_since.is_some_and(|since| since.elapsed() >= RETURN_AFTER);
-        if !long_enough {
+        if !long_enough || self.svoi_lacks().is_some() {
             return;
         }
-        match modes.return_by_itself(BACK) {
-            Ok(true) => tracing::info!("mode: «Свой» is back by itself: {BACK}"),
+        let left_for_a_part =
+            modes.state().auto.is_some_and(|auto| auto.reason == NO_HEARING || auto.reason == NO_VOICE);
+        let reason = if left_for_a_part { GIVEN } else { BACK };
+        match modes.return_by_itself(reason) {
+            Ok(true) => tracing::info!("mode: «Свой» is back by itself: {reason}"),
             Ok(false) => {}
             Err(error) => tracing::warn!("mode: «Свой» not back: {}", error.message),
         }
@@ -407,6 +550,11 @@ impl crate::placement::HomeServerSource for HomeServerService {
     fn home_server(&self) -> HomeServer {
         self.state()
     }
+
+    /// The registry's «Свой» knows it too: the switch refuses it with why, and the panel shows it off.
+    fn own_lacks(&self) -> Option<&'static str> {
+        self.svoi_lacks()
+    }
 }
 
 impl crate::placement::service::HomeServerView for HomeServerService {
@@ -419,6 +567,7 @@ impl crate::placement::service::HomeServerView for HomeServerService {
                 "state": status.state,
                 "since": status.since,
                 "error": status.error,
+                "without": status.without,
             })
         })
     }
@@ -444,13 +593,38 @@ impl crate::plugins::controller::HomeLink for HomeServerService {
     }
 }
 
+/// The computer's model among «Мозг»'s providers: added here, under its title, at the computer's `/home/v1/llm`.
+fn computers(provider: &crate::dialog::brain::ProviderView) -> bool {
+    provider.title == BRAIN_TITLE && provider.base_url.as_deref().is_some_and(|url| url.ends_with("/home/v1/llm"))
+}
+
+/// Whether «Мозг» on the station answers with the computer's model now: its fast or its smart pick is on it.
+pub fn brain_answers_with_computer(brain: &crate::dialog::brain::BrainService) -> bool {
+    let view = brain.view();
+    let on_computer = |id: &str| view.providers.iter().any(|provider| provider.id == id && computers(provider));
+    view.choice.fast.iter().chain(view.choice.smart.iter()).any(|pick| on_computer(&pick.provider))
+}
+
+/// «Что даю колонке» as the station's gateway takes it: «Модель» is not let go while «Мозг» answers with the
+/// computer's model — the station would go on asking the computer (the provider stays while a choice answers with
+/// it) and the switch would promise what it does not do. Hearing and voice go their own way (`link`).
+pub fn check_parts(
+    home: &HomeServerService,
+    brain: &crate::dialog::brain::BrainService,
+    without: &[String],
+) -> Result<(), ApiError> {
+    if home.takes_model_away(without) && brain_answers_with_computer(brain) {
+        return Err(ApiError::conflict(MODEL_ANSWERS));
+    }
+    Ok(())
+}
+
 pub fn keep_brain_provider(home: &HomeServerService, brain: &crate::dialog::brain::BrainService) {
     use crate::dialog::brain::brain_service::ProviderInput;
     let view = brain.view();
-    let ours = view.providers.iter().find(|provider| {
-        provider.title == BRAIN_TITLE && provider.base_url.as_deref().is_some_and(|url| url.ends_with("/home/v1/llm"))
-    });
-    match (home.configured(), ours) {
+    let ours = view.providers.iter().find(|provider| computers(provider));
+    // The model off in «Что даю колонке»: the computer's model leaves the providers, as when there is no computer.
+    match (home.configured().filter(|_| home.serves("llm")), ours) {
         (Some((url, key)), None) => {
             let input = ProviderInput(serde_json::Map::from_iter([
                 ("preset".into(), serde_json::json!("custom-openai")),
@@ -484,9 +658,14 @@ pub fn router() -> axum::Router<Arc<crate::app::App>> {
     let router = axum::Router::new()
         .route("/api/v1/home-server", get(routes::status).put(routes::set).delete(routes::remove))
         .route("/api/v1/home-server/check", post(routes::check_now))
-        .route("/api/v1/home-server/link", post(routes::link));
+        .route("/api/v1/home-server/link", post(routes::link))
+        // The computer's bot's messages for the station (messenger.rs): a voice message is up to 2 MB.
+        .route(
+            messenger::MESSAGE_PATH,
+            post(messenger::receive).layer(axum::extract::DefaultBodyLimit::max(messenger::BODY_LIMIT)),
+        );
     #[cfg(feature = "pc")]
-    let router = router.merge(serve::router());
+    let router = router.merge(serve::router()).route("/api/v1/home-server/served", get(routes::served));
     router
 }
 
@@ -500,6 +679,14 @@ mod routes {
     use crate::app::App;
     use crate::core::identity::permissions::{CONNECTORS_MANAGE, CONNECTORS_VIEW};
     use crate::platform::http::{created, ok, ApiResult, Body, Caller};
+
+    /// The helper's «Что даю колонке»: how many times and how fast it gave the station hearing, voice and the model
+    /// today.
+    #[cfg(feature = "pc")]
+    pub async fn served(caller: Caller) -> ApiResult<Value> {
+        caller.permitted(crate::core::identity::permissions::STATION_VIEW)?;
+        Ok(ok(super::serve::served_today()))
+    }
 
     pub async fn status(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<HomeServerStatus> {
         caller.permitted(CONNECTORS_VIEW)?;
@@ -531,10 +718,19 @@ mod routes {
         Body(body): Body<Value>,
     ) -> ApiResult<HomeServerStatus> {
         crate::placement::peer::peer_or_permitted(&caller, app.placement.peer_key(), CONNECTORS_MANAGE)?;
+        let without: Option<Vec<String>> = body
+            .get("without")
+            .and_then(Value::as_array)
+            .map(|list| list.iter().filter_map(Value::as_str).map(str::to_string).collect());
+        // Before anything is stored: «Модель» stays while «Мозг» answers with it (the computer's panel says why).
+        if let Some(without) = &without {
+            super::check_parts(&app.home_server, &app.brain, without)?;
+        }
         let status = app.home_server.link(
             body.get("url").and_then(Value::as_str),
             body.get("key").and_then(Value::as_str),
             body.get("enabled").and_then(Value::as_bool),
+            without,
             caller.actor(),
         )?;
         if status.enabled {
@@ -616,14 +812,14 @@ mod tests {
         settings
             .set(
                 &CONNECTOR_HOME_SERVER,
-                &HomeServerSetting { url: "http://192.0.2.10:8191".into(), enabled: true },
+                &HomeServerSetting { url: "http://192.0.2.10:8191".into(), enabled: true, without: Vec::new() },
                 None,
             )
             .unwrap();
         let home = start("http://192.0.2.10");
         assert_eq!(home.configured().map(|(url, _)| url).as_deref(), Some("http://192.0.2.10"), "the move's address");
         settings
-            .set(&CONNECTOR_HOME_SERVER, &HomeServerSetting { url: "http://192.0.2.11".into(), enabled: true }, None)
+            .set(&CONNECTOR_HOME_SERVER, &HomeServerSetting { url: "http://192.0.2.11".into(), enabled: true, without: Vec::new() }, None)
             .unwrap();
         let home = start("http://192.0.2.10");
         assert_eq!(home.configured().map(|(url, _)| url).as_deref(), Some("http://192.0.2.11"), "the panel's stays");
@@ -691,19 +887,143 @@ mod tests {
         let home = HomeServerService::new(config, settings, secrets, EventBus::new());
         assert!(home.configured().is_some(), "the move brought it on");
 
-        let status = home.link(None, None, Some(false), None).unwrap();
+        let status = home.link(None, None, Some(false), None, None).unwrap();
         assert!(status.configured && !status.enabled, "kept, off");
         assert_eq!(status.url.as_deref(), Some("http://192.0.2.10"));
         assert_eq!(home.configured(), None, "not leaned on");
         assert_eq!(home.state(), HomeServer::None);
 
         // The computer moved on the home network: the new address, the switch stays off.
-        let status = home.link(Some("http://192.0.2.35:3000"), None, None, None).unwrap();
+        let status = home.link(Some("http://192.0.2.35:3000"), None, None, None, None).unwrap();
         assert_eq!((status.url.as_deref(), status.enabled), (Some("http://192.0.2.35:3000"), false));
 
-        let status = home.link(None, None, Some(true), None).unwrap();
+        let status = home.link(None, None, Some(true), None, None).unwrap();
         assert!(status.enabled);
         assert_eq!(home.configured(), Some(("http://192.0.2.35:3000".into(), "vgw_home".into())));
+        // «Что даю колонке»: без модели — слух и голос остаются.
+        let status = home.link(None, None, None, Some(vec!["llm".into(), "bogus".into()]), None).unwrap();
+        assert_eq!(status.without, vec!["llm"]);
+        assert!(home.serves("asr") && home.serves("tts") && !home.serves("llm"));
+    }
+
+    /// The station leaning on the computer at `url`, its modes asking the gate above; `extra` — more of its .env.
+    fn station_on(url: &str, extra: &[(&str, &str)]) -> (Arc<HomeServerService>, Arc<ModeService>) {
+        let mut pairs = vec![
+            ("HOME_SERVER_URL", url),
+            ("HOME_SERVER_KEY", "vgw_home"),
+            ("UNIPROXY_MODE", "gateway"),
+            ("DUOWAVE_ROLE", "station"),
+        ];
+        pairs.extend_from_slice(extra);
+        let config = Arc::new(Config::for_tests(&Env::from_pairs(pairs)));
+        let db = Arc::new(Db::memory());
+        let events = EventBus::new();
+        let settings = Arc::new(SettingsService::new(db.clone(), events.clone()));
+        let secrets = Arc::new(SecretsService::new(db, None).unwrap());
+        let home = HomeServerService::new(config.clone(), settings.clone(), secrets, events.clone());
+        let voice = Arc::new(VoiceService::new(&config.gateway, events.clone()));
+        let modes =
+            Arc::new(ModeService::new(config.gateway.mode, settings, events, voice, Arc::new(Gate(home.clone()))));
+        home.set_modes(modes.clone());
+        (home, modes)
+    }
+
+    /// Review G2: in «Свой» there is no Yandex — without the computer's hearing or voice and no cloud for it the
+    /// station would hear or say nothing. It gives way to «Шлюз» as when the computer is away (Yandex hears, Alice
+    /// speaks), says why, and comes back once the part is given again.
+    #[tokio::test]
+    async fn svoi_gives_way_while_the_computers_hearing_or_voice_is_not_given_and_comes_back_with_it() {
+        let up = Arc::new(AtomicBool::new(true));
+        let url = computer(up.clone()).await;
+        let (home, modes) = station_on(&url, &[]);
+        home.check().await;
+        home.age_up(RETURN_AFTER);
+        modes.switch(Some(&serde_json::json!("own")), None).unwrap();
+
+        // «Слух» off, the station's recognition is the build's local default: no cloud to hear.
+        home.link(None, None, None, Some(vec!["asr".into()]), None).unwrap();
+        let view = modes.view();
+        assert_eq!((view.mode, view.auto.map(|auto| auto.reason)), (PanelMode::Gateway, Some(NO_HEARING.to_string())));
+        home.check().await;
+        assert_eq!(modes.current(), PanelMode::Gateway, "not back while it would be deaf");
+
+        // Given again: back at once, the computer has answered for a minute.
+        home.link(None, None, None, Some(Vec::new()), None).unwrap();
+        assert_eq!(modes.current(), PanelMode::Own);
+
+        // «Голос» off: mute without a cloud voice — the same way.
+        home.link(None, None, None, Some(vec!["tts".into()]), None).unwrap();
+        assert_eq!(modes.view().auto.map(|auto| auto.reason), Some(NO_VOICE.to_string()));
+        // A person switches to «Свой» all the same (the switch asks only whether the computer is up): the next look
+        // gives way again.
+        modes.switch(Some(&serde_json::json!("own")), None).unwrap();
+        home.check().await;
+        let view = modes.view();
+        assert_eq!((view.mode, view.auto.map(|auto| auto.reason)), (PanelMode::Gateway, Some(NO_VOICE.to_string())));
+
+        // The voice given back, only «Модель» off: hearing and voice are there, «Свой» is back.
+        home.link(None, None, None, Some(vec!["llm".into()]), None).unwrap();
+        assert_eq!((modes.current(), home.svoi_lacks()), (PanelMode::Own, None));
+    }
+
+    #[tokio::test]
+    async fn svoi_stays_without_the_computers_hearing_when_a_cloud_hears_and_on_a_computer_it_is_never_asked() {
+        let up = Arc::new(AtomicBool::new(true));
+        let url = computer(up.clone()).await;
+        let (home, modes) = station_on(&url, &[("ASR_BASE_URL", "https://api.groq.com/openai/v1")]);
+        home.check().await;
+        modes.switch(Some(&serde_json::json!("own")), None).unwrap();
+        home.link(None, None, None, Some(vec!["asr".into()]), None).unwrap();
+        assert_eq!(modes.current(), PanelMode::Own, "the cloud hears");
+        assert_eq!(home.svoi_lacks(), None);
+        home.link(None, None, None, Some(vec!["asr".into(), "tts".into()]), None).unwrap();
+        assert_eq!((modes.current(), home.svoi_lacks()), (PanelMode::Gateway, Some(NO_VOICE)), "no cloud voice");
+
+        // A computer's gateway hears and speaks itself: its parts never send «Свой» away.
+        let (home, modes) = station_on(&url, &[("DUOWAVE_ROLE", "pc")]);
+        home.check().await;
+        modes.switch(Some(&serde_json::json!("own")), None).unwrap();
+        home.link(None, None, None, Some(vec!["asr".into(), "tts".into()]), None).unwrap();
+        assert_eq!((modes.current(), home.svoi_lacks()), (PanelMode::Own, None));
+    }
+
+    /// Review G3: «Модель» off while «Мозг» on the station answers with the computer's model would change nothing —
+    /// the provider stays while it answers — so the switch is refused with why; otherwise the model goes, and the
+    /// provider with it.
+    #[test]
+    fn the_model_is_not_let_go_while_the_stations_brain_answers_with_it() {
+        let db = Arc::new(Db::memory());
+        let events = EventBus::new();
+        let settings = Arc::new(SettingsService::new(db.clone(), events.clone()));
+        let secrets = Arc::new(SecretsService::new(db.clone(), None).unwrap());
+        let config = Arc::new(Config::for_tests(&Env::from_pairs([
+            ("HOME_SERVER_URL", "http://192.0.2.10"),
+            ("HOME_SERVER_KEY", "vgw_home"),
+            ("DIALOG_PROVIDER", "none"),
+        ])));
+        let home = HomeServerService::new(config.clone(), settings.clone(), secrets.clone(), events.clone());
+        let brain =
+            crate::dialog::brain::BrainService::new(config.dialog.clone(), db, settings, secrets, events).unwrap();
+        keep_brain_provider(&home, &brain);
+        let ours = brain.view().providers.into_iter().find(computers).expect("the computer's model is there").id;
+        let pick = |fast: serde_json::Value| {
+            brain.choose(&serde_json::Map::from_iter([("fast".to_string(), fast)]), None).unwrap();
+        };
+
+        pick(serde_json::json!({"provider": ours, "model": "home"}));
+        assert!(brain_answers_with_computer(&brain));
+        let refused = check_parts(&home, &brain, &["llm".into()]).unwrap_err();
+        assert_eq!((refused.status.as_u16(), refused.message.as_str()), (409, MODEL_ANSWERS));
+        assert!(check_parts(&home, &brain, &["asr".into(), "tts".into()]).is_ok(), "hearing and voice go their way");
+
+        // Another model answers: «Модель» goes, the provider with it.
+        pick(serde_json::Value::Null);
+        assert!(check_parts(&home, &brain, &["llm".into()]).is_ok());
+        home.link(None, None, None, Some(vec!["llm".into()]), None).unwrap();
+        keep_brain_provider(&home, &brain);
+        assert!(!brain.view().providers.iter().any(computers));
+        // Off already: nothing more is asked of the other parts.
+        assert!(check_parts(&home, &brain, &["asr".into(), "llm".into()]).is_ok());
     }
 
     #[test]
@@ -717,7 +1037,7 @@ mod tests {
             secrets,
             EventBus::new(),
         );
-        assert!(home.link(None, None, Some(true), None).is_err());
-        assert!(home.link(Some("http://192.0.2.10"), None, None, None).is_err(), "no key: the computer must bring one");
+        assert!(home.link(None, None, Some(true), None, None).is_err());
+        assert!(home.link(Some("http://192.0.2.10"), None, None, None, None).is_err(), "no key: the computer must bring one");
     }
 }

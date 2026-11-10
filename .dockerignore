@@ -8,9 +8,12 @@
 !content/radio.json
 !content/README.md
 # What the program carries inside besides its own folder (include_str!, rust-embed): the built-in packages, the
-# station's service script, the plugin workshop's guides.
+# station's scripts, the plugin workshop's guides. scripts/check-docker-context.mjs (CI) fails when one is missing.
 !packages
-!station-client/S99zgateway
+!station-client/voice.sh
+!station-client/S95duowave
+!station-client/call-client.sh
+!station-client/gateway.sh
 !docs/plugins/AUTHORING.md
 !docs/plugins/panel-sdk.d.ts
 !docs/plugins/skill

@@ -75,12 +75,16 @@ Every change on a station is the owner's decision (the station rules in the repo
 
 ## Updates
 
-The gateway checks the release feed (`latest.json`, `UPDATE_FEED_URL`; the release build names the repository's)
-at start and every `UPDATE_CHECK_HOURS`, offers a newer version in the panel («Дом» → «Обновления») and installs it
-only when someone with the right `system.update` agrees: the archive is downloaded, its minisign signature checked
-against the key built in (`updates.pub`), the program replaced (the one before stays as `duowave.previous`), and
-the gateway restarts as the new one. Inside the desktop app, in Docker or as a Home Assistant add-on it offers the
-update and leaves the install to the app, the image or the add-on.
+The gateway checks the release feed (`latest.json`, `UPDATE_FEED_URL`, https only; the release build names the
+repository's) at start and every `UPDATE_CHECK_HOURS`, offers a newer version in the panel («Дом» → «Обновления») and
+installs it only when someone with the right `system.update` agrees: the archive is downloaded, its minisign signature
+checked against the keys built in (`updates.pub`), its `release.json` too — the archive is installed only as the very
+version offered, built for this platform and newer than the running one, so a feed in the wrong hands cannot take the
+gateway back to an older release — the program replaced (the one before stays as `duowave.previous`), and the gateway
+restarts as the new one. An urgent release is the exception: the feed's `critical_below` (scripts/release/critical.txt)
+makes an older gateway install it by itself at its next check, unless `UPDATE_AUTO_CRITICAL=false`. Inside the desktop
+app, in Docker or as a Home Assistant add-on it offers the update and leaves the install to the app (urgent ones go at
+once), the image or the add-on.
 
 ## Packages and the catalog
 

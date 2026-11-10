@@ -46,6 +46,24 @@ pub fn recognition_text_raw(asr_result: Option<&Value>) -> String {
     text
 }
 
+/// Yandex's recognition into a request's trip: the words so far while it listens, what it heard at the end, after
+/// which Alice thinks. Nothing heard at the end leaves the trip as it is: the station's statistics end it.
+pub fn yandex_heard(trip: &RequestHandle, asr_result: Option<&Value>) {
+    let text = recognition_text(asr_result);
+    let end = asr_result.and_then(|asr| asr.get("endOfUtt")).and_then(Value::as_bool).unwrap_or(false);
+    if !end {
+        if !text.is_empty() {
+            trip.partial(&text);
+        }
+        return;
+    }
+    if text.is_empty() {
+        return;
+    }
+    trip.heard(&text);
+    trip.step(RequestPhase::Think, Some(Place::Yandex), Some(ALICE));
+}
+
 /// The requests' trips of one relayed session, by the station's message id.
 pub struct RelayTrips {
     starter: Option<Arc<dyn RequestStarter>>,
@@ -148,23 +166,7 @@ impl RelayTrips {
         let Some(r#ref) = r#ref else { return };
         let Some(trip) = self.trip(&r#ref) else { return };
         match kind {
-            "asrResult" => {
-                let asr = event.get("asrResult");
-                let text = recognition_text(asr);
-                let end = asr.and_then(|asr| asr.get("endOfUtt")).and_then(Value::as_bool).unwrap_or(false);
-                if !end {
-                    if !text.is_empty() {
-                        trip.partial(&text);
-                    }
-                    return;
-                }
-                // Nothing heard: the station's statistics end it.
-                if text.is_empty() {
-                    return;
-                }
-                trip.heard(&text);
-                trip.step(RequestPhase::Think, Some(Place::Yandex), Some(ALICE));
-            }
+            "asrResult" => yandex_heard(&trip, event.get("asrResult")),
             "aliceResponse" => {
                 let response = event.get("aliceResponse").unwrap_or(&empty);
                 let voice = response.get("voiceResponse").unwrap_or(&empty);

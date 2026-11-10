@@ -144,6 +144,12 @@ events! {
         #[serde(default, skip_serializing_if = "Option::is_none")] error: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")] actor: Option<Actor>,
     }
+    /// A plugin wrote or removed its data (`host.kv`): the panel's widgets of the package read theirs again — a list
+    /// filled by voice shows at once. At most once a second per package, the last write of a burst told too
+    /// (src/plugins/host_api.rs). No keys, no values.
+    PackageDataChanged = "packages.data" {
+        package: String,
+    }
     /// A draft of the workshop changed by its agent or by voice (src/plugins/workshop): the panel reads it again.
     WorkshopChanged = "workshop.changed" {
         draft: String,
@@ -221,6 +227,12 @@ events! {
         #[serde(default, skip_serializing_if = "Option::is_none")] actor: Option<Actor>,
     }
     /// The station said who it is: its model and colour at sync, its firmware in its spotter's log (logSpotter).
+    /// What the station plays or which timers it holds changed (its state in a request, our player's news): the
+    /// panel's widgets read it again (docs/plans/desk.md, stage 2).
+    StationStateChanged = "station.state" {
+        device: String,
+        what: String,
+    }
     StationSynced = "station.synced" {
         device_tag: String,
         #[serde(default, skip_serializing_if = "Option::is_none")] device_model: Option<String>,

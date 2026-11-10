@@ -618,6 +618,9 @@ pub struct UpdatesConfig {
     pub check_hours: u64,
     /// UPDATE_PUBKEY: the minisign keys updates are signed with (one per line), when not those built in.
     pub public_key: Option<String>,
+    /// UPDATE_AUTO_CRITICAL: an urgent release (the feed's critical_below) installs by itself, without «Обновить»,
+    /// where the gateway installs its own updates; false leaves it to a click like any other. On by default.
+    pub auto_critical: bool,
 }
 
 /// Where the gateway runs (src/placement, docs/plans/station-placement.md).
@@ -895,6 +898,7 @@ fn build(env: &Env) -> Config {
             feed_url: env.optional("UPDATE_FEED_URL"),
             check_hours: env.integer("UPDATE_CHECK_HOURS", 1),
             public_key: env.optional("UPDATE_PUBKEY"),
+            auto_critical: env.flag("UPDATE_AUTO_CRITICAL", true),
         },
         placement: PlacementConfig {
             station_payload_file: env.get("STATION_PAYLOAD_FILE").map(PathBuf::from),

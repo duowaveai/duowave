@@ -7,6 +7,9 @@
 //!
 //! The calls module (the hub, SIP and LiveKit, the Telegram bot) is reached through the traits below; it tells
 //! the skill of its events by `on_ringing`, `on_ended`, `on_endpoints` and `on_message`, outside its own locks.
+//! On the station, whose build has no calls module, «передай …» goes through the computer's bot while the computer
+//! helps it (src/home_server/messenger.rs), and the bot's messages come from the computer the other way
+//! (src/placement/messages.rs): one part of «Что даю колонке», «Сообщения», for both.
 //!
 //! The `.ts` files named here are the Node gateway's, removed from the tree: git tag `node-gateway-last`.
 
@@ -27,6 +30,8 @@ const ANNOUNCE_EVERY: Duration = Duration::from_millis(12_000);
 const ANNOUNCEMENTS: usize = 3;
 /// How long a contact has to open the call's link from Telegram; then the hub rings their page as usual (45 s).
 const INVITE: Duration = Duration::from_millis(90_000);
+/// «передай …» to a name the bot does not know.
+pub const NO_RECIPIENT: &str = "Не знаю, кому передать.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PartyKind {
@@ -124,7 +129,30 @@ pub struct IncomingMessage {
     /// A voice message's file (Ogg/Opus, as Telegram keeps them).
     pub file: Option<PathBuf>,
     pub text: Option<String>,
+    /// The file is a copy made for playing only — a message the computer passed on to the station
+    /// (src/home_server/messenger.rs): removed once played. The bot's own inbox is kept.
+    pub discard: bool,
 }
+
+/// Where a contact's message goes besides the stations at this gateway's own /uni.ws: the gateways of the stations
+/// this computer helps, which its bot's messages would never reach otherwise (src/placement/messages.rs).
+pub trait MessageRelay: Send + Sync {
+    /// Hands the message on, each station in a task of its own: how many stations it goes to.
+    fn pass_on(&self, message: &IncomingMessage) -> usize;
+}
+
+/// A message that did not go, with the words the station says why: «Компьютер не на связи…». Other errors of
+/// `send_text` are the skill's failure as before.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotSent(pub String);
+
+impl std::fmt::Display for NotSent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for NotSent {}
 
 /// What the skill needs of the Telegram bot (src/calls/telegram.ts).
 pub trait MessengerAccess: Send + Sync {
@@ -137,6 +165,11 @@ pub trait MessengerAccess: Send + Sync {
         text: String,
         button: Option<LinkButton>,
     ) -> BoxFuture<'static, anyhow::Result<()>>;
+    /// Why no message can go now, whoever it is for, as the station says it: the computer that holds the bot is
+    /// away, or it has no bot. None: the contact decides.
+    fn unavailable(&self) -> Option<String> {
+        None
+    }
 }
 
 /// No calls module (the station's own build, or before it is wired): no parties, no SIP, no bot.
@@ -227,6 +260,7 @@ pub struct CallsSkill {
     calls: Arc<dyn CallsAccess>,
     telegram: Arc<dyn MessengerAccess>,
     speaker: RwLock<Option<Arc<dyn Speaker>>>,
+    relay: RwLock<Option<Arc<dyn MessageRelay>>>,
     /// By the identity the link lets into the room.
     invites: Mutex<HashMap<String, Invite>>,
 }
@@ -243,12 +277,22 @@ impl CallsSkill {
             calls,
             telegram,
             speaker: RwLock::new(None),
+            relay: RwLock::new(None),
             invites: Mutex::new(HashMap::new()),
         })
     }
 
     pub fn attach_speaker(&self, speaker: Arc<dyn Speaker>) {
         *self.speaker.write().unwrap() = Some(speaker);
+    }
+
+    /// On the computer: the stations it helps hear its bot's messages too.
+    pub fn attach_relay(&self, relay: Arc<dyn MessageRelay>) {
+        *self.relay.write().unwrap() = Some(relay);
+    }
+
+    fn relay(&self) -> Option<Arc<dyn MessageRelay>> {
+        self.relay.read().unwrap().clone()
     }
 
     fn speaker(&self) -> Option<Arc<dyn Speaker>> {
@@ -327,11 +371,19 @@ impl CallsSkill {
                 })
             }
             "message" => {
+                if let Some(reason) = self.telegram.unavailable() {
+                    return Ok(Outcome::speech(reason));
+                }
                 let Some(recipient) = self.recipient(intent) else {
-                    return Ok(Outcome::speech("Не знаю, кому передать."));
+                    return Ok(Outcome::speech(NO_RECIPIENT));
                 };
                 let text = js::string_or_empty(intent.params.get("text"));
-                self.telegram.send_text(recipient.chat_id, text.clone(), None).await?;
+                if let Err(error) = self.telegram.send_text(recipient.chat_id, text.clone(), None).await {
+                    return match error.downcast::<NotSent>() {
+                        Ok(not_sent) => Ok(Outcome::speech(not_sent.0)),
+                        Err(error) => Err(error),
+                    };
+                }
                 Ok(Outcome {
                     speech: Some("Передала.".into()),
                     done: Some(format!("контакту «{}» отправлено в Telegram сообщение «{text}»", recipient.name)),
@@ -501,19 +553,49 @@ impl CallsSkill {
         });
     }
 
+    /// Said or played on the stations at this gateway, and handed on to the stations this computer helps. Live 11.11:
+    /// with the station's gateway on the station nobody was at the computer's /uni.ws, and the message was lost
+    /// without a word — now it goes there, and what reaches no one is said in the log.
     async fn deliver(&self, message: IncomingMessage) {
-        let Some(speaker) = self.speaker() else { return };
+        let empty = message.file.is_none() && message.text.as_deref().is_none_or(str::is_empty);
+        if empty {
+            return;
+        }
+        let passed = self.relay().map_or(0, |relay| relay.pass_on(&message));
+        let played = self.play(&message).await;
+        if message.discard {
+            if let Some(file) = &message.file {
+                let _ = tokio::fs::remove_file(file).await;
+            }
+        }
+        if !played && passed == 0 {
+            tracing::info!(
+                target: "calls",
+                "сообщение от «{}» не проиграно: колонки на связи с этим шлюзом нет, и передать его некому",
+                message.from
+            );
+        }
+    }
+
+    /// The message on whichever station is at this gateway now: whether one said it.
+    async fn play(&self, message: &IncomingMessage) -> bool {
+        let Some(speaker) = self.speaker() else { return false };
         if let Some(file) = &message.file {
             match tokio::fs::read(file).await {
                 Ok(audio) => {
                     let clip = AudioClip { audio: audio.into(), label: format!("voice message from {}", message.from) };
-                    speaker.say("*".into(), format!("Голосовое сообщение: {}.", message.from), Some(clip)).await;
+                    speaker.say("*".into(), format!("Голосовое сообщение: {}.", message.from), Some(clip)).await
                 }
-                Err(error) => tracing::warn!(target: "calls", "message from {}: {error}", message.from),
+                Err(error) => {
+                    tracing::warn!(target: "calls", "message from {}: {error}", message.from);
+                    false
+                }
             }
         } else if let Some(text) = message.text.as_deref().filter(|text| !text.is_empty()) {
             // «Папа пишет: …»: the name as it is, no case to get wrong («от папа»).
-            speaker.say("*".into(), format!("{} пишет: {text}", capitalized(&message.from)), None).await;
+            speaker.say("*".into(), format!("{} пишет: {text}", capitalized(&message.from)), None).await
+        } else {
+            false
         }
     }
 }
@@ -898,9 +980,63 @@ mod tests {
                 chat_id: "7".into(),
                 file: None,
                 text: Some("Ужин готов".into()),
+                discard: false,
             })
             .await;
         assert_eq!(*said.0.lock().unwrap(), ["Папа пишет: Ужин готов"]);
+    }
+
+    /// The stations this computer helps.
+    #[derive(Default)]
+    struct Stations(Mutex<Vec<IncomingMessage>>);
+
+    impl MessageRelay for Arc<Stations> {
+        fn pass_on(&self, message: &IncomingMessage) -> usize {
+            self.0.lock().unwrap().push(message.clone());
+            1
+        }
+    }
+
+    /// Live 11.11: the station's gateway on the station, nobody at the computer's /uni.ws — the message went nowhere.
+    /// It goes to the stations the computer helps, and is said here too where a station is.
+    #[tokio::test]
+    async fn hands_a_contacts_message_on_to_the_stations_it_helps_and_a_copy_for_playing_goes_after_it() {
+        let SetUp { skill, said, .. } = set_up(true);
+        let stations = Arc::new(Stations::default());
+        skill.attach_relay(Arc::new(stations.clone()));
+        let text = IncomingMessage {
+            from: "мама".into(),
+            chat_id: "42".into(),
+            file: None,
+            text: Some("Скоро буду".into()),
+            discard: false,
+        };
+        skill.deliver(text.clone()).await;
+        assert_eq!(*stations.0.lock().unwrap(), [text]);
+        assert_eq!(*said.0.lock().unwrap(), ["Мама пишет: Скоро буду"]);
+
+        // A voice message the computer passed on: played, then its copy removed.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("voice.ogg");
+        std::fs::write(&file, b"OggS").unwrap();
+        let voice = IncomingMessage {
+            from: "мама".into(),
+            chat_id: String::new(),
+            file: Some(file.clone()),
+            text: None,
+            discard: true,
+        };
+        skill.deliver(voice).await;
+        assert_eq!(said.0.lock().unwrap().last().map(String::as_str), Some("Голосовое сообщение: мама."));
+        assert!(!file.exists(), "the copy is gone");
+
+        // No station here and none helped: the log says so (no panic, no speaker needed).
+        let alone = CallsSkill::new(Arc::new(NoCalls), Arc::new(NoCalls), Arc::new(NoCalls));
+        alone.deliver(IncomingMessage { text: Some("Привет".into()), ..text_message() }).await;
+    }
+
+    fn text_message() -> IncomingMessage {
+        IncomingMessage { from: "папа".into(), chat_id: "7".into(), file: None, text: None, discard: false }
     }
 
     #[tokio::test(start_paused = true)]

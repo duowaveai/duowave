@@ -357,6 +357,26 @@ async fn load(
         .await
 }
 
+/// Whether a module parses — the panel part of a plugin (`panel.js`), which runs in the browser, not here: its syntax
+/// errors show in the workshop's check rather than in the panel (docs/plans/desk.md, stage 5). Nothing is evaluated
+/// and its imports are not resolved.
+pub async fn syntax_of(name: &str, source: &str) -> Result<(), String> {
+    // Its imports — Preact and the panel's SDK — live in the browser: blanked here line for line, the rest is parsed.
+    static IMPORTS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"(?m)^[ \t]*import\b(?:[^;"']*?\bfrom\s*)?["'][^"']*["'][ \t]*;?"#).expect("a valid pattern")
+    });
+    let source = IMPORTS.replace_all(source, |found: &regex::Captures| "\n".repeat(found[0].matches('\n').count())).into_owned();
+    let name = name.to_string();
+    // A runtime of its own on a blocking thread: the engine is not Send, the check's caller is.
+    tokio::task::spawn_blocking(move || {
+        let engine = rquickjs::Runtime::new().map_err(|error| error.to_string())?;
+        let context = rquickjs::Context::full(&engine).map_err(|error| error.to_string())?;
+        context.with(|ctx| Module::declare(ctx.clone(), name, source).catch(&ctx).map(|_| ()).map_err(|error| message(&error)))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 /// The functions a module exports.
 fn exported(ctx: &Ctx<'_>, namespace: &Persistent<Object<'static>>) -> Vec<String> {
     let Ok(namespace) = namespace.clone().restore(ctx) else { return Vec::new() };

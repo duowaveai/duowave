@@ -1,13 +1,14 @@
-// Темы пульта — данные, а не код: палитры двух режимов, оболочка, плотность, шрифт и скругления. Встроенные темы
-// регистрирует тот же definePlugin, что потом будут звать плагины (builtin.tsx); выбирает и применяет тему theme.ts.
+// Темы пульта — данные, а не код: палитры двух режимов, плотность, шрифт и скругления. Тема одна — «Минимал»
+// (docs/plans/desk.md); темы пакетов перекрашивают её. Вид (стол и док или боковая панель) выбирает человек отдельно
+// от темы (theme.ts). Встроенную тему регистрирует тот же definePlugin, что зовут плагины (builtin.tsx).
 // Файл чистый — без DOM и Preact: его читает и vite.config.ts, чтобы вшить тему по умолчанию в index.html.
 
-/** Режим внутри темы. У «Стекла» тёмный — «ночь», светлый — «туман». */
+/** Режим внутри темы: тёмный или светлый. */
 export type Mode = 'dark' | 'light';
 
 /**
- * Палитра одного режима: CSS-токены без «--» — те, что читают glass.css и экраны (bg, text, accent, pill-own-fg…).
- * Плагину-теме проще всего взять палитру «Стекла» и поменять нужное: `{ ...GLASS.palette.dark, bg: '#…' }`.
+ * Палитра одного режима: CSS-токены без «--» — те, что читают стили и экраны (bg, text, accent, pill-own-fg…).
+ * Тема-пакет приносит только то, что меняет: остальное берётся у «Минимала».
  */
 export type Palette = Record<string, string>;
 
@@ -24,14 +25,13 @@ export interface Theme {
     defaultMode?: Mode;
     palette: Record<Mode, Palette>;
     /**
-     * Материал: как выглядят поверхности и элементы. 'glass' — стекло (DESIGN.md), 'minimal' — плоские тёплые
-     * карточки с линией, капсулы и белые листы (DESIGN.md, «Минимал»). Ставится на `<html data-look>`; незнакомый —
-     * стекло. Палитра темы ложится поверх палитры своего материала.
+     * Материал — всегда 'minimal' (плоские тёплые карточки с линией, капсулы и белые листы; DESIGN.md, «Минимал»):
+     * «Стекло» удалено 10.11.2026. Поле осталось для пакетов, которые его пишут; ставится на `<html data-look>`.
      */
     look?: string;
     /**
-     * Оболочка: где навигация и шапка. 'tabbar' — панель вкладок снизу, 'sidebar' — боковая панель. Незнакомая
-     * оболочка — панель вкладок.
+     * Вид, который тема советует: 'desk' — стол и док, 'sidebar' — боковая панель ('tabbar' прежних пакетов —
+     * стол). Вид выбирает человек (theme.ts), а тема его не навязывает.
      */
     layout: string;
     /** Плотность — множитель отступов: 1 — как в DESIGN.md, больше — просторнее. Высоту нажимаемых целей не трогает. */
@@ -42,214 +42,22 @@ export interface Theme {
     radius: { panel: number; large: number; bar: number };
 }
 
-/** «Стекло» (DESIGN.md): тёмная «ночь» и светлый «туман» — токены один в один из прежнего glass.css. */
-export const GLASS: Theme = {
-    id: 'glass',
-    title: 'Стекло',
-    about: 'Панель вкладок снизу, кнопка «Сказать» посередине',
-    modes: { dark: 'Ночь', light: 'Туман' },
-    layout: 'tabbar',
-    density: 1,
-    font: "'Manrope', system-ui, sans-serif",
-    radius: { panel: 24, large: 32, bar: 34 },
-    palette: {
-        dark: {
-            // Текст и база
-            bg: '#090C10',
-            aurora:
-                'radial-gradient(120% 70% at 0% 0%, rgba(182, 243, 106, 0.30) 0%, rgba(182, 243, 106, 0) 55%), ' +
-                'radial-gradient(90% 60% at 100% 38%, rgba(63, 224, 197, 0.24) 0%, rgba(63, 224, 197, 0) 60%), ' +
-                'radial-gradient(110% 60% at 20% 100%, rgba(139, 108, 255, 0.26) 0%, rgba(139, 108, 255, 0) 62%)',
-            text: '#F3F6F8',
-            sub: 'rgba(243, 246, 248, 0.68)',
-            // Стекло
-            'glass-bg': 'rgba(255, 255, 255, 0.07)',
-            'glass-border': 'rgba(255, 255, 255, 0.13)',
-            'glass-hi': 'rgba(255, 255, 255, 0.10)',
-            'glass-shadow': '0 12px 32px rgba(0, 0, 0, 0.35)',
-            'glass-blur': '24px',
-            'strong-bg': 'rgba(16, 20, 27, 0.62)',
-            'strong-border': 'rgba(255, 255, 255, 0.14)',
-            'strong-hi': 'rgba(255, 255, 255, 0.10)',
-            'strong-shadow': '0 16px 40px rgba(0, 0, 0, 0.45)',
-            'strong-blur': '28px',
-            // Меню списков: почти плотное — под ним не должен просвечивать текст карточек
-            'menu-bg': 'rgba(14, 18, 24, 0.96)',
-            divider: 'rgba(255, 255, 255, 0.08)',
-            track: 'rgba(255, 255, 255, 0.14)',
-            'icon-bg': 'rgba(255, 255, 255, 0.09)',
-            // Акцент (лайм)
-            accent: '#B6F36A',
-            'on-accent': '#0B0F0A',
-            'accent-text': '#B6F36A',
-            'talk-shadow': '0 8px 24px rgba(182, 243, 106, 0.35)',
-            // Полосы распределения
-            'bar-own': '#B6F36A',
-            'bar-yandex': '#FFB547',
-            'bar-agent': '#C2A8FF',
-            'bar-off': '#AEB6C1',
-            // Пилюли исполнителей: цвет текста / заливка
-            'pill-own-fg': '#B6F36A',
-            'pill-own-bg': 'rgba(182, 243, 106, 0.16)',
-            'pill-yandex-fg': '#FFB547',
-            'pill-yandex-bg': 'rgba(255, 181, 71, 0.16)',
-            'pill-agent-fg': '#C2A8FF',
-            'pill-agent-bg': 'rgba(183, 155, 255, 0.18)',
-            'pill-off-fg': '#AEB6C1',
-            'pill-off-bg': 'rgba(174, 182, 193, 0.14)',
-            'dot-offline': '#FF8A80',
-            // Выбранный сегмент и радио: лайм в тёмной теме, чернила в светлой (DESIGN.md: The Ink-Selection Rule)
-            'seg-on-bg': '#B6F36A',
-            'seg-on-fg': '#0B0F0A',
-            'seg-off-fg': 'rgba(243, 246, 248, 0.72)',
-            'radio-on-bg': '#B6F36A',
-            'radio-on-fg': '#0B0F0A',
-            'radio-off': 'rgba(255, 255, 255, 0.3)',
-            // Дашборд: подписи и узлы орбиты, сама орбита, затемнение шита
-            'label-bg': 'rgba(16, 20, 27, 0.5)',
-            'label-border': 'rgba(255, 255, 255, 0.10)',
-            'label-hi': 'rgba(255, 255, 255, 0.08)',
-            'label-shadow': '0 6px 18px rgba(0, 0, 0, 0.28)',
-            'node-hi': 'rgba(255, 255, 255, 0.12)',
-            'node-shadow': '0 10px 24px rgba(0, 0, 0, 0.35)',
-            'soft-own': 'rgba(182, 243, 106, 0.42)',
-            'soft-yandex': 'rgba(255, 181, 71, 0.42)',
-            'soft-agent': 'rgba(194, 168, 255, 0.42)',
-            'soft-off': 'rgba(174, 182, 193, 0.30)',
-            'on-badge': '#0B0F0A',
-            orbit: 'rgba(255, 255, 255, 0.16)',
-            'orbit-hi': '#B6F36A',
-            scrim: 'rgba(4, 6, 9, 0.55)',
-            grabber: 'rgba(255, 255, 255, 0.18)',
-            'station-shadow': '0.5',
-        },
-        light: {
-            bg: '#EDF1EF',
-            aurora:
-                'radial-gradient(120% 70% at 0% 0%, rgba(163, 230, 53, 0.45) 0%, rgba(163, 230, 53, 0) 55%), ' +
-                'radial-gradient(90% 60% at 100% 38%, rgba(45, 212, 191, 0.34) 0%, rgba(45, 212, 191, 0) 60%), ' +
-                'radial-gradient(110% 60% at 20% 100%, rgba(167, 139, 250, 0.34) 0%, rgba(167, 139, 250, 0) 62%)',
-            text: '#0D1117',
-            sub: 'rgba(13, 17, 23, 0.66)',
-            'glass-bg': 'rgba(255, 255, 255, 0.58)',
-            'glass-border': 'rgba(255, 255, 255, 0.85)',
-            'glass-hi': 'rgba(255, 255, 255, 0.9)',
-            'glass-shadow': '0 10px 30px rgba(30, 41, 59, 0.10)',
-            'glass-blur': '24px',
-            'strong-bg': 'rgba(255, 255, 255, 0.74)',
-            'strong-border': 'rgba(255, 255, 255, 0.9)',
-            'strong-hi': 'rgba(255, 255, 255, 0.95)',
-            'strong-shadow': '0 14px 36px rgba(30, 41, 59, 0.16)',
-            'strong-blur': '28px',
-            'menu-bg': 'rgba(255, 255, 255, 0.97)',
-            divider: 'rgba(13, 17, 23, 0.07)',
-            track: 'rgba(13, 17, 23, 0.10)',
-            'icon-bg': 'rgba(255, 255, 255, 0.75)',
-            accent: '#A3E635',
-            'on-accent': '#0D1117',
-            'accent-text': '#3F6212',
-            'talk-shadow': '0 8px 22px rgba(101, 163, 13, 0.30)',
-            'bar-own': '#84CC16',
-            'bar-yandex': '#F59E0B',
-            'bar-agent': '#8B5CF6',
-            'bar-off': '#9CA3AF',
-            'pill-own-fg': '#3F6212',
-            'pill-own-bg': '#E2F7C2',
-            'pill-yandex-fg': '#9A4A05',
-            'pill-yandex-bg': '#FDE8C8',
-            'pill-agent-fg': '#5B21B6',
-            'pill-agent-bg': '#ECE5FF',
-            'pill-off-fg': '#4B5563',
-            'pill-off-bg': '#E6E8EC',
-            'dot-offline': '#B42318',
-            'seg-on-bg': '#0D1117',
-            'seg-on-fg': '#F3F6F8',
-            'seg-off-fg': 'rgba(13, 17, 23, 0.7)',
-            'radio-on-bg': '#0D1117',
-            'radio-on-fg': '#FFFFFF',
-            'radio-off': 'rgba(13, 17, 23, 0.26)',
-            'label-bg': 'rgba(255, 255, 255, 0.66)',
-            'label-border': 'rgba(255, 255, 255, 0.9)',
-            'label-hi': 'rgba(255, 255, 255, 0.95)',
-            'label-shadow': '0 6px 16px rgba(30, 41, 59, 0.10)',
-            'node-hi': 'rgba(255, 255, 255, 0.9)',
-            'node-shadow': '0 8px 20px rgba(30, 41, 59, 0.14)',
-            'soft-own': 'rgba(101, 163, 13, 0.45)',
-            'soft-yandex': 'rgba(217, 119, 6, 0.42)',
-            'soft-agent': 'rgba(124, 58, 237, 0.35)',
-            'soft-off': 'rgba(75, 85, 99, 0.28)',
-            'on-badge': '#FFFFFF',
-            orbit: 'rgba(13, 17, 23, 0.16)',
-            'orbit-hi': '#65A30D',
-            scrim: 'rgba(13, 17, 23, 0.24)',
-            grabber: 'rgba(13, 17, 23, 0.14)',
-            'station-shadow': '0.22',
-        },
-    },
-};
-
-/**
- * «Простор» — то же «Стекло» для большого экрана: боковая панель вместо вкладок снизу (на телефоне она выезжает
- * слева), просторнее и круглее, стекло тоньше, как у компьютера в DESIGN.md. Сияние стоит за панелью: фиолет слева,
- * бирюза справа сверху, лайм — тише, справа снизу. Цвета исполнителей и лаймовое действие — те же: смысл цвета
- * в данных у всех тем один (The Who-Answers Rule).
- */
-export const PROSTOR: Theme = {
-    id: 'prostor',
-    title: 'Простор',
-    about: 'Боковая панель, больше воздуха — для компьютера; на телефоне разделы в меню',
-    modes: { dark: 'Сумрак', light: 'Иней' },
-    layout: 'sidebar',
-    density: 1.125,
-    font: GLASS.font,
-    radius: { panel: 28, large: 32, bar: 30 },
-    palette: {
-        dark: {
-            ...GLASS.palette.dark,
-            bg: '#080B12',
-            aurora:
-                'radial-gradient(70% 80% at 0% 35%, rgba(139, 108, 255, 0.30) 0%, rgba(139, 108, 255, 0) 60%), ' +
-                'radial-gradient(70% 55% at 100% 0%, rgba(63, 224, 197, 0.22) 0%, rgba(63, 224, 197, 0) 60%), ' +
-                'radial-gradient(80% 60% at 90% 100%, rgba(182, 243, 106, 0.16) 0%, rgba(182, 243, 106, 0) 62%)',
-            'glass-bg': 'rgba(255, 255, 255, 0.06)',
-            'glass-shadow': '0 16px 40px rgba(0, 0, 0, 0.35)',
-            'glass-blur': '28px',
-            'strong-bg': 'rgba(14, 18, 28, 0.66)',
-            'strong-shadow': '0 16px 40px rgba(0, 0, 0, 0.40)',
-            'menu-bg': 'rgba(12, 16, 24, 0.96)',
-            scrim: 'rgba(4, 6, 12, 0.55)',
-        },
-        light: {
-            ...GLASS.palette.light,
-            bg: '#EEF2F6',
-            aurora:
-                'radial-gradient(70% 80% at 0% 35%, rgba(167, 139, 250, 0.34) 0%, rgba(167, 139, 250, 0) 60%), ' +
-                'radial-gradient(70% 55% at 100% 0%, rgba(45, 212, 191, 0.30) 0%, rgba(45, 212, 191, 0) 60%), ' +
-                'radial-gradient(80% 60% at 90% 100%, rgba(163, 230, 53, 0.30) 0%, rgba(163, 230, 53, 0) 62%)',
-            'glass-bg': 'rgba(255, 255, 255, 0.56)',
-            'glass-shadow': '0 12px 34px rgba(30, 41, 59, 0.10)',
-            'glass-blur': '28px',
-            'strong-shadow': '0 14px 36px rgba(30, 41, 59, 0.14)',
-        },
-    },
-};
-
 /**
  * «Минимал» — стиль нового duowave.app (landing-design/minimal, плашки С1–С6): белый фон без сияния и градиентов,
  * тонкие линии, светло-серые карточки #FAFAFA, белые листы и плитки, капсулы; лайм — только у главного действия. Заголовки
  * Inter Tight 300, текст Inter 400/500, код JetBrains Mono (ui/minimal.css).
  * Цвет исполнителя живёт в точках статусов, кольце колонки, свечении за ней и кометах: лайм — своё, янтарь — снаружи,
  * фиолет — агент, серый — выключено. Тёмный режим — сдержанная производная того же вида, не стекло: макета у него нет.
- * Два вида, как у «Стекла» и «Простора»: панель вкладок снизу (эта тема) и боковая панель (MINIMAL_PANEL).
+ * Видов два, их выбирает человек: стол и док (основной) и боковая панель (theme.ts).
  */
 export const MINIMAL: Theme = {
     id: 'minimal',
     title: 'Минимал',
-    about: 'Тонкие линии и светлые карточки; панель вкладок снизу, кнопка «Сказать» посередине',
+    about: 'Тонкие линии, светлые карточки, лайм — только у «Сказать»',
     modes: { dark: 'Тёмный', light: 'Светлый' },
     defaultMode: 'light',
     look: 'minimal',
-    layout: 'tabbar',
+    layout: 'desk',
     density: 1,
     font: "'Inter Panel', 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif",
     radius: { panel: 16, large: 20, bar: 20 },
@@ -410,18 +218,6 @@ export const MINIMAL: Theme = {
     },
 };
 
-/**
- * «Минимал» с боковой панелью — второй вид «Минимала», как «Простор» у «Стекла»: на компьютере панель слева, на
- * телефоне разделы в меню. Палитра, шрифты и элементы — те же.
- */
-export const MINIMAL_PANEL: Theme = {
-    ...MINIMAL,
-    id: 'minimal-panel',
-    title: 'Минимал · панель',
-    about: 'Тонкие линии и светлые карточки; боковая панель — для компьютера, на телефоне разделы в меню',
-    layout: 'sidebar',
-};
-
 /** Тема, которая стоит, пока человек не выбрал другую, и на которую пульт откатывается, если выбранной нет. */
 export const DEFAULT_THEME = MINIMAL;
 
@@ -458,7 +254,7 @@ export function bootCss(theme: Theme): string {
  */
 export function bootAttributes(theme: Theme): string {
     const mode = theme.defaultMode ? ` data-mode="${theme.defaultMode}"` : '';
-    return `data-id="${theme.id.replace(/[^a-z0-9-]/g, '')}" data-look="${(theme.look ?? 'glass').replace(/[^a-z]/g, '')}"${mode}`;
+    return `data-id="${theme.id.replace(/[^a-z0-9-]/g, '')}" data-look="minimal"${mode}`;
 }
 
 /** Правило выбранной темы: специфичнее bootCss, поэтому побеждает его независимо от порядка в документе. */
@@ -481,23 +277,19 @@ function paletteOf(value: unknown): Palette {
 const clamp = (value: unknown, min: number, max: number, fallback: number): number =>
     typeof value === 'number' && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
 
-/** Материалы, которые знает пульт, — и тема, у которой материал взят: её палитра под палитрой пакета. */
-const LOOKS: Record<string, Theme> = { glass: GLASS, minimal: MINIMAL };
 const isMode = (value: unknown): value is Mode => value === 'dark' || value === 'light';
 
 /**
  * Тема из пакета (kind: theme или плагин с contributes.themes) — чужие данные, поэтому каждое поле проверяется, а чего
- * нет, берётся у темы её материала («Стекло» или «Минимал»): палитра пакета ложится поверх её палитры, как
- * `{ ...GLASS.palette.dark, bg: '#…' }`. Раскладка — только известная оболочка; своя раскладка — это код, плагин
- * пульта (THEMES.md).
+ * нет, берётся у «Минимала»: палитра пакета ложится поверх его палитры. Материал — всегда «Минимал» (пакет, который
+ * просил «Стекло», получает его). Вид — только известный: 'sidebar' или стол (THEMES.md).
  */
 export function normalizeTheme(raw: unknown): Theme | null {
     if (!isRecord(raw)) return null;
     const id = typeof raw.id === 'string' && /^[a-z0-9-]{1,40}$/.test(raw.id) ? raw.id : null;
     const title = typeof raw.title === 'string' ? raw.title.trim().slice(0, 40) : '';
     if (!id || !title || !isRecord(raw.palette)) return null;
-    const look = typeof raw.look === 'string' && raw.look in LOOKS ? raw.look : 'glass';
-    const base = LOOKS[look];
+    const base = MINIMAL;
     const modes = isRecord(raw.modes) ? raw.modes : {};
     const notes = isRecord(raw.modeNotes) ? raw.modeNotes : {};
     const radius = isRecord(raw.radius) ? raw.radius : {};
@@ -513,12 +305,12 @@ export function normalizeTheme(raw: unknown): Theme | null {
         },
         modeNotes,
         defaultMode: isMode(raw.defaultMode) ? raw.defaultMode : undefined,
-        look,
+        look: 'minimal',
         palette: {
             dark: { ...base.palette.dark, ...paletteOf(raw.palette.dark) },
             light: { ...base.palette.light, ...paletteOf(raw.palette.light) },
         },
-        layout: raw.layout === 'sidebar' ? 'sidebar' : 'tabbar',
+        layout: raw.layout === 'sidebar' ? 'sidebar' : 'desk',
         density: clamp(raw.density, 0.8, 1.5, 1),
         font: typeof raw.font === 'string' && raw.font.trim() ? raw.font.slice(0, 200) : base.font,
         radius: {

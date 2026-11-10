@@ -1,6 +1,11 @@
 //! Our timers: the station keeps and rings them (timer_set_directive, field 15 as Yandex sends it); we keep a copy
 //! per device for "how much is left", cancel and stop. Every command is in the shape we saw Yandex send (relay
-//! journals, 31.10 and 02.11); cancel stays Yandex's while it is on the route, as it was before.
+//! journals, 31.10 and 02.11); cancel stays Yandex's while it is on the route, as it was before. A timer may have a
+//! name — «поставь таймер на чай на пять минут» — for the panel's widget (docs/plans/desk.md, stage 2); the station
+//! does not know it.
+
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -25,10 +30,35 @@ pub struct StoredTimer {
     /// Seconds left when paused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused_at: Option<u64>,
+    /// What it is for, as said: «чай», «стирка».
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// A timer as the panel shows it: ours (with its name) or the station's own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimerView {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Seconds in all.
+    pub seconds: u64,
+    /// Seconds left now.
+    pub left: u64,
+    pub paused: bool,
+    /// Unix ms when it rings (a paused one: if resumed now).
+    pub ends_at: u64,
+    /// `own` — set through us, `station` — the station's own (Yandex set it).
+    pub source: &'static str,
 }
 
 /// A timer rings until stopped; after this long without a stop we take it for rung out.
 const RINGING_MS: u64 = 10 * 60_000;
+/// A state the station took this soon after one of our timers was set may not list it yet: the request that set it
+/// carried the state from before, and a state is stamped when its request is routed — after recognition, seconds
+/// after the station took it.
+const LISTED_AFTER_MS: u64 = 10_000;
 /// How long "На сколько поставить таймер?" waits for the answer.
 const ASK_MS: u64 = 30_000;
 
@@ -45,11 +75,79 @@ fn say_seconds(seconds: u64) -> String {
 
 pub struct TimersSkill {
     store: StateStore<StoredTimer>,
+    /// «Поставь таймер на чай»: the name waits for «на сколько» (device → name, until).
+    pending: Mutex<HashMap<String, (String, u64)>>,
 }
 
 impl TimersSkill {
     pub fn new(store: StateStore<StoredTimer>) -> TimersSkill {
-        TimersSkill { store }
+        TimersSkill { store, pending: Mutex::new(HashMap::new()) }
+    }
+
+    /// The timers of a device for the panel: ours with their names, then the station's own ones it reported (in
+    /// `state`, taken at `observed`), counted down to `now` (unix ms). One of ours the station's list left out since
+    /// it was set is gone: cancelled through Yandex (cancel stays Yandex's while it is on the route) or on the
+    /// station itself — only the station keeps and rings them.
+    pub fn views(&self, device: &str, state: Option<(&DeviceState, u64)>, now: u64) -> Vec<TimerView> {
+        // The timers the station listed, when its alarm capability reported (an empty list says none, not «unknown»).
+        let listed = state.filter(|(state, _)| state.alarms.is_some());
+        let mut views: Vec<TimerView> = self
+            .active(device, now)
+            .into_iter()
+            .filter(|timer| {
+                listed.is_none_or(|(state, observed)| {
+                    observed <= timer.start.saturating_mul(1000).saturating_add(LISTED_AFTER_MS)
+                        || state.timer_ids.contains(&timer.id)
+                })
+            })
+            .map(|timer| {
+                // Any length said is counted (`due_at`): what is left, and when it rings, stop at u64's end.
+                let left = match timer.paused_at {
+                    Some(left) => left,
+                    None => u64::try_from((due_at(&timer) - i128::from(now)).max(0) / 1000).unwrap_or(u64::MAX),
+                };
+                TimerView {
+                    ends_at: now.saturating_add(left.saturating_mul(1000)),
+                    id: timer.id,
+                    name: timer.name,
+                    seconds: timer.seconds,
+                    left,
+                    paused: timer.paused_at.is_some(),
+                    source: "own",
+                }
+            })
+            .collect();
+        if let Some((state, observed)) = state {
+            for timer in &state.timers {
+                if views.iter().any(|view| view.id == timer.id) {
+                    continue;
+                }
+                let seconds = timer.duration.unwrap_or(0).max(0) as u64;
+                let reported = timer.remaining.unwrap_or(seconds as i64).max(0) as u64;
+                let passed = if timer.paused { 0 } else { now.saturating_sub(observed) / 1000 };
+                let left = reported.saturating_sub(passed);
+                if left == 0 && !timer.paused {
+                    continue;
+                }
+                views.push(TimerView {
+                    id: timer.id.clone(),
+                    name: None,
+                    seconds,
+                    left,
+                    paused: timer.paused,
+                    ends_at: now.saturating_add(left.saturating_mul(1000)),
+                    source: "station",
+                });
+            }
+        }
+        views.sort_by_key(|view| (view.paused, view.left));
+        views
+    }
+
+    /// A name said for a timer whose length is still to come; taken once.
+    fn take_pending(&self, device: &str, now: u64) -> Option<String> {
+        let mut pending = self.pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.remove(device).filter(|(_, until)| *until >= now).map(|(name, _)| name)
     }
 
     /// Our timers that are due and not stopped; when the station reports its timers, only those it still lists.
@@ -78,26 +176,50 @@ impl TimersSkill {
             .collect()
     }
 
+    /// The devices with timers of ours still counting down or paused: kept on disk, they outlive a restart.
+    pub fn devices(&self, now: u64) -> Vec<String> {
+        self.store.devices().into_iter().filter(|device| !self.active(device, now).is_empty()).collect()
+    }
+
     fn run(&self, intent: &Intent, context: &ExecutionContext) -> anyhow::Result<Outcome> {
         let device = context.device_tag.as_str();
         let now = context.now.timestamp_millis().max(0) as u64;
         Ok(match intent.action.as_str() {
             "set" => {
                 let seconds = js::to_number(intent.params.get("seconds"));
+                let name = intent
+                    .params
+                    .get("name")
+                    .and_then(|name| name.as_str())
+                    .map(|name| name.trim().chars().take(40).collect::<String>())
+                    .filter(|name| !name.is_empty());
                 if !(seconds.is_finite() && seconds >= 1.0) {
+                    let question = match &name {
+                        Some(name) => format!("На сколько поставить таймер «{name}»?"),
+                        None => "На сколько поставить таймер?".to_string(),
+                    };
+                    if let Some(name) = name {
+                        self.pending
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .insert(device.to_string(), (name, now + ASK_MS));
+                    }
                     return Ok(Outcome {
-                        speech: Some("На сколько поставить таймер?".into()),
+                        speech: Some(question),
                         listen: true,
                         continuation: Some(ContinuationRequest { capability: CapabilityName::Timers, ttl_ms: ASK_MS }),
                         ..Outcome::default()
                     });
                 }
-                self.set(device, js::round(seconds) as u64, now)
+                self.set(device, js::round(seconds) as u64, now, name)
             }
             "continue" => {
                 let text = js::string_or_empty(intent.params.get("text"));
                 match parse_duration(&text).filter(|seconds| *seconds > 0) {
-                    Some(seconds) => self.set(device, seconds, now),
+                    Some(seconds) => {
+                        let name = self.take_pending(device, now);
+                        self.set(device, seconds, now, name)
+                    }
                     None => Outcome::speech("Не поняла, на сколько. Скажите, например: таймер на пять минут."),
                 }
             }
@@ -180,17 +302,23 @@ impl TimersSkill {
         })
     }
 
-    fn set(&self, device: &str, seconds: u64, now: u64) -> Outcome {
-        let timer =
-            StoredTimer { id: new_timer_id(), start: js::round(now as f64 / 1000.0) as u64, seconds, paused_at: None };
+    fn set(&self, device: &str, seconds: u64, now: u64, name: Option<String>) -> Outcome {
+        let timer = StoredTimer {
+            id: new_timer_id(),
+            start: js::round(now as f64 / 1000.0) as u64,
+            seconds,
+            paused_at: None,
+            name: name.clone(),
+        };
         let mut timers = self.timers(device, now);
         timers.push(timer.clone());
         self.store.set(device, timers);
-        // As Yandex answers it.
-        Outcome::said(
-            format!("Хорошо. {}. Отсчёт пошёл.", say_seconds(seconds)),
-            vec![timer_set(&TimerSpec { id: timer.id, start: timer.start, seconds })],
-        )
+        // As Yandex answers it; a named one says its name.
+        let said = match &name {
+            Some(name) => format!("Хорошо. Таймер «{name}» — {}. Отсчёт пошёл.", say_seconds(seconds)),
+            None => format!("Хорошо. {}. Отсчёт пошёл.", say_seconds(seconds)),
+        };
+        Outcome::said(said, vec![timer_set(&TimerSpec { id: timer.id, start: timer.start, seconds })])
     }
 
     /// Stored timers without those long rung out.
@@ -289,6 +417,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn names_a_timer_asks_its_length_with_the_name_and_shows_it_to_the_panel() {
+        let skill = skill();
+        let now = at("2026-11-01T10:00:00Z");
+        let asked = skill.execute(&intent("set", json!({"name": "чай"})), &context(now)).await.unwrap();
+        assert_eq!(asked.speech.as_deref(), Some("На сколько поставить таймер «чай»?"));
+        let set = skill.execute(&intent("continue", json!({"text": "на три минуты"})), &context(now)).await.unwrap();
+        assert_eq!(set.speech.as_deref(), Some("Хорошо. Таймер «чай» — 3 минуты. Отсчёт пошёл."));
+        let views = skill.views("h:test", None, now.timestamp_millis() as u64 + 60_000);
+        assert_eq!(views.len(), 1);
+        assert_eq!((views[0].name.as_deref(), views[0].seconds, views[0].left, views[0].source), (Some("чай"), 180, 120, "own"));
+    }
+
+    #[tokio::test]
+    async fn shows_the_stations_own_timers_counted_down_from_when_it_reported_them() {
+        let skill = skill();
+        let observed = at("2026-11-01T10:00:00Z").timestamp_millis() as u64;
+        let state = DeviceState {
+            timers: vec![crate::gateway::protocol::protocol_types::StationTimer {
+                id: "yandex-1".into(),
+                start: None,
+                duration: Some(600),
+                remaining: Some(500),
+                paused: false,
+            }],
+            ..DeviceState::default()
+        };
+        let views = skill.views("h:test", Some((&state, observed)), observed + 100_000);
+        assert_eq!(views.len(), 1);
+        assert_eq!((views[0].id.as_str(), views[0].left, views[0].source), ("yandex-1", 400, "station"));
+    }
+
+    #[tokio::test]
     async fn tells_what_is_left_survives_a_restart_and_stops_the_timer_while_it_rings() {
         let start = at("2026-11-01T10:00:00Z");
         let db = Arc::new(Db::memory());
@@ -371,5 +531,45 @@ mod tests {
         assert_eq!(status.speech.as_deref(), Some("Осталось 10000000000000 часов."));
         assert!(skill.ringing("h:test", None, ms).is_empty());
         assert_eq!(skill.active("h:test", ms).len(), 2);
+        // The panel's widget asks every 15 s (review G9): no overflow, no wrap — they ring at u64's end.
+        let views = skill.views("h:test", None, ms);
+        assert_eq!(views.len(), 2);
+        assert!(views.iter().all(|view| view.ends_at == u64::MAX), "{views:?}");
+        // So does a station's own timer as long as its state can say.
+        let endless = DeviceState {
+            timers: vec![crate::gateway::protocol::protocol_types::StationTimer {
+                id: "yandex-1".into(),
+                start: None,
+                duration: Some(i64::MAX),
+                remaining: Some(i64::MAX),
+                paused: false,
+            }],
+            ..DeviceState::default()
+        };
+        assert_eq!(skill.views("hall", Some((&endless, ms)), ms)[0].ends_at, u64::MAX);
+    }
+
+    /// Review G6: «Отмени таймер» goes to Yandex while cancel is on its route, and our copy is not told. The station's
+    /// list after it has the timer no more: the panel shows it no more either.
+    #[tokio::test]
+    async fn shows_a_timer_of_ours_only_while_the_station_lists_it_once_it_could() {
+        let skill = skill();
+        let now = at("2026-11-01T10:00:00Z");
+        let set = skill.execute(&intent("set", json!({"seconds": 300, "name": "чай"})), &context(now)).await.unwrap();
+        let id = timer_of(&set).timer_id;
+        let ms = now.timestamp_millis() as u64;
+        let listing = |ids: &[&str]| DeviceState {
+            timer_ids: ids.iter().map(|id| id.to_string()).collect(),
+            alarms: Some(Vec::new()),
+            ..DeviceState::default()
+        };
+        // The request that set it carried the state from before: no word on it yet.
+        assert_eq!(skill.views("h:test", Some((&listing(&[]), ms)), ms + 1_000).len(), 1);
+        // A later state lists it: it stays; one without it — cancelled on the station's side.
+        let later = ms + 60_000;
+        assert_eq!(skill.views("h:test", Some((&listing(&[&id]), later)), later)[0].name.as_deref(), Some("чай"));
+        assert!(skill.views("h:test", Some((&listing(&["yandex-1"]), later)), later).iter().all(|view| view.id != id));
+        // A state without the alarm capability says nothing of the timers.
+        assert_eq!(skill.views("h:test", Some((&DeviceState::default(), later)), later).len(), 1);
     }
 }

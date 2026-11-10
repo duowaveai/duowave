@@ -1,0 +1,74 @@
+{
+  "schema": 1,
+  "kind": "plugin",
+  "id": "shopping",
+  "version": "1.1.1",
+  "title": "Список покупок",
+  "description": "Свой список покупок: «добавь молоко в список покупок», «что в списке покупок», «вычеркни хлеб из списка покупок», «очисти список покупок» — и виджет на столе пульта, где список пополняют и вычёркивают. Хранится у шлюза, без Яндекса. Поставляется выключенным: включённый, забирает фразы о списке покупок у Яндекса при маршруте «Сервисы аккаунта» «свой + Яндекс» (по умолчанию) или «свой». Оставить список Яндекса — маршрут «Яндекс» («Мозг» → «Маршруты») или выключить плагин.",
+  "api": "^1.1",
+  "runs": ["pc", "station", "stationServer"],
+  "budget": { "memoryMb": 2, "storageMb": 1 },
+  "permissions": ["voice.intents", "llm.tools", "kv"],
+  "contributes": {
+    "intents": [
+      {
+        "phrases": [
+          "добавь {item} в список покупок",
+          "запиши {item} в список покупок",
+          "добавь в список покупок {item}",
+          "запиши в список покупок {item}",
+          "надо купить {item}",
+          "нужно купить {item}"
+        ],
+        "handler": "addSay",
+        "capability": "account"
+      },
+      {
+        "phrases": [
+          "что в списке покупок",
+          "какой список покупок",
+          "что купить",
+          "что надо купить",
+          "прочитай список покупок"
+        ],
+        "handler": "listSay",
+        "capability": "account"
+      },
+      {
+        "phrases": [
+          "удали {item} из списка покупок",
+          "вычеркни {item} из списка покупок",
+          "убери {item} из списка покупок",
+          "удали из списка покупок {item}",
+          "вычеркни из списка покупок {item}"
+        ],
+        "handler": "removeSay",
+        "capability": "account"
+      },
+      {
+        "phrases": ["очисти список покупок", "удали список покупок", "всё купили"],
+        "handler": "clearSay",
+        "capability": "account"
+      }
+    ],
+    "tools": [
+      {
+        "name": "shopping_list",
+        "description": "Список покупок дома: прочитать, добавить или вычеркнуть. action — list, add или remove; items — что добавить или вычеркнуть.",
+        "input": {
+          "type": "object",
+          "properties": {
+            "action": { "type": "string", "enum": ["list", "add", "remove"] },
+            "items": { "type": "array", "items": { "type": "string" } }
+          },
+          "required": ["action"]
+        },
+        "handler": "shoppingTool"
+      }
+    ],
+    "panel": {
+      "slots": ["desk.widgets"],
+      "calls": ["panelList", "panelAdd", "panelRemove", "panelClear"]
+    }
+  }
+}

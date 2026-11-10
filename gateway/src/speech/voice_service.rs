@@ -56,6 +56,19 @@ struct Chosen {
     own_voice: Option<VoicePair>,
 }
 
+/// The provider a computer's gateway speaks with, as its start settles it (`restore_from_settings`): the stored choice
+/// when it can speak — «ours» needs a voice server of ours (TTS_OWN_URL) — the env's `own` kept over a stored `mixed`;
+/// else the env's. A move to the station reads the computer's so (src/placement/moves.rs).
+pub fn provider_at_start(env: &TtsConfig, stored: Option<TtsProvider>) -> TtsProvider {
+    let usable =
+        stored.filter(|provider| matches!(provider, TtsProvider::Yandex | TtsProvider::None) || env.own.is_some());
+    match usable {
+        Some(TtsProvider::Mixed) if env.provider == TtsProvider::Own => TtsProvider::Own,
+        Some(provider) => provider,
+        None => env.provider,
+    }
+}
+
 /// Our voice through the station's home server while it is up (src/home_server): the computer speaks with the voice
 /// it has chosen, the voice lab's too.
 pub trait HomeVoice: Send + Sync {
@@ -147,6 +160,34 @@ impl VoiceService {
         self.config.own.as_ref().map(|own| VoicePair { model: own.model.clone(), voice: own.voice.clone() })
     }
 
+    /// The station leans on a home server for our voice (`set_home`).
+    pub fn has_home(&self) -> bool {
+        self.home.get().is_some()
+    }
+
+    /// The home server's voice from the next answer on — the computer's choice, its voice lab's too — while it is up;
+    /// Alice's while it is not (`provider`). `own` stays `own`; otherwise ours speak in the computer's voice and
+    /// Yandex's in its own (`mixed`). Only a station with a home server (src/home_server).
+    pub fn use_home(&self) -> Result<TtsProvider> {
+        if !self.has_home() {
+            bail!("no home server: the computer does not give this gateway its voice");
+        }
+        let provider = {
+            let mut chosen = self.lock();
+            if chosen.provider != TtsProvider::Own {
+                chosen.provider = TtsProvider::Mixed;
+            }
+            chosen.provider
+        };
+        self.events.emit(GatewayEvent::VoiceChanged {
+            provider: provider.as_str().into(),
+            model_id: None,
+            voice_id: None,
+            actor: None,
+        });
+        Ok(provider)
+    }
+
     /// Alice's voice from the next answer on.
     pub fn use_yandex(&self) {
         self.lock().provider = TtsProvider::Yandex;
@@ -230,9 +271,11 @@ impl VoiceService {
             );
         }
         let provider = settings.get(&VOICE_PROVIDER, None).and_then(|provider| TtsProvider::parse(&provider));
-        // A stored «ours» without a voice server of ours cannot speak: the env's provider stays.
+        // A stored «ours» without a voice server of ours cannot speak: the env's provider stays. A station with a home
+        // server speaks it with the computer's voice (a move with the computer as its server brings the computer's
+        // choice, transfer::MOVE_SETS).
         let usable = provider.filter(|provider| {
-            matches!(provider, TtsProvider::Yandex | TtsProvider::None) || self.own_speech.is_some()
+            matches!(provider, TtsProvider::Yandex | TtsProvider::None) || self.own_speech.is_some() || self.has_home()
         });
         if let (Some(provider), None) = (provider, usable) {
             tracing::warn!(
@@ -377,5 +420,60 @@ mod tests {
         let alone = VoiceService::new(&gateway(&[]), EventBus::new());
         alone.restore_from_settings(&settings, None);
         assert_eq!(alone.chosen_provider(), TtsProvider::Yandex);
+    }
+
+    /// The computer's voice as the station has it: the station's own voice server is not set (its .env has no
+    /// TTS_OWN_URL), its home server is.
+    struct Home(Option<Arc<OwnSpeech>>);
+
+    impl HomeVoice for Home {
+        fn speech(&self) -> Option<Arc<OwnSpeech>> {
+            self.0.clone()
+        }
+    }
+
+    fn home_speech() -> Arc<OwnSpeech> {
+        let config = gateway(&[("TTS_OWN_URL", "http://192.0.2.10:7780/home/v1/tts")]);
+        Arc::new(OwnSpeech::new(config.tts.own.unwrap()))
+    }
+
+    /// Live, 10.11: the computer speaks «mixed» and moved the gateway to the station with itself as its server; the
+    /// station answered in Alice's voice in «Шлюз» — its own provider was «yandex» and a stored «mixed» needed a voice
+    /// server of its own. A stored «mixed» (the move brings it) speaks the computer's voice while it is up, Alice's when
+    /// it is away; the station's «Голос» window switches it either way.
+    #[tokio::test]
+    async fn a_station_with_a_home_server_speaks_the_computers_voice_in_gateway_mode_as_the_move_set_it() {
+        let settings = settings();
+        settings.set(&VOICE_PROVIDER, &"mixed".to_string(), None).unwrap();
+        let station = VoiceService::new(&gateway(&[]), EventBus::new());
+        assert!(station.use_home().is_err(), "no home server: nothing to speak with");
+        station.set_home(Arc::new(Home(Some(home_speech()))));
+        station.restore_from_settings(&settings, None);
+        assert_eq!(station.chosen_provider(), TtsProvider::Mixed);
+        assert_eq!(station.provider(true), TtsProvider::Mixed, "«Шлюз»: our answers in the computer's voice");
+        assert!(station.describe(true).contains("the home server's voice"), "{}", station.describe(true));
+
+        let away = VoiceService::new(&gateway(&[]), EventBus::new());
+        away.set_home(Arc::new(Home(None)));
+        away.restore_from_settings(&settings, None);
+        assert_eq!((away.chosen_provider(), away.provider(true)), (TtsProvider::Mixed, TtsProvider::Yandex));
+
+        // «Алиса» and back in the station's «Голос» window.
+        station.use_yandex();
+        assert_eq!(station.provider(true), TtsProvider::Yandex);
+        assert_eq!(station.use_home().unwrap(), TtsProvider::Mixed);
+        assert_eq!(station.provider(true), TtsProvider::Mixed);
+    }
+
+    #[test]
+    fn the_provider_a_computer_speaks_with_is_its_stored_choice_when_it_can_speak_it() {
+        let own = gateway(&[("TTS_OWN_URL", "http://127.0.0.1:8091/v1")]).tts;
+        let env_own = gateway(&[("TTS_OWN_URL", "http://127.0.0.1:8091/v1"), ("TTS_PROVIDER", "own")]).tts;
+        let none = gateway(&[]).tts;
+        assert_eq!(provider_at_start(&own, Some(TtsProvider::Mixed)), TtsProvider::Mixed);
+        assert_eq!(provider_at_start(&own, None), TtsProvider::Yandex, "the env's");
+        assert_eq!(provider_at_start(&env_own, Some(TtsProvider::Mixed)), TtsProvider::Own, "the env's own kept");
+        assert_eq!(provider_at_start(&env_own, Some(TtsProvider::Yandex)), TtsProvider::Yandex);
+        assert_eq!(provider_at_start(&none, Some(TtsProvider::Mixed)), TtsProvider::Yandex, "no voice server of ours");
     }
 }

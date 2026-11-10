@@ -15,6 +15,11 @@ pub struct Feed {
     pub pub_date: Option<String>,
     #[serde(default)]
     pub platforms: BTreeMap<String, Asset>,
+    /// An urgent fix (scripts/release/critical.txt): a version below this one has something a later release fixes
+    /// and should not wait for a click — the gateway installs the offered version by itself (UPDATE_AUTO_CRITICAL,
+    /// `UpdatesService`). Gateways before 0.2.1 do not know the field and skip it, as Tauri's updater does.
+    #[serde(default)]
+    pub critical_below: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -93,6 +98,54 @@ pub fn is_newer(offered: &str, current: &str) -> bool {
         (Some(offered), Some(current)) => offered > current,
         _ => false,
     }
+}
+
+/// Whether the feed's offer is urgent for `current`: `current` is below the feed's critical_below and the offered
+/// version is not. A version that does not read is not urgent — nothing installs by itself on a guess.
+pub fn is_critical(feed: &Feed, current: &str) -> bool {
+    match (feed.critical_below.as_deref().and_then(parse_version), parse_version(current), parse_version(&feed.version))
+    {
+        (Some(floor), Some(current), Some(offered)) => current < floor && offered >= floor,
+        _ => false,
+    }
+}
+
+/// Whether updates may come from `url`: https, or plain http to this very machine (a test's server, a mirror on
+/// localhost). The signature guards the bytes; https guards what the network in between could swap or hold back —
+/// the feed it reads, which release it is offered. A feed or a file over plain http elsewhere is refused.
+pub fn secure(url: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(url).map_err(|_| format!("адрес обновлений не читается: {url}"))?;
+    let loopback = match parsed.host() {
+        Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    };
+    match parsed.scheme() {
+        "https" => Ok(()),
+        "http" if loopback => Ok(()),
+        _ => Err(format!("обновления берутся только по https, а этот адрес — нет: {url}")),
+    }
+}
+
+/// The client builder for everything an update reads: our TLS (utils::http) and a redirect followed only to an
+/// address `secure` allows — updates.duowave.dev sends the feed on to GitHub, and nothing may send it on to plain http.
+pub fn client_builder() -> reqwest::ClientBuilder {
+    crate::utils::http::client_builder().redirect(reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 10 {
+            attempt.error("too many redirects")
+        } else if let Err(why) = secure(attempt.url().as_str()) {
+            attempt.error(why)
+        } else {
+            attempt.follow()
+        }
+    }))
+}
+
+/// The shared client for the feed: one pool, the redirect rule above.
+pub fn client() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| client_builder().build().expect("the updates' HTTP client builds")).clone()
 }
 
 #[cfg(test)]
@@ -177,5 +230,40 @@ mod tests {
         );
         let elsewhere = feed("https://files.example.com/duowave-station-aarch64.tar.gz");
         assert_eq!(frozen_beside(&elsewhere, "0.2.0"), None, "not a GitHub-style release");
+    }
+
+    #[test]
+    fn an_urgent_release_is_urgent_only_below_its_floor() {
+        let feed = |version: &str, floor: Option<&str>| Feed {
+            version: version.into(),
+            notes: None,
+            pub_date: None,
+            platforms: BTreeMap::new(),
+            critical_below: floor.map(str::to_string),
+        };
+        assert!(is_critical(&feed("0.2.3", Some("0.2.3")), "0.2.2"), "the release that fixes it");
+        assert!(is_critical(&feed("v0.2.5", Some("v0.2.3")), "0.2.1"), "a later release still carries the floor");
+        assert!(!is_critical(&feed("0.2.5", Some("0.2.3")), "0.2.3"), "past the fix already: an ordinary update");
+        assert!(!is_critical(&feed("0.2.2", Some("0.2.3")), "0.2.1"), "an offer below the floor fixes nothing");
+        assert!(!is_critical(&feed("0.2.3", None), "0.2.2"), "no floor, nothing urgent");
+        assert!(!is_critical(&feed("0.2.3", Some("garbage")), "0.2.2"), "a floor that does not read");
+        let read: Feed = serde_json::from_str(r#"{"version":"0.2.3","critical_below":"0.2.3"}"#).unwrap();
+        assert_eq!(read.critical_below.as_deref(), Some("0.2.3"));
+        let plain: Feed = serde_json::from_str(r#"{"version":"0.2.3"}"#).unwrap();
+        assert_eq!(plain.critical_below, None, "a feed without the field");
+    }
+
+    #[test]
+    fn updates_come_over_https_or_from_this_very_machine() {
+        assert!(secure("https://updates.duowave.dev/latest.json").is_ok());
+        assert!(secure("https://github.com/o/r/releases/download/v0.2.1/duowave-linux-x86_64.tar.gz").is_ok());
+        assert!(secure("http://127.0.0.1:8080/latest.json").is_ok(), "a test's server");
+        assert!(secure("http://localhost/latest.json").is_ok());
+        assert!(secure("http://[::1]:9/latest.json").is_ok());
+        assert!(secure("http://updates.duowave.dev/latest.json").is_err(), "plain http to the internet");
+        assert!(secure("http://192.168.1.10/latest.json").is_err(), "nor to the home network");
+        assert!(secure("ftp://example.com/latest.json").is_err());
+        assert!(secure("not an address").is_err());
+        let _ = client();
     }
 }

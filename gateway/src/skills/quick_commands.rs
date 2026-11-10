@@ -14,7 +14,7 @@ use serde_json::Value;
 use super::capabilities::{CapabilityName, Intent};
 use super::js;
 use super::skill::{intent, text_value};
-use super::text::{find_number, normalize, parse_clock, parse_duration};
+use super::text::{find_number, normalize, parse_clock, parse_duration, read_number};
 use crate::config::ModelProfile;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -47,6 +47,50 @@ fn fixed(capability: CapabilityName, action: &str) -> Option<Intent> {
 /// A captured part trimmed, or none when empty.
 fn rest(value: Option<&str>) -> Option<Value> {
     value.map(js::trim).filter(|text| !text.is_empty()).map(|text| Value::String(text.to_string()))
+}
+
+/// Words said with a timer that are not what it is for: «поставь таймер ещё на пять минут», «таймер мне на чай».
+const NOT_TIMER_NAMES: &str = "еще снова опять обратно тоже также сразу заново теперь мне нам полтора полторы";
+
+/// What a timer is for, when the part says it: not a number said without its unit («таймер на пять», «на 5»), not a
+/// word of the request itself.
+fn timer_name(part: &str) -> Option<String> {
+    let part = js::trim(part);
+    let words: Vec<&str> = part.split(' ').collect();
+    let first = words.first().copied().unwrap_or("");
+    let number = first.starts_with(|c: char| c.is_ascii_digit()) || read_number(&words, 0).is_some();
+    let request = NOT_TIMER_NAMES.split(' ').any(|word| word == first);
+    (!first.is_empty() && !number && !request).then(|| part.to_string())
+}
+
+/// A timer's length and its name from what follows «таймер на»: «чай на пять минут», «пять минут на чай», «пять минут
+/// для стирки», «чай» (the length asked next), «пять минут». The duration parser skips words it does not know, so a part
+/// is the length only when its other part says none. A number without its unit is no length and no name: «на пять»
+/// asks how long, «чай на пять» asks it for «чай».
+fn timer_parts(text: &str) -> (Option<u64>, Option<String>) {
+    let text = js::trim(text);
+    let seconds = |part: &str| parse_duration(part).filter(|seconds| *seconds > 0);
+    for separator in [" для ", " на "] {
+        if let Some((left, right)) = text.split_once(separator) {
+            match (seconds(left), seconds(right)) {
+                (None, Some(length)) => return (Some(length), timer_name(left)),
+                (Some(length), None) => return (Some(length), timer_name(right)),
+                _ => {}
+            }
+        }
+    }
+    if let Some(length) = seconds(text) {
+        return (Some(length), None);
+    }
+    for separator in [" для ", " на "] {
+        if let Some((left, right)) = text.split_once(separator) {
+            match (timer_name(left), timer_name(right)) {
+                (Some(name), None) | (None, Some(name)) => return (None, Some(name)),
+                _ => {}
+            }
+        }
+    }
+    (None, timer_name(text))
 }
 
 fn group<'a>(m: &'a Captures, index: usize) -> Option<&'a str> {
@@ -171,8 +215,15 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             fixed(Timers, "cancel")
         }),
         rule("timerSet", "^((поставь|заведи|установи|запусти|включи) )?таймер на (.+)$|^засеки (.+)$", |m, _| {
-            let seconds = parse_duration(group(m, 3).or(group(m, 4)).unwrap_or("")).filter(|seconds| *seconds > 0);
-            Some(intent(Timers, "set", vec![("seconds", seconds.map(Value::from))]))
+            let (seconds, name) = timer_parts(group(m, 3).or(group(m, 4)).unwrap_or(""));
+            Some(intent(Timers, "set", vec![("seconds", seconds.map(Value::from)), ("name", name.map(Value::from))]))
+        }),
+        // «Таймер стирка на сорок минут»: the name before «на». «Таймер ещё на пять минут» names nothing: it stays the
+        // model's, as it was before timers had names.
+        rule("timerNamed", "^((поставь|заведи|установи|запусти|включи) )?таймер ([а-яё-]+) на (.+)$", |m, _| {
+            let seconds = parse_duration(group(m, 4).unwrap_or("")).filter(|seconds| *seconds > 0);
+            let name = timer_name(group(m, 3).unwrap_or(""))?;
+            Some(intent(Timers, "set", vec![("seconds", seconds.map(Value::from)), ("name", Some(Value::from(name)))]))
         }),
         rule(
             "timerStatus",
@@ -597,6 +648,36 @@ mod tests {
         assert_eq!(quick("Поставь будильник на 7:30"), exact(Alarms, "set", json!({"hours": 7, "minutes": 30})));
         assert_eq!(quick("разбуди меня через 2 минуты"), exact(Alarms, "set", json!({"inSeconds": 120})));
         is("не беспокоить", DoNotDisturb, "on");
+    }
+
+    #[test]
+    fn names_a_timer_said_with_what_it_is_for() {
+        let set = |seconds: Option<u64>, name: &str| exact(Timers, "set", json!({"seconds": seconds, "name": name}));
+        assert_eq!(quick("Поставь таймер на чай на пять минут"), set(Some(300), "чай"));
+        assert_eq!(quick("таймер на пять минут на чай"), set(Some(300), "чай"));
+        assert_eq!(quick("таймер на сорок минут для стирки"), set(Some(2400), "стирки"));
+        assert_eq!(quick("поставь таймер стирка на сорок минут"), set(Some(2400), "стирка"));
+        // Only the name: the length is asked next, the name waits for it.
+        assert_eq!(quick("поставь таймер на чай"), exact(Timers, "set", json!({"name": "чай"})));
+        // No name: as before.
+        assert_eq!(quick("Поставь таймер на 5 минут"), exact(Timers, "set", json!({"seconds": 300})));
+    }
+
+    /// Review G10: a number said without its unit is no name — «На сколько поставить таймер?», not «…таймер «пять»?»;
+    /// nor is a word of the request itself.
+    #[test]
+    fn names_a_timer_neither_by_a_bare_number_nor_by_a_word_of_the_request() {
+        assert_eq!(quick("Поставь таймер на пять"), exact(Timers, "set", json!({})));
+        assert_eq!(quick("таймер на 5"), exact(Timers, "set", json!({})));
+        assert_eq!(quick("засеки двадцать пять"), exact(Timers, "set", json!({})));
+        // The name stays, the length is asked again.
+        assert_eq!(quick("поставь таймер на чай на пять"), exact(Timers, "set", json!({"name": "чай"})));
+        assert_eq!(quick("таймер на пять для стирки"), exact(Timers, "set", json!({"name": "стирки"})));
+        // «Ещё», «снова», «мне»: the model's, as before timers had names.
+        for text in ["Поставь таймер ещё на пять минут", "таймер снова на 10 минут", "поставь таймер мне на пять минут"]
+        {
+            assert_eq!(quick(text), None, "{text}");
+        }
     }
 
     #[test]

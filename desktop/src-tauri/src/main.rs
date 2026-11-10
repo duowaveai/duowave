@@ -107,6 +107,21 @@ fn main() {
             build_tray(&handle)?;
             let listener = handle.clone();
             gateway.on_change(move |status| status_changed(&listener, status.clone()));
+            // «Не давать компьютеру спать» из пульта помощника (docs/plans/desk.md, этап 4): пульт пишет ту же
+            // настройку (desktop.json), приложение перечитывает её и ставит своё меню так же.
+            {
+                let (gateway, handle) = (gateway.clone(), handle.clone());
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    let want = awake::load_setting(&gateway.paths().data);
+                    if want != gateway.keep_awake() {
+                        gateway.set_keep_awake(want);
+                        if let Some(tray) = handle.try_state::<Tray>() {
+                            let _ = tray.keep_awake.set_checked(want);
+                        }
+                    }
+                });
+            }
             std::thread::spawn(move || gateway.start());
 
             if !std::env::args().any(|arg| arg == AUTOSTART_ARG) {

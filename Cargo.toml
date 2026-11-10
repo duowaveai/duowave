@@ -14,10 +14,12 @@ publish = false
 
 # A computer's build: thin LTO over the default codegen units, most of fat LTO's speed for much less build time (the
 # release builds it on five platforms). The station's build keeps fat LTO and one unit (below).
+# Panics unwind here: a task that panics ends alone (tokio catches it, the voice lab's catch_unwind reports it, a
+# plugin's thread dies by itself), and the gateway goes on serving every station and can still update itself. With
+# abort one panic anywhere ended the whole process, and a panic at every start kept it from ever reaching the update.
 [profile.release]
 lto = "thin"
 strip = true
-panic = "abort"
 
 # Tests sign in often: a password hash (scrypt, 16 MB of mixing) takes a second unoptimised, ~50 ms optimised.
 [profile.dev.package.scrypt]
@@ -34,9 +36,11 @@ opt-level = 3
 
 # The station: the smallest binary that still runs well (cargo build --profile station).
 # Fat LTO and one codegen unit, as before the computer's build went thin: the station's flash and memory are small, and
-# its build is one target.
+# its build is one target. Panics abort, without unwinding tables in the flash: the station's own script
+# (station-client/gateway.sh) starts the gateway again, and its safety net steps in when that keeps happening.
 [profile.station]
 inherits = "release"
 opt-level = "s"
 lto = true
 codegen-units = 1
+panic = "abort"

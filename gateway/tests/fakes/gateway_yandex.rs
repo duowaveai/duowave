@@ -141,7 +141,13 @@ impl GatewayYandex {
                         voice.closed = true;
                         voice.clone()
                     };
-                    // Yandex recognises the voice itself: its own results (the station has ours), then the answer.
+                    // Yandex recognises the voice itself: its own results (the station has ours, or nothing here
+                    // recognises), the words so far and then all of them, then the answer.
+                    connection.send(encode_server(&ServerMessage::AsrResult {
+                        r#ref: voice.message_id.clone(),
+                        text: "включи".into(),
+                        end_of_utt: false,
+                    }));
                     connection.send(encode_server(&ServerMessage::AsrResult {
                         r#ref: voice.message_id.clone(),
                         text: "включи кино".into(),

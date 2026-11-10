@@ -1,0 +1,6 @@
+/* Виджет «Список покупок»: кружок-галочка у покупки, поле добавления внизу. Только токены темы. */
+.shopping-item { gap: 10px; }
+.shopping-box { width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--glass-border); flex: none; }
+.shopping-item:hover .shopping-box { border-color: var(--text); }
+.shopping-add { display: flex; gap: 6px; }
+.shopping-add .field { flex: 1; min-width: 0; min-height: 32px; font-size: 13px; padding: 0 12px; }

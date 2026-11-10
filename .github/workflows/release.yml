@@ -18,9 +18,17 @@
 # (warm-cache.yml) under the same shared-key as here, and a release only reads them (save-if: false — what a tag
 # saved no later release could use).
 #
-# Signing needs the secret TAURI_SIGNING_PRIVATE_KEY (the contents of the owner's ~/.tauri/duowave-updates.key; its
-# password, TAURI_SIGNING_PRIVATE_KEY_PASSWORD, is empty). Without it the archives are built but not signed, and no
-# gateway installs them.
+# The update key never meets a build. Every installed gateway and app trusts it, and a signature cannot be taken back,
+# so it stays out of the jobs that compile: those run other people's code — crates' build scripts, npm packages,
+# actions — and hand over unsigned files. Two small jobs sign them, station-sign and sign, in the environment «release»:
+# they run the Tauri CLI pinned by scripts/release/tauri-cli/package-lock.json and our own check
+# (scripts/release/verify-sig.mjs: a trusted key, and in each gateway archive a release.json with the tag's version),
+# nothing else. The key and its password are secrets of that environment — TAURI_SIGNING_PRIVATE_KEY (the contents of
+# the owner's ~/.tauri/duowave-updates.key) and TAURI_SIGNING_PRIVATE_KEY_PASSWORD — and the environment admits tags v*
+# only (Settings → Environments → release). Without the key the files go out unsigned, and nothing installs them.
+#
+# The run's token reads by default; only publish writes (the draft) and the image jobs push (the registry). Actions are
+# pinned to their commits, pnpm and the Tauri CLI to exact versions, and no checkout leaves the token in .git/config.
 #
 # The station's YAM package goes to the YAM registry (repo.yse.wtf) when the owner publishes the release:
 # yam-registry.yml, with its own secrets.
@@ -31,78 +39,131 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
+
+env:
+  # The packages' catalog built into every gateway of the release (gateway/src/plugins/catalog.rs). For good: builds
+  # that are never updated keep asking it, so a move later means a 301 from here with the path kept.
+  DUOWAVE_PACKAGES_FEED: https://packages.duowave.app/catalog.json
 
 jobs:
   station-build:
-    # The gateway for the station itself, signed: what every computer build carries and the YAM package holds.
+    # The gateway for the station itself, unsigned: station-sign signs it, then every computer build carries it and the
+    # YAM package holds it.
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
       DUOWAVE_UPDATE_FEED: https://updates.duowave.dev/latest.json
-      SIGNING: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       # Every later job needs this one, so a tag the code does not carry stops the whole release here: a gateway
       # built from it would offer the same release forever.
       - name: The tag is the code's version
         run: scripts/release/version.sh --check "${GITHUB_REF_NAME}"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 26
-      - run: npm install -g pnpm@11 && pnpm install --frozen-lockfile && pnpm --filter panel build
-      - uses: dtolnay/rust-toolchain@stable
+      - run: npm install -g pnpm@11.22.0 && pnpm install --frozen-lockfile && pnpm --filter panel build
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 10.11.2026
         with:
           targets: aarch64-unknown-linux-musl
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: station-aarch64
           save-if: false
-      - uses: mlugg/setup-zig@v2
-      - uses: taiki-e/install-action@v2
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-zigbuild
       - run: cargo zigbuild -p duowave --target aarch64-unknown-linux-musl --profile station --no-default-features --features station
-      - run: tar -czf duowave-station-aarch64.tar.gz -C target/aarch64-unknown-linux-musl/station duowave
+      # release.json beside the program, under the same signature: the version and the platform it was built as. A
+      # gateway installs the archive only as that version, newer than its own (gateway/src/updates/install.rs).
+      - name: Archive
+        run: |
+          out=target/aarch64-unknown-linux-musl/station
+          printf '{"version":"%s","platform":"duowave-station-aarch64"}\n' "${GITHUB_REF_NAME#v}" > "$out/release.json"
+          tar -czf duowave-station-aarch64.tar.gz -C "$out" duowave release.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: station-unsigned
+          path: duowave-station-aarch64.tar.gz
+          if-no-files-found: error
+
+  station-sign:
+    # The station's archive signed, before anything carries it: the key's environment, the pinned CLI, the check.
+    needs: station-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    env:
+      # A step's `if` cannot read secrets: whether there is a key, as a plain variable.
+      SIGNING: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 26
+      # Files only, from the lock file: no install scripts run.
+      - name: The pinned Tauri CLI
+        run: npm ci --prefix scripts/release/tauri-cli --ignore-scripts --no-audit --no-fund
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: station-unsigned
+          path: station-build
       - name: Sign for the updater
         if: env.SIGNING == 'true'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npx --yes @tauri-apps/cli@^2 signer sign duowave-station-aarch64.tar.gz
-      - uses: actions/upload-artifact@v4
+        run: node scripts/release/tauri-cli/node_modules/@tauri-apps/cli/tauri.js signer sign station-build/duowave-station-aarch64.tar.gz
+      - name: The signature holds
+        if: env.SIGNING == 'true'
+        run: node scripts/release/verify-sig.mjs --version "${GITHUB_REF_NAME}" station-build/duowave-station-aarch64.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: gateway-duowave-station-aarch64
-          path: duowave-station-aarch64.tar.gz*
+          path: station-build/duowave-station-aarch64.tar.gz*
           if-no-files-found: error
 
   station-package:
     # The YAM 0.2 package duowave/gateway (station-client/yam): a .yampkg per target, checked by installing it into a
     # folder, put into the release. The registry gets it when the owner publishes the release (yam-registry.yml).
-    needs: station-build
+    needs: station-sign
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       # YAM's own repository, at a known commit: yam-publish packs and signs, yam checks the package installs.
       YAM_REF: 5c06c9f95de97276cc035e9673fe52e52b1c7052
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: nyakokitsu/yam
           ref: ${{ env.YAM_REF }}
           path: yam
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: swatinem/rust-cache@v2
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 10.11.2026
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: yam
           key: yam-${{ env.YAM_REF }}
       - run: cargo build --manifest-path yam/Cargo.toml --release --locked --bin yam --bin yam-publish
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: gateway-duowave-station-aarch64
           path: station-build
+      # The program packed is the one signed: checked here, after YAM's own build ran.
+      - name: The station's build is the signed one
+        run: |
+          if [ -f station-build/duowave-station-aarch64.tar.gz.sig ]; then
+            node scripts/release/verify-sig.mjs --version "${GITHUB_REF_NAME}" station-build/duowave-station-aarch64.tar.gz
+          fi
       - name: The package
         run: |
           mkdir -p station-program && tar -xzf station-build/duowave-station-aarch64.tar.gz -C station-program
@@ -117,7 +178,7 @@ jobs:
             yam/target/release/yam --profiles yam/platforms --platform "$target" --root "$root" install --yes "$package"
             yam/target/release/yam --profiles yam/platforms --platform "$target" --root "$root" doctor
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: station
           path: dist-station/*.yampkg
@@ -125,8 +186,8 @@ jobs:
 
   gateway-binaries:
     # The gateway alone — for a PC, a server, a Raspberry Pi — an archive per platform with the feed and the station's
-    # build inside; signed, it is what the gateway's own updater installs. The station's own is station-build.
-    needs: station-build
+    # build inside, unsigned: sign signs them for the gateway's own updater. The station's own is station-build.
+    needs: station-sign
     strategy:
       fail-fast: false
       matrix:
@@ -142,12 +203,16 @@ jobs:
     timeout-minutes: 60
     env:
       DUOWAVE_UPDATE_FEED: https://updates.duowave.dev/latest.json
-      # A step's `if` cannot read secrets: whether there is a key, as a plain variable.
-      SIGNING: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
     steps:
-      - uses: actions/checkout@v4
-      # The station's signed build, built into this one (only when it is signed: an unsigned one no gateway takes).
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 26
+      # The station's signed build, built into this one (only when it is signed: an unsigned one no gateway takes) —
+      # its signature checked first.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: gateway-duowave-station-aarch64
           path: station-build
@@ -155,46 +220,42 @@ jobs:
         shell: bash
         run: |
           if [ -f station-build/duowave-station-aarch64.tar.gz.sig ]; then
+            node scripts/release/verify-sig.mjs --version "${GITHUB_REF_NAME}" station-build/duowave-station-aarch64.tar.gz
             echo "DUOWAVE_STATION_PAYLOAD=${{ github.workspace }}/station-build/duowave-station-aarch64.tar.gz" >> "$GITHUB_ENV"
           fi
       # The panel is built into the program.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 26
-      - run: npm install -g pnpm@11 && pnpm install --frozen-lockfile && pnpm --filter panel build
-      - uses: dtolnay/rust-toolchain@stable
+      - run: npm install -g pnpm@11.22.0 && pnpm install --frozen-lockfile && pnpm --filter panel build
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 10.11.2026
         with:
           targets: ${{ matrix.target }}
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: release-${{ matrix.key }}
           save-if: false
       - if: matrix.zig
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
       - if: matrix.zig
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-zigbuild
       - if: matrix.zig
         run: cargo zigbuild -p duowave --target ${{ matrix.target }} ${{ matrix.args }}
       - if: ${{ !matrix.zig }}
         run: cargo build -p duowave --target ${{ matrix.target }} ${{ matrix.args }}
+      # The program and its release.json (as in station-build); no macOS metadata files (._*) in the archive.
       - name: Archive
         shell: bash
+        env:
+          COPYFILE_DISABLE: '1'
         run: |
           program=duowave; [ "${{ runner.os }}" = Windows ] && program=duowave.exe
-          tar -czf ${{ matrix.key }}.tar.gz -C target/${{ matrix.target }}/${{ matrix.out }} "$program"
-      - name: Sign for the updater
-        if: env.SIGNING == 'true'
-        shell: bash
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npx --yes @tauri-apps/cli@^2 signer sign ${{ matrix.key }}.tar.gz
-      - uses: actions/upload-artifact@v4
+          out=target/${{ matrix.target }}/${{ matrix.out }}
+          printf '{"version":"%s","platform":"%s"}\n' "${GITHUB_REF_NAME#v}" "${{ matrix.key }}" > "$out/release.json"
+          tar -czf ${{ matrix.key }}.tar.gz -C "$out" "$program" release.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: gateway-${{ matrix.key }}
-          path: ${{ matrix.key }}.tar.gz*
+          name: unsigned-gateway-${{ matrix.key }}
+          path: ${{ matrix.key }}.tar.gz
           if-no-files-found: error
 
   desktop:
@@ -202,7 +263,7 @@ jobs:
     # the panel built into that. No DUOWAVE_UPDATE_FEED here: the gateway inside checks the app's own feed
     # (plugins.updater.endpoints in tauri.conf.json), so the panel and the tray offer the same version. The station's
     # build goes inside too.
-    needs: station-build
+    needs: station-sign
     strategy:
       fail-fast: false
       matrix:
@@ -217,14 +278,18 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
-      # With the key the app ships its update archives too (tauri.release.conf.json turns them on: a local build
-      # without the key keeps them off), and the feed carries them under Tauri's keys (darwin-aarch64, …).
-      SIGNING: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
       # Where Tauri puts the bundles: under the target's own folder when one is named.
       BUNDLE: desktop/src-tauri/target/${{ matrix.target && format('{0}/', matrix.target) || '' }}release/bundle
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # Node and pnpm for the panel (tauri build runs `pnpm --filter panel build` first, beforeBuildCommand), the
+      # pinned Tauri CLI for the build itself.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 26
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: gateway-duowave-station-aarch64
           path: station-build
@@ -232,20 +297,19 @@ jobs:
         shell: bash
         run: |
           if [ -f station-build/duowave-station-aarch64.tar.gz.sig ]; then
+            node scripts/release/verify-sig.mjs --version "${GITHUB_REF_NAME}" station-build/duowave-station-aarch64.tar.gz
             echo "DUOWAVE_STATION_PAYLOAD=${{ github.workspace }}/station-build/duowave-station-aarch64.tar.gz" >> "$GITHUB_ENV"
           fi
-      # Node and pnpm for the panel only: tauri build runs `pnpm --filter panel build` first (beforeBuildCommand).
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 26
-      - run: npm install -g pnpm@11 && pnpm install --frozen-lockfile
+      - run: npm install -g pnpm@11.22.0 && pnpm install --frozen-lockfile
+      - name: The pinned Tauri CLI
+        run: npm ci --prefix scripts/release/tauri-cli --ignore-scripts --no-audit --no-fund
       - name: Tauri's system packages
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 10.11.2026
         with:
           targets: ${{ matrix.target }}
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: desktop/src-tauri
           shared-key: release-desktop-${{ matrix.name }}
@@ -296,26 +360,28 @@ jobs:
           New-Item -ItemType Directory -Force $additional | Out-Null
           Get-Checked 'https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v0.5.3/nsis_tauri_utils.dll' (Join-Path $additional 'nsis_tauri_utils.dll') SHA1 '75197FEE3C6A814FE035788D1C34EAD39349B860'
           Get-ChildItem $tools
-      - uses: tauri-apps/tauri-action@v0
+      # Without the key and without update archives (createUpdaterArtifacts stays off): the next step makes the update
+      # files from the bundles, and sign signs them.
+      - name: Build
+        shell: bash
+        working-directory: desktop/src-tauri
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # The AppImage: linuxdeploy's own strip cannot read what Ubuntu 24.04's linker writes (ubuntu-24.04-arm failed
           # «failed to run linuxdeploy» twice in v0.1.4), so nothing is stripped there (the program is stripped by Cargo,
           # profile.release strip = true); and linuxdeploy, an AppImage itself, unpacks instead of mounting where FUSE is
           # missing. Elsewhere both are ignored.
           NO_STRIP: 'true'
           APPIMAGE_EXTRACT_AND_RUN: '1'
-        with:
-          projectPath: desktop/src-tauri
-          tauriScript: npx --yes @tauri-apps/cli@^2
-          # --verbose: the bundlers' own output (linuxdeploy, WiX) in the log when one fails.
-          args: --verbose ${{ matrix.target && format('--target {0}', matrix.target) || '' }} ${{ env.SIGNING == 'true' && format('--config {0}/desktop/src-tauri/tauri.release.conf.json', github.workspace) || '' }}
-      # The update archive under one name per system and processor, so the two Macs' DuoWave.app.tar.gz do not meet:
-      # duowave-app-<os>-<arch>.<ext> and its .sig, which feed.mjs puts under Tauri's key <os>-<arch>.
-      - name: The app's update archive
-        if: env.SIGNING == 'true'
+        # --verbose: the bundlers' own output (linuxdeploy, WiX) in the log when one fails.
+        run: node ../../scripts/release/tauri-cli/node_modules/@tauri-apps/cli/tauri.js build --verbose ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+      # The app's update file under one name per system and processor, so the two Macs' archives do not meet:
+      # duowave-app-<os>-<arch>.<ext>, which sign signs and feed.mjs puts under Tauri's key <os>-<arch>. On a Mac it is
+      # the app in a .tar.gz with DuoWave.app at its top, as Tauri's bundler packs it and its updater unpacks it; on
+      # Windows the NSIS installer, on Linux the AppImage — the files themselves.
+      - name: The app's update file
         shell: bash
+        env:
+          COPYFILE_DISABLE: '1'
         run: |
           bundle=$BUNDLE
           case "${{ runner.os }}" in macOS) os=darwin ;; Windows) os=windows ;; *) os=linux ;; esac
@@ -323,20 +389,20 @@ jobs:
           target='${{ matrix.target }}'
           case "${target:-${{ runner.arch }}}" in aarch64-*|ARM64) arch=aarch64 ;; *) arch=x86_64 ;; esac
           mkdir -p updater
-          for file in "$bundle"/macos/*.app.tar.gz "$bundle"/nsis/*-setup.exe "$bundle"/appimage/*.AppImage; do
-            [ -f "$file.sig" ] || continue
-            case "$file" in *.app.tar.gz) ext=app.tar.gz ;; *) ext=${file##*.} ;; esac
-            cp "$file" "updater/duowave-app-$os-$arch.$ext"
-            cp "$file.sig" "updater/duowave-app-$os-$arch.$ext.sig"
-          done
-          ls updater
-      - uses: actions/upload-artifact@v4
-        if: env.SIGNING == 'true'
+          case "$os" in
+            darwin)
+              app=$(ls -d "$bundle"/macos/*.app | head -n 1)
+              tar -czf "updater/duowave-app-$os-$arch.app.tar.gz" -C "$(dirname "$app")" "$(basename "$app")" ;;
+            windows) cp "$(ls "$bundle"/nsis/*-setup.exe | head -n 1)" "updater/duowave-app-$os-$arch.exe" ;;
+            linux) cp "$(ls "$bundle"/appimage/*.AppImage | head -n 1)" "updater/duowave-app-$os-$arch.AppImage" ;;
+          esac
+          ls -l updater
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: app-updater-${{ matrix.name }}
+          name: unsigned-app-${{ matrix.name }}
           path: updater/
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: desktop-${{ matrix.name }}
           path: |
@@ -348,34 +414,97 @@ jobs:
             ${{ env.BUNDLE }}/appimage/*.AppImage
           if-no-files-found: error
 
+  sign:
+    # The gateway's archives and the app's update files signed: the same small job as station-sign, in «release».
+    needs: [gateway-binaries, desktop]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    env:
+      SIGNING: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 26
+      - name: The pinned Tauri CLI
+        run: npm ci --prefix scripts/release/tauri-cli --ignore-scripts --no-audit --no-fund
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: unsigned-gateway-*
+          path: gateway
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: unsigned-app-*
+          path: app
+          merge-multiple: true
+      - name: Sign for the updater
+        if: env.SIGNING == 'true'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          for file in gateway/* app/*; do
+            node scripts/release/tauri-cli/node_modules/@tauri-apps/cli/tauri.js signer sign "$file"
+          done
+      - name: The signatures hold
+        if: env.SIGNING == 'true'
+        run: node scripts/release/verify-sig.mjs --version "${GITHUB_REF_NAME}" $(ls gateway/* app/* | grep -v '\.sig$')
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gateway-signed
+          path: gateway/
+          if-no-files-found: error
+      # Unsigned, the app's update files would only clutter the release: nothing takes them without a signature.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: env.SIGNING == 'true'
+        with:
+          name: app-updater-signed
+          path: app/
+          if-no-files-found: error
+
   publish:
-    needs: [station-build, station-package, desktop, gateway-binaries]
+    needs: [station-package, sign]
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       # Only the release's own artifacts, by name: the run has others too (the images' build records, *.dockerbuild,
       # which are not archives and failed the download of everything in v0.1.0).
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: gateway-*
           path: release
           merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: desktop-*
           path: release
           merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: app-updater-*
           path: release
           merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: station
           path: release
-      # The feed: the gateway's signed archives (and the app's, once it ships updater archives); none signed, none.
+      # Everything signed is checked once more as it leaves: a file changed between the jobs stops the draft.
+      - name: The signatures hold
+        run: |
+          if ls release/*.sig >/dev/null 2>&1; then
+            node scripts/release/verify-sig.mjs --version "${GITHUB_REF_NAME}" $(ls release/*.sig | sed 's/\.sig$//')
+          fi
+      # The feed: the gateway's signed archives and the app's; none signed, none. An urgent release carries
+      # critical_below from scripts/release/critical.txt.
       - name: latest.json
         run: |
           if ls release/*.tar.gz.sig >/dev/null 2>&1; then
@@ -387,7 +516,7 @@ jobs:
             echo "no signatures (no TAURI_SIGNING_PRIVATE_KEY): no feed in this release"
           fi
       # A draft: unsigned installers make the systems warn (desktop/README.md, «Подпись»); the owner looks first.
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           draft: true
           files: release/**/*
@@ -401,11 +530,16 @@ jobs:
     if: ${{ !cancelled() && needs.gateway-binaries.result != 'skipped' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          pattern: gateway-duowave-linux-*
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: unsigned-gateway-duowave-linux-*
           path: linux-builds
           merge-multiple: true
       - name: The Linux programs
@@ -414,9 +548,9 @@ jobs:
           tar -xzf linux-builds/duowave-linux-x86_64.tar.gz -C deploy/prebuilt/amd64
           tar -xzf linux-builds/duowave-linux-aarch64.tar.gz -C deploy/prebuilt/arm64
           file deploy/prebuilt/*/duowave
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -425,14 +559,14 @@ jobs:
       - name: The image's name
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/gateway" >> "$GITHUB_ENV"
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ${{ env.IMAGE }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         env:
           # No build record among the run's artifacts: publish takes the release's own by name, and it is noise there.
           DOCKER_BUILD_RECORD_UPLOAD: false
@@ -450,6 +584,9 @@ jobs:
     # Nothing here needs the station's build, so these start with the release — and check the tag themselves.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -460,12 +597,14 @@ jobs:
           - { image: tts, context: tts-server, args: TORCH=cpu, arch: arm64, runner: ubuntu-24.04-arm }
           - { image: asr-cuda, context: asr-server, args: TORCH=cu126, arch: amd64, runner: ubuntu-latest }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       # As in station-build: no image under a tag the code does not carry.
       - name: The tag is the code's version
         run: scripts/release/version.sh --check "${GITHUB_REF_NAME}"
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -474,14 +613,14 @@ jobs:
       - name: The image's name
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/${{ matrix.image }}" >> "$GITHUB_ENV"
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ${{ env.IMAGE }}
       # Pushed by digest, without a tag: the tags go onto the joined image. The layer cache lives in the registry
       # under buildcache-<arch> — an Actions cache made on a tag no later tag could read — with every stage's layers
       # (mode=max), so the builder's PyTorch install is found too, not only the final image's layers.
       - id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         env:
           # No build record among the run's artifacts: publish takes the release's own by name, and it is noise there.
           DOCKER_BUILD_RECORD_UPLOAD: false
@@ -498,7 +637,7 @@ jobs:
         run: mkdir -p digests && touch "digests/${DIGEST#sha256:}"
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           # The image's name last: the pattern below then ends with it, and asr's does not take asr-cuda's digest.
           name: digest-${{ matrix.arch }}-${{ matrix.image }}
@@ -511,18 +650,21 @@ jobs:
     needs: images
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
         image: [asr, tts, asr-cuda]
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: digest-*-${{ matrix.image }}
           path: digests
           merge-multiple: true
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -530,7 +672,7 @@ jobs:
       - name: The image's name
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/${{ matrix.image }}" >> "$GITHUB_ENV"
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ${{ env.IMAGE }}
           tags: |

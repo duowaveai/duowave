@@ -1,18 +1,13 @@
-// Оболочки по имени из темы (Theme.layout). Незнакомое имя — панель вкладок: тема из плагина не может оставить пульт
-// без навигации.
+// Оболочки по виду (theme.ts): стол и док или боковая панель. Незнакомое имя — стол: вид из чужой записи не может
+// оставить пульт без навигации; 'tabbar' прежних тем — тоже стол (док и есть бывшая панель вкладок).
 
 import type { FunctionComponent } from 'preact';
 
+import { DeskShell } from './desk-shell';
 import type { ShellProps } from './shell';
 import { SidebarShell } from './sidebar-shell';
-import { TabbarShell } from './tabbar-shell';
 
-const SHELLS: Record<string, FunctionComponent<ShellProps>> = {
-    tabbar: TabbarShell,
-    sidebar: SidebarShell,
-};
-
-/** Оболочка темы и её имя. */
-export function shellFor(layout: string): { id: string; Shell: FunctionComponent<ShellProps> } {
-    return layout in SHELLS ? { id: layout, Shell: SHELLS[layout] } : { id: 'tabbar', Shell: TabbarShell };
+/** Оболочка вида и её имя. */
+export function shellFor(view: string): { id: 'desk' | 'sidebar'; Shell: FunctionComponent<ShellProps> } {
+    return view === 'sidebar' ? { id: 'sidebar', Shell: SidebarShell } : { id: 'desk', Shell: DeskShell };
 }

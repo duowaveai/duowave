@@ -5,6 +5,7 @@
 import { Component, ComponentChildren, FunctionComponent } from 'preact';
 
 import { can } from '../api';
+import type { Health } from '../api';
 import { registeredPlugins, useRegistry } from './registry';
 import type { Icon } from './sections';
 
@@ -16,9 +17,21 @@ export interface SlotContribution {
     order?: number;
     /** Право из /auth/me, без которого вклада не видно. */
     permission?: string;
-    /** Для слотов-вкладок (house.tabs): подпись и значок вкладки. */
+    /** Для слотов-вкладок (house.tabs) и виджетов стола (desk.widgets): подпись и значок. */
     title?: string;
     icon?: Icon;
+    /** Виджет стола: маленький (в ряд по два на телефоне) или большой (во всю ширину). По умолчанию маленький. */
+    size?: 'small' | 'large';
+    /** Виджет стола: подпись источника в его шапке — «колонка», «журнал», «плагин»… */
+    source?: string;
+    /** Виджет стола: стоит на столе сразу, пока его не убрали; без него — только из «+». */
+    initial?: boolean;
+    /** Виджет стола: для каких ролей пульта ('gateway', 'helper'); без него — для обеих. */
+    roles?: Array<'gateway' | 'helper'>;
+    /** Виджет стола рисует свою рамку сам (карточку плагина, сцену). */
+    bare?: boolean;
+    /** Виджет стола: есть ли ему что показать сейчас (по /health); нет — его нет ни на столе, ни в «+». */
+    available?: (health: Health | null) => boolean;
 }
 
 /** Вклад с плагином, который его принёс: ключ `плагин.вклад` уникален во всём пульте. */

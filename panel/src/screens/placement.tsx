@@ -389,7 +389,11 @@ function ComputerSide({
     );
 }
 
-/** Где главные настройки, когда шлюз на колонке, и их копия. */
+/**
+ * Настройки колонки и их копии (docs/plans/desk.md, этап 4): настройки живут на колонке, помощник правит их там, в её
+ * окнах, а здесь держит копии. Выбора «на колонке / на компьютере» больше нет; колонка, чьи настройки пока на
+ * компьютере (так было прежде), возвращает их на колонку одной кнопкой.
+ */
 function SettingsLine({
     view,
     busy,
@@ -407,37 +411,43 @@ function SettingsLine({
     const record = station.record!;
     const latest = station.backups[0];
     const live = station.live;
-    const text =
-        record.settingsHome === 'station'
-            ? station.copyStale
-                ? latest
-                    ? `Настройки хранятся на колонке · компьютер не видел колонку с ${clock(latest.at)} — копия старая`
-                    : 'Настройки хранятся на колонке · копии на этом компьютере ещё нет'
-                : `Настройки хранятся на колонке · копия на этом компьютере — ${timeAgo(latest!.at)}`
-            : station.stationBehind
-              ? 'Настройки хранятся на этом компьютере · колонка на старых: отправлю, когда она будет на связи'
-              : `Настройки хранятся на этом компьютере · отправлено на колонку ${live.sentAt ? timeAgo(live.sentAt) : '—'}`;
+    if (record.settingsHome === 'pc')
+        return (
+            <div class="flex flex-col gap-6">
+                <Line tone="warn">
+                    Настройки этой колонки пока хранятся на компьютере и уходят на неё отсюда. Теперь они живут на колонке:
+                    верните их туда — помощник будет править их прямо на колонке и держать копии здесь.
+                </Line>
+                {live.syncError && <Line tone="error">{live.syncError}</Line>}
+                {mayManage && (
+                    <Row>
+                        <Action
+                            label="Вернуть настройки на колонку"
+                            busy={busy === 'home'}
+                            onClick={() =>
+                                void ask({
+                                    title: 'Настройки — на колонку?',
+                                    text: 'Последние настройки с компьютера уйдут на колонку, и дальше она хранит их сама; компьютер держит копии.',
+                                    ok: 'Вернуть',
+                                }).then((yes) => yes && void act('home', () => api.setSettingsHome('station')))
+                            }
+                        />
+                    </Row>
+                )}
+            </div>
+        );
+    const text = station.copyStale
+        ? latest
+            ? `Настройки — на колонке · компьютер не видел колонку с ${clock(latest.at)} — копия старая`
+            : 'Настройки — на колонке · копии на этом компьютере ещё нет'
+        : `Настройки — на колонке, правятся в её окнах · копия здесь — ${latest ? timeAgo(latest.at) : '—'}`;
     return (
         <div class="flex flex-col gap-6">
-            <Line tone={station.copyStale || station.stationBehind ? 'warn' : undefined}>{text}</Line>
+            <Line tone={station.copyStale ? 'warn' : undefined}>{text}</Line>
             {live.syncError && <Line tone="error">{live.syncError}</Line>}
             {mayManage && (
                 <Row>
-                    <Action
-                        label={record.settingsHome === 'station' ? 'Хранить на компьютере' : 'Хранить на колонке'}
-                        busy={busy === 'home'}
-                        onClick={() => {
-                            const next = record.settingsHome === 'station' ? 'pc' : 'station';
-                            const warning =
-                                next === 'pc'
-                                    ? 'Настройки будут меняться только на этом компьютере и уходить на колонку. Пока компьютер спит, ничего не поменять.'
-                                    : 'Настройки будут меняться и на колонке, без компьютера; компьютер будет держать их копию.';
-                            void ask({ title: next === 'pc' ? 'Настройки — на компьютере?' : 'Настройки — на колонке?', text: warning, ok: 'Дальше' }).then(
-                                (yes) => yes && void act('home', () => api.setSettingsHome(next)),
-                            );
-                        }}
-                    />
-                    {record.settingsHome === 'station' && <Action label="Копии…" onClick={onCopies} />}
+                    <Action label="Копии…" onClick={onCopies} />
                 </Row>
             )}
         </div>
@@ -474,7 +484,7 @@ function StationSide({
             <StationHelper mayManage={can('connectors.manage')} onChanged={() => void act('helperRead', async () => undefined)} />
             <Line>
                 {view.state.settingsHome === 'pc'
-                    ? `Настройки хранятся на компьютере: здесь их можно смотреть, меняют их в пульте компьютера.${
+                    ? `Настройки этой колонки пока приходят с компьютера — верните их на колонку в окне «Шлюз» его пульта.${
                           health.settingsReceivedAt ? ` Получены ${timeAgo(health.settingsReceivedAt)}.` : ''
                       }`
                     : health.settingsCopiedAt
@@ -630,7 +640,8 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
     const [address, setAddress] = useState(record?.address ?? '');
     const [gateway, setGateway] = useState('');
     const [editing, setEditing] = useState<{ station: boolean; pc: boolean }>({ station: false, pc: false });
-    const [home, setHome] = useState<'station' | 'pc'>(record?.settingsHome ?? 'station');
+    // Настройки колонки живут на ней (docs/plans/desk.md, этап 4): перенос на колонку их туда и кладёт.
+    const home = 'station' as const;
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [data, setData] = useState<DashData>({ mode: 'gateway', availability });
@@ -682,7 +693,7 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
     const brainName = chosen.usable && chosen.tone === 'cloud' ? chosen.name : undefined;
     const station = stations?.find((entry) => entry.lastAddress === address.trim());
     const pcAddress = gateway.trim() || bestHome(view.homeAddresses ?? [], address.trim());
-    const settingsAt: Host = !onStation || home === 'pc' ? 'pc' : 'station';
+    const settingsAt: Host = onStation ? 'station' : 'pc';
     // Шлюз уже на колонке: «На колонке» ↔ «Колонка + ПК» — переключатель, без переноса.
     const helperOnly = current !== 'pc' && onStation && picked !== current;
 
@@ -742,35 +753,15 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
                 ))}
             </div>
 
-            <div class="settings-mini" role="group" aria-label="Главные настройки">
+            <div class="settings-mini" role="note" aria-label="Настройки колонки">
                 <span class="set-label">
                     <Gear size={16} />
-                    Главные настройки
+                    Настройки
                 </span>
-                <div role="radiogroup" aria-label="Где хранить главные настройки" class="seg2">
-                    {(
-                        [
-                            ['station', 'На колонке'],
-                            ['pc', 'На ПК'],
-                        ] as const
-                    ).map(([id, title]) => (
-                        <button
-                            key={id}
-                            role="radio"
-                            aria-checked={onStation ? home === id : id === 'pc'}
-                            disabled={!onStation && id === 'station'}
-                            onClick={() => setHome(id)}
-                        >
-                            {title}
-                        </button>
-                    ))}
-                </div>
                 <p class="meta">
                     {!onStation
-                        ? 'Шлюз на ПК — настройки тоже на нём.'
-                        : home === 'station'
-                          ? 'Меняются всегда, и без ПК; ПК держит копию.'
-                          : 'Меняются только на ПК и уходят на колонку; пока он спит — не поменять.'}
+                        ? 'Шлюз на компьютере — настройки тоже на нём.'
+                        : 'Живут на колонке и меняются и без компьютера; компьютер правит их в её окнах и держит копии.'}
                 </p>
             </div>
 
@@ -1120,9 +1111,16 @@ function StationHelper({ mayManage, onChanged }: { mayManage: boolean; onChanged
 }
 
 /** Шлюз на колонке поставлен вручную (пакет YAM, `duowave station install`): адрес и ключ пары из его .env. */
-function LinkSheet({ onClose, onLinked }: { onClose: () => void; onLinked: () => void }) {
-    const [address, setAddress] = useState('');
+/**
+ * «Шлюз уже на колонке»: компьютер становится её помощником. По паролю пульта колонки — ключ пары она отдаёт сама
+ * (docs/plans/desk.md, этап 4); ключ пары руками — запасной путь для шлюза, поставленного вручную со своим PEER_KEY.
+ */
+export function LinkSheet({ onClose, onLinked, initialAddress }: { onClose: () => void; onLinked: () => void; initialAddress?: string }) {
+    const [address, setAddress] = useState(initialAddress ?? '');
     const [port, setPort] = useState('8790');
+    const [byKey, setByKey] = useState(false);
+    const [password, setPassword] = useState('');
+    const [name, setName] = useState('');
     const [key, setKey] = useState('');
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -1130,7 +1128,8 @@ function LinkSheet({ onClose, onLinked }: { onClose: () => void; onLinked: () =>
         setBusy(true);
         setError(null);
         try {
-            await api.linkStation(address.trim(), Number(port) || 8790, key.trim());
+            if (byKey) await api.linkStation(address.trim(), Number(port) || 8790, key.trim());
+            else await api.pairStation(address.trim(), Number(port) || 8790, password, name.trim());
             onLinked();
         } catch (e) {
             setError(problemOf(e));
@@ -1138,27 +1137,47 @@ function LinkSheet({ onClose, onLinked }: { onClose: () => void; onLinked: () =>
             setBusy(false);
         }
     };
+    const ready = address.trim() && (byKey ? key.trim().length >= 16 : password.length > 0);
     return (
         <Sheet
-            title="Шлюз уже на колонке"
-            about="Поставлен вручную: компьютер будет видеть его, держать копию настроек и обновлять — без SSH."
+            title="Помогать колонке"
+            about="Шлюз уже работает на колонке: этот компьютер станет её помощником — слух, голос и модель, копии настроек, обновления, мастерская. Без SSH."
             onClose={onClose}
             footer={
-                <button class="dash-done" disabled={busy || !address.trim() || key.trim().length < 16} onClick={() => void link()}>
-                    {busy ? 'Связываюсь…' : 'Связать'}
+                <button class="dash-done" disabled={busy || !ready} onClick={() => void link()}>
+                    {busy ? 'Связываюсь…' : 'Стать помощником'}
                 </button>
             }
         >
             <TextField label="Адрес колонки" value={address} placeholder="192.0.2.23" inputMode="url" onInput={setAddress} />
-            <TextField label="Порт шлюза на колонке" value={port} placeholder="8790" inputMode="numeric" onInput={setPort} />
-            <SecretField
-                label="Ключ пары"
-                value={key}
-                removing={false}
-                hint="PEER_KEY из /data/opt/duowave/gateway/.env на колонке (duowave station install --peer-key …)."
-                onInput={setKey}
-                onRemove={() => undefined}
-            />
+            {byKey ? (
+                <>
+                    <TextField label="Порт шлюза на колонке" value={port} placeholder="8790" inputMode="numeric" onInput={setPort} />
+                    <SecretField
+                        label="Ключ пары"
+                        value={key}
+                        removing={false}
+                        hint="PEER_KEY из /data/opt/duowave/gateway/.env на колонке (duowave station install --peer-key …)."
+                        onInput={setKey}
+                        onRemove={() => undefined}
+                    />
+                </>
+            ) : (
+                <>
+                    <TextField label="Имя в пульте колонки" value={name} placeholder="если там не один человек" onInput={setName} />
+                    <SecretField
+                        label="Пароль пульта колонки"
+                        value={password}
+                        removing={false}
+                        hint="Пароль администратора её пульта: компьютер войдёт один раз, возьмёт ключ пары и забудет пароль."
+                        onInput={setPassword}
+                        onRemove={() => undefined}
+                    />
+                </>
+            )}
+            <button class="t-caption underline cursor-pointer self-start" onClick={() => setByKey(!byKey)}>
+                {byKey ? 'Связать по паролю пульта колонки' : 'Есть ключ пары — связать по нему'}
+            </button>
             {error && <Line tone="error">{error}</Line>}
         </Sheet>
     );

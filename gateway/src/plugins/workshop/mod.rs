@@ -14,6 +14,7 @@
 //!   The first install and new rights or hosts wait for the admin's «ок» in the panel (`approve`): the agent and voice
 //!   cannot give it.
 
+pub mod activity;
 pub mod agent;
 pub mod cli;
 pub mod openapi;
@@ -176,7 +177,15 @@ pub struct Workshop {
     kv: Mutex<HashMap<String, DraftStore>>,
     /// One install at a time.
     installing: tokio::sync::Mutex<()>,
+    /// Previews of drafts' panel parts (docs/plans/desk.md, stage 5): a token → the draft, until when. A module is
+    /// imported without the session's key, so the token in its address is what lets it through.
+    previews: Mutex<HashMap<String, (String, std::time::Instant)>>,
+    /// What the agent does on each draft, whoever started it (docs/plans/desk.md, «Делаю виджет»).
+    activity: Arc<activity::Activity>,
 }
+
+/// How long a preview's address works.
+const PREVIEW_FOR: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 fn walk(root: &Path, at: &Path, files: &mut Vec<FileView>) {
     let Ok(entries) = std::fs::read_dir(at) else { return };
@@ -220,7 +229,40 @@ impl Workshop {
             handle: tokio::runtime::Handle::try_current().ok(),
             kv: Mutex::new(HashMap::new()),
             installing: tokio::sync::Mutex::new(()),
+            previews: Mutex::new(HashMap::new()),
+            activity: Arc::new(activity::Activity::default()),
         })
+    }
+
+    /// What the agent does on each draft: the panel's plaque and the workshop's log.
+    pub fn activity(&self) -> &Arc<activity::Activity> {
+        &self.activity
+    }
+
+    /// An address for the draft's panel part, for the panel to import and show before anything is installed.
+    pub fn preview(&self, id: &str) -> Result<(String, Option<String>), ApiError> {
+        let folder = self.existing(id)?;
+        if !folder.join("panel.js").is_file() {
+            return Err(ApiError::conflict("В черновике нет panel.js — нечего показать."));
+        }
+        let token = hex::encode(crate::utils::ids::random_bytes(16));
+        let mut previews = self.previews.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        previews.retain(|_, (_, until)| *until > std::time::Instant::now());
+        previews.insert(token.clone(), (id.to_string(), std::time::Instant::now() + PREVIEW_FOR));
+        let styles = folder.join("panel.css").is_file().then(|| format!("/panel-preview/{token}/panel.css"));
+        Ok((format!("/panel-preview/{token}/panel.js"), styles))
+    }
+
+    /// A previewed draft's panel.js or panel.css by its token; none for anything else or a token gone.
+    pub fn preview_file(&self, token: &str, file: &str) -> Option<String> {
+        if !matches!(file, "panel.js" | "panel.css") {
+            return None;
+        }
+        let id = {
+            let previews = self.previews.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            previews.get(token).filter(|(_, until)| *until > std::time::Instant::now()).map(|(id, _)| id.clone())?
+        };
+        self.read(&id, file).ok()
     }
 
     pub fn dir(&self) -> &Path {
@@ -344,7 +386,8 @@ impl Workshop {
             match kind.unwrap_or("plugin") {
                 "plugin" => templates::plugin(id, title.unwrap_or(id)),
                 "theme" => templates::theme(id, title.unwrap_or(id)),
-                other => return Err(ApiError::field("kind", format!("«{other}»: черновик — plugin или theme"))),
+                "widget" => templates::widget(id, title.unwrap_or(id)),
+                other => return Err(ApiError::field("kind", format!("«{other}»: черновик — plugin, widget или theme"))),
             }
         };
         std::fs::create_dir_all(&folder).map_err(ApiError::internal)?;

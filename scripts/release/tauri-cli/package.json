@@ -1,0 +1,8 @@
+{
+  "name": "duowave-release-tauri-cli",
+  "private": true,
+  "description": "The Tauri CLI the release builds the desktop app and signs updates with: one version, its files pinned by package-lock.json. release.yml installs it with npm ci --ignore-scripts, apart from the workspace and its packages.",
+  "dependencies": {
+    "@tauri-apps/cli": "2.12.4"
+  }
+}

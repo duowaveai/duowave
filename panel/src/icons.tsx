@@ -272,3 +272,88 @@ export function capabilityIconComponent(icon: string): preact.FunctionComponent<
     };
     return map[icon] ?? IconChat;
 }
+
+/** Закрыть окно или панель. */
+export const IconClose = ({ size = 20 }: IconProps) => svg(size, <path d="M6 6l12 12M18 6 6 18" />);
+
+/** «…» у виджета: его меню. */
+export const IconDots = ({ size = 20 }: IconProps) => svg(size, <path d="M5 12h.01M12 12h.01M19 12h.01" />);
+
+export const IconMinus = ({ size = 20 }: IconProps) => svg(size, <path d="M5 12h14" />);
+
+/** Компьютер — помощник. */
+export const IconLaptop = ({ size = 20 }: IconProps) =>
+    svg(size, <>
+        <rect x="4" y="5" width="16" height="11" rx="2" />
+        <path d="M2 19h20" />
+    </>);
+
+/** Список: покупки, вопросы. */
+export const IconList = ({ size = 20 }: IconProps) => svg(size, <path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01" />);
+
+/** Монеты — курсы валют. */
+export const IconCoins = ({ size = 20 }: IconProps) =>
+    svg(size, <>
+        <ellipse cx="9" cy="7" rx="6" ry="3" />
+        <path d="M3 7v5c0 1.7 2.7 3 6 3s6-1.3 6-3V7" />
+        <path d="M9 18c0 1.7 2.7 3 6 3s6-1.3 6-3v-5c0-1.4-1.8-2.5-4.3-2.9" />
+    </>);
+
+/** Щит — присмотр за колонкой: копии, страховка. */
+export const IconShield = ({ size = 20 }: IconProps) => svg(size, <path d="M12 3 4 6v6c0 5 3.4 8.3 8 9 4.6-.7 8-4 8-9V6z" />);
+
+/** Мастерская — код. */
+export const IconCode = ({ size = 20 }: IconProps) => svg(size, <path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16" />);
+
+export const IconPlay = ({ size = 20 }: IconProps) => svg(size, <path d="M7 5v14l12-7z" />, true);
+
+export const IconPause = ({ size = 20 }: IconProps) =>
+    svg(size, <>
+        <rect x="6" y="5" width="4" height="14" rx="1.2" />
+        <rect x="14" y="5" width="4" height="14" rx="1.2" />
+    </>, true);
+
+export const IconPrev = ({ size = 20 }: IconProps) =>
+    svg(size, <>
+        <path d="M19 6 10 12l9 6z" fill="currentColor" />
+        <path d="M6 6v12" />
+    </>);
+
+export const IconNext = ({ size = 20 }: IconProps) =>
+    svg(size, <>
+        <path d="M5 6l9 6-9 6z" fill="currentColor" />
+        <path d="M18 6v12" />
+    </>);
+
+/** Сердце — «нравится». */
+export const IconHeart = ({ size = 20 }: IconProps) => svg(size, <path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z" />);
+
+/** Погода: солнце с лучами. */
+export const IconWeather = ({ size = 20 }: IconProps) =>
+    svg(size, <>
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+    </>);
+
+/** Замок — стол закреплён. */
+export const IconLock = ({ size = 20 }: IconProps) =>
+    svg(size, <>
+        <rect x="4" y="11" width="16" height="10" rx="2" />
+        <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+    </>);
+
+/** Открытый замок — стол можно двигать. */
+export const IconUnlock = ({ size = 20 }: IconProps) =>
+    svg(size, <>
+        <rect x="4" y="11" width="16" height="10" rx="2" />
+        <path d="M8 11V7a4 4 0 0 1 7.75-1.4" />
+    </>);
+
+/** Сетка — расставить виджеты. */
+export const IconGrid = ({ size = 20 }: IconProps) =>
+    svg(size, <>
+        <rect x="4" y="4" width="7" height="7" rx="1.5" />
+        <rect x="13" y="4" width="7" height="7" rx="1.5" />
+        <rect x="4" y="13" width="7" height="7" rx="1.5" />
+        <rect x="13" y="13" width="7" height="7" rx="1.5" />
+    </>);

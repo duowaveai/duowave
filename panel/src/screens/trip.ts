@@ -155,6 +155,18 @@ export function liveTripOf(request: RequestView | undefined, now: number, nodes:
 
 // Для журнала: слова для шагов, мест, итогов.
 
+/**
+ * Что чувствует человек: через сколько колонка заговорила после того, как он договорил (или написал); без речи —
+ * сколько шёл весь запрос. Нет ни того, ни другого — undefined (запрос ещё идёт).
+ */
+export function feltMs(request: RequestView): number | undefined {
+    const spoke = request.steps.find((step) => step.phase === 'speak');
+    const listen = request.steps.find((step) => step.phase === 'listen');
+    const said = listen?.ms !== undefined ? listen.at + listen.ms : 0;
+    if (spoke) return Math.max(0, spoke.at - said);
+    return request.ms;
+}
+
 export const PHASE_WORDS: Record<RequestPhase, string> = {
     listen: 'слушает',
     recognize: 'распознаёт',

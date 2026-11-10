@@ -24,18 +24,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 10.11.2026
         with:
           targets: aarch64-unknown-linux-musl
       - id: cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: station-aarch64
       - if: steps.cache.outputs.cache-hit != 'true'
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
       - if: steps.cache.outputs.cache-hit != 'true'
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-zigbuild
       - if: steps.cache.outputs.cache-hit != 'true'
@@ -56,18 +58,20 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 10.11.2026
         with:
           targets: ${{ matrix.target }}
       - id: cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: release-${{ matrix.key }}
       - if: matrix.zig && steps.cache.outputs.cache-hit != 'true'
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
       - if: matrix.zig && steps.cache.outputs.cache-hit != 'true'
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-zigbuild
       - if: matrix.zig && steps.cache.outputs.cache-hit != 'true'
@@ -89,24 +93,30 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 10.11.2026
         with:
           targets: ${{ matrix.target }}
       - id: cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: desktop/src-tauri
           shared-key: release-desktop-${{ matrix.name }}
       - if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 26
       - if: steps.cache.outputs.cache-hit != 'true'
-        run: npm install -g pnpm@11 && pnpm install --frozen-lockfile
+        run: npm install -g pnpm@11.22.0 && pnpm install --frozen-lockfile
+      # The Tauri CLI release.yml builds with: one version, its files from the lock file, no install scripts.
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: npm ci --prefix scripts/release/tauri-cli --ignore-scripts --no-audit --no-fund
       - name: Tauri's system packages
         if: runner.os == 'Linux' && steps.cache.outputs.cache-hit != 'true'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
       - if: steps.cache.outputs.cache-hit != 'true'
         working-directory: desktop/src-tauri
-        run: npx --yes @tauri-apps/cli@^2 build --no-bundle ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+        shell: bash
+        run: node ../../scripts/release/tauri-cli/node_modules/@tauri-apps/cli/tauri.js build --no-bundle ${{ matrix.target && format('--target {0}', matrix.target) || '' }}

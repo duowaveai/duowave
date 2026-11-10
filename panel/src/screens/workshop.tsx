@@ -3,10 +3,14 @@
 // всегда сначала показывает, что изменится (версия, права, хосты, что даёт), и ставится только по «да» администратора:
 // агент и голос этого не могут. Плагин можно попробовать на колонке, не ставя насовсем: проба идёт на шлюзе несколько
 // минут, потом прежняя версия возвращается сама. Тему — примерить в пульте. Версии на шлюзе и откат — здесь же.
+// «Ход работы» показывает, что агент делает с черновиком сейчас и делал раньше — и по просьбе голосом у колонки.
+// Поставленный виджет стола встаёт и на стол.
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import {
+    AgentJob,
+    AgentStep,
     BrainView,
     CheckReport,
     DraftView,
@@ -25,15 +29,24 @@ import {
     workshopChat,
 } from '../api';
 import { IconCheck } from '../icons';
+import { syncPackages } from '../plugins/loader';
+import { forgetStationPackages } from '../sdk';
+import { POLL_MS, aboutOf, askToStop, doingWords, elapsed, shortText, toolWords, useSecondTick, useSettledVersion } from '../shell/agent-plaque';
 import { useLinkedItem, usePanel } from '../shell/context';
-import { registerPlugin, unregisterPlugin } from '../shell/registry';
+import { mayLeave, useLeaveGuard } from '../shell/leave';
+import { PanelPlugin, onRegistryChange, registerPlugin, registeredPlugins, unregisterPlugin } from '../shell/registry';
 import { setTheme, useTheme } from '../shell/theme';
 import { Theme, normalizeTheme } from '../shell/themes';
+import { deskActions } from '../shell/widgets';
 import { timeAgo } from '../time';
 import { Action } from '../ui/cards';
 import { Sheet } from '../ui/sheet';
+import { VIA } from '../via';
 import { permissionTitle } from './plugins';
 import { ask as confirmAsk } from '../ui/confirm';
+import { pushDraft, stationInstall, stationPlan, stationTrial, stationVersion } from './to-station';
+import { DraftWidgetPreview, mayRunDraft } from './widget-agent';
+import { CodeEditor } from '../ui/code-editor';
 
 const PREVIEW = 'workshop.preview';
 const isAdmin = (): boolean => can('plugins.manage') && sessionStore.get()?.role === 'admin';
@@ -58,7 +71,7 @@ function themeData(id: string, title: string, base: Theme) {
         modes: base.modes,
         modeNotes: base.modeNotes,
         defaultMode: base.defaultMode,
-        look: base.look ?? 'glass',
+        look: 'minimal',
         layout: base.layout,
         density: base.density,
         font: base.font,
@@ -713,6 +726,248 @@ function AgentModelSheet({ current, onSaved, onClose }: { current: WorkshopAgent
     );
 }
 
+/** Сколько шагов хода работы держит мастерская — как шлюз (activity.rs, KEPT). */
+const KEPT_STEPS = 200;
+
+/** Кто попросил агента. */
+const ASKED_BY: Record<AgentJob['by'], string> = { voice: 'Голосом у колонки', panel: 'В пульте' };
+
+const clock = (at: number): string => new Date(at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+interface LogRow {
+    key: number;
+    at: number;
+    kind: 'asked' | 'tool' | 'result' | 'said' | 'end';
+    /** Кто: «Голосом у колонки», «В пульте», «Агент». */
+    who?: string;
+    text: string;
+    tool?: string;
+    /** У вызова — чем он кончился: «✓» или «не вышло: …». */
+    mark?: string;
+    /** У вызова — что агент получил в ответ (файл, итог проверки; шлюз отдаёт начало): «что увидел». */
+    seen?: string;
+    failed?: boolean;
+}
+
+/**
+ * Шаги агента — строками хода работы: вызов вместе с его ответом, сказанное подряд — одной строкой. Кто попросил,
+ * известно у работы, что пульт застал (шлюз говорит это о текущей), у прежних — просто «Попросили».
+ *
+ * Вызовы одного хода агента идут разом, и ответы приходят не по порядку: ответ находит свой вызов по `call` (seq шага
+ * вызова). Шлюз постарше `call` не присылает — тогда ответ достаётся вызову без ответа того же инструмента (openCall).
+ * Вызова уже нет в списке (он старше двухсот шагов) — неудача встаёт своей строкой, удачный ответ не показывается.
+ */
+function logRows(steps: AgentStep[], askedBy: Map<number, AgentJob['by']>): LogRow[] {
+    const rows: LogRow[] = [];
+    /** Строки вызовов по seq их шага. */
+    const calls = new Map<number, LogRow>();
+    for (const step of steps) {
+        const last = rows[rows.length - 1];
+        if (step.kind === 'asked') {
+            const by = askedBy.get(step.seq);
+            rows.push({ key: step.seq, at: step.at, kind: 'asked', who: by ? ASKED_BY[by] : 'Попросили', text: `«${shortText(step.text, 400)}»` });
+        } else if (step.kind === 'tool') {
+            const row: LogRow = { key: step.seq, at: step.at, kind: 'tool', tool: step.tool, text: toolWords(step.tool, step.text) };
+            rows.push(row);
+            calls.set(step.seq, row);
+        } else if (step.kind === 'result') {
+            const call = typeof step.call === 'number' ? calls.get(step.call) : openCall(rows, step.tool);
+            if (call && call.mark === undefined) {
+                call.mark = step.failed ? `не вышло: ${shortText(step.text, 200)}` : '✓';
+                call.seen = step.text.trim() || undefined;
+                call.failed = step.failed;
+            } else if (step.failed) {
+                rows.push({ key: step.seq, at: step.at, kind: 'result', text: `${toolWords(step.tool)} — не вышло: ${shortText(step.text, 200)}`, failed: true });
+            }
+        } else if (step.kind === 'said') {
+            if (last?.kind === 'said') last.text = `${last.text} ${step.text}`;
+            else rows.push({ key: step.seq, at: step.at, kind: 'said', who: 'Агент', text: step.text });
+        } else {
+            const text = step.kind === 'failed' ? `Не вышло: ${step.text || 'ошибка'}` : step.kind === 'stopped' ? step.text || 'Остановлено' : 'Готово';
+            rows.push({ key: step.seq, at: step.at, kind: 'end', text, failed: step.kind === 'failed' });
+        }
+    }
+    return rows;
+}
+
+/**
+ * Вызов, которому отвечает ответ без `call`: последний вызов того же инструмента, у которого ещё нет ответа, — назад до
+ * просьбы, с которой началась эта работа: ответы прежних работ шлюз не пишет (activity.rs, push).
+ */
+function openCall(rows: LogRow[], tool: string | undefined): LogRow | undefined {
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+        const row = rows[index];
+        if (row.kind === 'asked') return undefined;
+        if (row.kind === 'tool' && row.tool === tool && row.mark === undefined) return row;
+    }
+    return undefined;
+}
+
+/**
+ * «Ход работы»: что агент делает с черновиком — кто и о чём попросил (голосом у колонки или в пульте), каждый вызов и
+ * чем он кончился, что агент сказал и как кончилась работа, со временем. Новое — внизу, список идёт за ним, пока его не
+ * отмотали вверх. Пока агент работает — чем он занят и «Остановить». Черновик, сделанный голосом, показывает так весь
+ * разговор у колонки. Работы не было — ничего.
+ */
+function AgentLog({ id, title }: { id: string; title: string }) {
+    const panel = usePanel();
+    const version = useSettledVersion();
+    const [job, setJob] = useState<AgentJob | null>(null);
+    const [steps, setSteps] = useState<AgentStep[]>([]);
+    const [stopping, setStopping] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    /** Последний прочитанный шаг: дальше читаются только новые. */
+    const after = useRef(0);
+    const askedBy = useRef(new Map<number, AgentJob['by']>());
+    const box = useRef<HTMLDivElement>(null);
+    /** Список у нижнего края: новое прокручивает его за собой. */
+    const follow = useRef(true);
+    const reading = useRef(false);
+    const again = useRef(false);
+
+    const read = (): void => {
+        // По одному чтению; что пришло за это время — следующим сразу за ним.
+        if (reading.current) {
+            again.current = true;
+            return;
+        }
+        reading.current = true;
+        const from = after.current;
+        api.draftActivity(id, from)
+            .then((answer) => {
+                if (answer.job?.last && answer.job.last.seq < from) {
+                    // Шлюз перезапускался и считает шаги заново — всё с начала.
+                    after.current = 0;
+                    askedBy.current.clear();
+                    setSteps([]);
+                    again.current = true;
+                    return;
+                }
+                setJob(answer.job);
+                const fresh = answer.steps.filter((step) => step.seq > from);
+                if (fresh.length === 0) return;
+                after.current = fresh[fresh.length - 1].seq;
+                // Кто попросил — шлюз говорит о текущей работе: её первый шаг — последняя просьба.
+                const asked = [...fresh].reverse().find((step) => step.kind === 'asked');
+                if (asked && answer.job) askedBy.current.set(asked.seq, answer.job.by);
+                setSteps((before) => [...before, ...fresh].slice(-KEPT_STEPS));
+            })
+            .catch(() => undefined)
+            .finally(() => {
+                reading.current = false;
+                if (again.current) {
+                    again.current = false;
+                    read();
+                }
+            });
+    };
+    useEffect(() => read(), [version]);
+    const busy = !!job?.busy;
+    useEffect(() => {
+        if (!busy) return;
+        const timer = window.setInterval(read, POLL_MS);
+        return () => window.clearInterval(timer);
+    }, [busy]);
+    // За новейшим шагом, а не за длиной: список держит двести шагов, и у долгого черновика длина уже не меняется.
+    const newest = steps[steps.length - 1]?.seq;
+    useEffect(() => {
+        const list = box.current;
+        if (list && follow.current) list.scrollTop = list.scrollHeight;
+    }, [newest]);
+    const now = useSecondTick(busy) + panel.feed.skew;
+
+    if (!job && steps.length === 0) return null;
+    const rows = logRows(steps, askedBy.current);
+    const stop = async () => {
+        if (!(await askToStop(title))) return;
+        setStopping(true);
+        setError(null);
+        try {
+            await api.stopDraftAgent(id);
+            read();
+        } catch (e) {
+            setError(problemOf(e));
+        } finally {
+            setStopping(false);
+        }
+    };
+    return (
+        <section class="card glass card-list" aria-labelledby="agent-log-h">
+            <div class="card-head">
+                <h2 id="agent-log-h" class="t-title-xs m-0">
+                    Ход работы
+                </h2>
+                <span class="t-meta">
+                    {job?.busy ? `идёт ${elapsed(now - job.since)}` : job?.ended ? `закончено в ${clock(job.ended)}` : ''}
+                </span>
+            </div>
+            <div
+                ref={box}
+                class="agent-log"
+                role="log"
+                aria-label="Шаги агента"
+                tabIndex={0}
+                onScroll={() => {
+                    const list = box.current;
+                    if (list) follow.current = list.scrollHeight - list.scrollTop - list.clientHeight < 24;
+                }}
+            >
+                {rows.map((row) => (
+                    <div key={row.key} class={`agent-log-row is-${row.kind}${row.failed ? ' is-failed' : ''}`}>
+                        <span class="agent-log-time">{clock(row.at)}</span>
+                        <div class="agent-log-text">
+                            {row.who && <span class="agent-log-who">{row.who}: </span>}
+                            {row.text}
+                            {row.mark && <span class="agent-log-mark">{row.mark}</span>}
+                            {row.seen && (
+                                <details class="agent-log-seen">
+                                    <summary>что увидел</summary>
+                                    <pre>{row.seen}</pre>
+                                </details>
+                            )}
+                        </div>
+                    </div>
+                ))}
+            </div>
+            {job?.busy && (
+                <div class="agent-log-now">
+                    <span class="agent-spin" aria-hidden="true" />
+                    <span class="flex-1 min-w-0">{doingWords(job.last, now)}</span>
+                    <Action label="Остановить" busy={stopping} onClick={() => void stop()} />
+                </div>
+            )}
+            {error && (
+                <p class="t-caption m-0 c-dot-offline" role="alert">
+                    {error}
+                </p>
+            )}
+        </section>
+    );
+}
+
+/**
+ * Часть пульта поставленного плагина, когда пульт её подхватит (plugins/loader.ts): новая регистрация на месте
+ * `before`. Не дождались — какая есть.
+ */
+function installedPart(id: string, before: PanelPlugin | undefined, wait = 15_000): Promise<PanelPlugin | undefined> {
+    const key = `package.${id}`;
+    const find = () => registeredPlugins().find((plugin) => plugin.id === key);
+    return new Promise((resolve) => {
+        const found = find();
+        if (found && found !== before) return resolve(found);
+        const done = (plugin: PanelPlugin | undefined) => {
+            window.clearTimeout(timer);
+            stop();
+            resolve(plugin);
+        };
+        const timer = window.setTimeout(() => done(find()), wait);
+        const stop = onRegistryChange(() => {
+            const next = find();
+            if (next && next !== before) done(next);
+        });
+    });
+}
+
 type ChatEntry = { who: 'me' | 'agent' | 'tool' | 'error'; text: string };
 
 /** Чат с агентом: что сделать — он пишет, проверяет и ставит черновик сам, показывая каждый шаг. */
@@ -754,7 +1009,7 @@ function AgentChat({ draft, onChanged }: { draft: string; onChanged: () => void 
                 fresh,
                 (event: WorkshopEvent) => {
                     if (event.type === 'text') add({ who: 'agent', text: event.text });
-                    if (event.type === 'tool') add({ who: 'tool', text: `→ ${event.name}${event.input.path ? ` ${String(event.input.path)}` : ''}` });
+                    if (event.type === 'tool') add({ who: 'tool', text: `→ ${toolWords(event.name, aboutOf(event.input))}` });
                     if (event.type === 'result' && event.isError) add({ who: 'error', text: `${event.name}: ${event.content}` });
                     if (event.type === 'error') add({ who: 'error', text: event.message });
                 },
@@ -767,6 +1022,15 @@ function AgentChat({ draft, onChanged }: { draft: string; onChanged: () => void 
             setBusy(false);
             onChanged();
         }
+    };
+    // Работа агента идёт и без этого разговора (закрыли окно — продолжается, activity.rs): «Остановить» кончает её на
+    // шлюзе, а потом пульт перестаёт слушать.
+    const stop = () => {
+        add({ who: 'tool', text: 'остановлено' });
+        void api
+            .stopDraftAgent(draft)
+            .catch(() => undefined)
+            .finally(() => abort.current?.abort());
     };
     const answers = model?.answers;
     return (
@@ -815,7 +1079,7 @@ function AgentChat({ draft, onChanged }: { draft: string; onChanged: () => void 
                         if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void send();
                     }}
                 />
-                {busy ? <Action label="Стоп" onClick={() => abort.current?.abort()} /> : <Action tone="on" label="Отправить" disabled={!text.trim()} onClick={() => void send()} />}
+                {busy ? <Action label="Остановить" onClick={stop} /> : <Action tone="on" label="Отправить" disabled={!text.trim()} onClick={() => void send()} />}
             </div>
         </section>
         {picking && model && <AgentModelSheet current={model} onSaved={setModel} onClose={() => setPicking(false)} />}
@@ -826,6 +1090,8 @@ function AgentChat({ draft, onChanged }: { draft: string; onChanged: () => void 
 /** Черновик открыт: что с ним, файлы, песочница, версии, журнал, агент. */
 function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => void; onListChanged: () => void }) {
     const panel = usePanel();
+    // Перемены шлюза — не чаще раза в 0,4 с: каждый шаг агента — перемена, а перечитывать черновик — четыре запроса.
+    const version = useSettledVersion();
     const theme = useTheme();
     const [draft, setDraft] = useState<DraftView | null>(null);
     const [installed, setInstalled] = useState<PackageView | null>(null);
@@ -838,7 +1104,22 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
     const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
     const [check, setCheck] = useState<CheckReport | null>(null);
     const [exports, setExports] = useState<string[]>([]);
-    const [plan, setPlan] = useState<{ plan: InstallPlan; trial: boolean } | null>(null);
+    const [plan, setPlan] = useState<{ plan: InstallPlan; trial: boolean; station?: string } | null>(null);
+    /** Предпросмотр виджета черновика: 0 — не показан, дальше — номер показа (после правки — заново). */
+    const [widgetShown, setWidgetShown] = useState(0);
+    /** panel.js, который человек разрешил показать: показ выполнит только его (mayRunDraft). */
+    const [approved, setApproved] = useState('');
+    // Помощник: плагин пишется здесь, а ставится и пробуется на колонке (docs/plans/desk.md, этап 4).
+    const helperStation = panel.role.role === 'helper' ? panel.role.station?.key : undefined;
+    const [onStation, setOnStation] = useState<string | null | undefined>(undefined);
+    useEffect(() => {
+        if (!helperStation) return;
+        let alive = true;
+        void stationVersion(helperStation, id).then((found) => alive && setOnStation(found));
+        return () => {
+            alive = false;
+        };
+    }, [helperStation, id, version]);
     const [journal, setJournal] = useState<JournalLine[]>([]);
     const [previewing, setPreviewing] = useState<string | null>(null);
 
@@ -891,12 +1172,13 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
         setCheck(null);
         setNote(null);
         setPlan(null);
+        setWidgetShown(0);
         void readDraft().then((next) => {
             void readFile('manifest.json');
             if (next?.kind !== 'theme') void readExports();
         });
     }, [id]);
-    useEffect(() => void readJournal(), [id, panel.version]);
+    useEffect(() => void readJournal(), [id, version]);
     // Агент, голосовой режим или конец пробы поменяли черновик (workshop.changed, packages.changed): список файлов,
     // версии и открытый файл, если в нём нет несохранённого, — заново.
     useEffect(() => {
@@ -904,7 +1186,7 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
         void readDraft();
         void readManifestFile();
         if (content === saved) void readFile(path);
-    }, [panel.version]);
+    }, [version]);
     // Проба кончилась по времени: шлюз вернул прежнюю — перечитать, даже если события не было.
     useEffect(() => {
         if (!draft?.trial) return;
@@ -919,6 +1201,10 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
             setTheme(previewing);
         }
     }, [previewing]);
+    // Несохранённое в файле: закрыть окно, уйти в другой раздел или к черновикам — сначала вопрос (shell/leave.ts).
+    useLeaveGuard(content !== saved, () =>
+        confirmAsk({ title: 'Уйти без сохранения?', text: `В ${path} есть несохранённое.`, ok: 'Уйти', danger: true }),
+    );
 
     const act = async (what: string, action: () => Promise<void>) => {
         setBusy(what);
@@ -954,8 +1240,51 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
         void readJournal();
         onListChanged();
     };
-    const doInstall = () => act('install', async () => finished(await api.installDraft(id, true)));
-    const doTrial = (minutes: number) => act('trial', async () => finished(await api.startTrial(id, true, minutes), true));
+    /**
+     * Виджет стола поставленного черновика — сразу и на стол, когда пульт подхватит часть плагина: так на стол встаёт и
+     * виджет, сделанный голосом у колонки.
+     */
+    const putOnDesk = async (before: PanelPlugin | undefined, said: string) => {
+        void syncPackages();
+        const role = panel.role.role;
+        const part = await installedPart(id, before);
+        const widgets = (part?.slots?.['desk.widgets'] ?? []).filter((widget) => !widget.roles || widget.roles.includes(role));
+        if (widgets.length === 0) return;
+        const desk = deskActions(role);
+        for (const widget of widgets) desk.add(`package.${id}.${widget.id}`);
+        const names = widgets.map((widget) => `«${widget.title ?? draft?.title ?? id}»`).join(', ');
+        setNote({ ok: true, text: `${said} ${widgets.length > 1 ? `Виджеты ${names} на столе.` : `Виджет ${names} на столе.`}` });
+    };
+    const doInstall = () =>
+        act('install', async () => {
+            if (plan?.station) {
+                await finished(await stationInstall(plan.station, id));
+                // Виджеты стола помощника зовут плагин колонки, если он там стоит (sdk, useApi): список — заново.
+                forgetStationPackages();
+                setOnStation(await stationVersion(plan.station, id));
+            } else {
+                const before = registeredPlugins().find((plugin) => plugin.id === `package.${id}`);
+                const report = await api.installDraft(id, true);
+                await finished(report);
+                // В окне колонки у помощника её стол не здесь — туда не ставим.
+                if (report.installed && hasPanel && !VIA) void putOnDesk(before, report.message);
+            }
+        });
+    const doTrial = (minutes: number) =>
+        act('trial', async () => {
+            if (plan?.station) {
+                await finished(await stationTrial(plan.station, id, minutes), false);
+                forgetStationPackages();
+            } else await finished(await api.startTrial(id, true, minutes), true);
+        });
+    /** «Поставить на колонку…», «Проба на колонке…»: черновик уходит в мастерскую колонки, там — что изменится. */
+    const askStation = (trial: boolean) =>
+        helperStation &&
+        act(trial ? 'ask-trial' : 'ask', async () => {
+            await saveNow();
+            await pushDraft(helperStation, id);
+            setPlan({ plan: await stationPlan(helperStation, id), trial, station: helperStation });
+        });
     const endTrial = (keep: boolean) =>
         act(keep ? 'keep' : 'end', async () => {
             const answer = await api.endTrial(id, keep);
@@ -1010,6 +1339,8 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
 
     const files = draft?.files ?? [];
     const plugin = draft?.kind !== 'theme';
+    // Виджет стола в черновике (panel.js): показать, как он встанет на стол.
+    const hasPanel = files.some((file) => file.path === 'panel.js');
     const dirty = content !== saved;
     // Редактор — по высоте кода (до 70% экрана, дальше прокрутка внутри).
     const rows = Math.min(48, Math.max(12, content.split('\n').length + 1));
@@ -1020,13 +1351,29 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
                     <h2 id="draft-h" class="t-title-xs m-0">
                         {draft?.title ?? id}
                     </h2>
-                    <button class="t-caption cursor-pointer underline min-h-44" onClick={onClose}>
+                    <button class="t-caption cursor-pointer underline min-h-44" onClick={() => void mayLeave().then((ok) => ok && onClose())}>
                         к черновикам
                     </button>
                 </div>
                 <p class="t-caption m-0">
-                    {[plugin ? 'плагин' : 'тема', draft?.version && `черновик ${draft.version}`, draft?.installed ? `на шлюзе ${draft.installed}` : 'не поставлен'].filter(Boolean).join(' · ')}
+                    {[
+                        plugin ? 'плагин' : 'тема',
+                        draft?.version && `черновик ${draft.version}`,
+                        helperStation
+                            ? onStation === undefined
+                                ? null
+                                : onStation
+                                  ? `на колонке сейчас ${onStation} — останется рядом для отката`
+                                  : 'на колонке не стоит'
+                            : draft?.installed
+                              ? `на шлюзе ${draft.installed}`
+                              : 'не поставлен',
+                        helperStation && draft?.installed ? `на этом компьютере ${draft.installed}` : null,
+                    ]
+                        .filter(Boolean)
+                        .join(' · ')}
                 </p>
+                {helperStation && plugin && <p class="t-caption m-0">Пишется здесь — работает на колонке, и без компьютера.</p>}
                 {draft?.problems.map((problem) => (
                     <span key={problem} class="t-caption c-dot-offline">
                         {problem}
@@ -1035,10 +1382,37 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
                 {draft?.trial && <TrialBanner draft={draft} busy={busy} onEnd={(keep) => void endTrial(keep)} />}
                 <div class="flex flex-wrap gap-8 mt-8">
                     <Action label="Проверить" busy={busy === 'check'} disabled={!!busy} onClick={() => void act('check', async () => (await saveNow(), setCheck(await api.checkDraft(id))))} />
-                    <Action tone="on" label="Поставить…" busy={busy === 'ask'} disabled={!!busy} onClick={() => void ask(false)} />
-                    {plugin && !draft?.trial && <Action label="Проба на колонке…" busy={busy === 'ask-trial'} disabled={!!busy} onClick={() => void ask(true)} />}
+                    {helperStation && plugin ? (
+                        <>
+                            <Action tone="on" label="Поставить на колонку…" busy={busy === 'ask'} disabled={!!busy} onClick={() => void askStation(false)} />
+                            <Action label="Проба на колонке…" busy={busy === 'ask-trial'} disabled={!!busy} onClick={() => void askStation(true)} />
+                            <Action label="Поставить на этот компьютер…" disabled={!!busy} onClick={() => void ask(false)} />
+                        </>
+                    ) : (
+                        <>
+                            <Action tone="on" label="Поставить…" busy={busy === 'ask'} disabled={!!busy} onClick={() => void ask(false)} />
+                            {plugin && !draft?.trial && <Action label="Проба на колонке…" busy={busy === 'ask-trial'} disabled={!!busy} onClick={() => void ask(true)} />}
+                        </>
+                    )}
                     {!plugin &&
                         (previewing ? <Action label="Снять примерку" onClick={endPreview} /> : <Action label="Примерить тему" busy={busy === 'preview'} disabled={!!busy} onClick={() => void preview()} />)}
+                    {plugin && hasPanel && (
+                        <Action
+                            label={widgetShown ? 'Показать заново' : 'Показать виджет'}
+                            disabled={!!busy}
+                            onClick={() =>
+                                void act('widget', async () => {
+                                    await saveNow();
+                                    // panel.js выполнится в пульте с правами вошедшего: сначала спросить — у черновика,
+                                    // сделанного голосом, каждый раз, у прочих — когда его код не тот, что разрешали.
+                                    const code = await mayRunDraft(id);
+                                    if (code === null) return;
+                                    setApproved(code);
+                                    setWidgetShown((n) => n + 1);
+                                })
+                            }
+                        />
+                    )}
                     <Action
                         label="Удалить черновик"
                         disabled={!!busy}
@@ -1052,6 +1426,7 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
                         }
                     />
                 </div>
+                {widgetShown > 0 && <DraftWidgetPreview id={id} nonce={widgetShown} code={approved} />}
                 {check && <CheckLines report={check} />}
                 {note && (
                     <span class={`t-caption ${note.ok ? 'c-accent-text' : 'c-dot-offline'}`} role="status">
@@ -1064,6 +1439,8 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
                     </p>
                 )}
             </section>
+
+            <AgentLog key={id} id={id} title={draft?.title ?? id} />
 
             <section class="card glass card-list" aria-labelledby="files-h">
                 <div class="card-head">
@@ -1092,15 +1469,11 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
                             </button>
                         ))}
                 </div>
-                <textarea
-                    class="field font-mono ws-editor"
-                    rows={rows}
-                    spellcheck={false}
-                    autocapitalize="off"
-                    autocomplete="off"
-                    aria-label={`Файл ${path}`}
+                <CodeEditor
                     value={content}
-                    onInput={(e) => setContent((e.target as HTMLTextAreaElement).value)}
+                    path={path}
+                    rows={rows}
+                    onInput={setContent}
                     onKeyDown={(e) => {
                         if (e.key === 's' && (e.metaKey || e.ctrlKey)) {
                             e.preventDefault();
@@ -1142,7 +1515,7 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
 
 /** Вкладка «Мастерская» раздела «Плагины». */
 export function WorkshopScreen() {
-    const panel = usePanel();
+    const version = useSettledVersion();
     const linked = useLinkedItem('plugins', 'workshop');
     const [drafts, setDrafts] = useState<DraftView[] | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -1156,7 +1529,7 @@ export function WorkshopScreen() {
             .catch((e) => setError(problemOf(e)));
     useEffect(() => {
         if (isAdmin()) void read();
-    }, [panel.version]);
+    }, [version]);
     if (!isAdmin()) {
         return (
             <section class="card glass">

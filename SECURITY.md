@@ -1,11 +1,11 @@
 # Уязвимости
 
 Нашли, как через шлюз попасть туда, куда не должны, — в пульт без входа, на колонку, к ключам, к записям или
-сообщениям? Не пишите в issue: сообщите правообладателю закрыто — hello@duowave.app или через «Report a vulnerability»
+сообщениям? Не пишите в issue: сообщите правообладателю закрыто — hello@duowave.ai или через «Report a vulnerability»
 на вкладке Security этого репозитория. Ответим в течение недели и договоримся, когда рассказать.
 
 *Found a way past the gateway's access rules, onto a station, or to keys, recordings or messages? Please report it
-privately — hello@duowave.app or GitHub's «Report a vulnerability» — not in an issue.*
+privately — hello@duowave.ai or GitHub's «Report a vulnerability» — not in an issue.*
 
 Что важно для этого проекта:
 

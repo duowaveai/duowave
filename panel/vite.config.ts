@@ -21,16 +21,24 @@ export default defineConfig({
     server: {
         proxy: {
             '/health': { target: gateway },
-            '/api': { target: gateway },
+            // ws: живой канал — WebSocket (/api/v1/live/ws).
+            '/api': { target: gateway, ws: true },
             '/debug': { target: gateway },
+            // Части плагинов и проход помощника к колонке (docs/plans/desk.md, этап 4).
+            '/panel-plugins': { target: gateway },
+            '/panel-preview': { target: gateway },
+            '/station': { target: gateway },
         },
     },
     // Проверка прод-сборки: pnpm --filter panel preview
     preview: {
         proxy: {
             '/health': { target: gateway },
-            '/api': { target: gateway },
+            '/api': { target: gateway, ws: true },
             '/debug': { target: gateway },
+            '/panel-plugins': { target: gateway },
+            '/panel-preview': { target: gateway },
+            '/station': { target: gateway },
         },
     },
     build: { outDir: 'dist', target: 'es2022' },

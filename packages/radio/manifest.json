@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "plugin",
   "id": "radio",
-  "version": "1.1.0",
+  "version": "1.4.0",
   "title": "Радио",
   "description": "Радиостанции голосом: свой список популярных станций и открытый каталог Radio Browser. «Включи радио джаз», поиск и включение станций для «Мозга», источник радио для плеера шлюза; станцию, на которой колонка молчит, запоминает и включает следующую.",
   "api": "^1.1",
@@ -120,11 +120,23 @@
       {
         "name": "player.failed",
         "handler": "onPlayer"
+      },
+      {
+        "name": "player.stopped",
+        "handler": "onPlayer"
+      },
+      {
+        "name": "station.connected",
+        "handler": "onStation"
+      },
+      {
+        "name": "station.disconnected",
+        "handler": "onStation"
       }
     ],
     "panel": {
       "slots": [
-        "home.cards"
+        "desk.widgets"
       ],
       "calls": [
         "panelStations"

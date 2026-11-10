@@ -388,6 +388,15 @@ pub async fn check(folder: &Path, id: &str, handle: Option<tokio::runtime::Handl
     {
         report.warnings.push("contributes.panel без panel.js: в пульте плагину нечего показать.".into());
     }
+    // The panel part runs in the browser: here only whether it parses.
+    if let Ok(panel) = std::fs::read_to_string(folder.join("panel.js")) {
+        if let Err(error) = crate::plugins::quickjs::syntax_of("panel.js", &panel).await {
+            report.code = Some(match report.code.take() {
+                Some(before) => format!("{before}\npanel.js: {error}"),
+                None => format!("panel.js: {error}"),
+            });
+        }
+    }
     report.ok = report.manifest.is_empty() && report.code.is_none() && report.missing.is_empty();
     report.ms = began.elapsed().as_millis() as u64;
     report

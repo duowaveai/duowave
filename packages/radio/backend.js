@@ -6,9 +6,12 @@
 // - radioSearch — инструмент «Мозга» radio_search: список станций по названию, жанру или настроению;
 // - radioPlay — инструмент radio_play: находит и сразу включает (ответ того же вида, что на фразу, — `{say, play}`);
 // - stations — источник радио для встроенного навыка (contributes.media);
-// - onPlayer — что колонка сказала о станции (player.started, player.silent, player.failed): молчит — станция
-//   запоминается как нерабочая и уходит в конец выдачи, а вместо неё играет следующая;
-// - panelStations — карточке «Радио» на главном экране пульта (panel.js).
+// - onPlayer — что колонка сказала о станции (player.started, player.stopped, player.silent, player.failed): что
+//   играет — виджету; молчит — станция запоминается как нерабочая и уходит в конец выдачи, а вместо неё играет
+//   следующая;
+// - onStation — колонка подключилась или отключилась (station.connected, station.disconnected): не вернулась вовремя
+//   (минута после обрыва, 3 — после смены режима) — у неё ничего не играет;
+// - panelStations — виджету «Радио» на столе пульта (panel.js).
 //
 // Звук идёт через плеер шлюза (audio_play), поэтому «пауза», «дальше», «громче» — встроенные навыки.
 
@@ -158,6 +161,27 @@ function workingFirst(items) {
   return [...items.filter((one) => !brokenAt(one.id)), ...items.filter((one) => brokenAt(one.id))];
 }
 
+// Что играет — у каждой колонки своё: ставит player.started, снимает player.stopped того же элемента, а его шлюз шлёт и
+// тогда, когда поверх радио включили другое (свою музыку, сказку). «Играет» старше 12 часов всё равно не показывается —
+// на случай, когда о конце так и не узнали.
+const NOW_MS = 12 * 60 * 60 * 1000;
+const nowKey = (device) => `now:${device}`.slice(0, 100);
+// Колонка отключилась: вернулась вовремя — поток играет дальше, «играет» остаётся; не вернулась — у неё ничего не
+// играет. Соединение оборвалось (1006: сброс, тишина) — ждём минуту. Закрыто рукопожатием (смена режима) — 3 минуты:
+// следующее колонка открывает сама, от секунды до 2,5 минуты, и присутствие шлюза ждёт её столько же.
+const AWAY_MS = 60 * 1000;
+const SWITCH_MS = 3 * 60 * 1000;
+// Последнее соединение колонки: прежнее закрылось, когда новое уже открыто, — колонка на связи.
+const linkKey = (device) => `link:${device}`.slice(0, 100);
+
+// Когда «играет» гаснет, если колонка не вернётся.
+const goneAt = (now) => now.away + (now.wait ?? AWAY_MS);
+
+// «Играет» на виду: не старше 12 часов, и колонка не пропала дольше, чем её ждут.
+function playing(now, at) {
+  return Boolean(now) && at - now.since < NOW_MS && !(now.away && at > goneAt(now));
+}
+
 // Свой список, потом каталог; каталог не ответил — что нашлось у себя.
 async function find(query, limit) {
   const own = ownFind(query, limit);
@@ -195,8 +219,15 @@ export async function radioPlay({ station }) {
 export async function onPlayer({ name, payload }) {
   const id = payload?.item?.id;
   if (!id) return null;
+  const device = String(payload.device ?? "");
   if (name === "player.started") {
     if (brokenAt(id)) host.kv.delete(`broken:${id}`);
+    // Виджету на столе: что играет на этой колонке и с какого времени («играет 44 минуты»).
+    host.kv.set(nowKey(device), { id, title: payload.item.title ?? id, device, since: Date.now() });
+    return null;
+  }
+  if (name === "player.stopped") {
+    if (host.kv.get(nowKey(device))?.id === id) host.kv.delete(nowKey(device));
     return null;
   }
   if (name === "player.silent" && payload.retrying) {
@@ -214,9 +245,42 @@ export async function onPlayer({ name, payload }) {
   return next.length > 0 ? { play: next } : null;
 }
 
-// Карточке «Радио» в пульте: свои станции, какие молчали, что включали последним.
-export function panelStations() {
+// Колонка подключилась или отключилась. Отключилась — «играет» не снимается сразу, а помечается: смена режима или
+// короткий обрыв поток не останавливают. Вернулась вовремя — пометка уходит; позже — у неё ничего не играет.
+export function onStation({ name, payload }) {
+  const device = String(payload?.deviceTag ?? "");
+  if (!device) return null;
+  const session = String(payload?.sessionId ?? "");
+  const now = host.kv.get(nowKey(device));
+  if (name === "station.connected") {
+    if (session) host.kv.set(linkKey(device), session);
+    if (!now?.away) return null;
+    if (Date.now() > goneAt(now)) host.kv.delete(nowKey(device));
+    else host.kv.set(nowKey(device), { ...now, away: null, wait: null });
+    return null;
+  }
+  if (name !== "station.disconnected" || !now || now.away) return null;
+  // Закрылось прежнее соединение, а новое уже открыто: колонка на связи.
+  const live = host.kv.get(linkKey(device));
+  if (live && session && live !== session) return null;
+  const handshake = typeof payload.code === "number" && payload.code !== 1006;
+  host.kv.set(nowKey(device), { ...now, away: Date.now(), wait: handshake ? SWITCH_MS : AWAY_MS });
+  return null;
+}
+
+// Виджету «Радио» на столе пульта: что играет сейчас на колонке пульта и с какого времени, свои станции, какие молчали,
+// что включали последним. Без колонки — последнее начатое на любой. Колонка пропала, но её ещё ждут, — until: после
+// него виджет уберёт «играет» сам, не дожидаясь, пока его перечитают.
+export function panelStations({ device } = {}) {
+  // Прежняя версия держала одно «что играет» на все колонки.
+  if (host.kv.get("now") !== null) host.kv.delete("now");
+  let now = null;
+  for (const key of device ? [nowKey(String(device))] : host.kv.keys("now:")) {
+    const one = host.kv.get(key);
+    if (playing(one, Date.now()) && (!now || one.since > now.since)) now = one;
+  }
   return {
+    now: now?.away ? { ...now, until: goneAt(now) } : now,
     last: host.kv.get("last") ?? null,
     stations: OWN.map((station) => ({ id: station.id, title: station.title, tags: station.tags, broken: brokenAt(station.id) !== null })),
   };

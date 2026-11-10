@@ -286,6 +286,14 @@ function Updates() {
             </div>
             {offer ? (
                 <div>
+                    {offer.critical && (
+                        <p class="t-caption m-0 mb-4 c-dot-offline" role="alert">
+                            <b>Срочное обновление</b> — исправляет важное в этой версии.{' '}
+                            {status.autoCritical
+                                ? 'Шлюз поставит его сам в течение часа, можно и сейчас.'
+                                : 'Поставьте его как можно скорее.'}
+                        </p>
+                    )}
                     <p class="t-body m-0 mb-4">
                         Доступна версия <b>{offer.version}</b>
                         {offer.date ? `, ${new Date(offer.date).toLocaleDateString('ru-RU')}` : ''}

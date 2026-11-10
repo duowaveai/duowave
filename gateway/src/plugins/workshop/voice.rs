@@ -16,12 +16,12 @@ use regex::Regex;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
+use super::activity::By;
 use super::agent;
 use super::Workshop;
-use crate::config::ModelProfile;
 use crate::core::events::{EventBus, GatewayEvent};
 use crate::dialog::llm::ToolCall;
-use crate::dialog::{DialogContext, DialogService, Filler, ToolBox, ToolOutcome};
+use crate::dialog::{DialogService, Filler, ToolBox, ToolOutcome};
 use crate::skills::capabilities::{CapabilityName, Intent};
 use crate::skills::quick_commands::QuickMatch;
 use crate::skills::router::{ExtraRules, EXECUTOR};
@@ -33,12 +33,28 @@ const VOICE_MS: u64 = 5 * 60_000;
 /// The agent's rounds in one spoken answer: fewer than in the panel, the person waits by the station.
 const ROUNDS: usize = 8;
 const BUDGET_MS: u64 = 90_000;
+/// One round of the model may write nothing this long: it thinks, then writes a whole file in one call, and a
+/// streamed call comes only whole (LLM_TIMEOUT_MS, 10 s, cut every such round off).
+const ROUND_MS: u64 = 60_000;
+/// «Работаю над этим» while the calls run past this…
+const FILLER_MS: u64 = 1500;
+/// …or the model has said nothing yet for this long.
+const THINKING_MS: u64 = 5000;
 /// The rule's name in the journal.
 const RULE: &str = "workshop:voice";
 
 static START: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         "^(давай (сделаем|напишем|создадим) (новый )?(навык|плагин|тему)|режим мастерской|открой мастерскую|включи мастерскую|мастерская)$",
+    )
+    .expect("a valid pattern")
+});
+/// «Сделай виджет: сколько осталось стирке» — a widget for the panel's desk (docs/plans/desk.md, stage 5): the draft
+/// starts from the widget's template and what was asked goes to the agent at once. «Гиджет» is how the recognizer
+/// often hears the word.
+static WIDGET: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        "^(?:сделай|нарисуй|создай|добавь|давай (?:сделаем|создадим|нарисуем)) (?:мне )?(?:новый )?[вг]иджет(?: (?P<ask>.+))?$",
     )
     .expect("a valid pattern")
 });
@@ -54,7 +70,9 @@ const VOICE_RULES: &str = "## Голосовой режим
 списков, кода, разметки и ссылок. Код не диктуй и не читай: он в черновике, человек видит его в пульте, в «Мастерской». \
 Уточняй по одному вопросу за раз. Поставить плагин на колонку и дать ему права голосом нельзя — голос можно подделать: \
 когда черновик готов и проверен, скажи «Готово, поставить можно в пульте, в мастерской». Попроси проверить фразой: \
-«скажите: включи радио джаз» — и прогони её сам (try_phrase).";
+«скажите: включи радио джаз» — и прогони её сам (try_phrase). Если черновик — виджет стола пульта (в манифесте слот \
+desk.widgets): что он показывает, рисует panel.js, данные даёт panelData в backend.js; правь их, проверяй (check) и \
+скажи, что виджет готов и виден в пульте, в «Мастерской»: там его можно посмотреть и поставить на стол.";
 
 /// A device in the workshop: its draft.
 #[derive(Debug, Clone)]
@@ -96,7 +114,14 @@ impl VoiceWorkshop {
     ) -> BoxFuture<'a, anyhow::Result<Outcome>> {
         Box::pin(async move {
             if intent.action == "workshop" {
-                return Ok(self.start(intent, context));
+                let started = self.start(intent, context);
+                // «Сделай виджет: …» — what to show goes to the agent at once.
+                if let Some(ask) = intent.params.get("ask").and_then(|ask| ask.as_str()).filter(|ask| !ask.trim().is_empty()) {
+                    if self.sessions().contains_key(&context.device_tag) {
+                        return Ok(self.follow(&context.device_tag, &format!("Сделай виджет: {ask}"), context.cancel.clone()));
+                    }
+                }
+                return Ok(started);
             }
             let text = intent.params.get("text").and_then(|text| text.as_str()).unwrap_or_default().to_string();
             Ok(self.follow(&context.device_tag, &text, context.cancel.clone()))
@@ -115,11 +140,10 @@ impl VoiceWorkshop {
         if !self.dialog.enabled() {
             return Outcome::speech("Мастерская не работает: в «Мозге» не выбрана модель.");
         }
-        let theme = intent.params.get("kind").and_then(|kind| kind.as_str()) == Some("theme");
-        let (prefix, kind, title, greeting) = if theme {
-            ("golos-tema", "theme", "Тема голосом", "Делаем тему. Какой она будет: тёмная или светлая, какие цвета?")
-        } else {
-            ("golos", "plugin", "Навык голосом", "Делаем навык. Что он должен уметь?")
+        let (prefix, kind, title, greeting) = match intent.params.get("kind").and_then(|kind| kind.as_str()) {
+            Some("theme") => ("golos-tema", "theme", "Тема голосом", "Делаем тему. Какой она будет: тёмная или светлая, какие цвета?"),
+            Some("widget") => ("golos-vidzhet", "widget", "Виджет голосом", "Делаем виджет для стола пульта. Что на нём показать?"),
+            _ => ("golos", "plugin", "Навык голосом", "Делаем навык. Что он должен уметь?"),
         };
         let id = self.free_id(prefix);
         if let Err(error) = self.workshop.create(&id, Some(kind), Some(title), None) {
@@ -149,15 +173,21 @@ impl VoiceWorkshop {
                 .emit(GatewayEvent::WorkshopChanged { draft: session.draft.clone(), change: "voice.ended".into() });
             return Outcome::speech(format!("Выхожу из мастерской. Черновик «{}» остался в пульте.", session.draft));
         }
+        // The panel's plaque and the workshop's log follow the work; «Остановить» there ends it.
+        let run = self.workshop.activity().begin(&session.draft, By::Voice, text, &cancel);
         let workshop = self.workshop.clone();
         let draft = session.draft.clone();
         let events = self.events.clone();
+        let told = run.clone();
         let mut toolbox = ToolBox::new(
             agent::tools(false).into_iter().filter(|tool| tool.name != "install").collect(),
             move |call: ToolCall, _cancel: CancellationToken| {
-                let (workshop, draft, events) = (workshop.clone(), draft.clone(), events.clone());
+                let (workshop, draft, events, run) = (workshop.clone(), draft.clone(), events.clone(), told.clone());
                 async move {
+                    // The calls of one turn run at once: the answer names its call.
+                    let asked = workshop.activity().call(&run, &call.name, &call.input);
                     let (content, failed) = agent::run_tool(&workshop, &draft, &call.name, &call.input).await;
+                    workshop.activity().answer(&run, asked, &call.name, &content, failed);
                     if call.name == "write_file" || call.name == "delete_file" {
                         events.emit(GatewayEvent::WorkshopChanged {
                             draft: draft.clone(),
@@ -170,13 +200,14 @@ impl VoiceWorkshop {
         );
         toolbox.rounds = Some(ROUNDS);
         toolbox.budget_ms = Some(BUDGET_MS);
-        toolbox.filler = Some(Filler { phrase: "Работаю над этим.".into(), after_ms: 1500 });
-        let context = DialogContext {
-            profile: Some(ModelProfile::Smart),
-            system: Some(format!("{}\n\n{VOICE_RULES}", agent::instructions(&self.workshop, &session.draft))),
-            ..DialogContext::default()
-        };
-        let phrases = self.dialog.answer(&key(device), text, context, cancel, Some(toolbox));
+        toolbox.round_ms = Some(ROUND_MS);
+        toolbox.filler =
+            Some(Filler { phrase: "Работаю над этим.".into(), after_ms: FILLER_MS, thinking_ms: Some(THINKING_MS) });
+        // The workshop's own model, as in the panel (`workshop.agent`), else the smart profile of «Мозг».
+        let mut context = agent::context(&self.workshop, &session.draft, agent::model_of(&self.workshop));
+        context.system = context.system.map(|system| format!("{system}\n\n{VOICE_RULES}"));
+        let answer = self.dialog.answer(&key(device), text, context, run.cancel.clone(), Some(toolbox));
+        let phrases = self.workshop.activity().watch(run, answer);
         let turns = self.sessions().get_mut(device).map(|session| {
             session.turns += 1;
             session.turns
@@ -204,10 +235,17 @@ fn key(device: &str) -> String {
 /// «Давай сделаем навык»: the router's rule for the workshop's start, beside the plugins' phrases.
 impl ExtraRules for VoiceWorkshop {
     fn matched(&self, normalized: &str) -> Option<QuickMatch> {
-        let found = START.captures(normalized)?;
-        let theme = found.get(4).is_some_and(|word| word.as_str() == "тему");
         let mut intent = Intent::new(CapabilityName::Plugins, "workshop");
         intent.params.insert(EXECUTOR.into(), json!(CapabilityName::Plugins.as_str()));
+        if let Some(found) = WIDGET.captures(normalized) {
+            intent.params.insert("kind".into(), json!("widget"));
+            if let Some(ask) = found.name("ask") {
+                intent.params.insert("ask".into(), json!(ask.as_str()));
+            }
+            return Some(QuickMatch { intent, rule: RULE });
+        }
+        let found = START.captures(normalized)?;
+        let theme = found.get(4).is_some_and(|word| word.as_str() == "тему");
         intent.params.insert("kind".into(), json!(if theme { "theme" } else { "plugin" }));
         Some(QuickMatch { intent, rule: RULE })
     }
@@ -216,6 +254,17 @@ impl ExtraRules for VoiceWorkshop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hears_a_widget_asked_for_with_what_to_show() {
+        let found = WIDGET.captures("сделай виджет сколько осталось стирке и что потом").unwrap();
+        assert_eq!(found.name("ask").map(|ask| ask.as_str()), Some("сколько осталось стирке и что потом"));
+        assert!(WIDGET.is_match("давай сделаем виджет") && WIDGET.is_match("давай создадим новый виджет"));
+        // As the recognizer heard it on the owner's station.
+        assert!(WIDGET.is_match("давай сделаем гиджет"));
+        assert!(WIDGET.captures("нарисуй новый виджет").unwrap().name("ask").is_none());
+        assert!(!WIDGET.is_match("сделай виджеты") && !WIDGET.is_match("давай сделаем уроки"));
+    }
 
     #[test]
     fn hears_the_workshops_start_and_its_end() {
@@ -231,6 +280,7 @@ mod tests {
 
     #[tokio::test]
     async fn starts_a_draft_by_voice_listens_on_without_the_wake_word_and_leaves_on_enough() {
+        use super::super::activity::StepKind;
         use crate::config::{Config, Env};
         use crate::skills::router::{Continuation, Decision, ModelState, Resolution, RouteInput};
         use crate::skills::routes::RouteStep;
@@ -271,9 +321,22 @@ mod tests {
         assert!(started.listen && started.continuation.is_some());
         assert!(app.workshop.draft("golos-1").is_ok(), "the draft is in the panel's workshop");
 
-        // A follow-up without the wake word comes back here, and «хватит» leaves.
+        // A follow-up without the wake word comes back here and goes to the agent; the panel's plaque and the
+        // workshop's log follow the work. «Хватит» leaves.
         let going =
             Continuation { capability: CapabilityName::Plugins, executor: RouteStep::Own, until: now_ms() + 60_000 };
+        let (intent, skill, _) = heard(app.skills.router.decide(&input("сделай кнопку погоды", Some(going))));
+        assert_eq!(intent.action, "continue");
+        let answer = skill.execute(&intent, &context).await.unwrap();
+        use futures::StreamExt;
+        let said: Vec<String> = answer.phrases.unwrap().map(|phrase| phrase.unwrap()).collect().await;
+        assert!(!said.is_empty(), "the agent answered");
+        let (job, steps) = app.workshop.activity().log("golos-1", 0).unwrap();
+        assert!(!job.busy && job.asked.contains("кнопку погоды"), "{job:?}");
+        let kinds: Vec<StepKind> = steps.iter().map(|step| step.kind).collect();
+        assert_eq!((kinds.first(), kinds.last()), (Some(&StepKind::Asked), Some(&StepKind::Done)), "{kinds:?}");
+        assert!(kinds.contains(&StepKind::Said));
+
         let (intent, skill, _) = heard(app.skills.router.decide(&input("хватит", Some(going))));
         assert_eq!(intent.action, "continue");
         let left = skill.execute(&intent, &context).await.unwrap();

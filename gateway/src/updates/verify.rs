@@ -5,7 +5,8 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use minisign_verify::{PublicKey, Signature};
 
-/// The keys releases are signed with, built into the program (one per line); UPDATE_PUBKEY replaces them.
+/// The keys releases are signed with, built into the program (one per line): the release key, then a reserve kept
+/// offline for the day the release key is lost (docs/plans/key-rotation.md). UPDATE_PUBKEY replaces them.
 pub const BUILT_IN_KEY: &str = include_str!("../../updates.pub");
 
 /// A public key in Tauri's form (base64 of the .pub file), or minisign's own text, or its bare base64 line.
@@ -63,8 +64,10 @@ mod tests {
     const THROWAWAY_PAYLOAD: &[u8] = b"duowave: a signed update, for the test";
 
     #[test]
-    fn the_built_in_key_reads() {
-        public_key(BUILT_IN_KEY).expect("updates.pub is a key");
+    fn the_built_in_keys_read() {
+        // The release key and the reserve one, kept offline for the day the release key is lost
+        // (docs/plans/key-rotation.md): a change here is a rotation, made on purpose.
+        assert_eq!(public_keys(BUILT_IN_KEY).expect("updates.pub reads").len(), 2, "the release key and the reserve");
         assert!(public_key("nonsense").is_err());
     }
 
@@ -86,8 +89,8 @@ wLMDjy9FLAuxZ3q4NlEvkgtyhrr0gtTu6KC4KBJdITbbOeAi1zBIYo0v4iTgt8jJpIidRJnp94ABQkJA
         let key = public_key(THROWAWAY).unwrap();
         assert!(verify(&key, THROWAWAY_PAYLOAD, THROWAWAY_SIGNATURE).is_ok());
         assert!(verify(&key, b"duowave: something else", THROWAWAY_SIGNATURE).is_err());
-        let release = public_key(BUILT_IN_KEY).unwrap();
-        assert!(verify(&release, THROWAWAY_PAYLOAD, THROWAWAY_SIGNATURE).is_err(), "another key's signature");
+        let release = public_keys(BUILT_IN_KEY).unwrap();
+        assert!(verify_any(&release, THROWAWAY_PAYLOAD, THROWAWAY_SIGNATURE).is_err(), "another key's signature");
     }
 
     #[test]
@@ -105,7 +108,7 @@ wLMDjy9FLAuxZ3q4NlEvkgtyhrr0gtTu6KC4KBJdITbbOeAi1zBIYo0v4iTgt8jJpIidRJnp94ABQkJA
         assert!(public_keys("nonsense").is_err());
         assert!(public_keys(&format!("{THROWAWAY}\nnonsense")).is_err(), "a broken line fails the whole list");
         assert!(public_keys("\n  \n").is_err(), "no lines at all");
-        assert_eq!(public_keys(BUILT_IN_KEY).unwrap().len(), 1, "the built-in file is one key");
+        assert!(public_keys(&format!("{BUILT_IN_KEY}\nnonsense")).is_err(), "nor after the built-in keys");
     }
 
     #[test]

@@ -1,8 +1,8 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/media/panel-overview-dark.png">
-    <img src="docs/media/panel-overview-light.png" alt="Пульт DuoWave: колонка, мозг, плагины, мастерская и где работает шлюз" width="100%">
-  </picture>
+  <a href="https://duowave.ai"><picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/media/desk-dark.gif">
+    <img src="docs/media/desk-light.gif" alt="Стол DuoWave: в центре колонка отвечает на вопрос, вокруг — виджеты: биткоин, погода, таймеры, музыка, календарь и змейка, сделанная голосом" width="100%">
+  </picture></a>
 </p>
 
 <h1 align="center">DuoWave</h1>
@@ -14,14 +14,14 @@
 </p>
 
 <p align="center">
-  <a href="https://duowave.app">duowave.app</a> ·
+  <a href="https://duowave.ai">duowave.ai</a> ·
   <a href="#поставить">Поставить</a> ·
   <a href="docs/plugins/AUTHORING.md">Написать плагин</a> ·
   <a href="#чем-рискуете-и-как-вернуть">Как вернуть как было</a>
 </p>
 
 <p align="center">
-  <a href="https://duowave.app"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/duowave-promo-poster-dark.png"><img src="docs/media/duowave-promo-poster-light.png" alt="Ролик: DuoWave за полторы минуты" width="720"></picture></a>
+  <a href="https://duowave.ai"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/duowave-promo-poster-dark.png"><img src="docs/media/duowave-promo-poster-light.png" alt="Ролик: DuoWave за полторы минуты" width="720"></picture></a>
 </p>
 
 *A voice gateway for a rooted Yandex Station: any model, your own speech recognition and voice, plugins you write by
@@ -47,20 +47,31 @@ Linux, macOS, Windows. Open source: Apache-2.0.*
 - **Свой голос.** Колонка говорит голосом по записи — например, голосом мамы для сказок на ночь. Или готовыми
   голосами Silero и Piper, или голосом Алисы.
 - **Где удобно.** На самой колонке, на домашнем сервере, на компьютере — или колонка вместе с сервером.
+- **Стол с виджетами.** Пульт — бесконечный стол: колонка в центре, вокруг погода, таймеры, музыка, курсы, список
+  покупок. Нужен свой виджет — скажите, что показать, и мастерская его нарисует.
 
 ## Возможности
+
+### Стол: колонка в центре, виджеты вокруг
+
+<p align="center">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/desk-phone-dark.png"><img src="docs/media/desk-phone-light.png" alt="Стол на телефоне: погода, биткоин, колонка, которая отвечает, музыка, змейка и таймеры" width="260"></picture>
+</p>
+
+Пульт — бесконечный стол. В центре — колонка: видно, кто сейчас её слышит, кто думает и кто говорит. Вокруг —
+виджеты: погода, таймеры, что играет, радио, курсы, календарь, список покупок. Их можно двигать, приближать и
+прятать, и у каждого человека в доме свой стол. Нужен свой виджет — скажите, что показать: мастерская нарисует его,
+пульт покажет вживую, и вы поставите его на стол.
 
 ### Мозг: любая модель и свои маршруты
 
 <p align="center">
   <picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/panel-brain-dark.png"><img src="docs/media/panel-brain-light.png" alt="«Мозг»: модели и провайдеры" width="260"></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/panel-routes-dark.png"><img src="docs/media/panel-routes-light.png" alt="«Мозг» → «Маршруты»" width="260"></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/panel-home-dark.png"><img src="docs/media/panel-home-light.png" alt="Главный экран: кто слышит, думает и говорит" width="260"></picture>
 </p>
 
 Провайдеры — со своим ключом или дома; глубина мышления; MCP-серверы как инструменты модели. У каждой возможности —
-погоды, музыки, умного дома, будильников — свой исполнитель. Главный экран показывает, кто сейчас слышит, думает и
-говорит.
+погоды, музыки, умного дома, будильников — свой исполнитель.
 
 ### Плагины и мастерская: навыки голосом
 
@@ -160,9 +171,11 @@ Silero и Piper. Записи голоса остаются у вас и ник�
 
 ```sh
 git clone https://github.com/duowaveai/duowave && cd duowave
-docker compose up -d --build                    # шлюз и пульт
-docker compose --profile full up -d --build     # + своё распознавание и голос на процессоре
+docker compose up -d                    # шлюз и пульт — готовый образ выпуска
+docker compose --profile full up -d     # + своё распознавание и голос на процессоре (их образы собираются здесь)
 ```
+
+Собрать шлюз из исходников вместо готового образа: `docker compose build gateway && docker compose up -d`.
 
 Пульт: `http://<этот компьютер>:7780/panel` (другой порт — `GATEWAY_PORT=…` в `.env`). Код первой настройки, если пульт открыт не с этого компьютера, — в журнале:
 `docker compose logs gateway`. Всё, что шлюз хранит, — в томе `gateway-data`. Наборы, видеокарта NVIDIA, звонки —
@@ -236,9 +249,11 @@ ssh -p 2222 root@<колонка> 'wget -qO- http://<шлюз>/station/connect.s
 
 ## Обновления
 
-Шлюз сам узнаёт о новой версии и показывает её в пульте; ставит — только по кнопке. Каждый выпуск подписан, шлюз
-проверяет подпись перед установкой. Приложение обновляется так же; Docker — `git pull && docker compose up -d --build`; пакет на колонке —
-`yam install` файла новой версии из выпуска.
+Шлюз сам узнаёт о новой версии и показывает её в пульте; ставит — по кнопке. Срочный выпуск, который исправляет
+что-то важное, шлюз ставит сам при ближайшей проверке (раз в час); выключить — `UPDATE_AUTO_CRITICAL=false`. Каждый
+выпуск подписан: шлюз проверяет подпись и версию внутри архива и не ставит выпуск старше своего. Приложение
+обновляется так же; Docker — `docker compose pull && docker compose up -d`; пакет на колонке — `yam install` файла
+новой версии из выпуска.
 
 ## Разработчикам
 

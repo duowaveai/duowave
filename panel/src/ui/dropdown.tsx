@@ -42,8 +42,11 @@ export function Dropdown({
         const away = (event: MouseEvent): void => {
             if (!root.current?.contains(event.target as Node)) setOpen(false);
         };
+        // Esc — этому списку: окно или шит под ним остаются открытыми.
         const escape = (event: KeyboardEvent): void => {
-            if (event.key === 'Escape') setOpen(false);
+            if (event.key !== 'Escape' || event.defaultPrevented) return;
+            event.preventDefault();
+            setOpen(false);
         };
         document.addEventListener('mousedown', away);
         document.addEventListener('keydown', escape);

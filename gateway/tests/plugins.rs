@@ -161,8 +161,14 @@ async fn plays_the_pilots_radio_when_the_station_says_vklyuchi_radio_and_leaves_
     assert_eq!((&stop["capability"], &stop["detail"]), (&json!("playback"), &json!("stop")));
 
     let view = env.get("/api/v1/packages/radio").await;
-    assert_eq!((&view["calls"], &view["errors"], &view["loaded"]), (&json!(1), &json!(0), &json!(true)));
+    assert_eq!((&view["errors"], &view["loaded"]), (&json!(0), &json!(true)));
+    assert!(view["calls"].as_u64().unwrap() >= 1, "{view}");
     assert!(view["memory"]["used"].as_u64().unwrap() > 0, "{view}");
+    // One phrase reached the plugin, «включи радио джаз»; «стоп» did not. (The events it follows — a station that
+    // connected — are its calls too, in the background.)
+    let journal = env.gateway.app.plugins.journal("radio");
+    let phrases = journal.iter().filter(|line| line.level == "call" && line.message.contains("(фраза)")).count();
+    assert_eq!(phrases, 1, "{journal:?}");
     station.close();
 
     // A file of the package's assets/ is our /media's, only inside that folder and only while the plugin is on.

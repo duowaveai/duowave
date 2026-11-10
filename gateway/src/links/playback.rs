@@ -12,6 +12,8 @@ use crate::skills::media::playback::{PlaybackReport, PlaybackSink};
 pub struct PlaybackLinks {
     pub requests: Arc<RequestsService>,
     pub plugins: Weak<PluginHost>,
+    /// The panel's widgets: what plays changed.
+    pub events: crate::core::events::EventBus,
 }
 
 impl PlaybackSink for PlaybackLinks {
@@ -23,5 +25,9 @@ impl PlaybackSink for PlaybackLinks {
         if let Some(plugins) = self.plugins.upgrade() {
             plugins.player_news(report);
         }
+        self.events.emit(crate::core::events::GatewayEvent::StationStateChanged {
+            device: report.device.clone(),
+            what: "player".into(),
+        });
     }
 }

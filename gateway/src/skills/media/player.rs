@@ -95,6 +95,23 @@ impl PlayerState {
     pub fn via_gateway(&self) -> bool {
         self.queue.get(self.index).is_some_and(|item| item.url.contains(RELAY_PATH))
     }
+
+    /// Where in the item it stands by our own count (ms): where this play began, and how long it played since the
+    /// station said it started — until `now` while it plays, until it stopped otherwise (ours or the station's
+    /// stop). Within the item's length. The panel has no word from the station between requests: its pause, its
+    /// «продолжить» and its widget go by this.
+    pub fn position_ms(&self, now: u64) -> u64 {
+        let until = match self.state {
+            PlayState::Starting | PlayState::Playing => now,
+            PlayState::Stopped | PlayState::Finished | PlayState::Failed => self.at,
+        };
+        let played = self.started_at.map_or(0, |started| until.saturating_sub(started));
+        let position = self.offset_ms.saturating_add(played);
+        match self.queue.get(self.index).and_then(|item| item.duration_ms) {
+            Some(length) => position.min(length),
+            None => position,
+        }
+    }
 }
 
 /// Where the gateway relays a stream the station kept silent on (gateway/media/stream.rs).
@@ -102,6 +119,11 @@ pub const RELAY_PATH: &str = "/media/stream/";
 
 /// Told when an item is started: the device and its play id (the playback watch times the station's answer).
 pub type StartHook = Box<dyn Fn(&str, &str) + Send + Sync>;
+
+/// Told when a new play takes the place of one that still played (the station said it started) with another item: the
+/// device and the play replaced. The station's own word of it comes for a play that is no longer the current one and
+/// is not heard, so its plugin hears it stopped from here (`player.stopped`).
+pub type ReplaceHook = Box<dyn Fn(&str, &PlayerState) + Send + Sync>;
 
 /// A stop this close to the item's end that we did not ask for is its end.
 const END_SLACK_MS: i64 = 3000;
@@ -224,6 +246,7 @@ pub struct MediaPlayer {
     /// Per device: the request going on it last and where its station fetches our /media.
     requests: Mutex<HashMap<String, (String, Option<String>)>>,
     started: OnceLock<StartHook>,
+    replaced: OnceLock<ReplaceHook>,
 }
 
 impl MediaPlayer {
@@ -247,12 +270,30 @@ impl MediaPlayer {
         let _ = self.started.set(hook);
     }
 
-    /// audio_play, and for a track (not a live radio) the request for the next one.
-    pub fn play(&self, device: &str, queue: Vec<MediaItem>, index: usize, offset_ms: u64) -> Vec<Directive> {
-        let mut players = self.players.lock().unwrap();
-        self.start(&mut players, device, queue, index, offset_ms)
+    /// Who is told of a play that a new one took the place of while it went on (the playback watch); once.
+    pub fn on_replace(&self, hook: ReplaceHook) {
+        let _ = self.replaced.set(hook);
     }
 
+    /// audio_play, and for a track (not a live radio) the request for the next one.
+    pub fn play(&self, device: &str, queue: Vec<MediaItem>, index: usize, offset_ms: u64) -> Vec<Directive> {
+        let (directives, replaced) = {
+            let mut players = self.players.lock().unwrap();
+            self.start(&mut players, device, queue, index, offset_ms)
+        };
+        self.tell_replaced(device, replaced);
+        directives
+    }
+
+    /// The play a new one took the place of, told outside the players' lock.
+    fn tell_replaced(&self, device: &str, replaced: Option<PlayerState>) {
+        if let (Some(hook), Some(replaced)) = (self.replaced.get(), replaced) {
+            hook(device, &replaced);
+        }
+    }
+
+    /// Starts the item: the directives, and the play it took the place of when that one still played another item —
+    /// the same item again (a retry, «продолжить») goes on as it was, and one stopped or ended was told so already.
     fn start(
         &self,
         players: &mut HashMap<String, PlayerState>,
@@ -260,8 +301,8 @@ impl MediaPlayer {
         queue: Vec<MediaItem>,
         index: usize,
         offset_ms: u64,
-    ) -> Vec<Directive> {
-        let Some(item) = queue.get(index).cloned() else { return Vec::new() };
+    ) -> (Vec<Directive>, Option<PlayerState>) {
+        let Some(item) = queue.get(index).cloned() else { return (Vec::new(), None) };
         let play_id = self.new_play_id();
         let request = self.requests.lock().unwrap().get(device).map(|(request, _)| request.clone());
         let state = PlayerState {
@@ -276,11 +317,13 @@ impl MediaPlayer {
             queued: None,
             request,
         };
-        players.insert(device.to_string(), state);
+        let replaced = players.insert(device.to_string(), state).filter(|before| {
+            before.state == PlayState::Playing && before.queue.get(before.index).is_some_and(|was| was.id != item.id)
+        });
         if let Some(hook) = self.started.get() {
             hook(device, &play_id);
         }
-        directives(&item, &play_id, offset_ms)
+        (directives(&item, &play_id, offset_ms), replaced)
     }
 
     /// The item of this play goes another way (the gateway's relay): its link changes; true when it still plays.
@@ -356,7 +399,10 @@ impl MediaPlayer {
         }
         if event == PlayerEvent::Finished && state.index + 1 < state.queue.len() {
             let (queue, next) = (state.queue.clone(), state.index + 1);
-            return Some(self.start(&mut players, device, queue, next, 0));
+            let (directives, replaced) = self.start(&mut players, device, queue, next, 0);
+            drop(players);
+            self.tell_replaced(device, replaced);
+            return Some(directives);
         }
         None
     }
@@ -385,7 +431,10 @@ impl MediaPlayer {
             return None;
         }
         let queue = state.queue.clone();
-        Some(self.start(&mut players, device, queue, index.max(0) as usize, offset_ms))
+        let (directives, replaced) = self.start(&mut players, device, queue, index.max(0) as usize, offset_ms);
+        drop(players);
+        self.tell_replaced(device, replaced);
+        Some(directives)
     }
 
     fn new_play_id(&self) -> String {
@@ -499,5 +548,24 @@ mod tests {
         assert_eq!(stream_of(&next[0])["id"], "b");
         assert_eq!(base36(35), "z");
         assert_eq!(base36(36), "10");
+    }
+
+    /// Review G5: between requests the panel has only our count — where the play began and how long it played.
+    #[test]
+    fn counts_where_the_item_stands_while_it_plays_and_where_it_stopped() {
+        let player = MediaPlayer::new();
+        let directives = player.play("h:test", vec![item("a", Some(200_000))], 0, 30_000);
+        let play = play_id_of(&directives[0]);
+        assert_eq!(player.current("h:test").unwrap().1.position_ms(5_000_000), 30_000, "not started yet");
+        player.on_event("h:test", PlayerEvent::Started, &play, 1_000_000);
+        assert_eq!(player.current("h:test").unwrap().1.position_ms(1_130_000), 160_000);
+        // Paused by us at 2:10 into the play: it stands there, however long the pause.
+        player.stopping("h:test", 1_130_000);
+        player.on_event("h:test", PlayerEvent::Stopped, &play, 1_130_400);
+        let state = player.current("h:test").unwrap().1;
+        assert_eq!((state.state, state.position_ms(9_000_000)), (PlayState::Stopped, 160_400));
+        // Never past the item's end.
+        player.on_event("h:test", PlayerEvent::Started, &play, 2_000_000);
+        assert_eq!(player.current("h:test").unwrap().1.position_ms(9_000_000), 200_000);
     }
 }

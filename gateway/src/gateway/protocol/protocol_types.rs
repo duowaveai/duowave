@@ -151,6 +151,24 @@ pub struct PlayerView {
     pub offset_ms: Option<i64>,
 }
 
+/// A timer as the station's alarm capability lists it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StationTimer {
+    pub id: String,
+    /// Unix seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<i64>,
+    /// Seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<i64>,
+    /// Seconds left when the state was taken.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining: Option<i64>,
+    #[serde(default)]
+    pub paused: bool,
+}
+
 /// What the station reports about itself in a request: volume, its player, the timers and alarms it holds.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -166,6 +184,10 @@ pub struct DeviceState {
     /// Timers the alarm capability lists: running, paused or ringing (the state does not say which rings).
     #[serde(default)]
     pub timer_ids: Vec<String>,
+    /// The same timers with what the station says of each: when it started, how long, what is left, paused —
+    /// for the panel's widget (docs/plans/desk.md, stage 2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub timers: Vec<StationTimer>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alarms: Option<Vec<StationAlarm>>,
 }

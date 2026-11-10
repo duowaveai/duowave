@@ -65,6 +65,8 @@ pub fn tell_calls_skill(hub: &CallHub, telegram: &TelegramMessenger, skill: &Arc
                 chat_id: message.chat_id.clone(),
                 file: message.file.clone(),
                 text: message.text.clone(),
+                // The bot's inbox keeps its voice messages.
+                discard: false,
             });
         }
     });
@@ -300,9 +302,9 @@ mod tests {
     #[tokio::test]
     async fn trusts_an_approved_stations_address_only() {
         let tofu = app(&[("STATION_PAIRING", "tofu")]);
-        assert!(!tofu.calls.trusted_address("192.168.1.100"), "no station approved yet");
-        tofu.stations.admit("kitchen", "::ffff:192.168.1.100");
-        assert!(tofu.calls.trusted_address("192.168.1.100"), "the first station is trusted on first use");
+        assert!(!tofu.calls.trusted_address("192.168.1.30"), "no station approved yet");
+        tofu.stations.admit("kitchen", "::ffff:192.168.1.30");
+        assert!(tofu.calls.trusted_address("192.168.1.30"), "the first station is trusted on first use");
         assert!(!tofu.calls.trusted_address("192.168.1.200"));
         let open = app(&[("STATION_PAIRING", "open")]);
         assert!(open.calls.trusted_address("10.0.0.1"));

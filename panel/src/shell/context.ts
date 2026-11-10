@@ -8,6 +8,7 @@ import type { AccessCatalog, ApiError, Health, RequestView, SessionSnapshot, Sta
 import type { LiveState } from '../live';
 import type { StationDrawing } from '../stations';
 import type { Place } from './links';
+import type { RoleInfo } from './role';
 
 export interface DebugState {
     sessions: SessionSnapshot[] | null;
@@ -67,6 +68,10 @@ export interface PanelState extends Navigation {
     openConnector: string | null;
     connectorOpened: () => void;
     signOut: () => void;
+    /** Роль пульта: шлюз или помощник (shell/role.ts), и колонка помощника. */
+    role: RoleInfo;
+    /** Открыть «+» — новый виджет на стол. */
+    openAdd: () => void;
 }
 
 export const PanelContext = createContext<PanelState | null>(null);

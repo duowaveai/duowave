@@ -76,7 +76,9 @@ pub fn asset(files: &dyn PanelFiles, relative: &str) -> Result<Response, ApiErro
 }
 
 /// The panel's content policy: its own scripts and the inline theme script by its hash, its own styles (inline style
-/// attributes too), its own API; never framed. A script injected into the page runs nowhere. Audio may come from
+/// attributes too), its own API; framed only by itself — the helper opens the station's sections in windows that are
+/// the panel again, through the pass (docs/plans/desk.md, stage 4), and no other site may frame it. A script injected
+/// into the page runs nowhere, and no form sends anything away from it (`form-action 'self'`). Audio may come from
 /// blob: — the takes and samples of the own voices are fetched with the session's key and played from memory (an
 /// <audio src> cannot send the key); so may images — the packages' avatars and the catalog's previews come the same
 /// way; media never runs. The recording worklet is the panel's own file.
@@ -109,7 +111,8 @@ pub fn panel_policy(html: &str) -> String {
         "connect-src 'self'",
         "object-src 'none'",
         "base-uri 'none'",
-        "frame-ancestors 'none'",
+        "form-action 'self'",
+        "frame-ancestors 'self'",
     ]
     .join("; ")
 }
@@ -122,6 +125,7 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/panel", get(|| async { index(&BuiltIn) }))
         .route("/panel/", get(|| async { index(&BuiltIn) }))
         .route("/panel/{*path}", get(|Path(path): Path<String>| async move { asset(&BuiltIn, &path) }))
+        .merge(super::desk::routes())
 }
 
 #[cfg(test)]
@@ -170,7 +174,15 @@ mod tests {
             Some("img-src 'self' data: blob:"),
             "the packages' avatars"
         );
-        assert_eq!(directive(&policy, "frame-ancestors").as_deref(), Some("frame-ancestors 'none'"));
+        assert_eq!(directive(&policy, "frame-ancestors").as_deref(), Some("frame-ancestors 'self'"));
+    }
+
+    /// Review S3: code that got into the page (a draft's panel.js) sends no form with the session elsewhere.
+    #[test]
+    fn sends_its_forms_only_to_itself() {
+        let policy = panel_policy("<html></html>");
+        assert_eq!(directive(&policy, "form-action").as_deref(), Some("form-action 'self'"));
+        assert_eq!(directive(&policy, "base-uri").as_deref(), Some("base-uri 'none'"));
     }
 
     async fn text(response: Response) -> (StatusCode, String, String) {

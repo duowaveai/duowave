@@ -1,0 +1,162 @@
+/* Плашка «Делаю виджет» и ход работы агента мастерской (docs/plans/desk.md; gateway/src/plugins/workshop/activity.rs).
+   Тихо, в материале «Минимала»: капсула chip-bg, как у капсул верхней строки; цвет агента (фиолет, bar-agent) — только у
+   кольца и точки (The Dot-Carries-Color Rule); лайма здесь нет — он у главного действия. У помощника верхняя строка
+   тёмная: она переопределяет токены (ui/desk.css), и плашка берёт их. */
+
+/* ─── Плашка: верхняя строка стола ─────────────────────────────── */
+.agent-plaque {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    max-width: min(520px, 44vw);
+    height: 26px;
+    padding: 0 3px 0 10px;
+    border-radius: 999px;
+    background: var(--chip-bg);
+    color: var(--text);
+    font-size: 12px;
+    line-height: 16px;
+    font-weight: 500;
+}
+.agent-plaque-open {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    height: 100%;
+    padding-right: 7px;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    border-radius: 999px;
+}
+.agent-plaque-open:hover .agent-plaque-what { text-decoration: underline; text-decoration-color: var(--glass-border); text-underline-offset: 3px; }
+.agent-plaque-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-plaque-doing { color: var(--sub); font-weight: 400; }
+.agent-plaque.is-failed .agent-plaque-what { color: var(--dot-offline); }
+.agent-plaque-stop {
+    flex: none;
+    height: 20px;
+    padding: 0 8px;
+    border-radius: 999px;
+    border: 1px solid var(--glass-border);
+    background: transparent;
+    color: var(--sub);
+    font: inherit;
+    font-weight: 500;
+}
+.agent-plaque-stop:hover:not(:disabled) { color: var(--text); background: var(--hover-bg); }
+.agent-plaque-stop:disabled { opacity: 0.6; cursor: default; }
+
+/* Кольцо агента, пока он работает, и точка, когда закончил: фиолет — готово, коралл — не вышло, камень — остановлено. */
+.agent-spin {
+    flex: none;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 1.5px solid color-mix(in srgb, var(--bar-agent) 22%, transparent);
+    border-top-color: var(--bar-agent);
+    animation: agent-spin 0.9s linear infinite;
+}
+@keyframes agent-spin { to { transform: rotate(360deg); } }
+.agent-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--bar-agent); }
+.agent-dot.is-failed { background: var(--dot-offline); }
+.agent-dot.is-stopped { background: var(--bar-off); }
+@media (prefers-reduced-motion: reduce) {
+    .agent-spin { animation: none; border-color: var(--bar-agent); }
+}
+
+/* Телефон: в строке тесно — плашка короче, «Остановить» — в мастерской, куда она ведёт. */
+@media (max-width: 640px) {
+    .desk-top .agent-plaque { max-width: 40vw; padding-right: 0; }
+    .desk-top .agent-plaque-stop { display: none; }
+}
+
+/* ─── Плашка: боковая панель ────────────────────────────────────── */
+.agent-plaque-side {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+    max-width: none;
+    height: auto;
+    padding: 10px 12px;
+    border-radius: 14px;
+}
+.agent-plaque-side .agent-plaque-open { flex: 1 1 160px; align-items: flex-start; padding: 0; border-radius: 8px; }
+.agent-plaque-side .agent-spin,
+.agent-plaque-side .agent-dot { margin-top: 4px; }
+.agent-plaque-lines { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.agent-plaque-lines > span { overflow-wrap: anywhere; }
+.agent-plaque-side .agent-plaque-stop { height: 26px; padding: 0 10px; }
+
+/* ─── Ход работы в мастерской (screens/workshop.tsx) ───────────── */
+.agent-log {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    max-height: 340px;
+    overflow: auto;
+    overscroll-behavior: contain;
+}
+.agent-log-row {
+    display: grid;
+    grid-template-columns: 64px minmax(0, 1fr);
+    gap: 10px;
+    padding: 6px 0;
+    border-top: 1px solid var(--row-line, var(--divider));
+    font-size: 13px;
+    line-height: 18px;
+}
+.agent-log-row:first-child { border-top: 0; }
+.agent-log-time { color: var(--mute); font-size: 12px; font-variant-numeric: tabular-nums; }
+.agent-log-text { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.agent-log-who { color: var(--sub); }
+.agent-log-row.is-asked .agent-log-text { font-weight: 500; }
+.agent-log-row.is-tool .agent-log-text { color: var(--sub); }
+.agent-log-row.is-tool .agent-log-mark { margin-left: 6px; color: var(--mute); }
+.agent-log-row.is-failed .agent-log-text,
+.agent-log-row.is-failed .agent-log-mark { color: var(--dot-offline); }
+.agent-log-row.is-end .agent-log-text { font-weight: 500; }
+/* «что увидел»: ответ вызова, как его получил агент, — по нажатию, моноширинным листом. */
+.agent-log-seen { margin-top: 2px; }
+.agent-log-seen > summary { width: max-content; cursor: pointer; list-style: none; font-size: 12px; line-height: 16px; color: var(--mute); }
+.agent-log-seen > summary::-webkit-details-marker { display: none; }
+.agent-log-seen > summary:hover,
+.agent-log-seen[open] > summary { color: var(--sub); }
+.agent-log-seen > pre {
+    margin: 4px 0 2px;
+    padding: 8px 10px;
+    max-height: 180px;
+    overflow: auto;
+    border-radius: 10px;
+    background: var(--strong-bg);
+    border: 1px solid var(--glass-border);
+    color: var(--text);
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.agent-log-now { display: flex; align-items: center; gap: 8px; font-size: 13px; line-height: 18px; color: var(--sub); padding-top: 6px; }
+
+/* ─── «+» → «Новый виджет»: шаги агента, пока он рисует (screens/widget-agent.tsx) ─ */
+.agent-live {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+    border-radius: 14px;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+}
+.agent-live-head { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; line-height: 18px; }
+.agent-live-doing { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-live-time { flex: none; color: var(--sub); font-variant-numeric: tabular-nums; }
+.agent-live-steps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; font-size: 12px; line-height: 16px; color: var(--sub); }
+.agent-live-steps > li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-live-steps > li.is-failed { color: var(--dot-offline); }

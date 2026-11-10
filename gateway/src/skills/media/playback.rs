@@ -4,7 +4,8 @@
 //!
 //! - the request that started the item gets a note — «колонка начала играть», «остановилась», «молчит 5 с»;
 //! - the plugin whose item it is hears `player.started`, `player.stopped`, `player.failed`, `player.silent` and may
-//!   answer a silence with the next station (`{play: […]}`);
+//!   answer a silence with the next station (`{play: […]}`); an item another play took the place of while it went on
+//!   is told stopped from here — the station's word of it comes for a play no longer followed;
 //! - a stream the station keeps silent on goes the gateway's way (the owner's decision 9): no `on_started` within
 //!   `SILENT_AFTER` — the gateway relays it through its own /media (an AAC stream transcoded where that is allowed),
 //!   and the station is told to play that instead, through a push it calls back for (as our speech without a
@@ -18,7 +19,7 @@ use std::time::Duration;
 use serde_json::{json, Map};
 
 use super::media_types::MediaItem;
-use super::player::{MediaPlayer, PlayState, PlayerEvent, MEDIA_CALLBACK, MEDIA_PLAY_ID};
+use super::player::{MediaPlayer, PlayState, PlayerEvent, PlayerState, MEDIA_CALLBACK, MEDIA_PLAY_ID};
 use crate::gateway::protocol::protocol_types::{Directive, DirectiveType};
 
 /// The station had this long to say it started; then it is silent (07.11: «Хит FM» started within 1–3 s).
@@ -132,7 +133,27 @@ impl PlaybackWatch {
                 watch.started(device, play_id);
             }
         }));
+        let me = Arc::downgrade(&watch);
+        player.on_replace(Box::new(move |device, replaced| {
+            if let Some(watch) = me.upgrade() {
+                watch.replaced(device, replaced);
+            }
+        }));
         watch
+    }
+
+    /// Another play took the place of one that went on: its plugin hears it stopped, its request notes it — the
+    /// radio's «играет N мин» does not stay under the music that came after it.
+    fn replaced(&self, device: &str, replaced: &PlayerState) {
+        let Some(item) = replaced.queue.get(replaced.index) else { return };
+        self.tell(
+            device,
+            &replaced.play_id,
+            replaced.request.clone(),
+            item,
+            PlaybackNews::Stopped,
+            replaced.via_gateway(),
+        );
     }
 
     pub fn set_sink(&self, sink: Arc<dyn PlaybackSink>) {
@@ -410,6 +431,52 @@ mod tests {
         assert!(watch.replace("kitchen", &record, vec![item("relax", "https://relax.example/r.mp3")]));
         let next = watch.retried("kitchen", &record).unwrap();
         assert_eq!(next[0].payload.as_ref().unwrap()["stream"]["url"], "https://relax.example/r.mp3");
+    }
+
+    /// Review J10: another play over the radio — its plugin hears the radio stopped (`player.stopped`), in the radio's
+    /// own request; the station's late word of it is not told twice. The same item again is no stop, nor is one that
+    /// the station stopped or that ended: those were told already.
+    #[tokio::test]
+    async fn an_item_another_play_took_the_place_of_is_told_stopped() {
+        let player = Arc::new(MediaPlayer::new());
+        let watch = PlaybackWatch::with(player.clone(), Duration::from_secs(60));
+        let heard = Arc::new(Heard::default());
+        watch.set_sink(heard.clone());
+        let notes = || heard.0.lock().unwrap().clone();
+        let started = |at: u64| {
+            let play = player.current("kitchen").unwrap().1.play_id;
+            player.on_event("kitchen", PlayerEvent::Started, &play, at);
+            play
+        };
+
+        // «Хит FM» plays; «включи мою музыку» over it: the radio is told stopped, in the radio's request.
+        player.note_request("kitchen", "r1", None);
+        player.play("kitchen", vec![item("hit", "https://hitfm.example/hit.mp3")], 0, 0);
+        let radio = started(1);
+        player.note_request("kitchen", "r2", None);
+        player.play("kitchen", vec![item("a", "http://gw/media/a.mp3"), item("b", "http://gw/media/b.mp3")], 0, 0);
+        assert_eq!(notes(), [(Some("r1".to_string()), "колонка остановила: hit".to_string())]);
+        watch.on_event("kitchen", PlayerEvent::Stopped, &radio);
+        assert_eq!(notes().len(), 1, "the station's late word of it is not told again");
+
+        // A track not started yet is no stop; a started one that «дальше» leaves is.
+        assert!(player.step("kitchen", 1, 0).is_some());
+        assert_eq!(notes().len(), 1);
+        started(2);
+        assert!(player.step("kitchen", -1, 0).is_some());
+        assert_eq!(notes().last().unwrap().1, "колонка остановила: b");
+
+        // The same item again — «сначала», a retry — goes on: no stop.
+        started(3);
+        assert!(player.step("kitchen", 0, 0).is_some());
+        assert_eq!(notes().len(), 2);
+
+        // Paused by us and stopped by the station: told by its own word, not again by the next play.
+        let paused = started(4);
+        player.stopping("kitchen", 5);
+        player.on_event("kitchen", PlayerEvent::Stopped, &paused, 6);
+        player.play("kitchen", vec![item("hit", "https://hitfm.example/hit.mp3")], 0, 0);
+        assert_eq!(notes().len(), 2);
     }
 
     #[tokio::test]

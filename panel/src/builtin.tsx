@@ -1,12 +1,11 @@
-// Встроенное в пульт — как плагин: пять разделов (три на панели вкладок, «Голос», «Дом» и «Журнал» — в «Ещё»), карточка «Сейчас отвечает» и темы через тот же definePlugin, что потом у
-// плагинов с шлюза.
-// Экраны разделов берут данные из контекста пульта (usePanel) и помнят свою вкладку (useSectionTab).
+// Встроенное в пульт — как плагин: разделы, виджеты стола и тема через тот же definePlugin, что у плагинов с шлюза.
+// Главный раздел — стол (docs/plans/desk.md): колонка в середине, виджеты вокруг. Экраны разделов берут данные из
+// контекста пульта (usePanel) и помнят свою вкладку (useSectionTab).
 
-import { IconGear, IconHome, IconJournal, IconLinks, IconPackage, IconSparkle, IconVoice } from './icons';
+import { IconCode, IconGear, IconHome, IconJournal, IconLaptop, IconLinks, IconMusic, IconPackage, IconShield, IconSparkle, IconTimer, IconVoice } from './icons';
 import { usePanel, useSectionTab } from './shell/context';
 import { definePlugin } from './shell/registry';
-import { GLASS, MINIMAL, MINIMAL_PANEL, PROSTOR } from './shell/themes';
-import { HomeScreen } from './screens/home';
+import { MINIMAL } from './shell/themes';
 import { HouseScreen } from './screens/house';
 import { JournalScreen } from './screens/journal';
 import { SettingsScreen } from './screens/settings';
@@ -14,34 +13,22 @@ import { NowAnsweringCard } from './screens/characters';
 import { MindScreen, MindTab, SettingsTab, isMindTab } from './screens/mind';
 import { ModelsScreen, ModelsTab } from './screens/models';
 import { PluginsScreen, PluginsTab } from './screens/plugins-section';
+import { DeskScreen } from './screens/desk';
+import {
+    AllocWidget,
+    HelperCardWidget,
+    HelperWidget,
+    ModeWidget,
+    RecentWidget,
+    UnsupportedWidget,
+    WatchWidget,
+    WorkshopWidget,
+} from './screens/desk-widgets';
+import { MusicWidget, TimersWidget } from './screens/station-widgets';
 import { useOfferedVersion } from './updates';
 
 /** Ссылка дашборда: в «Мозг» или в «Голос», сразу на нужную вкладку. */
 export const settingsPlace = (place: SettingsTab): [string, string] => [isMindTab(place) ? 'mind' : 'models', place];
-
-function HomeSection() {
-    const panel = usePanel();
-    return (
-        <HomeScreen
-            health={panel.health}
-            debug={panel.debug}
-            catalog={panel.catalog}
-            session={panel.session}
-            drawing={panel.drawing}
-            online={panel.online}
-            trip={panel.trip}
-            skew={panel.feed.skew}
-            version={panel.version}
-            recent={panel.recent}
-            banner={panel.banner}
-            noStation={panel.noStation}
-            onConnect={panel.openConnect}
-            onOpenJournal={() => panel.go('journal')}
-            onOpenSettings={(place) => panel.go(...settingsPlace(place))}
-            onOpenHouse={(connector) => panel.openHouse(connector)}
-        />
-    );
-}
 
 function MindSection() {
     const panel = usePanel();
@@ -90,12 +77,15 @@ function UpdateDot() {
     return useOfferedVersion() ? <span class="badge-dot" role="img" aria-label="новая версия шлюза" /> : null;
 }
 
+/** Колонка со своим шлюзом: у неё может быть помощник — его виджет есть только там. */
+const onStation = (health: { placement?: { role?: string } } | null): boolean => health?.placement?.role === 'station';
+
 export default definePlugin({
     id: 'core',
     sections: [
-        { id: 'home', title: 'Колонка', icon: IconHome, Screen: HomeSection, order: 10 },
+        { id: 'home', title: 'Колонка', icon: IconHome, Screen: DeskScreen, order: 10 },
         { id: 'mind', title: 'Мозг', icon: IconSparkle, Screen: MindSection, order: 20 },
-        // «Плагины»: что стоит, каталог и мастерская — вкладками; в панели вкладок между «Мозгом» и «Ещё».
+        // «Плагины»: что стоит, каталог и мастерская — вкладками; в доке между «Сказать» и «Ещё».
         { id: 'plugins', title: 'Плагины', icon: IconPackage, Screen: PluginsSection, order: 25, permission: 'station.view' },
         { id: 'models', title: 'Голос', icon: IconVoice, Screen: ModelsSection, order: 30, nav: 'more' },
         { id: 'house', title: 'Дом', icon: IconLinks, Screen: HouseSection, order: 40, nav: 'more', Badge: UpdateDot },
@@ -104,8 +94,20 @@ export default definePlugin({
         { id: 'journal', title: 'Журнал', icon: IconJournal, Screen: JournalSection, order: 50, nav: 'more', permission: 'journal.view' },
     ],
     slots: {
-        // «Сейчас отвечает: Артур» — первой из карточек главного экрана; открывает персонажа в «Мозг» → «Персонажи».
-        'home.cards': [{ id: 'character', Component: NowAnsweringCard, order: 10, permission: 'station.view' }],
+        // Виджеты стола: у шлюза — о колонке и её ответах, у помощника — о том, что он ей даёт.
+        'desk.widgets': [
+            { id: 'mode', title: 'Режим колонки', icon: IconSparkle, Component: ModeWidget, order: 10, size: 'large', source: 'колонка', roles: ['gateway'] },
+            { id: 'music', title: 'Музыка', icon: IconMusic, Component: MusicWidget, order: 12, size: 'large', bare: true, permission: 'station.view' },
+            { id: 'timers', title: 'Таймеры', icon: IconTimer, Component: TimersWidget, order: 14, size: 'small', source: 'колонка', permission: 'station.view' },
+            { id: 'character', title: 'Сейчас отвечает', Component: NowAnsweringCard, order: 15, size: 'small', bare: true, roles: ['gateway'], permission: 'station.view' },
+            { id: 'recent', title: 'Последние вопросы', icon: IconJournal, Component: RecentWidget, order: 20, size: 'large', source: 'журнал', permission: 'journal.view' },
+            { id: 'helper-card', title: 'Помощник', icon: IconLaptop, Component: HelperCardWidget, order: 25, size: 'small', source: 'компьютер', roles: ['gateway'], available: onStation },
+            { id: 'alloc', title: 'Кто сколько ответил', Component: AllocWidget, order: 30, size: 'large', bare: true, roles: ['gateway'] },
+            { id: 'unsupported', title: 'Пока не умеем', icon: IconJournal, Component: UnsupportedWidget, order: 40, size: 'large', source: 'журнал', roles: ['gateway'], permission: 'journal.view' },
+            { id: 'helper', title: 'Что даю колонке', icon: IconLaptop, Component: HelperWidget, order: 10, size: 'large', source: 'этот компьютер', roles: ['helper'] },
+            { id: 'watch', title: 'Присматриваю за колонкой', icon: IconShield, Component: WatchWidget, order: 20, size: 'large', source: 'этот компьютер', roles: ['helper'], permission: 'station.view' },
+            { id: 'workshop', title: 'Мастерская', icon: IconCode, Component: WorkshopWidget, order: 30, size: 'large', source: 'этот компьютер', roles: ['helper'], permission: 'plugins.manage' },
+        ],
     },
-    themes: [MINIMAL, MINIMAL_PANEL, GLASS, PROSTOR],
+    themes: [MINIMAL],
 });

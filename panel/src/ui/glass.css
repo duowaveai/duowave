@@ -476,24 +476,58 @@ textarea.field {
     flex: none;
 }
 
+/* Шиты рисуются в конце <body> (ui/sheet.tsx, Overlay) и встают над окнами, доком, «+» и «Колонками»; вопросы ask() —
+   над ними. Весь порядок слоёв — в начале ui/desk.css. Затемнение — на весь экран. */
 .sheet-backdrop {
     position: fixed;
     inset: 0;
-    z-index: 20;
+    z-index: 40;
     background: rgba(0, 0, 0, 0.30);
     display: flex;
     align-items: flex-end;
     justify-content: center;
 }
+.sheet-backdrop.confirm-layer { z-index: 50; }
 
+/* На телефоне шит — нижний лист с ручкой. Выше экрана он не растёт: длинное содержимое прокручивается внутри. */
 .sheet {
     width: min(480px, 100vw);
+    max-height: 88dvh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     border-radius: var(--r-panel-desk) var(--r-panel-desk) 0 0;
     padding: var(--s-lg) var(--s-md) calc(var(--s-lg) + env(safe-area-inset-bottom));
     display: flex;
     flex-direction: column;
     gap: var(--s-sm);
 }
+/* На широком экране — окно посередине, как диалог на столе (макет SpaceAddPanel): все углы скруглены, ручки нет,
+   по краям экрана — поле. */
+@media (min-width: 761px) {
+    .sheet-backdrop { align-items: center; padding: var(--s-xl); }
+    .sheet,
+    .sheet.dash-sheet {
+        width: min(560px, 100%);
+        max-height: min(86dvh, 100%);
+        border-radius: var(--r-panel-desk);
+        padding: var(--s-lg);
+    }
+    .sheet.dash-sheet { animation-name: sheet-in; }
+    .sheet > .dash-grabber { display: none; }
+}
+@keyframes sheet-in { from { opacity: 0; transform: translateY(8px) scale(0.99); } to { opacity: 1; transform: none; } }
+
+/* Шит во фрейме окна колонки у помощника (shell/station-window.tsx): его затемнение — только во фрейме, остальную
+   страницу помощника затемняет это, на слое шитов. Окно с фреймом встаёт над ним (в боковой панели — сам фрейм), а
+   заголовок и рамка окна уходят под вуаль того же цвета: темнеет весь экран, светел только шит во фрейме. Нажатие на
+   затемнение или вуаль закрывает шит фрейма. */
+.frame-scrim { position: fixed; inset: 0; z-index: 40; background: var(--scrim); cursor: default; }
+.station-frame.is-lifted { position: relative; z-index: 41; }
+/* Своя линия фрейма в боковой панели — тоже под затемнением: сквозь прозрачную рамку видно его. */
+.side-main > .station-frame.is-lifted { border-color: transparent; background-clip: padding-box; }
+.desk-window.is-lifted { z-index: 41; }
+.desk-window.is-lifted > .desk-window-body { position: relative; z-index: 2; }
+.desk-window-veil { position: absolute; inset: -1px; z-index: 1; border-radius: inherit; background: var(--scrim); cursor: default; }
 
 .banner-offline {
     border-radius: var(--r-pill);

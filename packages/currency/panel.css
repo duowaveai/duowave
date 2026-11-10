@@ -1,0 +1,2 @@
+/* Виджет «Курсы валют»: изменение к прошлому дню — тоном текста, без цветов «кто отвечает». */
+.currency-change { min-width: 44px; text-align: right; font-variant-numeric: tabular-nums; }

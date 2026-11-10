@@ -1,0 +1,10 @@
+# Urgent releases. A version listed here fixes something that must not wait for a click: the feed of that release,
+# and of every release after it, carries the highest version listed up to it as critical_below (feed.mjs). A gateway
+# older than that version — 0.2.1 or later, unless UPDATE_AUTO_CRITICAL=false — installs the newest release by itself
+# at its next check (hourly); in the desktop app the app updates itself; in Docker, Home Assistant or a package the
+# panel says it loudly instead, without the «×».
+#
+# One line a release: the version, then why, for people. Add it before the tag: the release's feed is written from this
+# file in the release workflow. Marking a release already published: add the line here, download the release's assets,
+# write its feed again as release.yml does (node scripts/release/feed.mjs <assets> <tag> <download base>) and upload it
+# in place of the release's latest.json (gh release upload <tag> latest.json --clobber).

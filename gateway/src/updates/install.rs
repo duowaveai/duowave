@@ -10,9 +10,11 @@ use std::time::Duration;
 /// An update larger than this is not one of ours.
 pub const MAX_DOWNLOAD: usize = 96 * 1024 * 1024;
 
-/// The archive at `url`, whole, into memory (the gateway is ~10–30 MB).
+/// The archive at `url`, whole, into memory (the gateway is ~10–30 MB). Over https only, each redirect too
+/// (`feed::secure`).
 pub async fn download(url: &str) -> Result<Vec<u8>, String> {
-    let client = crate::utils::http::client_builder()
+    super::feed::secure(url)?;
+    let client = super::feed::client_builder()
         .timeout(Duration::from_secs(600))
         .build()
         .map_err(|error| format!("загрузка: {error}"))?;
@@ -50,6 +52,16 @@ pub fn unpack(archive: &[u8]) -> Result<Vec<u8>, String> {
 
 /// The program named `name` inside a `.tar.gz`: the station's build is `duowave` whatever the computer's system.
 pub fn unpack_named(archive: &[u8], name: &str) -> Result<Vec<u8>, String> {
+    let program = find(archive, name, u64::MAX)?.ok_or_else(|| format!("в архиве нет {name}"))?;
+    if program.len() < 1024 {
+        return Err("archive: the program in it is empty".into());
+    }
+    Ok(program)
+}
+
+/// The file named `name` inside a `.tar.gz`, at the top or in one folder, when there is one; one larger than `limit`
+/// is an error, not read.
+fn find(archive: &[u8], name: &str, limit: u64) -> Result<Option<Vec<u8>>, String> {
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
     let entries = tar.entries().map_err(|error| format!("архив: {error}"))?;
     for entry in entries {
@@ -57,15 +69,53 @@ pub fn unpack_named(archive: &[u8], name: &str) -> Result<Vec<u8>, String> {
         let path = entry.path().map_err(|error| format!("архив: {error}"))?.into_owned();
         let file = path.file_name().and_then(|file| file.to_str()).unwrap_or("");
         if file == name && path.components().count() <= 2 && entry.header().entry_type().is_file() {
-            let mut program = Vec::new();
-            entry.read_to_end(&mut program).map_err(|error| format!("архив: {error}"))?;
-            if program.len() < 1024 {
-                return Err("archive: the program in it is empty".into());
+            if entry.size() > limit {
+                return Err(format!("архив: {name} слишком велик"));
             }
-            return Ok(program);
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).map_err(|error| format!("архив: {error}"))?;
+            return Ok(Some(bytes));
         }
     }
-    Err(format!("в архиве нет {name}"))
+    Ok(None)
+}
+
+/// What the release workflow writes beside the program in every archive: the version and the platform it was built
+/// as. The archive's signature covers it with the program, so both are the signer's word, not the feed's.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct Release {
+    pub version: String,
+    pub platform: String,
+}
+
+/// Its name in the archive, beside the program.
+pub const RELEASE_FILE: &str = "release.json";
+
+/// The release a signed archive says it is, checked against what it is about to be installed as: built for this
+/// platform, the very version offered, and newer than the one running. The feed is not signed, so it could offer an
+/// old signed archive as a new version and take a gateway back to a release with a known hole; or another platform's
+/// build, which would not start. Both stop here. Archives before 0.2.1 carry no release.json, so no gateway that
+/// checks ever installs one of them again.
+pub fn check_release(archive: &[u8], platform: &str, offered: &str, current: &str) -> Result<Release, String> {
+    use super::feed::{is_newer, parse_version};
+    let text = find(archive, RELEASE_FILE, 64 * 1024)?.ok_or_else(|| {
+        format!("в архиве нет {RELEASE_FILE}: это выпуск до 0.2.1 или собранный не конвейером выпуска")
+    })?;
+    let release: Release =
+        serde_json::from_slice(&text).map_err(|error| format!("{RELEASE_FILE} не читается: {error}"))?;
+    if release.platform != platform {
+        return Err(format!("архив собран для {}, а здесь {platform}", release.platform));
+    }
+    let (Some(signed), Some(wanted)) = (parse_version(&release.version), parse_version(offered)) else {
+        return Err(format!("версия не читается: в архиве «{}», предложена «{offered}»", release.version));
+    };
+    if signed != wanted {
+        return Err(format!("архив подписан как версия {signed}, а предложен как {wanted}"));
+    }
+    if !is_newer(&release.version, current) {
+        return Err(format!("версия {signed} не новее стоящей {current}: откат на прежнюю версию не ставится"));
+    }
+    Ok(release)
 }
 
 /// Where the program before an update is kept.
@@ -139,6 +189,32 @@ mod tests {
         assert!(unpack(&archive(&[("other", &program)])).is_err());
         assert!(unpack(&archive(&[(program_name(), b"tiny")])).is_err());
         assert!(unpack(b"not an archive").is_err());
+    }
+
+    #[test]
+    fn a_release_installs_only_as_itself_for_this_platform_and_forward() {
+        let program = vec![7u8; 4096];
+        let here = "duowave-linux-x86_64";
+        let release = |version: &str, platform: &str| {
+            archive(&[
+                (program_name(), &program),
+                (RELEASE_FILE, format!(r#"{{"version":"{version}","platform":"{platform}"}}"#).as_bytes()),
+            ])
+        };
+        assert_eq!(check_release(&release("0.2.2", here), here, "0.2.2", "0.2.1").unwrap().version, "0.2.2");
+        assert!(check_release(&release("0.2.2", here), here, "v0.2.2", "0.2.1").is_ok(), "the feed's v");
+        let replayed = check_release(&release("0.2.0", here), here, "99.0.0", "0.2.1").unwrap_err();
+        assert!(replayed.contains("0.2.0") && replayed.contains("99.0.0"), "an old release offered as new: {replayed}");
+        assert!(check_release(&release("0.2.1", here), here, "0.2.1", "0.2.1").is_err(), "the same version");
+        assert!(check_release(&release("0.2.0", here), here, "0.2.0", "0.2.1").is_err(), "an older one, as itself");
+        assert!(
+            check_release(&release("0.2.2", "duowave-linux-aarch64"), here, "0.2.2", "0.2.1").is_err(),
+            "another platform"
+        );
+        let unmarked = check_release(&archive(&[(program_name(), &program)]), here, "0.2.2", "0.2.1").unwrap_err();
+        assert!(unmarked.contains(RELEASE_FILE), "a release before 0.2.1: {unmarked}");
+        // The program is still found beside it: gateways before 0.2.1 take the new archives as before.
+        assert_eq!(unpack(&release("0.2.2", here)).unwrap(), program);
     }
 
     #[test]

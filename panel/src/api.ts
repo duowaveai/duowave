@@ -5,13 +5,25 @@
  */
 
 import type { AvailabilityView, Placement } from './availability';
+import { VIA, gw, noteAnswer } from './via';
 
+/** Ошибка шлюза: его слова из тела ответа (`message`), а нет их — код ответа. */
 export class ApiError extends Error {
     constructor(
         readonly status: number,
         readonly body: string,
     ) {
-        super(`API ${status}`);
+        super(gatewayMessage(body) ?? `Ошибка ${status}`);
+    }
+}
+
+/** Что сказал шлюз в теле ошибки: `{ message: '…' }`; не JSON или без слов — null. */
+function gatewayMessage(body: string): string | null {
+    try {
+        const message = (JSON.parse(body) as { message?: unknown } | null)?.message;
+        return typeof message === 'string' && message.trim() ? message.trim().slice(0, 300) : null;
+    } catch {
+        return null;
     }
 }
 
@@ -33,16 +45,33 @@ export interface PanelUser {
 
 const SESSION_KEY = 'glass-session';
 
+/**
+ * В окне колонки (via.ts) вход — тот же, что у пульта компьютера (его токен), а кто я и что мне можно — как сказал
+ * шлюз колонки: это помнится только в окне, чтобы не переписать права пульта компьютера в общем хранилище.
+ */
+let viaSession: Omit<PanelSession, 'token'> | null = null;
+
+function storedSession(): PanelSession | null {
+    try {
+        const raw = localStorage.getItem(SESSION_KEY);
+        return raw ? (JSON.parse(raw) as PanelSession) : null;
+    } catch {
+        return null;
+    }
+}
+
 export const sessionStore = {
     get: (): PanelSession | null => {
-        try {
-            const raw = localStorage.getItem(SESSION_KEY);
-            return raw ? (JSON.parse(raw) as PanelSession) : null;
-        } catch {
-            return null;
-        }
+        const stored = storedSession();
+        if (!VIA || !stored) return stored;
+        return viaSession ? { ...stored, ...viaSession, token: stored.token } : stored;
     },
     set: (session: PanelSession): void => {
+        if (VIA) {
+            const { token: _token, ...rest } = session;
+            viaSession = rest;
+            return;
+        }
         try {
             localStorage.setItem(SESSION_KEY, JSON.stringify(session));
         } catch {
@@ -50,6 +79,11 @@ export const sessionStore = {
         }
     },
     clear: (): void => {
+        // Окно колонки не выходит за пульт компьютера: вход — его.
+        if (VIA) {
+            viaSession = null;
+            return;
+        }
         try {
             localStorage.removeItem(SESSION_KEY);
         } catch {
@@ -68,31 +102,95 @@ function authHeaders(): Record<string, string> {
     return session ? { Authorization: `Bearer ${session.token}` } : {};
 }
 
-async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const response = await fetch(path, {
+/** `signal` обрывает запрос: виджет ушёл со стола, опрос начался заново (poll.ts). */
+async function call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+    const response = await fetch(gw(path), {
         method,
         headers: { Accept: 'application/json', ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...authHeaders() },
         body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal,
     });
+    if (VIA && response.status !== 503) noteAnswer(response.headers.get('x-duowave-copy-at'));
     if (!response.ok) throw new ApiError(response.status, await response.text().catch(() => ''));
     if (response.status === 204) return undefined as T;
     const envelope = (await response.json()) as { message: T | null };
     return envelope.message as T;
 }
 
-/** Заголовки входа для живого канала: он читается fetch'ем, а не EventSource, которому заголовок не передать. */
+/** Ответ колонки через проход: значение и, если колонки нет на связи, — когда снята копия, которую отдал компьютер. */
+export interface StationAnswer<T> {
+    value: T;
+    /** Мс от эпохи; null — ответила сама колонка. */
+    copyAt: number | null;
+}
+
+async function stationFetch<T>(station: string, method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<StationAnswer<T>> {
+    const response = await fetch(`/station/${encodeURIComponent(station)}${path}`, {
+        method,
+        headers: { Accept: 'application/json', ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...authHeaders() },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal,
+    });
+    if (!response.ok) throw new ApiError(response.status, await response.text().catch(() => ''));
+    const header = response.headers.get('x-duowave-copy-at');
+    const at = header ? Number(header) : NaN;
+    const copyAt = Number.isFinite(at) ? at : null;
+    if (response.status === 204) return { value: undefined as T, copyAt };
+    const envelope = (await response.json()) as { message: T | null };
+    return { value: envelope.message as T, copyAt };
+}
+
+/**
+ * Запрос к шлюзу колонки через проход помощника (`/station/<колонка>/…`, docs/plans/desk.md, этап 4) — из пульта
+ * компьютера, а не из окна колонки: так Мастерская помощника ставит черновик на колонку.
+ */
+export async function stationCall<T>(station: string, method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+    return (await stationFetch<T>(station, method, path, body, signal)).value;
+}
+
+/**
+ * Чтение у колонки через проход — с отметкой копии: колонки нет на связи, и компьютер отдал то, что помнит. Виджеты
+ * показывают такую копию копией, а не живым ответом.
+ */
+export function stationRead<T>(station: string, path: string, signal?: AbortSignal): Promise<StationAnswer<T>> {
+    return stationFetch<T>(station, 'GET', path, undefined, signal);
+}
+
+/**
+ * Почему окно колонки (via.ts) не пускают: кончился вход пульта компьютера, колонка не узнала ключ пары (её
+ * переустановили или сбросили) или проход сказал своё (компьютер с ней не связан). Окно вход не спрашивает: вход —
+ * у пульта компьютера.
+ */
+export async function viaRefusal(): Promise<{ kind: 'signed-out' | 'pair' | 'other'; message?: string }> {
+    const headers = { Accept: 'application/json', ...authHeaders() };
+    try {
+        const own = await fetch('/api/v1/auth/me', { headers });
+        if (own.status === 401) return { kind: 'signed-out' };
+        const through = await fetch(gw('/api/v1/auth/me'), { headers });
+        if (through.status === 401) return { kind: 'pair' };
+        if (through.ok) return { kind: 'other', message: 'Колонка снова отвечает — попробуйте ещё раз.' };
+        return { kind: 'other', message: problemOf(new ApiError(through.status, await through.text().catch(() => ''))) };
+    } catch {
+        return { kind: 'other' };
+    }
+}
+
+/**
+ * Заголовки входа для билета живого канала (`POST /api/v1/live/ticket`): WebSocket заголовка не передаёт, а токену в
+ * адресе не место — сокет открывается с одноразовым билетом (live.ts).
+ */
 export function liveHeaders(): Record<string, string> {
-    return { Accept: 'text/event-stream', ...authHeaders() };
+    return { Accept: 'application/json', ...authHeaders() };
 }
 
 /** Звук и картинки из шлюза с ключом входа: `<audio src>` и `<img src>` ключ не передают, поэтому — fetch в blob. */
 async function fetchAudio(path: string): Promise<Blob> {
-    const response = await fetch(path, { headers: authHeaders() });
+    const response = await fetch(gw(path), { headers: authHeaders() });
     if (!response.ok) throw new ApiError(response.status, await response.text().catch(() => ''));
     return response.blob();
 }
 
-const get = <T>(path: string) => call<T>('GET', path);
+const get = <T>(path: string, signal?: AbortSignal) => call<T>('GET', path, undefined, signal);
 const post = <T>(path: string, body: unknown = {}) => call<T>('POST', path, body);
 const put = <T>(path: string, body: unknown) => call<T>('PUT', path, body);
 const patch = <T>(path: string, body: unknown) => call<T>('PATCH', path, body);
@@ -288,7 +386,7 @@ export type AskEvent =
 
 /** Вопрос модели из пульта: события приходят по мере ответа; abort — прервать. */
 export async function askBrain(question: string, fresh: boolean, onEvent: (event: AskEvent) => void, signal?: AbortSignal): Promise<void> {
-    const response = await fetch('/api/v1/brain/ask', {
+    const response = await fetch(gw('/api/v1/brain/ask'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...authHeaders() },
         body: JSON.stringify({ question, fresh }),
@@ -349,7 +447,7 @@ async function readEvents<T>(response: Response, onEvent: (event: T) => void): P
 
 /** Сообщение агенту мастерской о черновике: события приходят по мере ответа; abort — прервать. */
 export async function workshopChat(draft: string, message: string, fresh: boolean, onEvent: (event: WorkshopEvent) => void, signal?: AbortSignal): Promise<void> {
-    const response = await fetch(`/api/v1/workshop/drafts/${encodeURIComponent(draft)}/chat`, {
+    const response = await fetch(gw(`/api/v1/workshop/drafts/${encodeURIComponent(draft)}/chat`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...authHeaders() },
         body: JSON.stringify({ message, fresh }),
@@ -418,10 +516,25 @@ export interface StationPlacementRecord {
     movedAt?: string;
 }
 
+/** Голос колонки, пока компьютер даёт ей свой (`/api/v1/models/home-voice`). */
+export interface HomeVoice {
+    /** Компьютер помогает колонке, и голос он даёт («Что даю колонке»). */
+    offered: boolean;
+    /** Компьютер на связи. */
+    up: boolean;
+    /** Имя голоса компьютера («Baya»); нет — компьютер не на связи или у голоса только id. */
+    voice?: string;
+    chosen: 'computer' | 'alice';
+    /** Как говорит голос компьютера: own — и ответы Яндекса им, mixed — только наши. */
+    provider: 'own' | 'mixed' | 'yandex' | 'none';
+}
+
 /** Размещение колонки в /health компьютера. */
 export interface PlacedStation {
     key: string;
     device?: string;
+    /** Имя колонки в списке компьютера («Детская»). */
+    name?: string;
     placement: Placement;
     address: string;
     port?: number;
@@ -489,6 +602,18 @@ export interface PlacementView {
     homeAddresses?: string[];
 }
 
+/** Что компьютер-помощник даёт колонке: слух, голос, модель, сообщения через свой бот Telegram. */
+export type HelperPart = 'asr' | 'tts' | 'llm' | 'messages';
+
+/** Сколько и как быстро помощник дал колонке сегодня. */
+export interface HelperServed {
+    day: string;
+    asr: { count: number; avgMs: number };
+    tts: { count: number; avgMs: number };
+    llm: { count: number; avgMs: number };
+    messages?: { count: number; avgMs: number };
+}
+
 /** Домашний сервер колонки: адрес компьютера, ключ, на связи ли он. */
 export interface HomeServerStatus {
     /** Адрес и ключ есть. */
@@ -506,11 +631,14 @@ export interface HomeServerStatus {
 export interface PlacementHealth {
     role: 'pc' | 'station';
     placement: Placement;
+    /** У шлюза на колонке: её имя (из записи компьютера, перенос его приносит) и устройство. */
+    name?: string;
+    device?: string;
     peerApi: number;
     settingsRevision?: number;
     data?: { freeKb: number; totalKb: number };
     memory?: { rssKb?: number; totalKb?: number; availableKb?: number };
-    homeServer?: { url: string; enabled?: boolean; state: 'none' | 'up' | 'down'; since?: string; error?: string };
+    homeServer?: { url: string; enabled?: boolean; state: 'none' | 'up' | 'down'; since?: string; error?: string; without?: HelperPart[] };
     voice?: { url: string; pointsTo: 'yandex' | 'gateway' | 'other'; local?: boolean };
     managedBy?: string;
     settingsHome?: 'station' | 'pc';
@@ -610,6 +738,38 @@ export interface RequestView {
 }
 
 /** Как колонку слышно: голосовой канал, её собственные клиенты (микрофон, звонки) или никак. */
+/** Таймер колонки для виджета: наш (с именем) или её собственный, что поставил Яндекс. */
+export interface TimerView {
+    id: string;
+    name?: string;
+    /** Секунд всего. */
+    seconds: number;
+    /** Секунд осталось, когда шлюз ответил. */
+    left: number;
+    paused: boolean;
+    /** Когда прозвенит, мс от эпохи (на паузе — если продолжить сейчас). */
+    endsAt: number;
+    source: 'own' | 'station';
+}
+
+/** Что играет колонка: наш плеер или то, что она сказала о себе (Яндекс). */
+export interface NowPlaying {
+    device?: string | null;
+    source: 'own' | 'station' | 'none';
+    state: 'playing' | 'paused' | 'stopped' | 'idle';
+    title?: string;
+    subtitle?: string;
+    imageUrl?: string;
+    /** FmRadio, Track, FairyTale… */
+    kind?: string;
+    durationMs?: number;
+    positionMs?: number;
+    /** Когда заиграло, мс от эпохи. */
+    since?: number;
+}
+
+export type PlayerCommand = 'pause' | 'resume' | 'next' | 'previous' | 'stop' | 'like' | 'dislike';
+
 export interface StationPresence {
     device: string;
     state: 'voice' | 'alive' | 'reconnecting' | 'offline';
@@ -618,12 +778,17 @@ export interface StationPresence {
     since: string;
 }
 
-/** Живой канал шлюза (/api/v1/live): сначала состояние, потом каждое изменение. */
+/**
+ * Живой канал шлюза (/api/v1/live/ws): сначала состояние, потом каждое изменение. `subject` у перемены — чья она, когда
+ * она одного пакета (`packages.*`: id пакета); `change` — что с пакетом случилось. `station` — сообщение канала колонки
+ * со своим шлюзом, которое пересказал шлюз компьютера (у помощника); без `message` — канал колонки потерян.
+ */
 export type LiveMessage =
     | { type: 'hello'; serverTime: string; presence: StationPresence[]; active: RequestView[]; recent: RequestView[] }
     | { type: 'request'; request: RequestView }
     | { type: 'presence'; presence: StationPresence }
-    | { type: 'changed'; name: string };
+    | { type: 'changed'; name: string; subject?: string; change?: string }
+    | { type: 'station'; station: string; message?: LiveMessage };
 
 export interface UnsupportedEntry {
     at: string;
@@ -902,8 +1067,20 @@ export interface PackageView {
     /** Его часть пульта, пока он включён. */
     panelModule?: string | null;
     panelStyles?: string | null;
-    /** Поля настроек из манифеста со значениями: пульт рисует форму сам. */
-    settings?: Array<{ key: string; type: 'string' | 'number' | 'boolean'; title: string; description?: string; default?: unknown; options?: string[]; value?: unknown }>;
+    /**
+     * Поля настроек из манифеста со значениями: пульт рисует форму сам. Секрет (`secret: true`, ссылка с ключом
+     * внутри) заданным приходит маской «••••••»: значение шлюз не отдаёт, а та же маска при сохранении оставляет прежнее.
+     */
+    settings?: Array<{
+        key: string;
+        type: 'string' | 'number' | 'boolean' | 'secret';
+        title: string;
+        description?: string;
+        default?: unknown;
+        options?: string[];
+        value?: unknown;
+        secret?: boolean;
+    }>;
     /** Что плагин даёт шлюзу. */
     contributes?: { phrases: string[]; tools: string[]; media: string[]; events: string[]; panel: boolean; themes: boolean };
     /** Сколько плагин просит: память — это лимит, место — его хранилище. */
@@ -928,6 +1105,59 @@ export interface PanelPart {
 }
 
 /** Черновик мастерской (DATA_DIR/packages-dev/<id>). */
+/** Шаг работы агента мастерской (gateway/src/plugins/workshop/activity.rs; docs/plans/desk.md, «Делаю виджет»). */
+export type AgentStepKind = 'asked' | 'said' | 'tool' | 'result' | 'done' | 'failed' | 'stopped';
+
+export interface AgentStep {
+    /** Растёт по всем черновикам: `after` в чтении отдаёт только новее. */
+    seq: number;
+    /** Мс от эпохи. */
+    at: number;
+    /** asked — что попросили (с него начинается работа), said — что сказал агент, tool — вызов (о чём он: файл, фраза), result — его ответ; done/failed/stopped — конец. */
+    kind: AgentStepKind;
+    text: string;
+    /** У tool и result — имя инструмента: write_file, read_file, check, try_phrase… */
+    tool?: string;
+    /** У result — seq его вызова (шага tool): вызовы одного хода идут разом, и ответ находит свой вызов по нему. */
+    call?: number;
+    failed?: boolean;
+}
+
+/** Работа агента, как её отдаёт шлюз: `now` — его часы (мс от эпохи); у помощника по ним считают время работы колонки. */
+export interface AgentActivity {
+    jobs: AgentJob[];
+    now?: number;
+}
+
+/** Ход работы над черновиком: шаги после `after`; `now` — часы шлюза, как в AgentActivity. */
+export interface AgentLog {
+    job: AgentJob | null;
+    steps: AgentStep[];
+    now?: number;
+}
+
+/** Работа агента над черновиком, как её показывает плашка. */
+export interface AgentJob {
+    draft: string;
+    /** Название из манифеста черновика, если есть. */
+    title: string | null;
+    /** voice — голосом у колонки, panel — в пульте (мастерская, «+» → «Новый виджет»). */
+    by: 'voice' | 'panel';
+    asked: string;
+    /** Мс от эпохи. */
+    since: number;
+    busy: boolean;
+    ended?: number;
+    last?: AgentStep;
+}
+
+/** Стол человека, как его хранит шлюз. */
+export interface KeptDesk<T> {
+    layout: T | null;
+    /** ISO-время записи; null — ничего не хранится. */
+    at: string | null;
+}
+
 export interface DraftView {
     id: string;
     kind?: PackageKind | null;
@@ -1059,7 +1289,10 @@ export interface PluginShare {
 /** Память и место плагинов (GET /api/v1/packages/resources): «Память колонки». */
 export interface PackagesResources {
     placement: Placement;
-    /** На колонке бюджет соблюдается: не помещается — плагин не включится. На компьютере — только показ. */
+    /**
+     * На колонке бюджет соблюдается при загрузке: не помещается — сначала выгружаются простаивающие, иначе плагин не
+     * загрузится. Включить можно всегда. На компьютере — только показ.
+     */
     enforced: boolean;
     measured: boolean;
     totalMb: number;
@@ -1068,8 +1301,14 @@ export interface PackagesResources {
     gatewayMb?: number | null;
     pluginsMb: number;
     budgetMb: number;
+    /** Занято сейчас загруженными плагинами (по их заявленным бюджетам). */
     committedMb: number;
+    /** Можно загрузить ещё сейчас. */
     freeMb: number;
+    /** Можно загрузить ещё, если выгрузить простаивающие. */
+    roomMb?: number;
+    /** Сколько плагинов загружено сейчас. */
+    loaded?: number;
     pressure: 'normal' | 'warn' | 'critical';
     deferring: boolean;
     action: 'disable' | 'warn';
@@ -1464,12 +1703,15 @@ export interface UpdateStatus {
     /** Есть ли лента выпусков, которую шлюз проверяет. */
     feed: boolean;
     checkedAt?: string;
-    available: { version: string; notes?: string; date?: string } | null;
+    /** critical — срочный выпуск: исправляет важное в этой версии (critical_below в ленте). */
+    available: { version: string; notes?: string; date?: string; critical?: boolean } | null;
     installing: boolean;
     error?: string;
     /** desktop, docker, home-assistant: кто ставит обновления этого шлюза. */
     managedBy?: string;
     canInstall: boolean;
+    /** Срочный выпуск шлюз ставит здесь сам, без кнопки (UPDATE_AUTO_CRITICAL; не в Docker и не в Home Assistant). */
+    autoCritical?: boolean;
     /** Что сделать вместо «Обновить», если шлюз не ставит обновление сам. */
     hint?: string;
 }
@@ -1487,7 +1729,7 @@ export const api = {
     /** «Остаться»: режим, в который шлюз перешёл сам, становится выбором человека. */
     keepMode: () => post<ModeView>('/api/v1/station/mode/keep'),
     availability: () => get<AvailabilityView>('/api/v1/availability'),
-    placement: (station?: string) => get<PlacementView>(forStation('/api/v1/placement', station)),
+    placement: (station?: string, signal?: AbortSignal) => get<PlacementView>(forStation('/api/v1/placement', station), signal),
     startMove: (body: {
         to: MoveTo;
         /** Колонка, чей шлюз переносим: без адреса берётся её адрес. */
@@ -1524,6 +1766,13 @@ export const api = {
         post<unknown>(forStation('/api/v1/placement/station-voice', station), { to }),
     /** Шлюз на колонке поставлен вручную: компьютер связывается с ним по адресу и ключу пары. */
     linkStation: (address: string, port: number, key: string) => post<StationGatewayView>('/api/v1/placement/link', { address, port, key }),
+    /** Связать по паролю пульта колонки: компьютер берёт ключ пары у неё сам (docs/plans/desk.md, этап 4). */
+    pairStation: (address: string, port: number, password: string, name?: string) =>
+        post<StationGatewayView>('/api/v1/placement/pair-station', { address, port, password, name: name || undefined }),
+    probeStation: (address: string, port?: number) =>
+        get<{ gateway: boolean; version?: string | null; port: number }>(
+            `/api/v1/placement/probe?address=${encodeURIComponent(address)}${port ? `&port=${port}` : ''}`,
+        ),
     /** Шлюз на колонке: голос колонки — Яндексу или обратно себе, без компьютера. */
     giveBack: () => post<unknown>('/api/v1/placement/give-back'),
     pointLocal: () => post<unknown>('/api/v1/placement/point-local'),
@@ -1534,9 +1783,19 @@ export const api = {
     /** Пульт колонки: адрес ПК, ключ, «ПК помогает колонке» — что не передано, остаётся. */
     linkHomeServer: (body: { url?: string; key?: string; enabled?: boolean }) => post<HomeServerStatus>('/api/v1/home-server/link', body),
     /** Пульт ПК: «ПК помогает колонке» — колонка опирается на этот ПК или работает одна. */
+    setHelperParts: (without: HelperPart[], station?: string) => post<StationGatewayView>(forStation('/api/v1/placement/helper', station), { without }),
+    helperServed: (signal?: AbortSignal) => get<HelperServed>('/api/v1/home-server/served', signal),
+    /** «Не давать компьютеру спать» приложения DuoWave на компьютере; managed: false — пульт не в приложении. */
+    desktopAwake: () => get<{ managed: boolean; keepAwake?: boolean }>('/api/v1/desktop/awake'),
+    setDesktopAwake: (on: boolean) => put<{ managed: boolean; keepAwake: boolean }>('/api/v1/desktop/awake', { on }),
     setStationHelper: (on: boolean, station?: string) =>
         post<StationGatewayView>(forStation('/api/v1/placement/helper', station), { on }),
     say: (text: string) => post<{ outcome: string }>('/api/v1/station/sessions/latest/say', { text }),
+    timers: (device?: string, signal?: AbortSignal) =>
+        get<{ device?: string | null; timers: TimerView[] }>(`/api/v1/station/timers${device ? `?device=${encodeURIComponent(device)}` : ''}`, signal),
+    player: (device?: string, signal?: AbortSignal) => get<NowPlaying>(`/api/v1/station/player${device ? `?device=${encodeURIComponent(device)}` : ''}`, signal),
+    playerCommand: (action: PlayerCommand, device?: string) =>
+        post<{ pushed: number }>(`/api/v1/station/player/${action}${device ? `?device=${encodeURIComponent(device)}` : ''}`),
     stations: () => get<Station[]>('/api/v1/stations'),
     // Журнал запросов: что спрашивали и что ответили, по странице за раз; сколько дней его хранить.
     requests: (query: { limit?: number; before?: string; device?: string } = {}) => {
@@ -1603,7 +1862,7 @@ export const api = {
     cancelVoice: (id: string) => post<{ canceled: boolean }>(`/api/v1/models/tts/${encodeURIComponent(id)}/cancel`),
     uninstallVoice: (id: string) => del<{ deleted: boolean }>(`/api/v1/models/tts/${encodeURIComponent(id)}`),
     placeSileroFile: (file: File) =>
-        fetch(`/api/v1/models/tts/silero/file?name=${encodeURIComponent(file.name)}`, {
+        fetch(gw(`/api/v1/models/tts/silero/file?name=${encodeURIComponent(file.name)}`), {
             method: 'POST',
             headers: { ...authHeaders(), 'Content-Type': 'application/octet-stream' },
             body: file,
@@ -1624,6 +1883,9 @@ export const api = {
         }),
     /** Забыть отложенный выбор голоса: модель доставится, но голос сам не включится. */
     cancelTtsPending: () => del<unknown>('/api/v1/models/tts/pending'),
+    /** Голос колонки, пока компьютер даёт ей свой (gateway/src/models/home_voice.rs). */
+    homeVoice: () => get<HomeVoice>('/api/v1/models/home-voice'),
+    setHomeVoice: (voice: HomeVoice['chosen']) => post<HomeVoice>('/api/v1/models/home-voice', { voice }),
     activateAsr: (id: string) => post<{ needsRestart: boolean }>('/api/v1/models/asr/activate', { id }),
     restartServer: (which: 'asr' | 'tts') => post<{ restarted: boolean }>(`/api/v1/models/servers/${which}/restart`),
     // Свой голос: модели, дубли, отпечаток. Выбор голоса — тот же activateTts с id `own:<голос>`; при памяти впритык
@@ -1632,7 +1894,7 @@ export const api = {
     voiceLabRecheck: () => post<VoiceLabView>('/api/v1/voice-lab/platform/recheck'),
     installEngine: (id: CloneEngineId) => post<VoiceLabJob>(`/api/v1/voice-lab/engines/${id}/install`),
     addTake: (wav: Blob, passage?: number) =>
-        fetch(`/api/v1/voice-lab/draft/takes${passage ? `?passage=${passage}` : ''}`, {
+        fetch(gw(`/api/v1/voice-lab/draft/takes${passage ? `?passage=${passage}` : ''}`), {
             method: 'POST',
             headers: { ...authHeaders(), 'Content-Type': 'audio/wav' },
             body: wav,
@@ -1699,10 +1961,26 @@ export const api = {
     reloadPackage: (id: string) => post<PackageView>(`/api/v1/packages/${encodeURIComponent(id)}/reload`),
     /** Назад к прошлой версии: новейшая уходит. */
     rollbackPackage: (id: string) => post<PackageView>(`/api/v1/packages/${encodeURIComponent(id)}/rollback`),
-    workshop: () => get<WorkshopView>('/api/v1/workshop'),
-    createDraft: (body: { id: string; kind?: 'plugin' | 'theme'; title?: string; openapi?: string }) => post<DraftView>('/api/v1/workshop/drafts', body),
+    workshop: (signal?: AbortSignal) => get<WorkshopView>('/api/v1/workshop', signal),
+    /** Что сейчас делает агент мастерской: черновики в работе и законченные за последние полторы минуты (плашка «Делаю виджет»). */
+    workshopActivity: (signal?: AbortSignal) => get<AgentActivity>('/api/v1/workshop/activity', signal),
+    /** Ход работы агента над черновиком: шаги после `after` (их seq); 0 — все, что хранятся. */
+    draftActivity: (id: string, after = 0) =>
+        get<AgentLog>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/activity${after > 0 ? `?after=${after}` : ''}`),
+    /** «Остановить»: работа агента над черновиком кончается сейчас — начата ли она голосом или в пульте. */
+    stopDraftAgent: (id: string) => post<{ stopped: boolean }>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/stop`),
+    /** Стол человека на шлюзе для роли пульта (gateway/src/panel/desk.rs); `layout: null` — пульт раскладывает стартовый. */
+    desk: <T>(role: 'gateway' | 'helper') => get<KeptDesk<T>>(`/api/v1/desk/${role}`),
+    /** Стол целиком; до 64 КБ. Ключу API стола не положено — 403. */
+    saveDesk: (role: 'gateway' | 'helper', layout: unknown) => put<{ at: string }>(`/api/v1/desk/${role}`, layout),
+    /** «Расставить заново» с нуля: хранимого стола больше нет. */
+    resetDesk: (role: 'gateway' | 'helper') => del<void>(`/api/v1/desk/${role}`),
+    createDraft: (body: { id: string; kind?: 'plugin' | 'theme' | 'widget'; title?: string; openapi?: string }) => post<DraftView>('/api/v1/workshop/drafts', body),
+    /** Адрес части пульта черновика — показать виджет до установки (docs/plans/desk.md, этап 5). */
+    draftPreview: (id: string) => post<{ module: string; styles?: string | null }>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/preview`),
     /** «Открыть в мастерской»: черновик, а нет его — из своего поставленного пакета. */
     openDraft: (id: string) => post<DraftView>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/open`),
+    workshopDraft: (id: string) => get<DraftView>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}`),
     deleteDraft: (id: string) => del<unknown>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}`),
     readDraftFile: (id: string, path: string) =>
         get<{ path: string; content: string }>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/files/${path.split('/').map(encodeURIComponent).join('/')}`),

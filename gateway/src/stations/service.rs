@@ -596,9 +596,9 @@ mod tests {
     #[test]
     fn binds_the_clients_to_the_address_an_approved_station_connects_from() {
         let stations = service(StationPairing::Open);
-        stations.admit("kitchen", "::ffff:192.168.1.100");
-        assert_eq!(stations.device_at(Some("192.168.1.100")).as_deref(), Some("kitchen"));
-        assert!(stations.trusted_address(Some("192.168.1.100")));
+        stations.admit("kitchen", "::ffff:192.168.1.30");
+        assert_eq!(stations.device_at(Some("192.168.1.30")).as_deref(), Some("kitchen"));
+        assert!(stations.trusted_address(Some("192.168.1.30")));
         assert_eq!(stations.device_at(Some("192.168.1.200")), None);
     }
 
@@ -606,7 +606,7 @@ mod tests {
     fn a_sync_settles_the_look_and_persists_across_a_reload() {
         let db = Arc::new(Db::memory());
         let stations = Arc::new(StationsService::new(db.clone(), EventBus::new(), StationPairing::Open).unwrap());
-        stations.admit("kitchen", "192.168.1.100");
+        stations.admit("kitchen", "192.168.1.30");
         stations.reported("kitchen", Some("plum"), Some("green"), None);
         let entry = stations.list().into_iter().find(|entry| entry.view.device == "kitchen").unwrap();
         let look = entry.look.unwrap();
@@ -623,7 +623,7 @@ mod tests {
     fn puts_a_sticker_on_a_lite_2_keeps_it_across_a_reload_and_refuses_it_elsewhere() {
         let db = Arc::new(Db::memory());
         let stations = Arc::new(StationsService::new(db.clone(), EventBus::new(), StationPairing::Open).unwrap());
-        stations.admit("kitchen", "192.168.1.100");
+        stations.admit("kitchen", "192.168.1.30");
         stations.admit("hall", "192.168.1.101");
         stations.reported("kitchen", Some("plum"), Some("blue"), None);
         stations.reported("hall", Some("yandexmini_2"), None, None);
@@ -647,7 +647,7 @@ mod tests {
     #[test]
     fn names_a_station_and_refuses_a_look_the_data_has_settled() {
         let stations = service(StationPairing::Open);
-        stations.admit("kitchen", "192.168.1.100");
+        stations.admit("kitchen", "192.168.1.30");
         stations.reported("kitchen", Some("plum"), Some("green"), None);
         let named = stations.update("kitchen", &serde_json::json!({ "name": "Кухня" }), None).unwrap();
         assert_eq!(named.view.name, "Кухня");
@@ -659,7 +659,7 @@ mod tests {
     #[test]
     fn counts_a_name_as_javascript_does() {
         let stations = service(StationPairing::Open);
-        stations.admit("kitchen", "192.168.1.100");
+        stations.admit("kitchen", "192.168.1.30");
         // 30 letters and 6 emoji: 36 characters, 42 UTF-16 units — over the 40 the TS allowed.
         let long = format!("{}{}", "Я".repeat(30), "🎵".repeat(6));
         let refused = stations.update("kitchen", &serde_json::json!({ "name": long }), None).unwrap_err();
@@ -694,7 +694,7 @@ mod tests {
         let events = EventBus::new();
         let mut heard = events.subscribe();
         let stations = StationsService::new(db.clone(), events.clone(), StationPairing::Open).unwrap();
-        stations.admit("kitchen", "192.168.1.100");
+        stations.admit("kitchen", "192.168.1.30");
         let tried = "0.369.1.50.4794654278.20261021.133";
         // The first sync names it: kept, nothing to say.
         stations.reported("kitchen", Some("plum"), None, Some(tried));
@@ -722,7 +722,7 @@ mod tests {
         let stations =
             Arc::new(StationsService::new(Arc::new(Db::memory()), events.clone(), StationPairing::Open).unwrap());
         stations.start();
-        stations.admit("kitchen", "192.168.1.100");
+        stations.admit("kitchen", "192.168.1.30");
         events.emit(GatewayEvent::StationSynced {
             device_tag: "kitchen".into(),
             device_model: Some("plum".into()),
@@ -819,7 +819,7 @@ mod tests {
     fn a_change_is_never_undone_by_the_station_being_seen_meanwhile() {
         let db = Arc::new(Db::memory());
         let stations = Arc::new(StationsService::new(db.clone(), EventBus::new(), StationPairing::Tofu).unwrap());
-        stations.admit("kitchen", "192.168.1.100");
+        stations.admit("kitchen", "192.168.1.30");
         let (stop, seen) = seen_meanwhile(&stations);
         for n in 0..300 {
             let name = format!("Кухня {n}");
@@ -839,12 +839,12 @@ mod tests {
     fn a_station_forgotten_while_it_is_seen_stays_forgotten() {
         let db = Arc::new(Db::memory());
         let stations = Arc::new(StationsService::new(db.clone(), EventBus::new(), StationPairing::Open).unwrap());
-        stations.admit("kitchen", "192.168.1.100");
+        stations.admit("kitchen", "192.168.1.30");
         let (stop, seen) = seen_meanwhile(&stations);
         for _ in 0..300 {
             stations.remove("kitchen", None).unwrap();
             assert_eq!(stations.find("kitchen"), None, "a stale copy brought the station back");
-            stations.admit("kitchen", "192.168.1.100");
+            stations.admit("kitchen", "192.168.1.30");
         }
         stations.remove("kitchen", None).unwrap();
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -857,7 +857,7 @@ mod tests {
     #[test]
     fn forgets_a_station() {
         let stations = service(StationPairing::Open);
-        stations.admit("kitchen", "192.168.1.100");
+        stations.admit("kitchen", "192.168.1.30");
         assert!(stations.remove("kitchen", None).is_ok());
         assert_eq!(stations.find("kitchen"), None);
         assert!(stations.remove("kitchen", None).is_err());

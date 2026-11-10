@@ -17,7 +17,9 @@ use crate::core::build::{Profile, PEER_API};
 use crate::core::events::{Actor, EventBus, GatewayEvent};
 use crate::platform::http::ApiError;
 use crate::secrets::SecretsService;
-use crate::settings::definitions::{GatewayState, SafetyCase, SettingsHome, CONNECTOR_HOME_SERVER, GATEWAY_STATE};
+use crate::settings::definitions::{
+    GatewayState, SafetyCase, SettingsHome, CONNECTOR_HOME_SERVER, GATEWAY_STATE, STATION_SELF,
+};
 use crate::settings::SettingsService;
 use crate::storage::Db;
 
@@ -65,7 +67,13 @@ pub struct PlacementService {
     restarter: OnceLock<Restarter>,
     /// The revision, computed at most every few seconds: the panels and the computer ask /health often.
     revision: Mutex<Option<(Instant, u64)>>,
+    /// The pair's key made here, on the station, when its .env had none: the computer took it with the admin's
+    /// password (`POST /api/v1/placement/pair`, docs/plans/desk.md, stage 4). Kept as a secret.
+    made_key: OnceLock<String>,
 }
+
+/// The secret a station keeps the pair's key under when its .env has none.
+pub const MADE_PEER_SECRET: &str = "placement:peer-made";
 
 impl PlacementService {
     pub fn new(
@@ -88,7 +96,32 @@ impl PlacementService {
             station: OnceLock::new(),
             restarter: OnceLock::new(),
             revision: Mutex::new(None),
+            made_key: OnceLock::new(),
         }
+        .with_made_key()
+    }
+
+    /// A station without PEER_KEY in its .env reads the key it made before.
+    fn with_made_key(self) -> PlacementService {
+        if self.profile.station && self.config.placement.peer_key.is_none() {
+            if let Some(key) = self.secrets.get(MADE_PEER_SECRET).filter(|key| key.len() >= 16) {
+                let _ = self.made_key.set(key);
+            }
+        }
+        self
+    }
+
+    /// The pair's key for the computer that has the admin's password: the .env's, else one made here now and kept.
+    pub fn pair_key(&self) -> Result<String, ApiError> {
+        if let Some(key) = self.peer_key() {
+            return Ok(key.to_string());
+        }
+        if !self.profile.station {
+            return Err(ApiError::conflict("Ключ пары отдаёт шлюз колонки, а это компьютер."));
+        }
+        let key = super::peer::new_key();
+        self.secrets.set(MADE_PEER_SECRET, Some(&key))?;
+        Ok(self.made_key.get_or_init(|| key).clone())
     }
 
     pub fn set_home_server(&self, home: Arc<dyn HomeServerView>) {
@@ -129,9 +162,9 @@ impl PlacementService {
         PEER_API
     }
 
-    /// The pair's key this gateway is reached with: the station's .env (PEER_KEY).
+    /// The pair's key this gateway is reached with: the station's .env (PEER_KEY), else the one it made (pair_key).
     pub fn peer_key(&self) -> Option<&str> {
-        self.config.placement.peer_key.as_deref()
+        self.config.placement.peer_key.as_deref().or_else(|| self.made_key.get().map(String::as_str))
     }
 
     /// The gateway's state record, defaults where nothing is stored.
@@ -211,6 +244,20 @@ impl PlacementService {
         })
     }
 
+    /// The station this gateway runs on, as the computer that moved it here knows it (`STATION_SELF`): its device, and
+    /// its name — the one this gateway's list of stations gives that device now (renamed since, it follows), else the
+    /// one the move brought. The default name of a new station («Колонка») does not count.
+    pub fn station_self(&self) -> (Option<String>, Option<String>) {
+        let Some(own) = self.settings.get(&STATION_SELF, None) else { return (None, None) };
+        let listed = own
+            .device
+            .as_deref()
+            .and_then(|device| station_name(&self.db, device))
+            .filter(|name| !name.trim().is_empty() && name != DEFAULT_STATION_NAME);
+        let name = listed.or(own.name).filter(|name| !name.trim().is_empty());
+        (own.device, name)
+    }
+
     pub fn health_value(&self) -> Value {
         let state = self.state();
         let mut health = json!({
@@ -245,6 +292,8 @@ impl PlacementService {
                     "safetyLast": state.safety_last,
                 });
                 merge(&mut health, extra);
+                let (device, name) = self.station_self();
+                merge(&mut health, json!({ "device": device, "name": name }));
             }
             Role::Pc => {
                 #[cfg(feature = "pc")]
@@ -254,6 +303,7 @@ impl PlacementService {
                         station.record().map(|record| {
                             json!({
                                 "key": station.key(),
+                                "name": station.name(),
                                 "device": record.device,
                                 "placement": record.placement,
                                 "address": record.address,
@@ -278,6 +328,21 @@ impl PlacementService {
         }
         health
     }
+}
+
+/// What a station is called in a list of stations until the household names it (src/stations/service.rs).
+pub const DEFAULT_STATION_NAME: &str = "Колонка";
+
+/// A station's name in this gateway's list of stations, by its device.
+pub fn station_name(db: &Db, device: &str) -> Option<String> {
+    use rusqlite::OptionalExtension;
+    db.with(|connection| {
+        connection
+            .query_row("SELECT name FROM stations WHERE device = ?1", rusqlite::params![device], |row| row.get(0))
+            .optional()
+    })
+    .ok()
+    .flatten()
 }
 
 fn merge(into: &mut Value, extra: Value) {
@@ -325,7 +390,7 @@ mod tests {
         let service =
             PlacementService::new(Profile { station: true }, config, db, secrets, settings.clone(), EventBus::new());
         assert_eq!(service.placement(), Placement::Station);
-        let home = |enabled| HomeServerSetting { url: "http://192.0.2.10".into(), enabled };
+        let home = |enabled| HomeServerSetting { url: "http://192.0.2.10".into(), enabled, without: Vec::new() };
         settings.set(&CONNECTOR_HOME_SERVER, &home(false), None).unwrap();
         assert_eq!(service.placement(), Placement::Station, "the move brought the address; the switch is off");
         settings.set(&CONNECTOR_HOME_SERVER, &home(true), None).unwrap();

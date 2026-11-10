@@ -1,0 +1,786 @@
+/* Стол, док, окна и виджеты — вид «Стол и док» (docs/plans/desk.md, макеты docs/design/roles: SpaceGateway,
+   SpaceHelper, WindowBrain, WindowWorkshop, PhoneSpace). Цвета — токены темы «Минимал»; рамка по роли —
+   html[data-role]: у шлюза белая (как страница), у помощника тёмная #11100F. Подключается после minimal.css.
+
+   Слои, снизу вверх: стол — окно раздела 15 — подложка «Ещё» 17 — док 18 — верхняя строка 20 — меню «Ещё» 21 — окно
+   на телефоне 25 (во весь экран, поверх дока) — «+», «Колонки», разделы на телефоне 30 — шиты 40 — вопросы ask() 50.
+   Шиты и вопросы рисуются в конце <body> (ui/sheet.tsx): ни transform стола или окна, ни док их не накрывают. */
+
+:root {
+    --top-h: 44px;
+    --dock-h: 72px;
+    --dock-gap: 22px;
+    /* Рамка помощника: тёмная в любом режиме (решение владельца 10.11.2026; знак роли в тёмном режиме — открыт). */
+    --helper-bg: #11100f;
+    --helper-line: #2a2826;
+    --helper-text: #f5f3f1;
+    --helper-sub: rgba(245, 243, 241, 0.6);
+    --helper-chip: #262422;
+    --desk-dot: #e4e0db;
+    --widget-bg: var(--strong-bg);
+    --widget-line: var(--glass-border);
+    --widget-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
+}
+/* Что плавает над столом (верхняя строка, док, окно, «+», мини-карта, масштаб), закрашено цветом темы поверх фона
+   страницы: размытия под ним нет, и полупрозрачный `strong-bg` темы (например, сделанной голосом) пропускал бы стол.
+   Непрозрачный цвет темы при этом выглядит как прежде. */
+html[data-theme='dark'] {
+    --desk-dot: #2a2826;
+    --widget-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
+/* ─── Рамка: верхняя строка ───────────────────────────────────── */
+.desk-shell { min-height: 100dvh; }
+.desk-top {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 20;
+    height: calc(var(--top-h) + env(safe-area-inset-top));
+    padding: env(safe-area-inset-top) 16px 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg);
+    border-bottom: 1px solid var(--glass-border);
+    color: var(--text);
+}
+.desk-top-role { font-size: 14px; line-height: 20px; font-weight: 500; white-space: nowrap; }
+.desk-top-sub { font-size: 13px; line-height: 18px; color: var(--sub); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desk-top-end { margin-left: auto; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.desk-top-end .icon-btn { width: 32px; height: 32px; }
+.desk-top-clock { font-size: 13px; line-height: 18px; padding-left: 6px; font-variant-numeric: tabular-nums; }
+.desk-top-pick {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    min-height: 28px;
+    color: inherit;
+    font: inherit;
+    border-radius: 8px;
+}
+.desk-top-pick:hover { color: var(--text); }
+.desk-top-pick svg { width: 14px; height: 14px; }
+/* На телефоне подпись и капсулы прячутся, а выбор колонки остаётся: её имя с точкой связи. */
+.desk-top-narrow { display: none; min-width: 0; }
+.desk-top-short { min-width: 0; max-width: 100%; gap: 6px; color: var(--text); font-size: 13px; line-height: 18px; font-weight: 500; }
+.desk-top-short-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desk-top-short .status-dot { flex: none; }
+.desk-top-short svg { flex: none; }
+
+/* Капсулы строки: режим, связь с помощником или шлюзом. Тёмная — помощник (тёмное = помощник везде). */
+.role-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 10px;
+    border-radius: 999px;
+    background: var(--chip-bg);
+    color: var(--text);
+    font-size: 12px;
+    line-height: 16px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+.role-chip .desk-top-pick { min-height: 24px; font-weight: 500; }
+.role-chip-state { color: var(--sub); }
+.role-chip-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; flex: none; background: #a3e635; }
+.role-chip-dot.own { background: var(--bar-own); }
+.role-chip-dot.yandex { background: var(--bar-yandex); }
+.role-chip-dot.gateway { background: var(--bar-off); }
+.role-chip.is-off .role-chip-dot { background: var(--bar-off); }
+.role-chip-ink { background: var(--helper-bg); color: var(--helper-text); }
+html[data-theme='dark'] .role-chip-ink { background: #f5f3f1; color: #11100f; }
+
+/* Метка «Этот компьютер» у окна помощника. */
+.role-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 999px;
+    background: var(--helper-bg);
+    color: var(--helper-text);
+    font-size: 12px;
+    line-height: 16px;
+    font-weight: 500;
+    white-space: nowrap;
+    flex: none;
+}
+.self-start { align-self: flex-start; }
+
+/* Помощник: верхняя строка, док и боковая панель — тёмные. */
+html[data-role='helper'] .desk-top,
+html[data-role='helper'] .dock,
+html[data-role='helper'] .dock-add,
+html[data-role='helper'] .side-shell > .side-panel,
+html[data-role='helper'] .side-top,
+html[data-role='helper'] .side-drawer {
+    background: var(--helper-bg);
+    border-color: var(--helper-line);
+    color: var(--helper-text);
+    --text: var(--helper-text);
+    --sub: var(--helper-sub);
+    --mute: rgba(245, 243, 241, 0.42);
+    --chip-bg: var(--helper-chip);
+    --hover-bg: #242220;
+    --icon-bg: #242220;
+    --glass-border: var(--helper-line);
+}
+html[data-role='helper'] .desk-top .role-chip-ink,
+html[data-role='helper'] .side-panel .role-chip-ink { background: #f5f3f1; color: #11100f; }
+html[data-role='helper'] .desk-top .icon-btn.glass { background: var(--helper-chip); border-color: var(--helper-line); color: var(--helper-text); }
+
+/* ─── Стол ─────────────────────────────────────────────────────── */
+.desk-main {
+    min-height: 100dvh;
+    padding: calc(var(--top-h) + env(safe-area-inset-top) + 24px) 24px calc(var(--dock-h) + var(--dock-gap) + 40px + env(safe-area-inset-bottom));
+    background-color: var(--bg);
+    background-image: radial-gradient(circle, var(--desk-dot) 1px, transparent 1.4px);
+    background-size: 24px 24px;
+    background-attachment: fixed;
+}
+.desk-main > .banner-offline { max-width: 560px; margin: 0 auto 16px; }
+
+/* Широкий экран: колонка посередине, виджеты в столбцах по бокам. */
+.desk-board {
+    display: grid;
+    grid-template-columns: 300px minmax(480px, 560px) 300px;
+    justify-content: center;
+    align-items: start;
+    gap: 28px 40px;
+}
+.desk-banner { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 12px; max-width: 560px; justify-self: center; width: 100%; }
+.desk-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.desk-scene { position: relative; min-width: 0; --pad-x: 0px; }
+.desk-scene .dash-stage { margin: 0; }
+@media (min-width: 1500px) {
+    .desk-board { grid-template-columns: 300px minmax(480px, 560px) 300px 300px; }
+    .desk-board > .desk-side:last-child { display: grid; grid-template-columns: 300px 300px; grid-column: span 2; align-content: start; gap: 16px 24px; }
+}
+
+/* Телефон и узкое окно: лента, маленькие виджеты — по два в ряд, большие — во всю ширину. */
+.desk-feed { max-width: 640px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+.desk-feed-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.desk-feed-grid > .widget-large,
+.desk-feed-grid > .widget-bare.widget-large,
+.desk-feed-grid > .desk-add-tile { grid-column: span 2; }
+.desk-solo { max-width: 560px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+
+/* Боковая панель: колонка, под ней виджеты столбцом. */
+.desk-column { display: flex; flex-direction: column; gap: 16px; }
+.desk-column .widget,
+.desk-column .widget-bare { width: 100%; }
+
+@media (max-width: 640px) {
+    .desk-main { padding-left: 12px; padding-right: 12px; }
+    .desk-top { padding-left: 12px; padding-right: 12px; gap: 8px; }
+    .desk-top-sub,
+    .desk-top-clock { display: none; }
+    .desk-top .role-chip:not(.role-chip-ink) { display: none; }
+    .desk-top-narrow { display: flex; }
+}
+
+/* «Новый виджет» — пунктирная плитка. */
+.desk-add-tile {
+    min-height: 116px;
+    border: 1.5px dashed #d6d1cb;
+    border-radius: 16px;
+    background: color-mix(in srgb, var(--bg) 70%, transparent);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    color: var(--text);
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 500;
+    padding: 12px;
+}
+.desk-add-tile:hover { border-color: var(--sub); }
+html[data-theme='dark'] .desk-add-tile { border-color: #3a3734; }
+
+/* ─── Виджет ───────────────────────────────────────────────────── */
+.widget {
+    position: relative;
+    background: var(--widget-bg);
+    border: 1px solid var(--widget-line);
+    border-radius: 16px;
+    box-shadow: var(--widget-shadow);
+    padding: 10px 12px 14px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+}
+.widget-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    line-height: 18px;
+    font-weight: 500;
+    min-height: 28px;
+}
+.widget-head > svg { flex: none; }
+.widget-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.widget-src { margin-left: auto; font-size: 11px; line-height: 14px; font-weight: 400; color: var(--sub); white-space: nowrap; }
+.widget-menu-box { position: relative; flex: none; }
+.widget-head .widget-src + .widget-menu-box { margin-left: 0; }
+.widget-head .widget-title + .widget-menu-box { margin-left: auto; }
+.widget-more {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--sub);
+}
+.widget-more:hover { background: var(--hover-bg); color: var(--text); }
+.widget-menu {
+    position: absolute;
+    top: 32px;
+    right: 0;
+    z-index: 15;
+    min-width: 180px;
+    padding: 6px;
+    border-radius: 14px;
+    display: flex;
+    flex-direction: column;
+}
+/* Стол закреплён: пункты раскладки видны, но не нажимаются, а сверху — почему. */
+.widget-menu-note { margin: 0; padding: 6px 12px 4px; font-size: 12px; line-height: 16px; color: var(--sub); }
+.widget-menu .tab-more-item:disabled { opacity: 0.45; cursor: default; }
+.widget-menu .tab-more-item:disabled:hover { background: none; }
+.widget-body { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.widget-body > section.card { padding: 0; border: 0; background: none; box-shadow: none; }
+.widget-bare { position: relative; min-width: 0; }
+.widget-bare > section,
+.widget-bare > div:first-child > section { margin: 0; }
+.widget-bare-menu { position: absolute; top: 8px; right: 8px; z-index: 2; opacity: 0; transition: opacity 0.15s; }
+.widget-bare:hover .widget-bare-menu,
+.widget-bare:focus-within .widget-bare-menu { opacity: 1; }
+@media (hover: none) { .widget-bare-menu { opacity: 1; } }
+.widget-bare:has(> :first-child:empty) { display: none; }
+.widget-bare > .card,
+.widget-bare > section.card {
+    background: var(--widget-bg);
+    border-color: var(--widget-line);
+    box-shadow: var(--widget-shadow);
+}
+
+/* Содержимое виджетов: строки, подписи, крупные числа, кнопки. */
+.w-rows > * + * { border-top: 1px solid var(--row-line, var(--divider)); }
+.w-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; min-width: 0; font-size: 13px; line-height: 18px; }
+.w-row-btn { width: 100%; text-align: left; color: inherit; }
+.w-row-btn:hover .w-text { text-decoration: underline; text-decoration-color: var(--glass-border); text-underline-offset: 3px; }
+.w-row-col { flex-direction: column; align-items: flex-start; gap: 2px; }
+.w-time { width: 36px; flex: none; }
+.w-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.w-row-col .w-text { width: 100%; }
+.w-cap { font-size: 12px; line-height: 16px; color: var(--sub); }
+.w-strong { font-size: 14px; line-height: 20px; font-weight: 500; }
+.w-big { font-family: 'Inter Tight', var(--font); font-weight: 300; font-size: 40px; line-height: 44px; letter-spacing: -0.03em; }
+.w-num { font-family: 'Inter Tight', var(--font); font-weight: 300; font-size: 22px; line-height: 26px; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.w-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.w-dot-own { background: var(--bar-own); }
+.w-dot-off { background: var(--bar-off); }
+.w-toggle { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.w-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.w-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 32px;
+    padding: 0 14px;
+    border-radius: 999px;
+    background: var(--chip-bg);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 18px;
+    font-weight: 500;
+    text-decoration: none;
+}
+.w-btn:hover:not(:disabled) { background: var(--hover-bg); box-shadow: 0 0 0 1px var(--glass-border); }
+.w-btn:disabled { opacity: 0.5; cursor: default; }
+.w-btn-ink { background: var(--ink-bg); color: var(--ink-fg); }
+.w-btn-ink:hover:not(:disabled) { background: var(--ink-hi); }
+.w-bar { height: 6px; border-radius: 999px; background: var(--track); overflow: hidden; }
+.w-bar > span { display: block; height: 100%; border-radius: 999px; background: var(--bar-own); }
+.w-day { background: var(--glass-bg); border: 1px solid var(--row-line, var(--divider)); border-radius: 10px; padding: 6px 8px; }
+
+/* ─── Док ──────────────────────────────────────────────────────── */
+.dock-wrap {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: calc(var(--dock-gap) + env(safe-area-inset-bottom));
+    z-index: 18;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 12px;
+    pointer-events: none;
+}
+.dock-wrap > * { pointer-events: auto; }
+.dock {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    height: var(--dock-h);
+    padding: 0 8px;
+    border-radius: 22px;
+    background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg);
+    border: 1px solid var(--glass-border);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.06);
+    color: var(--text);
+    min-width: 0;
+    max-width: calc(100vw - 88px);
+}
+/* Узкий экран: ячеек больше, чем места (у помощника их семь — до ~710 точек), — док прокручивается вбок, «Ещё» не
+   уезжает за край. Шире всё помещается, и док не обрезает свечение круга «Сказать». */
+@media (max-width: 760px) {
+    .dock {
+        overflow-x: auto;
+        overflow-y: hidden;
+        overscroll-behavior-x: contain;
+        scrollbar-width: none;
+    }
+    .dock::-webkit-scrollbar { display: none; }
+}
+.dock-cell {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    width: 72px;
+    height: 58px;
+    border-radius: 14px;
+    color: var(--sub);
+    font-size: 11px;
+    line-height: 14px;
+    font-weight: 500;
+    flex: none;
+}
+.dock-cell:hover { color: var(--text); background: var(--hover-bg); }
+.dock-cell[aria-current='page'] { color: var(--text); }
+.dock-cell-label { max-width: 68px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock-pip { position: absolute; bottom: 1px; width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
+.dock-talk { width: 52px; height: 52px; margin: 0 10px; flex: none; }
+.dock-sep { width: 1px; height: 36px; margin: 0 6px; background: var(--glass-border); flex: none; }
+.dock-add {
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    border: 1px solid var(--glass-border);
+    background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg);
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.06);
+    flex: none;
+}
+.dock-add:hover { background: var(--hover-bg); }
+/* Нажатие мимо меню «Ещё» закрывает его — и над окном раздела; док остаётся нажимаемым. */
+.dock-more-scrim { position: fixed; inset: 0; z-index: 17; }
+.dock-more {
+    position: fixed;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: calc(var(--dock-gap) + var(--dock-h) + 10px + env(safe-area-inset-bottom));
+    z-index: 21;
+    min-width: 220px;
+    max-height: 60vh;
+    overflow-y: auto;
+    padding: 6px;
+    border-radius: 16px;
+    display: flex;
+    flex-direction: column;
+}
+@media (max-width: 560px) {
+    .dock { padding: 0 4px; gap: 0; }
+    .dock-cell { width: 58px; }
+    .dock-cell-label { max-width: 56px; }
+    .dock-talk { margin: 0 4px; }
+    .dock-sep { display: none; }
+    .dock-add { width: 44px; height: 44px; }
+    .dock-wrap { gap: 8px; }
+}
+@media (max-width: 400px) {
+    .dock-cell { width: 50px; }
+}
+
+/* ─── Окно поверх стола ────────────────────────────────────────── */
+/* Посередине без transform: у окна с transform position: fixed внутри держался бы за окно, а не за экран. */
+.desk-window {
+    position: fixed;
+    z-index: 15;
+    top: calc(var(--top-h) + env(safe-area-inset-top) + 16px);
+    bottom: calc(var(--dock-gap) + var(--dock-h) + 16px + env(safe-area-inset-bottom));
+    left: 0;
+    right: 0;
+    margin-inline: auto;
+    width: min(1040px, calc(100vw - 48px));
+    display: flex;
+    flex-direction: column;
+    background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 20px;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.04);
+    outline: none;
+    animation: window-in 0.18s ease-out;
+}
+html[data-theme='dark'] .desk-window { box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5); }
+@keyframes window-in { from { opacity: 0; transform: translateY(8px) scale(0.99); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .desk-window { animation: none; } }
+.desk-window-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 12px 12px 20px;
+    border-bottom: 1px solid var(--glass-border);
+    flex: none;
+    min-width: 0;
+}
+.desk-window-title { margin: 0; font-size: 15px; line-height: 20px; font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desk-window-close {
+    margin-left: auto;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--sub);
+    flex: none;
+}
+.desk-window-close:hover { background: var(--hover-bg); color: var(--text); }
+.desk-window-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 20px 24px 32px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-md);
+}
+/* Экраны разделов писались под столбец: в окне — столбец посередине. */
+.desk-window-body > * { width: 100%; max-width: 760px; margin-left: auto; margin-right: auto; }
+.desk-window-body > .desk-window-wide { max-width: none; }
+/* Полоса колонки у окна помощника: её имя, её шлюз, «сохраняется на колонке». */
+.desk-window-strip { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
+.desk-window-strip-name { font-size: 14px; line-height: 20px; font-weight: 500; white-space: nowrap; }
+.desk-window-strip-note { font-size: 12px; line-height: 16px; color: var(--sub); }
+.desk-window-station .desk-window-head { background: var(--glass-bg); border-radius: 20px 20px 0 0; }
+.desk-window-station .desk-window-title { color: var(--sub); font-weight: 400; }
+
+@media (max-width: 760px) {
+    .desk-window {
+        top: env(safe-area-inset-top);
+        bottom: 0;
+        left: 0;
+        right: 0;
+        width: auto;
+        margin-inline: 0;
+        border-radius: 0;
+        border: 0;
+        z-index: 25;
+        animation: none;
+    }
+    .desk-window-body { padding: 16px 16px calc(var(--dock-h) + var(--dock-gap) + 24px + env(safe-area-inset-bottom)); }
+}
+
+/* ─── «+» — новый виджет ───────────────────────────────────────── */
+.add-layer { position: fixed; inset: 0; z-index: 30; }
+.add-scrim { position: absolute; inset: 0; width: 100%; height: 100%; background: var(--scrim); }
+.add-panel {
+    position: absolute;
+    top: calc(var(--top-h) + env(safe-area-inset-top) + 12px);
+    right: 16px;
+    bottom: 16px;
+    width: min(400px, calc(100vw - 32px));
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 20px;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.12);
+    animation: add-in 0.2s ease-out;
+}
+@keyframes add-in { from { opacity: 0; transform: translateX(12px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .add-panel { animation: none; } }
+@media (max-width: 640px) {
+    .add-panel { top: auto; left: 0; right: 0; bottom: 0; width: auto; max-height: 86dvh; border-radius: 20px 20px 0 0; padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
+}
+.add-head { display: flex; align-items: flex-start; gap: 10px; }
+.add-title { margin: 0; font-family: 'Inter Tight', var(--font); font-weight: 300; font-size: 24px; line-height: 30px; letter-spacing: -0.02em; }
+.add-sub { margin: 0; font-size: 13px; line-height: 18px; font-weight: 500; color: var(--sub); }
+.add-list { display: flex; flex-direction: column; gap: 6px; }
+.add-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border-radius: 14px;
+    border: 1px solid var(--glass-border);
+    background: var(--glass-bg);
+    text-align: left;
+    color: var(--text);
+}
+.add-item:hover { background: var(--hover-bg); }
+.add-item-icon { width: 36px; height: 36px; border-radius: 50%; background: var(--strong-bg); border: 1px solid var(--glass-border); display: flex; align-items: center; justify-content: center; flex: none; }
+
+/* ─── Боковая панель: роль, группы, «Новый виджет» ─────────────── */
+.side-role { display: flex; flex-direction: column; gap: 2px; padding: 0 4px; }
+.side-role-title { font-size: 15px; line-height: 20px; font-weight: 500; }
+.side-role-sub { font-size: 13px; line-height: 18px; color: var(--sub); }
+.side-role-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.side-group { padding: 8px 14px 2px; font-size: 11px; line-height: 14px; font-weight: 500; color: var(--sub); text-transform: none; }
+.side-add {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 56px;
+    border: 1.5px dashed #d6d1cb;
+    border-radius: 16px;
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 500;
+}
+html[data-theme='dark'] .side-add { border-color: #3a3734; }
+
+/* ─── Музыка и таймеры (screens/station-widgets.tsx) ───────────── */
+/* Мягкий тон обложки фоном, волна дорожки вместо полосы, чёрная кнопка игры: лайм — только у «Сказать». */
+.widget.music { background: var(--music-tone, var(--widget-bg)); border-color: rgba(0, 0, 0, 0.05); border-radius: 20px; padding: 14px; gap: 10px; }
+html[data-theme='dark'] .widget.music { background: color-mix(in srgb, var(--music-tone, #262422) 14%, var(--widget-bg)); border-color: var(--widget-line); }
+.music-cover {
+    position: relative;
+    width: 64px;
+    height: 64px;
+    flex: none;
+    border-radius: 13px;
+    overflow: hidden;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.14);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.music-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.music-cover-empty { background: var(--chip-bg); color: var(--sub); box-shadow: none; }
+.music-cover-sun { position: absolute; left: 11px; top: 10px; width: 26px; height: 26px; border-radius: 50%; background: #b6f36a; }
+.music-cover-sun::after { content: ''; position: absolute; left: -24px; right: -40px; top: 34px; height: 38px; border-radius: 50%; background: rgba(255, 255, 255, 0.35); }
+.music-where { margin: 0; display: flex; align-items: center; gap: 5px; font-size: 11px; line-height: 14px; font-weight: 500; color: var(--sub); }
+.music-title { margin: 3px 0 0; font-size: 15px; line-height: 20px; font-weight: 500; letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.music-wave { display: flex; align-items: center; justify-content: space-between; height: 26px; gap: 1px; }
+.music-wave > span { width: 3px; flex: none; border-radius: 2px; background: color-mix(in srgb, var(--text) 20%, transparent); }
+.music-wave > span.on { background: var(--text); }
+.music-controls { display: flex; align-items: center; justify-content: center; gap: 14px; }
+.music-ctl { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: var(--text); flex: none; }
+.music-ctl:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.music-ctl:disabled,
+.music-play:disabled { opacity: 0.5; cursor: default; }
+.music-play { width: 40px; height: 40px; border-radius: 50%; background: var(--ink-bg); color: var(--ink-fg); display: flex; align-items: center; justify-content: center; flex: none; }
+.music-play:hover:not(:disabled) { background: var(--ink-hi); }
+.mt-2 { margin-top: 2px; }
+.mt-6 { margin-top: 6px; }
+
+/* ─── Свободный стол (screens/desk-canvas.tsx) ─────────────────── */
+/* Поле без краёв под верхней строкой; плоскость сдвигается и масштабируется трансформом, колонка — в её начале. */
+.desk-shell:has(.desk-canvas) .desk-main { padding: 0; min-height: 0; background: none; }
+/* clip, а не hidden: hidden — всё ещё прокрутка, и фокус в обрезанном краем виджете сдвинул бы поле мимо pan. */
+.desk-canvas {
+    position: fixed;
+    top: calc(var(--top-h) + env(safe-area-inset-top));
+    left: 0;
+    right: 0;
+    bottom: 0;
+    overflow: hidden;
+    overflow: clip;
+    touch-action: none;
+    cursor: grab;
+    background-color: var(--bg);
+    background-image: radial-gradient(circle, var(--desk-dot) 1px, transparent 1.4px);
+    background-size: 24px 24px;
+}
+.desk-canvas:active { cursor: grabbing; }
+.desk-plane { position: absolute; left: 50%; top: 50%; width: 0; height: 0; transform-origin: 0 0; cursor: default; }
+.desk-scene-spot { position: absolute; }
+.desk-columns { position: absolute; display: flex; flex-direction: column; gap: 16px; }
+.desk-slot { position: relative; }
+.desk-placed { position: absolute; }
+.desk-placed.is-moving { z-index: 5; }
+.desk-placed.is-moving > .widget,
+.desk-placed.is-moving > .widget-bare > .widget,
+.desk-placed.is-moving > .widget-bare > section { box-shadow: 0 18px 48px rgba(0, 0, 0, 0.14); }
+.widget-grip { cursor: grab; touch-action: none; }
+.widget-grip:active { cursor: grabbing; }
+.widget-bare-grip { position: absolute; left: 0; right: 40px; top: 0; height: 28px; cursor: grab; touch-action: none; }
+.desk-resize {
+    position: absolute;
+    right: 2px;
+    bottom: 2px;
+    width: 14px;
+    height: 14px;
+    cursor: ew-resize;
+    border-right: 2px solid var(--glass-border);
+    border-bottom: 2px solid var(--glass-border);
+    border-radius: 0 0 6px 0;
+    opacity: 0;
+    transition: opacity 0.15s;
+    touch-action: none;
+}
+.desk-placed:hover .desk-resize,
+.desk-placed.is-moving .desk-resize { opacity: 1; }
+.desk-canvas-banner { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); z-index: 6; width: min(560px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 10px; }
+
+/* Замок, масштаб и мини-карта — справа внизу, над полем; ряд масштаба — над картой. */
+.desk-tools { position: absolute; right: 20px; bottom: calc(var(--dock-gap) + env(safe-area-inset-bottom)); z-index: 6; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.desk-zoom { display: flex; align-items: center; gap: 6px; }
+.desk-zoom-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 1px solid var(--glass-border);
+    background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg);
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.desk-zoom-btn:hover { background: var(--hover-bg); }
+.desk-zoom-level { min-width: 52px; height: 32px; border-radius: 999px; font-size: 13px; line-height: 18px; color: var(--text); font-variant-numeric: tabular-nums; }
+.desk-zoom-level:hover { background: var(--hover-bg); }
+/* Замок: закреплённый стол — чёрный круг (выбранное в «Минимале» — чернилами). Масштаб, «Расставить заново» и карта тогда
+   не нажимаются, а поле и виджеты не обещают курсором, что их можно тащить. */
+.desk-zoom-btn[aria-pressed='true'] { background: var(--ink-bg); border-color: var(--ink-bg); color: var(--ink-fg); }
+.desk-zoom-btn[aria-pressed='true']:hover { background: var(--ink-hi); border-color: var(--ink-hi); }
+.desk-zoom-btn:disabled,
+.desk-zoom-level:disabled { opacity: 0.45; cursor: default; }
+.desk-zoom-btn:disabled:hover { background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg); }
+.desk-zoom-level:disabled:hover { background: none; }
+.desk-canvas.is-locked,
+.desk-canvas.is-locked:active { cursor: default; }
+.desk-map { position: relative; width: 132px; height: 84px; border-radius: 12px; background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg); border: 1px solid var(--glass-border); overflow: hidden; cursor: pointer; display: block; }
+.desk-map:disabled { cursor: default; }
+.desk-map-item { position: absolute; border-radius: 2px; background: #e4e0db; }
+html[data-theme='dark'] .desk-map-item { background: #3a3734; }
+.desk-map-item.is-scene { border-radius: 50%; }
+.desk-map-item.is-add { background: transparent; border: 1px dashed #d6d1cb; }
+.desk-map-view { position: absolute; border: 1.5px solid var(--text); border-radius: 6px; }
+/* На 1280 точках и уже мини-карты нет, и ряд масштаба с замком встал бы на нижнюю линию дока: у помощника «+» (док 623,
+   зазор 12 и круг 52 — посередине) накрывал замок до ~1135 точек. Без карты ряд стоит над доком — на той же высоте, что
+   над картой (22 + 84 + 8 = 22 + 72 + 20). */
+@media (max-width: 1280px) {
+    .desk-map { display: none; }
+    .desk-tools { bottom: calc(var(--dock-gap) + var(--dock-h) + 20px + env(safe-area-inset-bottom)); }
+}
+
+/* ─── Окно колонки у помощника (shell/station-window.tsx) ──────── */
+.desk-window-body:has(> .station-frame) { padding: 0; overflow: hidden; }
+.station-frame { display: block; width: 100%; height: 100%; border: 0; border-radius: 0 0 20px 20px; background: var(--bg); }
+.desk-window-body > .station-frame { max-width: none; }
+.side-main > .station-frame { height: calc(100dvh - 140px); border-radius: var(--r-panel); border: 1px solid var(--glass-border); }
+@media (max-width: 760px) { .station-frame { border-radius: 0; } }
+/* Внутри фрейма: пульт колонки без дока — полоса колонки и раздел столбцом. */
+.station-window { min-height: 100dvh; background: var(--bg); }
+.station-window-body { max-width: 760px; margin: 0 auto; padding: 16px 20px 40px; display: flex; flex-direction: column; gap: var(--s-md); }
+.station-strip {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    padding: 10px 20px;
+    background: var(--glass-bg);
+    border-bottom: 1px solid var(--glass-border);
+}
+.station-strip-name { font-size: 14px; line-height: 20px; font-weight: 500; }
+.station-strip-note { flex-basis: 100%; font-size: 12px; line-height: 16px; color: var(--sub); }
+.station-strip.is-away { background: var(--pill-yandex-bg); }
+.station-strip.is-away .station-strip-note { color: var(--pill-yandex-fg); }
+.desk-window-head .role-chip { flex: none; }
+
+/* ─── Первый запуск на компьютере (screens/first-run.tsx) ──────── */
+.first-run { display: flex; flex-direction: column; gap: 12px; }
+.first-run-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.first-run-option { display: flex; flex-direction: column; gap: 8px; padding: 14px; border-radius: 16px; border: 1px solid var(--glass-border); background: var(--strong-bg); align-items: flex-start; }
+.first-run-option.is-helper { background: var(--helper-bg); border-color: var(--helper-line); color: var(--helper-text); --sub: var(--helper-sub); --chip-bg: var(--helper-chip); }
+.first-run-option.is-helper .w-btn-ink { background: #f5f3f1; color: #11100f; }
+/* Под колонкой у помощника — этот компьютер (макет SpaceHelper). */
+.desk-helper-pc { display: flex; align-items: center; gap: 10px; margin: 8px auto 0; width: max-content; max-width: 100%; padding: 8px 14px 8px 8px; border-radius: 999px; background: var(--helper-bg); color: var(--helper-text); --sub: var(--helper-sub); font-size: 13px; line-height: 18px; }
+.desk-helper-pc b { font-weight: 500; }
+.desk-helper-pc-icon { width: 32px; height: 32px; border-radius: 50%; background: var(--helper-chip); display: flex; align-items: center; justify-content: center; flex: none; }
+
+/* ─── Виджет голосом (screens/widget-agent.tsx) ────────────────── */
+.widget-agent { display: flex; flex-direction: column; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--glass-border); }
+.widget-agent-ask { display: flex; flex-direction: column; gap: 8px; }
+.widget-agent-ask input.field { min-height: 36px; }
+.widget-agent-mic { width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--glass-border); background: var(--strong-bg); color: var(--text); display: flex; align-items: center; justify-content: center; flex: none; }
+.widget-agent-mic[aria-pressed='true'] { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+.widget-agent-said { margin: 0; display: flex; gap: 8px; padding: 10px 12px; border-radius: 14px; background: var(--glass-bg); border: 1px solid var(--glass-border); font-size: 13px; line-height: 18px; white-space: pre-wrap; }
+.widget-agent-said > svg { flex: none; margin-top: 2px; color: var(--sub); }
+.widget-agent-preview { display: flex; flex-direction: column; gap: 10px; }
+.widget-agent-preview > .widget,
+.widget-agent-preview > .widget-bare { width: 300px; max-width: 100%; align-self: center; box-shadow: 0 0 0 1px var(--glass-border), 0 10px 30px rgba(0, 0, 0, 0.08); }
+
+/* ─── Подсветка кода в Мастерской (ui/code-editor.tsx) ─────────── */
+/* Прозрачное поле поверх раскрашенного текста; цвета — из макета, не цвета исполнителей. */
+.code-editor { position: relative; margin: 8px 0; border-radius: var(--r-field, 14px); background: var(--field-bg, var(--icon-bg)); border: 1px solid var(--glass-border); }
+.code-editor > .ws-editor { margin: 0; }
+.code-editor > .code-hl {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    border: 1px solid transparent;
+    border-radius: inherit;
+    padding: 10px 14px;
+    color: var(--text);
+    background: none;
+    min-height: 0;
+    max-height: none;
+}
+.code-editor > .code-hl > code { font: inherit; white-space: pre; }
+.code-editor > .code-input { position: relative; display: block; width: 100%; background: transparent; border-color: transparent; color: transparent; caret-color: var(--text); }
+.code-editor > .code-input::selection { background: color-mix(in srgb, var(--text) 18%, transparent); color: transparent; }
+.hl-k { color: #0f766e; }
+.hl-f { color: #1d4ed8; }
+.hl-s { color: #9f1239; }
+.hl-c { color: #78716c; font-style: italic; }
+html[data-theme='dark'] .hl-k { color: #5eead4; }
+html[data-theme='dark'] .hl-f { color: #93c5fd; }
+html[data-theme='dark'] .hl-s { color: #fda4af; }
+html[data-theme='dark'] .hl-c { color: #a8a29e; }
+/* Раскраска и поле — одной меркой, буква в букву: иначе подсветка уедет от курсора. */
+.code-editor > .code-hl,
+.code-editor > .code-input {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.5;
+    letter-spacing: normal;
+    tab-size: 2;
+    padding: 10px 14px;
+    white-space: pre;
+    overflow-wrap: normal;
+    word-break: normal;
+}
+/* Поле над раскраской — прозрачное и в «Минимале», где у полей свой белый фон. */
+html[data-look] .code-editor > textarea.code-input,
+html[data-look] .code-editor > textarea.code-input:focus { background: transparent; border-color: transparent; box-shadow: none; }
+html[data-look] .code-editor:focus-within { border-color: var(--text); }

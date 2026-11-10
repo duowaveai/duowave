@@ -683,6 +683,26 @@ pub const STATION_PLACEMENTS: SettingDefinition<BTreeMap<String, StationPlacemen
     parse: as_serde,
 };
 
+/// The station's gateway about the station it runs on, as the computer that moved it there knows it: its device and the
+/// name the household gave it there («Детская»). The station's own list of stations may know it by another tag, and a
+/// new tag is «Колонка» there; a move brings this (src/placement/transfer.rs, `MOVE_SETS`), /health says it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StationSelf {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+pub const STATION_SELF: SettingDefinition<StationSelf> = SettingDefinition {
+    key: "station_self",
+    scope: SettingScope::Global,
+    description: "Колонка, на которой работает этот шлюз",
+    sensitive: false,
+    parse: as_serde,
+};
+
 /// The station's home server (src/home_server): the computer's address. Its key is a secret, kept apart.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -692,6 +712,10 @@ pub struct HomeServerSetting {
     /// колонке»); on — «Колонка + ПК». A move always brings both; the switch only says whether to lean on it.
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// What the station does not take from the computer while it helps: "asr" (hearing), "tts" (voice), "llm" (the
+    /// model) — the helper's «Что даю колонке» (docs/plans/desk.md, stage 4). Empty — all three.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub without: Vec<String>,
 }
 
 fn yes() -> bool {

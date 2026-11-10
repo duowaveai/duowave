@@ -1,43 +1,14 @@
-import { ComponentChildren } from 'preact';
+// Карточки «Колонки», которые встают на стол виджетами (screens/desk-widgets.tsx): режим колонки, кто отвечает и
+// сколько обслужил, последние запросы, чего пока не умеем.
+
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { AccessCatalog, Health, ModeView, PanelMode, RequestView, SessionSnapshot, UnsupportedEntry, api, can, plural, problemOf } from '../api';
+import { AccessCatalog, Health, ModeView, PanelMode, RequestView, UnsupportedEntry, api, can, plural, problemOf } from '../api';
 import { FeatureId, available, useAvailability, whyNot } from '../availability';
 import { CAPABILITIES, CAPABILITY_TITLES } from '../capabilities';
 import { executorOf } from '../executor';
-import { StationDrawing } from '../stations';
 import { timeAgo } from '../time';
-import { ConnectFirstCard } from './connect';
-import { Dashboard } from './dashboard';
-import { Slot } from '../shell/slot';
 import { RequestRow } from './journal';
-import type { SettingsTab } from './mind';
-
-interface Props {
-    health: Health | null;
-    debug: { sessions: SessionSnapshot[] | null; unsupported: UnsupportedEntry[]; error: unknown };
-    catalog: AccessCatalog | null;
-    /** Сессия выбранной колонки и её рисунок — для середины дашборда. */
-    session?: SessionSnapshot;
-    drawing: StationDrawing;
-    online: boolean;
-    /** Настоящий запрос колонки из живого канала и часы шлюза: путь вопроса на дашборде. */
-    trip?: RequestView;
-    skew?: number;
-    /** Растёт с каждой переменой на шлюзе: дашборд перечитывает своё. */
-    version?: number;
-    /** Последние запросы этой колонки из живого канала (только тому, кто может читать журнал). */
-    recent?: RequestView[];
-    /** Плашка о новой колонке над режимом, если есть что настроить. */
-    banner?: ComponentChildren;
-    /** Колонок ещё нет: вместо дашборда — «Подключите колонку». */
-    noStation?: boolean;
-    onConnect?: () => void;
-    onOpenJournal: () => void;
-    onOpenSettings: (tab: SettingsTab) => void;
-    /** В «Дом» → «Коннекторы», сразу в лист этого подключения, если оно названо. */
-    onOpenHouse: (connector?: string) => void;
-}
 
 const MODES: Array<{ value: PanelMode; label: string; feature: FeatureId }> = [
     { value: 'relay', label: 'Яндекс', feature: 'mode.relay' },
@@ -47,26 +18,6 @@ const MODES: Array<{ value: PanelMode; label: string; feature: FeatureId }> = [
 
 const MODE_LABELS: Record<PanelMode, string> = { relay: 'Яндекс', gateway: 'Шлюз', own: 'Свой' };
 
-/**
- * Шлюз работает на колонке, а это пульт компьютера: режим, дашборд и журнал колонки — в её пульте; здесь — шлюз
- * компьютера, её домашний сервер.
- */
-function OnStationNote({ health }: { health: Health | null }) {
-    const station = health?.placement?.role === 'pc' ? health.placement.station : undefined;
-    if (!station || station.placement === 'pc') return null;
-    return (
-        <div class="card glass py-12 px-16 flex gap-10 items-center flex-wrap" role="status">
-            <span class="t-caption flex-1 min-w-200">
-                Шлюз работает на колонке{station.reachable ? '' : ' — и сейчас не отвечает'}. Её режим, дашборд и журнал — в её пульте;
-                здесь — шлюз компьютера{station.placement === 'stationServer' ? ', её домашний сервер' : ''}.
-            </span>
-            <a class="pill pill-off py-8 px-14" href={`http://${station.address}:${station.port ?? 8790}/panel`} target="_blank" rel="noreferrer">
-                Пульт колонки ↗
-            </a>
-        </div>
-    );
-}
-
 /** «с 14:02»: время перехода сегодня, иначе с датой. */
 function since(at: string): string {
     const date = new Date(at);
@@ -75,7 +26,7 @@ function since(at: string): string {
 }
 
 /** Режим колонки: сегмент из макета. Переключение закрывает соединение — колонка переподключается в новый режим. */
-function ModeCard({
+export function ModeCard({
     health,
     onOpenSettings,
     detailsOpen,
@@ -280,7 +231,7 @@ function ModeCard({
     );
 }
 
-function AllocPanel({ health, catalog }: { health: Health | null; catalog: AccessCatalog | null }) {
+export function AllocPanel({ health, catalog }: { health: Health | null; catalog: AccessCatalog | null }) {
     // Режим пульта; шлюз постарше сообщает только вид сессии — relay или gateway.
     const mode: PanelMode = health?.panelMode ?? (health?.mode === 'relay' ? 'relay' : 'gateway');
     const routes = health?.skills?.routes;
@@ -362,7 +313,7 @@ function ServedTotals({ health }: { health: Health | null }) {
 }
 
 /** Последние запросы под дашбордом: что спросили, что ответили, кто делал шаги; весь журнал — по кнопке. */
-function RecentRequests({
+export function RecentRequests({
     list,
     catalog,
     onOpenJournal,
@@ -401,7 +352,7 @@ function RecentRequests({
     );
 }
 
-function UnsupportedTop({ list, onOpenJournal }: { list: UnsupportedEntry[]; onOpenJournal: () => void }) {
+export function UnsupportedTop({ list, onOpenJournal }: { list: UnsupportedEntry[]; onOpenJournal: () => void }) {
     if (list.length === 0) return null;
     return (
         <section class="card glass card-list card-list-tight" aria-labelledby="unsupported-h">
@@ -424,62 +375,5 @@ function UnsupportedTop({ list, onOpenJournal }: { list: UnsupportedEntry[]; onO
                 </div>
             ))}
         </section>
-    );
-}
-
-/** «Колонка»: режим, дашборд с орбитой, кто отвечает и чего пока не умеем — ниже, прокруткой. */
-export function HomeScreen({
-    health,
-    debug,
-    catalog,
-    session,
-    drawing,
-    online,
-    trip,
-    skew,
-    version,
-    recent,
-    banner,
-    noStation,
-    onConnect,
-    onOpenJournal,
-    onOpenSettings,
-    onOpenHouse,
-}: Props) {
-    // Строка «Слышит · Думает · Говорит» на дашборде: скрыта по умолчанию, открывается словом «подробнее» в конце
-    // подписи режима или янтарного статуса. Хранится здесь: оба предложения — одна кнопка.
-    const [whoOpen, setWhoOpen] = useState(false);
-    const toggleWho = (): void => setWhoOpen((open) => !open);
-    // Без колонки дашборду нечего показать: режимы и орбита были бы о колонке, которой нет.
-    if (noStation && onConnect)
-        return (
-            <>
-                {banner}
-                <ConnectFirstCard onConnect={onConnect} />
-            </>
-    );
-    return (
-        <>
-            {banner}
-            <OnStationNote health={health} />
-            <ModeCard health={health} onOpenSettings={() => onOpenSettings('voice')} detailsOpen={whoOpen} onToggleDetails={toggleWho} />
-            <Dashboard
-                health={health}
-                session={session}
-                drawing={drawing}
-                online={online}
-                trip={trip}
-                skew={skew}
-                version={version}
-                onOpenSettings={onOpenSettings}
-                onOpenHouse={onOpenHouse}
-                whoOpen={whoOpen}
-                onToggleWho={toggleWho}
-            />
-            {recent && <RecentRequests list={recent} catalog={catalog} onOpenJournal={onOpenJournal} />}
-            <AllocPanel health={health} catalog={catalog} />
-            <UnsupportedTop list={debug.unsupported} onOpenJournal={onOpenJournal} />
-            <Slot name="home.cards" />
-        </>
     );
 }

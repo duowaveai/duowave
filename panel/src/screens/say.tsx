@@ -1,8 +1,9 @@
-import { useState } from 'preact/hooks';
+import { useRef, useState } from 'preact/hooks';
 
 import { ApiError, Health, SessionSnapshot, UnsupportedEntry, api, problemOf } from '../api';
 import { IconSend } from '../icons';
 import { Slot } from '../shell/slot';
+import { Overlay, useDialogFocus } from '../ui/sheet';
 
 interface Props {
     health: Health | null;
@@ -15,6 +16,9 @@ type Outcome = { state: 'idle' } | { state: 'sending' } | { state: 'done' } | { 
 export function SaySheet({ health, debug, onClose }: Props) {
     const [text, setText] = useState('');
     const [outcome, setOutcome] = useState<Outcome>({ state: 'idle' });
+    // Окно как окно: фокус внутрь, Esc закрывает его (а не окно раздела под ним), фокус — обратно.
+    const box = useRef<HTMLDivElement>(null);
+    useDialogFocus(box, onClose);
 
     const live = debug.sessions?.find((s) => !s.closedAt);
     const speakable = live?.canSpeak === true;
@@ -46,13 +50,8 @@ export function SaySheet({ health, debug, onClose }: Props) {
     };
 
     return (
-        <div
-            class="sheet-backdrop"
-            onClick={(e) => {
-                if (e.target === e.currentTarget) onClose();
-            }}
-        >
-            <div class="sheet glass-strong" role="dialog" aria-label="Сказать через колонку">
+        <Overlay onDismiss={onClose}>
+            <div ref={box} class="sheet glass-strong" role="dialog" aria-modal="true" aria-label="Сказать через колонку">
                 <div class="flex items-center justify-between">
                     <h2 class="t-title-xs m-0">
                         Сказать через колонку
@@ -97,6 +96,6 @@ export function SaySheet({ health, debug, onClose }: Props) {
                 )}
                 <Slot name="say.extras" props={{ speakable }} />
             </div>
-        </div>
+        </Overlay>
     );
 }

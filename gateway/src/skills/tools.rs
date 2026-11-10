@@ -175,12 +175,24 @@ pub static TOOLS: LazyLock<Vec<ToolSpec>> = LazyLock::new(|| {
             capability: Timers,
             tool: tool(
                 "set_timer",
-                "Start a countdown timer on the speaker.",
-                object(json!({"seconds": {"type": "integer", "minimum": 1, "maximum": 86400}}), &["seconds"]),
+                "Start a countdown timer on the speaker. Give it a short name when the person says what it is for \
+                 (\"чай\", \"стирка\").",
+                object(
+                    json!({
+                        "seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+                        "name": {"type": "string", "maxLength": 40}
+                    }),
+                    &["seconds"],
+                ),
             ),
             to_intent: |input| {
                 let seconds = integer(input, "seconds", 1.0, 86400.0)?;
-                Ok(intent(Timers, "set", vec![("seconds", seconds.and_then(number))]))
+                let name = input.get("name").and_then(Value::as_str).map(str::trim).filter(|name| !name.is_empty());
+                Ok(intent(
+                    Timers,
+                    "set",
+                    vec![("seconds", seconds.and_then(number)), ("name", name.map(|name| Value::from(name.to_string())))],
+                ))
             },
             question: None,
         },

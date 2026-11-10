@@ -2,8 +2,12 @@
 //! code of the plugins that are on.
 //!
 //! - A plugin's code is loaded at its first call (a phrase, a tool, a source) and unloaded after
-//!   `PLUGINS_IDLE_UNLOAD_S` without one: a plugin nobody uses costs nothing but its place on disk.
-//! - Switching one on starts its code first: what does not start stays off, and the admin reads why.
+//!   `PLUGINS_IDLE_UNLOAD_S` without one: a plugin nobody uses costs nothing but its place on disk — and nothing of
+//!   the station's memory: a context takes its declared budget only while it is loaded (budget.rs).
+//! - On the station a context loads only when its budget fits what is free; if it does not, idle contexts unload
+//!   first, the longest idle first, one in a call never; if it still does not, the call fails and says why.
+//! - Switching one on starts its code first: what does not start stays off, and the admin reads why. Memory never
+//!   keeps a plugin off: one that has no room to start now is on, and loads at its first call.
 //! - A reload starts the newest version on disk beside the one running. It starts — it takes over; it does not —
 //!   the one running stays, and its error is in the log and the panel. After a restart the same: a version that
 //!   does not start gives way to the one that last did (kept in the database).
@@ -12,17 +16,17 @@
 //! - The safe mode (PLUGINS_DISABLED=1) runs none of it, whatever is switched on.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
-use super::budget::{self, MemoryGauge, MemoryNow, MemoryProbe, PluginShare, PressureAction, ResourcesView};
+use super::budget::{self, Idle, MemoryGauge, MemoryNow, MemoryProbe, PluginShare, PressureAction, ResourcesView};
 use super::bundled::{self, BundledPackage};
-use super::host_api::{storage_used, PluginHostApi, SpeakerSource};
-use super::manifest::{self, Budget, PackageKind, Permission, SettingSpec, ToolSpec};
+use super::host_api::{storage_used, DataNews, PluginHostApi, SpeakerSource};
+use super::manifest::{self, Budget, Manifest, PackageKind, Permission, SettingSpec, ToolSpec};
 use super::media::PluginMediaSource;
 use super::phrases::Phrase;
 use super::registry::{self, Candidate, Origin, Package};
@@ -165,6 +169,19 @@ struct State {
 struct Loaded {
     version: String,
     instance: Arc<dyn PluginInstance>,
+    /// What it takes of the plugins' memory budget while loaded (`share_of`).
+    share_mb: u64,
+}
+
+/// What a package's context takes of the plugins' memory budget while it is loaded: a plugin's declared
+/// `budget.memoryMb`, its engine's own hard limit. An app's program is a process of its own, counted by what it holds
+/// (budget.rs): it takes no share.
+fn share_of(manifest: &Manifest) -> u64 {
+    if manifest.kind == PackageKind::Plugin {
+        manifest.budget.memory_mb
+    } else {
+        0
+    }
 }
 
 struct Plugin {
@@ -175,6 +192,14 @@ struct Plugin {
     stats: Mutex<Stats>,
     /// Milliseconds since the host began, at its last call.
     used: AtomicU64,
+    /// Its calls running now: a context in a call is never unloaded to make room.
+    busy: AtomicUsize,
+    /// What its loaded context takes of the budget (`Loaded::share_mb`); none while nothing is loaded.
+    taken_mb: AtomicU64,
+    /// What a context of it that is loading now took of the budget until it is in its slot (`Loading`).
+    loading_mb: AtomicU64,
+    /// What its engine held at the last look, MB: kept so a load's count asks no engine (a busy one answers late).
+    held_mb: AtomicU64,
 }
 
 impl Plugin {
@@ -190,6 +215,56 @@ impl Plugin {
     fn active(&self) -> Option<Arc<Package>> {
         let state = self.state();
         state.active.clone().filter(|_| state.enabled)
+    }
+
+    /// Its context into the slot: its share of the budget is taken while it is there. The one it replaces, if any.
+    fn hold(&self, slot: &mut Option<Loaded>, loaded: Loaded) -> Option<Loaded> {
+        self.taken_mb.store(loaded.share_mb, Ordering::Relaxed);
+        self.held_mb.store(0, Ordering::Relaxed);
+        slot.replace(loaded)
+    }
+
+    /// Its context out of the slot (to stop it): its share of the budget is free again.
+    fn release(&self, slot: &mut Option<Loaded>) -> Option<Loaded> {
+        self.taken_mb.store(0, Ordering::Relaxed);
+        self.held_mb.store(0, Ordering::Relaxed);
+        slot.take()
+    }
+}
+
+/// A call of a plugin under way: while it lasts its context is not unloaded to make room for another's.
+struct Busy<'a>(&'a Plugin);
+
+impl<'a> Busy<'a> {
+    fn new(plugin: &'a Plugin) -> Busy<'a> {
+        plugin.busy.fetch_add(1, Ordering::Relaxed);
+        Busy(plugin)
+    }
+}
+
+impl Drop for Busy<'_> {
+    fn drop(&mut self) {
+        self.0.busy.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// The room a context took while it loads: counted with the loaded ones, so two loads at once do not count on the same
+/// megabytes; given back once the context is in its slot (`Plugin::hold` takes it there) or did not load.
+struct Loading<'a> {
+    plugin: &'a Plugin,
+    mb: u64,
+}
+
+impl<'a> Loading<'a> {
+    fn take(plugin: &'a Plugin, mb: u64) -> Loading<'a> {
+        plugin.loading_mb.fetch_add(mb, Ordering::Relaxed);
+        Loading { plugin, mb }
+    }
+}
+
+impl Drop for Loading<'_> {
+    fn drop(&mut self) {
+        self.plugin.loading_mb.fetch_sub(self.mb, Ordering::Relaxed);
     }
 }
 
@@ -267,6 +342,8 @@ pub struct PluginHost {
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     memory: Arc<dyn MemoryProbe>,
     gauge: Arc<MemoryGauge>,
+    /// Held while a load's room is counted and taken: two loads at once do not count on the same megabytes.
+    admitting: Mutex<()>,
     /// Under pressure: the plugins' work in the background waits (`deferred`) until it eases.
     deferring: AtomicBool,
     deferred: Mutex<VecDeque<(String, String, Value)>>,
@@ -274,6 +351,8 @@ pub struct PluginHost {
     told: Mutex<Option<(u64, Pressure)>>,
     /// Each plugin's own journal, the last lines.
     journals: Mutex<HashMap<String, VecDeque<JournalLine>>>,
+    /// The plugins' writes to their `kv`, told the panel (`packages.data`): its widgets read their data again.
+    data_news: Arc<DataNews>,
 }
 
 impl PluginHost {
@@ -312,6 +391,8 @@ impl PluginHost {
             ))
         };
         bundled::lay_out(&config.packages_dir, &db, &bundled);
+        let handle = tokio::runtime::Handle::try_current().ok();
+        let data_news = DataNews::new(events.clone(), handle.clone());
         let host = Arc::new_cyclic(|me| PluginHost {
             config,
             db,
@@ -320,7 +401,7 @@ impl PluginHost {
             runtime,
             placement,
             speaker,
-            handle: tokio::runtime::Handle::try_current().ok(),
+            handle,
             media,
             me: me.clone(),
             player,
@@ -337,10 +418,12 @@ impl PluginHost {
             tasks: Mutex::new(Vec::new()),
             memory,
             gauge,
+            admitting: Mutex::new(()),
             deferring: AtomicBool::new(false),
             deferred: Mutex::new(VecDeque::new()),
             told: Mutex::new(None),
             journals: Mutex::new(HashMap::new()),
+            data_news,
         });
         let _ = give_up_to.set(Arc::downgrade(&host));
         host.rescan();
@@ -393,7 +476,7 @@ impl PluginHost {
         }
         for plugin in self.list() {
             if let Ok(mut slot) = plugin.slot.try_lock() {
-                if let Some(loaded) = slot.take() {
+                if let Some(loaded) = plugin.release(&mut slot) {
                     loaded.instance.stop();
                 }
             }
@@ -433,6 +516,10 @@ impl PluginHost {
                         slot: tokio::sync::Mutex::new(None),
                         stats: Mutex::new(Stats::default()),
                         used: AtomicU64::new(0),
+                        busy: AtomicUsize::new(0),
+                        taken_mb: AtomicU64::new(0),
+                        loading_mb: AtomicU64::new(0),
+                        held_mb: AtomicU64::new(0),
                     })
                 });
                 let choice = choices.get(&id).cloned().unwrap_or_default();
@@ -563,7 +650,8 @@ impl PluginHost {
         path.is_file().then_some(path)
     }
 
-    /// The panel parts of the plugins that are on: what every panel loads (its module and styles).
+    /// The panel parts of the plugins that are on: what every panel loads (its module and styles), with the settings
+    /// as the panel sees them — a secret one only as «••••••» (whoever sees the station loads these).
     pub fn panel_parts(&self) -> Vec<PanelPart> {
         if self.config.disabled {
             return Vec::new();
@@ -589,7 +677,7 @@ impl PluginHost {
                     version: package.version(),
                     module,
                     styles,
-                    settings: package.manifest.settings_values(stored.get(&plugin.id)),
+                    settings: package.manifest.settings_shown(stored.get(&plugin.id)),
                 })
             })
             .collect()
@@ -703,7 +791,8 @@ impl PluginHost {
                 state.active = None;
             }
             self.rebuild();
-            if let Some(loaded) = plugin.slot.lock().await.take() {
+            let loaded = plugin.release(&mut *plugin.slot.lock().await);
+            if let Some(loaded) = loaded {
                 loaded.instance.stop();
             }
         }
@@ -804,49 +893,46 @@ impl PluginHost {
 
     // Calls.
 
-    /// Calls a plugin's function, its code loaded first if it is not. A failure is noted (the panel's last error);
-    /// one after which its context is not to be trusted (time, memory) unloads it.
+    /// Calls a plugin's function, its code loaded first if it is not — on the station only when there is room for it
+    /// (`admit`). A failure is noted (the panel's last error); one after which its context is not to be trusted (time,
+    /// memory) unloads it.
     pub async fn call(&self, id: &str, function: &str, input: Value, kind: CallKind) -> Result<Value, PluginError> {
         if self.config.disabled {
             return Err(PluginError::Unavailable("безопасный режим: плагины не работают (PLUGINS_DISABLED)".into()));
         }
         let plugin = self.plugin(id).ok_or_else(|| PluginError::Unavailable(format!("нет плагина {id}")))?;
+        let _busy = Busy::new(&plugin);
         plugin.used.store(self.now_ms(), Ordering::Relaxed);
         let began = Instant::now();
         // «Колонка + сервер»: a plugin that prefers home runs on the computer while it is up; away, here if it fits.
-        if let Some(package) = plugin.active().filter(|package| package.manifest.prefer_home) {
-            if (self.placement)() == Placement::StationServer {
-                if let Some((url, key)) = self.home.as_ref().and_then(|home| home.up()) {
-                    match call_home(&url, &key, id, function, &input, kind).await {
-                        Ok(answer) => {
-                            self.note_line(
-                                id,
-                                "call",
-                                &format!("{function}: на компьютере, {} мс", began.elapsed().as_millis()),
-                            );
-                            let mut stats = plugin.stats();
-                            stats.calls += 1;
-                            stats.last_call_at = Some(now_iso());
-                            drop(stats);
-                            // What it plays from the computer — an app's sound, the household's files — is played
-                            // from the computer's /media.
-                            return Ok(super::media::from_home(answer, &url, id, &self.play_rights(id)));
-                        }
-                        Err(why) => self.note_line(id, "warn", &format!("{function}: {why} — работает на колонке")),
+        let away = (self.placement)() == Placement::StationServer
+            && plugin.active().is_some_and(|package| package.manifest.prefer_home);
+        if away {
+            if let Some((url, key)) = self.home.as_ref().and_then(|home| home.up()) {
+                match call_home(&url, &key, id, function, &input, kind).await {
+                    Ok(answer) => {
+                        self.note_line(
+                            id,
+                            "call",
+                            &format!("{function}: на компьютере, {} мс", began.elapsed().as_millis()),
+                        );
+                        let mut stats = plugin.stats();
+                        stats.calls += 1;
+                        stats.last_call_at = Some(now_iso());
+                        drop(stats);
+                        // What it plays from the computer — an app's sound, the household's files — is played from
+                        // the computer's /media.
+                        return Ok(super::media::from_home(answer, &url, id, &self.play_rights(id)));
                     }
-                }
-                let loaded = plugin.slot.lock().await.is_some();
-                if !loaded {
-                    if let Err(why) = self.fits(id, package.manifest.budget.memory_mb).await {
-                        let message = format!("недоступно, пока компьютер не на связи: {why}");
-                        self.note_line(id, "error", &format!("{function}: {message}"));
-                        return Err(PluginError::Unavailable(message));
-                    }
+                    Err(why) => self.note_line(id, "warn", &format!("{function}: {why} — работает на колонке")),
                 }
             }
         }
         let result = match self.instance(&plugin).await {
             Ok(instance) => instance.call(function, input, kind).await,
+            Err(PluginError::NoRoom(why)) if away => {
+                Err(PluginError::NoRoom(format!("недоступно, пока компьютер не на связи: {why}")))
+            }
             Err(error) => Err(error),
         };
         let how = match kind {
@@ -899,6 +985,7 @@ impl PluginHost {
                 self.speaker.clone(),
             )
             .with_services(self.services.clone())
+            .with_data_news(self.data_news.clone())
             .with_sink(Arc::new(move |id: &str, level: &str, message: &str| {
                 if let Some(host) = me.upgrade() {
                     host.note_line(id, level, message);
@@ -911,8 +998,8 @@ impl PluginHost {
         Ok(instance)
     }
 
-    /// The plugin's code, loaded now if it is not. A version that does not start gives way to the one that last
-    /// did, when there is one.
+    /// The plugin's code, loaded now if it is not and there is room for it (`admit`). A version that does not start
+    /// gives way to the one that last did, when there is one.
     async fn instance(&self, plugin: &Arc<Plugin>) -> Result<Arc<dyn PluginInstance>, PluginError> {
         let mut slot = plugin.slot.lock().await;
         let (package, good) = {
@@ -926,13 +1013,15 @@ impl PluginHost {
                 return Ok(loaded.instance.clone());
             }
         }
-        if let Some(loaded) = slot.take() {
+        if let Some(loaded) = plugin.release(&mut slot) {
             loaded.instance.stop();
         }
+        let loading = self.admit(plugin, &package.manifest).await?;
         match self.start_package(&package).await {
             Ok(instance) => {
-                *slot = Some(Loaded { version: version.clone(), instance: instance.clone() });
-                drop(slot);
+                let share_mb = share_of(&package.manifest);
+                plugin.hold(&mut slot, Loaded { version: version.clone(), instance: instance.clone(), share_mb });
+                drop((slot, loading));
                 if good.as_deref() != Some(version.as_str()) {
                     let _ = registry::set_good(&self.db, &plugin.id, &version);
                     plugin.state().good = Some(version.clone());
@@ -941,6 +1030,7 @@ impl PluginHost {
                 Ok(instance)
             }
             Err(error) => {
+                drop(loading);
                 let previous = good.filter(|good| *good != version).and_then(|good| {
                     plugin.state().found.iter().find_map(|candidate| match candidate {
                         Candidate::Ready(package) if package.version() == good => Some(package.clone()),
@@ -951,10 +1041,17 @@ impl PluginHost {
                 if let Some(previous) =
                     previous.filter(|previous| previous.manifest.incompatible_with((self.placement)()).is_none())
                 {
-                    if let Ok(instance) = self.start_package(&previous).await {
+                    // Room for it as for any load: without room the failure stands.
+                    let loading = self.admit(plugin, &previous.manifest).await.ok();
+                    let started = if loading.is_some() { self.start_package(&previous).await.ok() } else { None };
+                    if let Some(instance) = started {
                         let message = format!("{message}; работает прежняя {}", previous.version());
-                        *slot = Some(Loaded { version: previous.version(), instance: instance.clone() });
-                        drop(slot);
+                        let share_mb = share_of(&previous.manifest);
+                        plugin.hold(
+                            &mut slot,
+                            Loaded { version: previous.version(), instance: instance.clone(), share_mb },
+                        );
+                        drop((slot, loading));
                         {
                             let mut state = plugin.state();
                             state.active = Some(previous.clone());
@@ -975,7 +1072,7 @@ impl PluginHost {
     }
 
     async fn unload(&self, plugin: &Plugin) {
-        let loaded = plugin.slot.lock().await.take();
+        let loaded = plugin.release(&mut *plugin.slot.lock().await);
         if let Some(loaded) = loaded {
             loaded.instance.stop();
             self.changed(&plugin.id, "unloaded", Some(loaded.version), None, None);
@@ -987,15 +1084,16 @@ impl PluginHost {
         self.unload_idle_for(self.config.idle_unload_s * 1000);
     }
 
-    /// Unloads the code of plugins idle longer than `idle` ms.
+    /// Unloads the code of plugins idle longer than `idle` ms; one in a call stays.
     fn unload_idle_for(&self, idle: u64) {
         let now = self.now_ms();
         for plugin in self.list() {
-            if now.saturating_sub(plugin.used.load(Ordering::Relaxed)) < idle {
+            let idle_for = now.saturating_sub(plugin.used.load(Ordering::Relaxed));
+            if idle_for < idle || plugin.busy.load(Ordering::Relaxed) > 0 {
                 continue;
             }
             let Ok(mut slot) = plugin.slot.try_lock() else { continue };
-            if let Some(loaded) = slot.take() {
+            if let Some(loaded) = plugin.release(&mut slot) {
                 drop(slot);
                 loaded.instance.stop();
                 tracing::info!(target: "plugins", "{}: unloaded after {} s without a call", plugin.id, idle / 1000);
@@ -1101,31 +1199,42 @@ impl PluginHost {
         tokio::task::spawn_blocking(move || probe.now()).await.ok().flatten()
     }
 
-    /// Each plugin's share: what it declared, what its engine holds while loaded.
+    /// A plugin's share now, from what the host keeps — no engine is asked: what it declared, what it takes of the
+    /// budget (while its context is loaded or loading), whether it is in a call, what its engine held at the last
+    /// look. None for a package of another kind: an app is counted by what its process holds, the rest run nothing.
+    fn share_now(&self, plugin: &Plugin) -> Option<PluginShare> {
+        let (enabled, manifest) = {
+            let state = plugin.state();
+            let shown = state.active.clone().or_else(|| registry::newest_ready(&state.found));
+            (state.enabled && state.active.is_some(), shown.map(|package| package.manifest.clone()))
+        };
+        let manifest = manifest.filter(|manifest| manifest.kind == PackageKind::Plugin)?;
+        let loading_mb = plugin.loading_mb.load(Ordering::Relaxed);
+        let taken_mb = plugin.taken_mb.load(Ordering::Relaxed) + loading_mb;
+        let held_mb = plugin.held_mb.load(Ordering::Relaxed);
+        Some(PluginShare {
+            id: plugin.id.clone(),
+            title: manifest.title.clone(),
+            enabled: enabled && !self.config.disabled,
+            loaded: taken_mb > 0,
+            busy: loading_mb > 0 || plugin.busy.load(Ordering::Relaxed) > 0,
+            budget_mb: manifest.budget.memory_mb,
+            taken_mb,
+            actual_mb: (taken_mb > 0 && held_mb > 0).then_some(held_mb),
+        })
+    }
+
+    /// Each plugin's share, its engine asked first what it holds now (for the panel and the memory watch).
     async fn shares(&self) -> Vec<PluginShare> {
-        let mut shares = Vec::new();
-        for plugin in self.list() {
-            let (enabled, manifest) = {
-                let state = plugin.state();
-                let shown = state.active.clone().or_else(|| registry::newest_ready(&state.found));
-                (state.enabled && state.active.is_some(), shown.map(|package| package.manifest.clone()))
-            };
-            let Some(manifest) = manifest.filter(|manifest| manifest.kind == PackageKind::Plugin) else { continue };
+        let plugins = self.list();
+        for plugin in &plugins {
             let instance = plugin.slot.lock().await.as_ref().map(|loaded| loaded.instance.clone());
-            let actual = match instance {
-                Some(instance) => instance.memory().await.map(|memory| memory.allocated.div_ceil(1_048_576)),
-                None => None,
-            };
-            shares.push(PluginShare {
-                id: plugin.id.clone(),
-                title: manifest.title.clone(),
-                enabled: enabled && !self.config.disabled,
-                loaded: actual.is_some(),
-                budget_mb: manifest.budget.memory_mb,
-                actual_mb: actual,
-            });
+            let Some(instance) = instance else { continue };
+            if let Some(memory) = instance.memory().await {
+                plugin.held_mb.store(memory.allocated.div_ceil(1_048_576), Ordering::Relaxed);
+            }
         }
-        shares
+        plugins.iter().filter_map(|plugin| self.share_now(plugin)).collect()
     }
 
     /// The plugins' memory and room, for the panel.
@@ -1135,7 +1244,7 @@ impl PluginHost {
         let count = budget::count(memory, self.config.reserve_mb, &plugins);
         let placement = (self.placement)();
         let pressure = memory.map(|memory| memory.pressure).unwrap_or(Pressure::Normal);
-        self.gauge.set(memory.map(|_| count.free_mb));
+        self.gauge.set(memory.map(|_| count.room_mb));
         let dir = self.config.packages_dir.clone();
         let probe = self.memory.clone();
         let (free_disk, packages_mb) = tokio::task::spawn_blocking(move || {
@@ -1155,28 +1264,85 @@ impl PluginHost {
             budget_mb: count.budget_mb,
             committed_mb: count.committed_mb,
             free_mb: count.free_mb,
+            room_mb: count.room_mb,
+            loaded: count.loaded,
             pressure,
             deferring: self.deferring.load(Ordering::Relaxed),
             action: self.config.pressure_action,
             disk: budget::DiskView { free_mb: free_disk, reserve_mb: self.config.storage_reserve_mb, packages_mb },
-            note: budget::note(count.free_mb, memory.is_some(), pressure),
+            note: budget::note(&count, memory.is_some(), pressure),
             plugins,
         }
     }
 
-    /// Whether `need_mb` more fits the budget, a plugin's own share aside (it is being switched on again); on the
-    /// station only — on a computer the numbers are shown, not kept.
-    async fn fits(&self, id: &str, need_mb: u64) -> Result<(), String> {
-        if !(self.placement)().on_station() {
-            return Ok(());
+    /// Room for a context about to load (budget.rs): on the station its declared budget must fit what is free now. If
+    /// it does not, idle contexts unload first, the longest idle first, one in a call never; if it still does not, the
+    /// load is refused with what it needs and what is free. On a computer, or while the machine does not tell its
+    /// memory, nothing is refused. The room is taken until the context is in its slot (`Loading`); the context's own
+    /// share, if an older version of it is loaded, is left out — the new one takes its place.
+    async fn admit<'a>(&self, plugin: &'a Plugin, manifest: &Manifest) -> Result<Loading<'a>, PluginError> {
+        let memory = if (self.placement)().on_station() { self.memory_now().await } else { None };
+        // Counted and taken at once, nothing awaited meanwhile.
+        let _admitting = self.admitting.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(memory) = memory {
+            self.make_room(plugin, manifest.budget.memory_mb, memory)?;
         }
-        let Some(memory) = self.memory_now().await else { return Ok(()) };
-        let plugins: Vec<PluginShare> = self.shares().await.into_iter().filter(|share| share.id != id).collect();
-        let count = budget::count(Some(memory), self.config.reserve_mb, &plugins);
-        match budget::does_not_fit(need_mb, count.free_mb) {
-            Some(why) => Err(why),
-            None => Ok(()),
+        Ok(Loading::take(plugin, share_of(manifest)))
+    }
+
+    /// The count for a load of `need_mb` and the idle contexts it unloads, if it must; why not when there is no room.
+    fn make_room(&self, plugin: &Plugin, need_mb: u64, memory: MemoryNow) -> Result<(), PluginError> {
+        let others: Vec<Arc<Plugin>> = self.list().into_iter().filter(|other| other.id != plugin.id).collect();
+        let mut shares: Vec<PluginShare> = others.iter().filter_map(|other| self.share_now(other)).collect();
+        // What its own loaded version holds comes back to the budget, as any loaded context's does; its share is not
+        // counted twice.
+        if let Some(own) = self.share_now(plugin) {
+            shares.push(PluginShare { taken_mb: 0, busy: false, ..own });
         }
+        let count = budget::count(Some(memory), self.config.reserve_mb, &shares);
+        let now = self.now_ms();
+        let idle: Vec<Idle> = others
+            .iter()
+            .filter_map(|other| {
+                let share = shares.iter().find(|share| share.id == other.id)?;
+                (share.loaded && !share.busy).then(|| Idle {
+                    id: other.id.clone(),
+                    taken_mb: share.taken_mb,
+                    idle_ms: now.saturating_sub(other.used.load(Ordering::Relaxed)),
+                })
+            })
+            .collect();
+        let refused = |free_mb: u64| {
+            let why = budget::does_not_fit(need_mb, free_mb).unwrap_or_default();
+            tracing::warn!(target: "plugins", "{}: not loaded, no room — {need_mb} MB needed, {free_mb} MB free (the budget {} MB, {} MB taken by the loaded)", plugin.id, count.budget_mb, count.committed_mb);
+            PluginError::NoRoom(why)
+        };
+        let chosen = budget::to_unload(need_mb, count.free_mb, &idle).map_err(refused)?;
+        let mut free_mb = count.free_mb;
+        for other in chosen.iter().filter_map(|id| others.iter().find(|other| other.id == *id)) {
+            free_mb += self.unload_for(other, &plugin.id).unwrap_or(0);
+        }
+        // One that went into a call meanwhile stayed loaded.
+        if need_mb > free_mb {
+            return Err(refused(free_mb));
+        }
+        Ok(())
+    }
+
+    /// An idle context unloaded to make room for `for_id`'s: the share it gave back, or none when it went into a call
+    /// (or is loading) meanwhile.
+    fn unload_for(&self, plugin: &Plugin, for_id: &str) -> Option<u64> {
+        let Ok(mut slot) = plugin.slot.try_lock() else { return None };
+        if plugin.busy.load(Ordering::Relaxed) > 0 {
+            return None;
+        }
+        let loaded = plugin.release(&mut slot)?;
+        drop(slot);
+        loaded.instance.stop();
+        tracing::info!(target: "plugins", "{}: unloaded to make room for {for_id}", plugin.id);
+        self.note_line(&plugin.id, "load", &format!("выгружен: память понадобилась плагину {for_id}"));
+        self.changed(&plugin.id, "unloaded", Some(loaded.version), None, None);
+        Some(loaded.share_mb)
     }
 
     /// Whether a package of `need_mb` fits on the disk, with the reserve for the gateway's update; on the station only.
@@ -1192,8 +1358,8 @@ impl PluginHost {
     }
 
     /// One look at the memory: under pressure the idle plugins give their memory back and their background work
-    /// waits; at «critical» on the station the app, else the plugin, switched on last goes off (or the panel is told,
-    /// if the owner chose `warn`). The built-in skills and the voice path are never touched.
+    /// waits; at «critical» on the station the app, else the plugin, switched on last among those loaded goes off (or
+    /// the panel is told, if the owner chose `warn`). The built-in skills and the voice path are never touched.
     async fn watch_memory(&self) {
         let Some(memory) = self.memory_now().await else {
             self.gauge.set(None);
@@ -1222,7 +1388,8 @@ impl PluginHost {
         }
         let plugins = self.shares().await;
         let count = budget::count(Some(memory), self.config.reserve_mb, &plugins);
-        self.gauge.set(Some(count.free_mb));
+        // What a plugin could get, the idle contexts unloaded: what «would it go here» is asked against.
+        self.gauge.set(Some(count.room_mb));
         let now = (count.free_mb, memory.pressure);
         let told = {
             let mut told = self.told.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1242,12 +1409,18 @@ impl PluginHost {
 
     /// At «critical» on the station: the app switched on last goes off — an app weighs more than a plugin and starts
     /// again as easily (docs/plans/plugins.md, «Надзор за приложениями») — else the plugin switched on last; or the
-    /// log and the panel are told.
+    /// log and the panel are told. Only one that is loaded: one that holds nothing frees nothing by going off.
     async fn relieve(&self, memory: MemoryNow) {
-        let order: Vec<String> = registry::enabled_order(&self.db)
-            .into_iter()
-            .filter(|id| self.is_active(id) && self.may_switch_off(id))
-            .collect();
+        let mut order: Vec<String> = Vec::new();
+        for id in registry::enabled_order(&self.db) {
+            if !(self.is_active(&id) && self.may_switch_off(&id)) {
+                continue;
+            }
+            let Some(plugin) = self.plugin(&id) else { continue };
+            if plugin.slot.lock().await.is_some() {
+                order.push(id);
+            }
+        }
         let is_app = |id: &&String| self.package(id).is_some_and(|package| package.manifest.kind == PackageKind::App);
         let Some(id) = order.iter().find(is_app).or_else(|| order.first()).cloned() else { return };
         let why = format!(
@@ -1379,7 +1552,8 @@ impl PluginHost {
         })
     }
 
-    /// Switches a plugin on: its newest version that runs here starts first; what does not start stays off.
+    /// Switches a plugin on: its newest version that runs here starts first; what does not start stays off. Memory
+    /// never keeps it off: with no room to start it now (budget.rs) it is on unstarted, and loads at its first call.
     pub async fn enable(&self, id: &str, actor: Option<Actor>) -> Result<PackageView, ApiError> {
         self.writable()?;
         self.rescan();
@@ -1394,29 +1568,46 @@ impl PluginHost {
         // «Колонка + сервер»: a plugin that prefers home runs on the computer while it is up — nothing of it starts
         // on the station, and the station's memory is not asked.
         let at_home = self.runs_at_home(&package);
-        if !at_home {
-            if let Err(why) = self.fits(id, package.manifest.budget.memory_mb).await {
-                return Err(ApiError::conflict(format!("Плагин не включить: {why}.")));
-            }
-        }
         let version = package.version();
+        // Whether it is known to start: it started now, or it runs on the computer.
+        let mut started = at_home;
         if !at_home {
             let mut slot = plugin.slot.lock().await;
-            if let Some(loaded) = slot.take() {
+            if let Some(loaded) = plugin.release(&mut slot) {
                 loaded.instance.stop();
             }
-            let instance = self.start_package(&package).await.map_err(|error| {
-                self.note_error(&plugin, &format!("не запустился: {error}"));
-                ApiError::bad_request(format!("Плагин не запустился, он остаётся выключенным: {error}."))
-            })?;
-            *slot = Some(Loaded { version: version.clone(), instance });
+            match self.admit(&plugin, &package.manifest).await {
+                Ok(loading) => {
+                    let instance = self.start_package(&package).await.map_err(|error| {
+                        self.note_error(&plugin, &format!("не запустился: {error}"));
+                        ApiError::bad_request(format!("Плагин не запустился, он остаётся выключенным: {error}."))
+                    })?;
+                    let share_mb = share_of(&package.manifest);
+                    plugin.hold(&mut slot, Loaded { version: version.clone(), instance, share_mb });
+                    drop(loading);
+                    started = true;
+                }
+                Err(why) => {
+                    tracing::info!(target: "plugins", "{id} {version}: on, not started — {why}");
+                    self.note_line(
+                        id,
+                        "load",
+                        &format!(
+                            "включён, но пока не загружен: {why}. Загрузится при первом вызове, когда хватит памяти"
+                        ),
+                    );
+                }
+            }
         }
         plugin.used.store(self.now_ms(), Ordering::Relaxed);
-        registry::set_enabled(&self.db, id, true, Some(&version), actor.as_ref().map(|actor| actor.name.as_str()))?;
+        let good = started.then_some(version.as_str());
+        registry::set_enabled(&self.db, id, true, good, actor.as_ref().map(|actor| actor.name.as_str()))?;
         {
             let mut state = plugin.state();
             state.enabled = true;
-            state.good = Some(version.clone());
+            if started {
+                state.good = Some(version.clone());
+            }
             state.active = Some(package);
             state.problem = problem;
         }
@@ -1441,7 +1632,8 @@ impl PluginHost {
             state.active = None;
         }
         self.rebuild();
-        if let Some(loaded) = plugin.slot.lock().await.take() {
+        let loaded = plugin.release(&mut *plugin.slot.lock().await);
+        if let Some(loaded) = loaded {
             loaded.instance.stop();
         }
         tracing::info!(target: "plugins", "{id}: switched off");
@@ -1472,9 +1664,15 @@ impl PluginHost {
             return Err(ApiError::conflict(format!("Новая версия не включена: {taken}.")));
         }
         let version = package.version();
+        let running = running.unwrap_or_else(|| "—".into());
+        let loading = self.admit(&plugin, &package.manifest).await.map_err(|why| {
+            ApiError::conflict(format!("Новая версия {version} не загрузилась: {why}. Работает прежняя {running}."))
+        })?;
         match self.start_package(&package).await {
             Ok(instance) => {
-                let old = plugin.slot.lock().await.replace(Loaded { version: version.clone(), instance });
+                let loaded = Loaded { version: version.clone(), instance, share_mb: share_of(&package.manifest) };
+                let old = plugin.hold(&mut *plugin.slot.lock().await, loaded);
+                drop(loading);
                 if let Some(old) = old {
                     old.instance.stop();
                 }
@@ -1492,7 +1690,6 @@ impl PluginHost {
                 Ok(self.view_of(&plugin).await)
             }
             Err(error) => {
-                let running = running.unwrap_or_else(|| "—".into());
                 let message = format!("версия {version} не поднялась: {error}; работает прежняя {running}");
                 tracing::warn!(target: "plugins", "{id}: {message}");
                 self.note_error(&plugin, &message);
@@ -1552,7 +1749,8 @@ impl PluginHost {
         self.view_one(id).await
     }
 
-    /// The admin's values for the plugin's settings: each must be one its manifest declares, of its type.
+    /// The admin's values for the plugin's settings: each must be one its manifest declares, of its type. A secret one
+    /// that comes back as the panel was shown it («••••••») stays as it is stored.
     pub async fn set_settings(
         &self,
         id: &str,
@@ -1573,6 +1771,9 @@ impl PluginHost {
                 .iter()
                 .find(|spec| &spec.key == key)
                 .ok_or_else(|| ApiError::field(key, "нет такой настройки"))?;
+            if spec.secret && value.as_str() == Some(manifest::SECRET_SHOWN) {
+                continue;
+            }
             if value.is_null() {
                 own.remove(key);
                 continue;
@@ -1715,9 +1916,10 @@ impl PluginHost {
         let stats = plugin.stats().clone();
         let shown = package.clone().or(newest);
         let manifest = shown.as_ref().map(|package| package.manifest.clone());
+        // As the panel sees them: a secret one only as «••••••».
         let stored = self.settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default();
         let values =
-            manifest.as_ref().map(|manifest| manifest.settings_values(stored.get(&plugin.id))).unwrap_or_default();
+            manifest.as_ref().map(|manifest| manifest.settings_shown(stored.get(&plugin.id))).unwrap_or_default();
         let state = if self.config.disabled {
             "safeMode"
         } else if !enabled {
@@ -1891,7 +2093,8 @@ pub fn theme_form(theme: &Value) -> Result<(), String> {
         }
     }
     match theme.get("layout").and_then(Value::as_str) {
-        None | Some("tabbar") | Some("sidebar") => Ok(()),
+        // «desk» — стол и док (docs/plans/desk.md); «tabbar» прежних тем — тоже стол.
+        None | Some("desk") | Some("tabbar") | Some("sidebar") => Ok(()),
         Some(other) => Err(format!("{id}: раскладка «{other}» — это код оболочки, плагин пульта, а не тема")),
     }
 }
@@ -1905,7 +2108,7 @@ pub struct PanelPart {
     pub version: String,
     pub module: Option<String>,
     pub styles: Option<String>,
-    /// The values of its settings, for `useSettings`.
+    /// The values of its settings, for `useSettings`: a secret one only as «••••••».
     pub settings: Map<String, Value>,
 }
 
@@ -2277,6 +2480,26 @@ mod tests {
         assert_eq!(said(host.call("echo", "say", json!({"word": "г"}), CallKind::Voice).await), "г (1)");
     }
 
+    /// The owner, 10.11: an item added to the list by voice did not show in the widget until a reload. A plugin's
+    /// write to its store tells the panel (`packages.data`): the widget reads its data again.
+    #[tokio::test]
+    async fn a_plugins_write_to_its_store_tells_the_panel() {
+        let dir = tempfile::tempdir().unwrap();
+        write_package(dir.path(), &echo("1.0.0"), Some(CODE));
+        let fixture = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Pc);
+        let (host, mut events) = (fixture.host.clone(), fixture.events.subscribe());
+        host.enable("echo", None).await.unwrap();
+        let remembered = host.call("echo", "remember", json!({"value": "молоко"}), CallKind::Voice).await;
+        assert_eq!(remembered, Ok(json!("молоко")));
+        let mut told = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let GatewayEvent::PackageDataChanged { package } = event.as_ref() {
+                told.push(package.clone());
+            }
+        }
+        assert_eq!(told, ["echo"]);
+    }
+
     #[tokio::test]
     async fn refuses_what_the_manifest_does_not_allow() {
         let dir = tempfile::tempdir().unwrap();
@@ -2382,35 +2605,158 @@ mod tests {
         assert!(refused.message.contains("персонаж — не плагин"), "{}", refused.message);
     }
 
+    /// A small plugin of its own id: one phrase, its own `memoryMb`, the echo's code.
+    fn small(id: &str, memory_mb: u64) -> Value {
+        json!({
+            "schema": 1, "id": id, "version": "1.0.0", "title": id, "api": "^1",
+            "runs": ["pc", "station", "stationServer"],
+            "budget": { "memoryMb": memory_mb },
+            "permissions": ["voice.intents"],
+            "contributes": { "intents": [{ "phrases": [format!("{id} {{word}}")], "handler": "say" }] }
+        })
+    }
+
+    /// The station with `available_mb` of memory available: with the reserve of 40, the rest is the plugins' budget.
+    fn station(available_mb: u64) -> crate::plugins::budget::MemoryNow {
+        crate::plugins::budget::MemoryNow {
+            total_mb: 238,
+            available_mb,
+            pressure: Pressure::Normal,
+            gateway_mb: Some(33),
+        }
+    }
+
+    async fn is_loaded(host: &PluginHost, id: &str) -> bool {
+        host.view_one(id).await.unwrap().loaded
+    }
+
+    /// The owner, 10.11: a small plugin from the workshop did not go on — «нужно 4 МБ, свободно 0» — because every
+    /// plugin that was on took its declared budget. Now only a loaded context takes its share, and memory never keeps
+    /// a plugin off.
     #[tokio::test]
-    async fn keeps_the_stations_budget_and_gives_memory_back_under_pressure() {
+    async fn switches_a_plugin_on_whatever_the_memory_and_counts_only_what_is_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        for (id, memory_mb) in [("alpha", 4), ("beta", 4), ("big", 30)] {
+            write_package(dir.path(), &small(id, memory_mb), Some(CODE));
+        }
+        // 60 MB available, the reserve 40: 20 for the plugins' contexts.
+        let memory = crate::plugins::budget::fake::plenty();
+        memory.set(station(60));
+        let fixture = host_with(dir.path(), Arc::new(Db::memory()), false, Placement::Station, memory.clone());
+        let host = fixture.host.clone();
+        // 38 MB declared in all, more than the 20, and none refused.
+        assert!(host.enable("alpha", None).await.unwrap().loaded);
+        assert!(host.enable("beta", None).await.unwrap().loaded);
+        let big = host.enable("big", None).await.unwrap();
+        assert_eq!((big.enabled, big.state, big.loaded), (true, "ready", false), "on, its context waits for room");
+        assert!(
+            host.journal("big").iter().any(|line| line.message.contains("нужно 30 МБ")),
+            "the journal says why it did not start"
+        );
+        assert!(host.is_active("big"), "its phrases and the rest are in force");
+
+        // Only the loaded contexts take their share: 4 + 4 of the budget, the plugin that is on but not loaded nothing.
+        let resources = host.resources().await;
+        assert!(resources.enforced && resources.measured);
+        assert_eq!((resources.committed_mb, resources.loaded), (8, 2), "{resources:?}");
+        assert!(resources.free_mb >= 12 && resources.room_mb >= 20, "{resources:?}");
+        assert!(
+            resources.note.starts_with("Загружено плагинов: 2, под них занято 8 МБ. Можно загрузить ещё"),
+            "{}",
+            resources.note
+        );
+        let share = |id: &str| resources.plugins.iter().find(|share| share.id == id).cloned().unwrap();
+        assert_eq!((share("alpha").taken_mb, share("big").taken_mb, share("big").enabled), (4, 0, true));
+
+        // Its load: 30 MB do not fit even with the idle contexts unloaded, so none of them is unloaded for nothing.
+        let refused = host.call("big", "say", json!({"word": "а"}), CallKind::Voice).await.unwrap_err();
+        assert!(matches!(&refused, PluginError::NoRoom(why) if why.contains("нужно 30 МБ, свободно")), "{refused}");
+        assert!(is_loaded(&host, "alpha").await && is_loaded(&host, "beta").await);
+        assert!(host.view_one("big").await.unwrap().last_error.unwrap().message.contains("не хватает памяти"));
+
+        // More memory: it loads at its call.
+        memory.set(station(80));
+        assert_eq!(said(host.call("big", "say", json!({"word": "б"}), CallKind::Voice).await), "б (1)");
+        assert_eq!(host.resources().await.committed_mb, 38);
+    }
+
+    #[tokio::test]
+    async fn unloads_the_longest_idle_contexts_to_make_room_and_never_one_in_a_call() {
+        let dir = tempfile::tempdir().unwrap();
+        for id in ["alpha", "beta", "gamma", "delta"] {
+            write_package(dir.path(), &small(id, 4), Some(CODE));
+        }
+        // 12 MB for the plugins: three contexts of 4.
+        let memory = crate::plugins::budget::fake::plenty();
+        memory.set(station(52));
+        let fixture = host_with(dir.path(), Arc::new(Db::memory()), false, Placement::Station, memory);
+        let (host, mut events) = (fixture.host.clone(), fixture.events.subscribe());
+        for id in ["alpha", "beta", "gamma"] {
+            assert!(host.enable(id, None).await.unwrap().loaded);
+        }
+        // alpha idle the longest, then beta; gamma is in a call, however long it has been.
+        for (id, used) in [("alpha", 1), ("beta", 2), ("gamma", 0)] {
+            host.plugin(id).unwrap().used.store(used, Ordering::Relaxed);
+        }
+        let gamma = host.plugin("gamma").unwrap();
+        let in_call = Busy::new(&gamma);
+        changes(&mut events);
+
+        // delta switched on: alpha, the longest idle, makes room — only it.
+        assert!(host.enable("delta", None).await.unwrap().loaded);
+        let loaded = [
+            is_loaded(&host, "alpha").await,
+            is_loaded(&host, "beta").await,
+            is_loaded(&host, "gamma").await,
+            is_loaded(&host, "delta").await,
+        ];
+        assert_eq!(loaded, [false, true, true, true]);
+        assert_eq!(changes(&mut events), ["unloaded", "enabled"]);
+        assert!(host.journal("alpha").iter().any(|line| line.message.contains("понадобилась плагину delta")));
+
+        // alpha called again: beta is the longest idle now; gamma, in its call, stays.
+        host.plugin("delta").unwrap().used.store(4, Ordering::Relaxed);
+        assert_eq!(said(host.call("alpha", "say", json!({"word": "а"}), CallKind::Voice).await), "а (1)");
+        assert!(!is_loaded(&host, "beta").await);
+        assert!(is_loaded(&host, "alpha").await && is_loaded(&host, "gamma").await && is_loaded(&host, "delta").await);
+
+        // Every loaded context in a call: nothing can be freed, the load is refused and nothing is unloaded.
+        let (alpha, delta) = (host.plugin("alpha").unwrap(), host.plugin("delta").unwrap());
+        let calls = [Busy::new(&alpha), Busy::new(&delta)];
+        let refused = host.call("beta", "say", json!({"word": "б"}), CallKind::Voice).await.unwrap_err();
+        assert_eq!(
+            refused,
+            PluginError::NoRoom("колонке не хватает памяти, чтобы загрузить плагин: нужно 4 МБ, свободно 0 МБ".into())
+        );
+        assert!(is_loaded(&host, "alpha").await && is_loaded(&host, "gamma").await && is_loaded(&host, "delta").await);
+        let view = host.view_one("beta").await.unwrap();
+        assert_eq!((view.enabled, view.loaded), (true, false), "refused a load, it stays on");
+        // The idle unloading leaves a context in a call too.
+        host.unload_idle_for(0);
+        assert!(is_loaded(&host, "alpha").await && is_loaded(&host, "gamma").await && is_loaded(&host, "delta").await);
+
+        // The calls over, the next load makes room again.
+        drop((calls, in_call));
+        assert_eq!(said(host.call("beta", "say", json!({"word": "б"}), CallKind::Voice).await), "б (1)");
+    }
+
+    #[tokio::test]
+    async fn gives_memory_back_under_pressure_and_switches_off_only_what_is_loaded() {
         use crate::plugins::budget::MemoryNow;
         let dir = tempfile::tempdir().unwrap();
         write_package(dir.path(), &echo("1.0.0"), Some(CODE));
-        let mut big = echo("1.0.0");
-        big["id"] = json!("big");
-        big["budget"] = json!({ "memoryMb": 30 });
-        big["permissions"] = json!(["voice.intents"]);
-        big["contributes"] = json!({ "intents": [{ "phrases": ["большой"], "handler": "say" }] });
-        write_package(dir.path(), &big, Some(CODE));
+        write_package(dir.path(), &small("big", 30), Some(CODE));
         // The station: 60 MB available, the reserve 40 — 20 for plugins.
         let memory = crate::plugins::budget::fake::plenty();
-        let station = MemoryNow { total_mb: 238, available_mb: 60, pressure: Pressure::Normal, gateway_mb: Some(14) };
-        memory.set(station);
+        memory.set(station(60));
         let fixture = host_with(dir.path(), Arc::new(Db::memory()), false, Placement::Station, memory.clone());
         let (host, mut events) = (fixture.host.clone(), fixture.events.subscribe());
         host.enable("echo", None).await.unwrap();
-        let refused = host.enable("big", None).await.unwrap_err();
-        assert_eq!(refused.status, axum::http::StatusCode::CONFLICT);
-        assert!(refused.message.contains("нужно 30 МБ, свободно"), "{}", refused.message);
-        let resources = host.resources().await;
-        assert!(resources.enforced && resources.measured);
-        assert_eq!(resources.committed_mb, 2, "echo's declared 2 MB, not what it holds");
-        assert!(resources.free_mb >= 18 && resources.note.contains("Можно поставить ещё плагины"), "{resources:?}");
-        assert_eq!(resources.plugins.iter().find(|share| share.id == "echo").map(|share| share.loaded), Some(true));
+        assert!(!host.enable("big", None).await.unwrap().loaded, "on, no room to load");
 
-        // Pressure: an idle plugin unloads, background work waits; at «critical» the plugin switched on last goes off.
-        memory.set(MemoryNow { available_mb: 15, pressure: Pressure::Critical, ..station });
+        // Pressure: an idle plugin unloads, background work waits; at «critical» the plugin switched on last among
+        // those loaded goes off — big, switched on later, holds nothing and stays on.
+        memory.set(MemoryNow { available_mb: 15, pressure: Pressure::Critical, ..station(60) });
         host.plugin("echo").unwrap().used.store(0, Ordering::Relaxed);
         tokio::time::sleep(Duration::from_millis(5)).await;
         host.watch_memory().await;
@@ -2418,11 +2764,61 @@ mod tests {
         let view = host.view_one("echo").await.unwrap();
         assert_eq!((view.enabled, view.loaded), (false, false));
         assert!(view.problem.unwrap().contains("колонке не хватало памяти"));
+        assert!(host.view_one("big").await.unwrap().enabled);
         let told: Vec<String> = changes(&mut events);
         assert!(told.contains(&"pressure".to_string()), "{told:?}");
+        // Again: nothing is loaded, nothing more goes off.
+        host.watch_memory().await;
+        assert!(host.view_one("big").await.unwrap().enabled);
+
         // On a computer the budget is shown, not kept.
         let pc = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Pc).host;
         assert!(!pc.resources().await.enforced);
+        assert!(pc.enable("big", None).await.unwrap().loaded);
+    }
+
+    #[tokio::test]
+    async fn a_secret_setting_reaches_the_plugin_as_it_is_and_the_panel_only_as_dots() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut calendar = echo("1.0.0");
+        calendar["settings"] = json!([
+            { "key": "ics", "type": "string", "title": "Ссылка iCal", "secret": true },
+            { "key": "days", "type": "number", "title": "Дней", "default": 7 }
+        ]);
+        calendar["contributes"]["panel"] = json!({ "slots": ["desk.widgets"] });
+        write_package(dir.path(), &calendar, Some(CODE));
+        std::fs::write(dir.path().join("echo/1.0.0/panel.js"), "export default {};").unwrap();
+        let host = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Pc).host;
+        host.enable("echo", None).await.unwrap();
+        let stored = |key: &str| {
+            let all = host.settings().get(&PACKAGE_SETTINGS, None).unwrap_or_default();
+            all.get("echo").and_then(|own| own.get(key)).cloned()
+        };
+        let link = "https://calendar.example/private-0123/basic.ics";
+
+        let values = json!({ "ics": link, "days": 3 });
+        let view = host.set_settings("echo", values.as_object().unwrap(), None).await.unwrap();
+        let shown: Vec<Option<Value>> = view.settings.iter().map(|setting| setting.value.clone()).collect();
+        assert_eq!(shown, [Some(json!(manifest::SECRET_SHOWN)), Some(json!(3))]);
+        assert_eq!(serde_json::to_value(&view).unwrap()["settings"][0]["secret"], true);
+        let part = host.panel_parts().into_iter().find(|part| part.id == "echo").unwrap();
+        assert_eq!(part.settings["ics"], manifest::SECRET_SHOWN, "the panel parts — every viewer of the station");
+        assert_eq!(host.view_one("echo").await.unwrap().settings[0].value, Some(json!(manifest::SECRET_SHOWN)));
+        // The plugin itself reads the link as it is.
+        let package = host.package("echo").unwrap();
+        let own = host.settings().get(&PACKAGE_SETTINGS, None).unwrap_or_default();
+        assert_eq!(package.manifest.settings_values(own.get("echo"))["ics"], link);
+
+        // The panel saves back what it was shown: the link stays; a new one takes its place; null — none.
+        let back = json!({ "ics": manifest::SECRET_SHOWN, "days": 5 });
+        host.set_settings("echo", back.as_object().unwrap(), None).await.unwrap();
+        assert_eq!((stored("ics"), stored("days")), (Some(json!(link)), Some(json!(5))));
+        let other = "https://calendar.example/private-4567/basic.ics";
+        host.set_settings("echo", json!({ "ics": other }).as_object().unwrap(), None).await.unwrap();
+        assert_eq!(stored("ics"), Some(json!(other)));
+        host.set_settings("echo", json!({ "ics": null }).as_object().unwrap(), None).await.unwrap();
+        assert_eq!(stored("ics"), None);
+        assert_eq!(host.view_one("echo").await.unwrap().settings[0].value, None, "not set: nothing shown");
     }
 
     #[tokio::test]

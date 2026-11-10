@@ -4,13 +4,15 @@
 //! - `http.fetch` reaches only the hosts of its `net:` rights, a redirect too; never this computer's own addresses
 //!   (the gateway's API answers its own machine more openly); within a time limit and a size limit, through the
 //!   gateway's HTTP client (rustls, the same on the station).
-//! - `kv` is its own store in the gateway's database, as big as its `budget.storageMb`.
+//! - `kv` is its own store in the gateway's database, as big as its `budget.storageMb`; a write that changes it or a
+//!   removal tells the panel (`packages.data`): the package's widgets read their data again.
 //! - `settings` are the values of the settings its manifest declares, as the admin set them.
 //! - `log` goes to the gateway's log under its name, a burst cut short.
 
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -20,6 +22,7 @@ use serde_json::{json, Map, Value};
 
 use super::manifest::{host_allowed, Manifest, Permission};
 use super::runtime::HostApi;
+use crate::core::events::{EventBus, GatewayEvent};
 use crate::settings::definitions::PACKAGE_SETTINGS;
 use crate::settings::SettingsService;
 use crate::skills::own::reminders_skill::Speaker;
@@ -40,6 +43,75 @@ const MAX_KEYS: usize = 1000;
 /// Log lines a plugin may write in a window; the rest are dropped with a note.
 const LOG_BURST: u64 = 50;
 const LOG_WINDOW_MS: u64 = 10_000;
+/// A package's data changes are told the panel at most this often.
+const DATA_NEWS_EVERY: Duration = Duration::from_secs(1);
+
+/// A plugin's data changed (`kv`): the panel's widgets of its package read theirs again (`packages.data`) — a list
+/// filled by voice shows without a reload. Told at once, then at most once per `every` for the package: the writes
+/// within it are told once at its end, so the last of a burst is never lost. One for all the plugins (the host's).
+pub struct DataNews {
+    events: EventBus,
+    /// Where the end of a second is waited for; none (a tool, a test without a runtime) — each write told.
+    handle: Option<tokio::runtime::Handle>,
+    every: Duration,
+    /// The packages told within the last `every`, and whether a write came since (told at its end).
+    cooling: Arc<Mutex<HashMap<String, bool>>>,
+}
+
+impl DataNews {
+    pub fn new(events: EventBus, handle: Option<tokio::runtime::Handle>) -> Arc<DataNews> {
+        DataNews::with(events, handle, DATA_NEWS_EVERY)
+    }
+
+    pub fn with(events: EventBus, handle: Option<tokio::runtime::Handle>, every: Duration) -> Arc<DataNews> {
+        Arc::new(DataNews { events, handle, every, cooling: Arc::new(Mutex::new(HashMap::new())) })
+    }
+
+    /// A write of the package's: told now, or at the end of the `every` it falls in.
+    pub fn changed(&self, package: &str) {
+        let Some(handle) = &self.handle else {
+            tell(&self.events, package);
+            return;
+        };
+        {
+            let mut cooling = self.cooling.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(again) = cooling.get_mut(package) {
+                *again = true;
+                return;
+            }
+            cooling.insert(package.to_string(), false);
+        }
+        tell(&self.events, package);
+        let (events, cooling, every, package) =
+            (self.events.clone(), self.cooling.clone(), self.every, package.to_string());
+        handle.spawn(async move {
+            loop {
+                tokio::time::sleep(every).await;
+                let again = {
+                    let mut cooling = cooling.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    match cooling.get_mut(&package) {
+                        Some(again) if *again => {
+                            *again = false;
+                            true
+                        }
+                        _ => {
+                            cooling.remove(&package);
+                            false
+                        }
+                    }
+                };
+                if !again {
+                    return;
+                }
+                tell(&events, &package);
+            }
+        });
+    }
+}
+
+fn tell(events: &EventBus, package: &str) {
+    events.emit(GatewayEvent::PackageDataChanged { package: package.to_string() });
+}
 
 /// The addresses a plugin never reaches whatever its rights: this machine, its link-local neighbours, nowhere.
 fn forbidden(ip: IpAddr) -> bool {
@@ -289,6 +361,8 @@ pub struct PluginHostApi {
     sink: Option<LogSink>,
     /// The gateway's services behind `host.call`.
     services: Option<Arc<dyn HostServices>>,
+    /// Who tells the panel that the plugin's data changed.
+    data: Option<Arc<DataNews>>,
 }
 
 impl PluginHostApi {
@@ -310,6 +384,7 @@ impl PluginHostApi {
             log_count: AtomicU64::new(0),
             sink: None,
             services: None,
+            data: None,
         }
     }
 
@@ -323,6 +398,18 @@ impl PluginHostApi {
     pub fn with_sink(mut self, sink: LogSink) -> PluginHostApi {
         self.sink = Some(sink);
         self
+    }
+
+    /// The same, its writes to `kv` told the panel (`packages.data`).
+    pub fn with_data_news(mut self, data: Arc<DataNews>) -> PluginHostApi {
+        self.data = Some(data);
+        self
+    }
+
+    fn data_changed(&self) {
+        if let Some(data) = &self.data {
+            data.changed(&self.id);
+        }
     }
 
     fn kv_allowed(&self) -> Result<(), String> {
@@ -383,21 +470,25 @@ impl HostApi for PluginHostApi {
         if text.len() > MAX_VALUE {
             return Err(format!("значение больше {} КБ", MAX_VALUE / 1024));
         }
-        let budget = self.manifest.budget.storage_mb * 1024 * 1024;
-        let before: u64 = self
+        let stored: Option<String> = self
             .db
             .with(|c| {
                 c.query_row(
-                    "SELECT LENGTH(CAST(key AS BLOB)) + LENGTH(CAST(value AS BLOB)) FROM plugin_kv WHERE plugin_id = ?1 AND key = ?2",
+                    "SELECT value FROM plugin_kv WHERE plugin_id = ?1 AND key = ?2",
                     params![self.id, key],
-                    |row| row.get::<_, i64>(0),
+                    |row| row.get(0),
                 )
                 .optional()
             })
             .ok()
-            .flatten()
-            .unwrap_or(0)
-            .max(0) as u64;
+            .flatten();
+        // The value it holds already: nothing changes, nothing is written or told — a plugin that writes what it read
+        // would make its widgets read again for nothing.
+        if stored.as_deref().and_then(|stored| serde_json::from_str::<Value>(stored).ok()).as_ref() == Some(&value) {
+            return Ok(());
+        }
+        let budget = self.manifest.budget.storage_mb * 1024 * 1024;
+        let before = stored.map(|stored| (key.len() + stored.len()) as u64).unwrap_or(0);
         let after = storage_used(&self.db, &self.id).saturating_sub(before) + (key.len() + text.len()) as u64;
         if after > budget {
             return Err(format!("хранилище плагина заполнено: бюджет {} МБ", self.manifest.budget.storage_mb));
@@ -410,17 +501,22 @@ impl HostApi for PluginHostApi {
                     params![self.id, key, text, now_iso()],
                 )
             })
-            .map(|_| ())
-            .map_err(|_| "хранилище не записалось".to_string())
+            .map_err(|_| "хранилище не записалось".to_string())?;
+        self.data_changed();
+        Ok(())
     }
 
     fn kv_delete(&self, key: &str) -> Result<(), String> {
         self.kv_allowed()?;
         PluginHostApi::key(key)?;
-        self.db
+        let removed = self
+            .db
             .with(|c| c.execute("DELETE FROM plugin_kv WHERE plugin_id = ?1 AND key = ?2", params![self.id, key]))
-            .map(|_| ())
-            .map_err(|_| "хранилище не записалось".to_string())
+            .map_err(|_| "хранилище не записалось".to_string())?;
+        if removed > 0 {
+            self.data_changed();
+        }
+        Ok(())
     }
 
     fn kv_keys(&self, prefix: &str) -> Result<Vec<String>, String> {
@@ -460,6 +556,7 @@ impl HostApi for PluginHostApi {
         })
     }
 
+    /// The plugin's own values, a secret one as it is (the panel sees only «••••••», plugins/manifest.rs).
     fn settings(&self) -> Map<String, Value> {
         let stored = self.settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default();
         self.manifest.settings_values(stored.get(&self.id))
@@ -536,5 +633,83 @@ impl HostApi for PluginHostApi {
             "warn" => tracing::warn!(target: "plugins", "{}: {message}", self.id),
             _ => tracing::info!(target: "plugins", "{}: {message}", self.id),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn told(heard: &mut tokio::sync::broadcast::Receiver<Arc<GatewayEvent>>) -> Vec<String> {
+        let mut packages = Vec::new();
+        while let Ok(event) = heard.try_recv() {
+            if let GatewayEvent::PackageDataChanged { package } = event.as_ref() {
+                packages.push(package.clone());
+            }
+        }
+        packages
+    }
+
+    /// The owner, 10.11: «добавь молоко в список покупок» did not show in the widget until a reload. A plugin's write
+    /// is told at once; a burst within a second once more at its end — the last write is never lost — and each
+    /// package on its own.
+    #[tokio::test(start_paused = true)]
+    async fn a_plugins_writes_are_told_at_once_then_at_most_once_a_second_the_last_never_lost() {
+        let events = EventBus::new();
+        let mut heard = events.subscribe();
+        let news = DataNews::new(events.clone(), Some(tokio::runtime::Handle::current()));
+        news.changed("shopping");
+        news.changed("shopping");
+        news.changed("shopping");
+        news.changed("radio");
+        assert_eq!(told(&mut heard), ["shopping", "radio"], "the first of each at once");
+
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert_eq!(told(&mut heard), ["shopping"], "the rest of the burst at the second's end, once");
+        news.changed("shopping");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(told(&mut heard).is_empty(), "within the next second: held");
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert_eq!(told(&mut heard), ["shopping"], "and told at its end");
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert!(told(&mut heard).is_empty(), "nothing written, nothing told");
+        news.changed("shopping");
+        assert_eq!(told(&mut heard), ["shopping"], "a quiet package is told at once again");
+
+        // Without a runtime to wait on, each write is told.
+        let plain = DataNews::new(events.clone(), None);
+        plain.changed("radio");
+        plain.changed("radio");
+        assert_eq!(told(&mut heard), ["radio", "radio"]);
+    }
+
+    /// Review (packages-data-loop): a widget that wrote what it had read made every widget on the desk read again each
+    /// second. The value a key holds already, written again, changes nothing: nothing is told. Another value is, and a
+    /// removal of what was there.
+    #[test]
+    fn the_value_a_key_holds_written_again_tells_the_panel_nothing() {
+        let events = EventBus::new();
+        let mut heard = events.subscribe();
+        let manifest = crate::plugins::manifest::check(&json!({
+            "schema": 1, "kind": "plugin", "id": "shopping", "version": "1.0.0", "title": "Покупки", "api": "^1",
+            "runs": ["pc", "station"], "permissions": ["kv"]
+        }))
+        .unwrap();
+        let db = Arc::new(Db::memory());
+        let settings = Arc::new(SettingsService::new(db.clone(), events.clone()));
+        let api = PluginHostApi::new(Arc::new(manifest), db, settings, None, Arc::new(|| None))
+            .with_data_news(DataNews::new(events.clone(), None));
+
+        api.kv_set("list", json!({ "items": ["молоко"], "at": 1 })).unwrap();
+        assert_eq!(told(&mut heard), ["shopping"]);
+        api.kv_set("list", json!({ "at": 1, "items": ["молоко"] })).unwrap();
+        assert!(told(&mut heard).is_empty(), "the same list, its keys in another order: nothing told");
+        api.kv_set("list", json!({ "items": ["молоко", "хлеб"], "at": 2 })).unwrap();
+        assert_eq!(told(&mut heard), ["shopping"]);
+        assert_eq!(api.kv_get("list").unwrap(), Some(json!({ "items": ["молоко", "хлеб"], "at": 2 })));
+        api.kv_delete("list").unwrap();
+        api.kv_delete("list").unwrap();
+        assert_eq!(told(&mut heard), ["shopping"], "removed once: the second removes nothing");
     }
 }

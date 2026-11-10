@@ -31,5 +31,17 @@
   "smart-home": {
     "origin": "bundled",
     "enabled": true
+  },
+  "currency": {
+    "origin": "bundled",
+    "enabled": true
+  },
+  "shopping": {
+    "origin": "bundled",
+    "enabled": false
+  },
+  "calendar": {
+    "origin": "bundled",
+    "enabled": true
   }
 }

@@ -13,6 +13,7 @@ import { Sheet } from '../ui/sheet';
 import { Switch } from '../ui/switch';
 import { pluginMemoryLine } from './memory';
 import { ask } from '../ui/confirm';
+import { saveLabel } from '../via';
 
 /** Вид пакета по тому, откуда он, — на метке и в окне. */
 export const ORIGIN_TITLES: Record<PackageOrigin, string> = {
@@ -46,7 +47,14 @@ export function permissionTitle(permission: string): string {
 
 const isAdmin = (): boolean => can('plugins.manage') && sessionStore.get()?.role === 'admin';
 
-/** Поля настроек плагина: строка (или выбор), число, да/нет — форма из манифеста. */
+/** Маска секрета (ссылка с ключом внутри): значение шлюз не отдаёт, а та же маска при сохранении оставляет прежнее. */
+const SECRET_MASK = '••••••';
+
+type SettingField = NonNullable<PackageView['settings']>[number];
+
+const isSecret = (field: SettingField): boolean => field.type === 'secret' || field.secret === true || field.value === SECRET_MASK;
+
+/** Поля настроек плагина: строка (или выбор), число, да/нет, секрет — форма из манифеста. */
 function SettingsForm({ entry, onSaved }: { entry: PackageView; onSaved: (view: PackageView) => void }) {
     const fields = entry.settings ?? [];
     const [values, setValues] = useState<Record<string, unknown>>(() => Object.fromEntries(fields.map((field) => [field.key, field.value ?? field.default ?? null])));
@@ -75,6 +83,21 @@ function SettingsForm({ entry, onSaved }: { entry: PackageView; onSaved: (view: 
                     {field.description && <span class="t-caption">{field.description}</span>}
                     {field.type === 'boolean' ? (
                         <Switch on={values[field.key] === true} label={field.title} disabled={busy} onChange={(on) => setValues({ ...values, [field.key]: on })} />
+                    ) : isSecret(field) ? (
+                        // Заданный секрет не показывается: поле пустое, и пустым оно уходит маской — шлюз оставит прежнее.
+                        <input
+                            class="field"
+                            type="password"
+                            autocomplete="off"
+                            spellcheck={false}
+                            value={values[field.key] === SECRET_MASK ? '' : String(values[field.key] ?? '')}
+                            placeholder={field.value === SECRET_MASK ? 'задано · впишите новое, чтобы заменить' : 'вставьте сюда'}
+                            disabled={busy}
+                            onInput={(e) => {
+                                const text = (e.target as HTMLInputElement).value;
+                                setValues({ ...values, [field.key]: text === '' && field.value === SECRET_MASK ? SECRET_MASK : text });
+                            }}
+                        />
                     ) : field.options ? (
                         <select class="field" value={String(values[field.key] ?? '')} disabled={busy} onChange={(e) => setValues({ ...values, [field.key]: (e.target as HTMLSelectElement).value })}>
                             {field.options.map((option) => (
@@ -98,7 +121,7 @@ function SettingsForm({ entry, onSaved }: { entry: PackageView; onSaved: (view: 
                 </label>
             ))}
             <div>
-                <Action tone="on" label="Сохранить" busy={busy} onClick={() => void save()} />
+                <Action tone="on" label={saveLabel()} busy={busy} onClick={() => void save()} />
             </div>
             {note && (
                 <span class={`t-caption ${note.ok ? 'c-accent-text' : 'c-dot-offline'}`} role={note.ok ? 'status' : 'alert'}>

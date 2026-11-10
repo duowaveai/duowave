@@ -142,7 +142,7 @@ export function DuoWaveLogo({ size = 26, name = true, live = false }: { size?: n
 export function PoweredBy() {
     return (
         <footer class="powered-by">
-            <a href="https://duowave.app" target="_blank" rel="noreferrer">
+            <a href="https://duowave.ai" target="_blank" rel="noreferrer">
                 <DuoWaveMark size={16} variant="mono" />
                 Powered by DuoWave
             </a>

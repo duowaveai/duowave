@@ -50,11 +50,22 @@ html[data-look='minimal'] .dash-links {
     -webkit-backdrop-filter: none;
 }
 html[data-look='minimal'] .glass { box-shadow: none; }
-html[data-look='minimal'] .glass-strong { box-shadow: var(--strong-shadow); }
-html[data-look='minimal'] .menu { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.07); }
+/* Листы и меню без размытия — цвет темы поверх фона страницы, чтобы полупрозрачная тема не пропускала то, что под ними
+   (ui/desk.css, «Что плавает над столом»). */
+html[data-look='minimal'] .glass-strong {
+    background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg);
+    box-shadow: var(--strong-shadow);
+}
+html[data-look='minimal'] .menu {
+    background: linear-gradient(var(--menu-bg), var(--menu-bg)), var(--bg);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.07);
+}
 html[data-look='minimal'][data-theme='dark'] .menu { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); }
 html[data-look='minimal'] .sheet-backdrop { background: var(--scrim); }
-html[data-look='minimal'] .sheet { border-bottom: 0; }
+/* Нижний лист прилегает к краю экрана без линии снизу; окно посередине (с 761 точки, ui/glass.css) обведено целиком. */
+@media (max-width: 760px) {
+    html[data-look='minimal'] .sheet { border-bottom: 0; }
+}
 html[data-look='minimal'] .picker { border-radius: var(--r-panel-desk); }
 
 /* Вложенное — мельче своей панели: лист и плитка 14, вкладка 12. */

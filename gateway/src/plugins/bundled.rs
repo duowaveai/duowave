@@ -234,6 +234,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_built_in_panel_part_parses() {
+        let mut parsed = 0;
+        for package in packages() {
+            for (path, bytes) in &package.files {
+                if path != "panel.js" {
+                    continue;
+                }
+                let source = String::from_utf8(bytes.to_vec()).unwrap();
+                let name = format!("{}/panel.js", package.id);
+                crate::plugins::quickjs::syntax_of(&name, &source).await.unwrap_or_else(|error| panic!("{name}: {error}"));
+                parsed += 1;
+            }
+        }
+        assert!(parsed >= 4, "weather, radio, currency, shopping: {parsed}");
+    }
+
+    #[tokio::test]
     async fn every_built_in_package_reads_loads_and_exports_its_functions() {
         let index: Value = serde_json::from_slice(&Embedded::get("bundled.json").unwrap().data).unwrap();
         let named: Vec<&String> = index.as_object().unwrap().keys().filter(|id| !id.starts_with('_')).collect();

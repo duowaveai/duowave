@@ -29,12 +29,14 @@ use super::station_fs::{BIN, DIR, SERVICE, SERVICE_COMMAND};
 use super::transfer;
 use super::watch::{key_of, StationGateway, StationGateways};
 use crate::access::AccessService;
-use crate::config::Config;
+use crate::config::{Config, TtsProvider};
 use crate::core::availability::Placement;
 use crate::core::events::{Actor, EventBus, GatewayEvent};
 use crate::platform::http::ApiError;
 use crate::secrets::SecretsService;
-use crate::settings::definitions::{SettingsHome, StationLink, StationPlacement, STATION_LINKS};
+use crate::settings::definitions::{
+    SettingsHome, StationLink, StationPlacement, StationSelf, STATION_LINKS, VOICE_PROVIDER,
+};
 use crate::settings::SettingsService;
 use crate::stations::connect::quasar_config::{
     gateway_addresses, points_to, read_config, yandex, GatewayHost, PointsTo, VoiceAddresses,
@@ -439,7 +441,11 @@ impl MovesService {
         self.step(id, MoveStep::Copy, StepState::Done);
 
         self.step(id, MoveStep::Install, StepState::Running);
-        let key = self.deps.station.peer_key().map_err(|error| anyhow::anyhow!(error.message))?;
+        // The station's own key: the one it was linked or moved with, else a new one, kept once the station has it —
+        // never the computer's one key, which every station moved before opens with (review S2). Its watch opens it
+        // with the same.
+        let own = watch.own_key();
+        let key = own.clone().unwrap_or_else(super::peer::new_key);
         let mut home = None;
         // The computer's address and its key travel on every move to the station: alone, the station keeps them
         // off, and «ПК помогает колонке» is a switch later — no addresses, no keys (decision 7 of
@@ -468,6 +474,9 @@ impl MovesService {
             install.push_str(&format!(" --home-server {url} --key {secret}"));
         }
         self.run_ok(shell_ref, &install, None).await?;
+        if own.is_none() {
+            watch.keep_key(&key).map_err(|error| anyhow::anyhow!(error.message))?;
+        }
         let status: Value =
             serde_json::from_str(&self.run_ok(shell_ref, &format!("{BIN} station status --json"), None).await?)
                 .unwrap_or(Value::Null);
@@ -482,7 +491,10 @@ impl MovesService {
         let mut bundle = transfer::export(&self.deps.db, &self.deps.secrets, "pc")?;
         bundle.revision = transfer::revision(&self.deps.db, &self.deps.secrets)?;
         // The mode in force goes too, the one .env set included: the station starts in it (live, 07.11 — a mode only
-        // in .env did not travel, the station started in «Яндекс»).
+        // in .env did not travel, the station started in «Яндекс»). Only a move carries it (`transfer::MOVE_ONLY`):
+        // from then on the station switches its own. A whole package (`transfer::WHOLE`): the program just put there
+        // imports it at its first start, and a build older than this computer's (a file, the release of this version
+        // number) takes it too.
         let mode =
             self.deps.settings.get(&crate::settings::definitions::MODE, None).map(|setting| setting.mode).unwrap_or(
                 match self.deps.config.gateway.mode {
@@ -491,6 +503,22 @@ impl MovesService {
                 },
             );
         bundle.settings.insert("gateway_mode".into(), json!({ "mode": mode.as_str() }));
+        // The plugins' switches and their data go with the gateway: they live where it runs (transfer.rs), and the
+        // station takes them for the packages it has too (live, 10.11: «Список покупок» was off there, its list here).
+        bundle.plugins = Some(transfer::plugins(&self.deps.db)?);
+        // With this computer as its server the station speaks this computer's voice as this computer does — in
+        // «Шлюз» too (live, 10.11: Alice's voice there, the station's own choice was «yandex»).
+        if request.to == MoveTo::StationServer {
+            if let Some(provider) = self.voice_given() {
+                bundle.settings.insert("tts_provider".into(), json!(provider.as_str()));
+            }
+        }
+        // The station's name as this computer knows it: its own windows say it, not «Колонка».
+        let device = self.deps.stations.device_for_address(address);
+        let name = device.as_deref().and_then(|device| self.deps.stations.find(device)).map(|station| station.name);
+        if device.is_some() || name.is_some() {
+            bundle.settings.insert("station_self".into(), serde_json::to_value(StationSelf { device, name })?);
+        }
         let text = serde_json::to_string(&bundle)?;
         self.run_ok(shell_ref, &format!("{BIN} station receive-settings"), Some(&text)).await?;
         self.run_ok(shell_ref, &format!("{SERVICE_COMMAND} start"), None).await?;
@@ -561,21 +589,46 @@ impl MovesService {
             self.run_ok(shell.as_deref().unwrap(), &format!("[ -x {BIN} ] && echo ours || echo none"), None).await?;
         self.step(id, MoveStep::Check, StepState::Done);
 
-        // The settings come back when they lived on the station: applied at this gateway's restart.
+        // The settings come back when they lived on the station, the plugins' switches and data always — they live
+        // where the gateway runs: applied at this gateway's restart.
         self.step(id, MoveStep::Settings, StepState::Running);
         let record = watch.record();
         let mut restart = false;
         match (record.as_ref().map(|record| record.settings_home), watch.client()) {
             (Some(SettingsHome::Station), Some(client)) => {
-                let bundle = client.settings().await.map_err(|error| anyhow::anyhow!(error))?;
-                let key = self.deps.station.peer_key().map_err(|error| anyhow::anyhow!(error.message))?;
-                let _ = watch.backups.save(&transfer::seal(&bundle, &key), bundle.revision);
+                let bundle = client.settings_and_plugins().await.map_err(|error| anyhow::anyhow!(error))?;
+                // Sealed with the key the station opens with now, as its other copies are. A copy is the settings':
+                // its restore leaves the plugins' data as it is then.
+                let key = watch.pair_key().ok_or_else(|| anyhow::anyhow!("нет ключа пары"))?;
+                let copy = transfer::Bundle { plugins: None, ..bundle.clone() };
+                let _ = watch.backups.save(&transfer::seal(&copy, &key), bundle.revision);
                 let dir =
                     self.deps.config.skills.state_dir.clone().ok_or_else(|| anyhow::anyhow!("no state folder"))?;
                 std::fs::write(transfer::incoming_file(&dir), serde_json::to_vec(&bundle)?)?;
                 restart = true;
                 self.note(id, "Настройки взяты с колонки: шлюз перезапустится на них.");
                 self.step(id, MoveStep::Settings, StepState::Done);
+            }
+            (Some(SettingsHome::Pc), Some(client)) => {
+                // The settings live here already; the plugins' state comes back alone. Not taken (the station silent,
+                // a build before it): the move goes on, the plugins' data stays on the station.
+                let taken = match client.settings_and_plugins().await {
+                    Ok(bundle) => self.take_plugins(bundle).map_err(|error| error.to_string()),
+                    Err(error) => Err(error),
+                };
+                match taken {
+                    Ok(true) => {
+                        restart = true;
+                        self.note(id, "Плагины и их данные взяты с колонки: шлюз перезапустится на них.");
+                        self.step(id, MoveStep::Settings, StepState::Done);
+                    }
+                    Ok(false) => self.step(id, MoveStep::Settings, StepState::Skipped),
+                    Err(error) => {
+                        tracing::warn!("placement: the plugins' state stays on the station: {error}");
+                        self.note(id, &format!("Данные плагинов остались на колонке: {error}"));
+                        self.step(id, MoveStep::Settings, StepState::Skipped);
+                    }
+                }
             }
             _ => self.step(id, MoveStep::Settings, StepState::Skipped),
         }
@@ -698,6 +751,24 @@ impl MovesService {
         }
         watch.set_record(None, actor).map_err(|error| anyhow::anyhow!(error.message))?;
         Ok(false)
+    }
+
+    /// This computer's choice of voice when it gives a voice of its own (`own`, `mixed`), as it speaks now: what the
+    /// station speaks with while this computer is its server. None: Alice's here — the station keeps its own choice.
+    fn voice_given(&self) -> Option<TtsProvider> {
+        let stored = self.deps.settings.get(&VOICE_PROVIDER, None).and_then(|provider| TtsProvider::parse(&provider));
+        let provider = crate::speech::voice_service::provider_at_start(&self.deps.config.gateway.tts, stored);
+        matches!(provider, TtsProvider::Own | TtsProvider::Mixed).then_some(provider)
+    }
+
+    /// The station's plugins' state, left for this gateway's restart when it carries any: true then.
+    fn take_plugins(&self, bundle: transfer::Bundle) -> anyhow::Result<bool> {
+        let Some(plugins) = bundle.plugins.filter(|plugins| !plugins.is_empty()) else { return Ok(false) };
+        let dir = self.deps.config.skills.state_dir.clone().ok_or_else(|| anyhow::anyhow!("no state folder"))?;
+        let package = transfer::PluginsPackage { from: bundle.from, at: bundle.at, plugins };
+        super::station_fs::write_atomic(&transfer::incoming_plugins_file(&dir), &serde_json::to_vec(&package)?)
+            .map_err(|error| anyhow::anyhow!(error))?;
+        Ok(true)
     }
 
     /// Asks `check` until it says yes or the time is up.
@@ -1087,7 +1158,7 @@ mod tests {
         fn find(&self, device: &str) -> Option<StationView> {
             Some(StationView {
                 device: device.into(),
-                name: "Колонка".into(),
+                name: "Детская".into(),
                 status: RecordStatus::Approved,
                 last_address: Some("127.0.0.1".into()),
                 first_seen: now_iso(),
@@ -1163,12 +1234,18 @@ mod tests {
     struct Computer {
         moves: Arc<MovesService>,
         watch: Arc<StationGateway>,
+        secrets: Arc<SecretsService>,
         events: EventBus,
         restarts: Arc<AtomicUsize>,
         _state: tempfile::TempDir,
     }
 
     async fn setup() -> (Computer, Arc<Station>) {
+        setup_with(&[]).await
+    }
+
+    /// The computer with these in its .env besides.
+    async fn setup_with(env: &[(&str, &str)]) -> (Computer, Arc<Station>) {
         let dir = tempfile::Builder::new().prefix("station-").tempdir().unwrap();
         let dir_path = dir.path().to_path_buf();
         let fs = StationFs::at(dir.path());
@@ -1197,10 +1274,14 @@ mod tests {
         tokio::spawn(gateway(station.clone(), listener));
 
         let state = tempfile::tempdir().unwrap();
-        let config = Arc::new(Config::for_tests(&Env::from_pairs([
-            ("STATE_DIR", state.path().to_string_lossy().into_owned()),
-            ("UPDATE_FEED_URL", "https://github.com/o/r/releases/latest/download/latest.json".into()),
-        ])));
+        let config = Arc::new(Config::for_tests(&Env::from_pairs(
+            [
+                ("STATE_DIR", state.path().to_string_lossy().into_owned()),
+                ("UPDATE_FEED_URL", "https://github.com/o/r/releases/latest/download/latest.json".into()),
+            ]
+            .into_iter()
+            .chain(env.iter().map(|(name, value)| (*name, value.to_string()))),
+        )));
         let db = Arc::new(Db::memory());
         let events = EventBus::new();
         let secrets = Arc::new(SecretsService::new(db.clone(), None).unwrap());
@@ -1216,7 +1297,7 @@ mod tests {
             config,
             db,
             settings: settings.clone(),
-            secrets,
+            secrets: secrets.clone(),
             events: events.clone(),
             access,
             opener: Arc::new(Opener(station.clone())),
@@ -1229,7 +1310,7 @@ mod tests {
             timing: MoveTiming { start_ms: 3000, arrival_ms: 3000, poll_ms: 20 },
             payload: pretend_build(),
         });
-        (Computer { moves, watch, events, restarts, _state: state }, station)
+        (Computer { moves, watch, secrets, events, restarts, _state: state }, station)
     }
 
     async fn finished(moves: &MovesService, id: &str) -> MoveJob {
@@ -1250,6 +1331,9 @@ mod tests {
     #[tokio::test]
     async fn moves_the_gateway_onto_the_station_with_the_computer_as_its_server_and_back_to_yandex() {
         let (computer, station) = setup().await;
+        // A computer that moved stations before keeps its one key: this station gets a key of its own all the same.
+        let before = "the-computers-one-key-from-before-0123";
+        computer.secrets.set(crate::placement::peer::PEER_SECRET, Some(before)).unwrap();
         let gateway = crate::stations::connect::quasar_config::parse_gateway_host("192.0.2.10:3000");
         let job = computer
             .moves
@@ -1272,12 +1356,19 @@ mod tests {
         assert!(status.installed && status.local, "the program, the service, the voice at its own gateway");
         assert_eq!(status.home_server.as_deref(), Some("http://192.0.2.10:3000"));
         assert_eq!(station.fs.env_value("PEER_KEY").unwrap(), computer.watch.peer_key().unwrap());
+        // Its own key, kept as its own: never the computer's one, which would open every station it moved (S2).
+        let own = computer.secrets.get(&crate::placement::peer::station_secret("dev1"));
+        assert_eq!(own, station.fs.env_value("PEER_KEY"));
+        assert_ne!(own.as_deref(), Some(before));
+        assert_eq!(computer.secrets.get(crate::placement::peer::PEER_SECRET).as_deref(), Some(before), "untouched");
         assert_eq!(status.managed_by.as_deref(), Some("pc"));
         assert!(station.fs.path("/data/opt/duowave/restore.sh").exists(), "the way back before anything changed");
         let received: transfer::Bundle =
             serde_json::from_str(&station.received.lock().unwrap().clone().unwrap()).unwrap();
         assert_eq!(received.from, "pc");
-        assert!(received.settings.contains_key("gateway_mode"), "the mode in force travels, .env's too");
+        // The mode in force travels with a move, .env's too — the routine sending leaves the station its own (G1).
+        assert_eq!(received.settings["gateway_mode"], json!({ "mode": "relay" }), "the mode in force travels");
+        assert_eq!(received.schema, transfer::WHOLE, "whole: a station's build older than this one takes it too");
         assert_eq!(station.system.reboots.load(Ordering::Relaxed), 1);
         let record = computer.watch.record().unwrap();
         assert_eq!((record.placement, record.port, record.managed), (Placement::StationServer, station.port, true));
@@ -1405,6 +1496,185 @@ mod tests {
         assert!(station.fs.path("/data/opt/duowave/gateway/.env").exists());
         assert_eq!(computer.restarts.load(Ordering::Relaxed), 1, "restarts on the settings it took");
         assert_eq!(computer.watch.backups.list().len(), 1, "and keeps a copy of them");
+    }
+
+    fn station_server(gateway: Option<&str>, settings_home: SettingsHome) -> MoveRequest {
+        MoveRequest {
+            to: MoveTo::StationServer,
+            address: "127.0.0.1".into(),
+            gateway: gateway.and_then(crate::stations::connect::quasar_config::parse_gateway_host),
+            settings_home,
+            remove: false,
+        }
+    }
+
+    fn shopping_list(db: &Db, list: &str) {
+        crate::plugins::registry::set_enabled(db, "shopping", true, None, None).unwrap();
+        db.with(|c| {
+            c.execute(
+                "INSERT INTO plugin_kv (plugin_id, key, value, updated_at) VALUES ('shopping', 'list', ?1, 'then')
+                 ON CONFLICT (plugin_id, key) DO UPDATE SET value = excluded.value",
+                rusqlite::params![list],
+            )
+        })
+        .unwrap();
+    }
+
+    fn list_of(db: &Db) -> Option<String> {
+        use rusqlite::OptionalExtension;
+        db.with(|c| {
+            c.query_row("SELECT value FROM plugin_kv WHERE plugin_id = 'shopping' AND key = 'list'", [], |row| {
+                row.get(0)
+            })
+            .optional()
+        })
+        .unwrap()
+    }
+
+    /// The station's gateway answering the pair's GET of its package with this one, sealed: the computer's watch
+    /// asks it there from now.
+    async fn station_gives(computer: &Computer, bundle: &transfer::Bundle) {
+        let sealed = transfer::seal(bundle, &computer.watch.peer_key().unwrap());
+        let router = Router::new().route(
+            "/api/v1/transfer",
+            get(move || {
+                let sealed = sealed.clone();
+                async move { axum::Json(json!({ "message": sealed })) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let mut record = computer.watch.record().unwrap();
+        record.port = port;
+        computer.watch.set_record(Some(&record), None).unwrap();
+    }
+
+    /// Back to the computer: the station's voice comes to its /uni.ws after the reboot.
+    async fn back_to_the_computer(computer: &Computer, station: &Station, settings_home: SettingsHome) -> MoveJob {
+        let events = computer.events.clone();
+        let job = computer
+            .moves
+            .start(
+                MoveRequest {
+                    to: MoveTo::Pc,
+                    address: "127.0.0.1".into(),
+                    gateway: crate::stations::connect::quasar_config::parse_gateway_host("192.0.2.10:3000"),
+                    settings_home,
+                    remove: false,
+                },
+                None,
+            )
+            .unwrap();
+        for _ in 0..200 {
+            if station.fs.voice().unwrap().url == "ws://192.0.2.10:3000/uni.ws" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        events.emit(GatewayEvent::StationConnected { session_id: "s".into(), device_tag: "dev1".into() });
+        finished(&computer.moves, &job.id).await
+    }
+
+    /// Live, 10.11: the computer speaks «mixed» and moved the gateway to the station as its server; the station spoke
+    /// Alice's voice in «Шлюз», «Список покупок» was off there with its list on the computer, and its windows called it
+    /// «Колонка». The move carries this computer's voice choice, the plugins' switches and data, and the station's name
+    /// as this computer knows it; a move alone carries no voice.
+    #[tokio::test]
+    async fn the_move_with_the_computer_as_its_server_carries_its_voice_its_plugins_and_the_stations_name() {
+        let (computer, station) = setup_with(&[("TTS_OWN_URL", "http://127.0.0.1:9/v1")]).await;
+        computer.moves.deps.settings.set(&VOICE_PROVIDER, &"mixed".to_string(), None).unwrap();
+        shopping_list(&computer.moves.deps.db, r#"["молоко"]"#);
+        let job = computer.moves.start(station_server(Some("192.0.2.10:3000"), SettingsHome::Station), None).unwrap();
+        let job = finished(&computer.moves, &job.id).await;
+        assert_eq!(job.status, MoveStatus::Done, "{:?}", job.error);
+        let received: transfer::Bundle =
+            serde_json::from_str(&station.received.lock().unwrap().clone().unwrap()).unwrap();
+        assert_eq!(received.settings["tts_provider"], json!("mixed"), "the computer's voice, in «Шлюз» too");
+        assert_eq!(received.settings["station_self"], json!({ "device": "dev1", "name": "Детская" }));
+        let shopping = &received.plugins.as_ref().expect("the plugins' state")["shopping"];
+        assert!(shopping.enabled);
+        assert_eq!(shopping.kv.iter().map(|entry| entry.value.as_str()).collect::<Vec<_>>(), vec![r#"["молоко"]"#]);
+
+        // Alone on the station: the computer gives it no voice — the station keeps its own choice.
+        let (computer, station) = setup_with(&[("TTS_OWN_URL", "http://127.0.0.1:9/v1")]).await;
+        computer.moves.deps.settings.set(&VOICE_PROVIDER, &"mixed".to_string(), None).unwrap();
+        let alone =
+            MoveRequest { to: MoveTo::Station, ..station_server(Some("192.0.2.10:3000"), SettingsHome::Station) };
+        let job = computer.moves.start(alone, None).unwrap();
+        assert_eq!(finished(&computer.moves, &job.id).await.status, MoveStatus::Done);
+        let received: transfer::Bundle =
+            serde_json::from_str(&station.received.lock().unwrap().clone().unwrap()).unwrap();
+        assert!(!received.settings.contains_key("tts_provider"));
+        assert!(received.plugins.is_some(), "the plugins go along all the same");
+    }
+
+    /// Live, 10.11 (and 08.11): the move back revoked the station's key to its home server and the station's settings
+    /// applied at the restart brought it back; the station's plugins' data stayed on it. The move back takes the
+    /// plugins' state with the settings, and the key stays revoked.
+    #[tokio::test]
+    async fn the_move_back_brings_the_plugins_data_and_the_revoked_home_key_stays_revoked() {
+        let (computer, station) = setup().await;
+        let job = computer.moves.start(station_server(Some("192.0.2.10:3000"), SettingsHome::Station), None).unwrap();
+        assert_eq!(finished(&computer.moves, &job.id).await.status, MoveStatus::Done);
+        let home_key = computer.watch.record().unwrap().home_key_id.expect("a key for its home server");
+        // The station's package: what it was sent, the key alive in it, and its list grown there.
+        let mut theirs: transfer::Bundle =
+            serde_json::from_str(&station.received.lock().unwrap().clone().unwrap()).unwrap();
+        let station_db = Db::memory();
+        shopping_list(&station_db, r#"["молоко","хлеб"]"#);
+        theirs.plugins = Some(transfer::plugins(&station_db).unwrap());
+        assert!(theirs.tables["api_keys"]
+            .iter()
+            .any(|row| row["id"] == json!(home_key) && row["revoked_at"].is_null()));
+        station_gives(&computer, &theirs).await;
+
+        let job = back_to_the_computer(&computer, &station, SettingsHome::Station).await;
+        assert_eq!(job.status, MoveStatus::Done, "{:?}", job.error);
+        assert_eq!(computer.restarts.load(Ordering::Relaxed), 1);
+        let deps = &computer.moves.deps;
+        let revoked = |db: &Db| -> Option<String> {
+            db.with(|c| c.query_row("SELECT revoked_at FROM api_keys WHERE id = ?1", [&home_key], |row| row.get(0)))
+                .unwrap()
+        };
+        assert!(revoked(&deps.db).is_some(), "the move back revokes it");
+        // The restart: the package applied, the key as revoked as before it.
+        let state = deps.config.skills.state_dir.clone().unwrap();
+        let imported = transfer::apply_incoming(&state, &deps.db, &deps.secrets, false).unwrap();
+        assert!(imported.plugins >= 1);
+        assert!(revoked(&deps.db).is_some(), "not brought back to life by the station's settings");
+        assert_eq!(list_of(&deps.db).as_deref(), Some(r#"["молоко","хлеб"]"#), "the station's list, here now");
+        // The copy of the station's settings kept here is the settings': its restore leaves the plugins be.
+        assert_eq!(computer.watch.backups.list().len(), 1);
+    }
+
+    /// The settings live on the computer: the move back takes the plugins' state alone, for the restart.
+    #[tokio::test]
+    async fn with_the_settings_on_the_computer_the_move_back_takes_the_plugins_alone() {
+        let (computer, station) = setup().await;
+        let job = computer.moves.start(station_server(Some("192.0.2.10:3000"), SettingsHome::Pc), None).unwrap();
+        assert_eq!(finished(&computer.moves, &job.id).await.status, MoveStatus::Done);
+        let mut theirs: transfer::Bundle =
+            serde_json::from_str(&station.received.lock().unwrap().clone().unwrap()).unwrap();
+        let station_db = Db::memory();
+        shopping_list(&station_db, r#"["хлеб"]"#);
+        theirs.plugins = Some(transfer::plugins(&station_db).unwrap());
+        station_gives(&computer, &theirs).await;
+        let mut record = computer.watch.record().unwrap();
+        record.settings_home = SettingsHome::Pc;
+        computer.watch.set_record(Some(&record), None).unwrap();
+
+        let job = back_to_the_computer(&computer, &station, SettingsHome::Pc).await;
+        assert_eq!(job.status, MoveStatus::Done, "{:?}", job.error);
+        assert_eq!(states(&job)[1], (MoveStep::Settings, StepState::Done));
+        let state = computer.moves.deps.config.skills.state_dir.clone().unwrap();
+        assert!(!transfer::incoming_file(&state).exists(), "the settings are the computer's own");
+        assert!(transfer::incoming_plugins_file(&state).exists());
+        assert_eq!(computer.restarts.load(Ordering::Relaxed), 1);
+        let deps = &computer.moves.deps;
+        assert!(transfer::apply_incoming(&state, &deps.db, &deps.secrets, false).is_none());
+        assert_eq!(list_of(&deps.db).as_deref(), Some(r#"["хлеб"]"#));
     }
 
     #[tokio::test]

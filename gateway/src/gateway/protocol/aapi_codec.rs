@@ -18,7 +18,7 @@ use super::proto_object::{self, bytes_value, field_name, is_js_space, value_byte
 use super::protocol_types::{
     AlarmDate, AliceEvent, AliceEventType, AliceRequest, AliceResponseModel, CancelReason, ClientEvent, ClientInfo,
     ClientMessage, CloseReason, DeviceState, Directive, DirectiveType, EventHeader, PlayerState, PlayerView,
-    ServerMessage, StationAlarm, StreamAction, StreamControlEvent, TtsStateReason,
+    ServerMessage, StationAlarm, StationTimer, StreamAction, StreamControlEvent, TtsStateReason,
 };
 use super::structs::{from_struct, to_struct};
 use crate::utils::time::now_ms;
@@ -141,7 +141,8 @@ impl AapiCodec {
         let device = device_state.unwrap_or(&empty);
         let player = present(device, "audioPlayer");
         let track = player.and_then(|player| present(player, "currentTrack"));
-        let (timer_ids, alarms) = self.alarm_state(environment);
+        let (timers, alarms) = self.alarm_state(environment);
+        let timer_ids = timers.iter().map(|timer| timer.id.clone()).collect();
         Some(DeviceState {
             sound_level: device.get("soundLevel").and_then(Value::as_f64),
             sound_muted: bool_of(device, "soundMuted"),
@@ -159,6 +160,7 @@ impl AapiCodec {
                 offset_ms: i64_of(player, "offsetMs"),
             }),
             timer_ids,
+            timers,
             alarms,
         })
     }
@@ -178,7 +180,7 @@ impl AapiCodec {
     }
 
     /// The timers and alarms the station's alarm capability lists.
-    fn alarm_state(&self, environment: Option<&Value>) -> (Vec<String>, Option<Vec<StationAlarm>>) {
+    fn alarm_state(&self, environment: Option<&Value>) -> (Vec<StationTimer>, Option<Vec<StationAlarm>>) {
         let capability = capabilities_of(environment)
             .iter()
             .find(|entry| entry.get("type").and_then(Value::as_u64) == Some(ALARM_CAPABILITY));
@@ -190,10 +192,21 @@ impl AapiCodec {
         };
         let state = present(&decoded, "state");
         let list = |key: &str| state.and_then(|state| state.get(key)).map(list_of).unwrap_or_default();
-        let timer_ids = list("timers").iter().filter_map(|timer| non_empty(timer, "timerId")).collect();
+        let timers = list("timers")
+            .iter()
+            .filter_map(|timer| {
+                Some(StationTimer {
+                    id: non_empty(timer, "timerId")?,
+                    start: i64_of(timer, "startTimestamp"),
+                    duration: i64_of(timer, "duration"),
+                    remaining: i64_of(timer, "remaining"),
+                    paused: bool_of(timer, "paused").unwrap_or(false),
+                })
+            })
+            .collect();
         let alarms =
             list("alarms").iter().filter(|alarm| non_empty(alarm, "alarmId").is_some()).map(station_alarm).collect();
-        (timer_ids, Some(alarms))
+        (timers, Some(alarms))
     }
 
     pub fn encode_server(&self, message: &ServerMessage) -> Result<EncodedServerFrame, ProtoError> {
@@ -736,6 +749,7 @@ mod tests {
                 sound_max_level: Some(10.0),
                 player: Some(player),
                 timer_ids: vec![],
+                timers: vec![],
                 alarms: Some(vec![]),
             })
         );
@@ -771,6 +785,10 @@ mod tests {
         );
         let device = device_state(&voice_input_with_state(&state));
         assert_eq!(device.timer_ids, vec!["8db6c86a"]);
+        assert_eq!(
+            device.timers,
+            vec![StationTimer { id: "8db6c86a".into(), start: Some(1793578035), duration: Some(600), remaining: Some(592), paused: true }]
+        );
         let alarms = device.alarms.unwrap();
         assert_eq!(alarms.len(), 2);
         let rang = &alarms[0];

@@ -1,6 +1,10 @@
 //! The panel's live feed from the gateway's bus: requests as they go (the dashboard's trip), stations' presence, and
 //! the names of changes to re-read. Each listener gets what its rights allow; a listener that cannot be written to
-//! is dropped. `/api/v1/live` serves it as Server-Sent Events.
+//! is dropped. `/api/v1/live` serves it as Server-Sent Events (older panels, plugins), `/api/v1/live/ws` as a
+//! WebSocket (ws.rs) — with, for a panel at home, the channels of the stations whose gateway runs on them, as this
+//! gateway relays them (placement/relay.rs).
+
+pub mod ws;
 
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,6 +19,7 @@ use axum::routing::get;
 use axum::Router;
 use futures::Stream;
 use serde::Serialize;
+use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::app::App;
@@ -45,6 +50,8 @@ pub const RELAYED: &[&str] = &[
     "brain.changed",
     "mcp.changed",
     "packages.changed",
+    // A plugin's data changed (its kv): its widgets read theirs again.
+    "packages.data",
     "packages.catalog",
     "plugins.resources",
     "workshop.changed",
@@ -52,6 +59,7 @@ pub const RELAYED: &[&str] = &[
     "station.updated",
     "station.pending",
     "station.synced",
+    "station.state",
     "availability.changed",
     "homeServer.up",
     "homeServer.down",
@@ -66,7 +74,7 @@ pub const RELAYED: &[&str] = &[
 ];
 
 /// Finished requests in the hello: the dashboard's «last asked».
-const HELLO_RECENT: usize = 10;
+pub(crate) const HELLO_RECENT: usize = 10;
 const PING: Duration = Duration::from_secs(20);
 /// A stream lives this long; the panel opens it again, signed anew (a revoked key or a changed role takes effect).
 const LIFETIME: Duration = Duration::from_secs(15 * 60);
@@ -92,8 +100,23 @@ pub enum LiveMessage {
         presence: StationPresence,
     },
     /// Something the panel shows changed elsewhere (another phone, a script, the gateway itself): it reads it again.
+    /// `subject` — whose change it is, when it is one package's (`packages.*`: the package's id): a plugin's widget
+    /// reads its data again only on its own. `change` — what happened to the package (`packages.changed`): its code
+    /// loaded or unloaded changes nothing a widget shows.
     Changed {
         name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        subject: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        change: Option<String>,
+    },
+    /// A message of the live channel of a station whose gateway runs on it, as the station said it
+    /// (placement/relay.rs): a hello, a request, a presence, a change. Without one — that channel is lost until its
+    /// next hello.
+    Station {
+        station: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<Value>,
     },
 }
 
@@ -105,14 +128,64 @@ impl LiveMessage {
             LiveMessage::Request { .. } => "request",
             LiveMessage::Presence { .. } => "presence",
             LiveMessage::Changed { .. } => "changed",
+            LiveMessage::Station { .. } => "station",
         }
     }
+
+    /// A change by its name alone.
+    pub fn changed(name: &str) -> LiveMessage {
+        LiveMessage::Changed { name: name.to_string(), subject: None, change: None }
+    }
+}
+
+/// Whose a change is, and what it was, when it is one package's: its widgets read theirs again only on their own.
+fn subject_of(event: &GatewayEvent) -> (Option<String>, Option<String>) {
+    match event {
+        GatewayEvent::PackagesChanged { package_id, change, .. } => (Some(package_id.clone()), Some(change.clone())),
+        GatewayEvent::PackageDataChanged { package } => (Some(package.clone()), None),
+        _ => (None, None),
+    }
+}
+
+/// A station's message as one may see it who may not read the journal: its requests without what was said
+/// (`without_words`, on the message as the station sent it).
+pub fn station_without_words(message: &Value) -> Value {
+    let mut message = message.clone();
+    let strip = |request: &mut Value| {
+        if let Some(fields) = request.as_object_mut() {
+            for field in ["text", "partial", "answer", "error"] {
+                fields.remove(field);
+            }
+        }
+    };
+    match message.get("type").and_then(Value::as_str) {
+        Some("request") => {
+            if let Some(request) = message.get_mut("request") {
+                strip(request);
+            }
+        }
+        Some("hello") => {
+            for list in ["active", "recent"] {
+                if let Some(Value::Array(requests)) = message.get_mut(list) {
+                    requests.iter_mut().for_each(strip);
+                }
+            }
+        }
+        _ => {}
+    }
+    message
 }
 
 /// The stations' presence (src/stations/presence, ported apart): the hello's list. Until it is set the hello has
 /// none, and each station's presence arrives with its next change.
 pub trait PresenceSource: Send + Sync {
     fn list(&self) -> Vec<StationPresence>;
+}
+
+/// The stations' channels this gateway relays (placement/relay.rs): each one's state as a hello — what a panel that
+/// joins now hears of it right after its own hello.
+pub trait StationSource: Send + Sync {
+    fn snapshots(&self) -> Vec<(String, Value)>;
 }
 
 /// Where a listener's messages go: a panel's stream, or a test.
@@ -127,6 +200,8 @@ struct Listener {
     id: u64,
     /// Whether it may read what people said (journal.view): without it, requests come without their words.
     words: bool,
+    /// Whether it hears the stations' channels: a panel of the live socket, at home.
+    stations: bool,
     sink: Box<dyn LiveSink>,
 }
 
@@ -134,8 +209,11 @@ pub struct LiveHub {
     me: Weak<LiveHub>,
     requests: Arc<RequestsService>,
     presence: OnceLock<Arc<dyn PresenceSource>>,
+    stations: OnceLock<Arc<dyn StationSource>>,
     listeners: Mutex<Vec<Listener>>,
     next: AtomicU64,
+    /// The live socket's tickets (ws.rs).
+    pub tickets: ws::Tickets,
 }
 
 /// A listener's place in the hub: dropping it leaves.
@@ -158,8 +236,10 @@ impl LiveHub {
             me: me.clone(),
             requests,
             presence: OnceLock::new(),
+            stations: OnceLock::new(),
             listeners: Mutex::new(Vec::new()),
             next: AtomicU64::new(1),
+            tickets: ws::Tickets::default(),
         })
     }
 
@@ -167,6 +247,13 @@ impl LiveHub {
     pub fn set_presence(&self, source: Arc<dyn PresenceSource>) {
         if self.presence.set(source).is_err() {
             tracing::warn!("live: the presence source is set already");
+        }
+    }
+
+    /// The stations' channels this gateway relays: a panel that joins hears their state after its hello.
+    pub fn set_stations(&self, source: Arc<dyn StationSource>) {
+        if self.stations.set(source).is_err() {
+            tracing::warn!("live: the stations' relay is set already");
         }
     }
 
@@ -194,6 +281,16 @@ impl LiveHub {
 
     /// A panel joins: the state now, then every change it may see.
     pub fn join(&self, principal: &Principal, sink: Box<dyn LiveSink>) -> Leave {
+        self.join_as(principal, false, sink)
+    }
+
+    /// The same, and the stations' channels this gateway relays: each one's state right after the hello, then its
+    /// messages. A panel of the live socket at home (ws.rs).
+    pub fn join_with_stations(&self, principal: &Principal, sink: Box<dyn LiveSink>) -> Leave {
+        self.join_as(principal, true, sink)
+    }
+
+    fn join_as(&self, principal: &Principal, stations: bool, sink: Box<dyn LiveSink>) -> Leave {
         let words = can(Some(principal), JOURNAL_VIEW);
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let mut listeners = self.lock();
@@ -204,12 +301,40 @@ impl LiveHub {
             active: self.requests.active_views().into_iter().map(visible).collect(),
             recent: self.requests.recent_views(HELLO_RECENT).into_iter().map(visible).collect(),
         };
-        if sink.send(&hello) {
-            listeners.push(Listener { id, words, sink });
+        let mut joined = sink.send(&hello);
+        if stations && joined {
+            for (station, state) in self.stations.get().map(|source| source.snapshots()).unwrap_or_default() {
+                let message = if words { state } else { station_without_words(&state) };
+                joined = joined && sink.send(&LiveMessage::Station { station, message: Some(message) });
+            }
+        }
+        if joined {
+            listeners.push(Listener { id, words, stations, sink });
         } else {
             tracing::debug!("a panel's stream dropped before its hello");
         }
         Leave { hub: self.me.clone(), id }
+    }
+
+    /// A station's message, relayed (placement/relay.rs), to the panels that hear the stations — the words of its
+    /// requests only to those who may read the journal. `None`: the station's channel is lost.
+    pub fn relay(&self, station: &str, message: Option<&Value>) {
+        let mut listeners = self.lock();
+        if !listeners.iter().any(|listener| listener.stations) {
+            return;
+        }
+        let full = LiveMessage::Station { station: station.to_string(), message: message.cloned() };
+        let bare = LiveMessage::Station { station: station.to_string(), message: message.map(station_without_words) };
+        listeners.retain(|listener| {
+            if !listener.stations {
+                return true;
+            }
+            let kept = listener.sink.send(if listener.words { &full } else { &bare });
+            if !kept {
+                tracing::debug!("a panel's stream dropped");
+            }
+            kept
+        });
     }
 
     fn publish(&self, event: &GatewayEvent) {
@@ -237,8 +362,9 @@ impl LiveHub {
                 deliver(&mut listeners, &|_| LiveMessage::Presence { presence: presence.clone() });
             }
             other if RELAYED.contains(&other.name()) => {
-                let name = other.name().to_string();
-                deliver(&mut listeners, &|_| LiveMessage::Changed { name: name.clone() });
+                let (subject, change) = subject_of(other);
+                let message = LiveMessage::Changed { name: other.name().to_string(), subject, change };
+                deliver(&mut listeners, &|_| message.clone());
             }
             _ => {}
         }
@@ -302,7 +428,10 @@ fn events_body(queue: mpsc::Receiver<LiveMessage>, leave: Leave) -> impl Stream<
 }
 
 pub fn routes() -> Router<Arc<App>> {
-    Router::new().route("/api/v1/live", get(stream))
+    Router::new()
+        .route("/api/v1/live", get(stream))
+        .route("/api/v1/live/ticket", axum::routing::post(ws::ticket))
+        .route("/api/v1/live/ws", get(ws::socket))
 }
 
 /// The panel's live channel: Server-Sent Events over a plain GET, signed like any API call — the panel reads it with
@@ -444,10 +573,7 @@ mod tests {
         tick().await;
         assert_eq!(
             reader.messages()[1..],
-            [
-                LiveMessage::Request { request: Box::new(answered) },
-                LiveMessage::Changed { name: "mode.changed".into() }
-            ]
+            [LiveMessage::Request { request: Box::new(answered) }, LiveMessage::changed("mode.changed")]
         );
         let LiveMessage::Request { request: bare } = &viewer.messages()[1] else { panic!("a request") };
         assert_eq!((bare.id.as_str(), bare.phase), (request.id.as_str(), Some(RequestPhase::Think)));
@@ -483,7 +609,7 @@ mod tests {
 
     #[test]
     fn writes_each_message_as_an_event_of_its_type() {
-        let message = LiveMessage::Changed { name: "mode.changed".into() };
+        let message = LiveMessage::changed("mode.changed");
         assert_eq!(
             frame(7, &message),
             "id: 7\nevent: changed\ndata: {\"type\":\"changed\",\"name\":\"mode.changed\"}\n\n"
@@ -493,5 +619,75 @@ mod tests {
             serde_json::to_value(&hello).unwrap(),
             serde_json::json!({"type": "hello", "serverTime": "t", "presence": [], "active": [], "recent": []})
         );
+        let lost = LiveMessage::Station { station: "kitchen".into(), message: None };
+        assert_eq!(serde_json::to_value(&lost).unwrap(), serde_json::json!({"type": "station", "station": "kitchen"}));
+    }
+
+    #[tokio::test]
+    async fn names_the_package_a_change_is_of_and_what_happened_to_it() {
+        let (live, events, _) = hub();
+        let panel = Arc::new(Recorder::default());
+        let _panel = live.join(&person(&["station.view"]), Box::new(panel.clone()));
+        events.emit(GatewayEvent::PackageDataChanged { package: "shopping".into() });
+        events.emit(GatewayEvent::PackagesChanged {
+            change: "unloaded".into(),
+            package_id: "weather".into(),
+            version: Some("1.0.0".into()),
+            error: None,
+            actor: None,
+        });
+        tick().await;
+        let changes: Vec<Value> =
+            panel.messages()[1..].iter().map(|message| serde_json::to_value(message).unwrap()).collect();
+        assert_eq!(
+            changes,
+            [
+                serde_json::json!({"type": "changed", "name": "packages.data", "subject": "shopping"}),
+                serde_json::json!({"type": "changed", "name": "packages.changed", "subject": "weather", "change": "unloaded"}),
+            ]
+        );
+    }
+
+    /// A relay's stations, as it would keep them.
+    struct Relayed(Vec<(String, Value)>);
+
+    impl StationSource for Relayed {
+        fn snapshots(&self) -> Vec<(String, Value)> {
+            self.0.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn tells_the_stations_channels_only_to_the_sockets_at_home_and_their_words_only_to_the_journals_readers() {
+        let (live, _, _) = hub();
+        let asked =
+            serde_json::json!({"id": "r1", "status": "answered", "text": "Добавь молоко", "answer": "Добавила."});
+        let hello =
+            serde_json::json!({"type": "hello", "serverTime": "t", "presence": [], "active": [], "recent": [asked]});
+        live.set_stations(Arc::new(Relayed(vec![("h:kitchen".into(), hello)])));
+        let reader = Arc::new(Recorder::default());
+        let viewer = Arc::new(Recorder::default());
+        let old = Arc::new(Recorder::default());
+        let _reader = live.join_with_stations(&person(&["station.view", "journal.view"]), Box::new(reader.clone()));
+        let _viewer = live.join_with_stations(&person(&["station.view"]), Box::new(viewer.clone()));
+        let _old = live.join(&person(&["station.view", "journal.view"]), Box::new(old.clone()));
+
+        // The station's state right after the hello: its words to the journal's reader only.
+        let LiveMessage::Station { station, message: Some(state) } = &reader.messages()[1] else { panic!("a station") };
+        assert_eq!((station.as_str(), state["recent"][0]["text"].as_str()), ("h:kitchen", Some("Добавь молоко")));
+        let LiveMessage::Station { message: Some(state), .. } = &viewer.messages()[1] else { panic!("a station") };
+        assert_eq!(state["recent"][0]["id"], "r1");
+        assert_eq!((state["recent"][0].get("text"), state["recent"][0].get("answer")), (None, None));
+        assert_eq!(old.messages().len(), 1, "the stream of an older panel: its own hello only");
+
+        let request =
+            serde_json::json!({"type": "request", "request": {"id": "r2", "status": "active", "text": "Который час?"}});
+        live.relay("h:kitchen", Some(&request));
+        live.relay("h:kitchen", None);
+        assert_eq!(reader.messages()[2], LiveMessage::Station { station: "h:kitchen".into(), message: Some(request) });
+        let LiveMessage::Station { message: Some(bare), .. } = &viewer.messages()[2] else { panic!("a station") };
+        assert_eq!((bare["request"]["id"].as_str(), bare["request"].get("text")), (Some("r2"), None));
+        assert_eq!(viewer.messages()[3], LiveMessage::Station { station: "h:kitchen".into(), message: None }, "lost");
+        assert_eq!(old.messages().len(), 1);
     }
 }

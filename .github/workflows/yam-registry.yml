@@ -33,19 +33,21 @@ jobs:
       - name: Secrets
         if: env.PUBLISHING != 'true'
         run: echo "no YAM_PUBLISH_TOKEN or YAM_AUTHOR_KEY in the repository's secrets, nothing goes to the registry"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         if: env.PUBLISHING == 'true'
         with:
+          persist-credentials: false
           ref: ${{ env.TAG }}
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         if: env.PUBLISHING == 'true'
         with:
+          persist-credentials: false
           repository: nyakokitsu/yam
           ref: ${{ env.YAM_REF }}
           path: yam
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 10.11.2026
         if: env.PUBLISHING == 'true'
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: env.PUBLISHING == 'true'
         with:
           workspaces: yam

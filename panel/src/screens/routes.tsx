@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { AccessCatalog, Health, RoutesSetting, api, can, plural, problemOf } from '../api';
 import { CAPABILITIES, CapabilityMeta, capabilityIcon } from '../capabilities';
 import { capabilityIconComponent } from '../icons';
+import { Overlay } from '../ui/sheet';
 
 function routePill(route: string | undefined): { cls: string; label: string } {
     switch (route) {
@@ -73,7 +74,9 @@ export function RoutesScreen({ health, catalog }: Props) {
         if (!sheet) return;
         firstOption.current?.focus();
         const onKey = (event: KeyboardEvent) => {
-            if (event.key === 'Escape') close();
+            if (event.key !== 'Escape' || event.defaultPrevented) return;
+            event.preventDefault();
+            close();
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
@@ -187,12 +190,7 @@ export function RoutesScreen({ health, catalog }: Props) {
             )}
 
             {sheet && (
-                <div
-                    class="sheet-backdrop"
-                    onClick={(e) => {
-                        if (e.target === e.currentTarget) close();
-                    }}
-                >
+                <Overlay onDismiss={close}>
                     <div class="sheet glass-strong" role="dialog" aria-modal="true" aria-label={`Маршрут: ${sheet.title}`}>
                         <div class="flex items-center gap-8">
                             <h2 class="t-title-xs m-0 flex-1">
@@ -255,7 +253,7 @@ export function RoutesScreen({ health, catalog }: Props) {
                             </p>
                         )}
                     </div>
-                </div>
+                </Overlay>
             )}
         </>
     );

@@ -624,8 +624,47 @@ async fn keeps_the_log_spotter_audio_as_a_wav_and_acknowledges_the_log() {
     station.close();
 }
 
+/// The finished trip of a request whose words are `text`, from the requests' journal.
+async fn finished_trip(env: &Env, text: &str) -> Value {
+    for _ in 0..120 {
+        let journal = env.get("/api/v1/requests?limit=10").await;
+        let found = journal["requests"].as_array().unwrap().iter().find(|view| view["text"] == text).cloned();
+        if let Some(view) = found.filter(|view| view["status"] != "active") {
+            return view;
+        }
+        sleep(50).await;
+    }
+    panic!("no finished request \"{text}\" in /api/v1/requests");
+}
+
+/// A trip answered by Yandex alone: Yandex heard it, Alice thought and spoke.
+fn assert_heard_and_answered_by_yandex(trip: &Value) {
+    assert_eq!(
+        (&trip["kind"], &trip["status"], &trip["executor"], &trip["mode"], &trip["answer"]),
+        (&json!("voice"), &json!("answered"), &json!("yandex"), &json!("gateway"), &json!("Включаю."))
+    );
+    let steps: Vec<(&str, &str)> = trip["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|step| (step["phase"].as_str().unwrap(), step["by"].as_str().unwrap_or("")))
+        .collect();
+    assert_eq!(steps, vec![("listen", "yandex"), ("think", "yandex"), ("speak", "yandex")]);
+}
+
+/// The station's voice with nothing here to recognise it, its stream closed by the station when it is done.
+async fn speak_to_yandex_whole(station: &StationClient, message_id: &str, stream_id: u32, request_id: &str) -> usize {
+    station.start_voice(message_id, stream_id, request_id, None, None);
+    let audio = station_audio(&wake_word(), &concat(&[&voice(700.0, -50.0), &silence(1200.0)]));
+    station.send_audio(stream_id, &audio.bytes);
+    station.send(
+        json!({ "streamControl": { "streamId": stream_id, "messageId": format!("sc-{message_id}"), "close": {} } }),
+    );
+    audio.bytes.len()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn without_recognition_the_voice_goes_to_yandex_whole_and_we_answer_nothing() {
+async fn without_recognition_the_voice_goes_to_yandex_whole_and_its_trip_has_yandexs_words_and_answer() {
     // A station's gateway with no computer and no cloud: «Шлюз» with nothing to recognise with (live, 07.11).
     let env = env_with(&[("ASR_PROVIDER", "none")]).await;
     let station = env.station(STATION_HEADERS).await;
@@ -650,6 +689,77 @@ async fn without_recognition_the_voice_goes_to_yandex_whole_and_we_answer_nothin
     assert!(frames.iter().any(|frame| frame.len() > 4 && frame[..4] == 21u32.to_be_bytes()), "and its audio");
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert!(station.index(is_final_asr("voice-n")).is_none(), "no empty answer of ours closes it");
+
+    // The station is done speaking: Yandex hears it, answers it, speaks; the station gets all of it as Yandex said it.
+    station.send(json!({ "streamControl": { "streamId": 21, "messageId": "sc-n", "close": {} } }));
+    let heard = station.wait_for(is_final_asr("voice-n"), 4000).await;
+    assert_eq!(normalized(&heard), "включи кино");
+    station.wait_for(response_to("req-n"), 4000).await;
+    station.wait_for(speak_of("voice-n"), 4000).await;
+
+    // It is a request like any other: in the journal and on the panel, with Yandex's words and its answer.
+    let trip = finished_trip(&env, "включи кино").await;
+    assert_heard_and_answered_by_yandex(&trip);
+    let answers = notes(&env, "yandexAnswer").await;
+    assert!(answers.iter().any(|note| note["data"]["heard"] == "включи кино"), "{answers:?}");
+    station.close();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_recognition_a_voice_that_comes_before_our_session_with_yandex_is_up_waits_for_it_whole() {
+    // The station reconnects on «Алиса» and speaks at once (live, 08.11: 77 ms after the socket), before our session
+    // with Yandex is open: before, the request was cancelled and its audio went to Yandex on a stream it never heard
+    // opened.
+    let env = env_with(&[("ASR_PROVIDER", "none")]).await;
+    env.yandex.server.open_delay_ms.store(800, std::sync::atomic::Ordering::SeqCst);
+    let station = env.station(STATION_HEADERS).await;
+    station.synchronize("sync-held").await;
+    let sent = speak_to_yandex_whole(&station, "voice-held", 1, "req-held").await;
+
+    station.wait_for(response_to("req-held"), 8000).await;
+    let inputs = env.yandex.voice_inputs();
+    let input = inputs.iter().find(|input| input.message_id == "voice-held").expect("the VoiceInput reaches Yandex");
+    assert_eq!(
+        (input.stream_id, input.audio_bytes, input.closed),
+        (1, sent, true),
+        "with all its audio, then its close"
+    );
+    assert!(!notes(&env, "voiceHeld").await.is_empty());
+    assert_heard_and_answered_by_yandex(&finished_trip(&env, "включи кино").await);
+    assert!(notes(&env, "strayYandexStream").await.is_empty());
+    station.close();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_recognition_what_yandex_says_on_the_stations_own_stream_goes_to_the_station_the_rest_is_stray() {
+    let env = env_with(&[("ASR_PROVIDER", "none")]).await;
+    let station = env.station(STATION_HEADERS).await;
+    station.synchronize("sync-own").await;
+    speak_to_yandex_whole(&station, "voice-own", 21, "req-own").await;
+    station.wait_for(response_to("req-own"), 8000).await;
+    finished_trip(&env, "включи кино").await;
+
+    // Yandex closes the station's stream (the station's numbering, given to Yandex as it was): as in «Яндекс», the
+    // station gets it as it is. A stream that is nobody's stays dropped and noted.
+    let upstream = env.yandex.server.last();
+    let close =
+        |stream: u32, id: &str| json!({ "streamControl": { "streamId": stream, "messageId": id, "close": {} } });
+    upstream.send(server_frame(&close(21, "y-close-21")));
+    let passed = station.wait_for(|m| at(m, "streamControl.messageId") == "y-close-21", 4000).await;
+    assert_eq!(at(&passed, "streamControl.streamId"), 21);
+    upstream.send(server_frame(&close(40, "y-close-40")));
+    let mut stray = Vec::new();
+    for _ in 0..40 {
+        stray = notes(&env, "strayYandexStream").await;
+        if !stray.is_empty() {
+            break;
+        }
+        sleep(50).await;
+    }
+    assert_eq!(stray.len(), 1);
+    assert!(stray[0]["summary"].as_str().unwrap().contains("Yandex stream 40 (a stream control)"), "{stray:?}");
+    assert!(station.index(|m| at(m, "streamControl.messageId") == "y-close-40").is_none());
+    station.close();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

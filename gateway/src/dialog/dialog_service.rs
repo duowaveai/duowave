@@ -61,10 +61,14 @@ const NOT_RUN: &str = "not run: one command per request";
 pub struct Filler {
     pub phrase: Cow<'static, str>,
     pub after_ms: u64,
+    /// Said as well when a round of the model has written nothing for this long: a model that thinks first, or
+    /// writes a whole file (the workshop's), keeps the person waiting in silence otherwise.
+    pub thinking_ms: Option<u64>,
 }
 
 /// Said while a slow lookup runs and nothing of the answer has been said: the jingle alone is a long wait.
-pub const LOOKUP_FILLER: Filler = Filler { phrase: Cow::Borrowed("Сейчас посмотрю."), after_ms: 1000 };
+pub const LOOKUP_FILLER: Filler =
+    Filler { phrase: Cow::Borrowed("Сейчас посмотрю."), after_ms: 1000, thinking_ms: None };
 
 /// What a tool returned: its text for the model, whether it failed, whether the text came from outside the house.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -116,6 +120,9 @@ pub struct ToolBox {
     pub rounds: Option<usize>,
     /// The time for the tool rounds of one answer (25 s by default); the last round comes when it runs short.
     pub budget_ms: Option<u64>,
+    /// How long one round may write nothing before it fails (LLM_TIMEOUT_MS by default). A streamed call comes only
+    /// whole, so a model that writes a whole file in one call (the workshop's) needs much longer than a lookup.
+    pub round_ms: Option<u64>,
     /// How to use these tools: added to the stable part of the instructions while they are offered.
     pub instructions: Option<String>,
     /// The tools still offered after a tainted result (those that change nothing); all of them without it.
@@ -134,6 +141,7 @@ impl ToolBox {
             filler: None,
             rounds: None,
             budget_ms: None,
+            round_ms: None,
             instructions: None,
             safe_after_taint: None,
         }
@@ -525,11 +533,39 @@ impl DialogService {
                         instructions: toolbox.instructions.clone(),
                     });
                     let request = self.request(slot, &messages, context, offer.as_ref());
-                    let mut events = self.round(slot, request, cancel.clone(), Until::Phrase);
+                    let timeout_ms =
+                        toolbox.as_ref().and_then(|toolbox| toolbox.round_ms).unwrap_or(self.config.timeout_ms);
+                    let mut events = self.round_within(slot, request, cancel.clone(), Until::Phrase, timeout_ms);
+                    // A round that writes nothing for a while says the filler, once, while nothing has been said.
+                    let mut thinking = toolbox
+                        .as_ref()
+                        .and_then(|toolbox| toolbox.filler.as_ref())
+                        .filter(|_| !filler_said && speaker.said.is_empty())
+                        .and_then(|filler| {
+                            let at = Instant::now() + Duration::from_millis(filler.thinking_ms?);
+                            Some((filler.phrase.to_string(), at))
+                        });
                     let mut turn = None;
-                    while let Some(event) = events.next().await {
+                    loop {
+                        let event = match thinking.as_ref().map(|(_, at)| *at) {
+                            Some(at) => tokio::select! {
+                                event = events.next() => event,
+                                _ = tokio::time::sleep_until(at) => {
+                                    if let Some((phrase, _)) = thinking.take() {
+                                        filler_said = true;
+                                        y.send(Ok(phrase)).await;
+                                    }
+                                    continue;
+                                }
+                            },
+                            None => events.next().await,
+                        };
+                        let Some(event) = event else { break };
                         match event? {
-                            LlmEvent::Text(text) => speaker.push(&text).await,
+                            LlmEvent::Text(text) => {
+                                thinking = None;
+                                speaker.push(&text).await
+                            }
                             LlmEvent::Turn(done) => turn = Some(done),
                             LlmEvent::Tool(_) => {}
                         }
@@ -696,9 +732,20 @@ impl DialogService {
     /// One model round. LLM_TIMEOUT_MS until the first phrase (`Phrase`: a sentence's worth of text or a tool call)
     /// or the first event of any kind (`Event`); the timeout explains more than the client's abort error does.
     fn round(&self, slot: &ModelSlot, request: LlmRequest, cancel: CancellationToken, until: Until) -> LlmStream {
+        self.round_within(slot, request, cancel, until, self.config.timeout_ms)
+    }
+
+    /// A round that may write nothing for `timeout_ms` (a toolbox's `round_ms`) instead of LLM_TIMEOUT_MS.
+    fn round_within(
+        &self,
+        slot: &ModelSlot,
+        request: LlmRequest,
+        cancel: CancellationToken,
+        until: Until,
+        timeout_ms: u64,
+    ) -> LlmStream {
         let client = slot.client.clone();
         let model = slot.model.clone();
-        let timeout_ms = self.config.timeout_ms;
         let label = request.model.clone().filter(|model| !model.is_empty()).unwrap_or_else(|| "the model".into());
         generate(move |y| async move {
             let first = cancel.child_token();
@@ -1133,7 +1180,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(200)).await;
             Ok(ToolOutcome::from("Тест прошёл."))
         });
-        toolbox.filler = Some(Filler { phrase: "Сейчас посмотрю.".into(), after_ms: 50 });
+        toolbox.filler = Some(Filler { phrase: "Сейчас посмотрю.".into(), after_ms: 50, thinking_ms: None });
         assert_eq!(
             collect(service.answer(
                 "device-5",
@@ -1153,6 +1200,50 @@ mod tests {
                 json!({"role": "user", "content": "Что нового?"}),
                 json!({"role": "assistant", "content": "Главная новость: тест прошёл."}),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn gives_a_round_that_writes_a_whole_file_the_toolboxs_time_and_says_the_filler_once_while_it_thinks() {
+        let llm = chat().await;
+        let mut quick = config(Some(&llm.url));
+        quick.timeout_ms = 100;
+        let service = dialog(quick);
+        // Every round of the model stays silent longer than LLM_TIMEOUT_MS: the call first, then the words.
+        llm.calls(&[("write_file", json!({"path": "panel.js"}))]);
+        llm.reply("Готово, виджет в пульте.");
+        llm.delay_ms.store(300, Ordering::SeqCst);
+        let wrote = Arc::new(AtomicUsize::new(0));
+        let counted = wrote.clone();
+        let mut toolbox = ToolBox::new(vec![tool("write_file")], move |_, _| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            async { Ok(ToolOutcome::from("Записано.")) }
+        });
+        toolbox.rounds = Some(4);
+        toolbox.round_ms = Some(2_000);
+        toolbox.filler = Some(Filler { phrase: "Работаю над этим.".into(), after_ms: 50, thinking_ms: Some(120) });
+        assert_eq!(
+            collect(service.answer(
+                "device-12",
+                "Сделай виджет",
+                DialogContext::default(),
+                CancellationToken::new(),
+                Some(toolbox)
+            ))
+            .await,
+            vec!["Работаю над этим.", "Готово, виджет в пульте."]
+        );
+        assert_eq!(wrote.load(Ordering::SeqCst), 1, "the call ran");
+
+        // A lookup's filler waits for the calls only: a slow model alone says nothing before its words.
+        llm.calls(&[]);
+        let mut lookup = ToolBox::new(vec![tool("get_news")], |_, _| async { Ok(ToolOutcome::from("Новость.")) });
+        lookup.round_ms = Some(2_000);
+        lookup.filler = Some(LOOKUP_FILLER);
+        assert_eq!(
+            collect(service.answer("device-13", "Что нового?", DialogContext::default(), CancellationToken::new(), Some(lookup)))
+                .await,
+            vec!["Готово, виджет в пульте."]
         );
     }
 
@@ -1251,7 +1342,7 @@ mod tests {
         llm.calls(&[("get_news", json!({}))]);
         llm.reply("Новостей нет.");
         let mut toolbox = ToolBox::new(vec![tool("get_news")], |_, _| async { Ok(ToolOutcome::from("Ничего.")) });
-        toolbox.filler = Some(Filler { phrase: "Сейчас посмотрю.".into(), after_ms: 300 });
+        toolbox.filler = Some(Filler { phrase: "Сейчас посмотрю.".into(), after_ms: 300, thinking_ms: None });
         assert_eq!(
             collect(service.answer(
                 "device-6",

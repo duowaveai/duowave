@@ -38,6 +38,8 @@ ARG CARGO_ZIGBUILD_VERSION=0.24.1
 # The release feed built into the program (the release workflow passes the repository's latest.json): the gateway
 # then offers new versions in the panel and leaves installing them to the image. Empty: no checks.
 ARG DUOWAVE_UPDATE_FEED=
+# The packages' catalog built in (the release passes https://packages.duowave.app/catalog.json). Empty: none.
+ARG DUOWAVE_PACKAGES_FEED=
 RUN apt-get update && apt-get install -y --no-install-recommends python3-venv && rm -rf /var/lib/apt/lists/*
 RUN python3 -m venv /opt/zig && /opt/zig/bin/pip install --no-cache-dir "cargo-zigbuild==${CARGO_ZIGBUILD_VERSION}"
 ENV PATH=/opt/zig/bin:$PATH
@@ -54,9 +56,10 @@ COPY gateway gateway
 # What a new content folder starts with, built into the program (gateway/src/config/data_dir.rs).
 COPY content/radio.json content/README.md content/
 # And what else it carries inside (include_str!, rust-embed; .dockerignore lets in just these): the built-in packages,
-# the station's service script, the plugin workshop's guides.
+# the station's scripts, the plugin workshop's guides. scripts/check-docker-context.mjs (CI) fails when the code
+# embeds a file this stage does not have.
 COPY packages packages
-COPY station-client/S99zgateway station-client/
+COPY station-client/voice.sh station-client/S95duowave station-client/call-client.sh station-client/gateway.sh station-client/
 COPY docs/plugins/AUTHORING.md docs/plugins/panel-sdk.d.ts docs/plugins/
 COPY docs/plugins/skill docs/plugins/skill
 COPY docs/design/glass/THEMES.md docs/design/glass/

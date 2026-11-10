@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { ApiError, AsrCard, DownloadState, ModelsView, TtsCard, TtsPending, VoiceNeeds, api, can, isTight, needsOf, problemOf } from '../api';
+import { ApiError, AsrCard, DownloadState, HomeVoice, ModelsView, TtsCard, TtsPending, VoiceNeeds, api, can, isTight, needsOf, problemOf } from '../api';
 import { IconTimer, IconVoice } from '../icons';
 import { Action, Card, CardNote } from '../ui/cards';
 import { Dropdown } from '../ui/dropdown';
@@ -180,24 +180,105 @@ const MODELS_TABS: Array<TabEntry<ModelsTab>> = [
 ];
 
 /**
+ * «Голос» колонки, пока компьютер даёт ей свой: голос компьютера (наши ответы — им, ответы Яндекса — голосом Алисы)
+ * или Алиса. Выбор — самой колонки; перенос с компьютером-помощником приносит выбор компьютера. Шлюз постарше
+ * маршрута не знает — тогда карточки нет.
+ */
+function HomeVoiceChoice() {
+    const [state, setState] = useState<HomeVoice | null>(null);
+    const [busy, setBusy] = useState<HomeVoice['chosen'] | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const isAdmin = can('models.manage');
+
+    useEffect(() => {
+        let alive = true;
+        const read = () =>
+            api
+                .homeVoice()
+                .then((fresh) => alive && setState(fresh))
+                .catch(() => {});
+        void read();
+        const id = setInterval(read, 30_000);
+        return () => {
+            alive = false;
+            clearInterval(id);
+        };
+    }, []);
+
+    if (!state?.offered) return null;
+    const pick = async (voice: HomeVoice['chosen']) => {
+        if (busy || voice === state.chosen) return;
+        setBusy(voice);
+        setError(null);
+        try {
+            setState(await api.setHomeVoice(voice));
+        } catch (e) {
+            setError(problemOf(e));
+        } finally {
+            setBusy(null);
+        }
+    };
+    const computer = state.voice ? `Голос компьютера (${state.voice})` : 'Голос компьютера';
+    return (
+        <section class="card glass py-12 px-16 mb-10" aria-label="Чей голос отвечает">
+            <h2 class="t-title-xs m-0 mb-6">Чей голос отвечает</h2>
+            <p class="t-body m-0 mb-10">
+                {state.chosen === 'computer'
+                    ? !state.up
+                        ? 'Компьютер не на связи — пока он не вернётся, отвечает голос Алисы.'
+                        : state.provider === 'own'
+                          ? 'Все ответы — голосом компьютера.'
+                          : 'Наши ответы — голосом компьютера, ответы Яндекса — голосом Алисы.'
+                    : 'Отвечает голос Алисы.'}
+            </p>
+            <div class="flex flex-wrap gap-8">
+                <Action
+                    on={state.chosen === 'computer'}
+                    label={computer}
+                    busy={busy === 'computer'}
+                    disabled={!isAdmin || (!!busy && busy !== 'computer')}
+                    onClick={() => void pick('computer')}
+                />
+                <Action
+                    tone={state.chosen === 'alice' ? 'yandex' : 'off'}
+                    label="Алиса"
+                    busy={busy === 'alice'}
+                    disabled={!isAdmin || (!!busy && busy !== 'alice')}
+                    onClick={() => void pick('alice')}
+                />
+            </div>
+            {error && (
+                <p class="t-caption c-dot-offline m-0 mt-8" role="alert">
+                    {error}
+                </p>
+            )}
+        </section>
+    );
+}
+
+/**
  * Шлюз на самой колонке: своих моделей и голосовой лаборатории в нём нет. Голос и распознавание задаются адресами
- * облачных сервисов в .env шлюза; мозг и характер — как обычно, в разделе «Мозг».
+ * облачных сервисов в .env шлюза; мозг и характер — как обычно, в разделе «Мозг». Пока компьютер даёт колонке свой
+ * голос, во вкладке «Голос» — выбор между ним и Алисой (HomeVoiceChoice).
  */
 function LocalModelsAbsent({ kind, message }: { kind: Tab; message: string }) {
     return (
-        <section class="card glass py-12 px-16" aria-label={kind === 'voice' ? 'Голос' : 'Распознавание'}>
-            <h2 class="t-title-xs m-0 mb-6">
-                {kind === 'voice' ? 'Свои голоса — на компьютере' : 'Своё распознавание — на компьютере'}
-            </h2>
-            <p class="t-body m-0 mb-6">
-                {message}
-            </p>
-            <p class="t-caption m-0">
-                {kind === 'voice'
-                    ? 'Здесь отвечает голос Алисы. Свой голос — облачный синтез с OpenAI-совместимым /audio/speech: TTS_PROVIDER и TTS_OWN_URL в .env шлюза.'
-                    : 'Своё распознавание здесь — облачное, с OpenAI-совместимым /audio/transcriptions: ASR_BASE_URL и ASR_API_KEY в .env шлюза.'}
-            </p>
-        </section>
+        <>
+            {kind === 'voice' && <HomeVoiceChoice />}
+            <section class="card glass py-12 px-16" aria-label={kind === 'voice' ? 'Голос' : 'Распознавание'}>
+                <h2 class="t-title-xs m-0 mb-6">
+                    {kind === 'voice' ? 'Свои голоса — на компьютере' : 'Своё распознавание — на компьютере'}
+                </h2>
+                <p class="t-body m-0 mb-6">
+                    {message}
+                </p>
+                <p class="t-caption m-0">
+                    {kind === 'voice'
+                        ? 'Без голоса компьютера здесь отвечает голос Алисы. Свой голос — облачный синтез с OpenAI-совместимым /audio/speech: TTS_PROVIDER и TTS_OWN_URL в .env шлюза.'
+                        : 'Своё распознавание здесь — облачное, с OpenAI-совместимым /audio/transcriptions: ASR_BASE_URL и ASR_API_KEY в .env шлюза.'}
+                </p>
+            </section>
+        </>
     );
 }
 

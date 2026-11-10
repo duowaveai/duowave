@@ -40,26 +40,46 @@ declare module "@duowave/panel-sdk" {
         nav?: "main" | "more";
     }
 
-    /** Вклад в слот: home.cards — карточки главного экрана, header.actions — кнопки шапки, house.tabs — вкладки
-     * «Дома», say.extras — дополнения окна «Сказать». */
+    /**
+     * Вклад в слот: desk.widgets — виджеты стола (docs/plans/desk.md), home.cards — карточка на столе большим
+     * виджетом в своей рамке, header.actions — кнопки шапки, house.tabs — вкладки «Дома», say.extras — дополнения
+     * окна «Сказать».
+     *
+     *   slots: { "desk.widgets": [{ id: "now", title: "Погода", icon: icons.weather, size: "small", initial: true,
+     *                               source: "плагин", Component: Weather }] }
+     *
+     * Виджет рисует только содержимое: рамку с названием, значком, источником и меню «…» даёт стол. Крупное число —
+     * класс `w-big`, строки — `w-rows` > `w-row`, подпись — `w-cap`, плитка дня — `w-day`, кнопка — `w-btn`.
+     */
     export interface SlotContribution {
         id: string;
         Component: FunctionComponent<Record<string, unknown>>;
         order?: number;
         permission?: string;
-        /** Для house.tabs: подпись и значок вкладки. */
+        /** Для house.tabs и desk.widgets: подпись и значок. */
         title?: string;
         icon?: Icon;
+        /** desk.widgets: маленький (на телефоне по два в ряд) или большой (во всю ширину); по умолчанию маленький. */
+        size?: "small" | "large";
+        /** desk.widgets: подпись источника в шапке — «плагин», «колонка»… */
+        source?: string;
+        /** desk.widgets: стоит на столе сразу; без него — его ставят из «+». */
+        initial?: boolean;
+        /** desk.widgets: для каких ролей пульта; без него — для обеих. */
+        roles?: Array<"gateway" | "helper">;
+        /** desk.widgets: виджет рисует свою рамку сам (класс `widget` на корне). */
+        bare?: boolean;
     }
 
-    /** Тема — данные (docs/design/glass/THEMES.md): чего нет, берётся у «Стекла». */
+    /** Тема — данные (docs/design/glass/THEMES.md): чего нет, берётся у «Минимала». */
     export interface Theme {
         id: string;
         title: string;
         about?: string;
         modes?: { dark: string; light: string };
         palette: { dark: Record<string, string>; light: Record<string, string> };
-        layout?: "tabbar" | "sidebar";
+        /** Вид, который тема советует: стол и док или боковая панель ('tabbar' — стол); выбирает человек. */
+        layout?: "desk" | "tabbar" | "sidebar";
         density?: number;
         font?: string;
         radius?: { panel: number; large: number; bar: number };
@@ -81,11 +101,46 @@ declare module "@duowave/panel-sdk" {
     /** Значения настроек своего плагина (меняет их администратор в окне плагина). */
     export function useSettings(pluginId: string): Record<string, unknown>;
 
-    /** Номер перемены на шлюзе (перечитать своё) и переход в раздел пульта. */
+    /**
+     * Номер перемены своего плагина (перечитать своё) и переход в раздел пульта. Растёт с переменами его пакета — его
+     * данные (`host.kv`), настройки, включение — не чаще раза в 5 с; не с каждой переменой в пульте.
+     */
     export function usePanelState(): { version: number; go(section: string, tab?: string, item?: string): void };
 
     /** Есть ли у вошедшего право. */
     export function can(permission: string): boolean;
+
+    /** Запрос к колонке из живого канала: от первого звука до последнего слова ответа. Слова — тому, у кого журнал. */
+    export interface RequestView {
+        id: string;
+        device: string;
+        kind: "voice" | "text" | "say";
+        status: "active" | "answered" | "silent" | "cancelled" | "failed";
+        startedAt: string;
+        ms?: number;
+        text?: string;
+        answer?: string;
+        capability?: string;
+    }
+
+    /** Живой канал пульта, только чтение: открыт ли он, запросы к колонкам (новые сначала), как колонки слышно. */
+    export function useLive(): {
+        connected: boolean;
+        requests: RequestView[];
+        presence: Record<string, { device: string; state: "voice" | "alive" | "reconnecting" | "offline"; since: string }>;
+    };
+
+    /** Выбранная колонка, только чтение: устройство, имя, на связи ли, режим и роль пульта. */
+    export function useStation(): {
+        device: string | null;
+        name: string;
+        online: boolean;
+        mode: "relay" | "gateway" | "own" | null;
+        role: "gateway" | "helper";
+    };
+
+    /** Значки пульта: для шапки виджета (icon) и раздела. */
+    export const icons: Record<"weather" | "music" | "timer" | "list" | "coins" | "globe" | "heart" | "speaker" | "sparkle" | "package", Icon>;
 
     export const Card: FunctionComponent<{ title?: string; meta?: string; children?: ComponentChildren }>;
     export const Note: FunctionComponent<{ tone?: "meta" | "warning" | "error"; children?: ComponentChildren }>;

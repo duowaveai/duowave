@@ -36,12 +36,33 @@ export function offeredVersion(status: UpdateStatus | null): string | null {
     return status.available.version;
 }
 
-export function useOfferedVersion(): string | null {
+/** Предложенная версия для строки на главном экране: срочная ли она и поставит ли её шлюз сам. */
+export interface Offered {
+    version: string;
+    critical: boolean;
+    auto: boolean;
+}
+
+export function offeredUpdate(status: UpdateStatus | null): Offered | null {
+    const version = offeredVersion(status);
+    if (!version || !status?.available) return null;
+    return { version, critical: !!status.available.critical, auto: !!status.autoCritical };
+}
+
+function useUpdateStatus(): UpdateStatus | null {
     const [status, setStatus] = useState(current);
     useEffect(() => {
         listeners.add(setStatus);
         setStatus(current);
         return () => void listeners.delete(setStatus);
     }, []);
-    return offeredVersion(status);
+    return status;
+}
+
+export function useOfferedVersion(): string | null {
+    return offeredVersion(useUpdateStatus());
+}
+
+export function useOfferedUpdate(): Offered | null {
+    return offeredUpdate(useUpdateStatus());
 }

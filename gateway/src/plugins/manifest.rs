@@ -234,6 +234,10 @@ pub enum SettingType {
     Boolean,
 }
 
+/// What the panel sees of a secret setting that is set: never the value itself. A save that brings it back keeps the
+/// value stored.
+pub const SECRET_SHOWN: &str = "••••••";
+
 /// A setting the panel draws a field for; the plugin reads its value through `settings`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -248,6 +252,10 @@ pub struct SettingSpec {
     /// For a string: the values to pick from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<Vec<String>>,
+    /// `"secret": true` (a string): a private link, a token. The plugin's backend reads it as it is; the panel — the
+    /// package's view and the plugin's own part — sees only `SECRET_SHOWN`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
 }
 
 impl SettingSpec {
@@ -385,13 +393,26 @@ impl Manifest {
         })
     }
 
-    /// The values of its settings: the stored ones that still fit, the defaults for the rest.
+    /// The values of its settings: the stored ones that still fit, the defaults for the rest. The plugin's own: its
+    /// backend reads them so; the panel — `settings_shown`.
     pub fn settings_values(&self, stored: Option<&Map<String, Value>>) -> Map<String, Value> {
         let mut values = Map::new();
         for setting in &self.settings {
             let value = stored.and_then(|stored| stored.get(&setting.key)).filter(|value| setting.accepts(value));
             if let Some(value) = value.or(setting.default.as_ref()) {
                 values.insert(setting.key.clone(), value.clone());
+            }
+        }
+        values
+    }
+
+    /// The values as the panel sees them: a secret one that is set only as «••••••» (an empty one stays empty, so the
+    /// panel can tell it is not set).
+    pub fn settings_shown(&self, stored: Option<&Map<String, Value>>) -> Map<String, Value> {
+        let mut values = self.settings_values(stored);
+        for setting in self.settings.iter().filter(|setting| setting.secret) {
+            if let Some(value) = values.get_mut(&setting.key).filter(|value| value.as_str() != Some("")) {
+                *value = Value::String(SECRET_SHOWN.into());
             }
         }
         values
@@ -709,6 +730,18 @@ fn settings(value: Option<&Value>, problems: &mut Vec<String>) -> Vec<SettingSpe
                 None
             }
         };
+        let secret = match item.get("secret") {
+            None | Some(Value::Bool(false)) => false,
+            Some(Value::Bool(true)) if r#type == SettingType::String => true,
+            Some(Value::Bool(true)) => {
+                problems.push(format!("settings.{key}: secret — только у type string"));
+                continue;
+            }
+            Some(_) => {
+                problems.push(format!("settings.{key}: secret — true или false"));
+                continue;
+            }
+        };
         let spec = SettingSpec {
             key: key.to_string(),
             r#type,
@@ -716,6 +749,7 @@ fn settings(value: Option<&Value>, problems: &mut Vec<String>) -> Vec<SettingSpe
             description: field("description").map(|text| text.chars().take(300).collect()),
             default: item.get("default").cloned(),
             options,
+            secret,
         };
         if let Some(default) = &spec.default {
             if !spec.accepts(default) {
@@ -957,6 +991,31 @@ mod tests {
         let wrong = json!({"country": 5});
         assert_eq!(manifest.settings_values(wrong.as_object())["country"], "RU", "a value that no longer fits");
         assert!(manifest.incompatible_with(Placement::Station).is_none());
+    }
+
+    #[test]
+    fn a_secret_setting_is_its_backends_as_it_is_and_the_panels_only_as_dots() {
+        let settings = json!([
+            { "key": "ics", "type": "string", "title": "Ссылка iCal", "secret": true },
+            { "key": "country", "type": "string", "title": "Страна", "default": "RU", "secret": false }
+        ]);
+        let manifest = check(&with(radio(), "/settings", settings)).unwrap();
+        assert_eq!(manifest.settings.iter().map(|setting| setting.secret).collect::<Vec<_>>(), [true, false]);
+        let link = "https://calendar.example/private-0123/basic.ics";
+        let stored = json!({ "ics": link });
+        assert_eq!(manifest.settings_values(stored.as_object())["ics"], link);
+        let shown = manifest.settings_shown(stored.as_object());
+        assert_eq!((shown["ics"].as_str(), shown["country"].as_str()), (Some(SECRET_SHOWN), Some("RU")));
+        assert!(!manifest.settings_shown(None).contains_key("ics"), "not set: nothing to hide");
+        assert_eq!(manifest.settings_shown(json!({ "ics": "" }).as_object())["ics"], "", "empty stays empty");
+        // The panel learns which one is secret; the others say nothing new.
+        assert_eq!(serde_json::to_value(&manifest.settings[0]).unwrap()["secret"], true);
+        assert!(serde_json::to_value(&manifest.settings[1]).unwrap().get("secret").is_none());
+
+        let number = json!([{ "key": "pin", "type": "number", "title": "Код", "secret": true }]);
+        assert_eq!(problems(with(radio(), "/settings", number)), ["settings.pin: secret — только у type string"]);
+        let word = json!([{ "key": "ics", "type": "string", "title": "Ссылка", "secret": "yes" }]);
+        assert_eq!(problems(with(radio(), "/settings", word)), ["settings.ics: secret — true или false"]);
     }
 
     #[test]

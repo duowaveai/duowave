@@ -1,25 +1,35 @@
-//! The plugins' memory and room (docs/plans/plugins.md, «Память и место на колонке», stage 3). On a computer there is
-//! plenty of both; on the station (Lite 2: 238 MB of memory, about 137 free, no swap, about 60 MB free in /data) a lack
+//! The plugins' memory and room (docs/plans/plugins.md, «Память и место на колонке»). On a computer there is plenty of
+//! both; on the station (Lite 2: 238 MB of memory, about 115–125 available, no swap, about 60 MB free in /data) a lack
 //! of memory brings the OOM killer, which may take Alice's `quasar` along with the gateway. So the budget is counted
-//! before, not after a fall:
+//! before a plugin's context loads, not after a fall:
 //!
 //! ```text
-//! available to the station (MemAvailable, now)   ≈ 137 MB  — the gateway's own memory is already out of it
+//! available to the station (MemAvailable, now)   ≈ 120 MB  — the gateway's own memory is already out of it
 //! + what the plugins' engines hold now           (they give it back when unloaded)
 //! − the reserve for the system and Alice           40 MB   (PLUGINS_RESERVE_MB)
 //! = the plugins' budget                          ≈  80 MB
+//! − what the contexts loaded now declared
+//! = free: what one more context may take
 //! ```
 //!
-//! - Each plugin that is on takes its declared `budget.memoryMb`, not what it holds now: the budget must not lie at a
-//!   plugin's peak.
-//! - Switching one on is checked against what is free; on the station a plugin that does not fit stays off, and the
-//!   panel says how much it needs and how much is free.
-//! - Room on the disk the same way: what a package unpacks into and its store, with a reserve kept for the gateway's
-//!   own update (PLUGINS_STORAGE_RESERVE_MB, 15 MB: `.previous` alone is 12).
+//! - A context takes its plugin's declared `budget.memoryMb` while it is loaded — the engine's own hard limit
+//!   (quickjs.rs), so the budget does not lie at a plugin's peak — and nothing while it is not. A plugin that is on but
+//!   not loaded takes nothing, and idle contexts unload after PLUGINS_IDLE_UNLOAD_S: switching a plugin on is never
+//!   refused for memory. (Until 10.11.2026 every plugin that was on took its share: the ten built-ins declared 42 MB
+//!   and held about 2, and a small plugin from the workshop did not go on — «нужно 4 МБ, свободно 0».)
+//! - The check is at the load — a call, an event, a voice route: the context's declared budget must fit what is free.
+//!   If it does not, idle contexts unload first, the longest idle first, one in a call never; if it still does not,
+//!   the call fails and says what it needs and what is free. On the station only: on a computer the numbers are shown,
+//!   not kept. An app's program is checked the same way at its start; it is a process of its own, counted by what it
+//!   holds (out of MemAvailable), not by a share.
+//! - Room on the disk is checked at the install: what a package unpacks into and its store, with a reserve kept for the
+//!   gateway's own update (PLUGINS_STORAGE_RESERVE_MB, 15 MB: `.previous` alone is 12).
 //! - Under pressure (MemAvailable below the reserve, or the system's own pressure at «warn»): the contexts of plugins
 //!   idle longer than a minute are unloaded and their work in the background waits. At «critical» on the station the
-//!   plugin switched on last is switched off (PLUGINS_PRESSURE_ACTION=warn only says so: the owner's open decision 3).
-//!   The built-in skills and the voice path are never touched.
+//!   plugin switched on last among those loaded is switched off (PLUGINS_PRESSURE_ACTION=warn only says so: the
+//!   owner's open decision 3); one that holds nothing frees nothing and stays on. The built-in skills and the voice
+//!   path are never touched: a plugin's voice route that does not fit fails as any failed call does, and a built-in
+//!   skill takes the phrase when there is one.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -118,9 +128,14 @@ pub struct PluginShare {
     pub id: String,
     pub title: String,
     pub enabled: bool,
+    /// Its context is loaded, or loading.
     pub loaded: bool,
-    /// What it declared: what it takes of the budget while on.
+    /// In a call now, or loading: its context is not unloaded to make room.
+    pub busy: bool,
+    /// What it declared: what its context takes of the budget while loaded.
     pub budget_mb: u64,
+    /// What it takes of the budget now: its declared budget while its context is loaded, nothing otherwise.
+    pub taken_mb: u64,
     /// What its engine holds now, while loaded.
     pub actual_mb: Option<u64>,
 }
@@ -139,7 +154,7 @@ pub struct DiskView {
 #[serde(rename_all = "camelCase")]
 pub struct ResourcesView {
     pub placement: Placement,
-    /// On the station the budget is kept (a plugin that does not fit stays off); on a computer it is shown.
+    /// On the station the budget is kept (a context that does not fit does not load); on a computer it is shown.
     pub enforced: bool,
     /// Whether the machine told its memory at all.
     pub measured: bool,
@@ -149,45 +164,74 @@ pub struct ResourcesView {
     pub gateway_mb: Option<u64>,
     /// What the loaded plugins' engines hold now.
     pub plugins_mb: u64,
-    /// The plugins' budget: what they may take at most, together.
+    /// The plugins' budget: what their loaded contexts may take at most, together.
     pub budget_mb: u64,
-    /// What the plugins that are on declared.
+    /// In use now: what the contexts loaded now declared.
     pub committed_mb: u64,
+    /// What one more context may take now, nothing unloaded.
     pub free_mb: u64,
+    /// What one more context could get: the free and what the idle contexts give back when they unload.
+    pub room_mb: u64,
+    /// The plugins whose contexts are loaded now.
+    pub loaded: usize,
     pub pressure: Pressure,
     /// Under pressure the plugins' work in the background waits.
     pub deferring: bool,
     pub action: PressureAction,
     pub disk: DiskView,
     pub plugins: Vec<PluginShare>,
-    /// «Можно поставить ещё плагины примерно на 60 МБ».
+    /// «Загружено плагинов: 3, под них занято 12 МБ. Можно загрузить ещё 68 МБ.»
     pub note: String,
 }
 
 /// The count itself, from the machine's numbers and the plugins'.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Count {
     pub budget_mb: u64,
+    /// What the loaded contexts declared.
     pub committed_mb: u64,
+    /// What one more context may take now.
     pub free_mb: u64,
+    /// What one more context could get once the idle contexts unload: the busy ones keep theirs.
+    pub room_mb: u64,
     pub plugins_mb: u64,
+    pub loaded: usize,
 }
 
 pub fn count(memory: Option<MemoryNow>, reserve_mb: u64, plugins: &[PluginShare]) -> Count {
     let plugins_mb: u64 = plugins.iter().filter_map(|plugin| plugin.actual_mb).sum();
-    let committed_mb: u64 = plugins.iter().filter(|plugin| plugin.enabled).map(|plugin| plugin.budget_mb).sum();
+    let committed_mb: u64 = plugins.iter().map(|plugin| plugin.taken_mb).sum();
+    let busy_mb: u64 = plugins.iter().filter(|plugin| plugin.busy).map(|plugin| plugin.taken_mb).sum();
     let budget_mb = memory.map(|memory| (memory.available_mb + plugins_mb).saturating_sub(reserve_mb)).unwrap_or(0);
-    Count { budget_mb, committed_mb, free_mb: budget_mb.saturating_sub(committed_mb), plugins_mb }
+    Count {
+        budget_mb,
+        committed_mb,
+        free_mb: budget_mb.saturating_sub(committed_mb),
+        room_mb: budget_mb.saturating_sub(busy_mb),
+        plugins_mb,
+        loaded: plugins.iter().filter(|plugin| plugin.loaded).count(),
+    }
 }
 
-/// What the panel says under the bar.
-pub fn note(free_mb: u64, measured: bool, pressure: Pressure) -> String {
+/// What the panel says under the bar: what is in use now and how much more can be loaded.
+pub fn note(count: &Count, measured: bool, pressure: Pressure) -> String {
     if !measured {
         return "Сколько памяти свободно, шлюз здесь сказать не может.".into();
     }
-    let room = match free_mb {
-        0 => "Новых плагинов больше не поставить: память занята.".to_string(),
-        free => format!("Можно поставить ещё плагины примерно на {free} МБ."),
+    let used = match count.loaded {
+        0 => "Сейчас ни один плагин не загружен.".to_string(),
+        loaded => format!("Загружено плагинов: {loaded}, под них занято {} МБ.", count.committed_mb),
     };
+    let more = if count.free_mb > 0 {
+        format!("Можно загрузить ещё {} МБ.", count.free_mb)
+    } else if count.budget_mb == 0 {
+        "Плагинам места нет: памяти меньше запаса для системы и Алисы.".to_string()
+    } else if count.room_mb > 0 {
+        "Свободного места нет: следующий плагин сначала выгрузит простаивающие.".to_string()
+    } else {
+        "Больше не загрузить, пока работают загруженные.".to_string()
+    };
+    let room = format!("{used} {more}");
     match pressure {
         Pressure::Normal => room,
         Pressure::Warn => format!("{room} Памяти мало: простаивающие плагины выгружаются, фоновая работа ждёт."),
@@ -195,13 +239,46 @@ pub fn note(free_mb: u64, measured: bool, pressure: Pressure) -> String {
     }
 }
 
-/// Why a plugin does not fit, or nothing when it does.
+/// Why a plugin's context does not load, or nothing when it fits.
 pub fn does_not_fit(need_mb: u64, free_mb: u64) -> Option<String> {
     (need_mb > free_mb).then(|| {
-        format!(
-            "не хватит памяти колонки: нужно {need_mb} МБ, свободно {free_mb}. Выключите другой плагин или перенесите этот на домашний сервер"
-        )
+        format!("колонке не хватает памяти, чтобы загрузить плагин: нужно {need_mb} МБ, свободно {free_mb} МБ")
     })
+}
+
+/// A loaded context that may be unloaded to make room: none of its calls is running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Idle {
+    pub id: String,
+    /// What it takes of the budget.
+    pub taken_mb: u64,
+    /// How long since its last call.
+    pub idle_ms: u64,
+}
+
+/// What to unload so that a context of `need_mb` fits what is free: the idle contexts, the longest idle first, only as
+/// many as it takes; nothing when it fits already. When even all of them would not make room, nothing is unloaded and
+/// the answer is what the context could get at most.
+pub fn to_unload(need_mb: u64, free_mb: u64, idle: &[Idle]) -> Result<Vec<String>, u64> {
+    if need_mb <= free_mb {
+        return Ok(Vec::new());
+    }
+    let mut order: Vec<&Idle> = idle.iter().collect();
+    order.sort_by_key(|idle| std::cmp::Reverse(idle.idle_ms));
+    let could = free_mb + order.iter().map(|idle| idle.taken_mb).sum::<u64>();
+    if could < need_mb {
+        return Err(could);
+    }
+    let mut free = free_mb;
+    let mut chosen = Vec::new();
+    for idle in order {
+        if free >= need_mb {
+            break;
+        }
+        free += idle.taken_mb;
+        chosen.push(idle.id.clone());
+    }
+    Ok(chosen)
 }
 
 /// Why a package does not fit on the disk, or nothing when it does.
@@ -218,33 +295,74 @@ pub fn no_room(need_mb: u64, free_mb: Option<u64>, reserve_mb: u64) -> Option<St
 mod tests {
     use super::*;
 
-    fn share(id: &str, enabled: bool, budget_mb: u64, actual_mb: Option<u64>) -> PluginShare {
-        PluginShare { id: id.into(), title: id.into(), enabled, loaded: actual_mb.is_some(), budget_mb, actual_mb }
+    /// A plugin that is on in the count: its context loaded (holding `actual_mb`) or not, in a call or idle.
+    fn share(id: &str, budget_mb: u64, loaded: bool, busy: bool, actual_mb: Option<u64>) -> PluginShare {
+        PluginShare {
+            id: id.into(),
+            title: id.into(),
+            enabled: true,
+            loaded,
+            busy,
+            budget_mb,
+            taken_mb: if loaded { budget_mb } else { 0 },
+            actual_mb,
+        }
     }
 
     #[test]
-    fn counts_the_plans_example_by_what_plugins_declare_not_what_they_hold() {
-        // The station of 07.11: 137 MB available with the gateway running, the reserve 40.
-        let memory = MemoryNow { total_mb: 238, available_mb: 137, pressure: Pressure::Normal, gateway_mb: Some(14) };
-        let plugins =
-            [share("radio", true, 4, Some(1)), share("weather", true, 8, None), share("off", false, 30, None)];
+    fn counts_only_the_loaded_contexts_by_what_they_declare() {
+        // The station of 10.11: 120 MB available with the gateway running, the reserve 40; ten plugins on, two loaded.
+        let memory = MemoryNow { total_mb: 238, available_mb: 120, pressure: Pressure::Normal, gateway_mb: Some(33) };
+        let mut plugins = vec![share("radio", 4, true, false, Some(1)), share("calendar", 8, true, true, Some(1))];
+        plugins.extend((0..8).map(|n| share(&format!("idle-{n}"), 4, false, false, None)));
         let count = count(Some(memory), 40, &plugins);
-        assert_eq!(count.plugins_mb, 1);
-        assert_eq!(count.budget_mb, 98, "what the loaded radio holds comes back to the budget");
-        assert_eq!(count.committed_mb, 12, "on: 4 + 8 declared; off takes nothing");
-        assert_eq!(count.free_mb, 86);
-        assert_eq!(note(86, true, Pressure::Normal), "Можно поставить ещё плагины примерно на 86 МБ.");
-        assert!(note(0, true, Pressure::Warn).contains("Памяти мало"));
-        let starving = MemoryNow { available_mb: 30, ..memory };
-        assert_eq!(super::count(Some(starving), 40, &plugins).free_mb, 0, "below the reserve nothing is free");
+        assert_eq!(count.plugins_mb, 2);
+        assert_eq!(count.budget_mb, 82, "what the loaded contexts hold comes back to the budget");
+        assert_eq!(count.committed_mb, 12, "loaded: 4 + 8 declared; on but not loaded takes nothing");
+        assert_eq!((count.free_mb, count.room_mb, count.loaded), (70, 74, 2), "the idle radio would give its 4 back");
+        assert_eq!(
+            note(&count, true, Pressure::Normal),
+            "Загружено плагинов: 2, под них занято 12 МБ. Можно загрузить ещё 70 МБ."
+        );
+
+        // Nothing loaded: the whole budget is free, however many plugins are on.
+        let unloaded: Vec<PluginShare> = (0..10).map(|n| share(&format!("p{n}"), 4, false, false, None)).collect();
+        let idle = super::count(Some(memory), 40, &unloaded);
+        assert_eq!((idle.committed_mb, idle.free_mb), (0, 80));
+        assert_eq!(
+            note(&idle, true, Pressure::Normal),
+            "Сейчас ни один плагин не загружен. Можно загрузить ещё 80 МБ."
+        );
+
+        // Full of idle contexts: nothing free, room once they unload.
+        let tight = super::count(Some(MemoryNow { available_mb: 50, ..memory }), 40, &plugins);
+        assert_eq!((tight.budget_mb, tight.free_mb, tight.room_mb), (12, 0, 4));
+        assert!(note(&tight, true, Pressure::Normal).ends_with("следующий плагин сначала выгрузит простаивающие."));
+
+        let starving = super::count(Some(MemoryNow { available_mb: 30, ..memory }), 40, &plugins);
+        assert_eq!((starving.free_mb, starving.room_mb), (0, 0), "below the reserve nothing is free");
+        let said = note(&starving, true, Pressure::Warn);
+        assert!(said.contains("памяти меньше запаса") && said.contains("Памяти мало"), "{said}");
         assert_eq!(super::count(None, 40, &plugins).budget_mb, 0);
+    }
+
+    #[test]
+    fn makes_room_from_the_longest_idle_and_only_as_much_as_it_takes() {
+        let idle = |id: &str, taken_mb: u64, idle_ms: u64| Idle { id: id.into(), taken_mb, idle_ms };
+        let loaded = [idle("weather", 4, 5_000), idle("radio", 4, 90_000), idle("news", 4, 30_000)];
+        assert_eq!(to_unload(4, 4, &loaded), Ok(Vec::new()), "it fits: nothing unloads");
+        assert_eq!(to_unload(4, 1, &loaded), Ok(vec!["radio".to_string()]), "the longest idle goes first");
+        assert_eq!(to_unload(8, 1, &loaded), Ok(vec!["radio".to_string(), "news".to_string()]));
+        assert_eq!(to_unload(20, 1, &loaded), Err(13), "all of them would not do: nothing unloads");
+        assert_eq!(to_unload(4, 0, &[]), Err(0));
     }
 
     #[test]
     fn says_how_much_is_needed_and_how_much_is_free() {
         assert_eq!(does_not_fit(4, 7), None);
         let why = does_not_fit(12, 7).unwrap();
-        assert!(why.contains("нужно 12 МБ, свободно 7"), "{why}");
+        assert!(why.contains("нужно 12 МБ, свободно 7 МБ"), "{why}");
+        assert!(!why.contains("Выключите"), "switching others off is no longer the way: {why}");
         assert_eq!(no_room(2, Some(60), 15), None);
         assert!(no_room(50, Some(60), 15).unwrap().contains("свободно 60"));
         assert_eq!(no_room(50, None, 15), None, "a disk that does not tell is not refused");

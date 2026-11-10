@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "plugin",
   "id": "weather",
-  "version": "1.0.0",
+  "version": "1.1.2",
   "title": "Погода",
   "description": "Погода голосом: сейчас, на завтра и на неделю — для обычного места дома или для названного города. Открытый API Open-Meteo, без ключа. Встроенный плагин: если он выключен или не ответил, погоду говорит встроенный навык шлюза.",
   "api": "^1.1",
@@ -58,6 +58,10 @@
         "handler": "weatherNow",
         "annotations": { "readOnlyHint": true }
       }
-    ]
+    ],
+    "panel": {
+      "slots": ["desk.widgets"],
+      "calls": ["panelWeather"]
+    }
   }
 }

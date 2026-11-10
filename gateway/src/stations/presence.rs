@@ -326,7 +326,7 @@ mod tests {
     #[tokio::test]
     async fn tells_a_station_by_what_it_opens_then_nothing() {
         let (stations, events) = build(StationPairing::Open);
-        stations.admit("kitchen", "::ffff:192.168.1.100");
+        stations.admit("kitchen", "::ffff:192.168.1.30");
         let changes = Changes::watch(&events);
         let presence = Arc::new(PresenceService::new(stations.clone(), events.clone()));
         presence.start();
@@ -340,7 +340,7 @@ mod tests {
 
         // Its microphone bridge, by the address its voice socket came from; a stranger's address is nobody's.
         events.emit(GatewayEvent::StationChannel {
-            address: "192.168.1.100".into(),
+            address: "192.168.1.30".into(),
             channel: "microphone".into(),
             up: true,
         });
@@ -360,7 +360,7 @@ mod tests {
 
         let before = now_ms();
         events.emit(GatewayEvent::StationChannel {
-            address: "192.168.1.100".into(),
+            address: "192.168.1.30".into(),
             channel: "microphone".into(),
             up: false,
         });

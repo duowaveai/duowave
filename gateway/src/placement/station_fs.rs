@@ -712,7 +712,7 @@ fn make_executable(path: &Path) {
 }
 
 /// Keys inside: only root reads it.
-fn restrict(path: &Path) {
+pub(crate) fn restrict(path: &Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

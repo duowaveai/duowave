@@ -152,7 +152,8 @@ async fn release_of_this_version(plain: &str) -> Result<crate::updates::Feed, St
 }
 
 async fn fetch_feed(url: &str) -> Result<crate::updates::Feed, String> {
-    let response = crate::utils::http::client()
+    crate::updates::feed::secure(url).map_err(|error| format!("лента выпуска: {error}"))?;
+    let response = crate::updates::feed::client()
         .get(url)
         .timeout(std::time::Duration::from_secs(20))
         .send()

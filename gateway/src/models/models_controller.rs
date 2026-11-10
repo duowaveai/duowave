@@ -27,6 +27,8 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/v1/models/tts/pending", delete(forget_pending))
         .route("/api/v1/models/asr/activate", post(activate_asr))
         .route("/api/v1/models/servers/{which}/restart", post(restart))
+        // The station's «Голос» while its home server gives it the computer's voice (a computer's build playing it).
+        .merge(super::home_voice::routes())
 }
 
 /// A path's segment; one that does not decode answers in the envelope like every other error.

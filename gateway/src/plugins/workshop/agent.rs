@@ -8,6 +8,7 @@ use std::sync::Arc;
 use serde_json::{json, Map, Value};
 use tokio_util::sync::CancellationToken;
 
+use super::activity::By;
 use super::Workshop;
 use crate::config::ModelProfile;
 use crate::dialog::llm::{LlmTool, ToolCall};
@@ -26,6 +27,9 @@ pub const THEMES: &str = include_str!("../../../../docs/design/glass/THEMES.md")
 const ROUNDS: usize = 16;
 /// The time for one answer's tool rounds.
 const BUDGET_MS: u64 = 300_000;
+/// One round may write nothing this long: the model writes a whole file in one call, and a streamed call comes only
+/// whole (LLM_TIMEOUT_MS, 10 s, cut such rounds off).
+const ROUND_MS: u64 = 120_000;
 /// What a tool's answer gives the model at most.
 const ANSWER: usize = 24 * 1024;
 
@@ -243,19 +247,27 @@ pub fn chat(
     cancel: CancellationToken,
 ) -> PhraseStream {
     let context = context(&workshop, draft, model_of(&workshop));
+    // The panel's plaque and the workshop's log follow the work, whichever panel started it; «Остановить» ends it.
+    let run = workshop.activity().begin(draft, By::Panel, message, &cancel);
     let draft_id = draft.to_string();
+    let (tools_workshop, told_run) = (workshop.clone(), run.clone());
     let mut toolbox = ToolBox::new(tools(false), move |call: ToolCall, _cancel: CancellationToken| {
-        let (workshop, draft, told) = (workshop.clone(), draft_id.clone(), told.clone());
+        let (workshop, draft, told, run) = (tools_workshop.clone(), draft_id.clone(), told.clone(), told_run.clone());
         async move {
             told(ChatStep::Tool { name: call.name.clone(), input: call.input.clone() });
+            // The calls of one turn run at once: the answer names its call.
+            let asked = workshop.activity().call(&run, &call.name, &call.input);
             let (content, failed) = run_tool(&workshop, &draft, &call.name, &call.input).await;
+            workshop.activity().answer(&run, asked, &call.name, &content, failed);
             told(ChatStep::Result { name: call.name.clone(), content: content.chars().take(600).collect(), failed });
             Ok(if failed { ToolOutcome::error(content) } else { ToolOutcome::from(content) })
         }
     });
     toolbox.rounds = Some(ROUNDS);
     toolbox.budget_ms = Some(BUDGET_MS);
-    dialog.answer(key, message, context, cancel, Some(toolbox))
+    toolbox.round_ms = Some(ROUND_MS);
+    let answer = dialog.answer(key, message, context, run.cancel.clone(), Some(toolbox));
+    workshop.activity().watch(run, answer)
 }
 
 /// What the agent did on the way, for the panel's chat.

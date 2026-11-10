@@ -21,4 +21,4 @@ licence does not cover (section 6). A modified version goes under its own name.*
   смешения.
 - Не намекайте, что мы поддерживаем, проверили или продаём то, чего не делали.
 
-Сомневаетесь — напишите на hello@duowave.app, ответим.
+Сомневаетесь — напишите на hello@duowave.ai, ответим.

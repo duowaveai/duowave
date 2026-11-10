@@ -323,7 +323,8 @@ async fn answers_its_own_names_only_and_says_what_every_response_is() {
     assert_eq!(status(host("mac-mini.local:3000")).await, StatusCode::OK);
     let health = gateway.get("/health").send().await.unwrap();
     assert_eq!(health.headers()["x-content-type-options"], "nosniff");
-    assert_eq!(health.headers()["x-frame-options"], "DENY");
+    // Framed only by itself: the helper's windows of the station are the panel again (docs/plans/desk.md, stage 4).
+    assert_eq!(health.headers()["x-frame-options"], "SAMEORIGIN");
 }
 
 #[tokio::test]

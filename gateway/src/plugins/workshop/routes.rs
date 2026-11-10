@@ -18,12 +18,14 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
 
+use super::activity::{Job, Step};
 use super::agent::{self, ChatStep};
 use super::{CheckReport, DraftView, InstallPlan, InstallReport, PhraseReport, RunReport};
 use crate::app::App;
 use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller};
 use crate::plugins::routes::admin;
 use crate::settings::definitions::{BrainPick, WORKSHOP_AGENT};
+use crate::utils::time::now_ms;
 
 /// A file of a draft is up to 1 MB, sent as JSON.
 const BODY_LIMIT: usize = 2 * 1024 * 1024;
@@ -45,6 +47,11 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/api/v1/workshop/drafts/{id}/trial", post(trial).delete(end_trial))
         .route("/api/v1/workshop/agent", get(agent_model).put(set_agent_model))
         .route("/api/v1/workshop/drafts/{id}/chat", post(chat))
+        .route("/api/v1/workshop/activity", get(activity))
+        .route("/api/v1/workshop/drafts/{id}/activity", get(activity_log))
+        .route("/api/v1/workshop/drafts/{id}/stop", post(stop))
+        .route("/api/v1/workshop/drafts/{id}/preview", post(preview))
+        .route("/panel-preview/{token}/{file}", get(preview_file))
         .route("/mcp/workshop", post(mcp).get(mcp_get))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
 }
@@ -93,6 +100,24 @@ async fn remove(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<Stri
     admin(&caller)?;
     app.workshop.delete(&id)?;
     Ok(ok(json!({ "deleted": true })))
+}
+
+/// The draft's panel part to look at before installing (docs/plans/desk.md, stage 5): an address with a token.
+async fn preview(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
+    admin(&caller)?;
+    let (module, styles) = app.workshop.preview(&id)?;
+    Ok(ok(json!({ "module": module, "styles": styles })))
+}
+
+/// The previewed file: JavaScript or CSS, only from this gateway's own panel (the panel's content policy).
+async fn preview_file(
+    State(app): State<Arc<App>>,
+    Path((token, file)): Path<(String, String)>,
+) -> Result<axum::response::Response, ApiError> {
+    use axum::response::IntoResponse;
+    let text = app.workshop.preview_file(&token, &file).ok_or_else(|| ApiError::not_found("Not Found"))?;
+    let kind = if file.ends_with(".css") { "text/css; charset=utf-8" } else { "text/javascript; charset=utf-8" };
+    Ok(([(axum::http::header::CONTENT_TYPE, kind), (axum::http::header::CACHE_CONTROL, "no-store")], text).into_response())
 }
 
 async fn read(
@@ -169,6 +194,61 @@ async fn phrase(
 async fn journal(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
     admin(&caller)?;
     Ok(ok(json!({ "lines": app.workshop.journal(&id) })))
+}
+
+/// A step as the panel gets it: what a key or a token may have put into its text is hidden.
+fn shown(app: &App, mut step: Step) -> Step {
+    step.text = app.secrets.redact(&step.text);
+    step
+}
+
+/// A draft's work with its title, for the plaque «Делаю виджет «…»».
+fn job_view(app: &App, mut job: Job) -> Value {
+    job.asked = app.secrets.redact(&job.asked);
+    job.last = job.last.map(|step| shown(app, step));
+    let title = app.workshop.draft(&job.draft).ok().and_then(|draft| draft.title);
+    let mut view = serde_json::to_value(&job).unwrap_or_default();
+    view["title"] = json!(title);
+    view
+}
+
+/// What the agent does now (docs/plans/desk.md, «Делаю виджет»): the drafts it works on, whoever started it, and the
+/// ones it finished in the last minute and a half.
+/// `now` is this gateway's clock (ms since the epoch): the helper's panel reads a station's work through its pass and
+/// counts how long a step goes on by the station's own clock, not the computer's.
+async fn activity(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+    admin(&caller)?;
+    let jobs: Vec<Value> = app.workshop.activity().jobs().into_iter().map(|job| job_view(&app, job)).collect();
+    Ok(ok(json!({ "jobs": jobs, "now": now_ms() })))
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct AfterQuery {
+    /// Only the steps after this one (`seq`); none — all that is kept.
+    #[serde(default)]
+    after: u64,
+}
+
+/// A draft's work and its steps: what was asked, the calls and their results (each naming its call), what the agent
+/// said, how it ended; `now` as in `activity`.
+async fn activity_log(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<AfterQuery>,
+) -> ApiResult<Value> {
+    admin(&caller)?;
+    let Some((job, steps)) = app.workshop.activity().log(&id, query.after) else {
+        return Ok(ok(json!({ "job": null, "steps": [], "now": now_ms() })));
+    };
+    let steps: Vec<Step> = steps.into_iter().map(|step| shown(&app, step)).collect();
+    Ok(ok(json!({ "job": job_view(&app, job), "steps": steps, "now": now_ms() })))
+}
+
+/// «Остановить»: the agent's work on the draft ends now, by voice or from the panel alike.
+async fn stop(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
+    admin(&caller)?;
+    Ok(ok(json!({ "stopped": app.workshop.activity().stop(&id) })))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -332,16 +412,14 @@ async fn chat(
         };
         let _ = told_events.send(event);
     });
-    let cancel = CancellationToken::new();
-    let answering = cancel.clone();
-    let mut phrases = agent::chat(&app.dialog, app.workshop.clone(), &key, &id, &message, told, answering.clone());
+    // The work goes on when this panel closes (the plaque «Делаю виджет» and the workshop's log follow it):
+    // «Остановить» ends it (activity.rs), not the connection.
+    let mut phrases =
+        agent::chat(&app.dialog, app.workshop.clone(), &key, &id, &message, told, CancellationToken::new());
     let secrets = app.secrets.clone();
     tokio::spawn(async move {
         loop {
-            let next = tokio::select! {
-                _ = answering.cancelled() => return,
-                next = phrases.next() => next,
-            };
+            let next = phrases.next().await;
             match next {
                 Some(Ok(text)) => {
                     let _ = events.send(WorkshopEvent::Text { text, ms: ms() });
@@ -358,9 +436,7 @@ async fn chat(
             }
         }
     });
-    let guard = cancel.drop_guard();
     let stream = UnboundedReceiverStream::new(receiver).map(move |event| {
-        let _ = &guard;
         let data = serde_json::to_string(&event).unwrap_or_else(|_| "{}".into());
         Ok::<_, Infallible>(format!("data: {data}\n\n"))
     });
@@ -438,6 +514,64 @@ mod tests {
     use crate::core::identity::principal::user_principal;
     use crate::core::identity::Role;
     use http_body_util::BodyExt;
+
+    #[tokio::test]
+    async fn shows_the_admin_what_the_agent_does_on_a_draft_under_its_title_and_stops_it() {
+        use crate::plugins::workshop::activity::By;
+
+        let dir = tempfile::tempdir().unwrap();
+        let text = |sub: &str| dir.path().join(sub).to_string_lossy().into_owned();
+        let env = Env::from_pairs([
+            ("STATE_DIR", String::new()),
+            ("PACKAGES_DIR", text("packages")),
+            ("DATA_DIR", text("data")),
+            ("VOICE_LAB_DIR", text("voice-lab")),
+            ("TTS_MODELS_DIR", text("voices")),
+        ]);
+        let app = crate::app::App::build(Config::for_tests(&env)).unwrap();
+        let admin = || Caller::local(app.clone(), Some(user_principal("u1", "Админ", Role::Admin, None)));
+        let member = || Caller::local(app.clone(), Some(user_principal("u2", "Аня", Role::Member, None)));
+        app.workshop.create("widget-a", Some("plugin"), Some("Курс крипты"), None).unwrap();
+        let before = now_ms();
+        let idle = activity(State(app.clone()), admin()).await.unwrap().1;
+        assert_eq!(idle["jobs"], json!([]));
+        // The gateway's clock comes with each answer: the helper's panel counts a station's work by the station's.
+        assert!(idle["now"].as_u64().is_some_and(|now| now >= before && now <= now_ms()), "{idle}");
+        assert!(activity(State(app.clone()), member()).await.is_err(), "the workshop is the admin's");
+        let from = |after: u64| axum::extract::Query(AfterQuery { after });
+        let none = activity_log(State(app.clone()), admin(), Path("widget-a".into()), from(0)).await.unwrap().1;
+        assert!(none["job"].is_null() && none["now"].as_u64().is_some(), "{none}");
+
+        let run = app.workshop.activity().begin("widget-a", By::Voice, "Сделай виджет: курс биткоина", &CancellationToken::new());
+        let file = json!({"path": "panel.js", "content": "…"});
+        let call = app.workshop.activity().call(&run, "write_file", file.as_object().unwrap());
+        let jobs = activity(State(app.clone()), admin()).await.unwrap().1;
+        let job = &jobs["jobs"][0];
+        assert_eq!(
+            (job["title"].clone(), job["by"].clone(), job["busy"].clone(), job["last"]["tool"].clone()),
+            (json!("Курс крипты"), json!("voice"), json!(true), json!("write_file"))
+        );
+        app.workshop.activity().answer(&run, call, "write_file", "Записано.", false);
+        let log = activity_log(State(app.clone()), admin(), Path("widget-a".into()), from(0)).await.unwrap().1;
+        assert!(log["now"].as_u64().is_some_and(|now| now >= before), "{log}");
+        let steps = log["steps"].as_array().unwrap().clone();
+        assert_eq!(
+            steps.iter().map(|step| step["kind"].clone()).collect::<Vec<_>>(),
+            vec![json!("asked"), json!("tool"), json!("result")]
+        );
+        assert_eq!((steps[1]["seq"].clone(), steps[2]["call"].clone()), (json!(call), json!(call)), "its call");
+
+        // «Остановить»: the run's token is cancelled, the log ends with it.
+        assert_eq!(stop(State(app.clone()), admin(), Path("widget-a".into())).await.unwrap().1["stopped"], json!(true));
+        assert!(run.cancel.is_cancelled());
+        let after = steps[2]["seq"].as_u64().unwrap();
+        let log = activity_log(State(app.clone()), admin(), Path("widget-a".into()), axum::extract::Query(AfterQuery { after }))
+            .await
+            .unwrap()
+            .1;
+        assert_eq!((log["job"]["busy"].clone(), log["steps"][0]["kind"].clone()), (json!(false), json!("stopped")));
+        assert_eq!(stop(State(app.clone()), admin(), Path("widget-a".into())).await.unwrap().1["stopped"], json!(false));
+    }
 
     #[tokio::test]
     async fn writes_checks_and_installs_a_draft_the_admins_approval_first_and_serves_its_tools_over_mcp() {
@@ -600,5 +734,66 @@ mod tests {
         assert!(reset["choice"].is_null(), "{reset}");
         assert!(agent::model_of(&app.workshop).is_none());
         assert_eq!(app.settings.get(&crate::settings::definitions::BRAIN, None), brain);
+    }
+
+    #[tokio::test]
+    async fn starts_a_widget_that_passes_the_check_installs_and_shows_its_preview_by_a_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = |sub: &str| dir.path().join(sub).to_string_lossy().into_owned();
+        let env = Env::from_pairs([
+            ("STATE_DIR", String::new()),
+            ("PACKAGES_DIR", text("packages")),
+            ("DATA_DIR", text("data")),
+            ("VOICE_LAB_DIR", text("voice-lab")),
+            ("TTS_MODELS_DIR", text("voices")),
+        ]);
+        let app = crate::app::App::build(Config::for_tests(&env)).unwrap();
+        let admin = || Caller::local(app.clone(), Some(user_principal("u1", "Админ", Role::Admin, None)));
+        // A title said in words, quotes and all, stays a JavaScript string in panel.js.
+        app.workshop.create("widget-wash", Some("widget"), Some("Стирка \"быстрая\""), None).unwrap();
+        let report = app.workshop.check("widget-wash").await.unwrap();
+        assert!(report.ok, "{report:?}");
+        for function in ["panelData", "mark"] {
+            assert!(report.exports.iter().any(|name| name == function), "{function}: {report:?}");
+        }
+        let panel = app.workshop.read("widget-wash", "panel.js").unwrap();
+        assert!(panel.contains(r#"title: "Стирка \"быстрая\"""#), "{panel}");
+
+        let (module, styles) = app.workshop.preview("widget-wash").unwrap();
+        assert!(styles.is_none(), "the template has no panel.css");
+        let token = module.trim_start_matches("/panel-preview/").trim_end_matches("/panel.js").to_string();
+        let file = preview_file(State(app.clone()), Path((token.clone(), "panel.js".into()))).await.unwrap();
+        assert_eq!(file.headers()[axum::http::header::CONTENT_TYPE], "text/javascript; charset=utf-8");
+        assert!(preview_file(State(app.clone()), Path((token, "manifest.json".into()))).await.is_err(), "panel parts only");
+        assert!(preview_file(State(app.clone()), Path(("nope".into(), "panel.js".into()))).await.is_err());
+
+        let done = install(State(app.clone()), admin(), Path("widget-wash".into()), Body(InstallBody { approve: true }))
+            .await
+            .unwrap()
+            .1;
+        assert!(done.installed, "{}", done.message);
+
+        // Its reading writes nothing: no word to the panel, or every widget on it would read again each second for
+        // as long as it is open (review: packages-data-loop). A person's «Отметить» writes, and is told.
+        let mut heard = app.events.subscribe();
+        for _ in 0..2 {
+            let read = app.plugins.panel_call("widget-wash", "panelData", json!({})).await.unwrap();
+            assert_eq!(read["value"], json!(0), "{read}");
+        }
+        let marked = app.plugins.panel_call("widget-wash", "mark", json!({})).await.unwrap();
+        assert_eq!(marked["value"], json!(1), "{marked}");
+        assert_eq!(app.plugins.panel_call("widget-wash", "panelData", json!({})).await.unwrap()["value"], json!(1));
+        let mut told = Vec::new();
+        while let Ok(event) = heard.try_recv() {
+            if let crate::core::events::GatewayEvent::PackageDataChanged { package } = event.as_ref() {
+                told.push(package.clone());
+            }
+        }
+        assert_eq!(told, ["widget-wash"], "the mark only");
+
+        // A panel part that does not parse fails the check here, not in the panel.
+        app.workshop.write("widget-wash", "panel.js", "export default definePlugin({ id: \"widget-wash\", slots: { ").unwrap();
+        let broken = app.workshop.check("widget-wash").await.unwrap();
+        assert!(!broken.ok && broken.code.as_deref().is_some_and(|code| code.starts_with("panel.js:")), "{broken:?}");
     }
 }

@@ -4,6 +4,7 @@
 //! answers /api/v1/models that its models are not in it (501).
 
 pub mod catalog_db;
+pub mod home_voice;
 #[cfg(feature = "pc")]
 pub mod model_files;
 #[cfg(feature = "pc")]
@@ -38,11 +39,13 @@ mod station {
     pub const NOT_IN_THIS_BUILD: &str =
         "Свои модели — только в сборке шлюза для компьютера: в этой сборке (для колонки) их нет.";
 
-    /// `/api/v1/models` and everything under it: 501 in the envelope.
+    /// `/api/v1/models` and everything under it: 501 in the envelope — but the computer's voice for the station's
+    /// «Голос» (home_voice.rs).
     pub fn router() -> Router<Arc<App>> {
         Router::new()
             .route("/api/v1/models", any(not_in_this_build))
             .route("/api/v1/models/{*rest}", any(not_in_this_build))
+            .merge(super::home_voice::routes())
     }
 
     async fn not_in_this_build() -> ApiError {
@@ -76,5 +79,9 @@ mod tests {
             assert_eq!(body["message"], super::station::NOT_IN_THIS_BUILD);
             assert_eq!(body["path"], uri);
         }
+        // The station's «Голос» while the computer gives it its voice is this build's (home_voice.rs).
+        let request = Request::builder().uri("/api/v1/models/home-voice").body(Body::empty()).unwrap();
+        let response = router(app.clone()).oneshot(request).await.unwrap();
+        assert_ne!(response.status(), StatusCode::NOT_IMPLEMENTED);
     }
 }

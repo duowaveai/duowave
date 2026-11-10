@@ -1,206 +1,162 @@
 ---
-name: DuoWave — «Стекло» и «Минимал»
-description: Пульт колонки как стеклянный кошелёк — одна полоса распределения, один список маршрутов, матовые панели над мягким сиянием, тёмная и светлая темы. С 08.11.2026 тема по умолчанию — «Минимал» (стиль duowave.app): белый фон без сияния, тонкие линии, светло-серые карточки, белые листы, лайм только у главного действия.
+name: DuoWave — «Минимал»
+description: Пульт колонки в стиле duowave.app — ровный белый фон, тонкие тёплые линии, светло-серые карточки и белые листы; стол с колонкой посередине, виджеты вокруг, док внизу, разделы окнами. Роль видна по рамке — у шлюза белая, у помощника тёмная.
 colors:
-  lime: "#B6F36A"
-  lime-wash-dark: "rgba(182, 243, 106, 0.16)"
-  lime-light: "#A3E635"
-  lime-ink-light: "#3F6212"
-  lime-wash-light: "#E2F7C2"
-  lime-bar-light: "#84CC16"
-  lime-deep-light: "#65A30D"
-  teal: "#3FE0C5"
-  teal-deep-light: "#0F9F8C"
-  violet: "#8B6CFF"
-  violet-soft: "#C2A8FF"
-  violet-wash-dark: "rgba(183, 155, 255, 0.18)"
-  violet-ink-light: "#5B21B6"
-  violet-wash-light: "#ECE5FF"
-  violet-bar-light: "#8B5CF6"
-  amber: "#FFB547"
-  amber-wash-dark: "rgba(255, 181, 71, 0.16)"
-  amber-ink-light: "#9A4A05"
-  amber-wash-light: "#FDE8C8"
-  amber-bar-light: "#F59E0B"
-  slate: "#AEB6C1"
-  slate-wash-dark: "rgba(174, 182, 193, 0.14)"
-  slate-ink-light: "#4B5563"
-  slate-wash-light: "#E6E8EC"
-  slate-bar-light: "#9CA3AF"
-  coral-dark: "#FF8A80"
-  coral-light: "#B42318"
-  rose-dark: "#FF8FB1"
-  rose-light: "#D6336C"
-  night: "#090C10"
-  frost-text: "#F3F6F8"
-  frost-sub: "rgba(243, 246, 248, 0.68)"
-  on-lime: "#0B0F0A"
-  mist: "#EDF1EF"
-  ink: "#0D1117"
-  ink-sub: "rgba(13, 17, 23, 0.66)"
-  glass-dark: "rgba(255, 255, 255, 0.07)"
-  glass-strong-dark: "rgba(16, 20, 27, 0.62)"
-  glass-light: "rgba(255, 255, 255, 0.58)"
-  glass-strong-light: "rgba(255, 255, 255, 0.74)"
-  divider-dark: "rgba(255, 255, 255, 0.08)"
-  divider-light: "rgba(13, 17, 23, 0.07)"
-  track-dark: "rgba(255, 255, 255, 0.14)"
-  track-light: "rgba(13, 17, 23, 0.10)"
-  minimal-bg: "#FFFFFF"
-  minimal-text: "#000000"
-  minimal-sub: "rgba(0, 0, 0, 0.56)"
-  minimal-mute: "rgba(0, 0, 0, 0.38)"
-  minimal-card: "#FAFAFA"
-  minimal-line: "#ECE9E6"
-  minimal-row-line: "#F1EFED"
-  minimal-track: "#EFECE9"
-  minimal-chip: "#F3F1EF"
-  minimal-sheet: "#FFFFFF"
-  minimal-lime: "#B6F36A"
-  minimal-lime-hover: "#A3E635"
-  minimal-on-lime: "#0B0F0A"
-  minimal-lime-glow: "rgba(132, 204, 22, 0.32)"
-  minimal-own: "#84CC16"
-  minimal-outside: "#F59E0B"
-  minimal-agent: "#8B5CF6"
-  minimal-off: "#A8A29E"
-  minimal-beam: "#E2DDD8"
-  minimal-glow-rest: "#E7E5E4"
-  minimal-ink: "#000000"
-  minimal-ink-hover: "#262626"
-  minimal-danger: "#C8321F"
-  minimal-danger-wash: "rgba(200, 50, 31, 0.08)"
-  minimal-menu-shadow: "rgba(0, 0, 0, 0.07)"
-  minimal-dark-bg: "#11100F"
-  minimal-dark-card: "#1A1918"
-  minimal-dark-line: "#2A2826"
-  minimal-dark-sheet: "#201F1D"
-  minimal-dark-text: "#F5F3F1"
-  minimal-dark-shadow: "rgba(0, 0, 0, 0.4)"
+  bg: "#FFFFFF"
+  text: "#000000"
+  sub: "rgba(0, 0, 0, 0.56)"
+  mute: "rgba(0, 0, 0, 0.38)"
+  card: "#FAFAFA"
+  line: "#ECE9E6"
+  row-line: "#F1EFED"
+  sheet: "#FFFFFF"
+  hover: "#FAF9F8"
+  track: "#EFECE9"
+  chip: "#F3F1EF"
+  accent: "#B6F36A"
+  accent-hi: "#A3E635"
+  on-accent: "#0B0F0A"
+  accent-text: "#3F6212"
+  ink: "#000000"
+  ink-hi: "#262626"
+  on-ink: "#FFFFFF"
+  own: "#84CC16"
+  yandex: "#F59E0B"
+  agent: "#8B5CF6"
+  off: "#A8A29E"
+  pill-own-text: "#3F6212"
+  pill-own-wash: "#EEF8DF"
+  pill-yandex-text: "#92400E"
+  pill-yandex-wash: "#FCF1DE"
+  pill-agent-text: "#5B21B6"
+  pill-agent-wash: "#F1ECFE"
+  danger: "#C8321F"
+  danger-wash: "rgba(200, 50, 31, 0.08)"
+  orbit: "#E2DDD8"
+  glow-rest: "#E7E5E4"
+  scrim: "rgba(28, 25, 23, 0.18)"
+  desk-dot: "#E4E0DB"
+  dash: "#D6D1CB"
+  helper-bg: "#11100F"
+  helper-line: "#2A2826"
+  helper-text: "#F5F3F1"
+  helper-sub: "rgba(245, 243, 241, 0.6)"
+  helper-chip: "#262422"
+  dark-bg: "#11100F"
+  dark-text: "#F5F3F1"
+  dark-card: "#1A1918"
+  dark-line: "#2A2826"
+  dark-sheet: "#201F1D"
+  dark-sheet-line: "#2E2C2A"
+  dark-chip: "#262422"
+  dark-field: "#151413"
+  dark-seg-on: "#33312E"
+  dark-own: "#A3E635"
+  dark-yandex: "#FBBF24"
+  dark-agent: "#A78BFA"
+  dark-off: "#8A8580"
+  dark-danger: "#FF8A75"
+  dark-orbit: "#3A3734"
+  code-keyword: "#0F766E"
+  code-function: "#1D4ED8"
+  code-string: "#9F1239"
+  code-comment: "#78716C"
+  dark-code-keyword: "#5EEAD4"
+  dark-code-function: "#93C5FD"
+  dark-code-string: "#FDA4AF"
 typography:
   display:
-    fontFamily: "Manrope, system-ui, sans-serif"
+    fontFamily: "Inter Tight, Inter, system-ui, sans-serif"
     fontSize: "34px"
-    fontWeight: 800
-    lineHeight: "40px"
-    letterSpacing: "-0.03em"
+    fontWeight: 300
+    lineHeight: "38px"
+    letterSpacing: "-0.025em"
   headline:
-    fontFamily: "Manrope, system-ui, sans-serif"
+    fontFamily: "Inter Tight, Inter, system-ui, sans-serif"
+    fontSize: "28px"
+    fontWeight: 300
+    lineHeight: "32px"
+    letterSpacing: "-0.02em"
+  headline-sm:
+    fontFamily: "Inter Tight, Inter, system-ui, sans-serif"
     fontSize: "24px"
-    fontWeight: 800
+    fontWeight: 300
     lineHeight: "30px"
     letterSpacing: "-0.02em"
   figure:
-    fontFamily: "Manrope, system-ui, sans-serif"
+    fontFamily: "Inter Tight, Inter, system-ui, sans-serif"
+    fontSize: "40px"
+    fontWeight: 300
+    lineHeight: "44px"
+    letterSpacing: "-0.03em"
+  number:
+    fontFamily: "Inter Tight, Inter, system-ui, sans-serif"
     fontSize: "22px"
-    fontWeight: 800
-    lineHeight: "28px"
+    fontWeight: 300
+    lineHeight: "26px"
     letterSpacing: "-0.02em"
     fontFeature: "tnum"
   title:
-    fontFamily: "Manrope, system-ui, sans-serif"
-    fontSize: "20px"
-    fontWeight: 800
-    lineHeight: "26px"
-    letterSpacing: "-0.01em"
-  title-sm:
-    fontFamily: "Manrope, system-ui, sans-serif"
-    fontSize: "18px"
-    fontWeight: 800
-    lineHeight: "24px"
-  title-xs:
-    fontFamily: "Manrope, system-ui, sans-serif"
+    fontFamily: "Inter Panel, Inter, system-ui, sans-serif"
     fontSize: "15px"
-    fontWeight: 800
+    fontWeight: 500
     lineHeight: "20px"
   body:
-    fontFamily: "Manrope, system-ui, sans-serif"
+    fontFamily: "Inter Panel, Inter, system-ui, sans-serif"
     fontSize: "15px"
     fontWeight: 400
     lineHeight: "22px"
     fontFeature: "tnum"
   body-sm:
-    fontFamily: "Manrope, system-ui, sans-serif"
+    fontFamily: "Inter Panel, Inter, system-ui, sans-serif"
     fontSize: "14px"
     fontWeight: 400
     lineHeight: "20px"
+  label:
+    fontFamily: "Inter Panel, Inter, system-ui, sans-serif"
+    fontSize: "13px"
+    fontWeight: 500
+    lineHeight: "18px"
   meta:
-    fontFamily: "Manrope, system-ui, sans-serif"
+    fontFamily: "Inter Panel, Inter, system-ui, sans-serif"
     fontSize: "13px"
     fontWeight: 400
     lineHeight: "18px"
   caption:
-    fontFamily: "Manrope, system-ui, sans-serif"
+    fontFamily: "Inter Panel, Inter, system-ui, sans-serif"
     fontSize: "12px"
     fontWeight: 400
     lineHeight: "16px"
-  pill:
-    fontFamily: "Manrope, system-ui, sans-serif"
-    fontSize: "12px"
-    fontWeight: 800
-    lineHeight: "18px"
-  tab:
-    fontFamily: "Manrope, system-ui, sans-serif"
+  micro:
+    fontFamily: "Inter Panel, Inter, system-ui, sans-serif"
     fontSize: "11px"
-    fontWeight: 600
+    fontWeight: 500
     lineHeight: "14px"
-  minimal-display:
-    fontFamily: "Inter Tight, Inter, sans-serif"
-    fontSize: "34px"
-    fontWeight: 300
-    lineHeight: "38px"
-    letterSpacing: "-0.025em"
-  minimal-title:
-    fontFamily: "Inter Tight, Inter, sans-serif"
-    fontSize: "28px"
-    fontWeight: 300
-    lineHeight: "32px"
-    letterSpacing: "-0.02em"
-  minimal-name:
-    fontFamily: "Inter, system-ui, sans-serif"
-    fontSize: "15px"
-    fontWeight: 500
-    lineHeight: "20px"
-  minimal-body:
-    fontFamily: "Inter, system-ui, sans-serif"
-    fontSize: "15px"
-    fontWeight: 400
-    lineHeight: "22px"
-    fontFeature: "tnum"
-  minimal-button:
-    fontFamily: "Inter, system-ui, sans-serif"
+  code:
+    fontFamily: "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace"
     fontSize: "13px"
-    fontWeight: 500
-    lineHeight: "18px"
-  minimal-label:
-    fontFamily: "Inter, system-ui, sans-serif"
+    fontWeight: 400
+    lineHeight: "1.5"
+  code-sm:
+    fontFamily: "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace"
     fontSize: "12px"
     fontWeight: 400
-    lineHeight: "16px"
-  minimal-code:
-    fontFamily: "JetBrains Mono, ui-monospace, monospace"
-    fontSize: "12px"
-    fontWeight: 400
-    lineHeight: "1.75"
+    lineHeight: "1.5"
 rounded:
   pill: "999px"
   circle: "50%"
-  panel-phone: "24px"
-  panel-desk: "32px"
-  bar-phone: "34px"
-  art-desk: "28px"
-  row: "20px"
-  cell: "16px"
-  art-phone: "16px"
-  tile: "14px"
-  minimal-panel: "20px"
-  minimal-card: "16px"
-  minimal-sheet: "14px"
-  minimal-tab: "12px"
-  minimal-tile-icon: "11px"
-  minimal-app-icon: "13px"
-  minimal-icon: "8px"
-  minimal-wave-bar: "2px"
+  dock: "22px"
+  large: "20px"
+  soft-card: "18px"
+  panel: "16px"
+  sheet-inner: "14px"
+  cover: "13px"
+  tab: "12px"
+  tile-icon: "11px"
+  day-tile: "10px"
+  icon: "8px"
+  map-frame: "6px"
+  wave-bar: "2px"
 spacing:
   xxs: "4px"
   xs: "8px"
@@ -210,413 +166,341 @@ spacing:
   xl: "24px"
 components:
   button-talk:
-    backgroundColor: "{colors.lime}"
-    textColor: "{colors.on-lime}"
+    backgroundColor: "{colors.accent}"
+    textColor: "{colors.on-accent}"
     rounded: "{rounded.circle}"
-    size: "56px"
-  button-talk-light:
-    backgroundColor: "{colors.lime-light}"
-    textColor: "{colors.ink}"
-    rounded: "{rounded.circle}"
-    size: "56px"
-  button-talk-desk:
-    backgroundColor: "{colors.lime}"
-    textColor: "{colors.on-lime}"
-    typography: "{typography.body-sm}"
+    size: "52px"
+  button-talk-pill:
+    backgroundColor: "{colors.accent}"
+    textColor: "{colors.on-accent}"
+    typography: "{typography.title}"
     rounded: "{rounded.pill}"
     padding: "0 18px 0 14px"
-    height: "44px"
-  button-icon-glass:
-    backgroundColor: "{colors.glass-dark}"
-    textColor: "{colors.frost-text}"
-    rounded: "{rounded.circle}"
-    size: "44px"
-  segment-on:
-    backgroundColor: "{colors.lime}"
-    textColor: "{colors.on-lime}"
-    rounded: "{rounded.pill}"
     height: "40px"
-  segment-on-light:
+  button-accent:
+    backgroundColor: "{colors.accent}"
+    textColor: "{colors.on-accent}"
+    typography: "{typography.label}"
+    rounded: "{rounded.pill}"
+  button-ink:
     backgroundColor: "{colors.ink}"
-    textColor: "{colors.frost-text}"
+    textColor: "{colors.on-ink}"
+    typography: "{typography.title}"
     rounded: "{rounded.pill}"
-    height: "40px"
+    height: "44px"
+  button-ink-hover:
+    backgroundColor: "{colors.ink-hi}"
+  button-line:
+    backgroundColor: "{colors.sheet}"
+    textColor: "{colors.text}"
+    typography: "{typography.label}"
+    rounded: "{rounded.pill}"
+  button-line-hover:
+    backgroundColor: "{colors.hover}"
+  button-widget:
+    backgroundColor: "{colors.chip}"
+    textColor: "{colors.text}"
+    typography: "{typography.label}"
+    rounded: "{rounded.pill}"
+    padding: "0 14px"
+    height: "32px"
+  chip-status:
+    backgroundColor: "{colors.chip}"
+    textColor: "{colors.text}"
+    typography: "{typography.caption}"
+    rounded: "{rounded.pill}"
+    padding: "2px 10px 2px 8px"
+  segment-track:
+    backgroundColor: "{colors.track}"
+    rounded: "{rounded.panel}"
+    padding: "4px"
+  segment-on:
+    backgroundColor: "{colors.sheet}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.tab}"
+    height: "38px"
   segment-off:
     backgroundColor: "transparent"
-    textColor: "{colors.frost-sub}"
-    rounded: "{rounded.pill}"
-    height: "40px"
-  pill-own:
-    backgroundColor: "{colors.lime-wash-dark}"
-    textColor: "{colors.lime}"
-    typography: "{typography.pill}"
-    rounded: "{rounded.pill}"
-    padding: "2px 10px"
-  pill-own-light:
-    backgroundColor: "{colors.lime-wash-light}"
-    textColor: "{colors.lime-ink-light}"
-    typography: "{typography.pill}"
-    rounded: "{rounded.pill}"
-    padding: "2px 10px"
-  pill-yandex:
-    backgroundColor: "{colors.amber-wash-dark}"
-    textColor: "{colors.amber}"
-    typography: "{typography.pill}"
-    rounded: "{rounded.pill}"
-    padding: "2px 10px"
-  pill-yandex-light:
-    backgroundColor: "{colors.amber-wash-light}"
-    textColor: "{colors.amber-ink-light}"
-    typography: "{typography.pill}"
-    rounded: "{rounded.pill}"
-    padding: "2px 10px"
-  pill-agent:
-    backgroundColor: "{colors.violet-wash-dark}"
-    textColor: "{colors.violet-soft}"
-    typography: "{typography.pill}"
-    rounded: "{rounded.pill}"
-    padding: "2px 10px"
-  pill-agent-light:
-    backgroundColor: "{colors.violet-wash-light}"
-    textColor: "{colors.violet-ink-light}"
-    typography: "{typography.pill}"
-    rounded: "{rounded.pill}"
-    padding: "2px 10px"
-  pill-off:
-    backgroundColor: "{colors.slate-wash-dark}"
-    textColor: "{colors.slate}"
-    typography: "{typography.pill}"
-    rounded: "{rounded.pill}"
-    padding: "2px 10px"
-  pill-off-light:
-    backgroundColor: "{colors.slate-wash-light}"
-    textColor: "{colors.slate-ink-light}"
-    typography: "{typography.pill}"
-    rounded: "{rounded.pill}"
-    padding: "2px 10px"
-  panel-phone:
-    backgroundColor: "{colors.glass-dark}"
-    textColor: "{colors.frost-text}"
-    rounded: "{rounded.panel-phone}"
-    padding: "16px"
-  panel-desk:
-    backgroundColor: "{colors.glass-dark}"
-    textColor: "{colors.frost-text}"
-    rounded: "{rounded.panel-desk}"
-    padding: "24px"
-  panel-light:
-    backgroundColor: "{colors.glass-light}"
-    textColor: "{colors.ink}"
-    rounded: "{rounded.panel-phone}"
-    padding: "16px"
-  tab-bar:
-    backgroundColor: "{colors.glass-strong-dark}"
-    textColor: "{colors.frost-sub}"
-    typography: "{typography.tab}"
-    rounded: "{rounded.bar-phone}"
-    height: "68px"
-  top-bar:
-    backgroundColor: "{colors.glass-strong-dark}"
-    textColor: "{colors.frost-text}"
-    rounded: "{rounded.panel-desk}"
-    padding: "8px 10px 8px 12px"
-    height: "64px"
-  route-row:
-    textColor: "{colors.frost-text}"
-    typography: "{typography.body}"
-    height: "58px"
+    textColor: "{colors.sub}"
+    rounded: "{rounded.tab}"
+    height: "38px"
   switch:
-    backgroundColor: "{colors.lime}"
+    backgroundColor: "{colors.orbit}"
     rounded: "14px"
     width: "46px"
     height: "28px"
+  switch-on:
+    backgroundColor: "{colors.own}"
+  field:
+    backgroundColor: "{colors.sheet}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.pill}"
+    padding: "8px 14px"
+    height: "38px"
+  card:
+    backgroundColor: "{colors.card}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.panel}"
+    padding: "16px"
+  widget:
+    backgroundColor: "{colors.sheet}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.panel}"
+    padding: "10px 12px 14px 14px"
+    width: "300px"
+  widget-music:
+    rounded: "{rounded.large}"
+    padding: "14px"
+  top-bar:
+    backgroundColor: "{colors.sheet}"
+    textColor: "{colors.text}"
+    padding: "0 16px"
+    height: "44px"
+  top-bar-helper:
+    backgroundColor: "{colors.helper-bg}"
+    textColor: "{colors.helper-text}"
+    height: "44px"
+  dock:
+    backgroundColor: "{colors.sheet}"
+    textColor: "{colors.sub}"
+    typography: "{typography.micro}"
+    rounded: "{rounded.dock}"
+    padding: "0 8px"
+    height: "72px"
+  dock-helper:
+    backgroundColor: "{colors.helper-bg}"
+    textColor: "{colors.helper-sub}"
+    rounded: "{rounded.dock}"
+    height: "72px"
+  dock-cell:
+    textColor: "{colors.sub}"
+    typography: "{typography.micro}"
+    rounded: "{rounded.sheet-inner}"
+    width: "72px"
+    height: "58px"
+  desk-window:
+    backgroundColor: "{colors.sheet}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.large}"
+    padding: "20px 24px 32px"
+    width: "1040px"
+  sheet:
+    backgroundColor: "{colors.sheet}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.large}"
+    padding: "20px"
+    width: "560px"
+  side-item-on:
+    backgroundColor: "{colors.chip}"
+    textColor: "{colors.text}"
+    typography: "{typography.title}"
+    rounded: "{rounded.tab}"
+    height: "44px"
 ---
 
-# Design System: DuoWave — «Стекло»
+# Design System: DuoWave — «Минимал»
 
 ## Overview
 
-**Creative North Star: "Стеклянный кошелёк"**
+**Creative North Star: "Тихий лист"**
 
-Колонка читается как портфель: кто отвечает на её запросы — это «активы», а пульт показывает их так, как кошелёк показывает монеты. Одна полоса распределения (свой / Яндекс / агент / нет) и один список маршрутов, у каждого строки — цветная плашка исполнителя. Всё лежит на матовых стеклянных панелях с верхним бликом, а под ними — мягкое сияние из трёх пятен: лайм, бирюза, фиолет. Мир существует в двух темах, тёмной («ночь») и светлой («туман»), и обе — равноправные, а не одна производная от другой.
+Пульт — тихий белый стол, на котором лежит колонка. Посередине — её сцена: орбита тонкой тёплой линией, три узла «Слух · Мозг · Голос», мягкое свечение цветом того, кто сейчас работает, и карточка ответа под колонкой. Вокруг на поле с еле заметной сеткой точек — виджеты: белые листы с линией. Внизу плавает док — разделы вокруг лаймового круга «Сказать», «Ещё» и отдельная «+». Раздел открывается окном поверх стола, верхняя строка и док остаются видны. Всё остальное — шиты: белые листы над лёгким затемнением.
 
-Плотность спокойная, не приборная: строки по 58–60px, панели с крупным скруглением, контролы — только капсулы и круги. Действия собраны в одну лаймовую точку — кнопку «Сказать через колонку»: на телефоне это круг посреди плавающей стеклянной панели вкладок, на компьютере — капсула в стеклянной верхней панели. Шрифт один — Manrope, цифры всегда моноширинные (tabular-nums), потому что счётчики и время читаются столбиком.
+Материал один — «Минимал», стиль нового duowave.app (источник — `landing-design/minimal/`: плашки С1–С6 в `design/MinimalKit.dc.html`, `HANDOFF.md`; макеты ролей — [docs/design/roles](docs/design/roles/README.md)). Ровный фон без сияния и градиентов, линии 1px тёплого серого, светло-серые карточки, белые листы для всего, что плавает, только капсулы и круги. Цвет приходит маленькими дозами: точка исполнителя, кольцо колонки, свечение за ней, комета по орбите. Лайм — у главного действия. Шрифты — Inter Tight 300 для крупного, Inter 400/500 для всего остального, JetBrains Mono для кода; все из сборки, без сети.
 
-Происхождение образа закреплено владельцем: стеклянный стиль в духе мобильного крипто-кошелька, без его логотипа, имени и точных цветов. Оформление Яндекса и Алисы не повторяется.
+Тема в коде одна — `MINIMAL` (`panel/src/shell/themes.ts`), с 10.11.2026 единственная: «Стекло», «Простор» и «Минимал · панель» удалены (план стола; история «Стекла» — [docs/design/glass](docs/design/glass/THEMES.md)). Бывший «Минимал · панель» (`minimal-panel`) теперь не тема, а **вид**: человек выбирает «Стол и док» (основной) или «Боковая панель» отдельно от темы (`shell/theme.ts`, ключ `panel-view`); кто раньше выбирал «Простор» или «Минимал · панель», получает боковую панель. Темы пакетов перекрашивают «Минимал» — их палитра ложится поверх его палитры, материал всегда `minimal`. Режимов два: светлый (по умолчанию, по макетам) и тёмный (производная без макета).
+
+Роль пульта — не тема. «Шлюз» — пульт того, кто отвечает колонке; «Помощник» — DuoWave на компьютере, когда шлюз работает на колонке (`shell/role.ts`, `<html data-role>`). Роль видна по рамке: у шлюза верхняя строка, док и боковая панель белые, у помощника — тёмные в любом режиме.
 
 **Key Characteristics:**
-- Сияние (три радиальных градиента) на плоском фоне `night` / `mist`, никаких картинок.
-- Матовое стекло: полупрозрачная заливка, 1px светлая рамка, верхний блик `inset 0 1px 0`, `backdrop-filter: blur() saturate(160%)`.
-- Смысловой цвет исполнителя: лайм — свой, янтарь — Яндекс, фиолет — агент, серый — выключено.
-- Только капсулы (999px) и круги; панели 24px на телефоне, 32px на компьютере.
-- Manrope 400/600/700/800, заголовки и числа — 800 с отрицательным трекингом.
-- Одна лаймовая кнопка разговора на экран, плавающая в стекле.
+- Ровный белый фон (`bg`), на столе — сетка точек `desk-dot` шагом 24px; никаких сияний, картинок и размытий.
+- Карточка — светло-серая (`card`) с линией 1px (`line`), без тени; то, что плавает, — белый лист (`sheet`) с линией и мягкой тенью.
+- Цвет исполнителя живёт в точке, кольце, свечении и комете, а не в заливке.
+- Лайм (`accent`) — у «Сказать», «Применить», «Добавить»; вторая кнопка — чёрная, остальное — белое с линией.
+- Только капсулы (999px) и круги; поверхности — 16 (карточка, виджет), 20 (окно, шит, боковая панель), 22 (док).
+- Роль по рамке: белая — шлюз, тёмная `helper-bg` — помощник.
 
 ## Colors
 
-Тёмная или туманная подложка, на ней — четыре смысловых оттенка исполнителя и бирюза как чистое украшение сияния.
+Белое и тёплые серые как основа, четыре смысловых оттенка исполнителя точками, лайм — одним пятном действия.
 
 ### Primary
-- **Сигнальный лайм** (`lime`): в тёмной теме — главное действие (разговор, играть, «Применить», «Добавить»), выбранный сегмент режима, заполнение прогресса, точка «в сети», плашка «свой». В светлой теме заливка действия — **светлый лайм** (`lime-light`), а текст лаймового смысла — **глубокий оливковый** (`lime-ink-light`), потому что лайм на светлом фоне не читается. Полоса распределения в светлой теме — `lime-bar-light`; кольцо шлюза на схеме и включённый переключатель — `lime-deep-light`.
+- **Сигнальный лайм** (`accent`; наведение — `accent-hi`, текст на нём — `on-accent`): заливка главного действия — круг «Сказать» в доке, капсула «Сказать через колонку» в боковой панели, кнопки-пилюли «свой»-действия («Применить», «Добавить», выбранное в строке), нажатый микрофон виджета «голосом». Всегда со свечением `talk-shadow` (см. Elevation). Текст лаймового смысла на светлом — **глубокий оливковый** (`accent-text`), в тёмном — сам лайм.
 
 ### Secondary
-- **Янтарь Яндекса** (`amber`; в светлой — `amber-ink-light` на `amber-wash-light`, полоса `amber-bar-light`): всё, что отвечает Яндекс, и всё, что уходит в облако — подпись «облако» у служб, пунктирная зона «Облако» на схеме, фон ожидающего изменения маршрута (`rgba(255, 181, 71, 0.14)` / `rgba(245, 158, 11, 0.16)`), плашки «спросить» в разрешениях агента.
-
-### Tertiary
-- **Фиолет агента** (`violet-soft` в тёмной; `violet-ink-light` на `violet-wash-light` и `violet-bar-light` — в светлой): исполнитель «агент», плитка помощника OpenClaw (градиент `violet-soft` → `violet`), кольцо узла агента на схеме.
-- **Бирюза сияния** (`teal`): только сияние, градиенты значков (колонка — лайм → бирюза; обложка — лайм → бирюза → фиолет) и кольцо одного из людей. Бирюза никогда не обозначает исполнителя.
+- **Исполнители** — оттенок говорит, кто отвечает: **свой** (`own`, лаймово-зелёный), **снаружи** — Яндекс и облако (`yandex`, янтарь), **агент** (`agent`, фиолет), **выключено** (`off`, тёплый камень). В тёмном — `dark-own`, `dark-yandex`, `dark-agent`, `dark-off`. Они красят точки статуса, точки меток, кольцо и свечение колонки, кометы, полосы, включённый переключатель (`own`).
+- **Заливки меток** (`pill-*-wash` с текстом `pill-*-text`) остаются только у предупреждений: янтарная плашка «Станет … вместо …», подсказка «почему», полоса колонки «не на связи», мягкая янтарная кнопка.
 
 ### Neutral
-- **Ночь** (`night`): фон тёмной темы. **Морозный текст** (`frost-text`) и **морозная подпись** (`frost-sub`, 68%) — основной и второстепенный текст в тёмной; невыбранный сегмент — тот же белый на 72%.
-- **Туман** (`mist`): фон светлой темы. **Чернила** (`ink`) и **чернильная подпись** (`ink-sub`, 66%) — текст в светлой; чернила же — выбранный сегмент в светлой теме.
-- **Текст на лайме** (`on-lime`): содержимое лаймовых кнопок и плиток-градиентов в обеих темах (в светлой на `lime-light` — `ink`).
-- **Сланец** (`slate`; в светлой — `slate-ink-light` на `slate-wash-light`, полоса `slate-bar-light`): «нет», «выкл», «не умеем», гость.
-- **Стекло** (`glass-dark` / `glass-light`) и **плотное стекло** (`glass-strong-dark` / `glass-strong-light`): заливки панелей и плавающих панелей навигации. На компьютере обычное стекло тоньше — `rgba(255, 255, 255, 0.06)` в тёмной и `0.56` в светлой.
-- **Разделители** (`divider-dark` / `divider-light`) между строками списков; **дорожки** (`track-dark` / `track-light`) под прогрессом.
-- **Коралл** (`coral-dark` / `coral-light`): единственный цвет беды — «нет связи», баннер «Проблема», красная пунктирная связь на схеме, «нельзя» у агента. **Роза** (`rose-dark` / `rose-light`) — только кольцо человека в списке людей.
+- **Белый лист** (`bg`, `sheet`): фон страницы и всё, что плавает, — верхняя строка, док, окна, шиты, меню, виджеты, поля.
+- **Светло-серая карточка** (`card`) — содержимое внутри окон и столбцов.
+- **Тёплая линия** (`line`) — граница карточек, листов, окон, дока; **линия строки** (`row-line`) — между строками списков и в виджетах.
+- **Дорожка** (`track`) — под вкладками и сегментами; **подложка метки** (`chip`) — метки, кнопки виджетов, открытый пункт боковой панели; **наведение** (`hover`).
+- **Текст** (`text`), **подпись** (`sub`, 56 %), **приглушённое** (`mute`, 38 %, плейсхолдеры, неактивные вкладки).
+- **Чернила** (`ink`, наведение `ink-hi`, текст `on-ink`): вторая кнопка («Готово», игра в «Музыке», нажатый замок стола), выбранное радио.
+- **Орбита** (`orbit`): линия орбиты, дорожка выключенного переключателя, ручка шита; **свечение в покое** (`glow-rest`).
+- **Затемнение** (`scrim`) под шитом, панелью «+» и выезжающей боковой панелью.
+- **Пунктир** (`dash`; в тёмном — `dark-orbit`): «Новый виджет», его плашка на мини-карте.
+- **Беда** (`danger`, подложка `danger-wash`): «нет связи», баннер, метка ошибки, кнопка «опасно».
+- **Рамка помощника** (`helper-bg`, `helper-line`, `helper-text`, `helper-sub`, `helper-chip`): верхняя строка, док, «+», боковая панель, метка «Этот компьютер», плашка «этот компьютер» под колонкой, вариант помощника в первом запуске. Одна и та же в обоих режимах.
+- **Тёмный режим** (`dark-*`): тёплый почти чёрный фон, карточки и листы на тон светлее, выбранный сегмент — `dark-seg-on`, поле — `dark-field`.
+- **Подсветка кода** (`code-*`, в тёмном `dark-code-*`; комментарий в тёмном — `dark-off` курсивом): цвета макетов Мастерской, не цвета исполнителей.
 
 ### Named Rules
-**The Who-Answers Rule.** В данных цвет — это исполнитель и ничего больше: лайм = свой, янтарь = Яндекс, фиолет = агент, сланец = выключено. Плашка, сегмент полосы, точка легенды и шаг пути запроса берут один и тот же оттенок; бирюза и роза в эту роль не входят.
+**The Who-Answers Rule.** В данных цвет — это исполнитель и ничего больше: лайм-зелёный — своё и дома, янтарь — снаружи (облако и Яндекс одинаково), фиолет — агент, камень — выключено. Метка, точка, кольцо и комета одного исполнителя берут один оттенок.
 
-**The Brand-Mark Rule.** Знак сервиса (Claude, Notion, Telegram) носит цвет своего бренда, а где этот цвет не читается на теме (меньше 3:1 к фону значка) — цвет текста. Исполнителя он не означает: кто отвечает и в каком состоянии, показывают только плашка и кольцо.
+**The Dot-Carries-Color Rule.** Цвет исполнителя — в точке, кольце, свечении и комете, не в заливке: метка — тихая капсула `chip` с точкой 6px, плитки «Слышит · Думает · Говорит» — белые с точкой 7px, узел сцены — белый круг с точкой 10px. Заливка цветом остаётся только у предупреждений.
 
-**The Outside-Is-Amber Rule.** Янтарь значит «снаружи дома»: Яндекс и облако окрашены одинаково, чтобы уход за пределы Mac был виден с одного взгляда.
+**The One-Lime Rule.** Лайм — главное действие. Вторая кнопка — чёрная, остальные — белые с линией; фокус с клавиатуры — кольцо цвета текста, лайм на светлом не виден. Где лайм в коде стоит не у действия, перечислено в «Открытых вопросах».
 
-**The Home-Server-Is-Home Rule.** Когда шлюз работает на колонке, а слух, голос или модель — у компьютера (домашний сервер), узел лаймовый: компьютер дома. Своего оттенка у домашнего сервера нет; где именно работает узел, говорит подпись («Компьютер», «Распознаёт домашний сервер»), а уход в облако или к Яндексу, когда компьютер спит, — янтарь, как всегда.
+**The Dark-Is-Helper Rule.** Тёмная рамка значит «помощник» везде: верхняя строка, док, боковая панель, его метки и вариант в первом запуске. Рамку не красят цветами исполнителей.
 
-**The Ink-Selection Rule.** В светлой теме выбранный сегмент и выбранная капсула — чернила (`ink`) с морозным текстом, а не лайм; лаймовая заливка остаётся только у действий. Текст лаймового смысла в светлой теме — всегда `lime-ink-light`.
+**The Brand-Mark Rule.** Знак сервиса (Claude, Notion, Telegram) носит цвет своего бренда, где тот читается на фоне значка (3:1), иначе — цвет текста. Исполнителя он не означает.
 
 ## Typography
 
-**Display Font:** Manrope (with system-ui, sans-serif)
-**Body Font:** Manrope (with system-ui, sans-serif)
+**Display Font:** Inter Tight 300 (с Inter, system-ui)
+**Body Font:** Inter Panel — Inter 400/500 (с system-ui, -apple-system, Segoe UI)
+**Label/Mono Font:** JetBrains Mono 400 (с ui-monospace, SFMono-Regular, Menlo, monospace)
 
-**Character:** Один гротеск с округлой геометрией: на 800 и с отрицательным трекингом он звучит как цифры баланса в кошельке, на 400 — как спокойная подпись. Цифры моноширинные во всём корне (`font-variant-numeric: tabular-nums`).
+**Character:** Крупное — лёгкое и узкое, как заголовки сайта; мелкое — ровное и спокойное. Цифры моноширинные во всём корне (`tabular-nums`). Шрифты — пакеты `@fontsource` в сборке (`main.tsx`, `ui/fonts-minimal.css`): пульт работает дома и без интернета.
 
 ### Hierarchy
-- **Display** (800, 34px/40px, −0.03em): название экрана на компьютере («Подключения») и название того, что играет.
-- **Headline** (800, 24px/30px, −0.02em): заголовок экрана на телефоне, название открытого маршрута на компьютере.
-- **Figure** (800, 22px/28px, −0.02em): крупные числа — количество возможностей у исполнителя в ячейке распределения; название того, что играет, на телефоне.
-- **Title** (800, 20px/26px, −0.01em): заголовки главных панелей на компьютере. **Title-sm** (800, 18px/24px) — нижние панели компьютера («Люди», «Службы», «Журнал», группы подключений). **Title-xs** (800, 15px/20px) — заголовки панелей на телефоне. Шапка колонки — 800, 17px/22px на телефоне и 16px/20px на компьютере.
-- **Body** (400, 15px/22px): базовый текст; имя строки в списке — тот же размер на 700.
-- **Body-sm** (400, 14px/20px): пояснение режима, подзаголовок экрана, подписи капсул навигации и сегментов (600; выбранный — 800).
-- **Meta** (400, 13px/18px): подписи, легенда распределения, служебные подписи над группами полей (на 700, обычным регистром: «Кто отвечает», «Путь запроса»).
-- **Caption** (400, 12px/16px): вторая строка в списках — последняя фраза, «за сутки», время.
-- **Pill** (800, 12px/18px): текст плашки исполнителя и состояния.
-- **Tab** (600, 11px/14px): подписи вкладок плавающей панели; активная вкладка — 800 и лаймовый текст.
+- **Display** (Inter Tight 300, 34/38, −0,025em): крупный заголовок экрана — вход, «Колонки».
+- **Headline** (Inter Tight 300, 28/32, −0,02em): заголовок шита (H2 сайта на телефоне). **Headline-sm** (24/30) — заголовок панели «+».
+- **Figure** (Inter Tight 300, 40/44, −0,03em): главное число виджета — температура, остаток. **Number** (22/26, моноширинные) — число в строке, таймер.
+- **Title** (Inter 500, 15/20): заголовок окна раздела, заголовок панели, имя строки, название трека в «Музыке», капсула «Сказать через колонку», «Готово».
+- **Body** (Inter 400, 15/22): базовый текст. **Body-sm** (14/20): строка роли в верхней строке, вкладки раздела (500), «Новый виджет» (500), сильная строка виджета.
+- **Label** (Inter 500, 13/18): кнопки-капсулы, шапка виджета, кнопки виджета; **Meta** (400, 13/18) — подпись под ролью, часы, строки виджета.
+- **Caption** (Inter 400, 12/16): вторая строка списков, подписи в виджете, метки статуса (500, 12/18).
+- **Micro** (Inter 500, 11/14): подписи ячеек дока, «играет на колонке»; источник виджета — 400.
+- **Code** (JetBrains Mono 400, 13/1,5): редактор Мастерской с подсветкой; **Code-sm** (12/1,5) — код в шите, строки программы.
+  Стек кода — `'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace` (`minimal.css`, редактор — `desk.css`).
+  Базовые правила `glass.css` — подсказка выбора колонки (`.picker-hint code`), строки программы (`.t-mono`), план и
+  команда мастера подключения, код в шите — задают 12px и тот же стек без JetBrains Mono впереди:
+  `ui-monospace, SFMono-Regular, Menlo, monospace`. В «Минимале» JetBrains Mono встаёт перед ним (`minimal.css`), а
+  SFMono-Regular и Menlo остаются запасными шрифтами, пока JetBrains Mono не загрузился.
 
 ### Named Rules
-**The Heavy-Number Rule.** Всё, что считают или называют, — 800: заголовки, числа, плашки. Метки и навигация — 600–700, текст — 400. Вес 500 загружен, но не используется; не вводить его.
+**The Two-Weight Rule.** У текста два веса. Семья `Inter Panel` отдаёт всё до 450 начертанием 400, всё тяжелее — 500: прежние 600–800 в разметке звучат как Inter 500. Вес 300 — только у Inter Tight.
 
-**The Sentence-Case Rule.** Подписи над полями и группами пишутся обычным регистром на 700, без капса и разрядки.
+**The Sentence-Case Rule.** Подписи групп и полей — обычным регистром, без капса и разрядки.
 
 ## Layout
 
-Телефон — артборд 390×844: внутренний отступ 22px сверху и 16px по бокам, колонка панелей с промежутком 16px (14px на экране подключений). Список маршрутов уходит под плавающую панель вкладок: она закреплена в 16px от краёв и 18px от низа, высотой 68px, пять равных ячеек, по центру — круг разговора 56px. Фильтры на телефоне — горизонтальная лента капсул с прокруткой, выходящая за отступ до края экрана.
+**Каркас «Стол и док».** Верхняя строка — 44px (плюс безопасная зона), закреплена сверху: знак ДиВи 22px, роль (14/20, 500), подпись (13/18 серым), справа — плашка агента, капсулы роли, действия (кнопки 32px) и часы. Док — 72px, плавает в 22px от низа по центру; «+» — отдельный круг рядом с зазором 12px. Слои снизу вверх: стол — окно раздела 15 — подложка «Ещё» 17 — док 18 — верхняя строка 20 — меню «Ещё» 21 — окно на телефоне 25 — «+», «Колонки», выезжающая боковая панель 30 — шиты 40 — вопросы 50. Шиты и вопросы рисуются в конце `<body>`, поэтому их ничто не накрывает.
 
-Компьютер — контейнер шириной до 1360px с отступом 16px, стеклянная верхняя панель той же ширины (минимум 64px высоты) над содержимым. Содержимое — ряды панелей на `flex-wrap` с промежутком 20px и асимметричным соотношением 1.45 : 1 (базы 600px и 400px): слева то, что играет, и список маршрутов, справа режим с распределением и открытый маршрут. Нижний ряд — три панели (базы 340 / 340 / 420px). Подключения — сетка групп `repeat(auto-fit, minmax(380px, 1fr))`. Строки маршрута на компьютере — сетка `40px | 1fr | 0.9fr | 128px | 64px`. Отдельных брейкпоинтов нет: перестройка — только переносом flex-рядов.
+**Стол.** С 1100px — свободное поле без краёв под верхней строкой: плоскость двигается и масштабируется (50–160 %), сцена колонки — 560×520 в начале поля, виджеты стоят там, где их поставили; ширина виджета — 300px, растягивается от 240 до 640px за уголок. Справа внизу — масштаб (кнопки 32px), мини-карта 132×84 и замок. Уже 1100px — лента до 640px: колонка (сцена высотой 420), по виджету-два выше, остальные ниже, маленькие по два в ряд с зазором 12px, большие и «Новый виджет» — во всю ширину. В виде «Боковая панель» — колонка, под ней виджеты столбцом с зазором 16px. Без колонки — столбец до 560px с первым запуском и «Подключите колонку». Поля стола — 24px по бокам (12px до 640px), сверху 24px под строкой, снизу место под док.
 
-Ритм: 4 / 8 / 12 / 16 / 20 / 24px; внутри панелей телефона 14–16px, компьютера 20–24px. Строки списков — минимум 58px (телефон) и 60px (компьютер), строки служб и журнала — 40–44px. Все нажимаемые цели — не меньше 36px, основные — 44px и выше.
+**Окно раздела.** По центру между строкой и доком (16px от каждого), ширина `min(1040px, 100vw − 48px)`, содержимое прокручивается внутри, экраны разделов — столбцом до 760px посередине (`desk-window-wide` — во всю ширину). Поля тела — `20px 24px 32px`, шапка — `12px 12px 12px 20px`.
 
-Схема «дома — облако» на компьютере — фиксированное полотно 1200×340px с горизонтальной прокруткой: слева зона «Дома» (640px, сплошная рамка), справа зона «Облако» (500px, янтарная пунктирная рамка 1.5px), связи — линии 1.5px, наружные — пунктир `4 4`, оборванная — коралловым пунктиром.
+**Вид «Боковая панель».** С 900px — сетка `280px | 1fr` с зазором 24px и полями `16px 24px 16px 16px`: слева белый лист на всю высоту (липкий), справа столбец до 720px. Уже — сверху липкая полоса 60px (меню, колонка, круг «Сказать» 44px), разделы выезжают слева листом до 300px.
+
+**Брейкпоинты** (все — в `panel/src/ui/desk.css`, `glass.css`, `minimal.css`, `screens/desk.tsx`, `shell/sidebar-shell.tsx`):
+
+| Ширина | Что меняется |
+|---|---|
+| ≥ 1281 | мини-карта стола видна; масштаб и замок — над ней |
+| ≤ 1280 | мини-карты нет; масштаб и замок встают над доком (22 + 72 + 20 от низа) |
+| ≥ 1100 | свободный стол; уже — лента |
+| ≥ 900 | боковая панель — столбец слева; уже — полоса сверху и выезжающее меню |
+| ≥ 761 | шит — окно посередине: ширина до 560px, все углы 20, высота до 86dvh, прокрутка внутри, ручки нет, поле 24px по краям экрана |
+| ≤ 760 | шит — нижний лист до 480px шириной и до 88dvh высотой, скруглены верхние углы, ручка, без линии снизу; окно раздела — во весь экран без рамки и радиуса (слой 25), поля тела 16px; док прокручивается вбок, если ячейки не помещаются |
+| ≤ 640 | верхняя строка без подписи, часов и капсул роли — вместо них имя колонки с точкой связи; поля стола 12px; панель «+» — нижний лист до 86dvh |
+| ≤ 560 | док плотнее: ячейки 58px, поля 4px, без разделителя, круг «Сказать» с полями 4px; «+» — 44px; зазор 8px |
+| ≤ 420 | вкладки раздела — подписи без значков |
+| ≤ 400 | ячейки дока 50px |
+
+**Ритм.** 4 / 8 / 12 / 16 / 20 / 24px, умноженные на плотность темы (`--density`, 1). Промежуток между виджетами — 16px, внутри виджета — 10px. Нажимаемые цели — не меньше 28px в шапке виджета, 32px в строке и инструментах стола, основные — 36–52px.
 
 ## Elevation & Depth
 
-Глубина — это стекло над сиянием. Каждая поверхность одновременно полупрозрачна, размыта (`blur(24px)` на телефоне, `blur(28px)` на компьютере, всегда с `saturate(160%)`), обведена светлой рамкой 1px и несёт верхний блик `inset 0 1px 0`; под ней — широкая мягкая тень. Плавающие панели навигации — «плотное стекло»: заливка темнее (в тёмной) или белее (в светлой), тень глубже, размытие 28px. Цветное свечение есть только у лаймовой кнопки разговора и у узла шлюза на схеме.
+Мир плоский: карточка лежит без тени, глубину дают линия 1px и белый лист над светло-серым. Тени — мягкие и нейтральные, растут с тем, насколько поверхность «над» столом: лист виджета едва приподнят, док и шит плавают, окно раздела — выше всех. Размытия (`backdrop-filter`) нет нигде.
 
 ### Shadow Vocabulary
-- **Стекло, тёмная** (`box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10), 0 12px 32px rgba(0, 0, 0, 0.35)`; на компьютере `0 16px 40px`): все панели, круглые кнопки-иконки, узлы схемы.
-- **Стекло, светлая** (`box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 10px 30px rgba(30, 41, 59, 0.10)`; на компьютере `0 12px 34px`).
-- **Плотное стекло, тёмная** (`box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10), 0 16px 40px rgba(0, 0, 0, 0.45)`; компьютер — 0.40): панель вкладок, верхняя панель.
-- **Плотное стекло, светлая** (`box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 14px 36px rgba(30, 41, 59, 0.16)`; компьютер — 0.14).
-- **Свечение разговора** (`box-shadow: 0 8px 24px rgba(182, 243, 106, 0.35)` в тёмной, `0 8px 22px rgba(101, 163, 13, 0.30)` в светлой; на компьютере 0.30 / 0.28): кнопка разговора и большая кнопка «играть».
-- **Кольцо шлюза** (`box-shadow: inset 0 0 0 2px #B6F36A, 0 10px 28px rgba(182, 243, 106, 0.18)`): узел «Шлюз» на схеме.
-- **Кольцо выбора** (`box-shadow: inset 0 0 0 1px rgba(182, 243, 106, 0.45)` поверх `rgba(182, 243, 106, 0.10)`): выбранная строка маршрута на компьютере.
-- **Ручка переключателя** (`box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3)`).
+- **Карточка** (`box-shadow: none`): только линия.
+- **Лист виджета** (`0 2px 10px rgba(0, 0, 0, 0.04)`; в тёмном `0.3`): виджет, капсула подключений сцены, подпись узла.
+- **Плавающий лист** (`0 10px 40px rgba(0, 0, 0, 0.05)`; в тёмном `0.35`): шит, боковая панель, всё на `glass-strong`.
+- **Док** (`0 10px 40px rgba(0, 0, 0, 0.06)`): док и круг «+» — на 1 % плотнее плавающего листа.
+- **Окно** (`0 24px 80px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.04)`; в тёмном `0 24px 80px rgba(0, 0, 0, 0.5)`): окно раздела; панель «+» — `0 24px 80px rgba(0, 0, 0, 0.12)`.
+- **Меню** (`0 8px 24px rgba(0, 0, 0, 0.07)`; в тёмном `0.4`): меню «Ещё», меню виджета, выпадающие списки. Тот же отпечаток — у плитки персонажа при наведении вместе с подъёмом на 2px.
+- **Виджет в руках** (`0 18px 48px rgba(0, 0, 0, 0.14)`): пока его тащат по столу.
+- **Выбранный сегмент** (`0 1px 3px rgba(0, 0, 0, 0.08)`; в тёмном `0.4`).
+- **Кнопка с линией** (`0 0 0 1px line, 0 1px 2px rgba(0, 0, 0, 0.05)`): белые капсулы и круглые кнопки-значки.
+- **Карточка ответа** (`0 0 0 1px line, 0 6px 22px rgba(0, 0, 0, 0.06)`).
+- **Обложка музыки** (`0 6px 16px rgba(0, 0, 0, 0.14)`).
+- **Свечение действия** (`0 6px 18px rgba(132, 204, 22, 0.32)`, наведение `0 8px 26px … 0.46`; в тёмном 0.22 / 0.32; у пилюли-действия `0 4px 12px … 0.26`): только лайм.
+- **Узел сцены за работой** (`0 0 0 2px <цвет исполнителя>, 0 10px 30px <он же 27 %>`).
 
 ### Named Rules
-**The Top-Highlight Rule.** Стекло без блика — не стекло: любая стеклянная поверхность несёт вместе рамку 1px, `inset 0 1px 0` и размытие с `saturate(160%)`. Ни один из трёх признаков не снимается по отдельности.
+**The Line-Before-Shadow Rule.** Сначала линия 1px, потом тень. Поверхность без линии не стоит на столе.
 
-**The Strong-Glass-Floats Rule.** Плотное стекло — только у того, что плавает над прокручиваемым содержимым: панели вкладок на телефоне и верхней панели на компьютере.
+**The Window-Is-Highest Rule.** Чем выше слой, тем глубже тень: лист 4 % → плавающее 5 % → док 6 % → меню 7 % → окно 12 %. Окно раздела — единственная поверхность с двойной тенью.
 
-**The One-Glow Rule.** Цветное свечение принадлежит лаймовому действию разговора и воспроизведения; остальные тени нейтральные.
+**The One-Glow Rule.** Цветное свечение — у лаймового действия и у работающего узла сцены и колонки; остальные тени нейтральные.
 
 ## Shapes
 
-Острых углов нет. Контролы — капсулы (999px) или круги (50%): кнопки, сегменты, фильтры, плашки, поле поиска, аватары, значки строк (40px, на подключениях 38px). Панели — 24px на телефоне и 32px на компьютере; панель вкладок — 34px (половина её высоты 68px), баннер проблемы на телефоне — 20px. Вложенные поверхности скругляются мельче своей панели: ячейки распределения и разрешений — 16px, выбранная строка — 20px, ожидающее изменение — 18px, плитка помощника — 14px, обложка — 16px на телефоне и 28px на компьютере (132px). Полосы — капсулы своей высоты: распределение 10px (радиус 5px) на телефоне и 14px (7px) на компьютере с зазором 3–4px между сегментами; прогресс 4px и 6px. Люди — круг с цветным кольцом `inset 0 0 0 2px` и инициалом вместо фото.
+Острых углов нет. Контролы — капсулы (999px) или круги: кнопки, вкладки, метки, поля, капсулы роли, ячейки масштаба. Поверхности скругляются по размеру: **22** — док; **20** — окно раздела, шит (оба вида), боковая панель, панель «+», окно колонки во фрейме, виджет «Музыка»; **18** — карточки «Что дальше» на экране «Колонка подключена» и кольцо фокуса узла сцены. В `glass.css` так же записаны плашка «Станет … вместо …» и подсказка «почему», но «Минимал» переписывает их на 14 (`minimal.css`). **16** — карточка, виджет, карточка ответа, «Новый виджет», дорожка вкладок, меню «Ещё»; **14** — лист внутри карточки, плашка «Станет … вместо …», подсказка «почему», плитка персонажа, плитка «Слышит · Думает · Говорит», ячейка дока, строка «+», меню виджета и выпадающий список, редактор кода; **13** — обложка пакета и обложка в «Музыке»; **12** — вкладка и сегмент, пункт боковой панели, мини-карта стола; **11** — значок строки (белая плитка 40px); **10** — плашка дня в «Погоде»; **8** — кнопка выбора колонки в верхней строке; **6** — рамка окна на мини-карте и уголок растягивания виджета; **2** — полоски волны голоса, столбики волны в «Музыке», плашки на мини-карте. Полосы — капсулы своей высоты: полоса распределения 10px с радиусом 5px у сегментов, полоса виджета 6px и волна — 999px. Вложенное всегда мельче своей панели. Пунктир — 1,5px `dash`: «Новый виджет» и его плашка на мини-карте.
 
 ## Components
 
 ### Buttons
-Тактильные и немногочисленные: одна лаймовая кнопка действия на группу, всё остальное — стекло или контур.
-- **Shape:** капсула (999px) или круг (50%).
-- **Primary:** лаймовая заливка с текстом `on-lime` (в светлой — `lime-light` и `ink`), 800. Разговор на телефоне — круг 56px со свечением; на компьютере — капсула 44px «Сказать через колонку» с иконкой 18px и отступом `0 18px 0 14px`. «Играть / пауза» — круг 48px на телефоне, 56px со свечением на компьютере. «Применить», «Добавить» — капсулы 36–44px.
-- **Стеклянная иконка:** круг 44px в обычном стекле — смена темы, «предыдущая / следующая», «нравится» (тогда иконка лаймовым текстом).
-- **Контур:** прозрачный фон, рамка 1px нейтральная («Отменить») или 1.5px коралловая с коралловым текстом («Проверить»), капсула 36–40px, 700–800.
-- **Текстовая:** «Все 17» — лаймовый текст (`lime-ink-light` в светлой), 700, без фона, цель 44px.
-- **Hover / Focus:** в макетах не нарисованы (см. отчёт); выбор показывается только состоянием `aria-checked` / `aria-pressed`.
+Капсулы, тихие и немногочисленные: одно лаймовое действие, одна чёрная, остальное — белое с линией.
+- **Shape:** капсула (999px) или круг.
+- **Primary:** лайм с текстом `on-accent` и свечением. Круг «Сказать» в доке — 52px с иконкой 22px; в боковой панели — капсула 40px «Сказать через колонку» (15/500, поля `0 18px 0 14px`), на узком — круг 44px. Пилюли-действия «Применить», «Добавить» — лайм 13/500.
+- **Second:** чёрная (`ink`) — «Готово» в шите (44px, 15/500), игра в «Музыке» (круг 40px), кнопка-чернила в виджете, нажатый замок стола.
+- **Line:** белая с линией и лёгкой тенью, 13/500 — всё остальное; янтарная и коралловая — белые с текстом своего цвета; «опасно» — заливка `danger` с белым текстом; мягкая янтарная — `pill-yandex-wash`.
+- **В виджете:** капсула 32px на `chip`, поля `0 14px`, 13/500; наведение — `hover` и линия.
+- **Значок:** круг 44px (32px в верхней строке и инструментах стола, 36px — «закрыть» окна, 28px — «…» виджета), белый с линией.
+- **Hover / Active:** лайм → `accent-hi` и свечение глубже; чёрная → `ink-hi`; белая → `hover`. Нажатие — сжатие до 97 % за 0,15с. Фокус — кольцо 2px цвета текста. Недоступное — 45–50 %.
+- **Ссылка в шите:** текст 500 с линией 1px `line` снизу (отступ 4px), при наведении линия цвета текста.
 
 ### Chips
-- **Плашка исполнителя:** капсула `2px 10px` (на компьютере `3px 12px`), Pill 800, текст — оттенок исполнителя, фон — его прозрачная заливка в тёмной (14–18%) или пастель в светлой. Тексты: «свой», «сначала свой» (тоже лайм), «Яндекс», «агент», «выкл» / «не умеем».
-- **Разрешение агента:** капсула `4px 10px` с точкой 6px того же цвета: лайм «можно», янтарь «спросить», коралл «нельзя», сланец — выключено.
-- **Шаг пути запроса:** капсула `6px 12px`, 700, нейтральное стекло или цвет исполнителя на его шаге; между шагами — шеврон 14px цвета подписи; задержка или «облако» — приписка на 600 (облако — янтарём).
-- **Фильтры:** капсулы 36px; на телефоне — каждая своим стеклом с размытием 20px, на компьютере — внутри общей стеклянной капсулы. Выбранный — лайм (тёмная) или чернила (светлая).
+- **Метка статуса:** капсула `chip`, поля `2px 10px 2px 8px`, 12/18 500, точка 6px цвета исполнителя; выключено — текст `sub`, беда — текст и точка `danger`.
+- **Капсула роли** (верхняя строка, окно, полоса колонки): 26px, `0 10px`, `chip`, 12/16 500, точка 6px (своё / Яндекс / шлюз; не на связи — камень). Тёмная капсула (`helper-bg`) — связь с помощником; внутри тёмной рамки она светлая.
+- **Метка «Этот компьютер»:** капсула 24px `helper-bg` — у окна помощника.
 
 ### Cards / Containers
-- **Corner Style:** 24px телефон, 32px компьютер.
-- **Background:** стекло (`glass-dark` / `glass-light`); вложенные ячейки — `rgba(255, 255, 255, 0.05)` / `rgba(255, 255, 255, 0.55)`.
-- **Shadow Strategy:** см. «Стекло» в Elevation & Depth.
-- **Border:** 1px светлая рамка стекла.
-- **Internal Padding:** 14–16px телефон, 20–24px компьютер; панели-списки — `4px 16px 8px` / `12px`, чтобы строки шли до края.
-- **Баннер проблемы:** то же стекло, окрашенное кораллом (`rgba(255, 107, 107, 0.12)`, рамка `rgba(255, 122, 122, 0.35)`), круглая иконка на `rgba(255, 138, 128, 0.16)`, заголовок 800, контурная коралловая кнопка справа.
+- **Corner Style:** 16px.
+- **Background:** `card`, лист внутри — `sheet`.
+- **Shadow Strategy:** без тени (см. Elevation).
+- **Border:** 1px `line`.
+- **Internal Padding:** 16px; списки — `4px 16px 12px`, чтобы строки шли до края.
+- **Баннер «нет связи»:** капсула на `danger-wash`, текст `danger` 500, без рамки.
 
 ### Inputs / Fields
-- **Сегментированный режим:** сетка из трёх равных капсул в стеклянной (телефон) или `navBg`-капсуле (компьютер, `rgba(255, 255, 255, 0.06)` / `rgba(13, 17, 23, 0.05)`) с внутренним отступом 4px; сегменты 40px / 44px. Выбран — лайм (тёмная) или чернила (светлая), 800; остальные — прозрачные, 600. Под ним — строка пояснения, что изменится.
-- **Выбор исполнителя маршрута:** ряд отдельных капсул 40px с зазором 8px; невыбранные — стекло с рамкой, выбранная — как сегмент. Выбор не применяется сразу: появляется янтарная плашка «Станет … вместо …» с «Отменить» и «Применить».
-- **Поиск:** капсула 40px на `navBg`, иконка 16px, поле без рамки и фона.
-- **Переключатель:** дорожка 46×28px (радиус 14px), ручка 22px; включено — `lime` с тёмной ручкой (в светлой — `lime-deep-light` с белой), выключено — `rgba(255, 255, 255, 0.16)` / `rgba(13, 17, 23, 0.16)`, недоступно — дорожка 7% и ручка 50%.
-- **Громкость:** нативный `range` с `accent-color` лайма.
+- **Поле:** белая капсула с линией, 38px, поля `8px 14px`; многострочное — белый лист 14. Плейсхолдер — `mute`.
+- **Focus:** линия цвета текста, без кольца.
+- **Выпадающий список:** белое меню радиуса 14, выбранная строка — `chip` 500.
+- **Вкладки раздела и сегменты** (режим колонки, режим темы, вид колонки, срок журнала, тоны персонажа, варианты размещения): дорожка `track` радиуса 16 с полями 4px, вкладка 38px радиуса 12, 14/500 `sub`; выбранная — белая капсула с тенью сегмента, текст цвета текста.
+- **Переключатель:** дорожка 46×28 (радиус 14) цвета `orbit`, белая ручка 22px с тенью; включено — `own`; недоступно — дорожка `track`, ручка 50 %.
+- **Радио:** круг 22px, рамка 2px; выбрано — чёрный круг с белой галочкой.
 
 ### Navigation
-- **Телефон:** плавающая панель плотного стекла (68px, радиус 34px) из пяти ячеек: «Колонка», «Мозг», круг разговора, «Голос», «Дом». Внутри раздела — вкладки капсулой во всю ширину (выбранная залита лаймом): «Мозг» — модели, персонажи, маршруты; «Голос» — голос и распознавание; «Дом» — коннекторы, шлюз, пакеты, доступ. Иконка 22px над подписью Tab; активная — лаймовый текст и 800, прочие — подпись и 600.
-- **Компьютер:** верхняя панель плотного стекла: значок колонки и её статус, капсульная навигация на `navBg` (36px, активная — выбранный сегмент), справа смена темы, капсула разговора и аватар администратора с бирюзовым кольцом.
+- **Верхняя строка:** белая полоса 44px с линией снизу (у помощника — тёмная). Выбор колонки — текст 13/500 со стрелкой 14px, радиус 8.
+- **Док:** белый лист 72px радиуса 22 с линией и тенью дока. Ячейка 72×58 радиуса 14: значок 22px над подписью 11/14 500 `sub`; наведение — `hover` и цвет текста; открытая — цвет текста и точка 4px под подписью. Посередине — круг «Сказать» 52px с полями 10px; у помощника перед «Ещё» — разделитель 1×36. «Ещё» открывает меню над доком (радиус 16, до 60vh).
+- **Боковая панель:** белый лист радиуса 20; пункт 44px радиуса 12, 15/500 `sub`; открытый — подложка `chip` и цвет текста; группы — подписи 11/14 500.
+- **Масштаб, мини-карта, замок:** круги 32px с линией; уровень масштаба — капсула 52px; мини-карта 132×84 радиуса 12 — плашки 2px, сцена кругом, видимая часть — рамка 1,5px цвета текста радиуса 6. Закреплённый стол — чёрный круг замка, остальные инструменты 45 %.
 
-### Allocation Bar
-Подпись мира: одна горизонтальная полоса из сегментов-капсул, ширина каждого пропорциональна числу возможностей у исполнителя (`flex: n 1 0`), пустые исполнители скрыты. На телефоне под ней — строка легенды (точка 8px, подпись, число 800); на компьютере — сетка ячеек 16px с числом Figure. Полоса всегда стоит рядом с режимом: смена режима сразу перераспределяет её.
+### Desk Widget
+Подпись стола. Белый лист радиуса 16 с линией и тенью листа, ширина 300px, поля `10px 12px 14px 14px`, промежуток 10px. Шапка 28px: значок 16, название 13/500, источник 11/14 серым справа, «…» — круг 28px с меню (радиус 14, от 180px; на закреплённом столе пункты раскладки 45 % и пояснение сверху). Содержимое: строки 13/18 через `row-line`, подпись 12/16, сильная строка 14/500, крупное число — Figure, обычное — Number, точка 7px, полоса 6px (`track`, заполнение `own`), плашка дня — `card` радиуса 10. Встроенный экран без рамки (`widget-bare`) получает тот же лист, его «…» появляется при наведении (на сенсорном — всегда). **«Новый виджет»** — пунктир 1,5px `dash` радиуса 16, от 116px, текст 14/500.
 
-### Route Row
-Строка-«актив»: круглый значок 40px на `rgba(255, 255, 255, 0.09)` / `rgba(255, 255, 255, 0.75)`, имя 700 и последняя фраза Caption, справа — плашка исполнителя и «N за сутки». Разделитель 1px сверху, у первой строки — прозрачный. На компьютере строка — кнопка: выбранная получает лаймовую подложку и кольцо выбора, а маршрут открывается в правой панели (путь запроса, «Кому можно», последние запросы).
+**Музыка.** Тот же виджет, но радиус 20, поля 14px, фон — мягкий тон обложки (`--music-tone`, шесть пастелей), линия 5 % чёрного (в тёмном — 14 % тона поверх листа). Обложка 64px радиуса 13 с тенью; без картинки — градиент и «солнце» — лаймовый круг 26px. Над названием — «играет на колонке» 11/14 500, название 15/20 500. Вместо полосы прогресса — волна: столбики 3px радиуса 2, сыгранные — цвет текста, остальные — 20 %. Управление — круги 36px, игра — чёрный круг 40px.
 
-### DuoWave Mark
-Знак сервиса DuoWave (duowave.app) — персонаж **ДиВи** (утверждён 08.11.2026): лаймовый скруглённый квадрат и два тёмных глаза на холсте 256×256, в статике всегда подмигивает (левый глаз — капсула, правый — дужка; два открытых глаза — только в движении) — `ui/duowave.tsx`. Три варианта: **цветной** — тело `#B6F36A`, глаза `#0B0F0A` в любой теме (шапка, схема размещения, иконка вкладки); **моно** — тело цвета текста, глаза вырезаны и фон просвечивает; **прозрачный** — тело 14% цвета текста, глаза цвета текста (цветной фон, места, где лайм лишний). Рядом — надпись «duowave» контурами сайта (`svg.lp-wordmark`), в шапке пульта знак 26px и надпись 19px. Меньше 16px знак не ставится. Значок приложения — инверсия: ночная плашка целиком и лаймовые глаза (в тёмном Dock macOS 26 затемняет плашку, лаймовая с тёмными глазами там пропадала). Внизу каждого экрана — «Powered by DuoWave»: моно-знак 16px и подпись 12/600 цветом текста при 42% непрозрачности (70% при наведении), ссылкой на duowave.app. Знак не означает исполнителя и не красит данные.
+**Виджет голосом** (Мастерская, «+»): микрофон — белый круг 36px с линией, слушает — лайм; сказанное — лист 14 на `card`; превью виджета — 300px с линией и тенью `0 10px 30px / 8 %`.
 
-### Placement Map
-Окно «Где работает DuoWave» (`screens/placement-map.tsx`): три сегмента-варианта (выбранный — как сегмент режима), строка «Главные настройки» с шестерёнкой, схема из четырёх узлов (колонка, ПК, облако, Яндекс — капсулы 120×56 на `--menu-bg`), знак DuoWave на узле шлюза и шестерёнка на узле настроек, переезжающие при смене варианта. Связи пути голоса — штрих, бегущий в сторону данных, лаймом для своего и янтарём для облака и Яндекса; по ним бежит точка, шаги пути подписаны под схемой. Неучаствующие узлы — 38%. С `prefers-reduced-motion` штрих и точка стоят, видны все шаги.
+### Desk Window
+Раздел поверх стола: белый лист радиуса 20 с линией и тенью окна, появление 0,18с (из `translateY(8px) scale(.99)`). Шапка — заголовок 15/20 500 и круг «закрыть» 36px через линию; у помощника — метка «Этот компьютер». Окно колонки у помощника несёт полосу колонки (`card`, 14/500 имя, 12/16 пояснение; не на связи — янтарная подложка) и фрейм пульта колонки во всю площадь. До 760px окно — во весь экран.
 
-### Who Strip
-«Слышит · Думает · Говорит» — три плашки цвета исполнителя (как пилюли): над орбитой главного экрана и под схемой размещения. Считаются одним расчётом (`truth.ts`), поэтому не расходятся; когда выбранный мозг на деле не отвечает (слух у Яндекса, ПК спит), под ними — янтарная подсказка почему. Окно, после которого колонку не вернуть одним нажатием («Вернуть колонку Яндексу»), открывается тихой красной ссылкой и подтверждается галочкой и отсчётом 5 секунд на красной кнопке; обратимое («Отдать голос Яндексу») — янтарём и обычным подтверждением.
+### Sheet
+Белый лист радиуса 20 над затемнением `scrim` на весь экран. Заголовок — Headline, внизу чёрная «Готово». С 761px — окно посередине шириной до 560px, все углы, высота до 86dvh, поля 20px, ручки нет, появление как у окна. До 760px — нижний лист до 480px шириной и 88dvh высотой, ручка 40×4 цвета `orbit`, скруглены верхние углы, без линии снизу. Длинное — прокручивается внутри. Шиты встают над окнами, доком, «+» и «Колонками»; вопросы `ask()` — над ними. Во фрейме окна колонки затемнение шита — только во фрейме, остальную страницу затемняет помощник.
 
-### Answer Card
-Карточка ответа под колонкой на главном экране — во всех темах (решение владельца 08.11.2026: она переехала из
-«Минимала» в «Стекло» и «Простор»). Две строки: точка 7 px цвета того, кто работает, и что он делает («Слушает…»,
-«Думает…», «Отвечает…», «Ответ через 1,8 с») — 13/18, 800 (в «Минимале» 500); ниже — что услышано, о чём думает или
-что ответил, 12/16 цветом подписи. Пока колонка говорит, справа — волна голоса: пять полосок 3 × 15 px цвета
-исполнителя (у персонажа — его цвета), 0,8 с, масштабом по высоте. Радиус 16, поля `8px 12px 9px`; в «Стекле» —
-стекло подписи узла (`label-bg`, рамка, блик, размытие 16 px), в «Минимале» — белый лист с линией и тенью
-`0 6px 22px / 6 %`. Ширина — между кругами слуха и голоса (до 196 px), высота в расчёте сцены — 54 px.
+### «+» — новый виджет
+Панель справа под строкой: лист до 400px радиуса 20 с тенью окна над `scrim`, появление сдвигом на 12px за 0,2с; заголовок — Headline-sm, пункты — `card` радиуса 14 с линией и кругом-значком 36px. До 640px — нижний лист до 86dvh.
 
-## Do's and Don'ts
-
-### Do:
-- **Do** класть каждую поверхность на стекло с рамкой 1px, бликом `inset 0 1px 0` и `blur(24–28px) saturate(160%)` поверх сияния из трёх пятен.
-- **Do** окрашивать исполнителя одинаково везде: лайм — свой, янтарь — Яндекс и облако, фиолет — агент, сланец — выключено.
-- **Do** держать одну лаймовую кнопку разговора на экран: кругом 56px в панели вкладок на телефоне, капсулой 44px в верхней панели на компьютере.
-- **Do** делать каждую новую поверхность сразу в двух темах; в светлой — выбор чернилами, лаймовый текст — `lime-ink-light`.
-- **Do** набирать всё в Manrope с `tabular-nums`; заголовки и числа — 800 с отрицательным трекингом.
-- **Do** показывать изменение маршрута до применения — янтарной плашкой «Станет … вместо …» с «Отменить» и «Применить».
-- **Do** помечать вымышленные данные строкой «Данные для примера…» внизу экрана.
-
-### Don't:
-- **Don't** подражать оформлению Яндекса и Алисы.
-- **Don't** переносить логотип, имя или точные цвета кошелька, с которого взят стеклянный образ.
-- **Don't** использовать лайм, янтарь или фиолет в данных для чего-то, кроме исполнителя; бирюза и роза не обозначают исполнителя.
-- **Don't** ставить лаймовый текст на светлый фон.
-- **Don't** вводить острые углы или прямоугольные кнопки: контролы — капсулы и круги.
-- **Don't** давать плотное стекло или цветное свечение поверхностям, которые не плавают и не являются действием разговора.
-
-## Тема «Минимал»
-
-**Creative North Star: "Тихий лист"** — пульт в стиле нового duowave.app. Источник — `landing-design/minimal/`:
-плашки стиля С1–С6 (`design/MinimalKit.dc.html`), первый экран лендинга (`design/LandingMinimal.dc.html`) и
-`HANDOFF.md`. С 08.11.2026 «Минимал» — тема по умолчанию (`shell/themes.ts`, `MINIMAL`); рядом в «Дом» → «Доступ» → «Вид
-пульта» — «Минимал · панель», «Стекло» и «Простор». Всё, что выше в этом файле, — «Стекло»; здесь — чем «Минимал» от него
-отличается. Смысл цвета исполнителя общий (The Who-Answers Rule): лайм — своё и дома, янтарь — снаружи (облако и
-Яндекс), фиолет — агент, серый — выключено.
-
-Материал темы — поле `look: 'minimal'` (`<html data-look="minimal">`): токены — в палитре темы, элементы — в
-`panel/src/ui/minimal.css` под `html[data-look='minimal']`, поэтому «Стекло» и «Простор» не меняются. Тема-пакет может
-взять этот материал (`look: 'minimal'`), и её палитра ляжет поверх палитры «Минимала».
-
-### Colors (С1)
-
-| Токен | Светлый | Тёмный | Где |
-|---|---|---|---|
-| `bg` | `#FFFFFF` | `#11100F` | фон страницы: ровный белый, без сияния и градиентов (решение владельца 08.11.2026) |
-| `aurora` | `none` | `none` | сияния у «Минимала» нет; тема-пакет на этом материале может его вернуть |
-| `text` · `sub` · `mute` | `#000` · чёрный 56 % · 38 % | `#F5F3F1` · 60 % · 40 % | текст, подпись, приглушённое |
-| `glass-bg` · `glass-border` | `#FAFAFA` · `#ECE9E6` | `#1A1918` · `#2A2826` | карточка (светло-серая, решение владельца 08.11.2026) и её линия; блика, тени и размытия нет |
-| `strong-bg` · `menu-bg` | `#FFFFFF` | `#201F1D` | белый лист: панель вкладок, боковая панель, шит, окна, меню |
-| `track` · `chip-bg` | `#EFECE9` · `#F3F1EF` | `#262422` | дорожка вкладок и сегментов, подложка метки |
-| `accent` · `accent-hi` · `on-accent` | `#B6F36A` · `#A3E635` · `#0B0F0A` | те же | только главное действие; свечение `0 6px 18px rgba(132, 204, 22, .32)` |
-| `ink-bg` · `ink-hi` | `#000` · `#262626` | `#F5F3F1` · `#FFF` | вторая кнопка («Готово»), выбранное радио |
-| `bar-own` · `bar-yandex` · `bar-agent` · `bar-off` | `#84CC16` · `#F59E0B` · `#8B5CF6` · `#A8A29E` | `#A3E635` · `#FBBF24` · `#A78BFA` · `#8A8580` | точки статусов, кольцо колонки, свечение, кометы, полосы |
-| `orbit` · `glow-rest` | `#E2DDD8` · `#E7E5E4` | `#3A3734` | линия орбиты и дорожка переключателя; свечение за колонкой в покое |
-| `dot-offline` | `#C8321F` | `#FF8A75` | беда; подложка баннера — 8 % |
-
-**The Dot-Carries-Color Rule.** Цвет исполнителя в «Минимале» живёт в точке, кольце, свечении и комете, а не в
-заливке: метка — тихая капсула `chip-bg` с точкой 6 px его цвета, плитки «Слышит · Думает · Говорит» — белые с точкой
-7 px, узел дашборда — белый круг с точкой 10 px. Заливки цветом исполнителя остаются только у предупреждений
-(«Станет … вместо …» и подсказка «почему» — янтарная подложка).
-
-**The One-Lime Rule.** Лайм — главное действие и ничего больше: «Сказать через колонку», «Применить», «Добавить»,
-выбранное в строке («Выбран»). Вторая кнопка — чёрная, остальные — белые с линией. Текст лаймового смысла — глубокий
-оливковый `#3F6212`; фокус с клавиатуры — кольцо цвета текста.
-
-### Typography (С2)
-
-**Шрифты:** заголовки — Inter Tight 300, текст — Inter 400/500, код — JetBrains Mono 400. Пакеты `@fontsource`
-в сборке пульта (`main.tsx`, `ui/fonts-minimal.css`), без Google Fonts: пульт работает дома и без интернета.
-
-- **Display** (Inter Tight 300, 34/38, −0,025em) и **Title** (Inter Tight 300, 28/32, −0,02em — H2 сайта на
-  телефоне): заголовки шитов, окна «Колонки», входа.
-- **Title-xs, имена строк, кнопки** — Inter 500: 15/20 заголовок панели, 13/18 кнопка-капсула.
-- **Body** 15/22 и подписи 12–13 — Inter 400, цифры моноширинные (`tabular-nums`), как в «Стекле».
-- **Код** — JetBrains Mono 400, 12/1,75.
-
-**The Two-Weight Rule.** У текста два веса. Семья `Inter Panel` (`ui/fonts-minimal.css`) отдаёт всё до 450
-начертанием 400, а всё тяжелее — 500: прежние 600–800 в разметке пульта в «Минимале» звучат как Inter 500, как на
-плашках. Вес 300 — только у заголовков Inter Tight.
-
-### Layout & Shapes (С6)
-
-- **Два вида, как у «Стекла» и «Простора»:** «Минимал» — панель вкладок снизу везде (белый лист, круг «Сказать»
-  посередине, открытая вкладка — цветом текста, остальные — приглушённые; на компьютере — колонка 480 точек, как на
-  телефоне). «Минимал · панель» (`MINIMAL_PANEL`) — боковая панель: белый лист со знаком и надписью, колонкой,
-  лаймовой капсулой «Сказать через колонку» и разделами строками радиуса 12 (открытый — на подложке `chip-bg`); на
-  телефоне — полоса сверху, разделы в меню. Палитра, шрифты и элементы у обоих одни.
-- **Радиусы:** 999 — кнопки, вкладки, метки, поля; 20 — шит, боковая панель, панель вкладок, окна; 16 — карточка и
-  карточка ответа; 14 — лист внутри карточки, плитка, «Станет … вместо …»; 12 — вкладка панели и сегмент, строка
-  боковой панели; 13 — обложка пакета (значок приложения на плашке С4); 11 — значок строки (белая плитка 40 px);
-  8 — значок в карточке; 2 — полоска волны голоса.
-- **Тени:** карточка — без тени, только линия; лист — линия + `0 2px 10px / 4 %`; плавающее — `0 10px 40px / 5 %`;
-  меню — `0 8px 24px / 7 %`; плитка при наведении — `0 8px 24px / 7 %` и подъём на 2 px; выбранная вкладка и сегмент —
-  `0 1px 3px / 8 %`. Цветное свечение — только у лаймового действия и у работающего узла сцены.
-
-### Components (С3–С4)
-
-- **Кнопки** — только капсулы, нажатие — сжатие до 97 %. Лайм со свечением (главное), чёрная (вторая), белая с линией
-  и лёгкой тенью (остальное); у пилюль-действий 13/18 Inter 500. Янтарная и коралловая кнопки — белые с текстом своего
-  цвета. Ссылка в шите — текст с тонкой линией снизу.
-- **Вкладки раздела** — тёплая дорожка `track` (радиус 16, поля 4), выбранная — белая капсула радиуса 12 с тенью.
-  **Сегменты** (режим колонки, режим темы, вид колонки, срок журнала, тоны персонажа) — так же: дорожка и белый выбор.
-- **Переключатель** — дорожка `#E2DDD8`, включено — `bar-own` с белой ручкой.
-- **Поля** — белая капсула с линией на карточке, в фокусе линия цвета текста; многострочное — белый лист 14;
-  выпадающий список — белое меню 14, выбранная строка — `chip-bg`.
-- **Списки** — разделитель — линия `#ECE9E6`; значок строки — белая плитка с линией, радиус 11; выбор — чёрное радио
-  с белой галочкой; ожидающая строка — белый лист с линией.
-- **Плитка персонажа** — белая, линия `#F1EFED`, радиус 14, при наведении поднимается; выбранная — линия цвета текста.
-  Аватар без снимка — шар цвета персонажа с бликом сверху слева.
-- **Шит** — белый лист радиуса 20 над затемнением `rgba(28, 25, 23, .18)`, заголовок Title, внизу чёрная «Готово».
-
-### Motion: сцена дашборда (С6)
-
-Колонка в центре; за ней — мягкое свечение (`blur(60px)`, 45 %, размер 1,72 × 1,2 рисунка) цветом того, кто сейчас
-работает: слух на «слушает», мозг на «думает», голос на «отвечает», в покое — `glow-rest`. Вокруг — орбита «Стекла»,
-но тонкой тёплой линией `orbit` (1 px): по ней бежит лаймовая искра (1,6 px, 20 с на круг), а на шаге вопроса по
-дуге летит комета цветом того, кто работает, — от слуха к мозгу на «думает» и от мозга к голосу на «отвечает»
-(решение владельца 08.11.2026: орбита вместо пунктирных лучей сайта). Узел — белый круг с линией и точкой
-исполнителя; работающий — кольцо 2 px и тень его цвета, масштаб 1,06 и пульс кольцом. Подпись под колонкой —
-карточка ответа (см. Components → Answer Card), в «Минимале» — белый лист.
+### Dashboard Scene
+Колонка в центре; за ней — свечение радиальным градиентом (без `filter: blur`) цветом того, кто работает, в покое — `glow-rest`, прозрачность 45 % (тёмный 32 %). Орбита — линия 1px `orbit`, по ней лаймовая искра 1,6px, круг за 20с; на шаге вопроса по дуге летит комета цветом исполнителя. Узел — белый круг с линией, тенью и точкой 10px; работающий — кольцо 2px его цвета, тень, масштаб 1,06 и пульс. Подписи узлов без подложки: серое имя 12/16 и значение 13/17 500. Капсула подключений — белая с линией. Персонаж со своим цветом — шар в круге «Характер»; на ответе шар влетает в колонку (сжатие до 22 %), кольцо и свечение берут его цвет.
 
 | Что | Тайминг и кривая |
 |---|---|
@@ -624,51 +508,57 @@ components:
 | Искра по орбите | круг за 20 с |
 | Комета | 1,1 с по дуге, `cubic-bezier(.4, 0, .2, 1)` |
 | Узел загорается | кольцо 0,9 с, масштаб 1 с, `cubic-bezier(.3, .7, .3, 1)` |
-| Персонаж влетает в колонку | 1,25 с, `cubic-bezier(.45, 0, .25, 1)`; шар сжимается до 22 % и гаснет за 0,9 с |
-| Смена колонки | новая модель слева из глубины, прежняя вправо: 1,2 с, `cubic-bezier(.22, .8, .2, 1)`, масштаб 0,6, размытие 4 px |
+| Персонаж влетает в колонку | 1,25 с, `cubic-bezier(.45, 0, .25, 1)`; шар гаснет за 0,9 с |
+| Смена колонки | новая слева из глубины, прежняя вправо: 1,2 с, `cubic-bezier(.22, .8, .2, 1)`, масштаб 0,6, размытие 4px |
 | Шар персонажа | вращение 16 с |
 | Волна голоса | 0,8 с |
-| ДиВи при наведении | присесть 140 мс → прыжок на 16 px 190 мс → приземлиться 300 мс с перелётом |
+| ДиВи при наведении | присесть 140 мс → прыжок на 16px 190 мс → приземлиться 300 мс |
 
-**Персонаж в колонке.** Когда отвечает персонаж со своим цветом (характер «свой», мозг не у Яндекса), круг
-«Характер» — его шар. На шаге «отвечает» шар летит в кольцо колонки и гаснет, кольцо
-колонки, свечение и волна берут цвет персонажа; после ответа шар возвращается. Цвет персонажа — только на время его
-ответа; в остальное время кольцо говорит, кто исполнитель.
+При `prefers-reduced-motion` — статичный кадр: искра и кометы стоят, шар не летит (кольцо всё равно берёт цвет персонажа), колонка меняется сразу, окна и шиты появляются без хода.
 
-**Без анимации.** При `prefers-reduced-motion` — статичный кадр: искра и кометы стоят, шар не летит (кольцо всё равно берёт
-цвет персонажа на ответе), колонка меняется сразу, волна и шары не двигаются, ДиВи стоит и подмигивает.
+### Answer Card
+Под колонкой: белый лист радиуса 16, поля `8px 12px 9px`, линия и тень карточки ответа. Две строки: точка 7px цвета того, кто работает, и что он делает («Слушает…», «Ответ через 1,8 с») — 13/18 500; ниже — что услышано или отвечено, 12/16 `sub`. Пока колонка говорит, справа — волна: пять полосок 3×15 цвета исполнителя, 0,8с. Ширина — между кругами слуха и голоса (до 196px).
 
-### ДиВи и часы
+### Who Strip
+«Слышит · Думает · Говорит» — три белые плитки радиуса 14 с линией: подпись 12/16 серым, значение 13/18 500 с точкой 7px исполнителя. Считаются одним расчётом (`truth.ts`); когда мозг на деле не отвечает, под ними — янтарная подсказка почему. Необратимое («Вернуть колонку Яндексу») — тихой красной ссылкой с подтверждением галочкой и отсчётом 5 секунд; обратимое — янтарём.
 
-- **Живой ДиВи** в шапке и боковой панели (`ui/divi.ts` — перенос `brand/divi-mark.js`): при загрузке глаза
-  открыты, моргнул, подмигнул; при наведении на логотип (знак и надпись) или фокусе — моргнул, обрадовался, подпрыгнул,
-  снова подмигивает (около 2 с, повторное наведение во время анимации не перезапускает). Так во всех темах.
-- **ДиВи ведёт вход и подключение колонки** (`screens/auth.tsx`, `screens/connect.tsx`): на «Добро пожаловать» —
-  96 px по центру, в шапке шагов мастера — 40 px, над шагами подключения и на «Колонка подключена» — 72 px по центру.
-  Он живой сам по себе (`idle: 'lively'`, как у ДиВи в схеме шлюза на сайте): каждые 3–6 с открывает оба глаза,
-  оглядывается в одну сторону и в другую, моргает обоими и снова подмигивает; иногда только моргает, изредка радуется с
-  прыжком. На «Колонка подключена» он сразу радуется (`cheer`), а в момент, когда колонка вышла на связь, — салют
-  конфетти на 2,6 с (`ui/confetti.ts`, цвета ДиВи и тёплые акценты). Пока страница скрыта или знак не на экране, он
-  стоит; при prefers-reduced-motion — стоит и подмигивает, салюта нет.
-- **Часы на рисунках колонок** — всегда с ведущим нулём: 09:20, 00:15 (`stations/digits.ts`).
+### Placement Map
+Окно «Где работает DuoWave» (`screens/placement-map.tsx`): сегменты-варианты на дорожке, схема из четырёх узлов (колонка, ПК, облако, Яндекс — капсулы 120×56 на белом листе), знак DuoWave на узле шлюза. Путь голоса — штрих, бегущий в сторону данных: своё — `own`, облако и Яндекс — `yandex`; неучаствующие узлы — 38 %.
 
-### Выбор темы
+### DuoWave Mark и ДиВи
+Знак — персонаж **ДиВи**: лаймовый скруглённый квадрат и два тёмных глаза, в статике подмигивает (`ui/duowave.tsx`). Варианты: цветной (`accent` и `on-accent` в любой теме), моно (цвета текста, глаза вырезаны), прозрачный (14 % текста). В верхней строке — 22px, живой (`ui/divi.ts`): при загрузке моргает и подмигивает, при наведении радуется и подпрыгивает. На входе и в мастере подключения — 96 / 40 / 72px, живёт сам (`idle: 'lively'`); «Колонка подключена» — радость и конфетти 2,6с. Меньше 16px не ставится; исполнителя не означает. Значок приложения — инверсия: ночная плашка и лаймовые глаза. Внизу экранов — «Powered by DuoWave», моно-знак 16px и 12/500 на 42 %. Часы на рисунках колонок — с ведущим нулём (`stations/digits.ts`).
 
-Пульт помнит выбор человека в `panel-theme` как `{ v: 2, id, mode }`, где `null` — «как по умолчанию». Прежние сборки
-записывали «Стекло» сами, без выбора, поэтому такая запись — тема по умолчанию: при первом входе после обновления
-пульт встаёт в «Минимал», в его режиме (светлом). Другая тема из прежней записи («Простор», тема-пакет) — настоящий
-выбор и остаётся. Смена темы держит режим на экране.
+### Code Editor
+Мастерская: поле радиуса 14 на `field` с линией; прозрачное поле поверх раскрашенного текста, оба — JetBrains Mono 13/1,5, табуляция 2, поля `10px 14px`. В фокусе — линия цвета текста. Цвета — `code-*`, комментарий курсивом.
 
-### Do's and Don'ts «Минимала»
+## Do's and Don'ts
 
-- **Do** класть содержимое на светло-серую карточку с линией, а то, что плавает, — на белый лист.
-- **Do** показывать исполнителя точкой, кольцом, свечением и кометой его цвета.
+### Do:
+- **Do** класть содержимое на светло-серую карточку с линией 1px, а то, что плавает, — на белый лист с линией и мягкой тенью.
+- **Do** показывать исполнителя точкой, кольцом, свечением и кометой его цвета: своё — `own`, снаружи — `yandex`, агент — `agent`, выключено — `off`.
 - **Do** держать лайм за главным действием; вторая кнопка — чёрная, остальное — белое с линией.
-- **Do** набирать заголовки Inter Tight 300, всё остальное — Inter 400/500, код — JetBrains Mono.
-- **Don't** возвращать стекло: размытие, блик и цветные полупрозрачные заливки — материал «Стекла».
-- **Don't** класть под «Минимал» сияние и градиенты: фон — ровный белый (в тёмном — ровный тёплый почти чёрный).
-- **Don't** заливать метки цветом исполнителя и красить лаймом текст на светлом.
-- **Don't** брать шрифты из сети.
+- **Do** показывать роль рамкой: у шлюза верхняя строка и док белые, у помощника — `helper-bg`.
+- **Do** делать каждую новую поверхность сразу в двух режимах и проверять на 760 и 761px — там шит меняет вид.
+- **Do** набирать крупное Inter Tight 300, всё остальное — Inter 400/500, код — JetBrains Mono.
+- **Do** показывать изменение до применения — янтарной плашкой «Станет … вместо …» с «Отменить» и «Применить».
 
-**Не решено — ждёт владельца.** Тёмный режим «Минимала» — производная без макета:
-тёплый почти чёрный фон, карточки и листы на тон светлее, те же точки и лайм.
+### Don't:
+- **Don't** возвращать стекло: размытие, блик, полупрозрачные цветные заливки и сияние под фоном — материал удалённого «Стекла».
+- **Don't** заливать метки цветом исполнителя и красить лаймом текст на светлом фоне.
+- **Don't** красить рамку цветами исполнителей: лайм, янтарь и фиолет значат «кто отвечает».
+- **Don't** брать шрифты из сети и вводить третий вес текста.
+- **Don't** вводить острые углы и прямоугольные кнопки.
+- **Don't** подражать оформлению Яндекса и Алисы.
+
+## Открытые вопросы
+
+Записано как есть в коде ветки `desk` (10.11.2026); решения — за владельцем, цвета и размеры не менялись.
+
+1. **Лайм не только у действий.** Кроме «Сказать» и пилюль-действий лайм стоит у «солнца» на пустой обложке музыки (`desk.css`, `.music-cover-sun`, `#b6f36a`), у нажатого микрофона виджета голосом (`.widget-agent-mic`, `--accent`) у круглых значков карточек «Что дальше» на экране «Колонка подключена» (`glass.css`, `.connect-next-icon`, `--accent`) и у точки «на связи» в полосе колонки (`.role-chip-dot` без класса — `#a3e635`, вписан в код, в светлом режиме не совпадает с `own` `#84CC16`). Оставить лайм только за «Сказать» и действиями или так и задумано?
+2. **Радиус «Музыки» — 20, у остальных виджетов — 16.** Музыка отдельная по замыслу или её тоже 16?
+3. **Тени близки, но разные:** лист виджета 4 %, плавающий лист и шит 5 %, док и «+» 6 %, меню 7 %. Свести док к 5 % (как `strong-shadow`) или оставить ступень?
+4. **Код:** редактор Мастерской — 13/1,5, а плашка С2 сайта — 12/1,75. Какой размер правильный?
+5. **Тёмный режим «Минимала»** — производная без макета; знак роли в тёмном режиме не решён (тёмная рамка помощника сливается с тёмным фоном).
+6. **Устаревшее в коде (для уборки, не дизайн):** правила `.desk-board`, `.desk-side`, `.desk-banner` и брейкпоинт 1500px в `desk.css`, а также `.tabbar` в `glass.css` больше ничем не используются; комментарии в начале `glass.css` («Стекло» — дизайн-система), у `.side-item` (лайм / чернила) и у переключателя (около строки 971: «лайм с тёмной ручкой, lime-deep-light») и шапка `minimal.css` («Стекло» и «Простор» не меняются; ссылка на раздел «Тема „Минимал“», которого в этом файле больше нет — «Минимал» теперь весь документ; та же старая ссылка — в `docs/design/glass/THEMES.md`, строка 36) описывают удалённое.
+7. **Радиус 18.** Он остался у карточек «Что дальше» в мастере подключения и у кольца фокуса узла сцены, а плашки «Станет … вместо …» и «почему» «Минимал» уже свёл к 14. Перевести и эти два места на 14 (лист внутри карточки) или оставить 18 отдельной ступенью?
+8. **Разовые значения в `glass.css` (код 5–8 ноября):** радиус 5px у сегментов полосы распределения (около строки 420; это половина её высоты 10px, то есть капсула, но записано числом, а не 999px) и шрифт 10px у счётчика спутников на сцене (`.dash-badge`, около строки 715; в шкале самый мелкий — 11px). Оставить как есть или привести к шкале: капсула 999px и 11px?

@@ -287,10 +287,13 @@ impl PlayerControl for MediaControl {
             PlayerAction::Resume => {
                 let current = self.player.current(device);
                 let reported = context.device_state.as_ref().and_then(|state| state.player.as_ref());
+                // Where the station says it stands; without its word (the panel's «продолжить») where it stood by our
+                // count — not from the start.
                 let offset = match (&current, reported) {
                     (Some((item, _)), Some(reported)) if reported.id.as_deref() == Some(item.id.as_str()) => {
                         reported.offset_ms.unwrap_or(0).max(0) as u64
                     }
+                    (Some((_, state)), _) => state.position_ms(context.now.timestamp_millis().max(0) as u64),
                     _ => 0,
                 };
                 let radio = current.as_ref().is_some_and(|(item, _)| item.r#type == "FmRadio");
@@ -484,6 +487,33 @@ mod tests {
         let replay = control.control(PlayerAction::Replay, &context()).unwrap();
         assert_eq!(payload(&replay.directives[0])["stream"]["id"], items[1].id.as_str());
         assert_eq!(payload(&replay.directives[0])["stream"]["offset_ms"], 0);
+    }
+
+    /// Review G5: the panel's «продолжить» has no word from the station — the track goes on where it was paused, by
+    /// our count, not from its start.
+    #[tokio::test]
+    async fn continues_where_it_stood_by_our_count_when_the_station_says_nothing() {
+        let player = Arc::new(MediaPlayer::new());
+        let control = MediaControl::new(player.clone(), None);
+        let track = crate::skills::media::media_types::MediaItem {
+            id: "music/a.mp3".into(),
+            title: "a".into(),
+            url: "http://gateway.local/media/music/a.mp3".into(),
+            format: "MP3".into(),
+            codec: None,
+            r#type: "Track".into(),
+            subtitle: None,
+            image_url: None,
+            duration_ms: Some(240_000),
+        };
+        player.play("h:test", vec![track], 0, 0);
+        let play = player.current("h:test").unwrap().1.play_id;
+        let started = now_ms() - 200_000;
+        player.on_event("h:test", PlayerEvent::Started, &play, started);
+        player.stopping("h:test", started + 130_000);
+        player.on_event("h:test", PlayerEvent::Stopped, &play, started + 130_000);
+        let resume = control.control(PlayerAction::Resume, &context()).unwrap();
+        assert_eq!(payload(&resume.directives[0])["stream"]["offset_ms"], 130_000);
     }
 
     #[tokio::test]

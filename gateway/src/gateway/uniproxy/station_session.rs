@@ -27,7 +27,7 @@
 //! no answer speaking or still playing, nobody talking, no push of ours waiting. «стоп» with nothing else to stop, a
 //! cancel of its request, or the station's session closing drop it, journaled as deferredAnswer.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
@@ -43,6 +43,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::device_tag::device_tag_of;
 use super::relay_session::recorded_headers;
+use super::relay_trips::yandex_heard;
 use super::spoken_answer::{
     describe, ends_with_question, without_markup, AnswerObserver, AnswerOutcome, AnswerOutput, AnswerPart, AnswerParts,
     ResponseHeader, SpokenAnswer, SpokenAnswerOptions, Synthesize,
@@ -554,6 +555,18 @@ struct VoiceKey {
 /// What a callback of our push brings: the request it answers.
 type SayCallback = (String, AliceRequest);
 
+/// A voice request for Yandex that came before our session with it was open: its frames, the VoiceInput first, wait
+/// here in the order they came until it is.
+struct HeldVoice {
+    message_id: String,
+    stream_id: Option<u32>,
+    request: AliceRequest,
+    frames: Vec<Bytes>,
+}
+
+/// The station's streams given to Yandex as they are, the newest kept: what Yandex says on them is the station's.
+const KEPT_STATION_STREAMS: usize = 8;
+
 pub struct Inner {
     closed_at: Option<String>,
     wire: Option<WireFormat>,
@@ -575,8 +588,12 @@ pub struct Inner {
     yandex_ids: Vec<String>,
     /// Streams Yandex opened with a push (it speaks): ours by its id.
     push_streams: Vec<(u32, u32)>,
-    /// The station's streams that go to Yandex as they are (music recognition).
+    /// The station's streams that go to Yandex as they are (music recognition, a voice nothing here recognises).
     forwarded_streams: HashSet<u32>,
+    /// The same, still known after the station closed them: Yandex may answer on them later.
+    station_streams_at_yandex: VecDeque<u32>,
+    /// A voice request waiting for our session with Yandex to open.
+    held_voice: Option<HeldVoice>,
     stray_stream_noted: bool,
     /// Whether the station's next listening without the wake word is wanted: set by the last answer.
     follow_up: Option<FollowUp>,
@@ -805,6 +822,8 @@ impl StationSession {
                 yandex_ids: Vec::new(),
                 push_streams: Vec::new(),
                 forwarded_streams: HashSet::new(),
+                station_streams_at_yandex: VecDeque::new(),
+                held_voice: None,
                 stray_stream_noted: false,
                 follow_up: None,
                 answer: None,
@@ -1198,6 +1217,10 @@ impl StationSession {
                 if control.action == StreamAction::Close {
                     inner.forwarded_streams.remove(&control.stream_id);
                 }
+                if let Some(held) = inner.held_voice.as_mut().filter(|held| held.stream_id == Some(control.stream_id)) {
+                    held.frames.push(frame.clone());
+                    return true;
+                }
                 return yandex.send(frame.clone(), "streamControl");
             }
             ClientMessage::Event(event) => event,
@@ -1215,7 +1238,7 @@ impl StationSession {
             ClientEvent::Unknown { name, header, .. } if name == "musicInput" => {
                 // The music recognizer Yandex started: the station's recording and its stream go to Yandex.
                 if let Some(stream_id) = header.stream_id {
-                    inner.forwarded_streams.insert(stream_id);
+                    Self::forward_stream(inner, stream_id);
                 }
                 self.relay_yandex(
                     inner,
@@ -1241,7 +1264,9 @@ impl StationSession {
         let stream_id = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]);
         let payload = &frame[4..];
         if inner.forwarded_streams.contains(&stream_id) {
-            if let Some(yandex) = &inner.yandex {
+            if let Some(held) = inner.held_voice.as_mut().filter(|held| held.stream_id == Some(stream_id)) {
+                held.frames.push(frame.clone());
+            } else if let Some(yandex) = &inner.yandex {
                 yandex.send(frame.clone(), "audio");
             }
             return Ok(());
@@ -1317,21 +1342,7 @@ impl StationSession {
                 // goes to Yandex whole, voice and all, as in «Яндекс» — closed with an empty answer, the station fell
                 // silent (live, 07.11).
                 if !self.deps.speech.recognition_enabled() && inner.yandex.is_some() {
-                    if let Some(stream_id) = header.stream_id {
-                        inner.forwarded_streams.insert(stream_id);
-                    }
-                    self.relay_yandex(
-                        inner,
-                        None,
-                        &header.message_id,
-                        vec![frame],
-                        CapabilityName::Chat,
-                        "no recognition here",
-                        NO_EVENTS,
-                        "voiceInput",
-                        false,
-                    );
-                    return;
+                    return self.voice_to_yandex(inner, header, request, frame);
                 }
                 self.start_voice(inner, header, request);
             }
@@ -1390,6 +1401,9 @@ impl StationSession {
                 }
                 if let Some(relay) = &inner.yandex_relay {
                     relay.cancel(&reason);
+                }
+                if inner.held_voice.as_ref().is_some_and(|held| r#ref.is_none_or(|r#ref| held.message_id == r#ref)) {
+                    self.drop_held_voice(inner, RequestStatus::Cancelled, &reason);
                 }
                 self.cancel_voice(inner, r#ref, &reason);
             }
@@ -2066,6 +2080,8 @@ impl StationSession {
 
     fn route_input(&self, inner: &Inner, text: &str, request: &AliceRequest) -> RouteInput {
         let now = now_ms();
+        // What the station holds now — its player, its timers — for the panel between requests.
+        self.deps.skills.note_device_state(&self.device_tag, request.device_state.as_ref(), now);
         RouteInput {
             text: text.to_string(),
             device_tag: self.device_tag.clone(),
@@ -2907,10 +2923,21 @@ impl StationSession {
     fn on_yandex_stray(&self, frame: Bytes, stream_id: u32, is_control: bool) {
         let mut inner = self.lock();
         let Some(ours) = inner.push_stream(stream_id) else {
+            // The station's own stream, given to Yandex as it was: what Yandex says on it is the station's, as in
+            // «Яндекс». Its numbering is the station's (odd, from 1 on a new socket); Yandex's own streams are even.
+            if inner.station_streams_at_yandex.contains(&stream_id) {
+                if !is_control {
+                    self.outbox.send_binary(frame);
+                    return;
+                }
+                let summary = format!("stream={stream_id}: the station's own, from Yandex");
+                return self.send_raw(frame, "streamControl", summary, &json!({}));
+            }
             if !inner.stray_stream_noted {
+                let what = if is_control { "a stream control" } else { "audio" };
                 self.note(
                     "strayYandexStream",
-                    &format!("Yandex stream {stream_id} belongs to nothing of ours: dropped (noted once)"),
+                    &format!("Yandex stream {stream_id} ({what}) belongs to nothing of ours: dropped (noted once)"),
                     None,
                 );
             }
@@ -2938,6 +2965,101 @@ impl StationSession {
         while inner.yandex_ids.len() > KEPT_YANDEX_IDS {
             inner.yandex_ids.remove(0);
         }
+    }
+
+    /// A station's stream goes to Yandex as it is from here on.
+    fn forward_stream(inner: &mut Inner, stream_id: u32) {
+        inner.forwarded_streams.insert(stream_id);
+        inner.station_streams_at_yandex.retain(|&known| known != stream_id);
+        inner.station_streams_at_yandex.push_back(stream_id);
+        while inner.station_streams_at_yandex.len() > KEPT_STATION_STREAMS {
+            inner.station_streams_at_yandex.pop_front();
+        }
+    }
+
+    /// The station's voice, nothing here to recognise it: to Yandex whole, voice and all, as in «Яндекс», and
+    /// followed as any request — Yandex hears it (its AsrResult is the request's words) and answers it. Before, the
+    /// request was not followed and went nowhere in the journal or on the panel (live, 08.11).
+    ///
+    /// A station that reconnects and speaks at once is ahead of our session with Yandex, which its SynchronizeState
+    /// only began to open (live, 08.11: the voice 77 ms after the socket). Its voice waits for the session, as a
+    /// callback does; before, the request was cancelled at once and the station fell silent, while its audio still
+    /// went to Yandex once the session was up, on a stream Yandex never heard opened.
+    fn voice_to_yandex(self: &Arc<Self>, inner: &mut Inner, header: EventHeader, request: AliceRequest, frame: Bytes) {
+        if inner.held_voice.is_some() {
+            self.drop_held_voice(inner, RequestStatus::Cancelled, "superseded");
+        }
+        let message_id = header.message_id.clone();
+        if let Some(stream_id) = header.stream_id {
+            Self::forward_stream(inner, stream_id);
+        }
+        if let Some(trip) = self.begin_trip(inner, &message_id, RequestKind::Voice, None) {
+            trip.step(RequestPhase::Listen, Some(Place::Yandex), Some("Алиса"));
+            trip.routed(None, "yandex");
+        }
+        let Some(yandex) = inner.yandex.clone() else { return };
+        if yandex.connected() {
+            return self.voice_relayed(inner, &message_id, vec![frame]);
+        }
+        // Between its reconnects, it opens now.
+        yandex.warm_up();
+        inner.held_voice = Some(HeldVoice {
+            message_id: message_id.clone(),
+            stream_id: header.stream_id,
+            request,
+            frames: vec![frame],
+        });
+        self.note("voiceHeld", &format!("request {}: waits for our session with Yandex", tag8(&message_id)), None);
+        let session = self.clone();
+        tokio::spawn(async move {
+            let ready = yandex.ready(YANDEX_OPENING_WAIT_MS).await;
+            let mut inner = session.lock();
+            let Some(held) = inner.held_voice.take() else { return };
+            if held.message_id != message_id {
+                inner.held_voice = Some(held);
+                return;
+            }
+            if !ready {
+                inner.held_voice = Some(held);
+                return session.drop_held_voice(&mut inner, RequestStatus::Failed, "Yandex is not reachable");
+            }
+            session.voice_relayed(&mut inner, &held.message_id, held.frames);
+        });
+    }
+
+    fn voice_relayed(self: &Arc<Self>, inner: &mut Inner, message_id: &str, frames: Vec<Bytes>) {
+        self.relay_yandex(
+            inner,
+            None,
+            message_id,
+            frames,
+            CapabilityName::Chat,
+            "no recognition here",
+            NO_EVENTS,
+            "voiceInput",
+            false,
+        );
+    }
+
+    /// A held voice request that will not go to Yandex: its stream stops going there, its trip ends, and the station,
+    /// unless it cancelled it itself, stops listening and waiting (an empty result, its stream closed, an empty
+    /// response).
+    fn drop_held_voice(&self, inner: &mut Inner, status: RequestStatus, reason: &str) {
+        let Some(held) = inner.held_voice.take() else { return };
+        if let Some(stream_id) = held.stream_id {
+            inner.forwarded_streams.remove(&stream_id);
+            inner.orphan_streams.insert(stream_id);
+        }
+        if status == RequestStatus::Failed {
+            let r#ref = held.message_id.clone();
+            self.send(&ServerMessage::AsrResult { r#ref: r#ref.clone(), text: String::new(), end_of_utt: true }, false);
+            if let Some(stream_id) = held.stream_id {
+                self.send(&ServerMessage::StreamClose { stream_id, reason: CloseReason::Ok }, false);
+            }
+            self.send_empty_response(&r#ref, &held.request, Vec::new());
+        }
+        self.note("voiceDropped", &format!("request {}: {reason}", tag8(&held.message_id)), None);
+        self.end_trip(inner, &held.message_id, status, Some(reason), None);
     }
 
     /// The request goes to Yandex: as text (the station's own request with our recognised text, the voice stays
@@ -3117,6 +3239,10 @@ impl StationSession {
                 }
             }));
         }
+        // Yandex hears what nothing here did: its recognition is the request's words.
+        if let Some(trip) = trip.clone().filter(|_| !drop.contains(&"asrResult")) {
+            options.on_asr = Some(Box::new(move |asr_result: &Value| yandex_heard(&trip, Some(asr_result))));
+        }
         let relay = YandexRelay::new(options, self.link());
         if let Some(trip) = &trip {
             trip.claim(relay.owner);
@@ -3189,6 +3315,9 @@ impl StationSession {
             format!("streams {}", answer.streams),
             format!("{ms}ms"),
         ];
+        if let Some(heard) = &answer.heard {
+            parts.push(format!("heard \"{heard}\""));
+        }
         if let Some(error) = &answer.error {
             parts.push(error.clone());
         }

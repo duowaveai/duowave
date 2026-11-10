@@ -12,6 +12,7 @@ import { Switch } from '../ui/switch';
 import type { SettingsTab } from './mind';
 import { NewsSheet } from './news';
 import { ask } from '../ui/confirm';
+import { saveLabel } from '../via';
 
 /** Работает и настроено — лайм, не настроено и выключено — сланец, нет связи — коралл, «скоро» — чего в этой сборке ещё нет. */
 const STATE_PILL: Record<ConnectorView['status']['state'], { cls: string; label: string }> = {
@@ -407,7 +408,7 @@ function SettingsForm({ view, kind, onClose, onSaved }: { view: ConnectorSetting
                             aria-busy={busy === 'save'}
                             onClick={save}
                         >
-                            {busy === 'save' ? (changed ? 'Сохраняем…' : 'Проверяем…') : changed ? 'Сохранить и проверить' : 'Проверить'}
+                            {busy === 'save' ? (changed ? 'Сохраняем…' : 'Проверяем…') : changed ? `${saveLabel()} и проверить` : 'Проверить'}
                         </button>
                         <button class="pill pill-off dash-confirm-btn" onClick={onClose}>
                             Закрыть

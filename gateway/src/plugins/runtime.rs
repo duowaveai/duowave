@@ -51,6 +51,10 @@ pub enum PluginError {
     /// Off, unloaded, or the safe mode is on.
     #[error("{0}")]
     Unavailable(String),
+    /// Its context did not load: the station's memory has no room for its budget now, even with the idle contexts
+    /// unloaded (budget.rs). Nothing of it ran; the next call tries again.
+    #[error("{0}")]
+    NoRoom(String),
 }
 
 impl PluginError {

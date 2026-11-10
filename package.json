@@ -8,6 +8,7 @@
   "scripts": {
     "build": "pnpm --filter panel build",
     "dev": "pnpm --filter panel dev",
-    "check-private": "node scripts/release/check-private.mjs"
+    "check-private": "node scripts/release/check-private.mjs",
+    "hooks": "git config core.hooksPath .githooks"
   }
 }

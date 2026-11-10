@@ -26,6 +26,11 @@ pub trait PlacementSource: Send + Sync {
 /// The home server as the station's gateway last saw it.
 pub trait HomeServerSource: Send + Sync {
     fn home_server(&self) -> HomeServer;
+    /// What «Свой» would lack as the computer gives now («Что даю колонке» without hearing or voice, and no cloud for
+    /// it), said as the reason; none — nothing.
+    fn own_lacks(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// What the panel reads.
@@ -121,6 +126,10 @@ impl AvailabilityService {
             Placement::StationServer => self.home.get().map(|source| source.home_server()).unwrap_or(HomeServer::Down),
             _ => HomeServer::None,
         };
+        let own_lacks = match placement {
+            Placement::StationServer => self.home.get().and_then(|source| source.own_lacks()),
+            _ => None,
+        };
         Context {
             pc_build: cfg!(feature = "pc") && !self.profile.station,
             placement,
@@ -132,6 +141,7 @@ impl AvailabilityService {
             memory_free_mb: if placement.on_station() { self.memory.get().and_then(|gauge| gauge.get()) } else { None },
             transcoder: self.transcoder.get().copied().unwrap_or(false),
             transcode_on_station: self.transcode_on_station.load(std::sync::atomic::Ordering::Relaxed),
+            own_lacks,
         }
     }
 
@@ -196,7 +206,8 @@ impl AvailabilityService {
     }
 }
 
-/// The mode switch asks the registry: «Свой» on the station only with its home server up.
+/// The mode switch asks the registry: «Свой» on the station only with its home server up, and only while it gives
+/// the station hearing and voice (or the cloud does).
 impl ModeGate for AvailabilityService {
     fn check(&self, mode: PanelMode) -> Result<(), String> {
         match self.get(mode_feature(mode)) {
@@ -211,8 +222,9 @@ impl ModeGate for AvailabilityService {
 
     fn absent(&self, mode: PanelMode) -> Option<String> {
         let context = self.context();
-        // Only a mode with no way at all in this placement: not one that waits for the home server.
-        let structural = Context { home_server: HomeServer::Up, yandex: true, ..context };
+        // Only a mode with no way at all in this placement: not one that waits for the home server, nor for its hearing
+        // and voice — a stored «Свой» is kept, and the gateway leaves it by itself while they are not given.
+        let structural = Context { home_server: HomeServer::Up, yandex: true, own_lacks: None, ..context };
         let state = evaluate(feature(mode_feature(mode))?, &structural);
         (!state.on()).then_some(state.reason)
     }
@@ -240,7 +252,8 @@ mod tests {
         }
     }
 
-    struct Home(AtomicBool);
+    /// The home server: up or not, and what «Свой» would lack.
+    struct Home(AtomicBool, Mutex<Option<&'static str>>);
     impl HomeServerSource for Home {
         fn home_server(&self) -> HomeServer {
             if self.0.load(Ordering::Relaxed) {
@@ -248,6 +261,10 @@ mod tests {
             } else {
                 HomeServer::Down
             }
+        }
+
+        fn own_lacks(&self) -> Option<&'static str> {
+            *self.1.lock().unwrap()
         }
     }
 
@@ -257,7 +274,7 @@ mod tests {
         let mut heard = events.subscribe();
         let service = Arc::new(AvailabilityService::with(Profile { station: true }, true, false, events.clone()));
         service.set_placement(Arc::new(At(Placement::StationServer)));
-        let home = Arc::new(Home(AtomicBool::new(true)));
+        let home = Arc::new(Home(AtomicBool::new(true), Mutex::new(None)));
         service.set_home_server(home.clone());
         service.recheck();
         while heard.try_recv().is_ok() {}
@@ -282,5 +299,36 @@ mod tests {
         let alone = AvailabilityService::with(Profile { station: true }, true, false, EventBus::new());
         assert_eq!(alone.check(PanelMode::Own), Err(OWN_ON_STATION.to_string()));
         assert_eq!(alone.absent(PanelMode::Own), Some(OWN_ON_STATION.to_string()));
+    }
+
+    /// Review G2: the switch knows what the home server does not give — «Свой» without the computer's hearing (no
+    /// cloud for it) is refused with why, and the panel sees it off with the same words; a stored one is kept.
+    #[tokio::test]
+    async fn svoi_waits_for_the_computers_hearing_and_voice_and_says_so() {
+        let events = EventBus::new();
+        let mut heard = events.subscribe();
+        let service = Arc::new(AvailabilityService::with(Profile { station: true }, false, false, events.clone()));
+        service.set_placement(Arc::new(At(Placement::StationServer)));
+        let home = Arc::new(Home(AtomicBool::new(true), Mutex::new(None)));
+        service.set_home_server(home.clone());
+        service.recheck();
+        while heard.try_recv().is_ok() {}
+        assert!(service.check(PanelMode::Own).is_ok());
+
+        *home.1.lock().unwrap() = Some("слух компьютера выключен");
+        assert_eq!(
+            service.check(PanelMode::Own),
+            Err("«Свой» сейчас не включить: слух компьютера выключен.".to_string())
+        );
+        let own = service.get("mode.own").unwrap();
+        assert_eq!((own.state, own.reason.as_str()), (State::Off, "Слух компьютера выключен"));
+        assert_eq!(service.absent(PanelMode::Own), None, "a stored «Свой» stays: the gateway leaves it by itself");
+        service.recheck();
+        let told = heard.try_recv().unwrap();
+        let GatewayEvent::AvailabilityChanged { features } = &*told else { panic!("{told:?}") };
+        assert!(features.contains(&"mode.own".to_string()), "the panels hear «Свой» is off");
+
+        *home.1.lock().unwrap() = None;
+        assert!(service.check(PanelMode::Own).is_ok(), "given again: «Свой» may be chosen");
     }
 }

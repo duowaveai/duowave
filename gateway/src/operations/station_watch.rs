@@ -37,6 +37,15 @@ pub struct WatchStatus {
 /// answered after five minutes (undici's headers timeout). The watch's looks never wait for it.
 const SEND_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// A clock before this (2020-01-01) is not set yet: the station boots in 1970 and takes the time from the network a
+/// while later. An absence counted from such a moment is decades long (live, 10.11: «29905133 мин»), so the watch
+/// starts counting once the clock is right.
+const SANE_CLOCK_MS: u64 = 1_577_836_800_000;
+
+/// Whether no station is to come to this gateway's /uni.ws at all: on the computer, while every station's gateway runs
+/// on the station itself (src/placement/watch.rs, `none_here`).
+pub type Elsewhere = Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// When a station was last there, and whether its absence is told.
 struct Seen {
     last_seen: u64,
@@ -51,6 +60,7 @@ pub struct StationWatch {
     seen: Mutex<Seen>,
     send_timeout: Duration,
     cancel: CancellationToken,
+    elsewhere: std::sync::OnceLock<Elsewhere>,
 }
 
 impl StationWatch {
@@ -68,7 +78,18 @@ impl StationWatch {
             seen: Mutex::new(Seen { last_seen: now_ms(), alerted: false }),
             send_timeout: SEND_TIMEOUT,
             cancel: CancellationToken::new(),
+            elsewhere: std::sync::OnceLock::new(),
         }
+    }
+
+    /// The computer: what says no station is to come here now (every station's gateway runs on it). The watch is
+    /// silent about «не подключена» while it says so.
+    pub fn set_elsewhere(&self, elsewhere: Elsewhere) {
+        let _ = self.elsewhere.set(elsewhere);
+    }
+
+    fn none_expected(&self) -> bool {
+        self.elsewhere.get().is_some_and(|elsewhere| elsewhere())
     }
 
     /// Listens for a stranger asking to connect and, when the alert is on, checks every 30 s. The TS
@@ -115,9 +136,10 @@ impl StationWatch {
     /// For /health: whether a station is connected and when one was last seen.
     pub fn status(&self) -> WatchStatus {
         let connected = self.registry.active_count() > 0;
+        let now = now_ms();
         let mut seen = self.seen();
-        if connected {
-            seen.last_seen = now_ms();
+        if connected || (seen.last_seen < SANE_CLOCK_MS && now >= SANE_CLOCK_MS) {
+            seen.last_seen = now;
         }
         WatchStatus { connected, last_seen_at: iso_at(seen.last_seen) }
     }
@@ -132,10 +154,22 @@ impl StationWatch {
     /// TS check decided it on its one thread before its first await.
     fn news(&self, now: u64) -> Option<String> {
         let connected = self.registry.active_count() > 0;
+        let elsewhere = !connected && self.none_expected();
         let mut seen = self.seen();
         if connected {
             seen.last_seen = now;
             return std::mem::take(&mut seen.alerted).then(|| "Колонка снова на связи со шлюзом.".to_string());
+        }
+        // The clock not set yet (a station's boot): nothing counted. Set now while the watch's last look was before:
+        // the count starts now.
+        if now < SANE_CLOCK_MS {
+            return None;
+        }
+        // On the computer, every station's gateway runs on the station: none is missing here. The count starts again
+        // when one is to come back.
+        if elsewhere || seen.last_seen < SANE_CLOCK_MS {
+            seen.last_seen = now;
+            return None;
         }
         if seen.alerted || now.saturating_sub(seen.last_seen) < self.config.offline_alert_ms {
             return None;
@@ -333,6 +367,57 @@ mod tests {
         assert!(back.is_ok());
         assert_eq!(sent.lock().unwrap()[1], "Колонка снова на связи со шлюзом.");
         server.abort();
+    }
+
+    /// Live, 10.11: the station's own gateway started while the station's clock still said 1970, and once the clock was
+    /// set it told «Колонка не подключена к шлюзу 29905133 мин». The count starts once the clock is right.
+    #[tokio::test]
+    async fn counts_an_absence_only_from_a_clock_that_is_set() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let watch = StationWatch::new(
+            Arc::new(Sessions(Mutex::new(0))),
+            Some(Arc::new(Telegram(sent.clone()))),
+            operations(),
+            EventBus::new(),
+        );
+        // Started at the station's boot: 1970 and a few seconds.
+        watch.seen().last_seen = 5_000;
+        watch.check(65_000).await;
+        assert!(sent.lock().unwrap().is_empty(), "a clock not set yet counts nothing");
+        assert!(watch.status().last_seen_at.starts_with("20"), "/health does not say 1970 once the clock is set");
+        let start = now_ms();
+        watch.seen().last_seen = 5_000;
+        watch.check(start).await;
+        assert!(sent.lock().unwrap().is_empty(), "the clock is set now: the count starts");
+        watch.check(start + 61_000).await;
+        assert_eq!(sent.lock().unwrap().len(), 1);
+        assert!(sent.lock().unwrap()[0].contains("не подключена к шлюзу 1 мин"), "{:?}", sent.lock().unwrap());
+    }
+
+    /// Live, 10.11: the computer told «Колонка не подключена к шлюзу 5 мин… вернуть к Яндексу» while the station talked
+    /// to its own gateway. While no station is to come here, nothing is missing; the count starts again when one is.
+    #[tokio::test]
+    async fn the_computer_is_silent_while_every_station_runs_its_own_gateway() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let watch = StationWatch::new(
+            Arc::new(Sessions(Mutex::new(0))),
+            Some(Arc::new(Telegram(sent.clone()))),
+            operations(),
+            EventBus::new(),
+        );
+        let elsewhere = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let says = elsewhere.clone();
+        watch.set_elsewhere(Arc::new(move || says.load(std::sync::atomic::Ordering::Relaxed)));
+        let start = now_ms();
+        watch.check(start + 61_000).await;
+        watch.check(start + 600_000).await;
+        assert!(sent.lock().unwrap().is_empty(), "the station's gateway is on the station");
+        // Back to the computer: its absence counts from now.
+        elsewhere.store(false, std::sync::atomic::Ordering::Relaxed);
+        watch.check(start + 630_000).await;
+        assert!(sent.lock().unwrap().is_empty());
+        watch.check(start + 661_000).await;
+        assert_eq!(sent.lock().unwrap().len(), 1, "{:?}", sent.lock().unwrap());
     }
 
     #[tokio::test]

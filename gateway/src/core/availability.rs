@@ -131,6 +131,9 @@ pub enum Need {
     /// Streams can be transcoded here: a transcoder (ffmpeg) on a computer, or on the station by the owner's flag
     /// (MEDIA_TRANSCODE_ON_STATION) — it loads the station's weak processor.
     Transcode,
+    /// «Свой» on the station hears and speaks: the computer gives it hearing and voice («Что даю колонке»), or the
+    /// cloud stands in for the part it does not — without Yandex nothing else would.
+    OwnParts,
 }
 
 impl Need {
@@ -214,7 +217,10 @@ pub const FEATURES: &[Feature] = &[
         group: Group::Modes,
         ways: &[
             Way { runs: Runs::Here, needs: &[Need::PcBuild] },
-            Way { runs: Runs::HomeServer, needs: &[Need::At(ON_STATION_WITH_SERVER), Need::HomeServer] },
+            Way {
+                runs: Runs::HomeServer,
+                needs: &[Need::At(ON_STATION_WITH_SERVER), Need::HomeServer, Need::OwnParts],
+            },
         ],
         absent: OWN_ON_STATION,
         table: [yes("да"), no("нет: нужен свой сервер"), partial("пока компьютер на связи")],
@@ -305,11 +311,24 @@ pub const FEATURES: &[Feature] = &[
     },
     Feature {
         id: "connectors",
-        title: "Home Assistant, Telegram, новости, погода",
+        title: "Home Assistant, новости, погода",
         group: Group::House,
         ways: &[Way { runs: Runs::Here, needs: &[] }],
         absent: "",
         table: [yes("да"), yes("да"), yes("да")],
+    },
+    // The bot is the calls module's, the computer's build only: on the station «передай …» goes through the
+    // computer's (src/home_server/messenger.rs).
+    Feature {
+        id: "messages",
+        title: "Сообщения в Telegram: «передай …» и входящие",
+        group: Group::House,
+        ways: &[
+            Way { runs: Runs::Here, needs: &[Need::PcBuild] },
+            Way { runs: Runs::HomeServer, needs: &[Need::At(ON_STATION_WITH_SERVER), Need::HomeServer] },
+        ],
+        absent: "Сообщения в Telegram уходят через бота компьютера: в сборке для колонки его нет.",
+        table: [yes("да"), no("нет"), partial("через компьютер")],
     },
     Feature {
         id: "calls",
@@ -437,6 +456,9 @@ pub struct Context {
     pub transcoder: bool,
     /// MEDIA_TRANSCODE_ON_STATION: the owner lets the station transcode.
     pub transcode_on_station: bool,
+    /// What «Свой» would lack on the station as the computer gives now: its hearing or its voice not taken and no
+    /// cloud for it (src/home_server, `svoi_lacks`) — said as the reason; none: nothing.
+    pub own_lacks: Option<&'static str>,
 }
 
 impl Context {
@@ -452,6 +474,7 @@ impl Context {
             memory_free_mb: None,
             transcoder: true,
             transcode_on_station: false,
+            own_lacks: None,
         }
     }
 
@@ -465,6 +488,7 @@ impl Context {
             Need::Yandex => self.yandex,
             Need::Memory(mb) => self.memory_free_mb.is_none_or(|free| free >= mb),
             Need::Transcode => self.transcoder && (self.placement == Placement::Pc || self.transcode_on_station),
+            Need::OwnParts => self.own_lacks.is_none(),
         }
     }
 
@@ -479,6 +503,7 @@ impl Context {
             Need::Yandex => "в «Своём» Яндекс выключен",
             Need::Memory(_) => "на колонке не хватит памяти",
             Need::Transcode => "нет перекодировщика",
+            Need::OwnParts => self.own_lacks.unwrap_or("компьютер не даёт колонке слух или голос"),
         }
     }
 
@@ -664,6 +689,21 @@ mod tests {
         assert_eq!((down.state, down.reason.as_str()), (State::Off, "Компьютер не на связи"));
         let up = evaluate(own, &at(Placement::StationServer));
         assert_eq!((up.state, up.runs), (State::Ready, Some(Runs::HomeServer)));
+    }
+
+    /// Review G2: «Свой» on the station without the computer's hearing or voice and no cloud for it would be deaf or
+    /// mute — it is off, and says why; the computer away says so first; on the computer nothing is lacked.
+    #[test]
+    fn svoi_on_the_station_needs_the_computers_hearing_and_voice_or_the_clouds() {
+        let own = feature("mode.own").unwrap();
+        let hearing_off = Some("слух компьютера выключен");
+        let deaf = Context { own_lacks: hearing_off, ..at(Placement::StationServer) };
+        let state = evaluate(own, &deaf);
+        assert_eq!((state.state, state.reason.as_str()), (State::Off, "Слух компьютера выключен"));
+        let away = evaluate(own, &Context { home_server: HomeServer::Down, ..deaf });
+        assert_eq!(away.reason, "Компьютер не на связи");
+        let pc = evaluate(own, &Context { own_lacks: Some("голос компьютера выключен"), ..at(Placement::Pc) });
+        assert_eq!(pc.state, State::Ready);
     }
 
     #[test]
