@@ -116,9 +116,15 @@ impl VoiceWorkshop {
             if intent.action == "workshop" {
                 let started = self.start(intent, context);
                 // «Сделай виджет: …» — what to show goes to the agent at once.
-                if let Some(ask) = intent.params.get("ask").and_then(|ask| ask.as_str()).filter(|ask| !ask.trim().is_empty()) {
+                if let Some(ask) =
+                    intent.params.get("ask").and_then(|ask| ask.as_str()).filter(|ask| !ask.trim().is_empty())
+                {
                     if self.sessions().contains_key(&context.device_tag) {
-                        return Ok(self.follow(&context.device_tag, &format!("Сделай виджет: {ask}"), context.cancel.clone()));
+                        return Ok(self.follow(
+                            &context.device_tag,
+                            &format!("Сделай виджет: {ask}"),
+                            context.cancel.clone(),
+                        ));
                     }
                 }
                 return Ok(started);
@@ -141,8 +147,15 @@ impl VoiceWorkshop {
             return Outcome::speech("Мастерская не работает: в «Мозге» не выбрана модель.");
         }
         let (prefix, kind, title, greeting) = match intent.params.get("kind").and_then(|kind| kind.as_str()) {
-            Some("theme") => ("golos-tema", "theme", "Тема голосом", "Делаем тему. Какой она будет: тёмная или светлая, какие цвета?"),
-            Some("widget") => ("golos-vidzhet", "widget", "Виджет голосом", "Делаем виджет для стола пульта. Что на нём показать?"),
+            Some("theme") => (
+                "golos-tema",
+                "theme",
+                "Тема голосом",
+                "Делаем тему. Какой она будет: тёмная или светлая, какие цвета?",
+            ),
+            Some("widget") => {
+                ("golos-vidzhet", "widget", "Виджет голосом", "Делаем виджет для стола пульта. Что на нём показать?")
+            }
             _ => ("golos", "plugin", "Навык голосом", "Делаем навык. Что он должен уметь?"),
         };
         let id = self.free_id(prefix);
@@ -202,7 +215,9 @@ impl VoiceWorkshop {
         toolbox.budget_ms = Some(BUDGET_MS);
         toolbox.round_ms = Some(ROUND_MS);
         toolbox.filler =
-            Some(Filler { phrase: "Работаю над этим.".into(), after_ms: FILLER_MS, thinking_ms: Some(THINKING_MS) });
+            Some(Filler {
+                phrase: "Работаю над этим.".into(), after_ms: FILLER_MS, thinking_ms: Some(THINKING_MS)
+            });
         // The workshop's own model, as in the panel (`workshop.agent`), else the smart profile of «Мозг».
         let mut context = agent::context(&self.workshop, &session.draft, agent::model_of(&self.workshop));
         context.system = context.system.map(|system| format!("{system}\n\n{VOICE_RULES}"));

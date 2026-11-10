@@ -519,7 +519,10 @@ impl SkillsService {
 
     /// The device the panel means: the one it names, else the one heard from last.
     pub fn device_or_latest(&self, device: Option<&str>) -> Option<String> {
-        device.filter(|device| !device.is_empty()).map(str::to_string).or_else(|| self.latest_state().map(|(device, _, _)| device))
+        device
+            .filter(|device| !device.is_empty())
+            .map(str::to_string)
+            .or_else(|| self.latest_state().map(|(device, _, _)| device))
     }
 
     /// The device the panel's widgets mean: as `device_or_latest`, else the station on the line now (`live`), else
@@ -577,10 +580,30 @@ impl SkillsService {
             }
         }
         let Some((state, at)) = station else {
-            return NowPlaying { source: "none", state: "idle", title: None, subtitle: None, image_url: None, kind: None, duration_ms: None, position_ms: None, since: None };
+            return NowPlaying {
+                source: "none",
+                state: "idle",
+                title: None,
+                subtitle: None,
+                image_url: None,
+                kind: None,
+                duration_ms: None,
+                position_ms: None,
+                since: None,
+            };
         };
         let Some(player) = state.player else {
-            return NowPlaying { source: "none", state: "idle", title: None, subtitle: None, image_url: None, kind: None, duration_ms: None, position_ms: None, since: None };
+            return NowPlaying {
+                source: "none",
+                state: "idle",
+                title: None,
+                subtitle: None,
+                image_url: None,
+                kind: None,
+                duration_ms: None,
+                position_ms: None,
+                since: None,
+            };
         };
         use crate::gateway::protocol::protocol_types::PlayerState as StationPlayer;
         let playing = player.state == StationPlayer::Playing;

@@ -380,10 +380,7 @@ mod tests {
         assert!(skill.ours(&to_granny, "default"), "Бабушка is the computer's contact: ours, not Yandex's");
         let outcome = skill.execute(&to_granny, &ExecutionContext::new("default", Utc::now())).await.unwrap();
         assert_eq!(outcome.speech.as_deref(), Some("Передала."));
-        assert_eq!(
-            outcome.done.as_deref(),
-            Some("контакту «бабушка» отправлено в Telegram сообщение «Купи хлеба.»")
-        );
+        assert_eq!(outcome.done.as_deref(), Some("контакту «бабушка» отправлено в Telegram сообщение «Купи хлеба.»"));
         assert_eq!(*pc.sent.lock().unwrap(), [("бабушка".to_string(), "Купи хлеба.".to_string())]);
 
         // Telegram refuses on the computer: said so.

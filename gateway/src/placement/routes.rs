@@ -601,7 +601,11 @@ mod pc {
     /// First run with a gateway already on the station: the computer signs in to the station's panel with the admin's
     /// password, takes the pair's key (`POST /api/v1/placement/pair` there) and links — no SSH, no key copied by hand.
     /// The password goes to the station only and is not kept.
-    pub async fn pair_station(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
+    pub async fn pair_station(
+        State(app): State<Arc<App>>,
+        caller: Caller,
+        Body(body): Body<Value>,
+    ) -> ApiResult<Value> {
         caller.permitted(STATIONS_MANAGE)?;
         let address = body
             .get("address")
@@ -659,7 +663,11 @@ mod pc {
         if app.config.placement.managed_by.as_deref() != Some("desktop") {
             return Err(ApiError::conflict("Это настройка приложения DuoWave на компьютере."));
         }
-        app.config.data_dir.as_ref().map(|dir| dir.join("desktop.json")).ok_or_else(|| ApiError::conflict("Нет папки данных."))
+        app.config
+            .data_dir
+            .as_ref()
+            .map(|dir| dir.join("desktop.json"))
+            .ok_or_else(|| ApiError::conflict("Нет папки данных."))
     }
 
     fn read_desktop(path: &std::path::Path) -> Value {
@@ -690,7 +698,10 @@ mod pc {
 
     /// Is a DuoWave gateway on this station already? Its /health answers in our shape: the first run on a computer
     /// offers to help it rather than take its place.
-    pub async fn probe(caller: Caller, Query(query): Query<std::collections::HashMap<String, String>>) -> ApiResult<Value> {
+    pub async fn probe(
+        caller: Caller,
+        Query(query): Query<std::collections::HashMap<String, String>>,
+    ) -> ApiResult<Value> {
         caller.permitted(STATIONS_MANAGE)?;
         let address = query
             .get("address")

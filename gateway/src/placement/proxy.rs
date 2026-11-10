@@ -52,16 +52,16 @@ const COPIES_KEPT: usize = 400;
 const COPY_LIMIT: usize = 2 * 1024 * 1024;
 
 pub fn routes() -> Router<Arc<App>> {
-    Router::new()
-        .route("/station/{key}/{*rest}", any(pass))
-        .layer(axum::extract::DefaultBodyLimit::max(BODY_LIMIT))
+    Router::new().route("/station/{key}/{*rest}", any(pass)).layer(axum::extract::DefaultBodyLimit::max(BODY_LIMIT))
 }
 
 /// The client of the pass, and of the relay of the station's live channel (relay.rs): the home network's connect time.
 pub(crate) fn client() -> reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT
-        .get_or_init(|| crate::utils::http::client_builder().connect_timeout(CONNECT).build().expect("the HTTP client builds"))
+        .get_or_init(|| {
+            crate::utils::http::client_builder().connect_timeout(CONNECT).build().expect("the HTTP client builds")
+        })
         .clone()
 }
 
@@ -278,14 +278,21 @@ async fn pass(
             }
             // It took the request and did not answer in time: it is there, but slow — not «away».
             if error.is_timeout() && !error.is_connect() {
-                return Err(ApiError::unavailable(format!("Колонка «{name}» не ответила вовремя — попробуйте ещё раз.")));
+                return Err(ApiError::unavailable(format!(
+                    "Колонка «{name}» не ответила вовремя — попробуйте ещё раз."
+                )));
             }
             return Err(ApiError::unavailable(away(&name)));
         }
     };
 
     let status = StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    let content_type = response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|value| value.to_str().ok()).unwrap_or("").to_string();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
     // The live feed and anything else that streams goes through as it comes.
     if live_feed || content_type.starts_with("text/event-stream") || content_type.starts_with("audio/") {
         let stream = response.bytes_stream().map(|chunk| chunk.map_err(std::io::Error::other));
@@ -297,10 +304,21 @@ async fn pass(
         out.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
         return Ok(out);
     }
-    let bytes = response.bytes().await.map_err(|error| ApiError::bad_gateway(format!("Шлюз колонки оборвал ответ: {error}")))?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| ApiError::bad_gateway(format!("Шлюз колонки оборвал ответ: {error}")))?;
     let worth = status.is_success() && content_type.starts_with("application/json") && bytes.len() < COPY_LIMIT;
     if let (Some(path), true) = (copy.as_ref(), worth) {
-        write_copy(path, &Copy { at: now_ms(), status: status.as_u16(), content_type: content_type.clone(), body: String::from_utf8_lossy(&bytes).into_owned() });
+        write_copy(
+            path,
+            &Copy {
+                at: now_ms(),
+                status: status.as_u16(),
+                content_type: content_type.clone(),
+                body: String::from_utf8_lossy(&bytes).into_owned(),
+            },
+        );
     }
     let mut out = Response::new(Body::from(bytes));
     *out.status_mut() = status;
@@ -533,7 +551,10 @@ mod tests {
         let script = app
             .access
             .keys
-            .create(&Map::from_iter([("name".into(), json!("Скрипт")), ("grants".into(), json!(["station.view"]))]), None)
+            .create(
+                &Map::from_iter([("name".into(), json!("Скрипт")), ("grants".into(), json!(["station.view"]))]),
+                None,
+            )
             .unwrap()
             .secret;
         app.secrets.set(&crate::placement::peer::station_secret("h:kitchen"), Some(PAIR)).unwrap();
@@ -547,7 +568,10 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["message"], json!({"role": "member", "person": "Аня", "key": format!("Bearer {PAIR}")}));
         let (_, _, body) = send(&app, home, "GET", journal, &admin).await;
-        assert_eq!((body["message"]["role"].as_str(), body["message"]["person"].as_str()), (Some("admin"), Some("Мама")));
+        assert_eq!(
+            (body["message"]["role"].as_str(), body["message"]["person"].as_str()),
+            (Some("admin"), Some("Мама"))
+        );
         let (_, _, body) = send(&app, home, "GET", "/station/h:kitchen/api/v1/station", &script).await;
         assert_eq!(body["message"]["role"], "guest", "a key: a guest's rights there");
 

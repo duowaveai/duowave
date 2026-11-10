@@ -52,7 +52,9 @@ async fn read(State(app): State<Arc<App>>, caller: Caller, Path(role): Path<Stri
         .optional()
     })?;
     let (layout, at) = match kept {
-        Some((items, at)) => (serde_json::from_str::<Vec<Value>>(&items).ok().and_then(|mut items| items.pop()), Some(at)),
+        Some((items, at)) => {
+            (serde_json::from_str::<Vec<Value>>(&items).ok().and_then(|mut items| items.pop()), Some(at))
+        }
         None => (None, None),
     };
     Ok(ok(json!({ "layout": layout, "at": at })))

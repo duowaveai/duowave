@@ -243,7 +243,9 @@ mod tests {
                 }
                 let source = String::from_utf8(bytes.to_vec()).unwrap();
                 let name = format!("{}/panel.js", package.id);
-                crate::plugins::quickjs::syntax_of(&name, &source).await.unwrap_or_else(|error| panic!("{name}: {error}"));
+                crate::plugins::quickjs::syntax_of(&name, &source)
+                    .await
+                    .unwrap_or_else(|error| panic!("{name}: {error}"));
                 parsed += 1;
             }
         }

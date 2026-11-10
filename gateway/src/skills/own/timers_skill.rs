@@ -426,7 +426,10 @@ mod tests {
         assert_eq!(set.speech.as_deref(), Some("Хорошо. Таймер «чай» — 3 минуты. Отсчёт пошёл."));
         let views = skill.views("h:test", None, now.timestamp_millis() as u64 + 60_000);
         assert_eq!(views.len(), 1);
-        assert_eq!((views[0].name.as_deref(), views[0].seconds, views[0].left, views[0].source), (Some("чай"), 180, 120, "own"));
+        assert_eq!(
+            (views[0].name.as_deref(), views[0].seconds, views[0].left, views[0].source),
+            (Some("чай"), 180, 120, "own")
+        );
     }
 
     #[tokio::test]

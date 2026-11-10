@@ -62,7 +62,11 @@ impl FromRequestParts<Arc<App>> for Caller {
 fn helper_principal(person: Option<&str>, role: Option<&str>) -> Principal {
     use crate::core::identity::roles::{normalize_role, Role};
     let person: String = person.unwrap_or("").chars().filter(|c| !c.is_control()).take(40).collect();
-    let name = if person.trim().is_empty() { "Помощник".to_string() } else { format!("Помощник ({})", person.trim()) };
+    let name = if person.trim().is_empty() {
+        "Помощник".to_string()
+    } else {
+        format!("Помощник ({})", person.trim())
+    };
     let role = role.map(|role| normalize_role(role.trim())).unwrap_or(Role::Member);
     Principal {
         kind: crate::core::identity::principal::PrincipalKind::User,

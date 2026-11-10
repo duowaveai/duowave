@@ -193,7 +193,10 @@ async fn timers(
     gate(&app, &caller, &uri)?;
     caller.permitted(STATION_VIEW)?;
     let device = widget_device(&app, &query);
-    let timers = device.as_deref().map(|device| app.skills.timer_views(device, crate::utils::time::now_ms())).unwrap_or_default();
+    let timers = device
+        .as_deref()
+        .map(|device| app.skills.timer_views(device, crate::utils::time::now_ms()))
+        .unwrap_or_default();
     Ok(ok(TimersView { device, timers }))
 }
 

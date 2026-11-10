@@ -159,7 +159,12 @@ impl Activity {
                 Some(mut old) => {
                     if old.ended.is_none() {
                         old.cancel.cancel();
-                        old.log.push_back(self.step(StepKind::Stopped, "Новая просьба — эта работа прервана.", None, false));
+                        old.log.push_back(self.step(
+                            StepKind::Stopped,
+                            "Новая просьба — эта работа прервана.",
+                            None,
+                            false,
+                        ));
                     }
                     old.log
                 }
@@ -167,7 +172,8 @@ impl Activity {
             };
             log.push_back(self.step(StepKind::Asked, asked, None, false));
             trim(&mut log);
-            let entry = Entry { run: id, by, asked: short(asked), since: now_ms(), ended: None, cancel: cancel.clone(), log };
+            let entry =
+                Entry { run: id, by, asked: short(asked), since: now_ms(), ended: None, cancel: cancel.clone(), log };
             entries.insert(draft.to_string(), entry);
         }
         self.tell(draft);
@@ -248,7 +254,7 @@ impl Activity {
             .filter(|(_, entry)| entry.ended.is_none_or(|ended| now.saturating_sub(ended) < SHOWN_AFTER_MS))
             .map(|(draft, entry)| entry.job(draft))
             .collect();
-        jobs.sort_by(|a, b| b.since.cmp(&a.since));
+        jobs.sort_by_key(|job| std::cmp::Reverse(job.since));
         jobs
     }
 

@@ -35,6 +35,10 @@ find "$OUT" -name '*.md' -type f -exec perl -pi -e 's/\[([^\]]+)\]\((?:\.\.\/|\.
 find "$OUT" -type d -empty -delete
 
 node "$ROOT/scripts/release/check-private.mjs" --dir "$OUT"
+# The public tree builds the gateway on its own: what the program carries from outside gateway/ (include_str!,
+# rust-embed, the Dockerfile's COPY) has to be in it. 11.11.2026 the snapshot left out docs/design/glass/THEMES.md and
+# CI could not build.
+node "$OUT/scripts/check-docker-context.mjs"
 
 # What waits for the owner's decisions (the name, the repository, the licensor, the address): listed, and the tree is
 # not ready while any is left. DRAFT=1 builds it anyway, for a look.

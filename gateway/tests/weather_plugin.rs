@@ -111,7 +111,8 @@ impl Host {
             .world
             .iter()
             .filter(|known| {
-                plain(known.0).starts_with(&wanted) || known.7.is_some_and(|english| plain(english).starts_with(&wanted))
+                plain(known.0).starts_with(&wanted)
+                    || known.7.is_some_and(|english| plain(english).starts_with(&wanted))
             })
             .collect();
         found.sort_by_key(|known| (plain(known.0) != wanted, std::cmp::Reverse(known.3.unwrap_or(0))));
@@ -277,7 +278,9 @@ async fn finds_a_city_named_in_its_case_by_its_dictionary_form_and_the_likeliest
         assert!(!asked.iter().any(|query| query == "москве"), "«{when}»: the case form itself is never looked up");
     }
     // The question as it was heard live, now answered for Moscow.
-    assert!(say(&plugin, "в москве").await.starts_with("Москва: сейчас +1, пасмурно, ветер 4 м/с; сегодня от -1 до +4"));
+    assert!(say(&plugin, "в москве")
+        .await
+        .starts_with("Москва: сейчас +1, пасмурно, ветер 4 м/с; сегодня от -1 до +4"));
 }
 
 #[tokio::test]
@@ -296,10 +299,9 @@ async fn never_answers_for_a_far_off_prefix_match_and_says_plainly_the_place_is_
 async fn looks_a_place_up_once_and_remembers_it_across_loads_the_old_versions_guesses_forgotten() {
     let kv: Arc<Mutex<Map<String, Value>>> = Arc::default();
     // 1.1.1 kept the geocoder's first answer for the case form itself.
-    kv.lock().unwrap().insert(
-        "place:москве".into(),
-        json!({ "name": "Москверо", "latitude": 35.776, "longitude": -103.957 }),
-    );
+    kv.lock()
+        .unwrap()
+        .insert("place:москве".into(), json!({ "name": "Москверо", "latitude": 35.776, "longitude": -103.957 }));
     let host = Host::with(WORLD, kv.clone(), Map::new());
     let plugin = start(&host).await;
     assert!(say(&plugin, "в москве").await.starts_with("Москва:"));
@@ -324,7 +326,9 @@ async fn a_tool_and_the_usual_place_give_names_as_they_are_a_latin_one_too() {
     let host = Host::new(WORLD);
     let plugin = start(&host).await;
     assert!(tool(&plugin, json!({ "place": "Нижний Новгород" })).await.starts_with("Нижний Новгород:"));
-    assert!(tool(&plugin, json!({ "place": "Ростов-на-Дону", "when": "tomorrow" })).await.starts_with("Ростов-на-Дону, завтра:"));
+    assert!(tool(&plugin, json!({ "place": "Ростов-на-Дону", "when": "tomorrow" }))
+        .await
+        .starts_with("Ростов-на-Дону, завтра:"));
     assert!(tool(&plugin, json!({ "place": "Париж, США" })).await.starts_with("Париж:"));
     assert!(near(host.last_forecast(), 33.661, -95.556));
     assert!(tool(&plugin, json!({ "place": "в Твери" })).await.starts_with("Тверь:"));

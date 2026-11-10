@@ -387,7 +387,9 @@ impl Workshop {
                 "plugin" => templates::plugin(id, title.unwrap_or(id)),
                 "theme" => templates::theme(id, title.unwrap_or(id)),
                 "widget" => templates::widget(id, title.unwrap_or(id)),
-                other => return Err(ApiError::field("kind", format!("«{other}»: черновик — plugin, widget или theme"))),
+                other => {
+                    return Err(ApiError::field("kind", format!("«{other}»: черновик — plugin, widget или theme")))
+                }
             }
         };
         std::fs::create_dir_all(&folder).map_err(ApiError::internal)?;

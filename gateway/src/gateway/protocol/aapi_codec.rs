@@ -787,7 +787,13 @@ mod tests {
         assert_eq!(device.timer_ids, vec!["8db6c86a"]);
         assert_eq!(
             device.timers,
-            vec![StationTimer { id: "8db6c86a".into(), start: Some(1793578035), duration: Some(600), remaining: Some(592), paused: true }]
+            vec![StationTimer {
+                id: "8db6c86a".into(),
+                start: Some(1793578035),
+                duration: Some(600),
+                remaining: Some(592),
+                paused: true
+            }]
         );
         let alarms = device.alarms.unwrap();
         assert_eq!(alarms.len(), 2);

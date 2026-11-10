@@ -117,7 +117,8 @@ async fn preview_file(
     use axum::response::IntoResponse;
     let text = app.workshop.preview_file(&token, &file).ok_or_else(|| ApiError::not_found("Not Found"))?;
     let kind = if file.ends_with(".css") { "text/css; charset=utf-8" } else { "text/javascript; charset=utf-8" };
-    Ok(([(axum::http::header::CONTENT_TYPE, kind), (axum::http::header::CACHE_CONTROL, "no-store")], text).into_response())
+    Ok(([(axum::http::header::CONTENT_TYPE, kind), (axum::http::header::CACHE_CONTROL, "no-store")], text)
+        .into_response())
 }
 
 async fn read(
@@ -542,7 +543,12 @@ mod tests {
         let none = activity_log(State(app.clone()), admin(), Path("widget-a".into()), from(0)).await.unwrap().1;
         assert!(none["job"].is_null() && none["now"].as_u64().is_some(), "{none}");
 
-        let run = app.workshop.activity().begin("widget-a", By::Voice, "Сделай виджет: курс биткоина", &CancellationToken::new());
+        let run = app.workshop.activity().begin(
+            "widget-a",
+            By::Voice,
+            "Сделай виджет: курс биткоина",
+            &CancellationToken::new(),
+        );
         let file = json!({"path": "panel.js", "content": "…"});
         let call = app.workshop.activity().call(&run, "write_file", file.as_object().unwrap());
         let jobs = activity(State(app.clone()), admin()).await.unwrap().1;
@@ -565,12 +571,20 @@ mod tests {
         assert_eq!(stop(State(app.clone()), admin(), Path("widget-a".into())).await.unwrap().1["stopped"], json!(true));
         assert!(run.cancel.is_cancelled());
         let after = steps[2]["seq"].as_u64().unwrap();
-        let log = activity_log(State(app.clone()), admin(), Path("widget-a".into()), axum::extract::Query(AfterQuery { after }))
-            .await
-            .unwrap()
-            .1;
+        let log = activity_log(
+            State(app.clone()),
+            admin(),
+            Path("widget-a".into()),
+            axum::extract::Query(AfterQuery { after }),
+        )
+        .await
+        .unwrap()
+        .1;
         assert_eq!((log["job"]["busy"].clone(), log["steps"][0]["kind"].clone()), (json!(false), json!("stopped")));
-        assert_eq!(stop(State(app.clone()), admin(), Path("widget-a".into())).await.unwrap().1["stopped"], json!(false));
+        assert_eq!(
+            stop(State(app.clone()), admin(), Path("widget-a".into())).await.unwrap().1["stopped"],
+            json!(false)
+        );
     }
 
     #[tokio::test]
@@ -764,13 +778,17 @@ mod tests {
         let token = module.trim_start_matches("/panel-preview/").trim_end_matches("/panel.js").to_string();
         let file = preview_file(State(app.clone()), Path((token.clone(), "panel.js".into()))).await.unwrap();
         assert_eq!(file.headers()[axum::http::header::CONTENT_TYPE], "text/javascript; charset=utf-8");
-        assert!(preview_file(State(app.clone()), Path((token, "manifest.json".into()))).await.is_err(), "panel parts only");
+        assert!(
+            preview_file(State(app.clone()), Path((token, "manifest.json".into()))).await.is_err(),
+            "panel parts only"
+        );
         assert!(preview_file(State(app.clone()), Path(("nope".into(), "panel.js".into()))).await.is_err());
 
-        let done = install(State(app.clone()), admin(), Path("widget-wash".into()), Body(InstallBody { approve: true }))
-            .await
-            .unwrap()
-            .1;
+        let done =
+            install(State(app.clone()), admin(), Path("widget-wash".into()), Body(InstallBody { approve: true }))
+                .await
+                .unwrap()
+                .1;
         assert!(done.installed, "{}", done.message);
 
         // Its reading writes nothing: no word to the panel, or every widget on it would read again each second for
@@ -792,7 +810,9 @@ mod tests {
         assert_eq!(told, ["widget-wash"], "the mark only");
 
         // A panel part that does not parse fails the check here, not in the panel.
-        app.workshop.write("widget-wash", "panel.js", "export default definePlugin({ id: \"widget-wash\", slots: { ").unwrap();
+        app.workshop
+            .write("widget-wash", "panel.js", "export default definePlugin({ id: \"widget-wash\", slots: { ")
+            .unwrap();
         let broken = app.workshop.check("widget-wash").await.unwrap();
         assert!(!broken.ok && broken.code.as_deref().is_some_and(|code| code.starts_with("panel.js:")), "{broken:?}");
     }

@@ -1180,7 +1180,8 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(200)).await;
             Ok(ToolOutcome::from("Тест прошёл."))
         });
-        toolbox.filler = Some(Filler { phrase: "Сейчас посмотрю.".into(), after_ms: 50, thinking_ms: None });
+        toolbox.filler =
+            Some(Filler { phrase: "Сейчас посмотрю.".into(), after_ms: 50, thinking_ms: None });
         assert_eq!(
             collect(service.answer(
                 "device-5",
@@ -1221,7 +1222,8 @@ mod tests {
         });
         toolbox.rounds = Some(4);
         toolbox.round_ms = Some(2_000);
-        toolbox.filler = Some(Filler { phrase: "Работаю над этим.".into(), after_ms: 50, thinking_ms: Some(120) });
+        toolbox.filler =
+            Some(Filler { phrase: "Работаю над этим.".into(), after_ms: 50, thinking_ms: Some(120) });
         assert_eq!(
             collect(service.answer(
                 "device-12",
@@ -1237,12 +1239,19 @@ mod tests {
 
         // A lookup's filler waits for the calls only: a slow model alone says nothing before its words.
         llm.calls(&[]);
-        let mut lookup = ToolBox::new(vec![tool("get_news")], |_, _| async { Ok(ToolOutcome::from("Новость.")) });
+        let mut lookup =
+            ToolBox::new(vec![tool("get_news")], |_, _| async { Ok(ToolOutcome::from("Новость.")) });
         lookup.round_ms = Some(2_000);
         lookup.filler = Some(LOOKUP_FILLER);
         assert_eq!(
-            collect(service.answer("device-13", "Что нового?", DialogContext::default(), CancellationToken::new(), Some(lookup)))
-                .await,
+            collect(service.answer(
+                "device-13",
+                "Что нового?",
+                DialogContext::default(),
+                CancellationToken::new(),
+                Some(lookup)
+            ))
+            .await,
             vec!["Готово, виджет в пульте."]
         );
     }
@@ -1342,7 +1351,8 @@ mod tests {
         llm.calls(&[("get_news", json!({}))]);
         llm.reply("Новостей нет.");
         let mut toolbox = ToolBox::new(vec![tool("get_news")], |_, _| async { Ok(ToolOutcome::from("Ничего.")) });
-        toolbox.filler = Some(Filler { phrase: "Сейчас посмотрю.".into(), after_ms: 300, thinking_ms: None });
+        toolbox.filler =
+            Some(Filler { phrase: "Сейчас посмотрю.".into(), after_ms: 300, thinking_ms: None });
         assert_eq!(
             collect(service.answer(
                 "device-6",

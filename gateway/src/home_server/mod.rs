@@ -152,7 +152,11 @@ impl HomeServerService {
                 hex::encode(Sha256::digest(format!("{url}\n{key}").as_bytes()))
             };
             if service.secrets.get(FROM_ENV_SECRET).as_deref() != Some(brought.as_str()) {
-                let _ = service.settings.set(&CONNECTOR_HOME_SERVER, &HomeServerSetting { url, enabled: true, without: Vec::new() }, None);
+                let _ = service.settings.set(
+                    &CONNECTOR_HOME_SERVER,
+                    &HomeServerSetting { url, enabled: true, without: Vec::new() },
+                    None,
+                );
                 let _ = service.secrets.set(KEY_SECRET, Some(&key));
                 let _ = service.secrets.set(FROM_ENV_SECRET, Some(&brought));
             }
@@ -233,7 +237,15 @@ impl HomeServerService {
                 }
                 let url = url.trim_end_matches('/').to_string();
                 let enabled = self.known().is_none_or(|setting| setting.enabled);
-                self.settings.set(&CONNECTOR_HOME_SERVER, &HomeServerSetting { url, enabled, without: self.known().map(|setting| setting.without).unwrap_or_default() }, actor.clone())?;
+                self.settings.set(
+                    &CONNECTOR_HOME_SERVER,
+                    &HomeServerSetting {
+                        url,
+                        enabled,
+                        without: self.known().map(|setting| setting.without).unwrap_or_default(),
+                    },
+                    actor.clone(),
+                )?;
             }
         }
         *self.lock() = Watch::default();
@@ -819,7 +831,11 @@ mod tests {
         let home = start("http://192.0.2.10");
         assert_eq!(home.configured().map(|(url, _)| url).as_deref(), Some("http://192.0.2.10"), "the move's address");
         settings
-            .set(&CONNECTOR_HOME_SERVER, &HomeServerSetting { url: "http://192.0.2.11".into(), enabled: true, without: Vec::new() }, None)
+            .set(
+                &CONNECTOR_HOME_SERVER,
+                &HomeServerSetting { url: "http://192.0.2.11".into(), enabled: true, without: Vec::new() },
+                None,
+            )
             .unwrap();
         let home = start("http://192.0.2.10");
         assert_eq!(home.configured().map(|(url, _)| url).as_deref(), Some("http://192.0.2.11"), "the panel's stays");
@@ -1038,6 +1054,9 @@ mod tests {
             EventBus::new(),
         );
         assert!(home.link(None, None, Some(true), None, None).is_err());
-        assert!(home.link(Some("http://192.0.2.10"), None, None, None, None).is_err(), "no key: the computer must bring one");
+        assert!(
+            home.link(Some("http://192.0.2.10"), None, None, None, None).is_err(),
+            "no key: the computer must bring one"
+        );
     }
 }
