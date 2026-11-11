@@ -110,9 +110,10 @@ export function missingEngine(entry: CatalogEntry, engines: Record<string, Voice
     return (entry.needs ?? []).find((need) => need.kind === 'engine' && engines[need.id] && engines[need.id] !== 'ready') ?? null;
 }
 
-/** Метки пакета каталога: что с ним здесь. */
+/** Метки пакета каталога: откуда он (дополнительная лента — её название), что с ним здесь. */
 export function entryPills(entry: CatalogEntry, engines: Record<string, VoiceLabEngine['status']> | null): Array<{ text: string; cls: string }> {
     const pills: Array<{ text: string; cls: string }> = [];
+    if (entry.source) pills.push({ text: entry.source, cls: 'pill-off' });
     if (entry.state === 'update') pills.push({ text: 'новая версия', cls: 'pill-agent' });
     else if (isInstalled(entry)) pills.push({ text: 'установлен', cls: 'pill-off' });
     if (entry.state === 'incompatible') pills.push({ text: 'не пойдёт здесь', cls: 'pill-off' });
@@ -308,6 +309,18 @@ export function catalogStatus(catalog: CatalogState): { text: string; tone: 'met
 /** Показывать ли пакеты каталога, которых здесь нет: без сети и с выключенным каталогом — нет (поставить их нельзя). */
 export function catalogOpen(view: CatalogView | null): boolean {
     return !!view && view.configured && view.enabled && !view.offline;
+}
+
+/** Строки о дополнительных лентах, которые сейчас не прочитались; пока каталог закрыт — о нём уже сказано, их нет. */
+export function feedLines(view: CatalogView | null): string[] {
+    if (!catalogOpen(view)) return [];
+    return (view?.feeds ?? [])
+        .filter((feed) => feed.offline || feed.problem)
+        .map((feed) =>
+            feed.offline || !feed.problem
+                ? `Лента «${feed.title}» недоступна${feed.count > 0 ? ' — её пакеты показаны по последней копии' : ''}.`
+                : feed.problem,
+        );
 }
 
 /** Состояние плагина одним словом. */
@@ -544,6 +557,11 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                         {status.text}
                     </p>
                 )}
+                {feedLines(view).map((line) => (
+                    <p key={line} class="t-caption m-0 mb-6 c-pill-yandex-fg" role="status">
+                        {line}
+                    </p>
+                ))}
                 {kinds.length > 1 && (
                     <div class="pkg-filters">
                         <Dropdown

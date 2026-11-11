@@ -7,7 +7,7 @@ members = ["gateway"]
 exclude = ["desktop/src-tauri", "yam"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "Apache-2.0"
 publish = false
@@ -20,6 +20,16 @@ publish = false
 [profile.release]
 lto = "thin"
 strip = true
+
+# Debug and test builds stay small: line tables for this workspace (a panic or a failed test still names the line),
+# no debug info for the dependencies — on a Mac with several worktrees the debug caches had grown past 150 GB
+# (11.11.2026). Incremental state stays on, for tests too: after a small edit in the gateway its tests rebuild in ~35 s
+# with it and ~60 s without (11.11.2026, M4 Max); scripts/dev/trim-targets.sh clears the state nobody reads.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
 
 # Tests sign in often: a password hash (scrypt, 16 MB of mixing) takes a second unoptimised, ~50 ms optimised.
 [profile.dev.package.scrypt]

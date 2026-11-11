@@ -341,7 +341,9 @@ Home Assistant, Telegram, LiveKit, SIP, город погоды и ленты н
 - **API**: `/api/v1/packages` (все виды; включать, выключать, перезагружать, откатывать, копировать —
   `plugins.manage`), `/api/v1/packages/resources`, `/api/v1/packages/themes`, `/api/v1/packages/panel`, события
   `packages.changed`, `plugins.resources`, `workshop.changed`; инструменты плагинов — MCP `/mcp/plugins`
-  (`plugins.mcp`). Каталог — подписанная лента (`plugins/catalog.rs`, minisign).
+  (`plugins.mcp`). Каталог — подписанная лента (`plugins/catalog.rs`, minisign); главная лента называет до четырёх
+  дополнительных (`feeds`): у каждой своя копия в `packages-catalog/feeds/`, их пакеты — после главной, без кода
+  (план).
 - **Пульт** (`panel/src/shell/`, `panel/src/sdk/`, `panel/src/plugins/loader.ts`): тема — данные (палитры, раскладка,
   плотность, шрифт, скругления), оболочки `TabbarShell` и `SidebarShell`, реестр разделов и слоты с границами
   ошибок; `panel.js` пакетов грузится с шлюза на ходу через import map (её хеш — в CSP), SDK пульта —

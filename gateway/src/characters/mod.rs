@@ -284,6 +284,11 @@ impl CharactersService {
     }
 
     /// The table: a row for each character of a package (its text with the default tones), none for a package gone.
+    /// A row is written only when something of it changed. The list is read again at every look at it (`view` — a
+    /// panel's dashboard looks every 15 s), and a row written anew each time, with its time, moved the settings
+    /// revision: the computer of the pair took a copy of the station's settings every minute, its ten copies held the
+    /// last ten minutes only, and with the settings on the computer it would send them — the station's gateway starting
+    /// again on each (live, 11.11).
     fn store(&self, valid: &[Character]) -> rusqlite::Result<()> {
         let at = now_iso();
         self.db.transaction(|t| {
@@ -294,7 +299,11 @@ impl CharactersService {
                      VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                      ON CONFLICT (id) DO UPDATE SET title = excluded.title, description = excluded.description,
                      text = excluded.text, updated_at = excluded.updated_at, package = excluded.package,
-                     version = excluded.version, color = excluded.color, tones = excluded.tones, avatar = excluded.avatar",
+                     version = excluded.version, color = excluded.color, tones = excluded.tones, avatar = excluded.avatar
+                     WHERE characters.title IS NOT excluded.title OR characters.description IS NOT excluded.description
+                     OR characters.text IS NOT excluded.text OR characters.package IS NOT excluded.package
+                     OR characters.version IS NOT excluded.version OR characters.color IS NOT excluded.color
+                     OR characters.tones IS NOT excluded.tones OR characters.avatar IS NOT excluded.avatar",
                     params![
                         character.id,
                         character.title,
@@ -628,6 +637,37 @@ mod tests {
         std::fs::remove_dir_all(dir.path().join("packages/arthur")).unwrap();
         app.characters.sync();
         assert_eq!(rows(&app).len(), 1, "a package gone takes its characters' rows");
+    }
+
+    /// The list read again and again writes nothing: the row keeps its time and the settings revision stays, so the
+    /// computer of the pair takes no copy for a look (live, 11.11). A package updated changes its row, and the
+    /// revision with it.
+    #[tokio::test]
+    async fn reading_the_list_again_rewrites_no_row_and_moves_no_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(dir.path());
+        write_arthur(&dir.path().join("packages"), &arthur_manifest("1.2.0"));
+        app.characters.view().await.unwrap();
+        let revision = || crate::placement::transfer::revision(&app.db, &app.secrets).unwrap();
+        let written = || -> String {
+            app.db
+                .with(|c| {
+                    c.query_row("SELECT updated_at FROM characters WHERE id = 'arthur:arthur'", [], |row| row.get(0))
+                })
+                .unwrap()
+        };
+        let (before, at) = (revision(), written());
+        // The times are to the millisecond: a row written anew would show it.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        app.characters.view().await.unwrap();
+        app.characters.sync();
+        assert_eq!((revision(), written()), (before, at.clone()));
+
+        std::fs::remove_dir_all(dir.path().join("packages/arthur")).unwrap();
+        write_arthur(&dir.path().join("packages"), &arthur_manifest("1.3.0"));
+        app.characters.view().await.unwrap();
+        assert_eq!(revision(), before + 1);
+        assert_ne!(written(), at);
     }
 
     #[tokio::test]

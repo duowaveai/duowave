@@ -1349,6 +1349,23 @@ export interface CatalogEntry {
     state: CatalogState;
     /** Почему нельзя поставить. */
     reason?: string | null;
+    /** Кто выпускает пакет: издатель дополнительной ленты или поле самого пакета. */
+    publisher?: string | null;
+    /** Название дополнительной ленты, откуда пакет; у пакета главной ленты — нет. */
+    source?: string | null;
+}
+
+/** Дополнительная лента каталога — её называет главная: чья, как называется, на связи ли. */
+export interface CatalogSource {
+    url: string;
+    publisher: string;
+    title: string;
+    fetchedAt?: string | null;
+    /** Не дозвались — её пакеты из последней копии (или их нет). */
+    offline: boolean;
+    problem?: string | null;
+    /** Сколько её пакетов в каталоге. */
+    count: number;
 }
 
 /** Каталог пакетов (GET /api/v1/packages/catalog): лента с состоянием каждого; без сети — последняя копия. */
@@ -1367,6 +1384,8 @@ export interface CatalogView {
     offline: boolean;
     problem?: string | null;
     packages: CatalogEntry[];
+    /** Дополнительные ленты, которые называет главная, по порядку (шлюз постарше их не знает). */
+    feeds?: CatalogSource[];
 }
 
 /** Голос персонажа: готов, нужна модель, ставится, не пойдёт здесь, говорит запасной или голоса нет вовсе. */

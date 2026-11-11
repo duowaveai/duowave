@@ -9,6 +9,13 @@
 //! this computer, to try a catalog), and every file it names from the same origin. Nothing installs by itself: a
 //! person with the right presses the button. Until the catalog is signed (stage 8), plugins and apps in it are listed
 //! and never installed — only packages without code.
+//!
+//! The main feed may name extra feeds (`feeds`, up to 4: docs/plans/catalog-feeds.md) — our store, a partner's. Each is
+//! read after it, into its own folder `packages-catalog/feeds/<name by its address>/` with its own ETag and state; a
+//! feed the main one no longer names goes with its copy. Their packages come after the main's, in the main's order,
+//! and an id an earlier feed has is not taken from a later one. Every file from the package's own feed's origin;
+//! `verified` only when the main feed's declaration allows it; never code from them — there is no signature for them
+//! yet. Only the main feed names feeds: an extra feed's own `feeds` are not followed.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -17,6 +24,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::Digest;
 
 use super::controller::{PackageView, PlacementNow, PluginHost};
 use super::install::{self, Expected, MAX_ARCHIVE};
@@ -44,6 +52,12 @@ const MAX_IMAGE: u64 = 256 * 1024;
 const MAX_SAMPLE: u64 = 64 * 1024;
 const MAX_SAMPLES: usize = 3;
 const ARCHIVE_TIMEOUT: Duration = Duration::from_secs(120);
+/// The extra feeds the main one may name.
+const MAX_FEEDS: usize = 4;
+/// An extra feed's title for people, at most.
+const MAX_FEED_TITLE: usize = 40;
+/// The extra feeds' folders, in the catalog's own: `feeds/<name by the address>/`.
+const FEEDS_DIR: &str = "feeds";
 
 /// Where the feed is, as the configuration and the build say.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +123,23 @@ pub struct Entry {
     pub memory_mb: Option<u64>,
     /// An app's archives by platform (`platforms`): the station takes `linux-aarch64`'s, a Mac `darwin-arm64`'s.
     pub platforms: BTreeMap<String, Archive>,
+    /// Who puts it out: its own `publisher`; an extra feed's package — the one the main feed names for that feed,
+    /// whatever the package says.
+    pub publisher: Option<String>,
+    /// The extra feed it comes from; None — the main one.
+    pub extra: Option<ExtraFeed>,
+}
+
+/// An extra feed the main one names (`feeds`): read after it, its packages after the main's.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtraFeed {
+    pub url: url::Url,
+    /// Who puts out its packages: lowercase Latin letters, digits and «-».
+    pub publisher: String,
+    /// What a person sees it called: its publisher when the main feed gives no title.
+    pub title: String,
+    /// Whether its packages' `verified` stands: without it they count as not checked by us, whatever it says.
+    pub verified: bool,
 }
 
 /// An archive of the feed: its address, its hash, its size.
@@ -138,6 +169,8 @@ pub struct Feed {
     pub skipped: Vec<String>,
     /// Signed with the catalog's key (`catalog.json.minisig`): code may come from it (stage 8).
     pub signed: bool,
+    /// The extra feeds it names: the main feed's are read, an extra one's are not followed.
+    pub feeds: Vec<ExtraFeed>,
 }
 
 /// The catalog's signature: the feed's own address and `.minisig`, from the same origin.
@@ -165,6 +198,55 @@ impl Feed {
             None => self.newest().into_iter().find(|entry| entry.id == id),
         }
     }
+
+    /// An extra feed's packages after these, marked as its own: its publisher, and `verified` only when its
+    /// declaration allows. An id these have already is not taken: what was left out, and whose the id is.
+    fn take(&mut self, extra: &ExtraFeed, copy: Feed) -> Vec<String> {
+        let mut known: BTreeMap<String, String> = BTreeMap::new();
+        for entry in &self.packages {
+            let whose = entry.extra.as_ref().map_or_else(|| "the main feed".to_string(), |extra| extra.url.to_string());
+            known.entry(entry.id.clone()).or_insert(whose);
+        }
+        let mut left = Vec::new();
+        for mut entry in copy.packages {
+            if let Some(whose) = known.get(&entry.id) {
+                let refused = format!("{} (in {whose} already)", entry.id);
+                if !left.contains(&refused) {
+                    left.push(refused);
+                }
+                continue;
+            }
+            entry.publisher = Some(extra.publisher.clone());
+            entry.verified &= extra.verified;
+            entry.extra = Some(extra.clone());
+            self.packages.push(entry);
+        }
+        left
+    }
+}
+
+/// An extra feed as the main one declares it: HTTPS as the main, its publisher an id, a title for people.
+fn extra_feed(value: &Value) -> Result<ExtraFeed, String> {
+    let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty());
+    let url = feed_url(text("url").ok_or("feeds: нет url")?).map_err(|problem| format!("feeds: {problem}"))?;
+    let publisher = text("publisher")
+        .filter(|publisher| valid_id(publisher))
+        .ok_or_else(|| format!("feeds: {url}: publisher — строчные латинские буквы, цифры и «-»"))?
+        .to_string();
+    let title = text("title").map(|title| title.chars().take(MAX_FEED_TITLE).collect());
+    let verified = value.get("verified").and_then(Value::as_bool).unwrap_or(false);
+    Ok(ExtraFeed { url, title: title.unwrap_or_else(|| publisher.clone()), publisher, verified })
+}
+
+/// An extra feed's folder name by its address: the host to read, and a hash of the whole address — never a version.
+fn feed_folder(url: &url::Url) -> String {
+    let host: String = url
+        .host_str()
+        .unwrap_or("feed")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c.to_ascii_lowercase() } else { '_' })
+        .collect();
+    format!("{host}-{}", hex::encode(&sha2::Sha256::digest(url.as_str().as_bytes())[..4]))
 }
 
 fn entry(value: &Value, base: &url::Url) -> Result<Entry, String> {
@@ -210,6 +292,7 @@ fn entry(value: &Value, base: &url::Url) -> Result<Entry, String> {
         Some(_) => return Err(at("needs: список")),
     };
     let license = text("license").map(|license| license.chars().take(MAX_LICENSE).collect());
+    let publisher = text("publisher").filter(|publisher| valid_id(publisher)).map(str::to_string);
     let verified = value.get("verified").and_then(Value::as_bool).unwrap_or(false);
     let memory_mb = value.pointer("/budget/memoryMb").and_then(Value::as_u64);
     let mut platforms = BTreeMap::new();
@@ -246,11 +329,13 @@ fn entry(value: &Value, base: &url::Url) -> Result<Entry, String> {
         verified,
         memory_mb,
         platforms,
+        publisher,
+        extra: None,
     })
 }
 
 /// Reads a feed by its schema: the whole of it must be one (format 1, a list of packages); a package in it that is
-/// not one is left out with its reason.
+/// not one is left out with its reason, and so is an extra feed it names (`feeds`) that is not one, or past the 4th.
 pub fn parse_feed(text: &str, base: &url::Url) -> Result<Feed, String> {
     let value: Value = serde_json::from_str(text).map_err(|error| format!("не JSON: {error}"))?;
     match value.get("format").and_then(Value::as_u64) {
@@ -264,6 +349,7 @@ pub fn parse_feed(text: &str, base: &url::Url) -> Result<Feed, String> {
         packages: Vec::new(),
         skipped: Vec::new(),
         signed: false,
+        feeds: Vec::new(),
     };
     for item in list {
         match entry(item, base) {
@@ -273,6 +359,24 @@ pub fn parse_feed(text: &str, base: &url::Url) -> Result<Feed, String> {
             Ok(entry) => feed.packages.push(entry),
             Err(problem) => feed.skipped.push(problem),
         }
+    }
+    match value.get("feeds") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(feeds)) => {
+            for item in feeds {
+                match extra_feed(item) {
+                    Ok(extra) if extra.url == *base || feed.feeds.iter().any(|known| known.url == extra.url) => {
+                        feed.skipped.push(format!("feeds: {}: эта лента уже читается", extra.url));
+                    }
+                    Ok(extra) if feed.feeds.len() == MAX_FEEDS => {
+                        feed.skipped.push(format!("feeds: {}: больше {MAX_FEEDS} лент", extra.url));
+                    }
+                    Ok(extra) => feed.feeds.push(extra),
+                    Err(problem) => feed.skipped.push(problem),
+                }
+            }
+        }
+        Some(_) => feed.skipped.push("feeds: список лент".into()),
     }
     Ok(feed)
 }
@@ -286,6 +390,66 @@ struct Fetched {
     etag: Option<String>,
     /// RFC 3339.
     fetched_at: String,
+}
+
+/// What a feed's folder remembers of its last read.
+fn fetched_in(dir: &Path) -> Option<Fetched> {
+    let text = std::fs::read_to_string(dir.join("state.json")).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// A feed's last good copy as text, when the folder holds this address's.
+fn text_in(dir: &Path, url: &url::Url) -> Option<String> {
+    fetched_in(dir).filter(|fetched| fetched.url == url.as_str())?;
+    std::fs::read_to_string(dir.join("catalog.json")).ok()
+}
+
+/// How a feed's address answered.
+enum Answer {
+    /// The feed's text and its ETag.
+    Text(String, Option<String>),
+    /// 304: the copy here is the one.
+    Same,
+    /// No answer at all: the network.
+    Unreachable(String),
+    /// An answer that broke off midway.
+    Broken(String),
+    Status(reqwest::StatusCode),
+    /// More than a feed may be.
+    TooBig,
+}
+
+/// Asks a feed's address for it, with the ETag of the copy here.
+async fn ask(url: &url::Url, etag: Option<&str>) -> Answer {
+    let mut request = crate::utils::http::client().get(url.as_str()).timeout(FEED_TIMEOUT);
+    if let Some(etag) = etag {
+        request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+    }
+    let mut response = match request.send().await {
+        Ok(response) => response,
+        Err(error) => return Answer::Unreachable(error.to_string()),
+    };
+    if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+        return Answer::Same;
+    }
+    if !response.status().is_success() {
+        return Answer::Status(response.status());
+    }
+    let etag = response.headers().get(reqwest::header::ETAG).and_then(|value| value.to_str().ok()).map(str::to_string);
+    let mut body = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                body.extend_from_slice(&chunk);
+                if body.len() as u64 > MAX_FEED {
+                    return Answer::TooBig;
+                }
+            }
+            Ok(None) => break,
+            Err(error) => return Answer::Broken(error.to_string()),
+        }
+    }
+    Answer::Text(String::from_utf8_lossy(&body).into_owned(), etag)
 }
 
 /// A preview's kind by its first bytes: a picture (WebP, PNG — never SVG) or Opus in Ogg.
@@ -326,7 +490,8 @@ pub const NEEDS_SIGNATURE: &str = "Плагины и приложения ста
 ключа каталога (PACKAGES_PUBKEY) или подпись ленты не сошлась.";
 
 /// Whether a package of the feed can be installed here, and how it stands against the installed version. Code — a
-/// plugin, an app — only from a signed feed; on the station, only what fits the plugins' free memory.
+/// plugin, an app — only from a signed feed, and never from an extra one (no signature for them yet); on the station,
+/// only what fits the plugins' free memory.
 pub fn entry_state(
     entry: &Entry,
     installed: Option<&semver::Version>,
@@ -334,11 +499,18 @@ pub fn entry_state(
     signed: bool,
     free_mb: Option<u64>,
 ) -> (EntryState, Option<String>) {
-    if matches!(entry.kind, PackageKind::Plugin | PackageKind::App) && !signed {
+    if matches!(entry.kind, PackageKind::Plugin | PackageKind::App) && (!signed || entry.extra.is_some()) {
         // What is installed stays installed; a new version of code waits for a signed feed.
+        let why = match &entry.extra {
+            Some(extra) => format!(
+                "Плагины и приложения из ленты «{}» не ставятся: подписи для дополнительных лент пока нет.",
+                extra.title
+            ),
+            None => NEEDS_SIGNATURE.into(),
+        };
         return match installed {
             Some(installed) if *installed >= entry.version => (EntryState::Installed, None),
-            _ => (EntryState::NeedsSignature, Some(NEEDS_SIGNATURE.into())),
+            _ => (EntryState::NeedsSignature, Some(why)),
         };
     }
     if entry.kind == PackageKind::App
@@ -409,6 +581,25 @@ pub struct CatalogEntryView {
     pub state: EntryState,
     /// Why it cannot be installed here.
     pub reason: Option<String>,
+    /// Who puts it out: an extra feed's declared publisher, else the package's own.
+    pub publisher: Option<String>,
+    /// The title of the extra feed it comes from; None — the main feed.
+    pub source: Option<String>,
+}
+
+/// An extra feed for the panel: whose it is, what it is called, how its last read went.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeedView {
+    pub url: String,
+    pub publisher: String,
+    pub title: String,
+    pub fetched_at: Option<String>,
+    /// The last read did not reach it: its packages are from the copy before.
+    pub offline: bool,
+    pub problem: Option<String>,
+    /// Its packages taken into the catalog: an id an earlier feed has is not counted.
+    pub count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -428,6 +619,8 @@ pub struct CatalogView {
     pub offline: bool,
     pub problem: Option<String>,
     pub packages: Vec<CatalogEntryView>,
+    /// The extra feeds the main one names, in its order.
+    pub feeds: Vec<FeedView>,
 }
 
 #[derive(Default)]
@@ -436,6 +629,26 @@ struct Status {
     problem: Option<String>,
     /// Updates told on the bus already: each version once.
     announced: HashSet<String>,
+    /// The extra feeds' by their address: each one named since the gateway started, read or not.
+    extras: BTreeMap<String, FeedStatus>,
+}
+
+/// How an extra feed's last read went.
+#[derive(Debug, Clone, Default)]
+struct FeedStatus {
+    offline: bool,
+    problem: Option<String>,
+}
+
+/// How a read of the main feed went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Read {
+    /// A new copy is here.
+    New,
+    /// The copy before stays: the feed is the same, or it failed.
+    Kept,
+    /// It came through the home server, and the extra feeds' copies with it.
+    Home,
 }
 
 pub struct CatalogDeps {
@@ -532,17 +745,55 @@ impl PackageCatalog {
     }
 
     fn fetched(&self) -> Option<Fetched> {
-        let text = std::fs::read_to_string(self.dir.join("state.json")).ok()?;
-        serde_json::from_str(&text).ok()
+        fetched_in(&self.dir)
     }
 
-    /// The last good copy of this feed, read again, its signature checked again.
-    fn copy(&self, url: &url::Url) -> Option<Feed> {
-        self.fetched().filter(|fetched| fetched.url == url.as_str())?;
-        let text = std::fs::read_to_string(self.dir.join("catalog.json")).ok()?;
+    /// The last good copy of the main feed, read again, its signature checked again.
+    fn main_copy(&self, url: &url::Url) -> Option<Feed> {
+        let text = text_in(&self.dir, url)?;
         let mut feed = parse_feed(&text, url).ok()?;
         feed.signed = self.signed(text.as_bytes());
         Some(feed)
+    }
+
+    /// The extra feeds the main feed's copy names.
+    fn declared(&self, url: &url::Url) -> Vec<ExtraFeed> {
+        text_in(&self.dir, url).and_then(|text| parse_feed(&text, url).ok()).map(|feed| feed.feeds).unwrap_or_default()
+    }
+
+    /// An extra feed's folder: its copy, its state, its previews.
+    fn extra_dir(&self, url: &url::Url) -> PathBuf {
+        self.dir.join(FEEDS_DIR).join(feed_folder(url))
+    }
+
+    /// The catalog as its copies here have it: the main feed's packages, then each extra feed's in the order the main
+    /// one names them — an id an earlier feed has is not taken from a later one. With what was left out so, by feed.
+    fn merged(&self, url: &url::Url) -> Option<(Feed, Vec<String>)> {
+        let mut feed = self.main_copy(url)?;
+        let mut left = Vec::new();
+        for extra in feed.feeds.clone() {
+            let Some(text) = text_in(&self.extra_dir(&extra.url), &extra.url) else { continue };
+            let Ok(copy) = parse_feed(&text, &extra.url) else { continue };
+            let refused = feed.take(&extra, copy);
+            left.extend(refused.into_iter().map(|refused| format!("{}: {refused}", extra.url)));
+        }
+        Some((feed, left))
+    }
+
+    /// The last good copies, read again: the main feed's (its signature checked again) and the extra feeds' after it.
+    fn copy(&self, url: &url::Url) -> Option<Feed> {
+        self.merged(url).map(|(feed, _)| feed)
+    }
+
+    /// Whether the main feed's copy names an extra feed without a copy here that was not read since the gateway
+    /// started: one updated over a copy an older gateway wrote reads the catalog now, not in six hours.
+    fn untried(&self, url: &url::Url) -> bool {
+        let declared = self.declared(url);
+        let status = lock(&self.status);
+        declared.iter().any(|extra| {
+            !status.extras.contains_key(extra.url.as_str())
+                && text_in(&self.extra_dir(&extra.url), &extra.url).is_none()
+        })
     }
 
     /// Whether the feed's text is signed by the catalog's key (`catalog.json.minisig` beside the copy).
@@ -563,7 +814,8 @@ impl PackageCatalog {
     }
 
     /// The feed as it stands: read again when there is no copy, the copy is older than 6 hours or `refresh` says
-    /// so — and only with the switch on; the copy otherwise, or when the network fails.
+    /// so — and only with the switch on; the copy otherwise, or when the network fails. The extra feeds the main one
+    /// names are read after it each time, and their packages come after its own.
     pub async fn feed(&self, refresh: bool) -> Option<Feed> {
         let url = match self.url()? {
             Ok(url) => url,
@@ -579,83 +831,63 @@ impl PackageCatalog {
                     chrono::Utc::now().signed_duration_since(at).to_std().is_ok_and(|age| age > FRESH)
                 }),
             };
-            if refresh || stale(self.fetched()) || !self.dir.join("catalog.json").exists() {
+            let due =
+                || refresh || stale(self.fetched()) || !self.dir.join("catalog.json").exists() || self.untried(&url);
+            if due() {
                 let _turn = self.reading.lock().await;
                 // Another reader may have read it while this one waited.
-                if refresh || stale(self.fetched()) || !self.dir.join("catalog.json").exists() {
-                    self.read(&url).await;
+                if due() {
+                    let read = self.read(&url).await;
+                    self.read_extras(&url, read).await;
                 }
             }
         }
         self.copy(&url)
     }
 
-    /// Reads the feed: a new copy with its previews, or the copy before and why.
-    async fn read(&self, url: &url::Url) {
+    /// Reads the main feed: a new copy with its previews, or the copy before and why.
+    async fn read(&self, url: &url::Url) -> Read {
         let known = self.fetched().filter(|fetched| fetched.url == url.as_str());
         let etag =
             known.as_ref().and_then(|fetched| fetched.etag.clone()).filter(|_| self.dir.join("catalog.json").exists());
-        let mut request = crate::utils::http::client().get(url.as_str()).timeout(FEED_TIMEOUT);
-        if let Some(etag) = &etag {
-            request = request.header(reqwest::header::IF_NONE_MATCH, etag);
-        }
-        let response = match request.send().await {
-            Ok(response) => response,
-            Err(error) => {
-                // No internet of its own: the computer at home may have it.
-                if self.through_home(url).await {
-                    return;
-                }
-                tracing::warn!(target: "plugins", "packages catalog: {url}: {error}; the copy before stays");
-                let mut status = lock(&self.status);
-                status.offline = true;
-                status.problem = Some(format!("Каталог недоступен: {error}"));
-                return;
-            }
-        };
-        let now = now_iso();
-        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
-            let fetched = Fetched { url: url.to_string(), etag, fetched_at: now };
-            let _ = write_whole(&self.dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default());
-            let mut status = lock(&self.status);
-            status.offline = false;
-            status.problem = None;
-            return;
-        }
         let failed = |problem: String| {
             tracing::warn!(target: "plugins", "packages catalog: {problem}; the copy before stays");
             let mut status = lock(&self.status);
             status.offline = false;
             status.problem = Some(problem);
+            Read::Kept
         };
-        if !response.status().is_success() {
-            if response.status().is_server_error() && self.through_home(url).await {
-                return;
+        let offline = |error: String| {
+            tracing::warn!(target: "plugins", "packages catalog: {url}: {error}; the copy before stays");
+            let mut status = lock(&self.status);
+            status.offline = true;
+            status.problem = Some(format!("Каталог недоступен: {error}"));
+            Read::Kept
+        };
+        let (text, new_etag) = match ask(url, etag.as_deref()).await {
+            Answer::Text(text, new_etag) => (text, new_etag),
+            Answer::Same => {
+                let fetched = Fetched { url: url.to_string(), etag, fetched_at: now_iso() };
+                let _ = write_whole(&self.dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default());
+                let mut status = lock(&self.status);
+                status.offline = false;
+                status.problem = None;
+                return Read::Kept;
             }
-            return failed(format!("Каталог ответил HTTP {}", response.status()));
-        }
-        let new_etag =
-            response.headers().get(reqwest::header::ETAG).and_then(|value| value.to_str().ok()).map(str::to_string);
-        let mut response = response;
-        let mut body = Vec::new();
-        loop {
-            match response.chunk().await {
-                Ok(Some(chunk)) => {
-                    body.extend_from_slice(&chunk);
-                    if body.len() as u64 > MAX_FEED {
-                        return failed(format!("Каталог больше {} КБ", MAX_FEED / 1024));
-                    }
-                }
-                Ok(None) => break,
-                Err(error) => {
-                    let mut status = lock(&self.status);
-                    status.offline = true;
-                    status.problem = Some(format!("Каталог недоступен: {error}"));
-                    return;
-                }
+            // No internet of its own: the computer at home may have it.
+            Answer::Unreachable(error) => {
+                return if self.through_home(url).await { Read::Home } else { offline(error) };
             }
-        }
-        let text = String::from_utf8_lossy(&body).into_owned();
+            Answer::Broken(error) => return offline(error),
+            Answer::Status(code) => {
+                if code.is_server_error() && self.through_home(url).await {
+                    return Read::Home;
+                }
+                return failed(format!("Каталог ответил HTTP {code}"));
+            }
+            Answer::TooBig => return failed(format!("Каталог больше {} КБ", MAX_FEED / 1024)),
+        };
+        let now = now_iso();
         let feed = match parse_feed(&text, url) {
             Ok(feed) => feed,
             Err(problem) => return failed(format!("Каталог не разобрался: {problem}")),
@@ -663,7 +895,7 @@ impl PackageCatalog {
         for skipped in &feed.skipped {
             tracing::warn!(target: "plugins", "packages catalog: left out — {skipped}");
         }
-        self.previews(&feed).await;
+        self.previews(&self.dir, &feed).await;
         // Its signature, when the gateway has the catalog's key: code comes only from a feed it signed.
         let signature = match &self.key {
             Some(_) => install::download(Self::signature_url(url).as_str(), MAX_SIGNATURE, FEED_TIMEOUT).await.ok(),
@@ -689,8 +921,7 @@ impl PackageCatalog {
             tracing::warn!(target: "plugins", "packages catalog: its signature is missing or does not match: no code from it");
             lock(&self.status).problem =
                 Some("Подпись каталога не сошлась: плагины и приложения из него не ставятся.".into());
-            self.announce(&feed);
-            return;
+            return Read::New;
         }
         {
             let mut status = lock(&self.status);
@@ -698,11 +929,114 @@ impl PackageCatalog {
             status.problem = None;
         }
         tracing::info!(target: "plugins", "packages catalog: {} package(s) from {url}", feed.packages.len());
+        Read::New
+    }
+
+    /// After a read of the main feed: each extra feed its copy names is read in turn — unless they came through the
+    /// home server with it — and the folders of the ones it no longer names go. When anything new came, the ids a
+    /// later feed could not take are logged and the installed packages with newer versions told.
+    async fn read_extras(&self, url: &url::Url, main: Read) {
+        let declared = self.declared(url);
+        self.forget_extras(&declared);
+        let mut new = main != Read::Kept;
+        if main != Read::Home {
+            for extra in &declared {
+                new |= self.read_extra(extra).await;
+            }
+        }
+        {
+            // Each one named counts as tried now, the ones a home server did not bring too.
+            let mut status = lock(&self.status);
+            for extra in &declared {
+                status.extras.entry(extra.url.to_string()).or_default();
+            }
+        }
+        if !new {
+            return;
+        }
+        let Some((feed, left)) = self.merged(url) else { return };
+        for refused in left {
+            tracing::warn!(target: "plugins", "packages catalog: not taken from {refused}");
+        }
         self.announce(&feed);
     }
 
+    /// Reads an extra feed into its folder: a new copy with its previews, or the copy before and why. Whether a new
+    /// copy came.
+    async fn read_extra(&self, extra: &ExtraFeed) -> bool {
+        let (url, title) = (&extra.url, &extra.title);
+        let dir = self.extra_dir(url);
+        let known = fetched_in(&dir).filter(|fetched| fetched.url == url.as_str());
+        let etag = known.and_then(|fetched| fetched.etag).filter(|_| dir.join("catalog.json").exists());
+        // A new copy, or none: (offline, why).
+        let outcome = match ask(url, etag.as_deref()).await {
+            Answer::Same => {
+                let fetched = Fetched { url: url.to_string(), etag, fetched_at: now_iso() };
+                let _ = write_whole(&dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default());
+                Ok(false)
+            }
+            Answer::Unreachable(error) | Answer::Broken(error) => {
+                Err((true, format!("Лента «{title}» недоступна: {error}")))
+            }
+            Answer::Status(code) => Err((false, format!("Лента «{title}» ответила HTTP {code}"))),
+            Answer::TooBig => Err((false, format!("Лента «{title}» больше {} КБ", MAX_FEED / 1024))),
+            Answer::Text(text, new_etag) => match parse_feed(&text, url) {
+                Err(problem) => Err((false, format!("Лента «{title}» не разобралась: {problem}"))),
+                Ok(feed) => {
+                    for skipped in &feed.skipped {
+                        tracing::warn!(target: "plugins", "packages catalog: {url}: left out — {skipped}");
+                    }
+                    if !feed.feeds.is_empty() {
+                        tracing::info!(target: "plugins", "packages catalog: {url}: names feeds of its own — only the main feed's are read");
+                    }
+                    self.previews(&dir, &feed).await;
+                    let fetched = Fetched { url: url.to_string(), etag: new_etag, fetched_at: now_iso() };
+                    let written = write_whole(&dir.join("catalog.json"), text.as_bytes()).and_then(|()| {
+                        write_whole(&dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default())
+                    });
+                    match written {
+                        Ok(()) => {
+                            tracing::info!(target: "plugins", "packages catalog: {} package(s) from {url} ({})", feed.packages.len(), extra.publisher);
+                            Ok(true)
+                        }
+                        Err(error) => Err((false, format!("Копия ленты «{title}» не записалась: {error}"))),
+                    }
+                }
+            },
+        };
+        let mut status = lock(&self.status);
+        let state = status.extras.entry(url.to_string()).or_default();
+        match outcome {
+            Ok(new) => {
+                *state = FeedStatus::default();
+                new
+            }
+            Err((offline, problem)) => {
+                tracing::warn!(target: "plugins", "packages catalog: {url}: {problem}; the copy before stays");
+                *state = FeedStatus { offline, problem: Some(problem) };
+                false
+            }
+        }
+    }
+
+    /// The extra feeds the main one no longer names: their folders go, and what was known of them.
+    fn forget_extras(&self, declared: &[ExtraFeed]) {
+        let named: HashSet<String> = declared.iter().map(|extra| feed_folder(&extra.url)).collect();
+        for folder in std::fs::read_dir(self.dir.join(FEEDS_DIR)).into_iter().flatten().flatten() {
+            let name = folder.file_name().to_string_lossy().into_owned();
+            // A version's folder is the previews of a main feed's package that happens to be called `feeds`.
+            if named.contains(&name) || semver::Version::parse(&name).is_ok() {
+                continue;
+            }
+            tracing::info!(target: "plugins", "packages catalog: the feed {name} is no longer named — its copy goes");
+            let _ = std::fs::remove_dir_all(folder.path());
+        }
+        lock(&self.status).extras.retain(|url, _| declared.iter().any(|extra| extra.url.as_str() == url));
+    }
+
     /// The feed through the home server (`/home/v1/catalog`): its copy of the same feed and its signature, written here
-    /// as if read; the signature is checked here with this gateway's own key. Whether it came.
+    /// as if read; the signature is checked here with this gateway's own key. The extra feeds' copies come with it
+    /// (`feeds`: none from a computer older than them — the main feed alone then). Whether it came.
     async fn through_home(&self, url: &url::Url) -> bool {
         let Some((home, key)) = self.home.as_ref().and_then(|home| home.up()) else { return false };
         let answer = crate::utils::http::client()
@@ -732,13 +1066,28 @@ impl PackageCatalog {
         if written.is_err() {
             return false;
         }
+        // The extra feeds' copies, of the feeds this main one names.
+        for copy in body.get("feeds").and_then(Value::as_array).into_iter().flatten() {
+            let address = copy.get("url").and_then(Value::as_str);
+            let Some(extra) = feed.feeds.iter().find(|extra| Some(extra.url.as_str()) == address) else { continue };
+            let Some(text) = copy.get("feed").and_then(Value::as_str) else { continue };
+            if parse_feed(text, &extra.url).is_err() {
+                continue;
+            }
+            let dir = self.extra_dir(&extra.url);
+            let fetched = Fetched { url: extra.url.to_string(), etag: None, fetched_at: now_iso() };
+            let written = write_whole(&dir.join("catalog.json"), text.as_bytes())
+                .and_then(|()| write_whole(&dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default()));
+            if written.is_ok() {
+                lock(&self.status).extras.insert(extra.url.to_string(), FeedStatus::default());
+            }
+        }
         {
             let mut status = lock(&self.status);
             status.offline = false;
             status.problem = None;
         }
         tracing::info!(target: "plugins", "packages catalog: {} package(s) through the home server", feed.packages.len());
-        self.announce(&feed);
         true
     }
 
@@ -768,27 +1117,39 @@ impl PackageCatalog {
         }
     }
 
-    /// For the station's gateway that leans on this computer: the copy of the feed and its signature.
+    /// For the station's gateway that leans on this computer: the copy of the feed and its signature, and the copies
+    /// of the extra feeds it names (`feeds: [{url, feed}]`).
     pub fn export_for_station(&self) -> Option<Value> {
         let url = self.url().and_then(Result::ok)?;
-        self.fetched().filter(|fetched| fetched.url == url.as_str())?;
-        let feed = std::fs::read_to_string(self.dir.join("catalog.json")).ok()?;
+        let feed = text_in(&self.dir, &url)?;
         let signature = std::fs::read_to_string(self.dir.join(format!("catalog.json{SIGNATURE_SUFFIX}"))).ok();
-        Some(serde_json::json!({ "url": url.as_str(), "feed": feed, "signature": signature }))
+        let feeds: Vec<Value> = self
+            .declared(&url)
+            .into_iter()
+            .filter_map(|extra| {
+                let copy = text_in(&self.extra_dir(&extra.url), &extra.url)?;
+                Some(serde_json::json!({ "url": extra.url.as_str(), "feed": copy }))
+            })
+            .collect();
+        Some(serde_json::json!({ "url": url.as_str(), "feed": feed, "signature": signature, "feeds": feeds }))
     }
 
-    /// A file for the station: only from this catalog's own origin.
+    /// A file for the station: only from the origin of a feed this computer reads — the main one, or an extra one it
+    /// names.
     pub async fn fetch_for_station(&self, wanted: &str) -> Result<Vec<u8>, ApiError> {
         let base = self.url().and_then(Result::ok).ok_or_else(|| ApiError::conflict("Каталог здесь не настроен."))?;
-        let url = same_origin(&base, wanted).ok_or_else(|| ApiError::forbidden("Только файлы каталога."))?;
+        let extras = self.declared(&base).into_iter().map(|extra| extra.url);
+        let url = std::iter::once(base).chain(extras).find_map(|base| same_origin(&base, wanted));
+        let url = url.ok_or_else(|| ApiError::forbidden("Только файлы каталога."))?;
         install::download(url.as_str(), MAX_ARCHIVE, ARCHIVE_TIMEOUT).await.map_err(ApiError::bad_gateway)
     }
 
-    /// The previews of the feed's packages that are not here yet; the ones of versions it no longer names go.
-    async fn previews(&self, feed: &Feed) {
+    /// The previews of a feed's packages that are not here yet, in its folder; the ones of versions it no longer
+    /// names go.
+    async fn previews(&self, root: &Path, feed: &Feed) {
         let mut kept: HashSet<PathBuf> = HashSet::new();
         for entry in feed.newest() {
-            let dir = self.dir.join(&entry.id).join(entry.version.to_string());
+            let dir = root.join(&entry.id).join(entry.version.to_string());
             kept.insert(dir.clone());
             let wanted =
                 entry.image.iter().map(|url| ("image".to_string(), url, MAX_IMAGE)).chain(
@@ -814,17 +1175,29 @@ impl PackageCatalog {
             }
         }
         // Folders of packages and versions the feed no longer has.
-        for package in std::fs::read_dir(&self.dir).into_iter().flatten().flatten() {
+        for package in std::fs::read_dir(root).into_iter().flatten().flatten() {
             if !package.file_type().is_ok_and(|kind| kind.is_dir()) {
                 continue;
             }
             for version in std::fs::read_dir(package.path()).into_iter().flatten().flatten() {
-                if !kept.contains(&version.path()) {
+                // The extra feeds' folders are theirs (in `feeds`, beside a version of a package of that name).
+                let extra = package.file_name() == FEEDS_DIR
+                    && semver::Version::parse(&version.file_name().to_string_lossy()).is_err();
+                if !extra && !kept.contains(&version.path()) {
                     let _ = std::fs::remove_dir_all(version.path());
                 }
             }
             let _ = std::fs::remove_dir(package.path());
         }
+    }
+
+    /// A package's previews: in its feed's folder, by its id and version.
+    fn preview_dir(&self, entry: &Entry) -> PathBuf {
+        let feed = match &entry.extra {
+            Some(extra) => self.extra_dir(&extra.url),
+            None => self.dir.clone(),
+        };
+        feed.join(&entry.id).join(entry.version.to_string())
     }
 
     /// A preview's file in a version's folder: `image.webp`, `sample-1.ogg`.
@@ -853,7 +1226,8 @@ impl PackageCatalog {
         }
     }
 
-    /// The catalog for the panel: every package of the feed (its newest version) and how it stands here.
+    /// The catalog for the panel: every package of the feeds (its newest version) and how it stands here, and how each
+    /// extra feed stands.
     pub async fn view(&self, refresh: bool) -> CatalogView {
         self.host.rescan();
         let feed = self.feed(refresh).await;
@@ -879,7 +1253,7 @@ impl PackageCatalog {
                     .map(|entry| {
                         let mine = installed.get(&entry.id);
                         let (state, reason) = entry_state(entry, mine, placement, signed, free_mb);
-                        let dir = self.dir.join(&entry.id).join(entry.version.to_string());
+                        let dir = self.preview_dir(entry);
                         let base = format!("/api/v1/packages/catalog/{}/preview", entry.id);
                         CatalogEntryView {
                             id: entry.id.clone(),
@@ -902,12 +1276,41 @@ impl PackageCatalog {
                             installed: mine.map(ToString::to_string),
                             state,
                             reason,
+                            publisher: entry.publisher.clone(),
+                            source: entry.extra.as_ref().map(|extra| extra.title.clone()),
                         }
                     })
                     .collect()
             })
             .unwrap_or_default();
         let status = lock(&self.status);
+        let feeds = feed
+            .as_ref()
+            .map(|feed| {
+                let newest = feed.newest();
+                feed.feeds
+                    .iter()
+                    .map(|extra| {
+                        let known = status.extras.get(extra.url.as_str());
+                        let fetched = fetched_in(&self.extra_dir(&extra.url));
+                        FeedView {
+                            url: extra.url.to_string(),
+                            publisher: extra.publisher.clone(),
+                            title: extra.title.clone(),
+                            fetched_at: fetched
+                                .filter(|fetched| fetched.url == extra.url.as_str())
+                                .map(|fetched| fetched.fetched_at),
+                            offline: known.is_some_and(|known| known.offline),
+                            problem: known.and_then(|known| known.problem.clone()),
+                            count: newest
+                                .iter()
+                                .filter(|entry| entry.extra.as_ref().is_some_and(|from| from.url == extra.url))
+                                .count(),
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let problem = match &self.source {
             FeedSource::Off => Some("Каталог выключен в .env (PACKAGES_FEED_URL=off).".into()),
             FeedSource::Missing => {
@@ -928,6 +1331,7 @@ impl PackageCatalog {
             offline: status.offline,
             problem,
             packages,
+            feeds,
         }
     }
 
@@ -944,8 +1348,7 @@ impl PackageCatalog {
                 _ => return Err(missing()),
             },
         };
-        let dir = self.dir.join(&entry.id).join(entry.version.to_string());
-        self.preview_file(&dir, &name).ok_or_else(missing)
+        self.preview_file(&self.preview_dir(entry), &name).ok_or_else(missing)
     }
 
     /// The kind of a package as the feed lists it (its newest version), or as installed: who may install or remove
@@ -1040,8 +1443,9 @@ impl PackageCatalog {
                 tracing::warn!(target: "plugins", "{id}: the older versions are not removed: {error}");
             }
         }
-        // Vouched for: the feed says so, and code only when the feed is signed.
-        let vouched = entry.verified && (feed.signed || !matches!(entry.kind, PackageKind::Plugin | PackageKind::App));
+        // Vouched for: the feed says so (an extra one's only when the main allows), and code only from a signed main.
+        let signed = feed.signed && entry.extra.is_none();
+        let vouched = entry.verified && (signed || !matches!(entry.kind, PackageKind::Plugin | PackageKind::App));
         registry::set_installed(
             &self.db,
             id,
@@ -1118,6 +1522,8 @@ pub mod tests {
         pub reads: Arc<AtomicUsize>,
         pub url: String,
         pub down: Arc<std::sync::atomic::AtomicBool>,
+        /// Files to refuse, one request each: a station's own try, before the computer's.
+        pub refuse: Arc<AtomicUsize>,
     }
 
     async fn feed(State(site): State<Site>, headers: HeaderMap) -> axum::response::Response {
@@ -1137,6 +1543,10 @@ pub mod tests {
         State(site): State<Site>,
         axum::extract::Path(path): axum::extract::Path<String>,
     ) -> axum::response::Response {
+        if site.refuse.load(Ordering::SeqCst) > 0 {
+            site.refuse.fetch_sub(1, Ordering::SeqCst);
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
         match lock(&site.files).get(&path) {
             Some(bytes) => bytes.clone().into_response(),
             None => StatusCode::NOT_FOUND.into_response(),
@@ -1152,6 +1562,7 @@ pub mod tests {
             reads: Arc::new(AtomicUsize::new(0)),
             url,
             down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            refuse: Arc::new(AtomicUsize::new(0)),
         };
         let router =
             Router::new().route("/catalog.json", get(feed)).route("/{*path}", get(file)).with_state(site.clone());
@@ -1180,6 +1591,41 @@ pub mod tests {
             *lock(&self.feed) =
                 json!({ "format": 1, "updatedAt": "2026-11-07T12:00:00Z", "packages": entries }).to_string();
         }
+
+        /// The extra feeds its feed names (`feeds`).
+        pub fn name_feeds(&self, feeds: Value) {
+            let mut feed: Value = serde_json::from_str(&lock(&self.feed)).unwrap();
+            feed["feeds"] = feeds;
+            *lock(&self.feed) = feed.to_string();
+        }
+
+        /// A package added to its feed as it is: its addresses are not rewritten.
+        fn add(&self, entry: Value) {
+            let mut feed: Value = serde_json::from_str(&lock(&self.feed)).unwrap();
+            feed["packages"].as_array_mut().unwrap().push(entry);
+            *lock(&self.feed) = feed.to_string();
+        }
+
+        /// Its scheme, host and port.
+        fn origin(&self) -> &str {
+            self.url.trim_end_matches("/catalog.json")
+        }
+
+        fn address(&self) -> url::Url {
+            url::Url::parse(&self.url).unwrap()
+        }
+    }
+
+    /// A character with its archive, as Arthur is.
+    fn character(id: &str, version: &str) -> (Value, Vec<u8>) {
+        let mut entry = arthur(version);
+        entry["id"] = json!(id);
+        (entry, vgp(&character_manifest(id, version)))
+    }
+
+    /// The ids in the view, in its order.
+    fn ids(view: &CatalogView) -> Vec<&str> {
+        view.packages.iter().map(|entry| entry.id.as_str()).collect()
     }
 
     pub fn arthur(version: &str) -> Value {
@@ -1611,5 +2057,350 @@ pub mod tests {
         *lock(&site.files) = BTreeMap::new();
         let installed = fixture.catalog.install("arthur", None, false, None).await.unwrap();
         assert_eq!(installed.version.as_deref(), Some("1.0.0"));
+    }
+
+    #[test]
+    fn reads_the_extra_feeds_the_main_one_names_by_their_rules() {
+        let base = url::Url::parse("https://packages.duowave.app/catalog.json").unwrap();
+        let feeds = json!([
+            { "url": "https://store.duowave.app/catalog.json", "publisher": "duowave", "title": "DuoWave Store",
+              "verified": true },
+            { "url": "http://partner.example/catalog.json", "publisher": "partner" },
+            { "url": "https://partner.example/catalog.json", "publisher": "Partner" },
+            { "url": "https://partner.example/catalog.json", "publisher": "partner", "title": "П".repeat(60) },
+            { "url": "https://store.duowave.app/catalog.json", "publisher": "again" },
+            { "url": "https://packages.duowave.app/catalog.json", "publisher": "itself" },
+            { "url": "https://a.example/catalog.json", "publisher": "a" },
+            { "url": "http://127.0.0.1:8080/catalog.json", "publisher": "local" },
+            { "url": "https://b.example/catalog.json", "publisher": "b" }
+        ]);
+        let feed = parse_feed(&json!({ "format": 1, "packages": [], "feeds": feeds }).to_string(), &base).unwrap();
+        let urls: Vec<&str> = feed.feeds.iter().map(|extra| extra.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://store.duowave.app/catalog.json",
+                "https://partner.example/catalog.json",
+                "https://a.example/catalog.json",
+                "http://127.0.0.1:8080/catalog.json"
+            ]
+        );
+        let store = &feed.feeds[0];
+        assert_eq!(
+            (store.publisher.as_str(), store.title.as_str(), store.verified),
+            ("duowave", "DuoWave Store", true)
+        );
+        assert_eq!((feed.feeds[1].title.chars().count(), feed.feeds[1].verified), (MAX_FEED_TITLE, false));
+        assert_eq!(feed.feeds[2].title, "a", "without a title — its publisher");
+        // HTTP elsewhere, a publisher that is no id, the store twice, the main itself, a fifth feed.
+        assert_eq!(feed.skipped.len(), 5, "{:?}", feed.skipped);
+        assert!(feed.skipped.iter().any(|why| why.contains("только по HTTPS")));
+        assert!(feed.skipped.iter().any(|why| why.contains("больше 4 лент")));
+        let odd = parse_feed(&json!({ "format": 1, "packages": [], "feeds": {} }).to_string(), &base).unwrap();
+        assert_eq!(odd.skipped, ["feeds: список лент"]);
+        let older = parse_feed(&json!({ "format": 1, "packages": [] }).to_string(), &base).unwrap();
+        assert!(older.feeds.is_empty() && older.skipped.is_empty());
+        // Each address its own folder, never one a package's version could take.
+        let folder = feed_folder(&store.url);
+        assert!(folder.starts_with("store.duowave.app-") && semver::Version::parse(&folder).is_err());
+        let path = |path: &str| url::Url::parse(&format!("https://store.duowave.app/{path}")).unwrap();
+        assert_ne!(feed_folder(&path("a/catalog.json")), feed_folder(&path("b/catalog.json")));
+        // A package's own publisher, when it is an id.
+        let mut value = arthur("1.0.0");
+        value["url"] = json!("a.vgp");
+        value["sha256"] = json!("a".repeat(64));
+        value["size"] = json!(10);
+        value["publisher"] = json!("duowave");
+        assert_eq!(entry(&value, &base).unwrap().publisher.as_deref(), Some("duowave"));
+        value["publisher"] = json!("Duo Wave");
+        assert_eq!(entry(&value, &base).unwrap().publisher, None);
+    }
+
+    #[tokio::test]
+    async fn shows_the_extra_feeds_packages_after_the_main_ones_each_from_its_own_site() {
+        let (main, store) = (site().await, site().await);
+        let (mut butler, archive) = character("arthur", "1.2.0");
+        butler["publisher"] = json!("duowave");
+        main.publish(&[(butler, archive)]);
+        let (mut bublik, archive) = character("bublik", "1.0.0");
+        bublik["publisher"] = json!("impostor");
+        store.publish(&[(bublik, archive), character("arthur", "9.0.0")]);
+        // A package of the store whose archive is on the main site: only files of its own feed's origin.
+        let mut stray = arthur("1.0.0");
+        stray["id"] = json!("stray");
+        stray["url"] = json!(format!("{}/packages/arthur-1.2.0.vgp", main.origin()));
+        stray["sha256"] = json!("a".repeat(64));
+        stray["size"] = json!(10);
+        store.add(stray);
+        let declared = json!({ "url": store.url, "publisher": "duowave", "title": "DuoWave Store" });
+        main.name_feeds(json!([declared]));
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+
+        let view = catalog.view(false).await;
+        assert_eq!(ids(&view), ["arthur", "bublik"], "the main's first; its id is not the store's; no stray");
+        let (arthur, bublik) = (&view.packages[0], &view.packages[1]);
+        assert_eq!(
+            (arthur.version.as_str(), arthur.publisher.as_deref(), arthur.source.as_deref()),
+            ("1.2.0", Some("duowave"), None)
+        );
+        assert_eq!((bublik.publisher.as_deref(), bublik.source.as_deref()), (Some("duowave"), Some("DuoWave Store")));
+        assert!(arthur.verified && !bublik.verified, "the store's `verified` stands only when the main allows it");
+        assert_eq!(bublik.preview.image.as_deref(), Some("/api/v1/packages/catalog/bublik/preview/image"));
+        let (image, _) = catalog.preview("bublik", "image").await.unwrap();
+        assert!(image.starts_with(catalog.extra_dir(&store.address())), "{}", image.display());
+        let feed = &view.feeds[0];
+        assert_eq!(
+            (feed.url.as_str(), feed.title.as_str(), feed.publisher.as_str()),
+            (store.url.as_str(), "DuoWave Store", "duowave")
+        );
+        assert_eq!((feed.count, feed.offline, feed.problem.as_deref()), (1, false, None));
+        assert!(feed.fetched_at.is_some());
+        assert_eq!(catalog.install("stray", None, false, None).await.unwrap_err().status, StatusCode::NOT_FOUND);
+
+        // Installed from its own site, and not vouched for.
+        let installed = catalog.install("bublik", None, false, None).await.unwrap();
+        assert_eq!((installed.source.as_str(), installed.verified), ("catalog", false));
+        assert_eq!(catalog.kind_of("bublik").await, Some(PackageKind::Character));
+        catalog.remove("bublik", None).await.unwrap();
+        // The main allows its `verified`: so it is, and vouched for.
+        let mut declared = declared;
+        declared["verified"] = json!(true);
+        main.name_feeds(json!([declared]));
+        let view = catalog.view(true).await;
+        assert!(view.packages[1].verified);
+        let installed = catalog.install("bublik", None, false, None).await.unwrap();
+        assert!(installed.verified);
+        assert_eq!(catalog.view(false).await.packages[1].state, EntryState::Installed);
+    }
+
+    #[tokio::test]
+    async fn never_installs_code_from_an_extra_feed_even_beside_a_signed_main_one() {
+        let keys = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let (main, store) = (site().await, site().await);
+        let plugin = |id: &str, phrase: &str| {
+            let manifest = json!({
+                "schema": 1, "kind": "plugin", "id": id, "version": "1.0.0", "title": "Часы", "api": "^1",
+                "runs": ["pc", "station", "stationServer"], "permissions": ["voice.intents"],
+                "contributes": { "intents": [{ "phrases": [phrase], "handler": "say" }] }
+            });
+            let mut entry = arthur("1.0.0");
+            entry["id"] = json!(id);
+            entry["kind"] = json!("plugin");
+            (entry, plugin_vgp(&manifest, "export function say() { return 'Полночь'; }"))
+        };
+        main.publish(&[plugin("clock", "который час на луне")]);
+        store.publish(&[plugin("moon", "какая сейчас луна")]);
+        // The store vouched for, and the main feed signed: still no code from the store.
+        main.name_feeds(json!([{ "url": store.url, "publisher": "duowave", "verified": true }]));
+        let text = lock(&main.feed).clone();
+        let signature = minisign::sign(Some(&keys.pk), &keys.sk, std::io::Cursor::new(text.as_bytes()), None, None);
+        lock(&main.files).insert("catalog.json.minisig".into(), signature.unwrap().to_string().into_bytes());
+        let keyed = fixture_keyed(FeedSource::Url(main.url.clone()), Placement::Pc, Some(keys.pk.to_base64()));
+
+        let view = keyed.catalog.view(false).await;
+        assert!(view.signed, "{view:?}");
+        assert_eq!(view.packages[0].state, EntryState::Available);
+        let moon = &view.packages[1];
+        assert_eq!((moon.id.as_str(), moon.state), ("moon", EntryState::NeedsSignature));
+        let why = moon.reason.clone().unwrap();
+        assert!(why.contains("из ленты «duowave»"), "without a title — its publisher: {why}");
+        let refused = keyed.catalog.install("moon", None, false, None).await.unwrap_err();
+        assert_eq!((refused.status, refused.message), (StatusCode::CONFLICT, why));
+        assert!(!keyed.root.join("moon").exists());
+        let installed = keyed.catalog.install("clock", None, false, None).await.unwrap();
+        assert!(installed.verified, "code from the signed main feed");
+    }
+
+    #[tokio::test]
+    async fn an_extra_feed_that_fails_leaves_the_others_and_one_no_longer_named_goes_with_its_copy() {
+        let (main, store, partner) = (site().await, site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        store.publish(&[character("bublik", "1.0.0")]);
+        partner.publish(&[character("palych", "1.0.0")]);
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let named = |feeds: &[(&str, &str)]| {
+            let feeds: Vec<Value> = feeds
+                .iter()
+                .map(|(url, title)| json!({ "url": url, "publisher": "someone", "title": title }))
+                .collect();
+            main.name_feeds(json!(feeds));
+        };
+        let nowhere = format!("http://127.0.0.1:{closed}/catalog.json");
+        named(&[
+            (store.url.as_str(), "DuoWave Store"),
+            (nowhere.as_str(), "Nowhere"),
+            (partner.url.as_str(), "Partner"),
+        ]);
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+
+        let view = catalog.view(false).await;
+        assert_eq!(ids(&view), ["arthur", "bublik", "palych"]);
+        assert!(!view.offline && view.problem.is_none(), "the main feed stands: {view:?}");
+        let nowhere = &view.feeds[1];
+        assert!(nowhere.offline && nowhere.count == 0 && nowhere.fetched_at.is_none(), "{nowhere:?}");
+        assert!(nowhere.problem.as_deref().unwrap().starts_with("Лента «Nowhere» недоступна"));
+        // Not read again at every look: with the main feed, in six hours or when asked.
+        let reads = main.reads.load(Ordering::SeqCst);
+        catalog.view(false).await;
+        assert_eq!(main.reads.load(Ordering::SeqCst), reads);
+
+        // The store fails now: its copy before stays, the others as they were.
+        store.down.store(true, Ordering::SeqCst);
+        let view = catalog.view(true).await;
+        assert_eq!(ids(&view), ["arthur", "bublik", "palych"]);
+        let failed = &view.feeds[0];
+        assert_eq!(failed.problem.as_deref(), Some("Лента «DuoWave Store» ответила HTTP 503 Service Unavailable"));
+        assert!(!failed.offline && failed.count == 1);
+        assert!(view.feeds[2].problem.is_none() && view.feeds[2].count == 1);
+        assert!(view.problem.is_none());
+
+        // The main names the store no more: it goes, its copy too. The partner, down meanwhile, keeps its copy and
+        // previews — a new copy of the main feed clears only its own folders.
+        let gone = catalog.extra_dir(&store.address());
+        assert!(gone.join("catalog.json").is_file() && gone.join("bublik/1.0.0").is_dir());
+        named(&[(partner.url.as_str(), "Partner")]);
+        partner.down.store(true, Ordering::SeqCst);
+        let view = catalog.view(true).await;
+        assert_eq!(ids(&view), ["arthur", "palych"]);
+        assert_eq!(view.feeds.len(), 1);
+        assert!(view.feeds[0].problem.as_deref().unwrap().starts_with("Лента «Partner» ответила HTTP 503"));
+        assert!(!gone.exists(), "{}", gone.display());
+        let kept = catalog.extra_dir(&partner.address());
+        assert!(kept.join("catalog.json").is_file() && kept.join("palych/1.0.0/image.webp").is_file());
+        assert!(catalog.dir.join("arthur/1.0.0/image.webp").is_file(), "the main feed's previews stay");
+        partner.down.store(false, Ordering::SeqCst);
+        // The owner's switch covers every feed.
+        catalog.set_enabled(false, None).unwrap();
+        let before = partner.reads.load(Ordering::SeqCst);
+        assert_eq!(ids(&catalog.view(true).await), ["arthur", "palych"], "the copies still shown");
+        assert_eq!(partner.reads.load(Ordering::SeqCst), before);
+    }
+
+    #[tokio::test]
+    async fn a_package_called_feeds_keeps_its_previews_beside_the_extra_feeds_folders() {
+        let (main, store) = (site().await, site().await);
+        store.publish(&[character("bublik", "1.0.0")]);
+        let named = json!([{ "url": store.url, "publisher": "duowave" }]);
+        main.publish(&[character("feeds", "1.0.0")]);
+        main.name_feeds(named.clone());
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        assert_eq!(ids(&fixture.catalog.view(false).await), ["feeds", "bublik"]);
+        // Its newer version: the folder of the one before goes, the store's copy stays while the store is down.
+        main.publish(&[character("feeds", "1.1.0")]);
+        main.name_feeds(named);
+        store.down.store(true, Ordering::SeqCst);
+        let view = fixture.catalog.view(true).await;
+        assert_eq!((ids(&view), view.packages[0].version.as_str()), (vec!["feeds", "bublik"], "1.1.0"));
+        assert!(fixture.catalog.preview("feeds", "image").await.is_ok());
+        assert!(fixture.catalog.preview("bublik", "image").await.is_ok());
+        assert!(!fixture.catalog.dir.join("feeds/1.0.0").exists());
+    }
+
+    #[tokio::test]
+    async fn reads_an_extra_feed_at_once_when_the_copy_of_the_main_one_is_fresh_but_older_than_it() {
+        let (main, store) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        store.publish(&[character("bublik", "1.0.0")]);
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        assert_eq!(ids(&fixture.catalog.view(false).await), ["arthur"]);
+        // A copy that names the store, written by a gateway that did not read extra feeds — still fresh.
+        main.name_feeds(json!([{ "url": store.url, "publisher": "duowave" }]));
+        std::fs::write(fixture.catalog.dir.join("catalog.json"), lock(&main.feed).as_bytes()).unwrap();
+        assert_eq!(ids(&fixture.catalog.view(false).await), ["arthur", "bublik"]);
+        let reads = (main.reads.load(Ordering::SeqCst), store.reads.load(Ordering::SeqCst));
+        fixture.catalog.view(false).await;
+        assert_eq!((main.reads.load(Ordering::SeqCst), store.reads.load(Ordering::SeqCst)), reads);
+    }
+
+    #[tokio::test]
+    async fn the_station_sees_the_extra_feeds_through_the_computer() {
+        struct Computer(String);
+        impl crate::plugins::controller::HomeLink for Computer {
+            fn up(&self) -> Option<(String, String)> {
+                Some((self.0.clone(), "pair-key".into()))
+            }
+        }
+        async fn serve(router: Router) -> String {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+            address
+        }
+        let (main, store) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        store.publish(&[character("bublik", "1.0.0")]);
+        main.name_feeds(json!([{ "url": store.url, "publisher": "duowave", "title": "DuoWave Store" }]));
+        // The computer reads both feeds, and hands them on as its home server does.
+        let computer = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        assert_eq!(ids(&computer.catalog.view(false).await), ["arthur", "bublik"]);
+        let copy = computer.catalog.export_for_station().unwrap();
+        assert_eq!(
+            (copy["feeds"][0]["url"].as_str(), copy["feeds"].as_array().map(Vec::len)),
+            (Some(store.url.as_str()), Some(1))
+        );
+        let archive = format!("{}/packages/bublik-1.0.0.vgp", store.origin());
+        assert!(computer.catalog.fetch_for_station(&archive).await.is_ok());
+        let elsewhere = computer.catalog.fetch_for_station("http://127.0.0.1:9/packages/x.vgp").await.unwrap_err();
+        assert_eq!(elsewhere.status, StatusCode::FORBIDDEN);
+        let (export, files) = (computer.catalog.clone(), computer.catalog.clone());
+        let home = serve(
+            Router::new()
+                .route(
+                    "/home/v1/catalog",
+                    get(move || {
+                        let catalog = export.clone();
+                        async move { axum::Json(catalog.export_for_station().unwrap()) }
+                    }),
+                )
+                .route(
+                    "/home/v1/catalog/file",
+                    get(move |axum::extract::Query(query): axum::extract::Query<BTreeMap<String, String>>| {
+                        let catalog = files.clone();
+                        async move { catalog.fetch_for_station(&query["url"]).await }
+                    }),
+                ),
+        )
+        .await;
+
+        // The station: neither site in its reach.
+        let station = fixture_with(
+            FeedSource::Url(main.url.clone()),
+            Placement::StationServer,
+            None,
+            Some(Arc::new(Computer(home))),
+        );
+        main.down.store(true, Ordering::SeqCst);
+        store.down.store(true, Ordering::SeqCst);
+        let view = station.catalog.view(true).await;
+        assert_eq!(ids(&view), ["arthur", "bublik"], "{view:?}");
+        assert_eq!(view.packages[1].source.as_deref(), Some("DuoWave Store"));
+        assert!(!view.offline && !view.feeds[0].offline && view.feeds[0].count == 1, "{view:?}");
+        // The store's archive the computer's way: the station's own try is refused.
+        store.refuse.store(1, Ordering::SeqCst);
+        let installed = station.catalog.install("bublik", None, false, None).await.unwrap();
+        assert_eq!(installed.version.as_deref(), Some("1.0.0"));
+
+        // A computer older than extra feeds sends the main one alone: so the station sees it.
+        let text = lock(&main.feed).clone();
+        let url = main.url.clone();
+        let older = serve(Router::new().route(
+            "/home/v1/catalog",
+            get(move || {
+                let (url, text) = (url.clone(), text.clone());
+                async move { axum::Json(json!({ "url": url, "feed": text, "signature": null })) }
+            }),
+        ))
+        .await;
+        let station = fixture_with(
+            FeedSource::Url(main.url.clone()),
+            Placement::StationServer,
+            None,
+            Some(Arc::new(Computer(older))),
+        );
+        let view = station.catalog.view(true).await;
+        assert_eq!(ids(&view), ["arthur"]);
+        assert!(view.feeds[0].count == 0 && !view.feeds[0].offline && view.feeds[0].problem.is_none());
     }
 }

@@ -110,7 +110,8 @@ fn allowed(caller: &Caller) -> Result<(), ApiError> {
 }
 
 /// The packages' catalog for the station without internet of its own (docs/plans/plugins.md, stage 9, «через Mac»):
-/// this computer's copy of the feed and its signature — the station checks them with its own key.
+/// this computer's copy of the feed and its signature — the station checks them with its own key — and the copies of
+/// the extra feeds it names (`feeds: [{url, feed}]`, docs/plans/catalog-feeds.md).
 async fn catalog(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
     allowed(&caller)?;
     let copy = app.catalog.export_for_station().ok_or_else(|| ApiError::not_found("Копии каталога здесь нет."))?;
@@ -122,7 +123,8 @@ struct FileQuery {
     url: String,
 }
 
-/// A file of the catalog for the station: an archive, only from the catalog's own origin; the station checks its hash.
+/// A file of the catalog for the station: an archive, only from the origin of one of the catalog's feeds — the main
+/// one or an extra one it names; the station checks its hash.
 async fn catalog_file(
     State(app): State<Arc<App>>,
     caller: Caller,

@@ -37,6 +37,7 @@ import {
     catalogOpen,
     catalogStatus,
     entryPills,
+    feedLines,
     isInstalled,
     isBlocked,
     useCatalog,
@@ -276,6 +277,11 @@ export function CharactersTab() {
                                 {status.text}
                             </p>
                         )}
+                        {feedLines(catalog.view).map((line) => (
+                            <p key={line} class="t-caption m-0 c-pill-yandex-fg" role="status">
+                                {line}
+                            </p>
+                        ))}
                         {offered.length > 0 && (
                             <div class="char-grid">
                                 {offered.map((entry) => (

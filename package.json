@@ -1,6 +1,6 @@
 {
   "name": "duowave",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Voice gateway for Yandex Station: speaks the station uniproxy protocol and routes speech to our own ASR, LLM and TTS",
   "author": "",
   "private": true,

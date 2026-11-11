@@ -67,6 +67,9 @@ impl PersonaService {
         Ok(service)
     }
 
+    /// At each start. A card's row is written only when this build changed the card: written anew with its time at
+    /// every start, it moved the settings revision, and the computer of the pair took a copy for nothing
+    /// (characters/mod.rs, `store`).
     fn seed(&self) -> rusqlite::Result<()> {
         let at = now_iso();
         self.db.transaction(|t| {
@@ -74,7 +77,9 @@ impl PersonaService {
                 t.execute(
                     "INSERT INTO characters (id, title, description, badge, text, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                      ON CONFLICT (id) DO UPDATE SET title = excluded.title, description = excluded.description,
-                     badge = excluded.badge, text = excluded.text, updated_at = excluded.updated_at",
+                     badge = excluded.badge, text = excluded.text, updated_at = excluded.updated_at
+                     WHERE characters.title IS NOT excluded.title OR characters.description IS NOT excluded.description
+                     OR characters.badge IS NOT excluded.badge OR characters.text IS NOT excluded.text",
                     params![preset.id, preset.title, preset.description, preset.badge, preset.text, at],
                 )?;
             }
@@ -317,6 +322,34 @@ mod tests {
         assert_eq!(personas.system_prompt(None), SystemPrompt { text: default_system_prompt(), problem: None });
         let json = serde_json::to_value(&view).unwrap();
         assert_eq!(json["activePreset"], json!("alice"));
+    }
+
+    /// A start seeds the cards again: a card this build did not change keeps its row, its time with it, and the
+    /// settings revision stays; a card that differs is written as the build has it.
+    #[test]
+    fn a_start_rewrites_no_card_the_build_did_not_change() {
+        let personas = service(None);
+        let alice = || -> (String, String) {
+            personas
+                .db
+                .with(|c| {
+                    c.query_row("SELECT text, updated_at FROM characters WHERE id = 'alice'", [], |row| {
+                        Ok((row.get(0)?, row.get(1)?))
+                    })
+                })
+                .unwrap()
+        };
+        let before = alice();
+        // The times are to the millisecond: a row written anew would show it.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        personas.seed().unwrap();
+        assert_eq!(alice(), before);
+
+        personas.db.with(|c| c.execute("UPDATE characters SET text = 'older' WHERE id = 'alice'", [])).unwrap();
+        personas.seed().unwrap();
+        let after = alice();
+        assert_eq!(after.0, before.0, "the build's card again");
+        assert_ne!(after.1, before.1);
     }
 
     #[test]
