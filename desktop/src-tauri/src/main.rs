@@ -8,14 +8,14 @@ mod updates;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use engine::{Gateway, Paths, Phase, Status};
 use serde::Serialize;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
-use tauri::webview::NewWindowResponse;
+use tauri::webview::{NewWindowResponse, PageLoadEvent};
 use tauri::{AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent, Wry};
 #[cfg(target_os = "macos")]
 use tauri_plugin_autostart::MacosLauncher;
@@ -172,8 +172,16 @@ fn resolve_paths(app: &AppHandle, data: Option<PathBuf>) -> tauri::Result<Paths>
     })
 }
 
+/// What the window shows, as its page loads say. WKWebView has no address until its first page starts loading, and
+/// asking it then crashed the app: wry's `url()` unwraps it (11.11.2026, 0.4.0 — the gateway answered half a second
+/// after the start, before the splash had begun to load). None: nothing has started loading yet, the splash is on
+/// its way.
+#[derive(Default)]
+struct Shown(Mutex<Option<Url>>);
+
 fn build_window(app: &AppHandle) -> tauri::Result<()> {
     let opener = app.clone();
+    app.manage(Shown::default());
     let window = WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::App("index.html".into()))
         .title("DuoWave")
         .inner_size(1180.0, 820.0)
@@ -187,6 +195,13 @@ fn build_window(app: &AppHandle) -> tauri::Result<()> {
                 let _ = opener.opener().open_url(url.as_str(), None::<&str>);
             }
             NewWindowResponse::Deny
+        })
+        .on_page_load(|window, payload| {
+            if matches!(payload.event(), PageLoadEvent::Started) {
+                if let Some(shown) = window.try_state::<Shown>() {
+                    *shown.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(payload.url().clone());
+                }
+            }
         })
         .build()?;
     let hide = window.clone();
@@ -330,18 +345,20 @@ fn panel_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/panel")
 }
 
+/// What the window shows (`Shown`), never asked of the webview itself; None before its first page starts loading.
+fn shown(window: &WebviewWindow) -> Option<Url> {
+    let state = window.try_state::<Shown>()?;
+    let url = state.0.lock().ok()?.clone();
+    url
+}
+
 fn on_splash(window: &WebviewWindow) -> bool {
-    window
-        .url()
-        .map(|url| url.scheme() == "tauri" || url.host_str() == Some("tauri.localhost"))
-        .unwrap_or(false)
+    // Nothing loading yet is the splash on its way: the window opens with it.
+    shown(window).is_none_or(|url| url.scheme() == "tauri" || url.host_str() == Some("tauri.localhost"))
 }
 
 fn on_gateway(window: &WebviewWindow, port: u16) -> bool {
-    window
-        .url()
-        .map(|url| url.host_str() == Some("127.0.0.1") && url.port_or_known_default() == Some(port))
-        .unwrap_or(false)
+    shown(window).is_some_and(|url| url.host_str() == Some("127.0.0.1") && url.port_or_known_default() == Some(port))
 }
 
 fn navigate(window: &WebviewWindow, url: &str) {

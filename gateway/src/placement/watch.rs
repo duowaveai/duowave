@@ -15,7 +15,7 @@ use serde_json::Value;
 
 use super::backup::{BackupEntry, Backups};
 use super::payload::{self, PayloadInfo};
-use super::peer::{station_secret, PeerClient, PEER_SECRET};
+use super::peer::{self, station_secret, PeerClient, PEER_SECRET};
 use super::transfer;
 use crate::config::Config;
 use crate::core::availability::Placement;
@@ -535,6 +535,12 @@ impl StationGateway {
         self.lock().health.as_ref()?.pointer("/build/peerApi")?.as_u64()
     }
 
+    /// The station's gateway answered with a PEER_API from before updates as the archive itself (0.5.1): it would
+    /// not know the route, so it is updated by hand once.
+    fn too_old_for_archive(&self) -> bool {
+        self.station_peer_api().is_some_and(|api| api < peer::ARCHIVE_SINCE_PEER_API)
+    }
+
     fn station_revision(&self) -> Option<u64> {
         self.lock().health.as_ref()?.pointer("/placement/settingsRevision")?.as_u64()
     }
@@ -839,6 +845,9 @@ impl StationGateway {
         if self.update_offer().is_none() {
             return Err(ApiError::conflict("У колонки последняя версия."));
         }
+        if self.too_old_for_archive() {
+            return Err(ApiError::conflict(peer::OLD_STATION));
+        }
         {
             let mut live = self.lock();
             if live.updating {
@@ -865,6 +874,9 @@ impl StationGateway {
     pub async fn update_station(&self, actor: Option<Actor>) -> Result<String, String> {
         let client = self.client().ok_or("шлюз не на колонке")?;
         let version = self.update_offer().ok_or("у колонки последняя версия")?;
+        if self.too_old_for_archive() {
+            return Err(peer::OLD_STATION.into());
+        }
         if let Err(error) = self.backup_from(&client).await {
             tracing::warn!("placement: no copy of the station's settings before its update: {error}");
         }

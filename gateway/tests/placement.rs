@@ -240,15 +240,23 @@ async fn the_station_chooses_between_the_computers_voice_and_alices() {
 #[tokio::test]
 async fn the_station_takes_an_update_only_from_its_computer_and_only_signed() {
     let station = Gateway::start(&[("DUOWAVE_ROLE", "station"), ("PEER_KEY", PEER)]).await;
-    let body =
-        json!({"version": "9.9.9", "archive": "bm90IGFuIGFyY2hpdmU=", "signature": "untrusted comment: x\nRUQ=\n"});
-    let (status, _) = send(station.post("/api/v1/updates/upload").json(&body)).await;
+    // The archive itself as the body (PEER_API 2); the signature in Tauri's form, base64 of minisign's text.
+    let upload = |request: reqwest::RequestBuilder| {
+        request
+            .header(duowave::updates::VERSION_HEADER, "9.9.9")
+            .header(duowave::updates::SIGNATURE_HEADER, "dW50cnVzdGVkIGNvbW1lbnQ6IHgKUlVRPQo=")
+            .body(b"not an archive".to_vec())
+    };
+    let (status, _) = send(upload(station.post("/api/v1/updates/archive"))).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "not from the computer of the pair");
     let (status, answer) =
-        send(station.post("/api/v1/updates/upload").header("authorization", format!("Bearer {PEER}")).json(&body))
-            .await;
+        send(upload(station.post("/api/v1/updates/archive").header("authorization", format!("Bearer {PEER}")))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
     assert!(answer["message"].as_str().unwrap().contains("подпис"), "{answer}");
+    // The JSON with base64 of 0.5.0 and before is gone: one way only.
+    let (status, _) =
+        send(station.post("/api/v1/updates/upload").header("authorization", format!("Bearer {PEER}"))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
     station.stop().await;
 }
 

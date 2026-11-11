@@ -184,8 +184,9 @@ export function usePlacementView(): [PlacementView | null, () => Promise<void>] 
     useEffect(() => {
         const update = () => rerender((n) => n + 1);
         placementListeners.add(update);
-        // Виджетов несколько, а чтение — одно: каждый лишь напоминает, если прочитанное старше полуминуты.
-        const id = window.setInterval(() => Date.now() - placementAt >= 30_000 && void readPlacement(), 10_000);
+        // Виджетов несколько, а чтение — одно: каждый лишь напоминает, если прочитанное старше полуминуты, а пока колонка
+        // обновляется — старше трёх секунд: её путь (копия, загрузка, перезапуск) идёт около минуты, и итог виден сразу.
+        const id = window.setInterval(() => Date.now() - placementAt >= (anyUpdating() ? 3_000 : 30_000) && void readPlacement(), 3_000);
         return () => {
             placementListeners.delete(update);
             window.clearInterval(id);
@@ -198,6 +199,11 @@ export function usePlacementView(): [PlacementView | null, () => Promise<void>] 
         }
     }, [panel.version]);
     return [placement, readPlacement];
+}
+
+/** Какая-нибудь колонка сейчас обновляется с этого компьютера. */
+function anyUpdating(): boolean {
+    return !!placement && [placement.station, ...(placement.stations ?? [])].some((entry) => entry?.live.updating);
 }
 
 /** Выбранная колонка помощника в его размещении. */
@@ -376,8 +382,17 @@ function KeepAwake() {
     );
 }
 
-/** «Присматриваю за колонкой»: копия настроек, обновления, страховка, память. «Открыть» — всё о размещении. */
+/**
+ * «Присматриваю за колонкой»: копия настроек, обновления, страховка, память. «Открыть» — всё о размещении: на столе —
+ * переход в «Колонку», на странице «Компьютер-помощник» (`onOpen`) — блок «Где работает DuoWave» под карточкой, ведь
+ * пульт колонки вокруг неё видит размещение глазами колонки, а копии, перенос и ошибки обновления — у компьютера.
+ */
 export function WatchWidget() {
+    return <Watch />;
+}
+
+/** Сама карточка присмотра; `onOpen` — своё «Открыть» вместо перехода в «Колонку». */
+export function Watch({ onOpen, opened = false }: { onOpen?: () => void; opened?: boolean }) {
     const panel = usePanel();
     const [view, reread] = usePlacementView();
     const [busy, setBusy] = useState<string | null>(null);
@@ -388,12 +403,13 @@ export function WatchWidget() {
     const last = station.backups[0];
     const memory = health?.memory;
     const mayManage = can('stations.manage');
-    const act = (what: string, run: () => Promise<unknown>, done: string) => {
+    const updating = station.live.updating;
+    const act = (what: string, run: () => Promise<unknown>, done?: string) => {
         setBusy(what);
         setNote(null);
         void run()
             .then(() => {
-                setNote(done);
+                setNote(done ?? null);
                 return reread();
             })
             .catch((e) => setNote(problemOf(e)))
@@ -435,20 +451,31 @@ export function WatchWidget() {
                 {mayManage && station.update && (
                     <button
                         class="w-btn w-btn-ink"
-                        disabled={busy !== null}
-                        onClick={() => act('update', () => api.updateStationGateway(station.key), 'Колонка обновляется.')}
+                        disabled={busy !== null || updating}
+                        onClick={() => act('update', () => api.updateStationGateway(station.key))}
                     >
-                        {busy === 'update' ? 'Обновляю…' : `Обновить до ${station.update}`}
+                        {busy === 'update' || updating ? 'Обновляю…' : `Обновить до ${station.update}`}
                     </button>
                 )}
-                <button class="w-btn" onClick={() => panel.go('settings', 'station')}>
-                    Открыть
+                <button class="w-btn" aria-expanded={onOpen ? opened : undefined} onClick={() => (onOpen ? onOpen() : panel.go('settings', 'station'))}>
+                    {opened ? 'Свернуть' : 'Открыть'}
                 </button>
             </div>
-            {note && (
+            {/* Обновление идёт в фоне: что с ним — из размещения компьютера, а не из ответа на нажатие. */}
+            {updating ? (
                 <p class="w-cap m-0" role="status">
-                    {note}
+                    Колонка обновляется: копия настроек, загрузка, перезапуск — около минуты.
                 </p>
+            ) : station.live.updateError ? (
+                <p class="w-cap c-pill-yandex-fg m-0" role="status">
+                    Колонка не обновилась: {station.live.updateError}
+                </p>
+            ) : (
+                note && (
+                    <p class="w-cap m-0" role="status">
+                        {note}
+                    </p>
+                )
             )}
         </div>
     );

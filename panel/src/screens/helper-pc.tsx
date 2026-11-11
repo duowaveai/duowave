@@ -7,9 +7,10 @@
 import { useEffect, useState } from 'preact/hooks';
 
 import { can } from '../api';
-import { HelperWidget, WatchWidget } from './desk-widgets';
+import { HelperWidget, Watch } from './desk-widgets';
 import { Updates } from './house';
 import { ModelsScreen } from './models';
+import { PlacementCard } from './placement';
 import { WorkshopScreen } from './workshop';
 
 /** Страница компьютера внутри фрейма: «helper» — «Компьютер-помощник», «workshop» — мастерская. */
@@ -38,6 +39,8 @@ function Card({ id, title, children }: { id: string; title: string; children: pr
 /** Своё у компьютера: помощь колонке, присмотр, обновления, а глубже — его модели. */
 function HelperComputer() {
     const [models, setModels] = useState<'voice' | 'recognition' | null>(null);
+    // «Открыть» у присмотра: всё о размещении — здесь же, глазами компьютера (копии, перенос, что случилось).
+    const [placement, setPlacement] = useState(false);
     return (
         <>
             <Card id="help" title="Помогать колонке">
@@ -45,9 +48,10 @@ function HelperComputer() {
             </Card>
             {can('station.view') && (
                 <Card id="watch" title="Присматриваю за колонкой">
-                    <WatchWidget />
+                    <Watch opened={placement} onOpen={() => setPlacement((open) => !open)} />
                 </Card>
             )}
+            {placement && can('station.view') && <PlacementCard />}
             <Updates />
             {can('models.manage') && (
                 <section class="card glass card-list" aria-label="Модели на этом компьютере">

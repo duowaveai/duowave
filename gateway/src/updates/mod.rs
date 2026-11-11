@@ -229,7 +229,8 @@ impl UpdatesService {
             Some("pc") => (
                 false,
                 Some(
-                    "Шлюз на колонке обновляет компьютер, который его поставил: в его пульте «Обновить колонку»."
+                    "Шлюз на колонке обновляет компьютер, который его поставил: «Настройки» → «Компьютер-помощник» → \
+                     «Обновить до …»."
                         .into(),
                 ),
             ),
@@ -344,13 +345,11 @@ impl UpdatesService {
         install::check_release(&archive, &self.platform, &offer.version, &self.current())?;
         std::fs::create_dir_all(&self.downloads).map_err(|error| format!("{}: {error}", self.downloads.display()))?;
         let _ = std::fs::write(self.downloads.join(format!("duowave-{}.tar.gz", offer.version)), &archive);
-        let program = install::unpack(&archive)?;
         let current = std::env::current_exe().map_err(|error| format!("the running program: {error}"))?;
         if self.on_station() {
             self.station_room(&current)?;
         }
-        let previous =
-            install::replace(&current, &program).map_err(|error| format!("{}: {error}", current.display()))?;
+        let previous = install::replace_from_archive(&current, &archive, install::program_name())?;
         if self.on_station() {
             // The service's safety net may bring the one before back if this one does not come up.
             crate::placement::station_fs::StationFs::real().mark_updated(&offer.version);
@@ -381,10 +380,12 @@ impl UpdatesService {
         }
     }
 
-    /// The computer sends the station's gateway its update (`POST /api/v1/updates/upload`, the pair's key): the
-    /// signature checked with this gateway's own key, the archive's release.json too (this platform, the version sent,
-    /// newer than this one: no way back to an older release from here either), room checked, the program put in place
-    /// beside the one before, then the gateway becomes the new program. No internet on the station needed.
+    /// The computer sends the station's gateway its update (`POST /api/v1/updates/archive`, the pair's key): the archive
+    /// itself, its version and signature beside it. The signature is checked with this gateway's own key, the archive's
+    /// release.json too (this platform, the version sent, newer than this one: no way back to an older release from
+    /// here either), room checked, the program streamed into place beside the one before — never whole in memory —
+    /// then the gateway becomes the new program. No internet on the station needed. Blocking: the route runs it off
+    /// the threads that answer requests, so /health keeps answering the station's watchdog meanwhile.
     pub fn install_upload(
         self: &Arc<Self>,
         version: &str,
@@ -394,11 +395,11 @@ impl UpdatesService {
         let keys = self.keys.as_ref().map_err(|error| ApiError::conflict(error.clone()))?;
         verify::verify_any(keys, archive, signature).map_err(ApiError::bad_request)?;
         install::check_release(archive, &self.platform, version, &self.current()).map_err(ApiError::bad_request)?;
-        let program = install::unpack_named(archive, "duowave").map_err(ApiError::bad_request)?;
         let current = std::env::current_exe().map_err(ApiError::internal)?;
         if self.on_station() {
             self.station_room(&current).map_err(ApiError::conflict)?;
         }
+        let version = version.trim_start_matches('v').to_string();
         {
             let mut state = self.state.lock().unwrap();
             if state.installing {
@@ -407,32 +408,27 @@ impl UpdatesService {
             state.installing = true;
             state.failed = None;
         }
-        let service = self.clone();
-        let version = version.trim_start_matches('v').to_string();
-        tokio::spawn(async move {
-            let outcome =
-                install::replace(&current, &program).map_err(|error| format!("{}: {error}", current.display()));
-            match outcome {
-                Ok(previous) => {
-                    if service.on_station() {
-                        crate::placement::station_fs::StationFs::real().mark_updated(&version);
-                    }
-                    tracing::info!(
-                        "update {version} from the computer installed; the one before is {}",
-                        previous.display()
-                    );
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                    let error = install::restart(&current);
-                    let mut state = service.state.lock().unwrap();
-                    state.installing = false;
-                    state.failed = Some((version, format!("restart: {error}")));
-                }
-                Err(error) => {
-                    let mut state = service.state.lock().unwrap();
-                    state.installing = false;
-                    state.failed = Some((version, error));
-                }
+        let previous = match install::replace_from_archive(&current, archive, "duowave") {
+            Ok(previous) => previous,
+            Err(error) => {
+                let mut state = self.state.lock().unwrap();
+                state.installing = false;
+                state.failed = Some((version, error.clone()));
+                return Err(ApiError::conflict(error));
             }
+        };
+        if self.on_station() {
+            crate::placement::station_fs::StationFs::real().mark_updated(&version);
+        }
+        tracing::info!("update {version} from the computer installed; the one before is {}", previous.display());
+        let service = self.clone();
+        tokio::spawn(async move {
+            // The answer to the computer leaves first, then the gateway becomes the new program.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let error = install::restart(&current);
+            let mut state = service.state.lock().unwrap();
+            state.installing = false;
+            state.failed = Some((version, format!("restart: {error}")));
         });
         Ok(self.status())
     }
@@ -541,24 +537,34 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/v1/updates", get(status))
         .route("/api/v1/updates/check", post(check))
         .route("/api/v1/updates/install", post(install_now))
-        .route("/api/v1/updates/upload", post(upload).layer(axum::extract::DefaultBodyLimit::max(48 * 1024 * 1024)))
+        .route("/api/v1/updates/archive", post(archive).layer(axum::extract::DefaultBodyLimit::max(48 * 1024 * 1024)))
 }
 
-/// The computer of the pair sends the station's gateway its update: `{version, archive (base64), signature}`.
-async fn upload(
+/// The update's version beside the archive the computer sends (`POST /api/v1/updates/archive`).
+pub const VERSION_HEADER: &str = "x-duowave-version";
+/// Its signature: Tauri's form, one line of base64.
+pub const SIGNATURE_HEADER: &str = "x-duowave-signature";
+
+/// The computer of the pair sends the station's gateway its update: the archive itself as the body, its version and
+/// signature in headers (PEER_API 2). Before, it came as base64 in JSON: the station held it four times over, and the
+/// kernel killed the gateway midway (11.11.2026). The work runs on a blocking thread; its answer comes when the new
+/// program is in place, just before the gateway becomes it.
+async fn archive(
     State(app): State<Arc<App>>,
     caller: Caller,
-    crate::platform::http::Body(body): crate::platform::http::Body<serde_json::Value>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
 ) -> ApiResult<UpdateStatus> {
     if !crate::placement::peer::from_peer(&caller, app.placement.peer_key()) {
         return Err(ApiError::forbidden("Обновление колонке присылает только компьютер пары."));
     }
-    use base64::Engine as _;
-    let field = |name: &str| body.get(name).and_then(serde_json::Value::as_str).unwrap_or("");
-    let archive = base64::engine::general_purpose::STANDARD
-        .decode(field("archive"))
-        .map_err(|_| ApiError::bad_request("archive: base64 архива"))?;
-    Ok(crate::platform::http::created(app.updates.install_upload(field("version"), &archive, field("signature"))?))
+    let header = |name: &str| headers.get(name).and_then(|value| value.to_str().ok()).unwrap_or("").trim().to_string();
+    let (version, signature) = (header(VERSION_HEADER), header(SIGNATURE_HEADER));
+    let updates = app.updates.clone();
+    let status = tokio::task::spawn_blocking(move || updates.install_upload(&version, &body, &signature))
+        .await
+        .map_err(ApiError::internal)??;
+    Ok(crate::platform::http::created(status))
 }
 
 async fn status(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<UpdateStatus> {

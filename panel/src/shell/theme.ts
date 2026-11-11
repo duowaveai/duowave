@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from 'preact/hooks';
 
-import { VIA } from '../via';
+import { TOP_VIA, VIA } from '../via';
 import { onRegistryChange, registeredPlugins } from './registry';
 import { DEFAULT_THEME, Mode, Theme, activeCss } from './themes';
 
@@ -57,6 +57,18 @@ function initialChoice(): Choice {
     const mode = root.dataset.modePick;
     const id = root.dataset.themePick || null;
     return { id: id && !(id in RETIRED) ? id : null, mode: mode === 'light' || mode === 'dark' ? mode : null };
+}
+
+/** Выбор, как он записан сейчас: { v: 2, id, mode }. Запись постарше — не выбор (её читает только index.html). */
+function storedChoice(): Choice | null {
+    try {
+        const raw = JSON.parse(read(CHOICE_KEY) ?? 'null') as { v?: unknown; id?: unknown; mode?: unknown } | null;
+        if (!raw || raw.v !== 2) return null;
+        const id = typeof raw.id === 'string' && !(raw.id in RETIRED) ? raw.id : null;
+        return { id, mode: raw.mode === 'light' || raw.mode === 'dark' ? raw.mode : null };
+    } catch {
+        return null;
+    }
 }
 
 /** Вид: выбранный, иначе — тот, что был у удалённой темы человека, иначе стол. */
@@ -132,9 +144,11 @@ export function applyTheme(): void {
     if (style.textContent !== css) style.textContent = css;
     const bg = theme.palette[mode].bg;
     if (bg) document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bg);
-    // Окно колонки у помощника (via.ts) — та же страница и то же хранилище, но темы пакетов у колонки свои: её пульт
-    // красится выбором компьютера и ничего в его память не пишет, иначе пульт компьютера мигнёт чужой темой.
-    if (VIA) return;
+    // Окно колонки рамкой в пульте компьютера (via.ts) — та же страница и то же хранилище, но темы пакетов у колонки
+    // свои: оно красится выбором компьютера и ничего в его память не пишет, иначе пульт компьютера мигнёт чужой темой.
+    // Пульт колонки во всё окно (TOP_VIA, docs/plans/panel-rebuild.md, этап 4) — тот пульт, которым человек и
+    // пользуется: его выбор помнится, и страница компьютера в нём (`?own=`) красится так же.
+    if (VIA && !TOP_VIA) return;
     store(CHOICE_KEY, JSON.stringify({ v: 2, id: choice.id, mode: choice.mode }));
     store(LEGACY_KEY, mode);
     store(VIEW_KEY, view);
@@ -158,6 +172,27 @@ export const setView = (next: View): void => {
     view = next;
     changed();
 };
+
+// Выбор поменяли в другой странице этого пульта — в другой вкладке, в пульте колонки вокруг страницы компьютера
+// (`?own=`) или в ней самой: эта страница красится так же. Запись того же выбора события не даёт — круга нет.
+try {
+    window.addEventListener('storage', (event) => {
+        if (event.key === CHOICE_KEY) {
+            const next = storedChoice();
+            if (!next || (next.id === choice.id && next.mode === choice.mode)) return;
+            choice = next;
+        } else if (event.key === VIEW_KEY) {
+            const next = event.newValue;
+            if ((next !== 'desk' && next !== 'sidebar') || next === view) return;
+            view = next;
+        } else {
+            return;
+        }
+        changed();
+    });
+} catch {
+    // без окна (тесты) следить не за чем
+}
 
 // Плагин принёс или убрал тему: выбранная могла появиться или пропасть.
 onRegistryChange(() => {

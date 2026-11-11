@@ -62,6 +62,23 @@ pub fn unpack_named(archive: &[u8], name: &str) -> Result<Vec<u8>, String> {
 /// The file named `name` inside a `.tar.gz`, at the top or in one folder, when there is one; one larger than `limit`
 /// is an error, not read.
 fn find(archive: &[u8], name: &str, limit: u64) -> Result<Option<Vec<u8>>, String> {
+    with_file(archive, name, |entry| {
+        if entry.size() > limit {
+            return Err(format!("архив: {name} слишком велик"));
+        }
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).map_err(|error| format!("архив: {error}"))?;
+        Ok(bytes)
+    })
+}
+
+/// `take` run on the file named `name` inside a `.tar.gz`, at the top or in one folder, as it streams out of the
+/// archive; None when there is no such file.
+fn with_file<T>(
+    archive: &[u8],
+    name: &str,
+    take: impl FnOnce(&mut tar::Entry<'_, flate2::read::GzDecoder<&[u8]>>) -> Result<T, String>,
+) -> Result<Option<T>, String> {
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
     let entries = tar.entries().map_err(|error| format!("архив: {error}"))?;
     for entry in entries {
@@ -69,12 +86,7 @@ fn find(archive: &[u8], name: &str, limit: u64) -> Result<Option<Vec<u8>>, Strin
         let path = entry.path().map_err(|error| format!("архив: {error}"))?.into_owned();
         let file = path.file_name().and_then(|file| file.to_str()).unwrap_or("");
         if file == name && path.components().count() <= 2 && entry.header().entry_type().is_file() {
-            if entry.size() > limit {
-                return Err(format!("архив: {name} слишком велик"));
-            }
-            let mut bytes = Vec::new();
-            entry.read_to_end(&mut bytes).map_err(|error| format!("архив: {error}"))?;
-            return Ok(Some(bytes));
+            return take(&mut entry).map(Some);
         }
     }
     Ok(None)
@@ -128,18 +140,56 @@ pub fn previous_of(current: &Path) -> PathBuf {
 /// kept as `<name>.previous`. A rename is atomic: a failure midway leaves one of the two programs in place, never
 /// half of one.
 pub fn replace(current: &Path, program: &[u8]) -> std::io::Result<PathBuf> {
-    let incoming = current.with_file_name(format!("{}.new", program_name()));
+    let incoming = incoming_of(current);
     std::fs::write(&incoming, program)?;
+    swap_in(current, &incoming)
+}
+
+/// The program named `name` inside a `.tar.gz` put in place of `current` as `replace` puts it, but streamed from the
+/// archive to the disk: never whole in memory. A Station Lite 2 has some 90 MB to spare; the update that held the
+/// 16 MB program in memory — beside the archive, which came as base64 in JSON — got the station's gateway killed by
+/// the kernel midway, twice on 11.11.2026 (0.4.0 and 0.5.0), and it came back as the old version. Nothing is left
+/// half-written: a failure removes the incoming file and the running program stays.
+pub fn replace_from_archive(current: &Path, archive: &[u8], name: &str) -> Result<PathBuf, String> {
+    let incoming = incoming_of(current);
+    let on_disk = |error: std::io::Error| format!("{}: {error}", incoming.display());
+    let written = with_file(archive, name, |entry| {
+        let mut file = std::fs::File::create(&incoming).map_err(on_disk)?;
+        let written = std::io::copy(entry, &mut file).map_err(|error| format!("архив: {error}"))?;
+        file.sync_all().map_err(on_disk)?;
+        Ok(written)
+    });
+    let outcome = match written {
+        Ok(Some(written)) if written >= 1024 => {
+            swap_in(current, &incoming).map_err(|error| format!("{}: {error}", current.display()))
+        }
+        Ok(Some(_)) => Err("archive: the program in it is empty".to_string()),
+        Ok(None) => Err(format!("в архиве нет {name}")),
+        Err(error) => Err(error),
+    };
+    if outcome.is_err() {
+        let _ = std::fs::remove_file(&incoming);
+    }
+    outcome
+}
+
+/// Where a new program is written before it takes the running one's place.
+fn incoming_of(current: &Path) -> PathBuf {
+    current.with_file_name(format!("{}.new", program_name()))
+}
+
+/// `incoming` made executable and renamed over `current`, the old one kept as `<name>.previous`.
+fn swap_in(current: &Path, incoming: &Path) -> std::io::Result<PathBuf> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&incoming, std::fs::Permissions::from_mode(0o755))?;
+        std::fs::set_permissions(incoming, std::fs::Permissions::from_mode(0o755))?;
     }
     let previous = previous_of(current);
     let _ = std::fs::remove_file(&previous);
     // A running program may be renamed (Windows too), not overwritten.
     std::fs::rename(current, &previous)?;
-    if let Err(error) = std::fs::rename(&incoming, current) {
+    if let Err(error) = std::fs::rename(incoming, current) {
         let _ = std::fs::rename(&previous, current);
         return Err(error);
     }
@@ -228,5 +278,26 @@ mod tests {
         assert_eq!(previous, previous_of(&current));
         replace(&current, b"newer").unwrap();
         assert_eq!(std::fs::read(&previous).unwrap(), b"new program", "only the last one is kept");
+    }
+
+    #[test]
+    fn puts_the_program_in_place_straight_from_the_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join(program_name());
+        std::fs::write(&current, b"old").unwrap();
+        let program: Vec<u8> = (0..300_000u32).map(|n| (n % 251) as u8).collect();
+        let folder = format!("duowave-0.5.1/{}", program_name());
+        let archived = archive(&[("README.md", b"x"), (&folder, &program)]);
+        let previous = replace_from_archive(&current, &archived, program_name()).unwrap();
+        assert_eq!(std::fs::read(&current).unwrap(), program);
+        assert_eq!(std::fs::read(&previous).unwrap(), b"old");
+        // Nothing fit to put in place: the running program stays, and nothing half-written is left beside it.
+        assert!(replace_from_archive(&current, &archive(&[("other", &program)]), program_name()).is_err());
+        assert!(replace_from_archive(&current, &archive(&[(program_name(), b"tiny")]), program_name()).is_err());
+        assert!(replace_from_archive(&current, b"not an archive", program_name()).is_err());
+        let cut = &archived[..archived.len() / 2];
+        assert!(replace_from_archive(&current, cut, program_name()).is_err(), "an archive cut short");
+        assert_eq!(std::fs::read(&current).unwrap(), program);
+        assert!(!incoming_of(&current).exists());
     }
 }

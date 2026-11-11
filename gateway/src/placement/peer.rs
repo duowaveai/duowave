@@ -100,15 +100,7 @@ impl PeerClient {
             request = request.json(&body);
         }
         let response = request.send().await.map_err(|error| describe(&error))?;
-        let status = response.status();
-        let text = response.text().await.map_err(|error| describe(&error))?;
-        let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-        if !status.is_success() {
-            let message = value.get("message").and_then(Value::as_str).unwrap_or(text.as_str());
-            return Err(format!("шлюз колонки: {} {}", status.as_u16(), message.chars().take(200).collect::<String>()));
-        }
-        // The API's envelope: {message, code}.
-        Ok(value.get("message").cloned().unwrap_or(value))
+        answer(response).await
     }
 
     /// The station gateway's /health.
@@ -140,16 +132,53 @@ impl PeerClient {
         self.call(reqwest::Method::POST, path, Some(body), Duration::from_secs(30)).await
     }
 
-    /// A signed update for the station's gateway: the archive and its signature (src/updates).
+    /// A signed update for the station's gateway (src/updates): the archive itself as the body, its version and
+    /// signature in headers; the station streams the program from it to its disk (PEER_API 2). A station's gateway
+    /// before that has no such route: it is told to be updated by hand once.
     pub async fn upload_update(&self, version: &str, archive: &[u8], signature: &str) -> Result<Value, String> {
         use base64::Engine as _;
-        let body = serde_json::json!({
-            "version": version,
-            "archive": base64::engine::general_purpose::STANDARD.encode(archive),
-            "signature": signature,
-        });
-        self.call(reqwest::Method::POST, "/api/v1/updates/upload", Some(body), Duration::from_secs(300)).await
+        // A header holds one line: Tauri's form of a signature is one line of base64, minisign's own text is not.
+        let signature = signature.trim();
+        let signature = if signature.contains('\n') {
+            base64::engine::general_purpose::STANDARD.encode(signature)
+        } else {
+            signature.to_string()
+        };
+        let response = crate::utils::http::client()
+            .post(format!("{}/api/v1/updates/archive", self.base))
+            .bearer_auth(&self.key)
+            .timeout(Duration::from_secs(300))
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .header(crate::updates::VERSION_HEADER, version)
+            .header(crate::updates::SIGNATURE_HEADER, signature)
+            .body(archive.to_vec())
+            .send()
+            .await
+            .map_err(|error| describe(&error))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(OLD_STATION.into());
+        }
+        answer(response).await
     }
+}
+
+/// The station's gateway takes its update as the archive itself from this PEER_API on.
+pub const ARCHIVE_SINCE_PEER_API: u64 = 2;
+
+/// Said of a station's gateway too old to take an update from the computer that way.
+pub const OLD_STATION: &str = "Шлюз на колонке старше 0.5.1: такое обновление с компьютера он не примет. Поставьте \
+                               новую версию на колонку вручную — дальше она будет обновляться отсюда.";
+
+/// A station's answer, unwrapped from the API's envelope ({message, code}); a failure as the station said it.
+async fn answer(response: reqwest::Response) -> Result<Value, String> {
+    let status = response.status();
+    let text = response.text().await.map_err(|error| describe(&error))?;
+    let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    if !status.is_success() {
+        let message = value.get("message").and_then(Value::as_str).unwrap_or(text.as_str());
+        return Err(format!("шлюз колонки: {} {}", status.as_u16(), message.chars().take(200).collect::<String>()));
+    }
+    Ok(value.get("message").cloned().unwrap_or(value))
 }
 
 fn describe(error: &reqwest::Error) -> String {
@@ -157,6 +186,9 @@ fn describe(error: &reqwest::Error) -> String {
         "шлюз колонки не ответил вовремя".into()
     } else if error.is_connect() {
         "шлюз колонки не отвечает".into()
+    } else if error.is_request() || error.is_body() {
+        // Cut off midway: the station's gateway went away under the request (restarted, or killed for memory).
+        "связь со шлюзом колонки оборвалась на полпути".into()
     } else {
         format!("шлюз колонки: {error}")
     }

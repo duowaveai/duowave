@@ -11,7 +11,7 @@ import { SaySheet } from './screens/say';
 import { ConnectSheet } from './screens/connect';
 import { SetupBanner, SetupSheet, StationButton, StationsPicker, displayName, needsSetup } from './screens/stations';
 import { DebugState, PanelContext, PanelState } from './shell/context';
-import { Place, normalizePlace, parsePlace, writePlace } from './shell/links';
+import { Place, hashOf, normalizePlace, parsePlace, writePlace } from './shell/links';
 import { AccountMenu } from './shell/account-menu';
 import { useDevMode } from './shell/dev';
 import { SearchPalette, SearchPlace, searchPlaces, useSearchKey } from './shell/search';
@@ -418,6 +418,16 @@ export function App() {
     const go = (next: string, tab?: string, item?: string, query: Record<string, string> = {}): void => {
         // Прежнее имя раздела («Мозг», «Дом», «Журнал») — сразу на его новое место (shell/links.ts).
         const named = normalizePlace({ section: next, tab, item, query });
+        // Страница компьютера во фрейме пульта колонки (`?own=`) своих разделов не рисует: переход из неё — в самом
+        // пульте вокруг, его адресом (источник тот же). Иначе нажатие меняло бы невидимое состояние фрейма.
+        if (OWN_PAGE && window.parent !== window) {
+            try {
+                window.parent.location.hash = hashOf(named);
+                return;
+            } catch {
+                // чужой источник — переход остаётся здесь
+            }
+        }
         // Пустая вкладка — раздел как есть, без запомненной (док открывает «Настройки» списком на телефоне).
         const remembered = tab === '' ? undefined : tabs[tabKey(named.section, query)];
         const place: Place = { section: named.section, tab: named.tab ?? remembered, item: named.tab ? named.item : undefined, query };

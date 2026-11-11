@@ -9,8 +9,9 @@ use crate::settings::definitions::PanelMode;
 pub use crate::core::availability::OWN_ON_STATION;
 
 /// The version of the API a computer's gateway and a station's speak to each other (/health `build.peerApi`): a
-/// computer offers to update a station that speaks another before it moves anything onto it.
-pub const PEER_API: u32 = 1;
+/// computer offers to update a station that speaks another before it moves anything onto it. 2 (0.5.1): the station
+/// takes its update as the archive itself (`POST /api/v1/updates/archive`), no longer as base64 in JSON.
+pub const PEER_API: u32 = 2;
 
 /// The build as the gateway sees it. `station` comes from the cargo feature; tests build either.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

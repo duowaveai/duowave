@@ -1,7 +1,7 @@
 # The voice gateway as a Home Assistant add-on: the same image as Docker, on the host's network (mDNS finds the
 # stations, calls get their UDP ports, the station dials the add-on's port), everything it keeps in the add-on's /data.
 name: DuoWave
-version: "0.5.0"
+version: "0.5.1"
 slug: duowave
 description: A home voice server for a rooted Yandex Station — your own model, recognition and voice; Yandex as the fallback
 url: "https://github.com/duowaveai/duowave"

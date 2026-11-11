@@ -174,7 +174,7 @@ fn notify_once(app: &AppHandle, version: &str) {
         .notification()
         .builder()
         .title(format!("Доступна версия {version}"))
-        .body("Обновить можно в меню значка в трее или в пульте: Дом → Шлюз → Обновления.")
+        .body("Обновить можно в меню значка в трее или в пульте: Настройки → Обновления и копии.")
         .show();
     match shown {
         Ok(()) => {
