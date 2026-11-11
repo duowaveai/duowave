@@ -431,15 +431,17 @@ jobs:
           node-version: 26
       - name: The pinned Tauri CLI
         run: npm ci --prefix scripts/release/tauri-cli --ignore-scripts --no-audit --no-fund
+      # Into a folder of their own, not gateway/: that is the checkout's source folder, and 0.3.0's first run signed
+      # its files and stopped at gateway/src («Is a directory»).
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: unsigned-gateway-*
-          path: gateway
+          path: to-sign/gateway
           merge-multiple: true
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: unsigned-app-*
-          path: app
+          path: to-sign/app
           merge-multiple: true
       - name: Sign for the updater
         if: env.SIGNING == 'true'
@@ -447,23 +449,24 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          for file in gateway/* app/*; do
+          ls -l to-sign/gateway to-sign/app
+          for file in to-sign/gateway/* to-sign/app/*; do
             node scripts/release/tauri-cli/node_modules/@tauri-apps/cli/tauri.js signer sign "$file"
           done
       - name: The signatures hold
         if: env.SIGNING == 'true'
-        run: node scripts/release/verify-sig.mjs --version "${GITHUB_REF_NAME}" $(ls gateway/* app/* | grep -v '\.sig$')
+        run: node scripts/release/verify-sig.mjs --version "${GITHUB_REF_NAME}" $(ls to-sign/gateway/* to-sign/app/* | grep -v '\.sig$')
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: gateway-signed
-          path: gateway/
+          path: to-sign/gateway/
           if-no-files-found: error
       # Unsigned, the app's update files would only clutter the release: nothing takes them without a signature.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: env.SIGNING == 'true'
         with:
           name: app-updater-signed
-          path: app/
+          path: to-sign/app/
           if-no-files-found: error
 
   publish:
