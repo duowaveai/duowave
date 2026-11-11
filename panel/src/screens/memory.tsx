@@ -42,8 +42,8 @@ export function memorySegments(r: PackagesResources): Array<{ id: string; label:
     const system = Math.max(0, r.totalMb - r.availableMb - gateway - r.pluginsMb);
     return [
         { id: 'system', label: 'Система и Алиса', mb: system },
-        { id: 'gateway', label: 'Шлюз', mb: gateway },
-        { id: 'plugins', label: 'Плагины', mb: r.pluginsMb },
+        { id: 'gateway', label: 'DuoWave', mb: gateway },
+        { id: 'plugins', label: 'Навыки', mb: r.pluginsMb },
         { id: 'free', label: 'Свободно', mb: r.availableMb },
     ];
 }

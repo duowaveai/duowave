@@ -111,7 +111,7 @@ export function ThemeCard() {
             )}
             {isAdmin() && (
                 <div class="flex flex-wrap items-center gap-8 mt-8">
-                    <Action label="Сделать свою тему" onClick={() => panel.go('plugins', 'workshop', undefined, { new: 'theme', base: theme.id })} />
+                    <Action label="Сделать свою тему" onClick={() => panel.go('skills', 'workshop', undefined, { new: 'theme', base: theme.id })} />
                     <span class="t-caption">Черновик в мастерской на основе «{theme.title}»: поменяйте цвета, примерьте, поставьте.</span>
                 </div>
             )}

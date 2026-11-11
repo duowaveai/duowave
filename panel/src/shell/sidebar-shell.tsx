@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { IconLaptop, IconMenu, IconMic, IconPlus } from '../icons';
+import { IconLaptop, IconMenu, IconMic } from '../icons';
 import { DuoWaveLogo, DuoWaveMark, PoweredBy } from '../ui/duowave';
 import { useDialogFocus } from '../ui/sheet';
 import { AgentPlaque } from './agent-plaque';
@@ -26,7 +26,7 @@ function useWide(): boolean {
     return wide;
 }
 
-function NavList({ nav, active, onNav, helper }: { nav: Nav; active: string; onNav: (entry: NavEntry) => void; helper: boolean }) {
+function NavList({ nav, active, onNav }: { nav: Nav; active: string; onNav: (entry: NavEntry) => void }) {
     const item = (entry: NavEntry) => {
         const { icon: Icon, Badge } = entry;
         return (
@@ -41,12 +41,8 @@ function NavList({ nav, active, onNav, helper }: { nav: Nav; active: string; onN
     };
     return (
         <nav class="side-nav" aria-label="Разделы">
-            {helper && nav.left.length > 0 && <span class="side-group">Этот компьютер</span>}
             {nav.left.map(item)}
-            {helper && nav.right.length > 0 && <span class="side-group">Колонка</span>}
             {nav.right.map(item)}
-            {nav.more.length > 0 && <span class="side-sep" aria-hidden="true" />}
-            {nav.more.map(item)}
         </nav>
     );
 }
@@ -65,10 +61,9 @@ function Drawer({ children, onClose }: { children: preact.ComponentChildren; onC
     );
 }
 
-export function SidebarShell({ nav, active, onNav, top, station, actions, talk, onAdd, notice, desk, window: win }: ShellProps) {
+export function SidebarShell({ nav, active, onNav, top, station, actions, talk, notice, desk, window: win }: ShellProps) {
     const wide = useWide();
     const [open, setOpen] = useState(false);
-    const helper = top.role === 'helper';
     // Выбрали раздел — панель на телефоне больше не нужна.
     const go = (entry: NavEntry) => {
         setOpen(false);
@@ -85,21 +80,9 @@ export function SidebarShell({ nav, active, onNav, top, station, actions, talk, 
             {win.content}
         </>
     ) : (
-        <>
-            {desk}
-            <button class="side-add" onClick={onAdd}>
-                <IconPlus size={18} />
-                Новый виджет
-            </button>
-        </>
+        desk
     );
-    const role = (
-        <div class="side-role">
-            <span class="side-role-title">{top.title}</span>
-            <span class="side-role-sub">{top.subtitle}</span>
-            {top.chips && <span class="side-role-chips">{top.chips}</span>}
-        </div>
-    );
+    const role = <div class="side-role">{top.line}</div>;
     if (wide)
         return (
             <div class="side-shell">
@@ -114,7 +97,7 @@ export function SidebarShell({ nav, active, onNav, top, station, actions, talk, 
                         <IconMic size={18} />
                         Сказать через колонку
                     </button>
-                    <NavList nav={nav} active={active} onNav={go} helper={helper} />
+                    <NavList nav={nav} active={active} onNav={go} />
                     <div class="side-foot">{actions}</div>
                 </aside>
                 <main class="side-main">
@@ -145,7 +128,7 @@ export function SidebarShell({ nav, active, onNav, top, station, actions, talk, 
             {open && (
                 <Drawer onClose={() => setOpen(false)}>
                     {role}
-                    <NavList nav={nav} active={active} onNav={go} helper={helper} />
+                    <NavList nav={nav} active={active} onNav={go} />
                     <div class="side-foot">{actions}</div>
                 </Drawer>
             )}

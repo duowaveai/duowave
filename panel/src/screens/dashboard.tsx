@@ -48,6 +48,7 @@ import {
     NODE_LABELS,
     NodeKey,
     NodeView,
+    OrbitKey,
     STUBS,
     SatKey,
     SatView,
@@ -77,18 +78,20 @@ import { WhoThree } from './placement-map';
 /** How far the stage's glow reaches past its core («Минимал»): what the blur(60px) spread was. */
 const GLOW_REACH = 110;
 
-// Дашборд колонки: колонка в центре своей орбиты, вокруг — мозг, мышление, характер, слух и голос, снизу —
-// капсула подключений. Образ — docs/design/glass/source/GlassDash.dc.html; сцена считается под экран
+// Дашборд колонки: колонка в центре своей орбиты, полукругом по её верху — слух, мозг и голос, снизу — капсула
+// подключений. Путь вопроса идёт по этому полукругу: слух → мозг → голос (стол шлюза в
+// docs/design/roles/source/SpaceGateway.dc.html).
+// Мышление и характер — не на орбите: в них ведут строки из шитов мозга и голоса. Сцена считается под экран
 // (dash-scene.ts): орбита и колонка — по высоте, что остаётся до панели вкладок, подписи — всегда одного размера.
 // Под колонкой во всех темах — карточка ответа: кто работает, что делает, волна голоса, пока колонка говорит.
-// В «Минимале» (look: 'minimal') за колонкой ещё свечение цветом того, кто отвечает, персонаж влетает в колонку,
-// а при смене колонки новая модель выезжает слева (DESIGN.md, «Минимал» → Motion; ui/minimal.css).
+// В «Минимале» (look: 'minimal') за колонкой ещё свечение цветом того, кто отвечает, персонаж вылетает из голоса в
+// колонку, а при смене колонки новая модель выезжает слева (DESIGN.md, «Минимал» → Motion; ui/minimal.css).
 
-/** Ширина узла: мозг — посередине сверху, остальные — по бокам. */
-const NODE_W: Record<NodeKey, number> = { brain: 120, persona: 98, think: 98, ear: 98, voice: 98 };
-/** У слуха и голоса круг сверху, подпись под ним; у остальных — подпись над кругом. */
-const BELOW: ReadonlySet<NodeKey> = new Set(['ear', 'voice']);
-const ORDER: NodeKey[] = ['brain', 'persona', 'think', 'ear', 'voice'];
+/** Ширина узла: мозг — посередине сверху, слух и голос — по бокам. */
+const NODE_W: Record<OrbitKey, number> = { brain: 120, ear: 98, voice: 98 };
+/** У слуха и голоса круг сверху, подпись под ним; у мозга — подпись над кругом. */
+const BELOW: ReadonlySet<OrbitKey> = new Set(['ear', 'voice']);
+const ORDER: OrbitKey[] = ['ear', 'brain', 'voice'];
 
 type Icon = FunctionComponent<{ size?: number }>;
 const NODE_ICONS: Record<NodeKey, Icon> = { brain: IconSparkle, think: IconGauge, persona: IconSmile, ear: IconEar, voice: IconVoice };
@@ -358,7 +361,7 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
         timers.current = TRIP.map(([ms, next]) => window.setTimeout(() => setStage(next), ms));
     };
 
-    const context: SpecContext = { data, nodes, health, openSettings: onOpenSettings };
+    const context: SpecContext = { data, nodes, health, openSettings: onOpenSettings, openSheet: setSheet };
     const { art } = scene;
     /** Рисунок колонки — 240×200 точек; нажимается её корпус. */
     const k = art.size / 240;
@@ -505,15 +508,16 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
                     </button>
 
                     {orb && !reduced && (
-                        // Шар персонажа: в покое лежит под кругом характера, на ответе летит в кольцо колонки и гаснет.
+                        // Шар персонажа: в покое спрятан под кругом голоса, на ответе вылетает из него в кольцо колонки
+                        // и гаснет.
                         <span
                             class={`dash-fly${inside ? ' inside' : ''}`}
                             aria-hidden="true"
                             style={{
-                                left: `${scene.nodes.persona.x}px`,
-                                top: `${scene.nodes.persona.y}px`,
-                                '--fly-x': `${scene.ring.x - scene.nodes.persona.x}px`,
-                                '--fly-y': `${scene.ring.y - scene.nodes.persona.y}px`,
+                                left: `${scene.nodes.voice.x}px`,
+                                top: `${scene.nodes.voice.y}px`,
+                                '--fly-x': `${scene.ring.x - scene.nodes.voice.x}px`,
+                                '--fly-y': `${scene.ring.y - scene.nodes.voice.y}px`,
                             }}
                         >
                             <span class="dash-fly-orb" style={{ '--g': orb }}>
@@ -525,11 +529,10 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
                     {ORDER.map((key) => (
                         <OrbitNode
                             key={key}
+                            spot={key}
                             node={nodes[key]}
                             at={scene.nodes[key]}
-                            lit={lit.includes(key) && !(key === 'persona' && inside)}
-                            orb={key === 'persona' ? orb : undefined}
-                            emptied={key === 'persona' && inside}
+                            lit={lit.includes(key)}
                             onOpen={() => setSheet(key)}
                         />
                     ))}
@@ -571,40 +574,19 @@ function Comet({ d, tone, blur }: { d: string; tone: Tone; blur: string }) {
     );
 }
 
-function OrbitNode({
-    node,
-    at,
-    lit,
-    orb,
-    emptied = false,
-    onOpen,
-}: {
-    node: NodeView;
-    at: Point;
-    lit: boolean;
-    /** «Минимал»: шар персонажа в круге характера (CSS-градиент). */
-    orb?: string;
-    /** Шар сейчас в колонке — круг пустеет. */
-    emptied?: boolean;
-    onOpen: () => void;
-}) {
-    const width = NODE_W[node.key];
-    const below = BELOW.has(node.key);
-    const NodeIcon = NODE_ICONS[node.key];
+function OrbitNode({ spot, node, at, lit, onOpen }: { spot: OrbitKey; node: NodeView; at: Point; lit: boolean; onOpen: () => void }) {
+    const width = NODE_W[spot];
+    const below = BELOW.has(spot);
+    const NodeIcon = NODE_ICONS[spot];
     const where = node.tone !== 'off' ? `, ${WHERE[node.tone]}` : '';
     const label = (
         <span class="dash-label">
-            <small>{NODE_LABELS[node.key]}</small>
+            <small>{NODE_LABELS[spot]}</small>
             <b>{node.value}</b>
         </span>
     );
     const circle = (
-        <span class={`dash-circle ${toneClass(node.tone)}${lit ? ' on' : ''}${orb ? ' has-orb' : ''}${emptied ? ' emptied' : ''}`}>
-            {orb && (
-                <span class="dash-orb" style={{ '--g': orb }}>
-                    <i />
-                </span>
-            )}
+        <span class={`dash-circle ${toneClass(node.tone)}${lit ? ' on' : ''}`}>
             <NodeIcon size={22} />
             {lit && <span class="dash-pulse dash-anim" />}
         </span>
@@ -619,7 +601,7 @@ function OrbitNode({
                 width: `${width}px`,
                 transform: below ? undefined : 'translateY(-100%)',
             }}
-            aria-label={`${NODE_LABELS[node.key]}: ${node.value}${where}. ${node.key === 'think' ? 'Подробнее' : 'Изменить'}`}
+            aria-label={`${NODE_LABELS[spot]}: ${node.value}${where}. Изменить`}
             onClick={onOpen}
         >
             {below ? (
@@ -683,11 +665,21 @@ interface SpecContext {
     nodes: Record<NodeKey, NodeView>;
     health: Health | null;
     openSettings: (tab: SettingsTab) => void;
+    /** Открыть другой шит вместо этого: мышление — из мозга, характер — из голоса. */
+    openSheet: (key: NodeKey) => void;
 }
 
 const pillClass = (tone: Tone): string => `pill pill-${tone === 'cloud' ? 'yandex' : tone}`;
 const RELAY_ABOUT = 'В режиме «Яндекс» всё решает Яндекс.';
 const ADMIN_ONLY = 'Менять может администратор.';
+
+/** Мышление и характер не на орбите: строка в шите мозга или голоса, когда там есть что выбрать (не Алиса, не «нет»). */
+function sheetLink(key: 'think' | 'persona', { nodes, openSheet }: SpecContext): Spec['links'] {
+    const node = nodes[key];
+    if (node.tone === 'yandex' || node.tone === 'off') return [];
+    const value = key === 'think' ? node.value.toLowerCase() : node.value;
+    return [{ label: `${NODE_LABELS[key]}: ${value}`, open: () => openSheet(key) }];
+}
 
 /** Что показать в шите узла: варианты с тем, что можно здесь и сейчас, и честное «где это меняется» для остального. */
 function specFor(key: NodeKey, context: SpecContext): Spec {
@@ -706,7 +698,8 @@ function specFor(key: NodeKey, context: SpecContext): Spec {
 }
 
 /** Мозг: модели добавленных провайдеров, модель из .env или Алиса — первый шаг маршрута «Разговор». */
-function brainSpec({ data, nodes, health, openSettings }: SpecContext): Spec {
+function brainSpec(context: SpecContext): Spec {
+    const { data, nodes, health, openSettings } = context;
     const relay = data.mode === 'relay';
     const executor = executorOf(data.routes?.chat ?? 'own', data.mode);
     const ours = ourBrain(data.brain);
@@ -722,7 +715,7 @@ function brainSpec({ data, nodes, health, openSettings }: SpecContext): Spec {
     const alice: Choice = {
         id: 'yandex',
         name: 'Алиса',
-        sub: data.mode === 'own' ? 'нельзя в режиме «Свой»' : 'отвечает Яндекс',
+        sub: data.mode === 'own' ? 'нельзя в режиме «Своё»' : 'отвечает Яндекс',
         pill: { text: WHERE.yandex, tone: 'yandex' },
         on: executor === 'yandex',
         disabled: relay || data.mode === 'own' || !mayRoute,
@@ -756,7 +749,7 @@ function brainSpec({ data, nodes, health, openSettings }: SpecContext): Spec {
                 alice,
             ],
             notes: [!mayRoute && !relay ? ADMIN_ONLY : '', health?.dialog ? `Шлюз: ${health.dialog}` : ''].filter(Boolean),
-            links: [],
+            links: sheetLink('think', context),
         };
     }
     // Модели каждого провайдера: выбранные, проверенная, советы пресета — без длинных списков (весь список — в «Мозге»).
@@ -814,10 +807,10 @@ function brainSpec({ data, nodes, health, openSettings }: SpecContext): Spec {
         choices: [...models, ...envChoice, alice],
         notes: [
             !mayChoose && !relay ? ADMIN_ONLY : '',
-            models.length ? '' : 'Провайдеров пока нет: добавьте свой ключ в «Мозг» → «Модели».',
+            models.length ? '' : 'Провайдеров пока нет: добавьте свой ключ в «Персонаж» → «Мозг».',
             health?.dialog ? `Шлюз: ${health.dialog}` : '',
         ].filter(Boolean),
-        links: [{ label: 'Провайдеры и все модели', open: () => openSettings('brain') }],
+        links: [...sheetLink('think', context), { label: 'Открыть персонажа', open: () => openSettings('character') }, { label: 'Провайдеры и все модели', open: () => openSettings('brain') }],
     };
 }
 
@@ -860,8 +853,8 @@ function thinkSpec({ data, nodes, openSettings }: SpecContext): Spec {
         })),
         notes: [
             level ? `Сейчас: ${nodes.think.detail}.` : '',
-            claude && !fromPanel ? 'Глубину модели из .env задаёт LLM_EFFORT; выберите Claude в «Мозг» → «Модели», и она станет меняться здесь.' : '',
-            thinks && !claude ? 'Глубина выбирается только у Claude. Умную модель для сложного выбирают в «Мозг» → «Модели».' : '',
+            claude && !fromPanel ? 'Глубину модели из .env задаёт LLM_EFFORT; выберите Claude в «Персонаж» → «Мозг», и она станет меняться здесь.' : '',
+            thinks && !claude ? 'Глубина выбирается только у Claude. Умную модель для сложного выбирают в «Персонаж» → «Мозг».' : '',
         ].filter(Boolean),
         links: [{ label: 'Быстрая и умная модели', open: () => openSettings('brain') }],
     };
@@ -887,7 +880,7 @@ function personaSpec({ data, nodes, openSettings }: SpecContext): Spec {
         choices.unshift({
             id: 'custom',
             name: nodes.persona.value === 'нет' ? 'Свой' : nodes.persona.value,
-            sub: info.source === 'file' ? 'из файла DIALOG_SYSTEM_PROMPT_FILE' : 'свой текст — правится в «Мозг» → «Персонажи»',
+            sub: info.source === 'file' ? 'из файла DIALOG_SYSTEM_PROMPT_FILE' : 'свой текст — правится в «Персонаж» → «Персонажи»',
             on: true,
             disabled: true,
         });
@@ -947,13 +940,13 @@ function earSpec({ data, nodes, health, openSettings }: SpecContext): Spec {
                 confirm: `Перезапустить распознавание с «${shortTitle(waiting.title)}»? Новая модель может скачиваться минуты.`,
                 apply: async () => {
                     await api.restartServer('asr');
-                    return 'Распознавание перезапущено.';
+                    return 'Слух перезапущен.';
                 },
             });
         choices.push({
             id: 'yandex',
             name: 'Яндекс',
-            sub: data.mode === 'own' ? 'нельзя в режиме «Свой»' : 'колонка уходит к Яндексу целиком',
+            sub: data.mode === 'own' ? 'нельзя в режиме «Своё»' : 'колонка уходит к Яндексу целиком',
             pill: { text: WHERE.yandex, tone: 'yandex' },
             on: relay,
             disabled: relay || data.mode === 'own' || !can('station.mode'),
@@ -968,7 +961,7 @@ function earSpec({ data, nodes, health, openSettings }: SpecContext): Spec {
         key: 'ear',
         tone: nodes.ear.tone,
         title: NODE_LABELS.ear,
-        about: relay ? 'Сейчас слушает Яндекс; свою модель вернут «Шлюз» и «Свой».' : 'Кто превращает речь в текст.',
+        about: relay ? 'Сейчас слушает Яндекс; свой слух вернут «Вместе» и «Своё».' : 'Кто превращает речь в текст.',
         choices,
         empty: view ? undefined : 'Читаем модели…',
         notes: [view && !mayModels && !relay ? ADMIN_ONLY : '', health?.speech?.asr ? `Шлюз: ${health.speech.asr}` : ''].filter(Boolean),
@@ -977,7 +970,8 @@ function earSpec({ data, nodes, health, openSettings }: SpecContext): Spec {
 }
 
 /** Голос: сверху голос Алисы, под ним свои голоса (отпечатки), дальше скачанные; скачать новые — на экране «Голос». */
-function voiceSpec({ data, nodes, health, openSettings }: SpecContext): Spec {
+function voiceSpec(context: SpecContext): Spec {
+    const { data, nodes, health, openSettings } = context;
     const view = data.models;
     const relay = data.mode === 'relay';
     const mayModels = can('models.manage');
@@ -1031,11 +1025,11 @@ function voiceSpec({ data, nodes, health, openSettings }: SpecContext): Spec {
         empty: view ? undefined : 'Читаем голоса…',
         notes: [
             view && !view.ownVoiceServer ? 'Свой голосовой сервер не задан (TTS_OWN_URL): можно только голос Алисы.' : '',
-            view?.ownVoiceServer && !own ? 'Своих голосов на сервере пока нет — скачайте на экране «Голос».' : '',
+            view?.ownVoiceServer && !own ? 'Своих голосов на сервере пока нет — скачайте в «Персонаж» → «Голос».' : '',
             view && !mayModels && !relay ? ADMIN_ONLY : '',
             health?.tts ? `Шлюз: ${health.tts}` : '',
         ].filter(Boolean),
-        links: [{ label: 'Скачать другие голоса', open: () => openSettings('voice') }],
+        links: [...sheetLink('persona', context), { label: 'Открыть персонажа', open: () => openSettings('character') }, { label: 'Скачать другие голоса', open: () => openSettings('voice') }],
     };
 }
 

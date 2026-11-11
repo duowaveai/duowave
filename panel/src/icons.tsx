@@ -357,3 +357,25 @@ export const IconGrid = ({ size = 20 }: IconProps) =>
         <rect x="4" y="13" width="7" height="7" rx="1.5" />
         <rect x="13" y="13" width="7" height="7" rx="1.5" />
     </>);
+
+/** Поиск по пульту (⌘K): лупа. */
+export const IconSearch = ({ size = 20 }: IconProps) =>
+    svg(size, <>
+        <circle cx="11" cy="11" r="7" />
+        <line x1="20" y1="20" x2="16.2" y2="16.2" />
+    </>);
+
+/** Колонка в списке «Настроек» и «Вернуть колонку Яндексу»: стрелка назад по кругу. */
+export const IconUndo = ({ size = 20 }: IconProps) =>
+    svg(size, <>
+        <path d="M4 10h11a5 5 0 0 1 0 10h-3" />
+        <polyline points="8 6 4 10 8 14" />
+    </>);
+
+/** Стрелка «›» в строках списка: слой «подробнее». */
+export const IconChevronRight = ({ size = 20 }: IconProps) =>
+    svg(size, <polyline points="9 6 15 12 9 18" />);
+
+/** «Назад» в странице «Настроек» на телефоне. */
+export const IconChevronLeft = ({ size = 20 }: IconProps) =>
+    svg(size, <polyline points="15 6 9 12 15 18" />);

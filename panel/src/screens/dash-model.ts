@@ -10,14 +10,16 @@ import { executorOf } from '../executor';
 /** Цвет узла — кто делает работу (DESIGN.md: лайм дома, янтарь Яндекс и облако, фиолет помощник, сланец — нет). */
 export type Tone = 'own' | 'cloud' | 'yandex' | 'agent' | 'off';
 export type NodeKey = 'brain' | 'think' | 'persona' | 'ear' | 'voice';
+/** Узлы на орбите — полукругом: слух, мозг, голос. Мышление и характер открываются из шитов мозга и голоса. */
+export type OrbitKey = Extract<NodeKey, 'brain' | 'ear' | 'voice'>;
 /** Путь вопроса по орбите после нажатия на колонку: слух → мозг → голос. */
 export type TripStage = 'idle' | 'listen' | 'think' | 'speak' | 'done';
 export type Thinking = 'fast' | 'smart' | 'deep';
 
 export const NODE_LABELS: Record<NodeKey, string> = {
     brain: 'Мозг',
-    think: 'Мышление',
-    persona: 'Характер',
+    think: 'Думать дольше',
+    persona: 'Манера',
     ear: 'Слух',
     voice: 'Голос',
 };
@@ -225,7 +227,7 @@ export function voiceNode(data: DashData): NodeView {
             key: 'voice',
             value: voiceName(card, view.ttsActive.voiceId),
             tone: 'off',
-            detail: card.installed ? 'не загружен — перезапустите голосовой сервер' : 'не скачан — скачайте на экране «Голос»',
+            detail: card.installed ? 'не загружен — перезапустите голосовой сервер' : 'не скачан — скачайте в «Персонаж» → «Голос»',
         };
     const engine = card.group === 'own' ? `свой · ${card.own?.engineTitle ?? card.engine}` : card.engine === 'silero' ? shortTitle(card.title) : 'Piper';
     const instead = view.voice === 'yandex' ? ' · вместо Алисы: в «Своём» её голоса нет' : '';
@@ -311,7 +313,7 @@ export function truthOf(data: DashData): Solved {
 export function nodesOf(data: DashData, truth: Solved = truthOf(data)): Record<NodeKey, NodeView> {
     const nodes = rawNodesOf(data);
     if (truth.silent) {
-        const none = (key: NodeKey): NodeView => ({ key, value: 'нет', tone: 'off', detail: 'ПК спит — колонка молчит' });
+        const none = (key: NodeKey): NodeView => ({ key, value: 'нет', tone: 'off', detail: 'компьютер спит — колонка молчит' });
         return { brain: none('brain'), think: none('think'), persona: none('persona'), ear: none('ear'), voice: none('voice') };
     }
     if (truth.ear.host === 'yandex' && nodes.ear.tone !== 'yandex') nodes.ear = { key: 'ear', value: 'Яндекс', tone: 'yandex', detail: truth.ear.sub };
@@ -331,15 +333,15 @@ export type SatKey = 'home' | 'mcp' | 'agent' | 'calls' | 'chats';
 export const SATELLITES: Array<{ key: SatKey; title: string; kinds: string[] }> = [
     { key: 'home', title: 'Умный дом', kinds: ['smart_home'] },
     { key: 'mcp', title: 'MCP-серверы', kinds: ['mcp'] },
-    { key: 'agent', title: 'Помощники', kinds: ['agent'] },
+    { key: 'agent', title: 'Агенты', kinds: ['agent'] },
     { key: 'calls', title: 'Звонки', kinds: ['calls'] },
     { key: 'chats', title: 'Мессенджеры', kinds: ['messenger'] },
 ];
 
 /** Строка вида без единого подключения: MCP-серверы добавляют в «Дом» → «Коннекторы», помощников шлюз ещё не умеет. */
 export const STUBS: Partial<Record<SatKey, { sub: string; pill: string }>> = {
-    mcp: { sub: 'серверов пока нет — добавьте в «Дом» → «Коннекторы»', pill: 'нет' },
-    agent: { sub: 'OpenClaw и другие помощники с правами — в работе', pill: 'скоро' },
+    mcp: { sub: 'программ пока нет — добавьте в «Навыки» → «Подключения»', pill: 'нет' },
+    agent: { sub: 'OpenClaw и другие агенты с правами — в работе', pill: 'скоро' },
 };
 
 export interface SatView {

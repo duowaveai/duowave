@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { devMode } from '../shell/dev';
 
 import { AccessCatalog, Health, RoutesSetting, api, can, plural, problemOf } from '../api';
 import { CAPABILITIES, CapabilityMeta, capabilityIcon } from '../capabilities';
@@ -31,6 +32,8 @@ const OPTIONS: Array<{ value: string; label: string; cls: string; note: string }
 interface Props {
     health: Health | null;
     catalog: AccessCatalog | null;
+    /** Заголовок списка: в «Навыках» — «Что умеет колонка»; кто отвечает — у каждой строки. */
+    title?: string;
 }
 
 /** Возможности — из каталога шлюза (новая видна сразу), иконки — пульта. */
@@ -43,7 +46,7 @@ function capabilitiesOf(catalog: AccessCatalog | null): CapabilityMeta[] {
     }));
 }
 
-export function RoutesScreen({ health, catalog }: Props) {
+export function RoutesScreen({ health, catalog, title = 'Кто отвечает' }: Props) {
     const served = health?.skills?.served;
     const implemented = health?.skills?.implemented;
     const mayEdit = can('routes.edit');
@@ -90,7 +93,7 @@ export function RoutesScreen({ health, catalog }: Props) {
         return (
             <section class="card glass flex flex-col gap-12">
                 <h2 class="t-title-xs m-0">
-                    Маршруты
+                    {title}
                 </h2>
                 <p class="t-meta m-0">
                     Ждём шлюз…
@@ -123,7 +126,7 @@ export function RoutesScreen({ health, catalog }: Props) {
             <section class="card glass card-list card-list-tight" aria-labelledby="routes-h">
                 <div class="flex items-center gap-12">
                     <h2 id="routes-h" class="t-title-xs m-0 flex-1">
-                        Маршруты
+                        {title}
                     </h2>
                     <input
                         value={filter}
@@ -174,14 +177,17 @@ export function RoutesScreen({ health, catalog }: Props) {
                 )}
             </section>
             <p class="t-caption my-0 mx-6">
-                {health?.mode === 'relay' && 'Сейчас режим «Яндекс»: маршруты заработают в «Шлюзе» и «Своём». '}
-                {own && 'Сейчас «Свой»: шаги «Яндекс» пропускаются, а в «Шлюзе» маршруты снова работают как есть. '}
-                {mayEdit
-                    ? 'Нажмите на возможность, чтобы переключить — применяется на лету, без рестарта. '
-                    : 'Менять маршруты может администратор. '}
-                ROUTES в .env остаётся дефолтом для новой базы
-                {isDefault === false ? '; стоят изменения из пульта.' : isDefault === true ? '; сейчас стоит дефолт.' : '.'} {rows.length}{' '}
-                {plural(rows.length, 'возможность', 'возможности', 'возможностей')}.
+                {health?.mode === 'relay' && 'Сейчас режим «Яндекс»: это заработает в режимах «Вместе» и «Своё». '}
+                {own && 'Сейчас «Своё»: шаги «Яндекс» пропускаются, а в «Вместе» они снова работают как есть. '}
+                {mayEdit ? 'Нажмите на строку, чтобы выбрать, кто отвечает, — сразу, без перезапуска. ' : 'Выбирать, кто отвечает, может администратор. '}
+                {/* `.env` и дефолт — слова системы: только в слое разработчика (docs/plans/panel-rebuild.md, «Три слоя»). */}
+                {devMode() && (
+                    <>
+                        ROUTES в .env остаётся дефолтом для новой базы
+                        {isDefault === false ? '; стоят изменения из пульта.' : isDefault === true ? '; сейчас стоит дефолт.' : '.'}{' '}
+                    </>
+                )}
+                {rows.length} {plural(rows.length, 'возможность', 'возможности', 'возможностей')}.
             </p>
             {error && (
                 <div class="banner-offline my-0 mx-6" role="alert">
@@ -191,7 +197,7 @@ export function RoutesScreen({ health, catalog }: Props) {
 
             {sheet && (
                 <Overlay onDismiss={close}>
-                    <div class="sheet glass-strong" role="dialog" aria-modal="true" aria-label={`Маршрут: ${sheet.title}`}>
+                    <div class="sheet glass-strong" role="dialog" aria-modal="true" aria-label={`Кто отвечает: ${sheet.title}`}>
                         <div class="flex items-center gap-8">
                             <h2 class="t-title-xs m-0 flex-1">
                                 {sheet.title}
@@ -249,7 +255,7 @@ export function RoutesScreen({ health, catalog }: Props) {
                         )}
                         {!mayEdit && (
                             <p class="t-caption m-0">
-                                Менять маршруты может администратор.
+                                Выбирать, кто отвечает, может администратор.
                             </p>
                         )}
                     </div>

@@ -111,7 +111,7 @@ function layoutOf(placement: Placement, brainName?: string): { cards: Card[]; li
     };
     const service: Card = { id: 'service', x: CLOUD_X, y: 176, w: 120, title: 'Облачный сервис', sub: 'Алиса', home: false, alice: true };
     const column = (caps?: Card['caps']): Card => ({ id: 'column', x: 111, y: 88, w: 150, title: 'Колонка', sub: 'слушает и говорит', home: true, caps });
-    const pcCard = (extra: Partial<Card>): Card => ({ id: 'pc', x: 111, y: 176, w: 150, title: 'ПК', home: true, ...extra });
+    const pcCard = (extra: Partial<Card>): Card => ({ id: 'pc', x: 111, y: 176, w: 150, title: 'Компьютер', home: true, ...extra });
     switch (placement) {
         case 'pc':
             return {
@@ -122,7 +122,7 @@ function layoutOf(placement: Placement, brainName?: string): { cards: Card[]; li
                     { a: 'pc', b: 'service', kind: 'net', lit: 'service' },
                 ],
                 homeSub: 'колонка и компьютер в вашей сети',
-                caption: 'Распознавание и синтез — дома, на ПК. Наружу — только текст запроса модели и облачному сервису.',
+                caption: 'Слух и голос — дома, на компьютере. Наружу — только текст запроса модели и облачному сервису.',
             };
         case 'station':
             return {
@@ -136,14 +136,14 @@ function layoutOf(placement: Placement, brainName?: string): { cards: Card[]; li
             };
         default:
             return {
-                cards: [column(['conn']), pcCard({ sub: 'помощник', caps: ['rec', 'tts'] }), models, service],
+                cards: [column(['conn']), pcCard({ sub: 'помогает', caps: ['rec', 'tts'] }), models, service],
                 links: [
                     { a: 'column', b: 'pc', kind: 'local', lit: 'helps' },
                     { a: 'column', b: 'models', kind: 'net', lit: 'models' },
                     { a: 'column', b: 'service', kind: 'net', lit: 'service' },
                 ],
                 homeSub: 'колонка и компьютер вместе',
-                caption: 'Пока ПК на связи — слух и голос на нём. ПК уснул — их берёт облако или Алиса, колонка не молчит.',
+                caption: 'Пока компьютер на связи — слух и голос на нём. Уснул — их берёт облако или Алиса, колонка не молчит.',
             };
     }
 }
@@ -185,7 +185,7 @@ function AliceGlyph({ on }: { on: boolean }) {
         </g>
     );
 }
-const CAP_TITLES: Record<NonNullable<Card['caps']>[number], string> = { rec: 'Распознавание речи', tts: 'Синтез речи', conn: 'Подключения' };
+const CAP_TITLES: Record<NonNullable<Card['caps']>[number], string> = { rec: 'Слух', tts: 'Голос', conn: 'Подключения' };
 const CAP_ON: Record<NonNullable<Card['caps']>[number], (solved: Solved) => boolean> = {
     rec: (solved) => solved.ear.host === 'pc',
     tts: (solved) => solved.voice.host === 'pc',
@@ -302,7 +302,7 @@ export function PlacementMap({
     const gatewayCard = placement === 'pc' ? 'pc' : 'column';
     const gearCard = settingsAt === 'pc' ? 'pc' : 'column';
     const gateway = at.get(gatewayCard);
-    const text = solved.silent ? 'Голосу некуда идти: DuoWave на ПК, а ПК спит.' : caption;
+    const text = solved.silent ? 'Голосу некуда идти: DuoWave на компьютере, а компьютер спит.' : caption;
 
     return (
         <div class="map-card">

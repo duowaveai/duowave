@@ -176,7 +176,7 @@ function PendingVoice({ pending, title, isAdmin, onChanged }: { pending: TtsPend
 /** Голос и распознавание — вкладки сверху; мозг и характер живут в разделе «Мозг». */
 const MODELS_TABS: Array<TabEntry<ModelsTab>> = [
     { id: 'voice', label: 'Голос', icon: <IconVoice size={16} /> },
-    { id: 'recognition', label: 'Распознавание', icon: <IconTimer size={16} /> },
+    { id: 'recognition', label: 'Слух', icon: <IconTimer size={16} /> },
 ];
 
 /**
@@ -265,7 +265,7 @@ function LocalModelsAbsent({ kind, message }: { kind: Tab; message: string }) {
     return (
         <>
             {kind === 'voice' && <HomeVoiceChoice />}
-            <section class="card glass py-12 px-16" aria-label={kind === 'voice' ? 'Голос' : 'Распознавание'}>
+            <section class="card glass py-12 px-16" aria-label={kind === 'voice' ? 'Голос' : 'Слух'}>
                 <h2 class="t-title-xs m-0 mb-6">
                     {kind === 'voice' ? 'Свои голоса — на компьютере' : 'Своё распознавание — на компьютере'}
                 </h2>
@@ -282,7 +282,8 @@ function LocalModelsAbsent({ kind, message }: { kind: Tab; message: string }) {
     );
 }
 
-export function ModelsScreen({ tab, onTab }: { tab: ModelsTab; onTab: (tab: ModelsTab) => void }) {
+/** `bare` — без своих вкладок: голос стоит в «Персонаже», слух — в «Настройки» → «Колонка» (docs/plans/panel-rebuild.md). */
+export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onTab: (tab: ModelsTab) => void; bare?: boolean }) {
     const [view, setView] = useState<ModelsView | null>(null);
     const [notes, setNotes] = useState<Record<string, CardNote>>({});
     const [busy, setBusy] = useState<Record<string, boolean>>({});
@@ -378,8 +379,8 @@ export function ModelsScreen({ tab, onTab }: { tab: ModelsTab; onTab: (tab: Mode
         say(id, {
             notice:
                 what === 'voice'
-                    ? 'У вас «Свой» — без Яндекса. Голос Яндекса вернёт его: ваши ответы будет озвучивать Яндекс. Нажмите ещё раз, чтобы согласиться.'
-                    : 'У вас «Свой». Распознавание Яндекса уводит колонку целиком к нему (режим «Яндекс»). Нажмите ещё раз, чтобы согласиться.',
+                    ? 'У вас «Своё» — без Яндекса. Голос Яндекса вернёт его: ваши ответы будет озвучивать Яндекс. Нажмите ещё раз, чтобы согласиться.'
+                    : 'У вас «Своё». Слух Яндекса уводит колонку целиком к нему (режим «Яндекс»). Нажмите ещё раз, чтобы согласиться.',
         });
     };
 
@@ -424,6 +425,16 @@ export function ModelsScreen({ tab, onTab }: { tab: ModelsTab; onTab: (tab: Mode
 
     const activateAsr = async (id: string, cardId: string) => {
         if (!isAdmin) return;
+        // Слух Яндекса — это вся колонка у Яндекса (режим «Яндекс»): сначала спросить, а не уводить молча.
+        if (
+            cardId === 'yandex' &&
+            !(await ask({
+                title: 'Отдать слух Яндексу?',
+                text: 'Тогда колонку целиком ведёт Яндекс: режим станет «Яндекс», свой мозг, голос и навыки замолчат. Вернуть — режимом «Вместе» или «Своё» в «Настройки» → «Колонка».',
+                ok: 'Отдать Яндексу',
+            }))
+        )
+            return;
         say(id, {});
         mark(id, true);
         try {
@@ -523,15 +534,17 @@ export function ModelsScreen({ tab, onTab }: { tab: ModelsTab; onTab: (tab: Mode
     if (absent) {
         return (
             <>
-                <SectionTabs
-                    label="Голос и распознавание"
-                    tabs={MODELS_TABS}
-                    tab={tab}
-                    onPick={(id) => {
-                        onTab(id);
-                        setLimit(8);
-                    }}
-                />
+                {!bare && (
+                    <SectionTabs
+                        label="Голос и распознавание"
+                        tabs={MODELS_TABS}
+                        tab={tab}
+                        onPick={(id) => {
+                            onTab(id);
+                            setLimit(8);
+                        }}
+                    />
+                )}
                 <LocalModelsAbsent kind={tab} message={absent} />
             </>
         );
@@ -734,22 +747,24 @@ export function ModelsScreen({ tab, onTab }: { tab: ModelsTab; onTab: (tab: Mode
 
     return (
         <>
-            <SectionTabs
-                label="Голос и распознавание"
-                tabs={MODELS_TABS}
-                tab={tab}
-                onPick={(id) => {
-                    onTab(id);
-                    setLimit(8);
-                }}
-            />
+            {!bare && (
+                <SectionTabs
+                    label="Голос и распознавание"
+                    tabs={MODELS_TABS}
+                    tab={tab}
+                    onPick={(id) => {
+                        onTab(id);
+                        setLimit(8);
+                    }}
+                />
+            )}
 
             {tab === 'recognition' ? (
                 <>
-                    <section class="card glass card-list" aria-label="Распознавание">
+                    <section class="card glass card-list" aria-label="Слух">
                         <div class="card-head">
                             <h2 class="t-title-xs m-0">
-                                Распознавание
+                                Слух
                             </h2>
                             <span class="t-meta">
                                 {view.mode === 'relay' ? 'в режиме «Яндекс» распознаёт Яндекс' : view.asrLoaded ? `работает: ${view.asrLoaded}` : 'сервер молчит'}
@@ -813,7 +828,7 @@ export function ModelsScreen({ tab, onTab }: { tab: ModelsTab; onTab: (tab: Mode
                                 class="m-0 mt-10 mb-2 py-8 px-12 r-pill bg-pill-yandex-bg c-pill-yandex-fg fs-13 lh-18"
                             >
                                 Сейчас режим «Яндекс» — говорит голос Алисы. Свой голос можно выбрать заранее: он зазвучит,
-                                когда вернётесь в «Шлюз» или «Свой».
+                                когда вернётесь в «Вместе» или «Своё».
                             </p>
                         )}
                     </section>

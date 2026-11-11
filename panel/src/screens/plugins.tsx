@@ -251,7 +251,7 @@ export function InstalledPackageSheet({
                             disabled={!!busy}
                             onClick={() => {
                                 onClose();
-                                panel.go('plugins', 'workshop', view.id);
+                                panel.go('skills', 'workshop', view.id);
                             }}
                         />
                     )}
@@ -264,7 +264,7 @@ export function InstalledPackageSheet({
                                 void run('fork', async () => {
                                     const copy = await api.forkPackage(view.id);
                                     onClose();
-                                    panel.go('plugins', 'workshop', copy.id);
+                                    panel.go('skills', 'workshop', copy.id);
                                 })
                             }
                         />

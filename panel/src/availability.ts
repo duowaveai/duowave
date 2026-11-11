@@ -73,7 +73,7 @@ export const RUNS_TITLES: Record<Runs, string> = {
 export const PLACEMENT_TITLES: Record<Placement, string> = {
     pc: 'На компьютере',
     station: 'На колонке',
-    stationServer: 'Колонка + ПК',
+    stationServer: 'Колонка + компьютер',
 };
 
 let current: AvailabilityView | null = null;

@@ -25,20 +25,47 @@ const TAB_ALIASES: Record<string, Record<string, string>> = {
 };
 
 /**
- * Переехавшее: «Дом» → «Пакеты» и раздел «Мастерская» стали вкладками раздела «Плагины». Пакет по старой ссылке с
- * `?install` — из каталога, без него — из установленного.
+ * Переехавшее (docs/plans/panel-rebuild.md, «Карта»). Разделов пять прежних — «Мозг», «Голос», «Дом», «Плагины»,
+ * «Журнал» — и место у каждой их вкладки новое: в «Персонаже» (персонажи, голос, мозг), в «Навыках» (установленное,
+ * подключения, каталог, мастерская, кто отвечает) или в «Настройках» (колонка, обновления, история). Ещё раньше «Дом» →
+ * «Пакеты» и раздел «Мастерская» стали вкладками «Плагинов»; пакет по старой ссылке с `?install` — из каталога, без
+ * него — из установленного.
  */
 function moved(section: string, tab: string | undefined, item: string | undefined, query: Record<string, string>): [string, string | undefined, string | undefined] {
-    if (section === 'house' && (tab === 'packages' || tab === 'catalog')) {
-        return ['plugins', tab === 'catalog' || 'install' in query ? 'catalog' : 'installed', item];
+    switch (section) {
+        case 'mind':
+            if (tab === 'routes') return ['skills', 'routes', item];
+            return ['character', tab === 'characters' || tab === 'brain' ? tab : undefined, tab ? item : undefined];
+        case 'models':
+            // Распознавание — это слух колонки: «Настройки» → «Колонка».
+            if (tab === 'recognition') return ['settings', 'station', undefined];
+            return ['character', 'voice', tab ? item : undefined];
+        case 'house':
+            if (tab === 'packages' || tab === 'catalog') return ['skills', tab === 'catalog' || 'install' in query ? 'catalog' : 'installed', item];
+            if (tab === 'gateway') return ['settings', 'station', undefined];
+            // «Коннекторы» и вкладки плагинов из слота house.tabs — в «Навыках».
+            return ['skills', tab ?? 'connectors', tab ? item : undefined];
+        case 'plugins':
+        case 'packages':
+            return ['skills', tab ?? 'installed', tab ? item : undefined];
+        case 'workshop': {
+            // `#/workshop/drafts/<id>` — черновик; `#/workshop/<id>` тоже понимаем.
+            const draft = tab === 'drafts' ? item : (tab ?? item);
+            return ['skills', 'workshop', draft];
+        }
+        case 'journal':
+            return ['settings', 'history', undefined];
+        default:
+            return [section, tab, item];
     }
-    if (section === 'workshop') {
-        // `#/workshop/drafts/<id>` — черновик; `#/workshop/<id>` тоже понимаем.
-        const draft = tab === 'drafts' ? item : (tab ?? item);
-        return ['plugins', 'workshop', draft];
-    }
-    if (section === 'packages') return ['plugins', tab, item];
-    return [section, tab, item];
+}
+
+/** Место с прежним именем раздела или вкладки — на его новое место; новое остаётся как есть. */
+export function normalizePlace(place: Place): Place {
+    const named = SECTION_ALIASES[place.section] ?? place.section;
+    const tab = place.tab ? (TAB_ALIASES[named]?.[place.tab] ?? place.tab) : undefined;
+    const [section, nextTab, item] = moved(named, tab, place.item, place.query);
+    return { ...place, section, tab: nextTab, item };
 }
 
 const decode = (part: string): string => {

@@ -288,21 +288,21 @@ function ComputerSide({
                     <SegIcon placement="pc" />
                 </span>
                 <span class="helper-text">
-                    ПК помогает колонке
+                    Компьютер помогает колонке
                     <span>
                         {record.placement !== 'stationServer'
-                            ? 'выключено: колонка обходится без ПК'
+                            ? 'выключено: колонка обходится без компьютера'
                             : homeServer?.state === 'down'
-                              ? 'колонка не дотягивается до ПК: работает через облако или Яндекс'
-                              : 'распознавание, свой голос и модели — у этого ПК'}
+                              ? 'колонка не дотягивается до компьютера: работает через облако или Яндекс'
+                              : 'слух, свой голос и модели — у этого компьютера'}
                     </span>
                 </span>
                 <Switch
                     on={record.placement === 'stationServer'}
-                    label="ПК помогает колонке"
+                    label="Компьютер помогает колонке"
                     disabled={!mayManage || busy === 'helper' || !live.reachable}
                     onChange={(on) =>
-                        void act('helper', () => api.setStationHelper(on), on ? 'Колонка опирается на этот ПК.' : 'Колонка работает без ПК.')
+                        void act('helper', () => api.setStationHelper(on), on ? 'Колонка опирается на этот компьютер.' : 'Колонка работает без компьютера.')
                     }
                 />
             </label>
@@ -484,7 +484,7 @@ function StationSide({
             <StationHelper mayManage={can('connectors.manage')} onChanged={() => void act('helperRead', async () => undefined)} />
             <Line>
                 {view.state.settingsHome === 'pc'
-                    ? `Настройки этой колонки пока приходят с компьютера — верните их на колонку в окне «Шлюз» его пульта.${
+                    ? `Настройки этой колонки пока приходят с компьютера — верните их на колонку в его пульте: «Настройки» → «Колонка».${
                           health.settingsReceivedAt ? ` Получены ${timeAgo(health.settingsReceivedAt)}.` : ''
                       }`
                     : health.settingsCopiedAt
@@ -590,26 +590,26 @@ function FeatureList({ rows, placement }: { rows: FeatureRow[]; placement: Place
 /** Что будет при каждом размещении — коротко, по четыре строки: переключение сегментов не двигает страницу. */
 const WHAT: Record<Placement, Array<['plus' | 'minus' | 'info', string]>> = {
     pc: [
-        ['plus', 'Работает всё, включая «Свой» и звонки.'],
-        ['minus', 'ПК уснул — колонка молчит.'],
+        ['plus', 'Работает всё, включая «Своё» и звонки.'],
+        ['minus', 'Компьютер уснул — колонка молчит.'],
         ['info', 'На колонку ничего не ставится.'],
         ['info', 'Перенос на колонку — тем же окном.'],
     ],
     station: [
-        ['plus', 'ПК не нужен: колонка работает сама.'],
+        ['plus', 'Компьютер не нужен: колонка работает сама.'],
         ['minus', 'Без «Своего» и своего голоса.'],
         ['minus', 'Без облачного слуха отвечает Яндекс.'],
-        ['info', 'ПК можно включить помощником позже.'],
+        ['info', 'Компьютер можно позвать на помощь позже.'],
     ],
     stationServer: [
-        ['plus', 'Пока ПК на связи — всё как дома.'],
-        ['plus', 'ПК уснул — колонка сама в «Шлюз».'],
-        ['minus', 'Без ПК и облака слух у Яндекса.'],
-        ['info', 'Помощь ПК — просто переключатель.'],
+        ['plus', 'Пока компьютер на связи — всё как дома.'],
+        ['plus', 'Компьютер уснул — колонка сама переходит в «Вместе».'],
+        ['minus', 'Без компьютера и облака слух у Яндекса.'],
+        ['info', 'Помощь компьютера — просто переключатель.'],
     ],
 };
 
-const SEG_TITLES: Record<Placement, string> = { pc: 'На компьютере', station: 'На колонке', stationServer: 'Колонка + ПК' };
+const SEG_TITLES: Record<Placement, string> = { pc: 'На компьютере', station: 'На колонке', stationServer: 'Колонка + компьютер' };
 
 function SegIcon({ placement }: { placement: Placement }) {
     return (
@@ -725,17 +725,17 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
           ? 'Шлюз уже здесь'
           : helperOnly
             ? picked === 'stationServer'
-                ? 'Включить помощь ПК'
-                : 'Выключить помощь ПК'
+                ? 'Включить помощь компьютера'
+                : 'Выключить помощь компьютера'
             : picked === 'pc'
               ? 'Вернуть шлюз на компьютер'
               : picked === 'station'
                 ? 'Перенести на колонку'
-                : 'Перенести на колонку с ПК';
+                : 'Перенести на колонку с компьютером';
     return (
         <Sheet
             title="Где работает DuoWave"
-            about={helperOnly ? 'Без переноса и перезагрузки: колонка просто начнёт или перестанет опираться на ПК.' : 'Перенос — копия конфига колонки, его правка и перезагрузка: минута без голоса.'}
+            about={helperOnly ? 'Без переноса и перезагрузки: колонка просто начнёт или перестанет опираться на компьютер.' : 'Перенос — копия конфига колонки, его правка и перезагрузка: минута без голоса.'}
             onClose={onClose}
             footer={
                 <button class="dash-done" disabled={busy || same || noBuild || !address.trim()} onClick={() => void start()}>
@@ -768,8 +768,8 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
             <PlacementMap solved={solved} placement={picked} settingsAt={settingsAt} brainName={brainName} />
             {cloudAssumed && (
                 <Line>
-                    Облако на схеме — как при подключённых ключах: заработает после облачного распознавания или голоса в «Дом» →
-                    «Коннекторы».
+                    Облако на схеме — как при подключённых ключах: заработает после облачного слуха или голоса в «Навыки» →
+                    «Подключения».
                 </Line>
             )}
 
@@ -779,12 +779,12 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
                         <SegIcon placement="pc" />
                     </span>
                     <span class="helper-text">
-                        ПК помогает колонке
+                        Компьютер помогает колонке
                         <span>
-                            {picked === 'stationServer' ? 'распознавание, свой голос и модели — у ПК, пока он на связи' : 'выключено: колонка обходится без ПК'}
+                            {picked === 'stationServer' ? 'слух, свой голос и модели — у компьютера, пока он на связи' : 'выключено: колонка обходится без компьютера'}
                         </span>
                     </span>
-                    <Switch on={picked === 'stationServer'} label="ПК помогает колонке" onChange={(on) => setPicked(on ? 'stationServer' : 'station')} />
+                    <Switch on={picked === 'stationServer'} label="Компьютер помогает колонке" onChange={(on) => setPicked(on ? 'stationServer' : 'station')} />
                 </label>
             ) : (
                 // То же место, тем же размером: в «На компьютере» помощь ПК не нужна — шлюз и есть ПК.
@@ -793,8 +793,8 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
                         <SegIcon placement="pc" />
                     </span>
                     <span class="helper-text">
-                        ПК помогает колонке
-                        <span>не нужно: шлюз и есть ПК — колонка говорит с ним напрямую</span>
+                        Компьютер помогает колонке
+                        <span>не нужно: DuoWave и так на компьютере — колонка говорит с ним напрямую</span>
                     </span>
                 </div>
             )}
@@ -843,7 +843,7 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
                         <div class="link-row">
                                 <span class={`link-dot${pcAddress ? '' : ' warn'}`} aria-hidden="true" />
                                 <span class="link-text">
-                                    ПК: этот компьютер
+                                    Компьютер: этот
                                     <span>{pcAddress ? 'виден колонке в домашней сети' : 'адрес в домашней сети не найден — впишите'}</span>
                                 </span>
                                 <button class="link-edit" onClick={() => setEditing({ ...editing, pc: !editing.pc })}>
@@ -852,11 +852,11 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
                             </div>
                         {(editing.pc || !pcAddress) && (
                             <TextField
-                                label="Адрес этого ПК для колонки"
+                                label="Адрес этого компьютера для колонки"
                                 value={gateway}
                                 placeholder={pcAddress || '192.0.2.10:3000'}
                                 inputMode="url"
-                                hint={view.homeAddresses?.length ? `Этот ПК в домашней сети: ${view.homeAddresses.join(', ')}` : undefined}
+                                hint={view.homeAddresses?.length ? `Этот компьютер в домашней сети: ${view.homeAddresses.join(', ')}` : undefined}
                                 onInput={setGateway}
                             />
                         )}
@@ -943,7 +943,7 @@ function UnlinkSheet({ onClose, onConfirm }: { onClose: () => void; onConfirm: (
                 </li>
                 <li>
                     <span class="mk info">·</span>
-                    <span>Настройки и журнал останутся на колонке и на ПК.</span>
+                    <span>Настройки и история останутся на колонке и на компьютере.</span>
                 </li>
                 <li>
                     <span class="mk plus">+</span>
@@ -1035,10 +1035,10 @@ function StationHelper({ mayManage, onChanged }: { mayManage: boolean; onChanged
             const on = next.enabled ?? next.configured;
             setMessage(
                 !on
-                    ? { ok: true, text: 'Колонка работает без ПК.' }
+                    ? { ok: true, text: 'Колонка работает без компьютера.' }
                     : next.state === 'up'
-                      ? { ok: true, text: 'ПК на связи.' }
-                      : { ok: false, text: next.error ?? 'ПК не отвечает.' },
+                      ? { ok: true, text: 'Компьютер на связи.' }
+                      : { ok: false, text: next.error ?? 'Компьютер не отвечает.' },
             );
             onChanged();
         } catch (e) {
@@ -1048,12 +1048,12 @@ function StationHelper({ mayManage, onChanged }: { mayManage: boolean; onChanged
         }
     };
     const sub = !status.configured
-        ? 'колонка ещё не знает ПК — включите в пульте ПК'
+        ? 'колонка ещё не знает компьютер — включите в пульте компьютера'
         : !enabled
           ? 'выключено · адрес и ключ уже есть, включится сразу'
           : status.state === 'up'
-            ? 'на связи: распознавание, свой голос и модели — у ПК'
-            : `ПК не отвечает${status.since ? ` с ${clock(status.since)}` : ''}`;
+            ? 'на связи: слух, свой голос и модели — у компьютера'
+            : `Компьютер не отвечает${status.since ? ` с ${clock(status.since)}` : ''}`;
     const away = enabled && status.state !== 'up';
     return (
         <div class="flex flex-col gap-8">
@@ -1062,27 +1062,27 @@ function StationHelper({ mayManage, onChanged }: { mayManage: boolean; onChanged
                     <SegIcon placement="pc" />
                 </span>
                 <span class="helper-text">
-                    ПК помогает колонке
+                    Компьютер помогает колонке
                     <span>{sub}</span>
                 </span>
                 <Switch
                     on={enabled}
-                    label="ПК помогает колонке"
+                    label="Компьютер помогает колонке"
                     disabled={!mayManage || busy || !status.configured}
                     onChange={(on) => void run({ enabled: on })}
                 />
             </label>
             {away && (
                 <p class="truth-note">
-                    Если ПК спит — колонка работает сама и подключится, когда он проснётся. Если не спит, а связи нет, его адрес мог
-                    смениться: обычно ПК сообщает новый сам.
+                    Если компьютер спит — колонка работает сама и подключится, когда он проснётся. Если не спит, а связи нет, его адрес мог
+                    смениться: обычно компьютер сообщает новый сам.
                 </p>
             )}
             {mayManage && status.configured && (away || editing) && (
                 <Row>
                     {status.url && (
                         <a class="pill pill-off py-8 px-14" href={`${status.url}/panel`} target="_blank" rel="noreferrer">
-                            Пульт ПК ↗
+                            Пульт компьютера ↗
                         </a>
                     )}
                     <Action label={editing ? 'Скрыть' : 'Изменить адрес…'} onClick={() => setEditing(!editing)} />
@@ -1090,13 +1090,13 @@ function StationHelper({ mayManage, onChanged }: { mayManage: boolean; onChanged
             )}
             {mayManage && editing && (
                 <div class="flex flex-col gap-8">
-                    <TextField label="Адрес ПК" value={url} placeholder="http://192.0.2.10:3000" inputMode="url" onInput={setUrl} />
+                    <TextField label="Адрес компьютера" value={url} placeholder="http://192.0.2.10:3000" inputMode="url" onInput={setUrl} />
                     <SecretField
-                        label="Ключ с ПК"
+                        label="Ключ с компьютера"
                         mask={status.key}
                         value={key}
                         removing={false}
-                        hint="Привезён переносом. Заменить — только если ПК его отозвал."
+                        hint="Привезён переносом. Заменить — только если компьютер его отозвал."
                         onInput={setKey}
                         onRemove={() => undefined}
                     />

@@ -21,7 +21,7 @@ use crate::speech::VoiceService;
 
 fn note(mode: PanelMode) -> &'static str {
     match mode {
-        PanelMode::Relay => "Всё отвечает Яндекс, как до шлюза. Звонки по ссылке и помощник не работают.",
+        PanelMode::Relay => "Всё отвечает Яндекс, как до DuoWave. Звонки по ссылке и помощник не работают.",
         PanelMode::Gateway => "Сначала свой, Яндекс подхватывает то, чего мы не умеем.",
         PanelMode::Own => "Без Яндекса. Радио, сказки, напоминания и навыки пока не умеем.",
     }
@@ -327,7 +327,7 @@ mod tests {
     impl ModeGate for Server {
         fn check(&self, mode: PanelMode) -> Result<(), String> {
             if mode == PanelMode::Own && !self.0.load(std::sync::atomic::Ordering::Relaxed) {
-                return Err("«Свой» сейчас не включить: компьютер не на связи.".into());
+                return Err("«Своё» сейчас не включить: компьютер не на связи.".into());
             }
             Ok(())
         }

@@ -1,11 +1,11 @@
-// «Стол и док» — основной вид пульта (docs/plans/desk.md, макеты docs/design/roles): тонкая верхняя строка с ролью,
-// стол во весь экран, внизу док — разделы, круг «Сказать», «Ещё» — и отдельная «+» для нового виджета. Разделы
-// открываются окнами поверх стола; верхняя строка и док остаются видны. Рамка (строка и док) — по роли: у шлюза белая,
-// у помощника тёмная (`<html data-role>`, ui/desk.css). Пока агент мастерской делает виджет — в строке его плашка.
+// «Главная и док» — основной вид пульта (docs/plans/panel-rebuild.md): тонкая верхняя строка — колонка и её состояние,
+// поиск и аватар; главная во весь экран; внизу док — «Главная · Персонаж · [Сказать] · Навыки · Настройки». Разделы
+// открываются окнами поверх главной; верхняя строка и док остаются видны. Новый виджет — плиткой на главной. Пока агент
+// мастерской делает виджет — в строке его плашка.
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { IconMenu, IconMic, IconPlus } from '../icons';
+import { IconMic } from '../icons';
 import { DuoWaveMark } from '../ui/duowave';
 import { AgentPlaque } from './agent-plaque';
 import type { NavEntry, ShellProps } from './shell';
@@ -36,43 +36,21 @@ function Cell({ entry, active, onNav }: { entry: NavEntry; active: boolean; onNa
     );
 }
 
-export function DeskShell({ nav, active, onNav, top, actions, talk, onAdd, notice, desk, window: win }: ShellProps) {
-    const [more, setMore] = useState(false);
-    const moreButton = useRef<HTMLButtonElement>(null);
+export function DeskShell({ nav, active, onNav, top, actions, talk, notice, desk, window: win }: ShellProps) {
     const dock = useRef<HTMLElement>(null);
     const clock = useClock();
-    // Док шире экрана (телефон, у помощника семь ячеек) прокручивается: открытый пункт — в видимой части.
+    // Док шире экрана (телефон, слой разработчика) прокручивается: открытый пункт — в видимой части.
     useEffect(() => {
         dock.current?.querySelector<HTMLElement>('[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }, [active]);
-    const go = (entry: NavEntry) => {
-        setMore(false);
-        onNav(entry);
-    };
-    // «Ещё» открыто: Esc закрывает меню — и только его, окно под ним остаётся; фокус — обратно на «Ещё».
-    useEffect(() => {
-        if (!more) return;
-        const onKey = (event: KeyboardEvent) => {
-            if (event.key !== 'Escape' || event.defaultPrevented) return;
-            event.preventDefault();
-            setMore(false);
-            moreButton.current?.focus();
-        };
-        window.addEventListener('keydown', onKey, true);
-        return () => window.removeEventListener('keydown', onKey, true);
-    }, [more]);
-    const moreActive = nav.more.some((entry) => entry.key === active);
-    // Окно колонки у помощника несёт её полосу; своё — тёмную метку «Этот компьютер» (её ставит само окно).
     return (
         <div class="desk-shell">
             <header class="desk-top">
                 <DuoWaveMark size={22} title="DuoWave" live />
-                <span class="desk-top-role">{top.title}</span>
-                <span class="desk-top-sub">{top.subtitle}</span>
+                <span class="desk-top-line">{top.line}</span>
                 {top.narrow && <span class="desk-top-narrow">{top.narrow}</span>}
                 <div class="desk-top-end">
                     <AgentPlaque place="top" />
-                    {top.chips}
                     {actions}
                     <span class="desk-top-clock" aria-label={`Время: ${clock}`}>
                         {clock}
@@ -87,61 +65,18 @@ export function DeskShell({ nav, active, onNav, top, actions, talk, onAdd, notic
 
             {win && <DeskWindow key={win.id} win={win} />}
 
-            {more && (
-                <>
-                    <div class="dock-more-scrim" onClick={() => setMore(false)} />
-                    <div class="dock-more menu" role="menu" aria-label="Ещё разделы">
-                        {nav.more.map((entry) => {
-                            const { icon: Icon } = entry;
-                            return (
-                                <button
-                                    key={entry.key}
-                                    role="menuitem"
-                                    class="tab-more-item"
-                                    aria-current={active === entry.key ? 'page' : undefined}
-                                    onClick={() => go(entry)}
-                                >
-                                    <Icon size={20} />
-                                    {entry.title}
-                                </button>
-                            );
-                        })}
-                    </div>
-                </>
-            )}
-
             <div class="dock-wrap">
-                <nav ref={dock} class="dock" aria-label={top.role === 'helper' ? 'Док помощника' : 'Док'} data-dock="bottom">
+                <nav ref={dock} class="dock" aria-label="Док" data-dock="bottom">
                     {nav.left.map((entry) => (
-                        <Cell key={entry.key} entry={entry} active={active === entry.key} onNav={go} />
+                        <Cell key={entry.key} entry={entry} active={active === entry.key} onNav={onNav} />
                     ))}
                     <button aria-label="Сказать через колонку" class="talk-btn dock-talk" disabled={talk.disabled} onClick={talk.onTalk}>
                         <IconMic size={22} />
                     </button>
                     {nav.right.map((entry) => (
-                        <Cell key={entry.key} entry={entry} active={active === entry.key} onNav={go} />
+                        <Cell key={entry.key} entry={entry} active={active === entry.key} onNav={onNav} />
                     ))}
-                    {nav.more.length > 0 && (
-                        <>
-                            {top.role === 'helper' && <span class="dock-sep" aria-hidden="true" />}
-                            <button
-                                ref={moreButton}
-                                class="dock-cell"
-                                aria-haspopup="menu"
-                                aria-expanded={more}
-                                aria-current={moreActive ? 'page' : undefined}
-                                onClick={() => setMore(!more)}
-                            >
-                                <IconMenu size={22} />
-                                <span class="dock-cell-label">Ещё</span>
-                                {moreActive && <span class="dock-pip" aria-hidden="true" />}
-                            </button>
-                        </>
-                    )}
                 </nav>
-                <button class="dock-add" aria-label="Добавить виджет" onClick={onAdd}>
-                    <IconPlus size={22} />
-                </button>
             </div>
         </div>
     );

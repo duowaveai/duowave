@@ -30,7 +30,7 @@ export const KIND_TITLES: Record<PackageKind, string> = {
 
 const KIND_FILTERS: Array<{ id: PackageKind; label: string }> = [
     { id: 'character', label: 'Персонажи' },
-    { id: 'plugin', label: 'Плагины' },
+    { id: 'plugin', label: 'Навыки' },
     { id: 'app', label: 'Приложения' },
     { id: 'theme', label: 'Темы' },
 ];
@@ -359,7 +359,7 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
     const panel = usePanel();
     const catalog = useCatalog();
     const engines = useEngines();
-    const linked = useLinkedItem('plugins', part);
+    const linked = useLinkedItem('skills', part);
     const [installed, setInstalled] = useState<PackagesView | null>(null);
     const [installedError, setInstalledError] = useState<string | null>(null);
     const [kind, setKind] = useState<string | null>(null);
@@ -454,7 +454,7 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                     {installed && installed.packages.length === 0 && (
                         <p class="t-caption m-0 mb-6">
                             Пока ничего не поставлено — выберите{' '}
-                            <button class="underline cursor-pointer" onClick={() => panel.go('plugins', 'catalog')}>
+                            <button class="underline cursor-pointer" onClick={() => panel.go('skills', 'catalog')}>
                                 в каталоге
                             </button>
                             .
@@ -501,9 +501,9 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                                     </button>
                                     <div class="pkg-actions">
                                         {kindOf === 'character' && (
-                                            <Action label="открыть" onClick={() => panel.go('mind', 'characters', entry.id)} />
+                                            <Action label="открыть" onClick={() => panel.go('character', 'characters', entry.id)} />
                                         )}
-                                        {editable && <Action label="в мастерской →" onClick={() => panel.go('plugins', 'workshop', entry.id)} />}
+                                        {editable && <Action label="в мастерской →" onClick={() => panel.go('skills', 'workshop', entry.id)} />}
                                         {fromCatalog?.state === 'update' && canManage(kindOf) && (
                                             <Action tone="on" label="обновить" busy={busy === 'update'} disabled={!!busy} onClick={() => void actions.update(entry.id, entry.title)} />
                                         )}
@@ -635,7 +635,7 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                 <CatalogEntrySheet entry={linkedEntry} actions={actions} engines={engines} onClose={linked.close}>
                     {linkedEntry.kind === 'character' && isInstalled(linkedEntry) && (
                         <div>
-                            <Action label="Открыть персонажа" onClick={() => panel.go('mind', 'characters', linkedEntry.id)} />
+                            <Action label="Открыть персонажа" onClick={() => panel.go('character', 'characters', linkedEntry.id)} />
                         </div>
                     )}
                 </CatalogEntrySheet>

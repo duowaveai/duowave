@@ -289,7 +289,7 @@ pub fn preset_view(preset: &McpPreset, ha_url: Option<&str>) -> Value {
     let unknown = matches!(url, Some(None));
     view["ready"] = json!(!unknown);
     if unknown {
-        view["why"] = json!("Нужен адрес Home Assistant: в «Дом» → «Коннекторы» или свой адрес.");
+        view["why"] = json!("Нужен адрес Home Assistant: в «Навыки» → «Подключения» или свой адрес.");
     }
     view
 }
@@ -310,7 +310,7 @@ mod tests {
         let waiting = preset_view(ha, None);
         assert_eq!(waiting["ready"], json!(false));
         assert_eq!(waiting["url"], json!("{HA_URL}/api/mcp/assist"));
-        assert!(waiting["why"].as_str().unwrap().contains("«Коннекторы»"));
+        assert!(waiting["why"].as_str().unwrap().contains("«Подключения»"));
         let ready = preset_view(ha, Some("http://ha.local:8123"));
         assert_eq!(ready["ready"], json!(true));
         assert_eq!(ready["url"], json!("http://ha.local:8123/api/mcp/assist"));

@@ -342,9 +342,7 @@ html[data-look='minimal'] .dash-circle.on {
     box-shadow: 0 0 0 2px var(--tone-line), 0 10px 30px color-mix(in srgb, var(--tone-line) 27%, transparent);
 }
 html[data-look='minimal'] .dash-sheet-icon::after { display: none; }
-/* Характер с цветом — шар персонажа в круге узла; пока шар в колонке, круг пустеет. */
-html[data-look='minimal'] .dash-circle .dash-orb { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; }
-html[data-look='minimal'] .dash-circle .dash-orb i,
+/* Характер с цветом — шар персонажа: переливается своим цветом. */
 html[data-look='minimal'] .dash-fly-orb i {
     position: absolute;
     inset: -25%;
@@ -352,13 +350,11 @@ html[data-look='minimal'] .dash-fly-orb i {
     filter: blur(6px);
     animation: dash-spin 16s linear infinite;
 }
-html[data-look='minimal'] .dash-circle.has-orb > svg { display: none; }
-html[data-look='minimal'] .dash-circle.has-orb::after { z-index: 1; }
-html[data-look='minimal'] .dash-circle.emptied .dash-orb { opacity: 0.18; transition: opacity 0.9s ease; }
 @keyframes dash-spin { to { transform: rotate(360deg); } }
 
-/* Шар, который влетает в колонку: от круга характера к её кольцу, сжимаясь до 22 % (С6: 1,25 с). Стоит в центре
-   круга характера; путь — сдвигом всей обёртки (--fly-x, --fly-y), сжатие и угасание — у шара внутри, своими кривыми. */
+/* Шар, который влетает в колонку: из-под круга голоса к её кольцу, сжимаясь до 22 % (С6: 1,25 с). Стоит в центре
+   круга голоса, под ним; путь — сдвигом всей обёртки (--fly-x, --fly-y), сжатие и угасание — у шара внутри, своими
+   кривыми. */
 html[data-look='minimal'] .dash-fly {
     position: absolute;
     width: 0;
@@ -411,7 +407,6 @@ html[data-look='minimal'] .dash-art.leave { pointer-events: none; animation: das
 
 /* Без анимации — статичный кадр: шар не летит, колонка меняется сразу (искра, кометы и волна стоят — glass.css). */
 @media (prefers-reduced-motion: reduce) {
-    html[data-look='minimal'] .dash-circle .dash-orb i,
     html[data-look='minimal'] .dash-fly-orb i,
     html[data-look='minimal'] .dash-art.enter { animation: none; }
     html[data-look='minimal'] .dash-art.leave { display: none; }

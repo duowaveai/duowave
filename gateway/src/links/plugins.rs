@@ -89,7 +89,7 @@ impl HostServices for PluginServices {
     fn smart_home_devices(&self) -> BoxFuture<'static, Result<Value, String>> {
         let provider = self.provider();
         Box::pin(async move {
-            let provider = provider.ok_or_else(|| "умный дом не подключён («Дом» → «Коннекторы»)".to_string())?;
+            let provider = provider.ok_or_else(|| "умный дом не подключён («Навыки» → «Подключения»)".to_string())?;
             let devices = provider.devices(&CancellationToken::new()).await.map_err(|error| error.to_string())?;
             Ok(Value::Array(
                 devices
@@ -111,7 +111,7 @@ impl HostServices for PluginServices {
     ) -> BoxFuture<'static, Result<String, String>> {
         let provider = self.provider();
         Box::pin(async move {
-            let provider = provider.ok_or_else(|| "умный дом не подключён («Дом» → «Коннекторы»)".to_string())?;
+            let provider = provider.ok_or_else(|| "умный дом не подключён («Навыки» → «Подключения»)".to_string())?;
             let action = HomeAction::parse(&action)
                 .ok_or_else(|| format!("действие «{action}»: on, off, set_brightness, set_temperature, scene"))?;
             let cancel = CancellationToken::new();

@@ -136,7 +136,7 @@ function Tile({
 
 export function CharactersTab() {
     const panel = usePanel();
-    const linked = useLinkedItem('mind', 'characters');
+    const linked = useLinkedItem('character', 'characters');
     const catalog = useCatalog();
     const engines = useEngines();
     const [view, setView] = useState<CharactersView | null>(null);
@@ -778,7 +778,7 @@ function OwnSheet({
     return (
         <Sheet title="Собрать своего" about="свой текст и свой голос" onClose={onClose}>
             <div class="char-block">
-                <span class="t-meta fw-700">Характер</span>
+                <span class="t-meta fw-700">Манера</span>
                 {own && <span class="pill pill-own self-start">говорит</span>}
                 {mayEdit ? (
                     <PersonaEditor
@@ -849,7 +849,7 @@ export function NowAnsweringCard() {
     const voice = character ? voicePill(character.voice) : null;
     return (
         <section class="card glass" aria-label="Кто отвечает">
-            <button type="button" class="now-char" onClick={() => panel.go('mind', 'characters', character?.id ?? OWN)}>
+            <button type="button" class="now-char" onClick={() => panel.go('character', 'characters', character?.id ?? OWN)}>
                 <Avatar src={character?.avatar} title={name} color={character?.color} size="sm" mark={markOf(character)} />
                 <span class="now-char-text">
                     <span class="t-meta">Сейчас отвечает</span>

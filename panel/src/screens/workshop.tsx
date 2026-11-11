@@ -80,15 +80,27 @@ function themeData(id: string, title: string, base: Theme) {
     };
 }
 
+/** «Научить» из «Пока не умеем»: задание агенту для черновика, который для этого сделали, — ждёт его чата. */
+const teaching = new Map<string, string>();
+
+/** Задание «Научить» для чата черновика: одно и один раз. */
+function takeTeaching(draft: string): string {
+    const task = teaching.get(draft) ?? '';
+    teaching.delete(draft);
+    return task;
+}
+
 /** Черновики и новый черновик. */
 function DraftList({ drafts, onOpen, onMade }: { drafts: DraftView[]; onOpen: (id: string) => void; onMade: (draft: DraftView) => void }) {
-    const linked = useLinkedItem('plugins', 'workshop');
+    const linked = useLinkedItem('skills', 'workshop');
     const theme = useTheme();
     // «Вид пульта» → «Сделать свою тему»: форма темы сразу, на основе выбранной.
     const base = linked.query.new === 'theme' ? (theme.themes.find((entry) => entry.id === linked.query.base) ?? theme.theme) : null;
-    const [making, setMaking] = useState<'plugin' | 'theme' | 'openapi' | null>(base ? 'theme' : null);
-    const [id, setId] = useState(base ? idOf(`my-${base.id}`) : '');
-    const [title, setTitle] = useState(base ? `Моя тема (${base.title})` : '');
+    // «Навыки» → «Пока не умеем» → «Научить»: форма навыка сразу, с фразой в имени; задание — агенту.
+    const teach = linked.query.new === 'plugin' ? linked.query.teach?.trim() || null : null;
+    const [making, setMaking] = useState<'plugin' | 'theme' | 'openapi' | null>(base ? 'theme' : teach ? 'plugin' : null);
+    const [id, setId] = useState(base ? idOf(`my-${base.id}`) : teach ? `skill-${Date.now().toString(36).slice(-5)}` : '');
+    const [title, setTitle] = useState(base ? `Моя тема (${base.title})` : teach ? `«${teach}»` : '');
     const [openapi, setOpenapi] = useState('');
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -104,6 +116,11 @@ function DraftList({ drafts, onOpen, onMade }: { drafts: DraftView[]; onOpen: (i
                 manifest.contributes = { ...(manifest.contributes ?? {}), themes: [themeData(draft.id, title.trim() || draft.id, base)] };
                 draft = await api.writeDraftFile(draft.id, 'manifest.json', `${JSON.stringify(manifest, null, 2)}\n`);
             }
+            if (teach && making === 'plugin')
+                teaching.set(
+                    draft.id,
+                    `Научи колонку отвечать на «${teach}»: какой фразой её спрашивают, что ей нужно узнать и что сказать в ответ. Если нужны данные из интернета — скажи, откуда.`,
+                );
             onMade(draft);
             setMaking(null);
             setId('');
@@ -658,7 +675,7 @@ function AgentModelSheet({ current, onSaved, onClose }: { current: WorkshopAgent
             </div>
     );
     return (
-        <Sheet title="Модель агента" about="Только для агента мастерской — «Мозг» не меняется" onClose={onClose} footer={buttons}>
+        <Sheet title="Модель агента" about="Только для агента мастерской — мозг персонажа не меняется" onClose={onClose} footer={buttons}>
             <p class="t-caption m-0 ws-hint">Код лучше пишут сильные модели: быстрые и маленькие чаще ошибаются в коде и в манифесте. Проверка и песочница поймают ошибку, но чинить её придётся дольше.</p>
             <div role="radiogroup" aria-label="Модель агента" class="flex flex-col">
                 <button role="radio" aria-checked={!own} class="dash-option" onClick={() => setOwn(false)}>
@@ -973,7 +990,8 @@ type ChatEntry = { who: 'me' | 'agent' | 'tool' | 'error'; text: string };
 /** Чат с агентом: что сделать — он пишет, проверяет и ставит черновик сам, показывая каждый шаг. */
 function AgentChat({ draft, onChanged }: { draft: string; onChanged: () => void }) {
     const [entries, setEntries] = useState<ChatEntry[]>([]);
-    const [text, setText] = useState('');
+    // Пришли «Научить»: задание уже в поле — человек читает его и отправляет сам.
+    const [text, setText] = useState(() => takeTeaching(draft));
     const [busy, setBusy] = useState(false);
     const [fresh, setFresh] = useState(true);
     const [model, setModel] = useState<WorkshopAgentModel | null>(null);
@@ -1516,7 +1534,7 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
 /** Вкладка «Мастерская» раздела «Плагины». */
 export function WorkshopScreen() {
     const version = useSettledVersion();
-    const linked = useLinkedItem('plugins', 'workshop');
+    const linked = useLinkedItem('skills', 'workshop');
     const [drafts, setDrafts] = useState<DraftView[] | null>(null);
     const [error, setError] = useState<string | null>(null);
     const read = () =>

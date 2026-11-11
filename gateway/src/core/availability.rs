@@ -69,7 +69,7 @@ impl Placement {
             Placement::Station => {
                 "Мало места и памяти на колонке; служба перезапускает шлюз, страховка возвращает Яндекс."
             }
-            Placement::StationServer => "Без компьютера — урезанно; «Свой» только пока компьютер на связи.",
+            Placement::StationServer => "Без компьютера — урезанно; «Своё» только пока компьютер на связи.",
         }
     }
 }
@@ -191,8 +191,8 @@ pub struct Feature {
 const ON_STATION_WITH_SERVER: &[Placement] = &[Placement::StationServer];
 
 /// Why «Свой» is not on the station: the switch refuses it with this, the panel says it.
-pub const OWN_ON_STATION: &str = "«Свой» на колонке не включить: без Яндекса распознавание, голос и модели нужны \
-свои, а для них нужен свой сервер — компьютер со шлюзом. На колонке — «Яндекс» или «Шлюз» с облачными подключениями.";
+pub const OWN_ON_STATION: &str = "«Своё» на колонке не включить: без Яндекса слух, голос и модели нужны \
+свои, а для них нужен компьютер с DuoWave. На колонке — «Яндекс» или «Вместе» с облачными подключениями.";
 
 pub const FEATURES: &[Feature] = &[
     Feature {
@@ -205,7 +205,7 @@ pub const FEATURES: &[Feature] = &[
     },
     Feature {
         id: "mode.gateway",
-        title: "Режим «Шлюз»",
+        title: "Режим «Вместе»",
         group: Group::Modes,
         ways: &[Way { runs: Runs::Here, needs: &[] }],
         absent: "",
@@ -213,7 +213,7 @@ pub const FEATURES: &[Feature] = &[
     },
     Feature {
         id: "mode.own",
-        title: "Режим «Свой»",
+        title: "Режим «Своё»",
         group: Group::Modes,
         ways: &[
             Way { runs: Runs::Here, needs: &[Need::PcBuild] },

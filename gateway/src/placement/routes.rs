@@ -127,7 +127,7 @@ pub const READ_ONLY: &str =
 /// button that brings the settings back to the station.
 pub const SETTINGS_ON_PC: &str =
     "Настройки этой колонки пока хранятся на компьютере и уходят на неё отсюда: правка в её окне пропала бы при \
-     следующей отправке. Сначала верните их на колонку: «Дом» → «Шлюз» → «Вернуть настройки на колонку».";
+     следующей отправке. Сначала верните их на колонку: «Настройки» → «Колонка» → «Вернуть настройки на колонку».";
 
 /// Refuses a change of the settings on the station while they live on the computer; the computer's own pushes pass,
 /// a person's change through its pass does not — the next push would overwrite it.

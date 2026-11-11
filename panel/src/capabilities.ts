@@ -28,7 +28,7 @@ export const CAPABILITIES: CapabilityMeta[] = [
     { name: 'calls', title: 'Звонки и сообщения', icon: 'phone' },
     { name: 'music_recognition', title: 'Что играет', icon: 'music' },
     { name: 'account', title: 'Сервисы аккаунта', icon: 'user' },
-    { name: 'plugins', title: 'Плагины', icon: 'chat' },
+    { name: 'plugins', title: 'Навыки', icon: 'chat' },
 ];
 
 export const CAPABILITY_TITLES: Record<string, string> = Object.fromEntries(

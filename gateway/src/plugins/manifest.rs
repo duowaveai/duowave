@@ -872,7 +872,7 @@ fn contributes(value: Option<&Value>, permissions: &[Permission], problems: &mut
             .take(1024)
             .collect();
         if description.is_empty() {
-            problems.push(format!("{at}: нужно description — по нему «Мозг» выбирает инструмент"));
+            problems.push(format!("{at}: нужно description — по нему мозг выбирает инструмент"));
         }
         let input = match item.get("input").or_else(|| item.get("inputSchema")) {
             None => json!({ "type": "object", "properties": {} }),

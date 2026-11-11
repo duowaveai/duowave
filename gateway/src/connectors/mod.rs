@@ -412,7 +412,7 @@ pub mod builtin {
         let status: StatusFn = Arc::new(move || {
             let mode = modes.current();
             let status = if mode == PanelMode::Own {
-                ConnectorStatus::off("режим «Свой»: без Яндекса")
+                ConnectorStatus::off("режим «Своё»: без Яндекса")
             } else if mode == PanelMode::Relay {
                 let state = if sessions.open() > 0 {
                     crate::core::connectors::ConnectorState::Ready
@@ -709,7 +709,7 @@ mod tests {
         assert_eq!(views[13].status, ConnectorStatus::error("exit 1"));
 
         *mode.0.lock().unwrap() = PanelMode::Own;
-        assert_eq!(service.views().await[0].status, ConnectorStatus::off("режим «Свой»: без Яндекса"));
+        assert_eq!(service.views().await[0].status, ConnectorStatus::off("режим «Своё»: без Яндекса"));
         *mode.0.lock().unwrap() = PanelMode::Relay;
         let relay = service.views().await[0].status.clone();
         assert_eq!(relay.state, ConnectorState::Ready);

@@ -12,11 +12,11 @@ import { RequestRow } from './journal';
 
 const MODES: Array<{ value: PanelMode; label: string; feature: FeatureId }> = [
     { value: 'relay', label: 'Яндекс', feature: 'mode.relay' },
-    { value: 'gateway', label: 'Шлюз', feature: 'mode.gateway' },
-    { value: 'own', label: 'Свой', feature: 'mode.own' },
+    { value: 'gateway', label: 'Вместе', feature: 'mode.gateway' },
+    { value: 'own', label: 'Своё', feature: 'mode.own' },
 ];
 
-const MODE_LABELS: Record<PanelMode, string> = { relay: 'Яндекс', gateway: 'Шлюз', own: 'Свой' };
+const MODE_LABELS: Record<PanelMode, string> = { relay: 'Яндекс', gateway: 'Вместе', own: 'Своё' };
 
 /** «с 14:02»: время перехода сегодня, иначе с датой. */
 function since(at: string): string {
@@ -206,7 +206,7 @@ export function ModeCard({
                         Выбран голос Алисы — без Яндекса он не звучит
                     </p>
                     <p class="m-0 mt-4 mb-10 fs-13 lh-18">
-                        В режиме «Свой» вместо него будет говорить наш голос (или колонка замолчит, если своего голосового
+                        В режиме «Своё» вместо него будет говорить наш голос (или колонка замолчит, если своего голосового
                         сервера нет). Выберите свой голос — или продолжите так.
                     </p>
                     <div class="flex gap-8 flex-wrap">
@@ -240,12 +240,12 @@ export function AllocPanel({ health, catalog }: { health: Health | null; catalog
         return (
             <section class="card glass flex flex-col gap-12" aria-labelledby="alloc-h">
                 <h2 id="alloc-h" class="t-title-xs m-0">
-                    Кто отвечает
+                    Кто сколько ответил
                 </h2>
                 <p class="t-meta m-0">
                     {mode === 'relay'
-                        ? 'Режим «Яндекс»: отвечает Яндекс, шлюз только наблюдает.'
-                        : 'Шлюз прогревается — маршруты появятся через секунду.'}
+                        ? 'Режим «Яндекс»: отвечает Яндекс, DuoWave только наблюдает.'
+                        : 'DuoWave прогревается — это появится через секунду.'}
                 </p>
             </section>
         );
@@ -268,7 +268,7 @@ export function AllocPanel({ health, catalog }: { health: Health | null; catalog
         <section class="card glass flex flex-col gap-12" aria-labelledby="alloc-h">
             <div class="flex items-baseline justify-between">
                 <h2 id="alloc-h" class="t-title-xs m-0">
-                    Кто отвечает
+                    Кто сколько ответил
                 </h2>
                 <span class="t-meta">
                     {total} {plural(total, 'возможность', 'возможности', 'возможностей')}
@@ -334,7 +334,7 @@ export function RecentRequests({
                     Последние запросы
                 </h2>
                 <button class="fs-14 fw-700 c-accent-text min-h-44" onClick={onOpenJournal}>
-                    Журнал
+                    История разговоров
                 </button>
             </div>
             <ol class="req-list">

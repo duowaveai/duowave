@@ -213,7 +213,7 @@ impl ModeGate for AvailabilityService {
         match self.get(mode_feature(mode)) {
             Some(state) if !state.on() => Err(match mode {
                 PanelMode::Own if state.reason.starts_with('«') => state.reason,
-                PanelMode::Own => format!("«Свой» сейчас не включить: {}.", lowercase_first(&state.reason)),
+                PanelMode::Own => format!("«Своё» сейчас не включить: {}.", lowercase_first(&state.reason)),
                 _ => state.reason,
             }),
             _ => Ok(()),
@@ -282,7 +282,7 @@ mod tests {
         assert!(service.check(PanelMode::Own).is_ok());
         assert_eq!(service.get("asr.own").unwrap().state, State::Ready);
         home.0.store(false, Ordering::Relaxed);
-        assert_eq!(service.check(PanelMode::Own), Err("«Свой» сейчас не включить: компьютер не на связи.".to_string()));
+        assert_eq!(service.check(PanelMode::Own), Err("«Своё» сейчас не включить: компьютер не на связи.".to_string()));
         assert_eq!(service.absent(PanelMode::Own), None, "only for now: a stored «Свой» is kept");
         assert_eq!(service.get("asr.own").unwrap().reason, "компьютер не на связи — через облако");
         service.recheck();
@@ -318,7 +318,7 @@ mod tests {
         *home.1.lock().unwrap() = Some("слух компьютера выключен");
         assert_eq!(
             service.check(PanelMode::Own),
-            Err("«Свой» сейчас не включить: слух компьютера выключен.".to_string())
+            Err("«Своё» сейчас не включить: слух компьютера выключен.".to_string())
         );
         let own = service.get("mode.own").unwrap();
         assert_eq!((own.state, own.reason.as_str()), (State::Off, "Слух компьютера выключен"));

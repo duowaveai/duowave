@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 
 import { ConnectJob, ConnectStepId, FoundStation, StationCheck, api, can, problemOf } from '../api';
-import { IconCheck, IconMic, IconRobot, IconRoutes, IconVoice } from '../icons';
+import { IconCheck } from '../icons';
 import { drawingOf } from '../stations';
 import { confetti } from '../ui/confetti';
 import { DuoWaveMark } from '../ui/duowave';
 import { Sheet } from '../ui/sheet';
+import { CharactersTab } from './characters';
 
 // «Подключить колонку»: мастер из плана открытия (docs/plans/open-source.md, раздел 6). Шлюз находит колонку,
 // с согласия читает её настройки, показывает построчно, что изменит, и только по «Подключить» меняет: копия,
@@ -103,7 +104,9 @@ function Command({ text }: { text: string }) {
     );
 }
 
-type Step = 'find' | 'consent' | 'plan' | 'manual' | 'progress' | 'ready';
+// Первый запуск в четыре шага (docs/plans/panel-rebuild.md, этап 5): найти → проверить → кто будет отвечать → «скажите…».
+// Шаг 2 — проверка и подключение (consent, plan, manual, progress); шаг 3 — персонаж (who); шаг 4 — готово (ready).
+type Step = 'find' | 'consent' | 'plan' | 'manual' | 'progress' | 'who' | 'ready';
 
 /** Порт, на который колонка пойдёт к шлюзу: из адреса «хост:порт», без него — порт самого шлюза (own). */
 export function gatewayPort(address: string, own = 80): number {
@@ -148,9 +151,35 @@ export function ConnectFirstCard({ onConnect }: { onConnect: () => void }) {
 }
 
 /**
- * Мастер подключения: от поиска колонки до «пришла». onConnected — дальше имя и вид (SetupSheet); onOpenBrain — «Мозг»,
+ * Мастер подключения: от поиска колонки до «скажите колонке…» (этап 5). onConnected — на главную: имя и вид предложит плашка
+ * там же; onOpenBrain — «Мозг»,
  * где добавляют свою модель (без неё отвечает Яндекс).
  */
+/** «Пульт на телефоне»: адрес этого компьютера в домашней сети — открыть на телефоне в той же сети. */
+function PhoneLine() {
+    const [addresses, setAddresses] = useState<string[] | null>(null);
+    useEffect(() => {
+        let alive = true;
+        void api
+            .placement()
+            .then((view) => alive && setAddresses(view.homeAddresses ?? []))
+            .catch(() => alive && setAddresses([]));
+        return () => {
+            alive = false;
+        };
+    }, []);
+    const host = addresses?.[0];
+    if (!host) return null;
+    const url = `http://${host}${location.port ? `:${location.port}` : ''}/panel/`;
+    return (
+        <div class="connect-phone">
+            <b>Пульт на телефоне</b>
+            <span class="t-meta">Откройте на телефоне в той же сети Wi-Fi и войдите с паролем пульта:</span>
+            <span class="connect-path">{url}</span>
+        </div>
+    );
+}
+
 export function ConnectSheet({
     onClose,
     onConnected,
@@ -249,8 +278,8 @@ export function ConnectSheet({
     if (step === 'find')
         return (
             <Sheet
-                title="Подключить колонку"
-                about="Колонка с root и SSH по вики hackalice"
+                title="Привет! Найдём вашу колонку"
+                about="Шаг 1 из 4 · компьютер и колонка — в одной домашней сети Wi-Fi"
                 icon={guide}
                 onClose={onClose}
                 footer={
@@ -324,8 +353,8 @@ export function ConnectSheet({
     if (step === 'consent')
         return (
             <Sheet
-                title="Посмотреть колонку"
-                about={address.trim()}
+                title="Проверим колонку"
+                about={`Шаг 2 из 4 · ${address.trim()}`}
                 icon={guide}
                 onClose={onClose}
                 footer={
@@ -368,13 +397,13 @@ export function ConnectSheet({
             <Sheet
                 title={check.problem ? 'Подключить не выйдет' : check.connected ? 'Уже подключена' : 'Что изменится'}
                 icon={guide}
-                about={
+                about={`Шаг 2 из 4 · ${
                     facts
                         ? [facts.deviceType && drawingOf(null, facts.deviceType).title, facts.softwareVersion && `прошивка ${facts.softwareVersion}`, check.address]
                               .filter(Boolean)
                               .join(' · ')
                         : check.address
-                }
+                }`}
                 onClose={onClose}
                 footer={
                     <div class="dash-actions">
@@ -438,7 +467,7 @@ export function ConnectSheet({
                             ) : (
                                 <p class="t-caption m-0">
                                     Сейчас голос идёт {where(facts.pointsTo)}. После подключения колонка работает как раньше — режим «Яндекс», а
-                                    своё включают по одному в «Мозг» → «Маршруты».
+                                    своё включают по одному в «Навыки» → «Кто отвечает».
                                 </p>
                             )}
                             {check.updates === 'on' && (
@@ -503,22 +532,42 @@ export function ConnectSheet({
         );
     }
 
+    // Шаг 3: подключена — первое решение человека, приятное и понятное: кто будет отвечать. Персонаж — это голос и манера.
     if (step === 'ready' && job?.device)
         return (
             <Sheet
-                title="Колонка подключена"
-                about="Голос идёт через шлюз, отвечает пока Яндекс"
+                title="Кто будет отвечать?"
+                about="Шаг 3 из 4 · послушайте и выберите; поменять можно в любой момент в «Персонаже»"
                 onClose={onClose}
                 footer={
                     <div class="dash-actions">
-                        <button class="dash-done" onClick={() => onConnected(job.device!)}>
-                            Дальше: имя и вид
+                        <button class="dash-done" onClick={() => setStep('who')}>
+                            Дальше
                         </button>
-                        {onOpenBrain && (
-                            <button class="pill pill-off dash-wide" onClick={onOpenBrain}>
-                                Своя модель — в «Мозге»
-                            </button>
-                        )}
+                    </div>
+                }
+            >
+                <p class="connect-now m-0">
+                    <span class="pill pill-yandex">Яндекс</span>
+                    <span class="t-meta">Колонка подключена. Пока вы не выберете иначе, отвечает всё та же Алиса — как раньше.</span>
+                </p>
+                <CharactersTab />
+            </Sheet>
+        );
+
+    // Шаг 4: готово — живой голос. Имя и вид колонки — позже, плашкой на главной; пульт на телефоне — по адресу.
+    if (step === 'who' && job?.device) {
+        const device = job.device;
+        return (
+            <Sheet
+                title="Готово"
+                about="Шаг 4 из 4"
+                onClose={() => onConnected(device)}
+                footer={
+                    <div class="dash-actions">
+                        <button class="dash-done" onClick={() => onConnected(device)}>
+                            Открыть главную
+                        </button>
                     </div>
                 }
             >
@@ -526,59 +575,12 @@ export function ConnectSheet({
                 <div class="connect-hero">
                     <DuoWaveMark size={72} live cheer idle="lively" />
                 </div>
-                <p class="connect-now m-0">
-                    <span class="pill pill-yandex">Яндекс</span>
-                    <span class="t-meta">Сейчас отвечает Яндекс, как раньше: колонка работает как обычно, только уже через шлюз. Своё включается по одному.</span>
-                </p>
-                <ol class="connect-next">
-                    <li>
-                        <span class="connect-next-icon" aria-hidden="true">
-                            <IconMic size={16} />
-                        </span>
-                        <div class="connect-next-body">
-                            <b>Проверьте голосом</b>
-                            <span class="connect-say">«Алиса, сколько времени?»</span>
-                            <span class="t-caption">Вопрос и ответ появятся на главном экране пульта.</span>
-                        </div>
-                    </li>
-                    <li>
-                        <span class="connect-next-icon" aria-hidden="true">
-                            <IconRobot size={16} />
-                        </span>
-                        <div class="connect-next-body">
-                            <b>Своя модель</b>
-                            <span class="t-caption">
-                                <span class="connect-path">Мозг → Модели</span> ключ Claude или OpenAI — или Ollama у вас дома.
-                            </span>
-                            <span class="connect-say">«Алиса, придумай сказку про кота»</span>
-                            <span class="t-caption">— ответит уже ваша модель.</span>
-                        </div>
-                    </li>
-                    <li>
-                        <span class="connect-next-icon" aria-hidden="true">
-                            <IconRoutes size={16} />
-                        </span>
-                        <div class="connect-next-body">
-                            <b>Кто что отвечает</b>
-                            <span class="t-caption">
-                                <span class="connect-path">Мозг → Маршруты</span> например: погода и музыка — Яндекс, разговор — своя модель.
-                            </span>
-                        </div>
-                    </li>
-                    <li>
-                        <span class="connect-next-icon" aria-hidden="true">
-                            <IconVoice size={16} />
-                        </span>
-                        <div class="connect-next-body">
-                            <b>Свой голос и слух</b>
-                            <span class="t-caption">
-                                <span class="connect-path">Голос</span> голос по записи или готовые, своё распознавание. У каждого есть «Проверить».
-                            </span>
-                        </div>
-                    </li>
-                </ol>
+                <p class="t-meta m-0">Скажите колонке:</p>
+                <p class="connect-say m-0">«Алиса, какая погода завтра?»</p>
+                <PhoneLine />
             </Sheet>
         );
+    }
 
     // progress: подключение, а при «не пришла» — откат на том же экране.
     const restoring = job?.kind === 'restore';

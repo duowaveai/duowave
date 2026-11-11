@@ -143,9 +143,9 @@ export function PersonaTab({ isAdmin }: { isAdmin: boolean }) {
     }
 
     return (
-        <section class="card glass card-list" aria-label="Характер">
+        <section class="card glass card-list" aria-label="Манера">
             <div class="card-head">
-                <h2 class="t-title-xs m-0">Характер</h2>
+                <h2 class="t-title-xs m-0">Манера</h2>
                 <span class="t-meta">применяется со следующего вопроса</span>
             </div>
             {info.presets.map((preset) => {

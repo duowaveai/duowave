@@ -3,15 +3,19 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { AccessCatalog, ApiError, Health, MovedGateway, SessionSnapshot, Station, UnsupportedEntry, api, can, sessionStore } from './api';
 import { noteAvailability } from './availability';
 import { settingsPlace } from './builtin';
-import { IconChevronDown, IconCode, IconMoon, IconSun } from './icons';
+import { IconChevronDown, IconCode, IconSearch } from './icons';
 import { useLive, useStationLive } from './live';
-import { Reach, dotClass, isReachable, reachLine, reachOf } from './presence';
+import { Reach, dotClass, isReachable, reachOf } from './presence';
 import { AuthScreen } from './screens/auth';
 import { SaySheet } from './screens/say';
 import { ConnectSheet } from './screens/connect';
 import { SetupBanner, SetupSheet, StationButton, StationsPicker, displayName, needsSetup } from './screens/stations';
 import { DebugState, PanelContext, PanelState } from './shell/context';
-import { Place, parsePlace, writePlace } from './shell/links';
+import { Place, normalizePlace, parsePlace, writePlace } from './shell/links';
+import { AccountMenu } from './shell/account-menu';
+import { useDevMode } from './shell/dev';
+import { SearchPalette, SearchPlace, searchPlaces, useSearchKey } from './shell/search';
+import { timeAgo } from './time';
 import { SectionDef, useSections } from './shell/sections';
 import { Nav, NavEntry, OpenWindow, TopLine } from './shell/shell';
 import { applyRole, ownName, roleOf, RoleInfo } from './shell/role';
@@ -30,7 +34,35 @@ import { WidgetAgent } from './screens/widget-agent';
 import { deskActions } from './shell/widgets';
 import { StationFrame, StationModeChip, ViaRefused, WindowShell } from './shell/station-window';
 import { leaving, mayLeave } from './shell/leave';
-import { VIA, WINDOW } from './via';
+import { LOCAL, OWN_PAGE, TOP_VIA, VIA, WINDOW } from './via';
+import { OwnPage } from './screens/helper-pc';
+import { ViaNotice } from './shell/station-window';
+
+/**
+ * Пульт колонки во всё окно (этап 4) смотрит, помогает ли ей ещё этот компьютер: его /health — напрямую, без прохода.
+ * Перестал (шлюз вернулся на компьютер, помощь выключили) — окно снова пульт компьютера.
+ */
+function useLeaveWhenNotHelping(): void {
+    useEffect(() => {
+        if (!TOP_VIA || !VIA) return;
+        const check = async (): Promise<void> => {
+            try {
+                const response = await fetch('/health', { headers: { Accept: 'application/json' } });
+                if (!response.ok) return;
+                const health = ((await response.json()) as { message?: Health }).message;
+                const placement = health?.placement;
+                if (!placement) return;
+                const placed = placement.stations?.find((entry) => entry.key === VIA) ?? (placement.station?.key === VIA ? placement.station : undefined);
+                if (placement.role === 'pc' && placed && placed.placement !== 'pc') return;
+                location.replace(`${location.pathname}${location.hash}`);
+            } catch {
+                // компьютер не ответил — ничего не решаем
+            }
+        };
+        const id = window.setInterval(() => void check(), 30_000);
+        return () => window.clearInterval(id);
+    }, []);
+}
 
 /** Живая колонка или последняя закрытая сессия: когда списка колонок нет (нет права, шлюз постарше). */
 function pickStation(debug: DebugState): SessionSnapshot | undefined {
@@ -55,51 +87,53 @@ function remember(key: string, value: string): void {
     }
 }
 
-const MODE_WORDS: Record<string, string> = { relay: 'Яндекс', gateway: 'шлюз', own: 'свой' };
-
-/** Где работает шлюз, для шапки: «шлюз на колонке · ПК на связи». На компьютере без колонки — ничего. */
-function placementLine(health: Health | null): string | null {
-    const placement = health?.placement;
-    if (!placement) return null;
-    if (placement.role === 'station') {
-        const home = placement.homeServer;
-        // Адрес ПК известен, но помощь выключена («ПК помогает колонке»): колонка одна, и это не беда.
-        return home && home.enabled !== false ? `шлюз на колонке · ПК ${home.state === 'up' ? 'на связи' : 'не на связи'}` : 'шлюз на колонке';
+/** Как колонку слышно — для строки состояния: «на связи», «не на связи · была 5 мин назад». */
+function reachWords(reach: Reach, lastSeen?: string): string {
+    switch (reach) {
+        case 'online':
+            return 'на связи';
+        case 'waiting':
+            return 'на связи · ждёт «Алиса»';
+        case 'reconnecting':
+            return 'переподключается…';
+        case 'unknown':
+            return 'проверяю связь…';
+        default:
+            return lastSeen ? `не на связи · была ${timeAgo(lastSeen)}` : 'не на связи';
     }
-    const station = placement.station;
-    if (station && station.placement !== 'pc') return `шлюз на колонке · ${station.reachable ? 'на связи' : 'не отвечает'}`;
-    return null;
 }
 
-const MODE_TITLES: Record<string, string> = { relay: 'Яндекс', gateway: 'Шлюз', own: 'Свой' };
+/**
+ * Компьютер рядом с колонкой — второй половиной строки: «компьютер помогает». Одно имя вместо «помощника», «ПК» и
+ * «Колонки + ПК» (docs/plans/panel-rebuild.md, «Словарь»). Шлюз на компьютере без колонки со своим шлюзом — ничего.
+ */
+function helpWords(role: RoleInfo): string | null {
+    if (role.role === 'helper') return role.helping ? 'компьютер помогает' : 'колонка работает сама';
+    const helper = role.helper;
+    if (!helper || !helper.enabled) return null;
+    return helper.state === 'up' ? 'компьютер помогает' : 'компьютер не на связи';
+}
+
+const isAdmin = (): boolean => can('plugins.manage') && sessionStore.get()?.role === 'admin';
 
 /**
- * Навигация по роли (docs/plans/desk.md). Шлюз: «Колонка» и «Мозг» слева от «Сказать», «Плагины» справа, остальное —
- * в «Ещё». Помощник: слева своё — стол, модели, мастерская; справа — разделы колонки; в «Ещё» — остальное своё.
+ * Док (docs/plans/panel-rebuild.md): «Главная · Персонаж · [Сказать] · Навыки · Настройки» — у всех ролей; разделы
+ * плагинов — перед «Настройками»; «Мастерская» — у разработчика. Помощнику своего дока не нужно: его окно — пульт
+ * колонки (этап 4).
  */
-function navOf(sections: SectionDef[], role: RoleInfo): Nav {
+function navOf(sections: SectionDef[], role: RoleInfo, dev: boolean): Nav {
     const byId = new Map(sections.map((section) => [section.id, section]));
     const entry = (id: string, over: Partial<NavEntry> = {}): NavEntry[] => {
         const section = byId.get(id);
         return section ? [{ key: id, title: section.title, icon: section.icon, Badge: section.Badge, section: id, ...over }] : [];
     };
-    if (role.role === 'helper') {
-        const left = [...entry('home', { title: 'Стол' }), ...entry('models', { title: 'Модели' }), ...entry('plugins', { key: 'plugins/workshop', title: 'Мастерская', tab: 'workshop', icon: IconCode })];
-        const right = [
-            ...entry('mind', { key: 'station:mind', station: true }),
-            ...entry('plugins', { key: 'station:plugins', station: true }),
-            ...entry('models', { key: 'station:models', title: 'Голос', station: true }),
-        ];
-        const own: Record<string, string> = { mind: 'Мозг компьютера', plugins: 'Плагины компьютера' };
-        const more = sections
-            .filter((section) => section.id !== 'home' && section.id !== 'models')
-            .flatMap((section) => entry(section.id, own[section.id] ? { title: own[section.id] } : {}));
-        return { left, right, more };
-    }
-    const main = sections.filter((section) => (section.nav ?? 'main') === 'main');
-    const half = Math.ceil(main.length / 2);
-    const cells = (list: SectionDef[]) => list.flatMap((section) => entry(section.id));
-    return { left: cells(main.slice(0, half)), right: cells(main.slice(half)), more: cells(sections.filter((section) => section.nav === 'more')) };
+    const core = new Set(['home', 'character', 'skills', 'settings']);
+    const extra = sections.filter((section) => !core.has(section.id)).flatMap((section) => entry(section.id));
+    const workshop = dev && isAdmin() ? entry('skills', { key: 'skills/workshop', title: 'Мастерская', tab: 'workshop', icon: IconCode }) : [];
+    return {
+        left: [...entry('home'), ...entry('character')],
+        right: [...entry('skills'), ...workshop, ...extra, ...entry('settings', { tab: '' })],
+    };
 }
 
 /**
@@ -111,10 +145,8 @@ const tabKey = (section: string, query: Record<string, string>): string => (quer
 /** Какой пункт навигации открыт: стол, раздел колонки у помощника, мастерская или раздел. */
 function activeKey(place: Place, role: RoleInfo): string {
     if (place.section === 'home') return 'home';
-    if (role.role === 'helper') {
-        if (place.query.on === 'station') return `station:${place.section}`;
-        if (place.section === 'plugins' && place.tab === 'workshop') return 'plugins/workshop';
-    }
+    if (place.section === 'skills' && place.tab === 'workshop' && place.query.on !== 'station') return 'skills/workshop';
+    if (role.role === 'helper' && place.query.on === 'station') return `station:${place.section}`;
     return place.section;
 }
 
@@ -156,6 +188,11 @@ export function App() {
     const [packagesVersion, setPackagesVersion] = useState(0);
     const pollNow = useRef<() => void>();
     const theme = useTheme();
+    /** Слой разработчика (shell/dev.ts): «Мастерская» в доке, технические места в поиске. */
+    const dev = useDevMode();
+    /** Поиск по пульту: ⌘K или Ctrl+K, лупа в верхней строке. */
+    const [searchOpen, setSearchOpen] = useState(false);
+    useSearchKey(() => setSearchOpen(true));
     // Живой канал: присутствие колонок и запросы на ходу; перемена где-то ещё — перечитать сейчас, не ждать опроса.
     const feed = useLive(auth === 'ok' && can('station.view'), (name, subject, change) => {
         // Новая версия или канал открылся заново (пока его не было, шлюз мог найти версию или поставить её).
@@ -337,14 +374,8 @@ export function App() {
     const reach: Reach = helperStation ? (helperStation.reachable ? 'online' : 'offline') : reachOf(presence, voiceSession);
     const online = isReachable(reach);
     const lastSeen = presence?.lastSeen ?? (current && approved.length > 1 ? current.lastSeen : health?.station?.lastSeenAt);
-    const placementWords = placementLine(health);
-    const status = helperStation
-        ? `шлюз на колонке · ${helperStation.reachable ? 'на связи' : 'не отвечает'}`
-        : noStation
-          ? 'колонка не подключена'
-          : [reachLine(reach, MODE_WORDS[health?.panelMode ?? health?.mode ?? 'gateway'] ?? 'шлюз', lastSeen), placementWords]
-                .filter(Boolean)
-                .join(' · ');
+    // Строка состояния: «на связи · компьютер помогает». Режим — на главной («Кто отвечает») и в «Настройки» → «Колонка».
+    const status = noStation ? 'колонка не подключена' : [reachWords(reach, lastSeen), helpWords(role)].filter(Boolean).join(' · ');
     // Путь вопроса на дашборде: идущий запрос этой колонки, иначе последний законченный.
     const ofStation = feed.requests.filter((request) => !current || request.device === current.device);
     const trip = ofStation.find((request) => request.status === 'active') ?? ofStation.find((request) => request.status !== 'active');
@@ -375,7 +406,8 @@ export function App() {
         };
     }, []);
     /** Перейти и записать адрес: новый шаг истории или замена текущего. */
-    const navigate = (place: Place, replace = false): void => {
+    const navigate = (raw: Place, replace = false): void => {
+        const place = normalizePlace(raw);
         settle(place);
         writePlace(place, replace);
     };
@@ -384,11 +416,15 @@ export function App() {
      * (мастерская) сначала спрашивает: закрыть окно, выбрать раздел в доке — всё идёт сюда (shell/leave.ts).
      */
     const go = (next: string, tab?: string, item?: string, query: Record<string, string> = {}): void => {
-        const place: Place = { section: next, tab: tab ?? tabs[tabKey(next, query)], item: tab ? item : undefined, query };
+        // Прежнее имя раздела («Мозг», «Дом», «Журнал») — сразу на его новое место (shell/links.ts).
+        const named = normalizePlace({ section: next, tab, item, query });
+        // Пустая вкладка — раздел как есть, без запомненной (док открывает «Настройки» списком на телефоне).
+        const remembered = tab === '' ? undefined : tabs[tabKey(named.section, query)];
+        const place: Place = { section: named.section, tab: named.tab ?? remembered, item: named.tab ? named.item : undefined, query };
         if (!leaving()) return navigate(place);
         void mayLeave().then((ok) => ok && navigate(place));
     };
-    const openHouse = (connector?: string): void => go('house', 'connectors', connector);
+    const openHouse = (connector?: string): void => go('skills', 'connectors', connector);
     const signOut = (): void => {
         sessionStore.clear();
         setAuth('login');
@@ -396,10 +432,17 @@ export function App() {
     };
     // Пульт колонки в окне помощника — пульт шлюза: белая рамка (via.ts).
     useEffect(() => applyRole(VIA ? 'gateway' : role.role), [role.role]);
+    // Этап 4: компьютер помогает колонке — его окно и есть её пульт. Весь пульт идёт к колонке через проход компьютера;
+    // своё у компьютера — «Настройки» → «Компьютер-помощник». `?local` оставляет пульт компьютера (разработчику).
+    useEffect(() => {
+        if (VIA || OWN_PAGE || LOCAL || auth !== 'ok' || role.role !== 'helper' || !role.station?.key) return;
+        location.replace(`${location.pathname}?via=${encodeURIComponent(role.station.key)}${location.hash}`);
+    }, [auth, role.role, role.station?.key]);
+    useLeaveWhenNotHelping();
 
     if (auth === 'setup' || auth === 'login') {
         // Окно колонки у помощника вход не спрашивает: вход — у пульта компьютера; окно говорит, почему колонка не пустила.
-        if (VIA) return <ViaRefused setup={auth === 'setup'} />;
+        if (VIA) return <ViaRefused setup={auth === 'setup'} top={TOP_VIA} />;
         return (
             <AuthScreen
                 mode={auth}
@@ -461,7 +504,7 @@ export function App() {
                         version={offered.version}
                         critical={offered.critical}
                         auto={offered.auto}
-                        onOpen={() => go('house', 'gateway')}
+                        onOpen={() => go('settings', 'updates')}
                         onHide={() => {
                             setHiddenUpdate(offered.version);
                             remember('glass-update-later', offered.version);
@@ -473,26 +516,40 @@ export function App() {
         noStation,
         openConnect: () => setConnectOpen(true),
         openHouse,
-        // Лист подключения — элемент вкладки «Коннекторы»: `#/house/connectors/telegram` открывает его сразу.
-        openConnector: section === 'house' && tabs.house === 'connectors' ? (opened.item ?? null) : null,
-        connectorOpened: () => opened.item && navigate({ section: 'house', tab: 'connectors', query: {} }, true),
+        // Лист подключения — элемент вкладки «Подключения»: `#/skills/connectors/telegram` открывает его сразу.
+        openConnector: section === 'skills' && tabs.skills === 'connectors' ? (opened.item ?? null) : null,
+        connectorOpened: () => opened.item && navigate({ section: 'skills', tab: 'connectors', query: {} }, true),
         signOut,
         role,
         openAdd: () => setAddOpen(true),
     };
-    const { Shell } = VIA ? { Shell: WindowShell } : shellFor(theme.view);
-    const nav = navOf(sections, role);
+    // Страница компьютера внутри пульта колонки (`?own=`): только она, без дока и строки — её рамка уже стоит снаружи.
+    if (OWN_PAGE)
+        return (
+            <PanelContext.Provider value={panel}>
+                <OwnPage page={OWN_PAGE} />
+            </PanelContext.Provider>
+        );
+    // Во фрейме окна — пульт колонки без своего дока; во всё окно (этап 4) — обычный, с доком и строкой состояния.
+    const { Shell } = VIA && !TOP_VIA ? { Shell: WindowShell } : shellFor(theme.view);
+    const nav = navOf(sections, role, dev);
     const activeNav = activeKey(link, role);
     const onNav = (entry: NavEntry): void => go(entry.section, entry.tab, undefined, entry.station ? { on: 'station' } : {});
     const name = ownName(health, role) ?? displayName(current, drawing);
-    const mode = health?.panelMode ?? health?.mode;
-    const pick = (
-        <button class="desk-top-pick" aria-haspopup="dialog" aria-expanded={pickerOpen} onClick={() => setPickerOpen(true)}>
-            колонка «{name}»
-            <IconChevronDown />
-        </button>
+    // Верхняя строка — колонка и её состояние; имя открывает выбор колонки.
+    const line = (
+        <>
+            <button class="desk-top-pick desk-top-name" aria-haspopup="dialog" aria-expanded={pickerOpen} onClick={() => setPickerOpen(true)}>
+                {name}
+                <IconChevronDown />
+            </button>
+            <span class="desk-top-state">
+                <span aria-hidden="true" class={dotClass(reach)} />
+                {status}
+            </span>
+        </>
     );
-    // Телефон: подписи и капсулы в строке спрятаны — колонку выбирают по её имени с точкой связи.
+    // Телефон: строка короче — имя колонки с точкой связи.
     const short = (
         <button
             class="desk-top-pick desk-top-short"
@@ -506,47 +563,16 @@ export function App() {
             <IconChevronDown />
         </button>
     );
-    const helperChip = role.helper && (
-        <span class={`role-chip role-chip-ink${role.helper.state === 'up' && role.helper.enabled ? '' : ' is-off'}`}>
-            помощник {!role.helper.enabled ? 'выключен' : role.helper.state === 'up' ? 'на связи' : 'не на связи'}
-            <span class="role-chip-dot" aria-hidden="true" />
-        </span>
-    );
-    const top: TopLine =
-        role.role === 'helper'
-            ? {
-                  role: 'helper',
-                  title: 'Помощник',
-                  subtitle: 'этот компьютер',
-                  chips: (
-                      <>
-                          <span class={`role-chip${role.station?.reachable ? '' : ' is-off'}`}>
-                              шлюз — {pick}
-                              <span class="role-chip-state">{role.station?.reachable ? 'на связи' : 'не отвечает'}</span>
-                          </span>
-                          {role.station?.reachable && <StationModeChip station={role.station.key} version={version} />}
-                      </>
-                  ),
-                  narrow: short,
-              }
-            : {
-                  role: 'gateway',
-                  title: 'Шлюз',
-                  subtitle: pick,
-                  chips: (
-                      <>
-                          {mode && !noStation && (
-                              <span class="role-chip">
-                                  <span class={`role-chip-dot ${mode === 'own' ? 'own' : mode === 'relay' ? 'yandex' : 'gateway'}`} aria-hidden="true" />
-                                  режим «{MODE_TITLES[mode] ?? mode}»
-                              </span>
-                          )}
-                          {helperChip}
-                      </>
-                  ),
-                  narrow: short,
-              };
-    const entryOf = (key: string): NavEntry | undefined => [...nav.left, ...nav.right, ...nav.more].find((entry) => entry.key === key);
+    const top: TopLine = { role: role.role, line, narrow: short };
+    const places: SearchPlace[] = searchPlaces(role.role === 'helper', health?.placement?.role === 'station');
+    const pickPlace = (entry: SearchPlace): void => {
+        setSearchOpen(false);
+        if (entry.act === 'say') return setSayOpen(true);
+        if (entry.act === 'add') return setAddOpen(true);
+        if (entry.act === 'theme') return theme.toggleMode();
+        if (entry.place) go(entry.place.section, entry.place.tab, entry.place.item, entry.place.query ?? {});
+    };
+    const entryOf = (key: string): NavEntry | undefined => [...nav.left, ...nav.right].find((entry) => entry.key === key);
     const openedEntry = active && active.id !== home?.id ? entryOf(activeNav) : undefined;
     const scope: OpenWindow['scope'] = role.role === 'helper' && !VIA ? (link.query.on === 'station' ? 'station' : 'own') : undefined;
     const openWindow: OpenWindow | null =
@@ -589,7 +615,6 @@ export function App() {
                 active={activeNav}
                 onNav={onNav}
                 top={top}
-                onAdd={() => setAddOpen(true)}
                 desk={
                     home && (
                         <Boundary key={home.id} name={`раздел ${home.id}`} fallback={<SectionFailed title={home.title} />}>
@@ -610,26 +635,27 @@ export function App() {
                 }
                 actions={
                     <>
-                        <Slot name="header.actions" />
-                        <button
-                            aria-label={theme.mode === 'dark' ? 'Светлый режим' : 'Тёмный режим'}
-                            class="icon-btn glass"
-                            onClick={theme.toggleMode}
-                        >
-                            {theme.mode === 'dark' ? <IconSun /> : <IconMoon />}
+                        <button class="icon-btn glass search-btn" aria-label="Найти в пульте (⌘K)" title="Найти (⌘K)" onClick={() => setSearchOpen(true)}>
+                            <IconSearch size={16} />
                         </button>
+                        <Slot name="header.actions" />
+                        <AccountMenu onLook={() => go('settings', 'look')} onAccess={() => go('settings', 'access')} onSignOut={signOut} />
                     </>
                 }
                 talk={{ disabled: !can('station.say'), onTalk: () => setSayOpen(true) }}
                 notice={
-                    offline && (
-                        <div class="banner-offline" role="status">
-                            Шлюз недоступен — панель ждёт соединения…
-                        </div>
-                    )
+                    <>
+                        {offline && (
+                            <div class="banner-offline" role="status">
+                                DuoWave не отвечает — пульт ждёт соединения…
+                            </div>
+                        )}
+                        {TOP_VIA && <ViaNotice />}
+                    </>
                 }
             />
 
+            {searchOpen && <SearchPalette places={places} onPick={pickPlace} onClose={() => setSearchOpen(false)} />}
             {addOpen && (
                 <AddWidgetPanel onClose={() => setAddOpen(false)}>
                     <WidgetAgent
@@ -674,12 +700,12 @@ export function App() {
                         void readStations();
                         readMoved();
                     }}
-                    onConnected={(device) => {
+                    onConnected={() => {
+                        // Первый запуск (этап 5): имя и вид — позже, плашкой на главной, без отдельного шага.
                         setConnectOpen(false);
                         setReconnect(null);
                         void readStations();
                         readMoved();
-                        setSetupId(device);
                     }}
                     onOpenBrain={() => {
                         setConnectOpen(false);

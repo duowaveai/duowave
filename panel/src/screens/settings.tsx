@@ -21,11 +21,14 @@ export function SettingsScreen({
     tab,
     onTab,
     onSignOut,
+    bare = false,
 }: {
     catalog: AccessCatalog | null;
     tab: string;
     onTab: (tab: string) => void;
     onSignOut: () => void;
+    /** Без своих вкладок: страница в списке «Настроек» (docs/plans/panel-rebuild.md). */
+    bare?: boolean;
 }) {
     const tabs: Array<TabEntry<string>> = [
         { id: 'access', label: 'Доступ', icon: <IconKey size={16} /> },
@@ -34,7 +37,7 @@ export function SettingsScreen({
     const shown = tabs.some((entry) => entry.id === tab) ? tab : tabs[0].id;
     return (
         <>
-            <SectionTabs label="Настройки" tabs={tabs} tab={shown} onPick={onTab} />
+            {!bare && <SectionTabs label="Настройки" tabs={tabs} tab={shown} onPick={onTab} />}
             {shown === 'access' && (
                 <>
                     {can('users.manage') && <People catalog={catalog} />}

@@ -18,7 +18,7 @@ use crate::connectors::settings::ConnectorSettings;
 pub fn main(args: &[String]) -> anyhow::Result<()> {
     let config = super::config()?;
     let Some(livekit) = ConnectorSettings::open(&config)?.livekit() else {
-        return Err(Failure("LiveKit is not set up: the panel, «Дом» → «Коннекторы» → LiveKit".into()).into());
+        return Err(Failure("LiveKit is not set up: the panel, «Навыки» → «Подключения» → LiveKit".into()).into());
     };
     println!("{}", serde_json::to_string(&access(&livekit, args)?)?);
     Ok(())

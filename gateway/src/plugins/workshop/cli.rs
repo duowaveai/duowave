@@ -149,7 +149,7 @@ fn install(args: &[String]) -> Result<(), String> {
     let pretty = serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?;
     std::fs::write(target.join("manifest.json"), format!("{pretty}\n")).map_err(|error| error.to_string())?;
     println!(
-        "{id} {version} → {}. Пакет выключен: включает администратор в пульте («Плагины» → «Установлено»), новая версия работающего — кнопкой «Перезагрузить».",
+        "{id} {version} → {}. Пакет выключен: включает администратор в пульте («Навыки»), новая версия работающего — кнопкой «Перезагрузить».",
         target.display()
     );
     Ok(())

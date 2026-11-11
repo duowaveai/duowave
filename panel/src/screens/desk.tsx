@@ -61,7 +61,7 @@ function Scene({ room }: { room?: number }) {
                         <IconLaptop size={18} />
                     </span>
                     <span class="flex flex-col">
-                        <b>Этот компьютер — помощник</b>
+                        <b>Этот компьютер помогает колонке</b>
                         <span class="w-cap">даёт колонке «{placedName(panel.role.station) ?? panel.current?.name ?? panel.drawing.title}» слух, голос и модель</span>
                     </span>
                 </div>

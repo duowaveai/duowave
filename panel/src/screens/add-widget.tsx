@@ -69,7 +69,7 @@ export function AddWidgetPanel({ onClose, children }: { onClose: () => void; chi
                         class="add-item"
                         onClick={() => {
                             onClose();
-                            panel.go('plugins', 'catalog');
+                            panel.go('skills', 'catalog');
                         }}
                     >
                         <span class="add-item-icon" aria-hidden="true">

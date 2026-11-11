@@ -125,7 +125,7 @@ impl PersonaService {
                 }
                 Some(Legacy::Replaced(package)) => {
                     return Err(ApiError::bad_request(format!(
-                        "Мажордома заменил персонаж из каталога ({package}): «Дом» → «Пакеты»."
+                        "Мажордома заменил персонаж из каталога ({package}): он в «Персонаже»."
                     )));
                 }
                 _ => {}

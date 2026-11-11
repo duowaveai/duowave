@@ -531,7 +531,7 @@ impl MovesService {
             client
                 .post("/api/v1/home-server/link", json!({ "enabled": false }))
                 .await
-                .map_err(|error| anyhow::anyhow!("помощь ПК не выключилась: {error}"))?;
+                .map_err(|error| anyhow::anyhow!("помощь компьютера не выключилась: {error}"))?;
         }
         self.step(id, MoveStep::Settings, StepState::Done);
 
@@ -562,7 +562,7 @@ impl MovesService {
             })
             .await;
         if arrived.is_none() {
-            anyhow::bail!("колонка не вернулась к своему шлюзу за 3 минуты: «Вернуть как было» вернёт её Яндексу");
+            anyhow::bail!("колонка не вернулась к своему шлюзу за 3 минуты: где она сейчас — «Настройки» → «Колонка» → «Где работает DuoWave»");
         }
         // Where the main settings live from now: the station's gateway is told (it keeps them, or takes them).
         let home = if request.settings_home == SettingsHome::Pc { "pc" } else { "station" };
@@ -871,9 +871,9 @@ impl MovesService {
         let outcome = async {
             started.map_err(|error| error.to_string())?;
             let client = watch.client().ok_or("шлюз не на колонке")?;
-            self.wait(self.deps.timing.start_ms, || async { client.health().await.is_ok() })
-                .await
-                .ok_or("шлюз на колонке снова не запустился: смотрите «Что случилось»")?;
+            self.wait(self.deps.timing.start_ms, || async { client.health().await.is_ok() }).await.ok_or(
+                "шлюз на колонке снова не запустился: что с ним — «Настройки» → «Колонка» → «Где работает DuoWave»",
+            )?;
             self.run_ok(shell.as_ref(), &format!("{BIN} station point local --reboot"), None)
                 .await
                 .map(|_| ())

@@ -360,7 +360,7 @@ impl Workshop {
         if let Some(taken) = self.host.installed(id).filter(|_| kind.is_some() || openapi.is_some()) {
             let origin = self.host.origin_of(id);
             let way = if origin.editable() {
-                " Или откройте его самого: «Открыть в мастерской» в «Дом» → «Пакеты»."
+                " Или откройте его самого: «Открыть в мастерской» в «Навыки»."
             } else {
                 ""
             };

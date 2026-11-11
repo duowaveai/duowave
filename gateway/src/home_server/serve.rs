@@ -176,7 +176,7 @@ async fn plugin_call(
     Ok(axum::Json(json!({ "result": answer })).into_response())
 }
 
-pub const NO_BOT: &str = "На этом компьютере не настроен бот Telegram: «Дом» → «Коннекторы» → Telegram.";
+pub const NO_BOT: &str = "На этом компьютере не настроен бот Telegram: «Навыки» → «Подключения» → Telegram.";
 const SEND_SHAPE: &str = "JSON: {contact, text} — кому и что передать";
 
 /// The names of this computer's Telegram contacts, for the station's «передай …»: no chats.

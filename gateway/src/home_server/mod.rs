@@ -272,7 +272,9 @@ impl HomeServerService {
             let url = match url {
                 Some(url) => url.to_string(),
                 None => self.known().map(|setting| setting.url).ok_or_else(|| {
-                    ApiError::bad_request("Адреса ПК ещё нет: впишите его или включите помощь из пульта ПК.")
+                    ApiError::bad_request(
+                        "Адреса компьютера ещё нет: впишите его или включите помощь из пульта компьютера.",
+                    )
                 })?,
             };
             self.set(Some(&url), key, actor.clone())?;
@@ -280,7 +282,7 @@ impl HomeServerService {
         if let Some(on) = enabled {
             let Some(mut setting) = self.known().filter(|_| self.secrets.has(KEY_SECRET)) else {
                 return Err(ApiError::bad_request(
-                    "Колонка ещё не знает ПК: включите «ПК помогает колонке» в пульте ПК — он пришлёт адрес и ключ.",
+                    "Колонка ещё не знает компьютер: включите «Помогать колонке» в пульте компьютера — он пришлёт адрес и ключ.",
                 ));
             };
             if setting.enabled != on {
@@ -299,7 +301,9 @@ impl HomeServerService {
             without.sort();
             without.dedup();
             let Some(mut setting) = self.known() else {
-                return Err(ApiError::bad_request("Колонка ещё не знает ПК: сначала включите «ПК помогает колонке»."));
+                return Err(ApiError::bad_request(
+                    "Колонка ещё не знает компьютер: сначала включите «Помогать колонке» в пульте компьютера.",
+                ));
             };
             if setting.without != without {
                 setting.without = without;
@@ -777,7 +781,7 @@ mod tests {
     impl ModeGate for Gate {
         fn check(&self, mode: PanelMode) -> Result<(), String> {
             if mode == PanelMode::Own && self.0.state() != HomeServer::Up {
-                return Err("«Свой» сейчас не включить: компьютер не на связи.".into());
+                return Err("«Своё» сейчас не включить: компьютер не на связи.".into());
             }
             Ok(())
         }

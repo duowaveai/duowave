@@ -121,7 +121,7 @@ async fn choose(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Va
         Some("computer") => {
             if !offered(&app) {
                 return Err(ApiError::conflict(
-                    "Компьютер не даёт колонке голос: включите «ПК помогает колонке» и голос в «Что даю колонке».",
+                    "Компьютер не даёт колонке голос: включите «Помогать колонке» в пульте компьютера.",
                 ));
             }
             let provider = app.voice.use_home().map_err(ApiError::internal)?;

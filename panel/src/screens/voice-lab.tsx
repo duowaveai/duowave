@@ -723,7 +723,7 @@ function ImprintStep({ lab, engine, working, act }: { lab: VoiceLabView; engine:
                 })}
                 {enabling === 'done' ? (
                     <p class="t-caption m-0 c-accent-text">
-                        {pendingNote ?? 'Колонка говорит вашим голосом.'} Вернуть прежний — выберите его на экране «Голос».
+                        {pendingNote ?? 'Колонка говорит вашим голосом.'} Вернуть прежний — выберите его в «Персонаж» → «Голос».
                     </p>
                 ) : needs.body ? (
                     <div class="flex flex-col gap-8">{needs.body}</div>

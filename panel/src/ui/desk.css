@@ -48,6 +48,11 @@ html[data-theme='dark'] {
 }
 .desk-top-role { font-size: 14px; line-height: 20px; font-weight: 500; white-space: nowrap; }
 .desk-top-sub { font-size: 13px; line-height: 18px; color: var(--sub); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Строка состояния (docs/plans/panel-rebuild.md): имя колонки — выбор колонки, рядом точка связи и что с ней. */
+.desk-top-line { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.desk-top-name { font-size: 14px; line-height: 20px; font-weight: 500; white-space: nowrap; color: var(--text); }
+.desk-top-state { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; line-height: 18px; color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.desk-top-state .status-dot { flex: none; }
 .desk-top-end { margin-left: auto; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .desk-top-end .icon-btn { width: 32px; height: 32px; }
 .desk-top-clock { font-size: 13px; line-height: 18px; padding-left: 6px; font-variant-numeric: tabular-nums; }
@@ -112,28 +117,6 @@ html[data-theme='dark'] .role-chip-ink { background: #f5f3f1; color: #11100f; }
 }
 .self-start { align-self: flex-start; }
 
-/* Помощник: верхняя строка, док и боковая панель — тёмные. */
-html[data-role='helper'] .desk-top,
-html[data-role='helper'] .dock,
-html[data-role='helper'] .dock-add,
-html[data-role='helper'] .side-shell > .side-panel,
-html[data-role='helper'] .side-top,
-html[data-role='helper'] .side-drawer {
-    background: var(--helper-bg);
-    border-color: var(--helper-line);
-    color: var(--helper-text);
-    --text: var(--helper-text);
-    --sub: var(--helper-sub);
-    --mute: rgba(245, 243, 241, 0.42);
-    --chip-bg: var(--helper-chip);
-    --hover-bg: #242220;
-    --icon-bg: #242220;
-    --glass-border: var(--helper-line);
-}
-html[data-role='helper'] .desk-top .role-chip-ink,
-html[data-role='helper'] .side-panel .role-chip-ink { background: #f5f3f1; color: #11100f; }
-html[data-role='helper'] .desk-top .icon-btn.glass { background: var(--helper-chip); border-color: var(--helper-line); color: var(--helper-text); }
-
 /* ─── Стол ─────────────────────────────────────────────────────── */
 .desk-main {
     min-height: 100dvh;
@@ -179,6 +162,7 @@ html[data-role='helper'] .desk-top .icon-btn.glass { background: var(--helper-ch
     .desk-main { padding-left: 12px; padding-right: 12px; }
     .desk-top { padding-left: 12px; padding-right: 12px; gap: 8px; }
     .desk-top-sub,
+    .desk-top-line,
     .desk-top-clock { display: none; }
     .desk-top .role-chip:not(.role-chip-ink) { display: none; }
     .desk-top-narrow { display: flex; }
@@ -621,6 +605,15 @@ html[data-theme='dark'] .widget.music { background: color-mix(in srgb, var(--mus
 .desk-columns { position: absolute; display: flex; flex-direction: column; gap: 16px; }
 .desk-slot { position: relative; }
 .desk-placed { position: absolute; }
+/* Столбцы и поставленные виджеты — всегда своим слоем. В окне приложения (WebKit) столбцы у колонки прыгали вниз на
+   долю точки и обратно, пока на сцене горели слух и голос (владелец, 11.11, масштаб стола 86 %): похоже, движок то
+   выносит столбец в отдельный слой, то возвращает, и при дробном масштабе тот встаёт на пиксели иначе. Слой, который
+   не меняется, не прыгает. Подсказка — opacity, а не transform: слой с will-change: transform Chrome не перерисовывает
+   при смене масштаба стола, и текст в нём мылится. */
+.desk-columns,
+.desk-placed { will-change: opacity; }
+/* Свой слой — своё наложение: виджет с открытым меню встаёт над соседями, чтобы меню не ушло под них. */
+.desk-placed:has(.widget-menu) { z-index: 16; }
 .desk-placed.is-moving { z-index: 5; }
 .desk-placed.is-moving > .widget,
 .desk-placed.is-moving > .widget-bare > .widget,
@@ -784,3 +777,122 @@ html[data-theme='dark'] .hl-c { color: #a8a29e; }
 html[data-look] .code-editor > textarea.code-input,
 html[data-look] .code-editor > textarea.code-input:focus { background: transparent; border-color: transparent; box-shadow: none; }
 html[data-look] .code-editor:focus-within { border-color: var(--text); }
+
+/* ─── Пересборка пульта (docs/plans/panel-rebuild.md) ───────────── */
+
+/* Поиск ⌘K: лист сверху посередине, над всем пультом. */
+.search-layer { position: fixed; inset: 0; z-index: 40; display: flex; justify-content: center; align-items: flex-start; padding: 12vh 16px 16px; }
+.search-scrim { position: absolute; inset: 0; background: var(--scrim, rgba(0, 0, 0, 0.28)); border: 0; cursor: default; }
+.search-box {
+    position: relative;
+    width: min(560px, 100%);
+    max-height: 70vh;
+    display: flex;
+    flex-direction: column;
+    border-radius: 20px;
+    overflow: hidden;
+    background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg);
+}
+.search-field { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--glass-border); color: var(--sub); }
+.search-field input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; font: inherit; font-size: 16px; line-height: 22px; color: var(--text); }
+.search-field input::-webkit-search-cancel-button { display: none; }
+.search-kbd { font: inherit; font-size: 11px; line-height: 16px; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--glass-border); color: var(--sub); }
+.search-results { list-style: none; margin: 0; padding: 6px; overflow-y: auto; }
+.search-hit { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 10px 12px; border-radius: 12px; cursor: pointer; }
+.search-hit b { font-size: 14px; line-height: 20px; font-weight: 500; }
+.search-hit.on { background: var(--hover-bg); }
+.search-none { padding: 14px 12px; }
+.search-btn { flex: none; }
+
+/* Аватар: круг с первой буквой, меню под ним. */
+.account { position: relative; flex: none; }
+.account-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    background: var(--label-bg, #fff);
+    box-shadow: 0 0 0 1px var(--glass-border);
+}
+.account-btn:hover { box-shadow: 0 0 0 1px var(--glass-border), 0 2px 8px rgba(0, 0, 0, 0.08); }
+.account-menu { position: absolute; top: 40px; right: 0; z-index: 25; min-width: 220px; padding: 6px; border-radius: 14px; display: flex; flex-direction: column; }
+.account-who { display: flex; flex-direction: column; padding: 8px 12px 10px; border-bottom: 1px solid var(--glass-border); margin-bottom: 6px; }
+.account-who b { font-size: 14px; line-height: 20px; font-weight: 500; }
+.account-theme { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 0 2px 6px; }
+.account-theme button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 36px;
+    border-radius: 10px;
+    font-size: 13px;
+    color: var(--text);
+    box-shadow: 0 0 0 1px var(--glass-border);
+}
+.account-theme button.on { box-shadow: 0 0 0 2px var(--text); font-weight: 500; }
+
+/* «Настройки» списком: слева список страниц, справа открытая; на телефоне — что-то одно. */
+.set-split { display: grid; grid-template-columns: minmax(200px, 240px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.set-list { display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; }
+.set-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: 12px; text-align: left; color: var(--text); }
+.set-row:hover { background: var(--hover-bg); }
+.set-row[aria-current='page'] { background: var(--hover-bg); box-shadow: inset 0 0 0 1px var(--glass-border); }
+.set-row > svg:last-child { flex: none; color: var(--sub); }
+.set-row-icon { flex: none; width: 32px; height: 32px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; background: var(--label-bg, #fff); box-shadow: 0 0 0 1px var(--glass-border); }
+.set-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.set-row-text b { font-size: 14px; line-height: 20px; font-weight: 500; }
+.set-row-text .w-cap { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.set-page { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.set-page-title { margin: 2px 0 0; font-size: 20px; line-height: 26px; font-weight: 500; }
+.set-back { display: none; align-self: flex-start; align-items: center; gap: 4px; font-size: 13px; color: var(--sub); }
+@media (max-width: 760px) {
+    .set-split { grid-template-columns: minmax(0, 1fr); }
+    .set-split[data-view='list'] .set-page,
+    .set-split[data-view='page'] .set-list { display: none; }
+    .set-back { display: inline-flex; }
+}
+
+/* «Персонаж» одной страницей (screens/character.tsx): кто отвечает сверху, ниже — голос, манера, мозг, свой голос. */
+.char-page { display: flex; flex-direction: column; gap: 12px; }
+.char-hero { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 16px; padding: 16px; }
+.char-hero-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.char-hero-name { margin: 0; font-size: 22px; line-height: 28px; font-weight: 500; }
+.char-hero-actions { display: flex; align-items: center; gap: 8px; }
+.char-rows { padding: 4px 16px; }
+.char-row + .char-row { border-top: 1px solid var(--row-line, var(--divider)); }
+.char-row { padding: 6px 0; }
+.char-row-head { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; text-align: left; color: var(--text); border-radius: 12px; }
+.char-row-head:disabled { cursor: default; }
+.char-row-head > svg:last-child { flex: none; color: var(--sub); }
+.char-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.char-row-text b { font-size: 14px; line-height: 20px; font-weight: 500; }
+.char-row-value { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; line-height: 18px; font-weight: 500; white-space: nowrap; }
+.char-row-value::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--tone-line); flex: none; }
+.char-tones { display: flex; flex-direction: column; gap: 10px; padding: 4px 0 8px 42px; }
+.char-tone { display: flex; flex-direction: column; gap: 6px; padding: 0 0 8px 42px; }
+.char-tones .char-tone { padding: 0; }
+.deeper-back { display: inline-flex; align-self: flex-start; align-items: center; gap: 4px; margin-bottom: 4px; font-size: 13px; color: var(--sub); }
+.deeper-back:hover { color: var(--text); }
+@media (max-width: 560px) {
+    .char-hero { grid-template-columns: auto minmax(0, 1fr); }
+    .char-hero-actions { grid-column: 1 / -1; }
+}
+
+/* «Навыки» одним списком (screens/skills.tsx): что добавить, что умеет, чего пока нет, подключения и программы. */
+.skills-page { display: flex; flex-direction: column; gap: 12px; }
+
+/* Страница компьютера в пульте колонки (screens/helper-pc.tsx, этап 4): фрейм без рамки, а внутри — прозрачно. */
+.own-frame { display: block; width: 100%; height: min(72dvh, 760px); min-height: 420px; border: 0; background: transparent; color-scheme: normal; }
+html.own-page,
+html.own-page body { background: transparent !important; }
+.own-page-body { display: flex; flex-direction: column; gap: 12px; padding: 2px 2px 24px; }
+
+/* Первый запуск, шаг 4 (screens/connect.tsx): пульт на телефоне — адрес этого компьютера в домашней сети. */
+.connect-phone { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border-radius: 14px; box-shadow: 0 0 0 1px var(--glass-border); }
+.connect-phone b { font-size: 14px; line-height: 20px; font-weight: 500; }

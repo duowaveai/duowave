@@ -1,94 +1,12 @@
 import { useEffect, useState } from 'preact/hooks';
 
-import { AccessCatalog, Station, UpdateStatus, api, can, plural, problemOf } from '../api';
-import { IconLinks, IconSpeaker } from '../icons';
+import { Station, UpdateStatus, api, can, plural, problemOf } from '../api';
 import { timeAgo } from '../time';
-import { AskSheet } from './ask';
-import { Connectors } from './connectors';
-import { McpSection } from './mcp';
-import type { SettingsTab } from './mind';
-import { StationMemoryCard } from './memory';
-import { PlacementCard } from './placement';
-import { Contribution, useSlot } from '../shell/slot';
-import { SectionTabs, TabEntry } from '../ui/tabs';
-import { checkIsStale, setUpdateStatus, useOfferedVersion } from '../updates';
+import { checkIsStale, setUpdateStatus } from '../updates';
 import { ask } from '../ui/confirm';
 
-export type HouseTab = 'connectors' | 'gateway';
-
-/**
- * «Дом»: всё, что вокруг колонки, вкладками (и вкладками плагинов из слота house.tabs). «Коннекторы» — что подключено дома и что уходит в интернет, и
- * где каждое настраивается (своё — листом здесь), MCP-серверы; на колонке первым — её домашний сервер. «Шлюз» — где
- * он работает (компьютер, колонка, колонка с домашним сервером) и как туда перейти, каким колонкам он отвечает и какая
- * версия стоит. Пакеты и каталог — в разделе «Плагины» (screens/plugins-section.tsx). Люди, ключи, свой вход, история
- * изменений и вид пульта — раздел «Настройки» (screens/settings.tsx).
- */
-export function HouseScreen({
-    catalog,
-    tab,
-    onTab,
-    onOpenSettings,
-    openConnector,
-    onConnectorOpened,
-}: {
-    catalog: AccessCatalog | null;
-    /** Встроенная вкладка (HouseTab) или вкладка плагина — `плагин.вклад`. */
-    tab: string;
-    onTab: (tab: string) => void;
-    onOpenSettings: (tab: SettingsTab) => void;
-    /** Лист подключения, который открыть сразу (ссылка с дашборда). */
-    openConnector?: string | null;
-    onConnectorOpened?: () => void;
-}) {
-    const [asking, setAsking] = useState(false);
-    const offered = useOfferedVersion();
-    // Вкладки плагинов — после своих; у каждой своя граница ошибок.
-    const extra = useSlot('house.tabs');
-    const tabs: Array<TabEntry<string>> = [
-        ...(can('connectors.view') ? [{ id: 'connectors', label: 'Коннекторы', icon: <IconLinks size={16} /> }] : []),
-        ...(can('station.view') ? [{ id: 'gateway', label: 'Шлюз', icon: <IconSpeaker size={16} />, dot: !!offered }] : []),
-        ...extra.map((entry) => ({ id: entry.key, label: entry.title ?? entry.id, icon: entry.icon ? <entry.icon size={16} /> : null })),
-    ];
-    // Вкладка, которой этому входу не видно, — первая из видных.
-    const shown = tabs.some((entry) => entry.id === tab) ? tab : tabs[0].id;
-    return (
-        <>
-            <SectionTabs label="Дом" tabs={tabs} tab={shown} onPick={onTab} />
-            {shown === 'connectors' && (
-                <>
-                    <Connectors onOpenSettings={onOpenSettings} openId={openConnector} onOpened={onConnectorOpened} />
-                    <McpSection onAsk={() => setAsking(true)} />
-                    {asking && <AskSheet onClose={() => setAsking(false)} />}
-                </>
-            )}
-            {shown === 'gateway' && (
-                <>
-                    <PlacementCard />
-                    <StationMemoryCard />
-                    <Stations />
-                    <Updates />
-                </>
-            )}
-            {extra.map(
-                (entry) =>
-                    shown === entry.key && (
-                        <Contribution
-                            key={entry.key}
-                            entry={entry}
-                            fallback={
-                                <section class="card glass" role="alert">
-                                    <p class="t-meta m-0">
-                                        Вкладка «{entry.title ?? entry.id}» не открылась — ошибка в плагине «{entry.plugin}» (подробности в консоли
-                                        браузера). Остальной «Дом» работает.
-                                    </p>
-                                </section>
-                            }
-                        />
-                    ),
-            )}
-        </>
-    );
-}
+// Карточки прежнего «Дома»: колонки, которым отвечаем, и обновления DuoWave. Теперь они в «Настройки» → «Колонка» и
+// «Обновления и копии» (screens/places.tsx); подключения и MCP — в «Навыках».
 
 const STATION_PILL: Record<Station['status'], { cls: string; label: string }> = {
     approved: { cls: 'pill-own', label: 'отвечаем' },
@@ -97,7 +15,7 @@ const STATION_PILL: Record<Station['status'], { cls: string; label: string }> = 
 };
 
 /** Колонки: первая подключилась сама, каждую следующую пускает администратор. */
-function Stations() {
+export function Stations() {
     const [list, setList] = useState<Station[] | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState<string | null>(null);
@@ -196,7 +114,7 @@ function Stations() {
  * право (system.update), и только по своему согласию; шлюз в приложении, Docker или Home Assistant обновляет тот,
  * кто им управляет, — тогда здесь подсказка вместо кнопки. Шлюз на Node этого раздела не знает: раздел молчит.
  */
-function Updates() {
+export function Updates() {
     const [status, setShown] = useState<UpdateStatus | null>(null);
     const [checking, setChecking] = useState(false);
     const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);

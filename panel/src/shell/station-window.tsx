@@ -34,6 +34,21 @@ function useCopy(): number | null {
     return copyShown();
 }
 
+/**
+ * Пульт колонки во всё окно (docs/plans/panel-rebuild.md, этап 4): колонка не отвечает — плашка, что показана её
+ * копия и что менять можно, когда она вернётся. «Компьютер-помощник» при этом работает: он говорит с компьютером сам.
+ */
+export function ViaNotice() {
+    const copy = useCopy();
+    if (copy === null) return null;
+    return (
+        <div class="banner-offline" role="status">
+            Колонка не отвечает — показываю её копию от {hhmm(copy)}. Менять можно, когда она вернётся; «Компьютер-помощник» в
+            «Настройках» работает.
+        </div>
+    );
+}
+
 /** Полоса колонки над её разделом: чья она, на связи ли, где сохраняется. */
 function StationStrip() {
     const panel = usePanel();
@@ -120,7 +135,7 @@ const REFUSALS = {
  * Окно колонки, которое не пустили (docs/plans/desk.md, этап 4). Вход здесь не спрашивается: он у пульта компьютера, а
  * пароль колонки окну ни к чему. Окно говорит, в чём дело: кончился вход компьютера или колонка не узнала ключ пары.
  */
-export function ViaRefused({ setup }: { setup: boolean }) {
+export function ViaRefused({ setup, top = false }: { setup: boolean; top?: boolean }) {
     useEscapeToHelper();
     const [why, setWhy] = useState<{ kind: keyof typeof REFUSALS; message?: string } | null>(setup ? { kind: 'setup' } : null);
     useEffect(() => {
@@ -140,10 +155,16 @@ export function ViaRefused({ setup }: { setup: boolean }) {
                         <>
                             <h2 class="t-title-xs m-0">{said.title}</h2>
                             <p class="t-caption m-0">{why?.message ?? said.text}</p>
-                            <div>
+                            <div class="flex gap-8 flex-wrap">
                                 <button class="w-btn" onClick={() => location.reload()}>
                                     Попробовать снова
                                 </button>
+                                {/* Во всё окно (этап 4) — путь в пульт самого компьютера: войти, связать заново. */}
+                                {top && (
+                                    <button class="w-btn" onClick={() => location.replace(`${location.pathname}?local${location.hash}`)}>
+                                        Открыть пульт компьютера
+                                    </button>
+                                )}
                             </div>
                         </>
                     ) : (
@@ -256,7 +277,7 @@ export function StationFrame({ station, section, tab, item }: { station: string;
     );
 }
 
-const MODE_NAMES: Record<string, string> = { relay: 'Яндекс', gateway: 'Шлюз', own: 'Свой' };
+const MODE_NAMES: Record<string, string> = { relay: 'Яндекс', gateway: 'Вместе', own: 'Своё' };
 
 /**
  * «у колонки «Свой»» в верхней строке помощника: режим колонки — у её шлюза, через проход. Раз в полминуты и по

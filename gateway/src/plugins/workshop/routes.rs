@@ -389,7 +389,7 @@ async fn chat(
         return Err(ApiError::bad_request("Напишите, что сделать."));
     }
     if !app.dialog.enabled() {
-        return Err(ApiError::conflict("Модель не выбрана: добавьте провайдера на вкладке «Мозг»."));
+        return Err(ApiError::conflict("Модель не выбрана: добавьте провайдера в «Персонаж» → «Мозг»."));
     }
     let key = format!("workshop:{principal}:{id}");
     if body.fresh {

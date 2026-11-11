@@ -353,7 +353,7 @@ export function AgentPlaque({ place }: { place: 'top' | 'side' }) {
     const state = job.busy ? 'is-busy' : end === 'failed' ? 'is-failed' : end === 'stopped' ? 'is-stopped' : 'is-done';
     // Черновик колонки — в её окне «Плагины», на вкладке мастерской (StationFrame кладёт его в адрес фрейма).
     const open = () =>
-        whose === 'station' ? panel.go('plugins', 'workshop', job.draft, { on: 'station' }) : panel.go('plugins', 'workshop', job.draft);
+        whose === 'station' ? panel.go('skills', 'workshop', job.draft, { on: 'station' }) : panel.go('skills', 'workshop', job.draft);
     const title = whose === 'station' ? 'Открыть в мастерской колонки' : 'Открыть в мастерской';
     const stop = async () => {
         const key = asked;

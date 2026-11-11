@@ -234,7 +234,7 @@ impl StationGateway {
         record: &mut StationPlacement,
     ) -> Result<(), String> {
         if let Some((secret, id)) = key {
-            body["url"] = Value::String(self.home_url().ok_or("не вижу адрес этого ПК в домашней сети")?);
+            body["url"] = Value::String(self.home_url().ok_or("не вижу адрес этого компьютера в домашней сети")?);
             body["key"] = Value::String(secret);
             record.home_key_id = Some(id);
         }

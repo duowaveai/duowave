@@ -4,6 +4,7 @@
 // плагинов.
 
 import { useEffect, useState } from 'preact/hooks';
+import { useDevMode } from '../shell/dev';
 
 import { ApiError, DraftView, HelperPart, HelperServed, PlacementView, RequestView, api, can, problemOf } from '../api';
 import { CAPABILITY_TITLES } from '../capabilities';
@@ -41,7 +42,7 @@ export function useWhoOpen(): [boolean, () => void] {
 export function ModeWidget() {
     const panel = usePanel();
     const [open, toggle] = useWhoOpen();
-    return <ModeCard health={panel.health} onOpenSettings={() => panel.go('models', 'voice')} detailsOpen={open} onToggleDetails={toggle} />;
+    return <ModeCard health={panel.health} onOpenSettings={() => panel.go('character', 'voice')} detailsOpen={open} onToggleDetails={toggle} />;
 }
 
 const hhmm = (iso: string): string => new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
@@ -87,7 +88,7 @@ export function RecentWidget() {
                 })
                 .catch((e) => {
                     if (signal.aborted || !(e instanceof ApiError) || e.status !== 403) return;
-                    setRefused(refusedByStation(e) ? 'Журнал колонки виден администратору.' : problemOf(e));
+                    setRefused(refusedByStation(e) ? 'Историю колонки видит администратор.' : problemOf(e));
                 }),
     });
     if (station && refused) return <p class="w-cap m-0">{refused}</p>;
@@ -96,7 +97,7 @@ export function RecentWidget() {
         : panel.feed.requests.filter((request) => !device || request.device === device).slice(0, 4);
     if (list.length === 0) return <p class="w-cap m-0">Скажите что-нибудь колонке — вопросы появятся здесь.</p>;
     // У помощника это вопросы колонки — и журнал её: окно колонки, а не журнал компьютера, где их нет.
-    const openJournal = () => (station ? panel.go('journal', undefined, undefined, { on: 'station' }) : panel.go('journal'));
+    const openJournal = () => (station ? panel.go('settings', 'history', undefined, { on: 'station' }) : panel.go('settings', 'history'));
     return (
         <div class="w-rows">
             {list.map((request) => {
@@ -127,7 +128,7 @@ export function UnsupportedWidget() {
     return (
         <div class="w-rows">
             {list.slice(0, 3).map((entry) => (
-                <button key={entry.at + entry.text} class="w-row w-row-btn w-row-col" onClick={() => panel.go('journal')}>
+                <button key={entry.at + entry.text} class="w-row w-row-btn w-row-col" onClick={() => panel.go('settings', 'history')}>
                     <span class="w-text">«{entry.text}»</span>
                     <span class="w-cap">
                         {timeAgo(entry.at)} · {entry.reason}
@@ -224,12 +225,24 @@ const PARTS: Array<{ id: HelperPart; title: string; served: (n: number) => strin
     { id: 'messages', title: 'Сообщения', served: (n) => counted(n, 'сообщение', 'сообщения', 'сообщений'), without: 'никто' },
 ];
 
+/** «сегодня 14:02», «вчера 22:10», «08.11 09:30» — когда снята копия. */
+function copyDay(at: string): string {
+    const date = new Date(at);
+    const time = date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    const day = new Date();
+    if (date.toDateString() === day.toDateString()) return `сегодня ${time}`;
+    day.setDate(day.getDate() - 1);
+    if (date.toDateString() === day.toDateString()) return `вчера ${time}`;
+    return `${date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })} ${time}`;
+}
+
 /**
  * «Что даю колонке» (docs/plans/desk.md, этап 4; макет SpaceHelper): помощь целиком и по отдельности — слух, голос,
  * модель, сообщения — со счётом за сегодня и тем, чем колонка обходится без компьютера.
  */
 export function HelperWidget() {
     const panel = usePanel();
+    const dev = useDevMode();
     const [view, reread] = usePlacementView();
     const [served, setServed] = useState<HelperServed | null>(null);
     const [busy, setBusy] = useState<string | null>(null);
@@ -273,6 +286,10 @@ export function HelperWidget() {
                     onChange={(on) => run('all', () => api.setStationHelper(on, station?.key))}
                 />
             </label>
+            {/* Один переключатель; по частям — «Тонкая настройка», слой разработчика (docs/plans/panel-rebuild.md, этап 6). */}
+            {!dev && helping && <p class="w-cap m-0">Компьютер даёт колонке всё, что может, пока включён; уснёт — колонка обойдётся сама.</p>}
+            {dev && <span class="w-cap">Тонкая настройка</span>}
+            {dev && (
             <div class="w-rows">
                 {PARTS.map((part) => {
                     const on = helping && !without.includes(part.id);
@@ -306,7 +323,8 @@ export function HelperWidget() {
                     );
                 })}
             </div>
-            {served && <p class="w-cap m-0">Счёт — за сегодня, с запуска DuoWave на этом компьютере.</p>}
+            )}
+            {dev && served && <p class="w-cap m-0">Счёт — за сегодня, с запуска DuoWave на этом компьютере.</p>}
             <KeepAwake />
             {error && (
                 <p class="w-cap c-dot-offline m-0" role="alert">
@@ -339,7 +357,7 @@ function KeepAwake() {
         <label class="w-toggle">
             <span class="flex-1 min-w-0 flex flex-col">
                 <span class="w-strong">Не давать компьютеру спать</span>
-                <span class="w-cap">уснёт — колонка обойдётся облаком и голосом Алисы, «Свой» вернётся с ним</span>
+                <span class="w-cap">уснёт — колонка обойдётся облаком и голосом Алисы, «Своё» вернётся с ним</span>
             </span>
             <Switch
                 on={state.keepAwake !== false}
@@ -386,7 +404,7 @@ export function WatchWidget() {
             <div class="w-rows">
                 <div class="w-row">
                     <span class="w-text">Копия настроек</span>
-                    <span class="w-cap">{last ? timeAgo(last.at) : 'ещё нет'}</span>
+                    <span class="w-cap">{last ? `${copyDay(last.at)} ✓` : 'ещё нет'}</span>
                 </div>
                 <div class="w-row">
                     <span class="w-text">Обновления</span>
@@ -423,7 +441,7 @@ export function WatchWidget() {
                         {busy === 'update' ? 'Обновляю…' : `Обновить до ${station.update}`}
                     </button>
                 )}
-                <button class="w-btn" onClick={() => panel.go('house', 'gateway')}>
+                <button class="w-btn" onClick={() => panel.go('settings', 'station')}>
                     Открыть
                 </button>
             </div>
@@ -451,7 +469,7 @@ export function WorkshopWidget() {
                 .then((view) => !signal.aborted && setDrafts(view.drafts))
                 .catch(() => !signal.aborted && setDrafts([])),
     });
-    const open = (id?: string) => panel.go('plugins', 'workshop', id);
+    const open = (id?: string) => panel.go('skills', 'workshop', id);
     if (!drafts) return <p class="w-cap m-0">Читаю…</p>;
     const draft = drafts[0];
     if (!draft)
@@ -498,7 +516,7 @@ export function WorkshopWidget() {
 export function HelperCardWidget() {
     const panel = usePanel();
     const home = panel.health?.placement?.homeServer;
-    if (!home?.url) return <p class="w-cap m-0">Помощника нет: колонка отвечает сама.</p>;
+    if (!home?.url) return <p class="w-cap m-0">Компьютер не помогает: колонка отвечает сама.</p>;
     let panelUrl: string | null = null;
     try {
         panelUrl = `${new URL(home.url).origin}/panel`;
@@ -523,7 +541,7 @@ export function HelperCardWidget() {
             {panelUrl && (
                 <div class="w-actions">
                     <a class="w-btn" href={panelUrl} target="_blank" rel="noreferrer">
-                        Открыть помощника ↗
+                        Открыть пульт компьютера ↗
                     </a>
                 </div>
             )}

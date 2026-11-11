@@ -17,6 +17,28 @@ export const VIA: string | null = params.get('via')?.trim() || null;
 /** Раздел, который окно помощника открыло. */
 export const WINDOW: string | null = params.get('window')?.trim() || null;
 
+/**
+ * Пульт колонки во всё окно, не во фрейме (docs/plans/panel-rebuild.md, этап 4): компьютер помогает колонке, и окно
+ * приложения — её пульт. Всё в нём — о колонке; своё у компьютера — страница «Компьютер-помощник» (`?own=`).
+ */
+export const TOP_VIA: boolean = (() => {
+    if (!VIA) return false;
+    try {
+        return window.parent === window;
+    } catch {
+        return false;
+    }
+})();
+
+/**
+ * Страница компьютера внутри пульта колонки: `?own=helper` — «Компьютер-помощник», `?own=workshop` — его мастерская.
+ * Её запросы идут к шлюзу компьютера напрямую, без прохода.
+ */
+export const OWN_PAGE: string | null = VIA ? null : params.get('own')?.trim() || null;
+
+/** `?local` — остаться в пульте компьютера, не уходить в пульт колонки (разработчику и когда колонка не пускает). */
+export const LOCAL: boolean = params.has('local');
+
 const BASE = VIA ? `/station/${encodeURIComponent(VIA)}` : '';
 
 /** Адрес шлюза: через проход, когда пульт смотрит на колонку. Чужой адрес — как есть. */

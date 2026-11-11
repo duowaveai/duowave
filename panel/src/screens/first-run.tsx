@@ -1,4 +1,6 @@
-// Первый запуск на компьютере (docs/plans/desk.md, этап 4; макет Setup): колонки дома, на которых уже работает шлюз
+// Первый запуск на компьютере (docs/plans/panel-rebuild.md, этап 5): на колонке уже работает DuoWave — выбора размещения
+// нет, компьютер становится её помощником одной кнопкой; перенести DuoWave на компьютер — потом, в «Настройках».
+// Прежде (docs/plans/desk.md, этап 4; макет Setup): колонки дома, на которых уже работает шлюз
 // DuoWave, — и выбор: «Помогать колонке» (советую; окно станет тёмным — так видно, что это помощник) или «Шлюз — на
 // этом компьютере» (всё в одном месте, но компьютер спит — колонка молчит). Помощник связывается по паролю пульта
 // колонки (placement.tsx, LinkSheet), перенос шлюза сюда — обычным подключением колонки.
@@ -49,35 +51,16 @@ export function FirstRun() {
     return (
         <section class="card glass first-run" aria-labelledby="first-run-h">
             <h2 id="first-run-h" class="t-title m-0">
-                На колонке «{name}» уже работает шлюз
+                На колонке «{name}» уже работает DuoWave
             </h2>
-            <p class="t-meta m-0">DuoWave на этом компьютере может ей помогать — или забрать шлюз себе. Решение можно поменять потом.</p>
-            <div class="first-run-options">
-                <div class="first-run-option is-helper">
-                    <div class="flex items-center gap-8">
-                        <b>Помогать колонке</b>
-                        <span class="pill pill-own">советую</span>
-                    </div>
-                    <p class="t-caption m-0">
-                        Колонка — шлюз и отвечает сама, даже когда компьютер спит. Компьютер — помощник: слух, голос и модель, копии её
-                        настроек, мастерская плагинов.
-                    </p>
-                    <button class="w-btn w-btn-ink" onClick={() => setLinking(first.station.address)}>
-                        Стать помощником
-                    </button>
-                    <p class="t-caption m-0">Окно станет тёмным: так сразу видно, что это помощник.</p>
-                </div>
-                <div class="first-run-option">
-                    <b>Шлюз — на этом компьютере</b>
-                    <p class="t-caption m-0">
-                        + Всё в одном месте, в том числе звонки и MCP-программы. − Компьютер спит — колонка молчит. Колонку перенастрою на
-                        этот компьютер: перезагрузка, около минуты без голоса.
-                    </p>
-                    <button class="w-btn" onClick={panel.openConnect}>
-                        Перенести шлюз сюда…
-                    </button>
-                    <p class="t-caption m-0">Окно останется белым: шлюз — здесь.</p>
-                </div>
+            <p class="t-caption m-0">
+                Колонка отвечает сама, даже когда компьютер спит. Этот компьютер станет её помощником: слух, голос, модель, копии
+                настроек и мастерская навыков. Перенести DuoWave на компьютер можно позже: «Настройки» → «Колонка».
+            </p>
+            <div>
+                <button class="w-btn w-btn-ink" onClick={() => setLinking(first.station.address)}>
+                    Помогать колонке
+                </button>
             </div>
             {found.length > 1 && <p class="t-caption m-0">Ещё колонки со шлюзом: {found.slice(1).map((entry) => entry.station.name ?? entry.station.address).join(', ')}.</p>}
             {linking && (

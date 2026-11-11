@@ -20,20 +20,20 @@ export interface NavEntry {
     station?: boolean;
 }
 
-/** Навигация по роли: у помощника слева своё, справа — колонки; «Ещё» — остальное. */
+/** Навигация: четыре места дока по сторонам от «Сказать» (docs/plans/panel-rebuild.md). «Ещё» больше нет. */
 export interface Nav {
     left: NavEntry[];
     right: NavEntry[];
-    more: NavEntry[];
 }
 
-/** Верхняя строка: роль словом, чья это колонка или компьютер, капсулы режима и связи. */
+/**
+ * Верхняя строка — одна строка состояния: колонка, её точка связи и что с ней («на связи · компьютер помогает»). Роль
+ * окна («Шлюз», «Помощник») не показываем: человек управляет колонкой (docs/plans/panel-rebuild.md, «Словарь»).
+ */
 export interface TopLine {
     role: Role;
-    title: string;
-    subtitle: ComponentChildren;
-    chips: ComponentChildren;
-    /** Телефон: подпись и капсулы спрятаны — выбор колонки коротко, её имя с точкой связи. */
+    line: ComponentChildren;
+    /** Телефон: строка короче — имя колонки с точкой связи. */
     narrow?: ComponentChildren;
 }
 
@@ -69,8 +69,6 @@ export interface ShellProps {
     actions: ComponentChildren;
     /** «Сказать через колонку» — одна лаймовая кнопка на экран (DESIGN.md). */
     talk: { disabled: boolean; onTalk: () => void };
-    /** «+» — новый виджет на стол. */
-    onAdd: () => void;
     /** Плашка над содержимым: шлюз недоступен. */
     notice: ComponentChildren;
     /** Стол: колонка и виджеты. */
@@ -79,10 +77,3 @@ export interface ShellProps {
     window: OpenWindow | null;
 }
 
-/** Разделы для основной навигации и для «ещё» (журнал, настройки: в доке им нет места). */
-export function splitNav(sections: SectionDef[]): { main: SectionDef[]; more: SectionDef[] } {
-    return {
-        main: sections.filter((section) => (section.nav ?? 'main') === 'main'),
-        more: sections.filter((section) => section.nav === 'more'),
-    };
-}
