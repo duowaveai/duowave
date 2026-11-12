@@ -170,7 +170,8 @@ kill "$named" 2>/dev/null
 
 # 9. A start from a pipe, as an install over SSH runs it (Command::output): the pipe comes back at once, and the loop
 # and the watch run on in a session of their own (live 11.11: they kept the pipe, and the install waited for good).
-printf '#!/bin/sh\nexec sleep 300\n' >"$DIR/program"
+# Not `exec sleep`: run as «program serve», its command line keeps «serve», as the gateway's does.
+printf '#!/bin/sh\nsleep 300\n' >"$DIR/program"
 chmod +x "$DIR/program"
 rm -f "$DIR/gateway.pid" "$DIR/gateway-loop.pid" "$DIR/gateway-watch.pid" "$DIR/disabled"
 pipe=/tmp/duowave-check-pipe

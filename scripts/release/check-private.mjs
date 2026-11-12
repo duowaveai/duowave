@@ -48,9 +48,12 @@ const SKIP = /\.(png|jpe?g|gif|webp|ico|icns|woff2?|ttf|onnx|wav|ogg|opus|mp3|mp
 const ZONE_TABLES = new Set(['packages/calendar/backend.js']);
 const ZONE = /\b(?:Africa|America|Antarctica|Asia|Atlantic|Australia|Europe|Indian|Pacific)\/[A-Za-z_]+(?:\/[A-Za-z_]+)?/g;
 
+// exclude-internal.txt is itself left out of the public tree: there the check runs without it.
 function excluded() {
     return ['exclude.txt', 'exclude-internal.txt']
-        .map((file) => readFileSync(path.join(ROOT, 'scripts/release', file), 'utf8'))
+        .map((file) => path.join(ROOT, 'scripts/release', file))
+        .filter((file) => existsSync(file))
+        .map((file) => readFileSync(file, 'utf8'))
         .join('\n')
         .split('\n')
         .map((line) => line.replace(/#.*/, '').trim())

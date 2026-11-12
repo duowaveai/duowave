@@ -15,7 +15,7 @@ use duowave::gateway::protocol::protocol_types::{
     AliceResponseModel, ClientEvent, CloseReason, Directive, ServerMessage,
 };
 use duowave::speech::test_audio::{ogg_opus_chain, voice};
-use fakes::{audio_frame, codec, field, lock, sleep, until, StationClient, WsServer};
+use fakes::{audio_frame, codec, field, lock, sleep, until, until_async, StationClient, WsServer};
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use support::{bearer, message, send, Gateway};
@@ -289,7 +289,11 @@ async fn lets_go_of_a_station_that_vanished_and_of_its_yandex_connection_with_it
     // Yandex goes on answering our pings to it: only the station's own socket can tell the station is gone.
     station.vanish();
     until(3000, "the relay to close its Yandex connection", || !yandex.last().open()).await;
-    let health = message(gateway.get("/health"), StatusCode::OK).await;
-    assert_eq!((&health["activeSessions"], &health["station"]["connected"]), (&json!(0), &json!(false)));
+    // The session is let go right after its Yandex connection, not before: on a slow runner /health may still have it.
+    until_async(3000, "the session to be let go", || async {
+        let health = message(gateway.get("/health"), StatusCode::OK).await;
+        (&health["activeSessions"], &health["station"]["connected"]) == (&json!(0), &json!(false))
+    })
+    .await;
     gateway.stop().await;
 }
