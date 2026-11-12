@@ -26,6 +26,10 @@ default = ["pc", "wasm"]
 pc = ["rmcp/transport-async-rw", "dep:libc", "dep:russh", "dep:if-addrs", "dep:socket2"]
 # The build for the station itself: none of the PC parts.
 station = []
+# Recognition on this computer itself (src/speech/asr/local): GigaAM, Parakeet and Whisper as GGUF through
+# transcribe.cpp, in a worker process of this same program. The desktop app's build; transcribe.cpp compiles from C++
+# source, so the build needs cmake and a C++ toolchain (docs/plans/speech-servers.md).
+local-asr = ["pc", "dep:transcribe-cpp"]
 # Plugins in WebAssembly (`"runtime": "wasm"`, src/plugins/wasm.rs): wasmi, an interpreter in pure Rust. In the
 # computer's build; the station's adds it with `--features station,wasm` when one is needed there.
 wasm = ["dep:wasmi"]
@@ -36,6 +40,10 @@ silero = ["dep:ort"]
 webrtc = ["pc", "dep:webrtc", "dep:rtc"]
 # Calls through a LiveKit room: LiveKit's Rust SDK, which downloads a prebuilt libwebrtc at build time.
 livekit = ["pc", "dep:livekit"]
+# MIDI keyboards for apps (src/midi, docs/plans/midi.md): midir — CoreMIDI on a Mac, WinMM on Windows, ALSA on Linux
+# (libasound2-dev to build) — and midly for .mid files. The desktop app and the program for a Mac and Windows; not the
+# station's build, nor the Linux program built for musl with zig (ALSA does not build there).
+midi = ["dep:midir", "dep:midly", "dep:coremidi", "dep:core-foundation"]
 
 [dependencies]
 aes-gcm = "0.11.1"
@@ -90,6 +98,9 @@ tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 tokio-util = { version = "0.7.20", features = ["rt"] }
 tower = { version = "0.5.3", features = ["util"] }
 tower-http = { version = "0.7.1", features = ["fs"] }
+# Recognition on this computer (feature local-asr): its processor everywhere, Metal on a Mac with Apple Silicon (the
+# target table below). Pinned: the engine is young (0.x), a new one is taken knowingly.
+transcribe-cpp = { version = "=0.4.1", default-features = false, optional = true }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 # Opus: libopus 1.3.1 in Rust (c2rust), nothing to compile in C — the station's build needs no cmake, no C toolchain.
@@ -99,6 +110,9 @@ uuid = { version = "1.29.0", features = ["v4", "serde"] }
 webpki-roots = "1.0.11"
 webrtc = { version = "0.21.1", optional = true }
 wasmi = { version = "2.0.0", default-features = false, features = ["stable", "std", "validate", "auto-dispatch"], optional = true }
+
+midir = { version = "0.11.1", optional = true }
+midly = { version = "0.5.3", optional = true, default-features = false, features = ["alloc", "std"] }
 
 [build-dependencies]
 prost-build = "0.14.4"
@@ -115,6 +129,17 @@ tokio = { version = "1.54.1", features = ["test-util"] }
 
 [target."cfg(unix)".dependencies]
 libc = "0.2.191"
+
+# Metal on Apple Silicon. An Intel Mac stays on its processor: ggml's Metal shaders hang there on some AMD cards
+# (as Handy found), and Metal buys little at these models' sizes.
+[target."cfg(all(target_os = \"macos\", target_arch = \"aarch64\"))".dependencies]
+transcribe-cpp = { version = "=0.4.1", default-features = false, features = ["metal"], optional = true }
+
+# A Mac's MIDI: CoreMIDI tells of keyboards plugged in later only on the run loop of the thread its first client was
+# made on (src/midi/ports.rs).
+[target."cfg(target_os = \"macos\")".dependencies]
+coremidi = { version = "0.9.2", optional = true }
+core-foundation = { version = "0.10.1", optional = true }
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_System_SystemInformation", "Win32_Storage_FileSystem"] }

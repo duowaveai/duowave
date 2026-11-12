@@ -183,6 +183,11 @@ export function liveHeaders(): Record<string, string> {
     return { Accept: 'application/json', ...authHeaders() };
 }
 
+/** Картинка плагина (plugins/files.rs) с ключом входа — для `useFile` в SDK пульта: `<img src>` ключа не передаёт. */
+export async function fetchPluginFile(id: string, name: string): Promise<Blob> {
+    return fetchAudio(`/api/v1/packages/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`);
+}
+
 /** Звук и картинки из шлюза с ключом входа: `<audio src>` и `<img src>` ключ не передают, поэтому — fetch в blob. */
 async function fetchAudio(path: string): Promise<Blob> {
     const response = await fetch(gw(path), { headers: authHeaders() });
@@ -249,12 +254,45 @@ export interface ProviderPreset {
     editableUrl: boolean;
     needsKey: boolean;
     keyUrl?: string;
+    /**
+     * Вход через аккаунт сервиса: кнопка «Войти через {with}» или слова сервиса (`label`, «Continue with ChatGPT»).
+     * `keyless` — ключа нет вовсе, доступ — сам аккаунт (подписка ChatGPT).
+     */
+    signIn?: { with: string; label?: string; keyless?: boolean };
+    /** Где видно и задаётся, сколько подписки может тратить DuoWave («Usage» в ChatGPT). */
+    usageUrl?: string;
     fields?: Array<{ id: string; title: string; placeholder?: string }>;
     suggested?: { fast: string; smart: string; more?: string[] };
     local?: boolean;
     brand?: string;
     order: number;
 }
+
+/**
+ * Начатый вход в аккаунт сервиса. `here` — пульт открыт на компьютере шлюза, браузер вернётся в шлюз сам; `code` —
+ * пульт на другом устройстве, страница сервиса покажет код, его вставляют в пульт; `address` — так же, но сервис
+ * возвращает только на 127.0.0.1 (ChatGPT): браузер покажет ошибку адреса, этот адрес и вставляют.
+ */
+export interface SignInStart {
+    id: string;
+    url: string;
+    mode: 'here' | 'code' | 'address';
+}
+
+/** Вход провайдера, чей доступ — аккаунт (подписка ChatGPT): есть ли, чей (половина почты скрыта) и что мешает. */
+export interface ProviderAccount {
+    signedIn: boolean;
+    who?: string;
+    /** limit — лимит подписки исчерпан; signin — вход закончился или его не было. */
+    problem?: 'limit' | 'signin';
+}
+
+/** Где вход: ждёт человека, обменивает код, выполнен (кто получил ключ) или не вышел (почему). */
+export type SignInStatus =
+    | { state: 'waiting' }
+    | { state: 'working' }
+    | { state: 'done'; title: string }
+    | { state: 'failed'; message: string };
 
 /** Последняя «Проверка» провайдера. */
 export interface ProviderCheck {
@@ -282,6 +320,7 @@ export interface ProviderView {
     cloud: boolean;
     local: boolean;
     brand?: string;
+    account?: ProviderAccount;
 }
 
 /** Готовый MCP-сервер из набора шлюза. */
@@ -465,7 +504,8 @@ export interface BrainPick {
 export interface BrainView {
     presets: ProviderPreset[];
     providers: ProviderView[];
-    choice: { fast: BrainPick | null; smart: BrainPick | null; effort: LlmEffort };
+    /** `backup` — запасная: отвечает, когда выбранная модель не ответила; провайдер `env` — модель из .env. */
+    choice: { fast: BrainPick | null; smart: BrainPick | null; effort: LlmEffort; backup?: BrainPick | null };
     status: BrainStatus;
     env: { provider: BrainStatus['provider']; title: string; models: { fast: string; smart: string }; usable: boolean; cloud: boolean };
 }
@@ -817,6 +857,41 @@ export interface AsrCard {
     recommended?: boolean;
     active: boolean;
     pending: boolean;
+    /** Распознавание на этом компьютере: работает ли модель здесь, сколько весит её файл и скачан ли он. */
+    local?: { runsHere: boolean; size: number; installed: boolean };
+}
+
+/** Распознавание на этом компьютере (docs/plans/speech-servers.md): модель качается, грузится, работает или упала. */
+export interface LocalAsr {
+    /** Выбранная модель (имя из каталога). */
+    model: string | null;
+    phase: 'idle' | 'downloading' | 'loading' | 'ready' | 'failed';
+    /** Скачивание, пока оно идёт. */
+    bytes: number;
+    total: number;
+    /** Модель, которая распознаёт сейчас (старая, пока новая качается или грузится). */
+    serving: string | null;
+    /** На чём: metal, cpu…; устройство — «Apple M4 Max». */
+    backend: string | null;
+    device: string | null;
+    error: string | null;
+    /** Видеокарта отказала — распознаёт процессор до «Повторить». */
+    gpuFailed: boolean;
+    /** Перезапуски остановлены после трёх сбоев подряд. */
+    paused: boolean;
+    installed: string[];
+}
+
+/** Сервер своего голоса, который ставит и держит приложение (docs/plans/speech-servers.md, этап 5). */
+export interface ManagedTts {
+    /** missing — не ставился; idle — стоит, свой голос не выбран; ready — работает. */
+    phase: 'missing' | 'installing' | 'idle' | 'starting' | 'ready' | 'failed';
+    /** Шаг установки: «Ставлю PyTorch». */
+    stage: string | null;
+    percent: number;
+    error: string | null;
+    paused: boolean;
+    port: number;
 }
 
 export interface TtsCard {
@@ -914,6 +989,10 @@ export interface ModelsView {
     speaking: 'yandex' | 'own';
     mode: PanelMode;
     asrLoaded: string | null;
+    /** Распознавание на этом компьютере; нет — распознаёт сервер. */
+    localAsr?: LocalAsr;
+    /** Сервер своего голоса (Silero и Piper), который держит само приложение; нет — свой сервер или никакого. */
+    ttsManaged?: ManagedTts;
     /** Голосовой сервер отвечает. */
     ttsUp: boolean;
     downloads: DownloadState[];
@@ -1034,6 +1113,8 @@ export type PackageKind = 'plugin' | 'app' | 'character' | 'theme';
 
 /** Пакет, который стоит на шлюзе (GET /api/v1/packages), любого вида. */
 export interface PackageView {
+    /** Движок: людям пульт пишет не вид, а где работает — в шлюзе (js, wasm), на компьютере (process), в сети (mcp). */
+    runtime?: 'js' | 'wasm' | 'mcp' | 'process' | null;
     kind?: PackageKind | null;
     id: string;
     title: string;
@@ -1171,6 +1252,60 @@ export interface DraftView {
     origin?: PackageOrigin | null;
     /** Проба черновика на шлюзе идёт сейчас: какая версия, вместо какой и до какого времени. */
     trial?: DraftTrial | null;
+    /** Кто просил, лицо, где он сейчас (docs/plans/voice-creation.md). */
+    meta: DraftMeta;
+    /** Настройки манифеста без значений: обычные и личные. */
+    needs: DraftNeed[];
+    /** «Готово: виджет «…». Ему нужен ключ Todoist. Примерите — или сразу на стол?» — собирает шлюз из манифеста. */
+    readyLine?: string | null;
+}
+
+/** Лицо черновика для людей: виджет на столе, навык (фразы колонке), игра, тема. */
+export type DraftFace = 'widget' | 'skill' | 'game' | 'theme';
+
+/** Где черновик: агент работает → на примерке → на столе | в черновиках; или не вышло, или остановлен. */
+export type DraftStage = 'working' | 'ready' | 'installed' | 'parked' | 'failed' | 'stopped';
+
+/** Карточка черновика: её держит шлюз (packages-dev/.meta/<id>.json); у старых черновиков — прочитанная из того, что известно. */
+export interface DraftMeta {
+    /** panel — попросили в пульте, voice — у колонки. */
+    by: 'panel' | 'voice';
+    /** Кто вошёл в пульт или какая колонка просила (её тег). */
+    who?: string | null;
+    asked: string;
+    kind: DraftFace;
+    stage: DraftStage;
+    /** Мс от эпохи. */
+    updated: number;
+    /** Последние слова агента: что он решил сам или его вопрос. */
+    note?: string | null;
+    /** false — карточку прочли из того, что известно (черновик старше карточек). */
+    kept: boolean;
+}
+
+/** Что начал `make`: черновик, его лицо и название на сейчас (агент может переименовать). */
+export interface MadeDraft {
+    draft: string;
+    kind: DraftFace;
+    title: string;
+}
+
+/** Как запустить черновик в песочнице: на примере (без сети) и с обычными настройками поверх значений по умолчанию. */
+export interface DraftTrying {
+    example?: boolean;
+    settings?: Record<string, unknown>;
+}
+
+/** Что черновику нужно: обычное можно сказать, личное (secret) — только руками; личное без значения по умолчанию обязательно. */
+export interface DraftNeed {
+    key: string;
+    title: string;
+    type: 'string' | 'number' | 'boolean';
+    description?: string | null;
+    options?: string[] | null;
+    default?: unknown;
+    secret: boolean;
+    required: boolean;
 }
 
 /** Проба на колонке: черновик работает на шлюзе до `until`, потом возвращается `previous` (или пакет уходит). */
@@ -1232,6 +1367,8 @@ export interface CheckReport {
 }
 
 export interface RunReport {
+    /** Запущено на примере черновика (examples.json): в сеть ничего не ушло. */
+    example?: boolean;
     ok: boolean;
     result: unknown;
     error?: string | null;
@@ -1242,6 +1379,8 @@ export interface RunReport {
 }
 
 export interface PhraseReport {
+    /** Прогнано на примере черновика: в сеть ничего не ушло. */
+    example?: boolean;
     text: string;
     normalized: string;
     matched?: string | null;
@@ -1286,7 +1425,209 @@ export interface PluginShare {
     actualMb?: number | null;
 }
 
-/** Память и место плагинов (GET /api/v1/packages/resources): «Память колонки». */
+/** Когда срок у задачи расписания плагина (plugins/schedule.rs, When). */
+export type ScheduleSpec =
+    | { type: 'at'; at: string; days: 'daily' | 'weekdays' | 'weekends' | { on: number[] } }
+    | { type: 'every'; minutes: number; from: string; to: string }
+    | { type: 'once'; at_ms: number };
+
+/** Ритм манифеста или задача из кода плагина, как их видит пульт. */
+export interface ScheduleJob {
+    id: string;
+    title: string;
+    source: 'manifest' | 'code';
+    spec: ScheduleSpec;
+    say?: string | null;
+    handler?: string | null;
+    /** Следующий срок — время колонки с её поясом (ISO). */
+    next?: string | null;
+    paused: boolean;
+    problem?: string | null;
+    last?: { atMs: number; outcome: string } | null;
+}
+
+/** Расписание плагина (GET /api/v1/packages/<id>/schedule). */
+export interface ScheduleView {
+    on: boolean;
+    jobs: ScheduleJob[];
+}
+
+/** Картинки плагина (plugins/files.rs): что лежит, сколько занимает, предел здесь (на колонке — 5 МБ на все). */
+/** Клавиатура MIDI у шлюза (docs/plans/midi.md): её вход и выход. */
+export interface MidiDevice {
+    name: string;
+    input?: string;
+    output?: string;
+}
+
+/** `GET /api/v1/midi`: есть ли MIDI здесь, клавиатуры и кто их слушает. */
+export interface MidiView {
+    available: boolean;
+    why?: string;
+    devices: MidiDevice[];
+    listeners: Array<{ package: string; zone: 'local' | 'home' | 'remote'; devices: string[] }>;
+}
+
+/** Дорожки файла `.mid` (`POST /api/v1/midi/read`): мелодия — `[нота, начало, длина]` в долях. */
+export interface MidiSongView {
+    tempo: number;
+    meter: [number, number];
+    tracks: Array<{ index: number; name?: string; drums: boolean; notes: number; melody: Array<[number, number, number]> }>;
+}
+
+export interface PluginFilesView {
+    files: Array<{ name: string; size: number; type: string; written: number }>;
+    bytes: number;
+    limitBytes: number;
+    onStation: boolean;
+}
+
+/** История приложения (docs/plans/package-history.md): каждый шаг черновика и каждая версия, по хешу. */
+export type HistoryKind = 'step' | 'install' | 'restore' | 'merge' | 'catalog' | 'copy' | 'found' | 'data' | 'removed';
+export type HistoryWho = 'agent' | 'hand' | 'voice' | 'mcp' | 'catalog' | 'system';
+/** Что вернуть: код, данные или всё вместе. */
+export type RestoreWhat = 'code' | 'data' | 'code+data';
+
+/** Запись истории: шаг, установка, возврат, объединение… */
+export interface HistoryRecord {
+    id: string;
+    short: string;
+    app: string;
+    tree: string;
+    parents?: string[];
+    at: string;
+    kind: HistoryKind;
+    by: { who: HistoryWho; name?: string; via?: string };
+    asked?: string;
+    note?: string;
+    version?: string;
+    check?: string;
+    /** Снимок данных плагина перед этой переменой. */
+    data?: string;
+    from?: string;
+    what?: RestoreWhat;
+    trial?: boolean;
+    /** Где сделано: station, computer. */
+    on?: string;
+    /** Метки на записи: draft — черновик, installed — работает, catalog — из каталога. */
+    marks: string[];
+    /** Запись — прошлое черновика: объединять нечего, можно «взять из неё». */
+    inDraft: boolean;
+}
+
+/** У своей копии: новая версия приложения, из которого она сделана. */
+export interface HistoryUpstream {
+    app: string;
+    title?: string | null;
+    record?: string | null;
+    version?: string | null;
+}
+
+export interface HistoryFeed {
+    app: string;
+    records: HistoryRecord[];
+    more: boolean;
+    /** Старые записи убраны чисткой. */
+    earlierGone: boolean;
+    marks: Record<string, string>;
+    upstream?: HistoryUpstream | null;
+}
+
+export interface HistoryFileChange {
+    path: string;
+    change: 'added' | 'removed' | 'changed';
+    binary: boolean;
+    /** op: « » — без изменений, «-» — убрано, «+» — добавлено, «…» — свёрнуто (text — сколько строк). */
+    lines: { op: string; text: string }[];
+}
+
+export interface HistoryComparison {
+    from?: string | null;
+    to?: string | null;
+    files: HistoryFileChange[];
+    /** Перемены манифеста словами: версия, права, адреса, фразы. */
+    manifest: string[];
+}
+
+export interface RestorePlan {
+    app: string;
+    record: HistoryRecord;
+    what: RestoreWhat;
+    current?: string | null;
+    version?: string | null;
+    canCode: boolean;
+    dataFrom?: HistoryRecord | null;
+    dataSummary?: string | null;
+    rightsAdded: string[];
+    hostsAdded: string[];
+    needsApproval: boolean;
+    dataVersionChanged: boolean;
+    risky: boolean;
+    lines: string[];
+}
+
+export interface RestoreReport {
+    restored: boolean;
+    needsApproval?: RestorePlan | null;
+    message: string;
+    record?: string | null;
+    package?: PackageView | null;
+}
+
+export interface MergeState {
+    app: string;
+    base?: string | null;
+    ours: string;
+    theirs: string;
+    conflicts: { path: string; why: string }[];
+    reason: string;
+    question?: { text: string; options: string[]; at: string } | null;
+    asked?: string | null;
+    started: string;
+}
+
+export interface MergeReport {
+    state: 'merged' | 'agent' | 'nothing';
+    message: string;
+    record?: string | null;
+    merge?: MergeState | null;
+}
+
+export type HistoryPlace = 'here' | 'home' | 'both';
+
+/** Место истории и где она хранится — для «Памяти». */
+export interface HistoryRoom {
+    bytes: number;
+    budgetBytes: number;
+    policy: { place: HistoryPlace; budgetMb: number; days: number; steps: number; versions: number; data: number };
+    onStation: boolean;
+    apps: number;
+    places: HistoryPlace[];
+    home: boolean;
+}
+
+/** Картинки всех плагинов вместе — для «Ресурсы колонки». */
+export interface PluginFilesSummary {
+    bytes: number;
+    limitBytes?: number | null;
+    onStation: boolean;
+}
+
+/** Отложенная команда (skills/own/later_skill.rs): «через 10 минут выключи свет». `at` — мс с начала эпохи. */
+export interface LaterCommandView {
+    id: string;
+    device: string;
+    command: string;
+    at: number;
+}
+
+/** Выключатель «Расписания плагинов»: включён ли и пускает ли его PLUGINS_SCHEDULES. */
+export interface SchedulesSwitch {
+    on: boolean;
+    allowed: boolean;
+}
+
+/** Память и место плагинов (GET /api/v1/packages/resources): «Ресурсы колонки». */
 export interface PackagesResources {
     placement: Placement;
     /**
@@ -1353,6 +1694,8 @@ export interface CatalogEntry {
     publisher?: string | null;
     /** Название дополнительной ленты, откуда пакет; у пакета главной ленты — нет. */
     source?: string | null;
+    /** Пакет из своего источника, который добавили здесь по ссылке (шлюз 0.6 и новее). */
+    own?: boolean;
 }
 
 /** Дополнительная лента каталога — её называет главная: чья, как называется, на связи ли. */
@@ -1366,6 +1709,10 @@ export interface CatalogSource {
     problem?: string | null;
     /** Сколько её пакетов в каталоге. */
     count: number;
+    /** Свой источник, добавленный здесь по ссылке (его можно убрать), а не лента, которую называет главная. */
+    own?: boolean;
+    /** Свой источник ответил 404 или 410: закрыт — его пакетов в каталоге нет, поставленные из него скрыты. */
+    closed?: boolean;
 }
 
 /** Каталог пакетов (GET /api/v1/packages/catalog): лента с состоянием каждого; без сети — последняя копия. */
@@ -1384,7 +1731,7 @@ export interface CatalogView {
     offline: boolean;
     problem?: string | null;
     packages: CatalogEntry[];
-    /** Дополнительные ленты, которые называет главная, по порядку (шлюз постарше их не знает). */
+    /** Дополнительные ленты, которые называет главная, по порядку, потом свои источники (шлюз постарше их не знает). */
     feeds?: CatalogSource[];
 }
 
@@ -1430,6 +1777,8 @@ export interface CharacterView {
     voice: CharacterVoice;
     /** Персонаж из пакета не разобрался: почему. */
     problem?: string | null;
+    /** Чей голос, как говорит пакет: synthetic, consent или unknown — происхождение никто не проверял. */
+    voiceOrigin?: string | null;
 }
 
 /** Кто говорит сейчас: id персонажа (null — свой текст), правили ли текст руками, есть ли в пакете новый. */
@@ -1735,6 +2084,277 @@ export interface UpdateStatus {
     hint?: string;
 }
 
+// ─── Память персонажей (gateway/src/memory, docs/plans/memory.md) ───
+
+/** Слой записи: дом — общий, личное — персонажа; из пакета — мир и знания персонажа (с мирами, этап 3). */
+export type MemoryLayer = 'home' | 'personal';
+
+/** Кто или что в графе дома. */
+export type MemoryEntityKind = 'household' | 'person' | 'pet' | 'room' | 'thing' | 'place' | 'org' | 'character';
+
+/** Главный переключатель, «Запоминать мимоходом» и пауза. */
+export interface MemoryState {
+    enabled: boolean;
+    inPassing: boolean;
+    paused: boolean;
+    /** До какого времени пауза; null при паузе — «пока не включу». */
+    pausedUntil: string | null;
+}
+
+/** Кто сказал и где: задел на разделение памяти по людям дома. */
+export interface MemoryOrigin {
+    saidByKind: 'user' | 'household' | 'apiKey' | 'system' | 'contact';
+    saidById: string | null;
+    channel: 'station' | 'panel' | 'telegram' | 'api' | 'system';
+    /** Колонка (её метка устройства), когда сказано у колонки. */
+    station: string | null;
+    /** Кто мог слышать: только сказавший или вся комната. */
+    audience: 'speaker' | 'room';
+    /** Персонаж, который услышал. */
+    heardBy: string | null;
+}
+
+/** Факт с метками и именами, на которые он указывает. */
+export interface MemoryFact {
+    id: string;
+    subjectId: string;
+    relation: string | null;
+    objectId: string | null;
+    value: string | null;
+    text: string;
+    lang: string;
+    kind: 'fact' | 'opinion' | 'insight' | 'lesson' | 'todo';
+    viewpoint: string | null;
+    validFrom: string | null;
+    /** Закрыт («больше не так», «забудь», заменён): с этого времени. */
+    validTo: string | null;
+    closedReason: string | null;
+    replacedBy: string | null;
+    confidence: number;
+    importance: number;
+    /** Всегда в подсказке. */
+    pinned: boolean;
+    mentions: number;
+    source: 'voice' | 'model' | 'panel' | 'extract' | 'reflection' | 'package';
+    episodeId: string | null;
+    origin: MemoryOrigin;
+    visibility: 'household' | 'person' | 'people' | 'character' | 'world';
+    visibilityOwner: string | null;
+    ownerId: string | null;
+    createdAt: string;
+    updatedAt: string;
+    subjectName: string;
+    /** Кто или что это: у фактов о самом доме — household. */
+    subjectKind: MemoryEntityKind | null;
+    objectName: string | null;
+    layer: MemoryLayer;
+}
+
+/** «Новое»: запись и строка журнала, которая её отменяет. */
+export interface MemoryRecent extends MemoryFact {
+    changeId: string | null;
+}
+
+/** Строка «пробуждения»: то, что всегда стоит в подсказке персонажа. */
+export interface MemoryPromptItem {
+    id: string;
+    text: string;
+    pinned: boolean;
+    importance: number;
+    mentions: number;
+    updatedAt: string;
+    layer: MemoryLayer;
+}
+
+export interface MemoryOverview {
+    state: MemoryState;
+    counts: { home: number; personal: number; entities: number; episodes: number; closed: number };
+    /** Сколько примерно занимает память и сколько ей можно. */
+    bytes: number;
+    limitBytes: number;
+    recent: MemoryRecent[];
+    /** «Глазами персонажа»: что всегда уходит в подсказку того, кто сейчас отвечает. */
+    eyes: {
+        character: { id: string; title: string; feminine: boolean };
+        items: MemoryPromptItem[];
+        tokens: number;
+        maxTokens: number;
+        maxItems: number;
+    };
+}
+
+export interface MemoryEntity {
+    id: string;
+    kind: MemoryEntityKind;
+    name: string;
+    /** Другие имена: «Мария», «сестра Пети». */
+    aliases: string[];
+    accountId: string | null;
+    contact: string | null;
+    createdAt: string;
+    updatedAt: string;
+}
+
+/** Строка списка «Дом»: сколько фактов и самый свежий. */
+export interface MemoryEntityItem extends MemoryEntity {
+    facts: number;
+    note: string | null;
+}
+
+/** Связь «кто с кем»: факт, который соединяет двоих. */
+export interface MemoryLink {
+    factId: string;
+    relation: string | null;
+    otherId: string;
+    otherName: string;
+    otherKind: MemoryEntityKind;
+    closed: boolean;
+    text: string;
+}
+
+export interface MemoryEntityCard {
+    entity: MemoryEntity;
+    current: MemoryFact[];
+    closed: MemoryFact[];
+    links: MemoryLink[];
+}
+
+/** Строка журнала памяти: что сделано, кем и с чем; слова стёртого не хранятся. */
+export interface MemoryChange {
+    id: string;
+    at: string;
+    actorKind: string;
+    actorId: string | null;
+    action:
+        | 'add'
+        | 'edit'
+        | 'close'
+        | 'reopen'
+        | 'erase'
+        | 'pin'
+        | 'unpin'
+        | 'merge'
+        | 'undo'
+        | 'past'
+        | 'date'
+        | 'alias'
+        | 'importance'
+        | 'rollback';
+    /** fact, entity; note — итог дня или дневник; run — ночь сна (её откат). */
+    target: 'fact' | 'entity' | 'note' | 'run';
+    targetId: string;
+    summary: string;
+    reason: string | null;
+    /** Ночь сна, которая это сделала. */
+    runId: string | null;
+    undoneAt: string | null;
+}
+
+/** Модель, которой рефлексия думает ночью. */
+export interface ReflectionModel {
+    title: string;
+    model: string;
+    /** Вопросы уходят из дома. */
+    cloud: boolean;
+}
+
+/** Модель памяти: своя дома (любая), как у «Мозга» или одна модель из «Мозга» — домашняя или облачная. */
+export type MemoryModel = { mode: 'home' } | { mode: 'brain' } | { mode: 'pick'; provider: string; model: string };
+
+/** Модель поставщика «Мозга» для выбора модели памяти. */
+export interface ModelOption {
+    provider: string;
+    /** Поставщик для людей: «OpenAI», «Ollama». */
+    title: string;
+    model: string;
+    cloud: boolean;
+}
+
+/** Рефлексия — часть сна: включена ли, её части; модель памяти, которой она думает. */
+export interface ReflectionView {
+    enabled: boolean;
+    /** «Порядок»: склеить повторы, закрыть устаревшее, другие имена, даты, важность. */
+    order: boolean;
+    /** «Итог дня»: итог для дома и дневник персонажа. */
+    day: boolean;
+    /** Модель памяти, как выбрана. */
+    model: MemoryModel;
+    /** Модель, которая думает сейчас; null — память ждёт, `waiting` — почему. */
+    using: ReflectionModel | null;
+    waiting: string | null;
+    /** Чем сейчас были бы «Своя, дома» и «Как у «Мозга»». */
+    home: ReflectionModel | null;
+    brain: ReflectionModel | null;
+    /** Все модели поставщиков «Мозга», домашние первыми. */
+    options: ModelOption[];
+    /** Разговоров ждут рефлексии. */
+    pending: number;
+}
+
+export type SleepPartState = 'done' | 'nothing' | 'waiting' | 'failed';
+
+/** Что часть сна сказала о ночи. */
+export interface SleepPartReport {
+    part: string;
+    title: string;
+    state: SleepPartState;
+    summary: string;
+    lines: string[];
+    at: string;
+}
+
+/** Ночь сна. */
+export interface SleepRun {
+    id: string;
+    /** День, в который ночь началась, по часам колонки. */
+    night: string;
+    startedAt: string;
+    finishedAt: string | null;
+    trigger: 'schedule' | 'manual';
+    state: 'running' | 'done' | 'partial' | 'nothing';
+    parts: SleepPartReport[];
+    attempts: number;
+    rolledBackAt: string | null;
+}
+
+/** Итог дня для дома или запись в дневник персонажа. */
+export interface SleepNote {
+    id: string;
+    kind: 'day' | 'diary' | 'week' | 'month';
+    day: string;
+    characterId: string | null;
+    characterTitle: string | null;
+    text: string;
+}
+
+/** Что рефлексия сделала за ночь. */
+export interface ReflectionNight {
+    changes: MemoryChange[];
+    notes: SleepNote[];
+    /** Сколько разговоров обдумано. */
+    thought: number;
+}
+
+export interface SleepRunDetail extends SleepRun {
+    details: { reflection?: ReflectionNight };
+}
+
+/** Сон: его час, идёт ли, части, последняя ночь. */
+export interface SleepView {
+    /** ЧЧ:ММ по часам колонки. */
+    time: string;
+    zone: string;
+    next: string | null;
+    running: string | null;
+    /** Почему «Запустить сон сейчас» сейчас нечего делать; null — есть что. */
+    whyNot: string | null;
+    parts: Array<{ id: string; title: string; enabled: boolean; idle: string | null }>;
+    last: SleepRun | null;
+}
+
+/** Пауза памяти: на час, до утра (по часам этого браузера) или пока не включат. */
+export type MemoryPause = 'hour' | 'morning' | 'manual';
+
 export const api = {
     health: () => get<Health>('/health'),
     // Колонка
@@ -1906,12 +2526,24 @@ export const api = {
     homeVoice: () => get<HomeVoice>('/api/v1/models/home-voice'),
     setHomeVoice: (voice: HomeVoice['chosen']) => post<HomeVoice>('/api/v1/models/home-voice', { voice }),
     activateAsr: (id: string) => post<{ needsRestart: boolean }>('/api/v1/models/asr/activate', { id }),
+    /** Распознавание на этом компьютере, лёгким запросом; local: null — распознаёт сервер. */
+    localAsr: () => get<{ local: LocalAsr | null }>('/api/v1/models/asr/local'),
     restartServer: (which: 'asr' | 'tts') => post<{ restarted: boolean }>(`/api/v1/models/servers/${which}/restart`),
     // Свой голос: модели, дубли, отпечаток. Выбор голоса — тот же activateTts с id `own:<голос>`; при памяти впритык
     // шлюз отвечает 428 с предупреждением, и тот же запрос с anyway запускает всё равно.
     voiceLab: () => get<VoiceLabView>('/api/v1/voice-lab'),
     voiceLabRecheck: () => post<VoiceLabView>('/api/v1/voice-lab/platform/recheck'),
     installEngine: (id: CloneEngineId) => post<VoiceLabJob>(`/api/v1/voice-lab/engines/${id}/install`),
+    /** Голос пульта: WAV 16 кГц моно до 15 с → «Слух» шлюза (тот же, что у колонки). `heard` — где слышали: дома или в облаке. */
+    listen: (wav: Blob) =>
+        fetch(gw('/api/v1/listen'), {
+            method: 'POST',
+            headers: { ...authHeaders(), 'Content-Type': 'audio/wav' },
+            body: wav,
+        }).then(async (response) => {
+            if (!response.ok) throw new ApiError(response.status, await response.text().catch(() => ''));
+            return ((await response.json()) as { message: { text: string; heard: 'home' | 'cloud' } }).message;
+        }),
     addTake: (wav: Blob, passage?: number) =>
         fetch(gw(`/api/v1/voice-lab/draft/takes${passage ? `?passage=${passage}` : ''}`), {
             method: 'POST',
@@ -1940,7 +2572,12 @@ export const api = {
     removeProvider: (id: string) => del<void>(`/api/v1/brain/providers/${encodeURIComponent(id)}`),
     checkProvider: (id: string, model?: string) => post<ProviderCheck>(`/api/v1/brain/providers/${encodeURIComponent(id)}/check`, model ? { model } : {}),
     providerModels: (id: string) => post<{ models: string[] }>(`/api/v1/brain/providers/${encodeURIComponent(id)}/models`),
-    chooseBrain: (choice: { fast?: BrainPick | null; smart?: BrainPick | null; effort?: LlmEffort }) => put<BrainView>('/api/v1/brain/choice', choice),
+    signInProvider: (id: string) => post<SignInStart>(`/api/v1/brain/providers/${encodeURIComponent(id)}/signin`),
+    signInStatus: (id: string) => get<SignInStatus>(`/api/v1/oauth/${encodeURIComponent(id)}`),
+    /** Код со страницы сервиса или адрес страницы после входа — с другого устройства. */
+    completeSignIn: (id: string, text: string) => post<{ title: string }>('/api/v1/oauth/complete', { id, text }),
+    chooseBrain: (choice: { fast?: BrainPick | null; smart?: BrainPick | null; backup?: BrainPick | null; effort?: LlmEffort }) =>
+        put<BrainView>('/api/v1/brain/choice', choice),
 
     mcp: () => get<McpView>('/api/v1/mcp'),
     addMcpServer: (input: McpServerInput) => post<McpServer>('/api/v1/mcp/servers', input),
@@ -1988,13 +2625,17 @@ export const api = {
         get<AgentLog>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/activity${after > 0 ? `?after=${after}` : ''}`),
     /** «Остановить»: работа агента над черновиком кончается сейчас — начата ли она голосом или в пульте. */
     stopDraftAgent: (id: string) => post<{ stopped: boolean }>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/stop`),
+    /** «Сделай…» — одна дорога с колонкой: черновик своего лица, карточка, агент в фоне. Не просьба «сделай…» — 422; `draft` — переделать его. */
+    makeDraft: (words: string, draft?: string) => post<MadeDraft>('/api/v1/workshop/make', { words, draft }),
+    /** «В черновики»: черновик уходит со стола и ждёт в мастерской. */
+    parkDraft: (id: string) => post<DraftView>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/park`),
     /** Стол человека на шлюзе для роли пульта (gateway/src/panel/desk.rs); `layout: null` — пульт раскладывает стартовый. */
     desk: <T>(role: 'gateway' | 'helper') => get<KeptDesk<T>>(`/api/v1/desk/${role}`),
     /** Стол целиком; до 64 КБ. Ключу API стола не положено — 403. */
     saveDesk: (role: 'gateway' | 'helper', layout: unknown) => put<{ at: string }>(`/api/v1/desk/${role}`, layout),
     /** «Расставить заново» с нуля: хранимого стола больше нет. */
     resetDesk: (role: 'gateway' | 'helper') => del<void>(`/api/v1/desk/${role}`),
-    createDraft: (body: { id: string; kind?: 'plugin' | 'theme' | 'widget'; title?: string; openapi?: string }) => post<DraftView>('/api/v1/workshop/drafts', body),
+    createDraft: (body: { id: string; kind?: 'plugin' | 'quiz' | 'theme' | 'widget'; title?: string; openapi?: string }) => post<DraftView>('/api/v1/workshop/drafts', body),
     /** Адрес части пульта черновика — показать виджет до установки (docs/plans/desk.md, этап 5). */
     draftPreview: (id: string) => post<{ module: string; styles?: string | null }>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/preview`),
     /** «Открыть в мастерской»: черновик, а нет его — из своего поставленного пакета. */
@@ -2008,25 +2649,103 @@ export const api = {
     deleteDraftFile: (id: string, path: string) =>
         del<DraftView>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/files/${path.split('/').map(encodeURIComponent).join('/')}`),
     checkDraft: (id: string) => post<CheckReport>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/check`),
-    runDraft: (id: string, fn: string, input: unknown) => post<RunReport>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/run`, { function: fn, input }),
-    tryDraftPhrase: (id: string, text: string) => post<PhraseReport>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/phrase`, { text }),
+    /** `example` — на примере черновика (examples.json), без сети; `settings` — только обычные настройки, личные шлюз отклоняет. */
+    runDraft: (id: string, fn: string, input: unknown, trying?: DraftTrying) =>
+        post<RunReport>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/run`, { function: fn, input, ...trying }),
+    tryDraftPhrase: (id: string, text: string, trying?: DraftTrying) =>
+        post<PhraseReport>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/phrase`, { text, ...trying }),
     draftJournal: (id: string) => get<{ lines: JournalLine[] }>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/journal`),
-    installDraft: (id: string, approve: boolean) => post<InstallReport>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/install`, { approve }),
+    /** `settings` — что вписали в «Примерке», обычное и личное: шлюз сверяет с манифестом и пишет до первого запуска. */
+    installDraft: (id: string, approve: boolean, settings?: Record<string, unknown>) =>
+        post<InstallReport>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/install`, { approve, settings: settings ?? {} }),
     installPlan: (id: string) => get<InstallPlan>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/install`),
     startTrial: (id: string, approve: boolean, minutes = 10) => post<InstallReport>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/trial`, { approve, minutes }),
     endTrial: (id: string, keep: boolean) => del<{ message: string; draft?: DraftView | null }>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/trial${keep ? '?keep=true' : ''}`),
     workshopAgent: () => get<WorkshopAgentModel>('/api/v1/workshop/agent'),
     setWorkshopAgent: (choice: BrainPick | null) => put<WorkshopAgentModel>('/api/v1/workshop/agent', { choice }),
     setPackageSettings: (id: string, values: Record<string, unknown>) => put<PackageView>(`/api/v1/packages/${encodeURIComponent(id)}/settings`, values),
+    packageSchedule: (id: string) => get<ScheduleView>(`/api/v1/packages/${encodeURIComponent(id)}/schedule`),
+    runScheduleJob: (id: string, job: string) => post<{ outcome: string }>(`/api/v1/packages/${encodeURIComponent(id)}/schedule/${encodeURIComponent(job)}/run`),
+    pauseScheduleJob: (id: string, job: string, paused: boolean) => put<ScheduleView>(`/api/v1/packages/${encodeURIComponent(id)}/schedule/${encodeURIComponent(job)}`, { paused }),
+    removeScheduleJob: (id: string, job: string) => del<ScheduleView>(`/api/v1/packages/${encodeURIComponent(id)}/schedule/${encodeURIComponent(job)}`),
+    schedulesSwitch: () => get<SchedulesSwitch>('/api/v1/packages/schedules'),
+    setSchedulesSwitch: (on: boolean) => put<SchedulesSwitch>('/api/v1/packages/schedules', { on }),
+    laterCommands: () => get<LaterCommandView[]>('/api/v1/later'),
+    packageFiles: (id: string) => get<PluginFilesView>(`/api/v1/packages/${encodeURIComponent(id)}/files`),
+    pluginFilesSummary: () => get<PluginFilesSummary>('/api/v1/packages/files'),
+    midi: () => get<MidiView>('/api/v1/midi'),
+    midiTicket: (pkg: string) => post<{ ticket: string; expiresIn: number }>('/api/v1/midi/ticket', { package: pkg }),
+    /** Файл `.mid` — дорожки с мелодиями; шлюз его не хранит. */
+    midiRead: (file: Blob) =>
+        fetch(gw('/api/v1/midi/read'), {
+            method: 'POST',
+            headers: { ...authHeaders(), 'Content-Type': 'audio/midi' },
+            body: file,
+        }).then(async (response) => {
+            if (!response.ok) throw new ApiError(response.status, await response.text().catch(() => ''));
+            return ((await response.json()) as { message: MidiSongView }).message;
+        }),
+    historyRoom: () => get<HistoryRoom>('/api/v1/history'),
+    setHistorySettings: (settings: { place?: HistoryPlace; budgetMb?: number; days?: number; steps?: number }) => put<HistoryRoom>('/api/v1/history/settings', settings),
+    cleanHistory: () => post<{ records: number; objects: number; bytesBefore: number; bytesAfter: number }>('/api/v1/history/clean'),
+    packageHistory: (id: string, before?: string) =>
+        get<HistoryFeed>(`/api/v1/packages/${encodeURIComponent(id)}/history${before ? `?before=${encodeURIComponent(before)}` : ''}`),
+    compareHistory: (id: string, from: string, to?: string) =>
+        get<HistoryComparison>(`/api/v1/packages/${encodeURIComponent(id)}/history/compare?from=${encodeURIComponent(from)}${to ? `&to=${encodeURIComponent(to)}` : ''}`),
+    restorePlan: (id: string, record: string, what: RestoreWhat) =>
+        get<RestorePlan>(`/api/v1/packages/${encodeURIComponent(id)}/restore?record=${encodeURIComponent(record)}&what=${encodeURIComponent(what)}`),
+    restorePackage: (id: string, record: string, what: RestoreWhat, approve = false) =>
+        post<RestoreReport>(`/api/v1/packages/${encodeURIComponent(id)}/restore`, { record, what, approve }),
+    restoreDraft: (id: string, record: string) => post<DraftView>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/restore`, { record }),
+    mergeDraft: (id: string, record: string, agent = false, asked?: string) =>
+        post<MergeReport>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/merge`, { record, agent, asked }),
+    draftMerge: (id: string) => get<{ merge: MergeState | null }>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/merge`),
+    answerMerge: (id: string, choice: string) => post<{ answered: boolean }>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/merge/answer`, { choice }),
+    cancelMerge: (id: string) => del<DraftView>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/merge`),
+    cancelLaterCommand: (id: string) => del<boolean>(`/api/v1/later/${encodeURIComponent(id)}`),
     enablePackage: (id: string) => post<PackageView>(`/api/v1/packages/${encodeURIComponent(id)}/enable`),
     disablePackage: (id: string) => post<PackageView>(`/api/v1/packages/${encodeURIComponent(id)}/disable`),
     packagesCatalog: (refresh = false) => get<CatalogView>(`/api/v1/packages/catalog${refresh ? '?refresh=1' : ''}`),
     /** Выключатель «Не загружать каталог» (настройка packages_catalog). */
     setPackagesCatalog: (enabled: boolean) => put<CatalogView>('/api/v1/packages/catalog', { enabled }),
+    /** Свой источник пакетов по ссылке — после предупреждения (только администратор). */
+    addPackageSource: (url: string) => post<CatalogView>('/api/v1/packages/sources', { url, understood: true }),
+    removePackageSource: (url: string) => call<CatalogView>('DELETE', '/api/v1/packages/sources', { url }),
     installPackage: (id: string, version?: string) =>
         post<PackageView>(`/api/v1/packages/${encodeURIComponent(id)}/install`, version ? { version } : {}),
     updatePackage: (id: string) => post<PackageView>(`/api/v1/packages/${encodeURIComponent(id)}/update`),
     removePackage: (id: string) => del<unknown>(`/api/v1/packages/${encodeURIComponent(id)}`),
+    // Память персонажей: окно «Память», виджет, строка «Запомнено» под ответом.
+    memory: (signal?: AbortSignal) => get<MemoryOverview>('/api/v1/memory', signal),
+    setMemoryState: (change: { enabled?: boolean; inPassing?: boolean }) => put<MemoryState>('/api/v1/memory/state', change),
+    pauseMemory: (span: MemoryPause) =>
+        post<MemoryState>('/api/v1/memory/pause', { span, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
+    resumeMemory: () => del<MemoryState>('/api/v1/memory/pause'),
+    memoryEntities: (signal?: AbortSignal) => get<MemoryEntityItem[]>('/api/v1/memory/entities', signal),
+    memoryEntity: (id: string, signal?: AbortSignal) => get<MemoryEntityCard>(`/api/v1/memory/entities/${encodeURIComponent(id)}`, signal),
+    addMemoryEntity: (kind: MemoryEntityKind, name: string) => post<MemoryEntity>('/api/v1/memory/entities', { kind, name }),
+    updateMemoryEntity: (id: string, change: { name?: string; aliases?: string[] }) =>
+        patch<MemoryEntity>(`/api/v1/memory/entities/${encodeURIComponent(id)}`, change),
+    mergeMemoryEntity: (id: string, into: string) => post<MemoryEntity>(`/api/v1/memory/entities/${encodeURIComponent(id)}/merge`, { into }),
+    deleteMemoryEntity: (id: string) => del<{ done: boolean }>(`/api/v1/memory/entities/${encodeURIComponent(id)}`),
+    addMemoryFact: (subjectId: string, text: string, pinned = false) => post<MemoryFact>('/api/v1/memory/facts', { subjectId, text, pinned }),
+    updateMemoryFact: (id: string, change: { text?: string; pinned?: boolean }) =>
+        patch<MemoryFact>(`/api/v1/memory/facts/${encodeURIComponent(id)}`, change),
+    closeMemoryFact: (id: string, reason?: string) => post<{ done: boolean }>(`/api/v1/memory/facts/${encodeURIComponent(id)}/close`, reason ? { reason } : {}),
+    reopenMemoryFact: (id: string) => post<{ done: boolean }>(`/api/v1/memory/facts/${encodeURIComponent(id)}/reopen`),
+    eraseMemoryFact: (id: string) => del<{ done: boolean }>(`/api/v1/memory/facts/${encodeURIComponent(id)}`),
+    memoryChanges: (limit = 50, signal?: AbortSignal) => get<MemoryChange[]>(`/api/v1/memory/changes?limit=${limit}`, signal),
+    undoMemoryChange: (id: string) => post<{ done: boolean }>(`/api/v1/memory/changes/${encodeURIComponent(id)}/undo`),
+    reflection: (signal?: AbortSignal) => get<ReflectionView>('/api/v1/memory/reflection', signal),
+    setReflection: (change: Partial<Pick<ReflectionView, 'enabled' | 'order' | 'day' | 'model'>>) =>
+        put<ReflectionView>('/api/v1/memory/reflection', change),
+    // Сон: ночная работа шлюза по частям; первая часть — рефлексия.
+    sleep: (signal?: AbortSignal) => get<SleepView>('/api/v1/sleep', signal),
+    setSleepTime: (time: string) => put<SleepView>('/api/v1/sleep', { time }),
+    runSleep: () => post<{ id: string }>('/api/v1/sleep/run'),
+    sleepRuns: (limit = 30, signal?: AbortSignal) => get<SleepRun[]>(`/api/v1/sleep/runs?limit=${limit}`, signal),
+    sleepRun: (id: string, signal?: AbortSignal) => get<SleepRunDetail>(`/api/v1/sleep/runs/${encodeURIComponent(id)}`, signal),
+    rollBackSleepRun: (id: string) => post<SleepRun>(`/api/v1/sleep/runs/${encodeURIComponent(id)}/rollback`),
     /**
      * Файл шлюза с ключом входа (картинка, фраза-пробник): адреса /api/… и /media/… — как их прислал шлюз. Чужой адрес
      * не запрашивается: ключ входа уходит только своему шлюзу.

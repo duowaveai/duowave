@@ -67,6 +67,8 @@ pub struct AvailabilityService {
     /// A transcoder here, and the owner's flag for the station (gateway/media/transcode.rs).
     transcoder: OnceLock<bool>,
     transcode_on_station: std::sync::atomic::AtomicBool,
+    /// MIDI keyboards are heard here (src/midi).
+    midi: std::sync::atomic::AtomicBool,
     events: EventBus,
     /// The states last told: `availability.changed` only when one changed.
     told: Mutex<Vec<FeatureState>>,
@@ -93,6 +95,7 @@ impl AvailabilityService {
             memory: OnceLock::new(),
             transcoder: OnceLock::new(),
             transcode_on_station: std::sync::atomic::AtomicBool::new(false),
+            midi: std::sync::atomic::AtomicBool::new(false),
             events,
             told: Mutex::new(Vec::new()),
         }
@@ -120,6 +123,11 @@ impl AvailabilityService {
         self.transcode_on_station.store(on_station, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Whether this gateway hears MIDI keyboards (src/midi): its build and `MIDI`.
+    pub fn set_midi(&self, midi: bool) {
+        self.midi.store(midi, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub fn context(&self) -> Context {
         let placement = self.placement.get().map(|source| source.placement()).unwrap_or(self.profile.placement());
         let home_server = match placement {
@@ -142,6 +150,7 @@ impl AvailabilityService {
             transcoder: self.transcoder.get().copied().unwrap_or(false),
             transcode_on_station: self.transcode_on_station.load(std::sync::atomic::Ordering::Relaxed),
             own_lacks,
+            midi: self.midi.load(std::sync::atomic::Ordering::Relaxed),
         }
     }
 

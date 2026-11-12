@@ -54,7 +54,7 @@ export function AddWidgetPanel({ onClose, children }: { onClose: () => void; chi
                                         <span class="flex-1 min-w-0 flex flex-col">
                                             <span class="w-strong">{widget.title ?? widget.id}</span>
                                             <span class="w-cap">
-                                                {[widget.plugin === 'core' ? 'встроенный' : 'плагин', widget.size === 'large' ? 'большой' : 'маленький']
+                                                {[widget.plugin === 'core' ? 'встроенный' : 'приложение', widget.size === 'large' ? 'большой' : 'маленький']
                                                     .filter(Boolean)
                                                     .join(' · ')}
                                             </span>
@@ -77,7 +77,7 @@ export function AddWidgetPanel({ onClose, children }: { onClose: () => void; chi
                         </span>
                         <span class="flex-1 min-w-0 flex flex-col">
                             <span class="w-strong">Каталог</span>
-                            <span class="w-cap">плагины с виджетами: погода, радио, курсы, список покупок…</span>
+                            <span class="w-cap">приложения с виджетами: погода, радио, курсы, список покупок…</span>
                         </span>
                     </button>
                 </section>

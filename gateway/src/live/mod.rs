@@ -35,6 +35,8 @@ use crate::utils::time::now_iso;
 /// Events the panel re-reads on. Names only: whatever they carry, the panel reads through its own API and rights.
 pub const RELAYED: &[&str] = &[
     "settings.changed",
+    "memory.changed",
+    "sleep.changed",
     "mode.changed",
     "routes.changed",
     "voice.changed",
@@ -53,6 +55,8 @@ pub const RELAYED: &[&str] = &[
     // A plugin's data changed (its kv): its widgets read theirs again.
     "packages.data",
     "packages.catalog",
+    // A keyboard plugged in or out (src/midi): the panel reads the keyboards again.
+    "midi.devices",
     "plugins.resources",
     "workshop.changed",
     "connector.changed",
@@ -143,6 +147,8 @@ fn subject_of(event: &GatewayEvent) -> (Option<String>, Option<String>) {
     match event {
         GatewayEvent::PackagesChanged { package_id, change, .. } => (Some(package_id.clone()), Some(change.clone())),
         GatewayEvent::PackageDataChanged { package } => (Some(package.clone()), None),
+        // A draft and what happened to it (docs/plans/voice-creation.md): `made`, `ready`, `parked`, `open:fitting`…
+        GatewayEvent::WorkshopChanged { draft, change } => (Some(draft.clone()), Some(change.clone())),
         _ => (None, None),
     }
 }
@@ -636,6 +642,8 @@ mod tests {
             error: None,
             actor: None,
         });
+        // A draft and what happened to it: the desk's tile knows which one (docs/plans/voice-creation.md).
+        events.emit(GatewayEvent::WorkshopChanged { draft: "widget-1".into(), change: "ready".into() });
         tick().await;
         let changes: Vec<Value> =
             panel.messages()[1..].iter().map(|message| serde_json::to_value(message).unwrap()).collect();
@@ -644,6 +652,7 @@ mod tests {
             [
                 serde_json::json!({"type": "changed", "name": "packages.data", "subject": "shopping"}),
                 serde_json::json!({"type": "changed", "name": "packages.changed", "subject": "weather", "change": "unloaded"}),
+                serde_json::json!({"type": "changed", "name": "workshop.changed", "subject": "widget-1", "change": "ready"}),
             ]
         );
     }

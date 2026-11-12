@@ -50,6 +50,7 @@ capabilities! {
     Timers = "timers", "Таймеры", station: true;
     Alarms = "alarms", "Будильники", station: true;
     Reminders = "reminders", "Напоминания", station: false;
+    Later = "later", "Отложенные команды", station: false;
     Weather = "weather", "Погода", station: false, display: true;
     News = "news", "Новости", station: false;
     MorningShow = "morning_show", "Утреннее шоу", station: true;
@@ -60,7 +61,8 @@ capabilities! {
     Calls = "calls", "Звонки и голосовые сообщения", station: true;
     MusicRecognition = "music_recognition", "Что играет", station: true;
     Account = "account", "Сервисы аккаунта: списки, «найди телефон», покупки", station: false;
-    Plugins = "plugins", "Плагины: свои навыки из пакетов", station: false;
+    Plugins = "plugins", "Приложения: свои навыки", station: false;
+    Memory = "memory", "Память: «запомни», «забудь», «что ты помнишь»", station: false;
 }
 
 impl std::fmt::Display for CapabilityName {
@@ -101,7 +103,7 @@ mod tests {
 
     #[test]
     fn names_round_trip() {
-        assert_eq!(CAPABILITY_NAMES.len(), 22);
+        assert_eq!(CAPABILITY_NAMES.len(), 24);
         for name in CAPABILITY_NAMES {
             assert_eq!(is_capability(name.as_str()), Some(*name));
             assert_eq!(serde_json::to_value(name).unwrap(), serde_json::json!(name.as_str()));

@@ -1,8 +1,10 @@
 //! Which model answers, per profile: the panel's choice of providers (BrainService) or, while the panel has none,
 //! the one .env describes. The dialog takes one profile's model per answer and keeps it to the end of that answer:
 //! a swap in the panel applies from the next question, never in the middle of one (Claude's thinking blocks are
-//! valid only for the model that wrote them).
+//! valid only for the model that wrote them). The panel's backup comes with a slot: it answers when the slot's model
+//! gave no answer at all, and keeps the rest of that answer.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use serde::{Serialize, Serializer};
@@ -11,6 +13,9 @@ use super::llm_client::{create_llm, LlmClient, LlmSettings};
 use super::openai_chat::OPENAI_BASE_URL;
 use crate::config::{DialogProvider, ModelProfile};
 use crate::operations::networks::is_local_url;
+
+/// The provider id of the model .env describes.
+pub const ENV_PROVIDER: &str = "env";
 
 /// The kind of a provider as the panel names it: anthropic, openai, echo, none.
 pub fn serialize_kind<S: Serializer>(kind: &DialogProvider, serializer: S) -> Result<S::Ok, S::Error> {
@@ -29,6 +34,29 @@ pub struct ModelSlot {
     pub title: String,
     /// The question leaves the house.
     pub cloud: bool,
+    /// The model that answers when this one gives no answer (the panel's «Запасная»), shared by the answer's rounds.
+    pub backup: Option<Arc<Backup>>,
+}
+
+/// A backup for one answer: once it took over, the answer's later rounds go to it straight away — they do not wait
+/// for the first model again.
+pub struct Backup {
+    pub slot: ModelSlot,
+    taken: AtomicBool,
+}
+
+impl Backup {
+    pub fn new(slot: ModelSlot) -> Backup {
+        Backup { slot, taken: AtomicBool::new(false) }
+    }
+
+    pub fn taken(&self) -> bool {
+        self.taken.load(Ordering::SeqCst)
+    }
+
+    pub fn take(&self) {
+        self.taken.store(true, Ordering::SeqCst);
+    }
 }
 
 impl ModelSlot {
@@ -160,10 +188,11 @@ impl BrainSource for EnvBrain {
         Some(ModelSlot {
             client,
             model: if model.is_empty() { self.settings.model.clone() } else { model.clone() },
-            provider: "env".into(),
+            provider: ENV_PROVIDER.into(),
             kind: self.settings.provider,
             title: self.title.clone(),
             cloud: self.cloud(),
+            backup: None,
         })
     }
 

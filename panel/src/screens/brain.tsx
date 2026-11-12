@@ -6,6 +6,7 @@ import { BRANDS, type BrandId } from '../brand-icons';
 import { BrandMark } from '../ui/brand';
 import { Action, Card, CardNote } from '../ui/cards';
 import { Sheet } from '../ui/sheet';
+import { useSignIn } from '../ui/sign-in';
 import { AskSheet } from './ask';
 import { ask } from '../ui/confirm';
 
@@ -95,7 +96,7 @@ export function BrainTab() {
     const say = (id: string, note: CardNote) => setNotes((all) => ({ ...all, [id]: note }));
     const mark = (id: string, on: boolean) => setBusy((all) => ({ ...all, [id]: on }));
 
-    const choose = async (profile: 'fast' | 'smart', pick: BrainPick | null) => {
+    const choose = async (profile: 'fast' | 'smart' | 'backup', pick: BrainPick | null) => {
         mark(profile, true);
         say('choice', {});
         try {
@@ -120,20 +121,23 @@ export function BrainTab() {
         }
     };
 
-    const check = async (provider: ProviderView) => {
-        mark(provider.id, true);
-        say(provider.id, {});
+    const check = async (id: string, done?: string) => {
+        mark(id, true);
+        say(id, done ? { notice: done } : {});
         try {
-            const result = await api.checkProvider(provider.id);
+            const result = await api.checkProvider(id);
             const words = checkWords(result);
-            say(provider.id, words.ok ? { notice: `Проверено: ${words.text}.` } : { error: words.text });
+            say(id, words.ok ? { notice: `${done ? `${done} ` : ''}Проверено: ${words.text}.` } : { error: words.text });
             await load();
         } catch (e) {
-            say(provider.id, { error: problemOf(e) });
+            say(id, { error: problemOf(e) });
         } finally {
-            mark(provider.id, false);
+            mark(id, false);
         }
     };
+
+    /** «Войти через …» на карточке: ключ придёт входом, потом провайдер сам проверится. */
+    const signIn = useSignIn((id, title) => void check(id, `Вход в «${title}» выполнен — ключ у шлюза.`));
 
     const saveKey = async (provider: ProviderView, key: string) => {
         mark(provider.id, true);
@@ -175,15 +179,32 @@ export function BrainTab() {
 
     const { providers, presets, choice, status, env } = view;
     const anthropic = providers.some((provider) => provider.kind === 'anthropic' && [choice.fast, choice.smart].some((pick) => pick?.provider === provider.id));
+    /** Отвечает подписка (ChatGPT): рядом с выбором модели — что тратится и где лимиты, как просит OpenAI. */
+    const plan = [choice.fast, choice.smart]
+        .map((pick) => providers.find((provider) => provider.id === pick?.provider && provider.account))
+        .map((provider) => provider && presets.find((preset) => preset.id === provider.preset))
+        .find((preset) => preset?.signIn?.keyless);
     const envAnswers = status.source !== 'panel';
-    const options = (profile: 'fast' | 'smart') => (
+    const backup = choice.backup ?? null;
+    const envLabel = `из .env: ${env.title} · ${env.models.fast}`;
+    /** Куда уйдёт вопрос, если ответит запасная: её название и дома она или в интернете. */
+    const backupWhere = !backup
+        ? null
+        : backup.provider === 'env'
+          ? { title: env.title, cloud: env.cloud }
+          : providers.find((provider) => provider.id === backup.provider) ?? null;
+    const chosenOf = (profile: 'fast' | 'smart' | 'backup') => (profile === 'fast' ? choice.fast : profile === 'smart' ? choice.smart : backup);
+    const options = (profile: 'fast' | 'smart' | 'backup') => (
         <>
             <option value="">
-                {profile === 'smart' ? 'как быстрая' : env.usable ? `из .env: ${env.title} · ${env.models.fast}` : 'не выбрана'}
+                {profile === 'backup' ? 'не нужна' : profile === 'smart' ? 'как быстрая' : env.usable ? envLabel : 'не выбрана'}
             </option>
+            {profile === 'backup' && env.usable && (
+                <option value={pickValue({ provider: 'env', model: backup?.provider === 'env' ? backup.model : env.models.fast })}>{envLabel}</option>
+            )}
             {providers.map((provider) => {
                 const models = modelsOf(provider, presets);
-                const chosen = profile === 'fast' ? choice.fast : choice.smart;
+                const chosen = chosenOf(profile);
                 const extra = chosen?.provider === provider.id && !models.includes(chosen.model) ? [chosen.model] : [];
                 return (
                     <optgroup key={provider.id} label={provider.title}>
@@ -229,6 +250,26 @@ export function BrainTab() {
                         </select>
                     </label>
                 ))}
+                <label class="list-row">
+                    <span class="flex-1 min-w-180 flex flex-col gap-2">
+                        <b>Запасная</b>
+                        <span class="t-caption">если выбранная не ответит</span>
+                    </span>
+                    <select
+                        class="field max-w-full min-w-0 flex-1-1-220"
+                        value={pickValue(backup)}
+                        disabled={!mayChoose || busy.backup}
+                        onChange={(e) => void choose('backup', parsePick((e.target as HTMLSelectElement).value))}
+                    >
+                        {options('backup')}
+                    </select>
+                </label>
+                {backupWhere && (
+                    <p class="t-caption m-0 mt-4">
+                        Запасная отвечает, когда выбранная модель не ответила: кончился лимит подписки, нет связи или сервис отказал. Вопрос
+                        тогда уйдёт в «{backupWhere.title}» — {backupWhere.cloud ? 'в интернет' : 'дома, без интернета'}.
+                    </p>
+                )}
                 {anthropic && (
                     <div class="list-row">
                         <span class="flex-1 min-w-180 flex flex-col gap-2">
@@ -252,6 +293,19 @@ export function BrainTab() {
                         </div>
                     </div>
                 )}
+                {plan?.signIn && (
+                    <p class="t-caption m-0 mt-4">
+                        Отвечает подписка {plan.signIn.with}: тратится ваш план, а не ключ API.
+                        {plan.usageUrl && (
+                            <>
+                                {' '}
+                                <a class="c-accent-text" href={plan.usageUrl} target="_blank" rel="noopener noreferrer">
+                                    Лимиты
+                                </a>
+                            </>
+                        )}
+                    </p>
+                )}
                 {notes.choice?.notice && (
                     <p class="t-caption m-0 mt-4 c-accent-text" role="status">
                         {notes.choice.notice}
@@ -274,15 +328,34 @@ export function BrainTab() {
                 </div>
                 {providers.length === 0 && (
                     <p class="t-caption m-0 mb-8">
-                        Пока ни одного: отвечает модель из .env. Добавьте провайдера со своим ключом — Claude, OpenAI, OpenRouter, модель на
-                        этом Mac или любой совместимый сервис.
+                        Пока ни одного: отвечает модель из .env. Добавьте провайдера со своим ключом — Claude, OpenAI, модель на этом Mac или
+                        любой совместимый сервис, — или войдите в аккаунт OpenRouter.
                     </p>
                 )}
                 {providers.map((provider) => {
                     const words = checkWords(provider.check);
                     const answering = [choice.fast, choice.smart].some((pick) => pick?.provider === provider.id);
-                    const keyLine = provider.key.set ? `ключ ${provider.key.hint ?? ''}` : provider.needsKey ? 'нет ключа' : 'без ключа';
                     const models = modelsOf(provider, presets);
+                    const preset = presets.find((entry) => entry.id === provider.preset);
+                    const via = preset?.signIn;
+                    const account = provider.account;
+                    const keyLine = account
+                        ? account.signedIn
+                            ? `подписка ${via?.with ?? ''}${account.who ? ` · ${account.who}` : ''}`
+                            : 'нужно войти'
+                        : provider.key.set
+                          ? `ключ ${provider.key.hint ?? ''}`
+                          : provider.needsKey
+                            ? 'нет ключа'
+                            : 'без ключа';
+                    const noKey = via ? `Без ключа сервис не ответит: войдите через ${via.with} или вставьте ключ.` : 'Без ключа сервис не ответит.';
+                    const accountNote: CardNote | undefined = !account
+                        ? undefined
+                        : !account.signedIn
+                          ? { warning: `Без входа ${via?.with ?? 'сервис'} не ответит: нажмите «войти».` }
+                          : account.problem === 'limit'
+                            ? { warning: `Лимит подписки ${via?.with ?? ''} исчерпан: подождите, пока он восстановится, или выберите другую модель.` }
+                            : undefined;
                     return (
                         <Card
                             key={provider.id}
@@ -291,28 +364,52 @@ export function BrainTab() {
                             pills={[
                                 provider.cloud ? { text: 'облако', cls: 'pill-yandex' } : { text: 'дома', cls: 'pill-own' },
                                 ...(answering ? [{ text: 'отвечает', cls: 'pill-own' }] : []),
+                                ...(backup?.provider === provider.id ? [{ text: 'запасная', cls: 'pill-off' }] : []),
                             ]}
                             description={`${words.text} · ${keyLine}`}
                             note={
                                 notes[provider.id] ??
-                                (provider.needsKey && !provider.key.set ? { warning: 'Без ключа сервис не ответит.' } : words.ok === false ? { error: words.text } : undefined)
+                                accountNote ??
+                                (provider.needsKey && !provider.key.set ? { warning: noKey } : words.ok === false ? { error: words.text } : undefined)
                             }
                             action={null}
                         >
                             {mayManage && (
                                 <div class="flex items-center gap-6 flex-wrap pl-50">
-                                    <Action label="проверить" tone="on" busy={busy[provider.id]} onClick={() => void check(provider)} />
-                                    <Action
-                                        label="ключ"
-                                        disabled={busy[provider.id]}
-                                        onClick={() => {
-                                            setKeyFor(keyFor === provider.id ? null : provider.id);
-                                            setKeyDraft('');
-                                        }}
-                                    />
+                                    <Action label="проверить" tone="on" busy={busy[provider.id]} onClick={() => void check(provider.id)} />
+                                    {via && (
+                                        <Action
+                                            label={account?.signedIn ? 'войти заново' : 'войти'}
+                                            tone={(account ? account.signedIn : provider.key.set) ? 'off' : 'on'}
+                                            busy={signIn.starting && signIn.target === provider.id}
+                                            disabled={busy[provider.id]}
+                                            onClick={() => signIn.start(provider.id, via.with, () => api.signInProvider(provider.id))}
+                                        />
+                                    )}
+                                    {!via?.keyless && (
+                                        <Action
+                                            label="ключ"
+                                            disabled={busy[provider.id]}
+                                            onClick={() => {
+                                                setKeyFor(keyFor === provider.id ? null : provider.id);
+                                                setKeyDraft('');
+                                            }}
+                                        />
+                                    )}
+                                    {preset?.usageUrl && (
+                                        <a
+                                            class="pill pill-off py-8 px-14 min-h-36 inline-flex items-center"
+                                            href={preset.usageUrl}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                        >
+                                            лимиты
+                                        </a>
+                                    )}
                                     <Action label="убрать" disabled={busy[provider.id]} onClick={() => void remove(provider)} />
                                 </div>
                             )}
+                            {signIn.target === provider.id && signIn.steps && <div class="pl-50">{signIn.steps}</div>}
                             {keyFor === provider.id && (
                                 <form
                                     class="flex gap-8 flex-wrap pl-50"
@@ -369,7 +466,7 @@ export function BrainTab() {
                             ? `${env.title} · ${env.models.fast}${env.models.smart !== env.models.fast ? `, умная — ${env.models.smart}` : ''}`
                             : 'не задана: DIALOG_PROVIDER=none'
                     }
-                    meta={envAnswers ? undefined : 'запасная'}
+                    meta={backup?.provider === 'env' ? 'запасная' : undefined}
                     action={null}
                 />
             </section>
@@ -392,7 +489,8 @@ export function BrainTab() {
 
 /**
  * Шит «Добавить провайдера»: сначала какой (готовые и «свой»), потом ключ, адрес и поля пресета. «Проверить и
- * сохранить» сохраняет и сразу проверяет; если это первый провайдер и он работает — предложит отвечать им.
+ * сохранить» сохраняет и сразу проверяет; если это первый провайдер и он работает — предложит отвечать им. У сервиса со
+ * входом (OpenRouter) ключ можно не вставлять: «Войти через …» добавляет провайдера без ключа, ключ приходит входом.
  */
 function AddProvider({
     presets,
@@ -413,6 +511,25 @@ function AddProvider({
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [result, setResult] = useState<{ provider: ProviderView; check: ProviderCheck } | null>(null);
+    /** Провайдер, уже добавленный входом: ключ, вставленный потом, ложится на него, а не на второго такого же. */
+    const [created, setCreated] = useState<ProviderView | null>(null);
+
+    const checked = async (provider: ProviderView) => {
+        setBusy(true);
+        setError(null);
+        try {
+            setResult({ provider, check: await api.checkProvider(provider.id) });
+            onDone();
+        } catch (e) {
+            setError(problemOf(e));
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const signIn = useSignIn(() => {
+        if (created) void checked(created);
+    });
 
     const start = (chosen: ProviderPreset) => {
         setPreset(chosen);
@@ -421,20 +538,31 @@ function AddProvider({
         setFields({});
         setKey('');
         setError(null);
+        if (created && created.preset !== chosen.id) setCreated(null);
     };
+
+    const fieldsOf = (chosen: ProviderPreset) => ({
+        ...(title.trim() ? { title: title.trim() } : {}),
+        ...(chosen.editableUrl ? { baseUrl: url.trim() } : {}),
+        options: fields,
+    });
+
+    /** Войти: провайдер добавляется без ключа (если его ещё нет), потом страница сервиса. */
+    const beginSignIn = (chosen: ProviderPreset, service: string) =>
+        signIn.start('new', service, async () => {
+            const provider = created ?? (await api.addProvider({ preset: chosen.id, ...fieldsOf(chosen) }));
+            setCreated(provider);
+            onDone();
+            return api.signInProvider(provider.id);
+        });
 
     const save = async () => {
         if (!preset) return;
         setBusy(true);
         setError(null);
         try {
-            const provider = await api.addProvider({
-                preset: preset.id,
-                ...(title.trim() ? { title: title.trim() } : {}),
-                ...(preset.editableUrl ? { baseUrl: url.trim() } : {}),
-                ...(key.trim() ? { key: key.trim() } : {}),
-                options: fields,
-            });
+            const given = { ...fieldsOf(preset), ...(key.trim() ? { key: key.trim() } : {}) };
+            const provider = created ? await api.updateProvider(created.id, given) : await api.addProvider({ preset: preset.id, ...given });
             const check = await api.checkProvider(provider.id);
             setResult({ provider, check });
             onDone();
@@ -510,13 +638,15 @@ function AddProvider({
                     </>
                 ) : (
                     <div class="flex gap-8 flex-wrap">
-                        <button
-                            class="pill pill-own dash-confirm-btn"
-                            disabled={busy || (preset.needsKey && !key.trim()) || (preset.editableUrl && !url.trim())}
-                            onClick={() => void save()}
-                        >
-                            {busy ? 'Проверяем…' : 'Проверить и сохранить'}
-                        </button>
+                        {!preset.signIn?.keyless && (
+                            <button
+                                class="pill pill-own dash-confirm-btn"
+                                disabled={busy || (preset.needsKey && !key.trim()) || (preset.editableUrl && !url.trim())}
+                                onClick={() => void save()}
+                            >
+                                {busy ? 'Проверяем…' : 'Проверить и сохранить'}
+                            </button>
+                        )}
                         <button class="pill pill-off dash-confirm-btn" onClick={() => setPreset(null)}>
                             Назад
                         </button>
@@ -535,22 +665,56 @@ function AddProvider({
                     <p class="t-caption m-0">
                         {preset.description}
                     </p>
+                    {preset.signIn && (
+                        <div class="flex flex-col gap-6">
+                            <button
+                                type="button"
+                                class="pill pill-own dash-confirm-btn self-start"
+                                disabled={busy || signIn.starting}
+                                onClick={() => preset.signIn && beginSignIn(preset, preset.signIn.with)}
+                            >
+                                {signIn.starting ? 'Открываем…' : (preset.signIn.label ?? `Войти через ${preset.signIn.with}`)}
+                            </button>
+                            {preset.signIn.keyless ? (
+                                <span class="t-caption">
+                                    Ответы пойдут из вашей подписки {preset.signIn.with}, ключ API не нужен. Сколько DuoWave может тратить из
+                                    плана, задаётся в настройках {preset.signIn.with}.
+                                    {preset.usageUrl && (
+                                        <>
+                                            {' '}
+                                            <a class="c-accent-text" href={preset.usageUrl} target="_blank" rel="noopener noreferrer">
+                                                Лимиты
+                                            </a>
+                                        </>
+                                    )}
+                                </span>
+                            ) : (
+                                <span class="t-caption">
+                                    Ключ создастся в вашем аккаунте {preset.signIn.with} и придёт в шлюз сам. Удалить его можно там же. Или вставьте
+                                    свой ключ ниже.
+                                </span>
+                            )}
+                            {signIn.steps}
+                        </div>
+                    )}
                     {preset.editableUrl && (
                         <label class="flex flex-col gap-4">
                             <span class="t-caption">Адрес</span>
                             <input class="field" value={url} placeholder="http://localhost:8000/v1" onInput={(e) => setUrl((e.target as HTMLInputElement).value)} />
                         </label>
                     )}
-                    <label class="flex flex-col gap-4">
-                        <span class="t-caption">{preset.needsKey ? 'Ключ' : 'Ключ, если сервис его просит'}</span>
-                        <input
-                            class="field"
-                            type="password"
-                            autocomplete="off"
-                            value={key}
-                            onInput={(e) => setKey((e.target as HTMLInputElement).value)}
-                        />
-                    </label>
+                    {!preset.signIn?.keyless && (
+                        <label class="flex flex-col gap-4">
+                            <span class="t-caption">{preset.needsKey ? 'Ключ' : 'Ключ, если сервис его просит'}</span>
+                            <input
+                                class="field"
+                                type="password"
+                                autocomplete="off"
+                                value={key}
+                                onInput={(e) => setKey((e.target as HTMLInputElement).value)}
+                            />
+                        </label>
+                    )}
                     {preset.keyUrl && (
                         <a class="t-caption c-accent-text" href={preset.keyUrl} target="_blank" rel="noopener noreferrer">
                             Где взять ключ
@@ -572,7 +736,9 @@ function AddProvider({
                         <input class="field" value={title} placeholder={preset.title} onInput={(e) => setTitle((e.target as HTMLInputElement).value)} />
                     </label>
                     <p class="t-caption m-0">
-                        Ключ хранится в шлюзе зашифрованным; пульт потом покажет только его последние символы.
+                        {preset.signIn?.keyless
+                            ? 'Вход хранится в шлюзе зашифрованным и остаётся на этом компьютере: на колонку и другие компьютеры он не переезжает.'
+                            : 'Ключ хранится в шлюзе зашифрованным; пульт потом покажет только его последние символы.'}
                     </p>
                 </form>
             )}

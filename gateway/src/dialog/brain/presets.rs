@@ -1,12 +1,47 @@
 //! The providers the panel offers ready-made, and the two custom ones. A preset knows the address, whether a key is
-//! needed and where to get one, the fields beyond the key, and how its model ids are written. Addresses are each
-//! service's documented OpenAI-compatible (or Anthropic) endpoint; «Проверить» in the panel confirms them live.
+//! needed and where to get one, the fields beyond the key, how its model ids are written, and — when the service has
+//! one — how the owner signs in instead of pasting a key (src/oauth). Addresses are each service's documented
+//! OpenAI-compatible (or Anthropic) endpoint; «Проверить» in the panel confirms them live.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 use crate::config::DialogProvider;
+use crate::dialog::llm::LlmApi;
+use crate::oauth::{Flow, SignIn, TokenFlow};
+
+/// OpenRouter's sign-in: a key of the owner's, created in their account by OpenRouter's PKCE
+/// (https://openrouter.ai/docs/use-cases/oauth-pkce).
+const OPENROUTER_SIGN_IN: SignIn = SignIn {
+    with: "OpenRouter",
+    label: None,
+    flow: Flow::KeyExchange {
+        authorize: "https://openrouter.ai/auth",
+        exchange: "https://openrouter.ai/api/v1/auth/keys",
+    },
+};
+
+/// ChatGPT's plan through «Sign in with ChatGPT» for open-source and locally hosted apps
+/// (https://developers.openai.com/siwc/token-sharing-open-source): a client registered on the fly at the first sign-in,
+/// the return to 127.0.0.1 only, this gateway's stable id, the plan's scope required. The answers go through
+/// /responses (src/dialog/llm/openai_responses.rs); the button's words are OpenAI's.
+const CHATGPT_FLOW: TokenFlow = TokenFlow {
+    authorize: "https://auth.openai.com/api/accounts/authorize",
+    token: "https://auth.openai.com/api/accounts/oauth/token",
+    revoke: Some("https://auth.openai.com/api/accounts/oauth/revoke"),
+    issuer: "https://auth.openai.com",
+    client: "dynamic_agent_client",
+    registers: true,
+    scope: "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct",
+    resource: Some("https://api.openai.com/v1"),
+    required_scope: Some("chatgpt.tokens.use.direct"),
+    loopback: Some("/auth/callback"),
+    host_id: true,
+};
+
+const CHATGPT_SIGN_IN: SignIn =
+    SignIn { with: "ChatGPT", label: Some("Continue with ChatGPT"), flow: Flow::Tokens(&CHATGPT_FLOW) };
 
 /// What a panel provider speaks: Claude's Messages API or OpenAI's /chat/completions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +111,15 @@ pub struct ProviderPreset {
     /// Where the owner gets a key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key_url: Option<&'static str>,
+    /// The owner signs in at the service and the gateway gets the access itself: «Войти через …».
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sign_in: Option<SignIn>,
+    /// /chat/completions, or /responses for the ChatGPT plan.
+    #[serde(skip)]
+    pub api: LlmApi,
+    /// Where the owner sees and sets how much of a plan DuoWave may spend (ChatGPT's «Usage»).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_url: Option<&'static str>,
     /// Fields beyond the key (YandexGPT's folder).
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     pub fields: &'static [PresetField],
@@ -100,6 +144,9 @@ const BLANK: ProviderPreset = ProviderPreset {
     editable_url: false,
     needs_key: true,
     key_url: None,
+    sign_in: None,
+    api: LlmApi::Chat,
+    usage_url: None,
     fields: &[],
     suggested: None,
     local: false,
@@ -131,13 +178,27 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         ..BLANK
     },
     ProviderPreset {
+        id: "chatgpt",
+        title: "ChatGPT",
+        description: "Модели OpenAI из вашей подписки ChatGPT Plus или Pro, без ключа API: вход через аккаунт.",
+        base_url: Some("https://api.openai.com/v1"),
+        needs_key: false,
+        sign_in: Some(CHATGPT_SIGN_IN),
+        api: LlmApi::Responses,
+        usage_url: Some("https://chatgpt.com/settings/usage"),
+        brand: Some("openai"),
+        order: 3,
+        ..BLANK
+    },
+    ProviderPreset {
         id: "openrouter",
         title: "OpenRouter",
-        description: "Один ключ — сотни моделей разных компаний, оплата в одном месте.",
+        description: "Сотни моделей разных компаний и оплата в одном месте. Вместо ключа можно войти в аккаунт.",
         base_url: Some("https://openrouter.ai/api/v1"),
         key_url: Some("https://openrouter.ai/keys"),
+        sign_in: Some(OPENROUTER_SIGN_IN),
         brand: Some("openrouter"),
-        order: 3,
+        order: 4,
         ..BLANK
     },
     ProviderPreset {
@@ -150,7 +211,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         needs_key: false,
         local: true,
         brand: Some("ollama"),
-        order: 4,
+        order: 5,
         ..BLANK
     },
     ProviderPreset {
@@ -162,7 +223,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         needs_key: false,
         local: true,
         brand: Some("lmstudio"),
-        order: 5,
+        order: 6,
         ..BLANK
     },
     ProviderPreset {
@@ -173,7 +234,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         key_url: Some("https://yandex.cloud/ru/docs/ai-studio/quickstart/"),
         fields: &[PresetField { id: "folder", title: "ID каталога", placeholder: Some("b1g…") }],
         suggested: Some(Suggested { fast: "yandexgpt-lite/latest", smart: "yandexgpt/latest", more: &[] }),
-        order: 6,
+        order: 7,
         ..BLANK
     },
     ProviderPreset {
@@ -183,7 +244,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         base_url: Some("https://generativelanguage.googleapis.com/v1beta/openai"),
         key_url: Some("https://aistudio.google.com/apikey"),
         brand: Some("gemini"),
-        order: 7,
+        order: 8,
         ..BLANK
     },
     ProviderPreset {
@@ -193,7 +254,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         base_url: Some("https://api.deepseek.com/v1"),
         key_url: Some("https://platform.deepseek.com/api_keys"),
         brand: Some("deepseek"),
-        order: 8,
+        order: 9,
         ..BLANK
     },
     ProviderPreset {
@@ -203,7 +264,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         base_url: Some("https://api.groq.com/openai/v1"),
         key_url: Some("https://console.groq.com/keys"),
         brand: Some("groq"),
-        order: 9,
+        order: 10,
         ..BLANK
     },
     ProviderPreset {
@@ -213,7 +274,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         base_url: Some("https://api.mistral.ai/v1"),
         key_url: Some("https://console.mistral.ai/api-keys"),
         brand: Some("mistral"),
-        order: 10,
+        order: 11,
         ..BLANK
     },
     ProviderPreset {
@@ -222,7 +283,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         description: "Любой сервис или сервер с /chat/completions: vLLM, llama.cpp, прокси.",
         editable_url: true,
         needs_key: false,
-        order: 11,
+        order: 12,
         ..BLANK
     },
     ProviderPreset {
@@ -231,7 +292,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         description: "Прокси или шлюз с API Anthropic.",
         kind: ProviderKind::Anthropic,
         editable_url: true,
-        order: 12,
+        order: 13,
         ..BLANK
     },
 ];
@@ -280,7 +341,7 @@ mod tests {
     #[test]
     fn describes_the_presets_as_the_panel_reads_them() {
         let ids: Vec<&str> = PROVIDER_PRESETS.iter().map(|preset| preset.id).collect();
-        assert_eq!(&ids[..3], &["claude", "openai", "openrouter"]);
+        assert_eq!(&ids[..4], &["claude", "openai", "chatgpt", "openrouter"]);
         assert!(PROVIDER_PRESETS.windows(2).all(|pair| pair[0].order < pair[1].order));
         assert_eq!(
             serde_json::to_value(preset_of("yandexgpt").unwrap()).unwrap(),
@@ -295,12 +356,24 @@ mod tests {
                 "keyUrl": "https://yandex.cloud/ru/docs/ai-studio/quickstart/",
                 "fields": [{"id": "folder", "title": "ID каталога", "placeholder": "b1g…"}],
                 "suggested": {"fast": "yandexgpt-lite/latest", "smart": "yandexgpt/latest"},
-                "order": 6,
+                "order": 7,
             })
         );
         let ollama = serde_json::to_value(preset_of("ollama").unwrap()).unwrap();
         assert_eq!(ollama["local"], json!(true));
         assert_eq!(ollama["needsKey"], json!(false));
+        // A sign-in shows only its name and words: the flow and its addresses stay in the gateway.
+        let openrouter = serde_json::to_value(preset_of("openrouter").unwrap()).unwrap();
+        assert_eq!(openrouter["signIn"], json!({"with": "OpenRouter"}));
+        let chatgpt = serde_json::to_value(preset_of("chatgpt").unwrap()).unwrap();
+        assert_eq!(chatgpt["signIn"], json!({"with": "ChatGPT", "label": "Continue with ChatGPT", "keyless": true}));
+        assert_eq!((chatgpt["needsKey"].clone(), chatgpt.get("keyUrl")), (json!(false), None));
+        assert_eq!(chatgpt["usageUrl"], json!("https://chatgpt.com/settings/usage"));
+        assert!(chatgpt.get("api").is_none());
+        assert_eq!(preset_of("chatgpt").unwrap().api, LlmApi::Responses);
+        let signing_in: Vec<&str> =
+            PROVIDER_PRESETS.iter().filter(|preset| preset.sign_in.is_some()).map(|preset| preset.id).collect();
+        assert_eq!(signing_in, ["chatgpt", "openrouter"]);
         assert!(serde_json::to_value(preset_of("custom-anthropic").unwrap()).unwrap().get("baseUrl").is_none());
         assert_eq!(
             suggested_of(preset_of("claude").unwrap()),

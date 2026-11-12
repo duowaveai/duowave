@@ -23,8 +23,8 @@ impl Connector for PluginsConnector {
         ConnectorManifest {
             id: "plugins".into(),
             kind: ConnectorKind::Plugins,
-            title: "Плагины".into(),
-            description: "Навыки, инструменты для «Мозга» и источники музыки и радио — из плагинов в папке пакетов"
+            title: "Приложения".into(),
+            description: "Навыки, инструменты для «Мозга» и источники музыки и радио — из установленных приложений"
                 .into(),
             // A plugin that reaches the internet says so in its card; the connector itself sends nothing out.
             cloud: false,

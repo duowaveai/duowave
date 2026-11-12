@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 use super::{flag, option, Usage};
 use crate::config::{GatewayConfig, SpeechConfig};
 use crate::gateway::protocol::proto_object::js_number;
+use crate::skills::quick_commands::is_stop;
 use crate::speech::asr::speech_recognizer::{create_recognizer, SpeechRecognizer};
 use crate::speech::audio::opus_pcm_decoder::SPEECH_SAMPLE_RATE;
 use crate::speech::audio::pcm::encode_wav;
@@ -134,7 +135,7 @@ pub async fn replay(
     let guard_ms = speech.endpoint.guard_ms;
     let speech = SpeechService::with_recognizer(speech, recognizer);
     let bytes = recording.bytes;
-    let mut pipeline = speech.create_pipeline(Some("spotter"));
+    let mut pipeline = speech.create_pipeline(Some("spotter"), None);
     let mut events: Vec<String> = Vec::new();
 
     // Feed it as the station did: the wake word buffer, SpotterEnd, then the command. Interim recognition runs on
@@ -152,6 +153,8 @@ pub async fn replay(
         interval_ms: interim_ms,
         quiet_speech: gateway.quiet_speech,
         quiet_end_ms: gateway.quiet_end_ms,
+        unchanged_end_ms: gateway.unchanged_end_ms,
+        stop_end_ms: gateway.stop_end_ms,
         guard_ms,
     });
     let chunk = if interim_ms > 0 { INTERIM_CHUNK } else { CHUNK };
@@ -165,12 +168,12 @@ pub async fn replay(
         let Some(job) = interim.next(&pipeline) else { continue };
         let heard = recognize(&speech, &job.audio).await;
         // As live: a failed interim recognition changes nothing.
-        let end = heard.text.is_some_and(|text| interim.accept(&mut pipeline, &job, &text).end);
+        let end = heard.text.and_then(|text| interim.accept(&mut pipeline, &job, &text, is_stop(&text)).end);
         let source = if job.all_audio { " (all audio)" } else { "" };
         interims.push(format!("  at {}{source}: {}", seconds(job.at_ms), heard.line));
-        if end {
+        if let Some(end) = end {
             // The gateway ends the command here and stops taking audio.
-            events.push(format!("quiet speech unchanged: end at {}", seconds(job.at_ms)));
+            events.push(format!("{}: end at {}", end.describe(), seconds(job.at_ms)));
             pipeline.stop();
             break;
         }

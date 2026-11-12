@@ -30,6 +30,9 @@ use crate::settings::definitions::{
     PanelMode, PendingWait, VoicePending, VoiceRecipe, ASR_MODEL, MODE, VOICE_CHOICE, VOICE_PENDING, VOICE_PROVIDER,
 };
 use crate::settings::SettingsService;
+use crate::speech::asr::local::catalog as local_catalog;
+use crate::speech::asr::local::supervisor::{LocalAsr, LocalStatus};
+use crate::speech::tts::managed::{ManagedTts, TtsStatus as ManagedTtsStatus, RUNTIME_ID, RUNTIME_TITLE};
 use crate::storage::Db;
 use crate::utils::time::now_iso;
 
@@ -230,6 +233,11 @@ pub trait OwnVoices: Send + Sync {
 pub struct ModelsLinks {
     pub voice: Option<Arc<dyn Voice>>,
     pub own_voices: Option<Arc<dyn OwnVoices>>,
+    /// Recognition on this computer itself (ASR_PROVIDER=local): the model choice goes to it, not to a server.
+    pub local_asr: Option<Arc<LocalAsr>>,
+    /// The own voice's server the app sets up and keeps (src/speech/tts/managed.rs): its environment is a voice's
+    /// need like a voice lab engine, and it runs while a Silero or Piper voice is chosen.
+    pub managed_tts: Option<Arc<ManagedTts>>,
 }
 
 /// The shop's own parts: tests give their own folder and servers.
@@ -461,6 +469,20 @@ pub struct AsrCard {
     pub active: bool,
     /// Chosen in the panel but not serving yet: the recognition server needs its restart.
     pub pending: bool,
+    /// With recognition on this computer: whether the model runs here, its file's size and whether it is here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local: Option<LocalCard>,
+}
+
+/// A recognition model as this computer's own engine sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalCard {
+    /// It has a GGUF for transcribe.cpp; false: only an external recognition server runs it.
+    pub runs_here: bool,
+    /// Its file, bytes (0 when it does not run here).
+    pub size: u64,
+    pub installed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -478,6 +500,12 @@ pub struct ModelsView {
     pub mode: PanelMode,
     /// The recognition server's reality: which model it loaded; null when it is down.
     pub asr_loaded: Option<String>,
+    /// Recognition on this computer itself: its download, load, device and failure. None: a server recognises.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_asr: Option<LocalStatus>,
+    /// The own voice's server the app keeps: its install, start and failure. None: a server of one's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tts_managed: Option<ManagedTtsStatus>,
     /// The voice server answers its /health.
     pub tts_up: bool,
     pub downloads: Vec<DownloadState>,
@@ -638,7 +666,8 @@ impl ModelsService {
         let asr = &config.speech.asr;
         let own = config.gateway.tts.own.as_ref();
         let servers = ModelServers::new(
-            asr.enabled.then_some(asr.base_url.as_str()),
+            // Recognition on this computer has no server to ask or restart.
+            (asr.enabled && asr.local.is_none()).then_some(asr.base_url.as_str()),
             own.map(|own| own.base_url.as_str()),
             None,
             ModelServersOptions {
@@ -808,10 +837,46 @@ impl ModelsService {
             },
         };
         *lock(&self.choice) = choice;
+        // The app's own voice server runs while a Silero or Piper voice speaks (an own voice of the voice lab has a
+        // server of its own): started with the gateway, so the voice is there after a restart of the computer.
+        if let Some(tts) = &self.links.managed_tts {
+            let catalog_voice =
+                lock(&self.choice).as_ref().is_some_and(|choice| !choice.model_id.starts_with(OWN_PREFIX));
+            let speaks = self
+                .links
+                .voice
+                .as_ref()
+                .is_some_and(|voice| matches!(voice.chosen_provider(), TtsProvider::Own | TtsProvider::Mixed));
+            tts.want(catalog_voice && speaks);
+            // A Silero or Piper voice chosen before this app set up its server (a server of one's own then, or an
+            // update with other pins): its environment is installed now, and the voice speaks once it is.
+            if catalog_voice && speaks && !tts.installed() && !tts.installing() {
+                tracing::info!("tts: the chosen voice needs the own voice server's environment: installing it");
+                tts.install();
+            }
+        }
 
         if let Some(asr) = self.settings.get(&ASR_MODEL, None) {
             let chosen = self.catalog.list_asr()?.into_iter().find(|entry| entry.id == asr || entry.model == asr);
             *lock(&self.asr_chosen) = chosen;
+        }
+        // Recognition on this computer serves the chosen model, or GigaAM v3 on a new computer. A choice it cannot
+        // run (an external server's model) leaves the default serving here.
+        if let Some(local) = &self.links.local_asr {
+            let chosen = self.chosen_asr().map(|chosen| chosen.model);
+            let model = match chosen.as_deref().filter(|model| local_catalog::find(model).is_some()) {
+                Some(model) => model.to_string(),
+                None => {
+                    if let Some(other) = chosen {
+                        tracing::warn!(
+                            "asr: {other} runs only on a recognition server; this computer hears with {}",
+                            local_catalog::DEFAULT_MODEL
+                        );
+                    }
+                    local_catalog::DEFAULT_MODEL.to_string()
+                }
+            };
+            local.choose(&model);
         }
         // The choice lives in the settings, the Mac's run script reads a file: for a server that takes a new model
         // only with its restart, the file follows the choice, or a restart by launchd brings the default model back.
@@ -871,7 +936,11 @@ impl ModelsService {
         let job = self.links.own_voices.as_ref().and_then(|lab| lab.job());
         let downloads: Vec<DownloadState> = lock(&self.downloads).iter().map(|download| download.state()).collect();
         let asr_cards = self.catalog.list_asr()?;
-        let asr_loaded = asr_status.as_ref().and_then(|status| status.model.clone());
+        let local_asr = self.links.local_asr.as_ref().map(|local| local.status());
+        let asr_loaded = match &local_asr {
+            Some(local) => local.serving.clone(),
+            None => asr_status.as_ref().and_then(|status| status.model.clone()),
+        };
         let tts_loaded = tts_status.as_ref().map(|status| status.loaded.clone());
         let yandex_allowed = self.yandex_allowed();
         let yandex_voice = self.whose(true) == Whose::Yandex;
@@ -987,6 +1056,14 @@ impl ModelsService {
                     active: asr_loaded.as_deref() == Some(entry.model.as_str()),
                     pending: asr_chosen.as_ref().is_some_and(|chosen| chosen.model == entry.model)
                         && asr_loaded.as_deref() != Some(entry.model.as_str()),
+                    local: local_asr.as_ref().map(|local| {
+                        let gguf = local_catalog::find(&entry.model);
+                        LocalCard {
+                            runs_here: gguf.is_some(),
+                            size: gguf.map_or(0, |gguf| gguf.size),
+                            installed: local.installed.contains(&entry.model),
+                        }
+                    }),
                     record: entry,
                 })
                 .collect(),
@@ -1003,6 +1080,12 @@ impl ModelsService {
             speaking: self.whose(yandex_allowed),
             mode: self.mode(),
             asr_loaded,
+            // Recognition on this computer and the app's own voice server restart from here everywhere.
+            can_restart: local_asr.is_some()
+                || self.links.managed_tts.is_some()
+                || self.servers.can_restart(asr_status.as_ref(), tts_status.as_ref()),
+            local_asr,
+            tts_managed: self.links.managed_tts.as_ref().map(|tts| tts.status()),
             // An own voice speaks through its own server: that is the one that must answer.
             tts_up: match own_chosen {
                 Some(own_chosen) => {
@@ -1012,7 +1095,6 @@ impl ModelsService {
             },
             tts_pending: self.pending_view(job.as_ref(), &downloads),
             downloads,
-            can_restart: self.servers.can_restart(asr_status.as_ref(), tts_status.as_ref()),
             own_voice_server: self.has_own_speech(),
             restarting: lock(&self.restarting).as_ref().map(|restarting| restarting.which),
         })
@@ -1221,6 +1303,10 @@ impl ModelsService {
             ApiError::unavailable("Синтез речи ещё не подключён к этому шлюзу — голос не переключить.")
         })?;
         if body.get("modelId").and_then(Value::as_str) == Some("yandex") {
+            // Alice speaks: the app's own voice server gives its memory back.
+            if let Some(tts) = &self.links.managed_tts {
+                tts.want(false);
+            }
             voice.use_yandex();
             self.settings.set(&VOICE_PROVIDER, &TtsProvider::Yandex.as_str().to_string(), actor.clone())?;
             self.clear_pending(actor);
@@ -1256,6 +1342,9 @@ impl ModelsService {
             self.settings.set(&VOICE_CHOICE, &stored_ids(&ids), actor.clone())?;
             self.settings.set(&VOICE_PROVIDER, &voice.chosen_provider().as_str().to_string(), actor.clone())?;
             self.clear_pending(actor);
+            if let Some(tts) = &self.links.managed_tts {
+                tts.want(false);
+            }
             tracing::info!("tts: own voice {own} («{}», {}) speaks now", prepared.name, prepared.engine);
             return Ok(Chosen::Active(Activated { needs_restart: false }));
         }
@@ -1274,6 +1363,37 @@ impl ModelsService {
         };
         let record =
             self.voice_model(&choice.model_id).await?.ok_or_else(|| ApiError::not_found("нет такого голоса"))?;
+        // The app's own voice server: its Python first — a voice's need like a voice lab engine. With `install`
+        // it is installed in the background and the voice waits for it (then its file, then it speaks).
+        if let Some(tts) = &self.links.managed_tts {
+            if !tts.installed() {
+                let (download_mb, disk_mb) = ManagedTts::sizes();
+                let needs = VoiceNeeds {
+                    kind: "engine",
+                    id: RUNTIME_ID.into(),
+                    title: RUNTIME_TITLE.into(),
+                    download_mb: Some(download_mb),
+                    disk_mb: Some(disk_mb),
+                    minutes: Some(minutes_for(download_mb)),
+                    alternatives: Vec::new(),
+                };
+                if !request.install {
+                    return Err(needed(&needs, tts.installing()));
+                }
+                tts.install();
+                let wait = PendingWait { kind: "engine".into(), id: RUNTIME_ID.into() };
+                let pending = self.set_pending(
+                    &choice.model_id,
+                    Some(choice.voice_id.clone()),
+                    wait,
+                    request.anyway,
+                    None,
+                    actor,
+                )?;
+                return Ok(Chosen::Pending(pending));
+            }
+            tts.want(true);
+        }
         if !self.files.installed(&record.id, record.file.as_deref()) {
             return self.file_needed(&record, &choice, &request, actor).await.map(Chosen::Pending);
         }
@@ -1410,6 +1530,11 @@ impl ModelsService {
         Ok(pending_view(&pending, None))
     }
 
+    /// The card of the voice waiting for its engine or file, if one waits.
+    pub fn pending_card(&self) -> Option<String> {
+        self.settings.get(&VOICE_PENDING, None).map(|pending| pending.model_id)
+    }
+
     /// Forgets the pending voice: another was chosen, or the owner said no (`DELETE /api/v1/models/tts/pending`).
     pub fn clear_pending(&self, actor: Option<Actor>) {
         if self.settings.get(&VOICE_PENDING, None).is_none() {
@@ -1430,6 +1555,13 @@ impl ModelsService {
                 .iter()
                 .find(|download| download.id == pending.wait_for.id && download.state == DownloadPhase::Downloading)
                 .and_then(|download| (download.bytes * 100).checked_div(download.total).map(|p| p.min(100) as u32)),
+            "engine" if pending.wait_for.id == RUNTIME_ID => self
+                .links
+                .managed_tts
+                .as_ref()
+                .map(|tts| tts.status())
+                .filter(|status| status.phase == crate::speech::tts::managed::TtsPhase::Installing)
+                .map(|status| status.percent),
             "engine" => job
                 .filter(|job| job.running && job.kind == "install" && job.engine == pending.wait_for.id)
                 .map(|job| job.percent),
@@ -1457,6 +1589,19 @@ impl ModelsService {
         };
         let own = own_id(Some(&Value::String(pending.model_id.clone())));
         match pending.wait_for.kind.as_str() {
+            // The app's own voice server's environment: installed — the voice goes on (its file next); failed —
+            // the voice fails with the reason.
+            "engine" if pending.wait_for.id == RUNTIME_ID => {
+                let Some(tts) = &self.links.managed_tts else { return };
+                if tts.installing() {
+                    return;
+                }
+                if !tts.installed() {
+                    let why = tts.status().error.unwrap_or_else(|| "установка голоса прервалась".into());
+                    self.pending_failed(pending, why);
+                    return;
+                }
+            }
             "engine" => {
                 let Some(lab) = &lab else { return };
                 let engines = lab.engines().await;
@@ -1526,9 +1671,15 @@ impl ModelsService {
         if let Some(voice_id) = &pending.voice_id {
             body["voiceId"] = json!(voice_id);
         }
-        let request = VoiceRequest { body, install: false, anyway: pending.anyway, recipe: None };
+        // After the app's own voice server's environment the voice's file may still be missing: the choice goes on
+        // with its download (and waits for it) instead of failing for want of it.
+        let next_step = pending.wait_for.kind == "engine" && pending.wait_for.id == RUNTIME_ID;
+        let request = VoiceRequest { body, install: next_step, anyway: pending.anyway, recipe: None };
         match self.choose(request, None).await {
-            Ok(_) => tracing::info!("tts: the pending {} speaks now", pending.model_id),
+            Ok(Chosen::Active(_)) => tracing::info!("tts: the pending {} speaks now", pending.model_id),
+            Ok(Chosen::Pending(next)) => {
+                tracing::info!("tts: the pending {} goes on: it waits for its {}", pending.model_id, next.wait_for.kind)
+            }
             Err(error) => self.pending_ended(pending, &error),
         }
     }
@@ -1583,6 +1734,18 @@ impl ModelsService {
         if !safe_name(&card.model) {
             return Err(ApiError::bad_request(format!("not a model name: {}", card.model)));
         }
+        // On this computer: the model is fetched if it is not here and takes over once it is in — no restart.
+        if let Some(local) = &self.links.local_asr {
+            if local_catalog::find(&card.model).is_none() {
+                return Err(ApiError::bad_request(
+                    "Эта модель работает только на отдельном сервере распознавания — на этом компьютере её нет.",
+                ));
+            }
+            *lock(&self.asr_chosen) = Some(card.clone());
+            self.settings.set(&ASR_MODEL, &card.id, actor)?;
+            local.choose(&card.model);
+            return Ok(Activated { needs_restart: false });
+        }
         *lock(&self.asr_chosen) = Some(card.clone());
         self.settings.set(&ASR_MODEL, &card.id, actor)?;
         let status = self.servers.asr_status(HEALTH).await;
@@ -1613,7 +1776,19 @@ impl ModelsService {
                 };
                 let this = self.clone();
                 let task = tokio::spawn(async move {
-                    let result = this.servers.restart(which, model.as_deref()).await;
+                    let result = match (&this.links.local_asr, &this.links.managed_tts, which) {
+                        // On this computer: a new worker, the failures forgotten, the GPU tried again.
+                        (Some(local), _, ServerName::Asr) => {
+                            local.restart().await;
+                            Ok(())
+                        }
+                        // The app's own voice server: started anew (an install that failed runs again).
+                        (_, Some(tts), ServerName::Tts) => {
+                            tts.restart().await;
+                            Ok(())
+                        }
+                        _ => this.servers.restart(which, model.as_deref()).await,
+                    };
                     if result.is_ok() {
                         this.events.emit(GatewayEvent::ModelServerRestarted { which: which.as_str().into(), actor });
                         let what = match (&model, which) {
@@ -2625,6 +2800,8 @@ mod tests {
         let links = ModelsLinks {
             voice: setup.voice.map(|voice| voice as Arc<dyn Voice>),
             own_voices: setup.lab.map(|lab| lab as Arc<dyn OwnVoices>),
+            local_asr: None,
+            managed_tts: None,
         };
         let receiver = events.subscribe();
         let shop =

@@ -50,15 +50,16 @@ const CHECK_MS: u64 = 15_000;
 /// A reminder the device was offline for is tried this long, then dropped.
 const GIVE_UP_MS: i64 = 6 * 3_600_000;
 
-static DURATION_WORD: LazyLock<Regex> = LazyLock::new(|| {
+pub(crate) static DURATION_WORD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new("^([0-9]+|полчаса|полтора|полторы|час|часа|часов|минуту|минуты|минут|секунду|секунды|секунд|и)$")
         .expect("a valid pattern")
 });
-static CLOCK_WORD: LazyLock<Regex> = LazyLock::new(|| {
+pub(crate) static CLOCK_WORD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new("^([0-9]+|[0-9]{1,2}:[0-9]{2}|час|часа|часов|утра|вечера|дня|ночи|минут|минуты)$")
         .expect("a valid pattern")
 });
-static ABOUT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(что|чтобы|о|об|про)\s+").expect("a valid pattern"));
+pub(crate) static ABOUT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(что|чтобы|о|об|про)\s+").expect("a valid pattern"));
 
 /// When and what to remind of.
 #[derive(Debug, Clone, PartialEq)]

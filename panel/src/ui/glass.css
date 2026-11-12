@@ -609,8 +609,9 @@ textarea.field {
     .section-tabs[data-count='3'] .section-tab-icon,
     .section-tabs-many .section-tab-icon { display: none; }
 }
-/* Больше трёх вкладок (вкладки плагинов): ряд по ширине подписей, лишнее прокручивается вбок. */
-.section-tabs-many { display: flex; overflow-x: auto; scrollbar-width: none; }
+/* Больше трёх вкладок (вкладки плагинов): ряд по ширине подписей, лишнее прокручивается вбок. Прокрутка делает ряд
+   сжимаемым в колонке окна (min-height у него 0): под длинной страницей он схлопывался до полоски — не сжимается. */
+.section-tabs-many { display: flex; overflow-x: auto; scrollbar-width: none; flex-shrink: 0; }
 .section-tabs-many::-webkit-scrollbar { display: none; }
 .section-tabs-many > .section-tab { flex: 1 0 auto; padding: 0 12px; }
 

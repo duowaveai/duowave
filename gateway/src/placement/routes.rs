@@ -82,8 +82,11 @@ pub(crate) const SETTINGS_PATHS: &[&str] = &[
 /// Single routes outside those paths that write what the computer sends: the journal's days (`requests_keep_days`),
 /// the catalog switch (`packages_catalog`), the workshop's model (`workshop.agent`), one's own password and «Выйти
 /// везде» (their row in `users`, which travels whole: the next sending would bring the old password back, and the
-/// sessions ended with it), the first admin (`users` too), and the debug API's twin of the routes.
+/// sessions ended with it), the first admin (`users` too), the code of a sign-in pasted into the panel (it brings a
+/// provider's key, among the travelling secrets; the sign-in itself begins under /api/v1/brain), and the debug API's
+/// twin of the routes.
 const ALSO_SENT_OVER: &[&str] = &[
+    "/api/v1/oauth/complete",
     "/api/v1/requests/keep",
     "/api/v1/packages/catalog",
     "/api/v1/workshop/agent",
@@ -402,6 +405,8 @@ async fn export(State(app): State<Arc<App>>, caller: Caller, Query(asked): Query
     bundle.revision = app.placement.settings_revision().unwrap_or(0);
     if asked.plugins.as_deref().is_some_and(|value| matches!(value, "1" | "true")) {
         bundle.plugins = Some(transfer::plugins(&app.db)?);
+        // A move to the computer: every picture of the plugins goes along (plugins/files.rs).
+        bundle.pictures = Some(transfer::pictures(app.files.root(), None));
     }
     if peer {
         transfer::note_sync(&app.db, "copied");
@@ -417,7 +422,7 @@ async fn import(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Va
     let bundle: Bundle = if peer {
         transfer::open(&body, app.placement.peer_key().unwrap_or_default()).map_err(ApiError::bad_request)?
     } else {
-        serde_json::from_value(body).map_err(|_| ApiError::bad_request("Это не пакет настроек шлюза."))?
+        serde_json::from_value(body).map_err(|_| ApiError::bad_request("Это не набор настроек шлюза."))?
     };
     if bundle.format != transfer::FORMAT || bundle.schema > transfer::SCHEMA {
         return Err(ApiError::bad_request(transfer::NOT_FOR_THIS_GATEWAY));
@@ -852,7 +857,7 @@ mod tests {
         assert_eq!((status, body["message"].as_str()), (StatusCode::CONFLICT, Some(SETTINGS_ON_PC)));
         // (Here the plugin is off: its route answers so itself, the guard does not stop the call.)
         let (_, body) = send(&app, "POST", "/api/v1/packages/calendar/call/today", &through, json!({})).await;
-        assert_eq!(body["message"].as_str(), Some("Плагин calendar выключен."), "{body}");
+        assert_eq!(body["message"].as_str(), Some("Приложение calendar выключено."), "{body}");
 
         // Review G1: a character chosen is the persona, which travels; the mode is the station's own and goes on.
         let (status, body) = send(&app, "POST", "/api/v1/characters/alice/choose", &through, json!({})).await;
@@ -885,7 +890,7 @@ mod tests {
         bundle.schema = transfer::SCHEMA + 1;
         let sealed = transfer::seal(&bundle, PAIR);
         let (status, body) = send(&app, "POST", "/api/v1/transfer", &[("authorization", pair.as_str())], sealed).await;
-        let refused = Some("Пакет настроек не для этого шлюза: обновите его.");
+        let refused = Some("Набор настроек не для этого шлюза: обновите его.");
         assert_eq!((status, body["message"].as_str()), (StatusCode::BAD_REQUEST, refused), "{body}");
         assert!(!transfer::incoming_file(dir.path()).exists(), "nothing kept for the next start");
         assert_eq!(transfer::synced_at(&app.db, "received"), None, "nor noted as received");
@@ -912,6 +917,9 @@ mod tests {
             "/api/v1/brain/providers/p1/check",
             "/api/v1/brain/providers/p1/models",
             "/api/v1/mcp/servers/notes/reconnect",
+            // A provider's sign-in: begun under /api/v1/brain, finished with a pasted code that brings its key.
+            "/api/v1/brain/providers/p1/signin",
+            "/api/v1/oauth/complete",
         ] {
             assert!(sent_over(path), "{path}");
         }

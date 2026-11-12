@@ -13,6 +13,8 @@ pub mod bundled;
 pub mod catalog;
 pub mod connector;
 pub mod controller;
+pub mod files;
+pub mod history;
 pub mod host_api;
 pub mod install;
 pub mod manifest;
@@ -23,6 +25,7 @@ pub mod quickjs;
 pub mod registry;
 pub mod routes;
 pub mod runtime;
+pub mod schedule;
 pub mod skill;
 #[cfg(feature = "wasm")]
 pub mod wasm;

@@ -74,7 +74,9 @@ function characterPills(character: CharacterView, active: ActiveCharacter | null
     if (character.problem) pills.push({ text: 'не пойдёт здесь', cls: 'pill-off' });
     const voice = voicePill(character.voice);
     if (voice) pills.push(voice);
-    if (character.package && !character.package.verified) pills.push({ text: 'не из каталога', cls: 'pill-off' });
+    // Чей голос — никто не проверял (свой источник): сказать прежде всего прочего о пакете.
+    if (character.voiceOrigin === 'unknown') pills.push({ text: 'голос не проверен', cls: 'pill-yandex' });
+    else if (character.package && !character.package.verified) pills.push({ text: 'не из каталога', cls: 'pill-off' });
     else if (character.package && pills.length === 0) pills.push({ text: 'установлен', cls: 'pill-off' });
     return pills.slice(0, 2);
 }
@@ -521,9 +523,13 @@ function CharacterSheet({
                         {greeting && <PlayButton id={`sheet:${character.id}`} url={greeting.url} label={character.title} className="char-play is-inline" />}
                         {speaking && <span class="pill pill-own">говорит</span>}
                         {character.package && !character.package.verified && <span class="pill pill-off">не из каталога</span>}
+                        {character.voiceOrigin === 'unknown' && <span class="pill pill-yandex">голос не проверен</span>}
                         {character.builtin && <span class="pill pill-off">встроенный</span>}
                     </div>
                     {meta && <span class="t-caption">{meta}</span>}
+                    {character.voiceOrigin === 'unknown' && (
+                        <span class="t-caption c-pill-yandex-fg">Чей это голос и есть ли согласие его хозяина, никто не проверял: персонаж из своего источника.</span>
+                    )}
                 </div>
             </div>
             {character.problem && (
@@ -600,7 +606,7 @@ function CharacterSheet({
                 <div class="char-block">
                     <span class="t-meta fw-700">В каталоге версия {entry.version}</span>
                     <span class="t-caption">
-                        Скачается новая версия пакета. Что говорит персонаж, поменяется только после «Обновить» — сначала покажем, что изменится.
+                        Скачается новая версия персонажа. Что говорит персонаж, поменяется только после «Обновить» — сначала покажем, что изменится.
                     </span>
                     {canManage('character') && (
                         <div>

@@ -57,7 +57,7 @@ pub const ROUTES: SettingDefinition<BTreeMap<String, String>> = SettingDefinitio
 pub const PACKAGE_SETTINGS: SettingDefinition<BTreeMap<String, serde_json::Map<String, Value>>> = SettingDefinition {
     key: "packages.settings",
     scope: SettingScope::Global,
-    description: "Настройки пакетов",
+    description: "Настройки приложений",
     sensitive: false,
     parse: |value| {
         let plugins = value.as_object()?;
@@ -149,15 +149,125 @@ pub const PERSONA: SettingDefinition<Persona> = SettingDefinition {
     },
 };
 
+/// The apps' history (docs/plans/package-history.md, «Где хранить историю»): `place` (`here`, `home`, `both`),
+/// `budgetMb`, `days`, `steps`; a field left out goes by the device (plugins/history/gc.rs). Each gateway keeps its own:
+/// a move leaves it (placement/transfer.rs, `LOCAL_SETTINGS`).
+pub const PACKAGE_HISTORY: SettingDefinition<Value> = SettingDefinition {
+    key: "package_history",
+    scope: SettingScope::Global,
+    description: "История приложений: где хранить и сколько места",
+    sensitive: false,
+    parse: |value| value.is_object().then(|| value.clone()),
+};
+
 /// Whether the gateway reads the packages' catalog (src/plugins/catalog.rs): asking for it tells the site the
 /// gateway's address, as the update checks do. On unless the owner turns it off.
 pub const PACKAGES_CATALOG: SettingDefinition<bool> = SettingDefinition {
     key: "packages_catalog",
     scope: SettingScope::Global,
-    description: "Загружать каталог пакетов",
+    description: "Загружать каталог приложений",
     sensitive: false,
     parse: Value::as_bool,
 };
+
+/// The characters' memory (src/memory, docs/plans/memory.md): on unless the owner turns it off. Off, nothing that
+/// grew from talk — the household and the characters' personal records — goes into the prompt or is written; a
+/// character's world and package knowledge are not part of this switch.
+pub const MEMORY: SettingDefinition<bool> = SettingDefinition {
+    key: "memory",
+    scope: SettingScope::Global,
+    description: "Память персонажей",
+    sensitive: false,
+    parse: Value::as_bool,
+};
+
+/// «Запоминать мимоходом»: the model remembers what is worth keeping without being asked (on by default, the
+/// owner's decision of 12.11); off, it remembers only on «запомни».
+pub const MEMORY_IN_PASSING: SettingDefinition<bool> = SettingDefinition {
+    key: "memory_in_passing",
+    scope: SettingScope::Global,
+    description: "Запоминать мимоходом",
+    sensitive: false,
+    parse: Value::as_bool,
+};
+
+/// The memory's pause: until when nothing new is written (an RFC 3339 time), `manual` until someone turns it back
+/// on, empty when there is none. What is known is still used.
+pub const MEMORY_PAUSE: SettingDefinition<String> = SettingDefinition {
+    key: "memory_pause",
+    scope: SettingScope::Global,
+    description: "Пауза памяти",
+    sensitive: false,
+    parse: as_string,
+};
+
+/// When the night's work starts (docs/plans/memory.md, «Сон»): "HH:MM" on the station's clock, 04:00 when unset.
+/// The sleep runs from then till morning, and only when one of its parts that is on has work.
+pub const SLEEP_TIME: SettingDefinition<String> = SettingDefinition {
+    key: "sleep_time",
+    scope: SettingScope::Global,
+    description: "Сон: время",
+    sensitive: false,
+    parse: |value| {
+        let text = value.as_str()?;
+        let (hours, minutes) = text.split_once(':')?;
+        let (hours, minutes) = (hours.parse::<u32>().ok()?, minutes.parse::<u32>().ok()?);
+        (hours < 24 && minutes < 60 && text.len() == 5).then(|| text.to_string())
+    },
+};
+
+/// «Рефлексия»: the sleep's part that thinks the day over. Off by default (the owner's decision of 12.11).
+pub const MEMORY_REFLECTION: SettingDefinition<bool> = SettingDefinition {
+    key: "memory_reflection",
+    scope: SettingScope::Global,
+    description: "Рефлексия",
+    sensitive: false,
+    parse: Value::as_bool,
+};
+
+/// The reflection's «Порядок»: repeats glued, what a newer fact contradicts closed, other names linked, «завтра»
+/// turned into dates, the past put into history, importance recounted. On by default once the reflection is on.
+pub const MEMORY_REFLECTION_ORDER: SettingDefinition<bool> = SettingDefinition {
+    key: "memory_reflection_order",
+    scope: SettingScope::Global,
+    description: "Рефлексия: порядок",
+    sensitive: false,
+    parse: Value::as_bool,
+};
+
+/// The reflection's «Итог дня»: a short summary for the house and a diary entry for each character who talked that
+/// day. On by default once the reflection is on.
+pub const MEMORY_REFLECTION_DAY: SettingDefinition<bool> = SettingDefinition {
+    key: "memory_reflection_day",
+    scope: SettingScope::Global,
+    description: "Рефлексия: итог дня",
+    sensitive: false,
+    parse: Value::as_bool,
+};
+
+/// «Модель памяти»: which model thinks for the memory — the reflection at night now, the разбор of a conversation
+/// later — apart from «Мозг» (the owner, 12.11: «чтоб можно было память отдельно настраивать … домашний или
+/// облачный, какой хочешь»). A model at home by default.
+pub const MEMORY_MODEL: SettingDefinition<MemoryModel> = SettingDefinition {
+    key: "memory_model",
+    scope: SettingScope::Global,
+    description: "Модель памяти",
+    sensitive: false,
+    parse: as_serde,
+};
+
+/// The memory's model as chosen: `{"mode": "home"}`, `{"mode": "brain"}` or `{"mode": "pick", "provider", "model"}`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "lowercase")]
+pub enum MemoryModel {
+    /// A model at home, whichever is there: the talk stays in the house; none — the memory waits.
+    #[default]
+    Home,
+    /// The «Мозг»'s smart model, wherever it is, the cloud too.
+    Brain,
+    /// One model of «Мозг»'s providers, at home or in the cloud.
+    Pick { provider: String, model: String },
+}
 
 /// What a pending voice waits for: an engine's install, a voice file's download, or an imprint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -313,6 +423,8 @@ pub struct BrainPick {
 
 /// Which model answers (src/dialog/brain): the fast profile and the smart one, each from any provider added in the
 /// panel, and Claude's thinking depth. Without `fast` the .env model answers; an unset smart follows the fast one.
+/// `backup` answers when the chosen model gave no answer (the ChatGPT plan's limit, no connection, a refusal): a panel
+/// provider's model, or `env` for the .env one; unset — no backup.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Brain {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -321,6 +433,8 @@ pub struct Brain {
     pub smart: Option<BrainPick>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<BrainPick>,
 }
 
 /// The workshop agent's own model (src/plugins/workshop/agent.rs): a provider of the panel and its model; unset — the
@@ -354,6 +468,7 @@ pub const BRAIN: SettingDefinition<Brain> = SettingDefinition {
             fast: pick("fast"),
             smart: pick("smart"),
             effort: object.get("effort").and_then(|effort| as_one_of(effort, crate::config::LLM_EFFORTS)),
+            backup: pick("backup"),
         })
     },
 };

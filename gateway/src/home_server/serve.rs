@@ -15,6 +15,8 @@
 //!   (docs/plans/plugins.md, stage 7: a plugin with `prefer: home` runs on the computer while it is up).
 //! - `/home/v1/messenger/contacts`, `/home/v1/messenger/send` — this computer's Telegram bot for the station's
 //!   «передай …» (messenger.rs): its contacts by name only, their chats stay here; a text to one of them.
+//! - `/home/v1/history/have`, `…/objects`, `…/lines`, `…/fetch` — the station's apps' history kept here too
+//!   (plugins/history/sync.rs): which objects are missing, the objects, its lines and marks, objects back.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -32,6 +34,7 @@ use crate::app::App;
 use crate::core::identity::permissions::HOME_MODELS;
 use crate::operations::networks::is_local_url;
 use crate::platform::http::{ApiError, Caller, Zone};
+use crate::speech::asr::local::supervisor::LocalAsr;
 
 /// A minute of speech as WAV is ~2 MB; a request with history for the model, less.
 const BODY_LIMIT: usize = 16 * 1024 * 1024;
@@ -54,6 +57,10 @@ pub fn router() -> Router<Arc<App>> {
         .route("/home/v1/plugins/{id}/call", post(plugin_call))
         .route("/home/v1/messenger/contacts", get(messenger_contacts))
         .route("/home/v1/messenger/send", post(messenger_send))
+        .route("/home/v1/history/have", post(history_have))
+        .route("/home/v1/history/objects", post(history_objects))
+        .route("/home/v1/history/lines", post(history_lines))
+        .route("/home/v1/history/fetch", post(history_fetch))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
 }
 
@@ -166,17 +173,84 @@ async fn plugin_call(
         _ => crate::plugins::runtime::CallKind::Tool,
     };
     if !app.plugins.is_active(&id) {
-        return Err(ApiError::conflict(format!("Плагин {id} здесь не включён.")));
+        return Err(ApiError::conflict(format!("Приложение {id} здесь не включено.")));
     }
     let answer = app
         .plugins
         .call(&id, function, input, kind)
         .await
-        .map_err(|error| ApiError::bad_gateway(format!("Плагин не ответил: {error}.")))?;
+        .map_err(|error| ApiError::bad_gateway(format!("Приложение не ответило: {error}.")))?;
     Ok(axum::Json(json!({ "result": answer })).into_response())
 }
 
-pub const NO_BOT: &str = "На этом компьютере не настроен бот Telegram: «Навыки» → «Подключения» → Telegram.";
+fn history_of(app: &App) -> Result<Arc<crate::plugins::history::History>, ApiError> {
+    app.history.clone().ok_or_else(|| ApiError::conflict("Истории приложений на этом компьютере нет."))
+}
+
+fn ids_of(body: &Bytes) -> Result<Vec<String>, ApiError> {
+    let request: Value = serde_json::from_slice(body).map_err(|_| ApiError::bad_request("JSON: {ids}"))?;
+    Ok(request
+        .get("ids")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect())
+}
+
+/// The station's peer name for its marks here: its key's principal, as plain letters.
+fn peer_of(caller: &Caller) -> String {
+    let raw = caller.principal().map(|principal| principal.id.clone()).unwrap_or_else(|| "station".into());
+    let plain: String =
+        raw.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).take(48).collect();
+    let plain = plain.trim_matches('-').to_string();
+    if plain.is_empty() {
+        "station".into()
+    } else {
+        plain
+    }
+}
+
+/// Of the station's history objects, the ones this computer lacks.
+async fn history_have(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
+    allowed(&caller)?;
+    let history = history_of(&app)?;
+    Ok(axum::Json(json!({ "missing": history.missing(&ids_of(&body)?) })).into_response())
+}
+
+/// The station's history objects: each kept only when its name is its hash.
+async fn history_objects(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
+    allowed(&caller)?;
+    let history = history_of(&app)?;
+    let request: Value = serde_json::from_slice(&body).map_err(|_| ApiError::bad_request("JSON: {objects}"))?;
+    let objects = request.get("objects").and_then(Value::as_array).cloned().unwrap_or_default();
+    let stored = tokio::task::spawn_blocking(move || history.receive(&objects)).await.map_err(ApiError::internal)?;
+    Ok(axum::Json(json!({ "stored": stored })).into_response())
+}
+
+/// The station's lines and marks: its marks apart, its records into the apps' lines here.
+async fn history_lines(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
+    allowed(&caller)?;
+    let history = history_of(&app)?;
+    let request: Value = serde_json::from_slice(&body).map_err(|_| ApiError::bad_request("JSON: {apps}"))?;
+    let apps = request.get("apps").and_then(Value::as_object).cloned().unwrap_or_default();
+    let peer = peer_of(&caller);
+    let joined = tokio::task::spawn_blocking(move || history.receive_lines(&peer, &apps))
+        .await
+        .map_err(ApiError::internal)?
+        .map_err(ApiError::bad_request)?;
+    Ok(axum::Json(json!({ "joined": joined })).into_response())
+}
+
+/// Objects the station cleaned and needs back (a step back, its feed).
+async fn history_fetch(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
+    allowed(&caller)?;
+    let history = history_of(&app)?;
+    Ok(axum::Json(json!({ "objects": history.give(&ids_of(&body)?) })).into_response())
+}
+
+pub const NO_BOT: &str = "На этом компьютере не настроен бот Telegram: «Приложения» → «Подключения» → Telegram.";
 const SEND_SHAPE: &str = "JSON: {contact, text} — кому и что передать";
 
 /// The names of this computer's Telegram contacts, for the station's «передай …»: no chats.
@@ -222,8 +296,74 @@ async fn pass_on(bot: &crate::calls::TelegramMessenger, contact: &str, text: &st
 /// This computer's recognition server, when it is its own (at home): a cloud's is never handed on.
 fn recognition(app: &App) -> Option<(String, Option<String>)> {
     let asr = &app.config.speech.asr;
-    (asr.enabled && is_local_url(Some(&asr.base_url)))
+    (asr.enabled && asr.local.is_none() && is_local_url(Some(&asr.base_url)))
         .then(|| (asr.base_url.trim_end_matches('/').to_string(), asr.api_key.clone()))
+}
+
+/// What hears for the station: this computer's own engine (src/speech/asr/local), or its recognition server.
+enum Hearing {
+    Local(Arc<LocalAsr>),
+    Server(String, Option<String>),
+}
+
+fn hearing(app: &App) -> Option<Hearing> {
+    if let Some(local) = &app.local_asr {
+        return Some(Hearing::Local(local.clone()));
+    }
+    recognition(app).map(|(base, key)| Hearing::Server(base, key))
+}
+
+/// Whether the station may lean on this computer's hearing now: the own engine once its model is in.
+fn hears(app: &App) -> bool {
+    match hearing(app) {
+        Some(Hearing::Local(local)) => local.ready(),
+        Some(Hearing::Server(..)) => true,
+        None => false,
+    }
+}
+
+/// The parts of a multipart/form-data body by name (what an OpenAI-compatible client sends: `file`, `model`,
+/// `language`…). Only as much of the format as such a client uses.
+fn form_parts(headers: &HeaderMap, body: &[u8]) -> Vec<(String, Vec<u8>)> {
+    let Some(boundary) = content_type(headers).and_then(|kind| {
+        kind.split(';').map(str::trim).find_map(|part| part.strip_prefix("boundary=")).map(|b| b.trim_matches('"'))
+    }) else {
+        return Vec::new();
+    };
+    let delimiter = format!("--{boundary}").into_bytes();
+    let find = |haystack: &[u8], needle: &[u8], from: usize| {
+        haystack
+            .get(from..)
+            .and_then(|rest| rest.windows(needle.len()).position(|window| window == needle))
+            .map(|at| at + from)
+    };
+    let mut parts = Vec::new();
+    let mut at = match find(body, &delimiter, 0) {
+        Some(start) => start + delimiter.len(),
+        None => return parts,
+    };
+    while let Some(next) = find(body, &delimiter, at) {
+        let part = &body[at..next];
+        // Each part: CRLF, its headers, an empty line, its bytes, CRLF before the next delimiter.
+        let part = part.strip_prefix(b"\r\n").unwrap_or(part);
+        let part = part.strip_suffix(b"\r\n").unwrap_or(part);
+        if let Some(split) = find(part, b"\r\n\r\n", 0) {
+            let head = String::from_utf8_lossy(&part[..split]).to_string();
+            let name = head
+                .split(';')
+                .map(str::trim)
+                .find_map(|item| item.strip_prefix("name="))
+                .map(|name| name.split("\r\n").next().unwrap_or("").trim_matches('"').to_string());
+            if let Some(name) = name {
+                parts.push((name, part[split + 4..].to_vec()));
+            }
+        }
+        at = next + delimiter.len();
+        if body.get(at..at + 2) == Some(b"--") {
+            break;
+        }
+    }
+    parts
 }
 
 /// This computer's own model: the first OpenAI-compatible provider of «Мозг» at home, and its key.
@@ -251,7 +391,7 @@ async fn status(State(app): State<Arc<App>>, caller: Caller) -> Result<Response,
     Ok(axum::Json(json!({
         "version": crate::VERSION,
         "peerApi": crate::core::build::PEER_API,
-        "asr": recognition(&app).is_some(),
+        "asr": hears(&app),
         "tts": app.voice.own_speech().is_some(),
         "voice": voice,
         "llm": own_model(&app).is_some(),
@@ -301,10 +441,29 @@ async fn transcribe(
     body: Bytes,
 ) -> Result<Response, ApiError> {
     allowed(&caller)?;
-    let (base, key) =
-        recognition(&app).ok_or_else(|| ApiError::unavailable("На этом компьютере нет своего распознавания."))?;
-    let wait = Duration::from_millis(app.config.speech.asr.timeout_ms.max(5000));
+    let hearing = hearing(&app).ok_or_else(|| ApiError::unavailable("На этом компьютере нет своего распознавания."))?;
     let started = Instant::now();
+    let (base, key) = match hearing {
+        Hearing::Server(base, key) => (base, key),
+        Hearing::Local(local) => {
+            // The engine hears here: the WAV out of the form, the text back as an OpenAI-compatible server says it.
+            let parts = form_parts(&headers, &body);
+            let file = parts
+                .into_iter()
+                .find(|(name, _)| name == "file")
+                .ok_or_else(|| ApiError::bad_request("file: звук WAV"))?
+                .1;
+            let wav = crate::speech::audio::pcm::decode_wav(&file)
+                .map_err(|error| ApiError::bad_request(format!("file: {error}")))?;
+            let text =
+                local.recognize(&wav.pcm, wav.sample_rate, &CancellationToken::new()).await.map_err(|error| {
+                    ApiError::new(StatusCode::SERVICE_UNAVAILABLE, format!("распознавание этого компьютера: {error:#}"))
+                })?;
+            count(0, started);
+            return Ok(axum::Json(json!({ "text": text })).into_response());
+        }
+    };
+    let wait = Duration::from_millis(app.config.speech.asr.timeout_ms.max(5000));
     let answer = forward(
         reqwest::Method::POST,
         format!("{base}/audio/transcriptions"),
@@ -322,8 +481,15 @@ async fn transcribe(
 
 async fn asr_models(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
     allowed(&caller)?;
-    let (base, key) =
-        recognition(&app).ok_or_else(|| ApiError::unavailable("На этом компьютере нет своего распознавания."))?;
+    let (base, key) = match hearing(&app) {
+        None => return Err(ApiError::unavailable("На этом компьютере нет своего распознавания.")),
+        // The one model the engine serves, as an OpenAI-compatible server lists it.
+        Some(Hearing::Local(local)) => {
+            let listed = json!({ "object": "list", "data": [{ "id": local.model(), "object": "model" }] });
+            return Ok(axum::Json(listed).into_response());
+        }
+        Some(Hearing::Server(base, key)) => (base, key),
+    };
     forward(reqwest::Method::GET, format!("{base}/models"), key, None, None, Duration::from_secs(10)).await
 }
 
@@ -382,6 +548,19 @@ async fn llm_models(State(app): State<Arc<App>>, caller: Caller) -> Result<Respo
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_form_an_openai_client_sends_comes_apart_by_name() {
+        let body = b"--XyZ\r\nContent-Disposition: form-data; name=\"file\"; filename=\"speech.wav\"\r\nContent-Type: audio/wav\r\n\r\nRIFF\x00\x01\r\n--XyZ\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nhome\r\n--XyZ--\r\n";
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(axum::http::header::CONTENT_TYPE, "multipart/form-data; boundary=XyZ".parse().unwrap());
+        let parts = super::form_parts(&headers, body);
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].0, "file");
+        assert_eq!(parts[0].1, b"RIFF\x00\x01");
+        assert_eq!(parts[1], ("model".to_string(), b"home".to_vec()));
+        assert!(super::form_parts(&axum::http::HeaderMap::new(), body).is_empty());
+    }
+
     use std::net::SocketAddr;
     use std::sync::Mutex as StdMutex;
 

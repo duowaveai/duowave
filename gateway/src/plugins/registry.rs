@@ -1,6 +1,7 @@
 //! The packages the gateway knows: those in PACKAGES_DIR (`<id>/<version>/manifest.json`, any code beside it) and
 //! the admin's choices in the database (table `packages`: on or off, the version that last started well, where the
-//! package came from — the catalog or by hand — and whether the catalog vouched for it).
+//! package came from — the catalog or by hand — whether the catalog vouched for it, the feed it came from and whether
+//! that feed hides it: docs/plans/custom-feeds.md).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -212,6 +213,16 @@ impl Origin {
             Origin::Catalog => "из каталога",
         }
     }
+
+    /// The same for people, of an «приложение» (docs/ARCHITECTURE.md, «Как называем и где работает»).
+    pub fn word(self) -> &'static str {
+        match self {
+            Origin::System => "системное",
+            Origin::Bundled => "встроенное",
+            Origin::User => "своё",
+            Origin::Catalog => "из каталога",
+        }
+    }
 }
 
 /// What the admin decided about a plugin, and where its package came from.
@@ -224,17 +235,21 @@ pub struct Choice {
     pub source: String,
     /// The catalog vouched for it.
     pub verified: bool,
+    /// The address of the feed it was installed from; None — by hand, or from the catalog before 0.6.0.
+    pub feed: Option<String>,
+    /// Its feed says to hide it (or the own source it came from is closed).
+    pub hidden: bool,
 }
 
 impl Default for Choice {
     fn default() -> Choice {
-        Choice { enabled: false, good: None, source: SOURCE_LOCAL.into(), verified: false }
+        Choice { enabled: false, good: None, source: SOURCE_LOCAL.into(), verified: false, feed: None, hidden: false }
     }
 }
 
 pub fn choices(db: &crate::storage::Db) -> HashMap<String, Choice> {
     db.with(|c| {
-        let mut statement = c.prepare("SELECT id, enabled, version, source, verified FROM packages")?;
+        let mut statement = c.prepare("SELECT id, enabled, version, source, verified, feed, hidden FROM packages")?;
         let rows = statement.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -243,6 +258,8 @@ pub fn choices(db: &crate::storage::Db) -> HashMap<String, Choice> {
                     good: row.get(2)?,
                     source: row.get(3)?,
                     verified: row.get::<_, i64>(4)? != 0,
+                    feed: row.get(5)?,
+                    hidden: row.get::<_, i64>(6)? != 0,
                 },
             ))
         })?;
@@ -279,7 +296,8 @@ pub fn set_good(db: &crate::storage::Db, id: &str, version: &str) -> rusqlite::R
 }
 
 /// A package installed (or updated) by the installer: where it came from and whether the catalog vouched for it. On
-/// or off stays as it was; a new package is off.
+/// or off stays as it was; a new package is off. The feed it came from is forgotten (`set_feed` names it), and so is
+/// whether a feed hid it: a package put in anew is shown.
 pub fn set_installed(
     db: &crate::storage::Db,
     id: &str,
@@ -292,10 +310,23 @@ pub fn set_installed(
             "INSERT INTO packages (id, enabled, version, updated_at, updated_by, source, verified)
              VALUES (?1, 0, NULL, ?2, ?3, ?4, ?5)
              ON CONFLICT (id) DO UPDATE SET source = excluded.source, verified = excluded.verified,
-             updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+             updated_at = excluded.updated_at, updated_by = excluded.updated_by, feed = NULL, hidden = 0",
             params![id, now_iso(), by, source, verified as i64],
         )
         .map(|_| ())
+    })
+}
+
+/// The feed a package was installed from: only that feed may hide it.
+pub fn set_feed(db: &crate::storage::Db, id: &str, feed: &str) -> rusqlite::Result<()> {
+    db.with(|c| c.execute("UPDATE packages SET feed = ?2 WHERE id = ?1", params![id, feed]).map(|_| ()))
+}
+
+/// Hidden or shown by its feed; whether that changed anything.
+pub fn set_hidden(db: &crate::storage::Db, id: &str, hidden: bool) -> rusqlite::Result<bool> {
+    db.with(|c| {
+        c.execute("UPDATE packages SET hidden = ?2 WHERE id = ?1 AND hidden != ?2", params![id, hidden as i64])
+            .map(|changed| changed > 0)
     })
 }
 
@@ -372,7 +403,14 @@ pub mod tests {
         set_enabled(&db, "radio", true, Some("1.0.0"), Some("Админ")).unwrap();
         set_good(&db, "radio", "1.1.0").unwrap();
         set_enabled(&db, "radio", false, None, None).unwrap();
-        let local = Choice { enabled: false, good: Some("1.1.0".into()), source: SOURCE_LOCAL.into(), verified: false };
+        let local = Choice {
+            enabled: false,
+            good: Some("1.1.0".into()),
+            source: SOURCE_LOCAL.into(),
+            verified: false,
+            feed: None,
+            hidden: false,
+        };
         assert_eq!(choices(&db)["radio"], local);
         // The installer notes where it came from; on or off and the good version stay.
         set_installed(&db, "radio", SOURCE_CATALOG, true, Some("Админ")).unwrap();
@@ -380,6 +418,14 @@ pub mod tests {
         assert_eq!(choices(&db)["radio"], from_catalog);
         set_installed(&db, "arthur", SOURCE_CATALOG, true, None).unwrap();
         assert!(!choices(&db)["arthur"].enabled, "a new package is off");
+        // Its feed, and that feed hiding it: told once; a package put in anew is shown and from no feed.
+        set_feed(&db, "arthur", "https://feed.example/catalog.json").unwrap();
+        assert!(set_hidden(&db, "arthur", true).unwrap());
+        assert!(!set_hidden(&db, "arthur", true).unwrap(), "no change");
+        let hidden = &choices(&db)["arthur"];
+        assert_eq!((hidden.feed.as_deref(), hidden.hidden), (Some("https://feed.example/catalog.json"), true));
+        set_installed(&db, "arthur", SOURCE_LOCAL, false, None).unwrap();
+        assert_eq!((choices(&db)["arthur"].feed.clone(), choices(&db)["arthur"].hidden), (None, false));
         forget(&db, "radio").unwrap();
         assert!(!choices(&db).contains_key("radio"));
     }

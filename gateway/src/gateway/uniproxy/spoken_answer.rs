@@ -38,6 +38,7 @@ use crate::gateway::protocol::protocol_types::{
 use crate::gateway::yandex::yandex_session::Synthesis;
 use crate::skills::media::recording::AudioRecording;
 use crate::skills::own::reminders_skill::AudioClip;
+use crate::skills::skill::SpokenHook;
 use crate::speech::audio::ogg_opus_encoder::{encode_ogg_opus, EncodeRate};
 use crate::speech::audio::ogg_opus_joiner::OggOpusJoiner;
 use crate::utils::time::now_ms;
@@ -324,6 +325,8 @@ struct State {
     /// The answer has ended: nothing more is sent or deferred.
     ended: bool,
     cancel_reason: Option<String>,
+    /// Told when the speech ends on the station, once the answer was spoken to its end (the turn timer).
+    after_spoken: Option<SpokenHook>,
 }
 
 pub struct SpokenAnswer {
@@ -376,6 +379,7 @@ impl SpokenAnswer {
             station_gone: false,
             ended: false,
             cancel_reason: None,
+            after_spoken: None,
         };
         Arc::new(SpokenAnswer {
             options,
@@ -528,6 +532,16 @@ impl SpokenAnswer {
     /// Keeps the joined speech as it is played (a told tale); kept only when the answer is spoken to the end.
     pub fn record(&self, recording: Arc<dyn AudioRecording>) {
         self.lock().recorder = Some(Recorder { recording, joiner: OggOpusJoiner::new() });
+    }
+
+    /// Who wants to know when this answer's speech ends on the station (the turn timer, plugins/skill.rs).
+    pub fn after_spoken(&self, hook: SpokenHook) {
+        self.lock().after_spoken = Some(hook);
+    }
+
+    /// That hook, taken once: the session calls it when the answer was spoken to its end.
+    pub fn take_after_spoken(&self) -> Option<SpokenHook> {
+        self.lock().after_spoken.take()
     }
 
     /// Whether the AliceResponse is out, so commands can no longer join it.

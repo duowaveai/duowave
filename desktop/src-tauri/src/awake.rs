@@ -133,6 +133,26 @@ pub fn load_setting(data: &Path) -> bool {
         .unwrap_or(true)
 }
 
+/// Whether `key` was never marked in desktop.json; marks it. For what the app does once in its life (the login
+/// item switched on at the first run). Not marked when the file cannot be written: tried again next time.
+pub fn first_time(data: &Path, key: &str) -> bool {
+    let path = data.join(SETTINGS);
+    let mut settings = fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .filter(|settings| settings.is_object())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if settings.get(key).and_then(|value| value.as_bool()) == Some(true) {
+        return false;
+    }
+    settings[key] = serde_json::Value::Bool(true);
+    let written = fs::write(
+        path,
+        format!("{}\n", serde_json::to_string_pretty(&settings).unwrap_or_default()),
+    );
+    written.is_ok()
+}
+
 pub fn save_setting(data: &Path, keep_awake: bool) -> std::io::Result<()> {
     let path = data.join(SETTINGS);
     let mut settings = fs::read_to_string(&path)
@@ -150,6 +170,17 @@ pub fn save_setting(data: &Path, keep_awake: bool) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_first_time_is_once_and_keeps_the_other_settings() {
+        let dir = std::env::temp_dir().join(format!("duowave-first-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        save_setting(&dir, false).unwrap();
+        assert!(first_time(&dir, "autostartSet"));
+        assert!(!first_time(&dir, "autostartSet"));
+        assert!(!load_setting(&dir));
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn the_setting_is_on_until_switched_off() {

@@ -1,9 +1,9 @@
 //! `duowave plugin …`: the workshop without the panel (docs/plans/plugins.md, stage 6) — for a person or Claude Code in
 //! a terminal, no gateway needed.
 //!
-//!   duowave plugin new <id> [--theme] [--title «…»] [--from-openapi <api.json>] [--dir <folder>]
+//!   duowave plugin new <id> [--theme | --quiz | --midi] [--title «…»] [--from-openapi <api.json>] [--dir <folder>]
 //!       a draft folder from the template (a plugin, or a theme), or from an API's OpenAPI description in JSON
-//!   duowave plugin test <folder> [--phrase «…»]… [--run <function> [--input '<json>']]
+//!   duowave plugin test <folder> [--phrase «…»]… [--run <function> [--input '<json>']] [--example]
 //!       the workshop's check in the sandbox; phrases as the router hears them; a function with its input
 //!   duowave plugin install <folder> [--packages-dir <dir>]
 //!       the package into PACKAGES_DIR as a new version (the next patch when it is taken). It stays off until the
@@ -17,8 +17,9 @@ use serde_json::{Map, Value};
 use super::{openapi, sandbox, templates};
 use crate::plugins::manifest;
 
-const USAGE: &str = "duowave plugin new <id> [--theme] [--title «…»] [--from-openapi <api.json>] [--dir <folder>]
-duowave plugin test <folder> [--phrase «…»]… [--run <function> [--input '<json>']]
+const USAGE: &str =
+    "duowave plugin new <id> [--theme | --quiz | --midi] [--title «…»] [--from-openapi <api.json>] [--dir <folder>]
+duowave plugin test <folder> [--phrase «…»]… [--run <function> [--input '<json>']] [--example]
 duowave plugin install <folder> [--packages-dir <dir>]";
 
 /// The value after a flag.
@@ -63,6 +64,8 @@ fn new(args: &[String]) -> Result<(), String> {
             openapi::draft_from(id, flag(args, "--title"), &text)?
         }
         None if args.iter().any(|arg| arg == "--theme") => templates::theme(id, title),
+        None if args.iter().any(|arg| arg == "--quiz") => templates::quiz(id, title),
+        None if args.iter().any(|arg| arg == "--midi") => templates::midi(id, title),
         None => templates::plugin(id, title),
     };
     for (path, text) in files {
@@ -101,8 +104,14 @@ fn test(args: &[String]) -> Result<(), String> {
         let report = sandbox::check(&folder, &id, handle.clone()).await;
         println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
         let kv = Arc::new(Mutex::new(Map::new()));
+        // --example: the network's answers from examples.json, nothing goes out (as the panel's tile runs it).
+        let trying = if args.iter().any(|arg| arg == "--example") {
+            sandbox::Trying::example()
+        } else {
+            sandbox::Trying::default()
+        };
         for phrase in flags(args, "--phrase") {
-            let answer = sandbox::try_phrase(&folder, &id, phrase, kv.clone(), handle.clone()).await?;
+            let answer = sandbox::try_phrase(&folder, &id, phrase, kv.clone(), handle.clone(), &trying).await?;
             println!("«{phrase}» → {}", serde_json::to_string_pretty(&answer).unwrap_or_default());
         }
         if let Some(function) = flag(args, "--run") {
@@ -110,7 +119,7 @@ fn test(args: &[String]) -> Result<(), String> {
                 Some(text) => serde_json::from_str(text).map_err(|error| format!("--input: {error}"))?,
                 None => Value::Object(Map::new()),
             };
-            let ran = sandbox::run(&folder, &id, function, input, kv, handle.clone()).await?;
+            let ran = sandbox::run(&folder, &id, function, input, kv, handle.clone(), &trying).await?;
             println!("{function} → {}", serde_json::to_string_pretty(&ran).unwrap_or_default());
         }
         if report.ok {
@@ -149,7 +158,7 @@ fn install(args: &[String]) -> Result<(), String> {
     let pretty = serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?;
     std::fs::write(target.join("manifest.json"), format!("{pretty}\n")).map_err(|error| error.to_string())?;
     println!(
-        "{id} {version} → {}. Пакет выключен: включает администратор в пульте («Навыки»), новая версия работающего — кнопкой «Перезагрузить».",
+        "{id} {version} → {}. Пакет выключен: включает администратор в пульте («Приложения»), новая версия работающего — кнопкой «Перезагрузить».",
         target.display()
     );
     Ok(())

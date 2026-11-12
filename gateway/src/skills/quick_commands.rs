@@ -161,10 +161,10 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             Some(intent(Volume, "unmute", vec![("yandexText", text_value(Some("Включи звук.")))]))
         }),
         rule("volumeStatus", "^какая (сейчас )?громкость$", |_, _| fixed(Volume, "status")),
-        // Player.
+        // Player. A stop said again before the station fell silent is one stop: «Стоп. Стоп.» (live, 12.11).
         rule(
             "stop",
-            "^(стоп|stop|хватит|пауза|поставь на паузу|на паузу|останови(сь)?|перестань|прекрати|выключись|замолчи|выключи( музыку| радио| песню| это)?)$",
+            "^(стоп|stop|хватит|пауза|поставь на паузу|на паузу|останови(сь)?|перестань|прекрати|выключись|замолчи|выключи( музыку| радио| песню| это)?)( (стоп|stop|хватит))*$",
             |_, _| fixed(Playback, "stop"),
         ),
         // «Продолжу»: recognition's «продолжи» (live, 02.11).
@@ -319,6 +319,11 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         // Reminders.
         rule("reminderList", "^(какие у меня|мои) напоминания$", |_, _| fixed(Reminders, "list")),
         rule("reminderCancel", "^(отмени|удали) (все )?напоминани(е|я)$", |_, _| fixed(Reminders, "cancel")),
+        // «через 10 минут выключи свет», «в 18:30 включи радио» (skills/own/later_skill.rs): the rest put off.
+        rule("later", "^(через|завтра в|сегодня в|в) .+$", |_, text| crate::skills::own::later_skill::intent_of(text)),
+        rule("laterCancelAll", "^(отмени|удали) все отложенн(ые|ое)( команды)?$", |_, _| fixed(Later, "cancelAll")),
+        rule("laterCancel", "^(отмени|удали) отложенн(ое|ую)( команду)?$", |_, _| fixed(Later, "cancel")),
+        rule("laterList", "^(что|какие команды) (у меня )?отложен(о|ы)$", |_, _| fixed(Later, "list")),
         rule("reminder", "^напомни (мне )?(.+)$", |m, _| {
             Some(intent(Reminders, "set", vec![("request", text_value(group(m, 2)))]))
         }),
@@ -382,6 +387,12 @@ const LEAD_WORDS: &[&str] = &["ты ", "ну ", "а ", "и ", "давай ", "с
 /// A quick rule for the command, if one matches the whole of it.
 pub fn match_quick_command(text: &str) -> Option<QuickMatch> {
     match_heard(text, |normalized| match_rules(normalized, &RULES))
+}
+
+/// A stop and nothing else, as recognition heard it («Стоп.», «Хватит», «Состоп», «Стоп. Стоп.»): interim recognition
+/// ends the command on it without waiting for the end of speech (src/speech/interim_recognition.rs).
+pub fn is_stop(text: &str) -> bool {
+    match_quick_command(text).is_some_and(|found| found.rule == "stop")
 }
 
 /// A command as recognition heard it, through `matcher` (rules that take a whole normalized command): as heard,
@@ -594,6 +605,9 @@ mod tests {
         // Live (02.11): «ты» before the command; the track again from the start.
         is("Ты продолжи.", Playback, "resume");
         is("Ну стоп.", Playback, "stop");
+        // Said again before the station fell silent (live, 12.11).
+        is("Стоп. Стоп.", Playback, "stop");
+        is("Хватит, хватит!", Playback, "stop");
         is("Проиграй ещё раз этот трек сначала.", Playback, "replay");
         is("включи эту песню заново", Playback, "replay");
         is("повтори трек", Playback, "replay");
@@ -602,6 +616,19 @@ mod tests {
         assert_eq!(quick("Ещё раз"), None);
         assert_eq!(quick("сначала"), None);
         assert_eq!(quick("Ты кто?"), None);
+    }
+
+    #[test]
+    fn says_which_text_is_a_stop_and_nothing_else() {
+        for text in ["Стоп.", "Хватит!", "Состоп.", "Стоп. Стоп.", "Замолчи.", "Ну стоп.", "Выключи музыку."]
+        {
+            assert!(is_stop(text), "{text}");
+        }
+        // More words after it, before it, or another command.
+        for text in ["Стоп, а какая погода?", "Отлично. Стоп. Стоп.", "Стоп-кран", "Продолжи.", "Сто.", ""]
+        {
+            assert!(!is_stop(text), "{text}");
+        }
     }
 
     #[test]
@@ -644,6 +671,11 @@ mod tests {
         assert_eq!(quick("Поставь таймер на 5 минут"), exact(Timers, "set", json!({"seconds": 300})));
         assert_eq!(quick("таймер на полчаса"), exact(Timers, "set", json!({"seconds": 1800})));
         is("отмени таймер", Timers, "cancel");
+        is("через 10 минут выключи свет", Later, "set");
+        is("в 18:30 включи радио", Later, "set");
+        is("отмени отложенное", Later, "cancel");
+        is("отмени все отложенные", Later, "cancelAll");
+        is("что отложено", Later, "list");
         is("сколько осталось", Timers, "status");
         assert_eq!(quick("Поставь будильник на 7:30"), exact(Alarms, "set", json!({"hours": 7, "minutes": 30})));
         assert_eq!(quick("разбуди меня через 2 минуты"), exact(Alarms, "set", json!({"inSeconds": 120})));

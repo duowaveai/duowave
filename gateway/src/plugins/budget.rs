@@ -149,7 +149,7 @@ pub struct DiskView {
     pub packages_mb: u64,
 }
 
-/// `GET /api/v1/packages/resources`: the plugins' memory and room, for «Память колонки» and the plugins' list.
+/// `GET /api/v1/packages/resources`: the plugins' memory and room, for «Ресурсы колонки» and the plugins' list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourcesView {
@@ -219,30 +219,30 @@ pub fn note(count: &Count, measured: bool, pressure: Pressure) -> String {
         return "Сколько памяти свободно, шлюз здесь сказать не может.".into();
     }
     let used = match count.loaded {
-        0 => "Сейчас ни один плагин не загружен.".to_string(),
-        loaded => format!("Загружено плагинов: {loaded}, под них занято {} МБ.", count.committed_mb),
+        0 => "Сейчас ни одно приложение не загружено.".to_string(),
+        loaded => format!("Загружено приложений: {loaded}, под них занято {} МБ.", count.committed_mb),
     };
     let more = if count.free_mb > 0 {
         format!("Можно загрузить ещё {} МБ.", count.free_mb)
     } else if count.budget_mb == 0 {
-        "Плагинам места нет: памяти меньше запаса для системы и Алисы.".to_string()
+        "Приложениям места нет: памяти меньше запаса для системы и Алисы.".to_string()
     } else if count.room_mb > 0 {
-        "Свободного места нет: следующий плагин сначала выгрузит простаивающие.".to_string()
+        "Свободного места нет: следующее приложение сначала выгрузит простаивающие.".to_string()
     } else {
         "Больше не загрузить, пока работают загруженные.".to_string()
     };
     let room = format!("{used} {more}");
     match pressure {
         Pressure::Normal => room,
-        Pressure::Warn => format!("{room} Памяти мало: простаивающие плагины выгружаются, фоновая работа ждёт."),
-        Pressure::Critical => format!("{room} Памяти очень мало: плагины выгружаются."),
+        Pressure::Warn => format!("{room} Памяти мало: простаивающие приложения выгружаются, фоновая работа ждёт."),
+        Pressure::Critical => format!("{room} Памяти очень мало: приложения выгружаются."),
     }
 }
 
 /// Why a plugin's context does not load, or nothing when it fits.
 pub fn does_not_fit(need_mb: u64, free_mb: u64) -> Option<String> {
     (need_mb > free_mb).then(|| {
-        format!("колонке не хватает памяти, чтобы загрузить плагин: нужно {need_mb} МБ, свободно {free_mb} МБ")
+        format!("колонке не хватает памяти, чтобы загрузить приложение: нужно {need_mb} МБ, свободно {free_mb} МБ")
     })
 }
 
@@ -322,7 +322,7 @@ mod tests {
         assert_eq!((count.free_mb, count.room_mb, count.loaded), (70, 74, 2), "the idle radio would give its 4 back");
         assert_eq!(
             note(&count, true, Pressure::Normal),
-            "Загружено плагинов: 2, под них занято 12 МБ. Можно загрузить ещё 70 МБ."
+            "Загружено приложений: 2, под них занято 12 МБ. Можно загрузить ещё 70 МБ."
         );
 
         // Nothing loaded: the whole budget is free, however many plugins are on.
@@ -331,13 +331,13 @@ mod tests {
         assert_eq!((idle.committed_mb, idle.free_mb), (0, 80));
         assert_eq!(
             note(&idle, true, Pressure::Normal),
-            "Сейчас ни один плагин не загружен. Можно загрузить ещё 80 МБ."
+            "Сейчас ни одно приложение не загружено. Можно загрузить ещё 80 МБ."
         );
 
         // Full of idle contexts: nothing free, room once they unload.
         let tight = super::count(Some(MemoryNow { available_mb: 50, ..memory }), 40, &plugins);
         assert_eq!((tight.budget_mb, tight.free_mb, tight.room_mb), (12, 0, 4));
-        assert!(note(&tight, true, Pressure::Normal).ends_with("следующий плагин сначала выгрузит простаивающие."));
+        assert!(note(&tight, true, Pressure::Normal).ends_with("следующее приложение сначала выгрузит простаивающие."));
 
         let starving = super::count(Some(MemoryNow { available_mb: 30, ..memory }), 40, &plugins);
         assert_eq!((starving.free_mb, starving.room_mb), (0, 0), "below the reserve nothing is free");

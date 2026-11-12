@@ -1,10 +1,15 @@
 //! The model's side of a dialog, whatever the provider: a request (instructions, turns, tools) and a stream of what
-//! the model writes. Claude (anthropic.rs), any OpenAI-compatible /chat/completions (openai_chat.rs) and the echo
-//! for checks implement `LlmClient`.
+//! the model writes. Claude (anthropic.rs), any OpenAI-compatible /chat/completions (openai_chat.rs), OpenAI's
+//! /responses for the ChatGPT plan (openai_responses.rs) and the echo for checks implement `LlmClient`.
+//!
+//! A client takes its bearer right before each request (`bearer_of`): a key, or the access a sign-in keeps fresh
+//! (src/oauth) — tokens that live an hour are renewed there, ahead of time and once for everyone waiting.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::Arc;
 
+use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -13,7 +18,61 @@ use tokio_util::sync::CancellationToken;
 use super::anthropic::AnthropicLlm;
 use super::echo::EchoLlm;
 use super::openai_chat::{tokens_field_for, OpenAiChatLlm, OPENAI_BASE_URL};
+use super::openai_responses::OpenAiResponsesLlm;
 use crate::config::{DialogConfig, DialogProvider, ModelPair};
+
+/// Which of OpenAI's APIs an OpenAI-kind provider speaks: /chat/completions (every compatible service) or /responses
+/// (the ChatGPT plan, which takes nothing else).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LlmApi {
+    #[default]
+    Chat,
+    Responses,
+}
+
+/// Where a client takes its bearer before each request when a sign-in keeps it (src/oauth).
+pub trait AccessSource: Send + Sync {
+    /// The bearer for the next request: renewed first when it is about to run out.
+    fn bearer(&self) -> BoxFuture<'_, anyhow::Result<String>>;
+    /// A request went through: a limit noted earlier is over.
+    fn ok(&self) {}
+    /// The service said the plan's limit is reached: the panel shows it on the provider.
+    fn limited(&self) {}
+}
+
+/// The access in a client's settings. No Debug of what it holds.
+#[derive(Clone)]
+pub struct Access(pub Arc<dyn AccessSource>);
+
+impl fmt::Debug for Access {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Access(…)")
+    }
+}
+
+/// A failure the station says in its own words instead of the error phrase, because the owner can do something about
+/// it (the ChatGPT plan's limit, a sign-in to renew). `detail` is for the log and the panel.
+#[derive(Debug)]
+pub struct SpokenFailure {
+    pub phrase: String,
+    pub detail: String,
+}
+
+impl fmt::Display for SpokenFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for SpokenFailure {}
+
+/// The bearer of the next request: the access's when a sign-in gives it, else the key; None without either.
+pub async fn bearer_of(settings: &LlmSettings) -> anyhow::Result<Option<String>> {
+    if let Some(access) = &settings.access {
+        return access.0.bearer().await.map(Some);
+    }
+    Ok(settings.api_key.clone().filter(|key| !key.is_empty()))
+}
 
 /// A function the model may call: a station command, a lookup on our side or an MCP server's tool.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -141,6 +200,10 @@ pub struct LlmSettings {
     /// Extra request headers a provider needs (YandexGPT's folder).
     pub headers: BTreeMap<String, String>,
     pub tokens_field: TokensField,
+    /// The bearer from a sign-in, taken fresh before each request, in place of `api_key`.
+    pub access: Option<Access>,
+    /// /chat/completions or /responses, for an OpenAI-kind provider.
+    pub api: LlmApi,
 }
 
 /// "model" or, when the profiles differ, "fast model-a, smart model-b".
@@ -178,6 +241,8 @@ impl LlmSettings {
             effort: config.effort.clone(),
             explicit: false,
             headers: BTreeMap::new(),
+            access: None,
+            api: LlmApi::Chat,
         }
     }
 }
@@ -186,6 +251,9 @@ impl LlmSettings {
 pub fn create_llm(settings: &LlmSettings) -> Option<Arc<dyn LlmClient>> {
     match settings.provider {
         DialogProvider::Anthropic => Some(Arc::new(AnthropicLlm::new(settings.clone()))),
+        DialogProvider::OpenAi if settings.api == LlmApi::Responses => {
+            Some(Arc::new(OpenAiResponsesLlm::new(settings.clone())))
+        }
         DialogProvider::OpenAi => Some(Arc::new(OpenAiChatLlm::new(settings.clone()))),
         DialogProvider::Echo => Some(Arc::new(EchoLlm)),
         DialogProvider::None => None,

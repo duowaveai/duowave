@@ -134,7 +134,7 @@ impl TelegramMessenger {
     fn config(&self) -> Result<TelegramConfig> {
         self.current()
             .filter(|config| !config.token.is_empty())
-            .ok_or_else(|| anyhow!("no Telegram bot: set it up in the panel («Навыки» → «Подключения»)"))
+            .ok_or_else(|| anyhow!("no Telegram bot: set it up in the panel («Приложения» → «Подключения»)"))
     }
 
     /// Where the station's alerts go, when the bot has a chat for them.

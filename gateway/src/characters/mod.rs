@@ -134,6 +134,8 @@ pub struct CharacterView {
     pub voice: VoiceView,
     /// Why it is not offered: its package's `contributes.characters` does not check out.
     pub problem: Option<String>,
+    /// Whose voice it is, as its package says: synthetic, consent, unknown (no one checked — the panel says so).
+    pub voice_origin: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -234,7 +236,8 @@ impl CharactersService {
         let me = Arc::downgrade(self);
         let task = self.events.on("characters", move |event| {
             if let GatewayEvent::PackagesChanged { change, .. } = &*event {
-                if matches!(change.as_str(), "installed" | "updated" | "removed") {
+                // Hidden or shown again by its feed (docs/plans/custom-feeds.md): its characters go or come back.
+                if matches!(change.as_str(), "installed" | "updated" | "removed" | "hidden" | "shown") {
                     if let Some(characters) = me.upgrade() {
                         characters.sync();
                     }
@@ -260,15 +263,17 @@ impl CharactersService {
     }
 
     /// The installed packages' characters read again: the table follows them (rows of packages gone go), and their
-    /// voices are laid out in the voice lab or removed with them.
+    /// voices are laid out in the voice lab or removed with them. A package its feed hides counts as gone, and more: its
+    /// character that was chosen gives the place to Alisa, its voice that speaks to a fallback.
     pub fn sync(&self) {
         self.host.rescan();
         let mut found = Vec::new();
-        for package in self.host.installed_all() {
+        for package in self.host.visible_all() {
             if package.manifest.kind == PackageKind::Character {
                 found.extend(contributes::read(&package));
             }
         }
+        self.step_aside_hidden();
         for rejected in found.iter().filter_map(|found| found.as_ref().err()) {
             tracing::warn!(target: "characters", "{} {}: not offered — {}", rejected.id, rejected.version, rejected.problem);
         }
@@ -331,6 +336,37 @@ impl CharactersService {
         })
     }
 
+    /// The characters of the packages their feeds hide: the chosen one of them gives the place to Alisa (in the
+    /// positions she had), and the voice of one that speaks gives it to a fallback.
+    fn step_aside_hidden(&self) {
+        let hidden: Vec<Character> = self
+            .host
+            .hidden_all()
+            .into_iter()
+            .filter(|package| package.manifest.kind == PackageKind::Character)
+            .flat_map(|package| contributes::read(&package))
+            .filter_map(Result::ok)
+            .collect();
+        if hidden.is_empty() {
+            return;
+        }
+        let chosen = self.personas.chosen().and_then(|chosen| chosen.preset_id);
+        if let Some(id) = chosen.filter(|id| hidden.iter().any(|character| character.id == *id)) {
+            let mut body = serde_json::Map::new();
+            body.insert("presetId".into(), Value::String(ALICE.into()));
+            match self.personas.set(&body, None) {
+                Ok(()) => tracing::info!(target: "characters", "{id}: hidden by its feed — Alisa answers now"),
+                Err(error) => {
+                    tracing::warn!(target: "characters", "{id}: hidden, but Alisa is not chosen: {}", error.message)
+                }
+            }
+        }
+        #[cfg(feature = "pc")]
+        if let Some(voices) = self.voices() {
+            voices.step_aside(&hidden);
+        }
+    }
+
     fn package_ref(&self, package: &str, version: &str, license: Option<String>) -> PackageRef {
         let (_, verified) = self.host.origin(package);
         PackageRef { id: package.to_string(), version: version.to_string(), license, verified }
@@ -366,6 +402,7 @@ impl CharactersService {
             tones: character.tones.clone(),
             voice: self.voice_of(character).await,
             problem: None,
+            voice_origin: character.voice_origin.clone(),
         }
     }
 
@@ -384,6 +421,7 @@ impl CharactersService {
             tones: Vec::new(),
             voice: VoiceView::none(),
             problem: Some(rejected.problem.clone()),
+            voice_origin: None,
         }
     }
 
@@ -404,6 +442,7 @@ impl CharactersService {
                 samples: Vec::new(),
                 voice: VoiceView::none(),
                 problem: None,
+                voice_origin: None,
             })
             .collect()
     }
@@ -684,6 +723,40 @@ mod tests {
         assert_eq!(rows(&app).len(), 1, "not offered for the choice by id");
         let refused = app.characters.choose("arthur:arthur", ChooseBody::default(), true, None).await.unwrap_err();
         assert_eq!(refused.status.as_u16(), 400);
+    }
+
+    #[tokio::test]
+    async fn a_character_its_feed_hides_is_not_offered_and_gives_its_place_to_alisa() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(dir.path());
+        let mut manifest = arthur_manifest("1.2.0");
+        manifest["contributes"]["characters"][0]["voiceOrigin"] = json!("unknown");
+        write_arthur(&dir.path().join("packages"), &manifest);
+        let body = ChooseBody { voice: Some(false), ..ChooseBody::default() };
+        app.characters.choose("arthur:arthur", body, false, None).await.unwrap();
+        let view = app.characters.view().await.unwrap();
+        let arthur = view.characters.iter().find(|character| character.id == "arthur:arthur").unwrap();
+        assert_eq!(arthur.voice_origin.as_deref(), Some("unknown"), "the panel says no one checked it");
+
+        // Its feed hides it: not offered, Alisa answers; its package stays on disk.
+        crate::plugins::registry::set_installed(
+            &app.db,
+            "arthur",
+            crate::plugins::registry::SOURCE_CATALOG,
+            false,
+            None,
+        )
+        .unwrap();
+        crate::plugins::registry::set_hidden(&app.db, "arthur", true).unwrap();
+        let view = app.characters.view().await.unwrap();
+        assert!(view.characters.iter().all(|character| character.id != "arthur:arthur"));
+        assert_eq!(view.active.id.as_deref(), Some(ALICE));
+        assert!(app.plugins.installed("arthur").is_some());
+        // Shown again: offered again; the choice stays Alisa's.
+        crate::plugins::registry::set_hidden(&app.db, "arthur", false).unwrap();
+        let view = app.characters.view().await.unwrap();
+        assert!(view.characters.iter().any(|character| character.id == "arthur:arthur"));
+        assert_eq!(view.active.id.as_deref(), Some(ALICE));
     }
 
     #[tokio::test]

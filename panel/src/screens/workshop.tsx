@@ -42,10 +42,11 @@ import { timeAgo } from '../time';
 import { Action } from '../ui/cards';
 import { Sheet } from '../ui/sheet';
 import { VIA } from '../via';
-import { permissionTitle } from './plugins';
+import { RightsLines } from '../ui/rights-lines';
 import { ask as confirmAsk } from '../ui/confirm';
 import { pushDraft, stationInstall, stationPlan, stationTrial, stationVersion } from './to-station';
 import { DraftWidgetPreview, mayRunDraft } from './widget-agent';
+import { HistoryCard, HistoryRoomLine } from './history';
 import { CodeEditor } from '../ui/code-editor';
 
 const PREVIEW = 'workshop.preview';
@@ -98,7 +99,7 @@ function DraftList({ drafts, onOpen, onMade }: { drafts: DraftView[]; onOpen: (i
     const base = linked.query.new === 'theme' ? (theme.themes.find((entry) => entry.id === linked.query.base) ?? theme.theme) : null;
     // «Навыки» → «Пока не умеем» → «Научить»: форма навыка сразу, с фразой в имени; задание — агенту.
     const teach = linked.query.new === 'plugin' ? linked.query.teach?.trim() || null : null;
-    const [making, setMaking] = useState<'plugin' | 'theme' | 'openapi' | null>(base ? 'theme' : teach ? 'plugin' : null);
+    const [making, setMaking] = useState<'plugin' | 'quiz' | 'theme' | 'openapi' | null>(base ? 'theme' : teach ? 'plugin' : null);
     const [id, setId] = useState(base ? idOf(`my-${base.id}`) : teach ? `skill-${Date.now().toString(36).slice(-5)}` : '');
     const [title, setTitle] = useState(base ? `Моя тема (${base.title})` : teach ? `«${teach}»` : '');
     const [openapi, setOpenapi] = useState('');
@@ -161,7 +162,17 @@ function DraftList({ drafts, onOpen, onMade }: { drafts: DraftView[]; onOpen: (i
             ))}
             {making ? (
                 <div class="ws-form">
-                    <h3 class="t-title-xs m-0">{making === 'theme' ? (base ? `Своя тема на основе «${base.title}»` : 'Новая тема') : making === 'openapi' ? 'Плагин из описания API' : 'Новый плагин'}</h3>
+                    <h3 class="t-title-xs m-0">
+                        {making === 'theme'
+                            ? base
+                                ? `Своя тема на основе «${base.title}»`
+                                : 'Новая тема'
+                            : making === 'openapi'
+                              ? 'Плагин из описания API'
+                              : making === 'quiz'
+                                ? 'Викторина на время: 10 секунд на ответ, «Время вышло!»'
+                                : 'Новый плагин'}
+                    </h3>
                     <label class="ws-label">
                         <span class="t-caption">id — латиница, цифры, «-»</span>
                         <input class="field" value={id} onInput={(e) => setId((e.target as HTMLInputElement).value)} />
@@ -184,6 +195,7 @@ function DraftList({ drafts, onOpen, onMade }: { drafts: DraftView[]; onOpen: (i
             ) : (
                 <div class="flex flex-wrap gap-8 mt-8">
                     <Action tone="on" label="Новый плагин" onClick={() => setMaking('plugin')} />
+                    <Action label="Викторина на время" onClick={() => setMaking('quiz')} />
                     <Action label="Новая тема" onClick={() => setMaking('theme')} />
                     <Action label="Из описания API" onClick={() => setMaking('openapi')} />
                 </div>
@@ -234,53 +246,6 @@ function LogLines({ lines }: { lines: JournalLine[] }) {
 }
 
 /** Права словами, с пометкой, что новое: новые — янтарём (их одобряют), ушедшие — зачёркнуты. */
-function RightsLines({ plan }: { plan: InstallPlan }) {
-    const rights = plan.kept.filter((name) => !name.startsWith('net:'));
-    const hosts = plan.kept.filter((name) => name.startsWith('net:')).map((name) => name.slice(4));
-    const nothing = !plan.added.length && !plan.removed.length && !plan.hostsAdded.length && !plan.hostsRemoved.length && !plan.kept.length;
-    return (
-        <div class="flex flex-col gap-6">
-            <h3 class="t-title-xs m-0">Права</h3>
-            {nothing && <span class="t-caption">Особых прав не просит.</span>}
-            {(plan.added.length > 0 || plan.hostsAdded.length > 0) && (
-                <div class="ws-chips">
-                    <span class="t-caption">{plan.first ? 'Просит:' : 'Новые:'}</span>
-                    {plan.added.map((name) => (
-                        <span key={name} class="pill pill-yandex">
-                            {permissionTitle(name)}
-                        </span>
-                    ))}
-                    {plan.hostsAdded.map((host) => (
-                        <span key={host} class="pill pill-yandex">
-                            сеть: {host}
-                        </span>
-                    ))}
-                </div>
-            )}
-            {(plan.removed.length > 0 || plan.hostsRemoved.length > 0) && (
-                <div class="ws-chips">
-                    <span class="t-caption">Больше не нужны:</span>
-                    {plan.removed.map((name) => (
-                        <span key={name} class="pill pill-off line-through">
-                            {permissionTitle(name)}
-                        </span>
-                    ))}
-                    {plan.hostsRemoved.map((host) => (
-                        <span key={host} class="pill pill-off line-through">
-                            сеть: {host}
-                        </span>
-                    ))}
-                </div>
-            )}
-            {(rights.length > 0 || hosts.length > 0) && (
-                <span class="t-caption">
-                    Без изменений: {[...rights.map(permissionTitle), ...hosts.map((host) => `сеть: ${host}`)].join(', ')}.
-                </span>
-            )}
-        </div>
-    );
-}
-
 /**
  * «Поставить версию X?» / «Проба на колонке»: что изменится — версия, права и хосты (новые выделены), что даёт, бюджет,
  * — и одно «да» администратора. Первая установка и новые права одобряются здесь же.
@@ -483,9 +448,40 @@ function PhraseLines({ report }: { report: PhraseReport }) {
     );
 }
 
+/** Таймер хода из ответа плагина: `continue.timeout` — `{seconds, handler}` или готовое `{seconds, say}`. */
+type TurnTimeout = { seconds: number; handler?: string; say?: string };
+
+function timeoutOf(answer: unknown): TurnTimeout | null {
+    const next = answer && typeof answer === 'object' ? (answer as { continue?: unknown }).continue : undefined;
+    const timeout = next && typeof next === 'object' ? (next as { timeout?: TurnTimeout }).timeout : undefined;
+    return timeout && typeof timeout.seconds === 'number' ? timeout : null;
+}
+
+function sayOf(answer: unknown): string | null {
+    if (typeof answer === 'string') return answer.trim() || null;
+    const say = answer && typeof answer === 'object' ? (answer as { say?: unknown }).say : undefined;
+    return typeof say === 'string' && say.trim() ? say.trim() : null;
+}
+
+/** Ритм из `contributes.schedules` черновика: что песочница показывает и запускает. */
+type DraftRhythm = { id: string; title?: string; at?: string; every?: string; days?: unknown; handler?: string; say?: string };
+
+function rhythmsOf(manifest: string): DraftRhythm[] {
+    try {
+        const schedules = (JSON.parse(manifest) as { contributes?: { schedules?: unknown } }).contributes?.schedules;
+        return Array.isArray(schedules) ? schedules.filter((rhythm): rhythm is DraftRhythm => !!rhythm && typeof rhythm === 'object' && typeof (rhythm as DraftRhythm).id === 'string') : [];
+    } catch {
+        return [];
+    }
+}
+
+/** «Время вышло» в песочнице: сколько тишин подряд и что сказал плагин; третья кончает разговор, как в шлюзе. */
+type Silences = { timeout: TurnTimeout; missed: number; lines: string[]; done: boolean };
+
 /** Песочница: фразы из манифеста кнопками и все разом, своя фраза, функция с входом по схеме инструмента. */
 function Sandbox({ id, manifest, exports }: { id: string; manifest: string; exports: string[] }) {
     const { phrases, tools } = useMemo(() => readManifest(manifest), [manifest]);
+    const rhythms = useMemo(() => rhythmsOf(manifest), [manifest]);
     const functions = useMemo(() => [...new Set([...exports, ...tools.map((tool) => tool.handler ?? tool.name)])], [exports, tools]);
     const [busy, setBusy] = useState<string | null>(null);
     const [phraseText, setPhraseText] = useState('');
@@ -494,11 +490,13 @@ function Sandbox({ id, manifest, exports }: { id: string; manifest: string; expo
     const [fn, setFn] = useState('');
     const [input, setInput] = useState('{}');
     const [run, setRun] = useState<RunReport | null>(null);
+    const [silences, setSilences] = useState<Silences | null>(null);
     const [error, setError] = useState<string | null>(null);
     useEffect(() => {
         setPhrase(null);
         setAll(null);
         setRun(null);
+        setSilences(null);
     }, [id]);
     useEffect(() => {
         if (!fn && functions.length) pick(functions[0]);
@@ -521,7 +519,35 @@ function Sandbox({ id, manifest, exports }: { id: string; manifest: string; expo
     const tryPhrase = (text: string) =>
         act('phrase', async () => {
             setPhraseText(text);
-            setPhrase(await api.tryDraftPhrase(id, text));
+            const report = await api.tryDraftPhrase(id, text);
+            setPhrase(report);
+            const timeout = timeoutOf(report.answer);
+            setSilences(timeout ? { timeout, missed: 0, lines: [], done: false } : null);
+        });
+    // Человек молчит: как в шлюзе — функция таймера с {timeout: {seconds, missed}}, готовая фраза кончает разговор,
+    // третья тишина подряд кончает его без плагина.
+    const silence = () =>
+        act('silence', async () => {
+            if (!silences) return;
+            const { timeout, missed, lines } = silences;
+            if (missed >= 2) {
+                setSilences({ ...silences, lines: [...lines, 'Третья тишина подряд: шлюз скажет «Похоже, никого нет — заканчиваю» и закончит разговор.'], done: true });
+                return;
+            }
+            if (!timeout.handler) {
+                setSilences({ ...silences, lines: [...lines, `Время вышло: колонка скажет «${timeout.say ?? ''}», и разговор закончится.`], done: true });
+                return;
+            }
+            const report = await api.runDraft(id, timeout.handler, {
+                timeout: { seconds: timeout.seconds, missed: missed + 1 },
+                request: { text: '', device: 'sandbox', timezone: 'Europe/Moscow', capability: 'plugins' },
+            });
+            const next = report.ok ? timeoutOf(report.result) : null;
+            const said = report.ok ? sayOf(report.result) : null;
+            const line = report.ok
+                ? `${missed + 1}-я тишина → ${timeout.handler}: ${said ? `«${said}»` : 'без слов'}${next ? ` · новый таймер ${next.seconds} с` : ' · разговор кончится'}`
+                : `${missed + 1}-я тишина → ${timeout.handler}: ошибка — ${report.error ?? 'нет ответа'}`;
+            setSilences({ timeout: next ?? timeout, missed: missed + 1, lines: [...lines, line], done: !next });
         });
     const tryAll = () =>
         act('all', async () => {
@@ -569,6 +595,23 @@ function Sandbox({ id, manifest, exports }: { id: string; manifest: string; expo
                     <Action label="Прогнать" busy={busy === 'phrase'} disabled={!!busy || !phraseText.trim()} onClick={() => void tryPhrase(phraseText)} />
                 </div>
                 {phrase && <PhraseLines report={phrase} />}
+                {silences && (
+                    <div class="flex flex-col gap-4">
+                        <span class="t-caption">
+                            Таймер хода: {silences.timeout.seconds} с → {silences.timeout.handler ?? `готовая фраза «${silences.timeout.say ?? ''}»`}
+                        </span>
+                        {silences.lines.map((line) => (
+                            <span key={line} class="t-caption">
+                                {line}
+                            </span>
+                        ))}
+                        {!silences.done && (
+                            <div class="ws-row">
+                                <Action label={`Промолчать ${silences.timeout.seconds} с`} busy={busy === 'silence'} disabled={!!busy} onClick={() => void silence()} />
+                            </div>
+                        )}
+                    </div>
+                )}
                 {all && (
                     <ol class="ws-results">
                         {all.map((row) => (
@@ -592,6 +635,32 @@ function Sandbox({ id, manifest, exports }: { id: string; manifest: string; expo
                     </ol>
                 )}
             </div>
+
+            {rhythms.length > 0 && (
+                <div class="ws-block">
+                    <h3 class="t-title-xs m-0">Расписание</h3>
+                    {rhythms.map((rhythm) => (
+                        <div key={rhythm.id} class="ws-row">
+                            <span class="t-caption ws-grow">
+                                {rhythm.title ?? rhythm.id} · {rhythm.at ? `в ${rhythm.at}` : `каждые ${rhythm.every ?? '?'}`}
+                                {rhythm.say ? ` · скажет готовое «${rhythm.say}» — плагин не нужен` : rhythm.handler ? ` → ${rhythm.handler}` : ''}
+                            </span>
+                            {rhythm.handler && (
+                                <Action
+                                    label="Запустить"
+                                    busy={busy === `rhythm:${rhythm.id}`}
+                                    disabled={!!busy}
+                                    onClick={() =>
+                                        void act(`rhythm:${rhythm.id}`, async () =>
+                                            setRun(await api.runDraft(id, rhythm.handler!, { schedule: { id: rhythm.id, title: rhythm.title ?? rhythm.id, due: Date.now(), late: 0 }, data: null })),
+                                        )
+                                    }
+                                />
+                            )}
+                        </div>
+                    ))}
+                </div>
+            )}
 
             <div class="ws-block">
                 <h3 class="t-title-xs m-0">Функция</h3>
@@ -1507,7 +1576,17 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
 
             {plugin && <Sandbox id={id} manifest={manifest} exports={exports} />}
 
-            {installed && <VersionsCard entry={installed} busy={busy} trial={!!draft?.trial} onRollback={rollback} />}
+            {installed && draft?.trial && <VersionsCard entry={installed} busy={busy} trial onRollback={rollback} />}
+
+            <HistoryCard
+                id={id}
+                mode="draft"
+                onChanged={() => {
+                    void readDraft();
+                    void readJournal();
+                    onListChanged();
+                }}
+            />
 
             {draft?.installed && plugin && (
                 <section class="card glass card-list" aria-labelledby="journal-h">
@@ -1565,7 +1644,18 @@ export function WorkshopScreen() {
             {linked.item ? (
                 <Workbench id={linked.item} onClose={linked.close} onListChanged={() => void read()} />
             ) : (
-                <DraftList drafts={drafts ?? []} onOpen={(id) => linked.open(id)} onMade={(draft) => (void read(), linked.open(draft.id))} />
+                <>
+                    <DraftList drafts={drafts ?? []} onOpen={(id) => linked.open(id)} onMade={(draft) => (void read(), linked.open(draft.id))} />
+                    <section class="card glass card-list" aria-labelledby="history-room-h">
+                        <div class="card-head">
+                            <h2 id="history-room-h" class="t-title-xs m-0">
+                                История приложений
+                            </h2>
+                        </div>
+                        <p class="t-caption m-0">Каждый шаг и каждая версия хранятся: черновик и поставленное можно вернуть к любой записи.</p>
+                        <HistoryRoomLine titled />
+                    </section>
+                </>
             )}
         </>
     );

@@ -17,6 +17,8 @@
 pub mod activity;
 pub mod agent;
 pub mod cli;
+pub mod make;
+pub mod meta;
 pub mod openapi;
 pub mod routes;
 pub mod sandbox;
@@ -25,28 +27,36 @@ pub mod voice;
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
 use serde_json::{Map, Value};
 
 use super::controller::{PackageView, PluginHost};
+use super::history::{Author, History, RecordKind, StepMeta, Who};
 use super::manifest::{self, Budget, PackageKind, Permission};
 use super::registry::{self, Origin};
-use crate::core::events::Actor;
+use crate::core::events::{Actor, EventBus, GatewayEvent};
 use crate::platform::http::ApiError;
 
-pub use sandbox::{CheckReport, PhraseReport, RunReport};
+pub use make::{request_of, Made, Request};
+pub use meta::{DraftMeta, Face, Need, Stage};
+pub use sandbox::{CheckReport, PhraseReport, RunReport, Trying};
+
+/// Who hears a draft's card change (its stage): the station that asked says «Готово» (voice.rs).
+pub type CardFollower = Arc<dyn Fn(&str, &DraftMeta) + Send + Sync>;
 
 /// A file of a draft at most this big; the whole draft at most this.
 const MAX_FILE: u64 = 1024 * 1024;
 const MAX_DRAFT: u64 = 8 * 1024 * 1024;
-/// How many versions of a package of one's own stay after an install: the new one and the two before.
-const KEPT_VERSIONS: usize = 3;
+/// How many versions of a package of one's own stay on disk after an install: the new one and the one before — the
+/// older ones are in the history (docs/plans/package-history.md, decision 15) and come back from there.
+const KEPT_VERSIONS: usize = 2;
 /// The longest trial on the gateway, minutes.
 const MAX_TRIAL_MINUTES: u32 = 60;
 /// Files of a draft at its root; anything else lives under `assets/`.
-const ROOT_FILES: &[&str] = &["manifest.json", "backend.js", "panel.js", "panel.css", "README.md", "SKILL.md"];
+const ROOT_FILES: &[&str] =
+    &["manifest.json", "backend.js", "panel.js", "panel.css", "README.md", "SKILL.md", sandbox::EXAMPLES];
 /// What `assets/` may not hold: anything a browser runs on the panel's origin.
 const REFUSED: &[&str] = &["svg", "svgz", "html", "htm", "xhtml", "xml", "js", "mjs"];
 
@@ -99,6 +109,12 @@ pub struct DraftView {
     pub origin: Option<Origin>,
     /// A trial of the draft running on the gateway now («Проба на колонке»), if any.
     pub trial: Option<Trial>,
+    /// Who asked, its face, where it is (docs/plans/voice-creation.md).
+    pub meta: DraftMeta,
+    /// The settings it needs, plain and private, without values; none while the manifest does not read.
+    pub needs: Vec<Need>,
+    /// «Готово: виджет «…». Ему нужен ключ Todoist. Примерите — или сразу на стол?» — from its manifest.
+    pub ready_line: Option<String>,
 }
 
 /// A trial: the draft installed for a while in place of the installed version (or of nothing), then taken back unless
@@ -182,6 +198,16 @@ pub struct Workshop {
     previews: Mutex<HashMap<String, (String, std::time::Instant)>>,
     /// What the agent does on each draft, whoever started it (docs/plans/desk.md, «Делаю виджет»).
     activity: Arc<activity::Activity>,
+    /// The apps' history (docs/plans/package-history.md): each finished piece of work on a draft is a step of it.
+    history: std::sync::OnceLock<Arc<History>>,
+    /// The bus: a draft's card that changes is told the panel (`workshop.changed` with the draft and its change).
+    events: OnceLock<EventBus>,
+    /// Who hears a card change besides the panel.
+    card_followers: Mutex<Vec<CardFollower>>,
+    /// «Мозг», for the agent's work in the background (make.rs).
+    dialog: OnceLock<Arc<crate::dialog::DialogService>>,
+    /// This gateway hears MIDI keyboards (src/midi): a teacher for one is made only where it can work (make.rs).
+    midi: std::sync::atomic::AtomicBool,
 }
 
 /// How long a preview's address works.
@@ -223,7 +249,7 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 
 impl Workshop {
     pub fn new(dir: PathBuf, host: Arc<PluginHost>) -> Arc<Workshop> {
-        Arc::new(Workshop {
+        let workshop = Arc::new(Workshop {
             dir,
             host,
             handle: tokio::runtime::Handle::try_current().ok(),
@@ -231,12 +257,169 @@ impl Workshop {
             installing: tokio::sync::Mutex::new(()),
             previews: Mutex::new(HashMap::new()),
             activity: Arc::new(activity::Activity::default()),
-        })
+            history: std::sync::OnceLock::new(),
+            events: OnceLock::new(),
+            card_followers: Mutex::new(Vec::new()),
+            dialog: OnceLock::new(),
+            midi: std::sync::atomic::AtomicBool::new(false),
+        });
+        // A draft's card follows the agent's work on it: working while it goes on, then ready, failed or stopped.
+        let me = Arc::downgrade(&workshop);
+        workshop.activity.follow(Arc::new(move |draft: &str, moment: &activity::Moment| {
+            if let Some(workshop) = me.upgrade() {
+                workshop.work_moved(draft, moment);
+            }
+        }));
+        workshop
+    }
+
+    /// The history joins: the agent's work on a draft becomes a step when it ends, with what was asked.
+    pub fn set_history(&self, history: Arc<History>) {
+        self.activity.set_listener(Arc::new(RunSteps(history.clone())));
+        let _ = self.history.set(history);
+    }
+
+    pub fn history(&self) -> Option<&Arc<History>> {
+        self.history.get()
+    }
+
+    /// A save by hand (the panel's editor, Claude Code through MCP): a step; saves by the same hand within two minutes
+    /// are one.
+    pub fn hand_edited(&self, id: &str, by: Author) {
+        if let Some(history) = self.history() {
+            history.step(id, StepMeta { coalesce: true, ..StepMeta::new(RecordKind::Step, by) });
+        }
+    }
+
+    /// A new draft's first step: where it came from. A draft of the installed version goes on from that version.
+    fn first_step(&self, id: &str, note: String, from_installed: bool) {
+        let Some(history) = self.history() else { return };
+        let mut meta = StepMeta::new(RecordKind::Step, Author::new(Who::System));
+        meta.note = Some(note);
+        if from_installed {
+            meta.other = history.store().ref_get(id, super::history::INSTALLED);
+        }
+        history.step(id, meta);
+    }
+
+    /// The draft back to a step of its history: a new step with its files.
+    pub fn restore_step(&self, id: &str, record: &str, by: Author) -> Result<DraftView, ApiError> {
+        let folder = self.folder(id)?;
+        let history = self.history().ok_or_else(|| ApiError::conflict("Истории здесь нет."))?;
+        let record = history.resolve(id, record).ok_or_else(|| ApiError::not_found("Такого шага нет."))?;
+        // The agent steps back within its own work; anyone else waits for it.
+        if by.who != Who::Agent && self.activity.jobs().iter().any(|job| job.draft == id && job.busy) {
+            return Err(ApiError::conflict("Агент сейчас работает над черновиком: дождитесь или остановите его."));
+        }
+        history.restore_draft(id, &record, by).map_err(ApiError::conflict)?;
+        Ok(self.view_of(id, &folder))
     }
 
     /// What the agent does on each draft: the panel's plaque and the workshop's log.
     pub fn activity(&self) -> &Arc<activity::Activity> {
         &self.activity
+    }
+
+    /// The bus for the agent's steps (`workshop.changed`, change `agent`) and the drafts' cards.
+    pub fn attach_events(&self, events: EventBus) {
+        self.activity.attach_events(events.clone());
+        let _ = self.events.set(events);
+    }
+
+    /// Who hears every card change, after the panel: the voice's «Готово».
+    pub fn follow_cards(&self, follower: CardFollower) {
+        self.card_followers.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(follower);
+    }
+
+    /// A draft changed: the panel hears which one and how (`made`, `ready`, `parked`, `open:fitting`…).
+    pub fn tell(&self, id: &str, change: &str) {
+        if let Some(events) = self.events.get() {
+            events.emit(GatewayEvent::WorkshopChanged { draft: id.to_string(), change: change.to_string() });
+        }
+    }
+
+    fn cards_dir(&self) -> PathBuf {
+        self.dir.join(".meta")
+    }
+
+    /// The card the gateway keeps for a draft, if any.
+    fn kept_card(&self, id: &str) -> Option<DraftMeta> {
+        let text = std::fs::read_to_string(self.cards_dir().join(format!("{id}.json"))).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    /// A draft's card: the one kept, or one read from what is known.
+    pub fn card(&self, id: &str) -> DraftMeta {
+        self.kept_card(id).unwrap_or_else(|| self.known_card(id, None))
+    }
+
+    fn known_card(&self, id: &str, manifest: Option<&manifest::Manifest>) -> DraftMeta {
+        let folder = self.dir.join(id);
+        let updated = std::fs::metadata(&folder)
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|at| at.as_millis() as u64)
+            .unwrap_or(0);
+        let job = self.activity.log(id, u64::MAX).map(|(job, _)| job);
+        let read =
+            || std::fs::read_to_string(folder.join("manifest.json")).ok().and_then(|text| manifest::parse(&text).ok());
+        match manifest {
+            Some(manifest) => DraftMeta::known(id, Some(manifest), job.as_ref(), updated),
+            None => DraftMeta::known(id, read().as_ref(), job.as_ref(), updated),
+        }
+    }
+
+    /// Keeps a draft's card and tells it: the panel (with `change`, when there is one) and the followers.
+    pub fn keep_card(&self, id: &str, mut card: DraftMeta, change: Option<&str>) -> Result<DraftMeta, ApiError> {
+        card.updated = crate::utils::time::now_ms();
+        card.kept = true;
+        std::fs::create_dir_all(self.cards_dir()).map_err(ApiError::internal)?;
+        let json = serde_json::to_string_pretty(&card).map_err(ApiError::internal)?;
+        std::fs::write(self.cards_dir().join(format!("{id}.json")), json).map_err(ApiError::internal)?;
+        if let Some(change) = change {
+            self.tell(id, change);
+        }
+        let followers: Vec<CardFollower> =
+            self.card_followers.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        for follower in followers {
+            follower(id, &card);
+        }
+        Ok(card)
+    }
+
+    /// The agent's work moved on a draft with a card: it works, then it is ready (with the agent's last words),
+    /// failed or stopped. A draft without a card keeps none: its stage is read from the work.
+    fn work_moved(&self, id: &str, moment: &activity::Moment) {
+        let Some(mut card) = self.kept_card(id) else { return };
+        let change = match moment {
+            activity::Moment::Began => {
+                if card.stage == Stage::Working {
+                    return;
+                }
+                card.stage = Stage::Working;
+                card.note = None;
+                // The activity told the panel already (change `agent`).
+                None
+            }
+            activity::Moment::Ended { kind, said } => {
+                card.stage = Stage::after(*kind);
+                card.note = said.clone();
+                Some(card.stage.as_str())
+            }
+        };
+        if let Err(error) = self.keep_card(id, card, change) {
+            tracing::warn!(target: "plugins", "workshop: the card of {id} is not kept: {}", error.message);
+        }
+    }
+
+    /// «В черновики»: the draft waits in the workshop, off the desk; the agent's work on it, if any, stops.
+    pub fn park(&self, id: &str) -> Result<DraftView, ApiError> {
+        let folder = self.existing(id)?;
+        self.activity.stop(id);
+        let card = DraftMeta { stage: Stage::Parked, ..self.card(id) };
+        self.keep_card(id, card, Some("parked"))?;
+        Ok(self.view_of(id, &folder))
     }
 
     /// An address for the draft's panel part, for the panel to import and show before anything is installed.
@@ -292,7 +475,12 @@ impl Workshop {
         let mut files = Vec::new();
         walk(folder, folder, &mut files);
         let text = std::fs::read_to_string(folder.join("manifest.json")).ok();
-        let (kind, title, version, problems) = match text.as_deref().map(manifest::parse) {
+        let parsed = text.as_deref().map(manifest::parse);
+        let read = parsed.as_ref().and_then(|parsed| parsed.as_ref().ok());
+        let card = self.kept_card(id).unwrap_or_else(|| self.known_card(id, read));
+        let needs = read.map(meta::needs_of).unwrap_or_default();
+        let ready_line = read.map(|manifest| meta::ready_line(card.kind, &manifest.title, &needs));
+        let (kind, title, version, problems) = match parsed {
             Some(Ok(manifest)) => {
                 (Some(manifest.kind), Some(manifest.title), Some(manifest.version.to_string()), Vec::new())
             }
@@ -321,6 +509,9 @@ impl Workshop {
             installed: installed.as_ref().map(|package| package.version()),
             origin: installed.map(|_| self.host.origin_of(id)),
             trial: self.trial(id),
+            meta: card,
+            needs,
+            ready_line,
         }
     }
 
@@ -360,7 +551,7 @@ impl Workshop {
         if let Some(taken) = self.host.installed(id).filter(|_| kind.is_some() || openapi.is_some()) {
             let origin = self.host.origin_of(id);
             let way = if origin.editable() {
-                " Или откройте его самого: «Открыть в мастерской» в «Навыки»."
+                " Или откройте его самого: «Открыть в мастерской» в «Приложения»."
             } else {
                 ""
             };
@@ -381,14 +572,20 @@ impl Workshop {
                 )));
             }
             copy_dir(&installed.dir, &folder).map_err(ApiError::internal)?;
+            self.first_step(id, format!("черновик из поставленной версии {}", installed.version()), true);
             return Ok(self.view_of(id, &folder));
         } else {
             match kind.unwrap_or("plugin") {
                 "plugin" => templates::plugin(id, title.unwrap_or(id)),
                 "theme" => templates::theme(id, title.unwrap_or(id)),
                 "widget" => templates::widget(id, title.unwrap_or(id)),
+                "quiz" => templates::quiz(id, title.unwrap_or(id)),
+                "midi" => templates::midi(id, title.unwrap_or("Учитель на MIDI-клавиатуре")),
                 other => {
-                    return Err(ApiError::field("kind", format!("«{other}»: черновик — plugin, widget или theme")))
+                    return Err(ApiError::field(
+                        "kind",
+                        format!("«{other}»: черновик — plugin, widget, quiz, midi или theme"),
+                    ))
                 }
             }
         };
@@ -401,6 +598,11 @@ impl Workshop {
             std::fs::write(folder.join(path), text).map_err(ApiError::internal)?;
         }
         tracing::info!(target: "plugins", "workshop: draft {id} made");
+        let from = match (openapi, kind) {
+            (Some(_), _) => "черновик из описания API".to_string(),
+            (None, kind) => format!("черновик из заготовки «{}»", kind.unwrap_or("plugin")),
+        };
+        self.first_step(id, from, false);
         Ok(self.view_of(id, &folder))
     }
 
@@ -453,11 +655,14 @@ impl Workshop {
         Ok(self.view_of(id, &folder))
     }
 
-    /// The draft goes; the installed package stays as it is.
+    /// The draft goes, its card too; the installed package stays as it is.
     pub fn delete(&self, id: &str) -> Result<(), ApiError> {
         let folder = self.existing(id)?;
+        self.activity.stop(id);
         std::fs::remove_dir_all(folder).map_err(ApiError::internal)?;
+        let _ = std::fs::remove_file(self.cards_dir().join(format!("{id}.json")));
         self.kv.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(id);
+        self.tell(id, "deleted");
         Ok(())
     }
 
@@ -469,24 +674,59 @@ impl Workshop {
     /// not to play.
     pub async fn check(&self, id: &str) -> Result<CheckReport, ApiError> {
         let folder = self.existing(id)?;
-        Ok(sandbox::check(&folder, id, self.handle.clone()).await)
+        let mut report = sandbox::check(&folder, id, self.handle.clone()).await;
+        if self.host.on_station() {
+            report.warnings.extend(sandbox::station_warnings(&folder));
+        }
+        Ok(report)
     }
 
-    /// «Запустить»: one function of the draft with its input, in the sandbox.
-    pub async fn run(&self, id: &str, function: &str, input: Value) -> Result<RunReport, ApiError> {
+    /// «Запустить»: one function of the draft with its input, in the sandbox — on the network, or on its example.
+    pub async fn run(&self, id: &str, function: &str, input: Value, trying: &Trying) -> Result<RunReport, ApiError> {
         let folder = self.existing(id)?;
-        sandbox::run(&folder, id, function, input, self.sandbox_kv(id), self.handle.clone())
+        sandbox::run(&folder, id, function, input, self.sandbox_kv(id), self.handle.clone(), trying)
             .await
             .map_err(ApiError::bad_request)
     }
 
     /// «Прогнать фразу»: the phrase as the router would match it against the draft's phrases, and what the station
     /// would get.
-    pub async fn try_phrase(&self, id: &str, text: &str) -> Result<PhraseReport, ApiError> {
+    pub async fn try_phrase(&self, id: &str, text: &str, trying: &Trying) -> Result<PhraseReport, ApiError> {
         let folder = self.existing(id)?;
-        sandbox::try_phrase(&folder, id, text, self.sandbox_kv(id), self.handle.clone())
+        sandbox::try_phrase(&folder, id, text, self.sandbox_kv(id), self.handle.clone(), trying)
             .await
             .map_err(ApiError::bad_request)
+    }
+
+    /// The settings a person gave for a run of the draft («Показывать: 3» in «Примерка»): each one its manifest
+    /// declares, of its type, and plain — a private one (a key) never reaches the sandbox, its agent or the cloud.
+    pub fn plain_settings(&self, id: &str, given: &Map<String, Value>) -> Result<Map<String, Value>, ApiError> {
+        if given.is_empty() {
+            return Ok(Map::new());
+        }
+        let folder = self.existing(id)?;
+        let text = std::fs::read_to_string(folder.join("manifest.json"))
+            .map_err(|_| ApiError::bad_request("В черновике нет manifest.json."))?;
+        let draft = manifest::parse(&text).map_err(|error| ApiError::bad_request(error.to_string()))?;
+        let mut plain = Map::new();
+        for (key, value) in given {
+            let spec = draft
+                .settings
+                .iter()
+                .find(|spec| &spec.key == key)
+                .ok_or_else(|| ApiError::field(key, "нет такой настройки"))?;
+            if spec.secret {
+                return Err(ApiError::field(key, "личное сюда не передают: его вписывают при установке"));
+            }
+            if value.is_null() {
+                continue;
+            }
+            if !spec.accepts(value) {
+                return Err(ApiError::field(key, "значение не подходит к настройке"));
+            }
+            plain.insert(key.clone(), value.clone());
+        }
+        Ok(plain)
     }
 
     /// The installed plugin's own journal: its console, its calls, what the station said of its items.
@@ -497,10 +737,20 @@ impl Workshop {
     /// «Поставить»: the draft checked, put in as a new version beside the old one, the plugin reloaded (or switched on
     /// the first time). The first install and new rights or hosts wait for the admin's `approve`.
     /// «Поставить»: a real install keeps a running trial's version (it is no longer taken back).
-    pub async fn install(&self, id: &str, approve: bool, actor: Option<Actor>) -> Result<InstallReport, ApiError> {
-        let report = self.install_draft(id, approve, actor).await?;
+    pub async fn install(
+        &self,
+        id: &str,
+        approve: bool,
+        settings: &Map<String, Value>,
+        actor: Option<Actor>,
+    ) -> Result<InstallReport, ApiError> {
+        let report = self.install_draft(id, approve, settings, actor, false).await?;
         if report.installed {
             self.forget_trial(id);
+            // On the desk now: the draft's tile gives way to the app.
+            if let Some(card) = self.kept_card(id) {
+                self.keep_card(id, DraftMeta { stage: Stage::Installed, ..card }, Some("installed"))?;
+            }
         }
         Ok(report)
     }
@@ -587,7 +837,7 @@ impl Workshop {
             Some(_) => self.host.view_one(id).await.map(|view| view.enabled).unwrap_or(false),
             None => false,
         };
-        let mut report = self.install_draft(id, approve, actor.clone()).await?;
+        let mut report = self.install_draft(id, approve, &Map::new(), actor.clone(), true).await?;
         let Some(version) = report.version.clone().filter(|_| report.installed) else { return Ok(report) };
         if previous.is_some() && !was_enabled {
             if let Err(error) = self.host.enable(id, actor.clone()).await {
@@ -686,7 +936,16 @@ impl Workshop {
         Ok(message)
     }
 
-    async fn install_draft(&self, id: &str, approve: bool, actor: Option<Actor>) -> Result<InstallReport, ApiError> {
+    /// The install: `settings` — the values the person gave in «Примерка» (plain and private), checked against the
+    /// draft's manifest and written before the plugin first starts, so it starts with its key.
+    async fn install_draft(
+        &self,
+        id: &str,
+        approve: bool,
+        settings: &Map<String, Value>,
+        actor: Option<Actor>,
+        trial: bool,
+    ) -> Result<InstallReport, ApiError> {
         let _turn = self.installing.lock().await;
         let folder = self.existing(id)?;
         let report = sandbox::check(&folder, id, self.handle.clone()).await;
@@ -733,6 +992,8 @@ impl Workshop {
                 package: None,
             });
         }
+        // The values are checked before anything changes: a wrong one installs nothing.
+        let settings = super::controller::check_settings(&draft.settings, settings)?;
         if draft.kind == PackageKind::Plugin {
             self.host
                 .room_for(crate::operations::system_memory::folder_mb(&folder))
@@ -755,8 +1016,22 @@ impl Workshop {
             let _ = std::fs::remove_dir_all(&partial);
             return Err(ApiError::internal(error));
         }
+        // Its settings before it first starts: the plain ones among the settings, a key into the gateway's safe.
+        self.host.keep_settings(id, &settings, actor.clone())?;
         self.host.note_installed(id, registry::SOURCE_LOCAL, actor.clone())?;
-        prune(&root, id, KEPT_VERSIONS);
+        if let Some(history) = self.history() {
+            history.note_install(
+                id,
+                &root.join(id).join(version.to_string()),
+                &version.to_string(),
+                RecordKind::Install,
+                Author::of(actor.as_ref(), Who::Agent),
+                true,
+                trial,
+                None,
+            );
+        }
+        prune(&root, id, KEPT_VERSIONS, self.history().map(Arc::as_ref));
         let version = version.to_string();
         self.host.note_line(id, "load", &format!("мастерская поставила версию {version}"));
         self.host.announce(
@@ -790,6 +1065,27 @@ impl Workshop {
     }
 }
 
+/// The agent's work on a draft as steps of the app's history: what was changed by hand before it, a step of its own;
+/// the work's end, a step with what was asked and the agent's last words.
+struct RunSteps(Arc<History>);
+
+impl activity::RunListener for RunSteps {
+    fn began(&self, draft: &str) {
+        self.0.before_work(draft);
+    }
+
+    fn ended(&self, draft: &str, by: activity::By, asked: &str, said: &str) {
+        let via = match by {
+            activity::By::Voice => "voice",
+            activity::By::Panel => "panel",
+        };
+        let mut meta = StepMeta::new(RecordKind::Step, Author { who: Who::Agent, name: None, via: Some(via.into()) });
+        meta.asked = Some(asked.to_string());
+        meta.note = Some(said.to_string());
+        self.0.step(draft, meta);
+    }
+}
+
 /// Why a checked draft does not install, each in words.
 fn problems_of(report: &CheckReport) -> Vec<String> {
     let mut problems = report.manifest.clone();
@@ -815,8 +1111,8 @@ fn capitalized(text: &str) -> String {
     }
 }
 
-/// Versions of a package of one's own beyond the newest `kept` go.
-fn prune(root: &Path, id: &str, kept: usize) {
+/// Versions of a package of one's own beyond the newest `kept` go — into the history first.
+fn prune(root: &Path, id: &str, kept: usize, history: Option<&History>) {
     let mut versions: Vec<semver::Version> = std::fs::read_dir(root.join(id))
         .into_iter()
         .flatten()
@@ -826,7 +1122,11 @@ fn prune(root: &Path, id: &str, kept: usize) {
         .collect();
     versions.sort_by(|a, b| b.cmp(a));
     for old in versions.into_iter().skip(kept) {
-        let _ = std::fs::remove_dir_all(root.join(id).join(old.to_string()));
+        let dir = root.join(id).join(old.to_string());
+        if let Some(history) = history {
+            history.ensure_recorded(id, &dir, &old.to_string());
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 

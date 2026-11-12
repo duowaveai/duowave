@@ -164,6 +164,18 @@ keep_watch() {
     done
 }
 
+# The loop and the watch as programs of their own, away from whoever started them: a session of their own (setsid, where
+# busybox has it) and none of the caller's input or output. As shell functions under a redirection they kept busybox
+# sh's saved copy of the caller's output: an install over SSH (Command::output) waited for it forever, and the service
+# stayed in that SSH session (11.11.2026).
+detached() {
+    if command -v setsid >/dev/null 2>&1; then
+        setsid sh "$0" "$1" </dev/null >/dev/null 2>&1 &
+    else
+        sh "$0" "$1" </dev/null >/dev/null 2>&1 &
+    fi
+}
+
 start() {
     # /data wiped (a factory reset), the package removed, or the safety net gave the station back: nothing to start.
     [ -n "$BIN" ] && [ -x "$BIN" ] || return 0
@@ -172,9 +184,9 @@ start() {
     mkdir -p "$DATA"
     # Kept under 256 KB: the station's /data is small.
     [ -f "$LOG" ] && [ "$(wc -c <"$LOG")" -gt 262144 ] && mv "$LOG" "$LOG.old"
-    run </dev/null >/dev/null 2>&1 &
+    detached run
     remember "$LOOP" $!
-    keep_watch </dev/null >/dev/null 2>&1 &
+    detached watch
     remember "$WATCH" $!
     # Before Alice: when her voice goes here, the gateway is up by the time she dials it.
     if voice_here; then
@@ -206,8 +218,15 @@ case "${1:-}" in
         sleep 1
         start
         ;;
-    run) run ;;
-    watch) keep_watch ;;
+    # Each says its own pid too: had setsid to fork, the one start() noted would be gone.
+    run)
+        remember "$LOOP" $$
+        run
+        ;;
+    watch)
+        remember "$WATCH" $$
+        keep_watch
+        ;;
     status)
         if alive "$CHILD" serve; then
             echo "gateway: running (pid $(pid_of "$CHILD"))"

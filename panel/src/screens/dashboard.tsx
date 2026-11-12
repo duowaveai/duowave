@@ -70,6 +70,7 @@ import {
     voiceName,
 } from './dash-model';
 import { ART_RATIO, CIRCLE, Point, Scene, sceneOf } from './dash-scene';
+import { localAsrLine } from './local-asr';
 import type { SettingsTab } from './mind';
 import { DONE_MS, liveTripOf } from './trip';
 import { MODE_TITLES, Solved, Who } from '../truth';
@@ -594,6 +595,8 @@ function OrbitNode({ spot, node, at, lit, onOpen }: { spot: OrbitKey; node: Node
     return (
         <button
             class="dash-node"
+            // Узел по имени: комета агента вылетает от «Мозга» (ui/comet.ts).
+            data-node={spot}
             // Круг узла — ровно на орбите: у подписи сверху узел отсчитывается от низа круга.
             style={{
                 left: `${at.x - width / 2}px`,
@@ -929,7 +932,17 @@ function earSpec({ data, nodes, health, openSettings }: SpecContext): Spec {
                 on: !relay,
                 disabled: relay,
             });
-        if (waiting)
+        if (waiting && view.localAsr)
+            // На этом компьютере новая модель скачивается и встаёт сама, без перезапуска.
+            choices.push({
+                id: waiting.id,
+                name: shortTitle(waiting.title),
+                sub: view.localAsr.phase === 'failed' ? (view.localAsr.error ?? 'не встала') : `выбрана — ${localAsrLine(view.localAsr)}`,
+                pill: { text: view.localAsr.phase === 'failed' ? 'сбой' : 'готовится', tone: 'off' },
+                on: false,
+                disabled: true,
+            });
+        else if (waiting)
             choices.push({
                 id: waiting.id,
                 name: shortTitle(waiting.title),

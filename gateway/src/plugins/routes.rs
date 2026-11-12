@@ -5,7 +5,8 @@
 //!
 //! The catalog (`/api/v1/packages/catalog`) is seen by whoever sees the station; installing, updating and removing a
 //! package is by its kind: a character — who may change the character (`persona.edit`), a theme — who changes the
-//! gateway's settings (`settings.edit`), a plugin or an app — the admin at home (`plugins.manage`).
+//! gateway's settings (`settings.edit`), a plugin or an app — the admin at home (`plugins.manage`). Own sources of
+//! packages (`/api/v1/packages/sources`, docs/plans/custom-feeds.md) are added and removed by the admin at home alone.
 
 use std::sync::Arc;
 
@@ -45,6 +46,7 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/panel-plugins/{id}/{version}/{file}", get(panel_file))
         .route("/mcp/plugins", post(mcp_plugins))
         .route("/api/v1/packages/catalog", get(catalog).put(catalog_switch))
+        .route("/api/v1/packages/sources", post(add_source).delete(remove_source))
         .route("/api/v1/packages/catalog/{id}/preview/{which}", get(preview))
         .route("/api/v1/packages/{id}", get(one).delete(remove))
         .route("/api/v1/packages/{id}/install", post(install))
@@ -55,6 +57,13 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/api/v1/packages/{id}/rollback", post(rollback))
         .route("/api/v1/packages/{id}/settings", put(settings))
         .route("/api/v1/packages/{id}/tools/{name}/try", post(try_tool))
+        .route("/api/v1/packages/schedules", get(schedules_switch).put(schedules_set))
+        .route("/api/v1/packages/files", get(files_summary))
+        .route("/api/v1/packages/{id}/files", get(files_view))
+        .route("/api/v1/packages/{id}/files/{name}", get(file))
+        .route("/api/v1/packages/{id}/schedule", get(schedule))
+        .route("/api/v1/packages/{id}/schedule/{job}", put(schedule_pause).delete(schedule_remove))
+        .route("/api/v1/packages/{id}/schedule/{job}/run", post(schedule_run))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
 }
 
@@ -63,7 +72,7 @@ pub(crate) fn admin(caller: &Caller) -> Result<Option<Actor>, ApiError> {
     caller.zone_at_least(Zone::Home)?;
     let principal = caller.permitted(PLUGINS_MANAGE)?;
     if principal.kind != PrincipalKind::User || principal.role != Some(Role::Admin) {
-        return Err(ApiError::forbidden("Пакетами управляет только администратор."));
+        return Err(ApiError::forbidden("Приложениями управляет только администратор."));
     }
     Ok(caller.actor())
 }
@@ -103,6 +112,39 @@ async fn catalog_switch(
     caller.permitted(SETTINGS_EDIT)?;
     app.catalog.set_enabled(body.enabled, caller.actor())?;
     Ok(ok(app.catalog.view(false).await))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SourceBody {
+    url: String,
+    /// The panel showed the warning and the admin agreed: packages from it are checked by no one.
+    #[serde(default)]
+    understood: bool,
+}
+
+/// An own source of packages by its link: `{url, understood: true}` — the admin at home, after the warning.
+async fn add_source(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Body(body): Body<SourceBody>,
+) -> ApiResult<CatalogView> {
+    let actor = admin(&caller)?;
+    if !body.understood {
+        return Err(ApiError::bad_request(
+            "Свой источник добавляется после предупреждения: его пакеты никто не проверял (understood: true).",
+        ));
+    }
+    Ok(ok(app.catalog.add_source(&body.url, actor).await?))
+}
+
+/// An own source removed: `{url}`. What was installed from it stays.
+async fn remove_source(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Body(body): Body<SourceBody>,
+) -> ApiResult<CatalogView> {
+    let actor = admin(&caller)?;
+    Ok(ok(app.catalog.remove_source(&body.url, actor).await?))
 }
 
 /// A package's preview from the copy here: `image`, or a phrase by its number from 1.
@@ -153,8 +195,16 @@ async fn remove(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<Stri
     let kind = app.catalog.kind_of(&id).await;
     let actor = may_handle(&caller, kind)?;
     app.characters.before_removal(&id)?;
+    // Its history lives on for 30 days, with its data as it is now (docs/plans/package-history.md).
+    if let Some(history) = &app.history {
+        if app.plugins.origin_of(&id).removable() {
+            history.note_removed(&id, actor.as_ref());
+        }
+    }
     app.catalog.remove(&id, actor).await?;
     app.characters.sync();
+    // Its pictures go with it (plugins/files.rs).
+    app.files.forget(&id);
     Ok(ok(json!({ "deleted": true })))
 }
 
@@ -290,7 +340,7 @@ async fn mcp_plugins(
     Ok(axum::Json(answer).into_response())
 }
 
-/// The plugins' memory and room: «Память колонки» and the plugins' list.
+/// The plugins' memory and room: «Ресурсы колонки» and the plugins' list.
 async fn resources(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<ResourcesView> {
     caller.permitted(CONNECTORS_VIEW)?;
     Ok(ok(app.plugins.resources().await))
@@ -356,6 +406,96 @@ async fn try_tool(
     Ok(ok(TryAnswer { content: app.plugins.try_tool(&id, &name, input).await? }))
 }
 
+/// Every plugin's pictures together, and the station's limit (plugins/files.rs): «Ресурсы колонки».
+async fn files_summary(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+    caller.permitted(CONNECTORS_VIEW)?;
+    Ok(ok(app.files.summary()))
+}
+
+/// A plugin's pictures for its card: names, sizes, the limit they count against here.
+async fn files_view(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
+    caller.permitted(CONNECTORS_VIEW)?;
+    let room = app.plugins.installed(&id).map_or(1, |package| package.manifest.budget.storage_mb);
+    Ok(ok(app.files.view(&id, room)))
+}
+
+/// A plugin's picture for its part of the panel (`useFile`): with the panel's key, never an open link.
+async fn file(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path((id, name)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    caller.permitted(&use_of(CapabilityName::Plugins))?;
+    let (bytes, kind) =
+        app.files.read(&id, &name).ok_or_else(|| ApiError::not_found(format!("Нет картинки {name}.")))?;
+    let mut response = bytes.into_response();
+    response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
+    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=300"));
+    Ok(response)
+}
+
+/// The switch «Расписания плагинов» (plugins/schedule.rs): whoever sees the connectors sees it.
+async fn schedules_switch(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+    caller.permitted(CONNECTORS_VIEW)?;
+    Ok(ok(app.schedules.switch_view()))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SwitchBody {
+    on: bool,
+}
+
+/// Every plugin's schedule on or off — the admin's; the jobs stay either way.
+async fn schedules_set(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<SwitchBody>) -> ApiResult<Value> {
+    admin(&caller)?;
+    app.schedules.set_on(body.on);
+    Ok(ok(app.schedules.switch_view()))
+}
+
+/// A plugin's schedule: its rhythms and tasks, when each comes next, how each ended the last time.
+async fn schedule(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
+    caller.permitted(CONNECTORS_VIEW)?;
+    Ok(ok(app.schedules.view(&id)))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PauseBody {
+    paused: bool,
+}
+
+async fn schedule_pause(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path((id, job)): Path<(String, String)>,
+    Body(body): Body<PauseBody>,
+) -> ApiResult<Value> {
+    admin(&caller)?;
+    app.schedules.pause(&id, &job, body.paused).map_err(ApiError::bad_request)?;
+    Ok(ok(app.schedules.view(&id)))
+}
+
+/// A task the code set goes; a rhythm of the manifest is only paused.
+async fn schedule_remove(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path((id, job)): Path<(String, String)>,
+) -> ApiResult<Value> {
+    admin(&caller)?;
+    app.schedules.remove(&id, &job).map_err(ApiError::bad_request)?;
+    Ok(ok(app.schedules.view(&id)))
+}
+
+/// «Запустить сейчас»: what it did.
+async fn schedule_run(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path((id, job)): Path<(String, String)>,
+) -> ApiResult<Value> {
+    admin(&caller)?;
+    let outcome = app.schedules.run_now(&id, &job).await.map_err(ApiError::bad_request)?;
+    Ok(ok(json!({ "outcome": outcome })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,6 +510,35 @@ mod tests {
             Ok(answer) => answer.0,
             Err(error) => error.status,
         }
+    }
+
+    /// The switch «Расписания плагинов»: whoever sees the connectors sees it, only the admin turns it, and it is kept;
+    /// a plugin's schedule is seen the same way, its jobs paused and run by the admin alone.
+    #[tokio::test]
+    async fn the_schedules_switch_and_a_plugins_schedule_are_the_admins_to_change() {
+        let app = crate::app::App::build(Config::for_tests(&Env::from_pairs([("STATE_DIR", "")]))).unwrap();
+        let admin = || Caller::local(app.clone(), Some(user_principal("u1", "Админ", Role::Admin, None)));
+        let member = || Caller::local(app.clone(), Some(user_principal("u2", "Аня", Role::Member, None)));
+        let seen = schedules_switch(State(app.clone()), member()).await.unwrap().1;
+        assert_eq!(seen, json!({ "on": true, "allowed": true }));
+        let refused = schedules_set(State(app.clone()), member(), Body(SwitchBody { on: false })).await;
+        assert_eq!(status(refused), StatusCode::FORBIDDEN);
+        let off = schedules_set(State(app.clone()), admin(), Body(SwitchBody { on: false })).await.unwrap().1;
+        assert_eq!(off, json!({ "on": false, "allowed": true }));
+        assert!(!app.schedules.is_on());
+        // A plugin with no schedule: nothing to show, nothing to run.
+        let none = schedule(State(app.clone()), member(), Path("nothing".into())).await.unwrap().1;
+        assert_eq!(none, json!({ "on": false, "jobs": [] }));
+        let pause = schedule_pause(
+            State(app.clone()),
+            member(),
+            Path(("nothing".into(), "x".into())),
+            Body(PauseBody { paused: true }),
+        )
+        .await;
+        assert_eq!(status(pause), StatusCode::FORBIDDEN);
+        let run = schedule_run(State(app.clone()), admin(), Path(("nothing".into(), "x".into()))).await;
+        assert_eq!(status(run), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

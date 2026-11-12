@@ -64,7 +64,7 @@ export default definePlugin({
   id: "radio",
   slots: {
     "desk.widgets": [
-      { id: "stations", title: "Радио", icon: icons.music, size: "small", initial: true, source: "плагин", order: 60, permission: "station.view", Component: Radio },
+      { id: "stations", title: "Радио", icon: icons.music, size: "small", initial: true, source: "приложение", order: 60, permission: "station.view", Component: Radio },
     ],
   },
 });

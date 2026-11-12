@@ -431,7 +431,7 @@ export function Watch({ onOpen, opened = false }: { onOpen?: () => void; opened?
                     <span class="w-cap">{health?.safety === false ? 'выключена' : 'включена'}</span>
                 </div>
                 <div class="w-row">
-                    <span class="w-text">Память колонки</span>
+                    <span class="w-text">Оперативная память</span>
                     <span class="w-cap">
                         {memory?.rssKb !== undefined ? `${mb(memory.rssKb)}${memory.totalKb ? ` из ${mb(memory.totalKb)}` : ''} МБ` : '—'}
                     </span>
@@ -502,7 +502,7 @@ export function WorkshopWidget() {
     if (!draft)
         return (
             <div class="flex flex-col gap-8">
-                <p class="w-cap m-0">Черновиков нет. Здесь пишутся плагины, а работают они на колонке — и без компьютера.</p>
+                <p class="w-cap m-0">Черновиков нет. Здесь делаются приложения, а работают они на колонке — и без компьютера.</p>
                 <div class="w-actions">
                     <button class="w-btn" onClick={() => open()}>
                         Открыть
@@ -562,7 +562,7 @@ export function HelperCardWidget() {
             </div>
             <p class="w-cap m-0">
                 {up
-                    ? 'Слух, голос и модель — у компьютера. На нём же мастерская плагинов, лаборатория голоса и копии настроек этой колонки.'
+                    ? 'Слух, голос и модель — у компьютера. На нём же мастерская приложений, лаборатория голоса и копии настроек этой колонки.'
                     : 'Пока его нет, колонка отвечает сама: слышит облако, говорит Алиса.'}
             </p>
             {panelUrl && (

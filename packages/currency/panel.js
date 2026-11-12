@@ -50,7 +50,7 @@ export default definePlugin({
   id: "currency",
   slots: {
     "desk.widgets": [
-      { id: "rates", title: "Курсы валют", icon: icons.coins, size: "small", source: "плагин", order: 70, permission: "station.view", Component: Rates },
+      { id: "rates", title: "Курсы валют", icon: icons.coins, size: "small", source: "приложение", order: 70, permission: "station.view", Component: Rates },
     ],
   },
 });

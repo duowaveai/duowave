@@ -1,7 +1,7 @@
-//! The gateway's secrets — model keys, MCP tokens and variables, OAuth tokens — sealed in the database
-//! (secret_box.rs), open in memory only. Ids are paths: `llm:<provider>:key`, `mcp:<server>:env:NAME`. No API
-//! returns a value; the panel sees masks. Values that do not open (the key file was lost) read as unset: the panel
-//! asks for them again, nothing breaks.
+//! The gateway's secrets — model keys, MCP tokens and variables, OAuth tokens, the plugins' private settings — sealed
+//! in the database (secret_box.rs), open in memory only. Ids are paths: `llm:<provider>:key`, `mcp:<server>:env:NAME`,
+//! `plugin:<package>:<key>`. No API returns a value; the panel sees masks. Values that do not open (the key file was
+//! lost) read as unset: the panel asks for them again, nothing breaks.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -14,6 +14,29 @@ use super::secret_box::{hint, load_key, open, seal, Key, Sealed};
 use crate::platform::http::ApiError;
 use crate::storage::db::Db;
 use crate::utils::time::now_iso;
+
+/// The prefix of the plugins' private settings (`"secret": true` in a manifest): a key, a private link.
+pub const PLUGIN_SECRETS: &str = "plugin:";
+
+/// Where a plugin's private setting lives in the safe: `plugin:<package>:<key>`.
+pub fn plugin_secret(package: &str, key: &str) -> String {
+    format!("{PLUGIN_SECRETS}{package}:{key}")
+}
+
+/// The prefix of one plugin's private settings: what its removal takes, what its copy copies.
+pub fn plugin_secrets(package: &str) -> String {
+    format!("{PLUGIN_SECRETS}{package}:")
+}
+
+/// The shortest value `redact` hides: a plugin's key may be short (a PIN, a four-digit code), the gateway's own keys
+/// are long, and hiding a short common word of theirs would garble the text.
+fn hidden_from(id: &str) -> usize {
+    if id.starts_with(PLUGIN_SECRETS) {
+        4
+    } else {
+        8
+    }
+}
 
 /// What the panel may know of a secret: whether it is set and its last characters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -118,12 +141,20 @@ impl SecretsService {
         Ok(())
     }
 
-    /// Hides every known secret value in a text before it reaches a log or the journal.
+    /// Hides every known secret value in a text before it reaches a log or the journal: the gateway's keys from 8
+    /// characters, the plugins' from 4. The longest first, so a value inside another does not leave the rest of it.
     pub fn redact(&self, text: &str) -> String {
+        let values = self.values.read().unwrap();
+        let mut hidden: Vec<&str> = values
+            .iter()
+            .filter(|(id, value)| value.chars().count() >= hidden_from(id))
+            .map(|(_, value)| value.as_str())
+            .collect();
+        hidden.sort_by_key(|value| std::cmp::Reverse(value.len()));
         let mut out = text.to_string();
-        for value in self.values.read().unwrap().values() {
-            if value.chars().count() >= 8 {
-                out = out.replace(value.as_str(), "•••");
+        for value in hidden {
+            if out.contains(value) {
+                out = out.replace(value, "•••");
             }
         }
         out
@@ -162,5 +193,21 @@ mod tests {
         secrets.set("a", Some("supersecretvalue")).unwrap();
         secrets.set("b", Some("short")).unwrap();
         assert_eq!(secrets.redact("key=supersecretvalue short"), "key=••• short");
+    }
+
+    /// A plugin's key is hidden from 4 characters: a PIN in its journal is not shown to the workshop's agent.
+    #[test]
+    fn redacts_a_plugins_short_key_too() {
+        let secrets = SecretsService::new(Arc::new(Db::memory()), None).unwrap();
+        secrets.set(&plugin_secret("todo", "token"), Some("4721")).unwrap();
+        secrets.set(&plugin_secret("todo", "pin"), Some("472")).unwrap();
+        secrets.set("llm:claude:key", Some("sk-4721-long-enough")).unwrap();
+        assert_eq!(plugin_secret("todo", "token"), "plugin:todo:token");
+        assert_eq!(secrets.ids(&plugin_secrets("todo")), vec!["plugin:todo:pin", "plugin:todo:token"]);
+        assert_eq!(
+            secrets.redact("pin 4721 with key sk-4721-long-enough, 472 left"),
+            "pin ••• with key •••, 472 left",
+            "the longer key first: the short one inside it does not cut it apart; 3 characters stay"
+        );
     }
 }

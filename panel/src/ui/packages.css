@@ -175,6 +175,8 @@
 .pkg-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .pkg-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 2px 0 8px; }
 .pkg-switch { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--divider); }
+/* «Свои источники» в каталоге: ленты по ссылке, их пакеты никто не проверял. */
+.pkg-own { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-top: 1px solid var(--divider); }
 
 /* Окно «нужна модель» и отложенный голос. */
 .needs-facts { margin: 0; font-size: 15px; line-height: 22px; }
@@ -186,7 +188,7 @@
     .char-tile { transition: none; }
 }
 
-/* ─── Память колонки (screens/memory.tsx) ─────────────────────── */
+/* ─── Ресурсы колонки (screens/memory.tsx) ─────────────────────── */
 .mem-bar { display: flex; height: 12px; border-radius: var(--r-pill, 999px); overflow: hidden; background: var(--track, rgba(127, 127, 127, 0.18)); }
 .mem-seg { display: block; height: 100%; min-width: 2px; }
 .mem-system { background: var(--bar-off); }
@@ -236,3 +238,21 @@
 .ws-error { align-self: flex-start; font-size: 12px; color: var(--dot-offline); padding: 2px 12px; }
 .font-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .line-through { text-decoration: line-through; }
+
+/* История приложения (screens/history.tsx, docs/plans/package-history.md): лента, сравнение, возврат, объединение. */
+.hist-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; }
+.hist-row { display: flex; flex-direction: column; gap: 4px; padding: 10px 0; border-top: 1px solid var(--pill-off-bg); }
+.hist-row:first-child { border-top: 0; padding-top: 0; }
+.hist-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.hist-actions { display: flex; flex-wrap: wrap; gap: 0 14px; }
+.hist-panel { margin-top: 4px; padding: 10px 12px; border-radius: 14px; background: var(--icon-bg); display: flex; flex-direction: column; gap: 8px; }
+.hist-diff { margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--pill-off-bg); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.hist-add { color: var(--pill-own-fg); }
+.hist-del { color: var(--dot-offline); }
+.hist-fold { color: var(--sub); }
+.hist-manifest { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
+.hist-choice { display: flex; flex-direction: column; gap: 4px; }
+.hist-choice label { display: flex; align-items: flex-start; gap: 10px; min-height: 44px; padding: 4px 0; cursor: pointer; }
+.hist-choice input { margin-top: 3px; accent-color: var(--radio-on-bg); }
+.hist-merge { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 14px; background: var(--pill-agent-bg); color: var(--pill-agent-fg); }
+.hist-number { width: 88px; }

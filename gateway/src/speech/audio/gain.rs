@@ -45,6 +45,16 @@ impl GainStage {
         self.set(self.config.max_db.min((self.config.target_dbfs - reference).max(0.0)));
     }
 
+    /// A gain picked for an earlier request (auto mode): a request with no wake word to pick it from — the station
+    /// listening on after a question — would keep the maximum, and room noise at +40 dB is louder than VAD's
+    /// threshold, so its end of speech never came (live 12.11: every follow-up ran to VAD_MAX_SPEECH_MS).
+    pub fn assume(&mut self, db: f64) {
+        if self.config.mode != GainMode::Auto || !db.is_finite() {
+            return;
+        }
+        self.set(db.clamp(0.0, self.config.max_db));
+    }
+
     /// Linear gain for audio whose peak (0..1) is given: the request gain, lowered so the peak stays under the
     /// ceiling.
     pub fn limited(&self, peak: f64) -> f64 {
@@ -63,7 +73,7 @@ mod tests {
     use crate::speech::test_audio::voice;
 
     fn auto() -> GainConfig {
-        GainConfig { mode: GainMode::Auto, fixed_db: 0.0, max_db: 40.0, target_dbfs: -20.0 }
+        GainConfig { mode: GainMode::Auto, fixed_db: 0.0, max_db: 40.0, target_dbfs: -20.0, no_wake_word_db: 30.0 }
     }
 
     #[test]
@@ -93,5 +103,20 @@ mod tests {
         assert_eq!(fixed.gain_db(), 30.0);
         assert!((fixed.limited(0.001) - 10f64.powf(30.0 / 20.0)).abs() < 0.0005);
         assert!(0.5 * fixed.limited(0.5) <= 0.97);
+    }
+
+    #[test]
+    fn takes_an_earlier_gain_within_its_limits_in_auto_mode_only() {
+        let mut gain = GainStage::new(auto());
+        assert_eq!(gain.gain_db(), 40.0, "the maximum until anything is known");
+        gain.assume(27.34);
+        assert_eq!((gain.gain_db(), gain.reference_dbfs()), (27.3, None), "assumed, not measured");
+        gain.assume(55.0);
+        assert_eq!(gain.gain_db(), 40.0);
+        gain.assume(f64::NAN);
+        assert_eq!(gain.gain_db(), 40.0);
+        let mut fixed = GainStage::new(GainConfig { mode: GainMode::Fixed, fixed_db: 30.0, ..auto() });
+        fixed.assume(12.0);
+        assert_eq!(fixed.gain_db(), 30.0);
     }
 }

@@ -1,6 +1,7 @@
 /**
  * Запись голоса для отпечатка: чистый звук микрофона через AudioWorklet, без обработки браузера (эхо-, шумоподавление и
  * автогромкость портят образец), в WAV 16 бит 24 кГц — так его ждёт шлюз. MediaRecorder не годится: Safari пишет AAC.
+ * Голос пульта (voice/mic.ts) пишет тем же рекордером 16 кГц и с обработкой браузера: «Слуху» шлюза так понятнее.
  * Модуль ворклета — файл пульта (/panel/take-tap.js): политика безопасности пульта не пускает скрипты из blob-ссылок.
  * Не загрузился ворклет — пишет старый ScriptProcessor: звук тот же. Файл с диктофона браузер раскодирует сам.
  */
@@ -56,15 +57,15 @@ export function encodeWav(samples: Float32Array, rate: number): Blob {
     return new Blob([data.buffer], { type: 'audio/wav' });
 }
 
-/** Звук в 24 кГц моно — частоту меняет сам браузер, с нормальным фильтром. */
-async function toTakeRate(buffer: AudioBuffer): Promise<Float32Array> {
+/** Звук в нужной частоте (24 кГц отпечатка, 16 кГц «Слуха») моно — частоту меняет сам браузер, с нормальным фильтром. */
+async function toTakeRate(buffer: AudioBuffer, rate = TAKE_RATE): Promise<Float32Array> {
     const mono = new Float32Array(buffer.length);
     for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
         const data = buffer.getChannelData(channel);
         for (let i = 0; i < data.length; i++) mono[i] += data[i] / buffer.numberOfChannels;
     }
-    if (buffer.sampleRate === TAKE_RATE) return mono;
-    const offline = new OfflineAudioContext(1, Math.ceil((mono.length * TAKE_RATE) / buffer.sampleRate), TAKE_RATE);
+    if (buffer.sampleRate === rate) return mono;
+    const offline = new OfflineAudioContext(1, Math.ceil((mono.length * rate) / buffer.sampleRate), rate);
     const source = offline.createBufferSource();
     const input = offline.createBuffer(1, mono.length, buffer.sampleRate);
     input.copyToChannel(mono, 0);
@@ -87,6 +88,12 @@ export async function fileToWav(file: File): Promise<{ wav: Blob; seconds: numbe
     return { wav: encodeWav(samples, TAKE_RATE), seconds: samples.length / TAKE_RATE };
 }
 
+/** Как писать: частота WAV и обработка браузера (эхо- и шумоподавление, автогромкость) — у голоса пульта она есть. */
+export interface RecordAs {
+    rate?: number;
+    processed?: boolean;
+}
+
 /** Одна запись с микрофона: start() — в обработчике нажатия (Safari иначе не даст звук), stop() отдаёт WAV. */
 export class Recorder {
     private readonly chunks: Float32Array[] = [];
@@ -96,12 +103,14 @@ export class Recorder {
     private constructor(
         private readonly context: AudioContext,
         private readonly stream: MediaStream,
+        private readonly rate: number,
     ) {}
 
-    static async start(deviceId: string | undefined, onLevel: (db: number, seconds: number) => void): Promise<Recorder> {
+    static async start(deviceId: string | undefined, onLevel: (db: number, seconds: number) => void, as: RecordAs = {}): Promise<Recorder> {
+        const rate = as.rate ?? TAKE_RATE;
         let context: AudioContext;
         try {
-            context = new AudioContext({ sampleRate: TAKE_RATE });
+            context = new AudioContext({ sampleRate: rate });
         } catch {
             context = new AudioContext(); // частоту приведём на остановке
         }
@@ -112,9 +121,9 @@ export class Recorder {
                 audio: {
                     ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
                     channelCount: 1,
-                    echoCancellation: false,
-                    noiseSuppression: false,
-                    autoGainControl: false,
+                    echoCancellation: as.processed === true,
+                    noiseSuppression: as.processed === true,
+                    autoGainControl: as.processed === true,
                 },
             });
         } catch (error) {
@@ -128,7 +137,7 @@ export class Recorder {
                       : `Микрофон не открылся: ${(error as Error).message}`,
             );
         }
-        const recorder = new Recorder(context, stream);
+        const recorder = new Recorder(context, stream, rate);
         const take = (chunk: Float32Array): void => {
             recorder.chunks.push(chunk);
             recorder.length += chunk.length;
@@ -168,6 +177,7 @@ export class Recorder {
 
     async stop(): Promise<{ wav: Blob; seconds: number }> {
         const rate = this.context.sampleRate;
+        const wanted = this.rate;
         this.release();
         const samples = new Float32Array(this.length);
         let offset = 0;
@@ -175,11 +185,11 @@ export class Recorder {
             samples.set(chunk, offset);
             offset += chunk.length;
         }
-        if (rate === TAKE_RATE) return { wav: encodeWav(samples, TAKE_RATE), seconds: samples.length / TAKE_RATE };
+        if (rate === wanted) return { wav: encodeWav(samples, wanted), seconds: samples.length / wanted };
         const buffer = new AudioBuffer({ length: Math.max(1, samples.length), numberOfChannels: 1, sampleRate: rate });
         buffer.copyToChannel(samples, 0);
-        const converted = await toTakeRate(buffer);
-        return { wav: encodeWav(converted, TAKE_RATE), seconds: converted.length / TAKE_RATE };
+        const converted = await toTakeRate(buffer, wanted);
+        return { wav: encodeWav(converted, wanted), seconds: converted.length / wanted };
     }
 
     cancel(): void {

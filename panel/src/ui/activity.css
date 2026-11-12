@@ -37,10 +37,14 @@
 .agent-plaque.is-failed .agent-plaque-what { color: var(--dot-offline); }
 .agent-plaque-stop {
     flex: none;
+    width: 20px;
     height: 20px;
-    padding: 0 8px;
-    border-radius: 999px;
-    border: 1px solid var(--glass-border);
+    padding: 0;
+    border-radius: 50%;
+    border: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     background: transparent;
     color: var(--sub);
     font: inherit;
@@ -160,3 +164,9 @@
 .agent-live-steps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; font-size: 12px; line-height: 16px; color: var(--sub); }
 .agent-live-steps > li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-live-steps > li.is-failed { color: var(--dot-offline); }
+
+/* Где агент думает (docs/plans/voice-creation.md): облако — янтарь (туда уходят просьба и файлы черновика), дома — своё. */
+.agent-plaque-place { display: inline-flex; align-items: center; gap: 5px; padding-right: 6px; color: var(--sub); font-weight: 400; white-space: nowrap; }
+.agent-plaque-place-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--bar-off); }
+.agent-plaque-place.is-cloud .agent-plaque-place-dot { background: var(--bar-yandex); }
+.agent-plaque-place.is-home .agent-plaque-place-dot { background: var(--bar-own); }

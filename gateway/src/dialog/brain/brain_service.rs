@@ -20,13 +20,16 @@ use super::presets::{headers_for, model_for, preset_of, suggested_of, ProviderKi
 use crate::config::{DialogConfig, DialogProvider, ModelPair, ModelProfile, LLM_EFFORTS};
 use crate::core::events::{Actor, EventBus, GatewayEvent};
 use crate::dialog::llm::brain::{
-    serialize_kind, BrainModels, BrainOrigin, BrainProfile, BrainProfiles, BrainSource, BrainStatus, EnvBrain,
-    ModelSlot,
+    serialize_kind, Backup, BrainModels, BrainOrigin, BrainProfile, BrainProfiles, BrainSource, BrainStatus, EnvBrain,
+    ModelSlot, ENV_PROVIDER,
 };
 use crate::dialog::llm::openai_chat::{tokens_field_for, OPENAI_BASE_URL};
 use crate::dialog::llm::{
-    create_llm, describe_http_error as describe, LlmClient, LlmEvent, LlmMessage, LlmRequest, LlmSettings, LlmStream,
-    LlmTool,
+    bearer_of, create_llm, describe_http_error as describe, Access, LlmClient, LlmEvent, LlmMessage, LlmRequest,
+    LlmSettings, LlmStream, LlmTool, SpokenFailure,
+};
+use crate::oauth::{
+    record_id, tokens, AccountView, Credential, Flow, OAuthService, SignInStart, Target, TokenAccess, TokenRecord,
 };
 use crate::operations::networks::is_local_url;
 use crate::platform::http::ApiError;
@@ -104,6 +107,9 @@ pub struct ProviderView {
     pub local: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brand: Option<&'static str>,
+    /// A provider whose access is an account's (ChatGPT's plan): signed in or not, whose, what stands in the way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<AccountView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -111,6 +117,9 @@ pub struct ChoiceView {
     pub fast: Option<BrainPick>,
     pub smart: Option<BrainPick>,
     pub effort: String,
+    /// Answers when the chosen model gives no answer; `env` as the provider: the .env model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup: Option<BrainPick>,
 }
 
 /// The model .env describes: it answers while the panel has chosen nothing.
@@ -175,6 +184,9 @@ pub struct BrainService {
     /// it too, so a key never meets another provider's address.
     mutation: Mutex<()>,
     clients: Mutex<HashMap<String, Built>>,
+    /// The access of each provider signed in with tokens, by id with its `created_at`: one per provider, so its
+    /// clients and checks share one renewal at a time.
+    accesses: Mutex<HashMap<String, (String, Arc<TokenAccess>)>>,
 }
 
 /// A string field as the panel sent it, trimmed and cut to `max` characters; '' for anything else.
@@ -277,6 +289,7 @@ impl BrainService {
             state: RwLock::new(State::default()),
             mutation: Mutex::new(()),
             clients: Mutex::new(HashMap::new()),
+            accesses: Mutex::new(HashMap::new()),
         };
         service.reload()?;
         Ok(service)
@@ -296,6 +309,7 @@ impl BrainService {
                 fast: choice.fast.clone(),
                 smart: choice.smart.clone(),
                 effort: self.effort_of(&choice),
+                backup: choice.backup.clone(),
             },
             status: self.status_of(&rows, &choice),
             env: EnvView {
@@ -325,8 +339,10 @@ impl BrainService {
         let (id, view) = {
             let _mutation = self.lock();
             let id = new_id(&self.ids()?, preset.id);
-            // A key left under this id by an earlier provider (a removal that failed half-way) never reaches this one.
+            // A key or a sign-in left under this id by an earlier provider (a removal that failed half-way) never
+            // reaches this one.
             self.secrets.delete_all(&format!("llm:{id}:"))?;
+            self.secrets.delete(&record_id(&id))?;
             let now = now_iso();
             self.db.with(|c| {
                 c.execute(
@@ -403,10 +419,27 @@ impl BrainService {
             if answering(&choice.fast) || answering(&choice.smart) {
                 return Err(ApiError::conflict("Этот провайдер сейчас отвечает. Сначала выберите другую модель."));
             }
+            if answering(&choice.backup) {
+                return Err(ApiError::conflict("Этот провайдер — запасная модель. Сначала выберите другую запасную."));
+            }
+            let flow = self.stored_row(id)?.and_then(|row| token_flow(&row.preset));
             if self.db.with(|c| c.execute("DELETE FROM llm_providers WHERE id = ?1", params![id]))? == 0 {
                 return Err(missing());
             }
             self.secrets.delete_all(&format!("llm:{id}:"))?;
+            let signed: Option<TokenRecord> =
+                self.secrets.get(&record_id(id)).and_then(|text| serde_json::from_str(&text).ok());
+            self.secrets.delete(&record_id(id))?;
+            self.accesses.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(id);
+            // The sign-in ends at the service too; unconfirmed, the owner disconnects DuoWave in the service's settings.
+            if let (Some(flow), Some(record), Ok(runtime)) = (flow, signed, tokio::runtime::Handle::try_current()) {
+                let provider = id.to_string();
+                runtime.spawn(async move {
+                    if !tokens::revoke(flow, &record).await {
+                        tracing::warn!(target: "brain", "{provider}: the sign-in was not revoked at the service");
+                    }
+                });
+            }
             self.reload()?;
         }
         self.events.emit(GatewayEvent::BrainChanged {
@@ -417,18 +450,83 @@ impl BrainService {
         Ok(())
     }
 
-    /// The models: fast and smart (null: back to .env; a smart left out follows the fast one) and Claude's depth.
+    /// «Войти через …»: the sign-in of a provider whose service has one (src/oauth). What it brings lands on this
+    /// provider as it is now — not on a later one that takes its id meanwhile. `here`: the panel is open on this
+    /// computer, so the browser's return reaches the gateway.
+    pub fn sign_in(&self, id: &str, engine: &OAuthService, here: bool) -> Result<SignInStart, ApiError> {
+        let row = {
+            let _mutation = self.lock();
+            self.stored_row(id)?.ok_or_else(missing)?
+        };
+        let sign_in = preset_of(&row.preset)
+            .and_then(|preset| preset.sign_in.as_ref())
+            .ok_or_else(|| ApiError::bad_request("Этот провайдер подключается только ключом."))?;
+        engine.start(sign_in, target_of(&row), here)
+    }
+
+    /// What a sign-in brought, on the provider that began it — still there and not replaced by another under its id:
+    /// a key kept as a pasted one would be, or tokens kept on this gateway. The provider's title for the panel.
+    pub fn signed_in(
+        &self,
+        id: &str,
+        created_at: &str,
+        credential: Credential,
+        actor: Option<Actor>,
+    ) -> Result<String, ApiError> {
+        let title = {
+            let _mutation = self.lock();
+            let row = self.stored_row(id)?.filter(|row| row.created_at == created_at).ok_or_else(missing)?;
+            match credential {
+                Credential::Key(key) => self.secrets.set(&key_of(id), Some(&key))?,
+                Credential::Tokens(record) => {
+                    let text = serde_json::to_string(&record).map_err(ApiError::internal)?;
+                    self.secrets.set(&record_id(id), Some(&text))?;
+                    if let Some(access) = self.access_of(&row) {
+                        access.reset();
+                    }
+                }
+            }
+            self.db.with(|c| {
+                c.execute(
+                    "UPDATE llm_providers SET updated_at = ?3 WHERE id = ?1 AND created_at = ?2",
+                    params![id, created_at, now_iso()],
+                )
+            })?;
+            self.reload()?;
+            row.title
+        };
+        self.events.emit(GatewayEvent::BrainChanged {
+            change: "provider.login".into(),
+            provider_id: Some(id.to_string()),
+            actor,
+        });
+        Ok(title)
+    }
+
+    /// Who gets what a provider's sign-in brings: for tests that sign in with a service of their own.
+    #[cfg(test)]
+    pub(crate) fn sign_in_target(&self, id: &str) -> Result<Target, ApiError> {
+        let _mutation = self.lock();
+        self.stored_row(id)?.map(|row| target_of(&row)).ok_or_else(missing)
+    }
+
+    /// The models: fast and smart (null: back to .env; a smart left out follows the fast one), the backup (null: none;
+    /// `env` as the provider: the .env model) and Claude's depth.
     pub fn choose(&self, input: &Map<String, Value>, actor: Option<Actor>) -> Result<BrainView, ApiError> {
         let mutation = self.lock();
         let rows = self.load_rows()?;
         let mut next = self.settings.peek(&BRAIN)?.unwrap_or_default();
-        for profile in ["fast", "smart"] {
+        for profile in ["fast", "smart", "backup"] {
             let Some(value) = input.get(profile) else { continue };
             let pick = if value.is_null() {
                 None
             } else {
                 let provider = value.get("provider").and_then(Value::as_str);
-                let Some(provider) = provider.filter(|provider| rows.iter().any(|row| row.id == *provider)) else {
+                // The .env model may be the backup when it can answer.
+                let env = profile == "backup" && self.env.slot(ModelProfile::Fast).is_some();
+                let known =
+                    |provider: &&str| rows.iter().any(|row| row.id == *provider) || (env && *provider == ENV_PROVIDER);
+                let Some(provider) = provider.filter(known) else {
                     return Err(ApiError::bad_request("Такого провайдера нет."));
                 };
                 let model = text(value.get("model"), 200);
@@ -437,10 +535,10 @@ impl BrainService {
                 }
                 Some(BrainPick { provider: provider.to_string(), model })
             };
-            if profile == "fast" {
-                next.fast = pick;
-            } else {
-                next.smart = pick;
+            match profile {
+                "fast" => next.fast = pick,
+                "smart" => next.smart = pick,
+                _ => next.backup = pick,
             }
         }
         if let Some(effort) = input.get("effort") {
@@ -704,7 +802,22 @@ impl BrainService {
             cloud,
             local: !cloud,
             brand: preset.and_then(|preset| preset.brand),
+            account: self.access_of(row).map(|access| access.account()),
         }
+    }
+
+    /// The access of a provider signed in with tokens (ChatGPT's plan): one per provider, made when first needed.
+    fn access_of(&self, row: &ProviderRow) -> Option<Arc<TokenAccess>> {
+        let preset = preset_of(&row.preset)?;
+        let sign_in = preset.sign_in.as_ref()?;
+        let Flow::Tokens(flow) = sign_in.flow else { return None };
+        let mut accesses = self.accesses.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((_, access)) = accesses.get(&row.id).filter(|(created_at, _)| *created_at == row.created_at) {
+            return Some(access.clone());
+        }
+        let access = Arc::new(TokenAccess::new(self.secrets.clone(), &record_id(&row.id), flow, sign_in.with));
+        accesses.insert(row.id.clone(), (row.created_at.clone(), access.clone()));
+        Some(access)
     }
 
     fn settings_of(&self, row: &ProviderRow) -> LlmSettings {
@@ -721,6 +834,21 @@ impl BrainService {
             effort: self.effort(),
             explicit: true,
             headers: headers_for(&row.preset, &row.options),
+            access: self.access_of(row).map(|access| Access(access)),
+            api: preset.map(|preset| preset.api).unwrap_or_default(),
+        }
+    }
+
+    /// A provider's model as one answer's slot, without a backup. The caller holds `mutation`.
+    fn slot_of_row(&self, row: &ProviderRow, model: &str) -> ModelSlot {
+        ModelSlot {
+            client: self.client_of(row),
+            model: model_for(&row.preset, &row.options, model),
+            provider: row.id.clone(),
+            kind: row.kind.provider(),
+            title: row.title.clone(),
+            cloud: cloud_of_row(row),
+            backup: None,
         }
     }
 
@@ -769,15 +897,17 @@ impl BrainService {
         let preset = preset_of(&row.preset);
         let base = settings.base_url.as_deref().unwrap_or("").trim_end_matches('/').to_string();
         let mut headers = HeaderMap::new();
+        // The key, or the fresh token of a sign-in (renewed first when it is about to run out).
+        let bearer = bearer_of(settings).await?;
         let url = if row.kind == ProviderKind::Anthropic {
-            let Some(key) = settings.api_key.as_deref().filter(|key| !key.is_empty()) else { bail!("no API key") };
+            let Some(key) = bearer.as_deref() else { bail!("no API key") };
             let mut value = HeaderValue::from_str(key).map_err(|_| anyhow!("the API key is not a header value"))?;
             value.set_sensitive(true);
             headers.insert("x-api-key", value);
             headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
             format!("{base}/v1/models?limit=100")
         } else {
-            if let Some(key) = settings.api_key.as_deref().filter(|key| !key.is_empty()) {
+            if let Some(key) = bearer.as_deref() {
                 let mut value = HeaderValue::from_str(&format!("Bearer {key}"))
                     .map_err(|_| anyhow!("the API key is not a header value"))?;
                 value.set_sensitive(true);
@@ -809,13 +939,19 @@ impl BrainService {
         let body = response.bytes().await.map_err(failed)?;
         let body: Value =
             serde_json::from_slice(&body).map_err(|error| anyhow!("the list of models is not JSON: {error}"))?;
-        let listed: Vec<String> = body
-            .get("data")
-            .and_then(Value::as_array)
-            .map(|models| {
+        let listed: Vec<String> = match (body.get("data"), body.get("models")) {
+            (Some(Value::Array(models)), _) => {
                 models.iter().filter_map(|model| model.get("id").and_then(Value::as_str).map(str::to_string)).collect()
-            })
-            .unwrap_or_default();
+            }
+            // ChatGPT's plan lists `models` by `slug`, the ones to show with `visibility: "list"`.
+            (_, Some(Value::Array(models))) => models
+                .iter()
+                .filter(|model| model.get("visibility").and_then(Value::as_str).is_none_or(|seen| seen == "list"))
+                .filter_map(|model| model.get("slug").or_else(|| model.get("id")).and_then(Value::as_str))
+                .map(str::to_string)
+                .collect(),
+            _ => Vec::new(),
+        };
         let mut chat: Vec<String> = if row.kind == ProviderKind::Anthropic {
             listed
         } else {
@@ -854,6 +990,10 @@ impl BrainService {
 
     /// A failure as the owner reads it on the card.
     fn problem_of(&self, error: &anyhow::Error) -> String {
+        // The plan's limit, a sign-in to renew: the same words the station says.
+        if let Some(failure) = error.downcast_ref::<SpokenFailure>() {
+            return failure.phrase.clone();
+        }
         let message = self.secrets.redact(&error.to_string());
         if NO_KEY.is_match(&message) {
             return "Нет ключа.".into();
@@ -879,6 +1019,19 @@ impl BrainService {
 
 fn missing() -> ApiError {
     ApiError::not_found("Такого провайдера нет.")
+}
+
+/// A provider as the one a sign-in's key is for.
+fn target_of(row: &ProviderRow) -> Target {
+    Target::Provider { id: row.id.clone(), created_at: row.created_at.clone() }
+}
+
+/// The token sign-in of a preset (ChatGPT's plan), if its access is one.
+fn token_flow(preset: &str) -> Option<&'static tokens::TokenFlow> {
+    match preset_of(preset)?.sign_in.as_ref()?.flow {
+        Flow::Tokens(flow) => Some(flow),
+        Flow::KeyExchange { .. } => None,
+    }
 }
 
 /// A provider's client; a panel provider is anthropic or openai, so there always is one.
@@ -932,33 +1085,33 @@ fn fields(preset: &ProviderPreset, value: Option<&Value>) -> BTreeMap<String, St
 }
 
 impl BrainSource for BrainService {
+    /// The profile's model, and the backup with it when one is chosen and it is another model.
     fn slot(&self, profile: ModelProfile) -> Option<ModelSlot> {
         // The row and the key its client is built with, from between the panel's changes, never across one.
         let _mutation = self.lock();
         let (rows, choice) = self.snapshot();
-        let Some((row, pick)) = Self::picked(&rows, &choice, profile) else { return self.env.slot(profile) };
-        Some(ModelSlot {
-            client: self.client_of(row),
-            model: model_for(&row.preset, &row.options, &pick.model),
-            provider: row.id.clone(),
-            kind: row.kind.provider(),
-            title: row.title.clone(),
-            cloud: cloud_of_row(row),
-        })
+        let mut slot = match Self::picked(&rows, &choice, profile) {
+            Some((row, pick)) => self.slot_of_row(row, &pick.model),
+            None => self.env.slot(profile)?,
+        };
+        let backup = choice.backup.as_ref().and_then(|pick| match rows.iter().find(|row| row.id == pick.provider) {
+            Some(row) => Some(self.slot_of_row(row, &pick.model)),
+            None if pick.provider == ENV_PROVIDER => self.env.slot(profile),
+            None => None,
+        });
+        slot.backup = backup
+            .filter(|backup| {
+                (backup.provider.as_str(), backup.model.as_str()) != (slot.provider.as_str(), slot.model.as_str())
+            })
+            .map(|backup| Arc::new(Backup::new(backup)));
+        Some(slot)
     }
 
     fn slot_of(&self, provider: &str, model: &str) -> Option<ModelSlot> {
         let _mutation = self.lock();
         let (rows, _) = self.snapshot();
         let row = rows.iter().find(|row| row.id == provider)?;
-        Some(ModelSlot {
-            client: self.client_of(row),
-            model: model_for(&row.preset, &row.options, model),
-            provider: row.id.clone(),
-            kind: row.kind.provider(),
-            title: row.title.clone(),
-            cloud: cloud_of_row(row),
-        })
+        Some(self.slot_of_row(row, model))
     }
 
     fn description(&self) -> String {
@@ -1062,6 +1215,96 @@ pub(crate) mod tests {
 
     fn object(value: Value) -> Map<String, Value> {
         value.as_object().cloned().unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_backup_comes_with_the_chosen_model_and_the_env_model_may_be_it() {
+        let (_service, url) = service().await;
+        let (brain, _) = brain_with(dialog_config(&[
+            ("DIALOG_PROVIDER", "openai"),
+            ("LLM_MODEL", "env-model"),
+            ("LLM_BASE_URL", url.as_str()),
+        ]));
+        let first = brain
+            .add(&input(json!({"preset": "custom-openai", "baseUrl": url, "key": "sk-test-key-1234"})), None)
+            .unwrap();
+        let second =
+            brain.add(&input(json!({"preset": "custom-openai", "title": "Запас", "baseUrl": url})), None).unwrap();
+        let choice = json!({
+            "fast": {"provider": first.id, "model": "small-model"},
+            "backup": {"provider": second.id, "model": "big-model"},
+        });
+        brain.choose(&object(choice), None).unwrap();
+        let slot = brain.slot(ModelProfile::Fast).unwrap();
+        let backup = slot.backup.as_ref().expect("the backup comes with the chosen model");
+        assert_eq!(
+            (backup.slot.provider.as_str(), backup.slot.model.as_str(), backup.slot.title.as_str()),
+            (second.id.as_str(), "big-model", "Запас")
+        );
+        assert!(backup.slot.backup.is_none() && !backup.taken());
+        assert_eq!(
+            brain.view().choice.backup,
+            Some(BrainPick { provider: second.id.clone(), model: "big-model".into() })
+        );
+        assert!(brain.remove(&second.id, None).unwrap_err().message.contains("запасная"));
+
+        // The chosen model itself is no backup.
+        brain.choose(&object(json!({"backup": {"provider": first.id, "model": "small-model"}})), None).unwrap();
+        assert!(brain.slot(ModelProfile::Fast).unwrap().backup.is_none());
+        // The .env model may be the backup.
+        brain.choose(&object(json!({"backup": {"provider": "env", "model": "env-model"}})), None).unwrap();
+        assert_eq!(brain.slot(ModelProfile::Smart).unwrap().backup.unwrap().slot.provider, "env");
+        assert!(brain.choose(&object(json!({"backup": {"provider": "nobody", "model": "m"}})), None).is_err());
+        brain.choose(&object(json!({"backup": null})), None).unwrap();
+        assert!(brain.slot(ModelProfile::Fast).unwrap().backup.is_none());
+        assert_eq!(serde_json::to_value(brain.view().choice).unwrap().get("backup"), None);
+        brain.remove(&second.id, None).unwrap();
+    }
+
+    #[tokio::test]
+    async fn reads_the_models_the_chatgpt_plan_lists_by_slug() {
+        let list = json!({"models": [
+            {"slug": "gpt-plan", "visibility": "list", "display_name": "GPT"},
+            {"slug": "gpt-hidden", "visibility": "hide"},
+            {"slug": "gpt-old"},
+        ]});
+        let app = axum::Router::new()
+            .route("/v1/models", axum::routing::get(move || std::future::ready(axum::Json(list.clone()))));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let (brain, _) = brain();
+        let provider = brain.add(&input(json!({"preset": "custom-openai", "baseUrl": url})), None).unwrap();
+        assert_eq!(brain.models(&provider.id).await.unwrap(), vec!["gpt-old", "gpt-plan"]);
+    }
+
+    #[tokio::test]
+    async fn a_chatgpt_provider_shows_its_sign_in_and_takes_its_tokens_away_when_removed() {
+        let (brain, secrets) = brain();
+        let added = brain.add(&input(json!({"preset": "chatgpt"})), None).unwrap();
+        assert_eq!(serde_json::to_value(&added.account).unwrap(), json!({"signedIn": false, "problem": "signin"}));
+        assert!(!added.needs_key && !added.local);
+        // Signed in once (no refresh token here: nothing to revoke at the service in a test).
+        let record = TokenRecord {
+            client_id: "oaiapp_1".into(),
+            access_token: "access-1".into(),
+            expires_at: crate::utils::time::now_ms() as i64 + 3_600_000,
+            email: Some("owner@example.com".into()),
+            ..TokenRecord::default()
+        };
+        let target = brain.sign_in_target("chatgpt").unwrap();
+        let Target::Provider { id, created_at } = target;
+        brain.signed_in(&id, &created_at, Credential::Tokens(record), None).unwrap();
+        let view = serde_json::to_value(brain.view()).unwrap();
+        let card = &view["providers"][0];
+        assert_eq!(card["account"], json!({"signedIn": true, "who": "o…@example.com"}));
+        assert_eq!(card["key"], json!({"set": false}));
+        assert!(!view.to_string().contains("access-1"));
+        // The client answers with the plan's API and the sign-in's token.
+        let slot = brain.slot_of("chatgpt", "gpt-plan").unwrap();
+        assert!(slot.client.description().ends_with("api.openai.com/v1/responses"), "{}", slot.client.description());
+        brain.remove("chatgpt", None).unwrap();
+        assert!(secrets.get("oauth:llm:chatgpt").is_none() && secrets.ids("llm:").is_empty());
     }
 
     #[tokio::test]

@@ -15,8 +15,10 @@ use super::audio::pcm::js_round;
 use super::speech_pipeline::{SpeechPipeline, SpeechPipelineOptions, UtteranceAudio};
 use super::vad::energy_vad::EnergyVadEngine;
 use super::vad::vad_engine::{create_vad_engine, VadEngine, VadLoadError};
+use super::wake_word_gains::WakeWordGains;
 use crate::config::{SpeechConfig, VadEngine as VadKind};
 use crate::core::events::{EventBus, GatewayEvent};
+use crate::storage::StateStore;
 use crate::utils::time::now_ms;
 
 /// A recognition server at home (ours, asr-server/) is kept warm. Live 06.11: after a day and a half without a
@@ -54,6 +56,8 @@ pub struct SpeechService {
     asked_at: Arc<AtomicU64>,
     /// Ends the warm-up when the service goes.
     stop: CancellationToken,
+    /// The gains the stations' wake words picked: a request without one starts from them.
+    wake_word_gains: WakeWordGains,
 }
 
 impl Drop for SpeechService {
@@ -118,7 +122,25 @@ impl SpeechService {
             vad_problem,
             asked_at: Arc::new(AtomicU64::new(0)),
             stop: CancellationToken::new(),
+            wake_word_gains: WakeWordGains::in_memory(),
         }
+    }
+
+    /// The stations' wake word gains kept in the database: a restart of the gateway keeps them.
+    pub fn keeping_wake_word_gains(mut self, store: StateStore<f64>) -> SpeechService {
+        self.wake_word_gains = WakeWordGains::kept(store);
+        self
+    }
+
+    /// The gain a request without the wake word starts from when its session has heard no wake word: the median
+    /// of the station's last ones. None before the station's first.
+    pub fn wake_word_gain(&self, device: &str) -> Option<f64> {
+        self.wake_word_gains.typical(device)
+    }
+
+    /// The gain a wake word of the station picked.
+    pub fn note_wake_word_gain(&self, device: &str, gain_db: f64) {
+        self.wake_word_gains.note(device, gain_db);
     }
 
     /// The gateway's side of the start: a recognition server restarted from the panel may serve another model (it
@@ -157,13 +179,16 @@ impl SpeechService {
 
     /// The pipeline of one voice request. Unknown activation types wait for SpotterEnd too: holding audio costs
     /// latency, skipping the guard costs a wrong end.
-    pub fn create_pipeline(&self, activation_type: Option<&str>) -> SpeechPipeline {
+    /// `assumed_gain_db`: for a request without a wake word, the gain the station's wake words got (its session's
+    /// last, else the station's typical one). None: AUDIO_GAIN_NO_WAKE_WORD_DB, not the maximum.
+    pub fn create_pipeline(&self, activation_type: Option<&str>, assumed_gain_db: Option<f64>) -> SpeechPipeline {
         SpeechPipeline::new(
             self.engine.as_ref(),
             SpeechPipelineOptions {
                 endpoint: self.config.endpoint.clone(),
                 gain: self.config.gain.clone(),
                 expect_wake_word: activation_type.is_none_or(|kind| kind.is_empty() || kind == "spotter"),
+                assumed_gain_db: assumed_gain_db.or(Some(self.config.gain.no_wake_word_db)),
             },
         )
     }
@@ -181,6 +206,20 @@ impl SpeechService {
         let wake_words: Vec<String> = self.config.asr.wake_words.iter().chain(extra_wake_words).cloned().collect();
         let Transcript { text, restarted } = read_transcript(&raw, &wake_words);
         Ok(Recognition { raw, text, restarted, latency_ms: js_round(started.elapsed().as_secs_f64() * 1000.0) as u64 })
+    }
+
+    /// Whether anything recognises now: the panel's voice says «Слух» is off when nothing does.
+    pub fn recognizes(&self) -> bool {
+        self.recognizer.as_ref().is_some_and(|recognizer| recognizer.available())
+    }
+
+    /// Whether recognition runs at home now (ours, the computer's, a private address) or in a cloud: the panel's
+    /// strip writes the cloud in amber.
+    pub fn at_home(&self) -> bool {
+        self.recognizer
+            .as_ref()
+            .and_then(|recognizer| recognizer.at_home())
+            .unwrap_or_else(|| at_home(&self.config.asr.base_url))
     }
 
     /// The model that recognises, as its server says: the journal and the dashboard name it. A look asks the server
@@ -298,6 +337,39 @@ mod tests {
         Config::load(&Env::from_pairs(pairs.iter().copied())).unwrap().speech
     }
 
+    #[test]
+    fn a_request_without_a_wake_word_and_no_gain_to_start_from_takes_a_moderate_one() {
+        let service = SpeechService::with_recognizer(config(&[("VAD_ENGINE", "energy")]), None);
+        // Nothing to pick a gain from: AUDIO_GAIN_NO_WAKE_WORD_DB, not the maximum.
+        assert_eq!(service.create_pipeline(Some("directive"), None).report().gain_db, 30.0);
+        // The gain the station's wake words got comes first.
+        assert_eq!(service.create_pipeline(Some("directive"), Some(27.5)).report().gain_db, 27.5);
+        // A request with the wake word picks its own from it; until then, the maximum.
+        assert_eq!(service.create_pipeline(Some("spotter"), None).report().gain_db, 40.0);
+        let lower = config(&[("VAD_ENGINE", "energy"), ("AUDIO_GAIN_NO_WAKE_WORD_DB", "24")]);
+        assert_eq!(
+            SpeechService::with_recognizer(lower, None).create_pipeline(Some("directive"), None).report().gain_db,
+            24.0
+        );
+        // A fixed gain stays fixed.
+        let fixed = config(&[("VAD_ENGINE", "energy"), ("AUDIO_GAIN", "18")]);
+        assert_eq!(
+            SpeechService::with_recognizer(fixed, None).create_pipeline(Some("directive"), None).report().gain_db,
+            18.0
+        );
+    }
+
+    #[test]
+    fn remembers_the_wake_word_gains_of_each_station() {
+        let service = SpeechService::with_recognizer(config(&[("VAD_ENGINE", "energy")]), None);
+        assert_eq!(service.wake_word_gain("kitchen"), None);
+        service.note_wake_word_gain("kitchen", 28.0);
+        service.note_wake_word_gain("kitchen", 32.0);
+        service.note_wake_word_gain("bedroom", 36.0);
+        assert_eq!(service.wake_word_gain("kitchen"), Some(30.0));
+        assert_eq!(service.wake_word_gain("bedroom"), Some(36.0));
+    }
+
     #[tokio::test]
     async fn recognises_a_request_and_takes_the_wake_word_out() {
         let heard = Arc::new(Heard {
@@ -309,7 +381,7 @@ mod tests {
         assert_eq!(speech.status(), SpeechStatus { vad: "energy".into(), asr: "heard via test".into() });
         assert_eq!(speech.ear().as_deref(), Some("test"));
 
-        let mut pipeline = speech.create_pipeline(Some("spotter"));
+        let mut pipeline = speech.create_pipeline(Some("spotter"), None);
         let audio = station_audio(
             &concat(&[&silence(1200.0), &voice(800.0, -50.0)]),
             &concat(&[&voice(800.0, -50.0), &silence(1500.0)]),
@@ -426,7 +498,7 @@ mod tests {
         assert!(!speech.recognition_enabled());
         assert_eq!(speech.ear(), None);
         // Without a wake word the command starts at once.
-        assert_eq!(speech.create_pipeline(Some("button")).command_start_ms(), Some(0.0));
-        assert_eq!(speech.create_pipeline(None).command_start_ms(), None);
+        assert_eq!(speech.create_pipeline(Some("button"), None).command_start_ms(), Some(0.0));
+        assert_eq!(speech.create_pipeline(None, None).command_start_ms(), None);
     }
 }

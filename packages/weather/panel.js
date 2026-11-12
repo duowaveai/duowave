@@ -57,7 +57,7 @@ export default definePlugin({
   id: "weather",
   slots: {
     "desk.widgets": [
-      { id: "now", title: "Погода", icon: icons.weather, size: "small", initial: true, source: "плагин", order: 5, permission: "station.view", Component: Weather },
+      { id: "now", title: "Погода", icon: icons.weather, size: "small", initial: true, source: "приложение", order: 5, permission: "station.view", Component: Weather },
     ],
   },
 });

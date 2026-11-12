@@ -44,6 +44,20 @@ export interface DeskLayout {
     pan?: { x: number; y: number };
     /** Стол закреплён: свободный стол не сдвигается и не масштабируется, виджеты не двигаются и не тянутся. */
     locked?: boolean;
+    /**
+     * Только что сели на стол из «Примерки» (docs/plans/voice-creation.md, «Посадка»): виджет → когда, мс от эпохи. Сутки
+     * у такого виджета метка «новый».
+     */
+    fresh?: Record<string, number>;
+}
+
+/** Метка «новый» у севшего на стол виджета держится сутки. */
+export const FRESH_MS = 24 * 60 * 60 * 1000;
+
+/** Новый ли виджет: сел на стол меньше суток назад. */
+export function isFresh(layout: DeskLayout, key: string, now = Date.now()): boolean {
+    const at = layout.fresh?.[key];
+    return at !== undefined && now - at < FRESH_MS;
 }
 
 const EMPTY: DeskLayout = { v: 1, hidden: [], added: [], places: {}, order: [] };
@@ -81,6 +95,9 @@ function parse(raw: unknown): DeskLayout | null {
             if (place && finite(place.x) && finite(place.y))
                 places[id] = { x: place.x, y: place.y, w: finite(place.w) ? place.w : undefined, h: finite(place.h) ? place.h : undefined };
     const pan = value.pan as { x?: unknown; y?: unknown } | null | undefined;
+    const fresh: Record<string, number> = {};
+    if (value.fresh && typeof value.fresh === 'object')
+        for (const [id, at] of Object.entries(value.fresh as Record<string, unknown>)) if (finite(at) && Date.now() - at < FRESH_MS) fresh[id] = at;
     return {
         v: 1,
         hidden: list(value.hidden),
@@ -90,6 +107,7 @@ function parse(raw: unknown): DeskLayout | null {
         zoom: finite(value.zoom) && value.zoom >= 0.4 && value.zoom <= 2 ? value.zoom : undefined,
         pan: pan && finite(pan.x) && finite(pan.y) ? { x: pan.x, y: pan.y } : undefined,
         locked: value.locked === true || undefined,
+        fresh: Object.keys(fresh).length ? fresh : undefined,
     };
 }
 
@@ -435,6 +453,8 @@ export interface DeskActions {
      * шлюз хранимый забывает (api.resetDesk), иначе хранит остаток. На шлюз — сразу.
      */
     reset: () => void;
+    /** Посадка из «Примерки»: на стол, на это место (на свободном столе), с меткой «новый» на сутки. На шлюз — сразу. */
+    land: (id: string, place?: WidgetPlace) => void;
 }
 
 export function deskActions(role: Role): DeskActions {
@@ -465,6 +485,17 @@ export function deskActions(role: Role): DeskActions {
         view: (zoom, pan) => change((layout) => ({ ...layout, zoom, pan })),
         lock: (on) => change((layout) => ({ ...layout, locked: on || undefined }), 0),
         reset: () => change((layout) => ({ ...layout, places: {}, order: [], zoom: undefined, pan: undefined }), 0),
+        land: (id, place) =>
+            change(
+                (layout) => ({
+                    ...layout,
+                    hidden: layout.hidden.filter((entry) => entry !== id),
+                    added: [...layout.added.filter((entry) => entry !== id), id],
+                    places: place ? { ...layout.places, [id]: place } : layout.places,
+                    fresh: { ...Object.fromEntries(Object.entries(layout.fresh ?? {}).filter(([, at]) => Date.now() - at < FRESH_MS)), [id]: Date.now() },
+                }),
+                0,
+            ),
     };
 }
 

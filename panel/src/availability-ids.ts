@@ -19,10 +19,12 @@ export const FEATURE_IDS = [
     'stations.connect',
     'voice.lab',
     'characters',
+    'memory',
     'characters.voice',
     'plugins',
     'plugins.apps',
     'media.transcode',
+    'plugins.midi',
     'offline',
 ] as const;
 

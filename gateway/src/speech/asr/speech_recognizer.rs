@@ -30,6 +30,10 @@ pub trait SpeechRecognizer: Send + Sync {
     fn available(&self) -> bool {
         true
     }
+    /// Whether it recognises at home now (true) or in a cloud (false); None — read it from the configured address.
+    fn at_home(&self) -> Option<bool> {
+        None
+    }
 }
 
 /// None when recognition is off (ASR_PROVIDER=none).

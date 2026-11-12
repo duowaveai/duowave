@@ -702,7 +702,8 @@ impl StationGateway {
     }
 
     /// The computer's settings to the station, the way its build takes them (its /health as last asked). A station
-    /// that knows schema 2 gets the routine package (`transfer::routine`): its import keeps its own mode. An earlier
+    /// that knows schema 3 gets the routine package (`transfer::routine`): its import keeps its own mode; one that
+    /// knows schema 2 (0.5.x) the same with the plugins' keys among their settings too, as it reads them. An earlier
     /// one, whose import knows schema 1 and removes each setting a package lacks, gets the whole package with its own
     /// mode and waiting voice in it, as its own package says them (`transfer::for_earlier`, read with the pair's GET of
     /// it, there in every build): its import leaves it both. What remains of it: a mode switched at the station between
@@ -718,9 +719,15 @@ impl StationGateway {
         let (version, schema) = (self.station_version(), self.station_schema());
         let bundle = if schema >= transfer::SCHEMA {
             transfer::routine(whole)
+        } else if schema >= transfer::KEYS_IN_SETTINGS_SCHEMA {
+            // 0.5.x: the plugins' keys among their settings too, as it reads them (`transfer::keys_in_settings`).
+            transfer::Bundle {
+                schema: transfer::KEYS_IN_SETTINGS_SCHEMA,
+                ..transfer::keys_in_settings(transfer::routine(whole))
+            }
         } else {
             let theirs = client.settings().await?;
-            transfer::for_earlier(whole, &theirs)
+            transfer::keys_in_settings(transfer::for_earlier(whole, &theirs))
         };
         match self.send_own(client, bundle, revision, print.clone()).await {
             Err(error) if error.contains(transfer::NOT_FOR_THIS_GATEWAY) => {
@@ -1249,7 +1256,7 @@ mod tests {
                     let newer = bundle.schema as usize > knows;
                     sent.calls.lock().unwrap().push(if newer { "refused" } else { "POST transfer" }.into());
                     if !newer {
-                        if knows < transfer::SCHEMA as usize {
+                        if knows < transfer::KEYS_IN_SETTINGS_SCHEMA as usize {
                             transfer::earlier_import(&mut sent.own.lock().unwrap(), &bundle).unwrap();
                         }
                         sent.received.lock().unwrap().push(bundle);
@@ -1489,6 +1496,30 @@ mod tests {
         assert!(!sent[0].settings.contains_key("gateway_mode"), "its import keeps its own mode");
         assert_eq!(sent[0].settings["requests_keep_days"], serde_json::json!(7));
         assert_eq!(station.calls(), vec!["POST transfer"]);
+    }
+
+    /// The computer on 0.6, the station still on 0.5 (its import knows schema 2): the routine package says schema 2
+    /// and carries the plugins' keys among their settings as well, so a calendar on the station keeps its key until the
+    /// station is updated too.
+    #[tokio::test]
+    async fn a_station_on_0_5_gets_the_plugins_keys_as_it_reads_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let (watch, settings) = computer(dir.path());
+        let key = watch.peer_key().unwrap();
+        let station = Pretend::fresh();
+        station.knows.store(2, Ordering::Relaxed);
+        *station.says.lock().unwrap() = Some(2);
+        let port = pretend(&key, station.clone()).await;
+        settings_on_the_computer(&watch, port);
+        watch.secrets.set(&crate::secrets::plugin_secret("calendar", "token"), Some("cal-not-a-real-key")).unwrap();
+        settings.set(&KEEP_REQUESTS, &7, None).unwrap();
+
+        watch.poll().await;
+        let sent = station.received();
+        assert_eq!(station.calls(), vec!["POST transfer"], "taken, not refused");
+        assert_eq!(sent[0].schema, 2);
+        assert_eq!(sent[0].settings["packages.settings"]["calendar"]["token"], serde_json::json!("cal-not-a-real-key"));
+        assert!(!sent[0].settings.contains_key("gateway_mode"), "its import keeps its own mode");
     }
 
     /// A refusal for the schema all the same — a station's gateway whose /health says it knows schema 2 and refuses it

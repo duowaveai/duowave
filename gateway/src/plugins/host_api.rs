@@ -233,6 +233,21 @@ fn fetch_of(hosts: &[String], request: &Value) -> Result<Fetch, String> {
 
 /// The request, its redirects checked one by one; the answer as `{status, url, headers, body}`.
 async fn send(hosts: Vec<String>, fetch: Fetch) -> Result<Value, String> {
+    let (status, final_url, answer_headers, bytes) = send_raw(hosts, fetch, MAX_RESPONSE).await?;
+    Ok(json!({
+        "status": status,
+        "url": final_url,
+        "headers": answer_headers,
+        "body": String::from_utf8_lossy(&bytes),
+    }))
+}
+
+/// The request, its redirects checked one by one; the answer's status, address, headers and bytes, `max` at most.
+async fn send_raw(
+    hosts: Vec<String>,
+    fetch: Fetch,
+    max: usize,
+) -> Result<(u16, String, Map<String, Value>, Vec<u8>), String> {
     let Fetch { mut url, mut method, headers, mut body, timeout } = fetch;
     let deadline = tokio::time::Instant::now() + timeout;
     let late = || format!("нет ответа за {} мс", timeout.as_millis());
@@ -280,17 +295,33 @@ async fn send(hosts: Vec<String>, fetch: Fetch) -> Result<Value, String> {
         let chunk = tokio::time::timeout_at(deadline, stream.next()).await.map_err(|_| late())?;
         let Some(chunk) = chunk else { break };
         let chunk = chunk.map_err(|error| format!("ответ оборвался: {}", without_url(error)))?;
-        if bytes.len() + chunk.len() > MAX_RESPONSE {
-            return Err(format!("ответ больше {} КБ", MAX_RESPONSE / 1024));
+        if bytes.len() + chunk.len() > max {
+            return Err(format!("ответ больше {} КБ", max / 1024));
         }
         bytes.extend_from_slice(&chunk);
     }
-    Ok(json!({
-        "status": status,
-        "url": final_url,
-        "headers": answer_headers,
-        "body": String::from_utf8_lossy(&bytes),
-    }))
+    Ok((status, final_url, answer_headers, bytes))
+}
+
+/// `files.download`: a picture's bytes from a host of the manifest's rights, its redirects checked too, on the
+/// gateway's runtime, `max` at most (plugins/files.rs).
+pub fn download_checked(
+    hosts: Vec<String>,
+    url: &str,
+    max: usize,
+    handle: Option<tokio::runtime::Handle>,
+) -> BoxFuture<'static, Result<Vec<u8>, String>> {
+    let prepared = fetch_of(&hosts, &json!({ "url": url, "timeoutMs": MAX_TIMEOUT_MS }));
+    Box::pin(async move {
+        let fetch = prepared?;
+        let Some(handle) = handle else { return Err("сеть недоступна".into()) };
+        let (status, _, _, bytes) =
+            handle.spawn(send_raw(hosts, fetch, max)).await.map_err(|_| "запрос прервался".to_string())??;
+        if status != 200 {
+            return Err(format!("картинка не скачалась: ответ {status}"));
+        }
+        Ok(bytes)
+    })
 }
 
 /// `http.fetch` for a manifest's hosts: the request checked, its redirects too, on the gateway's runtime. The
@@ -344,6 +375,28 @@ pub trait HostServices: Send + Sync {
     fn weather_place(&self) -> Option<String>;
     /// The news feeds switched on in the panel: `[{url, topic}]`.
     fn news_feeds(&self) -> Vec<Value>;
+    /// A message to the owner from the plugin `caller` (plugins/schedule.rs, Host API 1.2, right `notify`).
+    fn notify(&self, caller: &str, text: String) -> BoxFuture<'static, Result<Value, String>> {
+        let _ = (caller, text);
+        Box::pin(async { Err("сообщений владельцу здесь нет".to_string()) })
+    }
+    /// The plugin's pictures (plugins/files.rs, Host API 1.2, right `files`): `put` (the downloaded bytes), `list`,
+    /// `delete`.
+    fn files(
+        &self,
+        caller: &str,
+        action: &str,
+        input: Value,
+        bytes: Option<Vec<u8>>,
+    ) -> BoxFuture<'static, Result<Value, String>> {
+        let _ = (caller, action, input, bytes);
+        Box::pin(async { Err("картинок здесь нет".to_string()) })
+    }
+    /// The plugin's own schedule (plugins/schedule.rs, Host API 1.2): `set`, `list`, `cancel`, `parse`.
+    fn schedule(&self, caller: &str, action: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
+        let _ = (caller, action, input);
+        Box::pin(async { Err("расписаний здесь нет".to_string()) })
+    }
 }
 
 /// What the gateway gives a plugin's code.
@@ -363,6 +416,8 @@ pub struct PluginHostApi {
     services: Option<Arc<dyn HostServices>>,
     /// Who tells the panel that the plugin's data changed.
     data: Option<Arc<DataNews>>,
+    /// The gateway's safe: the plugin's private settings, and what its log lines must not show.
+    secrets: Option<Arc<crate::secrets::SecretsService>>,
 }
 
 impl PluginHostApi {
@@ -385,7 +440,14 @@ impl PluginHostApi {
             sink: None,
             services: None,
             data: None,
+            secrets: None,
         }
+    }
+
+    /// The same, its private settings read from the gateway's safe and its log lines without them.
+    pub fn with_secrets(mut self, secrets: Option<Arc<crate::secrets::SecretsService>>) -> PluginHostApi {
+        self.secrets = secrets;
+        self
     }
 
     /// The same, with the gateway's services behind `host.call`.
@@ -426,6 +488,31 @@ impl PluginHostApi {
         }
         Ok(())
     }
+}
+
+/// A plugin's store as it is, key and stored text, by key: the history's snapshot of its data (history/data.rs).
+pub fn kv_rows(db: &Db, plugin: &str) -> rusqlite::Result<Vec<(String, String)>> {
+    db.with(|c| {
+        let mut statement = c.prepare("SELECT key, value FROM plugin_kv WHERE plugin_id = ?1 ORDER BY key")?;
+        let rows =
+            statement.query_map(params![plugin], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+        rows.collect()
+    })
+}
+
+/// A plugin's store replaced whole: the history brings back its data (history/data.rs).
+pub fn kv_replace(db: &Db, plugin: &str, rows: &[(String, String)]) -> rusqlite::Result<()> {
+    let now = now_iso();
+    db.transaction(|tx| {
+        tx.execute("DELETE FROM plugin_kv WHERE plugin_id = ?1", params![plugin])?;
+        for (key, value) in rows {
+            tx.execute(
+                "INSERT INTO plugin_kv (plugin_id, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)",
+                params![plugin, key, value, now],
+            )?;
+        }
+        Ok(())
+    })
 }
 
 /// How much of the store a plugin uses, keys and values, in bytes.
@@ -556,15 +643,22 @@ impl HostApi for PluginHostApi {
         })
     }
 
-    /// The plugin's own values, a secret one as it is (the panel sees only «••••••», plugins/manifest.rs).
+    /// The plugin's own values, a secret one as it is, from the gateway's safe (the panel sees only «••••••»,
+    /// plugins/manifest.rs).
     fn settings(&self) -> Map<String, Value> {
         let stored = self.settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default();
-        self.manifest.settings_values(stored.get(&self.id))
+        match &self.secrets {
+            Some(secrets) => {
+                self.manifest.settings_values(Some(&self.manifest.stored_with_secrets(stored.get(&self.id), secrets)))
+            }
+            None => self.manifest.settings_values(stored.get(&self.id)),
+        }
     }
 
     fn call(&self, name: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
         let manifest = self.manifest.clone();
         let services = self.services.clone();
+        let handle = self.handle.clone();
         let (name, id) = (name.to_string(), self.id.clone());
         Box::pin(async move {
             let services = services.ok_or_else(|| "служб шлюза здесь нет".to_string())?;
@@ -607,6 +701,25 @@ impl HostApi for PluginHostApi {
                 }
                 "weather.place" => Ok(services.weather_place().map(Value::String).unwrap_or(Value::Null)),
                 "news.feeds" => Ok(Value::Array(services.news_feeds())),
+                "files.download" => {
+                    need(Permission::Files)?;
+                    let url = text("url").ok_or_else(|| "files.download(url, name): нужна ссылка".to_string())?;
+                    let max = crate::plugins::files::FILE_MAX as usize;
+                    let bytes = download_checked(manifest.hosts(), &url, max, handle).await?;
+                    services.files(&id, "put", input, Some(bytes)).await
+                }
+                "files.list" | "files.delete" => {
+                    need(Permission::Files)?;
+                    services.files(&id, name.trim_start_matches("files."), input, None).await
+                }
+                "notify.send" => {
+                    need(Permission::Notify)?;
+                    services.notify(&id, text("text").unwrap_or_default()).await
+                }
+                "schedule.set" | "schedule.list" | "schedule.cancel" | "schedule.parse" => {
+                    need(Permission::Schedule)?;
+                    services.schedule(&id, name.trim_start_matches("schedule."), input).await
+                }
                 other => Err(format!("нет функции {other}")),
             }
         })
@@ -624,7 +737,12 @@ impl HostApi for PluginHostApi {
             }
             return;
         }
-        let message: String = message.chars().take(1000).collect();
+        let mut message: String = message.chars().take(1000).collect();
+        // A plugin may print its own key: neither its journal (which the workshop's agent reads) nor the gateway's
+        // log keeps it.
+        if let Some(secrets) = &self.secrets {
+            message = secrets.redact(&message);
+        }
         if let Some(sink) = &self.sink {
             sink(&self.id, level, &message);
         }

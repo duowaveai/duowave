@@ -48,7 +48,7 @@ impl PluginInstance for Instance {
         let connection = self.connection.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         let function = function.to_string();
         Box::pin(async move {
-            let connection = connection.ok_or_else(|| PluginError::Unavailable("плагин выгружен".into()))?;
+            let connection = connection.ok_or_else(|| PluginError::Unavailable("приложение выгружено".into()))?;
             let arguments: Map<String, Value> = match input {
                 Value::Object(map) => map,
                 Value::Null => Map::new(),

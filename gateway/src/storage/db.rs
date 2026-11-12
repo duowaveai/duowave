@@ -227,12 +227,20 @@ mod tests {
             "characters",
             "llm_providers",
             "mcp_servers",
+            "memory_aliases",
+            "memory_changes",
+            "memory_entities",
+            "memory_episodes",
+            "memory_facts",
+            "memory_notes",
+            "memory_visible_to",
             "packages",
             "plugin_kv",
             "requests",
             "schema_migrations",
             "secrets",
             "settings",
+            "sleep_runs",
             "state",
             "stations",
             "user_settings",
@@ -272,6 +280,89 @@ mod tests {
         connection.execute("UPDATE schema_migrations SET checksum = 'other' WHERE version = 1", []).unwrap();
         drop(connection);
         assert!(matches!(Db::open(Some(dir.path())), Err(DbError::Changed { version: 1, .. })));
+    }
+
+    /// A household's database as 0.5.x left it — migrations 1–5 with their checksums, people's settings, packages, a
+    /// station and its journal — opened by this build: the newer migrations apply one after another, a copy is taken
+    /// first, nothing the household had is lost, and the next start applies nothing.
+    #[test]
+    fn upgrades_a_database_from_0_5_keeping_its_data() {
+        const AT_0_5: u32 = 5;
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let mut connection = Connection::open(dir.path().join(DB_FILE)).unwrap();
+            connection.pragma_update(None, "foreign_keys", "ON").unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE schema_migrations (
+                        version INTEGER PRIMARY KEY NOT NULL, name TEXT NOT NULL, checksum TEXT NOT NULL,
+                        applied_at TEXT NOT NULL)",
+                )
+                .unwrap();
+            for migration in MIGRATIONS.iter().filter(|migration| migration.version <= AT_0_5) {
+                let transaction = connection.transaction().unwrap();
+                transaction.execute_batch(migration.sql).unwrap();
+                transaction
+                    .execute(
+                        "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?1, ?2, ?3, 'then')",
+                        params![migration.version, migration.name, checksum(migration.sql)],
+                    )
+                    .unwrap();
+                transaction.commit().unwrap();
+            }
+            connection
+                .execute_batch(
+                    "INSERT INTO settings (key, value, updated_at) VALUES ('brain', '{\"effort\":\"low\"}', 'then');
+                     INSERT INTO packages (id, enabled, version, updated_at, source, verified)
+                         VALUES ('weather', 1, '1.2.0', 'then', 'catalog', 1);
+                     INSERT INTO plugin_kv (plugin_id, key, value, updated_at) VALUES ('weather', 'city', '\"Тверь\"', 'then');
+                     INSERT INTO stations (device, name, first_seen, last_seen, firmware)
+                         VALUES ('dev-1', 'Кухня', 'then', 'then', '1.0');
+                     INSERT INTO requests (id, device, kind, mode, status, started_at)
+                         VALUES ('r-1', 'dev-1', 'voice', 'own', 'done', 'then');",
+                )
+                .unwrap();
+        }
+
+        let db = Db::open(Some(dir.path())).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(db.applied_migrations(), MIGRATIONS.len() - AT_0_5 as usize);
+        assert!(db.backup().is_some_and(Path::exists), "a copy before the migrations");
+        let (versions, kept, memory) = db
+            .with(|c| {
+                let mut s = c.prepare("SELECT version FROM schema_migrations ORDER BY version")?;
+                let versions: Vec<u32> = s.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?;
+                let kept: (String, String, String, String, String) = c.query_row(
+                    "SELECT (SELECT value FROM settings WHERE key = 'brain'),
+                            (SELECT version || ' ' || source FROM packages WHERE id = 'weather'),
+                            (SELECT value FROM plugin_kv WHERE plugin_id = 'weather'),
+                            (SELECT name || ' ' || firmware FROM stations WHERE device = 'dev-1'),
+                            (SELECT status FROM requests WHERE id = 'r-1')",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                )?;
+                let memory: i64 = c.query_row(
+                    "SELECT count(*) FROM memory_entities JOIN memory_episodes ON reflected_run IS NULL",
+                    [],
+                    |row| row.get(0),
+                )?;
+                Ok((versions, kept, memory))
+            })
+            .unwrap();
+        assert_eq!(versions, (1..=MIGRATIONS.len() as u32).collect::<Vec<_>>(), "one after another, none skipped");
+        assert_eq!(
+            kept,
+            (
+                "{\"effort\":\"low\"}".to_string(),
+                "1.2.0 catalog".to_string(),
+                "\"Тверь\"".to_string(),
+                "Кухня 1.0".to_string(),
+                "done".to_string()
+            )
+        );
+        assert_eq!(memory, 0, "the new tables are there and empty");
+        drop(db);
+        let again = Db::open(Some(dir.path())).unwrap();
+        assert_eq!(again.applied_migrations(), 0);
     }
 
     #[test]

@@ -74,13 +74,13 @@ async function download(url, timeoutMs) {
   }
   if (!answer.ok) {
     if (answer.status >= 400 && answer.status < 500) {
-      throw trouble(`Ссылка на календарь не работает (ответ ${answer.status}) — проверьте её в настройках плагина «Календарь».`, true);
+      throw trouble(`Ссылка на календарь не работает (ответ ${answer.status}) — проверьте её в настройках приложения «Календарь».`, true);
     }
     throw trouble(`Сервер календаря ответил ошибкой ${answer.status} — попробуйте позже.`);
   }
   const text = await answer.text();
   if (!/^\s*BEGIN:VCALENDAR/i.test(text.slice(0, 200))) {
-    throw trouble("По ссылке не календарь iCal (.ics) — проверьте её в настройках плагина «Календарь».", true);
+    throw trouble("По ссылке не календарь iCal (.ics) — проверьте её в настройках приложения «Календарь».", true);
   }
   return text;
 }
@@ -857,7 +857,7 @@ export async function agendaSay({ request }) {
   } catch (error) {
     return message(error);
   }
-  if (!cache) return "Календарь не подключён: добавьте ссылку iCal в настройках плагина «Календарь» в пульте.";
+  if (!cache) return "Календарь не подключён: добавьте ссылку iCal в настройках приложения «Календарь» в пульте.";
   const { zone } = listener(cache, request?.timezone);
   const now = Date.now();
   const today = todayOf(zone);
@@ -890,7 +890,7 @@ export async function calendarEvents({ days, timezone }) {
   } catch (error) {
     return { configured: true, error: message(error) };
   }
-  if (!cache) return { configured: false, note: "Календарь не подключён: нужна ссылка iCal в настройках плагина." };
+  if (!cache) return { configured: false, note: "Календарь не подключён: нужна ссылка iCal в настройках приложения." };
   const { zone, name } = listener(cache, timezone);
   const today = todayOf(zone);
   const events = occurrences(cache, zone, toUtc(zone, today), toUtc(zone, today + span * DAY_MS));

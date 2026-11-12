@@ -474,9 +474,9 @@ function StationSide({
         view.managedBy === 'pc'
             ? 'Обновления ставит компьютер, который поставил шлюз.'
             : view.managedBy === 'yam'
-              ? 'Шлюз пришёл пакетом YAM: обновление — yam install файла новой версии из выпуска, на колонке.'
+              ? 'Шлюз поставлен через YAM: обновление — yam install файла новой версии из выпуска, на колонке.'
               : view.managedBy === 'yse'
-                ? 'Шлюз пришёл пакетом yse: его обновляет yse.'
+                ? 'Шлюз поставлен через yse: его обновляет yse.'
                 : 'Обновления — из ленты выпусков, в карточке «Обновления».';
     return (
         <>
@@ -768,7 +768,7 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
             <PlacementMap solved={solved} placement={picked} settingsAt={settingsAt} brainName={brainName} />
             {cloudAssumed && (
                 <Line>
-                    Облако на схеме — как при подключённых ключах: заработает после облачного слуха или голоса в «Навыки» →
+                    Облако на схеме — как при подключённых ключах: заработает после облачного слуха или голоса в «Приложения» →
                     «Подключения».
                 </Line>
             )}

@@ -315,7 +315,7 @@ function AddServer({ presets, onClose, onAdded }: { presets: McpPreset[]; onClos
                 )}
                 {preset.install && (
                     <p class="t-caption m-0">
-                        Первый запуск скачает пакет {preset.install.package} через {preset.install.runner} — несколько мегабайт, один раз.
+                        Первый запуск скачает программу {preset.install.package} через {preset.install.runner} — несколько мегабайт, один раз.
                     </p>
                 )}
                 {field('note', 'Подсказка модели: зачем этот сервер в доме', { area: true })}

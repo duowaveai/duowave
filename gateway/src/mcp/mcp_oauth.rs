@@ -40,8 +40,7 @@ pub fn signed_in(secrets: &SecretsService, server_id: &str) -> bool {
 
 /// Where the authorization server sends the browser back: the gateway on this computer.
 pub fn callback_url(port: u16) -> String {
-    let host = if port == 0 || port == 80 { "localhost".to_string() } else { format!("localhost:{port}") };
-    format!("http://{host}/api/v1/mcp/oauth/callback")
+    crate::oauth::return_url(port, "/api/v1/mcp/oauth/callback")
 }
 
 /// The tokens of a server, sealed: what rmcp keeps between sign-ins and refreshes.

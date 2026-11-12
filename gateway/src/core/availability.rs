@@ -134,12 +134,14 @@ pub enum Need {
     /// «Свой» on the station hears and speaks: the computer gives it hearing and voice («Что даю колонке»), or the
     /// cloud stands in for the part it does not — without Yandex nothing else would.
     OwnParts,
+    /// This gateway hears MIDI keyboards: a computer's build with `midi`, and not `MIDI=0` (src/midi).
+    Midi,
 }
 
 impl Need {
     /// Whether the way exists here at all, as opposed to working right now.
     fn structural(self) -> bool {
-        matches!(self, Need::PcBuild | Need::At(_) | Need::Transcode)
+        matches!(self, Need::PcBuild | Need::At(_) | Need::Transcode | Need::Midi)
     }
 }
 
@@ -368,6 +370,16 @@ pub const FEATURES: &[Feature] = &[
         absent: "",
         table: [yes("да"), yes("да"), yes("да")],
     },
+    // The characters' memory (src/memory): the household graph, «запомни», the wake-up — the same on a computer and a
+    // station; search by meaning and reflection come with their stages (docs/plans/memory.md).
+    Feature {
+        id: "memory",
+        title: "Память персонажей",
+        group: Group::Brain,
+        ways: &[Way { runs: Runs::Here, needs: &[] }],
+        absent: "",
+        table: [yes("да"), yes("факты, связи, поиск по словам"), yes("да")],
+    },
     Feature {
         id: "characters.voice",
         title: "Голоса персонажей",
@@ -381,7 +393,7 @@ pub const FEATURES: &[Feature] = &[
     },
     Feature {
         id: "plugins",
-        title: "Плагины",
+        title: "Приложения",
         group: Group::Skills,
         ways: &[Way { runs: Runs::Here, needs: &[] }],
         absent: "",
@@ -412,6 +424,14 @@ pub const FEATURES: &[Feature] = &[
         ],
         absent: "На колонке перекодирование выключено: большая нагрузка на её процессор (MEDIA_TRANSCODE_ON_STATION).",
         table: [yes("да"), no("нет — большая нагрузка"), partial("на компьютере")],
+    },
+    Feature {
+        id: "plugins.midi",
+        title: "MIDI-клавиатура для приложений",
+        group: Group::Skills,
+        ways: &[Way { runs: Runs::Here, needs: &[Need::Midi] }],
+        absent: "Клавиатуру слышит шлюз на компьютере: в сборке колонки MIDI нет. В «колонка + сервер» — пульт помощника на компьютере.",
+        table: [yes("да, клавиатура — к компьютеру"), no("нет: в сборке колонки MIDI нет"), no("у шлюза колонки нет; у пульта помощника на компьютере — да")],
     },
     Feature {
         id: "offline",
@@ -459,6 +479,8 @@ pub struct Context {
     /// What «Свой» would lack on the station as the computer gives now: its hearing or its voice not taken and no
     /// cloud for it (src/home_server, `svoi_lacks`) — said as the reason; none: nothing.
     pub own_lacks: Option<&'static str>,
+    /// This gateway hears MIDI keyboards (src/midi).
+    pub midi: bool,
 }
 
 impl Context {
@@ -475,6 +497,7 @@ impl Context {
             transcoder: true,
             transcode_on_station: false,
             own_lacks: None,
+            midi: placement == Placement::Pc,
         }
     }
 
@@ -489,6 +512,7 @@ impl Context {
             Need::Memory(mb) => self.memory_free_mb.is_none_or(|free| free >= mb),
             Need::Transcode => self.transcoder && (self.placement == Placement::Pc || self.transcode_on_station),
             Need::OwnParts => self.own_lacks.is_none(),
+            Need::Midi => self.midi,
         }
     }
 
@@ -504,6 +528,7 @@ impl Context {
             Need::Memory(_) => "на колонке не хватит памяти",
             Need::Transcode => "нет перекодировщика",
             Need::OwnParts => self.own_lacks.unwrap_or("компьютер не даёт колонке слух или голос"),
+            Need::Midi => "в этой сборке MIDI нет или он выключен (MIDI=0)",
         }
     }
 

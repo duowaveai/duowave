@@ -15,6 +15,10 @@ use crate::gateway::protocol::protocol_types::{DeviceState, Directive};
 /// Speech that comes phrase by phrase (a tale the model tells, a game's move); it may fail on the way.
 pub type PhraseStream = BoxStream<'static, anyhow::Result<String>>;
 
+/// Called once with the moment the station stops speaking an answer (ms since the epoch, from the audio it was sent):
+/// the turn timer counts from there (plugins/skill.rs).
+pub type SpokenHook = Box<dyn FnOnce(u64) + Send>;
+
 /// What an executor knows about the request it serves.
 #[derive(Debug, Clone)]
 pub struct ExecutionContext {
@@ -73,6 +77,9 @@ pub struct Outcome {
     /// For the model's history: what was really done behind a short `speech` («Передала.»), so the model stands
     /// by it (live 02.11: it told the user its «Передала» were wrong and nothing was sent).
     pub done: Option<String>,
+    /// The answer's speech has ended on the station: called with when. An answer not spoken to its end (superseded,
+    /// cancelled, deferred) never calls it.
+    pub on_spoken: Option<SpokenHook>,
 }
 
 impl Outcome {
@@ -113,6 +120,7 @@ impl std::fmt::Debug for Outcome {
             .field("continuation", &self.continuation)
             .field("record_audio", &self.record_audio)
             .field("done", &self.done)
+            .field("on_spoken", &self.on_spoken.as_ref().map(|_| "…"))
             .finish()
     }
 }

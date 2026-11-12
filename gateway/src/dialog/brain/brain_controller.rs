@@ -1,7 +1,8 @@
 //! «Мозг» в пульте: провайдеры моделей (готовые и свои, со своими ключами) и выбор быстрой и умной модели. Видит
 //! всякий, кто видит подключения; ключи не уходят ни в один ответ — только «задан · …a1b2». Добавляет и меняет
 //! провайдеров человек с правом подключений, выбирает модели — с правом моделей. Действует со следующего вопроса,
-//! без перезапуска.
+//! без перезапуска. Провайдер, у сервиса которого есть вход через аккаунт (OpenRouter), получает ключ входом
+//! (src/oauth): «Войти через …» начинается здесь, возврат принимает /api/v1/oauth.
 
 use std::sync::Arc;
 
@@ -16,7 +17,8 @@ use super::brain_service::{BrainView, ProviderCheck, ProviderInput, ProviderView
 use crate::app::App;
 use crate::core::identity::permissions::{CONNECTORS_MANAGE, CONNECTORS_VIEW, MODELS_MANAGE};
 use crate::core::identity::{Principal, PrincipalKind};
-use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller};
+use crate::oauth::SignInStart;
+use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Zone};
 
 pub fn routes() -> Router<Arc<App>> {
     Router::new()
@@ -25,6 +27,7 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/api/v1/brain/providers/{id}", patch(update).delete(remove))
         .route("/api/v1/brain/providers/{id}/check", post(check))
         .route("/api/v1/brain/providers/{id}/models", post(models))
+        .route("/api/v1/brain/providers/{id}/signin", post(sign_in))
         .route("/api/v1/brain/choice", put(choose))
 }
 
@@ -91,6 +94,13 @@ async fn models(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<Stri
     }
 }
 
+/// «Войти через …»: the service's page for the owner. The panel open on the gateway's own computer gets the browser
+/// back by itself; from another device the page shows a code to paste — a return to localhost would not reach here.
+async fn sign_in(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<SignInStart> {
+    person(caller.permitted(CONNECTORS_MANAGE)?)?;
+    Ok(ok(app.brain.sign_in(&id, &app.oauth, caller.zone == Zone::Local)?))
+}
+
 async fn choose(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<BrainView> {
     caller.permitted(MODELS_MANAGE)?;
     Ok(ok(app.brain.choose(&object(body), caller.actor())?))
@@ -137,7 +147,7 @@ mod tests {
         let (status, start) = body(view(State(app.clone()), admin(&app)).await);
         assert_eq!(status, StatusCode::OK);
         let ids: Vec<&str> = start["presets"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
-        assert_eq!(&ids[..3], &["claude", "openai", "openrouter"]);
+        assert_eq!(&ids[..4], &["claude", "openai", "chatgpt", "openrouter"]);
         assert_eq!(start["providers"], json!([]));
         assert_eq!(start["choice"], json!({"fast": null, "smart": null, "effort": "low"}));
         assert_eq!(start["status"]["source"], json!("env"));
@@ -209,6 +219,55 @@ mod tests {
         assert_eq!(failing.err().unwrap().status, StatusCode::NOT_FOUND);
     }
 
+    fn param(url: &str, name: &str) -> Option<String> {
+        url::Url::parse(url).unwrap().query_pairs().find(|(key, _)| key == name).map(|(_, value)| value.into_owned())
+    }
+
+    #[tokio::test]
+    async fn signs_in_to_openrouter_back_to_this_computer_or_with_a_code_from_another_device() {
+        let app = app();
+        body(add(State(app.clone()), admin(&app), Body(json!({"preset": "openrouter"}))).await);
+        let (status, here) = body(sign_in(State(app.clone()), admin(&app), Path("openrouter".into())).await);
+        assert_eq!(status, StatusCode::OK, "{here}");
+        assert_eq!(here["mode"], json!("here"));
+        let url = here["url"].as_str().unwrap();
+        assert!(url.starts_with("https://openrouter.ai/auth?"), "{url}");
+        let port = app.config.app.public_port.unwrap_or(app.config.app.port);
+        assert_eq!(param(url, "callback_url"), Some(crate::oauth::return_url(port, "/api/v1/oauth/callback")));
+        assert_eq!(param(url, "state").as_deref(), here["id"].as_str());
+        assert_eq!(app.oauth.status(here["id"].as_str().unwrap()), Some(crate::oauth::SignInStatus::Waiting));
+
+        // The panel on a phone: localhost there is not this computer, so the page shows a code.
+        let mut phone = admin(&app);
+        phone.zone = Zone::Home;
+        let (_, code) = body(sign_in(State(app.clone()), phone, Path("openrouter".into())).await);
+        assert_eq!(code["mode"], json!("code"));
+        let url = code["url"].as_str().unwrap();
+        assert_eq!((param(url, "callback_url"), param(url, "state")), (None, None));
+        assert!(param(url, "code_challenge").is_some());
+    }
+
+    #[tokio::test]
+    async fn a_provider_without_a_sign_in_and_people_without_the_right_get_none() {
+        let (_service, url) = service().await;
+        let app = app();
+        let added = json!({"preset": "custom-openai", "baseUrl": url});
+        body(add(State(app.clone()), admin(&app), Body(added)).await);
+        let (status, refused) = body(sign_in(State(app.clone()), admin(&app), Path("custom-openai".into())).await);
+        assert_eq!(
+            (status, refused["message"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("Этот провайдер подключается только ключом."))
+        );
+        let (status, _) = body(sign_in(State(app.clone()), admin(&app), Path("nobody".into())).await);
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            body(sign_in(State(app.clone()), member(&app), Path("custom-openai".into())).await).0,
+            StatusCode::FORBIDDEN
+        );
+        let key = Caller::local(app.clone(), Some(api_key_principal("k1", "script", &["*".to_string()])));
+        assert_eq!(body(sign_in(State(app.clone()), key, Path("custom-openai".into())).await).0, StatusCode::FORBIDDEN);
+    }
+
     #[tokio::test]
     async fn the_routes_are_there_and_closed_without_signing_in() {
         let app = app();
@@ -219,6 +278,7 @@ mod tests {
             ("DELETE", "/api/v1/brain/providers/x"),
             ("POST", "/api/v1/brain/providers/x/check"),
             ("POST", "/api/v1/brain/providers/x/models"),
+            ("POST", "/api/v1/brain/providers/x/signin"),
             ("PUT", "/api/v1/brain/choice"),
             ("GET", "/api/v1/persona"),
             ("PUT", "/api/v1/persona"),

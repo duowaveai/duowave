@@ -31,7 +31,8 @@ export function searchPlaces(helper: boolean, onStation: boolean): SearchPlace[]
     return [
         { title: 'Главная', path: '', words: 'стол колонка виджеты дом главный экран', place: { section: 'home' } },
         { title: 'Новый виджет', path: 'Главная', words: 'добавить виджет плитка плюс', act: 'add' },
-        { title: 'Сказать через колонку', path: 'Главная', words: 'сказать произнести озвучить микрофон', act: 'say', when: () => can('station.say') },
+        // «Сказать» в доке — микрофон пульта (docs/plans/voice-creation.md, решение 1); текст, который колонка произнесёт, — здесь.
+        { title: 'Текстом колонке…', path: 'Главная', words: 'сказать через колонку произнести озвучить текст колонке', act: 'say', when: () => can('station.say') },
 
         { title: 'Персонаж', path: '', words: 'персонажи кто отвечает алиса артур мила свой персонаж', place: { section: 'character', tab: 'page' } },
         { title: 'Все персонажи', path: 'Персонаж', words: 'выбрать другого персонажа каталог персонажей', place: { section: 'character', tab: 'characters' } },
@@ -40,24 +41,37 @@ export function searchPlaces(helper: boolean, onStation: boolean): SearchPlace[]
         { title: 'Манера', path: 'Персонаж', words: 'характер манера длина ответа шутки промпт как отвечает', place: { section: 'character', tab: 'page' } },
         { title: 'Мозг', path: 'Персонаж', words: 'мозг модель llm claude qwen gpt deepseek мышление думать дольше', place: { section: 'character', tab: 'brain' } },
 
-        { title: 'Навыки', path: '', words: 'навыки плагины что умеет колонка возможности', place: { section: 'skills', tab: 'list' }, when: () => can('station.view') },
-        { title: 'Установленные навыки', path: 'Навыки', words: 'плагины пакеты установлено включить выключить обновить', place: { section: 'skills', tab: 'installed' }, when: () => can('station.view') },
-        { title: 'Пока не умеем', path: 'Навыки', words: 'научить не умеет не понял навык сделать', place: { section: 'skills', tab: 'list' }, when: () => can('journal.view') },
+        { title: 'Память', path: 'Приложения', words: 'память что помнит запомнить запомни забыть забудь факты', place: { section: 'skills', tab: 'memory', item: 'overview' }, when: () => can('memory.view') },
+        { title: 'Что помнит персонаж', path: 'Приложения → Память', words: 'глазами персонажа что знает помнит подсказка', place: { section: 'skills', tab: 'memory', item: 'overview' }, when: () => can('memory.view') },
+        { title: 'Люди и вещи дома', path: 'Приложения → Память', words: 'люди питомцы комнаты кто где кто с кем связи семья', place: { section: 'skills', tab: 'memory', item: 'house' }, when: () => can('memory.view') },
+        { title: 'Не запоминать: пауза', path: 'Приложения → Память', words: 'пауза не запоминай не запоминать', place: { section: 'skills', tab: 'memory', item: 'overview' }, when: () => can('memory.view') },
+        { title: 'Настройки памяти', path: 'Приложения → Память', words: 'запоминать мимоходом выключить память сон рефлексия', place: { section: 'skills', tab: 'memory', item: 'settings' }, when: () => can('memory.view') },
+
+        { title: 'Приложения', path: '', words: 'приложения навыки плагины пакеты что умеет колонка возможности', place: { section: 'skills', tab: 'list' }, when: () => can('station.view') },
+        { title: 'Установленные приложения', path: 'Приложения', words: 'установленные навыки плагины пакеты установлено включить выключить обновить', place: { section: 'skills', tab: 'installed' }, when: () => can('station.view') },
+        { title: 'Пока не умеем', path: 'Приложения', words: 'научить не умеет не понял навык сделать', place: { section: 'skills', tab: 'list' }, when: () => can('journal.view') },
         {
             title: 'Подключения',
-            path: 'Навыки',
+            path: 'Приложения',
             words: 'коннекторы подключения telegram телеграм умный дом home assistant звонки новости погода',
             place: { section: 'skills', tab: 'connectors' },
             when: () => can('connectors.view'),
         },
-        { title: 'Программы (MCP)', path: 'Навыки → Подключения', words: 'mcp программы инструменты агент сервер', place: { section: 'skills', tab: 'connectors' }, when: () => can('connectors.view') },
-        { title: 'Каталог', path: 'Навыки', words: 'каталог магазин добавить навык установить', place: { section: 'skills', tab: 'catalog' }, when: () => can('station.view') },
-        { title: 'Мастерская', path: 'Навыки', words: 'мастерская сделать свой навык код виджет агент черновик', place: { section: 'skills', tab: 'workshop' }, when: admin },
-        { title: 'Кто отвечает', path: 'Навыки', words: 'маршруты кто отвечает свой яндекс таблица', place: { section: 'skills', tab: 'routes' } },
+        { title: 'Программы (MCP)', path: 'Приложения → Подключения', words: 'mcp программы инструменты агент сервер', place: { section: 'skills', tab: 'connectors' }, when: () => can('connectors.view') },
+        { title: 'Каталог', path: 'Приложения', words: 'каталог магазин добавить навык приложение плагин установить', place: { section: 'skills', tab: 'catalog' }, when: () => can('station.view') },
+        { title: 'Мастерская', path: 'Приложения', words: 'мастерская сделать своё приложение свой навык плагин код виджет агент черновик', place: { section: 'skills', tab: 'workshop' }, when: admin },
+        { title: 'Кто отвечает', path: 'Приложения', words: 'маршруты кто отвечает свой яндекс таблица', place: { section: 'skills', tab: 'routes' } },
 
         { title: 'Колонка', path: 'Настройки', words: 'колонка имя вид станция лайт колонки', place: { section: 'settings', tab: 'station' } },
         { title: 'Режим', path: 'Настройки → Колонка', words: 'режим яндекс вместе своё шлюз', place: { section: 'settings', tab: 'station' } },
         { title: 'Слух', path: 'Настройки → Колонка', words: 'слух распознавание asr whisper gigaam речь', place: { section: 'settings', tab: 'station' } },
+        {
+            title: 'Ресурсы колонки',
+            path: 'Настройки → Колонка',
+            words: 'ресурсы оперативная озу место диск плагины давление',
+            place: { section: 'settings', tab: 'station' },
+            when: () => onStation,
+        },
         {
             title: 'Где работает DuoWave',
             path: 'Настройки → Колонка',

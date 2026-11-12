@@ -20,9 +20,10 @@ use tokio_util::sync::CancellationToken;
 
 use super::dialog_history::DialogHistory;
 use super::generator::{generate, Yielder};
-use super::llm::brain::{BrainOrigin, BrainSource, BrainStatus, EnvBrain, ModelSlot};
+use super::llm::brain::{Backup, BrainOrigin, BrainSource, BrainStatus, EnvBrain, ModelSlot};
 use super::llm::{
-    AssistantTurn, LlmEvent, LlmMessage, LlmRequest, LlmSettings, LlmStream, LlmTool, ToolCall, ToolChoice, ToolResult,
+    AssistantTurn, LlmClient, LlmEvent, LlmMessage, LlmRequest, LlmSettings, LlmStream, LlmTool, SpokenFailure,
+    ToolCall, ToolChoice, ToolResult,
 };
 use super::persona_service::PersonaService;
 use super::phrase_splitter::PhraseSplitter;
@@ -230,7 +231,8 @@ impl<'a> Speaker<'a> {
     }
 }
 
-/// Phrases of an answer; when they fail before any was said, the error phrase instead. `on_error` hears every
+/// Phrases of an answer; when they fail before any was said, the error phrase instead — or the failure's own words,
+/// when the owner can do something about it (`SpokenFailure`: the ChatGPT plan's limit). `on_error` hears every
 /// failure except a cancellation.
 pub fn with_error_phrase<F>(phrases: PhraseStream, cancel: CancellationToken, on_error: F) -> BoxStream<'static, String>
 where
@@ -249,9 +251,10 @@ where
                     if cancel.is_cancelled() {
                         return;
                     }
+                    let phrase = error.downcast_ref::<SpokenFailure>().map(|failure| failure.phrase.clone());
                     on_error(error);
                     if !said {
-                        y.send(ERROR_PHRASE.to_string()).await;
+                        y.send(phrase.unwrap_or_else(|| ERROR_PHRASE.to_string())).await;
                     }
                     return;
                 }
@@ -315,6 +318,8 @@ pub struct DialogService {
     brain: Arc<dyn BrainSource>,
     history: Mutex<DialogHistory>,
     prompt_problem: Mutex<Option<String>>,
+    /// The characters' memory (src/memory): its wake-up in the prompt, and every exchange as an episode.
+    memory: std::sync::OnceLock<Arc<crate::memory::MemoryService>>,
 }
 
 impl DialogService {
@@ -326,7 +331,14 @@ impl DialogService {
     ) -> DialogService {
         let brain = brain.unwrap_or_else(|| Arc::new(EnvBrain::new(LlmSettings::from_dialog(&config))));
         let history = Mutex::new(DialogHistory::new(config.history_turns, config.history_ttl_ms));
-        let service = DialogService { config, personas, brain, history, prompt_problem: Mutex::new(None) };
+        let service = DialogService {
+            config,
+            personas,
+            brain,
+            history,
+            prompt_problem: Mutex::new(None),
+            memory: std::sync::OnceLock::new(),
+        };
         service.announce();
         service
     }
@@ -451,6 +463,20 @@ impl DialogService {
         })
     }
 
+    /// The characters' memory, built after the dialog's dependencies: from now on its wake-up goes into the prompt
+    /// and every exchange becomes an episode.
+    pub fn attach_memory(&self, memory: Arc<crate::memory::MemoryService>) {
+        let _ = self.memory.set(memory);
+    }
+
+    /// An exchange into the short history, and into the memory's episodes when it keeps them.
+    fn remember_turn(&self, key: &str, question: &str, answer: &str, source: Option<&str>) {
+        self.history().remember(key, question, answer, source);
+        if let Some(memory) = self.memory.get() {
+            memory.episode(key, question, answer);
+        }
+    }
+
     /// Starts a dialog over: the panel's test chat on «Новый разговор».
     pub fn forget(&self, key: &str) {
         self.history().forget(key);
@@ -464,7 +490,7 @@ impl DialogService {
             (AnsweredBy::Skill, None) => Some(SKILL_SOURCE.to_string()),
             (AnsweredBy::Model, _) => None,
         };
-        self.history().remember(key, question, answer, source.as_deref());
+        self.remember_turn(key, question, answer, source.as_deref());
     }
 
     /// The answer to a question as phrases ready for speech, while the model is still writing. With a toolbox the
@@ -603,7 +629,7 @@ impl DialogService {
         }
         speaker.flush().await;
         let source = context.facts.as_deref().filter(|facts| !facts.is_empty()).map(facts_source);
-        self.history().remember(key, question, &speaker.answer(), source.as_deref());
+        self.remember_turn(key, question, &speaker.answer(), source.as_deref());
         Ok(())
     }
 
@@ -680,7 +706,7 @@ impl DialogService {
                 }
             }
             speaker.flush().await;
-            service.history().remember(&key, &question, &speaker.answer(), None);
+            service.remember_turn(&key, &question, &speaker.answer(), None);
         })
     }
 
@@ -710,10 +736,26 @@ impl DialogService {
             .map(|facts| format!("Данные для ответа (перескажи их коротко и по-человечески):\n{facts}"));
         let tail: Vec<String> =
             [Some(time_context(Utc::now(), context.timezone.as_deref())), facts].into_iter().flatten().collect();
+        let own_system = context.system.as_deref().is_some_and(|system| !system.is_empty());
         let base = context.system.clone().filter(|system| !system.is_empty()).unwrap_or(prompt.text);
         let system = match offer.and_then(|offer| offer.instructions.as_deref()).filter(|text| !text.is_empty()) {
             Some(instructions) => format!("{base}\n\n{instructions}"),
             None => base,
+        };
+        // The memory's wake-up and how to use its tools: in the stable part, so a provider caches it with the
+        // character. Not for an instruction of its own (the workshop's).
+        let system = match self.memory.get().filter(|_| !own_system) {
+            Some(memory) => {
+                let offered: Vec<&str> =
+                    offer.map(|offer| offer.tools.iter().map(|tool| tool.name.as_str()).collect()).unwrap_or_default();
+                let block = memory.prompt(crate::memory::text::lang_of(&system), &offered);
+                if block.is_empty() {
+                    system
+                } else {
+                    format!("{system}\n\n{block}")
+                }
+            }
+            None => system,
         };
         let (tools, tool_choice) = match offer.filter(|offer| !offer.tools.is_empty()) {
             Some(offer) => (offer.tools.clone(), offer.choice),
@@ -735,7 +777,10 @@ impl DialogService {
         self.round_within(slot, request, cancel, until, self.config.timeout_ms)
     }
 
-    /// A round that may write nothing for `timeout_ms` (a toolbox's `round_ms`) instead of LLM_TIMEOUT_MS.
+    /// A round that may write nothing for `timeout_ms` (a toolbox's `round_ms`) instead of LLM_TIMEOUT_MS. When the
+    /// slot's model fails before its first event — the ChatGPT plan's limit, no connection, a refusal, no answer in
+    /// time — and the panel chose a backup, the backup answers the same request; it then keeps the rest of the answer.
+    /// A model that said something and then failed is not replaced: part of the answer was heard.
     fn round_within(
         &self,
         slot: &ModelSlot,
@@ -746,55 +791,118 @@ impl DialogService {
     ) -> LlmStream {
         let client = slot.client.clone();
         let model = slot.model.clone();
-        let label = request.model.clone().filter(|model| !model.is_empty()).unwrap_or_else(|| "the model".into());
+        let backup = slot.backup.clone();
         generate(move |y| async move {
-            let first = cancel.child_token();
-            let mut events = client.stream(request, first.clone());
-            let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-            let mut waiting = true;
-            let mut timed_out = false;
-            let mut probe = PhraseSplitter::new();
-            loop {
-                let item = if waiting {
-                    tokio::select! {
-                        item = events.next() => item,
-                        _ = tokio::time::sleep_until(deadline) => {
-                            waiting = false;
-                            timed_out = true;
-                            first.cancel();
-                            continue;
-                        }
-                    }
-                } else {
-                    events.next().await
-                };
-                let Some(item) = item else { break };
-                match item {
-                    Ok(event) => {
-                        if waiting {
-                            waiting = match &event {
-                                LlmEvent::Text(text) => until == Until::Phrase && probe.push(text).is_empty(),
-                                _ => false,
-                            };
-                        }
-                        if let LlmEvent::Turn(AssistantTurn { usage: Some(usage), .. }) = &event {
-                            let read = usage.cache_read.map(|n| format!(" ({n} from cache)")).unwrap_or_default();
-                            let written = usage.cache_write.map(|n| format!(" ({n} cached)")).unwrap_or_default();
-                            tracing::debug!(target: "dialog", "{model}: {} in{read}{written}, {} out", usage.input, usage.output);
-                        }
-                        y.send(Ok(event)).await;
-                    }
-                    Err(error) => {
-                        let error = if timed_out && !cancel.is_cancelled() {
-                            anyhow!("no answer from {label} in {timeout_ms} ms")
-                        } else {
-                            error
-                        };
-                        return y.send(Err(error)).await;
-                    }
+            let on_backup = |backup: &Backup, request: LlmRequest| {
+                let request = LlmRequest { model: Some(backup.slot.model.clone()), ..request };
+                attempt(
+                    backup.slot.client.clone(),
+                    backup.slot.model.clone(),
+                    request,
+                    &cancel,
+                    until,
+                    timeout_ms,
+                    false,
+                    &y,
+                )
+            };
+            if let Some(backup) = backup.as_deref().filter(|backup| backup.taken()) {
+                on_backup(backup, request).await;
+                return;
+            }
+            let first = attempt(client, model, request.clone(), &cancel, until, timeout_ms, backup.is_some(), &y).await;
+            let (Attempt::Early(error), Some(backup)) = (first, backup.as_deref()) else { return };
+            tracing::warn!(
+                target: "dialog",
+                "the model gave no answer ({}): the backup {} via {} answers",
+                head_of(&error.to_string(), 200),
+                backup.slot.model,
+                backup.slot.title
+            );
+            backup.take();
+            on_backup(backup, request).await;
+        })
+    }
+}
+
+/// How one model's try at a round ended: its events (and its error, if any) went out — or it failed before its first
+/// event and, as asked, sent nothing: the backup may answer instead.
+enum Attempt {
+    Done,
+    Early(anyhow::Error),
+}
+
+/// The first `max` characters.
+fn head_of(text: &str, max: usize) -> String {
+    text.chars().take(max).collect()
+}
+
+/// One model's try at a round: its events out to the round, LLM_TIMEOUT_MS (or `timeout_ms`) until the first phrase or
+/// event. `hand_over`: a failure before the first event is not sent but handed back (`Attempt::Early`), unless the
+/// round was cancelled.
+#[allow(clippy::too_many_arguments)]
+async fn attempt(
+    client: Arc<dyn LlmClient>,
+    model: String,
+    request: LlmRequest,
+    cancel: &CancellationToken,
+    until: Until,
+    timeout_ms: u64,
+    hand_over: bool,
+    y: &Yielder<anyhow::Result<LlmEvent>>,
+) -> Attempt {
+    let label = request.model.clone().filter(|model| !model.is_empty()).unwrap_or_else(|| "the model".into());
+    let first = cancel.child_token();
+    let mut events = client.stream(request, first.clone());
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut waiting = true;
+    let mut timed_out = false;
+    let mut sent = false;
+    let mut probe = PhraseSplitter::new();
+    loop {
+        let item = if waiting {
+            tokio::select! {
+                item = events.next() => item,
+                _ = tokio::time::sleep_until(deadline) => {
+                    waiting = false;
+                    timed_out = true;
+                    first.cancel();
+                    continue;
                 }
             }
-        })
+        } else {
+            events.next().await
+        };
+        let Some(item) = item else { return Attempt::Done };
+        match item {
+            Ok(event) => {
+                if waiting {
+                    waiting = match &event {
+                        LlmEvent::Text(text) => until == Until::Phrase && probe.push(text).is_empty(),
+                        _ => false,
+                    };
+                }
+                if let LlmEvent::Turn(AssistantTurn { usage: Some(usage), .. }) = &event {
+                    let read = usage.cache_read.map(|n| format!(" ({n} from cache)")).unwrap_or_default();
+                    let written = usage.cache_write.map(|n| format!(" ({n} cached)")).unwrap_or_default();
+                    tracing::debug!(target: "dialog", "{model}: {} in{read}{written}, {} out", usage.input, usage.output);
+                }
+                sent = true;
+                y.send(Ok(event)).await;
+            }
+            Err(error) => {
+                let error = if timed_out && !cancel.is_cancelled() {
+                    anyhow!("no answer from {label} in {timeout_ms} ms")
+                } else {
+                    error
+                };
+                if hand_over && !sent && !cancel.is_cancelled() {
+                    return Attempt::Early(error);
+                }
+                y.send(Err(error)).await;
+                return Attempt::Done;
+            }
+        }
     }
 }
 
@@ -1093,6 +1201,24 @@ mod tests {
         assert_eq!(said, vec![ERROR_PHRASE]);
         let errors = errors.lock().unwrap();
         assert!(errors[0].contains("no answer from test-llm in 100 ms"), "{errors:?}");
+    }
+
+    #[tokio::test]
+    async fn says_the_failures_own_words_when_the_owner_can_act_on_it() {
+        let failure = anyhow::Error::new(SpokenFailure {
+            phrase: "Лимит исчерпан.".into(),
+            detail: "ChatGPT: limit".into(),
+        });
+        let phrases: PhraseStream = futures::stream::iter(vec![Err(failure)]).boxed();
+        let errors = Arc::new(Mutex::new(Vec::<String>::new()));
+        let heard = errors.clone();
+        let said: Vec<String> = with_error_phrase(phrases, CancellationToken::new(), move |error| {
+            heard.lock().unwrap().push(error.to_string())
+        })
+        .collect()
+        .await;
+        assert_eq!(said, vec!["Лимит исчерпан."]);
+        assert_eq!(errors.lock().unwrap().as_slice(), ["ChatGPT: limit"]);
     }
 
     #[tokio::test]
@@ -1444,6 +1570,7 @@ mod tests {
                 kind: DialogProvider::OpenAi,
                 title: "Test".into(),
                 cloud: false,
+                backup: None,
             })
         }
 
@@ -1454,6 +1581,124 @@ mod tests {
         fn status(&self) -> BrainStatus {
             unimplemented!("not asked")
         }
+    }
+
+    /// A model that fails: before its first event (as the ChatGPT plan's limit does), or after a word.
+    struct Failing {
+        calls: AtomicUsize,
+        after_word: bool,
+    }
+
+    impl LlmClient for Failing {
+        fn description(&self) -> String {
+            "failing".into()
+        }
+
+        fn tools(&self) -> bool {
+            true
+        }
+
+        fn stream(&self, _request: LlmRequest, _cancel: CancellationToken) -> LlmStream {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let events = if self.after_word {
+                vec![Ok(LlmEvent::Text("Сейчас".into())), Err(anyhow!("the answer broke off"))]
+            } else {
+                vec![Err(anyhow::Error::new(SpokenFailure { phrase: "Лимит.".into(), detail: "limit".into() }))]
+            };
+            futures::stream::iter(events).boxed()
+        }
+    }
+
+    /// The chosen model fails; the backup is the chat stub.
+    struct WithBackup {
+        primary: Arc<Failing>,
+        backup: Arc<dyn LlmClient>,
+    }
+
+    impl BrainSource for WithBackup {
+        fn slot(&self, _profile: ModelProfile) -> Option<ModelSlot> {
+            let backup = ModelSlot {
+                client: self.backup.clone(),
+                model: "backup-model".into(),
+                provider: "spare".into(),
+                kind: DialogProvider::OpenAi,
+                title: "Spare".into(),
+                cloud: false,
+                backup: None,
+            };
+            Some(ModelSlot {
+                client: self.primary.clone(),
+                model: "plan-model".into(),
+                provider: "chatgpt".into(),
+                kind: DialogProvider::OpenAi,
+                title: "ChatGPT".into(),
+                cloud: true,
+                backup: Some(Arc::new(Backup::new(backup))),
+            })
+        }
+
+        fn description(&self) -> String {
+            "test".into()
+        }
+
+        fn status(&self) -> BrainStatus {
+            unimplemented!("not asked")
+        }
+    }
+
+    async fn backed_up(after_word: bool) -> (Chat, Arc<Failing>, Arc<DialogService>) {
+        let llm = chat().await;
+        let settings = crate::dialog::llm::openai_chat::tests::settings(&llm.url);
+        let primary = Arc::new(Failing { calls: AtomicUsize::new(0), after_word });
+        let brain = Arc::new(WithBackup { primary: primary.clone(), backup: Arc::new(OpenAiChatLlm::new(settings)) });
+        let service = Arc::new(DialogService {
+            config: config(None),
+            personas: personas(),
+            brain,
+            history: Mutex::new(DialogHistory::new(2, 60_000)),
+            prompt_problem: Mutex::new(None),
+            memory: std::sync::OnceLock::new(),
+        });
+        (llm, primary, service)
+    }
+
+    #[tokio::test]
+    async fn the_backup_answers_when_the_chosen_model_gives_no_answer_and_keeps_the_rest_of_it() {
+        let (llm, primary, service) = backed_up(false).await;
+        llm.calls(&[("get_news", json!({}))]);
+        llm.reply("Запасной ответ.");
+        let toolbox = ToolBox::new(vec![tool("get_news")], |_, _| async { Ok(ToolOutcome::from("Новость.")) });
+        let said = collect(service.answer(
+            "device-21",
+            "Что нового?",
+            DialogContext::default(),
+            CancellationToken::new(),
+            Some(toolbox),
+        ))
+        .await;
+        assert_eq!(said, vec!["Запасной ответ."]);
+        assert_eq!(primary.calls.load(Ordering::SeqCst), 1, "the second round went straight to the backup");
+        let models: Vec<Value> = llm.requests.lock().unwrap().iter().map(|request| request["model"].clone()).collect();
+        assert_eq!(models, vec![json!("backup-model"), json!("backup-model")]);
+    }
+
+    #[tokio::test]
+    async fn a_model_that_began_its_answer_is_not_replaced_nor_a_cancelled_one() {
+        let (llm, primary, service) = backed_up(true).await;
+        llm.reply("Не должно прозвучать.");
+        let cancel = CancellationToken::new();
+        let phrases = service.answer("device-22", "Вопрос", DialogContext::default(), cancel.clone(), None);
+        let said: Vec<String> = with_error_phrase(phrases, cancel, |_| {}).collect().await;
+        assert_eq!(said, vec![ERROR_PHRASE]);
+        assert_eq!((primary.calls.load(Ordering::SeqCst), llm.count()), (1, 0), "the backup was not asked");
+
+        let (llm, primary, service) = backed_up(false).await;
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let phrases = service.answer("device-23", "Вопрос", DialogContext::default(), cancel.clone(), None);
+        let said: Vec<String> = with_error_phrase(phrases, cancel, |_| {}).collect().await;
+        assert!(said.is_empty());
+        assert_eq!((primary.calls.load(Ordering::SeqCst), llm.count()), (1, 0));
     }
 
     #[tokio::test]
@@ -1473,6 +1718,7 @@ mod tests {
             brain,
             history: Mutex::new(DialogHistory::new(2, 60_000)),
             prompt_problem: Mutex::new(None),
+            memory: std::sync::OnceLock::new(),
         });
         llm.calls(&[("get_news", json!({}))]);
         llm.reply("Ответ.");

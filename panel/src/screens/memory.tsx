@@ -1,12 +1,17 @@
-// Память и место плагинов (docs/plans/plugins.md, «Память и место на колонке»). «Дом» → «Шлюз» → «Память колонки» —
+// Память и место плагинов (docs/plans/plugins.md, «Память и место на колонке»). «Настройки» → «Колонка» → «Ресурсы
+// колонки» (так названа с 12.11, чтобы «память» в пульте значила только память персонажей, screens/recall.tsx) —
 // только когда шлюз на колонке: там памяти мало и свопа нет. Полоса — система и Алиса, сам шлюз, плагины, свободно; под
 // ней — сколько занято сейчас и сколько ещё можно загрузить, и давление памяти. Бюджет занимают только загруженные
 // плагины; включённый, но не загруженный — ничего. Плагин в списке «Пакетов» показывает свою долю — `pluginMemoryLine`.
 
 import { useEffect, useState } from 'preact/hooks';
 
-import { PackageView, PackagesResources, api, can, problemOf } from '../api';
+import { PackageView, PackagesResources, PluginFilesSummary, api, can, problemOf, sessionStore } from '../api';
 import { usePanel } from '../shell/context';
+import { HistoryRoomLine } from './history';
+
+/** История приложений и её место — администратору (её API — его). */
+const isAdminHere = (): boolean => can('plugins.manage') && sessionStore.get()?.role === 'admin';
 
 /** Память и место плагинов; перечитывается, когда шлюз говорит о переменах (plugins.resources, packages.changed). */
 export function useResources(): { resources: PackagesResources | null; error: string | null } {
@@ -43,7 +48,7 @@ export function memorySegments(r: PackagesResources): Array<{ id: string; label:
     return [
         { id: 'system', label: 'Система и Алиса', mb: system },
         { id: 'gateway', label: 'DuoWave', mb: gateway },
-        { id: 'plugins', label: 'Навыки', mb: r.pluginsMb },
+        { id: 'plugins', label: 'Приложения', mb: r.pluginsMb },
         { id: 'free', label: 'Свободно', mb: r.availableMb },
     ];
 }
@@ -60,7 +65,7 @@ export function StationMemoryCard() {
         <section class="card glass card-list" aria-labelledby="memory-h">
             <div class="section-head">
                 <h2 id="memory-h" class="t-title-xs m-0">
-                    Память колонки
+                    Ресурсы колонки
                 </h2>
                 {resources.measured && <span class={`pill ${pressure.cls}`}>{pressure.text}</span>}
             </div>
@@ -81,25 +86,45 @@ export function StationMemoryCard() {
                             </li>
                         ))}
                     </ul>
-                    {/* Шлюз пишет сам: «Загружено плагинов: 2, под них занято 8 МБ. Можно загрузить ещё 70 МБ.» */}
+                    {/* Шлюз пишет сам: «Загружено приложений: 2, под них занято 8 МБ. Можно загрузить ещё 70 МБ.» */}
                     <p class="t-body-sm m-0">{resources.note}</p>
                     <p class="t-caption m-0">
-                        Бюджет плагинов — {resources.budgetMb} МБ. Плагин занимает в нём свой объём, только пока загружен; простаивающие выгружаются и
+                        Бюджет приложений — {resources.budgetMb} МБ. Приложение занимает в нём свой объём, только пока загружено; простаивающие выгружаются и
                         уступают место. Запас для системы и Алисы — {resources.reserveMb} МБ.
                         {resources.action === 'warn'
-                            ? ' Под сильным давлением плагины не выключаются — только предупреждение.'
-                            : ' Под сильным давлением последний включённый из загруженных плагинов выключится сам.'}
+                            ? ' Под сильным давлением приложения не выключаются — только предупреждение.'
+                            : ' Под сильным давлением последнее включённое из загруженных приложений выключится само.'}
                     </p>
                     {resources.disk.freeMb != null && (
                         <p class="t-caption m-0">
-                            Место: свободно {resources.disk.freeMb} МБ, пакеты занимают {resources.disk.packagesMb} МБ, {resources.disk.reserveMb} МБ — запас на обновление шлюза.
+                            Место: свободно {resources.disk.freeMb} МБ, приложения занимают {resources.disk.packagesMb} МБ, {resources.disk.reserveMb} МБ — запас на обновление шлюза.
                         </p>
                     )}
+                    <PicturesLine />
+                    {isAdminHere() && <HistoryRoomLine />}
                 </>
             ) : (
                 <p class="t-caption m-0">{resources.note}</p>
             )}
         </section>
+    );
+}
+
+/** Картинки плагинов на колонке (этап 10): сколько их вместе и из скольких можно. Нет картинок — строки нет. */
+function PicturesLine() {
+    const panel = usePanel();
+    const [summary, setSummary] = useState<PluginFilesSummary | null>(null);
+    useEffect(() => {
+        api.pluginFilesSummary()
+            .then(setSummary)
+            .catch(() => setSummary(null));
+    }, [panel.version]);
+    if (!summary || summary.bytes === 0) return null;
+    const mb = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1).replace('.', ',');
+    return (
+        <p class="t-caption m-0">
+            Картинки приложений: {mb(summary.bytes)} МБ{summary.limitBytes ? ` из ${mb(summary.limitBytes)}` : ''}.
+        </p>
     );
 }
 

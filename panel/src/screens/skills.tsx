@@ -1,6 +1,6 @@
 // «Навыки» — один список (docs/plans/panel-rebuild.md, этап 3): что колонка умеет и кто на что отвечает — свой или
-// Яндекс, — чего она пока не умеет (и «Научить»), подключения и программы. Глубже — установленное, каталог и мастерская
-// вторым слоем, с «‹ Навыки» назад. Персонажи и темы из каталога живут у себя: в «Персонаже» и в «Оформлении».
+// Яндекс, — чего она пока не умеет (и «Научить»), подключения и программы. Глубже — память персонажей
+// (screens/recall.tsx), установленное, каталог и мастерская вторым слоем, с «‹ Навыки» назад. Персонажи и темы из каталога живут у себя: в «Персонаже» и в «Оформлении».
 
 import { useState } from 'preact/hooks';
 
@@ -16,13 +16,14 @@ import { McpSection } from './mcp';
 import { settingsPlace } from './places';
 import { RoutesScreen } from './routes';
 import { WorkshopScreen } from './workshop';
+import { MemoryScreen } from './recall';
 import { OwnFrame } from './helper-pc';
 import { TOP_VIA } from '../via';
 
 const isAdmin = (): boolean => can('plugins.manage') && sessionStore.get()?.role === 'admin';
 
 /** Вкладки второго слоя: свой экран целиком и «‹ Навыки» назад. Остальное (список, подключения) — главная страница. */
-const DEEPER = new Set(['installed', 'catalog', 'workshop']);
+const DEEPER = new Set(['memory', 'installed', 'catalog', 'workshop']);
 
 export function SkillsSection() {
     const [tab, setTab] = useSectionTab<string>('skills', 'list');
@@ -34,8 +35,9 @@ export function SkillsSection() {
             <>
                 <button class="deeper-back" onClick={() => setTab('list')}>
                     <IconChevronLeft size={16} />
-                    Навыки
+                    Приложения
                 </button>
+                {tab === 'memory' && can('memory.view') && <MemoryScreen />}
                 {tab === 'installed' && <PackagesTab part="installed" />}
                 {tab === 'catalog' && <PackagesTab part="catalog" />}
                 {/* Мастерская — у компьютера: черновики пишутся там, ставятся на колонку (этап 4). */}
@@ -46,8 +48,8 @@ export function SkillsSection() {
                         fallback={
                             <section class="card glass" role="alert">
                                 <p class="t-meta m-0">
-                                    «{contributed.title ?? contributed.id}» не открылось — ошибка в плагине «{contributed.plugin}» (подробности в консоли
-                                    браузера). Остальные навыки работают.
+                                    «{contributed.title ?? contributed.id}» не открылось — ошибка в приложении «{contributed.plugin}» (подробности в консоли
+                                    браузера). Остальные приложения работают.
                                 </p>
                             </section>
                         }
@@ -62,14 +64,15 @@ function SkillsList({ onOpen, extra }: { onOpen: (tab: string) => void; extra: A
     const panel = usePanel();
     const [asking, setAsking] = useState(false);
     const places: Array<{ key: string; title: string; sub: string; shown: boolean }> = [
-        { key: 'installed', title: 'Установленные навыки', sub: 'включить, выключить, настроить, обновить', shown: can('station.view') },
-        { key: 'catalog', title: 'Добавить из каталога', sub: 'навыки, персонажи и темы от DuoWave и сообщества', shown: can('station.view') },
-        { key: 'workshop', title: 'Сделать свой навык', sub: 'агент мастерской напишет его по вашему описанию', shown: isAdmin() },
-        ...extra.map((entry) => ({ key: entry.key, title: entry.title, sub: 'от плагина', shown: true })),
+        { key: 'memory', title: 'Память', sub: 'что персонажи помнят о доме: люди, связи, пауза', shown: can('memory.view') },
+        { key: 'installed', title: 'Установленные приложения', sub: 'включить, выключить, настроить, обновить', shown: can('station.view') },
+        { key: 'catalog', title: 'Добавить из каталога', sub: 'приложения, персонажи и темы от DuoWave и сообщества', shown: can('station.view') },
+        { key: 'workshop', title: 'Сделать своё приложение', sub: 'агент мастерской напишет его по вашему описанию', shown: isAdmin() },
+        ...extra.map((entry) => ({ key: entry.key, title: entry.title, sub: 'от приложения', shown: true })),
     ];
     return (
         <div class="skills-page">
-            <section class="card glass card-list" aria-label="Добавить и сделать">
+            <section class="card glass card-list" aria-label="Память, установленное и новое">
                 <div class="w-rows">
                     {places
                         .filter((place) => place.shown)

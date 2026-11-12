@@ -5,7 +5,7 @@
 
 import { useEffect, useState } from 'preact/hooks';
 
-import { ApiError, CatalogEntry, CatalogView, PackageKind, PackageOrigin, PackageView, PackagesView, VoiceLabEngine, api, can, problemOf, sessionStore } from '../api';
+import { ApiError, CatalogEntry, CatalogSource, CatalogView, PackageKind, PackageOrigin, PackageView, PackagesView, VoiceLabEngine, api, can, problemOf, sessionStore } from '../api';
 import { IconPackage } from '../icons';
 import { useLinkedItem, usePanel } from '../shell/context';
 import { timeAgo } from '../time';
@@ -14,23 +14,33 @@ import { Dropdown } from '../ui/dropdown';
 import { PlayButton, useMediaUrl } from '../ui/media';
 import { needsSize } from '../ui/needs';
 import { pluginMemoryLine } from './memory';
-import { InstalledPackageSheet, ORIGIN_TITLES } from './plugins';
+import { InstalledPackageSheet, LaterLine, ORIGIN_TITLES, SchedulesSwitchLine } from './plugins';
 import { panelSafeMode } from '../plugins/loader';
 import { Sheet } from '../ui/sheet';
 import { Switch } from '../ui/switch';
 import { ask } from '../ui/confirm';
 
-/** Вид пакета одним словом — на метке. */
+/**
+ * Вид пакета одним словом — на метке. Людям — не «плагин» и «приложение», а где оно работает (docs/ARCHITECTURE.md, «Как
+ * называем и где работает»): плагин — в шлюзе, приложение со своей программой — на компьютере.
+ */
 export const KIND_TITLES: Record<PackageKind, string> = {
     character: 'персонаж',
-    plugin: 'плагин',
-    app: 'приложение',
+    plugin: 'в шлюзе',
+    app: 'на компьютере',
     theme: 'тема',
 };
 
+/** Где работает приложение — словами для людей: «в шлюзе», «на компьютере», «в сети» (MCP); персонаж и тема — как есть. */
+export function placeOf(kind: PackageKind | null | undefined, runtime?: string | null): string {
+    if (runtime === 'mcp') return 'в сети';
+    if (runtime === 'process' || kind === 'app') return 'на компьютере';
+    return KIND_TITLES[kind ?? 'plugin'] ?? 'в шлюзе';
+}
+
 const KIND_FILTERS: Array<{ id: PackageKind; label: string }> = [
     { id: 'character', label: 'Персонажи' },
-    { id: 'plugin', label: 'Навыки' },
+    { id: 'plugin', label: 'Приложения' },
     { id: 'app', label: 'Приложения' },
     { id: 'theme', label: 'Темы' },
 ];
@@ -113,7 +123,9 @@ export function missingEngine(entry: CatalogEntry, engines: Record<string, Voice
 /** Метки пакета каталога: откуда он (дополнительная лента — её название), что с ним здесь. */
 export function entryPills(entry: CatalogEntry, engines: Record<string, VoiceLabEngine['status']> | null): Array<{ text: string; cls: string }> {
     const pills: Array<{ text: string; cls: string }> = [];
-    if (entry.source) pills.push({ text: entry.source, cls: 'pill-off' });
+    // Свой источник — заметно: его пакеты никто не проверял.
+    if (entry.own) pills.push({ text: `свой источник · ${entry.source ?? ''}`.trim(), cls: 'pill-yandex' });
+    else if (entry.source) pills.push({ text: entry.source, cls: 'pill-off' });
     if (entry.state === 'update') pills.push({ text: 'новая версия', cls: 'pill-agent' });
     else if (isInstalled(entry)) pills.push({ text: 'установлен', cls: 'pill-off' });
     if (entry.state === 'incompatible') pills.push({ text: 'не пойдёт здесь', cls: 'pill-off' });
@@ -281,7 +293,7 @@ export function CatalogEntrySheet({
             {entry.license && <p class="t-caption m-0">Лицензия: {entry.license}</p>}
             {!canManage(entry.kind) && (
                 <p class="t-caption m-0">
-                    {entry.kind === 'character' ? 'Ставить персонажей может тот, кому можно менять характер.' : 'Ставить такие пакеты может администратор.'}
+                    {entry.kind === 'character' ? 'Ставить персонажей может тот, кому можно менять характер.' : 'Ставить такие приложения может администратор.'}
                 </p>
             )}
             <div class="flex flex-wrap items-center gap-8">
@@ -311,16 +323,151 @@ export function catalogOpen(view: CatalogView | null): boolean {
     return !!view && view.configured && view.enabled && !view.offline;
 }
 
-/** Строки о дополнительных лентах, которые сейчас не прочитались; пока каталог закрыт — о нём уже сказано, их нет. */
+/** Строки о дополнительных лентах, которые сейчас не прочитались; пока каталог закрыт — о нём уже сказано, их нет. О своих источниках говорит их блок. */
 export function feedLines(view: CatalogView | null): string[] {
     if (!catalogOpen(view)) return [];
     return (view?.feeds ?? [])
-        .filter((feed) => feed.offline || feed.problem)
+        .filter((feed) => !feed.own && (feed.offline || feed.problem))
         .map((feed) =>
             feed.offline || !feed.problem
-                ? `Лента «${feed.title}» недоступна${feed.count > 0 ? ' — её пакеты показаны по последней копии' : ''}.`
+                ? `Лента «${feed.title}» недоступна${feed.count > 0 ? ' — её приложения показаны по последней копии' : ''}.`
                 : feed.problem,
         );
+}
+
+/** Сколько своих источников можно добавить — столько же держит шлюз. */
+const MAX_SOURCES = 4;
+
+/** Что сказать о своём источнике одной строкой. */
+function sourceLine(feed: CatalogSource): { text: string; warning: boolean } {
+    if (feed.closed) return { text: 'Закрыт: его пакетов больше нет, поставленные из него скрыты.', warning: true };
+    if (feed.offline) return { text: `Недоступен${feed.count > 0 ? ' — его пакеты показаны по последней копии' : ''}.`, warning: true };
+    if (feed.problem) return { text: feed.problem, warning: true };
+    const count = `пакетов в каталоге: ${feed.count}`;
+    return { text: feed.fetchedAt ? `${count} · обновлён ${timeAgo(feed.fetchedAt)}` : count, warning: false };
+}
+
+/**
+ * «Свои источники»: ленты пакетов, добавленные здесь по ссылке (её дают лично — показать персонажа, проверить пакет).
+ * Их пакеты никто не проверял: сначала предупреждение, ставятся только персонажи и темы. Только администратор.
+ */
+export function OwnSources({ view, onView }: { view: CatalogView | null; onView: (view: CatalogView) => void }) {
+    const [link, setLink] = useState('');
+    const [busy, setBusy] = useState<string | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const own = (view?.feeds ?? []).filter((feed) => feed.own);
+    const full = own.length >= MAX_SOURCES;
+
+    const add = async () => {
+        const url = link.trim();
+        let host: string;
+        try {
+            host = new URL(url).host;
+        } catch {
+            setError('Это не ссылка: нужен адрес вида https://…/catalog.json.');
+            return;
+        }
+        const yes = await ask({
+            title: `Добавить источник ${host}?`,
+            text:
+                'Пакеты из него никто не проверял — ни мы, ни каталог. Персонаж, его описание и голос могут быть чьими угодно, ' +
+                'голос — снятым без согласия. Добавляйте источник, только если ссылку дал тот, кому вы доверяете. Из него ' +
+                'ставятся только персонажи и темы, без кода; убрать его можно здесь же.',
+            ok: 'Добавить',
+            danger: true,
+        });
+        if (!yes) return;
+        setBusy('add');
+        setError(null);
+        try {
+            onView(await api.addPackageSource(url));
+            setLink('');
+        } catch (e) {
+            setError(problemOf(e));
+        } finally {
+            setBusy(null);
+        }
+    };
+
+    const remove = async (feed: CatalogSource) => {
+        const yes = await ask({
+            title: `Убрать источник «${feed.title}»?`,
+            text: 'Его пакеты уйдут из каталога. Поставленное из него останется как есть.',
+            ok: 'Убрать',
+            danger: true,
+        });
+        if (!yes) return;
+        setBusy(feed.url);
+        setError(null);
+        try {
+            onView(await api.removePackageSource(feed.url));
+        } catch (e) {
+            setError(problemOf(e));
+        } finally {
+            setBusy(null);
+        }
+    };
+
+    return (
+        <div class="pkg-own" aria-labelledby="own-sources-h">
+            <span id="own-sources-h" class="fw-700">
+                Свои источники
+            </span>
+            <span class="t-caption">Лента пакетов по ссылке, которую вам дали лично. Её пакеты никто не проверял.</span>
+            {own.map((feed) => {
+                const line = sourceLine(feed);
+                return (
+                    <div key={feed.url} class="pkg-row">
+                        <div class="pkg-main">
+                            <span class="pkg-text">
+                                <span class="pkg-title">
+                                    {feed.title}
+                                    <span class="pill pill-yandex">не проверен</span>
+                                </span>
+                                <span class="t-caption break-all">{feed.url}</span>
+                                <span class={`t-caption${line.warning ? ' c-pill-yandex-fg' : ''}`} role={line.warning ? 'status' : undefined}>
+                                    {line.text}
+                                </span>
+                            </span>
+                            <div class="pkg-actions">
+                                <Action label="убрать" busy={busy === feed.url} disabled={busy !== null} onClick={() => void remove(feed)} />
+                            </div>
+                        </div>
+                    </div>
+                );
+            })}
+            {full ? (
+                <span class="t-caption">Своих источников — не больше {MAX_SOURCES}: чтобы добавить, уберите ненужный.</span>
+            ) : (
+                <form
+                    class="flex gap-8 items-center"
+                    // Enter в поле сам нажимает «добавить» (кнопка формы): здесь — только не перезагрузить страницу,
+                    // иначе предупреждение всплывало дважды.
+                    onSubmit={(e) => e.preventDefault()}
+                >
+                    <input
+                        class="field flex-1 min-w-0"
+                        type="url"
+                        inputMode="url"
+                        autocomplete="off"
+                        aria-label="Ссылка на ленту пакетов"
+                        placeholder="https://…/catalog.json"
+                        value={link}
+                        onInput={(e) => {
+                            setLink((e.target as HTMLInputElement).value);
+                            setError(null);
+                        }}
+                    />
+                    <Action label="добавить" busy={busy === 'add'} disabled={!link.trim() || busy !== null} onClick={() => void add()} />
+                </form>
+            )}
+            {error && (
+                <p class="t-caption m-0 c-dot-offline" role="alert">
+                    {error}
+                </p>
+            )}
+        </div>
+    );
 }
 
 /** Состояние плагина одним словом. */
@@ -439,7 +586,7 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                         <h2 id="packages-h" class="t-title-xs m-0">
                             Установлено
                         </h2>
-                        <span class="t-meta">{installed?.safeMode ? 'безопасный режим: плагины не работают' : installed ? `${installed.packages.length}` : ''}</span>
+                        <span class="t-meta">{installed?.safeMode ? 'безопасный режим: приложения не работают' : installed ? `${installed.packages.length}` : ''}</span>
                     </div>
                     {installedError && (
                         <p class="t-caption m-0 c-dot-offline" role="alert">
@@ -448,9 +595,11 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                     )}
                     {panelSafeMode() && (
                         <p class="t-caption m-0 mb-6 c-pill-yandex-fg" role="status">
-                            Безопасный режим пульта (?safe=1): темы пакетов и части плагинов в пульт не загружены.
+                            Безопасный режим пульта (?safe=1): темы и части приложений в пульт не загружены.
                         </p>
                     )}
+                    {installed && installed.packages.some((entry) => entry.permissions.includes('schedule')) && <SchedulesSwitchLine />}
+                    <LaterLine />
                     {installed && installed.packages.length === 0 && (
                         <p class="t-caption m-0 mb-6">
                             Пока ничего не поставлено — выберите{' '}
@@ -461,7 +610,7 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                         </p>
                     )}
                     {all.length > 0 && ORIGIN_FILTERS.filter((filter) => filter.id === 'all' || counts[filter.id] > 0).length > 2 && (
-                        <div class="pkg-chips" role="group" aria-label="Откуда пакет">
+                        <div class="pkg-chips" role="group" aria-label="Откуда приложение">
                             {ORIGIN_FILTERS.filter((filter) => filter.id === 'all' || counts[filter.id] > 0).map((filter) => (
                                 <button
                                     key={filter.id}
@@ -534,7 +683,7 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                         );
                     })}
                     {!isAdmin && installed?.packages.some((entry) => (entry.kind ?? 'plugin') === 'plugin') && (
-                        <p class="t-caption m-0 mt-8">Включать плагины может администратор.</p>
+                        <p class="t-caption m-0 mt-8">Включать приложения может администратор.</p>
                     )}
                 </section>
             )}
@@ -551,7 +700,7 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                         </button>
                     )}
                 </div>
-                <p class="t-caption m-0 mb-6">Проверенные нами персонажи, плагины и темы. Ставится только то, что вы выберете.</p>
+                <p class="t-caption m-0 mb-6">Проверенные нами приложения, персонажи и темы. Ставится только то, что вы выберете.</p>
                 {status && (
                     <p class={`t-caption m-0 mb-6 ${status.tone === 'warning' ? 'c-pill-yandex-fg' : ''}`} role="status">
                         {status.text}
@@ -601,6 +750,7 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                         </div>
                     );
                 })}
+                {isAdmin && view?.configured && view.enabled && <OwnSources view={view} onView={catalog.setView} />}
                 {view?.configured && can('settings.edit') && (
                     <div class="pkg-switch">
                         <div class="flex-1 min-w-0 flex flex-col gap-2">

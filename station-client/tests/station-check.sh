@@ -168,6 +168,41 @@ printf '%s %s\n' "$named" "another-boot" >"$DIR/gateway.pid"
 [ "$(service status)" = "gateway: not running" ] && ok "a pid from before a power cut is not the gateway" || fail "boot id" "$(service status)"
 kill "$named" 2>/dev/null
 
+# 9. A start from a pipe, as an install over SSH runs it (Command::output): the pipe comes back at once, and the loop
+# and the watch run on in a session of their own (live 11.11: they kept the pipe, and the install waited for good).
+printf '#!/bin/sh\nexec sleep 300\n' >"$DIR/program"
+chmod +x "$DIR/program"
+rm -f "$DIR/gateway.pid" "$DIR/gateway-loop.pid" "$DIR/gateway-watch.pid" "$DIR/disabled"
+pipe=/tmp/duowave-check-pipe
+rm -f "$pipe"
+mkfifo "$pipe"
+DUOWAVE_START_WAIT_SECS=0 DUOWAVE_PROC=/proc sh "$DIR/gateway.sh" start >"$pipe" 2>&1 &
+cat "$pipe" >/dev/null &
+reader=$!
+waited=0
+while kill -0 "$reader" 2>/dev/null && [ "$waited" -lt 10 ]; do
+    sleep 1
+    waited=$((waited + 1))
+done
+if kill -0 "$reader" 2>/dev/null; then
+    fail "a start from a pipe" "the pipe stayed open"
+    kill "$reader" 2>/dev/null
+else
+    ok "a start from a pipe gives the pipe back"
+fi
+rm -f "$pipe"
+sleep 1
+loop=$(cut -d' ' -f1 "$DIR/gateway-loop.pid" 2>/dev/null)
+if command -v setsid >/dev/null 2>&1; then
+    session=$(cut -d' ' -f6 "/proc/$loop/stat" 2>/dev/null)
+    [ -n "$loop" ] && [ "$session" = "$loop" ] && ok "the loop runs in a session of its own" || fail "session" "loop ${loop:-?}, session ${session:-?}"
+fi
+case "$(service status)" in
+    "gateway: running"*) ok "the service runs on after the caller" ;;
+    *) fail "service" "$(service status)" ;;
+esac
+service stop
+
 unmount_all
 rm -rf "$DIR" "$DUOWAVE_INITD"
 [ "$WHERE" = container ] && umount /system/vendor/quasar

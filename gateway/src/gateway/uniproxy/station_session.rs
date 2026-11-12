@@ -89,6 +89,7 @@ use crate::mcp::{McpOffer, McpService, OfferOptions};
 use crate::skills::capabilities::{is_capability, CapabilityName, Intent};
 use crate::skills::media::recording::FileRecording;
 use crate::skills::own::reminders_skill::AudioClip;
+use crate::skills::quick_commands::is_stop;
 use crate::skills::router::{Continuation, Decision, ModelState, Resolution, RouteInput, RESTRICTED};
 use crate::skills::routes::RouteStep;
 use crate::skills::skill::{ExecutionContext, Outcome, OwnSkill};
@@ -597,6 +598,9 @@ pub struct Inner {
     stray_stream_noted: bool,
     /// Whether the station's next listening without the wake word is wanted: set by the last answer.
     follow_up: Option<FollowUp>,
+    /// The gain the last wake word gave: a request without one (listening on after a question) starts with it.
+    /// Before the session's first, the station's typical one (SpeechService::wake_word_gain).
+    last_gain_db: Option<f64>,
     /// The answer being spoken; a new request or a cancel stops it.
     answer: Option<Arc<SpokenAnswer>>,
     /// Follow-ups go to a Yandex dialog or our game while it lasts.
@@ -826,6 +830,7 @@ impl StationSession {
                 held_voice: None,
                 stray_stream_noted: false,
                 follow_up: None,
+                last_gain_db: None,
                 answer: None,
                 continuation: None,
                 command_question_until: 0,
@@ -947,22 +952,160 @@ impl StationSession {
     }
 
     async fn speak(self: Arc<Self>, text: String, clip: Option<AudioClip>) -> SayOutcome {
-        // The station ignores speech for a request it never sent (live: /say "spoken", the station silent). As
-        // Yandex rings a reminder: a push makes the station ask, and the speech is the answer to that request.
-        let id = new_message_id();
         let label = match &clip {
             Some(clip) => format!("say \"{text}\" + {}", clip.label),
             None => format!("say \"{text}\""),
         };
+        let asked = match &clip {
+            Some(clip) => format!("{text} [{}]", clip.label),
+            None => text.clone(),
+        };
+        let answer = self
+            .ask_by_push(&label, asked, |inner, r#ref, request| {
+                let mut options = self.answer_options(inner, r#ref, request);
+                options.listen = ListenMode::Never;
+                options.hold_response_ms = 0;
+                // Said through our push already (a reminder, a deferred answer): past the wait it stops.
+                options.deferrable = false;
+                self.start_answer(inner, options)
+            })
+            .await;
+        let Some(answer) = answer else { return SayOutcome::Failed };
+        let mut parts = vec![AnswerPart::Text(text)];
+        if let Some(clip) = clip {
+            parts.push(AnswerPart::Clip(clip));
+        }
+        self.play_answer(answer, futures::stream::iter(parts).boxed(), label).await
+    }
+
+    /// Our own skill's answer to a push: the turn timer's «время вышло» (plugins/skill.rs). The station is asked as
+    /// for our speech, and its request is answered as a phrase is — said, played, listened after, the conversation
+    /// going on. `still` is asked once the station calls back: no longer wanted (the person's words came first), the
+    /// callback gets an empty response and the answer being spoken plays on. False when nothing was spoken to its
+    /// end.
+    pub async fn answer_pushed(
+        self: &Arc<Self>,
+        intent: Intent,
+        label: String,
+        still: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> bool {
+        let session = self.clone();
+        // On its own task, as `say`: a caller that stops waiting does not cut the answer short.
+        tokio::spawn(async move { session.push_answer(intent, label, still).await }).await.unwrap_or(false)
+    }
+
+    async fn push_answer(
+        self: Arc<Self>,
+        intent: Intent,
+        label: String,
+        still: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> bool {
+        let Some(skill) = self.deps.skills.router.implementation(&intent) else { return false };
+        let started = self
+            .ask_by_push(&label, label.clone(), |inner, r#ref, request| {
+                if !still() {
+                    self.send_empty_response(r#ref, request, Vec::new());
+                    self.end_trip(inner, r#ref, RequestStatus::Silent, Some("no longer wanted"), None);
+                    return None;
+                }
+                let mut options = self.answer_options(inner, r#ref, request);
+                // The outcome asks the station to listen when the conversation goes on (apply_outcome).
+                options.listen = ListenMode::Never;
+                options.hold_response_ms = 0;
+                options.deferrable = false;
+                let answer = self.start_answer(inner, options);
+                let context = self.execution_context(inner, "", request, answer.token());
+                Some((answer, context, request.clone()))
+            })
+            .await
+            .flatten();
+        let Some((answer, context, request)) = started else { return false };
+        let session = self.clone();
+        let phrases_answer = answer.clone();
+        let phrases: PhraseStream = generate(move |y| async move {
+            let outcome = match skill.execute(&intent, &context).await {
+                Ok(outcome) => outcome,
+                Err(error) => return y.send(Err(error)).await,
+            };
+            let mut phrases = session.apply_outcome(&phrases_answer, &request, "", outcome, None);
+            while let Some(phrase) = phrases.next().await {
+                y.send(phrase).await;
+            }
+        });
+        let parts = self.with_errors(&answer, phrases);
+        self.play_answer(answer, parts, label).await == SayOutcome::Answer(AnswerOutcome::Spoken)
+    }
+
+    /// Words run in their time as if said now (a delayed command, skills/own/later_skill.rs): the station is asked by
+    /// a push, and its request is served as these words — the same routes, rules and answers. False when it did not
+    /// call back.
+    pub async fn run_words(self: &Arc<Self>, text: String) -> bool {
+        let session = self.clone();
+        tokio::spawn(async move {
+            let label = format!("отложенное «{text}»");
+            session
+                .ask_by_push(&label, text.clone(), |inner, r#ref, request| {
+                    session.handle_request(inner, r#ref, request, &text, false)
+                })
+                .await
+                .is_some()
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    /// The person's words are being heard now: a voice request still listening with words in it (without interim
+    /// recognition, any still listening), or one being recognized — the turn timer waits for them.
+    pub fn hearing(&self) -> bool {
+        use super::voice_request::VoiceState;
+        let interim = self.deps.config.partial_interval_ms > 0;
+        let inner = self.lock();
+        inner.voice_requests.iter().any(|voice| match voice.state {
+            VoiceState::Recognizing => true,
+            VoiceState::Listening => !interim || !voice.interim.text().is_empty(),
+            VoiceState::Done => false,
+        })
+    }
+
+    /// The station's player plays, as it last said (its device state in a request).
+    pub fn playing(&self) -> bool {
+        self.deps.skills.player_memory.get(&self.device_tag).is_some_and(|player| player.playing)
+    }
+
+    /// An alarm or a timer of ours rings on the station now.
+    pub fn ringing(&self) -> bool {
+        self.deps.skills.ringing_now(&self.device_tag, None, now_ms())
+    }
+
+    /// Someone is with the station: it rings, words are being heard, or a conversation goes on (a game, a question) —
+    /// speech by a plugin's schedule waits (plugins/schedule.rs).
+    pub fn busy(&self) -> bool {
+        let talking = self.lock().continuation.is_some_and(|continuation| continuation.until > now_ms());
+        talking || self.ringing() || self.hearing()
+    }
+
+    /// The station's time zone as it said it.
+    pub fn zone(&self) -> Option<String> {
+        self.lock().client_info.as_ref().and_then(|info| info.timezone.clone())
+    }
+
+    /// Asks the station by a push to call back and answers its request with `answer`, under the session's state. The
+    /// station ignores speech for a request it never sent (live: /say "spoken", the station silent); as Yandex rings
+    /// a reminder, a push makes the station ask, and our words are the answer to that request. None when no
+    /// callback came: the trip `asked` ends failed.
+    async fn ask_by_push<R>(
+        &self,
+        label: &str,
+        asked: String,
+        answer: impl FnOnce(&mut Inner, &str, &AliceRequest) -> R,
+    ) -> Option<R> {
+        let id = new_message_id();
         let trip = self.deps.requests.as_ref().map(|requests| {
             requests.begin(RequestStart {
                 device: self.device_tag.clone(),
                 session: Some(self.id.clone()),
                 kind: RequestKind::Say,
-                text: Some(match &clip {
-                    Some(clip) => format!("{text} [{}]", clip.label),
-                    None => text.clone(),
-                }),
+                text: Some(asked),
                 parent: None,
             })
         });
@@ -987,39 +1130,27 @@ impl StationSession {
             Ok(Ok(callback)) => Some(callback),
             _ => None,
         };
-        let answer = {
-            let mut inner = self.lock();
-            inner.pending_says.retain(|(pending, _)| *pending != id);
-            let Some((r#ref, request)) = callback else {
-                self.note(
-                    "sayFailed",
-                    &format!("{label}: no {} from the station in {SAY_CALLBACK_MS} ms", *SAY_CALLBACK),
-                    Some(json!({ "id": id })),
-                );
-                if let Some(trip) = trip {
-                    trip.finish(
-                        RequestStatus::Failed,
-                        Some(&format!("no callback from the station in {SAY_CALLBACK_MS} ms")),
-                        None,
-                    );
-                }
-                return SayOutcome::Failed;
-            };
+        let mut inner = self.lock();
+        inner.pending_says.retain(|(pending, _)| *pending != id);
+        let Some((r#ref, request)) = callback else {
+            self.note(
+                "sayFailed",
+                &format!("{label}: no {} from the station in {SAY_CALLBACK_MS} ms", *SAY_CALLBACK),
+                Some(json!({ "id": id })),
+            );
             if let Some(trip) = trip {
-                Self::set_trip(&mut inner, &r#ref, trip);
+                trip.finish(
+                    RequestStatus::Failed,
+                    Some(&format!("no callback from the station in {SAY_CALLBACK_MS} ms")),
+                    None,
+                );
             }
-            let mut options = self.answer_options(&inner, &r#ref, &request);
-            options.listen = ListenMode::Never;
-            options.hold_response_ms = 0;
-            // Said through our push already (a reminder, a deferred answer): past the wait it stops.
-            options.deferrable = false;
-            self.start_answer(&mut inner, options)
+            return None;
         };
-        let mut parts = vec![AnswerPart::Text(text)];
-        if let Some(clip) = clip {
-            parts.push(AnswerPart::Clip(clip));
+        if let Some(trip) = trip {
+            Self::set_trip(&mut inner, &r#ref, trip);
         }
-        self.play_answer(answer, futures::stream::iter(parts).boxed(), label).await
+        Some(answer(&mut inner, &r#ref, &request))
     }
 
     /// A command of ours nobody asked for (the player's retry through the gateway, stage 5а): pushed, and the station
@@ -1509,7 +1640,10 @@ impl StationSession {
 
         let name = format!("{}_{}.in.ogg", clock_tag(), request_id_of(&request).unwrap_or(&message_id));
         let audio = self.journal.open_audio(&name);
-        let speech = self.deps.speech.create_pipeline(request.activation_type.as_deref());
+        // The session's last wake word, else the station's typical one: after a restart or a reconnect, or with a
+        // wake word of our own only, the session has heard none.
+        let assumed = inner.last_gain_db.or_else(|| self.deps.speech.wake_word_gain(&self.device_tag));
+        let speech = self.deps.speech.create_pipeline(request.activation_type.as_deref(), assumed);
         let interim = InterimRecognition::new(self.interim_options());
         let serial = self.next_serial.fetch_add(1, Ordering::SeqCst);
         let activation = request.activation_type.clone();
@@ -1588,6 +1722,8 @@ impl StationSession {
             interval_ms: if self.deps.speech.recognition_enabled() { config.interim_interval_ms } else { 0 },
             quiet_speech: config.quiet_speech,
             quiet_end_ms: config.quiet_end_ms,
+            unchanged_end_ms: config.unchanged_end_ms,
+            stop_end_ms: config.stop_end_ms,
             guard_ms: self.deps.speech.config().endpoint.guard_ms,
         }
     }
@@ -1610,14 +1746,15 @@ impl StationSession {
             let mut inner = session.lock();
             let Some(voice) = inner.voice(key) else { return };
             let listening = voice.state == super::voice_request::VoiceState::Listening;
-            let mut end = false;
+            let mut end = None;
             match recognized {
                 Ok(recognition) if listening => {
-                    let outcome = voice.interim.accept(&mut voice.speech, &job, &recognition.text);
+                    let stop = is_stop(&recognition.text);
+                    let outcome = voice.interim.accept(&mut voice.speech, &job, &recognition.text, stop);
                     let source = if job.all_audio { "all audio " } else { "" };
-                    let quiet_end = if outcome.end { ", unchanged: end of quiet speech" } else { "" };
+                    let ended = outcome.end.map(|end| format!(", {}: end", end.describe())).unwrap_or_default();
                     let summary = format!(
-                        "{} {source}{} at {}s of audio, {}ms{quiet_end}",
+                        "{} {source}{} at {}s of audio, {}ms{ended}",
                         voice.tag(),
                         heard(&recognition),
                         seconds(job.at_ms),
@@ -1645,8 +1782,8 @@ impl StationSession {
                     }
                 }
             }
-            if end {
-                session.complete_voice(&mut inner, key, "quietEndOfUtterance");
+            if let Some(end) = end {
+                session.complete_voice(&mut inner, key, end.outcome());
             }
             if let Some(voice) = inner.voice(key) {
                 if voice.interim_abort.as_ref().is_some_and(|(running, _)| *running == number) {
@@ -1679,6 +1816,10 @@ impl StationSession {
         // A station close can overtake audio that is still queued for VAD.
         self.flush_voice(inner, key);
         let enabled = self.deps.speech.recognition_enabled();
+        if let Some(picked) = inner.voice(key).and_then(|voice| voice.speech.picked_gain_db()) {
+            inner.last_gain_db = Some(picked);
+            self.deps.speech.note_wake_word_gain(&self.device_tag, picked);
+        }
         let Some(voice) = inner.voice(key) else { return };
         // Also after the station's own NO_SPEECH: it gives up on a timer, possibly mid-sentence. Quiet speech goes
         // to recognition whole: the VAD-cut audio would drop the quiet words.
@@ -2211,7 +2352,11 @@ impl StationSession {
         outcome: Outcome,
         on_data: Option<Box<dyn FnOnce(String) -> PhraseStream + Send>>,
     ) -> PhraseStream {
-        let Outcome { speech, phrases, directives, listen, data, continuation, record_audio, done } = outcome;
+        let Outcome { speech, phrases, directives, listen, data, continuation, record_audio, done, on_spoken } =
+            outcome;
+        if let Some(on_spoken) = on_spoken {
+            answer.after_spoken(on_spoken);
+        }
         if !directives.is_empty() {
             if let Err(error) = answer.add_directives(directives) {
                 return futures::stream::iter([Err(anyhow::anyhow!(error))]).boxed();
@@ -3482,6 +3627,13 @@ impl StationSession {
             answer.observe(Arc::new(TripObserver { trip: trip.clone(), by, what }));
         }
         let outcome = SayOutcome::Answer(answer.play(phrases).await);
+        // Whoever counts from the end of the speech (the turn timer): the audio still to be played is known.
+        if let Some(spoken) =
+            answer.take_after_spoken().filter(|_| outcome == SayOutcome::Answer(AnswerOutcome::Spoken))
+        {
+            let now = now_ms();
+            spoken(now + answer.playback_left_ms(now));
+        }
         let deferred = outcome == SayOutcome::Answer(AnswerOutcome::Deferred);
         let errors = answer.errors();
         let text = answer.text();

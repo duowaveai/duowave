@@ -7,17 +7,23 @@
 import { useEffect, useState } from 'preact/hooks';
 
 import type { PlacedStation } from '../api';
-import { IconLaptop, IconPlus } from '../icons';
+import { IconLaptop } from '../icons';
 import { usePanel } from '../shell/context';
 import { useTheme } from '../shell/theme';
-import { DeskWidget, orderedOnDesk, useDeskLayout, useWidgets } from '../shell/widgets';
+import { DeskWidget, isFresh, orderedOnDesk, useDeskLayout, useWidgets } from '../shell/widgets';
 import { WidgetFrame, WidgetMenu } from '../ui/widget';
 import { settingsPlace } from '../builtin';
 import { ConnectFirstCard } from './connect';
 import { FirstRun } from './first-run';
+import { LocalAsrSetup, localAsrNeedsCard, useLocalAsr } from './local-asr';
 import { Dashboard } from './dashboard';
 import { DeskCanvas } from './desk-canvas';
 import { useWhoOpen } from './desk-widgets';
+import { AddTile, DraftTile } from './draft-tile';
+import { useDeskDrafts } from '../voice/drafts';
+
+export { AddTile };
+import { RememberedLine } from './recall';
 
 /** С этой ширины виджеты стоят по сторонам от колонки; уже — лентой. */
 const WIDE = '(min-width: 1100px)';
@@ -54,6 +60,8 @@ function Scene({ room }: { room?: number }) {
                 onToggleWho={toggleWho}
                 room={room}
             />
+            {/* Персонаж только что запомнил что-то голосом или мимоходом: видно сразу, с «Отменить». */}
+            {panel.role.role !== 'helper' && <RememberedLine />}
             {panel.role.role === 'helper' && (
                 // Макет SpaceHelper: под колонкой — этот компьютер, её помощник.
                 <div class="desk-helper-pc">
@@ -79,23 +87,30 @@ function placedName(station: PlacedStation | undefined): string | undefined {
     return (station as (PlacedStation & { name?: string }) | undefined)?.name || undefined;
 }
 
-/** «Новый виджет» — пунктирная плитка: открывает «+». */
-export function AddTile({ onAdd }: { onAdd: () => void }) {
+/**
+ * Место «Новый виджет» (docs/plans/voice-creation.md): черновик, над которым агент работает или который ждёт на
+ * примерке, стоит плиткой здесь — вещь рождается там, где будет стоять, — а «Новый виджет» сдвигается ниже.
+ */
+function Making({ onAdd }: { onAdd: () => void }) {
+    const { tile, more } = useDeskDrafts();
     return (
-        <button class="desk-add-tile" onClick={onAdd}>
-            <span class="flex items-center gap-6">
-                <IconPlus size={16} />
-                Новый виджет
-            </span>
-            <span class="w-cap">скажите, что показать, — нарисую</span>
-        </button>
+        <>
+            {tile && <DraftTile key={tile.id} draft={tile} more={more} />}
+            <AddTile onAdd={onAdd} small={!!tile} />
+        </>
     );
 }
 
-export function WidgetOnDesk({ widget, menu, grip }: { widget: DeskWidget; menu: WidgetMenu; grip?: (event: PointerEvent) => void }) {
+/** Плитка-черновик первой в ленте телефона. */
+function FeedDraft() {
+    const { tile, more } = useDeskDrafts();
+    return tile ? <DraftTile key={tile.id} draft={tile} more={more} /> : null;
+}
+
+export function WidgetOnDesk({ widget, menu, grip, fresh }: { widget: DeskWidget; menu: WidgetMenu; grip?: (event: PointerEvent) => void; fresh?: boolean }) {
     const { Component } = widget;
     return (
-        <WidgetFrame widget={widget} menu={menu} grip={grip}>
+        <WidgetFrame widget={widget} menu={menu} grip={grip} fresh={fresh}>
             <Component />
         </WidgetFrame>
     );
@@ -108,11 +123,21 @@ export function DeskScreen() {
     const role = panel.role.role;
     const widgets = useWidgets(role, panel.health);
     const [layout, actions] = useDeskLayout(role);
+    // Слух этого компьютера, пока он готовится или упал: над всем остальным, в любой раскладке.
+    const [localAsr, setLocalAsr] = useLocalAsr();
+    const setup = localAsrNeedsCard(localAsr) ? <LocalAsrSetup local={localAsr} onChange={setLocalAsr} /> : null;
+    const banner =
+        panel.banner || setup ? (
+            <>
+                {panel.banner}
+                {setup}
+            </>
+        ) : null;
     // Без колонки столу нечего показать: режимы и орбита были бы о колонке, которой нет.
     if (panel.noStation)
         return (
             <div class="desk-solo">
-                {panel.banner}
+                {banner}
                 <FirstRun />
                 <ConnectFirstCard onConnect={panel.openConnect} />
             </div>
@@ -124,25 +149,29 @@ export function DeskScreen() {
         earlier: feed && keys.indexOf(widget.key) > 0 ? () => actions.move(widget.key, -1, keys) : undefined,
         later: feed && keys.indexOf(widget.key) < keys.length - 1 ? () => actions.move(widget.key, 1, keys) : undefined,
     });
-    const tile = (widget: DeskWidget, feed: boolean) => <WidgetOnDesk key={widget.key} widget={widget} menu={menuOf(widget, feed)} />;
+    const tile = (widget: DeskWidget, feed: boolean) => (
+        <WidgetOnDesk key={widget.key} widget={widget} menu={menuOf(widget, feed)} fresh={isFresh(layout, widget.key)} />
+    );
 
     // Боковая панель: колонка, под ней виджеты столбцом.
     if (view === 'sidebar')
         return (
             <>
-                {panel.banner}
+                {banner}
                 <Scene />
                 <div class="desk-column">{shown.map((widget) => tile(widget, true))}</div>
             </>
         );
 
-    // Телефон и узкое окно: лента — колонка посередине, по виджету-два выше, остальные ниже.
+    // Телефон и узкое окно: лента — колонка посередине, по виджету-два выше, остальные ниже. Плитка-черновик — первой в
+    // ленте (решение 9), над колонкой.
     if (!wide) {
         const above = shown.slice(0, Math.min(2, Math.floor(shown.length / 3)));
         const below = shown.slice(above.length);
         return (
             <div class="desk-feed">
-                {panel.banner}
+                {banner}
+                <FeedDraft />
                 {above.length > 0 && <div class="desk-feed-grid">{above.map((widget) => tile(widget, true))}</div>}
                 <Scene room={420} />
                 <div class="desk-feed-grid">
@@ -160,9 +189,9 @@ export function DeskScreen() {
             layout={layout}
             actions={actions}
             scene={<Scene room={460} />}
-            addTile={<AddTile onAdd={panel.openAdd} />}
-            banner={panel.banner}
-            render={(widget, menu, grip) => <WidgetOnDesk widget={widget} menu={menu} grip={grip} />}
+            addTile={<Making onAdd={panel.openAdd} />}
+            banner={banner}
+            render={(widget, menu, grip) => <WidgetOnDesk widget={widget} menu={menu} grip={grip} fresh={isFresh(layout, widget.key)} />}
         />
     );
 }

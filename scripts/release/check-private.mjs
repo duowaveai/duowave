@@ -49,7 +49,9 @@ const ZONE_TABLES = new Set(['packages/calendar/backend.js']);
 const ZONE = /\b(?:Africa|America|Antarctica|Asia|Atlantic|Australia|Europe|Indian|Pacific)\/[A-Za-z_]+(?:\/[A-Za-z_]+)?/g;
 
 function excluded() {
-    return readFileSync(path.join(ROOT, 'scripts/release/exclude.txt'), 'utf8')
+    return ['exclude.txt', 'exclude-internal.txt']
+        .map((file) => readFileSync(path.join(ROOT, 'scripts/release', file), 'utf8'))
+        .join('\n')
         .split('\n')
         .map((line) => line.replace(/#.*/, '').trim())
         .filter(Boolean);

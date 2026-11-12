@@ -19,13 +19,15 @@ pub const PERMISSIONS: &[(&str, &str)] = &[
     ("connectors.view", "Смотреть подключения"),
     ("connectors.manage", "Подключать и настраивать подключения"),
     ("mcp.use", "Пользоваться инструментами MCP-серверов: голосом и в проверочном чате"),
-    ("plugins.manage", "Включать, выключать и перезагружать плагины, менять их настройки"),
+    ("plugins.manage", "Включать, выключать и перезагружать приложения, менять их настройки"),
     (
         "plugins.mcp",
-        "Звать инструменты включённых плагинов как MCP-сервер шлюза: так их берут Claude Code и другие агенты",
+        "Звать инструменты включённых приложений как MCP-сервер шлюза: так их берут Claude Code и другие агенты",
     ),
     ("settings.edit", "Общие настройки шлюза"),
     ("audit.view", "Смотреть, кто что менял"),
+    ("memory.view", "Смотреть память: что помнят персонажи о доме"),
+    ("memory.manage", "Менять память: править и стирать записи, включать и выключать её"),
     ("system.update", "Ставить обновления шлюза"),
     (
         "home.models",
@@ -49,6 +51,8 @@ pub const PLUGINS_MANAGE: &str = "plugins.manage";
 pub const PLUGINS_MCP: &str = "plugins.mcp";
 pub const SETTINGS_EDIT: &str = "settings.edit";
 pub const AUDIT_VIEW: &str = "audit.view";
+pub const MEMORY_VIEW: &str = "memory.view";
+pub const MEMORY_MANAGE: &str = "memory.manage";
 pub const SYSTEM_UPDATE: &str = "system.update";
 pub const HOME_MODELS: &str = "home.models";
 

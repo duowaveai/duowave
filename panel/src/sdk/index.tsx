@@ -9,7 +9,7 @@ import type { ComponentChildren } from 'preact';
 import * as hooks from 'preact/hooks';
 import * as jsxRuntime from 'preact/jsx-runtime';
 
-import { PackagesView, PanelMode, RequestView, StationPresence, api, can, stationCall } from '../api';
+import { DraftTrying as DraftTryingValue, PackagesView, PanelMode, RequestView, StationPresence, api, can, fetchPluginFile, stationCall } from '../api';
 import { IconCoins, IconGlobe, IconHeart, IconList, IconMusic, IconPackage, IconSparkle, IconSpeaker, IconTimer, IconWeather } from '../icons';
 import { enabledHere, packageSettings } from '../plugins/loader';
 import { PluginScope, usePluginVersion } from '../plugins/versions';
@@ -21,6 +21,9 @@ import { ask } from '../ui/confirm';
 import { Sheet } from '../ui/sheet';
 import { Switch } from '../ui/switch';
 import { VIA } from '../via';
+import { melodyOf, noteName, readMidiFile, useMidi } from './midi';
+import { PianoKeys } from './piano-keys';
+import { useSynth } from './synth';
 
 /**
  * Виджет черновика, показанный до установки («+» → «Новый виджет», мастерская; docs/plans/desk.md, этап 5): его
@@ -30,8 +33,15 @@ import { VIA } from '../via';
  */
 export const DraftPreview = preact.createContext<string | null>(null);
 
-async function callDraft<T>(id: string, fn: string, input: unknown): Promise<T> {
-    const report = await api.runDraft(id, fn, input);
+/**
+ * Как предпросмотр черновика зовёт песочницу (docs/plans/voice-creation.md): плитка на столе и «Примерка» — всегда на
+ * примере (`examples.json`, до «да» черновик в сеть не ходит) и с обычными настройками, что человек выбрал в
+ * «Примерке». Мастерская — как раньше, по сети.
+ */
+export const DraftTrying = preact.createContext<DraftTryingValue>({});
+
+async function callDraft<T>(id: string, fn: string, input: unknown, trying: DraftTryingValue): Promise<T> {
+    const report = await api.runDraft(id, fn, input, trying);
     if (!report.ok) throw new Error(report.error ?? `${fn} не отработала`);
     return report.result as T;
 }
@@ -89,7 +99,7 @@ async function callPlugin<T>(id: string, fn: string, input: unknown, station: st
             const path = `/api/v1/packages/${encodeURIComponent(id)}/call/${encodeURIComponent(fn)}`;
             return (await stationCall<{ result: T }>(station, 'POST', path, input)).result;
         }
-        if (there && !enabledHere(id)) throw new Error(`Плагин «${there.title || id}» выключен на колонке.`);
+        if (there && !enabledHere(id)) throw new Error(`Приложение «${there.title || id}» выключено на колонке.`);
     }
     return api.callPackage<T>(id, fn, input);
 }
@@ -100,16 +110,45 @@ async function callPlugin<T>(id: string, fn: string, input: unknown, station: st
  */
 export function useApi(pluginId: string): { call: <T = unknown>(fn: string, input?: unknown) => Promise<T> } {
     const draft = hooks.useContext(DraftPreview);
+    const trying = hooks.useContext(DraftTrying);
     // Без пульта вокруг (не должно быть, но плагину не падать из-за этого) — свой шлюз, как раньше.
     const panel = hooks.useContext(PanelContext);
     const station = !VIA && panel?.role.role === 'helper' ? panel.role.station?.key : undefined;
+    const settings = JSON.stringify(trying.settings ?? {});
     return hooks.useMemo(
         () => ({
             call: <T,>(fn: string, input: unknown = {}) =>
-                draft === pluginId ? callDraft<T>(pluginId, fn, input) : callPlugin<T>(pluginId, fn, input, station),
+                draft === pluginId ? callDraft<T>(pluginId, fn, input, trying) : callPlugin<T>(pluginId, fn, input, station),
         }),
-        [pluginId, draft, station],
+        [pluginId, draft, station, trying.example, settings],
     );
+}
+
+/**
+ * Картинка своего плагина (`host.files.download`, plugins/files.rs) для `<img src>`: адрес в памяти пульта — шлюз
+ * отдаёт её только с ключом входа, открытой ссылки нет. Пока не пришла или её нет — null.
+ */
+export function useFile(name: string): string | null {
+    const plugin = hooks.useContext(PluginScope);
+    const [url, setUrl] = hooks.useState<string | null>(null);
+    const own = usePluginVersion(plugin);
+    hooks.useEffect(() => {
+        if (!plugin || !name) return;
+        let alive = true;
+        let made: string | null = null;
+        fetchPluginFile(plugin, name)
+            .then((blob) => {
+                if (!alive) return;
+                made = URL.createObjectURL(blob);
+                setUrl(made);
+            })
+            .catch(() => alive && setUrl(null));
+        return () => {
+            alive = false;
+            if (made) URL.revokeObjectURL(made);
+        };
+    }, [plugin, name, own]);
+    return url;
 }
 
 /** Значения настроек своего плагина (меняет их администратор в окне плагина): только чтение. */
@@ -196,7 +235,31 @@ export function Pill({ tone = 'off', children }: { tone?: 'own' | 'yandex' | 'ag
     return <span class={`pill pill-${tone}`}>{children}</span>;
 }
 
-export const sdk = { definePlugin, useApi, useSettings, usePanelState, useLive, useStation, icons, can, Card, Action, Switch, Sheet, Note, Pill, ask };
+export const sdk = {
+    definePlugin,
+    useApi,
+    useSettings,
+    useFile,
+    usePanelState,
+    useLive,
+    useStation,
+    icons,
+    can,
+    Card,
+    Action,
+    Switch,
+    Sheet,
+    Note,
+    Pill,
+    ask,
+    // MIDI-клавиатура для приложений (docs/plans/midi.md, Host API 1.3).
+    useMidi,
+    useSynth,
+    PianoKeys,
+    readMidiFile,
+    melodyOf,
+    noteName,
+};
 
 declare global {
     // eslint-disable-next-line no-var

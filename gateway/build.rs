@@ -2,7 +2,8 @@
 //! and as an encoded descriptor set for the codec's reflection, the list of SQL migrations in migrations/ (adding a
 //! migration is adding a file), an empty panel folder when the panel is not built, so the program still builds
 //! (it then says the panel is missing), and the station's build inside the computer's when one is given
-//! (DUOWAVE_STATION_PAYLOAD: duowave-station-aarch64.tar.gz with its .sig beside it; src/placement/payload.rs).
+//! (DUOWAVE_STATION_PAYLOAD: duowave-station-aarch64.tar.gz with its .sig beside it; src/placement/payload.rs); and,
+//! for recognition on a Mac (feature local-asr), clang's runtime that ggml-metal's version checks call.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -31,7 +32,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=../panel/dist");
 
     std::fs::write(out.join("station_payload.rs"), station_payload(&out)?)?;
+    link_clang_rt_osx();
     Ok(())
+}
+
+/// ggml-metal (transcribe.cpp, feature local-asr) guards newer Metal calls with `@available`. Built for a macOS older
+/// than the SDK — the app's minimum is 13.5 — clang turns those checks into calls to `__isPlatformVersionAtLeast` in
+/// its runtime, libclang_rt.osx.a, which rustc does not link (`-nodefaultlibs`): the app's link failed without it
+/// (12.11). Linked here, as Handy does; a build for the host's own macOS folds the checks away and needs nothing.
+fn link_clang_rt_osx() {
+    let mac = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos");
+    if !mac || std::env::var_os("CARGO_FEATURE_LOCAL_ASR").is_none() {
+        return;
+    }
+    let resource_dir = std::process::Command::new("clang")
+        .arg("--print-resource-dir")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+    let Some(resource_dir) = resource_dir else {
+        println!("cargo:warning=clang --print-resource-dir failed: libclang_rt.osx.a not linked");
+        return;
+    };
+    let darwin = Path::new(&resource_dir).join("lib").join("darwin");
+    if !darwin.join("libclang_rt.osx.a").exists() {
+        println!("cargo:warning=no libclang_rt.osx.a in {}", darwin.display());
+        return;
+    }
+    println!("cargo:rustc-link-search=native={}", darwin.display());
+    println!("cargo:rustc-link-lib=static=clang_rt.osx");
 }
 
 /// The station's build carried by the computer's: the archive and its signature, both checked by the program before

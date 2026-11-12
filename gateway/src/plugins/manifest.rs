@@ -20,7 +20,11 @@ pub const MANIFEST_SCHEMA: u64 = 1;
 /// The Host API this gateway gives: `api` in a manifest is a requirement on it (`^1`).
 /// 1.1 (stage 10): `host.call` — the household's content, other plugins' tools, the smart home — and answers said by
 /// the model; additive, a plugin of `^1` still runs.
-pub const HOST_API: semver::Version = semver::Version::new(1, 1, 0);
+/// 1.2 (docs/plans/plugin-schedules.md): the turn timer — `continue.timeout`, «время вышло» said by the station
+/// itself; additive, a plugin of `^1.1` still runs.
+/// 1.3 (docs/plans/midi.md): the right `midi` — a MIDI keyboard at the computer, heard and played by the app's page;
+/// additive, a plugin of `^1.2` still runs.
+pub const HOST_API: semver::Version = semver::Version::new(1, 3, 0);
 
 /// What a plugin may ask for. The budget is a limit the runtime keeps, not a hint.
 pub const MAX_MEMORY_MB: u64 = 64;
@@ -82,8 +86,10 @@ impl PackageKind {
     pub fn not_a_plugin(self) -> Option<&'static str> {
         match self {
             PackageKind::Plugin | PackageKind::App => None,
-            PackageKind::Character => Some("персонаж — не плагин: его выбирают среди персонажей, а не включают здесь"),
-            PackageKind::Theme => Some("тема — не плагин: её выбирают в пульте, а не включают здесь"),
+            PackageKind::Character => {
+                Some("персонаж — не приложение: его выбирают среди персонажей, а не включают здесь")
+            }
+            PackageKind::Theme => Some("тема — не приложение: её выбирают в пульте, а не включают здесь"),
         }
     }
 }
@@ -149,6 +155,18 @@ pub enum Permission {
     SmartHome,
     /// `llm.chat`: an answer said by the gateway's model in the plugin's words (a game's host, a tale).
     LlmChat,
+    /// `schedule`: it acts by itself in time — rhythms of its manifest, tasks of its code (plugins/schedule.rs, Host API
+    /// 1.2).
+    Schedule,
+    /// `files`: pictures it downloads and keeps (plugins/files.rs): PNG, JPEG, WebP, GIF within its room, less on the
+    /// station (Host API 1.2).
+    Files,
+    /// `notify`: a message to the owner — the chat «Оповещения», the webhook, the Mac's notifications; never anyone
+    /// else (Host API 1.2).
+    Notify,
+    /// `midi`: hear and play the MIDI keyboard plugged into the computer (src/midi) — on the app's page, at home, while
+    /// it listens; never in its backend, nor in a journal (Host API 1.3).
+    Midi,
 }
 
 impl Permission {
@@ -170,6 +188,10 @@ impl Permission {
             "tools.call" => Permission::ToolsCall,
             "smart_home" => Permission::SmartHome,
             "llm.chat" => Permission::LlmChat,
+            "schedule" => Permission::Schedule,
+            "notify" => Permission::Notify,
+            "files" => Permission::Files,
+            "midi" => Permission::Midi,
             _ => return None,
         })
     }
@@ -188,6 +210,10 @@ impl Permission {
             Permission::ToolsCall => "tools.call".into(),
             Permission::SmartHome => "smart_home".into(),
             Permission::LlmChat => "llm.chat".into(),
+            Permission::Schedule => "schedule".into(),
+            Permission::Notify => "notify".into(),
+            Permission::Files => "files".into(),
+            Permission::Midi => "midi".into(),
         }
     }
 }
@@ -307,12 +333,25 @@ pub struct EventSpec {
     pub handler: String,
 }
 
+/// A rhythm of `contributes.schedules` (docs/plans/plugin-schedules.md): when, and what — the plugin's function or a
+/// ready answer the gateway says itself (the owner's decision 8, 12.11.2026: it never loads the plugin, so it costs
+/// the station no memory and a phone can make it a system notification).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleSpec {
+    pub id: String,
+    pub title: String,
+    pub when: super::schedule::When,
+    pub then: super::schedule::Then,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Contributes {
     pub intents: Vec<IntentSpec>,
     pub tools: Vec<ToolSpec>,
     pub media: Vec<MediaSpec>,
     pub events: Vec<EventSpec>,
+    /// Rhythms: it acts by itself in time (plugins/schedule.rs).
+    pub schedules: Vec<ScheduleSpec>,
     /// The panel's part, themes and characters: kept as they are for the panel (stage 5) and the characters
     /// (docs/plans/characters.md); the plugin host does not read them.
     pub panel: Option<Value>,
@@ -347,9 +386,22 @@ pub struct Manifest {
     pub permissions: Vec<Permission>,
     pub settings: Vec<SettingSpec>,
     pub contributes: Contributes,
+    /// `dataVersion`: the kind of the data it keeps, raised by its author when that changes (docs/plans/
+    /// package-history.md): a step back of the code alone across a change of it is marked risky.
+    pub data_version: Option<u32>,
 }
 
 impl Permission {
+    /// A right Host API 1.3 brought: a package with it needs `"api": "^1.3"`, a 1.2 gateway refuses it as unknown.
+    pub fn since_1_3(&self) -> bool {
+        matches!(self, Permission::Midi)
+    }
+
+    /// A right Host API 1.2 brought: a package with it needs `"api": "^1.2"`, a 1.1 gateway refuses it as unknown.
+    pub fn since_1_2(&self) -> bool {
+        matches!(self, Permission::Schedule | Permission::Notify | Permission::Files)
+    }
+
     /// A right Host API 1.1 brought (stage 10, the apps): a package with it needs `"api": "^1.1"`, a 1.0 gateway
     /// refuses it as unknown.
     pub fn since_1_1(&self) -> bool {
@@ -385,7 +437,7 @@ impl Manifest {
         (!self.runs.contains(&placement)).then(|| {
             let runs: Vec<&str> = self.runs.iter().map(|runs| runs.as_str()).collect();
             format!(
-                "не работает здесь: размещение «{}» ({}), а плагин — для {}",
+                "не работает здесь: размещение «{}» ({}), а приложение — для {}",
                 placement.title(),
                 placement.as_str(),
                 runs.join(", ")
@@ -416,6 +468,23 @@ impl Manifest {
             }
         }
         values
+    }
+
+    /// The stored values with the private ones (`secret`) from the gateway's safe, `plugin:<package>:<key>`: what
+    /// `settings_values` and `settings_shown` read. A private value still left among the settings (one stored before
+    /// the safe kept them, a package of settings from an older gateway) is read until the host moves it into the safe.
+    pub fn stored_with_secrets(
+        &self,
+        stored: Option<&Map<String, Value>>,
+        secrets: &crate::secrets::SecretsService,
+    ) -> Map<String, Value> {
+        let mut all = stored.cloned().unwrap_or_default();
+        for setting in self.settings.iter().filter(|setting| setting.secret) {
+            if let Some(value) = secrets.get(&crate::secrets::plugin_secret(&self.id, &setting.key)) {
+                all.insert(setting.key.clone(), Value::String(value));
+            }
+        }
+        all
     }
 }
 
@@ -459,7 +528,7 @@ impl std::fmt::Display for ManifestError {
     }
 }
 
-fn identifier(name: &str) -> bool {
+pub(crate) fn identifier(name: &str) -> bool {
     let mut chars = name.chars();
     chars.next().is_some_and(|first| first.is_ascii_alphabetic() || first == '_' || first == '$')
         && name.len() <= 64
@@ -607,6 +676,16 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
         _ => problems.push("runs: список размещений, где плагин работает (pc, station, stationServer)".into()),
     }
 
+    let data_version = match root.get("dataVersion") {
+        None | Some(Value::Null) => None,
+        Some(value) => match value.as_u64().filter(|n| *n <= u32::MAX as u64) {
+            Some(n) => Some(n as u32),
+            None => {
+                problems.push("dataVersion: целое число — вид данных, который хранит плагин".into());
+                None
+            }
+        },
+    };
     let prefer_home = match text("prefer") {
         None | Some("here") => false,
         Some("home") => true,
@@ -641,7 +720,7 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
                         permissions.insert(permission);
                     }
                     None => problems.push(format!(
-                        "permissions: «{}» — неизвестное право (есть net:<хост>, voice.intents, voice.say, llm.tools, llm.chat, media.source, content:music, content:tales, kv, events, tools.call, smart_home, lan.mdns)",
+                        "permissions: «{}» — неизвестное право (есть net:<хост>, voice.intents, voice.say, llm.tools, llm.chat, media.source, content:music, content:tales, kv, events, tools.call, smart_home, lan.mdns, schedule, notify, files)",
                         crate::skills::js::string_of(name)
                     )),
                 }
@@ -653,6 +732,18 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
 
     let settings = settings(root.get("settings"), &mut problems);
     let contributes = contributes(root.get("contributes"), &permissions, &mut problems);
+    // `at: "{key}"` — the time a person sets in the plugin's settings: a string setting of it.
+    for spec in &contributes.schedules {
+        let super::schedule::When::At { at, .. } = &spec.when else { continue };
+        let Some(key) = at.strip_prefix('{').and_then(|rest| rest.strip_suffix('}')) else { continue };
+        if !settings.iter().any(|setting| setting.key == key && setting.r#type == SettingType::String) {
+            problems.push(format!("contributes.schedules «{}»: at «{at}» — нет строковой настройки «{key}»", spec.id));
+        }
+    }
+    // A keyboard is plugged into a computer (docs/plans/midi.md): an app that hears one must run there.
+    if permissions.contains(&Permission::Midi) && !runs.contains(&Placement::Pc) {
+        problems.push("midi: MIDI-клавиатура подключается к компьютеру — добавьте pc в runs".into());
+    }
     // A character and a theme are data: what needs code is a plugin's to give.
     if matches!(kind, PackageKind::Character | PackageKind::Theme) {
         let coded = [
@@ -660,6 +751,7 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
             ("tools", contributes.tools.len()),
             ("media", contributes.media.len()),
             ("events", contributes.events.len()),
+            ("schedules", contributes.schedules.len()),
         ];
         for (what, _) in coded.into_iter().filter(|(_, count)| *count > 0) {
             problems.push(format!("contributes.{what}: у пакета вида {} нет кода, это дело плагина", kind.as_str()));
@@ -687,6 +779,7 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
         permissions,
         settings,
         contributes,
+        data_version,
     })
 }
 
@@ -927,6 +1020,22 @@ fn contributes(value: Option<&Value>, permissions: &[Permission], problems: &mut
         let handler = handler_of(item, "", &at, problems);
         out.events.push(EventSpec { name, handler });
     }
+    let schedules = list(contributes, "schedules", problems);
+    if !schedules.is_empty() {
+        need(permissions, Permission::Schedule, "schedules", problems);
+    }
+    if schedules.len() > super::schedule::MAX_RHYTHMS {
+        problems.push(format!("contributes.schedules: до {} ритмов", super::schedule::MAX_RHYTHMS));
+    }
+    for (index, item) in schedules.iter().enumerate().take(super::schedule::MAX_RHYTHMS) {
+        let at = format!("contributes.schedules[{index}]");
+        let Some(spec) = super::schedule::rhythm(item, &at, permissions, problems) else { continue };
+        if out.schedules.iter().any(|known| known.id == spec.id) {
+            problems.push(format!("{at}: id «{}» уже есть", spec.id));
+            continue;
+        }
+        out.schedules.push(spec);
+    }
     out
 }
 
@@ -1052,7 +1161,7 @@ mod tests {
             "api": "^1",
             "runs": [],
             "budget": { "memoryMb": 500 },
-            "permissions": ["files", "net:http://x.ru"],
+            "permissions": ["camera", "net:http://x.ru"],
             "contributes": {
                 "intents": [{ "phrases": ["{station}"], "handler": "play station" }],
                 "tools": [{ "name": "set_timer", "description": "" }],
@@ -1067,7 +1176,7 @@ mod tests {
             "нет title",
             "runs:",
             "budget.memoryMb",
-            "«files»",
+            "«camera»",
             "«net:http://x.ru»",
             "нужно право voice.intents",
             "начинаться со слова",

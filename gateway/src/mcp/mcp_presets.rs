@@ -289,7 +289,7 @@ pub fn preset_view(preset: &McpPreset, ha_url: Option<&str>) -> Value {
     let unknown = matches!(url, Some(None));
     view["ready"] = json!(!unknown);
     if unknown {
-        view["why"] = json!("Нужен адрес Home Assistant: в «Навыки» → «Подключения» или свой адрес.");
+        view["why"] = json!("Нужен адрес Home Assistant: в «Приложения» → «Подключения» или свой адрес.");
     }
     view
 }

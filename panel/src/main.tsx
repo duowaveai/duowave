@@ -17,6 +17,9 @@ import './ui/minimal.css';
 // Стол, док, окна и виджеты (docs/plans/desk.md) — последними.
 import './ui/desk.css';
 import './ui/activity.css';
+import './ui/recall.css';
+// Клавиатура на экране для приложений (sdk/piano-keys.tsx).
+import './ui/piano-keys.css';
 import { installSdk } from './sdk';
 import { registerPlugin } from './shell/registry';
 import { applyTheme } from './shell/theme';

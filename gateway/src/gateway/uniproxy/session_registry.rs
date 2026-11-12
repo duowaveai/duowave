@@ -20,6 +20,9 @@ use crate::gateway::observability::session_recorder::SessionEventRecord;
 use crate::health_status::{HealthSources, StationHealth};
 use crate::operations::station_watch::ActiveSessions;
 use crate::operations::StationWatch;
+use crate::plugins::schedule::ScheduleStation;
+use crate::plugins::skill::TurnStation;
+use crate::skills::capabilities::Intent;
 use crate::skills::own::reminders_skill::{AudioClip, Speaker};
 
 const RECENT_CLOSED: usize = 20;
@@ -141,6 +144,8 @@ impl SessionRegistry {
     /// the runtime.
     pub fn start(self: &Arc<Self>) {
         self.deps.skills.attach_speaker(Arc::new(RegistrySpeaker(self.me.clone())));
+        // Delayed commands run as new requests on the live station of their device.
+        self.deps.skills.later.attach_runner(Arc::new(RegistrySpeaker(self.me.clone())));
         // The player's retries through the gateway go to the live station of their device the same way.
         self.deps.skills.player_watch.set_pusher(Arc::new(RegistrySpeaker(self.me.clone())));
         let me = self.me.clone();
@@ -262,6 +267,16 @@ impl SessionRegistry {
         self.speaking_on("*")
     }
 
+    /// The turn timer's way to the stations (plugins/skill.rs): «время вышло» as the answer to a push.
+    pub fn turns(&self) -> Arc<dyn TurnStation> {
+        Arc::new(RegistrySpeaker(self.me.clone()))
+    }
+
+    /// The plugins' schedules' way to the stations (plugins/schedule.rs): speech, whether one is busy, its zone.
+    pub fn schedule_station(&self) -> Arc<dyn ScheduleStation> {
+        Arc::new(RegistrySpeaker(self.me.clone()))
+    }
+
     /// The newest live session of a device (`*`: any) that can speak.
     pub fn speaking_on(&self, device_tag: &str) -> Option<Arc<StationSession>> {
         let active = self.lock().active.clone();
@@ -289,6 +304,75 @@ impl Speaker for RegistrySpeaker {
             }
         }
         .boxed()
+    }
+}
+
+/// The turn timer's station: the live station of the device answers a push with our plugins' skill.
+impl TurnStation for RegistrySpeaker {
+    fn ask(
+        &self,
+        device: &str,
+        intent: Intent,
+        label: String,
+        still: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> BoxFuture<'static, bool> {
+        let session = self.0.upgrade().and_then(|registry| registry.speaking_on(device));
+        async move {
+            match session {
+                Some(session) => session.answer_pushed(intent, label, still).await,
+                None => false,
+            }
+        }
+        .boxed()
+    }
+
+    fn hearing(&self, device: &str) -> bool {
+        self.0.upgrade().and_then(|registry| registry.speaking_on(device)).is_some_and(|session| session.hearing())
+    }
+
+    fn ringing(&self, device: &str) -> bool {
+        self.0.upgrade().and_then(|registry| registry.speaking_on(device)).is_some_and(|session| session.ringing())
+    }
+
+    /// Ringing, words heard, a conversation going on, or music playing: «Готово» waits for a free station.
+    fn busy(&self, device: &str) -> bool {
+        self.0
+            .upgrade()
+            .and_then(|registry| registry.speaking_on(device))
+            .is_some_and(|session| session.busy() || session.playing())
+    }
+}
+
+/// The delayed commands' station: the words as a new request on the device's live station.
+impl crate::skills::own::later_skill::CommandRunner for RegistrySpeaker {
+    fn busy(&self, device: &str) -> bool {
+        self.0.upgrade().and_then(|registry| registry.speaking_on(device)).is_some_and(|session| session.busy())
+    }
+
+    fn run(&self, device: &str, command: String) -> BoxFuture<'static, bool> {
+        let session = self.0.upgrade().and_then(|registry| registry.speaking_on(device));
+        async move {
+            match session {
+                Some(session) => session.run_words(command).await,
+                None => false,
+            }
+        }
+        .boxed()
+    }
+}
+
+/// The schedules' station: speech on the device's live station (`*`: the newest connected), busy, its zone.
+impl ScheduleStation for RegistrySpeaker {
+    fn say(&self, device: &str, text: String) -> BoxFuture<'static, bool> {
+        Speaker::say(self, device.to_string(), text, None)
+    }
+
+    fn busy(&self, device: &str) -> bool {
+        self.0.upgrade().and_then(|registry| registry.speaking_on(device)).is_some_and(|session| session.busy())
+    }
+
+    fn timezone(&self) -> Option<String> {
+        self.0.upgrade().and_then(|registry| registry.latest_speaking()).and_then(|session| session.zone())
     }
 }
 

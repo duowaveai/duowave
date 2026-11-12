@@ -13,7 +13,7 @@ mkdir -p "$OUT"
 [ -z "$(git -C "$ROOT" status --porcelain --untracked-files=no)" ] || echo "note: uncommitted changes are not in the snapshot (it is HEAD)" >&2
 
 git -C "$ROOT" archive --format=tar HEAD | tar -x -C "$OUT"
-grep -v '^[[:space:]]*\(#\|$\)' "$ROOT/scripts/release/exclude.txt" | sed 's/[[:space:]]*#.*//' | while read -r entry; do
+cat "$ROOT/scripts/release/exclude.txt" "$ROOT/scripts/release/exclude-internal.txt" | grep -v '^[[:space:]]*\(#\|$\)' | sed 's/[[:space:]]*#.*//' | while read -r entry; do
     rm -rf "${OUT:?}/$entry"
 done
 

@@ -1,6 +1,6 @@
 [package]
 name = "duowave-desktop"
-version = "0.5.1"
+version = "0.6.0"
 description = "The voice gateway in the tray: runs the gateway (the Rust engine, crate duowave, inside the app) and shows its panel"
 edition = "2021"
 publish = false
@@ -13,8 +13,10 @@ publish = false
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# The gateway itself, in this process (docs/plans/rust-gateway.md, stage 7).
-duowave = { path = "../../gateway" }
+# The gateway itself, in this process (docs/plans/rust-gateway.md, stage 7), with recognition on this computer
+# (local-asr: transcribe.cpp in a worker of this app, docs/plans/speech-servers.md; the build needs cmake) and MIDI
+# keyboards for apps (midi, docs/plans/midi.md: the app's window has no Web MIDI, the gateway hears the keyboard).
+duowave = { path = "../../gateway", features = ["local-asr", "midi"] }
 tokio = { version = "1", features = ["sync", "net", "time"] }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-single-instance = "2"

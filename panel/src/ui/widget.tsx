@@ -92,12 +92,15 @@ export function WidgetFrame({
     menu,
     children,
     grip,
+    fresh,
 }: {
     widget: DeskWidget;
     menu: WidgetMenu;
     children: ComponentChildren;
     /** Свободный стол: за шапку виджет перетаскивают. */
     grip?: (event: PointerEvent) => void;
+    /** Сел на стол из «Примерки» меньше суток назад: метка «новый». */
+    fresh?: boolean;
 }) {
     const title = widget.title ?? widget.id;
     const body = (
@@ -118,6 +121,7 @@ export function WidgetFrame({
     const { icon: Icon } = widget;
     return (
         <section class={`widget widget-${widget.size}`} aria-label={title}>
+            {fresh && <span class="widget-fresh">новый</span>}
             <header class={`widget-head${grip ? ' widget-grip' : ''}`} onPointerDown={grip ? (event) => grip(event as PointerEvent) : undefined}>
                 {Icon && <Icon size={16} />}
                 <span class="widget-title">{title}</span>

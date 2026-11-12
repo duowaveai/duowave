@@ -277,7 +277,7 @@ struct Instance {
 }
 
 fn stopped() -> PluginError {
-    PluginError::Unavailable("плагин выгружен".into())
+    PluginError::Unavailable("приложение выгружено".into())
 }
 
 impl PluginInstance for Instance {
@@ -371,7 +371,7 @@ impl PluginRuntime for Wasm {
                 .map_err(|error| PluginError::Load(format!("поток не запустился: {error}")))?;
             let exports = match tokio::time::timeout(LOAD_LIMIT + GRACE, started).await {
                 Ok(Ok(loaded)) => loaded?,
-                Ok(Err(_)) => return Err(PluginError::Load("поток плагина завершился".into())),
+                Ok(Err(_)) => return Err(PluginError::Load("поток приложения завершился".into())),
                 Err(_) => return Err(PluginError::Timeout(LOAD_LIMIT.as_millis() as u64)),
             };
             Ok(Arc::new(Instance { jobs: Mutex::new(Some(jobs)), exports }) as Arc<dyn PluginInstance>)

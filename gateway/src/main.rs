@@ -19,6 +19,11 @@
 //!   duowave livekit-token --name "Мама" [--days 30]           a LiveKit room access for an app (PC build)
 
 fn main() -> anyhow::Result<()> {
+    // A recognition worker of this program's own gateway (src/speech/asr/local): nothing else starts in it.
+    #[cfg(feature = "local-asr")]
+    if duowave::speech::asr::local::is_worker_invocation() {
+        std::process::exit(duowave::speech::asr::local::run_worker());
+    }
     let command = std::env::args().nth(1).unwrap_or_else(|| "serve".into());
     match command.as_str() {
         "version" | "--version" | "-V" => {

@@ -27,6 +27,8 @@ const AUTOSTART_ARG: &str = "--autostart";
 /// Another data folder (a test, a portable copy); the log then goes to its logs/.
 const DATA_DIR_ENV: &str = "DUOWAVE_DATA_DIR";
 const WINDOW: &str = "main";
+/// The project's site: the tray's «Сайт DuoWave» opens it in the browser (the panel's «Powered by DuoWave» too).
+const SITE_URL: &str = "https://duowave.ai";
 /// The splash page while the gateway is not up (the app's own files).
 const SPLASH_URL: &str = if cfg!(windows) {
     "http://tauri.localhost/index.html"
@@ -45,6 +47,11 @@ struct Tray {
 }
 
 fn main() {
+    // A recognition worker of the gateway in this app (the gateway's src/speech/asr/local): this same program started
+    // with `--asr-worker`. Nothing else starts in it — no window, no tray, no second-instance check.
+    if duowave::speech::asr::local::is_worker_invocation() {
+        std::process::exit(duowave::speech::asr::local::run_worker());
+    }
     let context = tauri::generate_context!();
     // Set before any thread starts. The engine reads this process's own environment for what it passes to the
     // programs it starts (its model servers, the voice lab: DATA_DIR and the .env there) and for who manages it, as
@@ -54,6 +61,11 @@ fn main() {
         std::env::set_var("DATA_DIR", data);
     }
     std::env::set_var(engine::MANAGED_ENV, "desktop");
+    // uv beside the app's own program (bundle.externalBin): the gateway sets up Python with it for the own voice and
+    // the voice lab, so a new computer needs nothing installed by hand.
+    if let Some(uv) = bundled_uv() {
+        std::env::set_var("DUOWAVE_UV", uv);
+    }
     #[cfg(unix)]
     signals::install();
     // Starting at login: a launch agent on a Mac (the plugin's macOS-only choice), its own way on Windows and Linux.
@@ -103,6 +115,18 @@ fn main() {
             gateway.set_feed_url(updates::feed_url(&handle));
             gateway.set_update_installer(Arc::new(updates::AppInstaller(handle.clone())));
 
+            // «Запускать при входе» is on from the first run: after a restart of the computer the gateway, its
+            // recognition and the station's link come back by themselves. Once only — switched off in the tray, it
+            // stays off. A development build leaves the login items alone.
+            if cfg!(not(debug_assertions)) && awake::first_time(&gateway.paths().data, "autostartSet") {
+                let manager = handle.autolaunch();
+                if !manager.is_enabled().unwrap_or(false) {
+                    match manager.enable() {
+                        Ok(()) => gateway.note("«Запускать при входе» switched on at the first run"),
+                        Err(error) => gateway.note(&format!("«Запускать при входе» not switched on: {error}")),
+                    }
+                }
+            }
             build_window(&handle)?;
             build_tray(&handle)?;
             let listener = handle.clone();
@@ -215,8 +239,16 @@ fn build_window(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// The app's own uv: next to its program, where Tauri puts an external binary (Contents/MacOS in a .app).
+fn bundled_uv() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let uv = exe.parent()?.join(if cfg!(windows) { "uv.exe" } else { "uv" });
+    uv.is_file().then_some(uv)
+}
+
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Открыть пульт", true, None::<&str>)?;
+    let site = MenuItem::with_id(app, "site", "Сайт DuoWave", true, None::<&str>)?;
     let status = MenuItem::with_id(app, "status", "Шлюз запускается…", false, None::<&str>)?;
     let restart = MenuItem::with_id(app, "restart", "Перезапустить шлюз", true, None::<&str>)?;
     let at_login = app.autolaunch().is_enabled().unwrap_or(false);
@@ -237,6 +269,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         app,
         &[
             &open,
+            &site,
             &PredefinedMenuItem::separator(app)?,
             &status,
             &restart,
@@ -290,6 +323,9 @@ fn menu_event(app: &AppHandle, id: &str) {
     let gateway = app.state::<Arc<Gateway>>().inner().clone();
     match id {
         "open" => show_window(app),
+        "site" => {
+            let _ = app.opener().open_url(SITE_URL, None::<&str>);
+        }
         "restart" => {
             std::thread::spawn(move || gateway.restart());
         }

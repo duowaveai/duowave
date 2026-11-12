@@ -61,7 +61,7 @@ function Calendar() {
     return h(
       "div",
       { class: "flex flex-col gap-8" },
-      h("p", { class: "w-cap m-0" }, "Добавьте ссылку iCal своего календаря в настройках плагина — Google, Яндекс и iCloud её дают."),
+      h("p", { class: "w-cap m-0" }, "Добавьте ссылку iCal своего календаря в настройках приложения — Google, Яндекс и iCloud её дают."),
       settings,
     );
   // Ссылка не работает или календарь не ответил: шлюз говорит, что не так.
@@ -91,7 +91,7 @@ export default definePlugin({
   id: "calendar",
   slots: {
     "desk.widgets": [
-      { id: "agenda", title: "Календарь", icon: icons.sparkle, size: "small", source: "плагин", order: 65, permission: "station.view", Component: Calendar },
+      { id: "agenda", title: "Календарь", icon: icons.sparkle, size: "small", source: "приложение", order: 65, permission: "station.view", Component: Calendar },
     ],
   },
 });

@@ -149,7 +149,7 @@ impl AskToolbox {
     pub async fn run(&self, call: &ToolCall, cancel: &CancellationToken) -> Result<ToolOutcome, Cancelled> {
         let contributed = self.contributed.as_ref().filter(|contributed| contributed.owns(&call.name));
         let server = match contributed {
-            Some(_) => Some("Плагины".to_string()),
+            Some(_) => Some("Приложения".to_string()),
             None => self.offer.as_ref().and_then(|offer| offer.server_of(&call.name)).map(|server| server.title),
         };
         let _ = self.events.send(AskEvent::Tool { name: call.name.clone(), server, input: call.input.clone() });
@@ -305,7 +305,8 @@ mod tests {
                 if let (Some(toolbox), Some(call)) = (toolbox, call) {
                     assert_eq!(toolbox.rounds(), ROUNDS);
                     assert!(toolbox.instructions().starts_with("Подключения."));
-                    assert_eq!(toolbox.safe_after_taint(toolbox.tools()).len(), 1, "echo changes nothing");
+                    // Echo and the memory's `recall` change nothing; `remember` and `forget` do.
+                    assert_eq!(toolbox.safe_after_taint(toolbox.tools()).len(), 2, "echo and recall change nothing");
                     if let Ok(outcome) = toolbox.run(&call, &cancel).await {
                         said.push(Ok(format!("Сервер сказал: {}", outcome.content)));
                     }
@@ -354,7 +355,8 @@ mod tests {
         let events = events(response.unwrap()).await;
         let types: Vec<&str> = events.iter().map(|event| event["type"].as_str().unwrap()).collect();
         assert_eq!(types, ["start", "text", "done"]);
-        assert_eq!(events[0], json!({ "type": "start", "model": "home-small", "provider": "Дома", "tools": 0 }));
+        // No connectors here: the tools are the memory's own — remember, forget, recall (src/memory/tools.rs).
+        assert_eq!(events[0], json!({ "type": "start", "model": "home-small", "provider": "Дома", "tools": 3 }));
         assert_eq!(events[1]["text"], json!("Да."));
         assert_eq!(model.forgotten.lock().unwrap().as_slice(), ["panel:u2"], "its own history per person");
     }
@@ -389,7 +391,7 @@ mod tests {
         .await;
         let types: Vec<&str> = events.iter().map(|event| event["type"].as_str().unwrap()).collect();
         assert_eq!(types, ["start", "tool", "result", "text", "text", "done"]);
-        assert_eq!(events[0]["tools"], json!(1));
+        assert_eq!(events[0]["tools"], json!(4), "the fixture's echo and the memory's three");
         assert_eq!(
             events[1],
             json!({ "type": "tool", "name": "mcp_fixture__echo", "server": "Fixture", "input": { "text": "да" } })

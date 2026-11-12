@@ -51,6 +51,93 @@ export function hello({{ name }}) {{
     ]
 }
 
+/// A quiz with the turn timer (docs/plans/plugin-schedules.md, stage 8): 10 seconds a move after the station has asked,
+/// «время вышло» from its own function, the score in its store — what a game on time starts from.
+pub fn quiz(id: &str, title: &str) -> Vec<(String, String)> {
+    let manifest = json!({
+        "schema": 1,
+        "kind": "plugin",
+        "id": id,
+        "version": "0.1.0",
+        "title": title,
+        "description": "Викторина голосом: 10 секунд на ответ, колонка сама говорит «Время вышло!»",
+        "api": "^1.2",
+        "runs": ["pc", "station", "stationServer"],
+        "budget": { "memoryMb": 4, "storageMb": 1 },
+        "permissions": ["voice.intents", "kv"],
+        "contributes": { "intents": [{ "phrases": ["давай викторину", "викторина"], "handler": "start" }] }
+    });
+    let backend =
+        r#"// __TITLE__: викторина с таймером хода (docs/plugins/AUTHORING.md, «Таймер хода»). На ход — SECONDS секунд
+// после того, как колонка договорила вопрос: ответил — зовётся answer, промолчал — шлюз зовёт timeUp, и колонка сама
+// говорит «Время вышло!». Две тишины подряд шлюз терпит, на третьей сам заканчивает разговор. Номер вопроса и счёт —
+// в kv: память кода между ходами не живёт.
+
+const QUESTIONS = [
+  { ask: "Столица Австралии?", answer: "канберра" },
+  { ask: "Сколько планет в Солнечной системе?", answer: "восемь" },
+  { ask: "Самая длинная река в мире?", answer: "нил" },
+];
+const SECONDS = 10;
+const STOP = /^(хватит|стоп|закончим|выход|надоело)$/;
+
+const next = { handler: "answer", timeout: { seconds: SECONDS, handler: "timeUp" } };
+const key = (request) => `quiz:${request?.device ?? "station"}`;
+const plain = (text) => String(text ?? "").toLowerCase().replace(/ё/g, "е").replace(/[^\p{L}\p{N}\s]+/gu, " ").trim();
+
+// Следующий вопрос — или итог, когда вопросы кончились (ответ строкой заканчивает разговор).
+function ask(request, before) {
+  const state = host.kv.get(key(request)) ?? { index: 0, score: 0 };
+  if (state.index >= QUESTIONS.length) {
+    host.kv.delete(key(request));
+    return `${before} Вопросы кончились. Правильных ответов: ${state.score} из ${QUESTIONS.length}.`;
+  }
+  return { say: `${before} ${QUESTIONS[state.index].ask}`, continue: next };
+}
+
+// «Давай викторину».
+export function start({ request }) {
+  host.kv.set(key(request), { index: 0, score: 0 });
+  return ask(request, `Викторина! На каждый ответ ${SECONDS} секунд.`);
+}
+
+// Ответ человека; timer.spent — сколько секунд он думал.
+export function answer({ text, request, timer }) {
+  const words = plain(text);
+  if (STOP.test(words)) {
+    host.kv.delete(key(request));
+    return "Хорошо, доиграем в другой раз.";
+  }
+  const state = host.kv.get(key(request)) ?? { index: 0, score: 0 };
+  const question = QUESTIONS[state.index];
+  const right = Boolean(question) && words.includes(question.answer);
+  host.kv.set(key(request), { index: state.index + 1, score: state.score + (right ? 1 : 0) });
+  const quick = right && timer && timer.spent < 3 ? " Быстро!" : "";
+  return ask(request, right ? `Верно!${quick}` : `Нет, это ${question?.answer ?? "другое"}.`);
+}
+
+// SECONDS секунд тишины; timeout.missed — какая это тишина подряд.
+export function timeUp({ request, timeout }) {
+  const state = host.kv.get(key(request)) ?? { index: 0, score: 0 };
+  const question = QUESTIONS[state.index];
+  host.kv.set(key(request), { ...state, index: state.index + 1 });
+  const nudge = timeout.missed > 1 ? " Если вы тут — просто ответьте." : "";
+  return ask(request, `Время вышло! Правильный ответ: ${question?.answer ?? "другой"}.${nudge}`);
+}
+"#
+        .replace("__TITLE__", title);
+    vec![
+        ("manifest.json".into(), pretty(&manifest)),
+        ("backend.js".into(), backend),
+        (
+            "README.md".into(),
+            format!(
+                "# {title}\n\nВикторина голосом: «Алиса, давай викторину». На ответ 10 секунд; промолчали — колонка сама говорит «Время вышло!».\n"
+            ),
+        ),
+    ]
+}
+
 /// A widget for the panel's desk (docs/plans/desk.md, stage 5): what it shows comes from its backend (`panelData`),
 /// its part of the panel draws it (`panel.js`, the slot `desk.widgets`) — the frame, the name and the menu are the
 /// desk's. The workshop's agent starts from it when someone asks for a widget in words. Its reading writes nothing:
@@ -131,7 +218,7 @@ function Widget() {{
 export default definePlugin({{
   id: "{id}",
   slots: {{
-    "desk.widgets": [{{ id: "main", title: {title_json}, icon: icons.sparkle, size: "small", initial: true, source: "плагин", Component: Widget }}],
+    "desk.widgets": [{{ id: "main", title: {title_json}, icon: icons.sparkle, size: "small", initial: true, source: "приложение", Component: Widget }}],
   }},
 }});
 "#
@@ -140,7 +227,58 @@ export default definePlugin({{
         ("manifest.json".into(), pretty(&manifest)),
         ("backend.js".into(), backend),
         ("panel.js".into(), panel),
+        // Stand-in answers of the network: before the person's «да» the tile shows these (sandbox.rs, «пример»).
+        ("examples.json".into(), pretty(&json!({ "fetch": [] }))),
         ("README.md".into(), format!("# {title}\n\nВиджет на столе пульта: что он показывает и откуда берёт.\n")),
+    ]
+}
+
+/// A teacher for a MIDI keyboard (docs/plans/midi.md, «Заготовка»): a widget on the desk and a lesson window — the
+/// next note lit, a press sounds and lights the one after —, tunes of folk songs and old classics typed by hand, one's
+/// own from a .mid file, the progress, phrases for the station. It runs on a computer: the keyboard is the gateway's
+/// there (`runs: ["pc"]`, the right `midi`, Host API 1.3).
+pub fn midi(id: &str, title: &str) -> Vec<(String, String)> {
+    let manifest = json!({
+        "schema": 1,
+        "kind": "plugin",
+        "id": id,
+        "version": "0.1.0",
+        "title": title,
+        "description": "Учит играть на MIDI-клавиатуре: подсвечивает следующую ноту, звучит и ждёт верную",
+        "api": "^1.3",
+        "runs": ["pc"],
+        "dataVersion": 1,
+        "budget": { "memoryMb": 4, "storageMb": 4 },
+        "permissions": ["midi", "kv", "voice.intents"],
+        "settings": [{ "key": "names", "type": "boolean", "title": "Подписывать ноты", "default": true }],
+        "contributes": {
+            "panel": {
+                "slots": ["desk.widgets"],
+                "sections": [{ "id": id, "title": title }],
+                "calls": ["state", "choose", "add", "remove", "keyboard", "done"]
+            },
+            "intents": [
+                { "phrases": ["давай учить {melody}", "учим {melody}", "давай играть {melody}"], "handler": "learn" },
+                { "phrases": ["какие мелодии есть", "что мы учим"], "handler": "about" }
+            ]
+        }
+    });
+    // The title as a JavaScript string where code reads it, as it is in comments: what was asked may hold quotes.
+    let title_json = serde_json::to_string(title).unwrap_or_else(|_| "\"Учитель\"".into());
+    let fill =
+        |text: &str| text.replace("\"__TITLE__\"", &title_json).replace("__TITLE__", title).replace("__ID__", id);
+    vec![
+        ("manifest.json".into(), pretty(&manifest)),
+        ("backend.js".into(), fill(include_str!("templates/midi/backend.js"))),
+        ("panel.js".into(), fill(include_str!("templates/midi/panel.js"))),
+        (
+            "README.md".into(),
+            format!(
+                "# {title}\n\nУчит играть на MIDI-клавиатуре, подключённой к компьютеру с DuoWave: подсвечивает следующую \
+ноту, звучит и ждёт верную. Мелодии — народные и старая классика; свои — файлом .mid. Голосом: «Алиса, давай учить \
+ёлочку», «какие мелодии есть». В «Примерке» — клавиатура на экране, своя подключится после «да».\n"
+            ),
+        ),
     ]
 }
 

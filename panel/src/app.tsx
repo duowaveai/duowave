@@ -31,6 +31,10 @@ import { notePackageChange, runtimeOnly } from './plugins/versions';
 import { forgetStationPackages } from './sdk';
 import { AddWidgetPanel } from './screens/add-widget';
 import { WidgetAgent } from './screens/widget-agent';
+import { noteWorkshopChange } from './voice/drafts';
+import { CreationFlow } from './voice/flow';
+import { toggleListening } from './voice/mic';
+import { onTextToStation } from './voice/strip';
 import { deskActions } from './shell/widgets';
 import { StationFrame, StationModeChip, ViaRefused, WindowShell } from './shell/station-window';
 import { leaving, mayLeave } from './shell/leave';
@@ -118,7 +122,8 @@ const isAdmin = (): boolean => can('plugins.manage') && sessionStore.get()?.role
 
 /**
  * Док (docs/plans/panel-rebuild.md): «Главная · Персонаж · [Сказать] · Навыки · Настройки» — у всех ролей; разделы
- * плагинов — перед «Настройками»; «Мастерская» — у разработчика. Помощнику своего дока не нужно: его окно — пульт
+ * плагинов — перед «Настройками»; «Мастерская» — у разработчика. «Память» — страница «Навыков», не пункт дока: стартовый
+ * экран простой (docs/plans/memory.md). Помощнику своего дока не нужно: его окно — пульт
  * колонки (этап 4).
  */
 function navOf(sections: SectionDef[], role: RoleInfo, dev: boolean): Nav {
@@ -128,7 +133,8 @@ function navOf(sections: SectionDef[], role: RoleInfo, dev: boolean): Nav {
         return section ? [{ key: id, title: section.title, icon: section.icon, Badge: section.Badge, section: id, ...over }] : [];
     };
     const core = new Set(['home', 'character', 'skills', 'settings']);
-    const extra = sections.filter((section) => !core.has(section.id)).flatMap((section) => entry(section.id));
+    // Раздел по ссылке («Примерка») ячейки в доке не берёт.
+    const extra = sections.filter((section) => !core.has(section.id) && section.nav !== 'link').flatMap((section) => entry(section.id));
     const workshop = dev && isAdmin() ? entry('skills', { key: 'skills/workshop', title: 'Мастерская', tab: 'workshop', icon: IconCode }) : [];
     return {
         left: [...entry('home'), ...entry('character')],
@@ -169,6 +175,8 @@ export function App() {
         query: boot?.query ?? {},
     }));
     const [sayOpen, setSayOpen] = useState(false);
+    // «Текстом колонке…» с полосы голоса (решение 1: «Сказать» в доке — микрофон пульта).
+    useEffect(() => onTextToStation(() => can('station.say') && setSayOpen(true)), []);
     /** «+» — новый виджет на стол. */
     const [addOpen, setAddOpen] = useState(false);
     /** Колонки дома из записей шлюза; null — список не прочитать (нет права или шлюз постарше). */
@@ -201,6 +209,8 @@ export function App() {
         if ((name === 'packages.changed' && !runtimeOnly(change)) || name === 'hello') setPackagesVersion((value) => value + 1);
         // Виджеты плагинов перечитывают своё только по переменам своего пакета (plugins/versions.ts).
         notePackageChange(name, subject, change);
+        // Черновики мастерской: плитка на столе, «Готово» на полосе, «Примерка» по просьбе колонки (voice/drafts.ts).
+        if (name === 'workshop.changed' || name === 'hello') noteWorkshopChange(subject, change);
         setVersion((value) => value + 1);
         readAvailability.current = 0;
         pollNow.current?.();
@@ -652,7 +662,7 @@ export function App() {
                         <AccountMenu onLook={() => go('settings', 'look')} onAccess={() => go('settings', 'access')} onSignOut={signOut} />
                     </>
                 }
-                talk={{ disabled: !can('station.say'), onTalk: () => setSayOpen(true) }}
+                talk={{ disabled: false, onTalk: toggleListening }}
                 notice={
                     <>
                         {offline && (
@@ -668,16 +678,12 @@ export function App() {
             {searchOpen && <SearchPalette places={places} onPick={pickPlace} onClose={() => setSearchOpen(false)} />}
             {addOpen && (
                 <AddWidgetPanel onClose={() => setAddOpen(false)}>
-                    <WidgetAgent
-                        onPut={(key) => {
-                            // Поставленный виджет — на стол сразу, ещё до того, как пульт подхватит новый плагин.
-                            deskActions(role.role).add(key);
-                            setAddOpen(false);
-                        }}
-                    />
+                    {/* Просьба уходит агенту, панель закрывается: дальше вещь рождается на столе плиткой. */}
+                    <WidgetAgent onMade={() => setAddOpen(false)} />
                 </AddWidgetPanel>
             )}
             {sayOpen && <SaySheet health={health} debug={debug} onClose={() => setSayOpen(false)} />}
+            {auth === 'ok' && <CreationFlow />}
             {pickerOpen && (
                 <StationsPicker
                     stations={stations}

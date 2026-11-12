@@ -210,6 +210,13 @@ fn child_env() -> HashMap<String, String> {
     env.insert("PYTHONUNBUFFERED".into(), "1".into());
     env.insert("PYTHONIOENCODING".into(), "utf-8".into());
     env.insert("HF_HUB_DISABLE_TELEMETRY".into(), "1".into());
+    // Python's compiled files go to the data folder, not beside the code: in the app the code is the app's bundle
+    // (Resources/clone-server), and a __pycache__ written there breaks the bundle's signature (seen on 0.5.1, 12.11).
+    // A cache of its own keeps them all — the environments' packages too — so nothing is compiled twice.
+    if let Some(data) = std::env::var_os("DATA_DIR").filter(|data| !data.is_empty()) {
+        let cache = std::path::PathBuf::from(data).join("cache").join("python");
+        env.insert("PYTHONPYCACHEPREFIX".into(), cache.to_string_lossy().into_owned());
+    }
     env
 }
 

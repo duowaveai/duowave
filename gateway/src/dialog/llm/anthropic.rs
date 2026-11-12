@@ -22,8 +22,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::describe_http_error as describe;
 use super::llm_client::{
-    describe_models, AssistantTurn, LlmClient, LlmEvent, LlmMessage, LlmRequest, LlmSettings, LlmStream, LlmUsage,
-    ToolCall, ToolChoice,
+    bearer_of, describe_models, AssistantTurn, LlmClient, LlmEvent, LlmMessage, LlmRequest, LlmSettings, LlmStream,
+    LlmUsage, ToolCall, ToolChoice,
 };
 use super::sse::{Lines, SseDecoder, SseEvent};
 use crate::dialog::generator::{generate, Yielder};
@@ -85,7 +85,7 @@ async fn run(
     cancel: &CancellationToken,
     y: &Yielder<anyhow::Result<LlmEvent>>,
 ) -> anyhow::Result<()> {
-    let key = credentials(settings)?;
+    let key = credentials(settings).await?;
     let model = request.model.clone().filter(|model| !model.is_empty()).unwrap_or_else(|| settings.model.clone());
     let haiku = model.contains("haiku");
     let body = body_of(settings, request, &model, haiku);
@@ -128,11 +128,11 @@ async fn run(
 }
 
 /// The key. From .env: LLM_API_KEY, else ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN (LlmSettings::from_dialog). A
-/// panel provider uses its own key only: without one every request fails with a plain reason instead of quietly
-/// spending the environment's key. (The SDK's `ant auth login` profiles are not read.)
-fn credentials(settings: &LlmSettings) -> anyhow::Result<String> {
-    match settings.api_key.as_deref().filter(|key| !key.is_empty()) {
-        Some(key) => Ok(key.to_string()),
+/// panel provider uses its own key (or its sign-in's access) only: without one every request fails with a plain reason
+/// instead of quietly spending the environment's key. (The SDK's `ant auth login` profiles are not read.)
+async fn credentials(settings: &LlmSettings) -> anyhow::Result<String> {
+    match bearer_of(settings).await? {
+        Some(key) => Ok(key),
         None if settings.explicit => bail!("no API key: add it to the provider in the panel"),
         None => bail!("no API key: set LLM_API_KEY or ANTHROPIC_API_KEY"),
     }
@@ -666,6 +666,8 @@ mod tests {
             explicit,
             headers: BTreeMap::new(),
             tokens_field: Default::default(),
+            access: None,
+            api: Default::default(),
         }
     }
 

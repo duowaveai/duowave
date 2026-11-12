@@ -22,16 +22,36 @@ pub struct PluginServices {
     /// The panel's connectors as the skills read them: the weather's place, the news feeds, Home Assistant.
     connectors: Arc<dyn SkillConnectors>,
     plugins: OnceLock<Weak<PluginHost>>,
+    /// The plugins' schedules, once they stand: `host.schedule.*`.
+    schedules: OnceLock<Weak<crate::plugins::schedule::Scheduler>>,
+    /// The plugins' pictures: `host.files.*`.
+    files: OnceLock<Arc<crate::plugins::files::PluginFiles>>,
 }
 
 impl PluginServices {
     pub fn new(skills: &Arc<SkillsService>, connectors: Arc<dyn SkillConnectors>) -> Arc<PluginServices> {
-        Arc::new(PluginServices { skills: Arc::downgrade(skills), connectors, plugins: OnceLock::new() })
+        Arc::new(PluginServices {
+            skills: Arc::downgrade(skills),
+            connectors,
+            plugins: OnceLock::new(),
+            schedules: OnceLock::new(),
+            files: OnceLock::new(),
+        })
     }
 
     /// The plugin host, once it stands (it is built with these services).
     pub fn set_plugins(&self, plugins: &Arc<PluginHost>) {
         let _ = self.plugins.set(Arc::downgrade(plugins));
+    }
+
+    /// The plugins' pictures.
+    pub fn set_files(&self, files: &Arc<crate::plugins::files::PluginFiles>) {
+        let _ = self.files.set(files.clone());
+    }
+
+    /// The plugins' schedules, once they stand.
+    pub fn set_schedules(&self, schedules: &Arc<crate::plugins::schedule::Scheduler>) {
+        let _ = self.schedules.set(Arc::downgrade(schedules));
     }
 
     fn provider(&self) -> Option<Arc<dyn SmartHomeProvider>> {
@@ -89,7 +109,8 @@ impl HostServices for PluginServices {
     fn smart_home_devices(&self) -> BoxFuture<'static, Result<Value, String>> {
         let provider = self.provider();
         Box::pin(async move {
-            let provider = provider.ok_or_else(|| "умный дом не подключён («Навыки» → «Подключения»)".to_string())?;
+            let provider =
+                provider.ok_or_else(|| "умный дом не подключён («Приложения» → «Подключения»)".to_string())?;
             let devices = provider.devices(&CancellationToken::new()).await.map_err(|error| error.to_string())?;
             Ok(Value::Array(
                 devices
@@ -111,7 +132,8 @@ impl HostServices for PluginServices {
     ) -> BoxFuture<'static, Result<String, String>> {
         let provider = self.provider();
         Box::pin(async move {
-            let provider = provider.ok_or_else(|| "умный дом не подключён («Навыки» → «Подключения»)".to_string())?;
+            let provider =
+                provider.ok_or_else(|| "умный дом не подключён («Приложения» → «Подключения»)".to_string())?;
             let action = HomeAction::parse(&action)
                 .ok_or_else(|| format!("действие «{action}»: on, off, set_brightness, set_temperature, scene"))?;
             let cancel = CancellationToken::new();
@@ -129,5 +151,68 @@ impl HostServices for PluginServices {
 
     fn news_feeds(&self) -> Vec<Value> {
         self.connectors.news_feeds().into_iter().map(|feed| json!({ "url": feed.url, "topic": feed.topic })).collect()
+    }
+
+    fn files(
+        &self,
+        caller: &str,
+        action: &str,
+        input: Value,
+        bytes: Option<Vec<u8>>,
+    ) -> BoxFuture<'static, Result<Value, String>> {
+        let answer = match (self.files.get(), action) {
+            (None, _) => Err("картинок здесь нет".to_string()),
+            (Some(files), "put") => {
+                let room = self
+                    .plugins
+                    .get()
+                    .and_then(Weak::upgrade)
+                    .and_then(|plugins| plugins.package(caller))
+                    .map_or(1, |package| package.manifest.budget.storage_mb);
+                let name = input.get("name").and_then(Value::as_str).unwrap_or_default();
+                files.put(caller, name, &bytes.unwrap_or_default(), room)
+            }
+            (Some(files), "list") => Ok(Value::Array(files.list(caller))),
+            (Some(files), "delete") => {
+                Ok(Value::Bool(files.delete(caller, input.get("name").and_then(Value::as_str).unwrap_or_default())))
+            }
+            (Some(_), other) => Err(format!("нет функции files.{other}")),
+        };
+        Box::pin(async move { answer })
+    }
+
+    fn notify(&self, caller: &str, text: String) -> BoxFuture<'static, Result<Value, String>> {
+        let (schedules, caller) = (self.schedules.get().and_then(Weak::upgrade), caller.to_string());
+        Box::pin(async move {
+            let schedules = schedules.ok_or_else(|| "сообщений владельцу здесь нет".to_string())?;
+            schedules.notify(&caller, &text).await.map(|()| Value::Bool(true))
+        })
+    }
+
+    fn schedule(&self, caller: &str, action: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
+        let answer = match self.schedules.get().and_then(Weak::upgrade) {
+            Some(schedules) => schedules.code(caller, action, input),
+            None => Err("расписаний здесь нет".into()),
+        };
+        Box::pin(async move { answer })
+    }
+}
+
+/// The plugins' messages to the owner (plugins/schedule.rs, right `notify`) by the station watch's ways.
+pub struct OwnerAlerts(pub Arc<crate::operations::StationWatch>);
+
+impl crate::plugins::schedule::OwnerNotice for OwnerAlerts {
+    fn ready(&self) -> Result<(), String> {
+        if self.0.can_tell() {
+            Ok(())
+        } else {
+            Err("некуда прислать: выберите чат «Оповещения» в подключении Telegram или задайте ALERT_WEBHOOK_URL"
+                .into())
+        }
+    }
+
+    fn tell(&self, text: String) -> BoxFuture<'static, ()> {
+        let watch = self.0.clone();
+        Box::pin(async move { watch.tell(&text).await })
     }
 }

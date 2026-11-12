@@ -377,6 +377,7 @@ impl HomeServerService {
                 prompt: asr.prompt.clone(),
                 timeout_ms: asr.timeout_ms,
                 wake_words: asr.wake_words.clone(),
+                local: None,
             });
             let speech = OwnSpeech::new(OwnSpeechConfig {
                 base_url: format!("{url}/home/v1/tts"),
@@ -614,11 +615,13 @@ fn computers(provider: &crate::dialog::brain::ProviderView) -> bool {
     provider.title == BRAIN_TITLE && provider.base_url.as_deref().is_some_and(|url| url.ends_with("/home/v1/llm"))
 }
 
-/// Whether «Мозг» on the station answers with the computer's model now: its fast or its smart pick is on it.
+/// Whether «Мозг» on the station answers with the computer's model now: its fast, its smart or its backup pick is on
+/// it.
 pub fn brain_answers_with_computer(brain: &crate::dialog::brain::BrainService) -> bool {
     let view = brain.view();
     let on_computer = |id: &str| view.providers.iter().any(|provider| provider.id == id && computers(provider));
-    view.choice.fast.iter().chain(view.choice.smart.iter()).any(|pick| on_computer(&pick.provider))
+    let choice = &view.choice;
+    choice.fast.iter().chain(choice.smart.iter()).chain(choice.backup.iter()).any(|pick| on_computer(&pick.provider))
 }
 
 /// «Что даю колонке» as the station's gateway takes it: «Модель» is not let go while «Мозг» answers with the

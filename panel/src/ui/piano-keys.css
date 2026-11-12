@@ -1,0 +1,96 @@
+/* Клавиатура на экране для приложений (panel/src/sdk/piano-keys.tsx, docs/plans/midi.md): только токены темы. */
+
+.piano-keys {
+    width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+}
+
+.piano-keys-bed {
+    position: relative;
+    width: 100%;
+    user-select: none;
+    touch-action: none;
+}
+
+.piano-white,
+.piano-black {
+    position: absolute;
+    top: 0;
+    padding: 0 0 6px;
+    margin: 0;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    font: inherit;
+    cursor: pointer;
+    transition: background-color 90ms ease;
+}
+
+.piano-white {
+    height: 100%;
+    background: var(--bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 0 0 6px 6px;
+    color: var(--sub);
+    z-index: 1;
+}
+
+.piano-black {
+    height: 62%;
+    background: var(--text);
+    border: 1px solid var(--text);
+    border-radius: 0 0 2px 2px;
+    color: var(--bg);
+    z-index: 2;
+}
+
+.piano-name {
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 14px;
+    pointer-events: none;
+}
+
+.piano-white.is-middle .piano-name {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.piano-white.is-down,
+.piano-white:active {
+    background: var(--hover-bg);
+}
+
+.piano-black.is-down,
+.piano-black:active {
+    background: var(--sub);
+}
+
+.piano-white.is-next,
+.piano-black.is-next {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+}
+
+.piano-white.is-next .piano-name,
+.piano-black.is-next .piano-name {
+    color: var(--on-accent);
+    font-weight: 600;
+}
+
+.piano-white.is-wrong,
+.piano-black.is-wrong {
+    background: var(--dot-offline);
+    border-color: var(--dot-offline);
+    color: var(--on-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .piano-white,
+    .piano-black {
+        transition: none;
+    }
+}

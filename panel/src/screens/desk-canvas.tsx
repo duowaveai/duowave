@@ -35,6 +35,17 @@ const START: Point = { x: 0, y: -40 };
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
+/** Мерило открытого свободного стола: где элемент на нём (точка поля и ширина). Нет стола — null. */
+let measure: ((element: Element) => WidgetPlace) | null = null;
+
+/**
+ * Место элемента на свободном столе — для посадки черновика на место его плитки (docs/plans/voice-creation.md,
+ * «Посадка»). Нет свободного стола (лента, столбец) — null: виджет встаёт в ленту, на то же место.
+ */
+export function placeOnCanvas(element: Element | null): WidgetPlace | null {
+    return element && measure ? measure(element) : null;
+}
+
 /** Под курсором — своё, что листается в эту сторону (список в виджете): колесо — ему, а не полю. */
 function scrollsItself(from: HTMLElement, stop: HTMLElement, dx: number, dy: number): boolean {
     for (let node: HTMLElement | null = from; node && node !== stop; node = node.parentElement) {
@@ -89,6 +100,8 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
     /** Виджет, который тащат или растягивают сейчас: его место — здесь, пока не отпустили. */
     const [live, setLive] = useState<{ key: string; place: WidgetPlace } | null>(null);
     const [map, setMap] = useState<{ items: Array<{ key: string; rect: DOMRect; scene?: boolean }>; view: DOMRect } | null>(null);
+    /** «Новый виджет» под севшими на его место виджетами (docs/plans/voice-creation.md, «Посадка»): на сколько ниже, точки поля. */
+    const [addOffset, setAddOffset] = useState(0);
     const view = useRef({ zoom, pan });
     view.current = { zoom, pan };
     const locked = layout.locked === true;
@@ -119,6 +132,19 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
         const { zoom: z, pan: p } = view.current;
         return { x: (clientX - rect.left - rect.width / 2 - p.x) / z, y: (clientY - rect.top - rect.height / 2 - p.y) / z };
     };
+
+    // Мерило для посадки черновика: точка поля по месту на экране.
+    useEffect(() => {
+        const own = (element: Element): WidgetPlace => {
+            const rect = element.getBoundingClientRect();
+            const corner = toPlane(rect.left, rect.top);
+            return { x: Math.round(corner.x), y: Math.round(corner.y), w: Math.round(rect.width / view.current.zoom) };
+        };
+        measure = own;
+        return () => {
+            if (measure === own) measure = null;
+        };
+    }, []);
 
     const zoomAt = (next: number, clientX?: number, clientY?: number) => {
         const rect = box.current?.getBoundingClientRect();
@@ -252,11 +278,25 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
     const columnX = [-half - GAP - WIDTH, half + GAP, half + GAP + WIDTH + 40];
     const top = -SCENE_H / 2;
 
-    // Мини-карта: что на столе и где окно, — после каждой отрисовки, по местам в DOM.
+    // Мини-карта: что на столе и где окно, — после каждой отрисовки, по местам в DOM. И «Новый виджет» — ниже тех
+    // поставленных виджетов, что встали на его место (черновик сел там, где стояла его плитка).
     useLayoutEffect(() => {
         const node = plane.current;
         const outer = box.current;
         if (!node || !outer) return;
+        const spot = node.querySelector<HTMLElement>('.desk-add-spot');
+        if (spot) {
+            const zoom = view.current.zoom;
+            const rect = spot.getBoundingClientRect();
+            const top = rect.top - addOffset * zoom;
+            let need = 0;
+            for (const placed of node.querySelectorAll<HTMLElement>('.desk-placed')) {
+                const other = placed.getBoundingClientRect();
+                const across = other.left < rect.right && other.right > rect.left;
+                if (across && other.bottom > top && other.top < top + rect.height + addOffset * zoom) need = Math.max(need, (other.bottom - top) / zoom + 16);
+            }
+            if (Math.abs(need - addOffset) > 1) setAddOffset(Math.round(need));
+        }
         const items = [...node.querySelectorAll<HTMLElement>('[data-widget], .desk-scene, .desk-add-tile')].map((element) => ({
             key: element.dataset.widget ?? (element.classList.contains('desk-scene') ? 'scene' : 'add'),
             rect: element.getBoundingClientRect(),
@@ -294,7 +334,11 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
                                         {render(widget, widgetMenu(widget), gripOf(widget.key))}
                                     </div>
                                 ))}
-                                {index === 0 && addTile}
+                                {index === 0 && (
+                                    <div class="desk-add-spot" style={addOffset ? { marginTop: `${addOffset}px` } : undefined}>
+                                        {addTile}
+                                    </div>
+                                )}
                             </div>
                         ),
                 )}

@@ -39,6 +39,8 @@ pub const AUDITED: &[&str] = &[
     "mcp.changed",
     "packages.changed",
     "connector.changed",
+    "memory.changed",
+    "sleep.changed",
     "user.created",
     "user.updated",
     "user.deleted",
@@ -124,6 +126,15 @@ impl AuditService {
         }
         // A plugin's own comings and goings (its code loaded, unloaded, failed) are nobody's change.
         if let GatewayEvent::PackagesChanged { actor: None, .. } = event {
+            return;
+        }
+        // What the household said or the model remembered is the memory's own business (its «Новое»), not a
+        // person's change of how the house runs.
+        if let GatewayEvent::MemoryChanged { actor: None, .. } = event {
+            return;
+        }
+        // The night's own timer is not a person: only «Запустить сон сейчас» and «Откатить ночь» are logged.
+        if let GatewayEvent::SleepChanged { actor: None, .. } = event {
             return;
         }
         if let GatewayEvent::SettingsChanged { key, .. } = event {

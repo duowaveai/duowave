@@ -237,11 +237,11 @@ impl UpdatesService {
             Some("yam") => (
                 false,
                 Some(
-                    "Шлюз пришёл пакетом YAM: обновите пакет на колонке — yam install файла новой версии из выпуска."
+                    "Шлюз поставлен через YAM: обновите его на колонке — yam install файла новой версии из выпуска."
                         .into(),
                 ),
             ),
-            Some("yse") => (false, Some("Шлюз пришёл пакетом yse: обновите пакет — yse upgrade duowave.".into())),
+            Some("yse") => (false, Some("Шлюз поставлен через yse: обновите его — yse upgrade duowave.".into())),
             Some("docker") => (false, Some("Обновите образ: docker compose pull && docker compose up -d".into())),
             Some("home-assistant") => (false, Some("Обновите дополнение в Home Assistant.".into())),
             Some("desktop") => (false, Some("Обновите приложение из меню в трее.".into())),

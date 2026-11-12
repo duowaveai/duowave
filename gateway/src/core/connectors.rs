@@ -51,7 +51,7 @@ pub const CONNECTOR_KINDS: &[(ConnectorKind, &str)] = &[
     (ConnectorKind::Catalog, "Каталоги моделей"),
     (ConnectorKind::Mcp, "MCP-серверы: инструменты для модели"),
     (ConnectorKind::Agent, "Помощники-агенты"),
-    (ConnectorKind::Plugins, "Плагины: навыки, инструменты и источники из пакетов"),
+    (ConnectorKind::Plugins, "Приложения: навыки, инструменты и источники"),
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -265,6 +265,11 @@ pub trait Connector: Send + Sync {
     fn tools(&self) -> Vec<ToolContribution> {
         Vec::new()
     }
+    /// Whether the panel's list of connectors shows it. A built-in source of tools with a section of its own (the
+    /// memory) is not a connection to set up.
+    fn listed(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -309,7 +314,8 @@ impl ConnectorRegistry {
 
     /// Every connector with its state, checked at once; a slow check reads as an error.
     pub async fn views(&self) -> Vec<ConnectorView> {
-        let connectors = self.list();
+        let connectors: Vec<Arc<dyn Connector>> =
+            self.list().into_iter().filter(|connector| connector.listed()).collect();
         let checks = connectors.iter().map(|connector| async move {
             ConnectorView { manifest: connector.manifest(), status: checked(connector.as_ref()).await }
         });

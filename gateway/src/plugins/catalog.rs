@@ -16,6 +16,14 @@
 //! and an id an earlier feed has is not taken from a later one. Every file from the package's own feed's origin;
 //! `verified` only when the main feed's declaration allows it; never code from them — there is no signature for them
 //! yet. Only the main feed names feeds: an extra feed's own `feeds` are not followed.
+//!
+//! Own sources (docs/plans/custom-feeds.md): feeds the admin adds here by a link, after a warning — read after the
+//! main feed's, kept in `packages-catalog/sources.json` (up to 4), never vouched for, never code. One that answers 404
+//! or 410 is closed: its copy goes and what was installed from it is hidden.
+//!
+//! A feed may say a package is `hidden`: it is not listed or installed, and the installed one that came from that very
+//! feed is hidden here (registry `hidden`) — not listed, its code off, its characters not offered — until the feed
+//! stops saying so.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -58,6 +66,10 @@ const MAX_FEEDS: usize = 4;
 const MAX_FEED_TITLE: usize = 40;
 /// The extra feeds' folders, in the catalog's own: `feeds/<name by the address>/`.
 const FEEDS_DIR: &str = "feeds";
+/// The own sources the admin added here: `[{url, addedAt}]`.
+const SOURCES_FILE: &str = "sources.json";
+/// Own sources, at most.
+pub const MAX_SOURCES: usize = 4;
 
 /// Where the feed is, as the configuration and the build say.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,6 +152,8 @@ pub struct ExtraFeed {
     pub title: String,
     /// Whether its packages' `verified` stands: without it they count as not checked by us, whatever it says.
     pub verified: bool,
+    /// An own source the admin added here, not one the main feed names.
+    pub own: bool,
 }
 
 /// An archive of the feed: its address, its hash, its size.
@@ -171,6 +185,8 @@ pub struct Feed {
     pub signed: bool,
     /// The extra feeds it names: the main feed's are read, an extra one's are not followed.
     pub feeds: Vec<ExtraFeed>,
+    /// The packages it says to hide (`hidden: true`): not in `packages`, and an installed one from this feed is hidden.
+    pub hidden: std::collections::BTreeSet<String>,
 }
 
 /// The catalog's signature: the feed's own address and `.minisig`, from the same origin.
@@ -178,6 +194,18 @@ pub const SIGNATURE_SUFFIX: &str = ".minisig";
 const MAX_SIGNATURE: u64 = 8 * 1024;
 
 impl Feed {
+    /// A catalog of nothing yet: own sources' packages go into it when the main feed has no copy here.
+    fn empty() -> Feed {
+        Feed {
+            updated_at: None,
+            packages: Vec::new(),
+            skipped: Vec::new(),
+            signed: false,
+            feeds: Vec::new(),
+            hidden: Default::default(),
+        }
+    }
+
     /// The newest version of each package, in the feed's order.
     pub fn newest(&self) -> Vec<&Entry> {
         let mut seen: Vec<&Entry> = Vec::new();
@@ -235,7 +263,37 @@ fn extra_feed(value: &Value) -> Result<ExtraFeed, String> {
         .to_string();
     let title = text("title").map(|title| title.chars().take(MAX_FEED_TITLE).collect());
     let verified = value.get("verified").and_then(Value::as_bool).unwrap_or(false);
-    Ok(ExtraFeed { url, title: title.unwrap_or_else(|| publisher.clone()), publisher, verified })
+    Ok(ExtraFeed { url, title: title.unwrap_or_else(|| publisher.clone()), publisher, verified, own: false })
+}
+
+/// An own source as a feed: its host is its title and (in letters an id takes) its publisher; never vouched for.
+pub fn own_feed(url: &url::Url) -> ExtraFeed {
+    let host = url.host_str().unwrap_or("source").to_ascii_lowercase();
+    let letters: String = host.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let mut publisher: String = letters.trim_matches('-').chars().take(32).collect();
+    publisher = publisher.trim_end_matches('-').to_string();
+    if !valid_id(&publisher) {
+        publisher = "own".into();
+    }
+    let title = match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    };
+    ExtraFeed {
+        url: url.clone(),
+        publisher,
+        title: title.chars().take(MAX_FEED_TITLE).collect(),
+        verified: false,
+        own: true,
+    }
+}
+
+/// An own source as `sources.json` keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnSource {
+    url: String,
+    added_at: String,
 }
 
 /// An extra feed's folder name by its address: the host to read, and a hash of the whole address — never a version.
@@ -344,14 +402,19 @@ pub fn parse_feed(text: &str, base: &url::Url) -> Result<Feed, String> {
         None => return Err("нет format".into()),
     }
     let list = value.get("packages").and_then(Value::as_array).ok_or("нет списка packages")?;
-    let mut feed = Feed {
-        updated_at: value.get("updatedAt").and_then(Value::as_str).map(str::to_string),
-        packages: Vec::new(),
-        skipped: Vec::new(),
-        signed: false,
-        feeds: Vec::new(),
-    };
+    let mut feed =
+        Feed { updated_at: value.get("updatedAt").and_then(Value::as_str).map(str::to_string), ..Feed::empty() };
     for item in list {
+        // A package to hide needs its id alone: no archive, no previews.
+        if item.get("hidden").and_then(Value::as_bool) == Some(true) {
+            match item.get("id").and_then(Value::as_str).map(str::trim).filter(|id| valid_id(id)) {
+                Some(id) => {
+                    feed.hidden.insert(id.to_string());
+                }
+                None => feed.skipped.push("hidden: нет id".into()),
+            }
+            continue;
+        }
         match entry(item, base) {
             Ok(entry) if feed.packages.iter().any(|known| known.id == entry.id && known.version == entry.version) => {
                 feed.skipped.push(format!("{} {}: дважды", entry.id, entry.version));
@@ -390,6 +453,9 @@ struct Fetched {
     etag: Option<String>,
     /// RFC 3339.
     fetched_at: String,
+    /// An own source that answered 404 or 410: closed, its copy gone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    closed: bool,
 }
 
 /// What a feed's folder remembers of its last read.
@@ -452,6 +518,18 @@ async fn ask(url: &url::Url, etag: Option<&str>) -> Answer {
     Answer::Text(String::from_utf8_lossy(&body).into_owned(), etag)
 }
 
+/// Whether a package's manifest has a character whose voice is of no known origin (`voiceOrigin: unknown`).
+fn unknown_voice(dir: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(dir.join("manifest.json")) else { return false };
+    let Ok(manifest) = serde_json::from_str::<Value>(&text) else { return false };
+    manifest
+        .pointer("/contributes/characters")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|character| character.get("voiceOrigin").and_then(Value::as_str) == Some("unknown"))
+}
+
 /// A preview's kind by its first bytes: a picture (WebP, PNG — never SVG) or Opus in Ogg.
 fn preview_kind(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -502,10 +580,9 @@ pub fn entry_state(
     if matches!(entry.kind, PackageKind::Plugin | PackageKind::App) && (!signed || entry.extra.is_some()) {
         // What is installed stays installed; a new version of code waits for a signed feed.
         let why = match &entry.extra {
-            Some(extra) => format!(
-                "Плагины и приложения из ленты «{}» не ставятся: подписи для дополнительных лент пока нет.",
-                extra.title
-            ),
+            Some(extra) => {
+                format!("Приложения из ленты «{}» не ставятся: подписи для дополнительных лент пока нет.", extra.title)
+            }
             None => NEEDS_SIGNATURE.into(),
         };
         return match installed {
@@ -585,6 +662,8 @@ pub struct CatalogEntryView {
     pub publisher: Option<String>,
     /// The title of the extra feed it comes from; None — the main feed.
     pub source: Option<String>,
+    /// It comes from an own source the admin added here.
+    pub own: bool,
 }
 
 /// An extra feed for the panel: whose it is, what it is called, how its last read went.
@@ -600,6 +679,10 @@ pub struct FeedView {
     pub problem: Option<String>,
     /// Its packages taken into the catalog: an id an earlier feed has is not counted.
     pub count: usize,
+    /// An own source the admin added here (removable), not one the main feed names.
+    pub own: bool,
+    /// An own source that answered 404 or 410: its packages are gone from the catalog, the installed ones hidden.
+    pub closed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -619,7 +702,7 @@ pub struct CatalogView {
     pub offline: bool,
     pub problem: Option<String>,
     pub packages: Vec<CatalogEntryView>,
-    /// The extra feeds the main one names, in its order.
+    /// The extra feeds the main one names, in its order, then the own sources added here.
     pub feeds: Vec<FeedView>,
 }
 
@@ -767,17 +850,54 @@ impl PackageCatalog {
     }
 
     /// The catalog as its copies here have it: the main feed's packages, then each extra feed's in the order the main
-    /// one names them — an id an earlier feed has is not taken from a later one. With what was left out so, by feed.
+    /// one names them, then the own sources' — an id an earlier feed has is not taken from a later one. With what was
+    /// left out so, by feed. Without a copy of the main feed, the own sources' alone.
     fn merged(&self, url: &url::Url) -> Option<(Feed, Vec<String>)> {
-        let mut feed = self.main_copy(url)?;
+        let own = self.own_feeds(url);
+        let mut feed = match self.main_copy(url) {
+            Some(feed) => feed,
+            None if own.iter().any(|extra| text_in(&self.extra_dir(&extra.url), &extra.url).is_some()) => Feed::empty(),
+            None => return None,
+        };
         let mut left = Vec::new();
-        for extra in feed.feeds.clone() {
+        for extra in feed.feeds.clone().into_iter().chain(own) {
             let Some(text) = text_in(&self.extra_dir(&extra.url), &extra.url) else { continue };
             let Ok(copy) = parse_feed(&text, &extra.url) else { continue };
             let refused = feed.take(&extra, copy);
             left.extend(refused.into_iter().map(|refused| format!("{}: {refused}", extra.url)));
         }
         Some((feed, left))
+    }
+
+    /// The own sources as `sources.json` keeps them.
+    fn sources(&self) -> Vec<OwnSource> {
+        std::fs::read_to_string(self.dir.join(SOURCES_FILE))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    fn write_sources(&self, sources: &[OwnSource]) -> Result<(), ApiError> {
+        let text = serde_json::to_vec_pretty(sources).map_err(ApiError::internal)?;
+        write_whole(&self.dir.join(SOURCES_FILE), &text).map_err(ApiError::internal)
+    }
+
+    /// The own sources added here, as feeds: one the main feed is, or names already, is read as that one.
+    fn own_feeds(&self, main: &url::Url) -> Vec<ExtraFeed> {
+        let declared = self.declared(main);
+        self.sources()
+            .into_iter()
+            .filter_map(|source| feed_url(&source.url).ok())
+            .filter(|url| url != main && !declared.iter().any(|extra| extra.url == *url))
+            .map(|url| own_feed(&url))
+            .collect()
+    }
+
+    /// Every feed read after the main one: the ones it names, then the own sources.
+    fn extras(&self, main: &url::Url) -> Vec<ExtraFeed> {
+        let mut extras = self.declared(main);
+        extras.extend(self.own_feeds(main));
+        extras
     }
 
     /// The last good copies, read again: the main feed's (its signature checked again) and the extra feeds' after it.
@@ -788,7 +908,7 @@ impl PackageCatalog {
     /// Whether the main feed's copy names an extra feed without a copy here that was not read since the gateway
     /// started: one updated over a copy an older gateway wrote reads the catalog now, not in six hours.
     fn untried(&self, url: &url::Url) -> bool {
-        let declared = self.declared(url);
+        let declared = self.extras(url);
         let status = lock(&self.status);
         declared.iter().any(|extra| {
             !status.extras.contains_key(extra.url.as_str())
@@ -867,7 +987,7 @@ impl PackageCatalog {
         let (text, new_etag) = match ask(url, etag.as_deref()).await {
             Answer::Text(text, new_etag) => (text, new_etag),
             Answer::Same => {
-                let fetched = Fetched { url: url.to_string(), etag, fetched_at: now_iso() };
+                let fetched = Fetched { url: url.to_string(), etag, fetched_at: now_iso(), closed: false };
                 let _ = write_whole(&self.dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default());
                 let mut status = lock(&self.status);
                 status.offline = false;
@@ -901,7 +1021,7 @@ impl PackageCatalog {
             Some(_) => install::download(Self::signature_url(url).as_str(), MAX_SIGNATURE, FEED_TIMEOUT).await.ok(),
             None => None,
         };
-        let fetched = Fetched { url: url.to_string(), etag: new_etag, fetched_at: now };
+        let fetched = Fetched { url: url.to_string(), etag: new_etag, fetched_at: now, closed: false };
         let signature_file = self.dir.join(format!("catalog.json{SIGNATURE_SUFFIX}"));
         let written = write_whole(&self.dir.join("catalog.json"), text.as_bytes())
             .and_then(|()| match &signature {
@@ -919,8 +1039,7 @@ impl PackageCatalog {
         }
         if self.key.is_some() && !self.signed(text.as_bytes()) {
             tracing::warn!(target: "plugins", "packages catalog: its signature is missing or does not match: no code from it");
-            lock(&self.status).problem =
-                Some("Подпись каталога не сошлась: плагины и приложения из него не ставятся.".into());
+            lock(&self.status).problem = Some("Подпись каталога не сошлась: приложения из него не ставятся.".into());
             return Read::New;
         }
         {
@@ -937,28 +1056,78 @@ impl PackageCatalog {
     /// later feed could not take are logged and the installed packages with newer versions told.
     async fn read_extras(&self, url: &url::Url, main: Read) {
         let declared = self.declared(url);
-        self.forget_extras(&declared);
+        let own = self.own_feeds(url);
+        self.forget_extras(&declared.iter().chain(&own).cloned().collect::<Vec<_>>());
         let mut new = main != Read::Kept;
         if main != Read::Home {
             for extra in &declared {
                 new |= self.read_extra(extra).await;
             }
         }
+        // The own sources: read here even when the main feed came through the home server — it does not bring them.
+        for extra in &own {
+            new |= self.read_extra(extra).await;
+        }
         {
             // Each one named counts as tried now, the ones a home server did not bring too.
             let mut status = lock(&self.status);
-            for extra in &declared {
+            for extra in declared.iter().chain(&own) {
                 status.extras.entry(extra.url.to_string()).or_default();
             }
         }
         if !new {
             return;
         }
+        self.apply_hidden(url);
         let Some((feed, left)) = self.merged(url) else { return };
         for refused in left {
             tracing::warn!(target: "plugins", "packages catalog: not taken from {refused}");
         }
         self.announce(&feed);
+    }
+
+    /// The installed packages each feed hides, by the copies here: one installed from a feed is hidden while that feed
+    /// says `hidden` for it, or is an own source that closed; shown again when it stops. A package from a feed with no
+    /// word here (no copy, not named any more) stays as it was. One from the catalog before 0.6.0 (no feed noted) is
+    /// the main feed's.
+    fn apply_hidden(&self, main: &url::Url) {
+        // By feed address: the ids it hides, or None — it closed and hides all.
+        let mut hides: BTreeMap<String, Option<std::collections::BTreeSet<String>>> = BTreeMap::new();
+        if let Some(copy) = self.main_copy(main) {
+            hides.insert(main.to_string(), Some(copy.hidden));
+        }
+        for extra in self.extras(main) {
+            let dir = self.extra_dir(&extra.url);
+            let closed = fetched_in(&dir).is_some_and(|fetched| fetched.closed && fetched.url == extra.url.as_str());
+            if extra.own && closed {
+                hides.insert(extra.url.to_string(), None);
+            } else if let Some(copy) = text_in(&dir, &extra.url).and_then(|text| parse_feed(&text, &extra.url).ok()) {
+                hides.insert(extra.url.to_string(), Some(copy.hidden));
+            }
+        }
+        let mut changed = Vec::new();
+        for (id, choice) in registry::choices(&self.db) {
+            if choice.source != registry::SOURCE_CATALOG {
+                continue;
+            }
+            let feed = choice.feed.clone().unwrap_or_else(|| main.to_string());
+            let Some(hides) = hides.get(&feed) else { continue };
+            let hidden = hides.as_ref().is_none_or(|ids| ids.contains(&id));
+            match registry::set_hidden(&self.db, &id, hidden) {
+                Ok(true) => changed.push((id, hidden)),
+                Ok(false) => {}
+                Err(error) => tracing::warn!(target: "plugins", "{id}: hidden is not noted: {error}"),
+            }
+        }
+        if changed.is_empty() {
+            return;
+        }
+        self.host.rescan();
+        for (id, hidden) in changed {
+            let change = if hidden { "hidden" } else { "shown" };
+            tracing::info!(target: "plugins", "{id}: {change} by its feed");
+            self.host.announce(&id, change, None, None);
+        }
     }
 
     /// Reads an extra feed into its folder: a new copy with its previews, or the copy before and why. Whether a new
@@ -971,12 +1140,32 @@ impl PackageCatalog {
         // A new copy, or none: (offline, why).
         let outcome = match ask(url, etag.as_deref()).await {
             Answer::Same => {
-                let fetched = Fetched { url: url.to_string(), etag, fetched_at: now_iso() };
+                let fetched = Fetched { url: url.to_string(), etag, fetched_at: now_iso(), closed: false };
                 let _ = write_whole(&dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default());
                 Ok(false)
             }
             Answer::Unreachable(error) | Answer::Broken(error) => {
                 Err((true, format!("Лента «{title}» недоступна: {error}")))
+            }
+            // An own source taken down: closed — its copy goes, and what came from it is hidden.
+            Answer::Status(code)
+                if extra.own && matches!(code, reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::GONE) =>
+            {
+                let was = fetched_in(&dir).is_some_and(|fetched| fetched.closed && fetched.url == url.as_str());
+                let _ = std::fs::remove_dir_all(&dir);
+                let fetched = Fetched { url: url.to_string(), etag: None, fetched_at: now_iso(), closed: true };
+                let _ = write_whole(&dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default());
+                if !was {
+                    tracing::info!(target: "plugins", "packages catalog: {url}: HTTP {code} — the own source is closed");
+                }
+                let mut status = lock(&self.status);
+                status.extras.insert(
+                    url.to_string(),
+                    FeedStatus {
+                        offline: false, problem: Some(format!("Источник «{title}» закрыт (HTTP {code})."))
+                    },
+                );
+                return !was;
             }
             Answer::Status(code) => Err((false, format!("Лента «{title}» ответила HTTP {code}"))),
             Answer::TooBig => Err((false, format!("Лента «{title}» больше {} КБ", MAX_FEED / 1024))),
@@ -990,7 +1179,8 @@ impl PackageCatalog {
                         tracing::info!(target: "plugins", "packages catalog: {url}: names feeds of its own — only the main feed's are read");
                     }
                     self.previews(&dir, &feed).await;
-                    let fetched = Fetched { url: url.to_string(), etag: new_etag, fetched_at: now_iso() };
+                    let fetched =
+                        Fetched { url: url.to_string(), etag: new_etag, fetched_at: now_iso(), closed: false };
                     let written = write_whole(&dir.join("catalog.json"), text.as_bytes()).and_then(|()| {
                         write_whole(&dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default())
                     });
@@ -1019,7 +1209,8 @@ impl PackageCatalog {
         }
     }
 
-    /// The extra feeds the main one no longer names: their folders go, and what was known of them.
+    /// The extra feeds the main one no longer names (and the own sources no longer added): their folders go, and
+    /// what was known of them.
     fn forget_extras(&self, declared: &[ExtraFeed]) {
         let named: HashSet<String> = declared.iter().map(|extra| feed_folder(&extra.url)).collect();
         for folder in std::fs::read_dir(self.dir.join(FEEDS_DIR)).into_iter().flatten().flatten() {
@@ -1053,7 +1244,7 @@ impl PackageCatalog {
         }
         let Some(text) = body.get("feed").and_then(Value::as_str) else { return false };
         let Ok(feed) = parse_feed(text, url) else { return false };
-        let fetched = Fetched { url: url.to_string(), etag: None, fetched_at: now_iso() };
+        let fetched = Fetched { url: url.to_string(), etag: None, fetched_at: now_iso(), closed: false };
         let signature_file = self.dir.join(format!("catalog.json{SIGNATURE_SUFFIX}"));
         let written = write_whole(&self.dir.join("catalog.json"), text.as_bytes())
             .and_then(|()| match body.get("signature").and_then(Value::as_str) {
@@ -1075,7 +1266,7 @@ impl PackageCatalog {
                 continue;
             }
             let dir = self.extra_dir(&extra.url);
-            let fetched = Fetched { url: extra.url.to_string(), etag: None, fetched_at: now_iso() };
+            let fetched = Fetched { url: extra.url.to_string(), etag: None, fetched_at: now_iso(), closed: false };
             let written = write_whole(&dir.join("catalog.json"), text.as_bytes())
                 .and_then(|()| write_whole(&dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default()));
             if written.is_ok() {
@@ -1278,39 +1469,42 @@ impl PackageCatalog {
                             reason,
                             publisher: entry.publisher.clone(),
                             source: entry.extra.as_ref().map(|extra| extra.title.clone()),
+                            own: entry.extra.as_ref().is_some_and(|extra| extra.own),
                         }
                     })
                     .collect()
             })
             .unwrap_or_default();
+        // The own sources are listed even without a copy: the admin removes them here.
+        let own = self.url().and_then(Result::ok).map(|url| self.own_feeds(&url)).unwrap_or_default();
         let status = lock(&self.status);
+        let newest = feed.as_ref().map(|feed| feed.newest()).unwrap_or_default();
         let feeds = feed
             .as_ref()
-            .map(|feed| {
-                let newest = feed.newest();
-                feed.feeds
-                    .iter()
-                    .map(|extra| {
-                        let known = status.extras.get(extra.url.as_str());
-                        let fetched = fetched_in(&self.extra_dir(&extra.url));
-                        FeedView {
-                            url: extra.url.to_string(),
-                            publisher: extra.publisher.clone(),
-                            title: extra.title.clone(),
-                            fetched_at: fetched
-                                .filter(|fetched| fetched.url == extra.url.as_str())
-                                .map(|fetched| fetched.fetched_at),
-                            offline: known.is_some_and(|known| known.offline),
-                            problem: known.and_then(|known| known.problem.clone()),
-                            count: newest
-                                .iter()
-                                .filter(|entry| entry.extra.as_ref().is_some_and(|from| from.url == extra.url))
-                                .count(),
-                        }
-                    })
-                    .collect()
+            .map(|feed| feed.feeds.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .chain(own)
+            .map(|extra| {
+                let known = status.extras.get(extra.url.as_str());
+                let fetched =
+                    fetched_in(&self.extra_dir(&extra.url)).filter(|fetched| fetched.url == extra.url.as_str());
+                FeedView {
+                    url: extra.url.to_string(),
+                    publisher: extra.publisher.clone(),
+                    title: extra.title.clone(),
+                    fetched_at: fetched.as_ref().map(|fetched| fetched.fetched_at.clone()),
+                    offline: known.is_some_and(|known| known.offline),
+                    problem: known.and_then(|known| known.problem.clone()),
+                    count: newest
+                        .iter()
+                        .filter(|entry| entry.extra.as_ref().is_some_and(|from| from.url == extra.url))
+                        .count(),
+                    own: extra.own,
+                    closed: extra.own && fetched.is_some_and(|fetched| fetched.closed),
+                }
             })
-            .unwrap_or_default();
+            .collect();
         let problem = match &self.source {
             FeedSource::Off => Some("Каталог выключен в .env (PACKAGES_FEED_URL=off).".into()),
             FeedSource::Missing => {
@@ -1374,7 +1568,7 @@ impl PackageCatalog {
             return Err(ApiError::conflict("Каталог не настроен — ставить неоткуда."));
         }
         if !self.enabled() {
-            return Err(ApiError::conflict("Каталог выключен в настройках: включите его, чтобы ставить пакеты."));
+            return Err(ApiError::conflict("Каталог выключен в настройках: включите его, чтобы ставить приложения."));
         }
         self.host.rescan();
         let feed = self.feed(false).await.ok_or_else(|| {
@@ -1382,11 +1576,11 @@ impl PackageCatalog {
         })?;
         let entry = feed.find(id, version).cloned().ok_or_else(|| match version {
             Some(version) => ApiError::not_found(format!("В каталоге нет {id} {version}.")),
-            None => ApiError::not_found(format!("В каталоге нет пакета {id}.")),
+            None => ApiError::not_found(format!("В каталоге нет «{id}».")),
         })?;
         let installed = self.host.installed(id).map(|package| package.manifest.version.clone());
         if update && installed.is_none() {
-            return Err(ApiError::not_found(format!("Пакет {id} не установлен — обновлять нечего.")));
+            return Err(ApiError::not_found(format!("«{id}» не установлено — обновлять нечего.")));
         }
         let (state, reason) =
             entry_state(&entry, installed.as_ref(), (self.placement)(), feed.signed, self.host.free_memory_mb());
@@ -1407,14 +1601,14 @@ impl PackageCatalog {
         }
         // Room on the disk (on the station): the archive unpacked, roughly twice its size, and the reserve.
         if let Err(why) = self.host.room_for(entry.archive().size.div_ceil(1_048_576) * 2) {
-            return Err(ApiError::conflict(format!("Пакет не поставить: {why}.")));
+            return Err(ApiError::conflict(format!("Не поставить: {why}.")));
         }
         let _turn = self.installing.lock().await;
         let archive = entry.archive();
         let bytes = self
             .download(&archive.url, MAX_ARCHIVE, ARCHIVE_TIMEOUT)
             .await
-            .map_err(|error| ApiError::bad_gateway(format!("Пакет не скачался: {error}")))?;
+            .map_err(|error| ApiError::bad_gateway(format!("Не скачалось: {error}")))?;
         let root = self.host.packages_dir().to_path_buf();
         let version = entry.version.to_string();
         let placed = {
@@ -1426,18 +1620,46 @@ impl PackageCatalog {
             .await
             .map_err(ApiError::internal)?
         };
-        let placed = placed.map_err(|error| ApiError::bad_request(format!("Пакет не поставлен: {error}.")))?;
+        let placed = placed.map_err(|error| ApiError::bad_request(format!("Не поставлено: {error}.")))?;
+        // A voice of no known origin comes only from an own source the admin added, never from the catalog.
+        let own = entry.extra.as_ref().is_some_and(|extra| extra.own);
+        if !own && unknown_voice(&placed.dir) {
+            let _ = std::fs::remove_dir_all(&placed.dir);
+            self.host.rescan();
+            return Err(ApiError::bad_request(format!(
+                "Не поставлено: у «{}» голос неизвестного происхождения (voiceOrigin unknown) — из каталога такое не \
+                 ставится.",
+                entry.title
+            )));
+        }
         if placed.kind != entry.kind {
             let _ = std::fs::remove_dir_all(&placed.dir);
             self.host.rescan();
             return Err(ApiError::bad_request(format!(
-                "Пакет не поставлен: в каталоге он {}, а в архиве — {}.",
+                "Не поставлено: в каталоге это {}, а в архиве — {}.",
                 entry.kind.as_str(),
                 placed.kind.as_str()
             )));
         }
+        // The version in the app's history (docs/plans/package-history.md), with the plugin's data just before it.
+        if let Some(history) = self.host.history() {
+            history.note_install(
+                id,
+                &placed.dir,
+                &version,
+                super::history::RecordKind::Catalog,
+                super::history::Author {
+                    who: super::history::Who::Catalog,
+                    name: actor.as_ref().map(|actor| actor.name.clone()),
+                    via: None,
+                },
+                false,
+                false,
+                None,
+            );
+        }
         // An update: the version before stays to fall back on (a rollback, a new one that does not start); older
-        // ones leave once the new one is in place.
+        // ones leave once the new one is in place — they are in the history.
         if installed.is_some() {
             if let Err(error) = install::keep_versions(&root, id, 2) {
                 tracing::warn!(target: "plugins", "{id}: the older versions are not removed: {error}");
@@ -1453,6 +1675,11 @@ impl PackageCatalog {
             vouched,
             actor.as_ref().map(|actor| actor.name.as_str()),
         )?;
+        // Only the feed it came from may hide it.
+        let from = entry.extra.as_ref().map(|extra| extra.url.clone());
+        if let Some(from) = from.or_else(|| self.url().and_then(Result::ok)) {
+            registry::set_feed(&self.db, id, from.as_str())?;
+        }
         // A plugin that is on takes the new version: it starts beside the old one, which stays if it does not.
         if installed.is_some() && self.host.is_active(id) {
             if let Err(error) = self.host.reload(id, actor.clone()).await {
@@ -1466,6 +1693,85 @@ impl PackageCatalog {
         self.host.view_one(id).await
     }
 
+    /// An own source added by its link (docs/plans/custom-feeds.md): it must read as a feed first; then it is kept,
+    /// its copy and previews taken, and its packages join the catalog after the others'.
+    pub async fn add_source(&self, link: &str, actor: Option<Actor>) -> Result<CatalogView, ApiError> {
+        let main = match self.url() {
+            Some(Ok(url)) => url,
+            _ => return Err(ApiError::conflict("Каталог не настроен: свои источники читаются вместе с ним.")),
+        };
+        if !self.enabled() {
+            return Err(ApiError::conflict("Каталог выключен в настройках: включите его, чтобы добавить источник."));
+        }
+        let url = feed_url(link.trim()).map_err(ApiError::bad_request)?;
+        if url == main || self.declared(&main).iter().any(|extra| extra.url == url) {
+            return Err(ApiError::conflict("Эта лента уже читается: её пакеты и так в каталоге."));
+        }
+        {
+            let sources = self.sources();
+            if sources.iter().any(|source| source.url == url.as_str()) {
+                return Err(ApiError::conflict("Этот источник уже добавлен."));
+            }
+            if sources.len() >= MAX_SOURCES {
+                return Err(ApiError::conflict(format!(
+                    "Своих источников — не больше {MAX_SOURCES}: сначала уберите ненужный."
+                )));
+            }
+        }
+        // It must answer as a feed: a link with a typo is not kept.
+        let problem = match ask(&url, None).await {
+            Answer::Text(text, _) => {
+                parse_feed(&text, &url).err().map(|problem| format!("это не лента пакетов: {problem}"))
+            }
+            Answer::Same => None,
+            Answer::Unreachable(error) | Answer::Broken(error) => Some(format!("не отвечает: {error}")),
+            Answer::Status(code) => Some(format!("ответил HTTP {code}")),
+            Answer::TooBig => Some(format!("лента больше {} КБ", MAX_FEED / 1024)),
+        };
+        if let Some(problem) = problem {
+            return Err(ApiError::bad_gateway(format!("Источник не добавлен: {url} {problem}.")));
+        }
+        {
+            let _turn = self.reading.lock().await;
+            let mut sources = self.sources();
+            if !sources.iter().any(|source| source.url == url.as_str()) {
+                sources.push(OwnSource { url: url.to_string(), added_at: now_iso() });
+                self.write_sources(&sources)?;
+            }
+            let who = actor.as_ref().map_or("—", |actor| actor.name.as_str());
+            tracing::info!(target: "plugins", "packages catalog: own source added — {url} (by {who})");
+            let extra = own_feed(&url);
+            let _ = std::fs::remove_dir_all(self.extra_dir(&url));
+            self.read_extra(&extra).await;
+            self.apply_hidden(&main);
+            if let Some((feed, _)) = self.merged(&main) {
+                self.announce(&feed);
+            }
+        }
+        Ok(self.view(false).await)
+    }
+
+    /// An own source removed: its copy goes, and its packages from the catalog. What was installed from it stays — as
+    /// it is, hidden or not.
+    pub async fn remove_source(&self, link: &str, actor: Option<Actor>) -> Result<CatalogView, ApiError> {
+        let url = feed_url(link.trim()).map_err(ApiError::bad_request)?;
+        {
+            let _turn = self.reading.lock().await;
+            let mut sources = self.sources();
+            let before = sources.len();
+            sources.retain(|source| feed_url(&source.url).ok().as_ref() != Some(&url));
+            if sources.len() == before {
+                return Err(ApiError::not_found("Такого источника здесь нет."));
+            }
+            self.write_sources(&sources)?;
+            let _ = std::fs::remove_dir_all(self.extra_dir(&url));
+            lock(&self.status).extras.remove(url.as_str());
+            let who = actor.as_ref().map_or("—", |actor| actor.name.as_str());
+            tracing::info!(target: "plugins", "packages catalog: own source removed — {url} (by {who})");
+        }
+        Ok(self.view(false).await)
+    }
+
     /// A package removed, every version of it and its row; a plugin's code stops first.
     pub async fn remove(&self, id: &str, actor: Option<Actor>) -> Result<(), ApiError> {
         let _turn = self.installing.lock().await;
@@ -1473,8 +1779,8 @@ impl PackageCatalog {
         let origin = self.host.origin_of(id);
         if !origin.removable() {
             return Err(ApiError::conflict(format!(
-                "«{id}» — {} пакет: он обновляется вместе со шлюзом и не удаляется.{}",
-                origin.title(),
+                "«{id}» — {} приложение: оно обновляется вместе со шлюзом и не удаляется.{}",
+                origin.word(),
                 if origin.can_disable() {
                     " Его можно выключить или сделать свою копию."
                 } else {
@@ -1484,7 +1790,7 @@ impl PackageCatalog {
         }
         let root = self.host.packages_dir().to_path_buf();
         if !valid_id(id) || !root.join(id).is_dir() {
-            return Err(ApiError::not_found(format!("Нет пакета {id}.")));
+            return Err(ApiError::not_found(format!("Нет приложения {id}.")));
         }
         self.host.forget(id).await?;
         install::remove_package(&root, id).map_err(ApiError::internal)?;
@@ -1498,6 +1804,7 @@ impl PackageCatalog {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use crate::plugins::controller::PackagesView;
     use crate::plugins::install::tests::{character_manifest, vgp};
     use crate::plugins::quickjs::QuickJs;
     use crate::plugins::PluginsDeps;
@@ -1524,11 +1831,16 @@ pub mod tests {
         pub down: Arc<std::sync::atomic::AtomicBool>,
         /// Files to refuse, one request each: a station's own try, before the computer's.
         pub refuse: Arc<AtomicUsize>,
+        /// Taken down: the feed answers 404.
+        pub gone: Arc<std::sync::atomic::AtomicBool>,
     }
 
     async fn feed(State(site): State<Site>, headers: HeaderMap) -> axum::response::Response {
         if site.down.load(Ordering::SeqCst) {
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        if site.gone.load(Ordering::SeqCst) {
+            return StatusCode::NOT_FOUND.into_response();
         }
         site.reads.fetch_add(1, Ordering::SeqCst);
         let text = lock(&site.feed).clone();
@@ -1563,6 +1875,7 @@ pub mod tests {
             url,
             down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             refuse: Arc::new(AtomicUsize::new(0)),
+            gone: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let router =
             Router::new().route("/catalog.json", get(feed)).route("/{*path}", get(file)).with_state(site.clone());
@@ -1679,6 +1992,7 @@ pub mod tests {
             storage_reserve_mb: 15,
             pressure_action: crate::plugins::budget::PressureAction::Disable,
             bundled: false,
+            schedules: true,
         };
         let host = PluginHost::new(PluginsDeps {
             config: config.clone(),
@@ -1697,6 +2011,9 @@ pub mod tests {
             home: None,
             gateway_url: "http://127.0.0.1:9".into(),
             services: None,
+            secrets: Arc::new(
+                crate::secrets::SecretsService::new(Arc::new(crate::storage::Db::memory()), None).unwrap(),
+            ),
         });
         let catalog = PackageCatalog::with_source(
             CatalogDeps {
@@ -1982,10 +2299,7 @@ pub mod tests {
         *lock(&site.feed) = format!("{feed} ");
         let view = keyed.catalog.view(true).await;
         assert!(!view.signed);
-        assert_eq!(
-            view.problem.as_deref(),
-            Some("Подпись каталога не сошлась: плагины и приложения из него не ставятся.")
-        );
+        assert_eq!(view.problem.as_deref(), Some("Подпись каталога не сошлась: приложения из него не ставятся."));
         assert_eq!(view.packages[0].state, EntryState::Installed, "what is installed stays");
         // Without the key nothing of code installs at all.
         let unkeyed = fixture(FeedSource::Url(site.url.clone()), Placement::Pc);
@@ -2276,6 +2590,199 @@ pub mod tests {
         let before = partner.reads.load(Ordering::SeqCst);
         assert_eq!(ids(&catalog.view(true).await), ["arthur", "palych"], "the copies still shown");
         assert_eq!(partner.reads.load(Ordering::SeqCst), before);
+    }
+
+    /// A character whose voice is of no known origin, with its archive.
+    fn unknown_voice_character(id: &str, version: &str) -> (Value, Vec<u8>) {
+        let mut manifest = character_manifest(id, version);
+        manifest["contributes"]["characters"][0]["voiceOrigin"] = json!("unknown");
+        let mut entry = arthur(version);
+        entry["id"] = json!(id);
+        (entry, vgp(&manifest))
+    }
+
+    /// The changes told on the bus so far.
+    fn changes(events: &mut tokio::sync::broadcast::Receiver<Arc<GatewayEvent>>) -> Vec<String> {
+        let mut seen = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let GatewayEvent::PackagesChanged { package_id: id, change, .. } = event.as_ref() {
+                seen.push(format!("{id} {change}"));
+            }
+        }
+        seen
+    }
+
+    #[test]
+    fn a_package_to_hide_needs_its_id_alone() {
+        let base = url::Url::parse("https://demo.example/catalog.json").unwrap();
+        let text = json!({ "format": 1, "packages": [
+            { "id": "jarvis-demo", "hidden": true },
+            { "hidden": true },
+            { "id": "palych", "hidden": false }
+        ]})
+        .to_string();
+        let feed = parse_feed(&text, &base).unwrap();
+        assert_eq!(feed.hidden.iter().collect::<Vec<_>>(), ["jarvis-demo"]);
+        assert!(feed.packages.is_empty());
+        assert_eq!(feed.skipped.len(), 2, "no id, and an ordinary package without its archive: {:?}", feed.skipped);
+        assert!(feed.skipped[0].starts_with("hidden: нет id"));
+        // An own source: its host is its title and, in letters an id takes, its publisher; never vouched for.
+        let own = own_feed(&url::Url::parse("https://Demo.Duowave.dev/d/x7/catalog.json").unwrap());
+        assert_eq!(
+            (own.title.as_str(), own.publisher.as_str(), own.verified, own.own),
+            ("demo.duowave.dev", "demo-duowave-dev", false, true)
+        );
+        let local = own_feed(&url::Url::parse("http://127.0.0.1:8781/catalog.json").unwrap());
+        assert_eq!((local.title.as_str(), local.publisher.as_str()), ("127.0.0.1:8781", "own"));
+    }
+
+    #[tokio::test]
+    async fn an_own_source_added_by_its_link_brings_characters_never_code_and_never_an_id_taken() {
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0"), unknown_voice_character("vague", "1.0.0")]);
+        let plugin = {
+            let manifest = json!({
+                "schema": 1, "kind": "plugin", "id": "moon", "version": "1.0.0", "title": "Луна", "api": "^1",
+                "runs": ["pc", "station", "stationServer"], "permissions": ["voice.intents"],
+                "contributes": { "intents": [{ "phrases": ["какая луна"], "handler": "say" }] }
+            });
+            let mut entry = arthur("1.0.0");
+            entry["id"] = json!("moon");
+            entry["kind"] = json!("plugin");
+            (entry, plugin_vgp(&manifest, "export function say() { return 'Полная'; }"))
+        };
+        own.publish(&[unknown_voice_character("jarvis-demo", "1.0.0"), character("arthur", "9.0.0"), plugin]);
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+        assert_eq!(ids(&catalog.view(false).await), ["arthur", "vague"]);
+
+        // A link that is no feed is not kept.
+        let nowhere = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let refused = catalog.add_source(&format!("http://127.0.0.1:{nowhere}/catalog.json"), None).await.unwrap_err();
+        assert_eq!(refused.status, StatusCode::BAD_GATEWAY);
+        assert!(refused.message.starts_with("Источник не добавлен"), "{}", refused.message);
+        assert!(catalog.sources().is_empty());
+        assert_eq!(catalog.add_source(&main.url, None).await.unwrap_err().status, StatusCode::CONFLICT);
+        assert_eq!(catalog.add_source("ftp://x/catalog.json", None).await.unwrap_err().status, StatusCode::BAD_REQUEST);
+
+        let view = catalog.add_source(&own.url, None).await.unwrap();
+        assert_eq!(
+            ids(&view),
+            ["arthur", "vague", "jarvis-demo", "moon"],
+            "the own source's after; its arthur is not taken"
+        );
+        let demo = &view.packages[2];
+        assert!(demo.own && !demo.verified, "{demo:?}");
+        assert_eq!(demo.source.as_deref(), Some(own_feed(&own.address()).title.as_str()));
+        assert_eq!(view.packages[3].state, EntryState::NeedsSignature, "never code from an own source");
+        let listed = view.feeds.last().unwrap();
+        assert!(listed.own && !listed.closed && listed.count == 2, "{listed:?}");
+        assert_eq!(catalog.add_source(&own.url, None).await.unwrap_err().status, StatusCode::CONFLICT, "once");
+        assert!(catalog.dir.join(SOURCES_FILE).is_file());
+
+        // A voice of no known origin: from the own source, yes; from the catalog, no.
+        let installed = catalog.install("jarvis-demo", None, false, None).await.unwrap();
+        assert_eq!((installed.source.as_str(), installed.verified), ("catalog", false));
+        let noted = registry::choices(&catalog.db)["jarvis-demo"].clone();
+        assert_eq!(noted.feed.as_deref(), Some(own.url.as_str()));
+        let vague = catalog.install("vague", None, false, None).await.unwrap_err();
+        assert_eq!(vague.status, StatusCode::BAD_REQUEST);
+        assert!(vague.message.contains("voiceOrigin unknown"), "{}", vague.message);
+        assert!(fixture.host.installed("vague").is_none() && !fixture.root.join("vague/1.0.0").exists());
+        catalog.install("arthur", None, false, None).await.unwrap();
+        assert_eq!(registry::choices(&catalog.db)["arthur"].feed.as_deref(), Some(main.url.as_str()));
+
+        // Up to four.
+        let mut sources = catalog.sources();
+        for n in 0..3 {
+            sources.push(OwnSource { url: format!("https://feed{n}.example/catalog.json"), added_at: now_iso() });
+        }
+        catalog.write_sources(&sources).unwrap();
+        let full = catalog.add_source("https://feed9.example/catalog.json", None).await.unwrap_err();
+        assert!(full.message.contains("не больше 4"), "{}", full.message);
+    }
+
+    #[tokio::test]
+    async fn a_feed_hides_what_was_installed_from_it_and_a_closed_own_source_hides_all_it_gave() {
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        own.publish(&[character("jarvis-demo", "1.0.0"), character("palych", "1.0.0")]);
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        let (catalog, host) = (&fixture.catalog, &fixture.host);
+        catalog.add_source(&own.url, None).await.unwrap();
+        for id in ["arthur", "jarvis-demo", "palych"] {
+            catalog.install(id, None, false, None).await.unwrap();
+        }
+        let mut events = fixture.events.subscribe();
+        let listed = |view: PackagesView| view.packages.into_iter().map(|package| package.id).collect::<Vec<_>>();
+
+        // The own source hides one: not in the catalog, not listed here, its files kept.
+        let mut entries: Value = serde_json::from_str(&lock(&own.feed)).unwrap();
+        entries["packages"].as_array_mut().unwrap()[0] = json!({ "id": "jarvis-demo", "hidden": true });
+        *lock(&own.feed) = entries.to_string();
+        let view = catalog.view(true).await;
+        assert_eq!(ids(&view), ["arthur", "palych"]);
+        assert!(host.is_hidden("jarvis-demo") && !host.is_hidden("palych"));
+        assert_eq!(listed(host.view().await), ["arthur", "palych"]);
+        assert!(host.installed("jarvis-demo").is_some(), "its files stay");
+        assert_eq!(host.visible_all().len(), 2);
+        assert_eq!(changes(&mut events), ["jarvis-demo hidden"]);
+        catalog.view(true).await;
+        assert!(changes(&mut events).is_empty(), "told once");
+
+        // The main feed cannot hide what came from the own source; it hides its own.
+        main.name_feeds(json!([]));
+        let mut feed: Value = serde_json::from_str(&lock(&main.feed)).unwrap();
+        feed["packages"].as_array_mut().unwrap().push(json!({ "id": "palych", "hidden": true }));
+        feed["packages"].as_array_mut().unwrap()[0] = json!({ "id": "arthur", "hidden": true });
+        *lock(&main.feed) = feed.to_string();
+        catalog.view(true).await;
+        assert!(!host.is_hidden("palych"), "not its feed");
+        assert!(host.is_hidden("arthur"));
+        main.publish(&[character("arthur", "1.0.0")]);
+
+        // The own source says so no more: shown again.
+        own.publish(&[character("jarvis-demo", "1.0.0"), character("palych", "1.0.0")]);
+        catalog.view(true).await;
+        assert!(!host.is_hidden("jarvis-demo") && !host.is_hidden("arthur"));
+        assert_eq!(listed(host.view().await), ["arthur", "jarvis-demo", "palych"]);
+        changes(&mut events);
+
+        // Taken down (404): closed — its copy gone, all it gave hidden; told once.
+        own.gone.store(true, Ordering::SeqCst);
+        let view = catalog.view(true).await;
+        assert_eq!(ids(&view), ["arthur"]);
+        let closed = view.feeds.last().unwrap();
+        assert!(closed.own && closed.closed && closed.count == 0, "{closed:?}");
+        assert!(closed.problem.as_deref().unwrap().contains("закрыт"), "{closed:?}");
+        assert!(host.is_hidden("jarvis-demo") && host.is_hidden("palych"));
+        assert!(!catalog.extra_dir(&own.address()).join("catalog.json").exists());
+        let mut told = changes(&mut events);
+        told.sort();
+        assert_eq!(told, ["jarvis-demo hidden", "palych hidden"]);
+        catalog.view(true).await;
+        assert!(changes(&mut events).is_empty());
+        // Down for a while (5xx, no network) is not closed: only 404 and 410.
+        own.gone.store(false, Ordering::SeqCst);
+        catalog.view(true).await;
+        assert!(!host.is_hidden("palych"), "back up: shown again");
+        own.down.store(true, Ordering::SeqCst);
+        let view = catalog.view(true).await;
+        assert!(!view.feeds.last().unwrap().closed && !host.is_hidden("palych"));
+        assert_eq!(ids(&view), ["arthur", "jarvis-demo", "palych"], "the copy before stays");
+
+        // Removed: its packages leave the catalog; what came from it stays as it was.
+        own.gone.store(true, Ordering::SeqCst);
+        own.down.store(false, Ordering::SeqCst);
+        catalog.view(true).await;
+        let view = catalog.remove_source(&own.url, None).await.unwrap();
+        assert!(view.feeds.iter().all(|feed| !feed.own));
+        assert!(host.is_hidden("palych"), "still hidden");
+        assert!(!catalog.extra_dir(&own.address()).exists());
+        assert_eq!(catalog.remove_source(&own.url, None).await.unwrap_err().status, StatusCode::NOT_FOUND);
+        // A package put in anew is shown.
+        catalog.remove("palych", None).await.unwrap();
+        assert!(!host.is_hidden("palych"));
     }
 
     #[tokio::test]

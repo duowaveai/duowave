@@ -240,8 +240,10 @@ jobs:
           tool: cargo-zigbuild
       - if: matrix.zig
         run: cargo zigbuild -p duowave --target ${{ matrix.target }} ${{ matrix.args }}
+      # The Mac and Windows programs hear MIDI keyboards (src/midi); the Linux ones, built for musl with zig, cannot
+      # build ALSA — there the keyboard is the app's (docs/plans/midi.md, decision 7).
       - if: ${{ !matrix.zig }}
-        run: cargo build -p duowave --target ${{ matrix.target }} ${{ matrix.args }}
+        run: cargo build -p duowave --target ${{ matrix.target }} ${{ matrix.args }} --features midi
       # The program and its release.json (as in station-build); no macOS metadata files (._*) in the archive.
       - name: Archive
         shell: bash
@@ -305,7 +307,7 @@ jobs:
         run: npm ci --prefix scripts/release/tauri-cli --ignore-scripts --no-audit --no-fund
       - name: Tauri's system packages
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 10.11.2026
         with:
           targets: ${{ matrix.target }}
@@ -360,6 +362,12 @@ jobs:
           New-Item -ItemType Directory -Force $additional | Out-Null
           Get-Checked 'https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v0.5.3/nsis_tauri_utils.dll' (Join-Path $additional 'nsis_tauri_utils.dll') SHA1 '75197FEE3C6A814FE035788D1C34EAD39349B860'
           Get-ChildItem $tools
+      # uv goes into the app beside its program (bundle.externalBin, docs/plans/speech-servers.md): the pinned release
+      # for the target, checked by its SHA-256 (scripts/release/fetch-uv.py). Windows' runner has `python`, not
+      # `python3`.
+      - name: uv for the installer
+        shell: bash
+        run: $(command -v python3 || command -v python) scripts/release/fetch-uv.py ${{ matrix.target || '' }}
       # Without the key and without update archives (createUpdaterArtifacts stays off): the next step makes the update
       # files from the bundles, and sign signs them.
       - name: Build

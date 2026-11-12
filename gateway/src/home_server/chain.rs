@@ -50,6 +50,11 @@ impl SpeechRecognizer for HomeFirst {
         self.current().map(|recognizer| recognizer.model()).unwrap_or_else(|| "off".into())
     }
 
+    /// At home while the computer recognises; the cloud's otherwise.
+    fn at_home(&self) -> Option<bool> {
+        Some(self.home.recognizer().is_some())
+    }
+
     fn recognize<'a>(
         &'a self,
         pcm: &'a [i16],

@@ -488,7 +488,9 @@ impl MovesService {
 
         // The settings go before its first start: it starts on them.
         self.step(id, MoveStep::Settings, StepState::Running);
-        let mut bundle = transfer::export(&self.deps.db, &self.deps.secrets, "pc")?;
+        // The plugins' keys among their settings too: a build from before the safe kept them (0.5.x) reads them there,
+        // and this one's start moves them into its safe (`transfer::keys_in_settings`).
+        let mut bundle = transfer::keys_in_settings(transfer::export(&self.deps.db, &self.deps.secrets, "pc")?);
         bundle.revision = transfer::revision(&self.deps.db, &self.deps.secrets)?;
         // The mode in force goes too, the one .env set included: the station starts in it (live, 07.11 — a mode only
         // in .env did not travel, the station started in «Яндекс»). Only a move carries it (`transfer::MOVE_ONLY`):
@@ -506,6 +508,23 @@ impl MovesService {
         // The plugins' switches and their data go with the gateway: they live where it runs (transfer.rs), and the
         // station takes them for the packages it has too (live, 10.11: «Список покупок» was off there, its list here).
         bundle.plugins = Some(transfer::plugins(&self.deps.db)?);
+        // Their pictures too, as many as the station has room for (5 MB, the newest first, the owner's decision 11);
+        // the rest stay here, and the plugins download again what they miss.
+        let root = crate::plugins::files::root_of(&self.deps.config.data_dir);
+        let (all, fit) =
+            (transfer::pictures(&root, None), transfer::pictures(&root, Some(crate::plugins::files::STATION_ALL_MAX)));
+        if all.len() > fit.len() {
+            let left: usize =
+                all.iter().filter(|picture| !fit.contains(picture)).map(|picture| picture.data.len() * 3 / 4).sum();
+            self.note(
+                id,
+                &format!(
+                    "Картинки приложений, {:.1} МБ, на колонку не поедут: там для них 5 МБ. Приложения скачают их снова, когда понадобятся.",
+                    left as f64 / (1024.0 * 1024.0)
+                ),
+            );
+        }
+        bundle.pictures = Some(fit);
         // With this computer as its server the station speaks this computer's voice as this computer does — in
         // «Шлюз» too (live, 10.11: Alice's voice there, the station's own choice was «yandex»).
         if request.to == MoveTo::StationServer {
@@ -619,13 +638,13 @@ impl MovesService {
                 match taken {
                     Ok(true) => {
                         restart = true;
-                        self.note(id, "Плагины и их данные взяты с колонки: шлюз перезапустится на них.");
+                        self.note(id, "Приложения и их данные взяты с колонки: шлюз перезапустится на них.");
                         self.step(id, MoveStep::Settings, StepState::Done);
                     }
                     Ok(false) => self.step(id, MoveStep::Settings, StepState::Skipped),
                     Err(error) => {
                         tracing::warn!("placement: the plugins' state stays on the station: {error}");
-                        self.note(id, &format!("Данные плагинов остались на колонке: {error}"));
+                        self.note(id, &format!("Данные приложений остались на колонке: {error}"));
                         self.step(id, MoveStep::Settings, StepState::Skipped);
                     }
                 }
@@ -765,7 +784,12 @@ impl MovesService {
     fn take_plugins(&self, bundle: transfer::Bundle) -> anyhow::Result<bool> {
         let Some(plugins) = bundle.plugins.filter(|plugins| !plugins.is_empty()) else { return Ok(false) };
         let dir = self.deps.config.skills.state_dir.clone().ok_or_else(|| anyhow::anyhow!("no state folder"))?;
-        let package = transfer::PluginsPackage { from: bundle.from, at: bundle.at, plugins };
+        let package = transfer::PluginsPackage {
+            from: bundle.from,
+            at: bundle.at,
+            plugins,
+            pictures: bundle.pictures.unwrap_or_default(),
+        };
         super::station_fs::write_atomic(&transfer::incoming_plugins_file(&dir), &serde_json::to_vec(&package)?)
             .map_err(|error| anyhow::anyhow!(error))?;
         Ok(true)
@@ -1641,7 +1665,7 @@ mod tests {
         assert!(revoked(&deps.db).is_some(), "the move back revokes it");
         // The restart: the package applied, the key as revoked as before it.
         let state = deps.config.skills.state_dir.clone().unwrap();
-        let imported = transfer::apply_incoming(&state, &deps.db, &deps.secrets, false).unwrap();
+        let imported = transfer::apply_incoming(&state, &deps.db, &deps.secrets, false, None).unwrap();
         assert!(imported.plugins >= 1);
         assert!(revoked(&deps.db).is_some(), "not brought back to life by the station's settings");
         assert_eq!(list_of(&deps.db).as_deref(), Some(r#"["молоко","хлеб"]"#), "the station's list, here now");
@@ -1673,7 +1697,7 @@ mod tests {
         assert!(transfer::incoming_plugins_file(&state).exists());
         assert_eq!(computer.restarts.load(Ordering::Relaxed), 1);
         let deps = &computer.moves.deps;
-        assert!(transfer::apply_incoming(&state, &deps.db, &deps.secrets, false).is_none());
+        assert!(transfer::apply_incoming(&state, &deps.db, &deps.secrets, false, None).is_none());
         assert_eq!(list_of(&deps.db).as_deref(), Some(r#"["хлеб"]"#));
     }
 

@@ -7,6 +7,7 @@ import { Dropdown } from '../ui/dropdown';
 import { Progress, needsWhat, useNeedsFlow, voicePill } from '../ui/needs';
 import { SectionTabs, TabEntry } from '../ui/tabs';
 import { OwnVoiceRows, OwnVoicesHeader, VoiceWizard } from './voice-lab';
+import { localAsrLine, localAsrPercent } from './local-asr';
 import { ask } from '../ui/confirm';
 
 export type ModelsTab = 'voice' | 'recognition';
@@ -581,18 +582,36 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
     const moreAll = registryRest.filter(voiceMatches);
     const more = moreAll.slice(0, limit);
     const refreshView = () => void api.models().then(setView).catch(() => undefined);
-    /** Одна карточка распознавания: работает, ждёт перезапуска или «включить». */
+    const local = view.localAsr;
+    /** Одна карточка распознавания: работает, ждёт перезапуска или «включить». На этом компьютере — без перезапуска:
+     * выбранная модель скачивается (её вес — на карточке) и встаёт сама; модели без файла GGUF — только на сервере. */
     const asrCard = (card: AsrCard) => (
         <Card
             key={card.id}
             title={card.title}
             badge={card.badge}
             description={card.description}
-            meta={card.license}
+            meta={
+                card.local?.runsHere && !card.local.installed
+                    ? [card.license, `скачается ${Math.round(card.local.size / 1_000_000)} МБ`].filter(Boolean).join(' · ')
+                    : card.license
+            }
             note={notes[card.id]}
             action={
                 card.active ? (
                     <span class="pill pill-own">работает</span>
+                ) : card.local && !card.local.runsHere && card.id !== 'yandex' ? (
+                    <span class="pill pill-off" title="У этой модели нет файла для распознавания на компьютере — её запускает отдельный сервер распознавания.">
+                        только на сервере
+                    </span>
+                ) : card.pending && local ? (
+                    <span class="pill pill-off">
+                        {local.phase === 'downloading'
+                            ? `${Math.round(localAsrPercent(local))}%`
+                            : local.phase === 'failed'
+                              ? 'не встала'
+                              : 'загружается'}
+                    </span>
                 ) : card.pending ? (
                     view.canRestart ? (
                         <Action
@@ -767,9 +786,33 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                                 Слух
                             </h2>
                             <span class="t-meta">
-                                {view.mode === 'relay' ? 'в режиме «Яндекс» распознаёт Яндекс' : view.asrLoaded ? `работает: ${view.asrLoaded}` : 'сервер молчит'}
+                                {view.mode === 'relay'
+                                    ? 'в режиме «Яндекс» распознаёт Яндекс'
+                                    : local
+                                      ? localAsrLine(local)
+                                      : view.asrLoaded
+                                        ? `работает: ${view.asrLoaded}`
+                                        : 'сервер молчит'}
                             </span>
                         </div>
+                        {local?.phase === 'downloading' && <Progress percent={localAsrPercent(local)} label="Модель распознавания" />}
+                        {local && (local.phase === 'failed' || local.gpuFailed) && (
+                            <div class="flex items-center gap-12 py-8">
+                                <span class={`t-caption flex-1 ${local.phase === 'failed' ? 'c-dot-offline' : ''}`} role={local.phase === 'failed' ? 'alert' : 'status'}>
+                                    {local.phase === 'failed'
+                                        ? (local.error ?? 'Распознавание не запустилось.')
+                                        : 'Видеокарта отказала — распознаёт процессор. «Повторить» попробует видеокарту снова.'}
+                                </span>
+                                {isAdmin && (
+                                    <Action
+                                        tone="on"
+                                        label="повторить"
+                                        busy={busy['asr-server'] || view.restarting === 'asr'}
+                                        onClick={() => void restart('local-asr', 'asr')}
+                                    />
+                                )}
+                            </div>
+                        )}
                         {currentAsr.map(asrCard)}
                     </section>
                     <section class="card glass card-list" aria-label="Советуем">
@@ -803,6 +846,39 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
             ) : (
                 <>
                     {pending && <PendingVoice pending={pending} title={pendingTitle} isAdmin={isAdmin} onChanged={refreshView} />}
+                    {view.ttsManaged && ['installing', 'starting', 'failed'].includes(view.ttsManaged.phase) && (
+                        // Сервер своего голоса, который держит приложение: ставится, запускается или упал.
+                        <section class="card glass card-list" aria-label="Сервер своего голоса">
+                            <div class="card-head">
+                                <h2 class="t-title-xs m-0">Свой голос</h2>
+                                <span class="t-meta">
+                                    {view.ttsManaged.phase === 'installing'
+                                        ? (view.ttsManaged.stage ?? 'ставлю')
+                                        : view.ttsManaged.phase === 'starting'
+                                          ? 'запускаю сервер голоса…'
+                                          : 'сервер голоса не работает'}
+                                </span>
+                            </div>
+                            {view.ttsManaged.phase === 'installing' && (
+                                <Progress percent={view.ttsManaged.percent} label="Установка своего голоса" />
+                            )}
+                            {view.ttsManaged.phase === 'failed' && (
+                                <div class="flex items-center gap-12 py-8">
+                                    <span class="t-caption flex-1 c-dot-offline" role="alert">
+                                        {view.ttsManaged.error ?? 'Сервер голоса не запустился.'}
+                                    </span>
+                                    {isAdmin && (
+                                        <Action
+                                            tone="on"
+                                            label="повторить"
+                                            busy={busy['tts-server'] || view.restarting === 'tts'}
+                                            onClick={() => void restart('tts-managed', 'tts')}
+                                        />
+                                    )}
+                                </div>
+                            )}
+                        </section>
+                    )}
                     <section class="card glass card-list" aria-label="Голос Алисы">
                         <div class="card-head">
                             <h2 class="t-title-xs m-0">

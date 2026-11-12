@@ -150,13 +150,20 @@ events! {
     PackageDataChanged = "packages.data" {
         package: String,
     }
-    /// A draft of the workshop changed by its agent or by voice (src/plugins/workshop): the panel reads it again.
+    /// The MIDI keyboards plugged into this computer changed (src/midi): their names only — never a note.
+    MidiDevices = "midi.devices" {
+        devices: Vec<String>,
+    }
+    /// A draft of the workshop changed by its agent or by voice (src/plugins/workshop): the panel reads it again. The
+    /// change: `agent` (a step of the agent), `voice.*`, and the draft's card (docs/plans/voice-creation.md) — `made`,
+    /// `ready`, `failed`, `stopped`, `parked`, `installed`, `deleted`; `open:fitting` and `open:consent` when a station
+    /// asks the panel to open «Примерка» or the «да».
     WorkshopChanged = "workshop.changed" {
         draft: String,
         change: String,
     }
     /// The plugins' memory changed enough to tell (src/plugins/budget.rs): what is free of their budget, the
-    /// pressure. «Память колонки» reads the rest through the API.
+    /// pressure. «Ресурсы колонки» reads the rest through the API.
     PluginsResources = "plugins.resources" {
         free_mb: u64,
         pressure: String,
@@ -170,6 +177,22 @@ events! {
     ConnectorChanged = "connector.changed" {
         connector: String,
         fields: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")] actor: Option<Actor>,
+    }
+    /// The characters' memory changed (src/memory): what was done to which record, never its words — an erased
+    /// fact must not stay behind in the audit log. A person's change carries them as the actor; what the household
+    /// said or the model remembered carries none (the panel follows it live, the audit log leaves it out).
+    MemoryChanged = "memory.changed" {
+        action: String,
+        target: String,
+        target_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")] actor: Option<Actor>,
+    }
+    /// A night of the sleep (src/sleep) started, finished or was rolled back. A person who pressed «Запустить сон
+    /// сейчас» or «Откатить ночь» is the actor; the night's own timer is not.
+    SleepChanged = "sleep.changed" {
+        run_id: String,
+        state: String,
         #[serde(default, skip_serializing_if = "Option::is_none")] actor: Option<Actor>,
     }
     UserCreated = "user.created" {

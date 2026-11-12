@@ -39,6 +39,7 @@ use crate::core::identity::permissions::use_of;
 use crate::dialog::llm::LlmTool;
 use crate::operations::system_memory::Pressure;
 use crate::platform::http::ApiError;
+use crate::secrets::SecretsService;
 use crate::settings::definitions::PACKAGE_SETTINGS;
 use crate::settings::SettingsService;
 use crate::skills::capabilities::{CapabilityName, Intent};
@@ -133,6 +134,8 @@ pub struct PluginsDeps {
     pub gateway_url: String,
     /// The gateway's services behind `host.call` (content, tools, smart home…); none in tests that need none.
     pub services: Option<Arc<dyn super::host_api::HostServices>>,
+    /// The gateway's safe: the plugins' private settings (`"secret": true`) live there, `plugin:<package>:<key>`.
+    pub secrets: Arc<SecretsService>,
 }
 
 /// The last thing that went wrong with a plugin.
@@ -164,6 +167,8 @@ struct State {
     /// Where its package came from (catalog, local) and whether the catalog vouched for it.
     source: String,
     verified: bool,
+    /// Its feed hides it (docs/plans/custom-feeds.md): not listed, its code does not run, its characters not offered.
+    hidden: bool,
 }
 
 struct Loaded {
@@ -211,10 +216,10 @@ impl Plugin {
         self.stats.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// The version in force, while it is on.
+    /// The version in force, while it is on (and not hidden by its feed: then it is never in force).
     fn active(&self) -> Option<Arc<Package>> {
         let state = self.state();
-        state.active.clone().filter(|_| state.enabled)
+        state.active.clone().filter(|_| state.enabled && !state.hidden)
     }
 
     /// Its context into the slot: its share of the budget is taken while it is there. The one it replaces, if any.
@@ -353,6 +358,10 @@ pub struct PluginHost {
     journals: Mutex<HashMap<String, VecDeque<JournalLine>>>,
     /// The plugins' writes to their `kv`, told the panel (`packages.data`): its widgets read their data again.
     data_news: Arc<DataNews>,
+    /// The apps' history (src/plugins/history): set once it stands.
+    history: std::sync::OnceLock<Arc<super::history::History>>,
+    /// The gateway's safe: the plugins' private settings.
+    secrets: Arc<SecretsService>,
 }
 
 impl PluginHost {
@@ -375,6 +384,7 @@ impl PluginHost {
             home,
             gateway_url,
             services,
+            secrets,
         } = deps;
         let app_tokens = Arc::new(crate::apps::AppTokens::default());
         let give_up_to = std::sync::Arc::new(std::sync::OnceLock::<Weak<PluginHost>>::new());
@@ -424,6 +434,8 @@ impl PluginHost {
             told: Mutex::new(None),
             journals: Mutex::new(HashMap::new()),
             data_news,
+            history: std::sync::OnceLock::new(),
+            secrets,
         });
         let _ = give_up_to.set(Arc::downgrade(&host));
         host.rescan();
@@ -499,6 +511,78 @@ impl PluginHost {
         self.plugins.read().unwrap_or_else(|poisoned| poisoned.into_inner()).get(id).cloned()
     }
 
+    /// This gateway runs on the station: its limits for pictures, the workshop's warnings.
+    pub fn on_station(&self) -> bool {
+        (self.placement)().on_station()
+    }
+
+    /// The ids of the plugins installed (on or off): the scheduler drops the jobs of the ones gone.
+    pub fn ids(&self) -> Vec<String> {
+        self.list()
+            .into_iter()
+            .filter(|plugin| self.installed(&plugin.id).is_some())
+            .map(|plugin| plugin.id.clone())
+            .collect()
+    }
+
+    /// Memory is short and work in the background waits (budget.rs): so do the schedules.
+    pub fn deferring(&self) -> bool {
+        self.deferring.load(Ordering::Relaxed)
+    }
+
+    /// A plugin's schedule changed (set, ran, paused): the panel reads it again (`packages.changed`, `schedule`).
+    pub fn schedule_changed(&self, id: &str) {
+        self.changed(id, "schedule", None, None, None);
+    }
+
+    /// A plugin's settings as its code reads them (a secret one as it is): the time a person set for a rhythm.
+    pub fn settings_of(&self, id: &str) -> serde_json::Map<String, Value> {
+        let Some(package) = self.package(id) else { return serde_json::Map::new() };
+        let stored = self.settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default();
+        package.manifest.settings_values(Some(&package.manifest.stored_with_secrets(stored.get(id), &self.secrets)))
+    }
+
+    /// The gateway's safe: the workshop hides the plugins' keys in what its agent reads.
+    pub fn secrets(&self) -> &Arc<SecretsService> {
+        &self.secrets
+    }
+
+    /// The private settings (`secret`) still stored among the plugins' settings — written before the safe kept them, or
+    /// brought by a package of settings from an older gateway — moved into the safe. Each start and each rescan: what
+    /// is moved once is not there the next time.
+    fn keep_secrets_in_the_safe(&self) {
+        let Some(mut stored) = self.settings.get(&PACKAGE_SETTINGS, None) else { return };
+        let mut moved = 0;
+        for plugin in self.list() {
+            let package = {
+                let state = plugin.state();
+                state.active.clone().or_else(|| registry::newest_ready(&state.found))
+            };
+            let (Some(package), Some(own)) = (package, stored.get_mut(&plugin.id)) else { continue };
+            for setting in package.manifest.settings.iter().filter(|setting| setting.secret) {
+                let Some(value) = own.get(&setting.key).cloned() else { continue };
+                let id = crate::secrets::plugin_secret(&plugin.id, &setting.key);
+                // A value already in the safe is the newer one: the panel wrote it there.
+                if let Some(text) = value.as_str().filter(|text| !text.is_empty() && !self.secrets.has(&id)) {
+                    if let Err(error) = self.secrets.set(&id, Some(text)) {
+                        tracing::warn!(target: "plugins", "{}: {} stays among the settings: {}", plugin.id, setting.key, error.message);
+                        continue;
+                    }
+                }
+                own.remove(&setting.key);
+                moved += 1;
+            }
+        }
+        if moved > 0 {
+            match self.settings.set(&PACKAGE_SETTINGS, &stored, None) {
+                Ok(()) => tracing::info!(target: "plugins", "{moved} private setting(s) moved into the gateway's safe"),
+                Err(error) => {
+                    tracing::warn!(target: "plugins", "private settings not moved into the safe: {}", error.message)
+                }
+            }
+        }
+    }
+
     /// Reads the folder again: new packages appear, new versions are seen (they take over at a reload), a plugin
     /// whose package is gone stops. The version in force of a plugin that is on stays while it is on disk.
     pub fn rescan(&self) {
@@ -529,6 +613,7 @@ impl PluginHost {
                 state.good = choice.good;
                 state.source = choice.source;
                 state.verified = choice.verified;
+                state.hidden = choice.hidden;
                 let (newest, problem) = choose(&state.found, placement);
                 let kept = state.active.as_ref().and_then(|active| {
                     state.found.iter().find_map(|candidate| match candidate {
@@ -536,7 +621,7 @@ impl PluginHost {
                         _ => None,
                     })
                 });
-                state.active = if state.enabled { kept.or(newest) } else { None };
+                state.active = if state.enabled && !state.hidden { kept.or(newest) } else { None };
                 state.problem = problem;
             }
             // A package gone from the folder and from the database (removed) is forgotten here too.
@@ -550,6 +635,7 @@ impl PluginHost {
                 !state.found.is_empty() || state.enabled
             });
         }
+        self.keep_secrets_in_the_safe();
         self.rebuild();
     }
 
@@ -618,9 +704,32 @@ impl PluginHost {
         self.plugin(id).and_then(|plugin| registry::newest_ready(&plugin.state().found))
     }
 
-    /// Every installed package, by id: the newest version of each that reads as one.
+    /// Every installed package, by id: the newest version of each that reads as one — the hidden ones too.
     pub fn installed_all(&self) -> Vec<Arc<Package>> {
         self.list().iter().filter_map(|plugin| registry::newest_ready(&plugin.state().found)).collect()
+    }
+
+    /// The installed packages a person sees: the ones their feeds hide left out.
+    pub fn visible_all(&self) -> Vec<Arc<Package>> {
+        self.list()
+            .iter()
+            .filter(|plugin| !plugin.state().hidden)
+            .filter_map(|plugin| registry::newest_ready(&plugin.state().found))
+            .collect()
+    }
+
+    /// The installed packages their feeds hide.
+    pub fn hidden_all(&self) -> Vec<Arc<Package>> {
+        self.list()
+            .iter()
+            .filter(|plugin| plugin.state().hidden)
+            .filter_map(|plugin| registry::newest_ready(&plugin.state().found))
+            .collect()
+    }
+
+    /// Whether its feed hides the package (as of the last scan).
+    pub fn is_hidden(&self, id: &str) -> bool {
+        self.plugin(id).is_some_and(|plugin| plugin.state().hidden)
     }
 
     /// Where a package came from (catalog, local) and whether the catalog vouched for it.
@@ -677,7 +786,9 @@ impl PluginHost {
                     version: package.version(),
                     module,
                     styles,
-                    settings: package.manifest.settings_shown(stored.get(&plugin.id)),
+                    settings: package.manifest.settings_shown(Some(
+                        &package.manifest.stored_with_secrets(stored.get(&plugin.id), &self.secrets),
+                    )),
                 })
             })
             .collect()
@@ -687,7 +798,7 @@ impl PluginHost {
     /// in `contributes.panel.calls`, as a tool would be called.
     pub async fn panel_call(&self, id: &str, function: &str, input: Value) -> Result<Value, ApiError> {
         self.writable()?;
-        let package = self.package(id).ok_or_else(|| ApiError::conflict(format!("Плагин {id} выключен.")))?;
+        let package = self.package(id).ok_or_else(|| ApiError::conflict(format!("Приложение {id} выключено.")))?;
         let allowed = package
             .manifest
             .contributes
@@ -703,7 +814,7 @@ impl PluginHost {
         }
         self.call(id, function, input, CallKind::Tool)
             .await
-            .map_err(|error| ApiError::bad_request(format!("Плагин не ответил: {error}.")))
+            .map_err(|error| ApiError::bad_request(format!("Приложение не ответило: {error}.")))
     }
 
     /// The themes of the packages installed here (a theme package's, a plugin's that is on), for the panel's choice:
@@ -713,6 +824,10 @@ impl PluginHost {
         for plugin in self.list() {
             let package = {
                 let state = plugin.state();
+                // A theme its feed hides is not offered.
+                if state.hidden {
+                    continue;
+                }
                 registry::newest_ready(&state.found)
             };
             let Some(package) = package else { continue };
@@ -797,6 +912,8 @@ impl PluginHost {
             }
         }
         registry::forget(&self.db, id)?;
+        // Its keys go with it.
+        self.secrets.delete_all(&crate::secrets::plugin_secrets(id))?;
         Ok(())
     }
 
@@ -871,6 +988,17 @@ impl PluginHost {
         });
     }
 
+    /// May a page of this app hear the MIDI keyboard (docs/plans/midi.md): it is on here, and its version in force has
+    /// the right `midi` the admin approved. Asked when the page takes its ticket and every few seconds after.
+    pub fn may_hear_midi(&self, id: &str) -> Result<(), String> {
+        let package = self.package(id).ok_or_else(|| format!("приложение «{id}» выключено или не стоит здесь"))?;
+        if package.manifest.has(&super::manifest::Permission::Midi) {
+            Ok(())
+        } else {
+            Err("у приложения нет права «MIDI-клавиатура» (midi)".into())
+        }
+    }
+
     /// A line in a plugin's own journal.
     pub fn note_line(&self, id: &str, level: &str, message: &str) {
         let mut journals = self.journals.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -885,10 +1013,19 @@ impl PluginHost {
         });
     }
 
-    /// A plugin's own journal, oldest first: its console, its calls, what the station said of its items.
+    /// A plugin's own journal, oldest first: its console, its calls, what the station said of its items. Every
+    /// key the safe knows is hidden («•••»), one set after the line was written too: the workshop's agent reads this.
     pub fn journal(&self, id: &str) -> Vec<JournalLine> {
         let journals = self.journals.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        journals.get(id).map(|journal| journal.iter().cloned().collect()).unwrap_or_default()
+        journals
+            .get(id)
+            .map(|journal| {
+                journal
+                    .iter()
+                    .map(|line| JournalLine { message: self.secrets.redact(&line.message), ..line.clone() })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     // Calls.
@@ -898,9 +1035,9 @@ impl PluginHost {
     /// memory) unloads it.
     pub async fn call(&self, id: &str, function: &str, input: Value, kind: CallKind) -> Result<Value, PluginError> {
         if self.config.disabled {
-            return Err(PluginError::Unavailable("безопасный режим: плагины не работают (PLUGINS_DISABLED)".into()));
+            return Err(PluginError::Unavailable("безопасный режим: приложения не работают (PLUGINS_DISABLED)".into()));
         }
-        let plugin = self.plugin(id).ok_or_else(|| PluginError::Unavailable(format!("нет плагина {id}")))?;
+        let plugin = self.plugin(id).ok_or_else(|| PluginError::Unavailable(format!("нет приложения {id}")))?;
         let _busy = Busy::new(&plugin);
         plugin.used.store(self.now_ms(), Ordering::Relaxed);
         let began = Instant::now();
@@ -985,6 +1122,7 @@ impl PluginHost {
                 self.speaker.clone(),
             )
             .with_services(self.services.clone())
+            .with_secrets(Some(self.secrets.clone()))
             .with_data_news(self.data_news.clone())
             .with_sink(Arc::new(move |id: &str, level: &str, message: &str| {
                 if let Some(host) = me.upgrade() {
@@ -1006,7 +1144,7 @@ impl PluginHost {
             let state = plugin.state();
             (state.active.clone().filter(|_| state.enabled), state.good.clone())
         };
-        let package = package.ok_or_else(|| PluginError::Unavailable("плагин выключен".into()))?;
+        let package = package.ok_or_else(|| PluginError::Unavailable("приложение выключено".into()))?;
         let version = package.version();
         if let Some(loaded) = slot.as_ref() {
             if loaded.version == version {
@@ -1468,7 +1606,7 @@ impl PluginHost {
         let plugin = self.known(id)?;
         let origin = Origin::of(&plugin.state().source);
         if origin == Origin::System {
-            return Err(ApiError::conflict("Системный пакет не копируют: он часть шлюза."));
+            return Err(ApiError::conflict("Системное приложение не копируют: оно часть шлюза."));
         }
         let package = registry::newest_ready(&plugin.state().found)
             .ok_or_else(|| ApiError::bad_request(format!("У {id} нет версии, которая читается.")))?;
@@ -1480,7 +1618,7 @@ impl PluginHost {
             return Err(ApiError::field("id", "строчные латинские буквы, цифры и «-», с буквы, до 32 знаков"));
         }
         if self.config.packages_dir.join(&copy_id).exists() || self.plugin(&copy_id).is_some() {
-            return Err(ApiError::conflict(format!("Пакет {copy_id} уже есть — назовите копию иначе.")));
+            return Err(ApiError::conflict(format!("«{copy_id}» уже есть — назовите копию иначе.")));
         }
         let version = package.version();
         let target = self.config.packages_dir.join(&copy_id).join(&version);
@@ -1497,17 +1635,39 @@ impl PluginHost {
             false,
             actor.as_ref().map(|a| a.name.as_str()),
         )?;
-        // Its settings come along.
+        // Its settings come along, its keys too.
         let mut stored = self.settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default();
         if let Some(own) = stored.get(id).cloned() {
             stored.insert(copy_id.clone(), own);
             self.settings.set(&PACKAGE_SETTINGS, &stored, actor.clone())?;
+        }
+        let from = crate::secrets::plugin_secrets(id);
+        for secret in self.secrets.ids(&from) {
+            if let Some(value) = self.secrets.get(&secret) {
+                let key = &secret[from.len()..];
+                self.secrets.set(&crate::secrets::plugin_secret(&copy_id, key), Some(&value))?;
+            }
         }
         let was_on = plugin.state().enabled;
         if was_on && origin.can_disable() {
             self.disable(id, actor.clone()).await?;
         }
         self.rescan();
+        // The copy's history starts from the version it was made of (docs/plans/package-history.md): a newer one of
+        // the source can be merged into it later.
+        if let Some(history) = self.history() {
+            let source = history.ensure_recorded(id, &package.dir, &version);
+            history.note_install(
+                &copy_id,
+                &target,
+                &version,
+                super::history::RecordKind::Copy,
+                super::history::Author::of(actor.as_ref(), super::history::Who::System),
+                false,
+                false,
+                source,
+            );
+        }
         tracing::info!(target: "plugins", "{id}: copied as {copy_id} {version}");
         self.changed(&copy_id, "installed", Some(version), None, actor.clone());
         if was_on {
@@ -1532,13 +1692,13 @@ impl PluginHost {
 
     fn writable(&self) -> Result<(), ApiError> {
         if self.config.disabled {
-            return Err(ApiError::conflict("Безопасный режим: плагины выключены (PLUGINS_DISABLED)."));
+            return Err(ApiError::conflict("Безопасный режим: приложения выключены (PLUGINS_DISABLED)."));
         }
         Ok(())
     }
 
     fn known(&self, id: &str) -> Result<Arc<Plugin>, ApiError> {
-        self.plugin(id).ok_or_else(|| ApiError::not_found(format!("Нет пакета {id}.")))
+        self.plugin(id).ok_or_else(|| ApiError::not_found(format!("Нет приложения {id}.")))
     }
 
     /// A tool of this package already given by another plugin that is on.
@@ -1548,7 +1708,7 @@ impl PluginHost {
             tools
                 .iter()
                 .find(|offered| offered.spec.name == spec.name && offered.plugin != id)
-                .map(|offered| format!("инструмент {} уже даёт плагин {}", spec.name, offered.plugin))
+                .map(|offered| format!("инструмент {} уже даёт приложение {}", spec.name, offered.plugin))
         })
     }
 
@@ -1560,10 +1720,10 @@ impl PluginHost {
         let plugin = self.known(id)?;
         let (package, problem) = choose(&plugin.state().found, (self.placement)());
         let Some(package) = package else {
-            return Err(ApiError::bad_request(format!("Плагин не включить: {}.", problem.unwrap_or_default())));
+            return Err(ApiError::bad_request(format!("Приложение не включить: {}.", problem.unwrap_or_default())));
         };
         if let Some(taken) = self.tool_taken(id, &package) {
-            return Err(ApiError::conflict(format!("Плагин не включить: {taken}.")));
+            return Err(ApiError::conflict(format!("Приложение не включить: {taken}.")));
         }
         // «Колонка + сервер»: a plugin that prefers home runs on the computer while it is up — nothing of it starts
         // on the station, and the station's memory is not asked.
@@ -1580,7 +1740,7 @@ impl PluginHost {
                 Ok(loading) => {
                     let instance = self.start_package(&package).await.map_err(|error| {
                         self.note_error(&plugin, &format!("не запустился: {error}"));
-                        ApiError::bad_request(format!("Плагин не запустился, он остаётся выключенным: {error}."))
+                        ApiError::bad_request(format!("Приложение не запустилось, оно остаётся выключенным: {error}."))
                     })?;
                     let share_mb = share_of(&package.manifest);
                     plugin.hold(&mut slot, Loaded { version: version.clone(), instance, share_mb });
@@ -1622,7 +1782,7 @@ impl PluginHost {
         let plugin = self.known(id)?;
         if !Origin::of(&plugin.state().source).can_disable() {
             return Err(ApiError::conflict(format!(
-                "«{id}» — системный пакет: без него колонка не работает как надо, его не выключить."
+                "«{id}» — системное приложение: без него колонка не работает как надо, его не выключить."
             )));
         }
         registry::set_enabled(&self.db, id, false, None, actor.as_ref().map(|actor| actor.name.as_str()))?;
@@ -1709,7 +1869,10 @@ impl PluginHost {
         let plugin = self.known(id)?;
         let origin = Origin::of(&plugin.state().source);
         if !origin.removable() {
-            return Err(ApiError::conflict(format!("«{id}» — {} пакет: его версия — версия шлюза.", origin.title())));
+            return Err(ApiError::conflict(format!(
+                "«{id}» — {} приложение: его версия — версия шлюза.",
+                origin.word()
+            )));
         }
         let ready: Vec<Arc<Package>> = plugin
             .state()
@@ -1725,6 +1888,12 @@ impl PluginHost {
         };
         let (gone, back) = (newest.version(), before.version());
         let dir = newest.dir.clone();
+        let back_dir = before.dir.clone();
+        // The version that goes stays in the history (docs/plans/package-history.md): it can come back.
+        let history = self.history();
+        if let Some(history) = &history {
+            history.ensure_recorded(id, &dir, &gone);
+        }
         tokio::task::spawn_blocking(move || std::fs::remove_dir_all(dir))
             .await
             .map_err(ApiError::internal)?
@@ -1744,13 +1913,55 @@ impl PluginHost {
             self.reload(id, actor.clone()).await?;
         }
         tracing::info!(target: "plugins", "{id}: rolled back from {gone} to {back}");
+        if let Some(history) = &history {
+            history.note_rollback(id, &back_dir, &back, actor.as_ref());
+        }
         self.note_line(id, "load", &format!("откат: {gone} → {back}"));
         self.changed(id, "rolledBack", Some(back), None, actor);
         self.view_one(id).await
     }
 
+    /// The history's step back (history/restore.rs): the version `version` on disk — the newest there now — is the one
+    /// in force: the good one, and it runs now if the plugin is on.
+    pub async fn take_version(&self, id: &str, version: &str, actor: Option<Actor>) -> Result<PackageView, ApiError> {
+        self.writable()?;
+        self.rescan();
+        let plugin = self.known(id)?;
+        let _ = registry::set_good(&self.db, id, version);
+        {
+            let mut state = plugin.state();
+            state.good = Some(version.to_string());
+            if state.active.as_ref().is_some_and(|active| active.version() != version) {
+                state.active = None;
+            }
+        }
+        self.rescan();
+        if plugin.state().enabled {
+            self.reload(id, actor).await?;
+        }
+        self.view_one(id).await
+    }
+
+    /// A plugin's code out of memory now — the history brings back its data under it; it loads again at its next
+    /// call.
+    pub async fn unload_now(&self, id: &str) {
+        if let Some(plugin) = self.plugin(id) {
+            self.unload(&plugin).await;
+        }
+    }
+
+    /// The history of the apps (src/plugins/history), once it stands.
+    pub fn history(&self) -> Option<Arc<super::history::History>> {
+        self.history.get().cloned()
+    }
+
+    pub fn set_history(&self, history: Arc<super::history::History>) {
+        let _ = self.history.set(history);
+    }
+
     /// The admin's values for the plugin's settings: each must be one its manifest declares, of its type. A secret one
-    /// that comes back as the panel was shown it («••••••») stays as it is stored.
+    /// that comes back as the panel was shown it («••••••») stays as it is stored; a new one goes into the gateway's
+    /// safe, never among the settings.
     pub async fn set_settings(
         &self,
         id: &str,
@@ -1762,37 +1973,44 @@ impl PluginHost {
             let state = plugin.state();
             state.active.clone().or_else(|| choose(&state.found, (self.placement)()).0)
         };
-        let package = package.ok_or_else(|| ApiError::bad_request("У плагина нет версии, которая работает здесь."))?;
-        let specs = &package.manifest.settings;
-        let mut stored = self.settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default();
-        let mut own = stored.remove(id).unwrap_or_default();
-        for (key, value) in values {
-            let spec = specs
-                .iter()
-                .find(|spec| &spec.key == key)
-                .ok_or_else(|| ApiError::field(key, "нет такой настройки"))?;
-            if spec.secret && value.as_str() == Some(manifest::SECRET_SHOWN) {
-                continue;
-            }
-            if value.is_null() {
-                own.remove(key);
-                continue;
-            }
-            if !spec.accepts(value) {
-                return Err(ApiError::field(key, "значение не подходит к настройке"));
-            }
-            own.insert(key.clone(), value.clone());
-        }
-        stored.insert(id.to_string(), own);
-        self.settings.set(&PACKAGE_SETTINGS, &stored, actor.clone())?;
+        let package =
+            package.ok_or_else(|| ApiError::bad_request("У приложения нет версии, которая работает здесь."))?;
+        let checked = check_settings(&package.manifest.settings, values)?;
+        self.keep_settings(id, &checked, actor.clone())?;
         self.changed(id, "settings", Some(package.version()), None, actor);
         Ok(self.view_of(&plugin).await)
+    }
+
+    /// Writes settings checked against a manifest (`check_settings`): the plain ones among the plugins' settings, the
+    /// private ones into the gateway's safe. Also before the package is known: the workshop writes a new plugin's
+    /// settings before its first start (docs/plans/voice-creation.md, stage 4).
+    pub fn keep_settings(&self, id: &str, checked: &CheckedSettings, actor: Option<Actor>) -> Result<(), ApiError> {
+        if checked.plain.is_empty() && checked.private.is_empty() {
+            return Ok(());
+        }
+        for (key, value) in &checked.private {
+            self.secrets.set(&crate::secrets::plugin_secret(id, key), value.as_deref())?;
+        }
+        let mut stored = self.settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default();
+        let mut own = stored.remove(id).unwrap_or_default();
+        for (key, value) in &checked.plain {
+            match value {
+                Some(value) => own.insert(key.clone(), value.clone()),
+                None => own.remove(key),
+            };
+        }
+        for key in checked.private.iter().map(|(key, _)| key) {
+            own.remove(key);
+        }
+        stored.insert(id.to_string(), own);
+        self.settings.set(&PACKAGE_SETTINGS, &stored, actor)?;
+        Ok(())
     }
 
     /// Runs a plugin's tool as «Мозг» would, for the panel's check: its answer as the model reads it.
     pub async fn try_tool(&self, id: &str, name: &str, input: Value) -> Result<String, ApiError> {
         self.writable()?;
-        let package = self.package(id).ok_or_else(|| ApiError::conflict(format!("Плагин {id} выключен.")))?;
+        let package = self.package(id).ok_or_else(|| ApiError::conflict(format!("Приложение {id} выключено.")))?;
         let spec = package
             .manifest
             .contributes
@@ -1918,8 +2136,12 @@ impl PluginHost {
         let manifest = shown.as_ref().map(|package| package.manifest.clone());
         // As the panel sees them: a secret one only as «••••••».
         let stored = self.settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default();
-        let values =
-            manifest.as_ref().map(|manifest| manifest.settings_shown(stored.get(&plugin.id))).unwrap_or_default();
+        let values = manifest
+            .as_ref()
+            .map(|manifest| {
+                manifest.settings_shown(Some(&manifest.stored_with_secrets(stored.get(&plugin.id), &self.secrets)))
+            })
+            .unwrap_or_default();
         let state = if self.config.disabled {
             "safeMode"
         } else if !enabled {
@@ -1959,6 +2181,7 @@ impl PluginHost {
             panel_module: panel_part("panel.js"),
             panel_styles: panel_part("panel.css"),
             kind: manifest.as_ref().map(|manifest| manifest.kind),
+            runtime: manifest.as_ref().map(|manifest| manifest.runtime),
             id: plugin.id.clone(),
             title: manifest.as_ref().map(|manifest| manifest.title.clone()).unwrap_or_else(|| plugin.id.clone()),
             description: manifest.as_ref().and_then(|manifest| manifest.description.clone()),
@@ -2024,11 +2247,15 @@ impl PluginHost {
         }
     }
 
-    /// Every package found, as the panel lists them. The folder is read again first: a package copied in shows.
+    /// Every package found, as the panel lists them — but the ones their feeds hide. The folder is read again first: a
+    /// package copied in shows.
     pub async fn view(&self) -> PackagesView {
         self.rescan();
         let mut packages = Vec::new();
         for plugin in self.list() {
+            if plugin.state().hidden {
+                continue;
+            }
             packages.push(self.view_of(&plugin).await);
         }
         PackagesView {
@@ -2047,6 +2274,41 @@ impl PluginHost {
 }
 
 /// A package's folder copied under a new id: every file, the manifest's id and title changed.
+/// Settings checked against a manifest's, nothing written yet: each plain one with its new value (None — removed),
+/// each private one with its new value (None — removed). A private one that comes back as the panel was shown it
+/// («••••••») is left out: it stays as it is.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CheckedSettings {
+    pub plain: Vec<(String, Option<Value>)>,
+    pub private: Vec<(String, Option<String>)>,
+}
+
+/// The values given for a plugin's settings: each must be one its manifest declares, of its type. Every value is
+/// checked before any is written: a wrong one changes nothing.
+pub fn check_settings(
+    specs: &[manifest::SettingSpec],
+    values: &Map<String, Value>,
+) -> Result<CheckedSettings, ApiError> {
+    let mut checked = CheckedSettings::default();
+    for (key, value) in values {
+        let spec =
+            specs.iter().find(|spec| &spec.key == key).ok_or_else(|| ApiError::field(key, "нет такой настройки"))?;
+        if spec.secret && value.as_str() == Some(manifest::SECRET_SHOWN) {
+            continue;
+        }
+        if !value.is_null() && !spec.accepts(value) {
+            return Err(ApiError::field(key, "значение не подходит к настройке"));
+        }
+        match (spec.secret, value) {
+            (true, Value::Null) => checked.private.push((key.clone(), None)),
+            (true, value) => checked.private.push((key.clone(), value.as_str().map(str::to_string))),
+            (false, Value::Null) => checked.plain.push((key.clone(), None)),
+            (false, value) => checked.plain.push((key.clone(), Some(value.clone()))),
+        }
+    }
+    Ok(checked)
+}
+
 fn copy_package(from: &std::path::Path, to: &std::path::Path, id: &str, title: &str) -> std::io::Result<()> {
     fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
         std::fs::create_dir_all(to)?;
@@ -2188,6 +2450,10 @@ pub struct SettingView {
 pub struct PackageView {
     /// The package's kind: a plugin, or a package of another kind this host lists and does not run.
     pub kind: Option<PackageKind>,
+    /// Its engine: what the panel says to people instead of the kind — in the gateway (js, wasm), beside it on the
+    /// computer (process), in the network (mcp). docs/ARCHITECTURE.md, «Как называем и где работает».
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<super::manifest::Runtime>,
     /// Where it came from, as the gateway knows: system, bundled, user, catalog.
     pub origin: Origin,
     /// For a plugin that prefers home: where its calls go now — home (the computer) or here.
@@ -2308,6 +2574,7 @@ mod tests {
                 storage_reserve_mb: 15,
                 pressure_action: crate::plugins::budget::PressureAction::Disable,
                 bundled: false,
+                schedules: true,
             },
             db,
             settings,
@@ -2324,6 +2591,9 @@ mod tests {
             home: HOME.with(|home| home.borrow().clone()),
             gateway_url: "http://127.0.0.1:9".into(),
             services: None,
+            secrets: Arc::new(
+                crate::secrets::SecretsService::new(Arc::new(crate::storage::Db::memory()), None).unwrap(),
+            ),
         });
         Fixture { host, media, events }
     }
@@ -2602,7 +2872,7 @@ mod tests {
         assert_eq!((view.kind, view.state), (Some(PackageKind::Character), "off"));
         assert!(view.versions[0].problems[0].contains("персонаж"));
         let refused = host.enable("ded-moroz", None).await.unwrap_err();
-        assert!(refused.message.contains("персонаж — не плагин"), "{}", refused.message);
+        assert!(refused.message.contains("персонаж — не приложение"), "{}", refused.message);
     }
 
     /// A small plugin of its own id: one phrase, its own `memoryMb`, the echo's code.
@@ -2661,7 +2931,7 @@ mod tests {
         assert_eq!((resources.committed_mb, resources.loaded), (8, 2), "{resources:?}");
         assert!(resources.free_mb >= 12 && resources.room_mb >= 20, "{resources:?}");
         assert!(
-            resources.note.starts_with("Загружено плагинов: 2, под них занято 8 МБ. Можно загрузить ещё"),
+            resources.note.starts_with("Загружено приложений: 2, под них занято 8 МБ. Можно загрузить ещё"),
             "{}",
             resources.note
         );
@@ -2726,7 +2996,9 @@ mod tests {
         let refused = host.call("beta", "say", json!({"word": "б"}), CallKind::Voice).await.unwrap_err();
         assert_eq!(
             refused,
-            PluginError::NoRoom("колонке не хватает памяти, чтобы загрузить плагин: нужно 4 МБ, свободно 0 МБ".into())
+            PluginError::NoRoom(
+                "колонке не хватает памяти, чтобы загрузить приложение: нужно 4 МБ, свободно 0 МБ".into()
+            )
         );
         assert!(is_loaded(&host, "alpha").await && is_loaded(&host, "gamma").await && is_loaded(&host, "delta").await);
         let view = host.view_one("beta").await.unwrap();
@@ -2804,21 +3076,67 @@ mod tests {
         let part = host.panel_parts().into_iter().find(|part| part.id == "echo").unwrap();
         assert_eq!(part.settings["ics"], manifest::SECRET_SHOWN, "the panel parts — every viewer of the station");
         assert_eq!(host.view_one("echo").await.unwrap().settings[0].value, Some(json!(manifest::SECRET_SHOWN)));
-        // The plugin itself reads the link as it is.
-        let package = host.package("echo").unwrap();
-        let own = host.settings().get(&PACKAGE_SETTINGS, None).unwrap_or_default();
-        assert_eq!(package.manifest.settings_values(own.get("echo"))["ics"], link);
+        // The plugin itself reads the link as it is; the settings never hold it, the safe does.
+        assert_eq!(host.settings_of("echo")["ics"], link);
+        assert_eq!(stored("ics"), None, "no private value among the settings");
+        assert_eq!(host.secrets().get("plugin:echo:ics").as_deref(), Some(link));
 
         // The panel saves back what it was shown: the link stays; a new one takes its place; null — none.
         let back = json!({ "ics": manifest::SECRET_SHOWN, "days": 5 });
         host.set_settings("echo", back.as_object().unwrap(), None).await.unwrap();
-        assert_eq!((stored("ics"), stored("days")), (Some(json!(link)), Some(json!(5))));
+        assert_eq!((host.settings_of("echo")["ics"].clone(), stored("days")), (json!(link), Some(json!(5))));
         let other = "https://calendar.example/private-4567/basic.ics";
         host.set_settings("echo", json!({ "ics": other }).as_object().unwrap(), None).await.unwrap();
-        assert_eq!(stored("ics"), Some(json!(other)));
+        assert_eq!(host.settings_of("echo")["ics"], other);
+        // A wrong value among them changes nothing, the key neither.
+        let wrong = json!({ "ics": "https://calendar.example/third.ics", "days": "много" });
+        assert!(host.set_settings("echo", wrong.as_object().unwrap(), None).await.is_err());
+        assert_eq!(host.settings_of("echo")["ics"], other);
         host.set_settings("echo", json!({ "ics": null }).as_object().unwrap(), None).await.unwrap();
-        assert_eq!(stored("ics"), None);
+        assert!(!host.secrets().has("plugin:echo:ics"));
         assert_eq!(host.view_one("echo").await.unwrap().settings[0].value, None, "not set: nothing shown");
+    }
+
+    /// Stage 1 of docs/plans/voice-creation.md: a key stored among the settings before the safe kept them moves into
+    /// the safe at the start; the plugin reads it as before, from the safe; its journal and the gateway's log show
+    /// «•••» in its place; a copy takes the key along, a removal takes it away.
+    #[tokio::test]
+    async fn a_plugins_key_lives_in_the_safe_and_never_in_its_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut todo = echo("1.0.0");
+        todo["settings"] = json!([
+            { "key": "token", "type": "string", "title": "Ключ Todoist", "secret": true },
+            { "key": "count", "type": "number", "title": "Показывать", "default": 5 }
+        ]);
+        let code = r#"
+            export function key() { return host.settings.get("token"); }
+            export function leak() { console.log(`ключ ${host.settings.get("token")} принят`); return 1; }
+        "#;
+        write_package(dir.path(), &todo, Some(code));
+        let db = Arc::new(Db::memory());
+        // As an older gateway left it: the key in clear among the settings.
+        let settings = SettingsService::new(db.clone(), EventBus::new());
+        let mut stored = BTreeMap::new();
+        stored.insert("echo".to_string(), json!({ "token": "td-0123", "count": 3 }).as_object().unwrap().clone());
+        settings.set(&PACKAGE_SETTINGS, &stored, None).unwrap();
+        let host = host_on(dir.path(), db, false, Placement::Pc).host;
+        let own = host.settings().get(&PACKAGE_SETTINGS, None).unwrap_or_default();
+        assert_eq!(own["echo"], json!({ "count": 3 }).as_object().unwrap().clone(), "moved out of the settings");
+        assert_eq!(host.secrets().get("plugin:echo:token").as_deref(), Some("td-0123"));
+        host.enable("echo", None).await.unwrap();
+        assert_eq!(host.call("echo", "key", json!({}), CallKind::Tool).await.unwrap(), json!("td-0123"));
+
+        host.call("echo", "leak", json!({}), CallKind::Tool).await.unwrap();
+        let lines: Vec<String> = host.journal("echo").into_iter().map(|line| line.message).collect();
+        assert!(lines.iter().any(|line| line == "ключ ••• принят"), "{lines:?}");
+        assert!(!lines.iter().any(|line| line.contains("td-0123")));
+
+        let copy = host.fork("echo", Some("my-echo"), None).await.unwrap();
+        assert_eq!(copy.id, "my-echo");
+        assert_eq!(host.secrets().get("plugin:my-echo:token").as_deref(), Some("td-0123"), "the copy takes the key");
+        host.forget("my-echo").await.unwrap();
+        assert!(!host.secrets().has("plugin:my-echo:token"), "a removal takes it away");
+        assert!(host.secrets().has("plugin:echo:token"), "the original's stays");
     }
 
     #[tokio::test]
@@ -2859,7 +3177,7 @@ mod tests {
         assert!(host.panel_file("echo", "0.9.0", "panel.js").is_none());
 
         let system = host.disable("core", None).await.unwrap_err();
-        assert!(system.message.contains("системный"), "{}", system.message);
+        assert!(system.message.contains("системное приложение"), "{}", system.message);
         assert!(!host.view_one("core").await.unwrap().can_disable);
 
         // Themes: the package's that is in form; a layout of code is the panel's plugin, not a theme.
@@ -2874,7 +3192,7 @@ mod tests {
         assert!(!host.view_one("echo").await.unwrap().enabled);
         assert_eq!(said(host.call("my-echo", "say", json!({"word": "к"}), CallKind::Voice).await), "к (1)");
         assert!(host.fork("echo", None, None).await.unwrap_err().message.contains("уже есть"));
-        assert!(host.fork("core", None, None).await.unwrap_err().message.contains("Системный"));
+        assert!(host.fork("core", None, None).await.unwrap_err().message.contains("Системное приложение"));
     }
 
     #[tokio::test]

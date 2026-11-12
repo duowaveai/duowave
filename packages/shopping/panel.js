@@ -75,7 +75,7 @@ export default definePlugin({
   id: "shopping",
   slots: {
     "desk.widgets": [
-      { id: "list", title: "Список покупок", icon: icons.list, size: "small", initial: true, source: "плагин", order: 50, permission: "station.view", Component: Shopping },
+      { id: "list", title: "Список покупок", icon: icons.list, size: "small", initial: true, source: "приложение", order: 50, permission: "station.view", Component: Shopping },
     ],
   },
 });

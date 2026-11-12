@@ -26,6 +26,7 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/v1/models/tts/activate", post(activate_tts))
         .route("/api/v1/models/tts/pending", delete(forget_pending))
         .route("/api/v1/models/asr/activate", post(activate_asr))
+        .route("/api/v1/models/asr/local", get(local_asr))
         .route("/api/v1/models/servers/{which}/restart", post(restart))
         // The station's «Голос» while its home server gives it the computer's voice (a computer's build playing it).
         .merge(super::home_voice::routes())
@@ -39,6 +40,14 @@ fn segment(path: Result<Path<String>, PathRejection>) -> Result<String, ApiError
 async fn view(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<ModelsView> {
     caller.permitted(STATION_VIEW)?;
     Ok(ok(app.models.view().await?))
+}
+
+/// Recognition on this computer, the light way (the desk asks it every few seconds while the model is coming):
+/// `{"local": {phase, bytes, total, serving, backend, error…}}`, `{"local": null}` when a server recognises.
+async fn local_asr(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+    caller.permitted(STATION_VIEW)?;
+    let local = app.local_asr.as_ref().map(|local| local.status());
+    Ok(ok(json!({ "local": local })))
 }
 
 /// Downloads a voice — pinned or from the open registry; the progress rides in GET /models.
@@ -243,6 +252,7 @@ mod tests {
             ("POST", "/api/v1/models/tts/silero/file"),
             ("POST", "/api/v1/models/tts/activate"),
             ("POST", "/api/v1/models/asr/activate"),
+            ("GET", "/api/v1/models/asr/local"),
             ("POST", "/api/v1/models/servers/asr/restart"),
         ] {
             assert_eq!(call(&app, method, uri, LOCAL).await.0, StatusCode::UNAUTHORIZED, "{method} {uri}");
@@ -260,6 +270,9 @@ mod tests {
     async fn shows_the_shop_to_who_sees_the_station_and_changes_it_for_who_manages_models() {
         let models = tempfile::tempdir().unwrap();
         let app = app(models.path()).await;
+        // A gateway whose recognition is a server: nothing local to show.
+        let (status, body) = answer(local_asr(State(app.clone()), member(&app)).await).await;
+        assert_eq!((status, &body["message"]["local"]), (StatusCode::OK, &Value::Null));
         let (status, body) = answer(view(State(app.clone()), member(&app)).await).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["code"], 200);

@@ -371,8 +371,10 @@ fn character(package: &Package, value: &Value, index: usize) -> Result<Character
     let voice_origin = text(value, "voiceOrigin");
     let speaks = value.get("voices").is_some() || value.get("ref").is_some();
     match voice_origin.as_deref() {
-        Some("synthetic" | "consent") => {}
-        Some(other) => problems.push(format!("voiceOrigin «{other}»: synthetic или consent")),
+        // `unknown`: no one checked whose it is — only from an own source or by hand (docs/plans/custom-feeds.md); the
+        // panel says so beside the character.
+        Some("synthetic" | "consent" | "unknown") => {}
+        Some(other) => problems.push(format!("voiceOrigin «{other}»: synthetic, consent или unknown")),
         // A voice of someone who never agreed is not taken: whose it is must be said.
         None if speaks => {
             problems.push("voiceOrigin: synthetic (голос по описанию) или consent (диктор с согласием)".into())
@@ -556,6 +558,14 @@ pub mod tests {
         assert!(character.text(Some(&much)).ends_with("\nШутишь при каждом удобном случае."));
         let wrong = BTreeMap::from([("irony".to_string(), 9), ("nothing".to_string(), 0)]);
         assert_eq!(character.positions(Some(&wrong)), BTreeMap::from([("irony".to_string(), 1)]));
+    }
+
+    #[test]
+    fn takes_a_voice_of_no_known_origin_and_keeps_the_word() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest = with(arthur_manifest("1.0.0"), "/contributes/characters/0/voiceOrigin", json!("unknown"));
+        let found = read(&write_arthur(root.path(), &manifest));
+        assert_eq!(found[0].as_ref().unwrap().voice_origin.as_deref(), Some("unknown"));
     }
 
     #[test]

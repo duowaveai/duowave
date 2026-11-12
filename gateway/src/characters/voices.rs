@@ -28,6 +28,9 @@ pub fn voice_id(character: &Character, engine: &str) -> String {
     format!("c-{}-{}-{}", character.package, character.local, engine)
 }
 
+/// The built-in Piper voices, any of which may stand in for a hidden character's voice.
+const ANY_PIPER: [&str; 4] = ["piper-denis", "piper-dmitri", "piper-ruslan", "piper-irina"];
+
 pub struct CharacterVoices {
     lab: Arc<VoiceLabService>,
     models: Arc<ModelsService>,
@@ -120,13 +123,52 @@ impl CharacterVoices {
         self.models.chosen_voice()?.model_id.strip_prefix(OWN_PREFIX).map(str::to_string)
     }
 
+    /// The voices of characters their feeds hide (docs/plans/custom-feeds.md): one waiting for its engine is
+    /// forgotten; one that speaks gives the place to a fallback here — the character's own, a like one by its gender,
+    /// else any Piper voice that is here. With none here it keeps speaking, and the log says so.
+    pub fn step_aside(&self, hidden: &[Character]) {
+        let theirs = |card: &str| {
+            let id = card.strip_prefix(OWN_PREFIX).unwrap_or(card);
+            hidden.iter().find(|character| id.starts_with(&format!("c-{}-{}-", character.package, character.local)))
+        };
+        if self.models.pending_card().as_deref().and_then(theirs).is_some() {
+            self.models.clear_pending(None);
+        }
+        let Some(speaking) = self.speaking() else { return };
+        let Some(character) = theirs(&speaking) else { return };
+        let wanted = character
+            .fallback_voice
+            .iter()
+            .map(String::as_str)
+            .chain(fallback_cards(character.gender).iter().copied())
+            .chain(ANY_PIPER);
+        let card = wanted
+            .into_iter()
+            .find(|card| self.models.voice_card(card).is_some_and(|(_, installed)| installed))
+            .map(str::to_string);
+        let Some(card) = card else {
+            tracing::warn!(target: "characters", "{}: hidden, but no fallback voice is here — its voice keeps speaking", character.id);
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+        let (models, id) = (self.models.clone(), character.id.clone());
+        runtime.spawn(async move {
+            match models.choose(VoiceRequest::card(&card), None).await {
+                Ok(_) => tracing::info!(target: "characters", "{id}: hidden — {card} speaks now"),
+                Err(error) => {
+                    tracing::warn!(target: "characters", "{id}: hidden, but {card} is not on: {}", error.message)
+                }
+            }
+        });
+    }
+
     /// A package may go only when none of its characters' voices speaks.
     pub fn before_removal(&self, package: &str) -> Result<(), ApiError> {
         let prefix = format!("c-{package}-");
         match self.speaking() {
-            Some(id) if id.starts_with(&prefix) => Err(ApiError::conflict(
-                "Голос персонажа из этого пакета говорит сейчас — сначала выберите другой голос.",
-            )),
+            Some(id) if id.starts_with(&prefix) => {
+                Err(ApiError::conflict("Голос этого персонажа говорит сейчас — сначала выберите другой голос."))
+            }
             _ => Ok(()),
         }
     }

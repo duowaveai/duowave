@@ -181,6 +181,14 @@ impl StationWatch {
         ))
     }
 
+    /// Whether a word to the owner reaches them now: a chat «Оповещения» chosen in Telegram, a webhook, or the Mac's
+    /// notifications — the log alone is no way (plugins/schedule.rs, `notify`).
+    pub fn can_tell(&self) -> bool {
+        let telegram = self.telegram.as_ref().is_some_and(|telegram| telegram.enabled() && telegram.chat().is_some());
+        let mac = cfg!(target_os = "macos") && self.config.notify;
+        telegram || self.config.webhook_url.is_some() || mac
+    }
+
     /// Tells the household something by the same ways as «колонка не на связи»: the log, macOS, the webhook,
     /// Telegram (src/placement: the station's gateway, the safety net).
     pub async fn tell(&self, text: &str) {

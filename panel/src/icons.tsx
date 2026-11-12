@@ -84,6 +84,15 @@ export const IconMic = ({ size = 24 }: IconProps) =>
         <line x1="12" y1="19" x2="12" y2="22" stroke-width="2.2" />
     </>);
 
+/** Микрофон выключен: пока открыто поле личного (ключа), пульт не слушает. */
+export const IconMicOff = ({ size = 24 }: IconProps) =>
+    svg(size, <>
+        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" stroke-width="2.2" />
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2" stroke-width="2.2" />
+        <line x1="12" y1="19" x2="12" y2="22" stroke-width="2.2" />
+        <line x1="4" y1="4" x2="20" y2="20" stroke-width="2.2" />
+    </>);
+
 export const IconSend = ({ size = 22 }: IconProps) =>
     svg(size, <>
         <path d="M22 2 11 13" stroke-width="2.2" />
@@ -379,3 +388,44 @@ export const IconChevronRight = ({ size = 20 }: IconProps) =>
 /** «Назад» в странице «Настроек» на телефоне. */
 export const IconChevronLeft = ({ size = 20 }: IconProps) =>
     svg(size, <polyline points="15 6 9 12 15 18" />);
+
+/** «Память»: книжка с закладкой. */
+export const IconMemory = ({ size = 20 }: IconProps) =>
+    svg(size, <>
+        <path d="M6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5v-15A1.5 1.5 0 0 1 6.5 3z" />
+        <path d="M5 19.5A1.5 1.5 0 0 0 6.5 21H19v-3" />
+        <path d="M10 3v6l2-1.3L14 9V3" />
+    </>);
+
+/** Закрепить: всегда в подсказке. */
+export const IconPin = ({ size = 20 }: IconProps) =>
+    svg(size, <>
+        <path d="M9 3.5h6l-1 5.5 3 3V14H7v-2l3-3z" />
+        <path d="M12 14v6.5" />
+    </>);
+
+/** Стереть совсем. */
+export const IconTrash = ({ size = 20 }: IconProps) =>
+    svg(size, <>
+        <path d="M4.5 7h15" />
+        <path d="M9.5 7V4.5h5V7" />
+        <path d="M6.5 7l1 13h9l1-13" />
+    </>);
+
+/** Питомец. */
+export const IconPaw = ({ size = 20 }: IconProps) =>
+    svg(size, <>
+        <circle cx="6.5" cy="10.5" r="1.7" />
+        <circle cx="10" cy="6.5" r="1.7" />
+        <circle cx="14" cy="6.5" r="1.7" />
+        <circle cx="17.5" cy="10.5" r="1.7" />
+        <path d="M12 11.5c-2.7 0-5 2.7-5 5.2 0 1.6 1.2 2.6 2.6 2.6.9 0 1.5-.5 2.4-.5s1.5.5 2.4.5c1.4 0 2.6-1 2.6-2.6 0-2.5-2.3-5.2-5-5.2z" />
+    </>);
+
+/** Комната. */
+export const IconDoor = ({ size = 20 }: IconProps) =>
+    svg(size, <>
+        <path d="M6 20.5V4.5A1.5 1.5 0 0 1 7.5 3h9A1.5 1.5 0 0 1 18 4.5v16" />
+        <path d="M3.5 20.5h17" />
+        <path d="M14.5 12h.01" />
+    </>);

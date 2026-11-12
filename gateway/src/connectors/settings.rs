@@ -310,7 +310,7 @@ impl ConnectorSettings {
             Ok(true) => {
                 if let Some(left) = self.env_left.get(&id) {
                     tracing::info!(
-                        "connectors: {} in .env not read: {} is set up in the panel («Навыки» → «Подключения»)",
+                        "connectors: {} in .env not read: {} is set up in the panel («Приложения» → «Подключения»)",
                         left.join(", "),
                         id.title()
                     );

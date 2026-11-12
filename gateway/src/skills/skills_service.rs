@@ -188,6 +188,8 @@ pub struct SkillsService {
     /// Next, previous, continue and likes of what our player plays.
     media: Arc<MediaControl>,
     pub reminders: Arc<RemindersSkill>,
+    /// «через 10 минут выключи свет»: the person's words done later (skills/own/later_skill.rs).
+    pub later: Arc<crate::skills::own::later_skill::LaterSkill>,
     /// Whether the station's player played before a break: its request to continue after reconnecting goes on only
     /// then.
     pub player_memory: Arc<PlayerMemory>,
@@ -282,6 +284,8 @@ impl SkillsService {
 
         // Quality: lookups, the smart home, games, reminders, the light.
         let reminders = Arc::new(RemindersSkill::new(StateStore::open(db.clone(), "reminders")));
+        let later =
+            Arc::new(crate::skills::own::later_skill::LaterSkill::new(StateStore::open(db.clone(), "later_commands")));
         let led = Arc::new(LedSkill::new(content.join("animations")));
         // The panel's feeds, place and Home Assistant, read on every request.
         let place: PlaceSource = {
@@ -307,6 +311,7 @@ impl SkillsService {
         skills.push(Arc::new(SmartHomeSkill::live(home)));
         skills.push(Arc::new(GamesSkill::new(Some(host), tts_markup, Some(model_on))));
         skills.push(reminders.clone());
+        skills.push(later.clone());
         skills.push(led.clone());
         let calls = CallsSkill::new(calls.hub, calls.calls, calls.messenger);
         skills.push(calls.clone());
@@ -334,6 +339,7 @@ impl SkillsService {
             media_sources,
             media,
             reminders,
+            later,
             player_memory,
             led,
             calls,
@@ -426,12 +432,14 @@ impl SkillsService {
             }
         });
         let reminders = self.reminders.start();
-        self.tasks.lock().unwrap().extend([listener, reminders]);
+        let later = self.later.start();
+        self.tasks.lock().unwrap().extend([listener, reminders, later]);
     }
 
     /// The tasks stop: at shutdown.
     pub fn shutdown(&self) {
         self.reminders.stop();
+        self.later.stop();
         for task in self.tasks.lock().unwrap().drain(..) {
             task.abort();
         }
@@ -1353,7 +1361,7 @@ mod tests {
         let built = build_with(Arc::new(Db::memory()), &[], Arc::new(WithHome));
         let skills = &built.service;
         let implemented = skills.implemented();
-        assert_eq!(implemented.len(), 17);
+        assert_eq!(implemented.len(), 18);
         // Home Assistant is set up in the panel; no news feeds and no radio list in an empty content folder.
         assert!(implemented[&CapabilityName::SmartHome]);
         assert!(!implemented[&CapabilityName::News]);

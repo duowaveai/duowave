@@ -28,6 +28,7 @@ use crate::live::LiveHub;
 use crate::mcp::McpService;
 #[cfg(feature = "pc")]
 use crate::models::{ModelsLinks, ModelsService};
+use crate::oauth::OAuthService;
 use crate::operations::station_watch::{ActiveSessions, TelegramSender};
 use crate::operations::{RetentionService, StationWatch};
 use crate::placement::{AvailabilityService, PlacementService};
@@ -40,7 +41,7 @@ use crate::settings::SettingsService;
 use crate::skills::{SkillsDeps, SkillsService};
 use crate::speech::{SpeechService, VoiceService};
 use crate::stations::{PresenceService, StationsService};
-use crate::storage::Db;
+use crate::storage::{Db, StateStore};
 use crate::updates::UpdatesService;
 use crate::utils::time::now_iso;
 #[cfg(feature = "pc")]
@@ -68,8 +69,16 @@ pub struct App {
     pub personas: Arc<PersonaService>,
     /// The model providers from the panel and the choice of models («Мозг»).
     pub brain: Arc<BrainService>,
+    /// Sign-ins to outside services instead of their keys (src/oauth): the ones begun and their returns.
+    pub oauth: Arc<OAuthService>,
     /// Answers with the model: phrases for speech, the history per device.
     pub dialog: Arc<DialogService>,
+    /// The characters' memory (src/memory): the household graph, the wake-up in the prompt, the «Память» window.
+    pub memory: Arc<crate::memory::MemoryService>,
+    /// The memory's reflection, the sleep's first part: it thinks the day over at night (src/memory/reflect.rs).
+    pub reflection: Arc<crate::memory::reflect::Reflection>,
+    /// The night's work in parts (src/sleep): its hour, «Запустить сон сейчас», «За ночь», «Откатить ночь».
+    pub sleep: Arc<crate::sleep::SleepService>,
     /// The model shop (a PC's build): the catalog, the voices on disk, the local recognition and voice servers.
     #[cfg(feature = "pc")]
     pub models: Arc<ModelsService>,
@@ -83,12 +92,21 @@ pub struct App {
     pub skills: Arc<SkillsService>,
     /// The plugins (src/plugins): their packages, the admin's choices, the code of those that are on.
     pub plugins: Arc<PluginHost>,
+    /// The plugins' schedules (plugins/schedule.rs): rhythms of their manifests and tasks of their code.
+    pub schedules: Arc<crate::plugins::schedule::Scheduler>,
+    /// The plugins' pictures (plugins/files.rs).
+    pub files: Arc<crate::plugins::files::PluginFiles>,
+    /// A MIDI keyboard for apps (src/midi): the keyboards plugged into this computer, heard while an app listens.
+    pub midi: Arc<crate::midi::MidiService>,
     /// The packages' catalog and the installer (src/plugins/catalog.rs): one feed for every kind.
     pub catalog: Arc<PackageCatalog>,
     /// Streams the gateway relays for the station: the fallback for one it keeps silent on (gateway/media/stream.rs).
     pub streams: Arc<crate::gateway::media::stream::StreamRelays>,
     /// The workshop (src/plugins/workshop): drafts, the sandbox, the agent, the install.
     pub workshop: Arc<crate::plugins::workshop::Workshop>,
+    /// The apps' history (src/plugins/history): every step and version kept by hash; None when its folder cannot be
+    /// made — the gateway goes on without it.
+    pub history: Option<Arc<crate::plugins::history::History>>,
     /// The characters (src/characters): the built-in ones and the packages', and their voices.
     pub characters: Arc<CharactersService>,
     pub stations: Arc<StationsService>,
@@ -101,6 +119,12 @@ pub struct App {
     /// The owner's own voices (src/voice_lab): a PC's part.
     #[cfg(feature = "pc")]
     pub voice_lab: Arc<VoiceLabService>,
+    /// Recognition on this computer itself (src/speech/asr/local), when it hears by itself (ASR_PROVIDER=local).
+    #[cfg(feature = "pc")]
+    pub local_asr: Option<Arc<crate::speech::asr::local::supervisor::LocalAsr>>,
+    /// The own voice's server the desktop app sets up and keeps (src/speech/tts/managed.rs).
+    #[cfg(feature = "pc")]
+    pub managed_tts: Option<Arc<crate::speech::tts::managed::ManagedTts>>,
     /// Our own calls (src/calls): the hub, the station clients, the bridges, the Telegram bot.
     #[cfg(feature = "pc")]
     pub calls: Arc<crate::calls::CallsService>,
@@ -146,8 +170,18 @@ impl App {
         self.updates.spawn_checks();
         // The reminders' scheduler and the routes' listener.
         self.skills.start();
-        // The plugins' idle unloading and the events they follow.
+        // The plugins' idle unloading and the events they follow; their schedules' tick.
         self.plugins.start();
+        self.schedules.start();
+        // The keyboards: the system's news of them first (a Mac), then the list and the keeper of idle ports.
+        self.midi.start();
+        // The apps' history: what is on disk and not in it yet, recorded; its cleaning once a day and the station's
+        // sending to the computer.
+        if let Some(history) = &self.history {
+            history.start();
+        }
+        // The night's work: at its hour, when a part that is on has work.
+        self.sleep.start();
         // The packages' characters in the table, their voices in the voice lab; followed as packages come and go.
         self.characters.start();
         // The station link: the skills speak through the live stations; a mode switch reconnects them.
@@ -158,6 +192,16 @@ impl App {
         self.calls.start();
         #[cfg(feature = "pc")]
         self.models.start().await?;
+        // Recognition on this computer: the model the shop chose is fetched and loaded in the background.
+        #[cfg(feature = "pc")]
+        if let Some(local) = &self.local_asr {
+            local.start();
+        }
+        // The app's own voice server: kept running while a Silero or Piper voice speaks (the shop said which above).
+        #[cfg(feature = "pc")]
+        if let Some(tts) = &self.managed_tts {
+            tts.start();
+        }
         Ok(())
     }
 
@@ -178,7 +222,8 @@ impl App {
         // Settings the other gateway of the pair sent (src/placement/transfer.rs): applied before anything reads them.
         if let Some(dir) = state_dir.as_deref() {
             let station = crate::core::build::Profile::for_role(config.placement.role.as_deref()).station;
-            crate::placement::transfer::apply_incoming(dir, &db, &secrets, station);
+            let pictures = crate::plugins::files::root_of(&config.data_dir);
+            crate::placement::transfer::apply_incoming(dir, &db, &secrets, station, Some(&pictures));
         }
         let settings = Arc::new(SettingsService::new(db.clone(), events.clone()));
         let access = Arc::new(AccessService::new(db.clone(), events.clone(), settings.clone(), &secrets)?);
@@ -244,6 +289,8 @@ impl App {
             updates.set_station(placement.managed_by());
         }
         let personas = Arc::new(PersonaService::new(&config.dialog, db.clone(), settings.clone(), events.clone())?);
+        let memory =
+            Arc::new(crate::memory::MemoryService::new(db.clone(), settings.clone(), events.clone(), personas.clone()));
         let brain = Arc::new(BrainService::new(
             config.dialog.clone(),
             db.clone(),
@@ -261,15 +308,74 @@ impl App {
                 }
             });
         }
+        // A sign-in's return comes to the address a browser on this computer reaches the gateway at.
+        let oauth = Arc::new(OAuthService::new(config.app.public_port.unwrap_or(config.app.port), secrets.clone()));
         let source: Arc<dyn BrainSource> = brain.clone();
         let dialog = Arc::new(DialogService::new(config.dialog.clone(), personas.clone(), Some(source)));
+        dialog.attach_memory(memory.clone());
+        // The sleep and its first part, the reflection: off until the owner turns it on.
+        let reflection =
+            Arc::new(crate::memory::reflect::Reflection::new(memory.clone(), settings.clone(), brain.clone()));
+        let sleep = Arc::new(crate::sleep::SleepService::new(db.clone(), settings.clone(), events.clone()));
+        sleep.register(reflection.clone());
+        // Recognition on this computer itself: its engine in a worker of this program, the model fetched once
+        // (src/speech/asr/local). Started with the gateway's start; the models' shop says which model.
+        #[cfg(feature = "pc")]
+        let local_asr = match &config.speech.asr.local {
+            Some(local) if config.speech.asr.enabled && !profile.station => {
+                use crate::speech::asr::local::supervisor::{LocalAsr, LocalAsrOptions};
+                let options = LocalAsrOptions::new(
+                    local.dir.clone(),
+                    local.mirror.clone(),
+                    config.speech.asr.language.clone(),
+                    local.gpu,
+                );
+                match LocalAsr::new(options) {
+                    Ok(asr) => Some(asr),
+                    Err(error) => {
+                        tracing::error!("local recognition cannot start: {error:#}");
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+        // The own voice's server, the app's own: set up when a Silero or Piper voice is chosen, kept while one speaks.
+        #[cfg(feature = "pc")]
+        let managed_tts = match &config.models.tts_managed {
+            Some(managed) if !profile.station => {
+                use crate::speech::tts::managed::{ManagedTts, ManagedTtsOptions};
+                let options = ManagedTtsOptions {
+                    dir: managed.dir.clone(),
+                    // Beside the program: the app's resources (its working folder), the repository's folder elsewhere.
+                    server_dir: std::path::absolute("tts-server").unwrap_or_else(|_| "tts-server".into()),
+                    models_dir: config.models.tts_dir.clone(),
+                    piper_root: managed.piper_root.clone(),
+                    port: managed.port,
+                };
+                Some(ManagedTts::new(options, events.clone()))
+            }
+            _ => None,
+        };
         // On the station recognition goes the computer's way first, then the cloud's (src/home_server/chain.rs).
-        let speech = Arc::new(if profile.station {
+        let speech = if profile.station {
             let chain = crate::home_server::chain::station_recognizer(&config.speech.asr, home_server.clone());
             SpeechService::with_recognizer(config.speech.clone(), Some(Arc::new(chain)))
         } else {
-            SpeechService::new(config.speech.clone())
-        });
+            #[cfg(feature = "pc")]
+            let speech = match &local_asr {
+                Some(asr) => {
+                    let local = crate::speech::asr::local::recognizer::LocalRecognizer::new(asr.clone());
+                    SpeechService::with_recognizer(config.speech.clone(), Some(Arc::new(local)))
+                }
+                None => SpeechService::new(config.speech.clone()),
+            };
+            #[cfg(not(feature = "pc"))]
+            let speech = SpeechService::new(config.speech.clone());
+            speech
+        };
+        // The gains the stations' wake words picked outlive a restart: a request without one starts from them.
+        let speech = Arc::new(speech.keeping_wake_word_gains(StateStore::open(db.clone(), "wake_word_gain")));
         speech.start(&events);
         let mcp = McpService::new(
             db.clone(),
@@ -360,6 +466,8 @@ impl App {
             let driven = ModelsLinks {
                 voice: Some(Arc::new(links::voice::ShopVoice(voice.clone()))),
                 own_voices: Some(Arc::new(links::voice::LabVoices(voice_lab.clone()))),
+                local_asr: local_asr.clone(),
+                managed_tts: managed_tts.clone(),
             };
             let models = Arc::new(ModelsService::new(&config, db.clone(), events.clone(), settings.clone(), driven));
             voice.restore_from_settings(&settings, Some(models.as_ref()));
@@ -442,6 +550,7 @@ impl App {
                 home: Some(home_server.clone() as Arc<dyn crate::plugins::controller::HomeLink>),
                 gateway_url: format!("http://127.0.0.1:{}", config.app.port),
                 services: Some(plugin_services.clone() as Arc<dyn crate::plugins::host_api::HostServices>),
+                secrets: secrets.clone(),
             });
             skills.router.add_rules(host.clone());
             let skill = Arc::new(crate::plugins::skill::PluginSkill::new(
@@ -454,6 +563,51 @@ impl App {
         };
         let (plugins, plugin_skill) = plugins;
         plugin_services.set_plugins(&plugins);
+        // The plugins' schedules are kept by the gateway that keeps the station's session: the station's own, or the
+        // computer the station talks to — not a computer that only helps a station (they would run twice).
+        let schedules = {
+            let station_build = placement.role() == crate::placement::service::Role::Station;
+            let availability = availability.clone();
+            let leads =
+                move || station_build || availability.context().placement == crate::core::availability::Placement::Pc;
+            Arc::new(crate::plugins::schedule::Scheduler::new(
+                db.clone(),
+                Arc::downgrade(&plugins),
+                Arc::new(leads),
+                config.plugins.schedules,
+            ))
+        };
+        plugin_services.set_schedules(&schedules);
+        // The plugins' pictures, in DATA_DIR/plugin-files; the station's limits where the gateway runs there.
+        let files = {
+            let root = crate::plugins::files::root_of(&config.data_dir);
+            let plugins = Arc::downgrade(&plugins);
+            Arc::new(crate::plugins::files::PluginFiles::new(
+                root,
+                Arc::new(move || plugins.upgrade().is_some_and(|plugins| plugins.on_station())),
+            ))
+        };
+        plugin_services.set_files(&files);
+        // A MIDI keyboard for apps (docs/plans/midi.md): the computer's build with `midi`; an app's page hears it while
+        // the app is on here with the right `midi`, and its journal says when the keyboard opened and closed.
+        let midi = {
+            let off = (!config.midi.enabled).then(|| "MIDI выключен (MIDI=0).".to_string());
+            let midi = crate::midi::MidiService::new(crate::midi::ports::system(), off, config.midi.remote);
+            midi.set_events(events.clone());
+            availability.set_midi(midi.available());
+            let host = Arc::downgrade(&plugins);
+            midi.set_gate(Arc::new(move |package: &str| {
+                let host = host.upgrade().ok_or_else(|| "приложения остановлены".to_string())?;
+                host.may_hear_midi(package)
+            }));
+            let host = Arc::downgrade(&plugins);
+            midi.set_journal(Arc::new(move |package: &str, line: &str| {
+                if let Some(host) = host.upgrade() {
+                    host.note_line(package, "info", line);
+                }
+            }));
+            midi
+        };
 
         // What the station says of our player (stage 5а): into the request's journal and to the plugin whose item it
         // is; a stream it keeps silent on goes the gateway's way — through /media/stream, AAC transcoded by ffmpeg on a
@@ -472,14 +626,53 @@ impl App {
         // The workshop: drafts in DATA_DIR/packages-dev, installed into the packages through the plugin host; by voice
         // too («давай сделаем навык»), through the plugins' skill and a rule of the router.
         let workshop = crate::plugins::workshop::Workshop::new(config.plugins.dev_dir.clone(), plugins.clone());
+        // A teacher for a MIDI keyboard is made only where a keyboard is heard (docs/plans/midi.md).
+        workshop.set_midi(midi.available());
         // The agent's steps reach the panel as `workshop.changed` (the plaque «Делаю виджет», the workshop's log).
-        workshop.activity().attach_events(events.clone());
+        workshop.attach_events(events.clone());
         // A trial left running before a restart is still taken back on its time.
         workshop.resume_trials();
-        let voice_workshop =
-            crate::plugins::workshop::voice::VoiceWorkshop::new(workshop.clone(), dialog.clone(), events.clone());
+        // The apps' history (src/plugins/history), in DATA_DIR/package-history: the workshop's steps, the versions
+        // the workshop, the catalog and copies put in, the plugins' data before each change.
+        let history = {
+            let host = Arc::downgrade(&plugins);
+            crate::plugins::history::History::open(
+                config.plugins.history_dir(),
+                config.plugins.dev_dir.clone(),
+                Some(settings.clone()),
+                Arc::new(move || host.upgrade().is_some_and(|host| host.on_station())),
+            )
+        };
+        if let Some(history) = &history {
+            history.set_host(&plugins);
+            history.set_events(events.clone());
+            history.set_data(crate::plugins::history::data::DataParts {
+                db: db.clone(),
+                schedules: Some(schedules.clone()),
+                files: Some(files.clone()),
+            });
+            history.set_home(home_server.clone() as Arc<dyn crate::plugins::controller::HomeLink>);
+            plugins.set_history(history.clone());
+            workshop.set_history(history.clone());
+        }
+        // One road for «сделай…» (docs/plans/voice-creation.md): the station's request goes the panel's way, the
+        // agent works in the background, the station that asked says «Готово» and listens for the answer.
+        let voice_workshop = crate::plugins::workshop::voice::VoiceWorkshop::new(workshop.clone(), dialog.clone());
         skills.router.add_rules(voice_workshop.clone());
-        plugin_skill.set_voice(voice_workshop);
+        // The memory's voice commands («запомни», «забудь», «что ты помнишь»): ours, at once, without the model.
+        skills.register(Arc::new(crate::skills::own::memory_skill::MemorySkill::new(memory.clone())));
+        skills.router.add_rules(Arc::new(crate::skills::own::memory_skill::MemoryRules));
+        plugin_skill.set_voice(voice_workshop.clone());
+        {
+            let live = live.clone();
+            voice_workshop.set_panels(Arc::new(move || live.size() > 0));
+        }
+        // «Верни погоду как было вчера»: the history by voice, beside the plugins' phrases.
+        if let Some(history) = &history {
+            let voice_history = crate::plugins::history::voice::VoiceHistory::new(history.clone());
+            skills.router.add_rules(voice_history.clone());
+            plugin_skill.set_history_voice(voice_history);
+        }
         // Answers said by the gateway's model in a plugin's words (`model`, right llm.chat): a game's host, a tale.
         {
             let dialog = dialog.clone();
@@ -508,6 +701,7 @@ impl App {
             })
         };
         let characters = CharactersService::new(db.clone(), events.clone(), personas.clone(), plugins.clone());
+        memory.attach_characters(characters.clone());
         #[cfg(feature = "pc")]
         characters.link_voices(crate::characters::voices::CharacterVoices::new(
             voice_lab.clone(),
@@ -532,6 +726,10 @@ impl App {
         if let Err(error) =
             connectors.register(Arc::new(crate::plugins::connector::PluginsConnector::new(Arc::downgrade(&plugins))))
         {
+            tracing::error!("{error}");
+        }
+        // The memory's tools for the model: `remember`, `forget`, `recall` (src/memory/tools.rs).
+        if let Err(error) = connectors.register(Arc::new(crate::memory::tools::MemoryConnector::new(&memory))) {
             tracing::error!("{error}");
         }
 
@@ -566,6 +764,13 @@ impl App {
             tools: Some(connectors.clone()),
             rescue,
         });
+        // The plugins' turn timer says «время вышло» on the device's live station; their schedules speak there too.
+        plugin_skill.set_turns(station_sessions.turns());
+        voice_workshop.set_turns(station_sessions.turns());
+        schedules.set_station(station_sessions.schedule_station());
+        // The nights keep to the station's clock.
+        let clock = station_sessions.schedule_station();
+        sleep.set_zone(Arc::new(move || crate::plugins::schedule::ScheduleStation::timezone(&*clock)));
         // The station watch alerts through the calls' Telegram bot on a PC; the station's build has no bot.
         let sessions: Arc<dyn ActiveSessions> = station_sessions.clone();
         #[cfg(feature = "pc")]
@@ -574,6 +779,16 @@ impl App {
         #[cfg(not(feature = "pc"))]
         let telegram: Option<Arc<dyn TelegramSender>> = None;
         let station_watch = Arc::new(StationWatch::new(sessions, telegram, config.operations.clone(), events.clone()));
+        // The plugins' messages to the owner go the station watch's ways: the chat «Оповещения», the webhook, the Mac.
+        schedules.set_notice(Arc::new(links::plugins::OwnerAlerts(station_watch.clone())));
+        // So does a delayed command that came too late to run.
+        {
+            let watch = station_watch.clone();
+            skills.later.set_notice(Arc::new(move |text: String| {
+                let watch = watch.clone();
+                tokio::spawn(async move { watch.tell(&text).await });
+            }));
+        }
         let retention = Arc::new(RetentionService::new(
             config.gateway.recorder.dir.clone(),
             config.operations.retention_days,
@@ -661,7 +876,11 @@ impl App {
             updates,
             personas,
             brain,
+            oauth,
             dialog,
+            memory,
+            reflection,
+            sleep,
             #[cfg(feature = "pc")]
             models,
             speech,
@@ -669,7 +888,11 @@ impl App {
             mcp,
             skills,
             workshop,
+            history,
             plugins,
+            schedules,
+            files,
+            midi,
             catalog,
             streams,
             characters,
@@ -681,6 +904,10 @@ impl App {
             station_connect,
             #[cfg(feature = "pc")]
             voice_lab,
+            #[cfg(feature = "pc")]
+            local_asr,
+            #[cfg(feature = "pc")]
+            managed_tts,
             #[cfg(feature = "pc")]
             calls,
             placement,
@@ -702,11 +929,25 @@ impl App {
         self.mcp.shutdown().await;
         self.skills.shutdown();
         self.plugins.shutdown();
+        self.schedules.stop();
+        self.sleep.stop();
+        // Every page's notes let go: no note sounds on after the gateway.
+        self.midi.stop();
         self.characters.shutdown();
         // On the way down keep every reachable station's «last seen», so a restart shows it reconnecting.
         self.presence.stop();
         self.station_watch.stop();
         self.retention.stop();
+        // Recognition's worker and the own voice's server end with the gateway: the desktop app restarts the gateway
+        // inside its process, and an old gateway's processes must not stay behind with their models.
+        #[cfg(feature = "pc")]
+        if let Some(local) = &self.local_asr {
+            local.shutdown().await;
+        }
+        #[cfg(feature = "pc")]
+        if let Some(tts) = &self.managed_tts {
+            tts.shutdown().await;
+        }
     }
 
     /// The gateway stops: what would hold the server's graceful close ends now (the station clients' polls and
@@ -735,10 +976,17 @@ pub fn router(app: Arc<App>) -> Router {
         // The station link: the station's API (/api/v1/station, /debug). Its voice socket comes before the routes.
         .merge(crate::gateway::debug::router())
         .merge(crate::dialog::routes())
+        .merge(crate::memory::routes())
+        .merge(crate::sleep::routes())
         .merge(crate::models::router())
         .merge(crate::mcp::routes())
+        .merge(crate::oauth::routes())
         .merge(crate::plugins::routes())
+        .merge(crate::midi::routes::routes())
+        .merge(crate::skills::own::later_skill::routes())
         .merge(crate::plugins::workshop::routes::routes())
+        .merge(crate::plugins::history::routes::routes())
+        .merge(crate::speech::listen::routes())
         .merge(crate::apps::host_http::routes())
         .merge(crate::characters::routes())
         .merge(crate::stations::router())

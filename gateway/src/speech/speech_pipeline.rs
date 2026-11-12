@@ -43,6 +43,9 @@ pub struct SpeechPipelineOptions {
     pub gain: GainConfig,
     /// The request starts with the wake word buffer (activation by spotter): hold it until SpotterEnd.
     pub expect_wake_word: bool,
+    /// Without a wake word (the station listening on after a question, a button): the gain the station's last wake
+    /// word got. None: the maximum.
+    pub assumed_gain_db: Option<f64>,
 }
 
 /// What processing the audio found, in order: the TS listener's onSpeechStart, onEnd and onError.
@@ -191,6 +194,9 @@ impl SpeechPipeline {
             options,
         };
         if !pipeline.options.expect_wake_word {
+            if let Some(db) = pipeline.options.assumed_gain_db {
+                pipeline.gain.assume(db);
+            }
             pipeline.start_command(CommandStartSource::None);
         }
         pipeline
@@ -198,6 +204,12 @@ impl SpeechPipeline {
 
     pub fn ended(&self) -> Option<SpeechEndReason> {
         self.endpointer.ended()
+    }
+
+    /// The gain this request's own wake word gave (none while it is not known, or when the gain was not picked from
+    /// it): what the station's next request without one starts with.
+    pub fn picked_gain_db(&self) -> Option<f64> {
+        self.gain.reference_dbfs().map(|_| self.gain.gain_db())
     }
 
     /// Where the command speech starts, ms of audio; None until VAD hears it.
@@ -520,7 +532,9 @@ impl SpeechPipeline {
 pub(crate) mod tests {
     use super::*;
     use crate::config::GainMode;
-    use crate::speech::test_audio::{concat, ogg_page, opus_head, silence, station_audio, voice};
+    use crate::speech::test_audio::{
+        concat, ogg_opus_chain, ogg_page, opus_head, silence, silence_at, station_audio, voice,
+    };
     use crate::speech::vad::energy_vad::EnergyVadEngine;
 
     pub(crate) fn endpoint() -> EndpointConfig {
@@ -536,7 +550,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn gain() -> GainConfig {
-        GainConfig { mode: GainMode::Auto, fixed_db: 0.0, max_db: 40.0, target_dbfs: -20.0 }
+        GainConfig { mode: GainMode::Auto, fixed_db: 0.0, max_db: 40.0, target_dbfs: -20.0, no_wake_word_db: 30.0 }
     }
 
     /// Wake word buffer: 1.2 s of room noise and a 0.8 s "word" ending at SpotterEnd, at station level (-50 dBFS).
@@ -547,7 +561,7 @@ pub(crate) mod tests {
     fn pipeline() -> SpeechPipeline {
         SpeechPipeline::new(
             &EnergyVadEngine::new(-40.0),
-            SpeechPipelineOptions { endpoint: endpoint(), gain: gain(), expect_wake_word: true },
+            SpeechPipelineOptions { endpoint: endpoint(), gain: gain(), expect_wake_word: true, assumed_gain_db: None },
         )
     }
 
@@ -691,6 +705,45 @@ pub(crate) mod tests {
         pipeline.close();
     }
 
+    /// Live 12.11: listening on after a question (no wake word) kept the maximum gain, the room's noise at +40 dB was
+    /// speech to VAD, and the request ran to VAD_MAX_SPEECH_MS though «Отлично» was said in the first seconds.
+    #[test]
+    fn a_request_without_a_wake_word_takes_the_gain_the_last_wake_word_gave() {
+        let listen_on = |assumed_gain_db: Option<f64>| {
+            let options =
+                SpeechPipelineOptions { endpoint: endpoint(), gain: gain(), expect_wake_word: false, assumed_gain_db };
+            let mut pipeline = SpeechPipeline::new(&EnergyVadEngine::new(-40.0), options);
+            // The room, «отлично» across it, the room again.
+            let audio = concat(&[&silence_at(300.0, -75.0), &voice(800.0, -48.0), &silence_at(3000.0, -75.0)]);
+            pipeline.push(&ogg_opus_chain(&audio, 7));
+            let events = pipeline.flush();
+            (pipeline, events)
+        };
+        let (mut before, _) = listen_on(None);
+        assert_eq!(before.report().gain_db, 40.0);
+        assert_eq!(before.ended(), None, "the room was speech: {}", before.report().vad.trace);
+        before.close();
+
+        let (mut now, events) = listen_on(Some(26.0));
+        let report = now.report();
+        assert_eq!((report.gain_db, report.wake_word_dbfs), (26.0, None));
+        assert!(matches!(events[..], [SpeechEvent::SpeechStart { .. }, SpeechEvent::End { .. }]), "{events:?}");
+        assert_eq!(now.ended(), Some(SpeechEndReason::EndOfUtterance), "{}", report.vad.trace);
+        // Assumed, not picked: it is not handed on as the station's own.
+        assert_eq!(now.picked_gain_db(), None);
+        now.close();
+
+        // A wake word picks one, and it is handed on.
+        let audio = station_audio(&wake_word_buffer(), &concat(&[&voice(800.0, -50.0), &silence(1500.0)]));
+        let mut woken = pipeline();
+        feed(&mut woken, &audio.bytes, audio.spotter_end_at);
+        woken.flush();
+        let picked = woken.picked_gain_db().unwrap();
+        assert!(within(picked, 26.5, 29.0), "{picked}");
+        assert_eq!(picked, woken.report().gain_db);
+        woken.close();
+    }
+
     #[cfg(feature = "silero")]
     #[test]
     fn runs_silero_vad_over_the_request_room_noise_after_the_wake_word_is_not_speech() {
@@ -699,7 +752,7 @@ pub(crate) mod tests {
         let audio = station_audio(&wake_word_buffer(), &silence(1500.0));
         let mut pipeline = SpeechPipeline::new(
             &silero,
-            SpeechPipelineOptions { endpoint: endpoint(), gain: gain(), expect_wake_word: true },
+            SpeechPipelineOptions { endpoint: endpoint(), gain: gain(), expect_wake_word: true, assumed_gain_db: None },
         );
         feed(&mut pipeline, &audio.bytes, audio.spotter_end_at);
         assert!(pipeline.flush().iter().all(|event| !matches!(event, SpeechEvent::Error(_))));

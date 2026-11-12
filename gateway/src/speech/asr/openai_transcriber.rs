@@ -411,6 +411,7 @@ pub(crate) mod tests {
             prompt: None,
             timeout_ms: 8000,
             wake_words: vec![],
+            local: None,
         }
     }
 

@@ -9,7 +9,10 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 
 import { AgentActivity, AgentJob, AgentStep, ApiError, api, can, problemOf, stationCall, stationRead } from '../api';
+import { IconClose } from '../icons';
 import { onStationChange } from '../live';
+import { useAgentPlace } from '../voice/drafts';
+import { noteAgentPlace } from '../voice/mic';
 import { usePoll } from '../poll';
 import { ask } from '../ui/confirm';
 import { VIA } from '../via';
@@ -51,6 +54,8 @@ export function toolWords(tool: string | undefined, about = ''): string {
     switch (tool) {
         case 'write_file':
             return what ? `пишет ${what}` : 'пишет файл';
+        case 'edit_file':
+            return what ? `правит ${what}` : 'правит файл';
         case 'read_file':
             return what ? `читает ${what}` : 'читает файл';
         case 'delete_file':
@@ -64,7 +69,7 @@ export function toolWords(tool: string | undefined, about = ''): string {
         case 'run_function':
             return what ? `запускает ${what}` : 'запускает';
         case 'plugin_journal':
-            return 'читает журнал плагина';
+            return 'читает журнал приложения';
         case 'install':
             return 'ставит';
         case 'docs':
@@ -277,6 +282,9 @@ export function AgentPlaque({ place }: { place: 'top' | 'side' }) {
     const [thereVersion, setThereVersion] = useState(0);
     const busy = !!own?.jobs.some((job) => job.busy);
     const busyThere = !!there?.jobs.some((job) => job.busy);
+    // Где агент (docs/plans/voice-creation.md): модель в облаке — янтарь, дома — своё; это же пишет полоса голоса.
+    const cloud = useAgentPlace();
+    useEffect(() => noteAgentPlace(cloud), [cloud]);
 
     // Своя мастерская: сразу и с каждой переменой (каждый шаг агента — `workshop.changed`), пока агент работает — ещё
     // и раз в две секунды: живой канал мог оборваться. Без наложений: пока идёт чтение, нового нет (poll.ts).
@@ -376,10 +384,18 @@ export function AgentPlaque({ place }: { place: 'top' | 'side' }) {
     };
     const mark = job.busy ? <span class="agent-spin" aria-hidden="true" /> : <span class={`agent-dot ${state}`} aria-hidden="true" />;
     const stopButton = job.busy && (
-        <button class="agent-plaque-stop" disabled={stopping} onClick={() => void stop()}>
-            {stopping ? 'Останавливаю…' : 'Остановить'}
+        <button class="agent-plaque-stop" disabled={stopping} aria-label="Остановить агента" title="Остановить агента" onClick={() => void stop()}>
+            {stopping ? '…' : <IconClose size={12} />}
         </button>
     );
+    // Где он думает: облако — янтарём (туда уходят просьба и файлы черновика), дома — своё.
+    const where =
+        job.busy && whose === 'own' && cloud !== null ? (
+            <span class={`agent-plaque-place ${cloud ? 'is-cloud' : 'is-home'}`}>
+                <span class="agent-plaque-place-dot" aria-hidden="true" />
+                {cloud ? 'облако' : 'дома'}
+            </span>
+        ) : null;
 
     if (place === 'side')
         return (
@@ -404,6 +420,7 @@ export function AgentPlaque({ place }: { place: 'top' | 'side' }) {
                     {words.tail && <span class="agent-plaque-doing"> · {words.tail}</span>}
                 </span>
             </button>
+            {where}
             {stopButton}
         </div>
     );

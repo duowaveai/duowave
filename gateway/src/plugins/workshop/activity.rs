@@ -61,7 +61,7 @@ pub struct Step {
 }
 
 /// Who started the work: the station's voice, or the panel (the workshop's chat, «+» → «Новый виджет»).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum By {
     Voice,
@@ -117,17 +117,79 @@ pub struct Run {
     pub cancel: CancellationToken,
 }
 
+/// How a draft's work moved: a run began, or it ended — how, and the agent's last words (what it did on its own, its
+/// one question), which go with «Готово» (docs/plans/voice-creation.md).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Moment {
+    Began,
+    Ended { kind: StepKind, said: Option<String> },
+}
+
+/// Who follows the work's moves: the workshop keeps each draft's card by them.
+pub type Follower = Arc<dyn Fn(&str, &Moment) + Send + Sync>;
+
+/// What the agent's last words keep: a sentence or three.
+const LAST_WORDS: usize = 300;
+
 #[derive(Default)]
 pub struct Activity {
     entries: Mutex<HashMap<String, Entry>>,
     seq: AtomicU64,
     events: OnceLock<EventBus>,
+    /// Who hears a run begin and end: the apps' history (docs/plans/package-history.md) — a step with the request.
+    listener: OnceLock<Arc<dyn RunListener>>,
+    /// Who hears each run begin and end besides: the workshop's cards (docs/plans/voice-creation.md).
+    follower: OnceLock<Follower>,
+}
+
+/// Hears the agent's work on a draft begin and end (the history makes a step of it).
+pub trait RunListener: Send + Sync {
+    /// Before the work: the draft as it is.
+    fn began(&self, draft: &str);
+    /// The work ended — done, failed, stopped or replaced by a newer request: who asked, what, the agent's last words.
+    fn ended(&self, draft: &str, by: By, asked: &str, said: &str);
+}
+
+impl Entry {
+    /// What the run told the listener at its end: who asked, what, the agent's last words.
+    fn summary(&self) -> (By, String, String) {
+        let said = self
+            .log
+            .iter()
+            .rev()
+            .take_while(|step| step.kind != StepKind::Asked)
+            .find(|step| step.kind == StepKind::Said)
+            .map(|step| step.text.clone())
+            .unwrap_or_default();
+        (self.by, self.asked.clone(), said)
+    }
 }
 
 impl Activity {
     /// The panel hears of every step through `workshop.changed` (change `agent`) and reads the activity again.
     pub fn attach_events(&self, events: EventBus) {
         let _ = self.events.set(events);
+    }
+
+    pub fn set_listener(&self, listener: Arc<dyn RunListener>) {
+        let _ = self.listener.set(listener);
+    }
+
+    fn ended(&self, draft: &str, summary: Option<(By, String, String)>) {
+        if let (Some(listener), Some((by, asked, said))) = (self.listener.get(), summary) {
+            listener.ended(draft, by, &asked, &said);
+        }
+    }
+
+    /// Who hears each run begin and end (the workshop's cards); once.
+    pub fn follow(&self, follower: Follower) {
+        let _ = self.follower.set(follower);
+    }
+
+    fn moved(&self, draft: &str, moment: Moment) {
+        if let Some(follower) = self.follower.get() {
+            follower(draft, &moment);
+        }
     }
 
     fn entries(&self) -> MutexGuard<'_, HashMap<String, Entry>> {
@@ -153,11 +215,13 @@ impl Activity {
     pub fn begin(&self, draft: &str, by: By, asked: &str, parent: &CancellationToken) -> Run {
         let id = self.next();
         let cancel = parent.child_token();
+        let mut replaced = None;
         {
             let mut entries = self.entries();
             let mut log = match entries.remove(draft) {
                 Some(mut old) => {
                     if old.ended.is_none() {
+                        replaced = Some(old.summary());
                         old.cancel.cancel();
                         old.log.push_back(self.step(
                             StepKind::Stopped,
@@ -176,13 +240,20 @@ impl Activity {
                 Entry { run: id, by, asked: short(asked), since: now_ms(), ended: None, cancel: cancel.clone(), log };
             entries.insert(draft.to_string(), entry);
         }
+        self.ended(draft, replaced);
+        if let Some(listener) = self.listener.get() {
+            listener.began(draft);
+        }
         self.tell(draft);
+        self.moved(draft, Moment::Began);
         Run { draft: draft.to_string(), id, cancel }
     }
 
     /// A step of a run that still goes on; a replaced or ended run's steps are dropped.
     fn push(&self, run: &Run, step: Step, end: bool) -> bool {
-        {
+        let kind = step.kind;
+        let mut summary = None;
+        let said = {
             let mut entries = self.entries();
             let Some(entry) = entries.get_mut(&run.draft) else { return false };
             if entry.run != run.id || entry.ended.is_some() {
@@ -192,9 +263,15 @@ impl Activity {
             trim(&mut entry.log);
             if end {
                 entry.ended = Some(now_ms());
+                summary = Some(entry.summary());
             }
-        }
+            end.then(|| last_words(&entry.log))
+        };
+        self.ended(&run.draft, summary);
         self.tell(&run.draft);
+        if let Some(said) = said {
+            self.moved(&run.draft, Moment::Ended { kind, said });
+        }
         true
     }
 
@@ -234,15 +311,18 @@ impl Activity {
                     entry.log.push_back(self.step(StepKind::Stopped, "Остановлено в пульте.", None, false));
                     trim(&mut entry.log);
                     entry.ended = Some(now_ms());
-                    true
+                    Some(entry.summary())
                 }
-                _ => false,
+                _ => None,
             }
         };
-        if stopped {
+        let was = stopped.is_some();
+        if was {
+            self.ended(draft, stopped);
             self.tell(draft);
+            self.moved(draft, Moment::Ended { kind: StepKind::Stopped, said: None });
         }
-        stopped
+        was
     }
 
     /// The work the plaque shows: what goes on, and what ended in the last minute and a half; the newest first.
@@ -286,7 +366,7 @@ impl Activity {
                         if run.cancel.is_cancelled() {
                             activity.end(&run, StepKind::Stopped, "");
                         } else {
-                            activity.end(&run, StepKind::Failed, &format!("{error:#}"));
+                            activity.end(&run, StepKind::Failed, &failure_words(&format!("{error:#}")));
                             y.send(Err(error)).await;
                         }
                         return;
@@ -315,6 +395,30 @@ impl Drop for Ending {
     }
 }
 
+/// What the agent said after its last call, up to the run's end: its last words to the person.
+fn last_words(log: &VecDeque<Step>) -> Option<String> {
+    let mut words: Vec<&str> = Vec::new();
+    for step in log.iter().rev() {
+        match step.kind {
+            StepKind::Said => words.push(step.text.as_str()),
+            StepKind::Done | StepKind::Failed | StepKind::Stopped if words.is_empty() => {}
+            _ => break,
+        }
+    }
+    words.reverse();
+    let text = words.join(" ");
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().count() <= LAST_WORDS {
+        return Some(text.to_string());
+    }
+    let mut kept: String = text.chars().take(LAST_WORDS - 1).collect();
+    kept.push('…');
+    Some(kept)
+}
+
 fn trim(log: &mut VecDeque<Step>) {
     while log.len() > KEPT {
         log.pop_front();
@@ -339,6 +443,17 @@ fn about(input: &Map<String, Value>) -> String {
         .or_else(|| input.values().find_map(Value::as_str))
         .unwrap_or_default()
         .to_string()
+}
+
+/// Why the agent's work failed, as the panel writes it: the model's own words, and what to do when they are known.
+fn failure_words(error: &str) -> String {
+    if error.contains("ran out of tokens") {
+        return format!(
+            "{error}: ответ модели оборвался на длинном файле. Скажите «переделай» — агент поправит файл кусками \
+(edit_file); не помогло — поднимите LLM_MAX_TOKENS."
+        );
+    }
+    error.to_string()
 }
 
 #[cfg(test)]

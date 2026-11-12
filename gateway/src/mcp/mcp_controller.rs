@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::Response;
 use axum::routing::{get, patch, post, put};
 use axum::Router;
 use serde::Deserialize;
@@ -149,16 +149,7 @@ async fn callback(
         ),
         Err(error) => (StatusCode::BAD_REQUEST, error.message),
     };
-    let page = format!(
-        "<!doctype html><html lang=\"ru\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" \
-         content=\"width=device-width, initial-scale=1\"><title>Вход</title></head>\
-         <body style=\"font-family: system-ui, sans-serif; background: #090C10; color: #F3F6F8; display: grid; \
-         place-items: center; min-height: 100vh; margin: 0; padding: 16px;\">\
-         <p style=\"max-width: 420px; line-height: 1.5;\">{} <a href=\"/panel/\" style=\"color: #B6F36A;\">Вернуться в \
-         пульт</a></p></body></html>",
-        escape_html(&text)
-    );
-    Ok((status, Html(page)).into_response())
+    Ok(crate::oauth::page::page(status, &text))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -174,21 +165,6 @@ async fn complete(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<
     let url = url::Url::parse(text).map_err(|_| ApiError::bad_request("Это не адрес страницы после входа."))?;
     let query: Vec<(String, String)> = url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
     Ok(ok(app.mcp.complete_login(&query, caller.actor()).await?))
-}
-
-fn escape_html(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            other => out.push(other),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -210,6 +186,7 @@ mod tests {
     use crate::mcp::fixtures;
     use crate::mcp::mcp_service::tests::{until, READY};
     use crate::mcp::mcp_service::ServerState;
+    use axum::response::IntoResponse;
 
     // The Node e2e signed people in over HTTP; access is ported on its own (the Rust stub signs nobody in), so the
     // handlers here are called as the guard would let these people through.
@@ -447,10 +424,5 @@ mod tests {
         let (status, text) = request(&router, "GET", "/api/v1/mcp/oauth/callback?state=x", [8, 8, 8, 8]).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(text.contains("Только из домашней сети."), "{text}");
-    }
-
-    #[test]
-    fn escapes_the_page_text() {
-        assert_eq!(escape_html(r#"<a href="x">'&'</a>"#), "&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;");
     }
 }

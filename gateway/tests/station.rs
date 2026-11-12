@@ -16,7 +16,7 @@ use duowave::core::stations::presence::PresenceState;
 use duowave::gateway::protocol::proto_object::bytes_value;
 use duowave::gateway::protocol::protocol_types::{Directive, DirectiveType};
 use duowave::speech::audio::ogg_opus_demuxer::{OggOpusDemuxer, OggOpusEvent};
-use duowave::speech::test_audio::{concat, ogg_pages, silence, station_audio, voice};
+use duowave::speech::test_audio::{concat, ogg_opus_chain, ogg_pages, silence, silence_at, station_audio, voice};
 use fakes::gateway_yandex::{FakeAnswer, GatewayYandex};
 use fakes::{
     at, codec, lock, server_frame, sleep, start_forecast, until, until_async, AsrStub, ChatStub, FakeConnection,
@@ -566,6 +566,45 @@ async fn hears_a_whisper_vad_cannot_all_audio_on_the_fly_the_end_when_the_text_s
     assert_eq!(timeline["allAudio"]["text"], "Который час?");
     // Only 5 dB over the room: no window loud enough to show a pitch, so it counts as a whisper.
     assert_eq!(timeline["voicing"], json!({ "windows": 0, "longestRun": 0 }));
+    station.close();
+}
+
+/// A voice request without the wake word, as the station sends it for a wake word of our own (START_CONVERSATION).
+fn without_wake_word(message_id: &str, stream_id: u32, request_id: &str) -> Value {
+    json!({ "event": { "header": { "messageId": message_id, "streamId": stream_id }, "voiceInput": {
+        "header": { "requestId": request_id, "sequenceNumber": 5 },
+        "request": { "event": { "type": "voice_input" }, "voiceSession": true, "activationType": "directive" } } } })
+}
+
+/// A word, then the room: sent as the station would, until the final result.
+async fn say_without_wake_word(station: &StationClient, message_id: &str, stream_id: u32, request_id: &str) {
+    station.send(without_wake_word(message_id, stream_id, request_id));
+    let audio = ogg_opus_chain(&concat(&[&voice(700.0, -50.0), &silence_at(3000.0, -75.0)]), stream_id);
+    send_in_real_time(station, stream_id, &audio, || station.has(is_final_asr(message_id))).await;
+    station.wait_for(is_final_asr(message_id), 4000).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_without_the_wake_word_starts_from_the_stations_wake_words_in_a_new_session_too() {
+    let env = env().await;
+    env.asr.set_reply("Который час?");
+    let station = env.station(&[]).await;
+    // No wake word heard from this station yet: a moderate gain (AUDIO_GAIN_NO_WAKE_WORD_DB), not +40 dB, at which
+    // the room's noise is speech for the energy VAD.
+    say_without_wake_word(&station, "voice-60", 61, "req-60").await;
+    assert_eq!(env.voice_timeline("req-60").await["speech"]["gainDb"].as_f64(), Some(30.0));
+    // «Алиса» picks the gain from itself.
+    env.speak(&station, "voice-61", 63, "req-61", None, None);
+    station.wait_for(response_to("req-61"), 4000).await;
+    let picked = env.voice_timeline("req-61").await["speech"]["gainDb"].as_f64().unwrap();
+    assert!((25.0..32.0).contains(&picked), "{picked}");
+    station.close();
+
+    // The station comes back (it reconnected, or the gateway restarted): this session has heard no wake word, the
+    // station has — and only a wake word of our own may follow.
+    let station = env.station(&[]).await;
+    say_without_wake_word(&station, "voice-62", 65, "req-62").await;
+    assert_eq!(env.voice_timeline("req-62").await["speech"]["gainDb"].as_f64(), Some(picked));
     station.close();
 }
 

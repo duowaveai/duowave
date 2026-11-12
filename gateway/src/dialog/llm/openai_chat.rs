@@ -12,8 +12,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::describe_http_error as describe;
 use super::llm_client::{
-    describe_models, AssistantTurn, LlmClient, LlmEvent, LlmMessage, LlmRequest, LlmSettings, LlmStream, TokensField,
-    ToolCall, ToolChoice,
+    bearer_of, describe_models, AssistantTurn, LlmClient, LlmEvent, LlmMessage, LlmRequest, LlmSettings, LlmStream,
+    TokensField, ToolCall, ToolChoice,
 };
 use super::sse::Lines;
 use crate::dialog::generator::{generate, Yielder};
@@ -126,17 +126,17 @@ fn to_chat_messages(message: &LlmMessage) -> Vec<Value> {
     }
 }
 
-fn starts_with_error(text: &str) -> bool {
+pub(super) fn starts_with_error(text: &str) -> bool {
     text.get(..5).is_some_and(|head| head.eq_ignore_ascii_case("error"))
 }
 
 /// The first `max` characters.
-fn head(text: &str, max: usize) -> String {
+pub(super) fn head(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
 }
 
 /// The call's input, or why it is not one: a broken call fails alone, not the whole answer.
-fn parse_arguments(text: &str) -> (Map<String, Value>, Option<String>) {
+pub(super) fn parse_arguments(text: &str) -> (Map<String, Value>, Option<String>) {
     if text.trim().is_empty() {
         return (Map::new(), None);
     }
@@ -147,8 +147,26 @@ fn parse_arguments(text: &str) -> (Map<String, Value>, Option<String>) {
     }
 }
 
-fn aborted() -> anyhow::Error {
+pub(super) fn aborted() -> anyhow::Error {
     anyhow!("This operation was aborted")
+}
+
+/// JSON, the bearer of this request (the key, or a sign-in's fresh token) and the provider's own headers.
+pub(super) async fn request_headers(settings: &LlmSettings) -> anyhow::Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    if let Some(key) = bearer_of(settings).await? {
+        let mut bearer = HeaderValue::from_str(&format!("Bearer {key}"))
+            .map_err(|_| anyhow!("the API key is not a header value"))?;
+        bearer.set_sensitive(true);
+        headers.insert(AUTHORIZATION, bearer);
+    }
+    for (name, value) in &settings.headers {
+        let name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| anyhow!("not a header name: {name}"))?;
+        let value = HeaderValue::from_str(value).map_err(|_| anyhow!("not a value for the header {name}"))?;
+        headers.insert(name, value);
+    }
+    Ok(headers)
 }
 
 #[derive(Debug, Default)]
@@ -192,20 +210,7 @@ async fn run(
         }
     }
 
-    let mut headers = HeaderMap::new();
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    if let Some(key) = settings.api_key.as_deref().filter(|key| !key.is_empty()) {
-        let mut bearer = HeaderValue::from_str(&format!("Bearer {key}"))
-            .map_err(|_| anyhow!("the API key is not a header value"))?;
-        bearer.set_sensitive(true);
-        headers.insert(AUTHORIZATION, bearer);
-    }
-    for (name, value) in &settings.headers {
-        let name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| anyhow!("not a header name: {name}"))?;
-        let value = HeaderValue::from_str(value).map_err(|_| anyhow!("not a value for the header {name}"))?;
-        headers.insert(name, value);
-    }
-
+    let headers = request_headers(settings).await?;
     let send = client().post(url).headers(headers).body(Value::Object(body).to_string()).send();
     let response = tokio::select! {
         _ = cancel.cancelled() => return Err(aborted()),
@@ -370,6 +375,8 @@ pub(crate) mod tests {
             explicit: false,
             headers: BTreeMap::new(),
             tokens_field: TokensField::MaxTokens,
+            access: None,
+            api: crate::dialog::llm::LlmApi::Chat,
         }
     }
 

@@ -1,5 +1,9 @@
 # ASR server (GigaAM)
 
+> Приложение DuoWave (и шлюз со сборкой `local-asr`) распознаёт само — без этого сервера: GigaAM v3 в формате GGUF
+> через transcribe.cpp, см. [desktop/README.md](../desktop/README.md). Этот сервер — для шлюза в Docker, на другой
+> машине или для тех, кому нужен PyTorch: шлюз уходит на него с `ASR_BASE_URL` / `ASR_PROVIDER=openai`.
+
 Распознавание речи для шлюза: [GigaAM](https://github.com/salute-developers/GigaAM) (MIT) за
 OpenAI-совместимым `POST /v1/audio/transcriptions`. Шлюз шлёт сюда одну фразу (WAV 16 кГц моно)
 после конца речи — тот же вызов, что к OpenAI, поэтому их можно менять без изменений в коде.

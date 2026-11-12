@@ -602,7 +602,7 @@ impl StationFs {
 
     /// The settings the computer sends: kept for the gateway's next start (or read by the running one).
     pub fn receive_settings(&self, bundle: &[u8]) -> Result<(), String> {
-        serde_json::from_slice::<super::transfer::Bundle>(bundle).map_err(|_| "это не пакет настроек".to_string())?;
+        serde_json::from_slice::<super::transfer::Bundle>(bundle).map_err(|_| "это не набор настроек".to_string())?;
         std::fs::create_dir_all(self.path(&format!("{DATA}/state"))).map_err(|error| error.to_string())?;
         write_atomic(&self.path(INCOMING_SETTINGS), bundle)?;
         restrict(&self.path(INCOMING_SETTINGS));
@@ -1278,6 +1278,35 @@ pub(crate) mod tests {
         assert!(std::fs::read_to_string(service.file("safety-fired")).unwrap().starts_with("previous-address "));
         let log = std::fs::read_to_string(service.file("gateway/gateway.log")).unwrap_or_default();
         assert_eq!(log.matches("no answer on /health").count(), 3, "{log}");
+    }
+
+    #[test]
+    fn its_start_gives_the_callers_output_back_while_the_loop_runs_on() {
+        // An install over SSH runs the service's start with Command::output(), which waits for that output to close.
+        // The loop and the watch must not keep it: on the station on 11.11.2026 they did, for good.
+        let service = Service::new("ws://192.0.2.10/uni.ws");
+        // A gateway that runs five seconds and is told to stay off after it: a start that kept the caller's output
+        // would last as long as the loop.
+        let off = format!(": > {}\nsleep 5\n", service.file("disabled").display());
+        service.program("duowave", "started", &off);
+        let began = std::time::Instant::now();
+        let output = service.command("start", &[("DUOWAVE_PROBE_SECS", "1")]).output().unwrap();
+        assert!(output.status.success());
+        let took = began.elapsed();
+        assert!(took < std::time::Duration::from_secs(3), "the start kept the caller's output for {took:?}");
+        // The loop starts the gateway apart from the caller: a moment later, longer on a busy machine.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while service.runs().is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert_eq!(service.runs(), vec!["started"], "the loop runs on apart from the caller");
+        // Done: the watch, the loop and the gateway by their pid files, before the folder goes.
+        for file in ["gateway-watch.pid", "gateway-loop.pid", "gateway.pid"] {
+            let pid = std::fs::read_to_string(service.file(file)).unwrap_or_default();
+            if let Some(pid) = pid.split_whitespace().next() {
+                let _ = std::process::Command::new("kill").arg(pid).status();
+            }
+        }
     }
 
     #[test]

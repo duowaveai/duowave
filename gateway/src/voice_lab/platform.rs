@@ -368,8 +368,30 @@ mod native {
     }
 }
 
-/// uv on PATH, or where its installers put it.
+/// Where the desktop app's own uv is (bundle.externalBin): the app sets it before the gateway starts.
+pub const BUNDLED_UV_ENV: &str = "DUOWAVE_UV";
+
+/// Free bytes on the disk that holds a path, the nearest existing folder above it asked when it is not there yet;
+/// 0 when the system does not say. For the downloads outside the voice lab (recognition models).
+pub fn free_disk_bytes(path: &Path) -> u64 {
+    let mut place = path.to_path_buf();
+    while !place.exists() {
+        match place.parent() {
+            Some(parent) if parent != place => place = parent.to_path_buf(),
+            _ => break,
+        }
+    }
+    native::free_disk_bytes(&place)
+}
+
+/// The uv the desktop app carries beside its own program (DUOWAVE_UV, set by the app), else uv on PATH, else where
+/// its installers put it.
 async fn find_uv(probe: &dyn Probe, os: OsName) -> Option<String> {
+    if let Some(bundled) = probe.env(BUNDLED_UV_ENV).filter(|path| !path.trim().is_empty()) {
+        if probe.exists(Path::new(&bundled)) {
+            return Some(bundled);
+        }
+    }
     let exe = if os == OsName::Win32 { "uv.exe" } else { "uv" };
     if probe.run("uv", &["--version"], PROBE_TIMEOUT_MS).await.ok() {
         return Some("uv".into());
@@ -518,11 +540,24 @@ pub(crate) mod tests {
         /// By the command line's start; None: the command fails.
         pub answers: Vec<(&'static str, Option<&'static str>)>,
         pub files: HashMap<String, String>,
+        pub vars: HashMap<String, String>,
     }
 
     impl Computer {
         pub fn new(platform: &'static str) -> Computer {
-            Computer { platform, arch: "x64", ram_mb: 32_768, answers: Vec::new(), files: HashMap::new() }
+            Computer {
+                platform,
+                arch: "x64",
+                ram_mb: 32_768,
+                answers: Vec::new(),
+                files: HashMap::new(),
+                vars: HashMap::new(),
+            }
+        }
+
+        pub fn var(mut self, name: &str, value: &str) -> Computer {
+            self.vars.insert(name.to_string(), value.to_string());
+            self
         }
 
         pub fn arch(mut self, arch: &'static str) -> Computer {
@@ -555,8 +590,8 @@ pub(crate) mod tests {
             self.arch.into()
         }
 
-        fn env(&self, _name: &str) -> Option<String> {
-            None
+        fn env(&self, name: &str) -> Option<String> {
+            self.vars.get(name).cloned()
         }
 
         fn run(&self, command: &str, args: &[&str], _timeout_ms: u64) -> BoxFuture<'static, CommandResult> {
@@ -651,6 +686,18 @@ pub(crate) mod tests {
             Tools { uv: Some("/home/owner/.local/bin/uv".into()), git: true, taskpolicy: false, systemd_run: true }
         );
         assert_eq!(describe_platform(&info), "Linux, NVIDIA GeForce RTX 4070, 12 ГБ видеопамяти, 32 ГБ памяти");
+    }
+
+    #[tokio::test]
+    async fn the_apps_own_uv_comes_first_and_a_missing_one_gives_way_to_the_systems() {
+        let bundled = "/Applications/DuoWave.app/Contents/MacOS/uv";
+        let with_app = Computer::new("darwin")
+            .var(BUNDLED_UV_ENV, bundled)
+            .file(bundled, "")
+            .answer("uv --version", Some("uv 0.9.0"));
+        assert_eq!(detect(&with_app).await.tools.uv.as_deref(), Some(bundled));
+        let gone = Computer::new("darwin").var(BUNDLED_UV_ENV, bundled).answer("uv --version", Some("uv 0.9.0"));
+        assert_eq!(detect(&gone).await.tools.uv.as_deref(), Some("uv"));
     }
 
     #[tokio::test]

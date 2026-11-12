@@ -5,6 +5,7 @@ pub mod brain;
 pub mod echo;
 pub mod llm_client;
 pub mod openai_chat;
+pub mod openai_responses;
 pub mod sse;
 
 pub use llm_client::*;

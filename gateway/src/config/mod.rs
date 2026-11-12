@@ -30,6 +30,8 @@ pub struct Config {
     pub connectors: ConnectorsSeed,
     /// The plugins' packages and their limits (src/plugins).
     pub plugins: PluginsConfig,
+    /// A MIDI keyboard for apps (src/midi).
+    pub midi: MidiConfig,
     /// DATA_DIR, when set: the one folder for everything written.
     pub data_dir: Option<PathBuf>,
 }
@@ -68,6 +70,27 @@ pub struct PluginsConfig {
     /// the start, on the first time switched on; `0` leaves them out and the built-in skills answer alone. Off in tests
     /// without a data folder of their own (`Config::for_tests`), which would lay them out into the working copy.
     pub bundled: bool,
+    /// PLUGINS_SCHEDULES: plugins act by themselves in time (plugins/schedule.rs); `0` stops every rhythm and task,
+    /// the jobs kept — the panel's switch «Расписания плагинов» does the same at runtime.
+    pub schedules: bool,
+}
+
+/// A MIDI keyboard for apps (docs/plans/midi.md).
+#[derive(Debug, Clone)]
+pub struct MidiConfig {
+    /// MIDI: `0` — the gateway does not open keyboards at all, though its build can.
+    pub enabled: bool,
+    /// MIDI_REMOTE: `1` — a panel from outside home (through the tunnel) hears the keyboard too; the owner's decision 2
+    /// (12.11.2026): no by default, the keyboard is heard only at home.
+    pub remote: bool,
+}
+
+impl PluginsConfig {
+    /// The apps' history (docs/plans/package-history.md): beside the drafts — `$DATA_DIR/package-history`,
+    /// `data/package-history` without it.
+    pub fn history_dir(&self) -> PathBuf {
+        self.dev_dir.with_file_name("package-history")
+    }
 }
 
 /// The gateway's port when PORT is not set: an uncommon one, so it is free on most computers (80, 3000, 8080 rarely
@@ -153,6 +176,12 @@ pub struct GatewayConfig {
     pub quiet_speech: bool,
     /// Quiet speech ends when its recognised text has not changed for this much audio.
     pub quiet_end_ms: u64,
+    /// Speech VAD hears ends when its recognised text has not changed for this much audio (room noise VAD takes for
+    /// speech); 0 leaves the end to VAD.
+    pub unchanged_end_ms: u64,
+    /// A stop and nothing else ends once the next interim result says it again, this much audio later; 0 waits for the
+    /// end of speech.
+    pub stop_end_ms: u64,
     pub recorder: RecorderConfig,
     pub debug_api: bool,
     /// The home networks (CIDR, "private"): the debug API, the station's HTTP, the first-run setup.
@@ -286,11 +315,14 @@ pub struct GainConfig {
     pub max_db: f64,
     /// Auto mode: level of the loudest 32 ms window of the wake word after gain, dBFS RMS.
     pub target_dbfs: f64,
+    /// Auto mode, a request without the wake word whose station has no wake word gain yet (its first since the
+    /// database began, a wake word of our own only): this, not the maximum — at +40 dB room noise is speech for VAD.
+    pub no_wake_word_db: f64,
 }
 
 #[derive(Debug, Clone)]
 pub struct AsrConfig {
-    /// openai (any OpenAI-compatible /audio/transcriptions) or none.
+    /// openai (any OpenAI-compatible /audio/transcriptions), local (this computer's own engine) or none.
     pub enabled: bool,
     pub base_url: String,
     pub api_key: Option<String>,
@@ -299,6 +331,19 @@ pub struct AsrConfig {
     pub prompt: Option<String>,
     pub timeout_ms: u64,
     pub wake_words: Vec<String>,
+    /// Recognition on this computer itself (src/speech/asr/local); None: the server at `base_url` recognises.
+    pub local: Option<LocalAsrConfig>,
+}
+
+/// ASR_PROVIDER=local: GigaAM, Parakeet or Whisper as GGUF in a worker of this program (a build with local-asr).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalAsrConfig {
+    /// ASR_LOCAL_DIR, else DATA_DIR/speech: the models and the worker's log.
+    pub dir: PathBuf,
+    /// ASR_MODELS_MIRROR: a folder of the model files by name, asked before Hugging Face.
+    pub mirror: Option<String>,
+    /// ASR_LOCAL_GPU=0 keeps recognition on the processor.
+    pub gpu: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -655,6 +700,19 @@ pub struct ModelsConfig {
     /// The open Piper registry the voice catalog fills from: every voice of rhasspy/piper-voices on HuggingFace, a
     /// page of the tree at a time (no variable: tests give their own).
     pub piper_registry: String,
+    /// The own voice's server set up and kept by the app itself (src/speech/tts/managed.rs): in the desktop app
+    /// when TTS_OWN_URL names no other server. None: a server of one's own, or none.
+    pub tts_managed: Option<ManagedTtsConfig>,
+}
+
+/// Where the app keeps the own voice's server: its environments and logs (TTS_MANAGED_DIR, else DATA_DIR/speech/tts),
+/// Piper's environment on a short path (TTS_PIPER_DIR, else ~/.duowave, in Windows %LOCALAPPDATA%\duowave: espeak-ng
+/// in Piper keeps its data's path in 160 bytes), and the port it listens on, on this computer only (8091).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedTtsConfig {
+    pub dir: PathBuf,
+    pub piper_root: PathBuf,
+    pub port: u16,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -693,6 +751,22 @@ impl Config {
 fn build(env: &Env) -> Config {
     let content_dir = env.get("CONTENT_DIR").map(PathBuf::from).unwrap_or_else(|| data_path(env, "content", "content"));
     let mac_deploy = env.get("MAC_DEPLOY_DIR").map(str::trim).filter(|dir| !dir.is_empty()).map(PathBuf::from);
+    // The own voice's server is the app's own in the desktop app, unless the .env names another (TTS_OWN_URL).
+    let tts_managed =
+        (cfg!(feature = "pc") && env.get("DUOWAVE_MANAGED") == Some("desktop") && env.get("TTS_OWN_URL").is_none())
+            .then(|| {
+                let dir = env
+                    .get("TTS_MANAGED_DIR")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| data_path(env, "speech/tts", "data/speech/tts"));
+                let short = if cfg!(windows) {
+                    env.get("LOCALAPPDATA").map(|local| PathBuf::from(local).join("duowave"))
+                } else {
+                    env.get("HOME").map(|home| PathBuf::from(home).join(".duowave"))
+                };
+                let piper_root = env.get("TTS_PIPER_DIR").map(PathBuf::from).or(short).unwrap_or_else(|| dir.clone());
+                ManagedTtsConfig { dir, piper_root, port: 8091 }
+            });
     let threshold = env.number("VAD_THRESHOLD", 0.5);
     let media_base_url =
         env.get("MEDIA_BASE_URL").map(|url| url.trim_end_matches('/').to_string()).filter(|url| !url.is_empty());
@@ -738,6 +812,8 @@ fn build(env: &Env) -> Config {
             interim_interval_ms: env.integer("ASR_INTERIM_INTERVAL_MS", 500),
             quiet_speech: env.flag("ASR_QUIET_SPEECH", true),
             quiet_end_ms: env.integer("ASR_QUIET_END_MS", 2000),
+            unchanged_end_ms: env.integer("ASR_UNCHANGED_END_MS", 2000),
+            stop_end_ms: env.integer("ASR_STOP_END_MS", 400),
             recorder: RecorderConfig {
                 enabled: env.flag("RECORDER_ENABLED", true),
                 dir: env
@@ -770,16 +846,20 @@ fn build(env: &Env) -> Config {
                 // Без TTS_OWN_URL свой голос «не настроен» — но там, где лежат mac-скрипты запуска
                 // (MAC_DEPLOY_DIR), сервер стартует из пульта, и он считается настроенным на их
                 // фиксированный порт: у новой установки флоу не упирается в непрописанную переменную.
-                own: env.get("TTS_OWN_URL").or_else(|| mac_deploy.as_ref().map(|_| "http://127.0.0.1:8091/v1")).map(
-                    |url| OwnSpeechConfig {
+                // In the desktop app the server is the app's own (src/speech/tts/managed.rs): set up by itself, on
+                // the same fixed port.
+                own: env
+                    .get("TTS_OWN_URL")
+                    .or_else(|| tts_managed.as_ref().map(|_| "http://127.0.0.1:8091/v1"))
+                    .or_else(|| mac_deploy.as_ref().map(|_| "http://127.0.0.1:8091/v1"))
+                    .map(|url| OwnSpeechConfig {
                         base_url: url.to_string(),
                         api_key: env.optional("TTS_OWN_API_KEY"),
                         model: env.string("TTS_OWN_MODEL", "silero"),
                         voice: env.string("TTS_OWN_VOICE", "xenia"),
                         format: if env.get("TTS_OWN_FORMAT") == Some("opus") { "opus".into() } else { "wav".into() },
                         timeout_ms: env.integer("TTS_OWN_TIMEOUT_MS", 8000),
-                    },
-                ),
+                    }),
                 voice: env.optional("TTS_VOICE"),
                 lang: env.string("TTS_LANG", "ru-RU"),
                 timeout_ms: env.integer("TTS_TIMEOUT_MS", 5000),
@@ -828,7 +908,9 @@ fn build(env: &Env) -> Config {
                 .and_then(|action| crate::plugins::budget::PressureAction::parse(&action))
                 .unwrap_or(crate::plugins::budget::PressureAction::Disable),
             bundled: env.flag("PLUGINS_BUNDLED", true),
+            schedules: env.flag("PLUGINS_SCHEDULES", true),
         },
+        midi: MidiConfig { enabled: env.flag("MIDI", true), remote: env.flag("MIDI_REMOTE", false) },
         voice_lab: VoiceLabConfig {
             dir: env
                 .get("VOICE_LAB_DIR")
@@ -892,6 +974,7 @@ fn build(env: &Env) -> Config {
                 prompt: env.optional("ASR_PROMPT"),
                 timeout_ms: env.integer("ASR_TIMEOUT_MS", 8000),
                 wake_words: env.list("WAKE_WORDS", &["алиса", "яндекс"]),
+                local: local_asr(env),
             },
         },
         updates: UpdatesConfig {
@@ -916,6 +999,7 @@ fn build(env: &Env) -> Config {
             mac_deploy_dir: mac_deploy,
             piper_registry:
                 "https://huggingface.co/api/models/rhasspy/piper-voices/tree/main?recursive=true&limit=1000".into(),
+            tts_managed,
         },
     }
 }
@@ -1010,6 +1094,28 @@ fn connectors_seed(env: &Env, content_dir: &std::path::Path) -> ConnectorsSeed {
     }
 }
 
+/// Recognition on this computer itself: ASR_PROVIDER=local, and by default in the desktop app (DUOWAVE_MANAGED=desktop)
+/// unless the .env names a recognition server (ASR_BASE_URL). Only a build with local-asr has the engine; elsewhere
+/// the server at ASR_BASE_URL recognises.
+fn local_asr(env: &Env) -> Option<LocalAsrConfig> {
+    if !cfg!(feature = "local-asr") {
+        if env.get("ASR_PROVIDER") == Some("local") {
+            tracing::warn!("ASR_PROVIDER=local: this build has no local recognition; ASR_BASE_URL recognises");
+        }
+        return None;
+    }
+    let local = match env.get("ASR_PROVIDER") {
+        Some("local") => true,
+        Some(_) => false,
+        None => env.get("DUOWAVE_MANAGED") == Some("desktop") && env.get("ASR_BASE_URL").is_none(),
+    };
+    local.then(|| LocalAsrConfig {
+        dir: env.get("ASR_LOCAL_DIR").map(PathBuf::from).unwrap_or_else(|| data_path(env, "speech", "data/speech")),
+        mirror: env.optional("ASR_MODELS_MIRROR"),
+        gpu: env.flag("ASR_LOCAL_GPU", true),
+    })
+}
+
 fn gain(env: &Env) -> GainConfig {
     let value = env.raw("AUDIO_GAIN").unwrap_or("auto").trim();
     let fixed =
@@ -1019,6 +1125,7 @@ fn gain(env: &Env) -> GainConfig {
         fixed_db: fixed.unwrap_or(0.0),
         max_db: env.number("AUDIO_GAIN_MAX_DB", 40.0),
         target_dbfs: env.number("AUDIO_GAIN_TARGET_DBFS", -20.0),
+        no_wake_word_db: env.number("AUDIO_GAIN_NO_WAKE_WORD_DB", 30.0),
     }
 }
 
@@ -1091,7 +1198,7 @@ fn validate(env: &Env) -> Vec<String> {
     one_of("YANDEX_PUSHES", &["pass", "drop"]);
     one_of("STATION_PAIRING", &["tofu", "closed", "open"]);
     one_of("VAD_ENGINE", &["silero", "energy"]);
-    one_of("ASR_PROVIDER", &["openai", "none"]);
+    one_of("ASR_PROVIDER", &["openai", "local", "none"]);
     one_of("DIALOG_PROVIDER", &["anthropic", "openai", "echo", "none"]);
     one_of("LLM_EFFORT", LLM_EFFORTS);
     one_of("DIALOG_LISTEN", &["question", "always", "never"]);
@@ -1146,10 +1253,13 @@ fn validate(env: &Env) -> Vec<String> {
     number("VAD_ENERGY_THRESHOLD_DBFS", None, Some(0.0));
     number("AUDIO_GAIN_MAX_DB", Some(0.0), Some(60.0));
     number("AUDIO_GAIN_TARGET_DBFS", None, Some(0.0));
+    number("AUDIO_GAIN_NO_WAKE_WORD_DB", Some(0.0), Some(60.0));
     number("ASR_TIMEOUT_MS", Some(500.0), None);
     number("ASR_PARTIAL_INTERVAL_MS", Some(0.0), None);
     number("ASR_INTERIM_INTERVAL_MS", Some(0.0), None);
     number("ASR_QUIET_END_MS", Some(500.0), None);
+    number("ASR_UNCHANGED_END_MS", Some(0.0), None);
+    number("ASR_STOP_END_MS", Some(0.0), None);
     number("LLM_MAX_TOKENS", Some(256.0), None);
     number("LLM_TIMEOUT_MS", Some(1000.0), None);
     number("DIALOG_HISTORY_TURNS", Some(0.0), None);
@@ -1216,6 +1326,7 @@ fn validate(env: &Env) -> Vec<String> {
     for key in [
         "ALERT_WEBHOOK_URL",
         "ASR_BASE_URL",
+        "ASR_MODELS_MIRROR",
         "LLM_BASE_URL",
         "MEDIA_BASE_URL",
         "WEATHER_FORECAST_URL",
@@ -1288,6 +1399,70 @@ mod tests {
         assert_eq!(config.plugins.catalog_dir, PathBuf::from("/data/duowave/packages-catalog"));
         let memory = Config::load(&Env::from_pairs([("DATA_DIR", "/d"), ("STATE_DIR", "")])).unwrap();
         assert_eq!(memory.skills.state_dir, None);
+    }
+
+    #[test]
+    fn the_app_keeps_its_own_voice_server_unless_the_env_names_one() {
+        let app = Config::load(&Env::from_pairs([("DUOWAVE_MANAGED", "desktop"), ("DATA_DIR", "/data")])).unwrap();
+        let managed = app.models.tts_managed.expect("the app's own voice server");
+        assert_eq!(managed.dir, PathBuf::from("/data/speech/tts"));
+        assert_eq!(managed.port, 8091);
+        // No home known: Piper beside the rest; with one, on its short path.
+        assert_eq!(managed.piper_root, PathBuf::from("/data/speech/tts"));
+        let home = Config::load(&Env::from_pairs([
+            ("DUOWAVE_MANAGED", "desktop"),
+            ("HOME", "/Users/owner"),
+            ("LOCALAPPDATA", "C:\\L"),
+        ]))
+        .unwrap();
+        let short =
+            if cfg!(windows) { PathBuf::from("C:\\L").join("duowave") } else { PathBuf::from("/Users/owner/.duowave") };
+        assert_eq!(home.models.tts_managed.unwrap().piper_root, short);
+        assert_eq!(app.gateway.tts.own.map(|own| own.base_url).as_deref(), Some("http://127.0.0.1:8091/v1"));
+        let named = Config::load(&Env::from_pairs([
+            ("DUOWAVE_MANAGED", "desktop"),
+            ("TTS_OWN_URL", "http://192.168.1.10:8091/v1"),
+        ]))
+        .unwrap();
+        assert!(named.models.tts_managed.is_none());
+        assert_eq!(named.gateway.tts.own.map(|own| own.base_url).as_deref(), Some("http://192.168.1.10:8091/v1"));
+        let shell = Config::load(&Env::from_pairs([("PORT", "7780")])).unwrap();
+        assert!(shell.models.tts_managed.is_none());
+        assert!(shell.gateway.tts.own.is_none());
+    }
+
+    #[cfg(feature = "local-asr")]
+    #[test]
+    fn the_app_hears_by_itself_unless_the_env_names_a_server_or_another_provider() {
+        let app = Config::load(&Env::from_pairs([("DUOWAVE_MANAGED", "desktop"), ("DATA_DIR", "/data")])).unwrap();
+        let local = app.speech.asr.local.expect("the app's own recognition");
+        assert_eq!(local.dir, PathBuf::from("/data/speech"));
+        assert!(local.gpu);
+        assert_eq!(local.mirror, None);
+        // A recognition server named in the .env keeps serving, as before.
+        let named = Config::load(&Env::from_pairs([
+            ("DUOWAVE_MANAGED", "desktop"),
+            ("ASR_BASE_URL", "http://127.0.0.1:8090/v1"),
+        ]))
+        .unwrap();
+        assert!(named.speech.asr.local.is_none());
+        let openai =
+            Config::load(&Env::from_pairs([("DUOWAVE_MANAGED", "desktop"), ("ASR_PROVIDER", "openai")])).unwrap();
+        assert!(openai.speech.asr.local.is_none());
+        // Outside the app only when asked, with its own folder, mirror and processor-only switch.
+        assert!(Config::load(&Env::from_pairs([("PORT", "7780")])).unwrap().speech.asr.local.is_none());
+        let asked = Config::load(&Env::from_pairs([
+            ("ASR_PROVIDER", "local"),
+            ("ASR_LOCAL_DIR", "/models"),
+            ("ASR_MODELS_MIRROR", "https://mirror.example.org/asr"),
+            ("ASR_LOCAL_GPU", "0"),
+        ]))
+        .unwrap();
+        let local = asked.speech.asr.local.expect("asked for");
+        assert_eq!(local.dir, PathBuf::from("/models"));
+        assert_eq!(local.mirror.as_deref(), Some("https://mirror.example.org/asr"));
+        assert!(!local.gpu);
+        assert!(asked.speech.asr.enabled);
     }
 
     #[test]

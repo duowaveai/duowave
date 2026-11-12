@@ -340,7 +340,7 @@ export const SATELLITES: Array<{ key: SatKey; title: string; kinds: string[] }> 
 
 /** Строка вида без единого подключения: MCP-серверы добавляют в «Дом» → «Коннекторы», помощников шлюз ещё не умеет. */
 export const STUBS: Partial<Record<SatKey, { sub: string; pill: string }>> = {
-    mcp: { sub: 'программ пока нет — добавьте в «Навыки» → «Подключения»', pill: 'нет' },
+    mcp: { sub: 'программ пока нет — добавьте в «Приложения» → «Подключения»', pill: 'нет' },
     agent: { sub: 'OpenClaw и другие агенты с правами — в работе', pill: 'скоро' },
 };
 

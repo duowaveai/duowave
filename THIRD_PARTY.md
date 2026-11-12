@@ -16,6 +16,16 @@ ISC, Zlib, Unicode-3.0, а корни сертификатов webpki-roots — 
 - SQLite (через rusqlite, вшит в программу) — общественное достояние.
 - ring — Apache-2.0 и ISC; rustls — Apache-2.0, ISC или MIT.
 - rmcp — Apache-2.0; russh — Apache-2.0; webrtc-rs — MIT или Apache-2.0; livekit — Apache-2.0.
+- transcribe.cpp (крейты transcribe-cpp и transcribe-cpp-sys 0.4.1, возможность `local-asr`, сборка приложения) —
+  MIT, © handy-computer; внутри — ggml (MIT, © The ggml authors) и miniz (MIT). Собирается из исходников C++ при
+  сборке, вшивается в программу. Распознавание в отдельном процессе-исполнителе устроено по образцу Handy
+  ([cjpais/Handy](https://github.com/cjpais/Handy), MIT, © CJ Pais): тот же способ — программа с флагом, кадры по
+  stdin и stdout, конец исполнителя с концом stdin; код написан заново.
+- uv (Astral) — Apache-2.0 или MIT на выбор: приложение несёт программу uv 0.13.5 рядом со своей
+  (`scripts/release/fetch-uv.py`), ею ставит Python для своего голоса и голосовой лаборатории.
+- MIDI-клавиатура (возможность `midi`, приложение и программа для Mac и Windows): midir — MIT; coremidi — MIT; midly —
+  Unlicense; на Linux — ALSA через alsa и alsa-sys (Apache-2.0 или MIT), сама libasound — системная (LGPL-2.1,
+  подключается динамически).
 - Готовые библиотеки, которые скачиваются при сборке с возможностями для ПК: ONNX Runtime (`silero`, через ort) —
   MIT, © Microsoft; libwebrtc для LiveKit (`livekit`) — BSD-3-Clause, © The WebRTC project authors, со своими
   сторонними частями (их список — в архиве libwebrtc).
@@ -54,6 +64,11 @@ ISC, Zlib, Unicode-3.0, а корни сертификатов webpki-roots — 
 
 Веса скачиваются с Hugging Face и models.silero.ai по кнопке в пульте и в репозиторий не входят. Лицензия модели
 решает, где её можно использовать.
+
+Распознавание на компьютере (приложение, `ASR_PROVIDER=local`) берёт те же модели в формате GGUF — файлы, которые
+публикует Handy (`handy-computer/*-gguf` на Hugging Face, ревизии и SHA-256 закреплены в
+`gateway/src/speech/asr/local/catalog.rs`): GigaAM v3 — MIT, Parakeet TDT v3 — CC BY 4.0, Whisper — у файлов GGUF
+Apache-2.0, исходные веса — MIT. Приложение их не несёт: модель скачивается при первом запуске.
 
 | Модель | Лицензия | Дома, некоммерчески | За деньги, в облаке |
 |---|---|---|---|

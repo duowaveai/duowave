@@ -896,3 +896,389 @@ html.own-page body { background: transparent !important; }
 /* Первый запуск, шаг 4 (screens/connect.tsx): пульт на телефоне — адрес этого компьютера в домашней сети. */
 .connect-phone { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border-radius: 14px; box-shadow: 0 0 0 1px var(--glass-border); }
 .connect-phone b { font-size: 14px; line-height: 20px; font-weight: 500; }
+
+/* ─── Создание голосом (docs/plans/voice-creation.md; макет docs/design/voice-creation) ───────────────────────────
+   Одна плитка на весь путь: «Новый виджет» становится черновиком — пунктирный контур на светлой подложке, — его
+   рисует комета агента (фиолет — только агент), внутри по шагам агента проявляются строки; готово — тихий пунктир и
+   метка «на примерке»; настоящим листом плитка станет только на столе, после «да». Лайм — у «Сказать» и одного главного
+   действия, янтарь — то, что уходит из дома. Движение одно авторское (комета, контур, посадка), остальное — быстрая
+   отдача; при prefers-reduced-motion контур просто появляется. */
+.desk-add-tile.is-small { min-height: 56px; flex-direction: row; gap: 8px; }
+.desk-add-spot { display: flex; flex-direction: column; gap: 16px; }
+.draft-place { position: relative; display: flex; flex-direction: column; gap: 10px; }
+.draft-tile {
+    position: relative;
+    min-height: 196px;
+    border-radius: 16px;
+    background: color-mix(in srgb, var(--bg) 72%, transparent);
+    padding: 10px 12px 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+}
+.draft-outline { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.draft-outline rect { fill: none; }
+.draft-outline-line { stroke: #d6d1cb; stroke-width: 1.5; stroke-dasharray: 5 6; transition: stroke 0.4s; }
+html[data-theme='dark'] .draft-outline-line { stroke: #3a3734; }
+.draft-outline.is-working .draft-outline-line { stroke: var(--bar-agent); }
+.draft-outline-draw { stroke: #fff; stroke-width: 6; stroke-dasharray: 1000; stroke-dashoffset: 0; }
+.draft-outline.is-drawing .draft-outline-draw { animation: draft-draw 1.15s cubic-bezier(0.4, 0, 0.2, 1) both; }
+.draft-outline-runner { stroke: var(--bar-agent); stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 30 970; animation: draft-run 2.8s linear infinite; }
+.draft-head { display: flex; align-items: center; gap: 8px; min-height: 28px; font-size: 13px; line-height: 18px; font-weight: 500; }
+.draft-head > svg { flex: none; color: var(--bar-agent); }
+.draft-tile.is-ready .draft-head > svg { color: var(--text); }
+.draft-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.draft-title.is-wait { color: var(--sub); font-weight: 400; }
+.draft-rows { display: flex; flex-direction: column; }
+.draft-row { display: flex; align-items: center; gap: 10px; min-height: 34px; font-size: 13px; line-height: 18px; min-width: 0; }
+.draft-row + .draft-row { border-top: 1px solid var(--row-line); }
+.draft-row.is-new { animation: draft-reveal 0.6s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.draft-row-box { width: 16px; height: 16px; flex: none; border-radius: 50%; border: 1.5px solid #d6d1cb; display: flex; align-items: center; justify-content: center; color: var(--sub); }
+.draft-skeleton { display: block; height: 8px; width: 60%; margin: 13px 0 13px 26px; border-radius: 999px; background: var(--track); }
+.draft-example { min-width: 0; }
+.draft-ask { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.draft-end { margin: 0; font-size: 13px; line-height: 18px; color: var(--sub); }
+.draft-foot { margin-top: auto; display: flex; align-items: center; gap: 8px; min-height: 16px; font-size: 12px; line-height: 16px; color: var(--sub); }
+.draft-doing { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.draft-time { margin-left: auto; font-variant-numeric: tabular-nums; }
+.draft-more { margin-left: auto; }
+.draft-time + .draft-more { margin-left: 8px; }
+.draft-foot-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--bar-off); flex: none; }
+.draft-flag {
+    position: absolute;
+    left: 14px;
+    top: -13px;
+    z-index: 2;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 10px 0 8px;
+    border-radius: 999px;
+    background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg);
+    box-shadow: 0 0 0 1px var(--glass-border);
+    font-size: 12px;
+    line-height: 16px;
+    font-weight: 500;
+    animation: draft-rise 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.draft-flag-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--bar-agent); }
+.draft-acts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; animation: draft-rise 0.4s cubic-bezier(0.16, 1, 0.3, 1) 0.2s both; }
+.draft-acts .w-cap { margin-left: auto; }
+.draft-redo { display: flex; gap: 8px; }
+.draft-redo .field { flex: 1; min-width: 0; }
+/* Кнопки пути вещи — капсулы «Минимала» (button.pill): белая с линией, лайм — `pill-own`, чёрная — `pill-ink`. */
+.draft-acts button.pill,
+.fitting button.pill { min-height: 32px; padding: 0 14px; }
+.fitting button.pill.pill-lg { min-height: 40px; padding: 0 18px; font-size: 14px; line-height: 20px; }
+html[data-look] .fitting button.pill.pill-ink { background: var(--ink-bg); color: var(--ink-fg); box-shadow: none; }
+html[data-look] .fitting button.pill.pill-ink:hover:not(:disabled) { background: var(--ink-hi); }
+
+/* Комета агента: точка и короткий след поверх стола, от «Мозга» к плитке (ui/comet.ts). */
+.comet-layer { position: fixed; left: 0; top: 0; z-index: 19; pointer-events: none; overflow: visible; }
+.comet-trail { fill: none; stroke: var(--bar-agent); stroke-width: 2; stroke-opacity: 0.45; stroke-linecap: round; stroke-dasharray: 12 100; }
+.comet-dot {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 19;
+    width: 8px;
+    height: 8px;
+    margin: -4px 0 0 -4px;
+    border-radius: 50%;
+    background: var(--bar-agent);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--bar-agent) 22%, transparent);
+    offset-rotate: 0deg;
+    pointer-events: none;
+}
+
+/* Новый лист на столе: метка «новый» сутки (shell/widgets.ts, DeskLayout.fresh) и мягкий отклик при посадке. */
+.widget-fresh {
+    position: absolute;
+    left: 14px;
+    top: -13px;
+    z-index: 2;
+    box-shadow: 0 0 0 1px var(--glass-border);
+    background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 10px 0 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    line-height: 16px;
+    font-weight: 500;
+    color: var(--text);
+    white-space: nowrap;
+}
+.widget-fresh::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--bar-own); }
+.desk-slot.is-landing > .widget { animation: draft-settle 0.7s cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* Полоса голоса над доком (voice/strip.tsx). */
+.voice-strip {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: calc(var(--dock-gap) + var(--dock-h) + 16px + env(safe-area-inset-bottom));
+    z-index: 19;
+    margin-inline: auto;
+    width: min(640px, calc(100vw - 32px));
+    padding: 14px 18px 16px;
+    border-radius: 20px;
+    background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg);
+    border: 1px solid var(--glass-border);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.06);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    color: var(--text);
+    animation: strip-in 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+html[data-theme='dark'] .voice-strip { box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4); }
+.voice-strip-head { display: flex; align-items: center; gap: 10px; min-height: 36px; }
+.voice-strip-who { font-size: 13px; line-height: 18px; font-weight: 500; }
+.voice-strip-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.voice-strip-dot.is-agent { background: var(--bar-agent); }
+.voice-strip-dot.is-own { background: var(--bar-own); }
+.voice-strip-chip {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 10px 0 8px;
+    border-radius: 999px;
+    background: var(--chip-bg);
+    font-size: 12px;
+    line-height: 16px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+.voice-strip-chip-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--bar-off); }
+.voice-strip-chip.is-own .voice-strip-chip-dot { background: var(--bar-own); }
+.voice-strip-chip.is-out .voice-strip-chip-dot { background: var(--bar-yandex); }
+.voice-strip-chip.is-agent .voice-strip-chip-dot { background: var(--bar-agent); }
+.voice-strip-close { width: 28px; height: 28px; flex: none; border-radius: 50%; color: var(--sub); font-size: 18px; line-height: 1; }
+.voice-strip-chip + .voice-strip-close { margin-left: 0; }
+.voice-strip-who + .voice-strip-close { margin-left: auto; }
+.voice-strip-close:hover { background: var(--hover-bg); color: var(--text); }
+.voice-strip-caps { margin: 0; font-family: var(--font-display, inherit); font-weight: 300; font-size: 26px; line-height: 32px; letter-spacing: -0.02em; text-wrap: balance; animation: draft-rise 0.35s cubic-bezier(0.16, 1, 0.3, 1); }
+.voice-strip-text { margin: 0; font-size: 15px; line-height: 22px; text-wrap: pretty; }
+.voice-strip-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.say-chip {
+    display: inline-flex;
+    align-items: center;
+    height: 30px;
+    padding: 0 12px;
+    border-radius: 999px;
+    background: var(--chip-bg);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 18px;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background-color 0.15s, transform 0.15s;
+}
+.say-chip:hover:not(:disabled) { background: var(--hover-bg); box-shadow: 0 0 0 1px var(--glass-border); }
+.say-chip:active:not(:disabled) { transform: scale(0.97); }
+.say-chip:disabled { cursor: default; }
+.strip-mic {
+    position: relative;
+    width: 36px;
+    height: 36px;
+    flex: none;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg);
+    box-shadow: 0 0 0 1px var(--glass-border);
+    color: var(--text);
+}
+.strip-mic.is-listening { box-shadow: 0 0 0 2px var(--bar-own); }
+.strip-mic.is-off { background: var(--chip-bg); color: var(--sub); box-shadow: none; }
+.strip-mic-level { position: absolute; inset: 0; border-radius: 50%; background: color-mix(in srgb, var(--bar-own) 18%, transparent); transition: transform 0.1s linear; }
+.strip-mic-ring { position: absolute; inset: -4px; width: 44px; height: 44px; transform: rotate(-90deg); }
+.strip-mic-ring circle { fill: none; stroke: var(--bar-own); stroke-width: 2; stroke-linecap: round; stroke-dasharray: 126; stroke-dashoffset: 0; animation: strip-count linear forwards; }
+.strip-mic > svg:last-child { position: relative; }
+
+/* «Сказать» в доке: слушает — кольцо; поле ключа открыто — серая и перечёркнута. */
+.dock-talk { position: relative; }
+.dock-talk.is-listening::after { content: ''; position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--bar-own); animation: talk-ping 1.3s ease-out infinite; pointer-events: none; }
+html[data-look='minimal'] .talk-btn.is-held:disabled { background: var(--chip-bg); color: var(--sub); box-shadow: none; opacity: 1; }
+
+@keyframes draft-draw { from { stroke-dashoffset: 1000; } to { stroke-dashoffset: 0; } }
+@keyframes draft-run { from { stroke-dashoffset: 30; } to { stroke-dashoffset: -970; } }
+@keyframes draft-reveal { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+@keyframes draft-rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes draft-settle { 0% { transform: translateY(-4px) scale(1.02); box-shadow: 0 18px 48px rgba(0, 0, 0, 0.14); } 100% { transform: none; } }
+@keyframes strip-in { from { opacity: 0; transform: translateY(10px) scale(0.99); } to { opacity: 1; transform: none; } }
+@keyframes strip-count { to { stroke-dashoffset: 126; } }
+@keyframes talk-ping { 0% { transform: scale(1); opacity: 0.6; } 100% { transform: scale(1.5); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+    .draft-outline-runner,
+    .draft-row.is-new,
+    .draft-flag,
+    .draft-acts,
+    .voice-strip,
+    .voice-strip-caps,
+    .dock-talk.is-listening::after,
+    .desk-slot.is-landing > .widget { animation: none !important; }
+    .draft-outline.is-drawing .draft-outline-draw { animation: none; }
+}
+@media (max-width: 640px) {
+    .voice-strip { width: calc(100vw - 24px); bottom: calc(var(--dock-gap) + var(--dock-h) + 10px + env(safe-area-inset-bottom)); }
+    .voice-strip-caps { font-size: 22px; line-height: 28px; }
+}
+
+/* «Примерка» (screens/fitting.tsx): окно раздела по ссылке. Стенд — кусочек стола в точку, плитка стоит на нём; справа
+   «Что ему нужно» и «Что ему можно» карточками; внизу — что сказать и кнопки, янтарная плашка «Станет…» перед «да». */
+.draft-slot {
+    min-height: 196px;
+    border-radius: 16px;
+    border: 1.5px dashed #d6d1cb;
+    display: flex;
+    align-items: flex-end;
+    padding: 12px 14px;
+}
+html[data-theme='dark'] .draft-slot { border-color: #3a3734; }
+.fitting { display: flex; flex-direction: column; gap: 14px; min-height: 100%; }
+.fitting-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.fitting-sp { flex: 1; }
+.fit-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 10px 0 8px;
+    border-radius: 999px;
+    background: var(--chip-bg);
+    font-size: 12px;
+    line-height: 16px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+.fit-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--bar-off); }
+.fit-dot.is-own { background: var(--bar-own); }
+.fit-dot.is-out { background: var(--bar-yandex); }
+.fit-dot.is-agent { background: var(--bar-agent); }
+.fitting-body { display: grid; grid-template-columns: minmax(0, 1fr) 372px; gap: 24px; }
+.fitting-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.fitting-title { margin: 0; font-family: var(--font-display, inherit); font-weight: 300; font-size: 28px; line-height: 32px; letter-spacing: -0.02em; }
+.fitting-stand {
+    position: relative;
+    min-height: 300px;
+    border-radius: 16px;
+    border: 1px solid var(--glass-border);
+    background-color: var(--bg);
+    background-image: radial-gradient(circle, var(--desk-dot) 1px, transparent 1.4px);
+    background-size: 24px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 56px 16px 40px;
+}
+.fitting-stand-top { position: absolute; left: 12px; right: 12px; top: 12px; display: flex; align-items: center; gap: 8px; }
+.fitting-stand-top .t-caption { margin-left: auto; }
+.fitting-tile {
+    max-width: 100%;
+    border-radius: 16px;
+    border: 1px solid var(--glass-border);
+    background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+    padding: 10px 12px 14px 14px;
+    transition: width 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+    animation: fitting-lift 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.fitting-tile > .widget-agent-preview > .widget { border: 0; box-shadow: none; padding: 0; background: transparent; }
+/* Окно приложения в «Примерке» («Развернуть», docs/plans/midi.md): во всю ширину стенда, длинное — прокруткой. */
+.fitting-window { max-height: 60vh; overflow: auto; }
+.fitting-note { position: absolute; left: 16px; bottom: 12px; }
+.seg { display: flex; gap: 2px; padding: 3px; border-radius: 12px; background: var(--track); }
+.seg button { height: 26px; padding: 0 10px; border-radius: 9px; color: var(--seg-off-fg, var(--sub)); font-size: 12px; line-height: 16px; font-weight: 500; }
+.seg button[aria-pressed='true'] { background: var(--seg-on-bg, var(--strong-bg)); color: var(--seg-on-fg, var(--text)); box-shadow: var(--seg-shadow, 0 1px 3px rgba(0, 0, 0, 0.08)); }
+.fitting-h { display: flex; align-items: baseline; gap: 8px; font-size: 13px; line-height: 18px; font-weight: 500; }
+.fitting-h .t-caption { font-weight: 400; }
+.fitting-phrases { display: flex; flex-direction: column; border-top: 1px solid var(--row-line); border-bottom: 1px solid var(--row-line); }
+.fitting-phrase { display: flex; align-items: center; gap: 10px; min-height: 46px; font-size: 13px; line-height: 18px; min-width: 0; }
+.fitting-phrase + .fitting-phrase { border-top: 1px solid var(--row-line); }
+.fitting-play {
+    width: 28px;
+    height: 28px;
+    flex: none;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg);
+    box-shadow: 0 0 0 1px var(--glass-border), 0 1px 2px rgba(0, 0, 0, 0.05);
+    color: var(--text);
+}
+.fitting-play:hover:not(:disabled) { background: var(--hover-bg); }
+.fitting-answer { margin-left: auto; min-width: 0; color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; animation: draft-rise 0.4s ease-out; }
+.fitting-block { border-radius: 16px; border: 1px solid var(--glass-border); background: var(--glass-bg, var(--chip-bg)); padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.fitting-group { display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 16px; color: var(--sub); }
+.fitting-group b { font-weight: 500; color: var(--text); }
+.fitting-group > svg { color: var(--text); }
+.fitting-row { display: flex; flex-direction: column; gap: 4px; font-size: 13px; line-height: 18px; }
+.fitting-sep { height: 1px; background: var(--glass-border); margin: 2px 0; }
+.fitting-keys { display: flex; flex-direction: column; gap: 8px; border-radius: 14px; transition: box-shadow 0.2s; }
+.fitting-keys.is-open { box-shadow: 0 0 0 2px var(--text); padding: 6px; margin: -6px; }
+.fitting-private { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; font-size: 12px; line-height: 16px; color: var(--sub); }
+.fitting-private li { display: flex; align-items: center; gap: 8px; }
+.fitting-private li.is-mic { color: var(--text); font-weight: 500; }
+.fit-rights { display: flex; flex-direction: column; gap: 10px; }
+.fit-right { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; line-height: 18px; }
+.fit-right .fit-dot { margin-top: 6px; }
+.fit-right .t-caption { display: block; }
+.fit-right code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
+.fitting-redo { display: flex; gap: 8px; }
+.fitting-redo .field { flex: 1; min-width: 0; }
+.fitting-foot {
+    position: sticky;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    min-height: 68px;
+    margin: 0 -24px -32px;
+    padding: 14px 24px;
+    border-top: 1px solid var(--glass-border);
+    background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg);
+}
+.fitting-say { flex: 1; min-width: 220px; display: flex; align-items: center; gap: 12px; }
+.fitting-say p { margin: 0; font-size: 13px; line-height: 18px; color: var(--sub); text-wrap: pretty; }
+.fitting-say b { font-weight: 500; color: var(--text); }
+.fitting-will {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: -4px -6px -4px -8px;
+    padding: 8px 8px 8px 16px;
+    border-radius: 14px;
+    background: var(--pill-yandex-bg);
+    color: var(--pill-yandex-fg);
+}
+.fitting-will p { flex: 1; min-width: 200px; margin: 0; font-size: 13px; line-height: 18px; text-wrap: pretty; }
+.fitting-will b { font-weight: 500; }
+.fitting-approve { animation: fitting-nudge 1.6s ease-in-out 2; }
+.kbd { display: inline-flex; align-items: center; justify-content: center; height: 20px; margin-left: 6px; padding: 0 6px; border-radius: 6px; background: color-mix(in srgb, var(--on-accent) 12%, transparent); font-size: 11px; line-height: 14px; font-weight: 500; }
+.fitting-more { display: flex; gap: 16px; flex-wrap: wrap; }
+.linkish { padding: 0; color: var(--sub); font-size: 12px; line-height: 16px; text-decoration: underline; text-decoration-color: var(--glass-border); text-underline-offset: 3px; }
+.linkish:hover { color: var(--text); }
+@keyframes fitting-lift { from { transform: translateY(10px) scale(0.98); opacity: 0.4; } to { transform: none; opacity: 1; } }
+@keyframes fitting-nudge { 0%, 100% { box-shadow: 0 4px 12px rgba(132, 204, 22, 0.26); } 50% { box-shadow: 0 4px 12px rgba(132, 204, 22, 0.26), 0 0 0 6px rgba(132, 204, 22, 0.22); } }
+@media (max-width: 900px) {
+    .fitting-body { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .fitting-tile,
+    .fitting-approve,
+    .fitting-answer { animation: none; }
+}

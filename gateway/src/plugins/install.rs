@@ -66,7 +66,7 @@ fn inside(path: &Path) -> Result<Option<PathBuf>, String> {
             Component::Normal(part) => clean.push(part),
             Component::CurDir => {}
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(format!("путь «{}» ведёт из папки пакета", path.display()));
+                return Err(format!("путь «{}» ведёт из папки приложения", path.display()));
             }
         }
     }
@@ -104,7 +104,7 @@ pub fn unpack(bytes: &[u8], into: &Path) -> Result<(), String> {
                 }
                 let extension = relative.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
                 if REFUSED.contains(&extension.as_str()) {
-                    return Err(format!("«{}»: SVG в пакете нельзя", relative.display()));
+                    return Err(format!("«{}»: SVG в приложении нельзя", relative.display()));
                 }
                 if let Some(parent) = target.parent() {
                     std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -119,11 +119,11 @@ pub fn unpack(bytes: &[u8], into: &Path) -> Result<(), String> {
                 let written = std::io::copy(&mut (&mut entry).take(room + 1), &mut file).map_err(broken)?;
                 total += written;
                 if total > MAX_UNPACKED {
-                    return Err(format!("распакованный пакет больше {} МБ", MAX_UNPACKED / 1024 / 1024));
+                    return Err(format!("распакованное приложение больше {} МБ", MAX_UNPACKED / 1024 / 1024));
                 }
             }
             other => {
-                return Err(format!("«{}»: в пакете только файлы и папки, а это {other:?}", relative.display()));
+                return Err(format!("«{}»: в приложении только файлы и папки, а это {other:?}", relative.display()));
             }
         }
     }
@@ -145,7 +145,7 @@ fn remove_dir(dir: &Path) -> std::io::Result<()> {
 /// version already there is replaced only once the new one has read whole.
 pub fn install_archive(root: &Path, bytes: &[u8], expected: Expected<'_>) -> Result<Installed, String> {
     if !valid_id(expected.id) || semver::Version::parse(expected.version).is_err() {
-        return Err(format!("не пакет: {} {}", expected.id, expected.version));
+        return Err(format!("не то приложение: {} {}", expected.id, expected.version));
     }
     check_archive(bytes, expected.sha256, expected.size)?;
     std::fs::create_dir_all(root).map_err(|error| format!("{}: {error}", root.display()))?;
@@ -155,7 +155,9 @@ pub fn install_archive(root: &Path, bytes: &[u8], expected: Expected<'_>) -> Res
         unpack(bytes, &partial)?;
         let package = match registry::read_package(&partial, expected.id, expected.version) {
             Candidate::Ready(package) => package,
-            Candidate::Broken { problems, .. } => return Err(format!("пакет не читается: {}", problems.join("; "))),
+            Candidate::Broken { problems, .. } => {
+                return Err(format!("приложение не читается: {}", problems.join("; ")))
+            }
         };
         let target = root.join(expected.id).join(expected.version);
         std::fs::create_dir_all(root.join(expected.id)).map_err(|error| error.to_string())?;
@@ -225,7 +227,7 @@ pub fn keep_versions(root: &Path, id: &str, keep: usize) -> std::io::Result<()> 
 /// A package's folder, every version of it.
 pub fn remove_package(root: &Path, id: &str) -> std::io::Result<()> {
     if !valid_id(id) {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("не пакет: {id}")));
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("не приложение: {id}")));
     }
     remove_dir(&root.join(id))
 }

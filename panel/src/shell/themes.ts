@@ -114,6 +114,14 @@ export const MINIMAL: Theme = {
             'pill-off-fg': 'rgba(0, 0, 0, 0.56)',
             'pill-off-bg': '#F3F1EF',
             'dot-offline': '#C8321F',
+            // Слои памяти (окно «Память»): дом — бирюзовый, личное персонажа — розовый, из пакета — синий с замком.
+            // Лайм, янтарь и фиолет не берутся: они значат «кто отвечает».
+            'mem-home-fg': '#0F5F59',
+            'mem-home-bg': '#E2F2EE',
+            'mem-pers-fg': '#9F1239',
+            'mem-pers-bg': '#FBEAF0',
+            'mem-pkg-fg': '#1D4E89',
+            'mem-pkg-bg': '#E8EFF8',
             // Выбор — белая капсула с тенью на тёплой дорожке (вкладки панели, сегменты)
             'seg-on-bg': '#FFFFFF',
             'seg-on-fg': '#000000',
@@ -189,6 +197,12 @@ export const MINIMAL: Theme = {
             'pill-off-fg': 'rgba(245, 243, 241, 0.6)',
             'pill-off-bg': '#262422',
             'dot-offline': '#FF8A75',
+            'mem-home-fg': '#8FD8CA',
+            'mem-home-bg': 'rgba(45, 212, 191, 0.12)',
+            'mem-pers-fg': '#F3A8BD',
+            'mem-pers-bg': 'rgba(244, 114, 182, 0.12)',
+            'mem-pkg-fg': '#A9C8F2',
+            'mem-pkg-bg': 'rgba(96, 165, 250, 0.12)',
             'seg-on-bg': '#33312E',
             'seg-on-fg': '#F5F3F1',
             'seg-off-fg': 'rgba(245, 243, 241, 0.6)',

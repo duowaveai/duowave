@@ -18,6 +18,7 @@ export const CAPABILITIES: CapabilityMeta[] = [
     { name: 'timers', title: 'Таймеры', icon: 'timer' },
     { name: 'alarms', title: 'Будильники', icon: 'timer' },
     { name: 'reminders', title: 'Напоминания', icon: 'timer' },
+    { name: 'later', title: 'Отложенные команды', icon: 'timer' },
     { name: 'weather', title: 'Погода', icon: 'chat' },
     { name: 'news', title: 'Новости', icon: 'chat' },
     { name: 'morning_show', title: 'Утреннее шоу', icon: 'player' },
@@ -28,7 +29,7 @@ export const CAPABILITIES: CapabilityMeta[] = [
     { name: 'calls', title: 'Звонки и сообщения', icon: 'phone' },
     { name: 'music_recognition', title: 'Что играет', icon: 'music' },
     { name: 'account', title: 'Сервисы аккаунта', icon: 'user' },
-    { name: 'plugins', title: 'Навыки', icon: 'chat' },
+    { name: 'plugins', title: 'Приложения', icon: 'chat' },
 ];
 
 export const CAPABILITY_TITLES: Record<string, string> = Object.fromEntries(

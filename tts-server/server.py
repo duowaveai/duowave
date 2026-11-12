@@ -49,6 +49,7 @@ import queue
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -518,6 +519,21 @@ class Handler(BaseHTTPRequestHandler):
         log.debug(format, *args)
 
 
+def exit_with_parent(engines: Engines) -> None:
+    """Reads stdin until it ends — the app that started the server is gone — then ends the server and its Piper
+    processes at once, whatever it was doing."""
+    try:
+        while sys.stdin.buffer.read(65536):
+            pass
+    except (OSError, ValueError):
+        pass
+    log.info("the app is gone: ending")
+    try:
+        engines.close()
+    finally:
+        os._exit(0)
+
+
 def stop(signum: int, frame: object) -> None:
     # Docker stops with SIGTERM, and as PID 1 the server gets no default action for it: end serve_forever instead.
     raise KeyboardInterrupt
@@ -539,6 +555,8 @@ def main() -> None:
     parser.add_argument("--sample-rate", type=int, default=48000, help="silero: 8000 | 24000 | 48000")
     parser.add_argument("--api-key", default=os.environ.get("TTS_API_KEY") or os.environ.get("TTS_OWN_API_KEY") or None,
                         help="require Authorization: Bearer <key> on everything but /health")
+    parser.add_argument("--exit-with-parent", action="store_true",
+                        help="end when stdin closes: the desktop app starts the server with a pipe, and its end (a crash too) ends the server")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -563,6 +581,8 @@ def main() -> None:
     Handler.engines = engines
     Handler.api_key = args.api_key
     server = ThreadingHTTPServer((args.host, args.port), Handler)
+    if args.exit_with_parent:
+        threading.Thread(target=exit_with_parent, args=(engines,), name="parent", daemon=True).start()
     signal.signal(signal.SIGTERM, stop)
     voices = "; ".join(f"{name}: {', '.join(names)}" for name, names in engines.describe().items()) or "none yet"
     log.info("voices %s at http://%s:%d/v1", voices, args.host, args.port)

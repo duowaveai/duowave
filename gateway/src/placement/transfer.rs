@@ -44,12 +44,22 @@ pub const FORMAT: &str = "duowave-settings";
 /// schema the whole package with its own mode in it (`for_earlier`, src/placement/watch.rs); a routine package that
 /// reaches such a station all the same is refused by its route («Пакет настроек не для этого шлюза: обновите его.»),
 /// and its mode stays. The pair's routes stay the same: no new `PEER_API`.
-pub const SCHEMA: u32 = 2;
+///
+/// 3 (0.6.0): the plugins' private settings travel only sealed among the secrets (`plugin:<package>:<key>`), no longer
+/// among their settings. An import of schema 2 (0.5.x) takes the plugins' settings without them and passes by the
+/// secrets it does not know: a calendar's key would be gone from a station still on 0.5 while its computer is on 0.6,
+/// and would not come back with its update. Such a station gets the routine package with the keys put back among the
+/// settings as it reads them (`keys_in_settings`), schema 2; its first start on 0.6 moves them into its safe.
+pub const SCHEMA: u32 = 3;
+
+/// The routine package for a station whose import knows schema 2 (0.5.x): the same, the plugins' keys among their
+/// settings too (`keys_in_settings`).
+pub const KEYS_IN_SETTINGS_SCHEMA: u32 = 2;
 
 /// What a gateway's route answers a package not for it — another format, or a schema newer than its import knows
 /// (routes.rs, `import`): the same words in every build since the route came, so the computer knows an earlier
 /// station's refusal by them (src/placement/watch.rs).
-pub const NOT_FOR_THIS_GATEWAY: &str = "Пакет настроек не для этого шлюза: обновите его.";
+pub const NOT_FOR_THIS_GATEWAY: &str = "Набор настроек не для этого шлюза: обновите его.";
 
 /// The schema of a whole package (`export`): every setting that travels, the mode among them when one is stored. An
 /// import of schema 1 applies it as it applied one of its own build, so a whole package still goes to an earlier
@@ -78,6 +88,8 @@ pub const LOCAL_SETTINGS: &[&str] = &[
     "voice_pending",
     // The station's own name and device as the computer knows them: a move brings them (`MOVE_SETS`).
     "station_self",
+    // The apps' history: where each gateway keeps its own and how much (plugins/history/gc.rs).
+    "package_history",
 ];
 
 /// Of each side's own settings (`LOCAL_SETTINGS`), the ones a move to the station sets there all the same when its
@@ -94,9 +106,11 @@ pub const MOVE_SETS: &[&str] = &["tts_provider", "station_self"];
 /// station of an earlier build: the station's own mode goes in it (`for_earlier`).
 pub const MOVE_ONLY: &[&str] = &["gateway_mode"];
 
-/// The secrets that travel: the model providers', the connectors', the MCP servers'. Everything else (the pair's
-/// key, the home server's, the panel's sessions) is each side's own.
-pub const TRAVELLING_SECRETS: &[&str] = &["llm:", "connector:", "mcp:"];
+/// The secrets that travel: the model providers', the connectors', the MCP servers', the plugins' private settings
+/// (`plugin:<package>:<key>`, their settings travel too). Like every secret of the package they go sealed with the
+/// pair's key, and so do the copies kept on the computer. Everything else (the pair's key, the home server's, the
+/// panel's sessions, a sign-in's tokens under `oauth:`) is each side's own.
+pub const TRAVELLING_SECRETS: &[&str] = &["llm:", "connector:", "mcp:", crate::secrets::PLUGIN_SECRETS];
 
 /// The settings package.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -123,6 +137,80 @@ pub struct Bundle {
     /// by.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugins: Option<BTreeMap<String, PluginState>>,
+    /// The plugins' pictures (plugins/files.rs): only a move carries them, with the plugins' state — to the station as
+    /// many as fit its 5 MB, the newest first (the owner's decision 11); the rest stay, and a plugin downloads again
+    /// what it misses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pictures: Option<Vec<Picture>>,
+}
+
+/// One plugin's picture on its way: its bytes in base64.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Picture {
+    pub plugin: String,
+    pub name: String,
+    pub data: String,
+    pub written: i64,
+}
+
+/// The plugins' pictures here, the newest first, as many as fit `budget` bytes (none: all).
+pub fn pictures(root: &Path, budget: Option<u64>) -> Vec<Picture> {
+    let mut found: Vec<(String, String, PathBuf, u64, i64)> = Vec::new();
+    for plugin in std::fs::read_dir(root).into_iter().flatten().flatten().filter(|entry| entry.path().is_dir()) {
+        let id = plugin.file_name().to_string_lossy().into_owned();
+        for file in std::fs::read_dir(plugin.path()).into_iter().flatten().flatten() {
+            let Ok(meta) = file.metadata() else { continue };
+            let name = file.file_name().to_string_lossy().into_owned();
+            if !meta.is_file() || name.starts_with('.') {
+                continue;
+            }
+            let written = meta
+                .modified()
+                .ok()
+                .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |at| at.as_millis() as i64);
+            found.push((id.clone(), name, file.path(), meta.len(), written));
+        }
+    }
+    found.sort_by_key(|picture| std::cmp::Reverse(picture.4));
+    let mut taken = 0u64;
+    found
+        .into_iter()
+        .filter(|(_, _, _, size, _)| match budget {
+            Some(budget) if taken + size > budget => false,
+            _ => {
+                taken += size;
+                true
+            }
+        })
+        .filter_map(|(plugin, name, path, _, written)| {
+            Some(Picture { plugin, name, data: B64.encode(std::fs::read(path).ok()?), written })
+        })
+        .collect()
+}
+
+/// The pictures that came with a move, for the plugins this side has a state for too: each written whole, a name or
+/// an id that is not one of ours passed by.
+pub fn keep_pictures(root: &Path, pictures: &[Picture], plugins: &BTreeMap<String, PluginState>) -> usize {
+    let mut kept = 0;
+    for picture in pictures.iter().filter(|picture| plugins.contains_key(&picture.plugin)) {
+        let safe = crate::plugins::manifest::valid_id(&picture.plugin)
+            && !picture.name.starts_with('.')
+            && picture
+                .name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.'));
+        let Ok(bytes) = B64.decode(&picture.data) else { continue };
+        if !safe || crate::plugins::files::picture_kind(&bytes).is_none() {
+            continue;
+        }
+        let folder = root.join(&picture.plugin);
+        if std::fs::create_dir_all(&folder).is_ok() && std::fs::write(folder.join(&picture.name), bytes).is_ok() {
+            kept += 1;
+        }
+    }
+    kept
 }
 
 /// A plugin's state that lives where the gateway runs: whether it is on, and its own data (`plugin_kv`). Never its
@@ -136,6 +224,10 @@ pub struct PluginState {
     pub at: Option<String>,
     #[serde(default)]
     pub kv: Vec<KvEntry>,
+    /// Its schedule here (plugins/schedule.rs): the rhythms' pauses and runs, the tasks its code set. A build before it
+    /// passes it by.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jobs: Vec<Value>,
 }
 
 /// One row of a plugin's own key-value store.
@@ -240,8 +332,12 @@ pub fn export(db: &Db, secrets: &SecretsService, from: &str) -> rusqlite::Result
         settings,
         secrets,
         plugins: None,
+        pictures: None,
     })
 }
+
+/// The plugins' schedules in the `state` table (plugins/schedule.rs): they travel with a move as the plugins' data.
+const SCHEDULES: &str = crate::plugins::schedule::STORE;
 
 /// The plugins' state here (`PluginState`), for a move: each package with a row of its own — every built-in has one,
 /// and so has every package installed or switched on once — and its data.
@@ -252,7 +348,12 @@ pub fn plugins(db: &Db) -> rusqlite::Result<BTreeMap<String, PluginState>> {
             .query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    PluginState { enabled: row.get::<_, i64>(1)? != 0, at: row.get(2)?, kv: Vec::new() },
+                    PluginState {
+                        enabled: row.get::<_, i64>(1)? != 0,
+                        at: row.get(2)?,
+                        kv: Vec::new(),
+                        jobs: Vec::new(),
+                    },
                 ))
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -265,6 +366,15 @@ pub fn plugins(db: &Db) -> rusqlite::Result<BTreeMap<String, PluginState>> {
             let (id, entry) = row?;
             if let Some(state) = found.get_mut(&id) {
                 state.kv.push(entry);
+            }
+        }
+        let mut statement = connection.prepare("SELECT device, items FROM state WHERE kind = ?1")?;
+        let jobs =
+            statement.query_map(params![SCHEDULES], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+        for row in jobs {
+            let (id, items) = row?;
+            if let (Some(state), Ok(items)) = (found.get_mut(&id), serde_json::from_str::<Vec<Value>>(&items)) {
+                state.jobs = items;
             }
         }
         Ok(found)
@@ -306,6 +416,13 @@ fn apply_plugins(
                 built_in.contains_key(id) as i64
             ],
         )?;
+        connection.execute("DELETE FROM state WHERE kind = ?1 AND device = ?2", params![SCHEDULES, id])?;
+        if !state.jobs.is_empty() {
+            connection.execute(
+                "INSERT INTO state (kind, device, items, updated_at) VALUES (?1, ?2, ?3, ?4)",
+                params![SCHEDULES, id, Value::Array(state.jobs.clone()).to_string(), now_iso()],
+            )?;
+        }
         connection.execute("DELETE FROM plugin_kv WHERE plugin_id = ?1", params![id])?;
         for entry in &state.kv {
             connection.execute(
@@ -388,11 +505,44 @@ fn pick_again(key: &str, value: &Value, left_out: &[String], own: Option<&str>) 
 }
 
 /// The package of the computer's routine sending, every time its settings change (src/placement/watch.rs): without
-/// what only a move carries — the station keeps its own mode — and so of schema 2 (`SCHEMA`): a station of an earlier
-/// build refuses it rather than lose its mode. Such a station gets `for_earlier` instead.
+/// what only a move carries — the station keeps its own mode — and so of schema 2 at least (`SCHEMA`): a station of an
+/// earlier build refuses it rather than lose its mode. Such a station gets `for_earlier` instead.
 pub fn routine(mut bundle: Bundle) -> Bundle {
     bundle.settings.retain(|key, _| !MOVE_ONLY.contains(&key.as_str()));
     bundle.schema = SCHEMA;
+    bundle
+}
+
+/// The plugins' private settings put back among their settings as well, as a build from before the safe kept them
+/// reads them (schema 2 and earlier, `SCHEMA`): the package for such a station — the routine one at schema 2, the
+/// whole one of a move or for an earlier build. The secrets stay in it too: a build of this one takes them from
+/// there, and its start moves what it finds among the settings into its safe (plugins/controller.rs,
+/// `keep_secrets_in_the_safe`), a value already in the safe winning. The package goes sealed, as the secrets do.
+pub fn keys_in_settings(mut bundle: Bundle) -> Bundle {
+    let key = crate::settings::definitions::PACKAGE_SETTINGS.key;
+    let keys: Vec<(String, String, String)> = bundle
+        .secrets
+        .iter()
+        .filter_map(|(id, value)| {
+            let (package, setting) = id.strip_prefix(crate::secrets::PLUGIN_SECRETS)?.split_once(':')?;
+            Some((package.to_string(), setting.to_string(), value.clone()))
+        })
+        .collect();
+    if keys.is_empty() {
+        return bundle;
+    }
+    let settings = bundle.settings.entry(key.to_string()).or_insert_with(|| Value::Object(Map::new()));
+    if !settings.is_object() {
+        *settings = Value::Object(Map::new());
+    }
+    if let Some(plugins) = settings.as_object_mut() {
+        for (package, setting, value) in keys {
+            let own = plugins.entry(package).or_insert_with(|| Value::Object(Map::new()));
+            if let Some(own) = own.as_object_mut() {
+                own.insert(setting, Value::String(value));
+            }
+        }
+    }
     bundle
 }
 
@@ -422,10 +572,10 @@ pub fn for_earlier(mut bundle: Bundle, theirs: &Bundle) -> Bundle {
 /// have (`apply_plugins`). One transaction for the database; the secrets after it.
 pub fn import(db: &Db, secrets: &SecretsService, bundle: &Bundle, station: bool) -> Result<Imported, String> {
     if bundle.format != FORMAT {
-        return Err("это не пакет настроек шлюза".into());
+        return Err("это не набор настроек шлюза".into());
     }
     if bundle.schema > SCHEMA {
-        return Err(format!("пакет настроек новее этого шлюза (схема {}): сначала обновите шлюз", bundle.schema));
+        return Err(format!("набор настроек новее этого шлюза (схема {}): сначала обновите шлюз", bundle.schema));
     }
     let mut imported = Imported::default();
     // The station's provider for its home server, never the computer's: by id, with its key.
@@ -542,6 +692,9 @@ pub struct PluginsPackage {
     pub from: String,
     pub at: String,
     pub plugins: BTreeMap<String, PluginState>,
+    /// The plugins' pictures that came with it (plugins/files.rs).
+    #[serde(default)]
+    pub pictures: Vec<Picture>,
 }
 
 /// The plugins' state of a package alone, applied in a transaction of its own.
@@ -553,11 +706,30 @@ pub fn import_plugins(db: &Db, plugins: &BTreeMap<String, PluginState>) -> Resul
 /// back), applied before the services start; the whole database copied first (`copy_database`). When the copy fails
 /// nothing is applied: what was left stays beside it as `.failed` and the gateway starts on what it had — as it does
 /// with a package that does not apply.
-pub fn apply_incoming(state_dir: &Path, db: &Db, secrets: &SecretsService, station: bool) -> Option<Imported> {
+pub fn apply_incoming(
+    state_dir: &Path,
+    db: &Db,
+    secrets: &SecretsService,
+    station: bool,
+    pictures_root: Option<&Path>,
+) -> Option<Imported> {
     let settings = incoming_file(state_dir);
     let plugins = incoming_plugins_file(state_dir);
     if !settings.exists() && !plugins.exists() {
         return None;
+    }
+    // The plugins' pictures that came along, kept beside the plugins' state (read before the files are applied).
+    if let Some(root) = pictures_root {
+        let bundle = std::fs::read(&settings).ok().and_then(|text| serde_json::from_slice::<Bundle>(&text).ok());
+        if let Some((Some(pictures), Some(states))) = bundle.map(|bundle| (bundle.pictures, bundle.plugins)) {
+            tracing::info!("settings: {} of the plugins' pictures kept", keep_pictures(root, &pictures, &states));
+        }
+        let package =
+            std::fs::read(&plugins).ok().and_then(|text| serde_json::from_slice::<PluginsPackage>(&text).ok());
+        if let Some(package) = package.filter(|package| !package.pictures.is_empty()) {
+            let kept = keep_pictures(root, &package.pictures, &package.plugins);
+            tracing::info!("settings: {kept} of the plugins' pictures kept");
+        }
     }
     if let Err(error) = copy_database(db) {
         for file in [&settings, &plugins] {
@@ -580,7 +752,7 @@ fn failed(file: &Path) -> PathBuf {
 fn apply_settings(file: &Path, db: &Db, secrets: &SecretsService, station: bool) -> Option<Imported> {
     let text = std::fs::read(file).ok()?;
     let outcome = serde_json::from_slice::<Bundle>(&text)
-        .map_err(|error| format!("пакет настроек не читается: {error}"))
+        .map_err(|error| format!("набор настроек не читается: {error}"))
         .and_then(|bundle| import(db, secrets, &bundle, station).map(|imported| (imported, bundle)));
     match outcome {
         Ok((imported, bundle)) => {
@@ -758,13 +930,13 @@ pub fn seal(bundle: &Bundle, pair_key: &str) -> Value {
 pub fn open(sealed: &Value, pair_key: &str) -> Result<Bundle, String> {
     let field = |name: &str| sealed.get(name).and_then(Value::as_str).and_then(|text| B64.decode(text).ok());
     let (Some(nonce), Some(data)) = (field("nonce"), field("data")) else {
-        return Err("это не запечатанный пакет настроек".into());
+        return Err("это не запечатанный набор настроек".into());
     };
-    let nonce = Nonce::try_from(&nonce[..]).map_err(|_| "пакет настроек повреждён".to_string())?;
+    let nonce = Nonce::try_from(&nonce[..]).map_err(|_| "набор настроек повреждён".to_string())?;
     let plain = pair_cipher(pair_key)
         .decrypt(&nonce, data.as_slice())
-        .map_err(|_| "пакет настроек не открывается: другой ключ пары или он повреждён".to_string())?;
-    serde_json::from_slice(&plain).map_err(|error| format!("пакет настроек не читается: {error}"))
+        .map_err(|_| "набор настроек не открывается: другой ключ пары или он повреждён".to_string())?;
+    serde_json::from_slice(&plain).map_err(|error| format!("набор настроек не читается: {error}"))
 }
 
 /// The import of every build before schema 2 (the apply loop in 708eec6 and earlier, the release 0.2.0's), its settings
@@ -775,7 +947,7 @@ pub fn open(sealed: &Value, pair_key: &str) -> Result<Bundle, String> {
 pub(crate) fn earlier_import(stored: &mut BTreeMap<String, Value>, bundle: &Bundle) -> Result<(), String> {
     let own = |key: &str| key != "voice_pending" && LOCAL_SETTINGS.contains(&key);
     if bundle.schema > 1 {
-        return Err(format!("пакет настроек новее этого шлюза (схема {}): сначала обновите шлюз", bundle.schema));
+        return Err(format!("набор настроек новее этого шлюза (схема {}): сначала обновите шлюз", bundle.schema));
     }
     stored.retain(|key, _| own(key) || bundle.settings.contains_key(key));
     for (key, value) in bundle.settings.iter().filter(|(key, _)| !own(key)) {
@@ -838,14 +1010,23 @@ mod tests {
         pc_settings.set(&MODE, &ModeSetting { mode: PanelMode::Gateway }, None).unwrap();
         pc_settings.set(&GATEWAY_STATE, &Default::default(), None).unwrap();
         pc_secrets.set("llm:claude:key", Some("sk-not-a-real-key")).unwrap();
+        pc_secrets.set(&crate::secrets::plugin_secret("todo", "token"), Some("todo-not-a-real-token")).unwrap();
         pc_secrets.set("placement:peer", Some("pair")).unwrap();
+        // A sign-in's tokens and the host's id: a refresh token renewed on two computers would end the sign-in.
+        pc_secrets.set("oauth:llm:chatgpt", Some(r#"{"client_id":"oaiapp_1"}"#)).unwrap();
+        pc_secrets.set("oauth:host", Some("urn:uuid:00000000-0000-4000-8000-000000000000")).unwrap();
         let bundle = export(&pc, &pc_secrets, "pc").unwrap();
         assert!(bundle.settings.contains_key("gateway_mode") && !bundle.settings.contains_key("gateway_state"));
-        assert_eq!(bundle.secrets.keys().collect::<Vec<_>>(), vec!["llm:claude:key"], "the pair's key stays");
+        assert_eq!(
+            bundle.secrets.keys().collect::<Vec<_>>(),
+            vec!["llm:claude:key", "plugin:todo:token"],
+            "a plugin's key travels as a model's; the pair's key, the sign-in's tokens and the host's id stay"
+        );
 
         let (station, station_secrets, station_settings) = gateway();
         person(&station, "u9", "Старый");
         station_secrets.set("connector:telegram:token", Some("old")).unwrap();
+        station_secrets.set(&crate::secrets::plugin_secret("radio", "token"), Some("old-radio")).unwrap();
         station_secrets.set("home-server:key", Some("mine")).unwrap();
         station_settings.set(&MODE, &ModeSetting { mode: PanelMode::Relay }, None).unwrap();
         let imported = import(&station, &station_secrets, &bundle, true).unwrap();
@@ -856,6 +1037,8 @@ mod tests {
         assert_eq!(names, vec!["Мама"], "the package's people, the old ones gone");
         assert_eq!(station_secrets.get("llm:claude:key").as_deref(), Some("sk-not-a-real-key"));
         assert_eq!(station_secrets.get("connector:telegram:token"), None, "removed on the computer, removed here");
+        assert_eq!(station_secrets.get("plugin:todo:token").as_deref(), Some("todo-not-a-real-token"));
+        assert_eq!(station_secrets.get("plugin:radio:token"), None, "a plugin's key goes as its settings do");
         assert_eq!(station_secrets.get("home-server:key").as_deref(), Some("mine"), "the station's own stays");
 
         // Back the other way: the same settings, the revision does not move for the time written.
@@ -893,6 +1076,33 @@ mod tests {
         assert_eq!(station_settings.raw("voice_pending"), Some(serde_json::json!({ "modelId": "station-voice" })));
     }
 
+    /// 0.6.0 keeps the plugins' keys in the safe; a station still on 0.5 reads them among the plugins' settings. Its
+    /// package carries them there too, beside the plugin's other settings, and keeps the sealed secret for a newer
+    /// build; a package without plugin keys is left as it was.
+    #[test]
+    fn a_station_on_0_5_gets_the_plugins_keys_among_their_settings() {
+        let (pc, pc_secrets, pc_settings) = gateway();
+        let mut stored = BTreeMap::new();
+        stored.insert("calendar".to_string(), json!({ "count": 3 }).as_object().unwrap().clone());
+        pc_settings.set(&crate::settings::definitions::PACKAGE_SETTINGS, &stored, None).unwrap();
+        pc_secrets.set(&crate::secrets::plugin_secret("calendar", "token"), Some("cal-not-a-real-key")).unwrap();
+        pc_secrets.set(&crate::secrets::plugin_secret("todo", "token"), Some("todo-not-a-real-key")).unwrap();
+
+        let plain = routine(export(&pc, &pc_secrets, "pc").unwrap());
+        assert!(plain.settings["packages.settings"]["calendar"].get("token").is_none(), "at 0.6 only in the safe");
+        let sent = keys_in_settings(plain.clone());
+        assert_eq!(
+            sent.settings["packages.settings"]["calendar"],
+            json!({ "count": 3, "token": "cal-not-a-real-key" })
+        );
+        assert_eq!(sent.settings["packages.settings"]["todo"], json!({ "token": "todo-not-a-real-key" }));
+        assert_eq!(sent.secrets.get("plugin:calendar:token").map(String::as_str), Some("cal-not-a-real-key"));
+
+        let (none, none_secrets, _) = gateway();
+        let untouched = routine(export(&none, &none_secrets, "pc").unwrap());
+        assert_eq!(keys_in_settings(untouched.clone()), untouched);
+    }
+
     /// Review G1, round four: a station's gateway of an earlier build removes each setting a package lacks, and the
     /// routine package leaves out the mode — so it says schema 2, and such a station refuses it and keeps its mode and
     /// its waiting voice. As schema 1 it would have taken both: the station started in .env's mode, «Яндекс». A whole
@@ -904,7 +1114,7 @@ mod tests {
         pc_settings.set(&KEEP_REQUESTS, &7, None).unwrap();
         let whole = export(&pc, &pc_secrets, "pc").unwrap();
         let sent = routine(whole.clone());
-        assert_eq!((SCHEMA, sent.schema, whole.schema), (2, 2, WHOLE), "the routine package needs schema 2");
+        assert_eq!((SCHEMA, sent.schema, whole.schema), (3, 3, WHOLE), "the routine package needs schema 2 at least");
 
         let station = BTreeMap::from([
             ("gateway_mode".to_string(), json!({ "mode": "relay" })),
@@ -1036,12 +1246,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(incoming_file(dir.path()), serde_json::to_vec(&bundle).unwrap()).unwrap();
         let (station, station_secrets, _) = gateway();
-        let imported = apply_incoming(dir.path(), &station, &station_secrets, true).unwrap();
+        let imported = apply_incoming(dir.path(), &station, &station_secrets, true, None).unwrap();
         assert_eq!(imported.rows["users"], 1);
         assert!(!incoming_file(dir.path()).exists());
-        assert!(apply_incoming(dir.path(), &station, &station_secrets, true).is_none());
+        assert!(apply_incoming(dir.path(), &station, &station_secrets, true, None).is_none());
         std::fs::write(incoming_file(dir.path()), b"not a package").unwrap();
-        assert!(apply_incoming(dir.path(), &station, &station_secrets, true).is_none());
+        assert!(apply_incoming(dir.path(), &station, &station_secrets, true, None).is_none());
         assert!(dir.path().join("incoming-settings.json.failed").exists());
     }
 
@@ -1126,6 +1336,80 @@ mod tests {
             .unwrap();
         assert_eq!(source, crate::plugins::registry::SOURCE_BUNDLED);
         assert_eq!(state_of(&fresh, "pc-only").0, None);
+    }
+
+    /// The plugins' pictures go with a move: to the station as many as fit its 5 MB, the newest first; a picture of a
+    /// plugin the other side has no state for, or one that is not a picture, is passed by.
+    #[test]
+    fn a_move_carries_the_newest_pictures_that_fit_and_keeps_them_for_the_plugins_it_knows() {
+        let png = |size: usize| {
+            let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+            bytes.resize(size, 0);
+            bytes
+        };
+        let mb = 1024 * 1024;
+        let here = tempfile::tempdir().unwrap();
+        let day = here.path().join("day");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(day.join("old.png"), png(3 * mb)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(day.join("new.png"), png(3 * mb)).unwrap();
+        let fit = pictures(here.path(), Some(crate::plugins::files::STATION_ALL_MAX));
+        assert_eq!(fit.iter().map(|picture| picture.name.as_str()).collect::<Vec<_>>(), ["new.png"]);
+        assert_eq!(pictures(here.path(), None).len(), 2);
+        let there = tempfile::tempdir().unwrap();
+        let mut states = BTreeMap::new();
+        states.insert("day".to_string(), PluginState { enabled: true, at: None, kv: Vec::new(), jobs: Vec::new() });
+        let mut carried = fit.clone();
+        carried.push(Picture { plugin: "other".into(), name: "x.png".into(), data: fit[0].data.clone(), written: 0 });
+        carried.push(Picture {
+            plugin: "day".into(),
+            name: "page.png".into(),
+            data: B64.encode(b"<html>"),
+            written: 0,
+        });
+        assert_eq!(keep_pictures(there.path(), &carried, &states), 1);
+        assert!(there.path().join("day/new.png").is_file() && !there.path().join("other").exists());
+    }
+
+    /// The plugins' schedules live where the gateway runs, as their data does: a move carries the tasks the code set
+    /// and the rhythms' pauses, for the packages both sides have.
+    #[test]
+    fn a_move_carries_the_plugins_schedules_with_their_data() {
+        let jobs = |db: &Db, id: &str| -> Option<String> {
+            db.with(|c| {
+                c.query_row("SELECT items FROM state WHERE kind = ?1 AND device = ?2", params![SCHEDULES, id], |row| {
+                    row.get(0)
+                })
+                .optional()
+            })
+            .unwrap()
+        };
+        let (pc, pc_secrets, _) = gateway();
+        plugin(&pc, "repeat", true, &[]);
+        let pills = r#"[{"id":"pills","title":"Таблетки","manifest":false,"when":{"type":"at","at":"09:00","days":"daily"},"then":{"say":"Таблетки"}}]"#;
+        pc.with(|c| {
+            c.execute(
+                "INSERT INTO state (kind, device, items, updated_at) VALUES (?1, 'repeat', ?2, '2026-11-12T10:00:00Z')",
+                params![SCHEDULES, pills],
+            )
+        })
+        .unwrap();
+        let (station, station_secrets, _) = gateway();
+        plugin(&station, "repeat", false, &[]);
+        let mut moved = export(&pc, &pc_secrets, "pc").unwrap();
+        moved.plugins = Some(plugins(&pc).unwrap());
+        assert_eq!(moved.plugins.as_ref().unwrap()["repeat"].jobs.len(), 1);
+        import(&station, &station_secrets, &moved, true).unwrap();
+        let carried: Value = serde_json::from_str(&jobs(&station, "repeat").unwrap()).unwrap();
+        assert_eq!(carried[0]["id"], "pills");
+        // Back without them: the computer's go too, as its data would.
+        let mut back = export(&station, &station_secrets, "station").unwrap();
+        let mut theirs = plugins(&station).unwrap();
+        theirs.get_mut("repeat").unwrap().jobs.clear();
+        back.plugins = Some(theirs);
+        import(&pc, &pc_secrets, &back, false).unwrap();
+        assert_eq!(jobs(&pc, "repeat"), None);
     }
 
     /// The choice of voice and the station's own name are each side's own; only a move to the station sets them there.
@@ -1264,7 +1548,7 @@ mod tests {
             serde_json::to_vec(&export(&pc, &pc_secrets, "pc").unwrap()).unwrap(),
         )
         .unwrap();
-        assert!(apply_incoming(dir.path(), &db, &secrets, true).is_some());
+        assert!(apply_incoming(dir.path(), &db, &secrets, true, None).is_some());
         let copy = std::fs::read_dir(dir.path())
             .unwrap()
             .filter_map(Result::ok)
@@ -1300,7 +1584,7 @@ mod tests {
             serde_json::to_vec(&export(&pc, &pc_secrets, "pc").unwrap()).unwrap(),
         )
         .unwrap();
-        assert!(apply_incoming(waiting.path(), &held, &secrets, true).is_none());
+        assert!(apply_incoming(waiting.path(), &held, &secrets, true, None).is_none());
         assert!(waiting.path().join("incoming-settings.json.failed").exists());
         assert!(!incoming_file(waiting.path()).exists());
         let names: Vec<String> =
@@ -1316,9 +1600,14 @@ mod tests {
         plugin(&pc, "shopping", false, &[]);
         let (station, _, _) = gateway();
         plugin(&station, "shopping", true, &[("list", r#"["хлеб"]"#)]);
-        let package = PluginsPackage { from: "station".into(), at: now_iso(), plugins: plugins(&station).unwrap() };
+        let package = PluginsPackage {
+            from: "station".into(),
+            at: now_iso(),
+            plugins: plugins(&station).unwrap(),
+            pictures: Vec::new(),
+        };
         std::fs::write(incoming_plugins_file(dir.path()), serde_json::to_vec(&package).unwrap()).unwrap();
-        assert!(apply_incoming(dir.path(), &pc, &pc_secrets, false).is_none(), "no settings came");
+        assert!(apply_incoming(dir.path(), &pc, &pc_secrets, false, None).is_none(), "no settings came");
         assert_eq!(state_of(&pc, "shopping"), (Some(true), vec![("list".into(), r#"["хлеб"]"#.into())]));
         assert!(!incoming_plugins_file(dir.path()).exists());
     }

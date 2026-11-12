@@ -20,6 +20,7 @@ docs/media/README.md
 # strangers (the owner, 11.11.2026). Not docs/design/glass/THEMES.md: the theme contract, built into the gateway
 # (workshop/agent.rs) and copied by Dockerfile.prod.
 docs/design/roles
+docs/design/voice-creation
 docs/design/glass/README.md
 docs/design/glass/source
 docs/design/glass/GlassDash.html
@@ -33,3 +34,5 @@ docs/design/glass/GlassHomeLight.html
 docs/design/glass/GlassLinks.html
 docs/design/glass/GlassLinksLight.html
 docs/design/glass/StationLite2.html
+# More that stays internal, named in a list of its own that is left out too (the owner, 12.11.2026).
+scripts/release/exclude-internal.txt

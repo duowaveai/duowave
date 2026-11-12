@@ -12,8 +12,9 @@ export const PluginScope = createContext<string | null>(null);
 
 /** Перечитывать не чаще. */
 const SETTLE_MS = 5000;
-/** Перемены пакета, после которых его данные те же: код загрузился, выгрузился, не загрузился; памяти мало. */
-const RUNTIME = new Set(['loaded', 'unloaded', 'failed', 'pressure']);
+/** Перемены пакета, после которых его данные те же: код загрузился, выгрузился, не загрузился; памяти мало; поменялось
+ *  расписание (поставили, сработало, пауза — plugins/schedule.rs). */
+const RUNTIME = new Set(['loaded', 'unloaded', 'failed', 'pressure', 'schedule']);
 /** Перемены, о которых плагину перечитать своё. */
 const OF_PACKAGES = new Set(['packages.changed', 'packages.data']);
 

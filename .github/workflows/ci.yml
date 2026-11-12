@@ -118,6 +118,9 @@ jobs:
         run: cargo clippy -p duowave --all-targets -- -D warnings
       - name: Lints, the station's build
         run: cargo clippy -p duowave --no-default-features --features station -- -D warnings
+      # MIDI keyboards (src/midi): midir needs ALSA's headers on Linux.
+      - name: Lints, with MIDI
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev && cargo clippy -p duowave --all-targets --features midi -- -D warnings
       - name: Tests
         run: cargo test -p duowave
 
@@ -173,13 +176,16 @@ jobs:
         with:
           persist-credentials: false
       - name: Tauri's system packages
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 10.11.2026
         with:
           components: clippy, rustfmt
       - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: desktop/src-tauri
+      # uv goes into the app (bundle.externalBin): Tauri's build wants it in binaries/ even for a check.
+      - name: uv for the installer
+        run: python3 ../../scripts/release/fetch-uv.py
       - name: Format
         run: cargo fmt --check
       - name: Lints
