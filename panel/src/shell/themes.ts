@@ -55,7 +55,6 @@ export const MINIMAL: Theme = {
     title: 'Минимал',
     about: 'Тонкие линии, светлые карточки, лайм — только у «Сказать»',
     modes: { dark: 'Тёмный', light: 'Светлый' },
-    defaultMode: 'light',
     look: 'minimal',
     layout: 'desk',
     density: 1,

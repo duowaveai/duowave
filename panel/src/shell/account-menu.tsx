@@ -1,11 +1,18 @@
-// Аватар в верхней строке (docs/plans/panel-rebuild.md): кто вошёл, тема в одно нажатие — светлая или тёмная, «Оформление»,
+// Аватар в верхней строке (docs/plans/panel-rebuild.md): кто вошёл, тема в одно нажатие — светлая, тёмная или «Авто», «Оформление»,
 // «Люди и доступ» и выход. Луна в шапке переехала сюда; всё остальное об оформлении — «Настройки» → «Оформление».
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
 import { sessionStore } from '../api';
-import { IconMoon, IconSun } from '../icons';
-import { useTheme } from './theme';
+import { IconAuto, IconMoon, IconSun } from '../icons';
+import { ModePick, useTheme } from './theme';
+
+/** Тема в одно нажатие; «Авто» — как у системы: светлая днём, тёмная вечером, и в темноте не режет глаза. */
+const MODES: Array<{ id: ModePick; label: string; Icon: typeof IconSun }> = [
+    { id: 'light', label: 'Светлая', Icon: IconSun },
+    { id: 'dark', label: 'Тёмная', Icon: IconMoon },
+    { id: 'auto', label: 'Авто', Icon: IconAuto },
+];
 
 const ROLE_WORDS: Record<string, string> = { admin: 'администратор', member: 'домашний', guest: 'гость' };
 
@@ -60,19 +67,12 @@ export function AccountMenu({ onLook, onAccess, onSignOut }: { onLook: () => voi
                         {me?.role && <span class="w-cap">{ROLE_WORDS[me.role] ?? me.role}</span>}
                     </div>
                     <div class="account-theme" role="group" aria-label="Тема">
-                        <button
-                            role="menuitemradio"
-                            aria-checked={theme.mode === 'light'}
-                            class={theme.mode === 'light' ? 'on' : ''}
-                            onClick={() => theme.setMode('light')}
-                        >
-                            <IconSun size={16} />
-                            Светлая
-                        </button>
-                        <button role="menuitemradio" aria-checked={theme.mode === 'dark'} class={theme.mode === 'dark' ? 'on' : ''} onClick={() => theme.setMode('dark')}>
-                            <IconMoon size={16} />
-                            Тёмная
-                        </button>
+                        {MODES.map(({ id, label, Icon }) => (
+                            <button key={id} role="menuitemradio" aria-checked={theme.pick === id} class={theme.pick === id ? 'on' : ''} onClick={() => theme.setMode(id)}>
+                                <Icon size={16} />
+                                {label}
+                            </button>
+                        ))}
                     </div>
                     <button role="menuitem" class="tab-more-item" onClick={() => pick(onLook)}>
                         Оформление

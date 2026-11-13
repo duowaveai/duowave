@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::js;
 use super::memory_policy::{stop_message, MemoryWatch, StopReason, WatchSample};
-use super::platform::{OsName, PlatformInfo};
+use super::platform::{OsName, PlatformInfo, Taskpolicy};
 use super::system_memory::MemorySnapshot;
 use crate::utils::ids::uuid;
 use crate::utils::time::now_iso;
@@ -789,9 +789,15 @@ pub(crate) fn taskkill(pid: u32) {
     }
 }
 
+/// A limiter that refuses to run the program here (taskpolicy or systemd-run without the flags or the session it
+/// needs) ends it at once: a program started under one that ends sooner than this is started once more as it is.
+/// Python with torch takes longer than this to load, let alone to reach its memory limit.
+pub const LIMITER_REFUSED_WITHIN: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// A heavy program under the kernel's own memory limit where the system has one: macOS `taskpolicy -m … -P kill` (it
-/// killed a 2 GB process at exactly 1 GiB, 06.11; MPS memory a single allocation late), Linux a systemd user scope
-/// with MemoryMax, both at a lower CPU and disk priority. Windows: the Python process joins a Job Object itself
+/// killed a 2 GB process at exactly 1 GiB, 06.11; MPS memory a single allocation late) where taskpolicy takes it —
+/// macOS 15 does not, and gets the lower priority alone —, Linux a systemd user scope with MemoryMax, both at a lower
+/// CPU and disk priority. Without the kernel's limit the program's own guard (voicelab/limits.py) still holds. Windows: the Python process joins a Job Object itself
 /// (clone-server/voicelab/limits.py). The kernel's limit is a little above the job's own, so the job's clear message
 /// comes first.
 pub fn with_limits(
@@ -802,9 +808,9 @@ pub fn with_limits(
 ) -> (String, Vec<String>) {
     let kernel_mb = limit_mb.filter(|mb| *mb > 0).map(|mb| js::round_i64(mb as f64 * 1.1 + 256.0));
     let strings = |items: &[&str]| items.iter().map(|item| item.to_string()).collect::<Vec<_>>();
-    if platform.os == OsName::Darwin && platform.tools.taskpolicy {
+    if platform.os == OsName::Darwin && platform.tools.taskpolicy != Taskpolicy::None {
         let mut wrapped = Vec::new();
-        if let Some(kernel_mb) = kernel_mb {
+        if let (Taskpolicy::Limits, Some(kernel_mb)) = (platform.tools.taskpolicy, kernel_mb) {
             wrapped.extend(["-m".to_string(), kernel_mb.to_string(), "-P".into(), "kill".into()]);
         }
         wrapped.extend(strings(&["-c", "utility", "-d", "throttle", command]));
@@ -1133,7 +1139,7 @@ mod tests {
             docker: false,
             gpu: GpuInfo { kind: GpuKind::Apple, name: None, vram_mb: None, driver: None },
             disk_free_mb: 80_000,
-            tools: Tools { uv: None, git: true, taskpolicy: true, systemd_run: false },
+            tools: Tools { uv: None, git: true, taskpolicy: Taskpolicy::Limits, systemd_run: false },
             checked_at: String::new(),
         }
     }
@@ -1151,13 +1157,24 @@ mod tests {
                 strings(&["-m", "4656", "-P", "kill", "-c", "utility", "-d", "throttle", "python", "imprint.py"])
             )
         );
+        // macOS 15: no `-m`/`-P` in its taskpolicy — the priority alone; none of ours at all — the program as it is.
+        let sequoia = PlatformInfo { tools: Tools { taskpolicy: Taskpolicy::Priority, ..base().tools }, ..base() };
+        assert_eq!(
+            with_limits(&sequoia, "python", &strings(&["imprint.py"]), Some(4000)),
+            ("/usr/sbin/taskpolicy".into(), strings(&["-c", "utility", "-d", "throttle", "python", "imprint.py"]))
+        );
+        let bare = PlatformInfo { tools: Tools { taskpolicy: Taskpolicy::None, ..base().tools }, ..base() };
+        assert_eq!(
+            with_limits(&bare, "python", &strings(&["imprint.py"]), Some(4000)),
+            ("python".into(), strings(&["imprint.py"]))
+        );
     }
 
     #[test]
     fn linux_a_systemd_user_scope_with_memorymax_and_no_swap_or_just_nice_without_systemd() {
         let linux = PlatformInfo {
             os: OsName::Linux,
-            tools: Tools { taskpolicy: false, systemd_run: true, ..base().tools },
+            tools: Tools { taskpolicy: Taskpolicy::None, systemd_run: true, ..base().tools },
             ..base()
         };
         assert_eq!(

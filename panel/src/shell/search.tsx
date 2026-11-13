@@ -88,7 +88,7 @@ export function searchPlaces(helper: boolean, onStation: boolean): SearchPlace[]
         },
         { title: 'Люди и доступ', path: 'Настройки', words: 'люди доступ пароль вход пользователи роли гость', place: { section: 'settings', tab: 'access' } },
         { title: 'Оформление', path: 'Настройки', words: 'тема оформление тёмная светлая вид боковая панель цвет', place: { section: 'settings', tab: 'look' } },
-        { title: 'Тёмная или светлая тема', path: 'Оформление', words: 'тема тёмная светлая ночь день', act: 'theme' },
+        { title: 'Тёмная или светлая тема', path: 'Оформление', words: 'тема тёмная светлая авто автоматическая системная ночь день', act: 'theme' },
         { title: 'Обновления и копии', path: 'Настройки', words: 'обновление версия копия страховка резерв', place: { section: 'settings', tab: 'updates' }, when: () => can('station.view') },
         { title: 'История разговоров', path: 'Настройки', words: 'история журнал вопросы разговоры что спрашивали', place: { section: 'settings', tab: 'history' }, when: () => can('journal.view') },
         { title: 'Для разработчиков', path: 'Настройки', words: 'разработчик env провайдер ключ api журнал запросов слой', place: { section: 'settings', tab: 'dev' } },

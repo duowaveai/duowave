@@ -73,13 +73,30 @@ impl GpuInfo {
     }
 }
 
+/// What macOS `taskpolicy` takes here: its flags changed between releases — macOS 15 has `-c` and `-d` but not `-m`
+/// and `-P`, and given them it prints its usage and runs nothing (a voice server «не запустился», 13.11). Tried, not
+/// guessed by the version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Taskpolicy {
+    /// Not a Mac, no taskpolicy, or it takes none of ours: the program runs as it is.
+    #[default]
+    None,
+    /// A lower CPU and disk priority (`-c utility -d throttle`), no memory limit from the kernel.
+    Priority,
+    /// The kernel's memory limit too (`-m … -P kill`).
+    Limits,
+}
+
+/// Where macOS keeps taskpolicy.
+pub const TASKPOLICY: &str = "/usr/sbin/taskpolicy";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tools {
     /// uv's path: it installs Python and the engines' packages on all three systems.
     pub uv: Option<String>,
     pub git: bool,
-    /// macOS: per-process memory limits through the kernel (taskpolicy -m).
-    pub taskpolicy: bool,
+    /// macOS: what taskpolicy takes — priorities, and per-process memory limits through the kernel (`-m`).
+    pub taskpolicy: Taskpolicy,
     /// Linux: memory limits through a systemd user scope.
     pub systemd_run: bool,
 }
@@ -488,14 +505,24 @@ pub async fn detect_platform(probe: &dyn Probe, runtime_dir: &Path) -> PlatformI
         docker: in_docker(probe, os),
         gpu,
         disk_free_mb: probe.free_disk_mb(runtime_dir),
-        tools: Tools {
-            uv,
-            git,
-            taskpolicy: os == OsName::Darwin && probe.exists(Path::new("/usr/sbin/taskpolicy")),
-            systemd_run,
-        },
+        tools: Tools { uv, git, taskpolicy: taskpolicy_takes(probe, os).await, systemd_run },
         checked_at: now_iso(),
     }
+}
+
+/// What taskpolicy takes here, tried on `/usr/bin/true`: our full flags, else the priorities alone, else none.
+async fn taskpolicy_takes(probe: &dyn Probe, os: OsName) -> Taskpolicy {
+    if os != OsName::Darwin || !probe.exists(Path::new(TASKPOLICY)) {
+        return Taskpolicy::None;
+    }
+    let tried = |args: &'static [&'static str]| probe.run(TASKPOLICY, args, PROBE_TIMEOUT_MS);
+    if tried(&["-m", "64", "-P", "kill", "-c", "utility", "-d", "throttle", "/usr/bin/true"]).await.ok() {
+        return Taskpolicy::Limits;
+    }
+    if tried(&["-c", "utility", "-d", "throttle", "/usr/bin/true"]).await.ok() {
+        return Taskpolicy::Priority;
+    }
+    Taskpolicy::None
 }
 
 /// «Мак, Apple M4 Max, 36 ГБ» — the panel's line about this computer.
@@ -640,6 +667,7 @@ pub(crate) mod tests {
             .answer("sysctl -n machdep.cpu.brand_string", Some("Apple M4 Max\n"))
             .answer("uv --version", Some("uv 0.9.0"))
             .answer("git --version", Some("git version 2.50"))
+            .answer("/usr/sbin/taskpolicy -m 64 -P kill -c utility -d throttle /usr/bin/true", Some(""))
             .file("/usr/sbin/taskpolicy", "")
     }
 
@@ -665,7 +693,10 @@ pub(crate) mod tests {
         assert_eq!(info.gpu.kind, GpuKind::Apple);
         assert_eq!(info.gpu.name.as_deref(), Some("Apple M4 Max"));
         assert_eq!(info.disk_free_mb, 80_000);
-        assert_eq!(info.tools, Tools { uv: Some("uv".into()), git: true, taskpolicy: true, systemd_run: false });
+        assert_eq!(
+            info.tools,
+            Tools { uv: Some("uv".into()), git: true, taskpolicy: Taskpolicy::Limits, systemd_run: false }
+        );
         assert_eq!(describe_platform(&info), "Мак, Apple M4 Max, 36 ГБ памяти");
     }
 
@@ -683,9 +714,28 @@ pub(crate) mod tests {
         );
         assert_eq!(
             info.tools,
-            Tools { uv: Some("/home/owner/.local/bin/uv".into()), git: true, taskpolicy: false, systemd_run: true }
+            Tools {
+                uv: Some("/home/owner/.local/bin/uv".into()),
+                git: true,
+                taskpolicy: Taskpolicy::None,
+                systemd_run: true
+            }
         );
         assert_eq!(describe_platform(&info), "Linux, NVIDIA GeForce RTX 4070, 12 ГБ видеопамяти, 32 ГБ памяти");
+    }
+
+    #[tokio::test]
+    async fn tries_what_taskpolicy_takes_macos_15_has_no_memory_limit_flags() {
+        // macOS 15: `-c` and `-d` only; `-m` and `-P` print the usage (exit 64).
+        let sequoia = Computer::new("darwin")
+            .answer("/usr/sbin/taskpolicy -c utility -d throttle /usr/bin/true", Some(""))
+            .file("/usr/sbin/taskpolicy", "");
+        assert_eq!(detect(&sequoia).await.tools.taskpolicy, Taskpolicy::Priority);
+        let none = Computer::new("darwin").file("/usr/sbin/taskpolicy", "");
+        assert_eq!(detect(&none).await.tools.taskpolicy, Taskpolicy::None, "takes none of ours");
+        let missing = Computer::new("darwin").answer("/usr/sbin/taskpolicy", Some(""));
+        assert_eq!(detect(&missing).await.tools.taskpolicy, Taskpolicy::None, "not there");
+        assert_eq!(detect(&linux_nvidia()).await.tools.taskpolicy, Taskpolicy::None);
     }
 
     #[tokio::test]

@@ -16,7 +16,7 @@ use serde_json::Value;
 
 use super::clone_engines::{Device, EngineId};
 use super::engine_installer::python_of;
-use super::jobs::{with_limits, PANICKED};
+use super::jobs::{with_limits, LIMITER_REFUSED_WITHIN, PANICKED};
 use super::js;
 use super::platform::PlatformInfo;
 use crate::utils::files::owner_only;
@@ -340,42 +340,68 @@ impl CloneServers {
             "--mem-limit-mb".into(),
             start.limit_mb.to_string(),
         ];
-        let (command, wrapped) = with_limits(&platform, &text(&python), &args, Some(start.limit_mb));
+        let plain = (text(&python), args.clone());
+        let limited = with_limits(&platform, &plain.0, &args, Some(start.limit_mb));
+        // Under the limiter first; one that refuses here (flags this system lacks, no user session for a scope)
+        // ends the program at once — then once more as it is.
+        let mut attempts = vec![limited.clone()];
+        if limited != plain {
+            attempts.push(plain);
+        }
         std::fs::create_dir_all(&self.options.logs_dir).map_err(|error| error.to_string())?;
         let log_path = self.options.logs_dir.join(format!("clone-{engine}.log"));
-        if log_path.exists() {
-            let _ = std::fs::rename(&log_path, self.options.logs_dir.join(format!("clone-{engine}.log.1")));
-        }
-        let log =
-            std::fs::OpenOptions::new().create(true).append(true).open(&log_path).map_err(|error| error.to_string())?;
-        let exited = Arc::new(AtomicBool::new(false));
-        let env = (self.options.env)();
-        match self.options.spawner.spawn(&command, &wrapped, &self.options.server_dir, &env, log) {
-            Ok(spawned) => {
-                if let Some(pid) = spawned.pid {
-                    self.write_run(engine, &RunFile { pid, port, instance: instance.clone(), started_at: now_iso() });
+        let mut exited = Arc::new(AtomicBool::new(false));
+        for (attempt, (command, wrapped)) in attempts.iter().enumerate() {
+            if log_path.exists() {
+                let _ = std::fs::rename(&log_path, self.options.logs_dir.join(format!("clone-{engine}.log.1")));
+            }
+            let log = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .map_err(|error| error.to_string())?;
+            exited = Arc::new(AtomicBool::new(false));
+            let began = tokio::time::Instant::now();
+            let env = (self.options.env)();
+            match self.options.spawner.spawn(command, wrapped, &self.options.server_dir, &env, log) {
+                Ok(spawned) => {
+                    if let Some(pid) = spawned.pid {
+                        self.write_run(
+                            engine,
+                            &RunFile { pid, port, instance: instance.clone(), started_at: now_iso() },
+                        );
+                    }
+                    let exited = exited.clone();
+                    tokio::spawn(async move {
+                        spawned.exited.await;
+                        exited.store(true, Ordering::SeqCst);
+                    });
                 }
-                let exited = exited.clone();
-                tokio::spawn(async move {
-                    spawned.exited.await;
+                Err(error) => {
+                    tracing::warn!("voice server {engine}: {command} did not start ({error})");
                     exited.store(true, Ordering::SeqCst);
-                });
+                }
             }
-            Err(error) => {
-                tracing::warn!("voice server {engine}: {command} did not start ({error})");
-                exited.store(true, Ordering::SeqCst);
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(self.options.start_timeout_ms);
+            while tokio::time::Instant::now() < deadline {
+                let health = self.health(engine, 1_000).await;
+                if health.and_then(|health| health.instance).as_deref() == Some(instance.as_str()) {
+                    return Ok(());
+                }
+                if exited.load(Ordering::SeqCst) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
             }
-        }
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(self.options.start_timeout_ms);
-        while tokio::time::Instant::now() < deadline {
-            let health = self.health(engine, 1_000).await;
-            if health.and_then(|health| health.instance).as_deref() == Some(instance.as_str()) {
-                return Ok(());
+            let refused = exited.load(Ordering::SeqCst) && began.elapsed() < LIMITER_REFUSED_WITHIN;
+            if refused && attempt + 1 < attempts.len() {
+                tracing::warn!(
+                    "voice server {engine}: under {command} it ended at once ({}) — started again without the limiter",
+                    read_tail(&log_path)
+                );
+                continue;
             }
-            if exited.load(Ordering::SeqCst) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            break;
         }
         let tail = read_tail(&log_path);
         let why = if exited.load(Ordering::SeqCst) {
@@ -451,7 +477,12 @@ mod tests {
             docker: false,
             gpu: GpuInfo { kind: GpuKind::Apple, name: None, vram_mb: None, driver: None },
             disk_free_mb: 80_000,
-            tools: Tools { uv: None, git: true, taskpolicy: false, systemd_run: false },
+            tools: Tools {
+                uv: None,
+                git: true,
+                taskpolicy: crate::voice_lab::platform::Taskpolicy::None,
+                systemd_run: false,
+            },
             checked_at: String::new(),
         }
     }
@@ -494,7 +525,15 @@ mod tests {
             self.make_with(spawner, Arc::new(HashMap::new))
         }
 
+        fn make_on(&self, spawner: Arc<dyn ServerSpawner>, on: PlatformInfo) -> Arc<CloneServers> {
+            self.make_full(spawner, Arc::new(HashMap::new), on)
+        }
+
         fn make_with(&self, spawner: Arc<dyn ServerSpawner>, env: EnvFact) -> Arc<CloneServers> {
+            self.make_full(spawner, env, platform())
+        }
+
+        fn make_full(&self, spawner: Arc<dyn ServerSpawner>, env: EnvFact, on: PlatformInfo) -> Arc<CloneServers> {
             let urls = BTreeMap::from([
                 (EngineId::Omnivoice, format!("http://127.0.0.1:{}/v1", self.port)),
                 (EngineId::Cosyvoice3, "http://example.invalid:8094/v1".to_string()),
@@ -506,7 +545,7 @@ mod tests {
                 voices_dir: self.path("voices"),
                 run_dir: self.path("run"),
                 logs_dir: self.path("logs"),
-                platform: Arc::new(|| Some(platform())),
+                platform: Arc::new(move || Some(on.clone())),
                 env,
                 spawner,
                 start_timeout_ms: 5_000,
@@ -632,6 +671,59 @@ mod tests {
             fixture.make(spawner).ensure(EngineId::Omnivoice, start).await,
             Err("сервер голоса не запустился: ModuleNotFoundError: No module named omnivoice".into())
         );
+    }
+
+    #[tokio::test]
+    async fn a_limiter_that_refuses_here_is_left_out_and_the_server_starts_as_it_is() {
+        // macOS 15's taskpolicy without `-m`: it prints its usage and ends at once (13.11).
+        let fixture = Fixture::new();
+        let log = fixture.path("logs").join("clone-omnivoice.log");
+        let port = fixture.listener.clone();
+        let servers = Arc::new(Mutex::new(Vec::new()));
+        let started = servers.clone();
+        let spawner = FakeSpawner::new(move |command, args| {
+            if command == "/usr/sbin/taskpolicy" {
+                std::fs::write(&log, "Usage: taskpolicy [-b|-B] [-t <tier>] [-l <tier>] -p pid\n").unwrap();
+                return Spawned { pid: Some(4244), exited: futures::future::ready(()).boxed() };
+            }
+            let instance = value_after(args, "--instance").to_string();
+            let body =
+                serde_json::json!({"server": "clone-server", "engine": "omnivoice", "instance": instance, "pid": 4245});
+            let listener = port.lock().unwrap().take().unwrap();
+            started.lock().unwrap().push(health_server(listener, Arc::new(Mutex::new(body))));
+            Spawned { pid: Some(4245), exited: never() }
+        });
+        let mut limited = platform();
+        limited.tools.taskpolicy = crate::voice_lab::platform::Taskpolicy::Limits;
+        let clone = fixture.make_on(spawner.clone(), limited);
+        let start = StartOptions { device: Device::Mps, limit_mb: 6000, threads: 4 };
+        clone.ensure(EngineId::Omnivoice, start).await.unwrap();
+        let calls = spawner.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "/usr/sbin/taskpolicy");
+        assert!(calls[1].0.ends_with("env/bin/python"), "then as it is: {}", calls[1].0);
+        assert_eq!(calls[1].1, calls[0].1[calls[0].1.iter().position(|arg| arg == &calls[1].0).unwrap() + 1..]);
+    }
+
+    #[tokio::test]
+    async fn a_server_that_fails_by_itself_under_the_limiter_is_not_retried_after_it_ran_a_while() {
+        let fixture = Fixture::new();
+        let log = fixture.path("logs").join("clone-omnivoice.log");
+        let spawner = FakeSpawner::new(move |_, _| {
+            std::fs::write(&log, "MemoryError: over the limit\n").unwrap();
+            Spawned {
+                pid: Some(4246),
+                exited: tokio::time::sleep(LIMITER_REFUSED_WITHIN + Duration::from_millis(300)).boxed(),
+            }
+        });
+        let mut limited = platform();
+        limited.tools.taskpolicy = crate::voice_lab::platform::Taskpolicy::Limits;
+        let start = StartOptions { device: Device::Mps, limit_mb: 6000, threads: 4 };
+        assert_eq!(
+            fixture.make_on(spawner.clone(), limited).ensure(EngineId::Omnivoice, start).await,
+            Err("сервер голоса не запустился: MemoryError: over the limit".into())
+        );
+        assert_eq!(spawner.calls().len(), 1, "its own failure, not the limiter's: no second start without the limit");
     }
 
     #[tokio::test]

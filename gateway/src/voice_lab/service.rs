@@ -25,6 +25,7 @@ use super::clone_servers::{
 use super::engine_installer::{install_engine, python_of, InstallPlan};
 use super::jobs::{
     with_limits, JobContext, JobDeps, JobKind, JobOutcome, JobRunState, JobRunner, JobState, RunOptions,
+    LIMITER_REFUSED_WITHIN,
 };
 use super::js;
 use super::memory_policy::{admit, ceiling_mb, need_mb, reserve_mb, Admission, AdmissionVerdict};
@@ -735,7 +736,8 @@ impl VoiceLabService {
             serde_json::to_string(&SAMPLE_PHRASES)?,
             "--die-with-stdin".into(),
         ]);
-        let (command, args) = with_limits(&info, &text(&python), &args, Some(admission.ceiling_mb));
+        let plain = (text(&python), args.clone());
+        let (command, args) = with_limits(&info, &plain.0, &args, Some(admission.ceiling_mb));
         let lab = self.clone();
         let creator = actor.clone();
         let ceiling = admission.ceiling_mb;
@@ -755,7 +757,18 @@ impl VoiceLabService {
                 let outcome: JobOutcome = async {
                     // imprint.py makes the voice's folders with the default modes: under a root that is the owner's.
                     lab.store.folders().map_err(|error| error.to_string())?;
-                    let result = context.run(&command, &args, options).await?;
+                    // A limiter that refuses here ends the program at once: then once more as it is.
+                    let began = std::time::Instant::now();
+                    let result = match context.run(&command, &args, options.clone()).await {
+                        Err(error) if command != plain.0 && began.elapsed() < LIMITER_REFUSED_WITHIN => {
+                            tracing::warn!(
+                                "imprint: under {command} it ended at once ({}) — started again without the limiter",
+                                error.message
+                            );
+                            context.run(&plain.0, &plain.1, options).await?
+                        }
+                        other => other?,
+                    };
                     if !finish.adopt.is_empty() {
                         lab.store.adopt_takes(&id, &finish.adopt)?;
                     }

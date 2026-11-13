@@ -822,18 +822,19 @@ html[data-look] .code-editor:focus-within { border-color: var(--text); }
     box-shadow: 0 0 0 1px var(--glass-border);
 }
 .account-btn:hover { box-shadow: 0 0 0 1px var(--glass-border), 0 2px 8px rgba(0, 0, 0, 0.08); }
-.account-menu { position: absolute; top: 40px; right: 0; z-index: 25; min-width: 220px; padding: 6px; border-radius: 14px; display: flex; flex-direction: column; }
+.account-menu { position: absolute; top: 40px; right: 0; z-index: 25; min-width: 236px; padding: 6px; border-radius: 14px; display: flex; flex-direction: column; }
 .account-who { display: flex; flex-direction: column; padding: 8px 12px 10px; border-bottom: 1px solid var(--glass-border); margin-bottom: 6px; }
 .account-who b { font-size: 14px; line-height: 20px; font-weight: 500; }
-.account-theme { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 0 2px 6px; }
+.account-theme { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 0 2px 6px; }
 .account-theme button {
     display: inline-flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    min-height: 36px;
+    gap: 3px;
+    min-height: 52px;
     border-radius: 10px;
-    font-size: 13px;
+    font-size: 12px;
     color: var(--text);
     box-shadow: 0 0 0 1px var(--glass-border);
 }

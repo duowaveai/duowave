@@ -3674,6 +3674,10 @@ impl StationSession {
         if silence_ms > 0 {
             counts.push(format!("kept waiting with {:.1}s of silence", silence_ms as f64 / 1000.0));
         }
+        let caught_up_ms = answer.caught_up_ms();
+        if caught_up_ms > 0 {
+            counts.push(format!("{:.1}s of it to catch up with the station's clock", caught_up_ms as f64 / 1000.0));
+        }
         let expects = answer.expects_follow_up();
         if answer.should_listen() {
             counts.push(if expects { "listens after" } else { "listening closed after" }.into());
@@ -3711,6 +3715,9 @@ impl StationSession {
         }
         if silence_ms > 0 {
             data["silenceMs"] = json!(silence_ms);
+        }
+        if caught_up_ms > 0 {
+            data["caughtUpMs"] = json!(caught_up_ms);
         }
         if let Some(reason) = answer.deferred_reason() {
             data["deferred"] = json!(reason);

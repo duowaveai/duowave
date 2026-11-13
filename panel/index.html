@@ -20,6 +20,9 @@
             const fallbackId = (boot && boot.dataset.id) || '';
             const fallbackMode = boot && boot.dataset.mode;
             const okMode = (value) => value === 'light' || value === 'dark';
+            // «auto» — a pick too: the system's mode, whatever the theme's own.
+            const okPick = (value) => okMode(value) || value === 'auto';
+            const system = () => (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
             const retired = { glass: 'desk', prostor: 'sidebar', 'minimal-panel': 'sidebar' };
             let raw = null;
             try {
@@ -29,9 +32,9 @@
             const was = raw && typeof raw.id === 'string' ? raw.id : '';
             const id = was && (fresh || was !== 'glass') && !retired[was] ? was : null;
             // An old automatic { id: 'glass', mode } is no pick; a retired «Простор» or «Минимал · панель» was one.
-            const picked = raw && okMode(raw.mode) && (fresh || id || (retired[was] && was !== 'glass')) ? raw.mode : null;
-            const mode = picked
-                || (!id && okMode(fallbackMode) ? fallbackMode : (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'));
+            const picked = raw && okPick(raw.mode) && (fresh || id || (retired[was] && was !== 'glass')) ? raw.mode : null;
+            const mode = picked === 'auto' ? system() : picked
+                || (!id && okMode(fallbackMode) ? fallbackMode : system());
             const root = document.documentElement;
             root.dataset.theme = mode;
             root.dataset.themePick = id || '';

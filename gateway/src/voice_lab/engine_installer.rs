@@ -456,7 +456,12 @@ mod tests {
             docker: false,
             gpu: GpuInfo { kind: GpuKind::Apple, name: Some("Apple M4 Max".into()), vram_mb: None, driver: None },
             disk_free_mb: 80_000,
-            tools: Tools { uv, git: true, taskpolicy: false, systemd_run: false },
+            tools: Tools {
+                uv,
+                git: true,
+                taskpolicy: crate::voice_lab::platform::Taskpolicy::None,
+                systemd_run: false,
+            },
             checked_at: String::new(),
         }
     }

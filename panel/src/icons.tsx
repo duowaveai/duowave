@@ -58,6 +58,13 @@ export const IconPhone = ({ size = 20 }: IconProps) =>
 export const IconMoon = ({ size = 20 }: IconProps) =>
     svg(size, <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />);
 
+/** «Авто» — полукруг: тема как у системы, светлая днём и тёмная в темноте. */
+export const IconAuto = ({ size = 20 }: IconProps) =>
+    svg(size, <>
+        <circle cx="12" cy="12" r="8.5" />
+        <path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none" />
+    </>);
+
 export const IconSun = ({ size = 20 }: IconProps) =>
     svg(size, <>
         <circle cx="12" cy="12" r="4.5" />

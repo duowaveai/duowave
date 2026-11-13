@@ -63,7 +63,7 @@ function Radio({ on, onPick, glyph, title, about }: { on: boolean; onPick: () =>
 
 export function ThemeCard() {
     const panel = usePanel();
-    const { theme, mode, view, themes, setTheme, setMode, setView } = useTheme();
+    const { theme, mode, pick, view, themes, setTheme, setMode, setView } = useTheme();
     return (
         <section class="card glass card-list" aria-labelledby="theme-h">
             <div class="section-head">
@@ -85,12 +85,13 @@ export function ThemeCard() {
                 ))}
             </div>
             <div role="radiogroup" aria-label="Режим" class="look-seg glass theme-modes">
-                {(['light', 'dark'] as const).map((value) => (
-                    <button key={value} role="radio" aria-checked={mode === value} onClick={() => setMode(value)}>
-                        {theme.modes[value]}
+                {(['light', 'dark', 'auto'] as const).map((value) => (
+                    <button key={value} role="radio" aria-checked={pick === value} onClick={() => setMode(value)}>
+                        {value === 'auto' ? 'Авто' : theme.modes[value]}
                     </button>
                 ))}
             </div>
+            {pick === 'auto' && <p class="t-caption m-0">Как в системе: днём светлый, вечером и в темноте — тёмный. Сейчас — {theme.modes[mode].toLowerCase()}.</p>}
             {theme.modeNotes?.[mode] && <p class="t-caption m-0">{theme.modeNotes[mode]}</p>}
             {themes.length > 1 && (
                 <>

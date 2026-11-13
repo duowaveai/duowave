@@ -19,6 +19,11 @@ const VIEW_KEY = 'panel-view';
 
 export type View = 'desk' | 'sidebar';
 
+/** Режим, который выбирает человек: светлый, тёмный или «Авто» — как у системы, и меняется вместе с ней. */
+export type ModePick = Mode | 'auto';
+
+const isPick = (value: unknown): value is ModePick => value === 'light' || value === 'dark' || value === 'auto';
+
 /**
  * Темы, которых больше нет (10.11.2026): «Стекло» и «Простор» удалены, «Минимал · панель» стал видом. Их выбор — тема
  * по умолчанию, а у тех, что были с боковой панелью, — ещё и вид «Боковая панель», если вид не выбран.
@@ -28,8 +33,8 @@ const RETIRED: Record<string, View> = { glass: 'desk', prostor: 'sidebar', 'mini
 interface Choice {
     /** Тема, которую выбрал человек; null — тема по умолчанию. */
     id: string | null;
-    /** Режим, который выбрал человек; null — режим темы, а у темы без своего — как у системы. */
-    mode: Mode | null;
+    /** Режим, который выбрал человек; null — режим темы, а у темы без своего — как у системы («Авто»). */
+    mode: ModePick | null;
 }
 
 function read(key: string): string | null {
@@ -56,7 +61,7 @@ function initialChoice(): Choice {
     const root = document.documentElement;
     const mode = root.dataset.modePick;
     const id = root.dataset.themePick || null;
-    return { id: id && !(id in RETIRED) ? id : null, mode: mode === 'light' || mode === 'dark' ? mode : null };
+    return { id: id && !(id in RETIRED) ? id : null, mode: isPick(mode) ? mode : null };
 }
 
 /** Выбор, как он записан сейчас: { v: 2, id, mode }. Запись постарше — не выбор (её читает только index.html). */
@@ -65,7 +70,7 @@ function storedChoice(): Choice | null {
         const raw = JSON.parse(read(CHOICE_KEY) ?? 'null') as { v?: unknown; id?: unknown; mode?: unknown } | null;
         if (!raw || raw.v !== 2) return null;
         const id = typeof raw.id === 'string' && !(raw.id in RETIRED) ? raw.id : null;
-        return { id, mode: raw.mode === 'light' || raw.mode === 'dark' ? raw.mode : null };
+        return { id, mode: isPick(raw.mode) ? raw.mode : null };
     } catch {
         return null;
     }
@@ -96,9 +101,15 @@ function systemMode(): Mode {
     }
 }
 
-/** Режим на странице: выбранный, иначе режим темы, иначе как у системы. */
+/** Что выбрано в переключателе: выбор человека, иначе режим темы, иначе «Авто». */
+function pickOf(theme: Theme): ModePick {
+    return choice.mode ?? theme.defaultMode ?? 'auto';
+}
+
+/** Режим на странице: выбранный, у «Авто» — как у системы сейчас. */
 function modeOf(theme: Theme): Mode {
-    return choice.mode ?? theme.defaultMode ?? systemMode();
+    const pick = pickOf(theme);
+    return pick === 'auto' ? systemMode() : pick;
 }
 
 /** Темы всех включённых плагинов; встроенная — первой. Тема с тем же id из плагина позже заменяет прежнюю. */
@@ -150,6 +161,7 @@ export function applyTheme(): void {
     // пользуется: его выбор помнится, и страница компьютера в нём (`?own=`) красится так же.
     if (VIA && !TOP_VIA) return;
     store(CHOICE_KEY, JSON.stringify({ v: 2, id: choice.id, mode: choice.mode }));
+    // Старые сборки «auto» не знают: им — режим, что на экране.
     store(LEGACY_KEY, mode);
     store(VIEW_KEY, view);
     store(CSS_KEY, JSON.stringify({ id: theme.id, mode, css, look: 'minimal', layout: view }));
@@ -167,7 +179,7 @@ function choose(next: Choice): void {
 
 /** Другая тема — в том же режиме, что на экране: смена темы не перекидывает из светлого в тёмный. */
 export const setTheme = (id: string): void => choose({ id, mode: choice.mode ?? modeOf(currentTheme()) });
-export const setMode = (mode: Mode): void => choose({ ...choice, mode });
+export const setMode = (mode: ModePick): void => choose({ ...choice, mode });
 export const setView = (next: View): void => {
     view = next;
     changed();
@@ -194,6 +206,19 @@ try {
     // без окна (тесты) следить не за чем
 }
 
+// «Авто»: система перешла из светлого в тёмный (вечер, ночной режим) — страница следом, без перезагрузки.
+// Событие смены приходит не везде (окно в фоне, встроенный WebKit) — поэтому ещё сверка, когда в окно вернулись.
+function followSystem(): void {
+    if (pickOf(currentTheme()) === 'auto' && document.documentElement.dataset.theme !== systemMode()) changed();
+}
+try {
+    matchMedia('(prefers-color-scheme: light)').addEventListener('change', followSystem);
+    window.addEventListener('focus', followSystem);
+    document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && followSystem());
+} catch {
+    // без окна или matchMedia (тесты, старый движок) — режим берётся при загрузке
+}
+
 // Плагин принёс или убрал тему: выбранная могла появиться или пропасть.
 onRegistryChange(() => {
     applyTheme();
@@ -204,10 +229,12 @@ onRegistryChange(() => {
 export function useTheme(): {
     theme: Theme;
     mode: Mode;
+    /** Что выбрано: светлый, тёмный или «Авто». */
+    pick: ModePick;
     view: View;
     themes: Theme[];
     setTheme: (id: string) => void;
-    setMode: (mode: Mode) => void;
+    setMode: (mode: ModePick) => void;
     setView: (view: View) => void;
     toggleMode: () => void;
 } {
@@ -224,6 +251,7 @@ export function useTheme(): {
     return {
         theme,
         mode,
+        pick: pickOf(theme),
         view,
         themes: availableThemes(),
         setTheme,

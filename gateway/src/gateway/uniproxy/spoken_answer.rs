@@ -160,6 +160,18 @@ const KEEP_ALIVE_POLL_MS: u64 = 250;
 static SILENCE: LazyLock<Option<Vec<u8>>> =
     LazyLock::new(|| encode_ogg_opus(&vec![0; SILENCE_MS * 48], EncodeRate::FullBand).ok());
 
+/// The station plays its stream on its own clock, from the stream's first audio on, and skips audio that comes after
+/// its time. Live 13.11: the stream opened with keep-alive silence at 32.5 s, half a second more went at 34.0, the
+/// speech (2.7 s) came at 35.3 and was placed right after the 1 s of silence, so the station had passed most of it:
+/// only «…как» of «Отлично, всё в порядке. А у вас как?» was heard, and the station stopped at 36.1, the stream's
+/// start plus its length. Audio that would land behind the clock goes after silence that brings the stream up to
+/// the clock and this much ahead of it (the way to the station and its own buffering).
+const CATCH_UP_LEAD_MS: u64 = 200;
+/// The silence that catches up, in steps of this length.
+const CATCH_UP_STEP_MS: usize = 100;
+static CATCH_UP_SILENCE: LazyLock<Option<Vec<u8>>> =
+    LazyLock::new(|| encode_ogg_opus(&vec![0; CATCH_UP_STEP_MS * 48], EncodeRate::FullBand).ok());
+
 /// The jingle directive as Yandex sends it in every response.
 pub fn placeholder_directive(channel: &str) -> Directive {
     let mut payload = Map::new();
@@ -297,6 +309,10 @@ struct State {
     observer: Option<Arc<dyn AnswerObserver>>,
     /// When its stream began (ms since the epoch): the station plays it from then on.
     speech_started_at: Option<u64>,
+    /// The same on tokio's clock: where the station is in the stream (`catch_up`).
+    stream_opened: Option<Instant>,
+    /// Silence put in so audio does not land behind the station's clock, ms (part of `silence_ms`).
+    caught_up_ms: u64,
     timeline: Timeline,
     listen: ListenMode,
     directives: Vec<Directive>,
@@ -362,6 +378,8 @@ impl SpokenAnswer {
             recorder: None,
             observer: None,
             speech_started_at: None,
+            stream_opened: None,
+            caught_up_ms: 0,
             timeline: Timeline::new(),
             listen: options.listen,
             directives: options.directives.clone(),
@@ -463,6 +481,11 @@ impl SpokenAnswer {
     /// The silence that kept the station waiting for the speech.
     pub fn silence_ms(&self) -> u64 {
         self.lock().silence_ms
+    }
+
+    /// The silence that brought the stream up to the station's clock before late audio (`catch_up`).
+    pub fn caught_up_ms(&self) -> u64 {
+        self.lock().caught_up_ms
     }
 
     pub fn timeline_summary(&self) -> String {
@@ -862,6 +885,33 @@ impl SpokenAnswer {
         state.keeping_alive = false;
     }
 
+    /// Before a phrase goes to the stream: when the stream is behind the station's clock (it has played everything and
+    /// more time has passed: keep-alive silence, a slow phrase), silence fills it up to the clock plus
+    /// `CATCH_UP_LEAD_MS`, so the phrase is not skipped. That silence comes late itself and is skipped by the station;
+    /// it only moves the phrase's place ahead. Keep-alive silence needs none: it is there to be received, not heard.
+    fn catch_up(&self, state: &mut State, now: Instant) -> Result<()> {
+        let (Some(opened), Some(stream_id)) = (state.stream_opened, state.stream_id) else { return Ok(()) };
+        let played = now.saturating_duration_since(opened).as_millis() as u64;
+        let before = state.joiner.duration_ms();
+        if before >= played {
+            return Ok(());
+        }
+        let Some(silence) = CATCH_UP_SILENCE.as_deref() else { return Ok(()) };
+        let target = played + CATCH_UP_LEAD_MS;
+        while state.joiner.duration_ms() < target {
+            state.joiner.begin_segment()?;
+            let pages = state.joiner.push(silence)?;
+            if !pages.is_empty() && !state.station_gone {
+                self.output.send_audio(stream_id, &pages);
+            }
+        }
+        let added = state.joiner.duration_ms().saturating_sub(before);
+        state.silence_ms += added;
+        state.caught_up_ms += added;
+        state.timeline.mark("caughtUp");
+        Ok(())
+    }
+
     /// Goes on without the station: its stream ends with what it has heard (a clean close, unless the station
     /// left it), and the rest of the words wait for `deferred_text`. False when it cannot.
     fn defer(&self, state: &mut State, why: String) -> bool {
@@ -954,6 +1004,7 @@ impl SpokenAnswer {
     fn open_stream(&self, state: &mut State) {
         self.start_stream(state);
         state.speech_started_at = Some(now_ms());
+        state.stream_opened = Some(Instant::now());
     }
 
     fn start_stream(&self, state: &mut State) {
@@ -1037,6 +1088,9 @@ impl SpokenAnswer {
             let mut state = self.lock();
             if state.deferred.is_some() || state.station_gone {
                 return;
+            }
+            if let Err(error) = self.catch_up(&mut state, Instant::now()) {
+                state.errors.push(format!("catching up before \"{}\": {}", head(text, 40), describe(&error)));
             }
             let _ = state.joiner.begin_segment();
             if let Some(recorder) = state.recorder.as_mut() {
@@ -1584,10 +1638,37 @@ mod tests {
         let audio = output.audio_times();
         assert_eq!(audio[0] - response, ms(KEEP_ALIVE_QUIET_MS));
         assert!(longest_gap(&audio) <= ms(1500), "{:?}", longest_gap(&audio));
-        // Silence at 3, 4.5, 6 and 7.5 s, then the phrase.
-        assert_eq!((answer.audio_ms(), answer.silence_ms()), (200, 2000));
-        assert_eq!(heads_and_packets(&output.audio()), (1, 10 + 4 * 25));
+        // Silence at 3, 4.5, 6 and 7.5 s, then the phrase at 8 s: 5 s into the stream, which has 2 s of audio, so
+        // 3.2 s more silence puts it 0.2 s ahead of the station's clock.
+        assert_eq!((answer.audio_ms(), answer.silence_ms(), answer.caught_up_ms()), (200, 5200, 3200));
+        assert_eq!(heads_and_packets(&output.audio()), (1, 10 + 4 * 25 + 160));
         assert!(answer.timeline_summary().contains("keepAlive"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn puts_a_phrase_that_comes_late_ahead_of_the_stations_clock_not_behind_it() {
+        // Live 13.11: silence opened the stream, the speech came 2.8 s later and was placed after 1 s of it, so the
+        // station had passed all but its last word.
+        let output = Output::new();
+        let answer = SpokenAnswer::new(options(), output.clone(), speak_all());
+        let parts = paced(&[(0, "Сейчас посмотрю."), (5000, "Нашлось вот что.")]);
+        assert_eq!(answer.play(parts).await, AnswerOutcome::Spoken);
+        // The first phrase opens the stream at 0.3 s (the response waits that long for the rest of the text), then
+        // keep-alive silence; the second phrase at 5 s, 4.7 s into the stream, goes at 4.9 s of it and lasts 0.2 s.
+        let length = answer.audio_ms() + answer.silence_ms();
+        assert_eq!(length, 5100);
+        assert!(answer.caught_up_ms() > 0);
+        assert_eq!(answer.audio_ms(), 400);
+        assert_eq!(heads_and_packets(&output.audio()).0, 1);
+        assert!(answer.timeline_summary().contains("caughtUp"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn plays_phrases_ready_in_time_without_catching_up() {
+        let output = Output::new();
+        let answer = SpokenAnswer::new(options(), output.clone(), speak_all());
+        assert_eq!(answer.play(phrases(&["Первая фраза ответа.", "Вторая."])).await, AnswerOutcome::Spoken);
+        assert_eq!((answer.caught_up_ms(), answer.silence_ms()), (0, 0));
     }
 
     #[tokio::test(start_paused = true)]

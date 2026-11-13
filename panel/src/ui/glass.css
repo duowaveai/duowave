@@ -385,6 +385,7 @@ textarea.field {
 /* Вид пульта (Дом → Доступ): схема раскладки темы её цветами, режим — сегментом под списком тем. */
 .theme-glyph { flex: none; display: block; }
 .theme-modes { margin: 4px 0 4px; }
+.look-seg.theme-modes { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
 /* ─── Список маршрутов ────────────────────────────────────────── */
 .route-row {

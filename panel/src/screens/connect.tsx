@@ -170,7 +170,9 @@ function PhoneLine() {
     }, []);
     const host = addresses?.[0];
     if (!host) return null;
-    const url = `http://${host}${location.port ? `:${location.port}` : ''}/panel/`;
+    // Шлюз отдаёт адрес уже с портом, если он не 80 (station_connect.rs, home_addresses): свой порт — только адресу без него.
+    const withPort = /:\d+$/.test(host) || !location.port ? host : `${host}:${location.port}`;
+    const url = `http://${withPort}/panel/`;
     return (
         <div class="connect-phone">
             <b>Пульт на телефоне</b>
