@@ -54,9 +54,10 @@ pub struct PluginsConfig {
     /// The workshop's drafts ($DATA_DIR/packages-dev; data/packages-dev without it): a plugin or a theme being written,
     /// one folder per id, installed into PACKAGES_DIR as a new version by the workshop's «Поставить».
     pub dev_dir: PathBuf,
-    /// PACKAGES_PUBKEY: the catalog's signing key (minisign), else the one built in at release
-    /// (DUOWAVE_PACKAGES_PUBKEY). With it and a valid `catalog.json.minisig`, plugins and apps install from the
-    /// catalog (docs/plans/plugins.md, stage 8); without, only packages without code do.
+    /// PACKAGES_PUBKEY: the catalog's signing keys (minisign, one per line), else those built in (`packages.pub`: the
+    /// release key and the reserve, docs/plans/key-rotation.md). With them and a `catalog.json.minisig` that any of
+    /// them signed, plugins and apps install from the catalog (docs/plans/plugins.md, stage 8); without, only packages
+    /// without code do.
     pub catalog_key: Option<String>,
     /// PLUGINS_RESERVE_MB: the memory kept for the system and Alice, out of the plugins' budget (docs/plans/plugins.md,
     /// «Бюджет»; 40 MB until it is measured under load — the owner's open decision 2).
@@ -899,8 +900,9 @@ fn build(env: &Env) -> Config {
             dev_dir: data_path(env, "packages-dev", "data/packages-dev"),
             catalog_key: env
                 .optional("PACKAGES_PUBKEY")
-                .or_else(|| option_env!("DUOWAVE_PACKAGES_PUBKEY").map(str::to_string))
-                .filter(|key| !key.trim().is_empty()),
+                .filter(|keys| !keys.trim().is_empty())
+                .or_else(|| Some(crate::plugins::catalog::BUILT_IN_KEYS.to_string()))
+                .filter(|keys| !keys.trim().is_empty()),
             reserve_mb: env.integer("PLUGINS_RESERVE_MB", 40),
             storage_reserve_mb: env.integer("PLUGINS_STORAGE_RESERVE_MB", 15),
             pressure_action: env
@@ -1386,6 +1388,15 @@ mod tests {
         assert_eq!(bare.gateway.uniproxy_path, "/uni.ws");
         let given = Config::load(&Env::from_pairs([("UNIPROXY_PATH", "/station/uni.ws")])).unwrap();
         assert_eq!(given.gateway.uniproxy_path, "/station/uni.ws");
+    }
+
+    #[test]
+    fn the_catalogs_keys_are_the_built_in_ones_unless_the_env_names_its_own() {
+        let built_in = Some(crate::plugins::catalog::BUILT_IN_KEYS.to_string()).filter(|keys| !keys.trim().is_empty());
+        assert_eq!(Config::load(&Env::default()).unwrap().plugins.catalog_key, built_in);
+        assert_eq!(Config::load(&Env::from_pairs([("PACKAGES_PUBKEY", " ")])).unwrap().plugins.catalog_key, built_in);
+        let own = Config::load(&Env::from_pairs([("PACKAGES_PUBKEY", "RWQone\nRWQtwo")])).unwrap();
+        assert_eq!(own.plugins.catalog_key.as_deref(), Some("RWQone\nRWQtwo"), "a list, in place of the built-in one");
     }
 
     #[test]

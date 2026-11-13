@@ -193,6 +193,12 @@ pub struct Feed {
 pub const SIGNATURE_SUFFIX: &str = ".minisig";
 const MAX_SIGNATURE: u64 = 8 * 1024;
 
+/// The keys the catalog is signed with, built into the program the way the updates' are, apart from them (a leaked
+/// catalog key gives no gateway release): minisign's `.pub` files one after another — the release key, then a reserve
+/// kept offline for the day the release key is lost or leaks (docs/plans/key-rotation.md, «Ключ каталога»). A feed
+/// signed by any of them is signed. PACKAGES_PUBKEY replaces them. Empty: no key — no code from the catalog.
+pub const BUILT_IN_KEYS: &str = include_str!("../../packages.pub");
+
 impl Feed {
     /// A catalog of nothing yet: own sources' packages go into it when the main feed has no copy here.
     fn empty() -> Feed {
@@ -753,8 +759,8 @@ pub struct CatalogDeps {
 pub struct PackageCatalog {
     source: FeedSource,
     home: Option<Arc<dyn super::controller::HomeLink>>,
-    /// The catalog's signing key: code installs only from a feed it signed.
-    key: Option<minisign_verify::PublicKey>,
+    /// The catalog's signing keys: code installs only from a feed one of them signed; none, no code.
+    keys: Vec<minisign_verify::PublicKey>,
     dir: PathBuf,
     host: Arc<PluginHost>,
     db: Arc<Db>,
@@ -790,17 +796,19 @@ impl PackageCatalog {
 
     /// The same, with the feed named here: tests.
     pub fn with_source(deps: CatalogDeps, source: FeedSource) -> Arc<PackageCatalog> {
-        let key = deps.config.catalog_key.as_deref().and_then(|text| match crate::updates::verify::public_key(text) {
-            Ok(key) => Some(key),
-            Err(error) => {
-                tracing::warn!(target: "plugins", "packages catalog: the key does not read ({error}): no code from the catalog");
-                None
+        // A list, one key per line, read whole: a line that does not read leaves no key at all, never a shorter list.
+        let keys = match deps.config.catalog_key.as_deref().map(crate::updates::verify::public_keys) {
+            None => Vec::new(),
+            Some(Ok(keys)) => keys,
+            Some(Err(error)) => {
+                tracing::warn!(target: "plugins", "packages catalog: its keys do not read ({error}): no code from the catalog");
+                Vec::new()
             }
-        });
+        };
         Arc::new(PackageCatalog {
             source,
             home: deps.home.clone(),
-            key,
+            keys,
             dir: deps.config.catalog_dir.clone(),
             host: deps.host,
             db: deps.db,
@@ -919,13 +927,16 @@ impl PackageCatalog {
         })
     }
 
-    /// Whether the feed's text is signed by the catalog's key (`catalog.json.minisig` beside the copy).
+    /// Whether the feed's text is signed by one of the catalog's keys (`catalog.json.minisig` beside the copy): the
+    /// reserve's signature holds as well as the release key's, so the catalog moves to it without a gateway release.
     fn signed(&self, text: &[u8]) -> bool {
-        let Some(key) = &self.key else { return false };
+        if self.keys.is_empty() {
+            return false;
+        }
         let Ok(signature) = std::fs::read_to_string(self.dir.join(format!("catalog.json{SIGNATURE_SUFFIX}"))) else {
             return false;
         };
-        crate::updates::verify::verify(key, text, &signature).is_ok()
+        crate::updates::verify::verify_any(&self.keys, text, &signature).is_ok()
     }
 
     /// The signature's address: the feed's path and `.minisig`, the same origin.
@@ -1019,10 +1030,11 @@ impl PackageCatalog {
             tracing::warn!(target: "plugins", "packages catalog: left out — {skipped}");
         }
         self.previews(&self.dir, &feed).await;
-        // Its signature, when the gateway has the catalog's key: code comes only from a feed it signed.
-        let signature = match &self.key {
-            Some(_) => install::download(Self::signature_url(url).as_str(), MAX_SIGNATURE, FEED_TIMEOUT).await.ok(),
-            None => None,
+        // Its signature, when the gateway has the catalog's keys: code comes only from a feed one of them signed.
+        let signature = if self.keys.is_empty() {
+            None
+        } else {
+            install::download(Self::signature_url(url).as_str(), MAX_SIGNATURE, FEED_TIMEOUT).await.ok()
         };
         let fetched = Fetched { url: url.to_string(), etag: new_etag, fetched_at: now, closed: false };
         let signature_file = self.dir.join(format!("catalog.json{SIGNATURE_SUFFIX}"));
@@ -1040,7 +1052,7 @@ impl PackageCatalog {
         if let Err(error) = written {
             return failed(format!("Копия каталога не записалась: {error}"));
         }
-        if self.key.is_some() && !self.signed(text.as_bytes()) {
+        if !self.keys.is_empty() && !self.signed(text.as_bytes()) {
             tracing::warn!(target: "plugins", "packages catalog: its signature is missing or does not match: no code from it");
             lock(&self.status).problem = Some("Подпись каталога не сошлась: приложения из него не ставятся.".into());
             return Read::New;
@@ -1517,7 +1529,7 @@ impl PackageCatalog {
         };
         CatalogView {
             signed,
-            keyed: self.key.is_some(),
+            keyed: !self.keys.is_empty(),
             configured: matches!(self.source, FeedSource::Url(_)),
             enabled: self.enabled(),
             url: match &self.source {
@@ -2311,6 +2323,58 @@ pub mod tests {
         let unkeyed = fixture(FeedSource::Url(site.url.clone()), Placement::Pc);
         let refused = unkeyed.catalog.install("clock", None, false, None).await.unwrap_err();
         assert_eq!(refused.message, NEEDS_SIGNATURE);
+    }
+
+    #[test]
+    fn the_built_in_keys_are_the_release_one_and_the_reserve() {
+        // A change here is a rotation, made on purpose (docs/plans/key-rotation.md, «Ключ каталога пакетов»).
+        let keys = crate::updates::verify::public_keys(BUILT_IN_KEYS).expect("packages.pub reads");
+        assert_eq!(keys.len(), 2, "the release key and the reserve");
+        // Apart from the update keys: a leaked catalog key signs no gateway release, and the other way round.
+        use base64::Engine as _;
+        let updates: String = crate::updates::verify::BUILT_IN_KEY
+            .lines()
+            .filter_map(|line| base64::engine::general_purpose::STANDARD.decode(line.trim()).ok())
+            .map(|text| String::from_utf8_lossy(&text).into_owned())
+            .collect();
+        assert!(updates.contains("minisign public key"), "updates.pub decodes: {updates}");
+        for key in BUILT_IN_KEYS.lines().filter(|line| !line.is_empty() && !line.starts_with("untrusted comment:")) {
+            assert!(!updates.contains(key.trim()), "{key} is an update key too");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_feed_signed_by_any_key_of_the_list_is_signed_and_by_no_other() {
+        let release = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let reserve = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let stranger = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let site = site().await;
+        site.publish(&[(arthur("1.0.0"), vgp(&character_manifest("arthur", "1.0.0")))]);
+        let feed = lock(&site.feed).clone();
+        // packages.pub's form: minisign's .pub files one after another, each with its comment line.
+        let list = format!("{}\n{}\n", release.pk.to_box().unwrap(), reserve.pk.to_box().unwrap());
+        let view_signed_by = |signer: &minisign::KeyPair, keys: &str| {
+            let signature = minisign::sign(Some(&signer.pk), &signer.sk, feed.as_bytes(), None, None).unwrap();
+            lock(&site.files).insert("catalog.json.minisig".into(), signature.to_string().into_bytes());
+            let fixture = fixture_keyed(FeedSource::Url(site.url.clone()), Placement::Pc, Some(keys.to_string()));
+            async move { fixture.catalog.view(true).await }
+        };
+
+        let by_release = view_signed_by(&release, &list).await;
+        assert!(by_release.keyed && by_release.signed, "{by_release:?}");
+        let by_reserve = view_signed_by(&reserve, &list).await;
+        assert!(by_reserve.signed, "the reserve signs without a gateway release: {by_reserve:?}");
+        let by_stranger = view_signed_by(&stranger, &list).await;
+        assert!(by_stranger.keyed && !by_stranger.signed, "{by_stranger:?}");
+        assert_eq!(
+            by_stranger.problem.as_deref(),
+            Some("Подпись каталога не сошлась: приложения из него не ставятся.")
+        );
+        // PACKAGES_PUBKEY's bare lines do as well; a line that does not read leaves no key at all.
+        let bare = format!("{}\n{}", release.pk.to_base64(), reserve.pk.to_base64());
+        assert!(view_signed_by(&reserve, &bare).await.signed);
+        let broken = view_signed_by(&release, &format!("{list}nonsense\n")).await;
+        assert!(!broken.keyed && !broken.signed, "{broken:?}");
     }
 
     #[test]
