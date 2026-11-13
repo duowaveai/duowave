@@ -2,26 +2,53 @@
   "schema": 1,
   "kind": "plugin",
   "id": "tales",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "title": "Сказки",
   "description": "Сказки и аудиокниги из папки дома (content/tales), а без готовой — сказка, которую сочинит модель шлюза. Встроенное приложение: если оно выключено, сказки рассказывает встроенный навык.",
-  "api": "^1.1",
-  "runs": ["pc", "station", "stationServer"],
-  "budget": { "memoryMb": 4, "storageMb": 1 },
-  "permissions": ["content:tales", "media.source", "voice.intents", "llm.chat"],
+  "api": "^2",
+  "runs": [
+    "pc",
+    "station",
+    "stationServer"
+  ],
+  "budget": {
+    "memoryMb": 4,
+    "storageMb": 1
+  },
+  "permissions": [
+    "call:system/content",
+    "call:system/brain"
+  ],
   "contributes": {
     "intents": [
       {
-        "phrases": ["включи сказку", "включи сказку {query}", "поставь сказку", "поставь сказку {query}", "включи аудиокнигу {query}"],
+        "phrases": [
+          "включи сказку",
+          "включи сказку {query}",
+          "поставь сказку",
+          "поставь сказку {query}",
+          "включи аудиокнигу {query}"
+        ],
         "handler": "playTale",
         "capability": "tales"
       },
       {
-        "phrases": ["сочини сказку", "сочини сказку {topic}", "придумай сказку", "придумай сказку {topic}"],
+        "phrases": [
+          "сочини сказку",
+          "сочини сказку {topic}",
+          "придумай сказку",
+          "придумай сказку {topic}"
+        ],
         "handler": "composeTale",
         "capability": "tales"
       }
     ],
-    "media": [{ "id": "shelf", "kind": "tales", "handler": "shelf" }]
+    "media": [
+      {
+        "id": "shelf",
+        "kind": "tales",
+        "handler": "shelf"
+      }
+    ]
   }
 }

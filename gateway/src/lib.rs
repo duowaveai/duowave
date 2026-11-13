@@ -6,6 +6,7 @@
 pub mod access;
 pub mod app;
 pub mod apps;
+pub mod bus;
 #[cfg(feature = "pc")]
 pub mod calls;
 pub mod characters;

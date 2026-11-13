@@ -845,6 +845,46 @@ pub const CONNECTOR_HOME_SERVER: SettingDefinition<HomeServerSetting> = SettingD
     parse: as_serde,
 };
 
+/// The bus's links (src/bus, docs/plans/bus.md): who reaches whom and how far. Like every setting not in
+/// `LOCAL_SETTINGS` they travel with the settings package, so a move keeps them.
+pub const BUS_LINKS: SettingDefinition<Vec<crate::bus::links::Link>> = SettingDefinition {
+    key: "bus.links",
+    scope: SettingScope::Global,
+    description: "Связи приложений",
+    sensitive: false,
+    parse: crate::bus::links::parse_links,
+};
+
+/// The house's mode and each participant's own: «Отдельно», «По правилам», «Свободно».
+pub const BUS_MODES: SettingDefinition<crate::bus::links::Modes> = SettingDefinition {
+    key: "bus.modes",
+    scope: SettingScope::Global,
+    description: "Режимы связей",
+    sensitive: false,
+    parse: |value| serde_json::from_value(value.clone()).ok(),
+};
+
+/// The bus's switches: asking in words through a cloud model without a person (off).
+pub const BUS_OPTIONS: SettingDefinition<crate::bus::links::Options> = SettingDefinition {
+    key: "bus.options",
+    scope: SettingScope::Global,
+    description: "Связи: настройки",
+    sensitive: false,
+    parse: |value| serde_json::from_value(value.clone()).ok(),
+};
+
+/// The owner's words on dangerous handles: «всегда можно», a mark taken off or put on.
+pub const BUS_DANGERS: SettingDefinition<Vec<crate::bus::danger::DangerWord>> = SettingDefinition {
+    key: "bus.dangers",
+    scope: SettingScope::Global,
+    description: "Опасные действия",
+    sensitive: false,
+    parse: |value| {
+        let list = value.as_array()?;
+        Some(list.iter().filter_map(|item| serde_json::from_value(item.clone()).ok()).collect())
+    },
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;

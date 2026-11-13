@@ -98,6 +98,9 @@ pub struct App {
     pub files: Arc<crate::plugins::files::PluginFiles>,
     /// A MIDI keyboard for apps (src/midi): the keyboards plugged into this computer, heard while an app listens.
     pub midi: Arc<crate::midi::MidiService>,
+    /// «Связи» (src/bus, docs/plans/bus.md): the bus between everything with an address — apps, the gateway's
+    /// services, folders, devices — with its one rule, its questions «да» and its journal.
+    pub bus: Arc<crate::bus::Bus>,
     /// The packages' catalog and the installer (src/plugins/catalog.rs): one feed for every kind.
     pub catalog: Arc<PackageCatalog>,
     /// Streams the gateway relays for the station: the fallback for one it keeps silent on (gateway/media/stream.rs).
@@ -175,6 +178,25 @@ impl App {
         self.schedules.start();
         // The keyboards: the system's news of them first (a Mac), then the list and the keeper of idle ports.
         self.midi.start();
+        // The bus follows the settings and the apps removed; the folders' `tmp/` and bin are cleaned every hour.
+        self.bus.start();
+        if self.config.data_dir.is_some() {
+            if let Some(files) = self.bus.files() {
+                files.places().prepare();
+                let places = files.places().clone();
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
+                    loop {
+                        tick.tick().await;
+                        let places = places.clone();
+                        let removed = tokio::task::spawn_blocking(move || places.sweep()).await.unwrap_or(0);
+                        if removed > 0 {
+                            tracing::info!(target: "bus", "files: {removed} old file(s) cleaned from tmp/ and the bin");
+                        }
+                    }
+                });
+            }
+        }
         // The apps' history: what is on disk and not in it yet, recorded; its cleaning once a day and the station's
         // sending to the computer.
         if let Some(history) = &self.history {
@@ -226,6 +248,17 @@ impl App {
             crate::placement::transfer::apply_incoming(dir, &db, &secrets, station, Some(&pictures));
         }
         let settings = Arc::new(SettingsService::new(db.clone(), events.clone()));
+        // «Связи» (src/bus): made before what registers on it; each kind of participant joins as it stands.
+        let bus = crate::bus::Bus::new(crate::bus::BusDeps {
+            db: db.clone(),
+            settings: settings.clone(),
+            events: events.clone(),
+            keep_lines: if cfg!(feature = "station") {
+                crate::bus::journal::STATION_LINES
+            } else {
+                crate::bus::journal::COMPUTER_LINES
+            },
+        });
         let access = Arc::new(AccessService::new(db.clone(), events.clone(), settings.clone(), &secrets)?);
         access.start();
         // The connectors the panel sets up (src/connectors/settings.rs): .env seeds the ones never stored, once.
@@ -537,10 +570,6 @@ impl App {
                 events: events.clone(),
                 media: skills.media_sources.clone(),
                 placement: Arc::new(move || availability.context().placement),
-                speaker: {
-                    let skills = Arc::downgrade(&skills);
-                    Arc::new(move || skills.upgrade().and_then(|skills| skills.speaker()))
-                },
                 runtime: Arc::new(crate::plugins::quickjs::QuickJs),
                 memory: Arc::new(crate::plugins::budget::MachineMemory),
                 gauge,
@@ -563,6 +592,46 @@ impl App {
         };
         let (plugins, plugin_skill) = plugins;
         plugin_services.set_plugins(&plugins);
+        // Apps and the gateway's services on the bus; the services reach the bus for the plugins' `host.bus`.
+        {
+            let apps = Arc::new(crate::bus::providers::apps::Apps::new());
+            apps.set_host(Arc::downgrade(&plugins));
+            // An app without its own `ask` answers in words through the household's model with its tools.
+            apps.set_words(Arc::new(links::bus_words::BrainWords::new(&dialog, &plugins, &bus)));
+            bus.register(apps);
+            // What an app reaches outside a letter (its speech by schedule, the model's answer in its words, its page
+            // hearing the keyboard) is the bus's word too: in the trail it runs in, else its own.
+            let gate_bus = Arc::downgrade(&bus);
+            plugins.set_gate(Arc::new(move |app: &str, to: &str, handle: &str| {
+                let bus = gate_bus.upgrade().ok_or_else(|| "шина остановлена".to_string())?;
+                let trail = crate::bus::trail::current().unwrap_or_else(|| crate::bus::Trail::app(app));
+                bus.may(&trail, &crate::bus::Address::app(app), to, handle)
+            }));
+            let system = Arc::new(crate::bus::providers::system::System::new());
+            let services: Arc<dyn crate::plugins::host_api::HostServices> = plugin_services.clone();
+            system.set_services(Arc::downgrade(&services));
+            bus.register(system);
+            plugin_services.set_bus(&bus);
+            // Folders: DATA_DIR/files and the household's music and tales; an app's own folder within its budget.
+            let places = crate::bus::providers::files::Places::new(
+                &config.data_dir.clone().unwrap_or_else(|| std::path::PathBuf::from("data")),
+                &config.skills.content_dir,
+                placement.role() == crate::placement::service::Role::Station,
+            );
+            let host = Arc::downgrade(&plugins);
+            let files = Arc::new(crate::bus::providers::files::Files::new(
+                places,
+                Arc::new(move |id: &str| {
+                    host.upgrade()
+                        .and_then(|host| host.package(id))
+                        .map(|package| package.manifest.budget.files_mb)
+                        .unwrap_or(crate::bus::providers::files::APP_FOLDER_MB)
+                }),
+            ));
+            files.set_bus(Arc::downgrade(&bus));
+            bus.set_files(files.clone());
+            bus.register(files);
+        }
         // The plugins' schedules are kept by the gateway that keeps the station's session: the station's own, or the
         // computer the station talks to — not a computer that only helps a station (they would run twice).
         let schedules = {
@@ -595,6 +664,7 @@ impl App {
             let midi = crate::midi::MidiService::new(crate::midi::ports::system(), off, config.midi.remote);
             midi.set_events(events.clone());
             availability.set_midi(midi.available());
+            // Which app's page may hear the keyboard is the bus's to say (`listen:device/midi`, the owner's «да»).
             let host = Arc::downgrade(&plugins);
             midi.set_gate(Arc::new(move |package: &str| {
                 let host = host.upgrade().ok_or_else(|| "приложения остановлены".to_string())?;
@@ -608,6 +678,12 @@ impl App {
             }));
             midi
         };
+        // Devices on the bus: the MIDI keyboard first; a new device is one more `add`.
+        {
+            let devices = Arc::new(crate::bus::providers::devices::Devices::new());
+            devices.add(Arc::new(crate::bus::providers::devices::MidiKeyboard::new(midi.clone())));
+            bus.register(devices);
+        }
 
         // What the station says of our player (stage 5а): into the request's journal and to the plugin whose item it
         // is; a stream it keeps silent on goes the gateway's way — through /media/stream, AAC transcoded by ffmpeg on a
@@ -893,6 +969,7 @@ impl App {
             schedules,
             files,
             midi,
+            bus,
             catalog,
             streams,
             characters,
@@ -982,6 +1059,7 @@ pub fn router(app: Arc<App>) -> Router {
         .merge(crate::mcp::routes())
         .merge(crate::oauth::routes())
         .merge(crate::plugins::routes())
+        .merge(crate::bus::routes::routes())
         .merge(crate::midi::routes::routes())
         .merge(crate::skills::own::later_skill::routes())
         .merge(crate::plugins::workshop::routes::routes())

@@ -28,8 +28,9 @@ use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
 use super::controller::PluginHost;
-use super::manifest::{identifier, valid_id, Permission, ScheduleSpec};
+use super::manifest::{asks, identifier, valid_id, Permission, ScheduleSpec};
 use super::runtime::CallKind;
+use crate::bus::Level;
 use crate::skills::own::alarms_skill::DEFAULT_TIMEZONE;
 use crate::storage::{Db, StateStore};
 use crate::utils::time::now_ms;
@@ -463,12 +464,12 @@ pub fn then_of(item: &Value, at: &str, permissions: &[Permission], problems: &mu
             None
         }
         (None, true) => {
-            if say.is_some() && !permissions.contains(&Permission::VoiceSay) {
-                problems.push(format!("{at}: say — речь без запроса, нужно право voice.say"));
+            if say.is_some() && !asks(permissions, "system/voice", Level::Call) {
+                problems.push(format!("{at}: say — речь без запроса, нужна связь call:system/voice"));
                 return None;
             }
-            if notify.is_some() && !permissions.contains(&Permission::Notify) {
-                problems.push(format!("{at}: notify — сообщение владельцу, нужно право notify"));
+            if notify.is_some() && !asks(permissions, "system/notify", Level::Call) {
+                problems.push(format!("{at}: notify — сообщение владельцу, нужна связь call:system/notify"));
                 return None;
             }
             Some(Then { handler: None, say: say.map(short), notify: notify.map(short) })
@@ -573,6 +574,7 @@ pub struct Scheduler {
     station: OnceLock<Arc<dyn ScheduleStation>>,
     /// The way to the owner, once the station watch stands.
     notice: OnceLock<Arc<dyn OwnerNotice>>,
+
     /// When each plugin sent the owner a message within the last hour.
     notices: Mutex<HashMap<String, VecDeque<i64>>>,
     /// This gateway keeps the station's times: a computer that only helps a station does not.
@@ -662,6 +664,16 @@ impl Scheduler {
     }
 
     /// The way to the owner, once the station watch stands.
+    /// Whether `plugin` may reach `to`'s `handle` by its schedule: the bus's word through the plugins' host (its links,
+    /// the owner's «да»), or without a host what its manifest asked for.
+    fn may(&self, plugin: &str, permissions: &[Permission], to: &str, handle: &str) -> Result<(), String> {
+        match self.host.upgrade() {
+            Some(host) => host.may(plugin, to, handle),
+            None if asks(permissions, to, Level::Call) => Ok(()),
+            None => Err(format!("нет связи call:{to} в манифесте")),
+        }
+    }
+
     pub fn set_notice(&self, notice: Arc<dyn OwnerNotice>) {
         let _ = self.notice.set(notice);
     }
@@ -1098,20 +1110,20 @@ impl Scheduler {
         let mut outcome = vec![format!("ответил за {ms} мс")];
         // A message to the owner first: it goes now whatever the station does.
         if let Some(notice) = notice {
-            outcome.push(if !permissions.contains(&Permission::Notify) {
-                "не прислано: нет права notify".to_string()
-            } else {
-                match self.notify(plugin, &notice).await {
+            outcome.push(match self.may(plugin, permissions, "system/notify", "send") {
+                Err(why) => format!("не прислано: {why}"),
+                Ok(()) => match self.notify(plugin, &notice).await {
                     Ok(()) => format!("прислал «{notice}»"),
                     Err(why) => format!("не прислано: {why}"),
-                }
+                },
             });
         }
+        let speech = said.as_ref().map(|_| self.may(plugin, permissions, "system/voice", "say"));
         match said {
             None if outcome.len() == 1 => outcome.push("молча".into()),
             None => {}
-            Some(_) if !permissions.contains(&Permission::VoiceSay) => {
-                outcome.push("не сказано: нет права voice.say".into())
+            Some(_) if matches!(speech, Some(Err(_))) => {
+                outcome.push(format!("не сказано: {}", speech.and_then(Result::err).unwrap_or_default()))
             }
             Some(_) if !self.may_speak(plugin, now) => outcome.push("не сказано: слишком часто".into()),
             Some(text) => {
@@ -1131,6 +1143,10 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn right(text: &str) -> Permission {
+        Permission::parse(text).unwrap()
+    }
 
     fn at(text: &str) -> i64 {
         chrono::DateTime::parse_from_rfc3339(text).unwrap().timestamp_millis()
@@ -1215,7 +1231,7 @@ mod tests {
 
     #[test]
     fn reads_the_manifests_rhythms_and_says_what_is_wrong() {
-        let rights = [Permission::Schedule, Permission::VoiceSay];
+        let rights = [right("call:system/schedule"), right("call:system/voice")];
         let mut problems = Vec::new();
         let brief = rhythm(
             &json!({ "id": "brief", "title": "Сводка", "at": "07:30", "days": "weekdays", "handler": "brief" }),
@@ -1247,9 +1263,14 @@ mod tests {
         }
         // A ready `say` is speech without a request: the right voice.say first.
         let mut problems = Vec::new();
-        assert!(rhythm(&json!({ "id": "w", "every": "1h", "say": "x" }), "s", &[Permission::Schedule], &mut problems)
-            .is_none());
-        assert!(problems[0].contains("voice.say"), "{problems:?}");
+        assert!(rhythm(
+            &json!({ "id": "w", "every": "1h", "say": "x" }),
+            "s",
+            &[right("call:system/schedule")],
+            &mut problems
+        )
+        .is_none());
+        assert!(problems[0].contains("call:system/voice"), "{problems:?}");
     }
 
     /// The station as the session registry gives it to the schedules: what it said, busy or not, there or not.
@@ -1282,11 +1303,11 @@ mod tests {
         export function brief({ schedule }) { return { say: `Сводка: ${schedule.id}` }; }
         export function broken() { throw new Error("сломалось"); }
         export function both() { return { say: "Сводка готова", notify: "Сводка: всё спокойно" }; }
-        export async function ping() { await host.notify("Привет из кода"); return null; }
+        export async function ping() { await host.bus.call("system/notify", "send", { text: "Привет из кода" }); return null; }
         export async function add({ text }) {
-            const parsed = await host.schedule.parse(text);
+            const parsed = await host.bus.call("system/schedule", "parse", { text });
             if (!parsed) return "Не поняла, когда.";
-            return await host.schedule.set({ ...parsed.spec, title: parsed.rest, say: `Напоминаю: ${parsed.rest}` });
+            return await host.bus.call("system/schedule", "set", { ...parsed.spec, title: parsed.rest, say: `Напоминаю: ${parsed.rest}` });
         }
     "#;
 
@@ -1297,14 +1318,6 @@ mod tests {
     impl crate::plugins::host_api::HostServices for Schedules {
         fn content(&self, _: &str, _: Option<String>, _: usize) -> BoxFuture<'static, Vec<Value>> {
             Box::pin(async { Vec::new() })
-        }
-        fn call_tool(
-            &self,
-            _: &str,
-            _: &str,
-            _: serde_json::Map<String, Value>,
-        ) -> BoxFuture<'static, Result<String, String>> {
-            Box::pin(async { Err("нет".to_string()) })
         }
         fn smart_home_devices(&self) -> BoxFuture<'static, Result<Value, String>> {
             Box::pin(async { Err("нет".to_string()) })
@@ -1331,6 +1344,27 @@ mod tests {
             let (scheduler, caller) = (self.0.get().and_then(Weak::upgrade), caller.to_string());
             Box::pin(async move {
                 scheduler.ok_or("нет".to_string())?.notify(&caller, &text).await.map(|()| Value::Bool(true))
+            })
+        }
+        /// Host API 2: the code's letters to `system/schedule` and `system/notify`, as the bus would carry them.
+        fn bus(
+            &self,
+            caller: &str,
+            name: &str,
+            input: Value,
+            _: Option<crate::bus::Trail>,
+        ) -> Option<BoxFuture<'static, Result<Value, String>>> {
+            assert_eq!(name, "bus.call");
+            let letter = input["input"].clone();
+            Some(match (input["to"].as_str(), input["handle"].as_str()) {
+                (Some("system/schedule"), Some(action)) => self.schedule(caller, action, letter),
+                (Some("system/notify"), Some("send")) => {
+                    self.notify(caller, letter["text"].as_str().unwrap_or_default().to_string())
+                }
+                (to, _) => {
+                    let to = to.unwrap_or_default().to_string();
+                    Box::pin(async move { Err(format!("нет такого: {to}")) })
+                }
             })
         }
     }
@@ -1370,8 +1404,8 @@ mod tests {
         use crate::settings::SettingsService;
         use crate::skills::media::sources::MediaSources;
         let manifest = json!({
-            "schema": 1, "id": "repeat", "version": "1.0.0", "title": "Повторы", "api": "^1.2", "runs": ["pc"],
-            "permissions": ["schedule", "voice.say", "notify"],
+            "schema": 1, "id": "repeat", "version": "1.0.0", "title": "Повторы", "api": "^2", "runs": ["pc"],
+            "permissions": ["call:system/schedule", "call:system/voice", "call:system/notify"],
             "contributes": { "schedules": [
                 { "id": "water", "every": "5m", "from": "00:00", "to": "24:00", "say": "Пора попить воды" },
                 { "id": "brief", "at": "07:30", "handler": "brief" },
@@ -1404,7 +1438,6 @@ mod tests {
             events,
             media: MediaSources::new(Vec::new()),
             placement: Arc::new(|| Placement::Pc),
-            speaker: Arc::new(|| None),
             runtime: Arc::new(crate::plugins::quickjs::QuickJs),
             memory: crate::plugins::budget::fake::plenty(),
             gauge: Default::default(),
@@ -1634,7 +1667,7 @@ mod tests {
         // A ready message without the right is a problem of the manifest.
         let mut problems = Vec::new();
         let item = json!({ "id": "n", "at": "09:00", "notify": "x" });
-        assert!(rhythm(&item, "s", &[Permission::Schedule], &mut problems).is_none());
-        assert!(problems[0].contains("право notify"), "{problems:?}");
+        assert!(rhythm(&item, "s", &[right("call:system/schedule")], &mut problems).is_none());
+        assert!(problems[0].contains("call:system/notify"), "{problems:?}");
     }
 }

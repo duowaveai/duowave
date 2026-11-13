@@ -748,6 +748,7 @@ impl VoiceLabService {
                     cwd: Some(lab.server_dir.clone()),
                     env: Some(child_env()),
                     limit_mb: Some(ceiling),
+                    anyway,
                     percent: Some((1.0, 99.0)),
                     labels: IMPRINT_LABELS,
                 };
@@ -1145,10 +1146,9 @@ impl VoiceLabService {
     }
 }
 
-/// A refusal stops the start; a warning stops it unless the owner said «всё равно».
+/// A warning stops the start unless the owner said «всё равно».
 fn admitted(admission: &Admission, anyway: bool) -> Result<(), ApiError> {
     match admission.verdict {
-        AdmissionVerdict::No => Err(ApiError::conflict(admission.reason.clone().unwrap_or_default())),
         AdmissionVerdict::Tight if !anyway => {
             Err(tight_memory(admission.reason.clone().unwrap_or_else(|| "Памяти впритык.".into())))
         }
@@ -1201,10 +1201,13 @@ pub(crate) mod testing {
             let result = if command == "sysctl" && args.get(1) == Some(&"machdep.cpu.brand_string") {
                 answer("Apple M4 Max\n".into())
             } else if command == "sysctl" {
-                // page, free, speculative, purgeable, reusable, file-backed, pressure level, swap-ins.
+                // By name, as `sysctl DARWIN_SYSCTL` answers: the free pages, the pressure level, no swap-ins yet.
                 let free = self.memory.free_mb.load(Ordering::SeqCst) * 64;
                 let level = self.memory.pressure_level.load(Ordering::SeqCst);
-                answer(format!("16384\n{free}\n0\n0\n0\n0\n{level}\n0"))
+                answer(format!(
+                    "hw.pagesize: 16384\nvm.page_free_count: {free}\nkern.memorystatus_vm_pressure_level: {level}\n\
+                     vm.compressor.swapper.swapins_total: 0\n"
+                ))
             } else if command == "uv" || command == "git" {
                 answer("ok".into())
             } else {

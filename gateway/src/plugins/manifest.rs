@@ -24,7 +24,7 @@ pub const MANIFEST_SCHEMA: u64 = 1;
 /// itself; additive, a plugin of `^1.1` still runs.
 /// 1.3 (docs/plans/midi.md): the right `midi` — a MIDI keyboard at the computer, heard and played by the app's page;
 /// additive, a plugin of `^1.2` still runs.
-pub const HOST_API: semver::Version = semver::Version::new(1, 3, 0);
+pub const HOST_API: semver::Version = semver::Version::new(2, 0, 0);
 
 /// What a plugin may ask for. The budget is a limit the runtime keeps, not a hint.
 pub const MAX_MEMORY_MB: u64 = 64;
@@ -125,95 +125,57 @@ impl Runtime {
     }
 }
 
-/// A right of a plugin, as the manifest names it.
+/// A right of a plugin, as the manifest names it (Host API 2, docs/plans/bus.md, «Один способ»): only two kinds —
+/// where on the internet it goes, and what in the house it reaches on the bus. What it gives (phrases, tools,
+/// sources, events) is said in `contributes`, its own store and folder are its own: none of these is a right.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Permission {
     /// `net:<host>`: `http.fetch` to this host; `net:*.example.com` to its subdomains.
     Net(String),
-    /// `voice.intents`: phrases the station hears go to the plugin.
-    VoiceIntents,
-    /// `lan.mdns`: an app announces itself in the home network (Spotify Connect): said to the admin, the process is
-    /// its own.
-    LanMdns,
-    /// `voice.say`: `host.voice.say`, speech without a request (a notice on an event).
-    VoiceSay,
-    /// `llm.tools`: tools for «Мозг».
-    LlmTools,
-    /// `media.source`: radio, music or tales for our player.
-    MediaSource,
-    /// `kv`: its own store in the gateway's database.
-    Kv,
-    /// `events`: the gateway's events it names in `contributes.events`.
-    Events,
-    /// `content:music`, `content:tales`: the household's own music or tales on the disk (CONTENT_DIR), to list and
-    /// to play (stage 10: built-in sources as plugins).
-    Content(String),
-    /// `tools.call`: other plugins' tools for «Мозг» (the morning show composes the weather and the news).
-    ToolsCall,
-    /// `smart_home`: the household's devices through the gateway's connector (Home Assistant) — its keys stay in
-    /// the gateway.
-    SmartHome,
-    /// `llm.chat`: an answer said by the gateway's model in the plugin's words (a game's host, a tale).
-    LlmChat,
-    /// `schedule`: it acts by itself in time — rhythms of its manifest, tasks of its code (plugins/schedule.rs, Host API
-    /// 1.2).
-    Schedule,
-    /// `files`: pictures it downloads and keeps (plugins/files.rs): PNG, JPEG, WebP, GIF within its room, less on the
-    /// station (Host API 1.2).
-    Files,
-    /// `notify`: a message to the owner — the chat «Оповещения», the webhook, the Mac's notifications; never anyone
-    /// else (Host API 1.2).
-    Notify,
-    /// `midi`: hear and play the MIDI keyboard plugged into the computer (src/midi) — on the app's page, at home, while
-    /// it listens; never in its backend, nor in a journal (Host API 1.3).
-    Midi,
+    /// `see:<адрес>`, `listen:…`, `call:…`, `edit:…`: a step of the ladder towards a pattern of addresses on the bus
+    /// (src/bus): `call:system/voice`, `call:app/notes`, `listen:device/midi`, `edit:files/home/Документы/*`. Asked
+    /// of a person the first time it is needed, like a phone; a built-in app has its own from the start.
+    Bus { level: crate::bus::Level, pattern: crate::bus::Pattern },
+}
+
+/// What a right of Host API 1 became (docs/plans/bus.md, «Один способ»): for the message that refuses the old word.
+pub fn right_now(old: &str) -> Option<&'static str> {
+    Some(match old {
+        "voice.intents" | "llm.tools" | "media.source" | "events" => "не нужно — хватает contributes",
+        "kv" | "files" => "не нужно — своё хранилище и своя папка без права",
+        "voice.say" => "call:system/voice",
+        "llm.chat" => "call:system/brain",
+        "tools.call" => "call:app/<id> или call:app/*",
+        "smart_home" => "call:system/smart-home",
+        "content:music" | "content:tales" => "call:system/content",
+        "notify" => "call:system/notify",
+        "schedule" => "call:system/schedule",
+        "midi" => "listen:device/midi",
+        "lan.mdns" => "не нужно — своя программа",
+        _ => return None,
+    })
 }
 
 impl Permission {
     pub fn parse(text: &str) -> Option<Permission> {
-        if let Some(host) = text.strip_prefix("net:") {
-            return host_pattern(host).then(|| Permission::Net(host.to_string()));
+        for (prefix, level) in [
+            ("see:", crate::bus::Level::See),
+            ("listen:", crate::bus::Level::Listen),
+            ("call:", crate::bus::Level::Call),
+            ("edit:", crate::bus::Level::Edit),
+        ] {
+            if let Some(pattern) = text.strip_prefix(prefix) {
+                return crate::bus::Pattern::parse(pattern).ok().map(|pattern| Permission::Bus { level, pattern });
+            }
         }
-        if let Some(folder) = text.strip_prefix("content:") {
-            return matches!(folder, "music" | "tales").then(|| Permission::Content(folder.to_string()));
-        }
-        Some(match text {
-            "voice.intents" => Permission::VoiceIntents,
-            "lan.mdns" => Permission::LanMdns,
-            "voice.say" => Permission::VoiceSay,
-            "llm.tools" => Permission::LlmTools,
-            "media.source" => Permission::MediaSource,
-            "kv" => Permission::Kv,
-            "events" => Permission::Events,
-            "tools.call" => Permission::ToolsCall,
-            "smart_home" => Permission::SmartHome,
-            "llm.chat" => Permission::LlmChat,
-            "schedule" => Permission::Schedule,
-            "notify" => Permission::Notify,
-            "files" => Permission::Files,
-            "midi" => Permission::Midi,
-            _ => return None,
-        })
+        let host = text.strip_prefix("net:")?;
+        host_pattern(host).then(|| Permission::Net(host.to_string()))
     }
 
     pub fn name(&self) -> String {
         match self {
             Permission::Net(host) => format!("net:{host}"),
-            Permission::VoiceIntents => "voice.intents".into(),
-            Permission::LanMdns => "lan.mdns".into(),
-            Permission::VoiceSay => "voice.say".into(),
-            Permission::LlmTools => "llm.tools".into(),
-            Permission::MediaSource => "media.source".into(),
-            Permission::Kv => "kv".into(),
-            Permission::Events => "events".into(),
-            Permission::Content(folder) => format!("content:{folder}"),
-            Permission::ToolsCall => "tools.call".into(),
-            Permission::SmartHome => "smart_home".into(),
-            Permission::LlmChat => "llm.chat".into(),
-            Permission::Schedule => "schedule".into(),
-            Permission::Notify => "notify".into(),
-            Permission::Files => "files".into(),
-            Permission::Midi => "midi".into(),
+            Permission::Bus { level, pattern } => format!("{}:{pattern}", level.as_str()),
         }
     }
 }
@@ -250,6 +212,9 @@ pub struct Budget {
     pub memory_mb: u64,
     /// Its `kv` store at most this big.
     pub storage_mb: u64,
+    /// Its own folder on the bus (`files/app/<id>`) at most this big on a computer; the station keeps all files within
+    /// its 5 MB (src/bus/providers/files.rs).
+    pub files_mb: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -317,6 +282,8 @@ pub struct ToolSpec {
     pub capability: CapabilityName,
     /// MCP's `readOnlyHint`: it changes nothing, so it stays offered after a text from outside the house.
     pub read_only: bool,
+    /// MCP's `destructiveHint` (it removes) or `openWorldHint` (it reaches outside): a dangerous handle on the bus.
+    pub danger: Option<crate::bus::danger::Danger>,
 }
 
 /// A source of media for our player: its function takes `{query, limit}` and gives items.
@@ -352,11 +319,55 @@ pub struct Contributes {
     pub events: Vec<EventSpec>,
     /// Rhythms: it acts by itself in time (plugins/schedule.rs).
     pub schedules: Vec<ScheduleSpec>,
+    /// Its part on the bus (src/bus, Host API 1.4): personal and dangerous handles, the news it tells, the news it
+    /// listens to, the function that answers in words.
+    pub bus: BusSpec,
     /// The panel's part, themes and characters: kept as they are for the panel (stage 5) and the characters
     /// (docs/plans/characters.md); the plugin host does not read them.
     pub panel: Option<Value>,
     pub themes: Option<Value>,
     pub characters: Option<Value>,
+}
+
+/// `contributes.bus` (src/bus, docs/plans/bus.md).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BusSpec {
+    /// Handles open only to a link made for them (its tools and panel functions by name).
+    pub private: Vec<String>,
+    /// Handles it marks dangerous itself: a mark may only be added, never taken away.
+    pub danger: std::collections::BTreeMap<String, crate::bus::danger::Danger>,
+    /// The news it tells (`host.bus.tell`).
+    pub emits: Vec<String>,
+    /// The news it listens to: whose (a pattern), which, and its function that takes it.
+    pub on: Vec<OnSpec>,
+    /// Its function that answers a question in words (`host.bus.ask`).
+    pub ask: Option<String>,
+}
+
+impl BusSpec {
+    /// Nothing on the bus: no personal or dangerous handle, no news told or heard, no answer in words.
+    pub fn is_empty(&self) -> bool {
+        self.private.is_empty()
+            && self.danger.is_empty()
+            && self.emits.is_empty()
+            && self.on.is_empty()
+            && self.ask.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OnSpec {
+    pub from: crate::bus::Pattern,
+    pub event: String,
+    pub handler: String,
+}
+
+/// A name of news: lower case letters, digits, `.`, `-`, `_`, a letter first.
+pub fn news_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|first| first.is_ascii_lowercase())
+        && name.len() <= 64
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-' | '_'))
 }
 
 #[derive(Debug, Clone)]
@@ -391,34 +402,22 @@ pub struct Manifest {
     pub data_version: Option<u32>,
 }
 
-impl Permission {
-    /// A right Host API 1.3 brought: a package with it needs `"api": "^1.3"`, a 1.2 gateway refuses it as unknown.
-    pub fn since_1_3(&self) -> bool {
-        matches!(self, Permission::Midi)
-    }
-
-    /// A right Host API 1.2 brought: a package with it needs `"api": "^1.2"`, a 1.1 gateway refuses it as unknown.
-    pub fn since_1_2(&self) -> bool {
-        matches!(self, Permission::Schedule | Permission::Notify | Permission::Files)
-    }
-
-    /// A right Host API 1.1 brought (stage 10, the apps): a package with it needs `"api": "^1.1"`, a 1.0 gateway
-    /// refuses it as unknown.
-    pub fn since_1_1(&self) -> bool {
-        matches!(
-            self,
-            Permission::Content(_)
-                | Permission::ToolsCall
-                | Permission::SmartHome
-                | Permission::LlmChat
-                | Permission::LanMdns
-        )
-    }
-}
-
 impl Manifest {
     pub fn has(&self, permission: &Permission) -> bool {
         self.permissions.contains(permission)
+    }
+
+    /// How far it asked to reach `address` on the bus: the highest step of its rights whose pattern matches.
+    pub fn asks(&self, address: &str) -> crate::bus::Level {
+        let Ok(address) = crate::bus::Address::parse(address) else { return crate::bus::Level::None };
+        self.permissions
+            .iter()
+            .filter_map(|permission| match permission {
+                Permission::Bus { level, pattern } if pattern.matches(&address) => Some(*level),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(crate::bus::Level::None)
     }
 
     /// The hosts it may reach.
@@ -603,10 +602,15 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
     }
 
     let api = text("api").unwrap_or_default().to_string();
+    // The Host API is code's: a character or a theme is data, any version of it reads.
+    let coded = matches!(kind, PackageKind::Plugin | PackageKind::App);
     match semver::VersionReq::parse(&api) {
-        Ok(requirement) if requirement.matches(&HOST_API) => {}
+        Ok(requirement) if requirement.matches(&HOST_API) || !coded => {}
+        Ok(_) if api.starts_with("^1") || api.starts_with("1") || api.starts_with(">=1") => problems.push(format!(
+            "приложение для Host API 1 ({api}), а у шлюза {HOST_API}: переделайте его в мастерской («api»: «^2», права — связи шины) или удалите"
+        )),
         Ok(_) => problems.push(format!("нужен Host API {api}, а у шлюза {}", HOST_API)),
-        Err(_) => problems.push("api: требование к версии Host API, например «^1»".into()),
+        Err(_) => problems.push("api: требование к версии Host API, например «^2»".into()),
     }
     let runtime = match text("runtime") {
         None | Some("js") => Runtime::Js,
@@ -708,6 +712,7 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
     let budget = Budget {
         memory_mb: limit("memoryMb", DEFAULT_MEMORY_MB, MAX_MEMORY_MB, &mut problems),
         storage_mb: limit("storageMb", DEFAULT_STORAGE_MB, MAX_STORAGE_MB, &mut problems),
+        files_mb: limit("filesMb", crate::bus::providers::files::APP_FOLDER_MB, 4096, &mut problems),
     };
 
     let mut permissions = BTreeSet::new();
@@ -719,10 +724,15 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
                     Some(permission) => {
                         permissions.insert(permission);
                     }
-                    None => problems.push(format!(
-                        "permissions: «{}» — неизвестное право (есть net:<хост>, voice.intents, voice.say, llm.tools, llm.chat, media.source, content:music, content:tales, kv, events, tools.call, smart_home, lan.mdns, schedule, notify, files)",
-                        crate::skills::js::string_of(name)
-                    )),
+                    None => {
+                        let text = crate::skills::js::string_of(name);
+                        problems.push(match right_now(&text) {
+                            Some(now) => format!("permissions: «{text}» — право Host API 1; теперь: {now}"),
+                            None => format!(
+                                "permissions: «{text}» — нет такого права: есть net:<хост> и связи see:/listen:/call:/edit:<адрес>"
+                            ),
+                        })
+                    }
                 }
             }
         }
@@ -741,7 +751,11 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
         }
     }
     // A keyboard is plugged into a computer (docs/plans/midi.md): an app that hears one must run there.
-    if permissions.contains(&Permission::Midi) && !runs.contains(&Placement::Pc) {
+    let hears_midi = permissions.iter().any(|permission| {
+        matches!(permission, Permission::Bus { level, pattern }
+            if *level >= crate::bus::Level::Listen && crate::bus::Address::parse("device/midi").is_ok_and(|midi| pattern.matches(&midi)))
+    });
+    if hears_midi && !runs.contains(&Placement::Pc) {
         problems.push("midi: MIDI-клавиатура подключается к компьютеру — добавьте pc в runs".into());
     }
     // A character and a theme are data: what needs code is a plugin's to give.
@@ -880,10 +894,12 @@ fn capability_of(item: &Value, at: &str, problems: &mut Vec<String>) -> Capabili
     }
 }
 
-fn need(permissions: &[Permission], permission: Permission, what: &str, problems: &mut Vec<String>) {
-    if !permissions.contains(&permission) {
-        problems.push(format!("contributes.{what}: нужно право {}", permission.name()));
-    }
+/// Whether the rights reach `address` on the bus at least at `level`.
+pub fn asks(permissions: &[Permission], address: &str, level: crate::bus::Level) -> bool {
+    let Ok(address) = crate::bus::Address::parse(address) else { return false };
+    permissions.iter().any(|permission| {
+        matches!(permission, Permission::Bus { level: have, pattern } if *have >= level && pattern.matches(&address))
+    })
 }
 
 fn list<'a>(contributes: &'a Map<String, Value>, key: &str, problems: &mut Vec<String>) -> &'a [Value] {
@@ -911,9 +927,6 @@ fn contributes(value: Option<&Value>, permissions: &[Permission], problems: &mut
     };
 
     let intents = list(contributes, "intents", problems);
-    if !intents.is_empty() {
-        need(permissions, Permission::VoiceIntents, "intents", problems);
-    }
     let mut phrases_seen = 0;
     for (index, item) in intents.iter().enumerate() {
         let at = format!("contributes.intents[{index}]");
@@ -940,9 +953,6 @@ fn contributes(value: Option<&Value>, permissions: &[Permission], problems: &mut
     }
 
     let tools = list(contributes, "tools", problems);
-    if !tools.is_empty() {
-        need(permissions, Permission::LlmTools, "tools", problems);
-    }
     if tools.len() > MAX_TOOLS {
         problems.push(format!("contributes.tools: не больше {MAX_TOOLS}"));
     }
@@ -976,6 +986,8 @@ fn contributes(value: Option<&Value>, permissions: &[Permission], problems: &mut
             }
         };
         let read_only = item.pointer("/annotations/readOnlyHint").and_then(Value::as_bool).unwrap_or(false);
+        let hint = |name: &str| item.pointer(&format!("/annotations/{name}")).and_then(Value::as_bool).unwrap_or(false);
+        let danger = crate::bus::danger::Danger::of_annotations(hint("destructiveHint"), hint("openWorldHint"));
         out.tools.push(ToolSpec {
             handler: handler_of(item, &name, &at, problems),
             capability: capability_of(item, &at, problems),
@@ -983,13 +995,11 @@ fn contributes(value: Option<&Value>, permissions: &[Permission], problems: &mut
             description,
             input,
             read_only,
+            danger: if read_only { None } else { danger },
         });
     }
 
     let media = list(contributes, "media", problems);
-    if !media.is_empty() {
-        need(permissions, Permission::MediaSource, "media", problems);
-    }
     for (index, item) in media.iter().enumerate() {
         let at = format!("contributes.media[{index}]");
         let id = item.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -1007,9 +1017,6 @@ fn contributes(value: Option<&Value>, permissions: &[Permission], problems: &mut
     }
 
     let events = list(contributes, "events", problems);
-    if !events.is_empty() {
-        need(permissions, Permission::Events, "events", problems);
-    }
     for (index, item) in events.iter().enumerate() {
         let at = format!("contributes.events[{index}]");
         let name = item.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -1021,8 +1028,8 @@ fn contributes(value: Option<&Value>, permissions: &[Permission], problems: &mut
         out.events.push(EventSpec { name, handler });
     }
     let schedules = list(contributes, "schedules", problems);
-    if !schedules.is_empty() {
-        need(permissions, Permission::Schedule, "schedules", problems);
+    if !schedules.is_empty() && !asks(permissions, "system/schedule", crate::bus::Level::Call) {
+        problems.push("contributes.schedules: нужна связь call:system/schedule".into());
     }
     if schedules.len() > super::schedule::MAX_RHYTHMS {
         problems.push(format!("contributes.schedules: до {} ритмов", super::schedule::MAX_RHYTHMS));
@@ -1036,7 +1043,89 @@ fn contributes(value: Option<&Value>, permissions: &[Permission], problems: &mut
         }
         out.schedules.push(spec);
     }
+    out.bus = bus_spec(contributes.get("bus"), permissions, problems);
     out
+}
+
+/// `contributes.bus`: every problem named.
+fn bus_spec(value: Option<&Value>, permissions: &[Permission], problems: &mut Vec<String>) -> BusSpec {
+    let Some(value) = value else { return BusSpec::default() };
+    let Some(bus) = value.as_object() else {
+        problems.push("contributes.bus: объект".into());
+        return BusSpec::default();
+    };
+    let mut spec = BusSpec::default();
+    let names = |key: &str, problems: &mut Vec<String>| -> Vec<String> {
+        match bus.get(key) {
+            None => Vec::new(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .filter_map(|item| match item.as_str() {
+                    Some(name) if identifier(name) || news_name(name) => Some(name.to_string()),
+                    _ => {
+                        problems
+                            .push(format!("contributes.bus.{key}: «{}» — не имя", crate::skills::js::string_of(item)));
+                        None
+                    }
+                })
+                .collect(),
+            Some(_) => {
+                problems.push(format!("contributes.bus.{key}: список имён"));
+                Vec::new()
+            }
+        }
+    };
+    spec.private = names("private", problems);
+    spec.emits = names("emits", problems);
+    if let Some(marks) = bus.get("danger") {
+        match marks.as_object() {
+            Some(marks) => {
+                for (handle, mark) in marks {
+                    match mark.as_str().and_then(crate::bus::danger::Danger::parse) {
+                        Some(danger) => {
+                            spec.danger.insert(handle.clone(), danger);
+                        }
+                        None => problems.push(format!(
+                            "contributes.bus.danger.{handle}: money, delete, outside, locks, camera или access"
+                        )),
+                    }
+                }
+            }
+            None => problems.push("contributes.bus.danger: объект «умение → опасность»".into()),
+        }
+    }
+    if let Some(ask) = bus.get("ask") {
+        match ask.as_str().filter(|name| identifier(name)) {
+            Some(name) => spec.ask = Some(name.to_string()),
+            None => problems.push("contributes.bus.ask: имя функции, что отвечает словами".into()),
+        }
+    }
+    let heard: Vec<&crate::bus::Pattern> = permissions
+        .iter()
+        .filter_map(|permission| match permission {
+            Permission::Bus { level, pattern } if *level >= crate::bus::Level::Listen => Some(pattern),
+            _ => None,
+        })
+        .collect();
+    for (index, item) in bus.get("on").and_then(Value::as_array).into_iter().flatten().enumerate() {
+        let at = format!("contributes.bus.on[{index}]");
+        let from = item.get("from").and_then(Value::as_str).map(crate::bus::Pattern::parse);
+        let Some(Ok(from)) = from else {
+            problems.push(format!("{at}: from — чей адрес (app/shopping, files/home/Фото/*)"));
+            continue;
+        };
+        let event = item.get("event").and_then(Value::as_str).unwrap_or_default().to_string();
+        if !news_name(&event) {
+            problems.push(format!("{at}: event — имя новости"));
+            continue;
+        }
+        if !heard.iter().any(|pattern| pattern.covers(&from)) {
+            problems.push(format!("{at}: слушать «{from}» — нужно право listen:{from}"));
+        }
+        let handler = handler_of(item, "", &at, problems);
+        spec.on.push(OnSpec { from, event, handler });
+    }
+    spec
 }
 
 #[cfg(test)]
@@ -1049,10 +1138,10 @@ mod tests {
             "id": "radio",
             "version": "1.2.0",
             "title": "Радио со всего мира",
-            "api": "^1",
+            "api": "^2",
             "runs": ["pc", "station", "stationServer"],
             "budget": { "memoryMb": 4, "storageMb": 2 },
-            "permissions": ["net:*.api.radio-browser.info", "media.source", "voice.intents", "llm.tools", "kv"],
+            "permissions": ["net:*.api.radio-browser.info"],
             "settings": [{ "key": "country", "type": "string", "title": "Страна", "default": "RU" }],
             "contributes": {
                 "intents": [{ "phrases": ["включи радио {station}"], "handler": "playStation", "capability": "radio" }],
@@ -1083,7 +1172,10 @@ mod tests {
         let manifest = check(&radio()).unwrap();
         assert_eq!((manifest.id.as_str(), manifest.version.to_string()), ("radio", "1.2.0".into()));
         assert_eq!(manifest.runs, [Placement::Pc, Placement::Station, Placement::StationServer]);
-        assert_eq!(manifest.budget, Budget { memory_mb: 4, storage_mb: 2 });
+        assert_eq!(
+            manifest.budget,
+            Budget { memory_mb: 4, storage_mb: 2, files_mb: crate::bus::providers::files::APP_FOLDER_MB }
+        );
         assert_eq!(manifest.hosts(), ["*.api.radio-browser.info"]);
         let intent = &manifest.contributes.intents[0];
         assert_eq!((intent.handler.as_str(), intent.capability), ("playStation", CapabilityName::Radio));
@@ -1129,8 +1221,15 @@ mod tests {
 
     #[test]
     fn refuses_another_host_api_or_a_placement_it_does_not_name_with_the_reason() {
-        let newer = problems(with(radio(), "/api", json!("^2")));
-        assert_eq!(newer, [format!("нужен Host API ^2, а у шлюза {HOST_API}")]);
+        let newer = problems(with(radio(), "/api", json!("^3")));
+        assert_eq!(newer, [format!("нужен Host API ^3, а у шлюза {HOST_API}")]);
+        // An app for Host API 1 is told what to do with it.
+        let older = problems(with(radio(), "/api", json!("^1.1")));
+        assert!(older[0].contains("Host API 1") && older[0].contains("переделайте"), "{older:?}");
+        // A character or a theme is data: any Host API reads.
+        let character = json!({ "schema": 1, "kind": "character", "id": "ded", "version": "1.0.0", "title": "Дед", "api": "^1",
+            "runs": ["pc"], "contributes": { "characters": [] } });
+        assert!(check(&character).is_ok(), "{:?}", check(&character).err());
         assert!(check(&with(radio(), "/api", json!(">=1.0.0, <3"))).is_ok());
         let unknown = problems(with(radio(), "/runs", json!(["pc", "station+home"])));
         assert_eq!(unknown, ["runs: «station+home» — нет такого размещения; есть pc, station, stationServer"]);
@@ -1158,10 +1257,10 @@ mod tests {
             "schema": 1,
             "id": "Radio!",
             "version": "one",
-            "api": "^1",
+            "api": "^2",
             "runs": [],
             "budget": { "memoryMb": 500 },
-            "permissions": ["camera", "net:http://x.ru"],
+            "permissions": ["camera", "net:http://x.ru", "voice.say"],
             "contributes": {
                 "intents": [{ "phrases": ["{station}"], "handler": "play station" }],
                 "tools": [{ "name": "set_timer", "description": "" }],
@@ -1178,15 +1277,12 @@ mod tests {
             "budget.memoryMb",
             "«camera»",
             "«net:http://x.ru»",
-            "нужно право voice.intents",
+            "«voice.say» — право Host API 1; теперь: call:system/voice",
             "начинаться со слова",
             "handler «play station»",
-            "нужно право llm.tools",
             "«set_timer» занято",
             "нужно description",
-            "нужно право media.source",
             "kind — radio, music или tales",
-            "нужно право events",
             "«request.updated»",
         ] {
             assert!(found.iter().any(|problem| problem.contains(expected)), "{expected} in {found:#?}");
@@ -1197,7 +1293,7 @@ mod tests {
     fn reads_every_kind_of_package_in_one_format_and_keeps_code_to_plugins() {
         assert_eq!(check(&radio()).unwrap().kind, PackageKind::Plugin, "a plugin when it does not say");
         let character = json!({
-            "schema": 1, "kind": "character", "id": "ded-moroz", "version": "1.0.0", "title": "Дед Мороз", "api": "^1",
+            "schema": 1, "kind": "character", "id": "ded-moroz", "version": "1.0.0", "title": "Дед Мороз", "api": "^2",
             "runs": ["pc", "station", "stationServer"],
             "contributes": { "characters": [{ "id": "ded-moroz", "prompt": "…", "voices": { "omnivoice": "…" } }] }
         });
@@ -1214,7 +1310,7 @@ mod tests {
         let unknown = with(character.clone(), "/kind", json!("skin"));
         assert_eq!(problems(unknown), ["kind «skin»: такого вида пакетов нет; есть plugin, app, character, theme"]);
         let mut talking = character.clone();
-        talking["permissions"] = json!(["voice.intents"]);
+        talking["permissions"] = json!([]);
         talking["contributes"]["intents"] = json!([{ "phrases": ["скажи хо-хо"], "handler": "ho" }]);
         assert_eq!(problems(talking), ["contributes.intents: у пакета вида character нет кода, это дело плагина"]);
         let mut app = with(character, "/kind", json!("app"));

@@ -293,7 +293,7 @@ pub mod tests {
 
     pub fn character_manifest(id: &str, version: &str) -> Value {
         json!({
-            "schema": 1, "kind": "character", "id": id, "version": version, "title": "Артур", "api": "^1",
+            "schema": 1, "kind": "character", "id": id, "version": version, "title": "Артур", "api": "^2",
             "runs": ["pc", "station", "stationServer"], "license": "CC BY-NC 4.0, некоммерчески",
             "contributes": { "characters": [{ "id": id, "prompt": "Ты — Артур, дворецкий.", "gender": "male" }] }
         })

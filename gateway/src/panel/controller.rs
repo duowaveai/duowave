@@ -65,29 +65,45 @@ pub fn index(files: &dyn PanelFiles) -> Result<Response, ApiError> {
     Ok(response)
 }
 
-/// Built assets live under /panel/assets/*; anything else falls back to the app shell.
+/// The page of an app's window (docs/plans/bus.md, «Окошки»): sandboxed by its own policy whatever frames it or
+/// opens it, so the app's code never runs with the panel's origin — its key, its storage — and reaches no address by
+/// itself: everything goes through the panel's bridge, as the bus allows.
+pub fn frame(files: &dyn PanelFiles) -> Result<Response, ApiError> {
+    let html = files.get("frame.html").ok_or_else(|| ApiError::not_found(NOT_BUILT))?;
+    let policy = frame_policy(&String::from_utf8_lossy(&html));
+    let mut response = Response::new(Body::from(html.into_owned()));
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html; charset=utf-8"));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    if let Ok(policy) = HeaderValue::from_str(&policy) {
+        headers.insert(header::CONTENT_SECURITY_POLICY, policy);
+    }
+    Ok(response)
+}
+
+/// Built assets live under /panel/assets/*; anything else falls back to the app shell. They are public files: an
+/// app's window, a frame of no origin, loads them across origins (`Access-Control-Allow-Origin: *`).
 pub fn asset(files: &dyn PanelFiles, relative: &str) -> Result<Response, ApiError> {
     let relative = relative.trim_start_matches('/');
+    if relative == "frame.html" {
+        return frame(files);
+    }
     let shell = relative.is_empty() || relative == "index.html" || relative.ends_with("/index.html");
     match files.get(relative).filter(|_| !shell) {
-        Some(data) => Ok(([(header::CONTENT_TYPE, mime(relative))], data.into_owned()).into_response()),
+        Some(data) => Ok((
+            [(header::CONTENT_TYPE, mime(relative)), (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")],
+            data.into_owned(),
+        )
+            .into_response()),
         None => index(files),
     }
 }
 
-/// The panel's content policy: its own scripts and the inline theme script by its hash, its own styles (inline style
-/// attributes too), its own API; framed only by itself — the helper opens the station's sections in windows that are
-/// the panel again, through the pass (docs/plans/desk.md, stage 4), and no other site may frame it. A script injected
-/// into the page runs nowhere, and no form sends anything away from it (`form-action 'self'`). Audio may come from
-/// blob: — the takes and samples of the own voices are fetched with the session's key and played from memory (an
-/// <audio src> cannot send the key); so may images — the packages' avatars and the catalog's previews come the same
-/// way; media never runs. The recording worklet is the panel's own file.
-pub fn panel_policy(html: &str) -> String {
+/// The inline scripts of a page by their hashes: the theme's boot, the import map (an import map is an inline script
+/// to the content policy too). A script with a `src` is the panel's own file, under 'self'.
+fn inline_hashes(html: &str) -> Vec<String> {
     let mut inline = Vec::new();
     let mut rest = html;
-    // Inline scripts by their hash: the theme's boot and the import map (`<script type="importmap">`) that gives the
-    // plugins' panel modules the panel's own Preact and SDK (docs/plans/plugins.md, stage 5) — an import map is an
-    // inline script to the content policy too. A script with a `src` is the panel's own file, under 'self'.
     while let Some(start) = rest.find("<script") {
         let after = &rest[start + "<script".len()..];
         let Some(close) = after.find('>') else { break };
@@ -100,7 +116,42 @@ pub fn panel_policy(html: &str) -> String {
         }
         rest = &body[end + "</script>".len()..];
     }
-    let scripts = format!("script-src 'self' {}", inline.join(" "));
+    inline
+}
+
+/// The window's content policy: a sandbox of no origin (scripts only — no same origin, no forms, no popups, no
+/// navigation of the panel), the panel's own scripts and the app's module, pictures from memory, and no connection
+/// anywhere (`connect-src 'none'`): no fetch, no socket. Framed only by the panel.
+pub fn frame_policy(html: &str) -> String {
+    let scripts = format!("script-src 'self' {}", inline_hashes(html).join(" "));
+    [
+        "sandbox allow-scripts",
+        "default-src 'none'",
+        scripts.trim_end(),
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob:",
+        "media-src 'self' data: blob:",
+        "font-src 'self' data:",
+        "connect-src 'none'",
+        "object-src 'none'",
+        "base-uri 'none'",
+        "form-action 'none'",
+        "frame-ancestors 'self'",
+    ]
+    .join("; ")
+}
+
+/// The panel's content policy: its own scripts and the inline theme script by its hash, its own styles (inline style
+/// attributes too), its own API; framed only by itself — the helper opens the station's sections in windows that are
+/// the panel again, through the pass (docs/plans/desk.md, stage 4), and no other site may frame it. A script injected
+/// into the page runs nowhere, and no form sends anything away from it (`form-action 'self'`). Audio may come from
+/// blob: — the takes and samples of the own voices are fetched with the session's key and played from memory (an
+/// <audio src> cannot send the key); so may images — the packages' avatars and the catalog's previews come the same
+/// way; media never runs. The recording worklet is the panel's own file.
+pub fn panel_policy(html: &str) -> String {
+    // Inline scripts by their hash: the theme's boot and the import map (`<script type="importmap">`) that gives the
+    // plugins' panel modules the panel's own Preact and SDK (docs/plans/plugins.md, stage 5).
+    let scripts = format!("script-src 'self' {}", inline_hashes(html).join(" "));
     [
         "default-src 'self'",
         scripts.trim_end(),
@@ -175,6 +226,27 @@ mod tests {
             "the packages' avatars"
         );
         assert_eq!(directive(&policy, "frame-ancestors").as_deref(), Some("frame-ancestors 'self'"));
+    }
+
+    /// An app's window: sandboxed by its own policy, no connection anywhere, the import map by its hash.
+    #[tokio::test]
+    async fn the_window_page_is_a_sandbox_that_connects_nowhere() {
+        let map = r#"{"imports":{"preact":"/panel/sdk/preact.js"}}"#;
+        let page = format!(r#"<html><script type="importmap">{map}</script></html>"#);
+        let policy = frame_policy(&page);
+        assert!(policy.starts_with("sandbox allow-scripts; default-src 'none'"), "{policy}");
+        let hash = B64.encode(Sha256::digest(map.as_bytes()));
+        assert_eq!(directive(&policy, "script-src"), Some(format!("script-src 'self' 'sha256-{hash}'")));
+        assert_eq!(directive(&policy, "connect-src").as_deref(), Some("connect-src 'none'"));
+        assert_eq!(directive(&policy, "form-action").as_deref(), Some("form-action 'none'"));
+        let files = Files(HashMap::from([("frame.html", "<html>окно</html>"), ("assets/frame.js", "x")]));
+        let served = asset(&files, "frame.html").unwrap();
+        assert!(served.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .starts_with("sandbox allow-scripts"));
+        let script = asset(&files, "assets/frame.js").unwrap();
+        assert_eq!(script.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
     }
 
     /// Review S3: code that got into the page (a draft's panel.js) sends no form with the session elsewhere.

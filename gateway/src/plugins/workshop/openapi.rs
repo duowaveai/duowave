@@ -220,10 +220,10 @@ pub fn draft_from(id: &str, title: Option<&str>, document: &str) -> Result<Vec<(
         "version": "0.1.0",
         "title": title,
         "description": spec.pointer("/info/description").and_then(Value::as_str).unwrap_or("Инструменты API для «Мозга»").chars().take(300).collect::<String>(),
-        "api": "^1",
+        "api": "^2",
         "runs": ["pc", "station", "stationServer"],
         "budget": { "memoryMb": 4, "storageMb": 1 },
-        "permissions": [format!("net:{host}"), "llm.tools".to_string()],
+        "permissions": [format!("net:{host}")],
         "settings": settings,
         "contributes": { "tools": tools }
     });

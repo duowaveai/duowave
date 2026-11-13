@@ -80,10 +80,13 @@ echo "{\"stage\":\"done\",\"percent\":100,\"peakMb\":2100,\"rtf\":1.2,\"refSecon
             let result = if command == "sysctl" && args.get(1) == Some(&"machdep.cpu.brand_string") {
                 answer("Apple M4 Max\n".into())
             } else if command == "sysctl" {
-                // page, free, speculative, purgeable, reusable, file-backed, pressure level, swap-ins.
+                // By name, as `sysctl DARWIN_SYSCTL` answers: the free pages, the pressure level, no swap-ins yet.
                 let free = self.memory.free_mb.load(Ordering::SeqCst) * 64;
                 let level = self.memory.pressure_level.load(Ordering::SeqCst);
-                answer(format!("16384\n{free}\n0\n0\n0\n0\n{level}\n0"))
+                answer(format!(
+                    "hw.pagesize: 16384\nvm.page_free_count: {free}\nkern.memorystatus_vm_pressure_level: {level}\n\
+                     vm.compressor.swapper.swapins_total: 0\n"
+                ))
             } else if command == "uv" || command == "git" {
                 answer("ok".into())
             } else {
@@ -479,7 +482,7 @@ echo "{\"stage\":\"done\",\"percent\":100,\"peakMb\":2100,\"rtf\":1.2,\"refSecon
     }
 
     #[tokio::test]
-    async fn only_warns_when_memory_is_tight_and_starts_on_the_owners_vse_ravno_refuses_while_the_mac_is_short() {
+    async fn only_warns_when_memory_is_tight_or_the_mac_is_short_and_starts_on_the_owners_vse_ravno() {
         let gw = gateway().await.signed_in().await;
         // Measured once (2.1 GB), the imprint needs 2.4 GB with its margin; its ceiling is half again above.
         gw.imprint("Мой голос").await;
@@ -497,9 +500,9 @@ echo "{\"stage\":\"done\",\"percent\":100,\"peakMb\":2100,\"rtf\":1.2,\"refSecon
             "Памяти впритык: свободно 3,9 ГБ, нужно около 2,4 ГБ, а 2,2 ГБ держу для колонки — она может подтормаживать."
         );
         gw.memory.pressure_level.store(2, Ordering::SeqCst);
-        let refused = imprint(true).await;
-        assert_eq!(refused.status, StatusCode::CONFLICT);
-        assert!(refused.body["message"].as_str().unwrap().contains("не хватает памяти"));
+        let pressed = imprint(false).await;
+        assert_eq!(pressed.status, StatusCode::PRECONDITION_REQUIRED, "13.11: a warning, never a refusal");
+        assert!(pressed.body["message"].as_str().unwrap().contains("не хватает памяти"));
         gw.memory.pressure_level.store(1, Ordering::SeqCst);
         assert_eq!(imprint(true).await.status, StatusCode::CREATED);
         let job = gw.finished_job().await;

@@ -2,21 +2,54 @@
   "schema": 1,
   "kind": "plugin",
   "id": "morning",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "title": "Утреннее шоу",
   "description": "Утреннее шоу из приложений: погода, пара главных новостей и музыка — своя из папки, а без неё радио. «Алиса, доброе утро» или «включи утреннее шоу».",
-  "api": "^1.1",
-  "runs": ["pc", "station", "stationServer"],
-  "budget": { "memoryMb": 4, "storageMb": 1 },
-  "permissions": ["voice.intents", "tools.call", "content:music", "media.source"],
+  "api": "^2",
+  "runs": [
+    "pc",
+    "station",
+    "stationServer"
+  ],
+  "budget": {
+    "memoryMb": 4,
+    "storageMb": 1
+  },
+  "permissions": [
+    "call:app/weather",
+    "call:app/news",
+    "call:app/radio",
+    "call:system/content"
+  ],
   "settings": [
-    { "key": "news", "type": "boolean", "title": "Новости в шоу", "default": true },
-    { "key": "music", "type": "string", "title": "Что играть после", "options": ["своя музыка", "радио"], "default": "своя музыка" }
+    {
+      "key": "news",
+      "type": "boolean",
+      "title": "Новости в шоу",
+      "default": true
+    },
+    {
+      "key": "music",
+      "type": "string",
+      "title": "Что играть после",
+      "options": [
+        "своя музыка",
+        "радио"
+      ],
+      "default": "своя музыка"
+    }
   ],
   "contributes": {
     "intents": [
       {
-        "phrases": ["утреннее шоу", "включи утреннее шоу", "запусти утреннее шоу", "давай утреннее шоу", "доброе утро", "шоу алисы"],
+        "phrases": [
+          "утреннее шоу",
+          "включи утреннее шоу",
+          "запусти утреннее шоу",
+          "давай утреннее шоу",
+          "доброе утро",
+          "шоу алисы"
+        ],
         "handler": "show",
         "capability": "morning_show"
       }

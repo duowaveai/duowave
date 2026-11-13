@@ -2979,6 +2979,7 @@ impl StationSession {
             media_base_url: self.deps.skills.media_base_url(self.host.as_deref()),
             now: chrono::Utc::now(),
             cancel,
+            speaker: Some(self.speaker(text)),
         }
     }
 

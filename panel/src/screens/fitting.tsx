@@ -26,6 +26,7 @@ import { useMicHold, useVoiceAction } from '../voice/phrases';
 import { hideStrip, stripNow } from '../voice/strip';
 import { placeOnCanvas } from './desk-canvas';
 import { DraftWidgetPreview, madeByVoice, mayRunDraft, trustOwnDraft, trustedCode } from './draft-preview';
+import { DraftCardPreview } from '../cards/draft-card';
 import { faceWord } from './draft-tile';
 
 /** Ширина плитки на столе: так она встанет. */
@@ -112,10 +113,10 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
             alive = false;
         };
     }, [id, version]);
-    // Код виджета: попросили в пульте — без вопроса; колонкой — после «да» на вопрос.
+    // Код виджета работает в своём окошке, без прав пульта (docs/plans/bus.md, «Окошки»): показ без вопроса — и
+    // у черновика, попрошенного у колонки.
     useEffect(() => {
         if (!draft || !draft.files.some((file) => file.path === 'panel.js')) return;
-        if (madeByVoice(id) || draft.meta.by === 'voice') return;
         void trustedCode(id).then((known) => known ?? trustOwnDraft(id)).then(setCode);
     }, [draft?.meta.updated]);
     // Тема на примерке уходит вместе с окном. «Готово…» на полосе своё сказало: окно открыто.
@@ -350,7 +351,13 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
                                     )}
                                 </div>
                             ) : (
-                                <p class="t-caption m-0">У {word === 'тема' ? 'темы' : 'него'} нет виджета — только фразы для колонки.</p>
+                                <DraftCardPreview
+                                    id={id}
+                                    nonce={draft.meta.updated + version}
+                                    trying={{ example: true, settings: plainValues }}
+                                    onWidget={setWidget}
+                                    fallback={<p class="t-caption m-0">У {word === 'тема' ? 'темы' : 'него'} нет виджета — только фразы для колонки.</p>}
+                                />
                             )}
                         </div>
                         <span class="fitting-note t-caption">пример данных · до «да» в сеть не ходит</span>

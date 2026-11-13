@@ -2,10 +2,12 @@
 //! when it must stop. The household's recognition and voice come first, and the guard is automatic: there is no
 //! number for the owner to pick (06.11: «не больше 4 ГБ», set for an imprint, kept the voice from starting — nobody
 //! can know that a voice on the video card wants 6.3 GB).
-//!  - Before a start: refused only while the computer is already short (pressure, paging). Short of room beside the
-//!    household's reserve, it is a warning: the owner may start anyway.
+//!  - Before a start: never a refusal, only a warning the owner may start past — while the computer is short already
+//!    (pressure, paging, video memory) or short of room beside the household's reserve. 13.11: a refusal on pressure,
+//!    read wrong on macOS 15, left a 48 GB Mac with 90 % free no way to take an imprint.
 //!  - While an imprint runs: the watchdog stops it when the computer starts paging or pressing (MemoryWatch). 05.11:
-//!    training beside the gateway swapped the Mac, and recognition missed 8 s.
+//!    training beside the gateway swapped the Mac, and recognition missed 8 s. Started on «всё равно», a lasting warning
+//!    alone does not stop it: the owner saw that warning and chose; critical pressure and paging still do.
 //!  - Always: a ceiling well above the program's need, against a runaway (a leak, a bug). Past it the program is
 //!    killed, not the gateway: Linux's OOM killer would otherwise pick the largest process, recognition included.
 
@@ -44,10 +46,8 @@ pub fn ceiling_mb(need: u64) -> u64 {
 pub enum AdmissionVerdict {
     /// There is room.
     Go,
-    /// Short of room beside the household's reserve: it starts only on the owner's «всё равно».
+    /// Short of room, or the computer short already: it starts only on the owner's «всё равно».
     Tight,
-    /// The computer is short already.
-    No,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,7 +63,7 @@ pub struct Admission {
 /// Paging in faster than this: the system is already short.
 pub const START_SWAP_MBPS: f64 = 2.0;
 
-/// Whether a program may start now; the refusal in the owner's words, or the warning when room is tight.
+/// Whether a program may start now, or the warning in the owner's words the start waits on.
 pub fn admit(snapshot: &MemorySnapshot, reserve: u64, need: u64, video_need_mb: Option<u64>) -> Admission {
     let verdict = |verdict: AdmissionVerdict, reason: Option<String>| Admission {
         verdict,
@@ -73,20 +73,20 @@ pub fn admit(snapshot: &MemorySnapshot, reserve: u64, need: u64, video_need_mb: 
     };
     if snapshot.pressure != Pressure::Normal {
         return verdict(
-            AdmissionVerdict::No,
-            Some("Системе уже не хватает памяти — подождите или закройте тяжёлые программы.".into()),
+            AdmissionVerdict::Tight,
+            Some("Системе уже не хватает памяти — лучше подождать или закрыть тяжёлые программы.".into()),
         );
     }
     if snapshot.swap_in_mbps.unwrap_or(0.0) > START_SWAP_MBPS {
         return verdict(
-            AdmissionVerdict::No,
-            Some("Компьютер сейчас подкачивает память с диска — подождите минуту.".into()),
+            AdmissionVerdict::Tight,
+            Some("Компьютер сейчас подкачивает память с диска — лучше подождать минуту.".into()),
         );
     }
     if let (Some(video), Some(free)) = (video_need_mb, snapshot.vram_free_mb) {
         if free < video as f64 {
             return verdict(
-                AdmissionVerdict::No,
+                AdmissionVerdict::Tight,
                 Some(format!("Видеопамяти свободно {} ГБ, а нужно около {} ГБ.", gb(free), gb(video as f64))),
             );
         }
@@ -139,14 +139,16 @@ pub struct WatchSample {
 /// and paging. Stateful: a warning has to last before it stops anything.
 pub struct MemoryWatch {
     limit: u64,
+    /// Started on «всё равно»: a lasting warning alone does not stop it.
+    anyway: bool,
     warn_since: Option<u64>,
     warn_start_mb: f64,
     swap_since: Option<u64>,
 }
 
 impl MemoryWatch {
-    pub fn new(limit: u64) -> MemoryWatch {
-        MemoryWatch { limit, warn_since: None, warn_start_mb: 0.0, swap_since: None }
+    pub fn new(limit: u64, anyway: bool) -> MemoryWatch {
+        MemoryWatch { limit, anyway, warn_since: None, warn_start_mb: 0.0, swap_since: None }
     }
 
     pub fn observe(&mut self, sample: WatchSample) -> Option<StopReason> {
@@ -156,7 +158,7 @@ impl MemoryWatch {
         if sample.pressure == Pressure::Critical {
             return Some(StopReason::Pressure);
         }
-        if sample.pressure == Pressure::Warn {
+        if sample.pressure == Pressure::Warn && !self.anyway {
             match self.warn_since {
                 None => {
                     self.warn_since = Some(sample.at);
@@ -266,16 +268,18 @@ mod tests {
     }
 
     #[test]
-    fn refuses_only_while_the_computer_is_short_already_pressure_paging_video_memory() {
+    fn only_warns_while_the_computer_is_short_already_pressure_paging_video_memory_13_11_never_a_refusal() {
         let pressed = admit(&MemorySnapshot { pressure: Pressure::Warn, ..snapshot(20_000) }, 2_212, 3_500, None);
-        assert_eq!(pressed.verdict, AdmissionVerdict::No);
+        assert_eq!(pressed.verdict, AdmissionVerdict::Tight);
         assert!(pressed.reason.unwrap().contains("не хватает памяти"));
+        let critical = admit(&MemorySnapshot { pressure: Pressure::Critical, ..snapshot(20_000) }, 2_212, 3_500, None);
+        assert_eq!(critical.verdict, AdmissionVerdict::Tight);
         let paging = admit(&MemorySnapshot { swap_in_mbps: Some(5.0), ..snapshot(20_000) }, 2_212, 3_500, None);
-        assert_eq!(paging.verdict, AdmissionVerdict::No);
+        assert_eq!(paging.verdict, AdmissionVerdict::Tight);
         assert!(paging.reason.unwrap().contains("подкачивает"));
         let video =
             admit(&MemorySnapshot { vram_free_mb: Some(1_000.0), ..snapshot(20_000) }, 2_212, 3_500, Some(3_000));
-        assert_eq!(video.verdict, AdmissionVerdict::No);
+        assert_eq!(video.verdict, AdmissionVerdict::Tight);
         assert!(video.reason.unwrap().contains("Видеопамяти"));
         let calm = admit(&MemorySnapshot { swap_in_mbps: Some(1.0), ..snapshot(20_000) }, 2_212, 3_500, None);
         assert_eq!(calm.verdict, AdmissionVerdict::Go);
@@ -284,20 +288,25 @@ mod tests {
     #[test]
     fn stops_a_job_past_its_ceiling_at_once_on_critical_pressure_at_once_on_lasting_warnings_and_paging_after_6_s() {
         assert_eq!(
-            MemoryWatch::new(4_000).observe(sample(4_100.0, Pressure::Normal, None, 0)),
+            MemoryWatch::new(4_000, false).observe(sample(4_100.0, Pressure::Normal, None, 0)),
             Some(StopReason::Memory)
         );
         assert_eq!(
-            MemoryWatch::new(4_000).observe(sample(1_000.0, Pressure::Critical, None, 0)),
+            MemoryWatch::new(4_000, false).observe(sample(1_000.0, Pressure::Critical, None, 0)),
             Some(StopReason::Pressure)
         );
 
-        let mut warned = MemoryWatch::new(4_000);
+        let mut warned = MemoryWatch::new(4_000, false);
         assert_eq!(warned.observe(sample(1_000.0, Pressure::Warn, None, 0)), None);
         assert_eq!(warned.observe(sample(1_000.0, Pressure::Warn, None, 7_000)), None, "not growing: not the job");
         assert_eq!(warned.observe(sample(1_500.0, Pressure::Warn, None, 8_000)), Some(StopReason::Pressure));
 
-        let mut paging = MemoryWatch::new(4_000);
+        let mut chosen = MemoryWatch::new(4_000, true);
+        assert_eq!(chosen.observe(sample(1_000.0, Pressure::Warn, None, 0)), None);
+        assert_eq!(chosen.observe(sample(1_500.0, Pressure::Warn, None, 8_000)), None, "the owner chose «всё равно»");
+        assert_eq!(chosen.observe(sample(1_500.0, Pressure::Critical, None, 9_000)), Some(StopReason::Pressure));
+
+        let mut paging = MemoryWatch::new(4_000, false);
         assert_eq!(paging.observe(sample(1_000.0, Pressure::Normal, Some(40.0), 0)), None);
         assert_eq!(paging.observe(sample(1_000.0, Pressure::Normal, Some(0.0), 3_000)), None, "a burst");
         assert_eq!(paging.observe(sample(1_000.0, Pressure::Normal, Some(40.0), 4_000)), None);

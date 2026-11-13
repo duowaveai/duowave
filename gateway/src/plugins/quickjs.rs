@@ -71,11 +71,6 @@ const PRELUDE: &str = r#"
     delete: (key) => { unwrap(raw.kvDelete(String(key))); },
     keys: (prefix = "") => unwrap(raw.kvKeys(String(prefix))),
   });
-  const voice = Object.freeze({
-    async say(text, options = {}) {
-      return unwrap(await raw.say(JSON.stringify({ text: String(text), device: options.device })));
-    },
-  });
   const settings = Object.freeze({
     get: (key) => {
       const all = JSON.parse(raw.settings());
@@ -83,39 +78,34 @@ const PRELUDE: &str = r#"
     },
   });
   const log = say("info");
-  // Host API 1.1: the gateway's services, each behind its right in the manifest.
+  // Host API 2 (docs/plans/bus.md, «Один способ»): everything beyond the app is a letter on the bus, decided by it.
   const call = async (name, input = {}) => unwrap(await raw.call(name, JSON.stringify(input ?? {})));
-  const content = Object.freeze({
-    search: (folder, query, limit) => call("content.search", { folder, query, limit }),
+  // The bus (src/bus): call another's handle, tell own news, see what is there, ask in words.
+  const bus = Object.freeze({
+    call: (to, handle, input = {}, options = {}) =>
+      call("bus.call", { to: String(to), handle: String(handle), input: input ?? {}, files: options.files ?? [] }),
+    tell: (event, payload = {}) => call("bus.tell", { event: String(event), payload: payload ?? {} }),
+    list: () => call("bus.list", {}),
+    ask: (to, text) => call("bus.ask", { to: String(to), text: String(text ?? "") }),
   });
-  const tools = Object.freeze({ call: (name, input = {}) => call("tools.call", { name, input }) });
-  const smartHome = Object.freeze({
-    devices: () => call("smartHome.devices"),
-    act: (device, action, value) => call("smartHome.act", { device, action, value }),
-  });
-  const home = Object.freeze({
-    weatherPlace: () => call("weather.place"),
-    newsFeeds: () => call("news.feeds"),
-  });
-  // Host API 1.2: a message to the owner (right `notify`) and the plugin's own schedule (right `schedule`),
-  // plugins/schedule.rs.
-  const notify = (text) => call("notify.send", { text: String(text ?? "") });
-  // Host API 1.2: pictures it downloads and keeps (right `files`, plugins/files.rs).
+  // Folders: an address `files/…`, or a path inside the app's own folder («tmp/a.txt»); `download` keeps a picture
+  // from the internet (its host among the `net:` rights) in it.
   const files = Object.freeze({
-    download: (url, name) => call("files.download", { url: String(url), name: String(name ?? "") }),
-    list: () => call("files.list", {}),
-    delete: (name) => call("files.delete", { name: String(name) }),
-  });
-  const schedule = Object.freeze({
-    set: (task) => call("schedule.set", task ?? {}),
-    list: () => call("schedule.list", {}),
-    cancel: (id) => call("schedule.cancel", { id: String(id) }),
-    parse: (text) => call("schedule.parse", { text: String(text ?? "") }),
+    list: (at = "") => call("folders.list", { at: String(at ?? "") }),
+    read: (at, options = {}) => call("folders.read", { at: String(at), as: options.as }),
+    write: (at, data) => call("folders.write", typeof data === "string"
+      ? { at: String(at), text: data }
+      : { at: String(at), text: data?.text, base64: data?.base64 }),
+    remove: (at) => call("folders.remove", { at: String(at) }),
+    move: (from, to) => call("folders.move", { at: String(from), to: String(to) }),
+    mkdir: (at) => call("folders.mkdir", { at: String(at) }),
+    stat: (at) => call("folders.stat", { at: String(at) }),
+    download: (url, name) => call("folders.download", { url: String(url), name: String(name ?? "") }),
   });
   globalThis.host = Object.freeze({
-    api: 1.2,
+    api: 2,
     plugin: Object.freeze({ id: raw.id, version: raw.version }),
-    http, kv, voice, settings, log, call, content, tools, smartHome, home, schedule, notify, files,
+    http, kv, settings, log, bus, files,
   });
   globalThis.console = Object.freeze({ log, info: log, debug: log, warn: say("warn"), error: say("error") });
 })();
@@ -159,6 +149,8 @@ enum Job {
         input: Value,
         kind: CallKind,
         deadline: Instant,
+        /// The trail of the chain the call is part of (src/bus/trail.rs): the thread holds it while the call runs.
+        trail: Option<crate::bus::Trail>,
         reply: oneshot::Sender<Result<Value, PluginError>>,
     },
     Memory {
@@ -185,13 +177,15 @@ impl PluginInstance for Instance {
     fn call(&self, function: &str, input: Value, kind: CallKind) -> BoxFuture<'static, Result<Value, PluginError>> {
         let sender = self.sender();
         let function = function.to_string();
+        // Read where the call is made, in the caller's task: the plugin's thread holds it for the call's host calls.
+        let trail = crate::bus::trail::current();
         Box::pin(async move {
             let sender = sender.ok_or_else(stopped)?;
             let limit = kind.limit();
             // The limit counts from the call, a wait behind a busy plugin included.
             let deadline = Instant::now() + limit;
             let (reply, answer) = oneshot::channel();
-            let job = Job::Call { function, input, kind, deadline, reply };
+            let job = Job::Call { function, input, kind, deadline, trail, reply };
             let timeout = || PluginError::Timeout(limit.as_millis() as u64);
             match tokio::time::timeout_at(deadline.into(), sender.send(job)).await {
                 Ok(Ok(())) => {}
@@ -312,11 +306,13 @@ fn run(
                         limit: usage.malloc_limit.max(0) as u64,
                     });
                 }
-                Job::Call { function, input, kind, deadline: until, reply } => {
+                Job::Call { function, input, kind, deadline: until, trail, reply } => {
                     if Instant::now() >= until {
                         let _ = reply.send(Err(PluginError::Timeout(kind.limit().as_millis() as u64)));
                         continue;
                     }
+                    // One call at a time on this thread: its host calls read this trail (src/bus/trail.rs).
+                    let _held = crate::bus::Trail::hold(trail);
                     deadline.store(at(until), Ordering::Relaxed);
                     let call = invoke(&context, &namespace, &function, input);
                     let result = match tokio::time::timeout_at(until.into(), call).await {
@@ -599,6 +595,11 @@ mod tests {
             json!({"country": "RU"}).as_object().cloned().unwrap()
         }
         fn log(&self, _level: &str, _message: &str) {}
+        /// Host API 2: speech is a letter to `system/voice`.
+        fn call(&self, name: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
+            let said = name == "bus.call" && input["to"] == "system/voice" && input["input"]["text"] == "привет";
+            Box::pin(async move { Ok(Value::Bool(said)) })
+        }
     }
 
     const SOURCE: &str = r#"
@@ -613,7 +614,7 @@ mod tests {
         export async function spinAfterAwait() { await host.http.fetch("https://x.example"); while (true) {} }
         export function hog() { const all = []; for (;;) all.push("x".repeat(4096)); }
         export function quiet() {}
-        export async function greet({ text }) { return await host.voice.say(text); }
+        export async function greet({ text }) { return await host.bus.call("system/voice", "say", { text }); }
         export const notAFunction = 1;
     "#;
 

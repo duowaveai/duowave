@@ -7,6 +7,7 @@ import { ThemeCard } from '../shell/theme-picker';
 import { Sheet } from '../ui/sheet';
 import { SectionTabs, TabEntry } from '../ui/tabs';
 import { ask } from '../ui/confirm';
+import { BusCard } from '../bus/settings-card';
 
 export type SettingsSectionTab = 'access' | 'look';
 
@@ -42,6 +43,7 @@ export function SettingsScreen({
                 <>
                     {can('users.manage') && <People catalog={catalog} />}
                     {can('users.manage') && <Keys catalog={catalog} />}
+                    {can('plugins.manage') && <BusCard />}
                     <Account onSignOut={onSignOut} />
                     {can('audit.view') && <History />}
                 </>

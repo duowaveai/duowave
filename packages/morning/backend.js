@@ -1,5 +1,5 @@
-// Утреннее шоу (этап 10 плана): собирает погоду и новости из других плагинов (их инструменты, право tools.call) и
-// музыку — свою из папки (content:music) или радио плагина «Радио» (его инструмент radio_play отдаёт, что играть).
+// Утреннее шоу (этап 10 плана): собирает погоду и новости из других приложений (их инструменты — письма шины) и
+// музыку — свою из папки (system/content) или радио плагина «Радио» (его инструмент radio_play отдаёт, что играть).
 // Части идут одновременно: голосовой вызов ограничен 2 с, и не ответившая часть просто пропускается.
 
 function greeting(timezone) {
@@ -24,9 +24,9 @@ export async function show({ request }) {
   const wantNews = host.settings.get("news") !== false;
   const music = host.settings.get("music") ?? "своя музыка";
   const [weather, news, tracks] = await Promise.all([
-    host.tools.call("weather_now", { timezone: request?.timezone }).catch(() => null),
-    wantNews ? host.tools.call("news_headlines", { limit: 2 }).catch(() => null) : null,
-    music === "своя музыка" ? host.content.search("music", "", 30).catch(() => []) : [],
+    host.bus.call("app/weather", "weather_now", { timezone: request?.timezone }).catch(() => null),
+    wantNews ? host.bus.call("app/news", "news_headlines", { limit: 2 }).catch(() => null) : null,
+    music === "своя музыка" ? host.bus.call("system/content", "music", { query: "", limit: 30 }).catch(() => []) : [],
   ]);
   const parts = [`${greeting(request?.timezone)}!`];
   if (weather && !/^error|не задано|не получить/i.test(weather)) parts.push(`Погода. ${short(weather, 2)}`);
@@ -36,7 +36,7 @@ export async function show({ request }) {
     return { say: parts.join(" "), play: tracks };
   }
   // Без своей музыки — радио: radio_play отвечает {say, play}, и шоу включает его станции.
-  const radio = await host.tools.call("radio_play", { station: "хиты" }).catch(() => null);
+  const radio = await host.bus.call("app/radio", "radio_play", { station: "хиты" }).catch(() => null);
   if (Array.isArray(radio?.play) && radio.play.length > 0) {
     parts.push(`А теперь — ${radio.play[0].title}.`);
     return { say: parts.join(" "), play: radio.play };

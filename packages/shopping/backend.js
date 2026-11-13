@@ -127,3 +127,28 @@ export function panelClear() {
   save([]);
   return { items: [] };
 }
+
+// Карточка на столе пульта (docs/plugins/cards.md): строка — вычеркнуть, поле — добавить. Рисует пульт.
+function card(note) {
+  const list = items();
+  return {
+    rows: list.map((entry) => ({ text: entry.text, mark: "on", tap: "removeCard", with: { id: entry.id } })),
+    input: { placeholder: "Добавить", submit: "addCard" },
+    cap: note ?? (list.length === 0 ? "Пусто. Скажите: «добавь молоко в список покупок»." : undefined),
+    say: list.length === 0 ? "Список покупок пуст." : `В списке покупок: ${list.map((entry) => entry.text).join(", ")}.`,
+  };
+}
+
+export function listCard() {
+  return card();
+}
+
+export function addCard({ text }) {
+  const { full } = add(split(text));
+  return card(full ? FULL : undefined);
+}
+
+export function removeCard({ id }) {
+  remove([String(id ?? "")]);
+  return card();
+}

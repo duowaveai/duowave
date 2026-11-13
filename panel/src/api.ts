@@ -1165,7 +1165,7 @@ export interface PackageView {
     /** Что плагин даёт шлюзу. */
     contributes?: { phrases: string[]; tools: string[]; media: string[]; events: string[]; panel: boolean; themes: boolean };
     /** Сколько плагин просит: память — это лимит, место — его хранилище. */
-    budget?: { memoryMb: number; storageMb: number } | null;
+    budget?: { memoryMb: number; storageMb: number; filesMb?: number } | null;
     /** Пока код загружен: сколько держит движок, байты. */
     memory?: { allocated: number; used: number; limit: number } | null;
     /** Его хранилище kv, байты. */
@@ -1183,6 +1183,131 @@ export interface PanelPart {
     module?: string | null;
     styles?: string | null;
     settings?: Record<string, unknown>;
+    /** Карточки приложения (`contributes.panel.cards`): данные от его функции, рисует пульт (src/cards). */
+    cards?: CardSpec[];
+}
+
+/** Карточка приложения в манифесте: какую функцию звать за данными, как называется, какого размера. */
+export interface CardSpec {
+    id: string;
+    title?: string;
+    /** Функция из contributes.panel.calls, что отдаёт карточку. */
+    function: string;
+    size?: 'small' | 'large';
+    /** Перечитывать раз в столько секунд (не чаще раза в 10 с); без него — с переменами своего пакета. */
+    refreshS?: number;
+    /** Стоит на столе сразу. */
+    initial?: boolean;
+    icon?: string;
+}
+
+// ——— Шина «Связи» (docs/plans/bus.md; gateway/src/bus) ———
+
+/** Ступень связи: не знает, видит, слышит, зовёт (у файлов — читает), правит. */
+export type BusLevel = 'none' | 'see' | 'listen' | 'call' | 'edit';
+/** Режим: «Отдельно», «По правилам», «Свободно». */
+export type BusMode = 'isolated' | 'rules' | 'free';
+/** Кто поставил связь: владелец руками, «да» на вопрос, «нет» на вопрос, установка. */
+export type BusLinkSource = 'owner' | 'answer' | 'refused' | 'install';
+
+export interface BusParticipant {
+    address: string;
+    title: string;
+    private?: boolean;
+    owner?: string | null;
+}
+
+export interface BusHandle {
+    name: string;
+    level: BusLevel;
+    title?: string | null;
+    danger?: string | null;
+    private?: boolean;
+    needs?: string | null;
+}
+
+export interface BusLink {
+    from: string;
+    to: string;
+    level: BusLevel;
+    source: BusLinkSource;
+    at?: string;
+    by?: string;
+}
+
+export interface BusQuestion {
+    id: string;
+    /** remember — как в телефоне (запоминается связью); once — опасное действие, один раз. */
+    kind: 'remember' | 'once';
+    from: string;
+    to: string;
+    handle: string;
+    level: BusLevel;
+    grant: string;
+    danger?: string;
+    fromTitle: string;
+    toTitle: string;
+    what: string;
+    root: string;
+    at: string;
+}
+
+export interface BusModes {
+    house: BusMode;
+    own: Record<string, BusMode>;
+}
+
+export interface BusOptions {
+    /** Вопросы словами через облако: приложения спрашивают друг друга словами, ответ может уйти облачной модели. */
+    cloudAsks: boolean;
+}
+
+/** Слово владельца об опасном умении: `target` — `app/radio:play` или `app/radio:*`; «всегда можно» для `caller`
+ *  (`*` — для всех) или снятая/поставленная метка (`none` или имя опасности). */
+export interface BusDangerWord {
+    target: string;
+    caller?: string;
+    always?: boolean;
+    mark?: string | null;
+}
+
+export interface BusOverview {
+    participants: BusParticipant[];
+    links: BusLink[];
+    modes: BusModes;
+    options: BusOptions;
+    dangers: BusDangerWord[];
+    questions: BusQuestion[];
+}
+
+export interface BusVisible extends BusParticipant {
+    /** Умения, что видит этот участник: проходит ли сейчас и спросит ли сначала человека. */
+    handles: Array<BusHandle & { allowed: boolean; asks: boolean }>;
+}
+
+export interface BusAppView {
+    participant: BusParticipant;
+    handles: BusHandle[];
+    mode: BusMode;
+    ownMode?: BusMode | null;
+    links: BusLink[];
+    reaches: BusVisible[];
+    asked: string[];
+    questions: BusQuestion[];
+}
+
+export interface BusJournalLine {
+    seq: number;
+    at: string;
+    trail: number;
+    root: string;
+    kind: string;
+    from: string;
+    to: string;
+    handle: string;
+    outcome: string;
+    ms: number;
+    note?: string | null;
 }
 
 /** Черновик мастерской (DATA_DIR/packages-dev/<id>). */
@@ -2612,6 +2737,28 @@ export const api = {
     /** Пульт плагина зовёт свой бэкенд: только функции из contributes.panel.calls. */
     callPackage: <T = unknown>(id: string, fn: string, input: unknown = {}) =>
         post<{ result: T }>(`/api/v1/packages/${encodeURIComponent(id)}/call/${encodeURIComponent(fn)}`, input).then((answer) => answer.result),
+    // Шина «Связи»: связи, режимы, вопросы «да», журнал (docs/plans/bus.md). Менять — администратору дома.
+    bus: () => get<BusOverview>('/api/v1/bus'),
+    busQuestions: () => get<{ questions: BusQuestion[] }>('/api/v1/bus/questions'),
+    busAnswer: (id: string, yes: boolean) => post<{ question: BusQuestion; yes: boolean }>(`/api/v1/bus/questions/${encodeURIComponent(id)}`, { yes }),
+    busLinks: () => get<{ links: BusLink[] }>('/api/v1/bus/links'),
+    busLink: (from: string, to: string, level: BusLevel) => put<{ links: BusLink[] }>('/api/v1/bus/links', { from, to, level }),
+    busUnlink: (from: string, to: string) => call<{ removed: boolean; links: BusLink[] }>('DELETE', '/api/v1/bus/links', { from, to }),
+    /** Режим участника (`address`) или дома (без него); `mode: null` — участнику снова режим дома. */
+    busMode: (address: string | null, mode: BusMode | null) => put<{ modes: BusModes }>('/api/v1/bus/modes', { address, mode }),
+    busOptions: (options: BusOptions) => put<{ options: BusOptions }>('/api/v1/bus/options', options),
+    busDanger: (word: BusDangerWord) => put<{ dangers: BusDangerWord[] }>('/api/v1/bus/dangers', word),
+    busJournal: (about?: string, before?: number, limit = 100) => {
+        const query = new URLSearchParams();
+        if (about) query.set('about', about);
+        if (before != null) query.set('before', String(before));
+        query.set('limit', String(limit));
+        return get<{ lines: BusJournalLine[] }>(`/api/v1/bus/journal?${query}`);
+    },
+    busApp: (id: string) => get<BusAppView>(`/api/v1/bus/apps/${encodeURIComponent(id)}`),
+    /** Письмо от лица своего приложения (кнопка карточки, окошко): за того, кто вошёл, не больше. */
+    busCall: <T = unknown>(from: string, to: string, handle: string, input: unknown = {}) =>
+        post<{ result: T }>('/api/v1/bus/call', { from, to, handle, input }).then((answer) => answer.result),
     /** «Сделать свою копию»: id копии — my-<id>, если не задан. */
     forkPackage: (id: string, newId?: string) => post<PackageView>(`/api/v1/packages/${encodeURIComponent(id)}/fork`, newId ? { id: newId } : {}),
     reloadPackage: (id: string) => post<PackageView>(`/api/v1/packages/${encodeURIComponent(id)}/reload`),

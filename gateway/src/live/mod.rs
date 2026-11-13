@@ -75,6 +75,10 @@ pub const RELAYED: &[&str] = &[
     "stationGateway.updated",
     // A new version: the panel puts its dot on «Дом» and the line on the home screen.
     "update.available",
+    // The bus (src/bus): links and modes changed, a question waits for «да», a participant told news.
+    "bus.changed",
+    "bus.asked",
+    "bus.news",
 ];
 
 /// Finished requests in the hello: the dashboard's «last asked».
@@ -149,6 +153,10 @@ fn subject_of(event: &GatewayEvent) -> (Option<String>, Option<String>) {
         GatewayEvent::PackageDataChanged { package } => (Some(package.clone()), None),
         // A draft and what happened to it (docs/plans/voice-creation.md): `made`, `ready`, `parked`, `open:fitting`…
         GatewayEvent::WorkshopChanged { draft, change } => (Some(draft.clone()), Some(change.clone())),
+        // Whose links changed and how; who asks; who told which news (src/bus).
+        GatewayEvent::BusChanged { target, change, .. } => (target.clone(), Some(change.clone())),
+        GatewayEvent::BusAsked { from, .. } => (Some(from.clone()), Some("asked".into())),
+        GatewayEvent::BusNews { from, event } => (Some(from.clone()), Some(event.clone())),
         _ => (None, None),
     }
 }

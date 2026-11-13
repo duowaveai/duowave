@@ -660,12 +660,14 @@ function ImprintStep({ lab, engine, working, act }: { lab: VoiceLabView; engine:
     const job = lab.job?.kind === 'imprint' && lab.job.id !== putAside ? lab.job : undefined;
     const voiceId = job?.state === 'done' ? job.result?.voiceId : undefined;
     const voice = voiceId ? lab.voices.find((entry) => entry.id === voiceId) : undefined;
-    // Как решит шлюз: Маку уже не хватает памяти — ждать; отпечатку тесно рядом с запасом колонки — предупредить.
+    // Как решит шлюз: компьютеру уже не хватает памяти или отпечатку тесно рядом с запасом колонки — только предупредить,
+    // снять всё равно решает владелец.
     const short = memory.pressure !== 'normal';
     const tight = !!card && memory.poolMb - memory.reserveMb < need;
-    const anyway = tight || warned !== null;
-    const tightText =
-        memory.poolMb >= need
+    const anyway = short || tight || warned !== null;
+    const tightText = short
+        ? 'Компьютеру сейчас не хватает памяти — лучше подождать минуту или закрыть тяжёлые программы.'
+        : memory.poolMb >= need
             ? `Памяти впритык: свободно ${gb(memory.poolMb)} ГБ, отпечатку нужно около ${gb(need)} ГБ, а ${gb(memory.reserveMb)} ГБ держу для колонки — она может подтормаживать.`
             : `Памяти мало: свободно ${gb(memory.poolMb)} ГБ, а отпечатку нужно около ${gb(need)} ГБ — Мак начнёт подкачивать память с диска.`;
 
@@ -785,8 +787,7 @@ function ImprintStep({ lab, engine, working, act }: { lab: VoiceLabView; engine:
             ) : (
                 <>
                     {job && job.state !== 'done' && <Problem text={job.error} />}
-                    {card && short && <Warning text="Маку сейчас не хватает памяти — подождите минуту или закройте тяжёлые программы." />}
-                    {card && !short && anyway && (
+                    {card && anyway && (
                         <Warning text={`${warned ?? tightText} Снять всё равно?`} />
                     )}
                     <span class="t-caption">
@@ -797,7 +798,7 @@ function ImprintStep({ lab, engine, working, act }: { lab: VoiceLabView; engine:
                     <div>
                         <Action
                             tone="on"
-                            label={working === 'imprint' ? 'запускаю…' : anyway && !short ? 'Снять всё равно' : 'Снять отпечаток'}
+                            label={working === 'imprint' ? 'запускаю…' : anyway ? 'Снять всё равно' : 'Снять отпечаток'}
                             busy={working === 'imprint'}
                             disabled={lab.job?.state === 'running'}
                             onClick={() => void start()}

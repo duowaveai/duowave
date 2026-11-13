@@ -665,7 +665,7 @@ mod tests {
         ]);
         app.workshop.write("widget-1", "manifest.json", &manifest.to_string()).unwrap();
 
-        // No card yet: one read from what is known — the panel's, a widget by its slot, waiting in the workshop.
+        // No card yet: one read from what is known — the panel's, a widget by its card, waiting in the workshop.
         let view = one(State(app.clone()), admin(), Path("widget-1".into())).await.unwrap().1;
         assert_eq!(
             (view.meta.by, view.meta.stage, view.meta.kind, view.meta.kept),
@@ -801,8 +801,8 @@ mod tests {
         let admin = || Caller::local(app.clone(), Some(user_principal("u1", "Админ", Role::Admin, None)));
         app.workshop.create("todo", Some("plugin"), Some("Дела"), None).unwrap();
         let manifest = json!({
-            "schema": 1, "kind": "plugin", "id": "todo", "version": "0.1.0", "title": "Дела", "api": "^1",
-            "runs": ["pc", "station", "stationServer"], "permissions": ["voice.intents"],
+            "schema": 1, "kind": "plugin", "id": "todo", "version": "0.1.0", "title": "Дела", "api": "^2",
+            "runs": ["pc", "station", "stationServer"], "permissions": [],
             "settings": [
                 { "key": "token", "type": "string", "title": "Ключ Todoist", "secret": true },
                 { "key": "count", "type": "number", "title": "Показывать", "default": 5 }
@@ -1018,12 +1018,13 @@ mod tests {
         let member = || Caller::local(app.clone(), Some(user_principal("u2", "Аня", Role::Member, None)));
         app.workshop.create("hello", Some("plugin"), Some("Привет"), None).unwrap();
 
-        // The plan of the first install: every right is new, nothing installed yet.
+        // The plan of the first install: nothing installed yet; the template asks for no rights (Host API 2: what it
+        // gives is no right).
         assert!(plan(State(app.clone()), member(), Path("hello".into())).await.is_err());
         let first = plan(State(app.clone()), admin(), Path("hello".into())).await.unwrap().1;
         assert!(first.first && first.from.is_none(), "{first:?}");
         assert_eq!(first.to, "0.1.0");
-        assert!(!first.added.is_empty() && first.removed.is_empty() && first.kept.is_empty(), "{first:?}");
+        assert!(first.added.is_empty() && first.removed.is_empty() && first.kept.is_empty(), "{first:?}");
         assert!(!first.phrases.is_empty(), "the template's phrases: {first:?}");
         let done = install(
             State(app.clone()),
@@ -1038,7 +1039,7 @@ mod tests {
         // The plan of the next one: the same rights kept, the next patch, nothing installed by asking.
         let next = plan(State(app.clone()), admin(), Path("hello".into())).await.unwrap().1;
         assert_eq!((next.first, next.from.as_deref(), next.to.as_str()), (false, Some("0.1.0"), "0.1.1"));
-        assert!(next.added.is_empty() && next.removed.is_empty() && !next.kept.is_empty(), "{next:?}");
+        assert!(next.added.is_empty() && next.removed.is_empty(), "{next:?}");
         assert!(next.enabled);
         assert_eq!(app.plugins.installed("hello").unwrap().version(), "0.1.0", "a plan installs nothing");
 
@@ -1099,26 +1100,38 @@ mod tests {
         ]);
         let app = crate::app::App::build(Config::for_tests(&env)).unwrap();
         let admin = || Caller::local(app.clone(), Some(user_principal("u1", "Админ", Role::Admin, None)));
-        // A title said in words, quotes and all, stays a JavaScript string in panel.js.
+        // A title said in words, quotes and all, stays the card's title in the manifest.
         app.workshop.create("widget-wash", Some("widget"), Some("Стирка \"быстрая\""), None).unwrap();
         let report = app.workshop.check("widget-wash").await.unwrap();
-        assert!(report.ok, "{report:?}");
+        assert!(report.ok && report.warnings.is_empty(), "{report:?}");
         for function in ["panelData", "mark"] {
             assert!(report.exports.iter().any(|name| name == function), "{function}: {report:?}");
         }
-        let panel = app.workshop.read("widget-wash", "panel.js").unwrap();
-        assert!(panel.contains(r#"title: "Стирка \"быстрая\"""#), "{panel}");
+        let manifest: Value =
+            serde_json::from_str(&app.workshop.read("widget-wash", "manifest.json").unwrap()).unwrap();
+        assert_eq!(manifest["contributes"]["panel"]["cards"][0]["title"], "Стирка \"быстрая\"");
+        // A card the panel draws: its function's answer is a card of known parts.
+        let shown = app.workshop.run("widget-wash", "panelData", json!({}), &Trying::example()).await.unwrap();
+        assert!(shown.ok && crate::bus::cards::check(&shown.result).is_empty(), "{shown:?}");
 
-        let (module, styles) = app.workshop.preview("widget-wash").unwrap();
-        assert!(styles.is_none(), "the template has no panel.css");
-        let token = module.trim_start_matches("/panel-preview/").trim_end_matches("/panel.js").to_string();
-        let file = preview_file(State(app.clone()), Path((token.clone(), "panel.js".into()))).await.unwrap();
-        assert_eq!(file.headers()[axum::http::header::CONTENT_TYPE], "text/javascript; charset=utf-8");
-        assert!(
-            preview_file(State(app.clone()), Path((token, "manifest.json".into()))).await.is_err(),
-            "panel parts only"
-        );
-        assert!(preview_file(State(app.clone()), Path(("nope".into(), "panel.js".into()))).await.is_err());
+        // A part the panel does not know, and a tap to a function the panel may not call: the check names both.
+        app.workshop
+            .write(
+                "widget-wash",
+                "backend.js",
+                "export function panelData() { return { big: \"1\", gauge: 3, buttons: [{ text: \"Сброс\", tap: \"reset\" }] }; }\nexport function mark() { return panelData(); }\nexport function reset() { return panelData(); }\n",
+            )
+            .unwrap();
+        let warned = app.workshop.check("widget-wash").await.unwrap();
+        assert!(warned.warnings.iter().any(|warning| warning.contains("«gauge»")), "{warned:?}");
+        assert!(warned.warnings.iter().any(|warning| warning.contains("reset")), "{warned:?}");
+        app.workshop
+            .write(
+                "widget-wash",
+                "backend.js",
+                &crate::plugins::workshop::templates::widget("widget-wash", "Стирка")[1].1,
+            )
+            .unwrap();
 
         let done = install(
             State(app.clone()),
@@ -1136,11 +1149,11 @@ mod tests {
         let mut heard = app.events.subscribe();
         for _ in 0..2 {
             let read = app.plugins.panel_call("widget-wash", "panelData", json!({})).await.unwrap();
-            assert_eq!(read["value"], json!(0), "{read}");
+            assert_eq!(read["big"], json!("0"), "{read}");
         }
         let marked = app.plugins.panel_call("widget-wash", "mark", json!({})).await.unwrap();
-        assert_eq!(marked["value"], json!(1), "{marked}");
-        assert_eq!(app.plugins.panel_call("widget-wash", "panelData", json!({})).await.unwrap()["value"], json!(1));
+        assert_eq!(marked["big"], json!("1"), "{marked}");
+        assert_eq!(app.plugins.panel_call("widget-wash", "panelData", json!({})).await.unwrap()["big"], json!("1"));
         let mut told = Vec::new();
         while let Ok(event) = heard.try_recv() {
             if let crate::core::events::GatewayEvent::PackageDataChanged { package } = event.as_ref() {
@@ -1148,6 +1161,17 @@ mod tests {
             }
         }
         assert_eq!(told, ["widget-wash"], "the mark only");
+
+        // A window of its own that only shows rows could be a card: the check says so.
+        app.workshop
+            .write(
+                "widget-wash",
+                "panel.js",
+                "import { h } from \"preact\";\nexport default definePlugin({ id: \"widget-wash\", slots: { \"desk.widgets\": [{ id: \"rows\", Component: () => h(\"p\", null, \"строка\") }] } });\n",
+            )
+            .unwrap();
+        let advised = app.workshop.check("widget-wash").await.unwrap();
+        assert!(advised.warnings.iter().any(|warning| warning.contains("может быть карточкой")), "{advised:?}");
 
         // A panel part that does not parse fails the check here, not in the panel.
         app.workshop

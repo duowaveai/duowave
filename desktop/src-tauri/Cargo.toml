@@ -1,6 +1,6 @@
 [package]
 name = "duowave-desktop"
-version = "0.6.0"
+version = "0.7.0"
 description = "The voice gateway in the tray: runs the gateway (the Rust engine, crate duowave, inside the app) and shows its panel"
 edition = "2021"
 publish = false

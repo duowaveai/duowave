@@ -60,7 +60,7 @@ COPY content/radio.json content/README.md content/
 # embeds a file this stage does not have.
 COPY packages packages
 COPY station-client/voice.sh station-client/S95duowave station-client/call-client.sh station-client/gateway.sh station-client/
-COPY docs/plugins/AUTHORING.md docs/plugins/panel-sdk.d.ts docs/plugins/
+COPY docs/plugins/AUTHORING.md docs/plugins/panel-sdk.d.ts docs/plugins/cards.md docs/plugins/
 COPY docs/plugins/skill docs/plugins/skill
 COPY docs/design/glass/THEMES.md docs/design/glass/
 COPY --from=panel /src/panel/dist panel/dist

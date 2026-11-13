@@ -1,3 +1,6 @@
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { defineConfig, type Plugin } from 'vite';
 import preact from '@preact/preset-vite';
 
@@ -6,6 +9,7 @@ import { DEFAULT_THEME, bootAttributes, bootCss } from './src/shell/themes';
 // Dev: the panel talks to the gateway through the Vite proxy (same origin, no CORS).
 // The gateway listens on PORT (.env), 7780 unless set (a gateway set up before 0.1.1 may say 80): GATEWAY_URL for another.
 const gateway = process.env.GATEWAY_URL ?? 'http://127.0.0.1:7780';
+const here = dirname(fileURLToPath(import.meta.url));
 
 // Тема по умолчанию вшивается в index.html из тех же данных (src/shell/themes.ts): первая отрисовка — в её цвета ещё
 // до загрузки скриптов, как раньше делал glass.css. Её id, режим и материал — атрибутами: их читает загрузчик темы.
@@ -41,5 +45,10 @@ export default defineConfig({
             '/station': { target: gateway },
         },
     },
-    build: { outDir: 'dist', target: 'es2022' },
+    // Две страницы: пульт и окошко приложения (frame.html — изолированный фрейм для кода приложений, docs/plans/bus.md).
+    build: {
+        outDir: 'dist',
+        target: 'es2022',
+        rollupOptions: { input: { main: resolve(here, 'index.html'), frame: resolve(here, 'frame.html') } },
+    },
 });

@@ -637,17 +637,17 @@ mod tests {
 
     #[test]
     fn merges_a_manifest_field_by_field_and_takes_the_higher_version() {
-        let base = serde_json::json!({ "version": "1.0.0", "title": "Погода", "permissions": ["kv"] });
-        let ours = serde_json::json!({ "version": "1.0.1", "title": "Погода коротко", "permissions": ["kv"] });
-        let theirs = serde_json::json!({ "version": "1.1.0", "title": "Погода", "permissions": ["kv", "net:x.org"] });
+        let base = serde_json::json!({ "version": "1.0.0", "title": "Погода", "permissions": [] });
+        let ours = serde_json::json!({ "version": "1.0.1", "title": "Погода коротко", "permissions": [] });
+        let theirs = serde_json::json!({ "version": "1.1.0", "title": "Погода", "permissions": ["net:x.org"] });
         let mut conflicts = Vec::new();
         let merged = merge_json(Some(&base), Some(&ours), Some(&theirs), "", &mut conflicts).unwrap();
         assert!(conflicts.is_empty(), "{conflicts:?}");
         assert_eq!(
             merged,
-            serde_json::json!({ "version": "1.1.0", "title": "Погода коротко", "permissions": ["kv", "net:x.org"] })
+            serde_json::json!({ "version": "1.1.0", "title": "Погода коротко", "permissions": ["net:x.org"] })
         );
-        let other = serde_json::json!({ "version": "1.0.0", "title": "Погода длинно", "permissions": ["kv"] });
+        let other = serde_json::json!({ "version": "1.0.0", "title": "Погода длинно", "permissions": [] });
         merge_json(Some(&base), Some(&ours), Some(&other), "", &mut conflicts);
         assert_eq!(conflicts, vec!["title".to_string()]);
     }

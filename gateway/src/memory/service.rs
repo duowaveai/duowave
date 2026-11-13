@@ -679,7 +679,12 @@ impl MemoryService {
     /// person's in the panel (`panel:<user>`). The workshop's talk is not the household's. Nothing while the memory
     /// is off or paused.
     pub fn episode(&self, key: &str, question: &str, answer: &str) {
-        if key.starts_with("workshop:") || question.trim().is_empty() || answer.trim().is_empty() {
+        // The workshop's agent and apps asking each other in words (src/links/bus_words.rs) are no episodes of a life.
+        if key.starts_with("workshop:")
+            || key.starts_with("bus:")
+            || question.trim().is_empty()
+            || answer.trim().is_empty()
+        {
             return;
         }
         if self.writing().is_err() {

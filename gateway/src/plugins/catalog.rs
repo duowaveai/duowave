@@ -610,7 +610,10 @@ pub fn entry_state(
         }
     }
     let gateway = semver::Version::parse(crate::VERSION).unwrap_or_else(|_| semver::Version::new(0, 0, 0));
-    let why = if !semver::VersionReq::parse(&entry.api).is_ok_and(|requirement| requirement.matches(&HOST_API)) {
+    // The Host API is code's: a character or a theme is data, any version of it reads.
+    let coded = matches!(entry.kind, PackageKind::Plugin | PackageKind::App);
+    let why = if coded && !semver::VersionReq::parse(&entry.api).is_ok_and(|requirement| requirement.matches(&HOST_API))
+    {
         Some(format!("нужен Host API {}, а у шлюза {HOST_API}", entry.api))
     } else if !entry.runs.contains(&placement) {
         Some(format!("не работает здесь: размещение «{}»", placement.title()))
@@ -1944,7 +1947,7 @@ pub mod tests {
     pub fn arthur(version: &str) -> Value {
         json!({
             "id": "arthur", "kind": "character", "version": version, "title": "Артур",
-            "description": "ИИ-дворецкий", "api": "^1", "runs": ["pc", "station", "stationServer"],
+            "description": "ИИ-дворецкий", "api": "^2", "runs": ["pc", "station", "stationServer"],
             "minGateway": "0.0.1", "license": "CC BY-NC 4.0, некоммерчески", "verified": true,
             "preview": { "image": "previews/arthur.webp", "samples": ["previews/arthur-1.opus"] },
             "needs": [{ "kind": "engine", "id": "omnivoice", "optional": true }]
@@ -2001,7 +2004,6 @@ pub mod tests {
             events: events.clone(),
             media: MediaSources::new(Vec::new()),
             placement: Arc::new(move || placement),
-            speaker: Arc::new(|| None),
             runtime: Arc::new(QuickJs),
             memory: crate::plugins::budget::fake::plenty(),
             gauge: Default::default(),
@@ -2103,9 +2105,13 @@ pub mod tests {
         let mut pc_only = character.clone();
         pc_only.runs = vec![Placement::Pc];
         assert!(entry_state(&pc_only, None, Placement::Station, false, None).1.unwrap().contains("На колонке"));
-        let mut api = character;
-        api.api = "^2".into();
-        assert!(entry_state(&api, None, Placement::Pc, false, None).1.unwrap().contains("Host API ^2"));
+        // A plugin for another Host API cannot run here; a character is data, any Host API reads.
+        let mut api = plugin.clone();
+        api.api = "^3".into();
+        assert!(entry_state(&api, None, Placement::Pc, true, None).1.unwrap().contains("Host API ^3"));
+        let mut old_character = character;
+        old_character.api = "^1".into();
+        assert_eq!(entry_state(&old_character, None, Placement::Pc, false, None).0, EntryState::Available);
     }
 
     #[tokio::test]
@@ -2271,8 +2277,8 @@ pub mod tests {
         let keys = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
         let site = site().await;
         let manifest = json!({
-            "schema": 1, "kind": "plugin", "id": "clock", "version": "1.0.0", "title": "Часы", "api": "^1",
-            "runs": ["pc", "station", "stationServer"], "permissions": ["voice.intents"],
+            "schema": 1, "kind": "plugin", "id": "clock", "version": "1.0.0", "title": "Часы", "api": "^2",
+            "runs": ["pc", "station", "stationServer"], "permissions": [],
             "contributes": { "intents": [{ "phrases": ["который час на луне"], "handler": "moon" }] }
         });
         let mut entry = arthur("1.0.0");
@@ -2494,8 +2500,8 @@ pub mod tests {
         let (main, store) = (site().await, site().await);
         let plugin = |id: &str, phrase: &str| {
             let manifest = json!({
-                "schema": 1, "kind": "plugin", "id": id, "version": "1.0.0", "title": "Часы", "api": "^1",
-                "runs": ["pc", "station", "stationServer"], "permissions": ["voice.intents"],
+                "schema": 1, "kind": "plugin", "id": id, "version": "1.0.0", "title": "Часы", "api": "^2",
+                "runs": ["pc", "station", "stationServer"], "permissions": [],
                 "contributes": { "intents": [{ "phrases": [phrase], "handler": "say" }] }
             });
             let mut entry = arthur("1.0.0");
@@ -2642,8 +2648,8 @@ pub mod tests {
         main.publish(&[character("arthur", "1.0.0"), unknown_voice_character("vague", "1.0.0")]);
         let plugin = {
             let manifest = json!({
-                "schema": 1, "kind": "plugin", "id": "moon", "version": "1.0.0", "title": "Луна", "api": "^1",
-                "runs": ["pc", "station", "stationServer"], "permissions": ["voice.intents"],
+                "schema": 1, "kind": "plugin", "id": "moon", "version": "1.0.0", "title": "Луна", "api": "^2",
+                "runs": ["pc", "station", "stationServer"], "permissions": [],
                 "contributes": { "intents": [{ "phrases": ["какая луна"], "handler": "say" }] }
             });
             let mut entry = arthur("1.0.0");

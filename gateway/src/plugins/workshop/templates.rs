@@ -17,10 +17,10 @@ pub fn plugin(id: &str, title: &str) -> Vec<(String, String)> {
         "version": "0.1.0",
         "title": title,
         "description": "Что он делает — для пульта",
-        "api": "^1",
+        "api": "^2",
         "runs": ["pc", "station", "stationServer"],
         "budget": { "memoryMb": 4, "storageMb": 1 },
-        "permissions": ["voice.intents", "llm.tools", "kv"],
+        "permissions": [],
         "contributes": {
             "intents": [{ "phrases": ["скажи привет {name}".to_string(), "скажи привет".to_string()], "handler": "hello" }],
             "tools": [{
@@ -61,10 +61,10 @@ pub fn quiz(id: &str, title: &str) -> Vec<(String, String)> {
         "version": "0.1.0",
         "title": title,
         "description": "Викторина голосом: 10 секунд на ответ, колонка сама говорит «Время вышло!»",
-        "api": "^1.2",
+        "api": "^2",
         "runs": ["pc", "station", "stationServer"],
         "budget": { "memoryMb": 4, "storageMb": 1 },
-        "permissions": ["voice.intents", "kv"],
+        "permissions": [],
         "contributes": { "intents": [{ "phrases": ["давай викторину", "викторина"], "handler": "start" }] }
     });
     let backend =
@@ -138,11 +138,13 @@ export function timeUp({ request, timeout }) {
     ]
 }
 
-/// A widget for the panel's desk (docs/plans/desk.md, stage 5): what it shows comes from its backend (`panelData`),
-/// its part of the panel draws it (`panel.js`, the slot `desk.widgets`) — the frame, the name and the menu are the
-/// desk's. The workshop's agent starts from it when someone asks for a widget in words. Its reading writes nothing:
-/// every write to `kv` makes the panel's widgets read again, so a write in `panelData` would have them read every
-/// second while the panel is open; its memory is written by a person's action (`mark`, the widget's button).
+/// A widget for the panel's desk (docs/plans/desk.md, stage 5; docs/plans/bus.md, «Карточки»): a card — its data
+/// comes from its backend (`panelData`), the panel draws it with its own parts; no code of the app runs in the panel,
+/// and the same card shows on a phone, in a chat, or said aloud. The workshop's agent starts from it when someone asks
+/// for a widget in words; a window of its own (`panel.js`) only when a card is not enough (a game, drawing, a keyboard
+/// on the screen). Its reading writes nothing: every write to `kv` makes the panel's widgets read again, so a write in
+/// `panelData` would have them read every second while the panel is open; its memory is written by a person's action
+/// (`mark`, the card's button).
 pub fn widget(id: &str, title: &str) -> Vec<(String, String)> {
     let manifest = json!({
         "schema": 1,
@@ -151,92 +153,60 @@ pub fn widget(id: &str, title: &str) -> Vec<(String, String)> {
         "version": "0.1.0",
         "title": title,
         "description": "Виджет на столе пульта",
-        "api": "^1",
+        "api": "^2",
         "runs": ["pc", "station", "stationServer"],
         "budget": { "memoryMb": 2, "storageMb": 1 },
-        "permissions": ["kv"],
+        "permissions": [],
         "contributes": {
-            "panel": { "slots": ["desk.widgets"], "calls": ["panelData", "mark"] }
+            "panel": {
+                "calls": ["panelData", "mark"],
+                "cards": [{ "id": "main", "title": title, "function": "panelData", "size": "small", "initial": true }]
+            }
         }
     });
     let backend = format!(
-        r#"// {title}: данные виджета на столе пульта (docs/plugins/AUTHORING.md, «Виджет стола»). panelData и mark
-// зовёт panel.js через useApi; ответ — любой JSON. Нужен интернет — право net:<хост> в манифесте; память между
-// вызовами — host.kv.
+        r#"// {title}: карточка на столе пульта (docs/plugins/cards.md). Функция карточки отдаёт её данные — детали,
+// которые рисует пульт: big (крупное), cap (подпись), rows (строки), line (линия), tiles (плитки), buttons
+// (кнопки)… Нажатие кнопки зовёт функцию из contributes.panel.calls и получает новую карточку. Нужен интернет —
+// право net:<хост> в манифесте и пример examples.json; память между вызовами — host.kv.
 //
 // panelData только читает: каждая запись в host.kv — весть пульту, и все виджеты читают данные заново; запись при
 // чтении крутила бы их раз в секунду. Кэш — только по сроку (пишется, когда устарел, как в weather); память, которую
-// меняет человек, пишет функция его действия — здесь mark, кнопка виджета.
+// меняет человек, пишет функция его действия — здесь mark, кнопка карточки.
+
+function card(marks) {{
+  return {{
+    big: String(marks),
+    cap: "отметок",
+    buttons: [{{ text: "Отметить", tap: "mark" }}],
+    say: `Отметок: ${{marks}}.`,
+  }};
+}}
 
 export function panelData() {{
-  return {{ value: host.kv.get("marks") ?? 0, caption: "отметок" }};
+  return card(host.kv.get("marks") ?? 0);
 }}
 
 export function mark() {{
   const marks = (host.kv.get("marks") ?? 0) + 1;
   host.kv.set("marks", marks);
-  return {{ value: marks, caption: "отметок" }};
+  return card(marks);
 }}
-"#
-    );
-    // The title as a JavaScript string: what was asked in words may hold quotes.
-    let title_json = serde_json::to_string(title).unwrap_or_else(|_| "\"Виджет\"".into());
-    let panel = format!(
-        r#"// {title}: виджет на столе пульта. Рамку — название, значок, меню «…», перетаскивание — даёт стол; здесь — только
-// содержимое. Классы: w-big (крупное число), w-rows > w-row (строки), w-cap (подпись), w-day (плитка), w-btn (кнопка).
-// version растёт, когда данные плагина изменились (запись в host.kv — голосом, кнопкой, из другого пульта): виджет
-// читает их заново.
-import {{ h }} from "preact";
-import {{ useEffect, useState }} from "preact/hooks";
-import {{ definePlugin, icons, useApi, usePanelState }} from "@duowave/panel-sdk";
-
-function Widget() {{
-  const api = useApi("{id}");
-  const {{ version }} = usePanelState();
-  const [data, setData] = useState(null);
-  const [error, setError] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const failed = (e) => setError(e?.message ?? String(e));
-  useEffect(() => {{
-    api.call("panelData").then(setData).catch(failed);
-  }}, [api, version]);
-  const mark = () => {{
-    setBusy(true);
-    api.call("mark").then(setData).catch(failed).finally(() => setBusy(false));
-  }};
-  if (error) return h("p", {{ class: "w-cap m-0" }}, error);
-  if (!data) return h("p", {{ class: "w-cap m-0" }}, "Читаю…");
-  return h(
-    "div",
-    {{ class: "flex flex-col gap-6" }},
-    h("span", {{ class: "w-big" }}, String(data.value)),
-    h("span", {{ class: "w-cap" }}, data.caption),
-    h("button", {{ class: "w-btn", type: "button", disabled: busy, onClick: mark }}, "Отметить"),
-  );
-}}
-
-export default definePlugin({{
-  id: "{id}",
-  slots: {{
-    "desk.widgets": [{{ id: "main", title: {title_json}, icon: icons.sparkle, size: "small", initial: true, source: "приложение", Component: Widget }}],
-  }},
-}});
 "#
     );
     vec![
         ("manifest.json".into(), pretty(&manifest)),
         ("backend.js".into(), backend),
-        ("panel.js".into(), panel),
         // Stand-in answers of the network: before the person's «да» the tile shows these (sandbox.rs, «пример»).
         ("examples.json".into(), pretty(&json!({ "fetch": [] }))),
-        ("README.md".into(), format!("# {title}\n\nВиджет на столе пульта: что он показывает и откуда берёт.\n")),
+        ("README.md".into(), format!("# {title}\n\nКарточка на столе пульта: что она показывает и откуда берёт.\n")),
     ]
 }
 
 /// A teacher for a MIDI keyboard (docs/plans/midi.md, «Заготовка»): a widget on the desk and a lesson window — the
 /// next note lit, a press sounds and lights the one after —, tunes of folk songs and old classics typed by hand, one's
 /// own from a .mid file, the progress, phrases for the station. It runs on a computer: the keyboard is the gateway's
-/// there (`runs: ["pc"]`, the right `midi`, Host API 1.3).
+/// there (`runs: ["pc"]`, the link `listen:device/midi`, Host API 2).
 pub fn midi(id: &str, title: &str) -> Vec<(String, String)> {
     let manifest = json!({
         "schema": 1,
@@ -245,11 +215,11 @@ pub fn midi(id: &str, title: &str) -> Vec<(String, String)> {
         "version": "0.1.0",
         "title": title,
         "description": "Учит играть на MIDI-клавиатуре: подсвечивает следующую ноту, звучит и ждёт верную",
-        "api": "^1.3",
+        "api": "^2",
         "runs": ["pc"],
         "dataVersion": 1,
         "budget": { "memoryMb": 4, "storageMb": 4 },
-        "permissions": ["midi", "kv", "voice.intents"],
+        "permissions": ["listen:device/midi"],
         "settings": [{ "key": "names", "type": "boolean", "title": "Подписывать ноты", "default": true }],
         "contributes": {
             "panel": {
@@ -291,7 +261,7 @@ pub fn theme(id: &str, title: &str) -> Vec<(String, String)> {
         "version": "0.1.0",
         "title": title,
         "description": "Тема пульта",
-        "api": "^1",
+        "api": "^2",
         "runs": ["pc", "station", "stationServer"],
         "contributes": {
             "themes": [{

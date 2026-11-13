@@ -18,6 +18,8 @@ import { pluginMemoryLine } from './memory';
 import { HistoryCard } from './history';
 import { ask } from '../ui/confirm';
 import { saveLabel } from '../via';
+import { LinksBlock } from '../bus/links-block';
+import { rightTitle } from '../bus/rights';
 
 /** Вид пакета по тому, откуда он, — на метке и в окне. */
 export const ORIGIN_TITLES: Record<PackageOrigin, string> = {
@@ -34,18 +36,6 @@ const ORIGIN_RULES: Record<PackageOrigin, string> = {
     catalog: 'Из каталога: обновляется из каталога. Его можно выключить и удалить; чтобы менять — сделайте свою копию.',
 };
 
-const PERMISSION_TITLES: Record<string, string> = {
-    'voice.intents': 'фразы колонки',
-    'voice.say': 'говорить без запроса',
-    'llm.tools': 'инструменты «Мозга»',
-    'media.source': 'источник музыки, радио и сказок',
-    kv: 'своё хранилище',
-    events: 'события шлюза',
-    schedule: 'действовать по расписанию',
-    notify: 'присылать вам сообщения',
-    files: 'хранить картинки',
-    midi: 'слышать и играть MIDI-клавиатуру — дома, на этом компьютере',
-};
 
 /** Мегабайты одной цифрой после запятой: «2,1». */
 const mb = (bytes: number): string => (bytes / (1024 * 1024)).toFixed(1).replace('.', ',');
@@ -67,7 +57,7 @@ function FilesLine({ id }: { id: string }) {
             })
             .catch(() => setView(null));
     }, [id, panel.version]);
-    if (!view) return null;
+    if (!view || view.files.length === 0) return null;
     return (
         <div class="flex flex-col gap-4">
             <span class="t-caption">
@@ -110,11 +100,8 @@ function MidiLine({ id }: { id: string }) {
     );
 }
 
-/** Право плагина словами: «сеть: *.api.radio-browser.info», «фразы колонки». */
-export function permissionTitle(permission: string): string {
-    if (permission.startsWith('net:')) return `сеть: ${permission.slice(4)}`;
-    return PERMISSION_TITLES[permission] ?? permission;
-}
+/** Право словами — одна функция на весь пульт (bus/rights.ts). */
+export const permissionTitle = rightTitle;
 
 const isAdmin = (): boolean => can('plugins.manage') && sessionStore.get()?.role === 'admin';
 
@@ -421,7 +408,18 @@ export function InstalledPackageSheet({
                     {contributes.tools.length > 0 && <span class="t-caption">Инструменты «Мозга»: {contributes.tools.join(', ')}</span>}
                     {contributes.media.length > 0 && <span class="t-caption">Источники: {contributes.media.join(', ')}</span>}
                     {contributes.events.length > 0 && <span class="t-caption">События: {contributes.events.join(', ')}</span>}
-                    {contributes.panel && <span class="t-caption">Своя часть пульта{view.panelModule ? '' : ' (загрузится, когда приложение включено)'}</span>}
+                    {contributes.panel && (
+                        <span class="t-caption">
+                            Своя часть пульта
+                            {view.panelModule
+                                ? origin === 'system' || origin === 'bundled'
+                                    ? ''
+                                    : ' — в своём окошке: без вашего входа и без сети, только через пульт'
+                                : view.enabled
+                                  ? ': карточки и вызовы'
+                                  : ' (загрузится, когда приложение включено)'}
+                        </span>
+                    )}
                 </div>
             )}
             {view.permissions.length > 0 && (
@@ -434,9 +432,10 @@ export function InstalledPackageSheet({
             {view.runsAt === 'home' && <span class="t-caption">Тяжёлое — на компьютере: пока он на связи, приложение работает там.</span>}
             {view.runsAt === 'here' && <span class="t-caption">Компьютер не на связи — приложение работает на колонке, если хватает памяти.</span>}
             {view.runs.length > 0 && <span class="t-caption">Работает: {view.runs.map((runs) => ({ pc: 'на компьютере', station: 'на колонке', stationServer: 'колонка + сервер' })[runs] ?? runs).join(', ')}</span>}
-            {runs && view.permissions.includes('schedule') && <ScheduleBlock id={view.id} admin={admin} />}
-            {runs && view.permissions.includes('files') && <FilesLine id={view.id} />}
-            {runs && view.permissions.includes('midi') && <MidiLine id={view.id} />}
+            {runs && view.permissions.includes('call:system/schedule') && <ScheduleBlock id={view.id} admin={admin} />}
+            {runs && <FilesLine id={view.id} />}
+            {runs && view.permissions.includes('listen:device/midi') && <MidiLine id={view.id} />}
+            {admin && runs && view.enabled && <LinksBlock id={view.id} />}
             {admin && runs && <SettingsForm entry={view} onSaved={(next) => { setView(next); onChanged(); }} />}
             {admin && (
                 <div class="flex flex-wrap items-center gap-8">

@@ -33,6 +33,9 @@ pub struct ExecutionContext {
     pub now: DateTime<Utc>,
     /// The request is over (cancelled, a newer one came): lookups and the model stop.
     pub cancel: CancellationToken,
+    /// Who speaks, as the household knows them (a recognised person, or the voice of the house): an app this request
+    /// reaches acts in their chain on the bus (src/bus/trail.rs). None where nobody speaks.
+    pub speaker: Option<crate::core::identity::Principal>,
 }
 
 impl ExecutionContext {
@@ -46,6 +49,7 @@ impl ExecutionContext {
             media_base_url: None,
             now,
             cancel: CancellationToken::new(),
+            speaker: None,
         }
     }
 }

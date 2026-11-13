@@ -25,7 +25,7 @@ use serde_json::{json, Map, Value};
 
 use super::budget::{self, Idle, MemoryGauge, MemoryNow, MemoryProbe, PluginShare, PressureAction, ResourcesView};
 use super::bundled::{self, BundledPackage};
-use super::host_api::{storage_used, DataNews, PluginHostApi, SpeakerSource};
+use super::host_api::{storage_used, DataNews, PluginHostApi};
 use super::manifest::{self, Budget, Manifest, PackageKind, Permission, SettingSpec, ToolSpec};
 use super::media::PluginMediaSource;
 use super::phrases::Phrase;
@@ -114,8 +114,6 @@ pub struct PluginsDeps {
     /// The media sources the media skills read: the plugins' join and leave here.
     pub media: Arc<MediaSources>,
     pub placement: PlacementNow,
-    /// How plugins speak without a request (`host.voice.say`): the station link's speaker, once it stands.
-    pub speaker: SpeakerSource,
     /// The engine; QuickJS unless a test gives its own.
     pub runtime: Arc<dyn PluginRuntime>,
     /// The machine's memory and disk: the plugins' budget (budget.rs).
@@ -327,7 +325,6 @@ pub struct PluginHost {
     events: EventBus,
     runtime: Arc<dyn PluginRuntime>,
     placement: PlacementNow,
-    speaker: SpeakerSource,
     /// The gateway's runtime: the plugins' requests run there.
     handle: Option<tokio::runtime::Handle>,
     media: Arc<MediaSources>,
@@ -362,7 +359,13 @@ pub struct PluginHost {
     history: std::sync::OnceLock<Arc<super::history::History>>,
     /// The gateway's safe: the plugins' private settings.
     secrets: Arc<SecretsService>,
+    /// The bus's word on an app reaching a participant outside a letter (its speech by schedule, the model's answer
+    /// in its words, its page hearing the keyboard): set once the bus stands.
+    gate: std::sync::OnceLock<Gate>,
 }
+
+/// May the app `app` reach `to`'s `handle` now (src/bus): its links, the owner's «да» — the reason in words when not.
+pub type Gate = Arc<dyn Fn(&str, &str, &str) -> Result<(), String> + Send + Sync>;
 
 impl PluginHost {
     /// The host with what is on disk and in the database; no code is loaded until it is called.
@@ -374,7 +377,6 @@ impl PluginHost {
             events,
             media,
             placement,
-            speaker,
             runtime,
             memory,
             gauge,
@@ -404,13 +406,13 @@ impl PluginHost {
         let handle = tokio::runtime::Handle::try_current().ok();
         let data_news = DataNews::new(events.clone(), handle.clone());
         let host = Arc::new_cyclic(|me| PluginHost {
+            gate: std::sync::OnceLock::new(),
             config,
             db,
             settings,
             events,
             runtime,
             placement,
-            speaker,
             handle,
             media,
             me: me.clone(),
@@ -780,7 +782,16 @@ impl PluginHost {
                 };
                 let module = part("panel.js");
                 let styles = part("panel.css");
-                (module.is_some() || styles.is_some()).then(|| PanelPart {
+                let cards = package
+                    .manifest
+                    .contributes
+                    .panel
+                    .as_ref()
+                    .and_then(|panel| panel.get("cards"))
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                (module.is_some() || styles.is_some() || !cards.is_empty()).then(|| PanelPart {
                     id: plugin.id.clone(),
                     title: package.manifest.title.clone(),
                     version: package.version(),
@@ -789,6 +800,7 @@ impl PluginHost {
                     settings: package.manifest.settings_shown(Some(
                         &package.manifest.stored_with_secrets(stored.get(&plugin.id), &self.secrets),
                     )),
+                    cards,
                 })
             })
             .collect()
@@ -932,15 +944,12 @@ impl PluginHost {
     pub fn play_rights(&self, id: &str) -> super::media::PlayRights {
         let Some(package) = self.package(id) else { return super::media::PlayRights::default() };
         super::media::PlayRights {
-            content: package
-                .manifest
-                .permissions
-                .iter()
-                .filter_map(|permission| match permission {
-                    Permission::Content(folder) => Some(folder.clone()),
-                    _ => None,
-                })
-                .collect(),
+            // `call:system/content`: the household's music and tales.
+            content: if package.manifest.asks("system/content") >= crate::bus::Level::Call {
+                vec!["music".into(), "tales".into()]
+            } else {
+                Vec::new()
+            },
             streams: package.manifest.kind == PackageKind::App,
         }
     }
@@ -988,15 +997,27 @@ impl PluginHost {
         });
     }
 
-    /// May a page of this app hear the MIDI keyboard (docs/plans/midi.md): it is on here, and its version in force has
-    /// the right `midi` the admin approved. Asked when the page takes its ticket and every few seconds after.
-    pub fn may_hear_midi(&self, id: &str) -> Result<(), String> {
-        let package = self.package(id).ok_or_else(|| format!("приложение «{id}» выключено или не стоит здесь"))?;
-        if package.manifest.has(&super::manifest::Permission::Midi) {
-            Ok(())
-        } else {
-            Err("у приложения нет права «MIDI-клавиатура» (midi)".into())
+    /// The bus's word on apps reaching what they reach outside a letter.
+    pub fn set_gate(&self, gate: Gate) {
+        let _ = self.gate.set(gate);
+    }
+
+    /// May the app `app`, on here, reach `to`'s `handle` now: the bus's word (its links, the owner's «да»); without a
+    /// bus, what its manifest asked for.
+    pub fn may(&self, app: &str, to: &str, handle: &str) -> Result<(), String> {
+        let package = self.package(app).ok_or_else(|| format!("приложение «{app}» выключено или не стоит здесь"))?;
+        match self.gate.get() {
+            Some(gate) => gate(app, to, handle),
+            None if package.manifest.asks(to) > crate::bus::Level::None => Ok(()),
+            None => Err(format!("приложение не просило связь с {to}")),
         }
+    }
+
+    /// May a page of this app hear the MIDI keyboard (docs/plans/midi.md): it is on here, and the bus lets it hear
+    /// `device/midi` (`listen:device/midi`, the owner's «да»). Asked when the page takes its ticket and every few
+    /// seconds after.
+    pub fn may_hear_midi(&self, id: &str) -> Result<(), String> {
+        self.may(id, "device/midi", "notes")
     }
 
     /// A line in a plugin's own journal.
@@ -1037,6 +1058,15 @@ impl PluginHost {
         if self.config.disabled {
             return Err(PluginError::Unavailable("безопасный режим: приложения не работают (PLUGINS_DISABLED)".into()));
         }
+        // The trail (src/bus/trail.rs): the chain this call is part of, or the app's own when nobody started one; a
+        // step further into this app — refused past the hops or back into an app that waits in the chain.
+        let trail = crate::bus::trail::current().unwrap_or_else(|| crate::bus::Trail::app(id));
+        let trail = trail.entering(id).map_err(|error| PluginError::Unavailable(error.to_string()))?;
+        trail.scope(self.call_in(id, function, input, kind)).await
+    }
+
+    /// The call itself, inside its trail.
+    async fn call_in(&self, id: &str, function: &str, input: Value, kind: CallKind) -> Result<Value, PluginError> {
         let plugin = self.plugin(id).ok_or_else(|| PluginError::Unavailable(format!("нет приложения {id}")))?;
         let _busy = Busy::new(&plugin);
         plugin.used.store(self.now_ms(), Ordering::Relaxed);
@@ -1114,21 +1144,15 @@ impl PluginHost {
         let (runtime, code) = super::runtime::engine_for(&manifest, package, &self.runtime, &self.apps)?;
         let me = self.me.clone();
         let host = Arc::new(
-            PluginHostApi::new(
-                manifest,
-                self.db.clone(),
-                self.settings.clone(),
-                self.handle.clone(),
-                self.speaker.clone(),
-            )
-            .with_services(self.services.clone())
-            .with_secrets(Some(self.secrets.clone()))
-            .with_data_news(self.data_news.clone())
-            .with_sink(Arc::new(move |id: &str, level: &str, message: &str| {
-                if let Some(host) = me.upgrade() {
-                    host.note_line(id, level, message);
-                }
-            })),
+            PluginHostApi::new(manifest, self.db.clone(), self.settings.clone(), self.handle.clone())
+                .with_services(self.services.clone())
+                .with_secrets(Some(self.secrets.clone()))
+                .with_data_news(self.data_news.clone())
+                .with_sink(Arc::new(move |id: &str, level: &str, message: &str| {
+                    if let Some(host) = me.upgrade() {
+                        host.note_line(id, level, message);
+                    }
+                })),
         );
         let started = Instant::now();
         let instance = runtime.start(code, host).await?;
@@ -1248,9 +1272,6 @@ impl PluginHost {
         let name = event.name();
         for plugin in self.list() {
             let Some(package) = plugin.active() else { continue };
-            if !package.manifest.has(&Permission::Events) {
-                continue;
-            }
             for spec in package.manifest.contributes.events.iter().filter(|spec| spec.name == name) {
                 let payload = json!({ "name": name, "payload": event.payload() });
                 self.background(&plugin.id, &spec.handler, payload);
@@ -1268,9 +1289,6 @@ impl PluginHost {
         let Some((plugin, own)) = report.item.id.split_once('/') else { return };
         let Some(package) = self.package(plugin) else { return };
         self.note_line(plugin, "player", &report.news.note(&report.item.title, report.via_gateway));
-        if !package.manifest.has(&Permission::Events) {
-            return;
-        }
         let name = report.news.event();
         let Some(spec) = package.manifest.contributes.events.iter().find(|spec| spec.name == name) else { return };
         let (seconds, retrying) = match report.news {
@@ -2027,6 +2045,12 @@ impl PluginHost {
 
     // What the plugins give the core.
 
+    /// The plugin whose tool this is, among those that are on (src/bus: `host.tools.call` goes to it as a letter).
+    pub fn tool_owner(&self, name: &str) -> Option<String> {
+        let tools = self.tools.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        tools.iter().find(|offered| offered.spec.name == name).map(|offered| offered.plugin.clone())
+    }
+
     /// The plugins' tools for «Мозг», in MCP's form, with the right each needs (`use:<capability>`).
     pub fn tool_contributions(&self) -> Vec<ToolContribution> {
         if self.config.disabled {
@@ -2052,7 +2076,10 @@ impl PluginHost {
                         let (me, plugin, handler) = (me.clone(), plugin.clone(), handler.clone());
                         Box::pin(async move {
                             let host = me.upgrade().ok_or_else(|| anyhow::anyhow!("plugins are gone"))?;
-                            let answer = host.call(&plugin, &handler, Value::Object(input), CallKind::Tool).await?;
+                            // The chain is the speaker's: whatever the tool reaches on the bus, it reaches as them.
+                            let trail = crate::bus::Trail::principal(&context.principal);
+                            let answer =
+                                trail.scope(host.call(&plugin, &handler, Value::Object(input), CallKind::Tool)).await?;
                             Ok(host.act(&plugin, capability, answer, context.station.as_ref()))
                         })
                     }),
@@ -2368,10 +2395,16 @@ pub struct PanelPart {
     pub id: String,
     pub title: String,
     pub version: String,
+    /// Its panel code (`panel.js`): it runs in a window of its own — a sandboxed frame that reaches the gateway only
+    /// through the panel's bridge (docs/plans/bus.md, «Окошки»); its styles load in that window.
     pub module: Option<String>,
     pub styles: Option<String>,
     /// The values of its settings, for `useSettings`: a secret one only as «••••••».
     pub settings: Map<String, Value>,
+    /// Its cards (`contributes.panel.cards`: id, title, function, size…): the panel draws them with its own parts, the
+    /// data comes from the app's function (src/bus/cards.rs).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cards: Vec<Value>,
 }
 
 /// A theme of a package, for the panel's choice.
@@ -2581,7 +2614,6 @@ mod tests {
             events: events.clone(),
             media: media.clone(),
             placement: Arc::new(move || placement),
-            speaker: Arc::new(|| None),
             runtime: Arc::new(QuickJs),
             memory,
             gauge: Default::default(),
@@ -2600,10 +2632,10 @@ mod tests {
 
     fn echo(version: &str) -> Value {
         json!({
-            "schema": 1, "id": "echo", "version": version, "title": "Эхо", "api": "^1",
+            "schema": 1, "id": "echo", "version": version, "title": "Эхо", "api": "^2",
             "runs": ["pc", "station", "stationServer"],
             "budget": { "memoryMb": 2 },
-            "permissions": ["voice.intents", "voice.say", "llm.tools", "media.source", "kv", "net:allowed.example"],
+            "permissions": ["call:system/voice", "net:allowed.example"],
             "contributes": {
                 "intents": [{ "phrases": ["скажи эхо {word}"], "handler": "say" }],
                 "tools": [{
@@ -2622,7 +2654,7 @@ mod tests {
         export function spin() { while (true) {} }
         export function remember({ value }) { host.kv.set("last", value); return host.kv.get("last"); }
         export async function reach({ url }) { return (await host.http.fetch(url)).status; }
-        export async function speak({ text }) { return await host.voice.say(text); }
+        export async function speak({ text }) { return await host.bus.call("system/voice", "say", { text }); }
     "#;
 
     fn said(answer: Result<Value, PluginError>) -> String {
@@ -2656,11 +2688,8 @@ mod tests {
         assert_eq!(found.intent.params["slots"], json!({"word": "привет"}));
         assert_eq!(found.intent.params[EXECUTOR], "plugins");
         assert_eq!(said(host.call("echo", "say", json!({"word": "а"}), CallKind::Voice).await), "а (1)");
-        // Speech without a request: no station on the line here, so nothing was said.
-        assert_eq!(
-            host.call("echo", "speak", json!({"text": "Звонок в дверь"}), CallKind::Background).await,
-            Ok(json!(false))
-        );
+        // Speech without a request is a letter to `system/voice` (Host API 2): this host has no bus, so it is refused.
+        assert!(host.call("echo", "speak", json!({"text": "Звонок в дверь"}), CallKind::Background).await.is_err());
 
         let tools = host.tool_contributions();
         assert_eq!(tools.len(), 1);
@@ -2775,12 +2804,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut strict = echo("1.0.0");
         strict["id"] = json!("strict");
-        strict["permissions"] = json!(["voice.intents", "net:allowed.example"]);
+        strict["permissions"] = json!(["net:allowed.example"]);
         strict["contributes"] = json!({ "intents": [{ "phrases": ["проверь права"], "handler": "say" }] });
         write_package(dir.path(), &strict, Some(CODE));
         let mut greedy = echo("1.0.0");
         greedy["id"] = json!("greedy");
-        greedy["permissions"] = json!(["voice.intents"]);
+        greedy["permissions"] = json!([]);
         write_package(dir.path(), &greedy, Some(CODE));
         let host = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Pc).host;
         host.enable("strict", None).await.unwrap();
@@ -2789,8 +2818,8 @@ mod tests {
             Err(PluginError::Script(text)) => text,
             other => panic!("{other:?}"),
         };
-        let kv = failure(host.call("strict", "remember", json!({"value": 1}), CallKind::Voice).await);
-        assert!(kv.contains("нет права kv"), "{kv}");
+        // Its own store is its own (Host API 2): no right needed.
+        assert_eq!(host.call("strict", "remember", json!({"value": 1}), CallKind::Voice).await, Ok(json!(1)));
         let other =
             failure(host.call("strict", "reach", json!({"url": "https://other.example/x"}), CallKind::Voice).await);
         assert!(other.contains("хост other.example не разрешён"), "{other}");
@@ -2799,19 +2828,14 @@ mod tests {
         let scheme = failure(host.call("strict", "reach", json!({"url": "file:///etc/passwd"}), CallKind::Voice).await);
         assert!(scheme.contains("только http и https"), "{scheme}");
         let speech = failure(host.call("strict", "speak", json!({"text": "Привет"}), CallKind::Background).await);
-        assert!(speech.contains("нет права voice.say"), "{speech}");
+        assert!(speech.contains("служб шлюза здесь нет"), "a letter needs the bus: {speech}");
         let view = host.view_one("strict").await.unwrap();
-        assert_eq!(view.errors, 5);
+        assert_eq!(view.errors, 4);
         assert!(view.last_error.unwrap().message.starts_with("speak: "), "the last error names the function");
 
-        // Tools for «Мозг» without llm.tools, a source without media.source: the package is refused whole.
-        let refused = host.enable("greedy", None).await.unwrap_err();
-        assert!(
-            refused.message.contains("нужно право llm.tools") && refused.message.contains("нужно право media.source"),
-            "{}",
-            refused.message
-        );
-        assert!(host.tool_contributions().is_empty());
+        // Tools for «Мозг», a source for the player: what an app gives needs no right (Host API 2), only `contributes`.
+        host.enable("greedy", None).await.unwrap();
+        assert!(!host.tool_contributions().is_empty());
     }
 
     #[tokio::test]
@@ -2862,7 +2886,7 @@ mod tests {
     async fn lists_a_package_of_another_kind_without_code_and_does_not_switch_it_on() {
         let dir = tempfile::tempdir().unwrap();
         let character = json!({
-            "schema": 1, "kind": "character", "id": "ded-moroz", "version": "1.0.0", "title": "Дед Мороз", "api": "^1",
+            "schema": 1, "kind": "character", "id": "ded-moroz", "version": "1.0.0", "title": "Дед Мороз", "api": "^2",
             "runs": ["pc", "station", "stationServer"],
             "contributes": { "characters": [{ "id": "ded-moroz" }] }
         });
@@ -2878,10 +2902,10 @@ mod tests {
     /// A small plugin of its own id: one phrase, its own `memoryMb`, the echo's code.
     fn small(id: &str, memory_mb: u64) -> Value {
         json!({
-            "schema": 1, "id": id, "version": "1.0.0", "title": id, "api": "^1",
+            "schema": 1, "id": id, "version": "1.0.0", "title": id, "api": "^2",
             "runs": ["pc", "station", "stationServer"],
             "budget": { "memoryMb": memory_mb },
-            "permissions": ["voice.intents"],
+            "permissions": [],
             "contributes": { "intents": [{ "phrases": [format!("{id} {{word}}")], "handler": "say" }] }
         })
     }
@@ -3150,12 +3174,12 @@ mod tests {
         registry::set_installed(&db, "echo", registry::SOURCE_BUNDLED, true, None).unwrap();
         let mut core = echo("1.0.0");
         core["id"] = json!("core");
-        core["permissions"] = json!(["voice.intents"]);
+        core["permissions"] = json!([]);
         core["contributes"] = json!({ "intents": [{ "phrases": ["ядро"], "handler": "say" }] });
         write_package(dir.path(), &core, Some(CODE));
         registry::set_installed(&db, "core", registry::SOURCE_SYSTEM, true, None).unwrap();
         let theme = json!({
-            "schema": 1, "kind": "theme", "id": "forest", "version": "1.0.0", "title": "Лес", "api": "^1",
+            "schema": 1, "kind": "theme", "id": "forest", "version": "1.0.0", "title": "Лес", "api": "^2",
             "runs": ["pc", "station", "stationServer"],
             "contributes": { "themes": [
                 { "id": "forest", "title": "Лес", "layout": "sidebar", "palette": { "dark": { "bg": "#0b1a10" }, "light": { "bg": "#eef7ee" } } },
@@ -3211,8 +3235,8 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let manifest = json!({
-            "schema": 1, "id": "tuner", "version": "1.0.0", "title": "Тюнер", "api": "^1", "runs": ["pc"],
-            "permissions": ["llm.tools", "events", "media.source"],
+            "schema": 1, "id": "tuner", "version": "1.0.0", "title": "Тюнер", "api": "^2", "runs": ["pc"],
+            "permissions": [],
             "contributes": {
                 "tools": [{ "name": "tuner_play", "description": "Включает станцию", "handler": "play", "capability": "radio" }],
                 "media": [{ "id": "stations", "kind": "radio" }],

@@ -2,21 +2,25 @@
   "schema": 1,
   "kind": "plugin",
   "id": "calendar",
-  "version": "1.1.2",
+  "version": "2.0.0",
   "title": "Календарь",
   "description": "Ваш календарь голосом и виджетом на столе пульта: что сегодня, завтра и на неделе. Календарь — по ссылке iCal (.ics), её дают Google, Яндекс и iCloud; без входа в аккаунт, только чтение. Ссылка — в настройках приложения. Время — по поясу календаря, «сегодня» голосом — по поясу колонки.",
-  "api": "^1.1",
-  "runs": ["pc", "station", "stationServer"],
-  "budget": { "memoryMb": 8, "storageMb": 1 },
+  "api": "^2",
+  "runs": [
+    "pc",
+    "station",
+    "stationServer"
+  ],
+  "budget": {
+    "memoryMb": 8,
+    "storageMb": 1
+  },
   "permissions": [
     "net:calendar.google.com",
     "net:calendar.yandex.ru",
     "net:*.icloud.com",
     "net:outlook.live.com",
-    "net:outlook.office365.com",
-    "voice.intents",
-    "llm.tools",
-    "kv"
+    "net:outlook.office365.com"
   ],
   "settings": [
     {
@@ -52,17 +56,39 @@
         "input": {
           "type": "object",
           "properties": {
-            "days": { "type": "integer", "minimum": 1, "maximum": 14, "description": "Сколько дней вперёд, считая сегодня" },
-            "timezone": { "type": "string", "description": "Часовой пояс колонки (Europe/Moscow): по нему «сегодня» и время; пусто — пояс календаря" }
+            "days": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 14,
+              "description": "Сколько дней вперёд, считая сегодня"
+            },
+            "timezone": {
+              "type": "string",
+              "description": "Часовой пояс колонки (Europe/Moscow): по нему «сегодня» и время; пусто — пояс календаря"
+            }
           }
         },
         "handler": "calendarEvents",
-        "annotations": { "readOnlyHint": true }
+        "annotations": {
+          "readOnlyHint": true
+        }
       }
     ],
     "panel": {
-      "slots": ["desk.widgets"],
-      "calls": ["panelEvents"]
+      "calls": [
+        "eventsCard"
+      ],
+      "cards": [
+        {
+          "id": "events",
+          "title": "Календарь",
+          "function": "eventsCard",
+          "size": "small",
+          "initial": true,
+          "icon": "list",
+          "refreshS": 600
+        }
+      ]
     }
   }
 }

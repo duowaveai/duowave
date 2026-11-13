@@ -1240,14 +1240,14 @@ pub(crate) mod tests {
         write_draft(
             dir.path(),
             "radio",
-            &[("manifest.json", "{\"version\":\"1.0.0\",\"permissions\":[\"kv\"]}\n"), ("backend.js", "a\nb\n")],
+            &[("manifest.json", "{\"version\":\"1.0.0\",\"permissions\":[]}\n"), ("backend.js", "a\nb\n")],
         );
         let first = history.step("radio", StepMeta::new(RecordKind::Found, Author::new(Who::System))).unwrap();
         write_draft(
             dir.path(),
             "radio",
             &[
-                ("manifest.json", "{\"version\":\"1.1.0\",\"permissions\":[\"kv\",\"net:api.example.org\"]}\n"),
+                ("manifest.json", "{\"version\":\"1.1.0\",\"permissions\":[\"net:api.example.org\"]}\n"),
                 ("backend.js", "a\nc\n"),
             ],
         );

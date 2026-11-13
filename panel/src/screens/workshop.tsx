@@ -46,6 +46,7 @@ import { RightsLines } from '../ui/rights-lines';
 import { ask as confirmAsk } from '../ui/confirm';
 import { pushDraft, stationInstall, stationPlan, stationTrial, stationVersion } from './to-station';
 import { DraftWidgetPreview, mayRunDraft } from './widget-agent';
+import { DraftCardPreview } from '../cards/draft-card';
 import { HistoryCard, HistoryRoomLine } from './history';
 import { CodeEditor } from '../ui/code-editor';
 
@@ -1483,18 +1484,19 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
                     )}
                     {!plugin &&
                         (previewing ? <Action label="Снять примерку" onClick={endPreview} /> : <Action label="Примерить тему" busy={busy === 'preview'} disabled={!!busy} onClick={() => void preview()} />)}
-                    {plugin && hasPanel && (
+                    {plugin && (
                         <Action
                             label={widgetShown ? 'Показать заново' : 'Показать виджет'}
                             disabled={!!busy}
                             onClick={() =>
                                 void act('widget', async () => {
                                     await saveNow();
-                                    // panel.js выполнится в пульте с правами вошедшего: сначала спросить — у черновика,
-                                    // сделанного голосом, каждый раз, у прочих — когда его код не тот, что разрешали.
-                                    const code = await mayRunDraft(id);
-                                    if (code === null) return;
-                                    setApproved(code);
+                                    // panel.js работает в своём окошке, без прав пульта; карточку рисует сам пульт.
+                                    if (hasPanel) {
+                                        const code = await mayRunDraft(id);
+                                        if (code === null) return;
+                                        setApproved(code);
+                                    }
                                     setWidgetShown((n) => n + 1);
                                 })
                             }
@@ -1513,7 +1515,12 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
                         }
                     />
                 </div>
-                {widgetShown > 0 && <DraftWidgetPreview id={id} nonce={widgetShown} code={approved} />}
+                {widgetShown > 0 &&
+                    (hasPanel ? (
+                        <DraftWidgetPreview id={id} nonce={widgetShown} code={approved} />
+                    ) : (
+                        <DraftCardPreview id={id} nonce={widgetShown} trying={{ example: false }} fallback={<p class="t-caption m-0">У черновика нет ни карточки, ни окошка — только фразы.</p>} />
+                    ))}
                 {check && <CheckLines report={check} />}
                 {note && (
                     <span class={`t-caption ${note.ok ? 'c-accent-text' : 'c-dot-offline'}`} role="status">

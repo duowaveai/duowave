@@ -2,13 +2,20 @@
   "schema": 1,
   "kind": "plugin",
   "id": "shopping",
-  "version": "1.1.2",
+  "version": "2.0.0",
   "title": "Список покупок",
   "description": "Свой список покупок: «добавь молоко в список покупок», «что в списке покупок», «вычеркни хлеб из списка покупок», «очисти список покупок» — и виджет на столе пульта, где список пополняют и вычёркивают. Хранится у шлюза, без Яндекса. Поставляется выключенным: включённый, забирает фразы о списке покупок у Яндекса при маршруте «Сервисы аккаунта» «свой + Яндекс» (по умолчанию) или «свой». Оставить список Яндекса — маршрут «Яндекс» («Мозг» → «Маршруты») или выключить приложение.",
-  "api": "^1.1",
-  "runs": ["pc", "station", "stationServer"],
-  "budget": { "memoryMb": 2, "storageMb": 1 },
-  "permissions": ["voice.intents", "llm.tools", "kv"],
+  "api": "^2",
+  "runs": [
+    "pc",
+    "station",
+    "stationServer"
+  ],
+  "budget": {
+    "memoryMb": 2,
+    "storageMb": 1
+  },
+  "permissions": [],
   "contributes": {
     "intents": [
       {
@@ -46,7 +53,11 @@
         "capability": "account"
       },
       {
-        "phrases": ["очисти список покупок", "удали список покупок", "всё купили"],
+        "phrases": [
+          "очисти список покупок",
+          "удали список покупок",
+          "всё купили"
+        ],
         "handler": "clearSay",
         "capability": "account"
       }
@@ -58,17 +69,44 @@
         "input": {
           "type": "object",
           "properties": {
-            "action": { "type": "string", "enum": ["list", "add", "remove"] },
-            "items": { "type": "array", "items": { "type": "string" } }
+            "action": {
+              "type": "string",
+              "enum": [
+                "list",
+                "add",
+                "remove"
+              ]
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
           },
-          "required": ["action"]
+          "required": [
+            "action"
+          ]
         },
         "handler": "shoppingTool"
       }
     ],
     "panel": {
-      "slots": ["desk.widgets"],
-      "calls": ["panelList", "panelAdd", "panelRemove", "panelClear"]
+      "calls": [
+        "listCard",
+        "addCard",
+        "removeCard"
+      ],
+      "cards": [
+        {
+          "id": "list",
+          "title": "Список покупок",
+          "function": "listCard",
+          "size": "small",
+          "initial": true,
+          "icon": "list"
+        }
+      ]
     }
   }
 }

@@ -28,6 +28,8 @@ import { UpdateBanner } from './ui/update-banner';
 import { readUpdateStatus, useOfferedUpdate } from './updates';
 import { syncPackages } from './plugins/loader';
 import { notePackageChange, runtimeOnly } from './plugins/versions';
+import { ConsentSheet } from './bus/consent-sheet';
+import { noteBusChange } from './bus/state';
 import { forgetStationPackages } from './sdk';
 import { AddWidgetPanel } from './screens/add-widget';
 import { WidgetAgent } from './screens/widget-agent';
@@ -209,6 +211,8 @@ export function App() {
         if ((name === 'packages.changed' && !runtimeOnly(change)) || name === 'hello') setPackagesVersion((value) => value + 1);
         // Виджеты плагинов перечитывают своё только по переменам своего пакета (plugins/versions.ts).
         notePackageChange(name, subject, change);
+        // Шина «Связи»: лист «да» и экраны связей перечитывают своё (bus/state.ts).
+        noteBusChange(name);
         // Черновики мастерской: плитка на столе, «Готово» на полосе, «Примерка» по просьбе колонки (voice/drafts.ts).
         if (name === 'workshop.changed' || name === 'hello') noteWorkshopChange(subject, change);
         setVersion((value) => value + 1);
@@ -684,6 +688,7 @@ export function App() {
             )}
             {sayOpen && <SaySheet health={health} debug={debug} onClose={() => setSayOpen(false)} />}
             {auth === 'ok' && <CreationFlow />}
+            {auth === 'ok' && <ConsentSheet />}
             {pickerOpen && (
                 <StationsPicker
                     stations={stations}

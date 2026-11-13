@@ -9,8 +9,7 @@ use futures::future::BoxFuture;
 use serde_json::{json, Map, Value};
 use tokio_util::sync::CancellationToken;
 
-use crate::core::connectors::ToolContext;
-use crate::core::identity::principal::system;
+use crate::bus::Trail;
 use crate::plugins::host_api::HostServices;
 use crate::plugins::PluginHost;
 use crate::skills::smart_home::home_assistant::HomeAssistantProvider;
@@ -26,6 +25,8 @@ pub struct PluginServices {
     schedules: OnceLock<Weak<crate::plugins::schedule::Scheduler>>,
     /// The plugins' pictures: `host.files.*`.
     files: OnceLock<Arc<crate::plugins::files::PluginFiles>>,
+    /// The bus (src/bus): `host.bus.*`, the folders, and the older services carried as letters.
+    bus: OnceLock<Weak<crate::bus::Bus>>,
 }
 
 impl PluginServices {
@@ -36,12 +37,18 @@ impl PluginServices {
             plugins: OnceLock::new(),
             schedules: OnceLock::new(),
             files: OnceLock::new(),
+            bus: OnceLock::new(),
         })
     }
 
     /// The plugin host, once it stands (it is built with these services).
     pub fn set_plugins(&self, plugins: &Arc<PluginHost>) {
         let _ = self.plugins.set(Arc::downgrade(plugins));
+    }
+
+    /// The bus, once it stands.
+    pub fn set_bus(&self, bus: &Arc<crate::bus::Bus>) {
+        let _ = self.bus.set(Arc::downgrade(bus));
     }
 
     /// The plugins' pictures.
@@ -83,26 +90,6 @@ impl HostServices for PluginServices {
                     })
                 })
                 .collect()
-        })
-    }
-
-    fn call_tool(
-        &self,
-        caller: &str,
-        name: &str,
-        input: Map<String, Value>,
-    ) -> BoxFuture<'static, Result<String, String>> {
-        let tool = self
-            .plugins
-            .get()
-            .and_then(Weak::upgrade)
-            .and_then(|plugins| plugins.tool_contributions().into_iter().find(|tool| tool.tool.name == name));
-        let (caller, name) = (caller.to_string(), name.to_string());
-        Box::pin(async move {
-            let tool = tool.ok_or_else(|| format!("нет инструмента {name}: его плагин выключен или его нет"))?;
-            tracing::debug!(target: "plugins", "{caller}: calls the tool {name}");
-            let context = ToolContext { principal: system(), cancel: CancellationToken::new(), station: None };
-            (tool.run)(input, context).await.map_err(|error| error.to_string())
         })
     }
 
@@ -168,7 +155,7 @@ impl HostServices for PluginServices {
                     .get()
                     .and_then(Weak::upgrade)
                     .and_then(|plugins| plugins.package(caller))
-                    .map_or(1, |package| package.manifest.budget.storage_mb);
+                    .map_or(1, |package| package.manifest.budget.files_mb);
                 let name = input.get("name").and_then(Value::as_str).unwrap_or_default();
                 files.put(caller, name, &bytes.unwrap_or_default(), room)
             }
@@ -179,6 +166,22 @@ impl HostServices for PluginServices {
             (Some(_), other) => Err(format!("нет функции files.{other}")),
         };
         Box::pin(async move { answer })
+    }
+
+    fn say(&self, caller: &str, text: String, device: Option<String>) -> BoxFuture<'static, Result<bool, String>> {
+        let speaker = self.skills.upgrade().and_then(|skills| skills.speaker());
+        let caller = caller.to_string();
+        Box::pin(async move {
+            let text: String = text.trim().chars().take(500).collect();
+            if text.is_empty() {
+                return Err("нечего сказать".into());
+            }
+            // No station on the line, or no station link at all: nothing is said, and the plugin is told so.
+            let Some(speaker) = speaker else { return Ok(false) };
+            tracing::info!(target: "plugins", "{caller}: says «{text}»");
+            let device = device.filter(|device| !device.is_empty()).unwrap_or_else(|| "*".into());
+            Ok(speaker.say(device, text, None).await)
+        })
     }
 
     fn notify(&self, caller: &str, text: String) -> BoxFuture<'static, Result<Value, String>> {
@@ -195,6 +198,17 @@ impl HostServices for PluginServices {
             None => Err("расписаний здесь нет".into()),
         };
         Box::pin(async move { answer })
+    }
+
+    fn bus(
+        &self,
+        caller: &str,
+        name: &str,
+        input: Value,
+        trail: Option<Trail>,
+    ) -> Option<BoxFuture<'static, Result<Value, String>>> {
+        let bus = self.bus.get().and_then(Weak::upgrade)?;
+        Some(crate::bus::letter(bus, caller, name, input, trail))
     }
 }
 

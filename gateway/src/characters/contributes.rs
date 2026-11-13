@@ -473,7 +473,7 @@ pub mod tests {
 
     pub fn arthur_manifest(version: &str) -> Value {
         json!({
-            "schema": 1, "kind": "character", "id": "arthur", "version": version, "api": "^1",
+            "schema": 1, "kind": "character", "id": "arthur", "version": version, "api": "^2",
             "title": "Артур", "description": "ИИ-дворецкий: «сэр», сухой юмор",
             "runs": ["pc", "station", "stationServer"], "license": "CC BY-NC 4.0, некоммерчески",
             "contributes": { "characters": [{

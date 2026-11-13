@@ -3,7 +3,8 @@
 // виджет» становится ею. Пока агент работает — фиолетовый пунктирный контур (его рисует комета агента, ui/comet.ts),
 // внутри по настоящим шагам агента проявляются строки. Готово — пунктир остаётся (это черновик), метка «на примерке»,
 // внутри пример данных, под плиткой «Примерить» и «На стол». Настоящим листом плитка станет только на столе, после
-// «да». Черновик колонки до показа кода — только лицо и «попросили у колонки»: код покажется после вопроса.
+// «да». Код черновика работает в своём окошке (docs/plans/bus.md, «Окошки»), поэтому показывается сразу — и черновик,
+// попрошенный у колонки, тоже.
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
@@ -15,7 +16,8 @@ import { flyComet } from '../ui/comet';
 import { askToMake, failed } from '../voice/creation';
 import { useAgentPlace } from '../voice/drafts';
 import { useVoiceAction } from '../voice/phrases';
-import { DraftWidgetPreview, madeByVoice, mayRunDraft, trustOwnDraft, trustedCode } from './draft-preview';
+import { DraftWidgetPreview, madeByVoice, trustOwnDraft, trustedCode } from './draft-preview';
+import { DraftCardPreview } from '../cards/draft-card';
 
 /** Черновики, к которым комета уже летала: второй раз — без полёта, контур на месте. */
 const flown = new Set<string>();
@@ -90,26 +92,18 @@ function Example({ draft }: { draft: DraftView }) {
     useEffect(() => {
         setCode(null);
         setProblem(null);
-        if (!hasPanel || voice) return;
-        // Попросили здесь, в пульте: показ не переспрашивает, пока код тот же.
+        if (!hasPanel) return;
+        // Код черновика работает в своём окошке, без прав пульта (docs/plans/bus.md, «Окошки»): показ не переспрашивает,
+        // даже если черновик попросили у колонки.
         trustedCode(draft.id)
             .then((known) => known ?? trustOwnDraft(draft.id))
             .then(setCode)
             .catch((e) => setProblem(problemOf(e)));
-    }, [draft.id, draft.version, draft.meta.updated, hasPanel, voice]);
-    if (!hasPanel) return <Phrases draft={draft} />;
+    }, [draft.id, draft.version, draft.meta.updated, hasPanel]);
+    // Без окошка — карточка, если она есть (её рисует пульт), иначе фразы навыка.
+    if (!hasPanel) return <DraftCardPreview id={draft.id} nonce={draft.meta.updated} trying={{ example: true }} fallback={<Phrases draft={draft} />} />;
     if (problem) return <p class="w-cap m-0">{problem}</p>;
-    if (!code)
-        return voice ? (
-            <div class="draft-ask">
-                <p class="w-cap m-0">Попросили у колонки. Код черновика покажется после вашего «да».</p>
-                <button class="w-btn" onClick={() => void mayRunDraft(draft.id).then(setCode)}>
-                    Показать
-                </button>
-            </div>
-        ) : (
-            <p class="w-cap m-0">Загружаю пример…</p>
-        );
+    if (!code) return <p class="w-cap m-0">{voice ? 'Попросили у колонки. Загружаю пример…' : 'Загружаю пример…'}</p>;
     return <DraftWidgetPreview id={draft.id} nonce={draft.meta.updated} code={code} trying={{ example: true }} bare />;
 }
 

@@ -2,13 +2,23 @@
   "schema": 1,
   "kind": "plugin",
   "id": "weather",
-  "version": "1.1.3",
+  "version": "2.0.0",
   "title": "Погода",
   "description": "Погода голосом: сейчас, на завтра и на неделю — для обычного места дома или для названного города. Открытый API Open-Meteo, без ключа. Встроенное приложение: если оно выключено или не ответило, погоду говорит встроенный навык шлюза.",
-  "api": "^1.1",
-  "runs": ["pc", "station", "stationServer"],
-  "budget": { "memoryMb": 4, "storageMb": 1 },
-  "permissions": ["net:*.open-meteo.com", "voice.intents", "llm.tools", "kv"],
+  "api": "^2",
+  "runs": [
+    "pc",
+    "station",
+    "stationServer"
+  ],
+  "budget": {
+    "memoryMb": 4,
+    "storageMb": 1
+  },
+  "permissions": [
+    "net:*.open-meteo.com",
+    "call:system/home"
+  ],
   "settings": [
     {
       "key": "place",
@@ -50,18 +60,45 @@
         "input": {
           "type": "object",
           "properties": {
-            "place": { "type": "string", "description": "Город; пусто — обычное место дома" },
-            "when": { "type": "string", "enum": ["now", "tomorrow", "week"] },
-            "timezone": { "type": "string", "description": "Часовой пояс колонки (Europe/Moscow): по нему место, когда оно не задано" }
+            "place": {
+              "type": "string",
+              "description": "Город; пусто — обычное место дома"
+            },
+            "when": {
+              "type": "string",
+              "enum": [
+                "now",
+                "tomorrow",
+                "week"
+              ]
+            },
+            "timezone": {
+              "type": "string",
+              "description": "Часовой пояс колонки (Europe/Moscow): по нему место, когда оно не задано"
+            }
           }
         },
         "handler": "weatherNow",
-        "annotations": { "readOnlyHint": true }
+        "annotations": {
+          "readOnlyHint": true
+        }
       }
     ],
     "panel": {
-      "slots": ["desk.widgets"],
-      "calls": ["panelWeather"]
+      "calls": [
+        "weatherCard"
+      ],
+      "cards": [
+        {
+          "id": "now",
+          "title": "Погода",
+          "function": "weatherCard",
+          "size": "small",
+          "initial": true,
+          "icon": "weather",
+          "refreshS": 900
+        }
+      ]
     }
   }
 }

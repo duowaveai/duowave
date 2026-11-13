@@ -4,6 +4,7 @@
 mod awake;
 mod engine;
 mod envfile;
+mod place;
 mod updates;
 
 use std::path::PathBuf;
@@ -228,6 +229,9 @@ fn build_window(app: &AppHandle) -> tauri::Result<()> {
             }
         })
         .build()?;
+    // Hidden still: it shows where it was left, or at the first start's place (place.rs).
+    place::restore(&window);
+    place::keep(&window);
     let hide = window.clone();
     window.on_window_event(move |event| {
         // Closing the window hides it: the gateway keeps running, the tray brings the window back.

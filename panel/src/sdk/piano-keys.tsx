@@ -6,7 +6,7 @@
 import type { JSX } from 'preact';
 import * as hooks from 'preact/hooks';
 
-import { noteName } from './midi';
+import { noteName } from './notes';
 
 const BLACK = new Set([1, 3, 6, 8, 10]);
 const isBlack = (note: number): boolean => BLACK.has(((note % 12) + 12) % 12);

@@ -362,6 +362,25 @@ events! {
         #[serde(default, skip_serializing_if = "Option::is_none")] error: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")] actor: Option<Actor>,
     }
+    /// The bus's links, modes or the owner's words changed, or a question got its answer (src/bus): what and whose,
+    /// never more. A person's change carries them as the actor.
+    BusChanged = "bus.changed" {
+        change: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")] target: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")] actor: Option<Actor>,
+    }
+    /// An app reached for something it may only have with a person's «да» (src/bus/consent.rs): the panel shows the
+    /// question. Addresses only; the question itself is read through the API with the right to answer.
+    BusAsked = "bus.asked" {
+        id: String,
+        from: String,
+        to: String,
+    }
+    /// A participant told news on the bus: who and which — never what it carries. Its faces read theirs again.
+    BusNews = "bus.news" {
+        from: String,
+        event: String,
+    }
 }
 
 impl GatewayEvent {

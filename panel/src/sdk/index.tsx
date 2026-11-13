@@ -1,29 +1,21 @@
-// SDK пульта для плагинов (docs/plans/plugins.md, этап 5; типы для авторов — docs/plugins/panel-sdk.d.ts). Модуль
-// плагина (`panel.js` пакета) импортирует «preact», «preact/hooks» и «@duowave/panel-sdk» — import map в index.html ведёт
-// их к файлам public/sdk/, а те берут всё отсюда: у плагина нет своей копии Preact, и его компоненты живут в дереве
-// пульта, в своих границах ошибок. Плагин ходит в шлюз только через useApi — к функциям своего бэкенда, которые его
-// манифест перечислил в contributes.panel.calls; права проверяет шлюз.
+// Помощники пульта для частей приложений (docs/plans/plugins.md, этап 5; docs/plans/bus.md, «Один способ»): код пульта
+// приложения работает только в его окошке, и окошко зовёт всё через мост (frame/host.tsx), а мост — через эти
+// помощники: useApi — к функциям его бэкенда из contributes.panel.calls (у помощника — к плагину колонки через проход),
+// useSettings, useFile, usePanelState, useLive, useStation, значки. SDK, который видит сам код приложения, — в окошке
+// (frame/sdk.tsx); типы для авторов — docs/plugins/panel-sdk.d.ts.
 
 import * as preact from 'preact';
 import type { ComponentChildren } from 'preact';
 import * as hooks from 'preact/hooks';
-import * as jsxRuntime from 'preact/jsx-runtime';
 
-import { DraftTrying as DraftTryingValue, PackagesView, PanelMode, RequestView, StationPresence, api, can, fetchPluginFile, stationCall } from '../api';
+import { DraftTrying as DraftTryingValue, PackagesView, PanelMode, RequestView, StationPresence, api, fetchPluginFile, stationCall } from '../api';
 import { IconCoins, IconGlobe, IconHeart, IconList, IconMusic, IconPackage, IconSparkle, IconSpeaker, IconTimer, IconWeather } from '../icons';
 import { enabledHere, packageSettings } from '../plugins/loader';
 import { PluginScope, usePluginVersion } from '../plugins/versions';
 import { PanelContext, usePanel } from '../shell/context';
-import { definePlugin, onRegistryChange } from '../shell/registry';
+import { onRegistryChange } from '../shell/registry';
 import { ownName } from '../shell/role';
-import { Action } from '../ui/cards';
-import { ask } from '../ui/confirm';
-import { Sheet } from '../ui/sheet';
-import { Switch } from '../ui/switch';
 import { VIA } from '../via';
-import { melodyOf, noteName, readMidiFile, useMidi } from './midi';
-import { PianoKeys } from './piano-keys';
-import { useSynth } from './synth';
 
 /**
  * Виджет черновика, показанный до установки («+» → «Новый виджет», мастерская; docs/plans/desk.md, этап 5): его
@@ -233,40 +225,4 @@ export function Note({ tone = 'meta', children }: { tone?: 'meta' | 'warning' | 
 /** Метка: own — наше, yandex — Яндекс, agent — агент, off — нейтральная. */
 export function Pill({ tone = 'off', children }: { tone?: 'own' | 'yandex' | 'agent' | 'off'; children?: ComponentChildren }) {
     return <span class={`pill pill-${tone}`}>{children}</span>;
-}
-
-export const sdk = {
-    definePlugin,
-    useApi,
-    useSettings,
-    useFile,
-    usePanelState,
-    useLive,
-    useStation,
-    icons,
-    can,
-    Card,
-    Action,
-    Switch,
-    Sheet,
-    Note,
-    Pill,
-    ask,
-    // MIDI-клавиатура для приложений (docs/plans/midi.md, Host API 1.3).
-    useMidi,
-    useSynth,
-    PianoKeys,
-    readMidiFile,
-    melodyOf,
-    noteName,
-};
-
-declare global {
-    // eslint-disable-next-line no-var
-    var __duowave: { preact: typeof preact; hooks: typeof hooks; jsxRuntime: typeof jsxRuntime; sdk: typeof sdk } | undefined;
-}
-
-/** Отдать плагинам Preact и SDK пульта — до загрузки первого panel.js. */
-export function installSdk(): void {
-    globalThis.__duowave = { preact, hooks, jsxRuntime, sdk };
 }

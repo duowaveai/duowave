@@ -543,9 +543,11 @@ mod tests {
         let draft = "golos-vidzhet-1";
         let card = app.workshop.card(draft);
         assert_eq!((card.by, card.who.as_deref(), card.kind), (By::Voice, Some("kitchen"), Face::Widget));
-        assert!(
-            app.workshop.draft(draft).unwrap().files.iter().any(|file| file.path == "panel.js"),
-            "the widget's template"
+        let template: serde_json::Value =
+            serde_json::from_str(&app.workshop.read(draft, "manifest.json").unwrap()).unwrap();
+        assert_eq!(
+            template["contributes"]["panel"]["cards"][0]["function"], "panelData",
+            "the widget's template: a card"
         );
 
         // The agent finishes: «Готово…» is pushed to the station that asked.

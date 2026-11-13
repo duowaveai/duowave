@@ -80,8 +80,14 @@ impl Face {
         if manifest.kind == PackageKind::Theme {
             return Face::Theme;
         }
-        let slots = manifest.contributes.panel.as_ref().and_then(|panel| panel.get("slots")).and_then(Value::as_array);
+        let panel = manifest.contributes.panel.as_ref();
+        let slots = panel.and_then(|panel| panel.get("slots")).and_then(Value::as_array);
         if slots.is_some_and(|slots| slots.iter().any(|slot| slot.as_str() == Some("desk.widgets"))) {
+            return Face::Widget;
+        }
+        // A card is a widget of the desk too, drawn by the panel (docs/plans/bus.md, «Карточки»).
+        let cards = panel.and_then(|panel| panel.get("cards")).and_then(Value::as_array);
+        if cards.is_some_and(|cards| !cards.is_empty()) {
             return Face::Widget;
         }
         Face::Skill
@@ -260,7 +266,7 @@ mod tests {
 
     fn manifest(settings: Value, panel: Option<Value>) -> Manifest {
         let mut value = json!({
-            "schema": 1, "kind": "plugin", "id": "todo", "version": "0.1.0", "title": "Дела на сегодня", "api": "^1",
+            "schema": 1, "kind": "plugin", "id": "todo", "version": "0.1.0", "title": "Дела на сегодня", "api": "^2",
             "runs": ["pc"], "permissions": ["net:api.todoist.com"], "settings": settings, "contributes": {}
         });
         if let Some(panel) = panel {
@@ -280,6 +286,9 @@ mod tests {
             Some(json!({ "slots": ["desk.widgets"] })),
         );
         assert_eq!(Face::of(&todo), Face::Widget);
+        let card =
+            manifest(json!([]), Some(json!({ "calls": ["today"], "cards": [{ "id": "today", "function": "today" }] })));
+        assert_eq!(Face::of(&card), Face::Widget, "a card is a widget of the desk");
         let needs = needs_of(&todo);
         let shown: Vec<(&str, bool, bool, Option<&Value>)> =
             needs.iter().map(|need| (need.key.as_str(), need.secret, need.required, need.default.as_ref())).collect();

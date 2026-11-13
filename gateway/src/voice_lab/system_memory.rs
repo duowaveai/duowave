@@ -6,7 +6,10 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use crate::operations::system_memory::number;
-pub use crate::operations::system_memory::{parse_darwin, parse_linux, windows_counters, Counters, Pressure};
+pub use crate::operations::system_memory::{
+    free_counters, parse_darwin, parse_linux, parse_vm_stat_swapins, windows_counters, Counters, Pressure,
+    DARWIN_SYSCTL,
+};
 
 use super::js;
 use super::platform::{OsName, ProbeCell, PROBE_TIMEOUT_MS};
@@ -67,7 +70,7 @@ impl SystemMemory {
             Some(counters) => counters,
             None => {
                 let (free, total) = probe.memory_bytes();
-                windows_counters(free, total)
+                free_counters(free, total, (self.os)() == OsName::Darwin)
             }
         };
         let at = (self.now)();
@@ -107,23 +110,14 @@ impl SystemMemory {
         let probe = self.probe.get();
         match (self.os)() {
             OsName::Darwin => {
-                let names = [
-                    "-n",
-                    "hw.pagesize",
-                    "vm.page_free_count",
-                    "vm.page_speculative_count",
-                    "vm.page_purgeable_count",
-                    "vm.page_reusable_count",
-                    "vm.page_pageable_external_count",
-                    "kern.memorystatus_vm_pressure_level",
-                    "vm.compressor.swapper.swapins_total",
-                ];
-                let result = probe.run("sysctl", &names, PROBE_TIMEOUT_MS).await;
-                if result.ok() {
-                    parse_darwin(&result.stdout, probe.total_mb())
-                } else {
-                    None
+                // Whatever the exit code: a name this macOS lacks fails the call, not the others' answers.
+                let result = probe.run("sysctl", &DARWIN_SYSCTL, PROBE_TIMEOUT_MS).await;
+                let mut counters = parse_darwin(&result.stdout, probe.total_mb())?;
+                if counters.swap_in_bytes.is_none() {
+                    let vm_stat = probe.run("vm_stat", &[], PROBE_TIMEOUT_MS).await;
+                    counters.swap_in_bytes = parse_vm_stat_swapins(&vm_stat.stdout);
                 }
+                Some(counters)
             }
             OsName::Linux => {
                 let meminfo = probe.read(Path::new("/proc/meminfo"))?;
@@ -165,12 +159,19 @@ mod tests {
             None
         }
         fn run(&self, command: &str, _args: &[&str], _timeout_ms: u64) -> BoxFuture<'static, CommandResult> {
-            let stdout = if command == "sysctl" {
-                format!("16384\n500000\n0\n0\n0\n0\n1\n{}", self.swapins.load(Ordering::SeqCst))
-            } else {
-                "10240\n".into()
+            // macOS 15: sysctl has no swap-in count and exits 1; vm_stat has them.
+            let swapins = self.swapins.load(Ordering::SeqCst);
+            let (code, stdout) = match command {
+                "sysctl" => (
+                    1,
+                    "hw.pagesize: 16384\nvm.page_free_count: 500000\nkern.memorystatus_vm_pressure_level: 1\n".into(),
+                ),
+                "vm_stat" => {
+                    (0, format!("Mach Virtual Memory Statistics: (page size of 16384 bytes)\nSwapins: {swapins}.\n"))
+                }
+                _ => (0, "10240\n".into()),
             };
-            Box::pin(async move { CommandResult { code: Some(0), stdout } })
+            Box::pin(async move { CommandResult { code: Some(code), stdout } })
         }
         fn exists(&self, _path: &Path) -> bool {
             false

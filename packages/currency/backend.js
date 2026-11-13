@@ -182,3 +182,28 @@ export async function panelRates() {
   const data = await daily(TIMEOUT);
   return { date: data.Date, rates: MAIN.map((code) => rateOf(data, code)).filter(Boolean) };
 }
+
+const money = (value) => Number(value).toFixed(2).replace(".", ",");
+
+// Карточка на столе пульта (docs/plugins/cards.md): курс ЦБ и изменение к прошлому дню. Рисует пульт.
+export async function ratesCard() {
+  let data;
+  try {
+    data = await panelRates();
+  } catch (error) {
+    return { empty: String(error?.message ?? error) };
+  }
+  const day = String(data.date ?? "").slice(0, 10).split("-").reverse().slice(0, 2).join(".");
+  return {
+    rows: data.rates.map((rate) => ({
+      text: `${rate.code} · ${rate.name}`,
+      value: `${money(rate.value)} ₽`,
+      delta: {
+        text: rate.change === 0 ? "0" : `${rate.change > 0 ? "+" : "−"}${money(Math.abs(rate.change))}`,
+        tone: rate.change > 0 ? "up" : rate.change < 0 ? "down" : "flat",
+      },
+    })),
+    cap: day ? `ЦБ России на ${day}` : "ЦБ России",
+    say: data.rates.map((rate) => `${rate.name}: ${money(rate.value)} руб.`).join("; "),
+  };
+}

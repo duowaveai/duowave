@@ -16,6 +16,7 @@
 !station-client/gateway.sh
 !docs/plugins/AUTHORING.md
 !docs/plugins/panel-sdk.d.ts
+!docs/plugins/cards.md
 !docs/plugins/skill
 !docs/design/glass/THEMES.md
 !package.json

@@ -384,7 +384,7 @@ async function lookup(target, days) {
 async function usualPlace(request) {
   const own = String(host.settings.get("place") ?? "").trim();
   if (own) return own;
-  const panel = await host.home.weatherPlace().catch(() => null);
+  const panel = await host.bus.call("system/home", "weather-place").catch(() => null);
   if (panel) return panel;
   const zone = String(request?.timezone ?? "").split("/").pop();
   return zone ? zone.replace(/_/g, " ") : null;
@@ -457,4 +457,23 @@ export async function panelWeather() {
   };
   host.kv.set("panel:weather", { at: Date.now(), name, data });
   return data;
+}
+
+// Карточка на столе пульта (docs/plugins/cards.md): сейчас крупно, три дня плитками. Рисует пульт.
+export async function weatherCard() {
+  let data;
+  try {
+    data = await panelWeather();
+  } catch (error) {
+    return { empty: String(error?.message ?? error) };
+  }
+  if (data.error) return { empty: data.error };
+  const now = data.now;
+  const line = [now.text, now.wind !== null ? `ветер ${now.wind} м/с` : null, data.place].filter(Boolean).join(" · ");
+  return {
+    big: `${signed(now.temperature)}°`,
+    cap: line,
+    tiles: data.days.map((day) => ({ label: day.label, value: `${signed(day.max)}°` })),
+    say: `${data.place}: ${signed(now.temperature)}°, ${now.text}.`,
+  };
 }

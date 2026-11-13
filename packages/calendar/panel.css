@@ -1,3 +1,0 @@
-/* Виджет «Календарь»: день — подписью над его событиями, время — узким столбцом. */
-.calendar-day { padding-top: 6px; text-transform: none; }
-.calendar-time { width: 64px; flex: none; }

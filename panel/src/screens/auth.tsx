@@ -42,7 +42,8 @@ export function AuthScreen({
         if (mode === 'login' && accounts > 1 && name.trim().length < 2) return setError('Введите имя.');
         setBusy(true);
         try {
-            const session = mode === 'setup' ? await api.setup(password, needsCode ? code.trim() : undefined) : await api.login(name, password);
+            const session =
+                mode === 'setup' ? await api.setup(password, needsCode ? code.trim() : undefined) : await api.login(name, password);
             finish(session);
         } catch (e) {
             setError(problemOf(e));
@@ -59,14 +60,12 @@ export function AuthScreen({
     return (
         <div class="screen justify-center min-h-screen">
             <section class="card glass flex flex-col gap-14 p-24">
-                {/* ДиВи встречает: открывает глаза, оглядывается, моргает (ui/divi.ts, 'lively'). */}
+                {/* ДиВи встречает: оглядывается, моргает, изредка здоровается (ui/divi.ts, 'lively'). */}
                 <div class="auth-hero">
                     <DuoWaveMark size={96} live idle="lively" />
                 </div>
                 <div class="auth-head">
-                    <h1 class="t-title m-0">
-                        {mode === 'setup' ? 'Добро пожаловать в DuoWave' : 'Пульт'}
-                    </h1>
+                    <h1 class="t-title m-0">{mode === 'setup' ? 'Добро пожаловать в DuoWave' : 'Пульт'}</h1>
                     <p class="t-meta m-0 mt-4">
                         {mode === 'setup'
                             ? 'Шаг 1 из 2 — пароль администратора: первый, кто его задаёт, управляет пультом. Шаг 2 — подключим колонку.'
@@ -151,8 +150,8 @@ export function AuthScreen({
                 <p class="t-caption m-0">
                     {mode === 'setup'
                         ? needsCode
-                          ? 'Вы настраиваете не с компьютера шлюза, поэтому нужен код. Пароль хранится в базе шлюза в виде хэша.'
-                          : 'Пароль хранится в базе шлюза в виде хэша. Людей и их права добавите потом: «Настройки» → «Люди и доступ».'
+                            ? 'Вы настраиваете не с компьютера шлюза, поэтому нужен код. Пароль хранится в базе шлюза в виде хэша.'
+                            : 'Пароль хранится в базе шлюза в виде хэша. Людей и их права добавите потом: «Настройки» → «Люди и доступ».'
                         : 'Пульт запомнит это устройство на месяц.'}
                 </p>
             </section>
@@ -166,16 +165,10 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
     return (
         <div class="flex flex-col gap-6">
             <label class="flex flex-col gap-6">
-                <span class="t-caption fw-700 c-text">
-                    {label}
-                </span>
+                <span class="t-caption fw-700 c-text">{label}</span>
                 {children}
             </label>
-            {hint && (
-                <span class="t-caption my-0 mx-4">
-                    {hint}
-                </span>
-            )}
+            {hint && <span class="t-caption my-0 mx-4">{hint}</span>}
         </div>
     );
 }

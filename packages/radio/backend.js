@@ -302,3 +302,22 @@ export async function radioSearch({ query, limit = 8 }) {
 export async function stations({ query, limit }) {
   return await find(String(query ?? ""), Math.min(Number(limit) || 20, 50));
 }
+
+// Карточка на столе пульта (docs/plugins/cards.md): что играет и свои станции; молчавшие на колонке помечены. Пульт
+// перечитывает её раз в минуту — «играет 12 мин» идёт само.
+export function radioCard() {
+  const data = panelStations({});
+  const now = data.now && !(data.now.until && Date.now() > data.now.until) ? data.now : null;
+  const minutes = now ? Math.max(0, Math.round((Date.now() - now.since) / 60000)) : 0;
+  const rows = data.stations.slice(0, 6).map((station) => ({ text: station.title, mark: station.broken ? "warn" : "off" }));
+  if (now) rows.unshift({ text: now.title, value: minutes < 1 ? "только что" : `${minutes} мин`, mark: "on" });
+  return {
+    cap: now
+      ? "Играет"
+      : data.last
+        ? `Сейчас не играет. Последнее: ${data.last}.`
+        : "Скажите: «Алиса, включи радио» — и название станции или жанр.",
+    rows,
+    say: now ? `Играет ${now.title}.` : "Радио сейчас не играет.",
+  };
+}

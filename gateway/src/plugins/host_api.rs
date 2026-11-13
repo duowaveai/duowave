@@ -20,7 +20,7 @@ use futures::StreamExt;
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Map, Value};
 
-use super::manifest::{host_allowed, Manifest, Permission};
+use super::manifest::{host_allowed, Manifest};
 use super::runtime::HostApi;
 use crate::core::events::{EventBus, GatewayEvent};
 use crate::settings::definitions::PACKAGE_SETTINGS;
@@ -350,18 +350,11 @@ pub type SpeakerSource = Arc<dyn Fn() -> Option<Arc<dyn Speaker>> + Send + Sync>
 /// Where a plugin's log lines go besides the gateway's log: the plugin's own journal for the panel and the workshop.
 pub type LogSink = Arc<dyn Fn(&str, &str, &str) + Send + Sync>;
 
-/// The gateway's services a plugin reaches through `host.call` (Host API 1.1, stage 10 of docs/plans/plugins.md):
-/// what the built-in skills used, so they can move into plugins. Each is behind its right, checked by the host API.
+/// The gateway's services behind the bus's `system/…` participants (src/bus/providers/system.rs) and the bus itself:
+/// a plugin reaches them only by letters (`host.bus`, Host API 2), each decided by the bus.
 pub trait HostServices: Send + Sync {
     /// The household's own music or tales (`music`, `tales`): items with their `content` path, the best first.
     fn content(&self, folder: &str, query: Option<String>, limit: usize) -> BoxFuture<'static, Vec<Value>>;
-    /// Another plugin's tool for «Мозг», by its name: its answer as the model reads it.
-    fn call_tool(
-        &self,
-        caller: &str,
-        name: &str,
-        input: Map<String, Value>,
-    ) -> BoxFuture<'static, Result<String, String>>;
     /// The smart home's devices: `[{id, name, kind, state}]`.
     fn smart_home_devices(&self) -> BoxFuture<'static, Result<Value, String>>;
     /// A device does something: `on`, `off`, `set_brightness`, `set_temperature`, `scene`.
@@ -375,13 +368,18 @@ pub trait HostServices: Send + Sync {
     fn weather_place(&self) -> Option<String>;
     /// The news feeds switched on in the panel: `[{url, topic}]`.
     fn news_feeds(&self) -> Vec<Value>;
-    /// A message to the owner from the plugin `caller` (plugins/schedule.rs, Host API 1.2, right `notify`).
+    /// Said aloud by a station without a request, for the plugin `caller` (`system/voice`): whether it was said —
+    /// no station on the line, nothing is.
+    fn say(&self, caller: &str, text: String, device: Option<String>) -> BoxFuture<'static, Result<bool, String>> {
+        let _ = (caller, text, device);
+        Box::pin(async { Ok(false) })
+    }
+    /// A message to the owner from the plugin `caller` (`system/notify`, plugins/schedule.rs).
     fn notify(&self, caller: &str, text: String) -> BoxFuture<'static, Result<Value, String>> {
         let _ = (caller, text);
         Box::pin(async { Err("сообщений владельцу здесь нет".to_string()) })
     }
-    /// The plugin's pictures (plugins/files.rs, Host API 1.2, right `files`): `put` (the downloaded bytes), `list`,
-    /// `delete`.
+    /// The plugin's pictures in its own folder (plugins/files.rs): `put` (the downloaded bytes), `list`, `delete`.
     fn files(
         &self,
         caller: &str,
@@ -392,10 +390,22 @@ pub trait HostServices: Send + Sync {
         let _ = (caller, action, input, bytes);
         Box::pin(async { Err("картинок здесь нет".to_string()) })
     }
-    /// The plugin's own schedule (plugins/schedule.rs, Host API 1.2): `set`, `list`, `cancel`, `parse`.
+    /// The plugin's own schedule (`system/schedule`, plugins/schedule.rs): `set`, `list`, `cancel`, `parse`.
     fn schedule(&self, caller: &str, action: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
         let _ = (caller, action, input);
         Box::pin(async { Err("расписаний здесь нет".to_string()) })
+    }
+    /// A letter on the bus for the plugin `caller` in its call's trail (src/bus): `bus.call`, `bus.tell`, `bus.list`,
+    /// `bus.ask`, `folders.*`. None where there is no bus.
+    fn bus(
+        &self,
+        caller: &str,
+        name: &str,
+        input: Value,
+        trail: Option<crate::bus::Trail>,
+    ) -> Option<BoxFuture<'static, Result<Value, String>>> {
+        let _ = (caller, name, input, trail);
+        None
     }
 }
 
@@ -407,7 +417,6 @@ pub struct PluginHostApi {
     settings: Arc<SettingsService>,
     /// The gateway's runtime: a plugin's requests and speech run there, beside the rest of the gateway's.
     handle: Option<tokio::runtime::Handle>,
-    speaker: SpeakerSource,
     log_window: AtomicU64,
     log_count: AtomicU64,
     /// The plugin's own journal (`id`, level, message).
@@ -426,7 +435,6 @@ impl PluginHostApi {
         db: Arc<Db>,
         settings: Arc<SettingsService>,
         handle: Option<tokio::runtime::Handle>,
-        speaker: SpeakerSource,
     ) -> PluginHostApi {
         PluginHostApi {
             id: manifest.id.clone(),
@@ -434,7 +442,6 @@ impl PluginHostApi {
             db,
             settings,
             handle,
-            speaker,
             log_window: AtomicU64::new(0),
             log_count: AtomicU64::new(0),
             sink: None,
@@ -474,12 +481,9 @@ impl PluginHostApi {
         }
     }
 
+    /// Its own store: always its own, no right needed (Host API 2).
     fn kv_allowed(&self) -> Result<(), String> {
-        if self.manifest.has(&Permission::Kv) {
-            Ok(())
-        } else {
-            Err("нет права kv: в манифесте его нет".into())
-        }
+        Ok(())
     }
 
     fn key(key: &str) -> Result<(), String> {
@@ -624,23 +628,11 @@ impl HostApi for PluginHostApi {
         Ok(keys)
     }
 
+    /// Speech without a request is a letter to `system/voice` (Host API 2): the bus decides it like any other.
     fn say(&self, text: String, device: Option<String>) -> BoxFuture<'static, Result<bool, String>> {
-        let allowed = self.manifest.has(&Permission::VoiceSay);
-        let (speaker, handle, id) = ((self.speaker)(), self.handle.clone(), self.id.clone());
-        Box::pin(async move {
-            if !allowed {
-                return Err("нет права voice.say: в манифесте его нет".into());
-            }
-            let text: String = text.trim().chars().take(500).collect();
-            if text.is_empty() {
-                return Err("нечего сказать".into());
-            }
-            // No station on the line, or no station link at all: nothing is said, and the plugin is told so.
-            let (Some(speaker), Some(handle)) = (speaker, handle) else { return Ok(false) };
-            tracing::info!(target: "plugins", "{id}: says «{text}»");
-            let device = device.filter(|device| !device.is_empty()).unwrap_or_else(|| "*".into());
-            handle.spawn(speaker.say(device, text, None)).await.map_err(|_| "речь прервалась".to_string())
-        })
+        let letter = json!({ "to": "system/voice", "handle": "say", "input": { "text": text, "device": device } });
+        let call = self.call("bus.call", letter);
+        Box::pin(async move { call.await.map(|said| said.as_bool().unwrap_or(false)) })
     }
 
     /// The plugin's own values, a secret one as it is, from the gateway's safe (the panel sees only «••••••»,
@@ -655,73 +647,31 @@ impl HostApi for PluginHostApi {
         }
     }
 
+    /// Everything beyond the plugin itself is a letter on the bus (Host API 2): `bus.*` and its folders, `folders.*`.
+    /// `folders.download` fetches a picture by the plugin's `net:` hosts here, then keeps it in its own folder.
     fn call(&self, name: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
         let manifest = self.manifest.clone();
         let services = self.services.clone();
         let handle = self.handle.clone();
         let (name, id) = (name.to_string(), self.id.clone());
+        // The trail of the call this runs in: the engine's thread holds it while the call goes (src/bus/trail.rs).
+        let trail = crate::bus::trail::current();
         Box::pin(async move {
             let services = services.ok_or_else(|| "служб шлюза здесь нет".to_string())?;
-            let need = |permission: Permission| {
-                if manifest.has(&permission) {
-                    Ok(())
-                } else {
-                    Err(format!("нет права {}: в манифесте его нет", permission.name()))
+            if name == "folders.download" {
+                let url = input.get("url").and_then(Value::as_str).unwrap_or_default().to_string();
+                if url.is_empty() {
+                    return Err("files.download(url, name): нужна ссылка".into());
                 }
-            };
-            let text = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_string);
-            match name.as_str() {
-                "content.search" => {
-                    let folder = text("folder").or_else(|| text("kind")).unwrap_or_default();
-                    need(Permission::Content(folder.clone()))?;
-                    let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(50).clamp(1, 200) as usize;
-                    Ok(Value::Array(services.content(&folder, text("query").filter(|q| !q.is_empty()), limit).await))
-                }
-                "tools.call" => {
-                    need(Permission::ToolsCall)?;
-                    let tool = text("name").unwrap_or_default();
-                    let arguments = input.get("input").and_then(Value::as_object).cloned().unwrap_or_default();
-                    // An answer in JSON comes back as such: the `{say, play}` of a tool that acts can be played on.
-                    services.call_tool(&id, &tool, arguments).await.map(|answer| match serde_json::from_str(&answer) {
-                        Ok(value @ (Value::Object(_) | Value::Array(_))) => value,
-                        _ => Value::String(answer),
-                    })
-                }
-                "smartHome.devices" => {
-                    need(Permission::SmartHome)?;
-                    services.smart_home_devices().await
-                }
-                "smartHome.act" => {
-                    need(Permission::SmartHome)?;
-                    let value = input.get("value").and_then(Value::as_f64);
-                    services
-                        .smart_home_act(text("device").unwrap_or_default(), text("action").unwrap_or_default(), value)
-                        .await
-                        .map(Value::String)
-                }
-                "weather.place" => Ok(services.weather_place().map(Value::String).unwrap_or(Value::Null)),
-                "news.feeds" => Ok(Value::Array(services.news_feeds())),
-                "files.download" => {
-                    need(Permission::Files)?;
-                    let url = text("url").ok_or_else(|| "files.download(url, name): нужна ссылка".to_string())?;
-                    let max = crate::plugins::files::FILE_MAX as usize;
-                    let bytes = download_checked(manifest.hosts(), &url, max, handle).await?;
-                    services.files(&id, "put", input, Some(bytes)).await
-                }
-                "files.list" | "files.delete" => {
-                    need(Permission::Files)?;
-                    services.files(&id, name.trim_start_matches("files."), input, None).await
-                }
-                "notify.send" => {
-                    need(Permission::Notify)?;
-                    services.notify(&id, text("text").unwrap_or_default()).await
-                }
-                "schedule.set" | "schedule.list" | "schedule.cancel" | "schedule.parse" => {
-                    need(Permission::Schedule)?;
-                    services.schedule(&id, name.trim_start_matches("schedule."), input).await
-                }
-                other => Err(format!("нет функции {other}")),
+                let max = crate::plugins::files::FILE_MAX as usize;
+                let bytes = download_checked(manifest.hosts(), &url, max, handle).await?;
+                return services.files(&id, "put", input, Some(bytes)).await;
             }
+            if name.starts_with("bus.") || name.starts_with("folders.") {
+                let letter = services.bus(&id, &name, input, trail).ok_or_else(|| "шины здесь нет".to_string())?;
+                return letter.await;
+            }
+            Err(format!("нет функции {name}: с Host API 2 всё вне приложения — письма шины, host.bus.call(адрес, умение, данные)"))
         })
     }
 
@@ -810,13 +760,13 @@ mod tests {
         let events = EventBus::new();
         let mut heard = events.subscribe();
         let manifest = crate::plugins::manifest::check(&json!({
-            "schema": 1, "kind": "plugin", "id": "shopping", "version": "1.0.0", "title": "Покупки", "api": "^1",
-            "runs": ["pc", "station"], "permissions": ["kv"]
+            "schema": 1, "kind": "plugin", "id": "shopping", "version": "1.0.0", "title": "Покупки", "api": "^2",
+            "runs": ["pc", "station"], "permissions": []
         }))
         .unwrap();
         let db = Arc::new(Db::memory());
         let settings = Arc::new(SettingsService::new(db.clone(), events.clone()));
-        let api = PluginHostApi::new(Arc::new(manifest), db, settings, None, Arc::new(|| None))
+        let api = PluginHostApi::new(Arc::new(manifest), db, settings, None)
             .with_data_news(DataNews::new(events.clone(), None));
 
         api.kv_set("list", json!({ "items": ["молоко"], "at": 1 })).unwrap();

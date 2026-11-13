@@ -19,6 +19,13 @@
 // backend.js, которые пульт плагина может звать (POST /api/v1/packages/<id>/call/<функция>, право use:plugins).
 // Стили — panel.css рядом, только через токены темы (var(--accent), var(--text) …). `?safe=1` в адресе пульта — без
 // плагинов.
+//
+// Окошко (Host API 2, docs/plans/bus.md, «Окошки»): panel.js любого приложения работает
+// в изолированном фрейме (/panel/frame.html: sandbox allow-scripts, connect-src 'none') — тот же SDK, но всё, что
+// выходит за окошко, идёт мостом пульта: useApi, useFile, ask, usePanelState().go, useMidi, readMidiFile. Ни входа
+// человека, ни localStorage пульта, ни fetch у окошка нет; useLive() не видит запросов людей. Разделы и вклады в
+// desk.widgets, home.cards, house.tabs пульт рисует окошками; другие слоты окошку недоступны. Виджет, который только
+// показывает строки и кнопки, лучше сделать карточкой (docs/plugins/cards.md): её рисует сам пульт, без кода.
 
 declare module "@duowave/panel-sdk" {
     import type { ComponentChildren, FunctionComponent } from "preact";
@@ -170,7 +177,7 @@ declare module "@duowave/panel-sdk" {
      */
     export function ask(options: string | { title: string; text?: string; ok?: string; cancel?: string; danger?: boolean }): Promise<boolean>;
 
-    // ── MIDI-клавиатура (Host API 1.3, право `midi`; docs/plans/midi.md) ──
+    // ── MIDI-клавиатура (связь `listen:device/midi`, только в окошке; docs/plans/midi.md) ──
     //
     //   const midi = useMidi();
     //   const synth = useSynth();

@@ -937,3 +937,21 @@ export async function panelEvents() {
     })),
   };
 }
+
+// Карточка на столе пульта (docs/plugins/cards.md): ближайшие события недели. Время — в строке, пульт пишет его
+// по-людски. Рисует пульт.
+export async function eventsCard() {
+  const data = await panelEvents();
+  if (!data.configured) {
+    return { empty: "Добавьте ссылку iCal своего календаря в настройках приложения — Google, Яндекс и iCloud её дают." };
+  }
+  if (data.error) return { empty: data.error };
+  if (data.events.length === 0) return { empty: "На неделе в календаре пусто." };
+  return {
+    rows: data.events.slice(0, 8).map((event) => ({
+      text: event.place ? `${event.title} · ${event.place}` : event.title,
+      ...(event.allDay ? { value: "весь день", time: `${event.date}T12:00:00` } : { time: new Date(event.start).toISOString() }),
+    })),
+    say: `Ближайшее: ${data.events[0].title}.`,
+  };
+}

@@ -50,9 +50,11 @@ drop_folder() {
     drop "$(kb "$1")" "$1"
     printf '%s\n' "$1" >>"$WORK/gone"
 }
+# sh has no local variables: a name of its own here, or reading the list would empty the caller's `folder` — then the
+# over-the-limit pass saw no folders and "removed" an empty path that matched every folder after it (11.11–13.11).
 dropped() {
-    while IFS= read -r folder; do
-        case $1/ in "$folder"/*) return 0 ;; esac
+    while IFS= read -r gone_path; do
+        case $1/ in "$gone_path"/*) return 0 ;; esac
     done <"$WORK/gone"
     return 1
 }

@@ -108,6 +108,39 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
     /** Для слушателей, поставленных один раз (колесо, прокрутка). */
     const lockedNow = useRef(locked);
     lockedNow.current = locked;
+    /**
+     * Ряд замка и масштаба над доком: без мини-карты (окно 1280 точек и уже) он стоит внизу, на линии дока, — кроме
+     * окна, где он налез бы на док (у помощника с «+» — уже ~1160 точек). Ряд прижат вправо: его левый край от высоты не
+     * зависит, и решение не скачет.
+     */
+    const tools = useRef<HTMLDivElement>(null);
+    const [raised, setRaised] = useState(false);
+    useEffect(() => {
+        // Док меняется сам по себе: «+» помощника приходит, когда шлюз сказал роль, — за новыми частями дока тоже следим.
+        const sizes = new ResizeObserver(() => check());
+        const parts = new MutationObserver(() => check());
+        let wrap: Element | null = null;
+        const check = () => {
+            const found = document.querySelector('.dock-wrap');
+            if (found && found !== wrap) {
+                wrap = found;
+                parts.disconnect();
+                parts.observe(found, { childList: true });
+            }
+            const own = [...(wrap?.children ?? [])] as HTMLElement[];
+            for (const part of own) sizes.observe(part);
+            const row = tools.current?.querySelector('.desk-zoom')?.getBoundingClientRect();
+            const right = Math.max(...own.map((part) => part.getBoundingClientRect().right));
+            setRaised(!!row && own.length > 0 && right + 12 > row.left);
+        };
+        check();
+        window.addEventListener('resize', check);
+        return () => {
+            sizes.disconnect();
+            parts.disconnect();
+            window.removeEventListener('resize', check);
+        };
+    }, []);
 
     // Масштаб и сдвиг — в раскладку, когда человек остановился. Вид как сначала там не нужен: стартовый стол шлюз не хранит.
     useEffect(() => {
@@ -358,7 +391,7 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
                 })}
             </div>
 
-            <div class="desk-tools">
+            <div ref={tools} class={`desk-tools${raised ? ' is-raised' : ''}`}>
                 <div class="desk-zoom">
                     <button
                         class="desk-zoom-btn"

@@ -182,8 +182,8 @@ mod tests {
 
     fn package(id: &str, version: &str, source: &'static str, enabled: bool) -> BundledPackage {
         let manifest = json!({
-            "schema": 1, "id": id, "version": version, "title": id, "api": "^1", "runs": ["pc", "station", "stationServer"],
-            "permissions": ["voice.intents"],
+            "schema": 1, "id": id, "version": version, "title": id, "api": "^2", "runs": ["pc", "station", "stationServer"],
+            "permissions": [],
             "contributes": { "intents": [{ "phrases": [format!("скажи {id}")], "handler": "say" }] }
         });
         let files = vec![
@@ -233,23 +233,27 @@ mod tests {
         assert_eq!(registry::choices(&db)["radio"].source, SOURCE_BUNDLED);
     }
 
-    #[tokio::test]
-    async fn every_built_in_panel_part_parses() {
-        let mut parsed = 0;
+    /// Host API 2: the built-in apps' widgets are cards the panel draws — no code of theirs runs in the panel — and
+    /// each card's function is among their panel's calls (docs/plans/bus.md, «Один способ»).
+    #[test]
+    fn every_built_in_widget_is_a_card_and_no_built_in_brings_panel_code() {
+        let mut cards = 0;
         for package in packages() {
-            for (path, bytes) in &package.files {
-                if path != "panel.js" {
-                    continue;
-                }
-                let source = String::from_utf8(bytes.to_vec()).unwrap();
-                let name = format!("{}/panel.js", package.id);
-                crate::plugins::quickjs::syntax_of(&name, &source)
-                    .await
-                    .unwrap_or_else(|error| panic!("{name}: {error}"));
-                parsed += 1;
+            assert!(
+                !package.files.iter().any(|(path, _)| path == "panel.js" || path == "panel.css"),
+                "{}: panel code",
+                package.id
+            );
+            let manifest = package.files.iter().find(|(path, _)| path == "manifest.json").unwrap();
+            let manifest: Value = serde_json::from_slice(&manifest.1).unwrap();
+            let panel = &manifest["contributes"]["panel"];
+            for card in panel["cards"].as_array().into_iter().flatten() {
+                let calls = panel["calls"].as_array().unwrap();
+                assert!(calls.contains(&card["function"]), "{}: {card}", package.id);
+                cards += 1;
             }
         }
-        assert!(parsed >= 4, "weather, radio, currency, shopping: {parsed}");
+        assert!(cards >= 5, "weather, currency, radio, shopping, calendar: {cards}");
     }
 
     #[tokio::test]

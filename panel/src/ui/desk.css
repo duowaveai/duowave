@@ -673,12 +673,14 @@ html[data-theme='dark'] .desk-map-item { background: #3a3734; }
 .desk-map-item.is-scene { border-radius: 50%; }
 .desk-map-item.is-add { background: transparent; border: 1px dashed #d6d1cb; }
 .desk-map-view { position: absolute; border: 1.5px solid var(--text); border-radius: 6px; }
-/* На 1280 точках и уже мини-карты нет, и ряд масштаба с замком встал бы на нижнюю линию дока: у помощника «+» (док 623,
-   зазор 12 и круг 52 — посередине) накрывал замок до ~1135 точек. Без карты ряд стоит над доком — на той же высоте, что
-   над картой (22 + 84 + 8 = 22 + 72 + 20). */
+/* На 1280 точках и уже мини-карты нет, и ряд масштаба с замком опускается вниз — на линию дока, серединой к его середине,
+   а не висит в воздухе. Где он налез бы на док (desk-canvas.tsx меряет: у помощника «+» — док 623, зазор 12 и круг 52
+   посередине — до ~1160 точек), `is-raised` ставит его над доком, на ту же высоту, что над картой (22 + 84 + 8 =
+   22 + 72 + 20). */
 @media (max-width: 1280px) {
     .desk-map { display: none; }
-    .desk-tools { bottom: calc(var(--dock-gap) + var(--dock-h) + 20px + env(safe-area-inset-bottom)); }
+    .desk-tools { bottom: calc(var(--dock-gap) + (var(--dock-h) - 32px) / 2 + env(safe-area-inset-bottom)); }
+    .desk-tools.is-raised { bottom: calc(var(--dock-gap) + var(--dock-h) + 20px + env(safe-area-inset-bottom)); }
 }
 
 /* ─── Окно колонки у помощника (shell/station-window.tsx) ──────── */

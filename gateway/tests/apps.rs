@@ -22,8 +22,8 @@ fn install_app(data: &Path, version: &str, hash: Option<&str>) {
     let sha = hash.map(str::to_string).unwrap_or_else(|| hex::encode(sha2::Sha256::digest(&program)));
     let manifest = json!({
         "schema": 1, "kind": "app", "runtime": "process", "id": "echo-app", "version": version,
-        "title": "Эхо-приложение", "api": "^1", "runs": ["pc", "station", "stationServer"],
-        "budget": { "memoryMb": 64 }, "permissions": ["llm.tools", "kv"],
+        "title": "Эхо-приложение", "api": "^2", "runs": ["pc", "station", "stationServer"],
+        "budget": { "memoryMb": 64 }, "permissions": [],
         "targets": { duowave::plugins::manifest::platform(): { "file": "bin/echo-app", "sha256": sha } },
         "health": { "path": "/health", "intervalS": 5 },
         "contributes": { "tools": [

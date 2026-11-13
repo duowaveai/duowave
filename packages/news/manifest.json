@@ -2,10 +2,10 @@
   "schema": 1,
   "kind": "plugin",
   "id": "news",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "title": "Новости",
   "description": "Заголовки новостей голосом: главное или по теме — из лент, выбранных в «Дом» → «Коннекторы» → «Новости», а без выбора — из каталога лент. Встроенное приложение: если оно выключено или не ответило, новости говорит встроенный навык шлюза.",
-  "api": "^1.1",
+  "api": "^2",
   "runs": [
     "pc",
     "station",
@@ -44,8 +44,7 @@
     "net:www.mk.ru",
     "net:www.sport-express.ru",
     "net:www.vedomosti.ru",
-    "voice.intents",
-    "llm.tools"
+    "call:system/home"
   ],
   "contributes": {
     "intents": [

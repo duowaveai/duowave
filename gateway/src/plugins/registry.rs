@@ -365,8 +365,8 @@ pub mod tests {
 
     pub fn manifest(id: &str, version: &str) -> Value {
         json!({
-            "schema": 1, "id": id, "version": version, "title": id, "api": "^1", "runs": ["pc", "station", "stationServer"],
-            "permissions": ["llm.tools"],
+            "schema": 1, "id": id, "version": version, "title": id, "api": "^2", "runs": ["pc", "station", "stationServer"],
+            "permissions": [],
             "contributes": { "tools": [{ "name": format!("{}_echo", id.replace('-', "_")), "description": "Повторяет" }] }
         })
     }

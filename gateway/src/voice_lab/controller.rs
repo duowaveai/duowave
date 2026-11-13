@@ -451,7 +451,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_warns_when_memory_is_tight_and_starts_on_the_owners_vse_ravno_refuses_while_the_mac_is_short() {
+    async fn only_warns_when_memory_is_tight_or_the_mac_is_short_and_starts_on_the_owners_vse_ravno() {
         let lab = lab().await;
         // Measured once (2.1 GB), the imprint needs 2.4 GB with its margin; its ceiling is half again above.
         imprinted(&lab, "Мой голос").await;
@@ -466,9 +466,9 @@ mod tests {
             )
         );
         lab.memory.pressure_level.store(2, Ordering::SeqCst);
-        let refused = imprint_as(&lab, json!({ "engine": "omnivoice", "anyway": true })).await;
-        assert_eq!(refused.0, StatusCode::CONFLICT);
-        assert!(refused.1.as_str().unwrap().contains("не хватает памяти"), "{}", refused.1);
+        let pressed = imprint_as(&lab, json!({ "engine": "omnivoice" })).await;
+        assert_eq!(pressed.0, StatusCode::PRECONDITION_REQUIRED, "a pressed computer is a warning, not a refusal");
+        assert!(pressed.1.as_str().unwrap().contains("не хватает памяти"), "{}", pressed.1);
         lab.memory.pressure_level.store(1, Ordering::SeqCst);
         assert_eq!(imprint_as(&lab, json!({ "engine": "omnivoice", "anyway": true })).await.0, StatusCode::CREATED);
         let job = finished_job(&lab).await;

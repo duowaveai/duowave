@@ -2,13 +2,22 @@
   "schema": 1,
   "kind": "plugin",
   "id": "music",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "title": "Своя музыка",
   "description": "Музыка из папки дома (content/music): «включи мою музыку», по исполнителю, альбому или песне; источник музыки для плеера шлюза. Встроенное приложение: если оно выключено, папку играет встроенный навык.",
-  "api": "^1.1",
-  "runs": ["pc", "station", "stationServer"],
-  "budget": { "memoryMb": 4, "storageMb": 1 },
-  "permissions": ["content:music", "media.source", "voice.intents"],
+  "api": "^2",
+  "runs": [
+    "pc",
+    "station",
+    "stationServer"
+  ],
+  "budget": {
+    "memoryMb": 4,
+    "storageMb": 1
+  },
+  "permissions": [
+    "call:system/content"
+  ],
   "contributes": {
     "intents": [
       {
@@ -25,6 +34,12 @@
         "capability": "music"
       }
     ],
-    "media": [{ "id": "library", "kind": "music", "handler": "library" }]
+    "media": [
+      {
+        "id": "library",
+        "kind": "music",
+        "handler": "library"
+      }
+    ]
   }
 }

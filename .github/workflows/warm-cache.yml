@@ -116,6 +116,12 @@ jobs:
       - name: Tauri's system packages
         if: runner.os == 'Linux' && steps.cache.outputs.cache-hit != 'true'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      # As release.yml: Tauri wants uv beside the program (bundle.externalBin) even without the bundles; without it
+      # every build here failed from 0.6.0 on.
+      - name: uv for the build
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: $(command -v python3 || command -v python) scripts/release/fetch-uv.py ${{ matrix.target || '' }}
       - if: steps.cache.outputs.cache-hit != 'true'
         working-directory: desktop/src-tauri
         shell: bash

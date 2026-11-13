@@ -140,6 +140,8 @@ pub struct RunOptions {
     pub env: Option<HashMap<String, String>>,
     /// The watchdog's limit, MB; without it the program runs unguarded (light work: pip, git).
     pub limit_mb: Option<u64>,
+    /// Started on the owner's «всё равно»: the watchdog lets a lasting memory warning be (MemoryWatch).
+    pub anyway: bool,
     /// The program's 0..100 mapped into this part of the job's progress.
     pub percent: Option<(f64, f64)>,
     /// Human labels of the stage ids the program prints.
@@ -522,7 +524,7 @@ impl JobContext {
             let period = Duration::from_millis(self.deps.watch_ms.max(1));
             let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            watch = Some((MemoryWatch::new(limit), ticker, limit));
+            watch = Some((MemoryWatch::new(limit, options.anyway), ticker, limit));
         }
         let mut sampling: Option<BoxFuture<'static, MemorySnapshot>> = None;
         let mut status: Option<Option<i32>> = None;

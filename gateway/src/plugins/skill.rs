@@ -26,7 +26,6 @@ use futures::future::BoxFuture;
 use serde_json::{json, Map, Value};
 
 use super::controller::PluginHost;
-use super::manifest::Permission;
 use super::media::media_items_with;
 use super::phrases::REQUEST;
 use super::runtime::CallKind;
@@ -357,10 +356,12 @@ impl PluginSkill {
         {
             outcome.directives.extend(crate::skills::display::show_temperature(celsius));
         }
-        // Said by the gateway's model, in the plugin's words: only with the right.
-        if let Some(model) =
-            answer.get("model").filter(|_| manifest.as_ref().is_some_and(|m| m.has(&Permission::LlmChat)))
-        {
+        // Said by the gateway's model, in the plugin's words: only as the bus lets it reach `system/brain`.
+        if let Some(model) = answer.get("model").filter(|_| {
+            host.may(plugin, crate::bus::providers::system::BRAIN, "speak")
+                .inspect_err(|why| tracing::info!(target: "plugins", "{plugin}: no answer by the model: {why}"))
+                .is_ok()
+        }) {
             if let Some(host_model) = self.model.get() {
                 let text = |key: &str| model.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
                 let key = format!("plugin:{plugin}:{}:{}", context.device_tag, text("key"));
@@ -482,7 +483,7 @@ impl PluginSkill {
             let spent = turn.from_ms.map_or(0.0, |from| (now_ms().saturating_sub(from) / 100) as f64 / 10.0);
             input["timer"] = json!({ "seconds": turn.seconds, "spent": spent });
         }
-        let answer = host.call(&going.plugin, &going.handler, input, CallKind::Voice).await;
+        let answer = in_trail(context, host.call(&going.plugin, &going.handler, input, CallKind::Voice)).await;
         match answer {
             Ok(answer) => Ok(self
                 .outcome(&going.plugin, &going.handler, going.capability, answer, context, None)
@@ -534,7 +535,7 @@ impl PluginSkill {
         let mut input = Map::new();
         input.insert("timeout".into(), json!({ "seconds": turn.seconds, "missed": missed }));
         input.insert(REQUEST.into(), PluginSkill::request(context, going.capability));
-        let answer = host.call(&going.plugin, &handler, Value::Object(input), CallKind::Voice).await;
+        let answer = in_trail(context, host.call(&going.plugin, &handler, Value::Object(input), CallKind::Voice)).await;
         match answer {
             Ok(answer) => Ok(self
                 .outcome(&going.plugin, &handler, going.capability, answer, context, Some(missed))
@@ -559,7 +560,8 @@ impl PluginSkill {
         let text = |key: &str| intent.params.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
         let (plugin, handler) = (text("plugin"), text("handler"));
         let host = self.host.upgrade().ok_or_else(|| anyhow::anyhow!("plugins are gone"))?;
-        let answer = host.call(&plugin, &handler, PluginSkill::input(intent, context), CallKind::Voice).await;
+        let answer =
+            in_trail(context, host.call(&plugin, &handler, PluginSkill::input(intent, context), CallKind::Voice)).await;
         let failed = match answer {
             Ok(answer) => match self.outcome(&plugin, &handler, intent.capability, answer, context, None) {
                 Some(outcome) => return Ok(outcome),
@@ -606,6 +608,15 @@ impl OwnSkill for PluginSkill {
     }
 }
 
+/// A call of a plugin in the chain of who speaks (src/bus/trail.rs): whatever it reaches on the bus, it reaches as
+/// them. Without a speaker (a check, a test) the app's own chain.
+async fn in_trail<F: std::future::Future>(context: &ExecutionContext, call: F) -> F::Output {
+    match &context.speaker {
+        Some(speaker) => crate::bus::Trail::principal(speaker).scope(call).await,
+        None => call.await,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -636,8 +647,8 @@ mod tests {
     async fn router() -> (Arc<Router>, Arc<PluginHost>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let manifest = serde_json::json!({
-            "schema": 1, "id": "radio", "version": "1.0.0", "title": "Радио", "api": "^1", "runs": ["pc"],
-            "permissions": ["voice.intents"],
+            "schema": 1, "id": "radio", "version": "1.0.0", "title": "Радио", "api": "^2", "runs": ["pc"],
+            "permissions": [],
             "contributes": { "intents": [{ "phrases": ["включи радио {station}"], "handler": "play", "capability": "radio" }] }
         });
         write_package(&dir.path().join("packages"), &manifest, Some(CODE));
@@ -670,7 +681,6 @@ mod tests {
             events,
             media: sources.clone(),
             placement: Arc::new(|| Placement::Pc),
-            speaker: Arc::new(|| None),
             runtime: Arc::new(QuickJs),
             memory: crate::plugins::budget::fake::plenty(),
             gauge: Default::default(),
@@ -749,14 +759,6 @@ mod tests {
             };
             Box::pin(async move { items })
         }
-        fn call_tool(
-            &self,
-            _: &str,
-            _: &str,
-            _: serde_json::Map<String, Value>,
-        ) -> futures::future::BoxFuture<'static, Result<String, String>> {
-            Box::pin(async { Err("нет".to_string()) })
-        }
         fn smart_home_devices(&self) -> futures::future::BoxFuture<'static, Result<Value, String>> {
             Box::pin(async { Err("нет".to_string()) })
         }
@@ -773,6 +775,22 @@ mod tests {
         }
         fn news_feeds(&self) -> Vec<Value> {
             Vec::new()
+        }
+        /// The household's music as a letter to `system/content` (Host API 2).
+        fn bus(
+            &self,
+            _: &str,
+            name: &str,
+            input: Value,
+            _: Option<crate::bus::Trail>,
+        ) -> Option<futures::future::BoxFuture<'static, Result<Value, String>>> {
+            let to = input["to"].as_str().unwrap_or_default().to_string();
+            let folder = input["handle"].as_str().unwrap_or_default().to_string();
+            if name != "bus.call" || to != "system/content" {
+                return Some(Box::pin(async move { Err(format!("нет такого: {to}")) }));
+            }
+            let items = self.content(&folder, None, 50);
+            Some(Box::pin(async move { Ok(Value::Array(items.await)) }))
         }
     }
 
@@ -820,7 +838,6 @@ mod tests {
             events,
             media: MediaSources::new(Vec::new()),
             placement: Arc::new(|| Placement::Pc),
-            speaker: Arc::new(|| None),
             runtime: Arc::new(QuickJs),
             memory: crate::plugins::budget::fake::plenty(),
             gauge: Default::default(),
@@ -915,20 +932,26 @@ mod tests {
         fn content(&self, _: &str, _: Option<String>, _: usize) -> futures::future::BoxFuture<'static, Vec<Value>> {
             Box::pin(async { Vec::new() })
         }
-        fn call_tool(
+        /// The other apps' tools as letters on the bus (Host API 2): what they would answer.
+        fn bus(
             &self,
             caller: &str,
             name: &str,
-            _: serde_json::Map<String, Value>,
-        ) -> futures::future::BoxFuture<'static, Result<String, String>> {
-            assert_eq!(caller, "morning");
-            let answer = match name {
-                "weather_now" => Ok("Сейчас +5, облачно. Ветер слабый. Завтра теплее.".to_string()),
-                "news_headlines" => Ok("Открыли новый мост. Завтра концерт. Ещё новость.".to_string()),
-                "radio_play" => Ok(json!({ "say": "Включаю Хит FM", "play": [{ "id": "hitfm", "title": "Хит FM", "url": "https://hitfm.hostingradio.ru/hitfm128.mp3" }] }).to_string()),
-                other => Err(format!("нет инструмента {other}")),
+            input: Value,
+            _: Option<crate::bus::Trail>,
+        ) -> Option<futures::future::BoxFuture<'static, Result<Value, String>>> {
+            assert_eq!((caller, name), ("morning", "bus.call"));
+            let to = input["to"].as_str().unwrap_or_default().to_string();
+            let handle = input["handle"].as_str().unwrap_or_default().to_string();
+            let answer = match (to.as_str(), handle.as_str()) {
+                ("app/weather", "weather_now") => Ok(json!("Сейчас +5, облачно. Ветер слабый. Завтра теплее.")),
+                ("app/news", "news_headlines") => Ok(json!("Открыли новый мост. Завтра концерт. Ещё новость.")),
+                ("app/radio", "radio_play") => Ok(
+                    json!({ "say": "Включаю Хит FM", "play": [{ "id": "hitfm", "title": "Хит FM", "url": "https://hitfm.hostingradio.ru/hitfm128.mp3" }] }),
+                ),
+                _ => Err(format!("нет такого: {to}")),
             };
-            Box::pin(async move { answer })
+            Some(Box::pin(async move { answer }))
         }
         fn smart_home_devices(&self) -> futures::future::BoxFuture<'static, Result<Value, String>> {
             Box::pin(async { Err("нет".to_string()) })
@@ -1093,8 +1116,8 @@ mod tests {
     async fn quiz() -> Quiz {
         let dir = tempfile::tempdir().unwrap();
         let manifest = json!({
-            "schema": 1, "id": "quiz", "version": "1.0.0", "title": "Викторина", "api": "^1", "runs": ["pc"],
-            "permissions": ["voice.intents"],
+            "schema": 1, "id": "quiz", "version": "1.0.0", "title": "Викторина", "api": "^2", "runs": ["pc"],
+            "permissions": [],
             "contributes": { "intents": [
                 { "phrases": ["викторина"], "handler": "start" },
                 { "phrases": ["быстрый вопрос"], "handler": "ready" },
@@ -1124,7 +1147,6 @@ mod tests {
             events,
             media: MediaSources::new(Vec::new()),
             placement: Arc::new(|| Placement::Pc),
-            speaker: Arc::new(|| None),
             runtime: Arc::new(QuickJs),
             memory: crate::plugins::budget::fake::plenty(),
             gauge: Default::default(),

@@ -1,5 +1,5 @@
 // Новости: заголовки из RSS и Atom-лент. Перенос встроенного навыка шлюза (gateway/src/skills/lookups/news_skill.rs) в
-// плагин, этап 10 плана. Ленты — выбранные в пульте («Дом» → «Коннекторы» → «Новости», host.home.newsFeeds()), а без
+// плагин, этап 10 плана. Ленты — выбранные в пульте («Дом» → «Коннекторы» → «Новости», письмо system/home), а без
 // выбора — каталог ниже; ходит только к хостам из своих прав net:. Встроенный навык остаётся запасным.
 
 const TOPICS = [{"id": "main", "title": "Главное", "words": ["главное", "главные", "последние", "свежие", "россия", "страна"]}, {"id": "world", "title": "В мире", "words": ["мир", "мире", "мировые", "международные", "за рубежом", "зарубежные"]}, {"id": "economy", "title": "Экономика", "words": ["экономика", "экономические", "бизнес", "финансы", "деньги", "рынки"]}, {"id": "tech", "title": "Технологии", "words": ["технологии", "техника", "гаджеты", "айти", "it", "интернет", "софт"]}, {"id": "science", "title": "Наука", "words": ["наука", "научные", "учёные", "космос", "исследования"]}, {"id": "sport", "title": "Спорт", "words": ["спорт", "спортивные", "футбол", "хоккей", "теннис", "матчи"]}, {"id": "culture", "title": "Культура", "words": ["культура", "кино", "фильмы", "книги", "фантастика", "сериалы"]}, {"id": "games", "title": "Игры", "words": ["игры", "игровые", "видеоигры", "геймеры"]}];
@@ -44,7 +44,7 @@ function titles(xml) {
 }
 
 async function feedsFor(topic) {
-  const chosen = await host.home.newsFeeds().catch(() => []);
+  const chosen = await host.bus.call("system/home", "news-feeds").catch(() => []);
   const own = (chosen ?? []).filter((feed) => /^https:\/\//.test(feed.url ?? ""));
   const pool = own.length > 0 ? own : FEEDS;
   const wanted = topic ? pool.filter((feed) => feed.topic === topic.id) : pool.filter((feed) => !feed.topic || feed.topic === "main");

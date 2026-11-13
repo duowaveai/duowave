@@ -1,16 +1,17 @@
-// Живой ДиВи — знак DuoWave в шапке пульта (описание знака, «Состояния и анимации»; DESIGN.md). Перенос
-// divi-mark.js сайта: те же позы, тайминги и кривые, плюс остановка, когда шапка уходит со страницы.
+// Живой ДиВи — знак DuoWave в шапке пульта (знак обновлён 13.11.2026: бренд-кит, logo/divi-mark.js; DIVI.md). Перенос
+// divi-mark.js сайта: те же позы, тайминги и кривые, плюс остановка, когда знак уходит со страницы.
 //
-// При загрузке: глаза открыты 700 мс → моргнул (80 + 130 мс) → 200 мс → правый глаз гнётся в дужку за 300 мс с
-// перелётом. При наведении на логотип (и при фокусе в нём): моргнул → обрадовался — обе дужки, присел за 140 мс,
-// подпрыгнул на 16 px за 190 мс, приземлился за 300 мс с перелётом → 700 мс радости → снова подмигивает. Пока
-// анимация идёт, наведение её не перезапускает. При prefers-reduced-motion знак стоит и подмигивает.
+// В покое оба глаза открыты (капсулы) и смотрят. Сценка «Привет», около 3,5 с: оглядывается (глаза в сторону на 7 за
+// 260 мс, 260 мс там, обратно за 220 мс) → моргает (80 + 130 мс) → 160 мс → подмигивает (правый глаз в дужку за 300 мс
+// с перелётом) → 520 мс → открывает глаз (260 мс) → 280 мс → улыбается обеими дужками и подпрыгивает (присел 140 мс,
+// вверх на 16 за 190 мс, приземлился 300 мс с перелётом) → 800 мс → снова смотрит (340 мс с перелётом).
+// При загрузке (`intro`): 600 мс смотрит, потом сценка. При наведении на логотип (и при фокусе в нём) — сценка; пока
+// она идёт, наведение её не перезапускает. При prefers-reduced-motion знак стоит с открытыми глазами.
 //
-// Сам по себе (`idle`, как в engine.ts сайта): `true` — после 10–16 с тишины моргнёт, примерно каждый третий раз
-// обрадуется целиком. `'lively'` — ДиВи входа и мастера подключения: каждые 3–6 с открывает оба глаза, оглядывается в
-// одну сторону и в другую (глаза сдвигаются на 8), моргает обоими и снова подмигивает; иногда только моргает, изредка
-// радуется с прыжком. `cheer` — при появлении сразу радость с прыжком: колонка подключилась. Пока страница скрыта или
-// знак не на экране, он стоит.
+// Сам по себе (`idle`): `true` — если 10–16 с ничего не происходило, моргает, примерно каждый третий раз играет сценку.
+// `'lively'` — ДиВи входа и мастера подключения: каждые 3–6 с оглядывается в одну сторону и в другую и моргает; иногда
+// только моргает, изредка играет сценку. `cheer` — при появлении сразу радость с прыжком: колонка подключилась. Пока
+// страница скрыта или знак не на экране, он стоит.
 
 const NS = 'http://www.w3.org/2000/svg';
 const BODY = 'M116 40H140A68 68 0 0 1 208 108V148A68 68 0 0 1 140 216H116A68 68 0 0 1 48 148V108A68 68 0 0 1 116 40Z';
@@ -35,6 +36,8 @@ interface Eye {
     y2: number;
     w: number;
     sy: number;
+    /** Сдвиг вбок: ДиВи смотрит в сторону. */
+    dx: number;
 }
 interface Body {
     sx: number;
@@ -47,7 +50,20 @@ interface Pose {
     b: Body;
 }
 
-const open = (x: number): Eye => ({ ox: x, x1: x, y1: CY - 14, ax: x, ay: CY - 14 / 3, bx: x, by: CY + 14 / 3, x2: x, y2: CY + 14, w: 24 * K, sy: 1 });
+const open = (x: number): Eye => ({
+    ox: x,
+    x1: x,
+    y1: CY - 14,
+    ax: x,
+    ay: CY - 14 / 3,
+    bx: x,
+    by: CY + 14 / 3,
+    x2: x,
+    y2: CY + 14,
+    w: 24 * K,
+    sy: 1,
+    dx: 0,
+});
 
 function arch(x: number): Eye {
     const a = 15 * HS;
@@ -70,23 +86,24 @@ function arch(x: number): Eye {
         y2: y,
         w: 14 * K,
         sy: 1,
+        dx: 0,
     };
 }
 
 const body = (change: Partial<Body> = {}): Body => ({ sx: 1, sy: 1, ty: 0, ...change });
 const POSES = {
-    wink: (): Pose => ({ l: open(L), r: arch(R), b: body() }),
     listen: (): Pose => ({ l: open(L), r: open(R), b: body() }),
+    /** Смотрит в сторону: оба глаза сдвинуты на `dx`. */
+    look: (dx = 7): Pose => {
+        const pose = POSES.listen();
+        pose.l.dx = pose.r.dx = dx;
+        return pose;
+    },
+    wink: (): Pose => ({ l: open(L), r: arch(R), b: body() }),
     happy: (): Pose => ({ l: arch(L), r: arch(R), b: body() }),
 };
 
 const clone = (pose: Pose): Pose => ({ l: { ...pose.l }, r: { ...pose.r }, b: { ...pose.b } });
-
-/** Глаза сдвинуты вбок на `dx` (единицы холста): ДиВи смотрит в сторону. */
-function shifted(pose: Pose, dx: number): Pose {
-    const eye = (e: Eye): Eye => ({ ...e, ox: e.ox + dx, x1: e.x1 + dx, ax: e.ax + dx, bx: e.bx + dx, x2: e.x2 + dx });
-    return { l: eye(pose.l), r: eye(pose.r), b: { ...pose.b } };
-}
 
 function mix<T extends object>(from: T, to: T, t: number): T {
     const out = { ...from } as Record<string, number>;
@@ -101,7 +118,7 @@ function mix<T extends object>(from: T, to: T, t: number): T {
 const lerp = (from: Pose, to: Pose, t: number): Pose => ({ l: mix(from.l, to.l, t), r: mix(from.r, to.r, t), b: mix(from.b, to.b, t) });
 
 const ease = (t: number): number => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
-/** Ease-out-back с перелётом 1,70158 — у приземления и у сгиба глаза в дужку. */
+/** Ease-out-back с перелётом 1,70158 — у приземления, у сгиба глаза в дужку и у возврата взгляда. */
 function back(t: number): number {
     const c1 = 1.70158;
     const c3 = c1 + 1;
@@ -117,11 +134,11 @@ function reduced(): boolean {
 }
 
 export interface DiviOptions {
-    /** При загрузке: глаза открыты, моргнул, подмигнул. */
+    /** При загрузке: 600 мс смотрит, потом сценка «Привет». */
     intro?: boolean;
-    /** Где наведение запускает радость с прыжком: обычно логотип целиком (знак и надпись). Без него — сам знак. */
+    /** Где наведение запускает сценку: обычно логотип целиком (знак и надпись). Без него — сам знак. */
     hover?: HTMLElement;
-    /** Сам по себе: `true` — изредка моргает, `'lively'` — часто открывает глаза и оглядывается (см. вверху). */
+    /** Сам по себе: `true` — изредка моргает, `'lively'` — часто оглядывается (см. вверху). */
     idle?: boolean | 'lively';
     /** При появлении — радость с прыжком. */
     cheer?: boolean;
@@ -134,7 +151,7 @@ export interface DiviMark {
 
 /** Нарисовать живого ДиВи в `host` (размер — у host, знак во всю его ширину). Цвета — лайм и тёмные глаза. */
 export function mountDivi(host: HTMLElement, options: DiviOptions = {}): DiviMark {
-    let pose = POSES.wink();
+    let pose = POSES.listen();
     let tween = 0;
     let busy = false;
     let alive = true;
@@ -169,7 +186,7 @@ export function mountDivi(host: HTMLElement, options: DiviOptions = {}): DiviMar
         group.setAttribute('transform', `translate(0 ${b.ty}) translate(128 216) scale(${b.sx} ${b.sy}) translate(-128 -216)`);
         [next.l, next.r].forEach((eye, index) => {
             const { g, path } = eyes[index];
-            g.setAttribute('transform', `translate(${eye.ox} ${CY}) scale(1 ${eye.sy}) translate(${-eye.ox} ${-CY})`);
+            g.setAttribute('transform', `translate(${eye.ox + eye.dx} ${CY}) scale(1 ${eye.sy}) translate(${-eye.ox} ${-CY})`);
             path.setAttribute('d', `M${eye.x1} ${eye.y1}C${eye.ax} ${eye.ay} ${eye.bx} ${eye.by} ${eye.x2} ${eye.y2}`);
             path.setAttribute('stroke-width', String(eye.w));
         });
@@ -220,58 +237,52 @@ export function mountDivi(host: HTMLElement, options: DiviOptions = {}): DiviMar
         await to(POSES.happy(), 300, back);
     };
 
-    const intro = async (): Promise<void> => {
+    /** Сценка «Привет»: оглядывается → моргает → подмигивает → открывает глаз → улыбается с прыжком → смотрит. */
+    const greet = async (): Promise<void> => {
+        if (busy || !alive) return;
         busy = true;
-        await wait(700);
+        await to(POSES.look(), 260);
+        await wait(260);
+        await to(POSES.listen(), 220);
         await blink();
-        await wait(200);
+        await wait(160);
         await to(POSES.wink(), 300, back);
+        await wait(520);
+        await to(POSES.listen(), 260);
+        await wait(280);
+        await hop();
+        await wait(800);
+        await to(POSES.listen(), 340, back);
+        busy = false;
+    };
+
+    /** Колонка подключилась: сразу радость с прыжком, потом снова смотрит. */
+    const cheer = async (): Promise<void> => {
+        if (busy || !alive) return;
+        busy = true;
+        await hop();
+        await wait(800);
+        await to(POSES.listen(), 340, back);
         busy = false;
     };
 
     let idleTimer = 0;
     let restartIdle: (() => void) | undefined;
 
-    const hover = async (): Promise<void> => {
+    const hover = (): void => {
         if (busy || !alive) return;
         restartIdle?.();
-        busy = true;
-        await blink();
-        await hop();
-        await wait(700);
-        await to(POSES.wink(), 300, back);
-        busy = false;
+        void greet();
     };
 
-    /** Посмотреть в одну сторону, в другую и снова прямо: глаза сдвигаются на 8, как в «Слушает». */
-    const look = async (): Promise<void> => {
-        const ahead = clone(pose);
-        const side = Math.random() < 0.5 ? -8 : 8;
-        await to(shifted(ahead, side), 220);
+    /** Посмотреть в одну сторону, в другую и снова прямо. */
+    const lookAround = async (): Promise<void> => {
+        const side = Math.random() < 0.5 ? -7 : 7;
+        await to(POSES.look(side), 240);
         await wait(380);
-        await to(shifted(ahead, -side), 300);
+        await to(POSES.look(-side), 320);
         await wait(380);
-        await to(ahead, 220);
-    };
-
-    /** Проснуться: открыть оба глаза, оглядеться, моргнуть обоими и снова подмигнуть. Около 3 с. */
-    const awake = async (): Promise<void> => {
         await to(POSES.listen(), 260, back);
-        await wait(260);
-        await look();
-        await wait(180);
-        await blink();
-        await wait(320);
-        await to(POSES.wink(), 300, back);
-    };
-
-    /** Только моргнуть обоими: открыть глаза, моргнуть, подмигнуть. */
-    const twinkle = async (): Promise<void> => {
-        await to(POSES.listen(), 200, back);
-        await wait(240);
-        await blink();
-        await wait(200);
-        await to(POSES.wink(), 300, back);
     };
 
     /** Знак виден: скрытый вариант схемы или ушедшая за край шапка стоят. */
@@ -289,12 +300,14 @@ export function mountDivi(host: HTMLElement, options: DiviOptions = {}): DiviMar
         const tick = async (): Promise<void> => {
             if (busy || !alive || document.hidden || !onScreen()) return next();
             const roll = Math.random();
-            if (lively ? roll < 0.15 : roll < 0.34) await hover();
+            if (lively ? roll < 0.15 : roll < 0.34) await greet();
             else {
                 busy = true;
-                if (lively && roll < 0.7) await awake();
-                else if (lively) await twinkle();
-                else await blink();
+                if (lively && roll < 0.7) {
+                    await lookAround();
+                    await wait(180);
+                }
+                await blink();
                 busy = false;
             }
             next();
@@ -303,16 +316,14 @@ export function mountDivi(host: HTMLElement, options: DiviOptions = {}): DiviMar
         next();
     };
 
-    const still = reduced();
-    set(options.intro && !still ? POSES.listen() : POSES.wink());
+    set(POSES.listen());
     const target = options.hover ?? host;
-    const onHover = (): void => void hover();
-    if (!still) {
-        if (options.cheer) void wait(250).then(hover);
-        else if (options.intro) void intro();
+    if (!reduced()) {
+        if (options.cheer) void wait(250).then(cheer);
+        else if (options.intro) void wait(600).then(greet);
         if (options.idle) idle(options.idle === 'lively');
-        target.addEventListener('mouseenter', onHover);
-        target.addEventListener('focusin', onHover);
+        target.addEventListener('mouseenter', hover);
+        target.addEventListener('focusin', hover);
     }
 
     return {
@@ -322,8 +333,8 @@ export function mountDivi(host: HTMLElement, options: DiviOptions = {}): DiviMar
             window.clearTimeout(idleTimer);
             for (const id of timers) window.clearTimeout(id);
             timers.clear();
-            target.removeEventListener('mouseenter', onHover);
-            target.removeEventListener('focusin', onHover);
+            target.removeEventListener('mouseenter', hover);
+            target.removeEventListener('focusin', hover);
         },
     };
 }

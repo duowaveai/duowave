@@ -83,7 +83,8 @@ impl PluginFiles {
         self.root.join(plugin)
     }
 
-    /// A plugin's pictures: name, size, when written.
+    /// A plugin's pictures — the pictures at the top of its own folder (`files/app/<id>`, src/bus/providers/files.rs);
+    /// its other files and folders are its own business: name, size, when written.
     fn files(&self, plugin: &str) -> Vec<(String, u64, i64)> {
         let Ok(entries) = std::fs::read_dir(self.folder(plugin)) else { return Vec::new() };
         let mut files: Vec<(String, u64, i64)> = entries
@@ -91,6 +92,10 @@ impl PluginFiles {
             .filter_map(|entry| {
                 let meta = entry.metadata().ok().filter(|meta| meta.is_file())?;
                 let name = entry.file_name().to_string_lossy().into_owned();
+                let lower = name.to_ascii_lowercase();
+                if ![".png", ".jpg", ".jpeg", ".webp", ".gif"].iter().any(|extension| lower.ends_with(extension)) {
+                    return None;
+                }
                 let written = meta
                     .modified()
                     .ok()
@@ -194,26 +199,20 @@ impl PluginFiles {
         if !folder.starts_with(&self.root) || folder == self.root {
             return Err("не та папка".into());
         }
-        let fresh = self.root.join(format!(".{plugin}.restore"));
-        let _ = std::fs::remove_dir_all(&fresh);
-        std::fs::create_dir_all(&fresh).map_err(|error| format!("картинки не записались: {error}"))?;
+        // The pictures only: the rest of the app's own folder — its `tmp/`, its other files — stays as it is.
+        std::fs::create_dir_all(&folder).map_err(|error| format!("картинки не записались: {error}"))?;
         for (name, bytes) in pictures {
-            if let Err(error) = std::fs::write(fresh.join(name), bytes) {
-                let _ = std::fs::remove_dir_all(&fresh);
-                return Err(format!("картинка {name} не записалась: {error}"));
+            let part = folder.join(format!(".{name}.part"));
+            std::fs::write(&part, bytes)
+                .and_then(|()| std::fs::rename(&part, folder.join(name)))
+                .map_err(|error| format!("картинка {name} не записалась: {error}"))?;
+        }
+        for (name, _, _) in self.files(plugin) {
+            if !pictures.iter().any(|(kept, _)| *kept == name) {
+                let _ = std::fs::remove_file(folder.join(&name));
             }
         }
-        let old = self.root.join(format!(".{plugin}.old"));
-        let _ = std::fs::remove_dir_all(&old);
-        if folder.exists() {
-            std::fs::rename(&folder, &old).map_err(|error| format!("картинки не заменились: {error}"))?;
-        }
-        if let Err(error) = std::fs::rename(&fresh, &folder) {
-            let _ = std::fs::rename(&old, &folder);
-            return Err(format!("картинки не заменились: {error}"));
-        }
-        let _ = std::fs::remove_dir_all(&old);
-        if pictures.is_empty() {
+        if std::fs::read_dir(&folder).is_ok_and(|mut entries| entries.next().is_none()) {
             let _ = std::fs::remove_dir(&folder);
         }
         Ok(())

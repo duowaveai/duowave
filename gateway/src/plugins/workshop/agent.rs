@@ -22,6 +22,14 @@ pub const SKILL: &str = include_str!("../../../../docs/plugins/skill/SKILL.md");
 pub const AUTHORING: &str = include_str!("../../../../docs/plugins/AUTHORING.md");
 pub const STATION: &str = include_str!("../../../../docs/plugins/skill/station.md");
 pub const PANEL_SDK: &str = include_str!("../../../../docs/plugins/panel-sdk.d.ts");
+pub const CARDS: &str = include_str!("../../../../docs/plugins/cards.md");
+
+/// Cards for the agent: the guide and the parts as the gateway knows them (src/bus/cards.rs) — one list for all.
+pub fn cards_doc() -> String {
+    let parts: Vec<String> =
+        crate::bus::cards::PARTS.iter().map(|(name, what)| format!("- `{name}` — {what}")).collect();
+    format!("{CARDS}\n{}\n", parts.join("\n"))
+}
 pub const THEMES: &str = include_str!("../../../../docs/design/glass/THEMES.md");
 
 /// Rounds of tool calls in one answer of the agent: writing and checking code takes many.
@@ -177,8 +185,8 @@ pub fn tools(with_draft: bool) -> Vec<LlmTool> {
         },
         LlmTool {
             name: "docs".into(),
-            description: "Справочник: authoring — манифест, Host API, лимиты; station — что умеет колонка; panel — SDK пульта (panel.js); themes — контракт темы.".into(),
-            parameters: schema(json!({ "topic": { "type": "string", "enum": ["authoring", "station", "panel", "themes"] } }), &["topic"]),
+            description: "Справочник: authoring — манифест, Host API, шина, лимиты; station — что умеет колонка; cards — карточки виджетов и когда нужно окошко; panel — SDK пульта (panel.js, окошко); themes — контракт темы.".into(),
+            parameters: schema(json!({ "topic": { "type": "string", "enum": ["authoring", "station", "cards", "panel", "themes"] } }), &["topic"]),
         },
     ];
     if with_draft {
@@ -293,6 +301,7 @@ pub async fn run_tool(workshop: &Workshop, draft: &str, name: &str, input: &Map<
         }
         "docs" => Ok(match field("topic").as_str() {
             "station" => STATION.to_string(),
+            "cards" => cards_doc(),
             "panel" => PANEL_SDK.to_string(),
             "themes" => THEMES.to_string(),
             _ => AUTHORING.to_string(),
@@ -508,7 +517,7 @@ mod tests {
     #[test]
     fn gives_the_agent_its_skill_and_every_tool_a_draft_or_none() {
         assert!(skill_text().starts_with("# Мастерская"), "the front matter is left out");
-        assert!(AUTHORING.contains("## Host API 1.2") && STATION.contains("Проверено 07.11.2026"));
+        assert!(AUTHORING.contains("## Host API 2") && STATION.contains("Проверено 07.11.2026"));
         let bound = tools(false);
         assert!(bound.iter().all(|tool| tool.parameters["required"]
             .as_array()

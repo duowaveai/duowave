@@ -3,7 +3,7 @@
 // уйдёт), остальное — своё.
 
 import type { DraftNeed, InstallPlan } from '../api';
-import { permissionTitle } from '../screens/plugins';
+import { rightTitle as permissionTitle, rightWords } from '../bus/rights';
 
 /** Капсулы прав для мастерской: новые — янтарём, ненужные — зачёркнуты, прежние — строкой. */
 export function RightsLines({ plan }: { plan: InstallPlan }) {
@@ -59,20 +59,11 @@ function goesThere(needs: DraftNeed[]): string {
     return keys.length ? `туда уйдут ${keys.join(', ')} и то, что приложение покажет` : 'туда уйдёт то, что приложение спросит';
 }
 
-/** Чем право обернётся для человека: «Слышать две фразы колонки», «Своё хранилище и часть пульта». */
-function rightLine(name: string, plan: InstallPlan): { title: string; note: string } {
-    switch (name) {
-        case 'voice.intents':
-            return { title: `Слышать ${plan.phrases.length || ''} ${plan.phrases.length === 1 ? 'фразу' : 'фразы'} колонки`.replace('  ', ' '), note: 'остальное идёт мимо него' };
-        case 'kv':
-            return { title: 'Своё хранилище', note: 'помнит своё, чужого не видит' };
-        case 'llm.tools':
-            return { title: 'Помогать «Мозгу»', note: 'модель зовёт его, когда нужно' };
-        case 'voice.say':
-            return { title: 'Говорить колонкой само', note: 'без вашей просьбы' };
-        default:
-            return { title: permissionTitle(name), note: '' };
-    }
+/** Чем право обернётся для человека: «Умный дом — видеть и включать устройства». Связь спросит «да» при первом
+ *  обращении, как в телефоне. */
+function rightLine(name: string): { title: string; note: string } {
+    const words = rightWords(name);
+    return { title: words.title, note: [words.note, 'спросит «да» при первом разе'].filter(Boolean).join(' · ') };
 }
 
 /** Строки прав для «Примерки»: хосты — янтарём (уходит из дома), остальное — своё. Новые права одобряете вы. */
@@ -94,7 +85,7 @@ export function PermissionLines({ plan, needs }: { plan: InstallPlan; needs: Dra
                 </div>
             ))}
             {rights.map((name) => {
-                const line = rightLine(name, plan);
+                const line = rightLine(name);
                 return (
                     <div key={name} class="fit-right">
                         <span class="fit-dot is-own" aria-hidden="true" />

@@ -10,6 +10,7 @@
 //!
 //! The `*.module.ts` named in src/links are the Node gateway's, removed from the tree: git tag `node-gateway-last`.
 
+pub mod bus_words;
 pub mod connectors;
 pub mod dialog;
 pub mod health;

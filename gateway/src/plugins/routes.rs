@@ -225,15 +225,17 @@ async fn panel_parts(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<V
     Ok(ok(json!({ "parts": app.plugins.panel_parts() })))
 }
 
-/// A plugin's panel part calls its backend (`useApi`): whoever may use the plugins, with the function's input.
+/// A plugin's panel part calls its backend (`useApi`): whoever may use the plugins, with the function's input. The
+/// backend acts in that person's chain on the bus (src/bus/trail.rs): what it reaches, it reaches as them.
 async fn panel_call(
     State(app): State<Arc<App>>,
     caller: Caller,
     Path((id, function)): Path<(String, String)>,
     Body(input): Body<Value>,
 ) -> ApiResult<Value> {
-    caller.permitted(&use_of(CapabilityName::Plugins))?;
-    Ok(ok(json!({ "result": app.plugins.panel_call(&id, &function, input).await? })))
+    let principal = caller.permitted(&use_of(CapabilityName::Plugins))?.clone();
+    let call = app.plugins.panel_call(&id, &function, input);
+    Ok(ok(json!({ "result": crate::bus::Trail::principal(&principal).scope(call).await? })))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -268,6 +270,9 @@ async fn panel_file(
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    // An app's window is a sandboxed frame of no origin (docs/plans/bus.md, «Окошки»): it loads its module across
+    // origins. The file is the app's public panel code, no secret in it.
+    headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
     Ok(response)
 }
 

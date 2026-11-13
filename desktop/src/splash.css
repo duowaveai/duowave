@@ -73,22 +73,8 @@ main {
     transform-origin: 128px 216px;
 }
 
-/* At rest: the wink — the left eye open, the right a smiling arc. */
-.mark .eye.right.open {
-    display: none;
-}
-
-/* Starting or stopping: listening — both eyes open, a blink every few seconds (down 80 ms, up 130 ms). */
-[data-phase="starting"] .mark .eye.right.open,
-[data-phase="stopping"] .mark .eye.right.open {
-    display: inline;
-}
-
-[data-phase="starting"] .mark .eye.right.smile,
-[data-phase="stopping"] .mark .eye.right.smile {
-    display: none;
-}
-
+/* At rest both eyes open (the mark since 13.11.2026). Starting or stopping: listening, a blink every few seconds
+   (down 80 ms, up 130 ms). */
 [data-phase="starting"] .mark .eye,
 [data-phase="stopping"] .mark .eye {
     animation: blink 2.6s ease-in-out infinite;
@@ -113,14 +99,6 @@ main {
     transform: scale(0.72);
 }
 
-[data-phase="failed"] .mark .eye.right.open {
-    display: inline;
-}
-
-[data-phase="failed"] .mark .eye.right.smile {
-    display: none;
-}
-
 [data-phase="failed"] .mark .body {
     animation: sway 0.6s ease-in-out 1;
 }
@@ -140,19 +118,11 @@ main {
     }
 }
 
-/* Asked for less motion: no movement, the wink. */
+/* Asked for less motion: no movement, both eyes open. */
 @media (prefers-reduced-motion: reduce) {
     .mark .eye,
     .mark .body {
         animation: none !important;
-    }
-
-    .mark .eye.right.open {
-        display: none !important;
-    }
-
-    .mark .eye.right.smile {
-        display: inline !important;
     }
 }
 

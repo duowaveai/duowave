@@ -129,12 +129,17 @@ async fn plays_the_pilots_radio_when_the_station_says_vklyuchi_radio_and_leaves_
         (&radio["removable"], &radio["canDisable"], &radio["version"]),
         (&json!(false), &json!(true), &json!(version))
     );
-    assert_eq!(
-        radio["permissions"],
-        json!(["net:*.api.radio-browser.info", "voice.intents", "llm.tools", "media.source", "kv", "events"])
-    );
-    assert_eq!(radio["budget"], json!({"memoryMb": 4, "storageMb": 1}));
-    assert!(radio["panelModule"].as_str().is_some_and(|module| module.ends_with("/panel.js")), "{radio}");
+    // Host API 2: its only right is where it goes on the internet; what it gives is in `contributes`.
+    assert_eq!(radio["permissions"], json!(["net:*.api.radio-browser.info"]));
+    assert_eq!(radio["budget"], json!({"memoryMb": 4, "storageMb": 1, "filesMb": 64}));
+    // Its widget is a card the panel draws: no panel code of its own.
+    assert!(radio["panelModule"].is_null(), "{radio}");
+    let parts = env.get("/api/v1/packages/panel").await;
+    let part =
+        parts["parts"].as_array().unwrap().iter().find(|part| part["id"] == "radio").cloned().expect("radio's card");
+    // One path: panel code of any app runs only in its window, so a part no longer says «frame».
+    assert!(part.get("frame").is_none(), "{part}");
+    assert_eq!(part["cards"][0]["function"], json!("radioCard"));
     let (code, refused) =
         send(env.gateway.delete("/api/v1/packages/radio").header(bearer(&env.admin).0, bearer(&env.admin).1)).await;
     assert_eq!(code, StatusCode::CONFLICT, "a built-in is not removed: {refused}");

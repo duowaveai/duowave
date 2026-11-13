@@ -20,7 +20,6 @@ import './ui/activity.css';
 import './ui/recall.css';
 // Клавиатура на экране для приложений (sdk/piano-keys.tsx).
 import './ui/piano-keys.css';
-import { installSdk } from './sdk';
 import { registerPlugin } from './shell/registry';
 import { applyTheme } from './shell/theme';
 import core from './builtin';
@@ -29,8 +28,6 @@ import { ConfirmHost } from './ui/confirm';
 // Встроенное — тем же путём, что плагины: разделы, слоты и темы приходят в реестр, тема применяется до первой отрисовки.
 registerPlugin(core);
 applyTheme();
-// Плагины пакетов (panel.js) берут Preact и SDK пульта — они должны быть на месте до первого из них.
-installSdk();
 
 render(
     <>

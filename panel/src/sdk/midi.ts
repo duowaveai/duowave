@@ -16,6 +16,7 @@ import { api } from '../api';
 import { available, whyNot } from '../availability';
 import { PluginScope } from '../plugins/versions';
 import { DraftPreview } from './index';
+import type { MidiSong } from './notes';
 
 export type MidiState = 'connecting' | 'ready' | 'nodevice' | 'browser' | 'off' | 'example';
 export type MidiVia = 'gateway' | 'browser' | 'example';
@@ -192,7 +193,7 @@ interface Device {
 }
 
 /** Канал одного приложения в этой странице. */
-class Channel {
+export class Channel {
     state: MidiState = 'connecting';
     via: MidiVia = 'gateway';
     why: string | null = null;
@@ -555,7 +556,8 @@ class Channel {
 
 const channels = new Map<string, Channel>();
 
-function channelOf(plugin: string, example: boolean): Channel {
+/** Канал клавиатуры приложения — один на страницу; окошко приложения слышит его через мост (frame/host.tsx). */
+export function channelOf(plugin: string, example: boolean): Channel {
     const key = `${example ? 'example:' : ''}${plugin}`;
     let channel = channels.get(key);
     if (!channel) {
@@ -608,41 +610,11 @@ export function useMidi(): MidiHandle {
     );
 }
 
-/** Ноты по-русски: «до», «до♯», …, «си». */
-const NAMES = ['до', 'до♯', 'ре', 'ре♯', 'ми', 'фа', 'фа♯', 'соль', 'соль♯', 'ля', 'ля♯', 'си'];
-const OCTAVES = ['субконтроктавы', 'контроктавы', 'большой октавы', 'малой октавы', 'первой октавы', 'второй октавы', 'третьей октавы', 'четвёртой октавы', 'пятой октавы'];
-
-/** `noteName(60)` → «до первой октавы»; `noteName(60, true)` → «до». */
-export function noteName(note: number, short = false): string {
-    const name = NAMES[((note % 12) + 12) % 12];
-    if (short) return name;
-    const octave = OCTAVES[Math.floor(note / 12) - 1];
-    return octave ? `${name} ${octave}` : name;
-}
-
-export interface MidiTrack {
-    index: number;
-    name?: string;
-    drums: boolean;
-    notes: number;
-    /** `[нота, начало, длина]` в долях. */
-    melody: Array<[number, number, number]>;
-}
-
-export interface MidiSong {
-    tempo: number;
-    meter: [number, number];
-    tracks: MidiTrack[];
-}
+export { melodyOf, noteName } from './notes';
+export type { MidiSong, MidiTrack } from './notes';
 
 /** Файл `.mid` — дорожки с мелодиями (читает шлюз, файл нигде не хранится). Ошибка — словами. */
 export async function readMidiFile(file: Blob): Promise<MidiSong> {
     if (file.size > 256 * 1024) throw new Error('Файл больше 256 КБ — это не простая мелодия.');
     return api.midiRead(file);
-}
-
-/** Мелодия дорожки: верхний голос уже взят шлюзом; здесь — по желанию сдвиг, чтобы начиналась с нуля. */
-export function melodyOf(track: MidiTrack): Array<[number, number, number]> {
-    const first = track.melody[0]?.[1] ?? 0;
-    return track.melody.map(([note, start, length]) => [note, Math.round((start - first) * 1000) / 1000, length]);
 }

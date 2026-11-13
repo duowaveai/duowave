@@ -68,15 +68,37 @@ pub fn number(text: &str) -> f64 {
     text.parse::<f64>().ok().filter(|value| value.is_finite()).unwrap_or(f64::NAN)
 }
 
-/// `sysctl -n hw.pagesize vm.page_*_count kern.memorystatus_vm_pressure_level vm.compressor.swapper.swapins_total`.
+/// What `sysctl` is asked on macOS, by name: each answers as `name: value`, so one the system lacks costs only itself.
+/// 13.11: macOS 15 has no `vm.compressor.swapper.swapins_total`; asked with -n, the whole call failed (exit 1) and a
+/// 48 GB Mac with 90 % free fell back to its free pages alone — «Системе уже не хватает памяти».
+pub const DARWIN_SYSCTL: [&str; 8] = [
+    "hw.pagesize",
+    "vm.page_free_count",
+    "vm.page_speculative_count",
+    "vm.page_purgeable_count",
+    "vm.page_reusable_count",
+    "vm.page_pageable_external_count",
+    "kern.memorystatus_vm_pressure_level",
+    "vm.compressor.swapper.swapins_total",
+];
+
+/// `sysctl DARWIN_SYSCTL…`'s `name: value` lines, whatever its exit code (an unknown name only goes to stderr). The
+/// page size and the free pages are needed; a missing count is 0, a missing pressure level normal, missing swap-ins
+/// unknown (`vm_stat` gives them — `parse_vm_stat_swapins`).
 pub fn parse_darwin(stdout: &str, total_mb: u64) -> Option<Counters> {
-    let values: Vec<f64> = trim(stdout).split('\n').map(number).collect();
-    if values.len() < 8 || values.iter().any(|value| !value.is_finite()) {
-        return None;
-    }
-    let [page, free, speculative, purgeable, reusable, external, level, swapins] =
-        [values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7]];
-    let pool = (free + speculative + purgeable + reusable) * page + (external * page) / 2.0;
+    let value = |name: &str| {
+        trim(stdout).lines().find_map(|line| {
+            let figure = number(line.strip_prefix(name)?.strip_prefix(':')?);
+            figure.is_finite().then_some(figure)
+        })
+    };
+    let page = value("hw.pagesize").filter(|page| *page > 0.0)?;
+    let free = value("vm.page_free_count")?;
+    let count = |name: &str| value(name).unwrap_or(0.0);
+    let reclaimable =
+        count("vm.page_speculative_count") + count("vm.page_purgeable_count") + count("vm.page_reusable_count");
+    let pool = (free + reclaimable) * page + (count("vm.page_pageable_external_count") * page) / 2.0;
+    let level = count("kern.memorystatus_vm_pressure_level");
     Some(Counters {
         total_mb,
         pool_mb: round(pool / MB).max(0.0) as u64,
@@ -87,8 +109,31 @@ pub fn parse_darwin(stdout: &str, total_mb: u64) -> Option<Counters> {
         } else {
             Pressure::Normal
         },
-        swap_in_bytes: Some(swapins * page),
+        swap_in_bytes: value("vm.compressor.swapper.swapins_total").map(|swapins| swapins * page),
     })
+}
+
+/// `vm_stat`'s «Swapins:» in bytes, by its own page size: where sysctl has no swap-in count (macOS 15).
+pub fn parse_vm_stat_swapins(stdout: &str) -> Option<f64> {
+    let page = stdout
+        .lines()
+        .find_map(|line| line.split_once("page size of ")?.1.split_whitespace().next().map(number))
+        .filter(|page| page.is_finite() && *page > 0.0)?;
+    let pages =
+        stdout.lines().find_map(|line| Some(number(line.strip_prefix("Swapins:")?.trim().trim_end_matches('.'))))?;
+    pages.is_finite().then_some(pages * page)
+}
+
+/// Where the system's own counters could not be read: what the system calls free (os.freemem()). Its share of the
+/// whole tells pressure on Windows; a Mac keeps its free pages low on purpose (the rest is cache), so there the share
+/// says nothing and pressure stays unknown — normal.
+pub fn free_counters(free_bytes: u64, total_bytes: u64, mac: bool) -> Counters {
+    let counters = windows_counters(free_bytes, total_bytes);
+    if mac {
+        Counters { pressure: Pressure::Normal, ..counters }
+    } else {
+        counters
+    }
 }
 
 /// `^name:\s+(\d+)` in /proc/meminfo, in bytes.
@@ -187,18 +232,7 @@ pub fn read_counters() -> Option<Counters> {
     }
     if cfg!(target_os = "macos") {
         let total = sysctl(&["-n", "hw.memsize"]).map(|text| number(&text))?;
-        let names = [
-            "-n",
-            "hw.pagesize",
-            "vm.page_free_count",
-            "vm.page_speculative_count",
-            "vm.page_purgeable_count",
-            "vm.page_reusable_count",
-            "vm.page_pageable_external_count",
-            "kern.memorystatus_vm_pressure_level",
-            "vm.compressor.swapper.swapins_total",
-        ];
-        return parse_darwin(&sysctl(&names)?, round(total / MB) as u64);
+        return parse_darwin(&sysctl_any(&DARWIN_SYSCTL)?, round(total / MB) as u64);
     }
     None
 }
@@ -206,6 +240,12 @@ pub fn read_counters() -> Option<Counters> {
 fn sysctl(args: &[&str]) -> Option<String> {
     let output = std::process::Command::new("sysctl").args(args).output().ok()?;
     output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// What sysctl printed, even when some name was unknown to it.
+fn sysctl_any(args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("sysctl").args(args).output().ok()?;
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// How much memory a process holds now (its resident set), MB: this gateway's when `pid` is none. /proc on Linux,
@@ -271,11 +311,13 @@ mod tests {
 
     #[test]
     fn counts_a_mac_pool_from_its_pages_not_from_memorystatus_level_05_11_75_free_while_swapping() {
-        // The counters of 06.11 00:05, page 16 KB: free, speculative, purgeable, reusable, file-backed, level,
-        // swap-ins.
-        let counters = parse_darwin("16384\n287115\n6239\n12839\n61438\n224580\n1\n18248758", 36_864);
+        // The counters of 06.11 00:05, page 16 KB.
+        let named = "hw.pagesize: 16384\nvm.page_free_count: 287115\nvm.page_speculative_count: 6239\n\
+                     vm.page_purgeable_count: 12839\nvm.page_reusable_count: 61438\n\
+                     vm.page_pageable_external_count: 224580\nkern.memorystatus_vm_pressure_level: 1\n\
+                     vm.compressor.swapper.swapins_total: 18248758\n";
         assert_eq!(
-            counters,
+            parse_darwin(named, 36_864),
             Some(Counters {
                 total_mb: 36_864,
                 pool_mb: 7_499,
@@ -283,8 +325,32 @@ mod tests {
                 swap_in_bytes: Some(18_248_758.0 * 16_384.0),
             })
         );
-        assert_eq!(parse_darwin("16384\n1\n1\n1\n1\n1\n4\n0", 36_864).map(|c| c.pressure), Some(Pressure::Critical));
+        let critical = "hw.pagesize: 16384\nvm.page_free_count: 1\nkern.memorystatus_vm_pressure_level: 4\n";
+        assert_eq!(parse_darwin(critical, 36_864).map(|c| c.pressure), Some(Pressure::Critical));
         assert_eq!(parse_darwin("garbage", 36_864), None);
+        assert_eq!(parse_darwin("hw.pagesize: 16384\n", 36_864), None, "no free pages: nothing to tell");
+    }
+
+    #[test]
+    fn reads_a_macos_15_that_has_no_swapper_count_13_11_a_48_gb_mac_with_90_free_was_refused() {
+        // macOS 15.6.1: sysctl exits 1 on the unknown name and prints the rest.
+        let named = "hw.pagesize: 16384\nvm.page_free_count: 197400\nvm.page_speculative_count: 534270\n\
+                     vm.page_purgeable_count: 266338\nvm.page_reusable_count: 612345\n\
+                     vm.page_pageable_external_count: 1138859\nkern.memorystatus_vm_pressure_level: 1\n";
+        let counters = parse_darwin(named, 49_152).unwrap();
+        assert_eq!((counters.pool_mb, counters.pressure, counters.swap_in_bytes), (34_059, Pressure::Normal, None));
+        let vm_stat = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:      16383.\n\
+                       Swapins:                                      812545.\nSwapouts:     1772206.\n";
+        assert_eq!(parse_vm_stat_swapins(vm_stat), Some(812_545.0 * 16_384.0));
+        assert_eq!(parse_vm_stat_swapins("Swapins: 5."), None, "no page size: no bytes");
+    }
+
+    #[test]
+    fn tells_no_pressure_from_a_macs_free_pages_alone() {
+        let (free, total) = (3_500 * 1_048_576, 49_152 * 1_048_576);
+        assert_eq!(free_counters(free, total, true).pressure, Pressure::Normal);
+        assert_eq!(free_counters(free, total, true).pool_mb, 3_500);
+        assert_eq!(free_counters(free, total, false).pressure, Pressure::Warn);
     }
 
     #[test]
