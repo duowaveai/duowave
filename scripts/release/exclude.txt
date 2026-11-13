@@ -21,6 +21,7 @@ docs/media/README.md
 # (workshop/agent.rs) and copied by Dockerfile.prod.
 docs/design/roles
 docs/design/voice-creation
+docs/design/audio-interface
 docs/design/glass/README.md
 docs/design/glass/source
 docs/design/glass/GlassDash.html

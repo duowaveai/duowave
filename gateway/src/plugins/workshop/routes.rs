@@ -120,7 +120,19 @@ async fn preview_file(
     use axum::response::IntoResponse;
     let text = app.workshop.preview_file(&token, &file).ok_or_else(|| ApiError::not_found("Not Found"))?;
     let kind = if file.ends_with(".css") { "text/css; charset=utf-8" } else { "text/javascript; charset=utf-8" };
-    Ok(([(axum::http::header::CONTENT_TYPE, kind), (axum::http::header::CACHE_CONTROL, "no-store")], text)
+    use axum::http::header;
+    // An app's window is a sandboxed frame of no origin (docs/plans/bus.md, «Окошки»): it imports the draft's part
+    // across origins, like an installed app's (plugins/routes.rs, `panel_file`). The address carries a short-lived
+    // random token; the file is the draft's panel code, no secret in it.
+    Ok((
+        [
+            (header::CONTENT_TYPE, kind),
+            (header::CACHE_CONTROL, "no-store"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+        ],
+        text,
+    )
         .into_response())
 }
 
@@ -1179,5 +1191,36 @@ mod tests {
             .unwrap();
         let broken = app.workshop.check("widget-wash").await.unwrap();
         assert!(!broken.ok && broken.code.as_deref().is_some_and(|code| code.starts_with("panel.js:")), "{broken:?}");
+    }
+
+    #[tokio::test]
+    async fn serves_a_drafts_preview_to_the_apps_window_across_origins_and_nothing_without_its_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = |sub: &str| dir.path().join(sub).to_string_lossy().into_owned();
+        let env = Env::from_pairs([
+            ("STATE_DIR", String::new()),
+            ("PACKAGES_DIR", text("packages")),
+            ("DATA_DIR", text("data")),
+            ("VOICE_LAB_DIR", text("voice-lab")),
+            ("TTS_MODELS_DIR", text("voices")),
+        ]);
+        let app = crate::app::App::build(Config::for_tests(&env)).unwrap();
+        app.workshop.create("waves", Some("plugin"), Some("Волны"), None).unwrap();
+        app.workshop.write("waves", "panel.js", "export default {};\n").unwrap();
+        let (module, _) = app.workshop.preview("waves").unwrap();
+        let token = module.trim_start_matches("/panel-preview/").trim_end_matches("/panel.js").to_string();
+
+        // The app's window is a sandboxed frame of no origin: its `import()` is across origins and needs the allowance.
+        let response = preview_file(State(app.clone()), Path((token.clone(), "panel.js".into()))).await.unwrap();
+        let headers = response.headers();
+        assert_eq!(headers[axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+        assert_eq!(headers[axum::http::header::CONTENT_TYPE], "text/javascript; charset=utf-8");
+        assert_eq!(headers[axum::http::header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"export default {};\n");
+
+        // Only its two parts, only by a live token.
+        assert!(preview_file(State(app.clone()), Path((token, "manifest.json".into()))).await.is_err());
+        assert!(preview_file(State(app.clone()), Path(("0".repeat(32), "panel.js".into()))).await.is_err());
     }
 }

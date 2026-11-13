@@ -326,6 +326,11 @@ async fn pass(
         out.headers_mut().insert(header::CONTENT_TYPE, value);
     }
     out.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    // An app's window is a sandboxed frame of no origin (docs/plans/bus.md, «Окошки»): it loads a station's panel part
+    // across origins, as the station itself allows it. The pass rebuilds the answer, so the allowance goes on here.
+    if public_file(&rest) {
+        out.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+    }
     Ok(out)
 }
 
@@ -637,9 +642,11 @@ mod tests {
             "/station/h:kitchen/panel-plugins/radio/1.3.0/panel.js",
             "/station/h:kitchen/panel-preview/t0k3n/panel.css",
         ] {
-            let (status, _, body) = send(&app, home, "GET", uri, "").await;
+            let (status, headers, body) = send(&app, home, "GET", uri, "").await;
             assert_eq!(status, StatusCode::OK, "{uri}: {body}");
             assert_eq!(body["message"], json!({"role": "", "person": "", "key": ""}), "{uri}");
+            // The app's window (a frame of no origin) imports it across origins: the allowance passes too.
+            assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*", "{uri}");
             assert_eq!(send(&app, home, "HEAD", uri, "").await.0, StatusCode::OK, "{uri}");
             assert_eq!(send(&app, "8.8.8.8", "GET", uri, "").await.0, StatusCode::FORBIDDEN, "{uri}: from outside");
             assert_eq!(send(&app, home, "POST", uri, "").await.0, StatusCode::UNAUTHORIZED, "{uri}: only a reading");
@@ -652,6 +659,8 @@ mod tests {
         }
         assert_eq!(send(&app, home, "GET", journal, "").await.0, StatusCode::UNAUTHORIZED, "the rest asks who");
         assert_eq!(asked.lock().unwrap().len(), before);
+        let (_, headers, _) = send(&app, home, "GET", journal, &admin).await;
+        assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN), "the API is not opened across origins");
 
         // A big answer is not copied.
         let (status, _, _) = send(&app, home, "GET", "/station/h:kitchen/api/v1/big", &admin).await;
