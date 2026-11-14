@@ -8,7 +8,8 @@
 //!   it reaches the Host API the same way (`/api/v1/apps/host/…` with its token): the same rights as a plugin's;
 //! - it is asked whether it is well (`health`), restarted after a fall with a growing pause, and switched off after
 //!   five falls in a row; its memory is counted for real (RSS) against its budget — three looks over it is a fall;
-//!   on Linux `RLIMIT_AS` keeps it from more than eight times its budget;
+//!   on Linux `RLIMIT_AS` keeps a built program from more than eight times its budget (not Node: V8 reserves far more
+//!   address space than it uses, its heap is held by `--max-old-space-size`);
 //! - its output goes to the gateway's log and the plugin's journal under its name;
 //! - its own sound — `/stream/<path>` of its server — reaches the station through our /media
 //!   (`/media/apps/<id>/<path>`), and nothing else of its server does.
@@ -196,8 +197,11 @@ fn spawn(launch: &Launch, host: &Arc<dyn HostApi>) -> Result<tokio::process::Chi
     if let Some(files) = &launch.files {
         command.env("DUOWAVE_APP_FILES", files);
     }
+    // Not for Node (`launch.path` is set only for it): V8 reserves gigabytes of address space at start, far over eight
+    // budgets, and under RLIMIT_AS it never says it is healthy (CI on Linux, 14.11). Its heap is held by
+    // --max-old-space-size and its real memory (RSS) is counted against its budget like any app's.
     #[cfg(target_os = "linux")]
-    {
+    if launch.path.is_none() {
         let limit = (launch.memory_mb.max(32) * 8 * 1024 * 1024) as libc::rlim_t;
         // SAFETY: setrlimit is async-signal-safe and only touches the child before exec.
         unsafe {
