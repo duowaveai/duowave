@@ -1,16 +1,16 @@
 // __TITLE__: фото дня из папки «Фото» домашней папки DuoWave — большая карточка на столе — и окошко со всеми фото
-// (docs/plans/shared-folders.md, docs/plugins/AUTHORING.md, «Папки»). Право — связь `call:files/home/Фото/*`: читать
+// (docs/plans/shared-folders.md, docs/plugins/AUTHORING.md, «Папки»). Право — связь `call:files/home/Photos/*`: читать
 // «Фото» со всем, что в ней; человек скажет «да» один раз. Картинку на экран даёт сам шлюз (`picture: {address}` в
 // карточке, `useFolderFile` в окошке) — уменьшенной, код фото не читает.
 //
 // Имена вслух — только с `speak` папки (`host.files.stat`): голос Алисы озвучивает Яндекс, без галочки имена не
 // уходят из дома. Карточка ничего не пишет в kv: пишут функции нажатий.
 
-const FOLDER = "files/home/Фото";
+const FOLDER = "files/home/Photos";
 const DEPTH = 2;
 const MOST = 2000;
 
-// Все фото папки, с вложенными до двух уровней: «Фото/Отпуск 2025/1.jpg».
+// Все фото папки, с вложенными до двух уровней: «Photos/Отпуск 2025/1.jpg».
 async function pictures() {
   const found = [];
   const walk = async (at, depth) => {
@@ -44,16 +44,13 @@ async function speakable() {
 
 export async function today() {
   const all = await pictures();
-  // Вид (docs/plugins/cards.md, «Вид»): тёплый вечерний фон, на нём фото дня — как в рамке.
-  const look = { colors: ["#2a1b3d", "#5b3a6e", "#a0526d"] };
-  if (all.length === 0) return { empty: "В папке «Фото» пока нет фотографий.", look, say: "Фотографий пока нет." };
+  if (all.length === 0) return { empty: "В папке «Фото» пока нет фотографий.", say: "Фотографий пока нет." };
   const photo = todayOf(all);
   const speak = await speakable();
   return {
     picture: { address: photo.address, caption: stem(photo.name) },
     cap: `Фото дня · ${all.length} в папке`,
     buttons: [{ text: "Другое", tap: "next" }],
-    look,
     say: speak ? `Фото дня: ${stem(photo.name)}.` : "Фото дня на экране.",
   };
 }

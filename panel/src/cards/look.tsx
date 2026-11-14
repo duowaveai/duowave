@@ -35,10 +35,39 @@ export function lookOf(raw: unknown): CardLook | null {
     return look.scene || look.colors || look.picture ? look : null;
 }
 
-/** Фон вида: свои цвета, иначе цвета сцены, иначе спокойный тёмный. */
+/** Цвета фона вида: свои, иначе цвета сцены, иначе спокойный тёмный. */
+function colorsOf(look: CardLook): string[] {
+    return look.colors ?? (look.scene ? SCENE_COLORS[look.scene] : ['#2b2f3a', '#454b59']);
+}
+
+/** Фон вида градиентом. */
 export function gradientOf(look: CardLook): string {
-    const colors = look.colors ?? (look.scene ? SCENE_COLORS[look.scene] : ['#2b2f3a', '#454b59']);
+    const colors = colorsOf(look);
     return colors.length === 1 ? colors[0] : `linear-gradient(160deg, ${colors.join(', ')})`;
+}
+
+/** Яркость цвета для глаза (WCAG, 0 — чёрный, 1 — белый). */
+function luminance(color: string): number {
+    let hex = color.replace('#', '');
+    if (hex.length === 3) hex = hex.replace(/./g, (c) => c + c);
+    const channel = (at: number): number => {
+        const value = parseInt(hex.slice(at, at + 2), 16) / 255;
+        return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4);
+}
+
+/**
+ * Каким текстом писать по фону и надо ли его притушить. Цвет текста — свой у вида или по яркости фона: светлый фон —
+ * тёмный текст. Край градиента, на котором текст не прочтётся (белый текст на светлом краю, тёмный на тёмном),
+ * пульт притушивает тенью: вид не зависит от темы пульта и всегда читается.
+ */
+export function inkOf(look: CardLook): { ink: 'light' | 'dark'; shade: 'soft' | 'strong' } {
+    const levels = colorsOf(look).map(luminance);
+    const average = levels.reduce((sum, level) => sum + level, 0) / levels.length;
+    const ink = look.ink ?? (average > 0.45 && !look.picture ? 'dark' : 'light');
+    const clash = ink === 'light' ? Math.max(...levels) > 0.55 : Math.min(...levels) < 0.18;
+    return { ink, shade: clash ? 'strong' : 'soft' };
 }
 
 /** Стабильный случай сцены по приложению: у погоды одни и те же облака после перерисовки. */
@@ -83,7 +112,7 @@ export function LookLayers({ app, look }: { app: string; look: CardLook }) {
         <div class="look-layers" aria-hidden="true" style={{ background: gradientOf(look) }}>
             {look.picture && <Backdrop app={app} picture={look.picture} />}
             {look.scene && <SceneCanvas scene={look.scene} seed={seedOf(`${app}:${look.scene}`)} />}
-            <div class="look-shade" data-ink={look.ink ?? 'light'} />
+            <div class="look-shade" data-ink={inkOf(look).ink} data-shade={inkOf(look).shade} />
         </div>
     );
 }

@@ -276,7 +276,7 @@ async fn app_view(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<St
 struct PreviewQuery {
     /// The app whose card shows it.
     app: String,
-    /// The picture's address in a folder: `files/home/Фото/лето.jpg`.
+    /// The picture's address in a folder: `files/home/Photos/лето.jpg`.
     address: String,
     #[serde(default)]
     size: Option<u32>,

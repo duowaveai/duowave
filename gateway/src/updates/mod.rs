@@ -236,7 +236,7 @@ impl UpdatesService {
             Some("yam") => (
                 false,
                 Some(
-                    crate::tr!("Шлюз поставлен через YAM: обновите его на колонке — yam install файла новой версии из выпуска."),
+                    crate::tr!("Шлюз поставлен через YAM: обновите его на колонке — yam install duowave/gateway@<версия>."),
                 ),
             ),
             Some("yse") => (false, Some(crate::tr!("Шлюз поставлен через yse: обновите его — yse upgrade duowave."))),

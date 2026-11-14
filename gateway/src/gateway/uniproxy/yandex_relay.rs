@@ -96,6 +96,10 @@ impl Default for YandexAnswer {
 pub type OnResponse = Box<dyn Fn(&YandexAnswer) + Send + Sync>;
 pub type Revoice = Box<dyn Fn(String) + Send + Sync>;
 pub type OnAsr = Box<dyn Fn(&Value) + Send + Sync>;
+/// Yandex's final recognition of a request it holds (WaitClientApproval): its text, empty when it heard nothing.
+pub type OnApproval = Box<dyn Fn(String) + Send + Sync>;
+/// Yandex answered a held request after all, though we cancelled it.
+pub type OnIgnored = Box<dyn Fn() + Send + Sync>;
 
 pub struct YandexRelayOptions {
     /// The station's message id Yandex's replies go to; unchanged when the request was the station's own frame.
@@ -114,6 +118,11 @@ pub struct YandexRelayOptions {
     /// Yandex's recognition of the voice it was given (each AsrResult, partial and final): nothing here heard it, so
     /// the request's words are Yandex's.
     pub on_asr: Option<OnAsr>,
+    /// The request asks Yandex to wait after its recognition (docs/plans/yandex-ear.md): the final text goes here,
+    /// once, and the session answers with a ContinueRequest or a CancelRequest.
+    pub approval: Option<OnApproval>,
+    /// The cancelled request's answer came all the same: Yandex did not wait.
+    pub on_ignored: Option<OnIgnored>,
 }
 
 impl YandexRelayOptions {
@@ -126,6 +135,8 @@ impl YandexRelayOptions {
             on_response: None,
             revoice: None,
             on_asr: None,
+            approval: None,
+            on_ignored: None,
         }
     }
 }
@@ -165,6 +176,12 @@ struct State {
     revoiced: bool,
     finished: bool,
     cancelled: bool,
+    /// The final recognition of a held request went to the session (`approval`).
+    asked: bool,
+    /// The session answers the held request itself: Yandex was told to drop it.
+    declined: bool,
+    /// Yandex answered the declined request all the same; said once.
+    ignored: bool,
     /// When the armed timeout fires, and what it says then.
     deadline: Instant,
     waiting_for: &'static str,
@@ -202,6 +219,9 @@ impl YandexRelay {
                 revoiced: false,
                 finished: false,
                 cancelled: false,
+                asked: false,
+                declined: false,
+                ignored: false,
                 deadline: Instant::now() + timeout,
                 waiting_for: "no response from Yandex",
             }),
@@ -264,6 +284,30 @@ impl YandexRelay {
         self.close_open_streams(&mut state, CloseReason::Cancel);
         state.cancelled = true;
         self.finish(&mut state, RelayOutcome::Cancelled);
+    }
+
+    /// The held request is answered here, not by Yandex: the relay ends as cancelled, and an answer Yandex sends
+    /// all the same reaches nobody but `on_ignored`.
+    pub fn decline(&self, reason: &str) {
+        self.lock().declined = true;
+        self.cancel(reason);
+    }
+
+    /// Whether the session answers this request itself (`decline`).
+    pub fn declined(&self) -> bool {
+        self.lock().declined
+    }
+
+    /// The final recognition of a held request, once: what goes to `approval`.
+    fn approval_text(&self, asr_result: &Value) -> Option<String> {
+        self.options.approval.as_ref()?;
+        let mut state = self.lock();
+        let end = asr_result.get("endOfUtt").and_then(Value::as_bool).unwrap_or(false);
+        if state.cancelled || state.asked || !end {
+            return None;
+        }
+        state.asked = true;
+        Some(recognition_text(Some(asr_result)))
     }
 
     fn read_response(state: &mut State, response: &Value) {
@@ -409,17 +453,51 @@ impl ExchangeHandler for YandexRelay {
     fn on_event(&self, frame: &Bytes, kind: &str, decoded: &Value) -> Result<()> {
         let empty = Value::Object(Default::default());
         let event = decoded.get("event").unwrap_or(&empty);
+        let mut asked = None;
         if kind == "asrResult" {
             let asr_result = event.get("asrResult").unwrap_or(&empty);
             // Out of our lock, as the response's: the session follows the request's trip.
             if let (true, Some(on_asr)) = (self.hear(asr_result), &self.options.on_asr) {
                 on_asr(asr_result);
             }
+            asked = self.approval_text(asr_result);
         }
+        let relayed = self.relay_event(frame, kind, decoded, event);
+        // The station has Yandex's final words first; then the session decides — out of our lock, as it may cancel
+        // this relay.
+        if let (Some(text), Some(approval)) = (asked, &self.options.approval) {
+            approval(text);
+        }
+        relayed
+    }
+
+    fn on_audio(&self, frame: &Bytes, stream_id: u32) -> Result<()> {
+        self.relay_audio(frame, stream_id)
+    }
+
+    fn on_stream_control(&self, frame: &Bytes, stream_id: u32, decoded: &Value) -> Result<()> {
+        self.relay_stream_control(frame, stream_id, decoded)
+    }
+
+    fn on_closed(&self, error: &str) {
+        self.relay_closed(error);
+    }
+}
+
+impl YandexRelay {
+    /// An event of Yandex's for the station: its response read, its streams numbered ours, the frame passed on.
+    fn relay_event(&self, frame: &Bytes, kind: &str, decoded: &Value, event: &Value) -> Result<()> {
+        let empty = Value::Object(Default::default());
         if kind == "aliceResponse" {
             let answer = {
                 let mut state = self.lock();
                 if state.cancelled || self.options.drop.contains(&kind) {
+                    let ignored = state.declined && !state.ignored;
+                    state.ignored |= ignored;
+                    drop(state);
+                    if let (true, Some(on_ignored)) = (ignored, &self.options.on_ignored) {
+                        on_ignored();
+                    }
                     return Ok(());
                 }
                 YandexRelay::read_response(&mut state, event.get("aliceResponse").unwrap_or(&empty));
@@ -485,7 +563,7 @@ impl ExchangeHandler for YandexRelay {
         Ok(())
     }
 
-    fn on_audio(&self, frame: &Bytes, stream_id: u32) -> Result<()> {
+    fn relay_audio(&self, frame: &Bytes, stream_id: u32) -> Result<()> {
         let mut state = self.lock();
         let ours = state.ours(stream_id);
         let Some(ours) = ours.filter(|&ours| ours >= 0 && !state.cancelled && !self.options.quiet) else {
@@ -496,7 +574,7 @@ impl ExchangeHandler for YandexRelay {
         Ok(())
     }
 
-    fn on_stream_control(&self, frame: &Bytes, stream_id: u32, decoded: &Value) -> Result<()> {
+    fn relay_stream_control(&self, frame: &Bytes, stream_id: u32, decoded: &Value) -> Result<()> {
         let mut state = self.lock();
         let Some(ours) = state.ours(stream_id).filter(|_| !state.cancelled) else { return Ok(()) };
         if decoded.get("streamControl").and_then(|control| control.get("close")).is_some() {
@@ -515,7 +593,7 @@ impl ExchangeHandler for YandexRelay {
         Ok(())
     }
 
-    fn on_closed(&self, error: &str) {
+    fn relay_closed(&self, error: &str) {
         let mut state = self.lock();
         state.answer.error = Some(error.to_string());
         self.close_open_streams(&mut state, CloseReason::Cancel);
@@ -606,6 +684,61 @@ mod tests {
         assert_eq!(*sent.kinds.lock().unwrap(), vec!["aliceResponse"]);
         assert_eq!(sent.audio.load(Ordering::SeqCst), 0);
         assert_eq!(*said.lock().unwrap(), vec!["Включаю Miyagi."]);
+        assert_eq!(relay.done().await.outcome, RelayOutcome::Answered);
+    }
+
+    /// Yandex's recognition, as the session hands it to the relay.
+    fn heard(relay: &YandexRelay, text: &str, end_of_utt: bool) {
+        let codec = AapiCodec::new();
+        let message = ServerMessage::AsrResult { r#ref: "station-1".into(), text: text.into(), end_of_utt };
+        let frame = codec.encode_server(&message).unwrap().frame;
+        let decoded = codec.decode_server_frame(&frame).unwrap();
+        relay.on_event(&frame, "asrResult", &decoded).unwrap();
+    }
+
+    #[tokio::test]
+    async fn asks_once_on_the_final_recognition_and_keeps_a_declined_answer_from_the_station() {
+        let sent = Arc::new(Output::default());
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let ignored = Arc::new(AtomicU32::new(0));
+        let mut options = YandexRelayOptions::new(NO_EVENTS, 1000);
+        let into = asked.clone();
+        options.approval = Some(Box::new(move |text| into.lock().unwrap().push(text)));
+        let count = ignored.clone();
+        options.on_ignored = Some(Box::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        }));
+        let relay = YandexRelay::new(options, sent.clone());
+        heard(&relay, "как", false);
+        heard(&relay, "как дела", true);
+        heard(&relay, "как дела", true);
+        // The station sees Yandex's recognition as it comes; the session is asked once, at the end.
+        assert_eq!(*sent.kinds.lock().unwrap(), vec!["asrResult", "asrResult", "asrResult"]);
+        assert_eq!(*asked.lock().unwrap(), vec!["как дела"]);
+        relay.decline("ours");
+        assert!(relay.declined());
+        // Yandex did not wait: its answer reaches nobody, and that is said once.
+        answer(&relay, "Хорошо.");
+        answer(&relay, "Хорошо.");
+        assert_eq!(sent.kinds.lock().unwrap().len(), 3);
+        assert_eq!(sent.audio.load(Ordering::SeqCst), 0);
+        assert_eq!(ignored.load(Ordering::SeqCst), 1);
+        assert_eq!(relay.done().await.outcome, RelayOutcome::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn relays_the_answer_of_a_request_yandex_was_told_to_continue() {
+        let sent = Arc::new(Output::default());
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let mut options = YandexRelayOptions::new(NO_EVENTS, 1000);
+        let into = asked.clone();
+        options.approval = Some(Box::new(move |text| into.lock().unwrap().push(text)));
+        let relay = YandexRelay::new(options, sent.clone());
+        heard(&relay, "", true);
+        assert_eq!(*asked.lock().unwrap(), vec![""]);
+        answer(&relay, "Включаю.");
+        assert_eq!(*sent.kinds.lock().unwrap(), vec!["asrResult", "aliceResponse", "ttsSpeak", "streamControl"]);
+        assert!(!relay.declined());
         assert_eq!(relay.done().await.outcome, RelayOutcome::Answered);
     }
 

@@ -177,15 +177,21 @@ duowave station log [строк]               # конец журнала шл�
 ## Пакет YAM: шлюз на самой колонке
 
 Для тех, у кого на колонке стоит [YAM 0.2](https://hackalice.me/start/packages/): пакет `duowave/gateway`, пока для
-Станции Лайт 2 (`plum`) — файл `duowave-gateway-<версия>-plum.yampkg` в
-[выпуске](https://github.com/duowaveai/duowave/releases/latest). В реестре repo.yse.wtf его пока нет: ставится файлом.
+Станции Лайт 2 (`plum`), в реестре [repo.yse.wtf](https://repo.yse.wtf/) (тот же файл
+`duowave-gateway-<версия>-plum.yampkg` лежит и в [выпуске](https://github.com/duowaveai/duowave/releases/latest)).
 Старого `.yap` для `yse` больше нет: реестр yapkg новые пакеты не принимает, YAM 0.1 не поддерживается.
 
 ```sh
-yam install ./duowave-gateway-<версия>-plum.yampkg   # шлюз запущен и стартует с колонкой; голос колонки пока у Яндекса
+yam registry add official https://repo.yse.wtf/v2 --key ed25519:5Rz8F47uftWVU5kLgWYhprkEZ4rpP2kecUge/a7KQas=
+yam install duowave/gateway         # шлюз запущен и стартует с колонкой; голос колонки не трогается
 ```
 
-После установки открыт пульт: `http://<адрес колонки>:8790` (адрес пишет установка). Голос колонки в шлюз — кнопкой в
+Если `yam` просит `--platform`, вызывайте его как `/usr/bin/yam`: установщик YAM ставит в `PATH` раньше саму программу
+без обёртки, которая знает платформу. Снаружи, по `ssh <колонка> '…'`, — полные пути: `/usr/bin/yam`,
+`/data/yam/bin/duowave`.
+
+После установки открыт пульт: адрес пишет установка (`http://<адрес колонки>:8790/panel`), там же — куда сейчас идёт
+голос колонки. Голос колонки в шлюз — кнопкой в
 пульте или `duowave station point local --reboot`; как было — `duowave station point previous --reboot`.
 
 ```sh
@@ -197,7 +203,7 @@ duowave station …                   # все команды программы
 duowave connect 192.0.2.10          # или голос — шлюзу на компьютере: копия quasar.cfg поверх файла прошивки, перезагрузка
 duowave restore                     # как было до шлюза
 duowave client install 192.0.2.10   # клиент звонков с автозапуском; duowave client remove — убрать
-yam install ./duowave-gateway-<новая>-plum.yampkg   # новая версия; шлюз перезапускается сам
+yam install duowave/gateway@<версия>   # новая версия (команды upgrade у YAM 0.2 нет); шлюз перезапускается сам
 ```
 
 **Как он запускается.** YAM 0.2 сам сервисы не запускает — только хранит раздел `services:`. Поэтому после установки
@@ -207,8 +213,8 @@ yam install ./duowave-gateway-<новая>-plum.yampkg   # новая верси
 `gateway-bin` — постоянную ссылку YAM, не папку версии, — и, когда шлюз ответил, скрипт загрузки
 `/etc/init.d/S95duowave`. Хук ничего не делает не на колонке (`yam --root` на
 компьютере), если шлюз поставлен иначе (пультом — тогда он остаётся, `duowave gateway install` ставит шлюз пакета на
-его место) и если шлюз выключен `duowave gateway remove`. Обновляет такой шлюз только YAM (`yam install` файла новой
-версии): пульт так и пишет.
+его место) и если шлюз выключен `duowave gateway remove`. Обновляет такой шлюз только YAM (`yam install
+duowave/gateway@<версия>`): пульт так и пишет.
 
 **Перед `yam remove duowave/gateway`** лучше вернуть голос (`duowave station point previous --reboot`) и выключить
 шлюз (`duowave gateway remove`). Если забыли — колонка не замолчит: у YAM нет шага при удалении, но при загрузке копия,

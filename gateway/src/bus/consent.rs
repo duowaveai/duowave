@@ -32,7 +32,7 @@ pub struct Question {
     /// The step it asks for: what the app asked for in its manifest, so one «да» covers what it said it would do.
     pub level: Level,
     /// What the answer is remembered for: the participant (`app/notes`), or a folder and all in it
-    /// (`files/home/Документы/*`) — what the person was told.
+    /// (`files/home/Documents/*`) — what the person was told.
     pub grant: Pattern,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub danger: Option<Danger>,

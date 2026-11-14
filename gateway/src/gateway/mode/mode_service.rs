@@ -13,7 +13,9 @@ use crate::core::build::ModeGate;
 use crate::core::events::{Actor, EventBus, GatewayEvent};
 use crate::platform::http::ApiError;
 use crate::requests::ModeSource;
-use crate::settings::definitions::{AutoSwitch, GatewayState, ModeBy, ModeSetting, PanelMode, GATEWAY_STATE, MODE};
+use crate::settings::definitions::{
+    AutoSwitch, GatewayState, ModeBy, ModeSetting, PanelMode, GATEWAY_STATE, MODE, YANDEX_EAR,
+};
 use crate::settings::SettingsService;
 use crate::speech::voice_service::Whose;
 use crate::speech::VoiceService;
@@ -40,6 +42,10 @@ pub struct ModeView {
     /// passes, unless a person decides first.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto: Option<AutoSwitch>,
+    /// «Слух Яндекса» (docs/plans/yandex-ear.md): in «Вместе» with no ear of our own, Yandex recognizes and our router
+    /// answers.
+    #[serde(rename = "yandexEar")]
+    pub yandex_ear: bool,
 }
 
 /// Which session a connecting station gets.
@@ -110,7 +116,23 @@ impl ModeService {
             speaking: self.voice.whose(mode != PanelMode::Own),
             by: state.mode_by,
             auto: state.auto,
+            yandex_ear: self.yandex_ear(),
         }
+    }
+
+    /// «Слух Яндекса»: on unless the owner turned it off.
+    pub fn yandex_ear(&self) -> bool {
+        self.settings.get(&YANDEX_EAR, None).unwrap_or(true)
+    }
+
+    /// The panel's switch of «Слух Яндекса»: from the next request on, no reconnect.
+    pub fn set_yandex_ear(&self, on: bool, actor: Option<Actor>) -> Result<ModeView, ApiError> {
+        if self.yandex_ear() != on {
+            self.settings.set(&YANDEX_EAR, &on, actor.clone())?;
+            self.events.emit(GatewayEvent::GatewayStateChanged { what: "yandexEar".into(), actor });
+            tracing::info!(target: "mode", "Yandex's ear for our brain: {}", if on { "on" } else { "off" });
+        }
+        Ok(self.view())
     }
 
     /// The gateway's state record: who chose the mode, and its own switch.
@@ -236,6 +258,10 @@ impl ModeSource for ModeService {
     fn current(&self) -> PanelMode {
         ModeService::current(self)
     }
+
+    fn yandex_ear(&self) -> Option<bool> {
+        Some(ModeService::yandex_ear(self))
+    }
 }
 
 #[cfg(test)]
@@ -296,6 +322,18 @@ mod tests {
         let (modes, voice, _) = build("yandex", false);
         modes.switch(Some(&json!("own")), None).unwrap();
         assert_eq!(voice.provider(modes.yandex_allowed()), TtsProvider::None);
+    }
+
+    #[test]
+    fn yandexs_ear_is_on_until_the_owner_turns_it_off() {
+        let (modes, _, _) = build("yandex", false);
+        assert!(modes.yandex_ear());
+        assert!(modes.view().yandex_ear);
+        let off = modes.set_yandex_ear(false, None).unwrap();
+        assert!(!off.yandex_ear && !modes.yandex_ear());
+        assert_eq!(serde_json::to_value(&off).unwrap()["yandexEar"], false);
+        assert_eq!(ModeSource::yandex_ear(&modes), Some(false));
+        assert!(modes.set_yandex_ear(true, None).unwrap().yandex_ear);
     }
 
     #[test]

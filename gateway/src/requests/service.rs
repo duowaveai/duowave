@@ -47,6 +47,10 @@ const PRUNE_EVERY: Duration = Duration::from_secs(6 * 3600);
 pub trait ModeSource: Send + Sync {
     /// The panel's mode now: relay, gateway, own.
     fn current(&self) -> PanelMode;
+    /// «Слух Яндекса» (docs/plans/yandex-ear.md), where the source knows it.
+    fn yandex_ear(&self) -> Option<bool> {
+        None
+    }
 }
 
 /// The mode as the gateway keeps it: the panel's choice (the `gateway_mode` setting), else UNIPROXY_MODE — what the

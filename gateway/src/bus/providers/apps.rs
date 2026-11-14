@@ -272,9 +272,9 @@ mod tests {
     #[test]
     fn what_an_app_asked_for_is_its_rights_on_the_bus_and_nothing_else() {
         let to = |text: &str| Address::parse(text).unwrap();
-        let rights = manifest(&["call:app/calendar", "listen:files/home/Фото/*", "see:*", "net:example.com"]);
+        let rights = manifest(&["call:app/calendar", "listen:files/home/Photos/*", "see:*", "net:example.com"]);
         assert_eq!(asked(&rights, &to("app/calendar")), Level::Call);
-        assert_eq!(asked(&rights, &to("files/home/Фото/лето.png")), Level::Listen);
+        assert_eq!(asked(&rights, &to("files/home/Photos/лето.png")), Level::Listen);
         assert_eq!(asked(&rights, &to("app/radio")), Level::See);
         // The old words of Host API 1 are no rights any more: the manifest says what they became.
         let words = ["voice", "say"].join(".");

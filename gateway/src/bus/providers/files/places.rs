@@ -4,16 +4,19 @@
 //!
 //! ```text
 //! ~/DuoWave/
-//! ├── Фото/ Документы/ Видео/ Загрузки/ Картинки/   files/home/<папка>
-//! ├── Музыка/ Сказки/                                files/home/Музыка — links to CONTENT_DIR's music and tales
-//! ├── Проекты/<id>/                                  files/project/<id>
-//! └── Подключено/<имя>                               files/home/Подключено/<имя> — a link to what a person attached
+//! ├── Photos/ Documents/ Videos/ Downloads/ Pictures/   files/home/<folder>
+//! ├── Music/ Stories/                                    files/home/Music — links to CONTENT_DIR's music and tales
+//! ├── Projects/<id>/                                     files/project/<id>
+//! └── Connected/<name>                                   files/home/Connected/<name> — a link to what a person attached
 //! ```
+//!
+//! The folders the gateway makes have the usual English names on every disk and in every language; people read them
+//! in theirs: `label` gives the words the panel, the questions and the voice say («Фото» for Photos in Russian).
 //!
 //! An app's own folder (`files/app/<id>`) and a person's (`files/person/<id>`) stay in DATA_DIR: they are not for a
 //! person's hands. The music and the tales stay in CONTENT_DIR, where the player and the station take them from; the
 //! home folder shows them by links the gateway makes. What a person attached stays where it is too: the gateway keeps
-//! a link to it in «Подключено» while it is there.
+//! a link to it in Connected while it is there.
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
@@ -23,13 +26,13 @@ use crate::bus::address::{self, Address};
 use super::path;
 
 /// The household's folders made at the start.
-pub const HOME_FOLDERS: &[&str] = &["Фото", "Документы", "Видео", "Загрузки", "Картинки"];
+pub const HOME_FOLDERS: &[&str] = &["Photos", "Documents", "Videos", "Downloads", "Pictures"];
 /// The household's music and tales: CONTENT_DIR's folders, read only here.
-pub const CONTENT_FOLDERS: &[(&str, &str)] = &[("Музыка", "music"), ("Сказки", "tales")];
+pub const CONTENT_FOLDERS: &[(&str, &str)] = &[("Music", "music"), ("Stories", "tales")];
 /// What a person attached: a drive, a folder dropped on the desk or picked.
-pub const ATTACHED: &str = "Подключено";
+pub const ATTACHED: &str = "Connected";
 /// The projects' folders: `files/project/<id>`.
-pub const PROJECTS: &str = "Проекты";
+pub const PROJECTS: &str = "Projects";
 /// Where removed and replaced files wait their week, in each place that has a bin.
 pub const BIN: &str = ".bin";
 /// How long a file waits in an app's `tmp/` before it is cleaned away.
@@ -37,16 +40,33 @@ pub const TMP_TTL: Duration = Duration::from_secs(24 * 3600);
 /// How long a removed or replaced file waits in the bin.
 pub const BIN_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 
+/// The words people read for a folder the gateway makes, in the language of now: «Фото» for Photos in Russian. A
+/// folder a person made keeps its own name.
+pub fn label(name: &str) -> Option<String> {
+    Some(match name {
+        "Photos" => crate::tr!("Фото"),
+        "Documents" => crate::tr!("Документы"),
+        "Videos" => crate::tr!("Видео"),
+        "Downloads" => crate::tr!("Загрузки"),
+        "Pictures" => crate::tr!("Картинки"),
+        "Music" => crate::tr!("Музыка"),
+        "Stories" => crate::tr!("Сказки"),
+        "Connected" => crate::tr!("Подключено"),
+        "Projects" => crate::tr!("Проекты"),
+        _ => return None,
+    })
+}
+
 /// What kind of place an address is in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     /// An app's own folder.
     App,
-    /// A folder of the home folder: Фото, Документы…
+    /// A folder of the home folder: Photos, Documents…
     Home,
     /// The household's music or tales.
     Content,
-    /// «Подключено» itself: the list of what is attached.
+    /// Connected itself: the list of what is attached.
     AttachedList,
     /// Something a person attached.
     Attached,
@@ -68,7 +88,7 @@ pub struct AttachedPlace {
 /// Where the bytes of an address live, and how.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Spot {
-    /// The folder participant: `files/home/Картинки`, `files/app/<id>`, `files/home/Подключено/<имя>`.
+    /// The folder participant: `files/home/Pictures`, `files/app/<id>`, `files/home/Connected/<name>`.
     pub folder: Address,
     pub kind: Kind,
     /// Its directory on this disk.
@@ -231,6 +251,9 @@ impl Places {
                 // The projects are `files/project/<id>`: one address for one place.
                 (None, PROJECTS) => return None,
                 (None, _) if path::hidden(name) => return None,
+                // A link to the music or the tales under another name (one the gateway made before, «Музыка»): not a
+                // second, writable door to them.
+                (None, _) if self.leads_into_content(&self.home.join(name)) => return None,
                 (None, _) => Spot {
                     folder: folder(&format!("home/{name}"))?,
                     kind: Kind::Home,
@@ -267,7 +290,16 @@ impl Places {
         Some(spot)
     }
 
-    /// The home folder made ready: its folders, «Подключено», «Проекты», the links to the music and the tales, and
+    /// Whether `at` is a link that leads into CONTENT_DIR.
+    fn leads_into_content(&self, at: &Path) -> bool {
+        if !at.symlink_metadata().is_ok_and(|meta| meta.file_type().is_symlink()) {
+            return false;
+        }
+        let (Ok(real), Ok(content)) = (at.canonicalize(), self.content.canonicalize()) else { return false };
+        real.starts_with(content)
+    }
+
+    /// The home folder made ready: its folders, Connected, Projects, the links to the music and the tales, and
     /// what lay in the old places moved in (once, when the home folder became a person's own).
     pub fn prepare(&self) {
         for name in HOME_FOLDERS.iter().copied().chain([ATTACHED, PROJECTS]) {
@@ -288,7 +320,7 @@ impl Places {
                 self.link(&target, &self.home.join(title));
             }
         } else {
-            // The projects lived in `DATA_DIR/files/project` before the home folder had «Проекты».
+            // The projects lived in `DATA_DIR/files/project` before the home folder had Projects.
             self.move_into(&self.files.join("project"), &self.projects());
         }
     }
@@ -342,7 +374,7 @@ impl Places {
         remove_if_empty(from);
     }
 
-    /// A link the gateway keeps in the home folder (Музыка, Сказки, what is attached): made where there is none, set
+    /// A link the gateway keeps in the home folder (Music, Tales, what is attached): made where there is none, set
     /// right where it points elsewhere; a real folder of that name is the person's and stays.
     pub fn link(&self, target: &Path, at: &Path) {
         match at.symlink_metadata() {
@@ -447,23 +479,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let places = places(dir.path(), Some(dir.path().join("DuoWave")));
         let spot = |text: &str| places.spot(&Address::parse(text).unwrap());
-        let photo = spot("files/home/Фото/лето.jpg").unwrap();
-        assert_eq!((photo.folder.as_str(), photo.kind), ("files/home/Фото", Kind::Home));
-        assert!(photo.path().ends_with("DuoWave/Фото/лето.jpg"));
+        let photo = spot("files/home/Photos/лето.jpg").unwrap();
+        assert_eq!((photo.folder.as_str(), photo.kind), ("files/home/Photos", Kind::Home));
+        assert!(photo.path().ends_with("DuoWave/Photos/лето.jpg"));
         assert_eq!(photo.bin, Some(dir.path().join("DuoWave/.bin")));
         let project = spot("files/project/сайт/index.html").unwrap();
-        assert!(project.path().ends_with("DuoWave/Проекты/сайт/index.html"));
-        let music = spot("files/home/Музыка/a.mp3").unwrap();
+        assert!(project.path().ends_with("DuoWave/Projects/сайт/index.html"));
+        let music = spot("files/home/Music/a.mp3").unwrap();
         assert!(music.read_only && music.path().ends_with("content/music/a.mp3"));
-        assert!(spot("files/home/Проекты/сайт").is_none(), "one address for one place");
+        assert!(spot("files/home/Projects/сайт").is_none(), "one address for one place");
         assert!(spot("files/home/.bin/x").is_none());
-        assert_eq!(spot("files/home/Подключено").unwrap().kind, Kind::AttachedList);
-        assert!(spot("files/home/Подключено/Флешка/a.jpg").is_none(), "nothing attached yet");
+        assert_eq!(spot("files/home/Connected").unwrap().kind, Kind::AttachedList);
+        assert!(spot("files/home/Connected/Флешка/a.jpg").is_none(), "nothing attached yet");
         places.set_attached(vec![AttachedPlace {
             name: "Флешка".into(), path: dir.path().join("usb"), write: false
         }]);
-        let usb = spot("files/home/Подключено/Флешка/DCIM/a.jpg").unwrap();
-        assert_eq!(usb.folder.as_str(), "files/home/Подключено/Флешка");
+        let usb = spot("files/home/Connected/Флешка/DCIM/a.jpg").unwrap();
+        assert_eq!(usb.folder.as_str(), "files/home/Connected/Флешка");
         assert_eq!(
             (usb.kind, usb.read_only, usb.rest.clone()),
             (Kind::Attached, true, vec!["DCIM".to_string(), "a.jpg".to_string()])
@@ -487,26 +519,26 @@ mod tests {
     #[test]
     fn the_start_makes_the_home_folder_and_moves_the_old_one_in() {
         let dir = tempfile::tempdir().unwrap();
-        let old = dir.path().join("data/files/home/Фото");
+        let old = dir.path().join("data/files/home/Photos");
         std::fs::create_dir_all(&old).unwrap();
         std::fs::write(old.join("старое.jpg"), "x").unwrap();
         std::fs::create_dir_all(dir.path().join("data/files/project/сайт")).unwrap();
         std::fs::create_dir_all(dir.path().join("content/music")).unwrap();
         std::fs::write(dir.path().join("content/music/песня.mp3"), "x").unwrap();
         let home = dir.path().join("DuoWave");
-        std::fs::create_dir_all(home.join("Документы")).unwrap();
+        std::fs::create_dir_all(home.join("Documents")).unwrap();
         let places = places(dir.path(), Some(home.clone()));
         places.prepare();
         for name in HOME_FOLDERS.iter().chain([&ATTACHED, &PROJECTS]) {
             assert!(home.join(name).is_dir(), "{name}");
         }
-        assert!(home.join("Фото/старое.jpg").is_file());
-        assert!(home.join("Проекты/сайт").is_dir());
+        assert!(home.join("Photos/старое.jpg").is_file());
+        assert!(home.join("Projects/сайт").is_dir());
         assert!(!dir.path().join("data/files/home").exists(), "the old place is gone once empty");
         #[cfg(unix)]
         {
-            assert!(home.join("Музыка").symlink_metadata().unwrap().file_type().is_symlink());
-            assert!(home.join("Музыка/песня.mp3").is_file(), "the music shows in the home folder by a link");
+            assert!(home.join("Music").symlink_metadata().unwrap().file_type().is_symlink());
+            assert!(home.join("Music/песня.mp3").is_file(), "the music shows in the home folder by a link");
         }
         // A second start finds all in place.
         places.prepare();
@@ -514,14 +546,79 @@ mod tests {
     }
 
     #[test]
+    fn the_folders_made_have_english_names_and_are_read_in_the_reader_language() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("DuoWave");
+        places(dir.path(), Some(home.clone())).prepare();
+        let mut made: Vec<String> =
+            std::fs::read_dir(&home).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        made.sort();
+        let mut wanted = vec!["Connected", "Documents", "Downloads", "Photos", "Pictures", "Projects", "Videos"];
+        if cfg!(unix) {
+            wanted.extend(["Music", "Stories"]);
+        }
+        wanted.sort();
+        assert_eq!(made, wanted, "the usual English names on the disk");
+        // People read them in their language: Russian is the source, English the catalog.
+        assert_eq!(label("Photos").as_deref(), Some("Фото"));
+        assert_eq!(label("Connected").as_deref(), Some("Подключено"));
+        assert_eq!(label("Рецепты"), None, "a folder a person made keeps its own name");
+        let sources: [(&str, &'static str); 9] = [
+            ("Photos", "Фото"),
+            ("Documents", "Документы"),
+            ("Videos", "Видео"),
+            ("Downloads", "Загрузки"),
+            ("Pictures", "Картинки"),
+            ("Music", "Музыка"),
+            ("Stories", "Сказки"),
+            ("Connected", "Подключено"),
+            ("Projects", "Проекты"),
+        ];
+        let all: Vec<&str> = HOME_FOLDERS
+            .iter()
+            .copied()
+            .chain(CONTENT_FOLDERS.iter().map(|(name, _)| *name))
+            .chain([ATTACHED, PROJECTS])
+            .collect();
+        assert_eq!(all, sources.map(|(name, _)| name), "each folder made has its words");
+        for (name, source) in sources {
+            assert_eq!(label(name).as_deref(), Some(source));
+            assert_eq!(crate::locale::text::translated(source, Some("en")), name, "{source}");
+        }
+    }
+
+    #[test]
+    fn the_old_russian_folders_stay_and_an_old_music_link_is_no_door() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("DuoWave");
+        std::fs::create_dir_all(home.join("Фото")).unwrap();
+        std::fs::write(home.join("Фото/лето.jpg"), "x").unwrap();
+        std::fs::create_dir_all(dir.path().join("content/music")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.path().join("content/music"), home.join("Музыка")).unwrap();
+        let places = places(dir.path(), Some(home.clone()));
+        places.prepare();
+        assert!(home.join("Фото/лето.jpg").is_file(), "nothing of the person's is moved or renamed");
+        assert!(home.join("Photos").is_dir());
+        let old = places.spot(&Address::parse("files/home/Фото/лето.jpg").unwrap()).unwrap();
+        assert_eq!(old.kind, Kind::Home, "an old folder is an ordinary folder of the home");
+        #[cfg(unix)]
+        {
+            assert!(home.join("Музыка").symlink_metadata().unwrap().file_type().is_symlink(), "left as it was");
+            assert!(places.spot(&Address::parse("files/home/Музыка/a.mp3").unwrap()).is_none());
+            assert!(places.spot(&Address::parse("files/home/Music/a.mp3").unwrap()).unwrap().read_only);
+        }
+    }
+
+    #[test]
     fn a_name_taken_in_the_home_folder_keeps_the_old_one_where_it_was() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("data/files/home/Фото/Отпуск")).unwrap();
+        std::fs::create_dir_all(dir.path().join("data/files/home/Photos/Отпуск")).unwrap();
         let home = dir.path().join("DuoWave");
-        std::fs::create_dir_all(home.join("Фото/Отпуск")).unwrap();
+        std::fs::create_dir_all(home.join("Photos/Отпуск")).unwrap();
         let places = places(dir.path(), Some(home));
         places.prepare();
-        assert!(dir.path().join("data/files/home/Фото/Отпуск").is_dir());
+        assert!(dir.path().join("data/files/home/Photos/Отпуск").is_dir());
         assert_eq!(places.notes().len(), 1, "{:?}", places.notes());
     }
 }

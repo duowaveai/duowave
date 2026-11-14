@@ -374,12 +374,16 @@ impl App {
         let local_asr = match &config.speech.asr.local {
             Some(local) if config.speech.asr.enabled && !profile.station => {
                 use crate::speech::asr::local::supervisor::{LocalAsr, LocalAsrOptions};
-                let options = LocalAsrOptions::new(
+                let mut options = LocalAsrOptions::new(
                     local.dir.clone(),
                     local.mirror.clone(),
                     config.speech.asr.language.clone(),
                     local.gpu,
                 );
+                // It hears the household's language (unless ASR_LANGUAGE says one), read from the setting itself:
+                // the models' shop looks again when it changes (src/models).
+                let household = settings.clone();
+                options.household = Arc::new(move || crate::locale::household(&household));
                 match LocalAsr::new(options) {
                     Ok(asr) => Some(asr),
                     Err(error) => {
@@ -975,9 +979,14 @@ impl App {
             }));
             // While every station's gateway runs on it, none is missing at this computer's /uni.ws. Weak: the watches
             // hold the station watch already (its teller), and an engine started again leaves neither behind.
+            // Nor is one awaited while the household talks by this computer's microphone (docs/plans/mic-mode.md): «колонка
+            // не подключена… вернуть к Яндексу» every five minutes to someone with no station is noise (live 14.11).
             let gateways = Arc::downgrade(&station_gateway);
-            station_watch
-                .set_elsewhere(Arc::new(move || gateways.upgrade().is_some_and(|gateways| gateways.none_here())));
+            let talk_settings = Arc::downgrade(&settings);
+            station_watch.set_elsewhere(Arc::new(move || {
+                talk_settings.upgrade().is_some_and(|settings| crate::talk::input::on_computer(&settings))
+                    || gateways.upgrade().is_some_and(|gateways| gateways.none_here())
+            }));
             // The bot's messages reach the stations this computer helps: they are not at its /uni.ws (live 11.11).
             skills.calls.attach_relay(crate::placement::messages::StationMessages::new(&station_gateway));
         }

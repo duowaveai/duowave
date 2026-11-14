@@ -80,6 +80,10 @@ pub struct HealthStatus {
     pub mode: &'static str,
     /// The panel's three: relay, gateway, or own (the gateway without Yandex).
     pub panel_mode: PanelMode,
+    /// «Слух Яндекса» (docs/plans/yandex-ear.md): in «Вместе» with no ear of our own, Yandex recognizes and our router
+    /// answers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub yandex_ear: Option<bool>,
     // ↓ From modules ported apart (HealthSources): absent until their part answers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_sessions: Option<usize>,
@@ -195,6 +199,7 @@ impl HealthStatusService {
             build,
             mode,
             panel_mode,
+            yandex_ear: self.modes.yandex_ear(),
             active_sessions: first(&sources, |s| s.active_sessions()),
             speech: first(&sources, |s| s.speech()),
             dialog: first(&sources, |s| s.dialog()),

@@ -49,19 +49,27 @@ pub fn recognition_text_raw(asr_result: Option<&Value>) -> String {
 /// Yandex's recognition into a request's trip: the words so far while it listens, what it heard at the end, after
 /// which Alice thinks. Nothing heard at the end leaves the trip as it is: the station's statistics end it.
 pub fn yandex_heard(trip: &RequestHandle, asr_result: Option<&Value>) {
+    if yandex_recognized(trip, asr_result) {
+        trip.step(RequestPhase::Think, Some(Place::Yandex), Some(ALICE));
+    }
+}
+
+/// The same, Yandex as the ear alone (docs/plans/yandex-ear.md): who thinks is decided after. True when it heard
+/// words at the end.
+pub fn yandex_recognized(trip: &RequestHandle, asr_result: Option<&Value>) -> bool {
     let text = recognition_text(asr_result);
     let end = asr_result.and_then(|asr| asr.get("endOfUtt")).and_then(Value::as_bool).unwrap_or(false);
     if !end {
         if !text.is_empty() {
             trip.partial(&text);
         }
-        return;
+        return false;
     }
     if text.is_empty() {
-        return;
+        return false;
     }
     trip.heard(&text);
-    trip.step(RequestPhase::Think, Some(Place::Yandex), Some(ALICE));
+    true
 }
 
 /// The requests' trips of one relayed session, by the station's message id.

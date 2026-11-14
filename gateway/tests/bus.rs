@@ -224,7 +224,7 @@ async fn a_no_is_remembered_and_the_owner_opens_the_door_in_links() {
     let (code, overview) = env.send("GET", "/api/v1/bus", json!({})).await;
     assert_eq!(code, StatusCode::OK, "{overview}");
     let participants = overview["message"]["participants"].as_array().unwrap();
-    for address in ["app/notes", "app/shop", "system/notify", "files/home/Документы"] {
+    for address in ["app/notes", "app/shop", "system/notify", "files/home/Documents"] {
         assert!(participants.iter().any(|one| one["address"] == address), "{address}: {overview}");
     }
     assert_eq!(overview["message"]["modes"]["own"]["app/notes"], "isolated");

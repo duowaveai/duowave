@@ -22,8 +22,8 @@ use super::dialog_history::DialogHistory;
 use super::generator::{generate, Yielder};
 use super::llm::brain::{Backup, BrainOrigin, BrainSource, BrainStatus, EnvBrain, ModelSlot};
 use super::llm::{
-    AssistantTurn, LlmClient, LlmEvent, LlmMessage, LlmRequest, LlmSettings, LlmStream, LlmTool, SpokenFailure,
-    ToolCall, ToolCallCut, ToolChoice, ToolResult,
+    AssistantTurn, Interrupted, LlmClient, LlmEvent, LlmMessage, LlmRequest, LlmSettings, LlmStream, LlmTool,
+    SpokenFailure, ToolCall, ToolCallCut, ToolChoice, ToolResult,
 };
 use super::persona_service::PersonaService;
 use super::phrase_splitter::PhraseSplitter;
@@ -60,6 +60,10 @@ const NOT_RUN: &str = "not run: one command per request";
 /// Turns cut off in a tool call that one answer goes on after (`ToolBox::cut_note`): a model that keeps writing too
 /// much at once will not fit the next time either.
 const MAX_CUTS: usize = 3;
+
+/// The pauses before a round the connection failed is asked again (`ToolBox::retries`), one per try: a moment for a
+/// network that blinked, longer for one coming back.
+const RETRY_PAUSES_MS: [u64; 3] = [3_000, 10_000, 30_000];
 
 /// A phrase to say once when the calls have not returned in `after_ms` and the answer has said nothing yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,6 +142,11 @@ pub struct ToolBox {
     /// A turn's calls run one after another, in the turn's order, instead of at once: they change the same files (the
     /// workshop's: a piece appended after the piece written).
     pub in_order: bool,
+    /// Times the rounds of one answer are asked again when the connection failed them (`Interrupted`: no connection,
+    /// a stream that broke or ended early, the service overloaded), each after a pause (`RETRY_PAUSES_MS`): the
+    /// broken turn's calls never ran, so nothing is done twice. 0 by default: part of a spoken answer was heard, and
+    /// the person would wait in silence. The workshop's agent works long enough for the network to drop on the way.
+    pub retries: usize,
 }
 
 impl ToolBox {
@@ -157,6 +166,7 @@ impl ToolBox {
             safe_after_taint: None,
             cut_note: None,
             in_order: false,
+            retries: 0,
         }
     }
 }
@@ -561,6 +571,7 @@ impl DialogService {
         let mut offered = toolbox.as_ref().map(|toolbox| toolbox.tools.clone()).unwrap_or_default();
         let mut filler_said = false;
         let mut cuts = 0;
+        let mut retried = 0;
         for round in 0.. {
             let given = if round == 0 { first.take() } else { None };
             let short =
@@ -568,6 +579,8 @@ impl DialogService {
             let last = given.is_none() && (round >= rounds || short);
             // What the model is told when this round's turn ran out of tokens in a call: the next round hears it.
             let mut cut_off = None;
+            // Why the connection failed this round, when it is asked again.
+            let mut broke = None;
             let turn = match given {
                 Some((text, turn)) => {
                     speaker.push(&text).await;
@@ -616,6 +629,15 @@ impl DialogService {
                             Ok(LlmEvent::Turn(done)) => turn = Some(done),
                             Ok(LlmEvent::Tool(_)) => {}
                             Err(error) => {
+                                let retries = toolbox.as_ref().map_or(0, |toolbox| toolbox.retries);
+                                if error.downcast_ref::<Interrupted>().is_some()
+                                    && retried < retries
+                                    && !cancel.is_cancelled()
+                                    && Instant::now() < deadline
+                                {
+                                    broke = Some(error.to_string());
+                                    break;
+                                }
                                 let note =
                                     toolbox.as_ref().and_then(|toolbox| toolbox.cut_note).filter(|_| cuts < MAX_CUTS);
                                 let (Some(cut), Some(note)) = (error.downcast_ref::<ToolCallCut>(), note) else {
@@ -636,6 +658,25 @@ impl DialogService {
                     turn
                 }
             };
+            // The connection failed the round: its turn is dropped (its calls never ran) and the same request goes
+            // again after a pause. What the model said of it stays said.
+            if let Some(why) = broke {
+                let pause = RETRY_PAUSES_MS[retried.min(RETRY_PAUSES_MS.len() - 1)];
+                retried += 1;
+                let retries = toolbox.as_ref().map_or(0, |toolbox| toolbox.retries);
+                tracing::warn!(
+                    target: "dialog",
+                    "{}: {why}: the round is asked again in {} s ({retried} of {retries})",
+                    slot.model,
+                    pause / 1000
+                );
+                speaker.flush().await;
+                tokio::select! {
+                    _ = cancel.cancelled() => return Err(anyhow!("stopped before the round was asked again")),
+                    _ = tokio::time::sleep(Duration::from_millis(pause)) => {}
+                }
+                continue;
+            }
             // The cut turn is dropped (its call never ran) and the model hears why, after what it was asked.
             if let Some(note) = cut_off {
                 cuts += 1;
@@ -2008,6 +2049,57 @@ mod tests {
             .unwrap()
             .as_ref()
             .is_err_and(|error| error.to_string() == "Claude ran out of tokens in a tool call"));
+        assert_eq!(llm.requests.lock().unwrap().len(), 1);
+    }
+
+    fn broken() -> anyhow::Result<LlmEvent> {
+        Err(crate::dialog::llm::interrupted(
+            "Anthropic stream broke: error decoding response body: Operation timed out (os error 60)",
+        ))
+    }
+
+    fn answer_with(service: &Arc<DialogService>, toolbox: ToolBox) -> PhraseStream {
+        service.answer("device-34", "Сделай игру", DialogContext::default(), CancellationToken::new(), Some(toolbox))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_round_the_connection_broke_is_asked_again_after_a_pause_when_the_toolbox_allows_it() {
+        // The stream breaks twice mid-answer, then goes through: the same request each time, after 3 s and 10 s.
+        let (llm, service) = scripted(Box::new(|n, _| match n {
+            0 | 1 => vec![Ok(LlmEvent::Text("Пишу игру.".into())), broken()],
+            _ => words("Готово."),
+        }));
+        let mut toolbox = writer(None);
+        toolbox.retries = 3;
+        let started = Instant::now();
+        let said = collect(answer_with(&service, toolbox)).await;
+        assert_eq!(said, vec!["Пишу игру.", "Пишу игру.", "Готово."], "what was said of a broken turn stays said");
+        let requests = llm.requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[1].messages, requests[0].messages, "the broken turn is dropped: the same request again");
+        assert_eq!(requests[2].messages, requests[0].messages);
+        assert!(started.elapsed() >= Duration::from_millis(13_000), "paused 3 s, then 10 s");
+
+        // A connection that stays down: asked three more times, then the answer fails with why.
+        let (llm, service) = scripted(Box::new(|_, _| vec![broken()]));
+        let mut toolbox = writer(None);
+        toolbox.retries = 3;
+        let got: Vec<anyhow::Result<String>> = answer_with(&service, toolbox).collect().await;
+        assert!(got.last().unwrap().as_ref().is_err_and(|error| error.is::<Interrupted>()));
+        assert_eq!(llm.requests.lock().unwrap().len(), 4);
+
+        // Without retries (a spoken answer's toolbox) it fails at once, as before.
+        let (llm, service) = scripted(Box::new(|_, _| vec![broken()]));
+        let got: Vec<anyhow::Result<String>> = answer_with(&service, writer(None)).collect().await;
+        assert!(got.last().unwrap().as_ref().is_err_and(|error| error.to_string().contains("os error 60")));
+        assert_eq!(llm.requests.lock().unwrap().len(), 1);
+
+        // A failure that is not the connection's is never asked again.
+        let (llm, service) = scripted(Box::new(|_, _| vec![Err(anyhow!("Anthropic API 400: messages: bad"))]));
+        let mut toolbox = writer(None);
+        toolbox.retries = 3;
+        let got: Vec<anyhow::Result<String>> = answer_with(&service, toolbox).collect().await;
+        assert!(got.last().unwrap().is_err());
         assert_eq!(llm.requests.lock().unwrap().len(), 1);
     }
 

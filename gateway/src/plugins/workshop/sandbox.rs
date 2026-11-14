@@ -192,7 +192,7 @@ impl SandboxHost {
     fn folder(&self, name: &str, input: &Value) -> Result<Value, String> {
         let at = input.get("at").and_then(Value::as_str).unwrap_or_default();
         // A folder of the home folder (docs/plans/shared-folders.md): the sandbox has none — it answers from the
-        // example (`examples.json`, «bus»: `{to: "files/home/Фото", handle: "list", result}`), for what the draft asked.
+        // example (`examples.json`, «bus»: `{to: "files/home/Photos", handle: "list", result}`), for what the draft asked.
         let own = format!("files/app/{}", self.manifest.id);
         if at.starts_with("files/") && at != own && !at.starts_with(&format!("{own}/")) {
             let handle = name.trim_start_matches("folders.");
@@ -638,6 +638,34 @@ pub fn code_warnings(source: &str) -> Vec<String> {
     warnings
 }
 
+/// A wait for the network longer than a quick call has (a phrase, a tool, a card: 2 s, the network included —
+/// `CallKind::limit`) in an app with no background to do it in: the call is cut before the answer, and whatever it
+/// meant to keep in `kv` is never kept — every next call fails the same. A slow service goes in a rhythm
+/// (`contributes.schedules`, 30 s), and the quick functions read what it kept.
+fn slow_network_warning(manifest: &Manifest, source: &str) -> Option<String> {
+    let quick = CallKind::Tool.limit().as_millis() as u64;
+    let contributes = &manifest.contributes;
+    let has_quick = !contributes.intents.is_empty()
+        || !contributes.tools.is_empty()
+        || !crate::bus::providers::apps::panel_calls(manifest).is_empty();
+    let has_background = !contributes.schedules.is_empty() || source.contains("system/schedule");
+    if !has_quick || has_background || !source.contains("host.http.fetch") {
+        return None;
+    }
+    let pattern = regex::Regex::new(r"timeoutMs\s*:\s*(\d+)").expect("the pattern compiles");
+    let lines: Vec<String> = source
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim_start().starts_with("//"))
+        .filter(|(_, line)| pattern.captures_iter(line).any(|found| found[1].parse::<u64>().is_ok_and(|ms| ms > quick)))
+        .map(|(index, _)| (index + 1).to_string())
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    Some(crate::tr!("Сеть ждёт дольше 2 с (timeoutMs, строка {lines}), а у фразы, инструмента и карточки всего 2 с вместе с сетью: вызов оборвётся, и kv не запишется — ошибка будет каждый раз. Медленный сервис — в фоне: ритм contributes.schedules (every, handler; связь call:system/schedule, 30 с) кладёт данные в host.kv, а фраза и карточка только читают kv.", lines = lines.join(", ")))
+}
+
 /// Host calls that answer with a promise (`host.http.fetch`, `host.bus.*`, `host.files.*`) left as a statement or a
 /// value without `await`, with their lines: the function answers before they end. Read by what stands before each
 /// call on its line; a call handed on (`return`, `=>`, an argument, an element of `Promise.all`'s array) is awaited
@@ -869,6 +897,7 @@ pub async fn check(folder: &Path, id: &str, handle: Option<tokio::runtime::Handl
         (true, _) => {
             if let Some(source) = &source {
                 report.warnings = code_warnings(source);
+                report.warnings.extend(slow_network_warning(&manifest, source));
             }
             match start(folder, id, &manifest, source, Arc::new(Mutex::new(Map::new())), handle, &Trying::default())
                 .await
@@ -953,9 +982,6 @@ pub async fn check(folder: &Path, id: &str, handle: Option<tokio::runtime::Handl
                 let card = crate::bus::cards::unwrap(ran.result);
                 for problem in crate::bus::cards::check(&card) {
                     report.warnings.push(format!("{label}: {problem}"));
-                }
-                if card.is_object() && card.get("look").is_none() {
-                    report.warnings.push(crate::tr!("{label}: без вида карточка — простая серая. Дайте ей look: сцену и цвета по смыслу (погода — небо за окном, музыка — волны, покупки — пузырьки), docs cards, «Вид».", label = label));
                 }
                 for tapped in crate::bus::cards::functions(&card) {
                     if !calls.contains(&tapped) {
@@ -1407,7 +1433,7 @@ mod tests {
         let kv = Arc::new(Mutex::new(Map::new()));
         let card = run(&folder, "album", "today", json!({}), kv.clone(), None, &Trying::example()).await.unwrap();
         let address = card.result["picture"]["address"].as_str().unwrap().to_string();
-        assert!(address.starts_with("files/home/Фото/"), "{}", card.result);
+        assert!(address.starts_with("files/home/Photos/"), "{}", card.result);
         assert_eq!(card.result["cap"], "Фото дня · 3 в папке");
         assert!(crate::bus::cards::check(&card.result).is_empty(), "{:?}", crate::bus::cards::check(&card.result));
         let other = run(&folder, "album", "next", json!({}), kv.clone(), None, &Trying::example()).await.unwrap();
@@ -1550,5 +1576,31 @@ export async function fine() {
         let warning = code_warnings(source).into_iter().find(|warning| warning.contains("без await")).unwrap();
         assert!(warning.contains("host.files.download (строка 4)"), "{warning}");
         assert!(code_warnings("export async function a() { await host.files.download(u, \"a\"); }").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_long_network_wait_in_a_quick_call_is_warned_unless_a_rhythm_does_it_in_the_background() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("jazz");
+        let mut slow = manifest();
+        slow["permissions"] = json!(["net:example.com"]);
+        let code = "export async function play() {\n  const r = await host.http.fetch(\"https://example.com/\", { timeoutMs: 8000 });\n  return \"ok\";\n}\nexport async function refresh() {}\n";
+        draft(&folder, slow.clone(), code);
+        let report = check(&folder, "jazz", None).await;
+        let warning = report.warnings.iter().find(|warning| warning.contains("timeoutMs")).cloned();
+        assert!(warning.as_deref().is_some_and(|warning| warning.contains("строка 2")), "{report:?}");
+
+        // Within the 2 s: nothing to say.
+        draft(&folder, slow.clone(), &code.replace("8000", "1500"));
+        assert!(!check(&folder, "jazz", None).await.warnings.iter().any(|warning| warning.contains("timeoutMs")));
+
+        // A rhythm fetches in the background: the long wait is its.
+        slow["permissions"] = json!(["net:example.com", "call:system/schedule"]);
+        slow["contributes"]["schedules"] =
+            json!([{ "id": "refresh", "title": "Обновить", "every": "30m", "handler": "refresh" }]);
+        draft(&folder, slow, code);
+        let report = check(&folder, "jazz", None).await;
+        assert!(report.manifest.is_empty(), "{report:?}");
+        assert!(!report.warnings.iter().any(|warning| warning.contains("timeoutMs")), "{report:?}");
     }
 }

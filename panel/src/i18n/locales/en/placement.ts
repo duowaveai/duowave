@@ -74,7 +74,7 @@ const en: Translation<typeof ru> = {
     copies: 'Copies…',
 
     managedPc: 'Updates are installed by the computer that installed the gateway.',
-    managedYam: 'The gateway was installed via YAM: to update, run yam install with the new version’s file from the release, on the speaker.',
+    managedYam: 'The gateway was installed via YAM: to update, run yam install duowave/gateway@<version> on the speaker.',
     managedYse: 'The gateway was installed via yse: yse updates it.',
     managedFeed: 'Updates come from the release feed, in the “Updates” card.',
     runsOnStation: 'The gateway runs on the speaker itself',

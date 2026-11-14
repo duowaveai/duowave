@@ -31,12 +31,9 @@ if [ -n "$current" ] && [ "$current" != "$program" ] && [ -x "$current" ]; then
     exit 0
 fi
 
-# A gateway that does not come up leaves the package installed: `duowave connect|restore` work without it.
+# A gateway that does not come up leaves the package installed: `duowave connect|restore` work without it. The install
+# itself says the panel's address and where the station's voice goes now.
 if ! "$program" station install --managed yam --program "$program" --in-place; then
     echo "duowave: the gateway did not start; try again: duowave gateway install" >&2
     exit 0
 fi
-port=$(sed -n 's/^PORT=\([0-9]*\).*/\1/p' "$STATE/gateway/.env" 2>/dev/null | tail -n 1)
-address=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1)
-echo "duowave: the panel — http://${address:-<the station>}:${port:-8790}"
-echo "duowave: the station's voice still goes to Yandex; to the gateway — the panel's button or: duowave station point local --reboot"

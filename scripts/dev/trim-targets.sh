@@ -36,14 +36,22 @@ trap 'rm -rf "$WORK"' EXIT
 : >"$WORK/tally"
 
 say() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
-kb() { du -sk "$@" 2>/dev/null | awk '{ s += $1 } END { print s + 0 }'; }
+# Paths go to du and rm in batches: one build unit can be thousands of files (an object file per code unit beside the
+# binary on macOS), more than one command line takes (ARG_MAX, 1 MB). On 14.11 a single rm with all of them failed
+# ("Argument list too long"), the run stopped there and left the caches over the limit; du failed the same way quietly
+# and counted such a unit as 0 GB.
+kb() {
+    [ $# -gt 0 ] || { echo 0; return; }
+    printf '%s\0' "$@" | xargs -0 du -sk 2>/dev/null | awk '{ s += $1 } END { print s + 0 }'
+}
 gb() { awk -v kb="$1" 'BEGIN { printf "%.1f", kb / 1048576 }'; }
 sum() { awk '{ s += $1 } END { print s + 0 }' "$1"; }
 # Removes the paths after the size in KB ($1) they take; the tally keeps what went.
 drop() {
     echo "$1" >>"$WORK/tally"
     shift
-    [ -n "$DRY" ] || rm -rf "$@"
+    [ -z "$DRY" ] && [ $# -gt 0 ] || return 0
+    printf '%s\0' "$@" | xargs -0 rm -rf
 }
 # A whole folder: also remembered, so a dry run does not count what is inside it twice.
 drop_folder() {

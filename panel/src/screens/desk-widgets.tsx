@@ -540,12 +540,17 @@ export function HelperCardWidget() {
     const home = panel.health?.placement?.homeServer;
     if (!home?.url) return <p class="w-cap m-0">{tr.desk.helperNotHelping}</p>;
     let panelUrl: string | null = null;
+    let address: string | null = null;
     try {
-        panelUrl = `${new URL(home.url).origin}/panel`;
+        const url = new URL(home.url);
+        panelUrl = `${url.origin}/panel`;
+        address = url.host;
     } catch {
         panelUrl = null;
     }
     const up = home.state === 'up' && home.enabled !== false;
+    // The computer's panel only while the computer answers: a link to a computer that is away leads nowhere.
+    const reachable = home.state === 'up';
     return (
         <div class="flex flex-col gap-8">
             <div class="w-row">
@@ -560,7 +565,8 @@ export function HelperCardWidget() {
                     ? tr.desk.helperUp
                     : tr.desk.helperDown}
             </p>
-            {panelUrl && (
+            {!reachable && address && <p class="w-cap m-0">{tr.desk.helperAwayStart(address)}</p>}
+            {reachable && panelUrl && (
                 <div class="w-actions">
                     <a class="w-btn" href={panelUrl} target="_blank" rel="noreferrer">
                         {tr.desk.openComputerPanel}

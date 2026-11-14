@@ -340,6 +340,8 @@ pub struct AsrConfig {
     pub base_url: String,
     pub api_key: Option<String>,
     pub model: String,
+    /// ASR_LANGUAGE as the .env sets it: unset (None) — the household's language; blank — none, the model hears
+    /// which for itself; a code — always that one (`speech::asr::wanted_language`).
     pub language: Option<String>,
     pub prompt: Option<String>,
     pub timeout_ms: u64,
@@ -987,11 +989,7 @@ fn build(env: &Env) -> Config {
                 base_url: env.string("ASR_BASE_URL", "http://127.0.0.1:8090/v1"),
                 api_key: env.optional("ASR_API_KEY"),
                 model: env.string("ASR_MODEL", "gigaam-v3"),
-                language: match env.raw("ASR_LANGUAGE") {
-                    None => Some("ru".into()),
-                    Some("") => None,
-                    Some(language) => Some(language.to_string()),
-                },
+                language: env.raw("ASR_LANGUAGE").map(|language| language.trim().to_string()),
                 prompt: env.optional("ASR_PROMPT"),
                 timeout_ms: env.integer("ASR_TIMEOUT_MS", 8000),
                 wake_words: env.list("WAKE_WORDS", &["алиса", "яндекс"]),
@@ -1387,9 +1385,19 @@ mod tests {
         assert_eq!(config.gateway.station_ssh.user, "root");
         assert_eq!(config.skills.state_dir, Some(PathBuf::from("data/state")));
         assert_eq!(config.speech.asr.wake_words, vec!["алиса", "яндекс"]);
+        assert_eq!(config.speech.asr.language, None, "unset: the household's language");
         assert_eq!(config.speech.endpoint.neg_threshold, 0.35);
         assert_eq!(config.dialog.listen, ListenMode::Question);
         assert_eq!(config.gateway.station_ping_ms, 15_000, "a cut after 45 s of silence; the station pings every 5 s");
+    }
+
+    #[test]
+    fn asr_language_set_in_the_env_comes_as_it_is_and_a_blank_one_stays_blank() {
+        let language =
+            |value: &str| Config::load(&Env::from_pairs([("ASR_LANGUAGE", value)])).unwrap().speech.asr.language;
+        assert_eq!(language("ru").as_deref(), Some("ru"));
+        assert_eq!(language(" en ").as_deref(), Some("en"));
+        assert_eq!(language("").as_deref(), Some(""), "blank: the model hears which for itself");
     }
 
     #[cfg(feature = "station")]

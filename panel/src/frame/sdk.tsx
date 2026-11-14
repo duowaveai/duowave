@@ -86,7 +86,7 @@ function useSettings(_pluginId?: string): Record<string, unknown> {
 }
 
 /** Картинка своего приложения: пульт берёт её с ключом входа и отдаёт окошку из памяти. */
-/** A picture of the home folder by its address (`files/home/Фото/лето.jpg`), made small: the app's link to that
+/** A picture of the home folder by its address (`files/home/Photos/лето.jpg`), made small: the app's link to that
  *  folder and the person's own rights both hold. */
 function useFolderFile(address: string, options: { size?: number } = {}): string | null {
     const [url, setUrl] = hooks.useState<string | null>(null);

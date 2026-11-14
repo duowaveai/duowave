@@ -170,8 +170,9 @@ pub fn widget(id: &str, title: &str) -> Vec<(String, String)> {
     let backend = format!(
         r#"// {title}: карточка на столе пульта (docs/plugins/cards.md). Функция карточки отдаёт её данные — детали,
 // которые рисует пульт: big (крупное), cap (подпись), rows (строки), line (линия), tiles (плитки), buttons
-// (кнопки)… и вид всего виджета — look: живая сцена пульта и цвета фона по смыслу (погода — небо за окном, музыка —
-// волны, покупки — пузырьки). Нажатие кнопки зовёт функцию из contributes.panel.calls и получает новую карточку.
+// (кнопки)… Простая карточка сама следует теме пульта (светлой, тёмной, «авто»); красивую — живую сцену и цвета
+// фона, look — дают, когда человек просит красиво. Нажатие кнопки зовёт функцию из contributes.panel.calls и
+// получает новую карточку.
 // Нужен интернет — право net:<хост> в манифесте и пример examples.json; память между вызовами — host.kv.
 //
 // panelData только читает: каждая запись в host.kv — весть пульту, и все виджеты читают данные заново; запись при
@@ -191,7 +192,6 @@ function card(marks) {{
     big: String(marks),
     cap: t("marks", {{ count: marks }}),
     buttons: [{{ text: t("mark"), tap: "mark" }}],
-    look: {{ scene: "sparkles", colors: ['#5b2a91', '#c2477a', '#f39a5d'] }},
     say: t("said", {{ count: marks }}),
   }};
 }}
@@ -266,7 +266,7 @@ pub fn midi(id: &str, title: &str) -> Vec<(String, String)> {
 }
 
 /// A photo album (docs/plans/shared-folders.md, «Заготовка «Фотоальбом»»): the photo of the day from the home folder's
-/// «Фото» as a large card, and a window with all of them in a grid. The link `call:files/home/Фото/*` — read «Фото»
+/// «Фото» as a large card, and a window with all of them in a grid. The link `call:files/home/Photos/*` — read «Фото»
 /// with all in it, one «да»; the pictures come made small from the gateway (`picture: {address}`, `useFolderFile`).
 /// Names aloud only with the folder's `speak`. A computer's: the home folder is there (`runs: ["pc"]`). In «Примерка»
 /// the folder is the example's (`examples.json`, «bus»).
@@ -281,7 +281,7 @@ pub fn folders(id: &str, title: &str) -> Vec<(String, String)> {
         "api": "^2",
         "runs": ["pc"],
         "budget": { "memoryMb": 4, "storageMb": 1 },
-        "permissions": ["call:files/home/Фото/*"],
+        "permissions": ["call:files/home/Photos/*"],
         "contributes": {
             "intents": [{ "phrases": ["покажи фото дня", "какое сегодня фото дня"], "handler": "todaySay" }],
             "panel": {
@@ -298,15 +298,15 @@ pub fn folders(id: &str, title: &str) -> Vec<(String, String)> {
     let examples = json!({
         "fetch": [],
         "bus": [
-            { "to": "files/home/Фото", "handle": "list", "result": { "items": [
-                { "name": "Отпуск", "address": "files/home/Фото/Отпуск", "folder": true, "kind": "folder", "size": 0 },
-                photo("files/home/Фото/Кот.jpg", "Кот.jpg"),
-                photo("files/home/Фото/Ёлка.jpg", "Ёлка.jpg")
+            { "to": "files/home/Photos", "handle": "list", "result": { "items": [
+                { "name": "Отпуск", "address": "files/home/Photos/Отпуск", "folder": true, "kind": "folder", "size": 0 },
+                photo("files/home/Photos/Кот.jpg", "Кот.jpg"),
+                photo("files/home/Photos/Ёлка.jpg", "Ёлка.jpg")
             ], "total": 3, "next": null } },
-            { "to": "files/home/Фото/Отпуск", "handle": "list", "result": { "items": [
-                photo("files/home/Фото/Отпуск/Море.jpg", "Море.jpg")
+            { "to": "files/home/Photos/Отпуск", "handle": "list", "result": { "items": [
+                photo("files/home/Photos/Отпуск/Море.jpg", "Море.jpg")
             ], "total": 1, "next": null } },
-            { "to": "files/home/Фото", "handle": "stat", "result": { "name": "Фото", "folder": true, "speak": true, "model": false } }
+            { "to": "files/home/Photos", "handle": "stat", "result": { "name": "Photos", "folder": true, "speak": true, "model": false } }
         ]
     });
     vec![
@@ -317,9 +317,9 @@ pub fn folders(id: &str, title: &str) -> Vec<(String, String)> {
         (
             "README.md".into(),
             format!(
-                "# {title}\n\nФото дня из папки «Фото» домашней папки DuoWave (`~/DuoWave/Фото`) — большая карточка на \
+                "# {title}\n\nФото дня из папки «Фото» домашней папки DuoWave (`~/DuoWave/Photos`) — большая карточка на \
 столе, «Другое» — следующее; окошко со всеми фото сеткой. Голосом: «Алиса, покажи фото дня». Право — читать «Фото» \
-(`call:files/home/Фото/*`): «да» один раз. В «Примерке» — фото из примера.\n"
+(`call:files/home/Photos/*`): «да» один раз. В «Примерке» — фото из примера.\n"
             ),
         ),
     ]

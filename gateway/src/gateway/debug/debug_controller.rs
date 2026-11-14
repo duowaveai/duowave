@@ -28,6 +28,7 @@ pub fn router() -> Router<Arc<App>> {
         router = router
             .route(&format!("{base}/mode"), get(mode).post(set_mode))
             .route(&format!("{base}/mode/keep"), post(keep_mode))
+            .route(&format!("{base}/mode/yandex-ear"), post(set_yandex_ear))
             .route(&format!("{base}/sessions"), get(sessions))
             .route(&format!("{base}/routes"), get(routes).post(post_routes).put(put_routes))
             .route(&format!("{base}/unsupported"), get(unsupported))
@@ -85,6 +86,21 @@ async fn keep_mode(State(app): State<Arc<App>>, caller: Caller, uri: OriginalUri
     caller.permitted(STATION_MODE)?;
     gate(&app, &caller, &uri)?;
     Ok(created(app.modes.keep(caller.actor())?))
+}
+
+/// «Слух Яндекса» on or off (`{"on": true}`): from the next request on, no reconnect.
+async fn set_yandex_ear(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    uri: OriginalUri,
+    Body(body): Body<Value>,
+) -> ApiResult<ModeView> {
+    caller.permitted(STATION_MODE)?;
+    gate(&app, &caller, &uri)?;
+    let Some(on) = body.get("on").and_then(Value::as_bool) else {
+        return Err(ApiError::bad_request(crate::tr!("on: true или false")));
+    };
+    Ok(created(app.modes.set_yandex_ear(on, caller.actor())?))
 }
 
 async fn sessions(State(app): State<Arc<App>>, caller: Caller, uri: OriginalUri) -> ApiResult<Vec<SessionSnapshot>> {

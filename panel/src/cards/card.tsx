@@ -12,9 +12,11 @@ import { usePluginVersion } from '../plugins/versions';
 import { useApi } from '../sdk';
 import { Action } from '../ui/cards';
 import { Switch } from '../ui/switch';
-import { LookLayers, lookOf, usePaint } from './look';
+import { inkOf, LookLayers, lookOf, usePaint } from './look';
 import './cards.css';
 import { locale, tr } from '../i18n';
+import { useOnComputer } from '../voice-input';
+import { addressed } from '../words';
 
 type Tone = 'up' | 'down' | 'flat';
 
@@ -51,6 +53,22 @@ export function cardOf(answer: unknown): CardData | null {
     const card = inner && typeof inner === 'object' && !Array.isArray(inner) ? inner : answer;
     return Object.keys(card as object).some((key) => PARTS.includes(key)) ? (card as CardData) : null;
 }
+
+/**
+ * Карточка в словах режима (words.ts, `addressed`): в режиме «Микрофон» её подсказки обращаются к ДиВи, а не к
+ * Алисе. Что карточка передаёт обратно приложению (`tap`, `with`, `submit`, `id`) и картинки не трогаются.
+ */
+function addressedCard(card: CardData): CardData {
+    const walk = (value: unknown): unknown => {
+        if (typeof value === 'string') return addressed(value);
+        if (Array.isArray(value)) return value.map(walk);
+        if (!value || typeof value !== 'object') return value;
+        return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, KEEP.includes(key) ? inner : walk(inner)]));
+    };
+    return walk(card) as CardData;
+}
+
+const KEEP = ['tap', 'with', 'submit', 'id', 'picture', 'look'];
 
 /** Кнопка карточки нажата: функция и что ей передать. */
 type Tap = (fn: string, input?: unknown) => void;
@@ -409,7 +427,7 @@ export function CardView({ app, card, tap, busy = false }: { app: string; card: 
     );
     if (!look || framed) return content;
     return (
-        <div class={`app-card-painted look-ink-${look.ink ?? 'light'}`}>
+        <div class={`app-card-painted look-ink-${inkOf(look).ink}`}>
             <LookLayers app={app} look={look} />
             <div class="app-card-painted-body">{content}</div>
         </div>
@@ -427,6 +445,8 @@ export function AppCard({ app, spec }: { app: string; spec: CardSpec }) {
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [nonce, setNonce] = useState(0);
+    const computer = useOnComputer();
+    const shown = useMemo(() => card && (computer ? addressedCard(card) : card), [card, computer]);
     useEffect(() => {
         let alive = true;
         call(spec.function, {})
@@ -467,7 +487,7 @@ export function AppCard({ app, spec }: { app: string; spec: CardSpec }) {
     if (!card && !error) return <p class="t-caption m-0">{tr.cards.loading}</p>;
     return (
         <div class="flex flex-col gap-8">
-            {card && <CardView app={app} card={card} tap={tap} busy={busy} />}
+            {shown && <CardView app={app} card={shown} tap={tap} busy={busy} />}
             {error && (
                 <p class="t-caption m-0 c-dot-offline" role="alert">
                     {error}

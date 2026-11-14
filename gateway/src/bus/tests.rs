@@ -50,7 +50,7 @@ impl Provider for Toy {
             Level::Call
         } else if from.as_str() == "app/c" && to.as_str() == "app/a" {
             Level::Listen
-        } else if from.as_str() == "app/a" && Pattern::parse("files/home/Документы/*").unwrap().matches(to) {
+        } else if from.as_str() == "app/a" && Pattern::parse("files/home/Documents/*").unwrap().matches(to) {
             Level::Edit
         } else {
             Level::None
@@ -164,12 +164,12 @@ async fn a_yes_for_a_folder_covers_all_in_it_and_what_was_not_asked_for_is_not_t
     let files = Arc::new(providers::files::Files::new(places, Arc::new(|_| 64)));
     files.set_bus(Arc::downgrade(&bus));
     bus.register(files);
-    let doc = |name: &str| Address::parse(&format!("files/home/Документы/{name}")).unwrap();
+    let doc = |name: &str| Address::parse(&format!("files/home/Documents/{name}")).unwrap();
     let first = bus.call(Trail::app("a"), a(), doc("a.txt"), "write", json!({"text": "x"}), vec![]).await;
     let Err(BusError::NeedsYes { id, why }) = first else { panic!("{first:?}") };
     assert_eq!(why, "«Приложение a» хочет менять файлы в папке «Документы»");
     let question = bus.consent.waiting().remove(0);
-    assert_eq!((question.grant.as_str(), question.level), ("files/home/Документы/*", Level::Edit));
+    assert_eq!((question.grant.as_str(), question.level), ("files/home/Documents/*", Level::Edit));
     // Reading first, then writing: still the one question.
     let _ = bus.call(Trail::app("a"), a(), doc("b.txt"), "read", json!({}), vec![]).await;
     assert_eq!(bus.consent.waiting().len(), 1);
@@ -179,7 +179,7 @@ async fn a_yes_for_a_folder_covers_all_in_it_and_what_was_not_asked_for_is_not_t
     let read = bus.call(Trail::app("a"), a(), doc("b.txt"), "read", json!({"as": "text"}), vec![]).await.unwrap();
     assert_eq!(read["text"], "y");
     // «Картинки» it never asked for: not there for it at all.
-    let pictures = Address::parse("files/home/Картинки/c.png").unwrap();
+    let pictures = Address::parse("files/home/Pictures/c.png").unwrap();
     let unseen = bus.call(Trail::app("a"), a(), pictures, "read", json!({}), vec![]).await;
     assert!(matches!(unseen, Err(BusError::NotFound(_))), "{unseen:?}");
 }
@@ -296,9 +296,9 @@ async fn a_folder_is_closed_to_roles_not_ticked_to_a_model_in_the_cloud_and_outs
     files.set_leaving(Arc::new(|| false), Arc::new(|| true));
     files.set_bus(Arc::downgrade(&bus));
     bus.register(files);
-    let docs = Pattern::parse("files/home/Документы/*").unwrap();
+    let docs = Pattern::parse("files/home/Documents/*").unwrap();
     bus.links.grant(Link::new(Pattern::exact(&a()), docs, Level::Edit, LinkSource::Owner), None).unwrap();
-    let doc = Address::parse("files/home/Документы/a.txt").unwrap();
+    let doc = Address::parse("files/home/Documents/a.txt").unwrap();
     bus.call(Trail::app("a"), a(), doc.clone(), "write", json!({"text": "x"}), vec![]).await.unwrap();
     let guest = || Trail::principal(&household_principal(Role::Guest, None));
     let member = || Trail::principal(&user_principal("u1", "Мама", Role::Member, None));
@@ -306,7 +306,7 @@ async fn a_folder_is_closed_to_roles_not_ticked_to_a_model_in_the_cloud_and_outs
     let unseen = bus.call(guest().entering("a").unwrap(), a(), doc.clone(), "read", json!({}), vec![]).await;
     assert!(matches!(unseen, Err(BusError::NotFound(_))), "{unseen:?}");
     // Through a model in the cloud: nothing — neither the file nor the list of names.
-    let folder = Address::parse("files/home/Документы").unwrap();
+    let folder = Address::parse("files/home/Documents").unwrap();
     for (to, handle) in [(doc.clone(), "read"), (folder.clone(), "list")] {
         let cloud =
             bus.call(member().through_model(true).entering("a").unwrap(), a(), to, handle, json!({}), vec![]).await;

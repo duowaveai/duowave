@@ -112,14 +112,22 @@ html[data-theme='dark'] .app-card {
 .look-shade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0) 38%, rgba(0, 0, 0, 0.16)); }
 .look-picture ~ .look-shade { background: linear-gradient(180deg, rgba(0, 0, 0, 0.32), rgba(0, 0, 0, 0.12) 45%, rgba(0, 0, 0, 0.42)); }
 .look-shade[data-ink='dark'] { background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0) 45%); }
+/* Край градиента не по тексту (белый текст на светлом, тёмный на тёмном): притушен ровно — текст читается всюду. */
+.look-shade[data-ink='light'][data-shade='strong'] { background: linear-gradient(180deg, rgba(0, 0, 0, 0.3), rgba(0, 0, 0, 0.22) 50%, rgba(0, 0, 0, 0.36)); }
+.look-shade[data-ink='dark'][data-shade='strong'] { background: linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.38)); }
 
 .widget-painted { border-color: transparent; isolation: isolate; box-shadow: 0 10px 28px rgba(20, 28, 60, 0.2); }
-.widget-painted > .widget-head,
+/* Шапка — слоем выше тела: её меню «…» раскрывается поверх содержимого. На одном слое тело, идущее следом, накрывало
+   меню (владелец, 14.11, «Курсы валют»). С открытым меню весь виджет встаёт над соседями, как простой: меню длиннее
+   виджета не уходит под следующий. */
+.widget-painted > .widget-head { position: relative; z-index: 2; }
 .widget-painted > .widget-body { position: relative; z-index: 1; }
+.widget-painted:has(.widget-menu) { z-index: 15; }
 .app-card-painted { position: relative; isolation: isolate; overflow: hidden; border-radius: 16px; padding: 12px 14px; }
 .app-card-painted > .app-card-painted-body { position: relative; z-index: 1; }
 
-/* Светлый текст на цветном фоне: свои значения токенов только для содержимого и шапки — меню «…» остаётся как было. */
+/* Вид не зависит от темы пульта: светлая, тёмная или «авто» — у содержимого свой полный набор токенов (текст, кнопки
+   и текст на них, поля, переключатели, подсказки), шапке — свои цвета; меню «…» остаётся как было. */
 .widget-painted.look-ink-light > .widget-head { color: #fff; }
 .widget-painted.look-ink-light > .widget-head .widget-title { text-shadow: 0 1px 10px rgba(0, 0, 0, 0.25); }
 .widget-painted.look-ink-light > .widget-head .widget-src { color: rgba(255, 255, 255, 0.78); }
@@ -147,6 +155,14 @@ html[data-theme='dark'] .app-card {
     --pill-own-bg: #ffffff;
     --pill-own-fg: #10131a;
     --accent: #ffffff;
+    --accent-hi: #ffffff;
+    --on-accent: #10131a;
+    --strong-bg: rgba(255, 255, 255, 0.2);
+    --hover-bg: rgba(255, 255, 255, 0.3);
+    --glass-border: rgba(255, 255, 255, 0.34);
+    --icon-bg: rgba(255, 255, 255, 0.18);
+    --bar-own: #ffffff;
+    --menu-bg: rgba(16, 19, 26, 0.86);
     color: #fff;
 }
 .widget-painted.look-ink-dark > .widget-body,
@@ -163,12 +179,31 @@ html[data-theme='dark'] .app-card {
     --track: rgba(16, 19, 26, 0.18);
     --pill-off-bg: rgba(255, 255, 255, 0.55);
     --pill-off-fg: #10131a;
+    --pill-own-bg: #10131a;
+    --pill-own-fg: #ffffff;
+    --accent: #10131a;
+    --accent-hi: #2a2f3a;
+    --on-accent: #ffffff;
+    --strong-bg: rgba(255, 255, 255, 0.62);
+    --hover-bg: rgba(255, 255, 255, 0.8);
+    --glass-border: rgba(16, 19, 26, 0.16);
+    --icon-bg: rgba(255, 255, 255, 0.55);
+    --bar-own: #10131a;
+    --menu-bg: rgba(255, 255, 255, 0.92);
     color: #10131a;
 }
+/* Кнопки на виде: своя тень вместо лаймовой свечи пульта. */
+.look-ink-light .app-card button.pill-own,
+.look-ink-dark .app-card button.pill-own { box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18); }
+.look-ink-light .app-card button.pill:not(.pill-own),
+.look-ink-dark .app-card button.pill:not(.pill-own) { backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
 .look-ink-light .app-card-big { font-size: 40px; line-height: 46px; text-shadow: 0 2px 18px rgba(0, 0, 0, 0.22); }
 .look-ink-light .app-card-tile,
 .look-ink-dark .app-card-tile { backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
 .look-ink-light .app-card .field { background: rgba(255, 255, 255, 0.18); border-color: rgba(255, 255, 255, 0.32); color: #fff; }
 .look-ink-light .app-card .field::placeholder { color: rgba(255, 255, 255, 0.72); }
 .look-ink-light .app-card-row .mark[data-mark='warn'] { background: #ffd166; }
-.look-ink-light .app-card .pill-off { backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.look-ink-dark .app-card .field { background: rgba(255, 255, 255, 0.55); border-color: rgba(16, 19, 26, 0.16); color: #10131a; }
+.look-ink-dark .app-card .field::placeholder { color: rgba(16, 19, 26, 0.55); }
+/* Переключатель на виде: включённый — белая дорожка с тёмной ручкой на светлом тексте, тёмная с белой — на тёмном. */
+.look-ink-light .app-card .switch[aria-checked='true']::after { background: #10131a; }

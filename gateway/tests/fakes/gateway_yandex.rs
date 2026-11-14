@@ -1,6 +1,8 @@
 //! Yandex's uniproxy as our own session sees it (test/app.e2e-spec.ts's fake): SynchronizeStateResponse on the
 //! station's frame, then per TtsGenerate a TtsSpeak, 300 ms of Ogg/Opus in a few frames on a stream of its own and
-//! the stream close; TextInput answered as the test says; a VoiceInput recognised itself and answered «Включаю.».
+//! the stream close; TextInput answered as the test says; a VoiceInput recognised itself and answered «Включаю.». A
+//! VoiceInput that asks Yandex to wait (WaitClientApproval, docs/plans/yandex-ear.md) is answered on a ContinueRequest
+//! only, and a CancelRequest drops it — unless the test makes Yandex ignore the wait.
 //!
 //! test/app.e2e-spec.ts, the Node original, is removed from the tree: git tag `node-gateway-last`.
 
@@ -9,6 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use duowave::gateway::protocol::aapi_codec::AapiCodec;
+use duowave::gateway::protocol::proto_edit::{get_bytes, get_string, waits_for_approval};
 use duowave::gateway::protocol::protocol_types::{
     AliceResponseModel, ClientEvent, ClientMessage, CloseReason, Directive, ServerMessage, StreamAction,
 };
@@ -34,6 +37,10 @@ pub struct VoiceInputSeen {
     pub audio_bytes: usize,
     pub spotter_end: bool,
     pub closed: bool,
+    /// It asked Yandex to wait after its recognition.
+    pub gated: bool,
+    /// What the gateway decided about a held request: `continue` or `cancel`.
+    pub decided: Option<String>,
 }
 
 /// What the fake Yandex answers to a TextInput: a response, and speech when `speech` is set.
@@ -58,6 +65,28 @@ pub struct YandexState {
     pub chunk_delay_ms: u64,
     /// Pause before TtsSpeak: a phrase can be dropped before Yandex answers it.
     pub tts_delay_ms: u64,
+    /// What Yandex hears in a VoiceInput; None: «включи кино».
+    pub heard: Option<String>,
+    /// Yandex answers a held request at once, as if it did not know the wait.
+    pub ignore_wait: bool,
+}
+
+/// Yandex's answer to a VoiceInput: «Включаю.», spoken.
+fn answer_voice(
+    connection: &Arc<FakeConnection>,
+    state: &Arc<Mutex<YandexState>>,
+    voice: &VoiceInputSeen,
+    stream_id: u32,
+) {
+    let response = AliceResponseModel {
+        request_id: voice.request_id.clone().unwrap_or_default(),
+        response_id: "yandex-voice-response".into(),
+        speech: Some("Включаю.".into()),
+        text: Some("Включаю.".into()),
+        ..Default::default()
+    };
+    connection.send(encode_server(&ServerMessage::AliceResponse { r#ref: voice.message_id.clone(), response }));
+    speak(connection, state, &voice.message_id, stream_id);
 }
 
 pub struct GatewayYandex {
@@ -142,29 +171,26 @@ impl GatewayYandex {
                         voice.clone()
                     };
                     // Yandex recognises the voice itself: its own results (the station has ours, or nothing here
-                    // recognises), the words so far and then all of them, then the answer.
+                    // recognises), the words so far and then all of them, then the answer — a held request's only
+                    // when the gateway lets it go on.
+                    let (heard, ignore_wait) = {
+                        let state = lock(state);
+                        (state.heard.clone().unwrap_or_else(|| "включи кино".into()), state.ignore_wait)
+                    };
+                    let first = heard.split(' ').next().unwrap_or_default().to_string();
                     connection.send(encode_server(&ServerMessage::AsrResult {
                         r#ref: voice.message_id.clone(),
-                        text: "включи".into(),
+                        text: first,
                         end_of_utt: false,
                     }));
                     connection.send(encode_server(&ServerMessage::AsrResult {
                         r#ref: voice.message_id.clone(),
-                        text: "включи кино".into(),
+                        text: heard,
                         end_of_utt: true,
                     }));
-                    let response = AliceResponseModel {
-                        request_id: voice.request_id.clone().unwrap_or_default(),
-                        response_id: "yandex-voice-response".into(),
-                        speech: Some("Включаю.".into()),
-                        text: Some("Включаю.".into()),
-                        ..Default::default()
-                    };
-                    connection.send(encode_server(&ServerMessage::AliceResponse {
-                        r#ref: voice.message_id.clone(),
-                        response,
-                    }));
-                    speak(connection, state, &voice.message_id, next_stream());
+                    if !voice.gated || ignore_wait {
+                        answer_voice(connection, state, &voice, next_stream());
+                    }
                 }
                 ClientMessage::Event(ClientEvent::VoiceInput { header, request }) => {
                     lock(state).voice_inputs.push(VoiceInputSeen {
@@ -174,7 +200,19 @@ impl GatewayYandex {
                         audio_bytes: 0,
                         spotter_end: false,
                         closed: false,
+                        gated: waits_for_approval(frame),
+                        decided: None,
                     });
+                }
+                ClientMessage::Event(ClientEvent::CancelRequest { request_message_id, .. }) => {
+                    let mut state = lock(state);
+                    let held = state
+                        .voice_inputs
+                        .iter_mut()
+                        .find(|voice| Some(&voice.message_id) == request_message_id.as_ref());
+                    if let Some(voice) = held.filter(|voice| voice.gated) {
+                        voice.decided = Some("cancel".into());
+                    }
                 }
                 ClientMessage::Event(ClientEvent::SynchronizeState { header, .. }) => {
                     connection.send(encode_server(&ServerMessage::SynchronizeStateResponse {
@@ -235,6 +273,25 @@ impl GatewayYandex {
                         }
                     });
                 }
+                ClientMessage::Event(ClientEvent::Unknown { name, .. }) if name == "continueRequest" => {
+                    let continued = get_bytes(&frame[4..], 1)
+                        .ok()
+                        .flatten()
+                        .and_then(|event| get_bytes(event, 10).ok().flatten())
+                        .and_then(|request| get_string(request, 1).ok().flatten());
+                    let (voice, ignore_wait) = {
+                        let mut state = lock(state);
+                        let ignore_wait = state.ignore_wait;
+                        let held =
+                            state.voice_inputs.iter_mut().find(|voice| Some(&voice.message_id) == continued.as_ref());
+                        let Some(voice) = held.filter(|voice| voice.gated && voice.decided.is_none()) else { return };
+                        voice.decided = Some("continue".into());
+                        (voice.clone(), ignore_wait)
+                    };
+                    if !ignore_wait {
+                        answer_voice(connection, state, &voice, next_stream());
+                    }
+                }
                 _ => {}
             }
         }))
@@ -273,5 +330,15 @@ impl GatewayYandex {
 
     pub fn set_tts_delay(&self, ms: u64) {
         lock(&self.state).tts_delay_ms = ms;
+    }
+
+    /// What Yandex hears in the next VoiceInputs.
+    pub fn hear(&self, text: &str) {
+        lock(&self.state).heard = Some(text.to_string());
+    }
+
+    /// Yandex answers held requests at once: a firmware or a server that does not know the wait.
+    pub fn ignore_wait(&self) {
+        lock(&self.state).ignore_wait = true;
     }
 }

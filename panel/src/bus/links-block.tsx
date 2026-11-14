@@ -6,6 +6,7 @@
 import { useEffect, useState } from 'preact/hooks';
 
 import { BusAppView, BusJournalLine, BusLevel, BusLink, BusMode, api, can, problemOf } from '../api';
+import { folderTitle } from '../folders/title';
 import { tr } from '../i18n';
 import { timeAgo } from '../time';
 import { Action } from '../ui/cards';
@@ -13,7 +14,7 @@ import { Switch } from '../ui/switch';
 import { busChanged, useBusVersion } from './state';
 import { KIND_TITLES, LEVELS, MODE_HINTS, MODE_TITLES, OUTCOME_TITLES, SOURCE_TITLES, levelWord } from './words';
 
-/** Образец адреса словами: `files/home/*` — «все папки дома», `files/home/Фото/*` — «папка «Фото» со всем в ней». */
+/** Образец адреса словами: `files/home/*` — «все папки дома», `files/home/Photos/*` — «папка «Фото» со всем в ней». */
 export function patternTitle(pattern: string, titles: Map<string, string>): string {
     const known = titles.get(pattern);
     if (known) return known;
@@ -21,10 +22,10 @@ export function patternTitle(pattern: string, titles: Map<string, string>): stri
     const base = pattern.endsWith('/*') ? pattern.slice(0, -2) : pattern;
     const named = titles.get(base);
     if (base === 'files/home') return tr.bus.patternHomeFolders;
-    if (base === 'files/home/Подключено') return tr.bus.patternConnected;
+    if (base === 'files/home/Connected') return tr.bus.patternConnected;
     if (base === 'files/project') return tr.bus.patternProjects;
     if (base === 'app') return tr.bus.patternApps;
-    if (base.startsWith('files/home/')) return tr.bus.patternFolder(named ?? base.split('/').pop() ?? base, pattern.endsWith('/*'));
+    if (base.startsWith('files/home/')) return tr.bus.patternFolder(named ?? folderTitle(base), pattern.endsWith('/*'));
     if (named) return pattern.endsWith('/*') ? tr.bus.patternNamedAll(named) : named;
     return pattern.endsWith('/*') ? tr.bus.patternAllIn(base) : pattern;
 }

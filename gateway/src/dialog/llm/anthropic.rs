@@ -22,8 +22,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::describe_http_error as describe;
 use super::llm_client::{
-    bearer_of, describe_models, AssistantTurn, LlmClient, LlmEvent, LlmMessage, LlmRequest, LlmSettings, LlmStream,
-    LlmUsage, ToolCall, ToolCallCut, ToolChoice,
+    bearer_of, describe_models, interrupted, AssistantTurn, LlmClient, LlmEvent, LlmMessage, LlmRequest, LlmSettings,
+    LlmStream, LlmUsage, ToolCall, ToolCallCut, ToolChoice,
 };
 use super::sse::{Lines, SseDecoder, SseEvent};
 use crate::dialog::generator::{generate, Yielder};
@@ -105,7 +105,7 @@ async fn run(
         };
         let (got, ended) = match chunk {
             Some(Ok(bytes)) => (lines.push(&bytes), false),
-            Some(Err(error)) => bail!("Anthropic stream broke: {}", describe(&error)),
+            Some(Err(error)) => return Err(interrupted(format!("Anthropic stream broke: {}", describe(&error)))),
             None => (lines.finish().into_iter().collect(), true),
         };
         for line in got {
@@ -291,8 +291,10 @@ async fn open(
                 }
                 retry_after(response.headers())
             }
-            Ok(Err(error)) if retries == 0 => bail!("cannot reach Anthropic: Connection error. ({})", describe(&error)),
-            Err(_) if retries == 0 => bail!("cannot reach Anthropic: Request timed out."),
+            Ok(Err(error)) if retries == 0 => {
+                return Err(interrupted(format!("cannot reach Anthropic: Connection error. ({})", describe(&error))))
+            }
+            Err(_) if retries == 0 => return Err(interrupted("cannot reach Anthropic: Request timed out.")),
             Ok(Err(_)) | Err(_) => None,
         };
         let wait = asked_wait.unwrap_or_else(|| default_retry_delay(MAX_RETRIES - retries));
@@ -367,7 +369,15 @@ fn status_error(status: u16, text: &str) -> anyhow::Error {
 fn handle(message: &mut Message, event: SseEvent) -> anyhow::Result<Option<String>> {
     match event.event.as_deref() {
         None | Some("ping") => Ok(None),
-        Some("error") => bail!("Anthropic API ?: {}", event.data),
+        // An error mid-answer. The service overloaded or failing on its side (529, 500) may pass: asked again later.
+        Some("error") => {
+            let data: Option<Value> = serde_json::from_str(&event.data).ok();
+            let message = format!("Anthropic API ?: {}", event.data);
+            match data.as_ref().and_then(|data| data.pointer("/error/type")).and_then(Value::as_str) {
+                Some("overloaded_error" | "api_error") => Err(interrupted(message)),
+                _ => Err(anyhow!(message)),
+            }
+        }
         Some(_) if event.data.is_empty() => Ok(None),
         Some(_) => {
             let data: Value = serde_json::from_str(&event.data)
@@ -541,11 +551,12 @@ impl Message {
         if let (Some(problem), false) = (&self.unparsed, out_of_tokens) {
             bail!("{problem}");
         }
+        // The connection closed before the message was whole: a broken stream, as the network's fault.
         if !self.started {
-            bail!("request ended without sending any chunks");
+            return Err(interrupted("request ended without sending any chunks"));
         }
         if !self.stopped {
-            bail!("stream ended without producing a Message with role=assistant");
+            return Err(interrupted("stream ended without producing a Message with role=assistant"));
         }
         if self.stop_reason.as_deref() == Some("refusal") {
             let category = self.stop_details.get("category").and_then(Value::as_str).unwrap_or("no category");
@@ -686,6 +697,24 @@ mod tests {
 
     async fn events(llm: &AnthropicLlm, request: LlmRequest) -> anyhow::Result<Vec<LlmEvent>> {
         llm.stream(request, CancellationToken::new()).collect::<Vec<_>>().await.into_iter().collect()
+    }
+
+    #[tokio::test]
+    async fn a_stream_cut_short_or_overloaded_is_interrupted_and_a_refused_one_is_not() {
+        use crate::dialog::llm::Interrupted;
+        let server = stub().await;
+        let cut = hello().split("event: message_stop").next().unwrap().to_string();
+        let error = |kind: &str| event("error", json!({"type": "error", "error": {"type": kind, "message": "x"}}));
+        // Answers go from the end: the cut stream first.
+        server.script.lock().unwrap().extend([error("invalid_request_error"), error("overloaded_error"), cut]);
+        let llm = AnthropicLlm::new(settings(&server.url, true, Some("panel-key")));
+        let request = || LlmRequest { system: "s".into(), messages: ask("q"), ..LlmRequest::default() };
+        let cut_short = events(&llm, request()).await.unwrap_err();
+        assert!(cut_short.is::<Interrupted>(), "{cut_short}");
+        let overloaded = events(&llm, request()).await.unwrap_err();
+        assert!(overloaded.is::<Interrupted>() && overloaded.to_string().contains("overloaded_error"), "{overloaded}");
+        let refused = events(&llm, request()).await.unwrap_err();
+        assert!(!refused.is::<Interrupted>() && refused.to_string().contains("invalid_request_error"), "{refused}");
     }
 
     #[tokio::test]

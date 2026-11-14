@@ -37,7 +37,7 @@ import type { SettingsTab } from './mind';
 import { ModelsScreen } from './models';
 import { PlacementCard } from './placement';
 import { SettingsScreen } from './settings';
-import { MicCheck, Readiness, TalkChoice, useTalkChoiceHere } from './voice-input';
+import { MicCheck, Readiness, TalkChoice, TalkKeyChoice, useTalkChoiceHere } from './voice-input';
 import { onComputer, useOnComputer } from '../voice-input';
 
 type Icon = FunctionComponent<{ size?: number }>;
@@ -109,6 +109,9 @@ function StationPage() {
                 <ModelsScreen tab="recognition" onTab={() => undefined} bare />
                 <Card id="mic-check" title={tr.places.micTitle}>
                     <MicCheck />
+                </Card>
+                <Card id="talk-key" title={tr.voiceInput.keyTitle}>
+                    <TalkKeyChoice />
                 </Card>
             </>
         );

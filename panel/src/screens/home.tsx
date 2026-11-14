@@ -9,6 +9,7 @@ import { CAPABILITIES, CAPABILITY_TITLES } from '../capabilities';
 import { executorOf } from '../executor';
 import { locale, tr } from '../i18n';
 import { timeAgo } from '../time';
+import { Switch } from '../ui/switch';
 import { RequestRow } from './journal';
 
 const modeLabels = (): Record<PanelMode, string> => ({ relay: tr.home.modeRelay, gateway: tr.home.modeGateway, own: tr.home.modeOwn });
@@ -45,6 +46,9 @@ export function ModeCard({
     const [voice, setVoice] = useState<'yandex' | 'own'>('own');
     /** Переход, который шлюз сделал сам (компьютер пропал): объяснение и «Остаться». */
     const [auto, setAuto] = useState<ModeView['auto']>(undefined);
+    /** «Слух Яндекса» (docs/plans/yandex-ear.md); шлюз постарше его не присылает — переключателя нет. */
+    const [yandexEar, setYandexEar] = useState<boolean | undefined>(health?.yandexEar);
+    const [earBusy, setEarBusy] = useState(false);
     // Что где доступно: перечитывается при каждой перемене на шлюзе — кнопки режимов следуют за ним.
     useAvailability();
     const [busy, setBusy] = useState(false);
@@ -70,6 +74,7 @@ export function ModeCard({
                     setNote(current.note);
                     setVoice(current.voice);
                     setAuto(current.by === 'auto' ? current.auto : undefined);
+                    setYandexEar(current.yandexEar);
                 })
                 .catch(() => {});
         void read();
@@ -109,6 +114,22 @@ export function ModeCard({
             setError(problemOf(e));
         } finally {
             setBusy(false);
+        }
+    };
+
+    /** «Слух Яндекса»: со следующего вопроса, без переподключения колонки. */
+    const switchEar = async (on: boolean) => {
+        if (!mayPick || earBusy) return;
+        setEarBusy(true);
+        setError(null);
+        setYandexEar(on);
+        try {
+            setYandexEar((await api.setYandexEar(on)).yandexEar);
+        } catch (e) {
+            setYandexEar(!on);
+            setError(problemOf(e));
+        } finally {
+            setEarBusy(false);
         }
     };
 
@@ -175,6 +196,14 @@ export function ModeCard({
                     {!available('mode.own') && !auto && !busy && !reconnecting && ` ${whyNot('mode.own') ?? ''}`}
                 </span>
             </p>
+            {mode === 'gateway' && yandexEar !== undefined && (
+                <div class="t-caption mx-6 mt-8 mb-0 flex items-center gap-10">
+                    <Switch on={yandexEar} label={tr.home.yandexEar} disabled={!mayPick || earBusy} onChange={(on) => void switchEar(on)} />
+                    <span>
+                        <b class="fw-700">{tr.home.yandexEar}.</b> {tr.home.yandexEarNote}
+                    </span>
+                </div>
+            )}
             {auto && mode === auto.to && (
                 <div class="t-caption mx-6 mt-8 mb-0 flex gap-8 items-center flex-wrap" role="status">
                     <span>

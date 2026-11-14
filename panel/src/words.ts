@@ -28,6 +28,17 @@ export function assistant(): string {
     return byMode(tr.core.assistantStation, tr.core.assistantComputer);
 }
 
+/** Обращение «Алиса, …» (или «Alice, …»): слово, с которого приложения пишут фразу колонке. */
+const ADDRESS = /(^|[\s«"„“(])(?:Алиса|Alice)(?=\s*[,!])/g;
+
+/**
+ * Слова приложения под режим: приложения пишут подсказки для колонки — «Скажите: «Алиса, включи радио»», а в режиме
+ * «Микрофон» обращаются к ДиВи. Меняется только обращение: «Алиса» в имени папки или песни остаётся.
+ */
+export function addressed(text: string): string {
+    return onComputer() ? text.replace(ADDRESS, (_, before: string) => before + tr.core.assistantComputer) : text;
+}
+
 /** Пример фразы: колонке — с её словом и её умением, компьютеру — то, что он умеет без колонки. */
 export function examplePhrase(): string {
     return byMode(tr.core.examplePhraseStation, tr.core.examplePhraseComputer);

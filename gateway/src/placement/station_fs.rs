@@ -554,6 +554,10 @@ impl StationFs {
         for file in [SERVICE, BIN_LINK, DISABLED, FIRED, UPDATED, MANAGED] {
             let _ = std::fs::remove_file(self.path(file));
         }
+        // The service's own marks (gateway.sh): the start count and the pids of a stopped gateway.
+        for file in ["gateway.started", "gateway.pid", "gateway-loop.pid", "gateway-watch.pid"] {
+            let _ = std::fs::remove_file(self.path(&format!("{DIR}/{file}")));
+        }
         if !copy_in_use {
             for file in [VOICE_SCRIPT, BOOT_SOURCE, RESTORE_SCRIPT, LOCK] {
                 let _ = std::fs::remove_file(self.path(file));
@@ -564,6 +568,8 @@ impl StationFs {
         if !keep_data {
             let _ = std::fs::remove_dir_all(self.path(DATA));
         }
+        // Nothing of ours left: the folder goes too (only when empty — a package's switch like yam-off stays).
+        let _ = std::fs::remove_dir(self.path(DIR));
         Ok(())
     }
 
@@ -1045,9 +1051,13 @@ pub(crate) mod tests {
 
         // Back to the firmware's own: nothing of ours is left on the firmware's partition.
         fs.point(&Target::Yandex, false, &system).unwrap();
+        for mark in ["gateway.started", "gateway.pid", "gateway-loop.pid", "gateway-watch.pid"] {
+            std::fs::write(fs.path(&format!("{DIR}/{mark}")), "1\n").unwrap();
+        }
         fs.remove(false, &system).unwrap();
         assert!(!fs.path(BOOT_SCRIPT).exists() && !fs.path(VOICE_SCRIPT).exists());
         assert!(!fs.path(DATA).exists());
+        assert!(!fs.path(DIR).exists(), "the service's marks and the folder go too (14.11: gateway.started stayed)");
     }
 
     #[test]

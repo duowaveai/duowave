@@ -1,4 +1,4 @@
-//! Drives and dropped folders offered to «Подключено» (docs/plans/shared-folders.md, «Подключено — внешнее по
+//! Drives and dropped folders offered to Connected (docs/plans/shared-folders.md, «Подключено — внешнее по
 //! желанию»). Nothing is attached by itself the first time: a drive plugged in, or a folder dropped on the app's
 //! window, becomes an offer — a tile on the desk with «Посмотреть» and «Не надо», and for a drive the station asks too
 //! when it is free (the app «Папки», `on_offer`). A drive the household looked at once is known again by its mark (its
@@ -45,7 +45,7 @@ pub enum OfferKind {
 pub struct Offer {
     pub id: String,
     pub kind: OfferKind,
-    /// The name it would have in «Подключено».
+    /// The name it would have in Connected.
     pub name: String,
     #[serde(skip)]
     pub path: PathBuf,
@@ -388,7 +388,7 @@ mod tests {
         drives.step(vec![usb.clone()]);
         assert_eq!(drives.offers().len(), 1, "one offer a drive");
         let rule = drives.look(&offers[0].id, Some("u1")).unwrap();
-        assert_eq!(rule.address.as_str(), "files/home/Подключено/Флешка KINGSTON");
+        assert_eq!(rule.address.as_str(), "files/home/Connected/Флешка KINGSTON");
         assert!(drives.offers().is_empty());
         // Pulled out: remembered, its link gone; plugged in again at another place: there by itself.
         drives.step(vec![]);

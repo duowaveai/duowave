@@ -627,6 +627,7 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
                 models,
                 connectors: connectors?.connectors ?? null,
                 availability,
+                yandexEar: mode?.yandexEar ?? health?.yandexEar,
             }),
         );
         void api

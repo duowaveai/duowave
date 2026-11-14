@@ -702,10 +702,109 @@ async fn speak_to_yandex_whole(station: &StationClient, message_id: &str, stream
     audio.bytes.len()
 }
 
+/// «Слух Яндекса» off (docs/plans/yandex-ear.md): Yandex hears and answers, as before the switch.
+async fn yandex_ear_off(env: &Env) {
+    let view = env.post("/api/v1/station/mode/yandex-ear", json!({ "on": false }), StatusCode::CREATED).await;
+    assert_eq!(view["yandexEar"], false);
+    assert_eq!(env.get("/health").await["yandexEar"], false);
+}
+
+/// The held request's fate at the fake Yandex, once the gateway decided: `continue` or `cancel`.
+async fn decided(env: &Env, message_id: &str) -> String {
+    for _ in 0..80 {
+        let inputs = env.yandex.voice_inputs();
+        let input = inputs.iter().find(|input| input.message_id == message_id);
+        if let Some(decided) = input.and_then(|input| input.decided.clone()) {
+            assert!(input.unwrap().gated, "the VoiceInput asked Yandex to wait");
+            return decided;
+        }
+        sleep(50).await;
+    }
+    panic!("the gateway did not decide about {message_id}");
+}
+
+/// Yandex's speech «Включаю.» reached the station.
+fn yandex_spoke(station: &StationClient) -> bool {
+    station.index(|m| at(m, "event.aliceResponse.voiceResponse.outputSpeech.text") == "Включаю.").is_some()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_yandexs_ear_yandex_recognizes_and_our_brain_answers_yandex_drops_the_request() {
+    // «Вместе» with no ear of our own, «Слух Яндекса» on (the default): Yandex hears and waits; a conversation is ours.
+    let env = env_with(&[("ASR_PROVIDER", "none")]).await;
+    assert_eq!(env.get("/health").await["yandexEar"], true);
+    env.yandex.hear("привет как дела");
+    env.llm.set_reply("Всё хорошо, спасибо!");
+    let (station, _) = env.connected_station("sync-ear").await;
+    speak_to_yandex_whole(&station, "voice-ear", 21, "req-ear").await;
+
+    // The station sees Yandex's words; Yandex is told to drop the request; our answer is spoken in Alice's voice.
+    let heard = station.wait_for(is_final_asr("voice-ear"), 4000).await;
+    assert_eq!(normalized(&heard), "привет как дела");
+    assert_eq!(decided(&env, "voice-ear").await, "cancel");
+    station.wait_for(response_to("req-ear"), 8000).await;
+    station.wait_for(speak_of("voice-ear"), 8000).await;
+    assert!(env.yandex.tts().iter().any(|text| text == "Всё хорошо, спасибо!"), "{:?}", env.yandex.tts());
+    assert!(!yandex_spoke(&station));
+
+    let trip = finished_trip(&env, "привет как дела").await;
+    assert_eq!((&trip["executor"], &trip["status"]), (&json!("model"), &json!("answered")), "{trip}");
+    assert_eq!((&trip["steps"][0]["phase"], &trip["steps"][0]["by"]), (&json!("listen"), &json!("yandex")));
+    let ear = notes(&env, "yandexEar").await;
+    assert!(ear.iter().any(|note| note["summary"].as_str().unwrap().contains("cancel")), "{ear:?}");
+    assert!(notes(&env, "yandexEarIgnored").await.is_empty());
+    station.close();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_yandexs_ear_what_the_routes_give_yandex_yandex_answers_itself() {
+    // Music is Yandex's here: «включи кино» goes on at Yandex, which answers as it would have.
+    let env = env_with(&[("ASR_PROVIDER", "none"), ("ROUTES", "do_not_disturb=off;music=yandex;playback=own")]).await;
+    let (station, _) = env.connected_station("sync-ear-go").await;
+    speak_to_yandex_whole(&station, "voice-go", 21, "req-go").await;
+
+    assert_eq!(decided(&env, "voice-go").await, "continue");
+    station.wait_for(response_to("req-go"), 8000).await;
+    station.wait_for(speak_of("voice-go"), 8000).await;
+    assert!(yandex_spoke(&station));
+    assert_heard_and_answered_by_yandex(&finished_trip(&env, "включи кино").await);
+    assert!(env.llm.requests().is_empty(), "the model is not asked");
+    station.close();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_yandexs_ear_an_answer_yandex_sends_without_waiting_is_dropped_and_noted() {
+    // A firmware or a server that does not know the wait: Yandex answers at once. Its answer does not reach the
+    // station; ours does, and the journal says Yandex's ear does not hold here.
+    let env = env_with(&[("ASR_PROVIDER", "none")]).await;
+    env.yandex.hear("привет как дела");
+    env.yandex.ignore_wait();
+    env.llm.set_reply("Всё хорошо.");
+    let (station, _) = env.connected_station("sync-ear-ignored").await;
+    speak_to_yandex_whole(&station, "voice-ign", 21, "req-ign").await;
+
+    assert_eq!(decided(&env, "voice-ign").await, "cancel");
+    station.wait_for(speak_of("voice-ign"), 8000).await;
+    let mut ignored = Vec::new();
+    for _ in 0..80 {
+        ignored = notes(&env, "yandexEarIgnored").await;
+        if !ignored.is_empty() {
+            break;
+        }
+        sleep(50).await;
+    }
+    assert_eq!(ignored.len(), 1, "{ignored:?}");
+    assert!(!yandex_spoke(&station));
+    assert_eq!(finished_trip(&env, "привет как дела").await["executor"], "model");
+    station.close();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn without_recognition_the_voice_goes_to_yandex_whole_and_its_trip_has_yandexs_words_and_answer() {
-    // A station's gateway with no computer and no cloud: «Шлюз» with nothing to recognise with (live, 07.11).
+    // A station's gateway with no computer and no cloud: «Шлюз» with nothing to recognise with (live, 07.11). With
+    // «Слух Яндекса» off, Yandex both hears and answers.
     let env = env_with(&[("ASR_PROVIDER", "none")]).await;
+    yandex_ear_off(&env).await;
     let station = env.station(STATION_HEADERS).await;
     station.synchronize("sync-n").await;
     station.start_voice("voice-n", 21, "req-n", None, None);
@@ -750,6 +849,7 @@ async fn without_recognition_a_voice_that_comes_before_our_session_with_yandex_i
     // with Yandex is open: before, the request was cancelled and its audio went to Yandex on a stream it never heard
     // opened.
     let env = env_with(&[("ASR_PROVIDER", "none")]).await;
+    yandex_ear_off(&env).await;
     env.yandex.server.open_delay_ms.store(800, std::sync::atomic::Ordering::SeqCst);
     let station = env.station(STATION_HEADERS).await;
     station.synchronize("sync-held").await;
@@ -772,6 +872,7 @@ async fn without_recognition_a_voice_that_comes_before_our_session_with_yandex_i
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn without_recognition_what_yandex_says_on_the_stations_own_stream_goes_to_the_station_the_rest_is_stray() {
     let env = env_with(&[("ASR_PROVIDER", "none")]).await;
+    yandex_ear_off(&env).await;
     let station = env.station(STATION_HEADERS).await;
     station.synchronize("sync-own").await;
     speak_to_yandex_whole(&station, "voice-own", 21, "req-own").await;

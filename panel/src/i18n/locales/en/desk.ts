@@ -83,6 +83,7 @@ const en: Translation<typeof ru> = {
     since: (time) => ` · since ${time}`,
     helperUp: 'The ear, voice and model are on the computer. It also hosts the app workshop, the voice lab and this speaker’s settings backups.',
     helperDown: 'While it’s away, the speaker answers on its own: the cloud hears, Alice speaks.',
+    helperAwayStart: (address) => `The computer’s panel opens once DuoWave runs on it (${address}).`,
     openComputerPanel: 'Open the computer’s panel ↗',
 };
 

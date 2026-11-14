@@ -61,6 +61,40 @@ fn color_ok(value: &Value) -> bool {
     })
 }
 
+/// How bright a colour is to the eye (WCAG): 0 — black, 1 — white.
+fn luminance(color: &str) -> Option<f64> {
+    let digits = color.strip_prefix('#')?;
+    let full: String = if digits.len() == 3 { digits.chars().flat_map(|c| [c, c]).collect() } else { digits.into() };
+    let channel = |at: usize| -> Option<f64> {
+        let value = f64::from(u8::from_str_radix(full.get(at..at + 2)?, 16).ok()?) / 255.0;
+        Some(if value <= 0.03928 { value / 12.92 } else { ((value + 0.055) / 1.055).powf(2.4) })
+    };
+    Some(0.2126 * channel(0)? + 0.7152 * channel(2)? + 0.0722 * channel(4)?)
+}
+
+/// Whether the text of a look reads on all its colours: white text on a light edge, dark text on a dark one, or a
+/// gradient from dark to very light (no one text colour fits both edges) does not. The panel shades such an edge, but
+/// a look should not need it.
+fn unreadable(look: &Map<String, Value>) -> bool {
+    let levels: Vec<f64> = look
+        .get("colors")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(luminance)
+        .collect();
+    let (Some(low), Some(high)) = (levels.iter().copied().reduce(f64::min), levels.iter().copied().reduce(f64::max))
+    else {
+        return false;
+    };
+    match look.get("ink").and_then(Value::as_str) {
+        Some("dark") => low < 0.18,
+        Some(_) => high > 0.55,
+        None => high > 0.7 && low < 0.25,
+    }
+}
+
 /// What is wrong with a card's `look`, in words for the agent; None — the panel paints it.
 fn look_problem(look: &Value) -> Option<String> {
     let Some(fields) = look.as_object() else {
@@ -89,7 +123,11 @@ fn look_problem(look: &Value) -> Option<String> {
             });
         }
     }
-    None
+    unreadable(fields).then(|| {
+        crate::tr!(
+            "look.colors: на одном краю текст не прочтётся — возьмите цвета ближе по яркости; светлый фон — ink: dark"
+        )
+    })
 }
 
 /// A picture of the app's own folder (`name`) or of the home's folders by a link (`address: files/…`).
@@ -365,6 +403,29 @@ mod tests {
             .iter()
             .any(|problem| problem.contains("нет такой детали: «canvas»") && problem.contains("окошко")));
         assert_eq!(functions(&card), vec!["remove", "refresh", "add", "sound"]);
+    }
+
+    #[test]
+    fn a_look_must_keep_its_text_readable_on_every_colour() {
+        let readable = [
+            json!({"colors": ["#2d3e55", "#4b6987", "#6a8aa9"]}),
+            json!({"colors": ["#fdf6e3", "#f2e8cf"], "ink": "dark"}),
+            json!({"colors": ["#fdf6e3", "#f2e8cf"]}),
+            json!({"scene": "rain"}),
+        ];
+        for look in readable {
+            assert_eq!(check(&json!({"big": "1", "look": look})), Vec::<String>::new(), "{look}");
+        }
+        // The draft «Что приготовить» (14.11): dark green to cream under white text.
+        for look in [
+            json!({"colors": ["#1f6f54", "#7fb069", "#f2e8cf"]}),
+            json!({"colors": ["#ffffff", "#7fb069"], "ink": "light"}),
+            json!({"colors": ["#0b1030", "#24124d"], "ink": "dark"}),
+        ] {
+            let problems = check(&json!({"big": "1", "look": look}));
+            assert!(problems.len() == 1 && problems[0].contains("не прочтётся"), "{look}: {problems:?}");
+        }
+        assert!((luminance("#ffffff").unwrap() - 1.0).abs() < 1e-9 && luminance("#000").unwrap() < 1e-9);
     }
 
     #[test]

@@ -7,6 +7,18 @@ export default {
     groupAttached: 'Подключено',
     groupAttachedEmpty: 'Ничего не подключено: воткните флешку или подключите папку с диска.',
     groupProject: 'Проекты',
+    /** Подписи папок, что шлюз делает сам: на диске у них английские имена (Photos), человек читает свои. */
+    standardNames: {
+        Photos: 'Фото',
+        Documents: 'Документы',
+        Videos: 'Видео',
+        Downloads: 'Загрузки',
+        Pictures: 'Картинки',
+        Music: 'Музыка',
+        Stories: 'Сказки',
+        Connected: 'Подключено',
+        Projects: 'Проекты',
+    },
     roleAdmin: 'вы',
     roleMember: 'семья',
     roleGuest: 'гости',

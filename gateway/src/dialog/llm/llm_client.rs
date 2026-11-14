@@ -188,6 +188,26 @@ impl fmt::Display for ToolCallCut {
 
 impl std::error::Error for ToolCallCut {}
 
+/// An answer the service did not finish through no fault of the request: the connection could not be made, broke or
+/// ended early mid-answer, or the service was overloaded. The same request may go through a little later. Rounds that
+/// may ask again (the workshop agent's, `ToolBox::retries`) do; anywhere else the answer fails with it. A turn's calls
+/// run only once the turn is whole, so none of an interrupted turn's ran.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Interrupted(pub String);
+
+impl fmt::Display for Interrupted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Interrupted {}
+
+/// `Interrupted` with its message, as an `anyhow` error.
+pub fn interrupted(message: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(Interrupted(message.into()))
+}
+
 /// The `path` of a tool input cut short: the JSON string after `"path":`, when it was written whole.
 fn path_in(partial: &str) -> Option<String> {
     let (_, after) = partial.split_once("\"path\"")?;

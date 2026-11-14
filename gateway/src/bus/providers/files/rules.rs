@@ -1,12 +1,12 @@
 //! The household's word on the home folder's folders (docs/plans/shared-folders.md, «Кто видит и что уходит из
-//! дома»), and what a person attached to it («Подключено»). A row of the table `folders` per folder the household
+//! дома»), and what a person attached to it (Connected). A row of the table `folders` per folder the household
 //! said something of: who sees it, whether the model may read it and the voice name its files, whether it opens
 //! outside the home; for an attached folder also where it is on this computer, how it came, and whether a drive is
 //! known again by itself. A folder without a row keeps the defaults: seen by the admin and the family, nothing of it
 //! to the model in the cloud or to Yandex's voice, closed outside the home.
 //!
 //! What is attached is pushed into `Places` (its address resolves there) and gets a link in the home folder's
-//! «Подключено» while it is there — Finder shows it like a folder. Nothing is copied: what a person attached stays
+//! Connected while it is there — Finder shows it like a folder. Nothing is copied: what a person attached stays
 //! where it is.
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -104,7 +104,7 @@ impl Rule {
         }
     }
 
-    /// Its name in «Подключено» for an attached one, its own name for a home folder.
+    /// Its name in Connected for an attached one, its own name for a home folder.
     pub fn name(&self) -> String {
         self.address.segments().last().unwrap_or_default().to_string()
     }
@@ -150,7 +150,7 @@ fn roles_of(text: &str) -> Vec<Role> {
     text.split(',').filter_map(|word| Role::parse(word.trim())).collect()
 }
 
-/// A name for «Подключено»: what the address takes (no `/`, `*`, `\`, control signs, no dot first), 64 letters.
+/// A name for Connected: what the address takes (no `/`, `*`, `\`, control signs, no dot first), 64 letters.
 pub fn clean_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
@@ -292,7 +292,7 @@ impl Folders {
         self.attached().into_iter().find(|rule| rule.volume.as_deref() == Some(mark))
     }
 
-    /// The places and the links in «Подключено» in step with the table: a link for each attached folder that is
+    /// The places and the links in Connected in step with the table: a link for each attached folder that is
     /// there, none for one that is not or is gone.
     pub fn apply(&self) {
         let attached = self.attached();
@@ -356,7 +356,7 @@ impl Folders {
         Ok(real)
     }
 
-    /// A name in «Подключено» nobody has: «Отпуск», then «Отпуск 2».
+    /// A name in Connected nobody has: «Отпуск», then «Отпуск 2».
     fn free_name(&self, wanted: &str) -> String {
         let taken: Vec<String> = self.attached().iter().map(Rule::name).collect();
         let base = clean_name(wanted);
@@ -366,7 +366,7 @@ impl Folders {
         (2..).map(|n| format!("{base} {n}")).find(|name| !taken.contains(name)).unwrap_or(base)
     }
 
-    /// Attaches a folder (or a drive) to «Подключено»; the same place attached again is the same row.
+    /// Attaches a folder (or a drive) to Connected; the same place attached again is the same row.
     pub fn attach(
         &self,
         path: &Path,
@@ -482,35 +482,35 @@ mod tests {
     #[test]
     fn a_folder_without_a_word_keeps_the_defaults() {
         let (folders, _dir) = made();
-        let rule = folders.rule(&Address::parse("files/home/Фото").unwrap());
+        let rule = folders.rule(&Address::parse("files/home/Photos").unwrap());
         assert_eq!(rule.roles, vec![Role::Admin, Role::Member]);
         assert!(!rule.model && !rule.speak && !rule.remote);
         assert!(rule.sees(Role::Admin) && rule.sees(Role::Member) && !rule.sees(Role::Guest));
     }
 
     #[test]
-    fn an_attached_folder_shows_in_podkliucheno_and_goes_without_touching_the_folder() {
+    fn an_attached_folder_shows_in_attached_and_goes_without_touching_the_folder() {
         let (folders, dir) = made();
         let trip = dir.path().join("Pictures/Отпуск 2025");
         std::fs::create_dir_all(&trip).unwrap();
         std::fs::write(trip.join("1.jpg"), "x").unwrap();
         let rule = folders.attach(&trip, None, How::Dropped, None, Some("u1")).unwrap();
-        assert_eq!(rule.address.as_str(), "files/home/Подключено/Отпуск 2025");
+        assert_eq!(rule.address.as_str(), "files/home/Connected/Отпуск 2025");
         assert!(!rule.write, "read only by default");
         let again = folders.attach(&trip, None, How::Picked, None, None).unwrap();
         assert_eq!(again.address, rule.address, "the same place attached again is the same row");
-        let spot = folders.places.spot(&Address::parse("files/home/Подключено/Отпуск 2025/1.jpg").unwrap()).unwrap();
+        let spot = folders.places.spot(&Address::parse("files/home/Connected/Отпуск 2025/1.jpg").unwrap()).unwrap();
         assert!(spot.path().ends_with("Отпуск 2025/1.jpg"));
         #[cfg(unix)]
-        assert!(dir.path().join("DuoWave/Подключено/Отпуск 2025/1.jpg").is_file(), "Finder sees it by the link");
+        assert!(dir.path().join("DuoWave/Connected/Отпуск 2025/1.jpg").is_file(), "Finder sees it by the link");
         // Another folder of the same name gets its own.
         let other = dir.path().join("Other/Отпуск 2025");
         std::fs::create_dir_all(&other).unwrap();
         assert_eq!(folders.attach(&other, None, How::Picked, None, None).unwrap().name(), "Отпуск 2025 2");
         folders.detach("Отпуск 2025").unwrap();
         assert!(trip.join("1.jpg").is_file(), "the folder itself stays");
-        assert!(dir.path().join("DuoWave/Подключено/Отпуск 2025").symlink_metadata().is_err());
-        assert!(folders.places.spot(&Address::parse("files/home/Подключено/Отпуск 2025/1.jpg").unwrap()).is_none());
+        assert!(dir.path().join("DuoWave/Connected/Отпуск 2025").symlink_metadata().is_err());
+        assert!(folders.places.spot(&Address::parse("files/home/Connected/Отпуск 2025/1.jpg").unwrap()).is_none());
         // The table holds it across a restart.
         let again = Folders::new(folders.db.clone(), folders.places.clone(), None);
         assert_eq!(again.attached().len(), 1);
@@ -519,7 +519,7 @@ mod tests {
     #[test]
     fn the_gateways_own_places_are_never_attached() {
         let (folders, dir) = made();
-        for path in [dir.path().join("data"), dir.path().join("DuoWave/Фото"), dir.path().to_path_buf()] {
+        for path in [dir.path().join("data"), dir.path().join("DuoWave/Photos"), dir.path().to_path_buf()] {
             assert!(folders.attach(&path, None, How::Picked, None, None).is_err(), "{}", path.display());
         }
         assert!(folders.attach(Path::new("relative"), None, How::Picked, None, None).is_err());
@@ -529,13 +529,13 @@ mod tests {
     #[test]
     fn a_change_keeps_the_admin_and_writes_only_attached_ones() {
         let (folders, _dir) = made();
-        let photos = Address::parse("files/home/Фото").unwrap();
+        let photos = Address::parse("files/home/Photos").unwrap();
         let change =
             Change { roles: Some(vec!["member".into(), "guest".into()]), model: Some(true), ..Change::default() };
         let rule = folders.change(&photos, &change).unwrap();
         assert!(rule.sees(Role::Guest) && rule.roles.contains(&Role::Admin) && rule.model);
         assert!(folders.change(&photos, &Change { write: Some(true), ..Change::default() }).is_err());
-        assert!(folders.change(&Address::parse("files/home/Фото/Отпуск").unwrap(), &change).is_err());
+        assert!(folders.change(&Address::parse("files/home/Photos/Отпуск").unwrap(), &change).is_err());
     }
 
     #[test]

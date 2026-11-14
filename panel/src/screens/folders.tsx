@@ -1,6 +1,6 @@
 // «Папки» (docs/plans/shared-folders.md): домашняя папка DuoWave — `~/DuoWave` в приложении, обычная папка в Finder.
-// Голос, агент и приложения видят только её: Фото, Документы, Видео, Загрузки, Картинки; музыку и сказки дома; проекты;
-// и «Подключено» — флешку или папку с диска, подключённые по желанию человека (ссылкой: всё остаётся на месте). Здесь
+// Голос, агент и приложения видят только её: Photos, Documents, Videos, Downloads, Pictures; музыку и сказки дома
+// (Music, Stories); проекты (Projects); и Connected — флешку или папку с диска, подключённые по желанию человека (ссылкой: всё остаётся на месте). Здесь
 // видно, что в каждой папке, кто её видит и что из неё уходит из дома; администратор меняет галочки, подключает и
 // отключает. Голосом по папкам ходит приложение «Папки».
 
@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { FolderItem, FolderPage, FolderRole, FolderRule, FolderView, FoldersView, api, can, fetchFolderPreview, problemOf } from '../api';
 import { formatList, formatNumber, tr } from '../i18n';
 import { foldersChanged, useFoldersVersion } from '../folders/state';
+import { folderTitle } from '../folders/title';
 import { IconChevronLeft, IconChevronRight, IconFolder } from '../icons';
 import { usePanel, useSectionTab } from '../shell/context';
 import { Action } from '../ui/cards';
@@ -125,7 +126,7 @@ function FoldersList({ view, onOpen }: { view: FoldersView; onOpen: (address: st
                                         <IconFolder size={18} />
                                     </span>
                                     <span class="flex-1 min-w-0 flex flex-col">
-                                        <span class="w-text">{folder.name}</span>
+                                        <span class="w-text">{folderTitle(folder.address)}</span>
                                         <span class="w-cap">
                                             {folder.here ? tr.folders.seenBy(rolesWords(folder.rule.roles)) : tr.folders.notHere}
                                             {folder.apps && folder.apps.length > 0
@@ -253,7 +254,7 @@ function FolderCard({ view, folder, onBack }: { view: FoldersView; folder: Folde
             </button>
             <section class="card glass" aria-labelledby="folder-h">
                 <h2 id="folder-h" class="t-title-xs m-0">
-                    {folder.name}
+                    {folderTitle(folder.address)}
                 </h2>
                 <p class="t-caption m-0 mb-8">
                     {folder.here ? (folder.path ?? folder.address) : tr.folders.folderGone}
@@ -364,7 +365,7 @@ function Browser({ root }: { root: string }) {
         <section class="card glass" aria-label={tr.folders.browserLabel}>
             <div class="flex flex-wrap items-center gap-4 mb-8 t-caption">
                 <button class="link-button" onClick={() => setAt(root)}>
-                    {root.split('/').pop()}
+                    {folderTitle(root)}
                 </button>
                 {trail.map((part, index) => (
                     <span key={`${index}-${part}`}>

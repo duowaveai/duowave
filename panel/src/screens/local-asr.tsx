@@ -6,7 +6,7 @@ import { useEffect, useState } from 'preact/hooks';
 
 import { LocalAsr, api, can, problemOf } from '../api';
 import { Progress } from '../ui/needs';
-import { tr } from '../i18n';
+import { language, tr } from '../i18n';
 
 /** Мегабайты, как их считают люди и Hugging Face (274 МБ у GigaAM v3). */
 const MB = 1_000_000;
@@ -48,6 +48,15 @@ export function localAsrLine(local: LocalAsr): string {
             return local.serving ? t.failedServing(local.serving) : t.failed;
         default:
             return t.noModel;
+    }
+}
+
+/** Название языка на языке пульта: «английский», «English». Нет такого у браузера — сам код. */
+export function languageName(code: string): string {
+    try {
+        return new Intl.DisplayNames([language()], { type: 'language' }).of(code) ?? code;
+    } catch {
+        return code;
     }
 }
 

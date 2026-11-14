@@ -99,7 +99,13 @@ export default {
     gpuFailedCpu: 'Видеокарта отказала — распознаёт процессор. «Повторить» попробует видеокарту снова.',
     retry: 'повторить',
     advisedTitle: 'Советуем',
-    advisedAbout: 'GigaAM от Сбера — для русской речи',
+    advisedAbout: 'лучшие для языка дома',
+    languageNeeds: (language: string, serving: string, needed: string) =>
+        `Язык дома — ${language}, а ${serving} его не знает. Для него нужна модель «${needed}»: она скачается один раз и встанет сама.`,
+    languageInstead: (language: string, serving: string, chosen: string) =>
+        `Язык дома — ${language}: слушает ${serving}, потому что выбранная ${chosen} его не знает.`,
+    languageFetch: 'скачать и включить',
+    languageFetchSize: (mb: number) => `скачать ${mb} МБ и включить`,
     moreModels: (n: number) => `Посмотреть ещё модели · ${n}`,
     moreModelsHeader: (n: number) => `Ещё модели · ${n}`,
     collapse: 'Свернуть',

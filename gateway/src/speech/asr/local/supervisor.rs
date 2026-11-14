@@ -7,6 +7,8 @@
 //!   the panel shows why, and «Повторить» starts again.
 //! - A new model loads in a new worker while the old one goes on serving; it takes over once it is in.
 //! - The worker ends with the gateway: it reads its stdin, and the gateway's end closes it, a crash too.
+//! - The model follows the household's language (catalog::pick): a one-language choice gives way to a model that is
+//!   here and knows the language; none here — the choice serves, and the status names the model to fetch.
 //!
 //! The way Handy keeps its engine (engine_supervisor/supervisor.rs, MIT), cut to what a gateway needs: one model,
 //! whole phrases, no streaming.
@@ -157,14 +159,25 @@ pub struct LocalStatus {
     pub paused: bool,
     /// The models whose file is here.
     pub installed: Vec<String>,
+    /// The model the choice names (the default without one), when another serves for the household's language.
+    pub instead_of: Option<String>,
+    /// The language recognition is for: ASR_LANGUAGE, else the household's; none — the model hears which itself.
+    pub language: Option<String>,
+    /// The model to fetch for that language: nothing here knows it (the person fetches it, nothing is fetched).
+    pub needs: Option<String>,
 }
+
+/// The household's language now (the gateway reads its setting; a test says it).
+pub type Household = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 pub struct LocalAsrOptions {
     /// DATA_DIR/speech: models/ and the worker's log live here.
     pub dir: PathBuf,
     pub mirror: Option<String>,
-    /// ASR_LANGUAGE: the hint for a many-language model.
+    /// ASR_LANGUAGE as the .env sets it: unset — the household's; blank — none (`speech::asr::wanted_language`).
     pub language: Option<String>,
+    /// The household's language: what recognition follows when ASR_LANGUAGE is unset. None by default.
+    pub household: Household,
     /// Whether a GPU may be used at all (ASR_LOCAL_GPU).
     pub gpu: bool,
     /// How long a phrase may take at the least (30 s; a test's is short).
@@ -179,6 +192,7 @@ impl LocalAsrOptions {
             dir,
             mirror,
             language,
+            household: Arc::new(|| None),
             gpu,
             run_floor: RUN_FLOOR,
             pauses: [Duration::from_secs(2), Duration::from_secs(10)],
@@ -196,6 +210,12 @@ struct Live {
 
 #[derive(Default)]
 struct State {
+    /// The person's choice as last given to `serve` (None: none yet — the default).
+    asked: Option<String>,
+    /// The model that choice names (`wanted_model`), once `serve` was asked.
+    wanted: Option<&'static str>,
+    /// The model the household's language wants fetched (catalog::Pick::needs).
+    needs: Option<String>,
     chosen: Option<String>,
     phase: Option<Phase>,
     bytes: u64,
@@ -226,6 +246,11 @@ impl Drop for LocalAsr {
             cancel.cancel();
         }
     }
+}
+
+/// The model a choice names: ours by that name, else the default.
+fn wanted_model(asked: Option<&str>) -> &'static str {
+    asked.and_then(catalog::find).map_or(catalog::DEFAULT_MODEL, |entry| entry.model)
 }
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -314,6 +339,54 @@ impl LocalAsr {
         self.lock().chosen.clone()
     }
 
+    /// The language recognition is for now: ASR_LANGUAGE, else the household's.
+    pub fn language(&self) -> Option<String> {
+        crate::speech::asr::wanted_language(self.options.language.as_deref(), (self.options.household)())
+    }
+
+    /// The person's choice (None: none yet), served as the household's language allows (catalog::pick): a model that
+    /// does not know the language gives way to one here that does; none here — it serves still, and the status names
+    /// the model to fetch. Only the person's own choice is ever fetched.
+    pub fn serve(&self, asked: Option<&str>) {
+        if let Some(other) = asked.filter(|model| catalog::find(model).is_none()) {
+            tracing::warn!(
+                target: "speech",
+                "asr: {other} runs only on a recognition server; this computer hears with {}",
+                catalog::DEFAULT_MODEL
+            );
+        }
+        let language = self.language();
+        let models_dir = self.models_dir();
+        let pick = catalog::pick(asked, language.as_deref(), |entry| {
+            download::present(&models_dir.join(entry.file), entry.size)
+        });
+        let wanted = wanted_model(asked);
+        if pick.model != wanted {
+            tracing::info!(
+                target: "speech",
+                "local recognition: {wanted} does not know {}; {} hears instead",
+                language.as_deref().unwrap_or("?"),
+                pick.model
+            );
+        }
+        if let (Some(needs), Some(language)) = (pick.needs, &language) {
+            tracing::info!(target: "speech", "local recognition: for {language} the panel offers {needs} to fetch");
+        }
+        {
+            let mut state = self.lock();
+            state.asked = asked.map(str::to_string);
+            state.wanted = Some(wanted);
+            state.needs = pick.needs.map(str::to_string);
+        }
+        self.choose(pick.model);
+    }
+
+    /// The household's language changed: the same choice served again for it.
+    pub fn relook(&self) {
+        let asked = self.lock().asked.clone();
+        self.serve(asked.as_deref());
+    }
+
     /// «Повторить»: the failures forgotten, the GPU tried again, the chosen model fetched or loaded anew.
     pub fn retry(&self) {
         {
@@ -358,6 +431,7 @@ impl LocalAsr {
             .filter(|entry| download::present(&self.file_of(entry), entry.size))
             .map(|entry| entry.model.to_string())
             .collect();
+        let language = self.language();
         let state = self.lock();
         let phase = match (state.phase, &state.chosen) {
             (Some(phase), _) => phase,
@@ -376,6 +450,12 @@ impl LocalAsr {
             gpu_failed: state.gpu_failed,
             paused: state.paused,
             installed,
+            instead_of: state
+                .wanted
+                .filter(|wanted| state.chosen.as_deref().is_some_and(|chosen| chosen != *wanted))
+                .map(str::to_string),
+            language,
+            needs: state.needs.clone(),
         }
     }
 
@@ -436,8 +516,17 @@ impl LocalAsr {
         !self.options.gpu || self.lock().gpu_failed
     }
 
+    /// What the model is told: a one-language model its language; else ASR_LANGUAGE as it is set, or the
+    /// household's language when the model knows it; else nothing — it hears which for itself.
     fn language_for(&self, entry: &GgufModel) -> Option<String> {
-        entry.language.map(str::to_string).or_else(|| self.options.language.clone().filter(|lang| !lang.is_empty()))
+        if let [only] = entry.languages {
+            return Some(only.to_string());
+        }
+        match self.options.language.as_deref().map(str::trim) {
+            Some("") => None,
+            Some(_) => self.language(),
+            None => entry.hint(self.language().as_deref()).map(str::to_string),
+        }
     }
 
     /// One look: the chosen model fetched if missing, loaded if not serving, a dead worker replaced.
@@ -803,6 +892,8 @@ mod tests {
         gpu_load_fails: bool,
         /// Every load fails as a bad file does.
         load_fails: bool,
+        /// The language each phrase was told.
+        told: Arc<Mutex<Vec<Option<String>>>>,
     }
 
     impl MemoryLaunch {
@@ -813,6 +904,7 @@ mod tests {
                 cpu_only_launches: AtomicUsize::new(0),
                 gpu_load_fails: false,
                 load_fails: false,
+                told: Arc::default(),
             })
         }
     }
@@ -828,6 +920,7 @@ mod tests {
             let act = self.acts.lock().unwrap().pop_front();
             let gpu_load_fails = self.gpu_load_fails && !cpu_only;
             let load_fails = self.load_fails;
+            let told = self.told.clone();
             std::thread::spawn(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
                 runtime.block_on(async move {
@@ -863,11 +956,14 @@ mod tests {
                                 backend: if cpu_only { "cpu".into() } else { "metal".into() },
                                 device: String::new(),
                             },
-                            Request::Run { .. } => match act {
+                            Request::Run { language } => match act {
                                 Some(Act::Crash) => return,
                                 Some(Act::Hang) => std::future::pending().await,
                                 Some(Act::GpuFault) => Response::Error { message: "device lost".into(), backend: true },
-                                Some(Act::Hear) | None => Response::Text { text: "привет".into() },
+                                Some(Act::Hear) | None => {
+                                    told.lock().unwrap().push(language);
+                                    Response::Text { text: "привет".into() }
+                                }
                             },
                         };
                         let mut out = Vec::new();
@@ -896,6 +992,91 @@ mod tests {
         options.run_floor = Duration::from_millis(300);
         options.pauses = [Duration::ZERO, Duration::ZERO];
         (LocalAsr::with_launch(options, launch), dir)
+    }
+
+    /// A service with these models' files in place, the household speaking `household` (changed through the
+    /// returned cell) and ASR_LANGUAGE as `env`.
+    fn speaking(
+        launch: Arc<MemoryLaunch>,
+        models: &[&str],
+        household: &str,
+        env: Option<&str>,
+    ) -> (Arc<LocalAsr>, Arc<Mutex<String>>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("models");
+        std::fs::create_dir_all(&folder).unwrap();
+        for model in models {
+            let entry = catalog::find(model).unwrap();
+            std::fs::File::create(folder.join(entry.file)).unwrap().set_len(entry.size).unwrap();
+        }
+        let cell = Arc::new(Mutex::new(household.to_string()));
+        let mut options = LocalAsrOptions::new(dir.path().to_path_buf(), None, env.map(str::to_string), false);
+        let read = cell.clone();
+        options.household = Arc::new(move || Some(read.lock().unwrap().clone()));
+        options.run_floor = Duration::from_millis(300);
+        options.pauses = [Duration::ZERO, Duration::ZERO];
+        (LocalAsr::with_launch(options, launch), cell, dir)
+    }
+
+    async fn heard_with(asr: &Arc<LocalAsr>, launch: &MemoryLaunch) -> Option<String> {
+        asr.settle().await;
+        assert_eq!(asr.status().phase, Phase::Ready, "{:?}", asr.status());
+        asr.recognize(&[0i16; 1_600], 16_000, &CancellationToken::new()).await.unwrap();
+        launch.told.lock().unwrap().pop().unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_english_household_with_only_gigaam_keeps_it_and_names_the_model_to_fetch() {
+        let launch = MemoryLaunch::new(&[]);
+        let (asr, _cell, _dir) = speaking(launch.clone(), &[catalog::DEFAULT_MODEL], "en", None);
+        asr.serve(None);
+        assert_eq!(heard_with(&asr, &launch).await.as_deref(), Some("ru"), "GigaAM is told its own language");
+        let status = asr.status();
+        assert_eq!(status.model.as_deref(), Some(catalog::DEFAULT_MODEL));
+        assert_eq!(status.needs.as_deref(), Some("parakeet-0.6b-v3"));
+        assert_eq!(status.language.as_deref(), Some("en"));
+        assert_eq!(status.instead_of, None);
+        // Nothing was fetched for the language: only GigaAM is here.
+        assert_eq!(status.installed, vec![catalog::DEFAULT_MODEL.to_string()]);
+    }
+
+    #[tokio::test]
+    async fn an_english_household_hears_with_a_model_here_that_knows_english_and_russian_brings_the_choice_back() {
+        let launch = MemoryLaunch::new(&[]);
+        let (asr, cell, _dir) = speaking(launch.clone(), &[catalog::DEFAULT_MODEL, "parakeet-0.6b-v3"], "en", None);
+        asr.serve(Some(catalog::DEFAULT_MODEL));
+        assert_eq!(heard_with(&asr, &launch).await.as_deref(), Some("en"));
+        let status = asr.status();
+        assert_eq!(status.serving.as_deref(), Some("parakeet-0.6b-v3"));
+        assert_eq!(status.instead_of.as_deref(), Some(catalog::DEFAULT_MODEL));
+        assert_eq!(status.needs, None);
+
+        *cell.lock().unwrap() = "ru".into();
+        asr.relook();
+        assert_eq!(heard_with(&asr, &launch).await.as_deref(), Some("ru"));
+        let status = asr.status();
+        assert_eq!(status.serving.as_deref(), Some(catalog::DEFAULT_MODEL));
+        assert_eq!(status.instead_of, None);
+    }
+
+    #[tokio::test]
+    async fn asr_language_in_the_env_wins_over_the_household_and_a_blank_one_tells_nothing() {
+        let launch = MemoryLaunch::new(&[]);
+        let both = [catalog::DEFAULT_MODEL, "parakeet-0.6b-v3"];
+        let (asr, _cell, _dir) = speaking(launch.clone(), &both, "en", Some("ru"));
+        asr.serve(None);
+        assert_eq!(heard_with(&asr, &launch).await.as_deref(), Some("ru"));
+        assert_eq!(asr.status().serving.as_deref(), Some(catalog::DEFAULT_MODEL), "Russian wanted: GigaAM stays");
+        asr.serve(Some("parakeet-0.6b-v3"));
+        assert_eq!(heard_with(&asr, &launch).await.as_deref(), Some("ru"));
+
+        let launch = MemoryLaunch::new(&[]);
+        let (asr, _cell, _dir) = speaking(launch.clone(), &both, "en", Some(""));
+        asr.serve(Some("parakeet-0.6b-v3"));
+        assert_eq!(heard_with(&asr, &launch).await, None, "blank: the model hears which itself");
+        asr.serve(None);
+        assert_eq!(heard_with(&asr, &launch).await.as_deref(), Some("ru"));
+        assert_eq!(asr.status().serving.as_deref(), Some(catalog::DEFAULT_MODEL), "no language: the choice serves");
     }
 
     async fn ready(asr: &Arc<LocalAsr>) {
@@ -986,6 +1167,7 @@ mod tests {
             cpu_only_launches: AtomicUsize::new(0),
             gpu_load_fails: true,
             load_fails: false,
+            told: Arc::default(),
         });
         let (asr, _dir) = service(launch.clone(), true);
         ready(&asr).await;
@@ -1001,6 +1183,7 @@ mod tests {
             cpu_only_launches: AtomicUsize::new(0),
             gpu_load_fails: false,
             load_fails: true,
+            told: Arc::default(),
         });
         let (asr, dir) = service(launch, false);
         asr.choose(catalog::DEFAULT_MODEL);

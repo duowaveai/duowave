@@ -43,7 +43,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::device_tag::device_tag_of;
 use super::relay_session::recorded_headers;
-use super::relay_trips::yandex_heard;
+use super::relay_trips::{yandex_heard, yandex_recognized};
 use super::spoken_answer::{
     describe, ends_with_question, without_markup, AnswerObserver, AnswerOutcome, AnswerOutput, AnswerPart, AnswerParts,
     ResponseHeader, SpokenAnswer, SpokenAnswerOptions, Synthesize,
@@ -74,7 +74,8 @@ use crate::gateway::observability::session_recorder::{
 use crate::gateway::protocol::aapi_codec::AapiCodec;
 use crate::gateway::protocol::ids::{new_message_id, new_session_id};
 use crate::gateway::protocol::proto_edit::{
-    edit_frame, get_bytes, get_string, restream, retext_text_input, voice_to_text_input, FrameEdit,
+    cancel_request, continue_request, edit_frame, get_bytes, get_string, restream, retext_text_input,
+    voice_to_text_input, wait_for_approval, waits_for_approval, FrameEdit,
 };
 use crate::gateway::protocol::proto_object::{bytes_value, is_js_space};
 use crate::gateway::protocol::protocol_types::{
@@ -301,6 +302,9 @@ const RESCUE_AFTER_MS: u64 = 3000;
 /// After connecting, the station's request to continue its player is its own, from before the break (a button's
 /// comes later).
 const RECONNECT_CONTINUE_MS: u64 = 15_000;
+/// How long the exchange of a request we took from Yandex (Yandex's ear, docs/plans/yandex-ear.md) stays ours: an
+/// answer Yandex sends all the same reaches the cancelled relay — dropped, and noted — not the station as a push.
+const DECLINED_EXCHANGE_MS: u64 = 15_000;
 /// Callbacks of Yandex's player: they report on the music, the dialog goes on beside them.
 fn player_callback(name: &str) -> bool {
     name.starts_with("music_thin_client_") || name.starts_with("@@mm_stack_engine_")
@@ -563,6 +567,8 @@ struct HeldVoice {
     stream_id: Option<u32>,
     request: AliceRequest,
     frames: Vec<Bytes>,
+    /// Yandex is asked to wait after its recognition (Yandex's ear).
+    gated: bool,
 }
 
 /// The station's streams given to Yandex as they are, the newest kept: what Yandex says on them is the station's.
@@ -595,6 +601,9 @@ pub struct Inner {
     station_streams_at_yandex: VecDeque<u32>,
     /// A voice request waiting for our session with Yandex to open.
     held_voice: Option<HeldVoice>,
+    /// Yandex's ear (docs/plans/yandex-ear.md): the station's message id of the request Yandex recognizes and holds
+    /// for our decision, and its relay.
+    yandex_ear: Option<(String, Arc<YandexRelay>)>,
     stray_stream_noted: bool,
     /// Whether the station's next listening without the wake word is wanted: set by the last answer.
     follow_up: Option<FollowUp>,
@@ -828,6 +837,7 @@ impl StationSession {
                 forwarded_streams: HashSet::new(),
                 station_streams_at_yandex: VecDeque::new(),
                 held_voice: None,
+                yandex_ear: None,
                 stray_stream_noted: false,
                 follow_up: None,
                 last_gain_db: None,
@@ -1380,6 +1390,7 @@ impl StationSession {
                     "music recognition",
                     NO_EVENTS,
                     "musicInput",
+                    false,
                     false,
                 );
                 true
@@ -3145,13 +3156,19 @@ impl StationSession {
         if let Some(stream_id) = header.stream_id {
             Self::forward_stream(inner, stream_id);
         }
+        let (frame, gated) = self.ask_to_wait(&message_id, frame);
         if let Some(trip) = self.begin_trip(inner, &message_id, RequestKind::Voice, None) {
-            trip.step(RequestPhase::Listen, Some(Place::Yandex), Some("Алиса"));
-            trip.routed(None, "yandex");
+            if gated {
+                // Yandex only hears: who answers is decided on its recognition.
+                trip.step(RequestPhase::Listen, Some(Place::Yandex), None);
+            } else {
+                trip.step(RequestPhase::Listen, Some(Place::Yandex), Some("Алиса"));
+                trip.routed(None, "yandex");
+            }
         }
         let Some(yandex) = inner.yandex.clone() else { return };
         if yandex.connected() {
-            return self.voice_relayed(inner, &message_id, vec![frame]);
+            return self.voice_relayed(inner, &message_id, vec![frame], gated);
         }
         // Between its reconnects, it opens now.
         yandex.warm_up();
@@ -3160,6 +3177,7 @@ impl StationSession {
             stream_id: header.stream_id,
             request,
             frames: vec![frame],
+            gated,
         });
         self.note("voiceHeld", &format!("request {}: waits for our session with Yandex", tag8(&message_id)), None);
         let session = self.clone();
@@ -3175,11 +3193,11 @@ impl StationSession {
                 inner.held_voice = Some(held);
                 return session.drop_held_voice(&mut inner, RequestStatus::Failed, "Yandex is not reachable");
             }
-            session.voice_relayed(&mut inner, &held.message_id, held.frames);
+            session.voice_relayed(&mut inner, &held.message_id, held.frames, held.gated);
         });
     }
 
-    fn voice_relayed(self: &Arc<Self>, inner: &mut Inner, message_id: &str, frames: Vec<Bytes>) {
+    fn voice_relayed(self: &Arc<Self>, inner: &mut Inner, message_id: &str, frames: Vec<Bytes>, gated: bool) {
         self.relay_yandex(
             inner,
             None,
@@ -3188,9 +3206,151 @@ impl StationSession {
             CapabilityName::Chat,
             "no recognition here",
             NO_EVENTS,
-            "voiceInput",
+            if gated { "voiceInput (Yandex's ear)" } else { "voiceInput" },
+            false,
+            gated,
+        );
+    }
+
+    /// Yandex's ear (docs/plans/yandex-ear.md): whether Yandex only hears this voice — it recognizes it and waits, and
+    /// our router decides who answers — or hears and answers it, as before. Only in «Вместе» with the switch on; the
+    /// frame is the station's with the wait asked for. A frame that cannot be marked goes as it was.
+    fn ask_to_wait(&self, message_id: &str, frame: Bytes) -> (Bytes, bool) {
+        if !self.deps.modes.yandex_ear() || !self.deps.modes.yandex_allowed() {
+            return (frame, false);
+        }
+        match wait_for_approval(&frame) {
+            Ok(gated) if waits_for_approval(&gated) => (Bytes::from(gated), true),
+            Ok(_) => {
+                self.note(
+                    "yandexEar",
+                    &format!("request {}: no request body to mark, Yandex answers", tag8(message_id)),
+                    None,
+                );
+                (frame, false)
+            }
+            Err(error) => {
+                self.note("yandexEar", &format!("request {}: {error}, Yandex answers", tag8(message_id)), None);
+                (frame, false)
+            }
+        }
+    }
+
+    /// Yandex recognized a request it holds for us: it answers it itself where our router sends it to Yandex (a
+    /// skill's dialog, a capability routed to Yandex as it was said, nothing heard) — ContinueRequest; anything else
+    /// is ours, as if our own ear had heard it — CancelRequest, and the request goes on here with Yandex's words.
+    fn on_yandex_ear(self: &Arc<Self>, inner: &mut Inner, message_id: &str, text: &str) {
+        let Some((_, relay)) = inner.yandex_ear.take_if(|(held, _)| held == message_id) else { return };
+        let Some(yandex) = inner.yandex.clone() else { return };
+        let request = inner
+            .request_frame(message_id)
+            .and_then(|kept| self.deps.codec.decode_client(&kept.frame).ok())
+            .and_then(|decoded| match decoded.message {
+                ClientMessage::Event(ClientEvent::VoiceInput { request, .. }) => Some(request),
+                _ => None,
+            })
+            .unwrap_or_else(unknown_request);
+        let text = text.trim();
+        let yandex_answers = text.is_empty() || self.yandex_takes(inner, message_id, text, &request);
+        if yandex_answers {
+            let continued = match inner.request_frame(message_id) {
+                Some(kept) => continue_request(&kept.frame, &new_message_id()),
+                None => Err(crate::gateway::protocol::proto_edit::ProtoError::new("the request's frame is gone")),
+            };
+            match continued {
+                Ok(frame) => {
+                    yandex.tell(
+                        Bytes::from(frame),
+                        "continueRequest",
+                        &format!("ref={}: Yandex answers", tag8(message_id)),
+                    );
+                }
+                Err(error) => {
+                    // Yandex keeps waiting and the station with it: the request is ours after all.
+                    self.note(
+                        "yandexEar",
+                        &format!("request {}: no ContinueRequest ({error}), ours", tag8(message_id)),
+                        None,
+                    );
+                    return self.take_from_yandex(inner, message_id, &request, text, &relay, &yandex);
+                }
+            }
+            let what = if text.is_empty() { "nothing heard".to_string() } else { format!("\"{text}\"") };
+            self.record(
+                EventDirection::Note,
+                "yandexEar",
+                Some(format!("{} continue: {what} → Yandex answers", tag8(message_id))),
+                Some(&json!({ "ref": message_id, "text": text, "answers": "yandex" })),
+                false,
+            );
+            if let Some(trip) = inner.trip(message_id) {
+                trip.step(RequestPhase::Think, Some(Place::Yandex), Some("Алиса"));
+            }
+            return;
+        }
+        self.take_from_yandex(inner, message_id, &request, text, &relay, &yandex);
+    }
+
+    /// The held request is ours: Yandex drops it (CancelRequest, local execution), its relay stops, and the request
+    /// goes where our router sends it, with Yandex's words.
+    fn take_from_yandex(
+        self: &Arc<Self>,
+        inner: &mut Inner,
+        message_id: &str,
+        request: &AliceRequest,
+        text: &str,
+        relay: &Arc<YandexRelay>,
+        yandex: &Arc<YandexSession>,
+    ) {
+        relay.decline("answered here (Yandex's ear)");
+        let cancel = Bytes::from(cancel_request(&new_message_id(), message_id));
+        yandex.tell(cancel, "cancelRequest", &format!("ref={}: answered here", tag8(message_id)));
+        self.record(
+            EventDirection::Note,
+            "yandexEar",
+            Some(format!("{} cancel: \"{text}\" → ours", tag8(message_id))),
+            Some(&json!({ "ref": message_id, "text": text, "answers": "own" })),
             false,
         );
+        if text.is_empty() {
+            self.send_empty_response(message_id, request, Vec::new());
+            return self.end_trip(inner, message_id, RequestStatus::Silent, None, None);
+        }
+        self.handle_request(inner, message_id, request, text, false);
+    }
+
+    /// Whether our router gives this request to Yandex as it was said: then Yandex, holding it, answers it itself.
+    /// What it would get as other words (`yandexText`), the emergency words, our skills, the model and «не умею» are
+    /// ours. The route is journaled here as `handle_request` would.
+    fn yandex_takes(&self, inner: &mut Inner, message_id: &str, text: &str, request: &AliceRequest) -> bool {
+        if super::rescue::rescue_of(text).is_some() {
+            return false;
+        }
+        let decision = self.deps.skills.router.decide(&self.route_input(inner, text, request));
+        let (capability, source, rule) = match &decision {
+            Decision::YandexDialog { capability } => (*capability, "continuation", None),
+            Decision::Intent { intent, source, rule, resolution: Resolution::Yandex }
+                if intent.params.get("yandexText").and_then(Value::as_str).is_none_or(|said| said == text) =>
+            {
+                if intent.capability == CapabilityName::Playback && intent.action == "silence" {
+                    for answer in &inner.deferred {
+                        answer.cancel("«стоп»");
+                    }
+                }
+                (intent.capability, source.as_str(), *rule)
+            }
+            _ => return false,
+        };
+        if !matches!(decision, Decision::YandexDialog { .. })
+            && inner.continuation.is_some_and(|continuation| continuation.executor == RouteStep::Yandex)
+        {
+            inner.continuation = None;
+        }
+        self.record_route(text, capability, &Resolution::Yandex, source, rule);
+        if let Some(trip) = inner.trip(message_id) {
+            trip.routed(Some(capability.as_str()), "yandex");
+        }
+        true
     }
 
     /// A held voice request that will not go to Yandex: its stream stops going there, its trip ends, and the station,
@@ -3255,7 +3415,18 @@ impl StationSession {
                 Err(error) => return self.note("frameError", &format!("{error:#}"), None),
             },
         };
-        self.relay_yandex(inner, Some(r#ref), &message_id, frames, capability, text, RECOGNITION_EVENTS, label, false);
+        self.relay_yandex(
+            inner,
+            Some(r#ref),
+            &message_id,
+            frames,
+            capability,
+            text,
+            RECOGNITION_EVENTS,
+            label,
+            false,
+            false,
+        );
     }
 
     /// Our recognised text in the station's own request, or, without one, in a request of our own.
@@ -3344,6 +3515,7 @@ impl StationSession {
         drop: &'static [&'static str],
         label: &str,
         player: bool,
+        gated: bool,
     ) {
         let yandex = inner.yandex.clone();
         // The player's own callbacks (a track started, the next one wanted) go beside the dialog: live, the next
@@ -3391,11 +3563,45 @@ impl StationSession {
                 }
             }));
         }
-        // Yandex hears what nothing here did: its recognition is the request's words.
+        // Yandex hears what nothing here did: its recognition is the request's words. Holding the request, it only
+        // hears: who answers is decided on its final recognition (on_yandex_ear).
         if let Some(trip) = trip.clone().filter(|_| !drop.contains(&"asrResult")) {
-            options.on_asr = Some(Box::new(move |asr_result: &Value| yandex_heard(&trip, Some(asr_result))));
+            options.on_asr = Some(Box::new(move |asr_result: &Value| {
+                if gated {
+                    yandex_recognized(&trip, Some(asr_result));
+                } else {
+                    yandex_heard(&trip, Some(asr_result));
+                }
+            }));
+        }
+        if gated {
+            let me = self.me.clone();
+            let held = message_id.to_string();
+            options.approval = Some(Box::new(move |text: String| {
+                if let Some(session) = me.upgrade() {
+                    let mut inner = session.lock();
+                    session.on_yandex_ear(&mut inner, &held, &text);
+                }
+            }));
+            let me = self.me.clone();
+            let held = message_id.to_string();
+            options.on_ignored = Some(Box::new(move || {
+                let Some(session) = me.upgrade() else { return };
+                tracing::warn!(target: "session", "Session {} request {}: Yandex answered though told not to (Yandex's ear does not hold here)", tag8(&session.id), tag8(&held));
+                session.note(
+                    "yandexEarIgnored",
+                    &format!(
+                        "request {}: Yandex answered though told not to; its answer dropped, ours stays",
+                        tag8(&held)
+                    ),
+                    None,
+                );
+            }));
         }
         let relay = YandexRelay::new(options, self.link());
+        if gated {
+            inner.yandex_ear = Some((message_id.to_string(), relay.clone()));
+        }
         if let Some(trip) = &trip {
             trip.claim(relay.owner);
         }
@@ -3427,14 +3633,19 @@ impl StationSession {
         tokio::spawn(async move {
             let answer = relay.done().await;
             let mut inner = session.lock();
+            let declined = relay.declined();
             if let (Some(exchange), Some(yandex)) = (exchange, &yandex) {
-                yandex.end_exchange(exchange, 3000);
+                yandex.end_exchange(exchange, if declined { DECLINED_EXCHANGE_MS } else { 3000 });
+            }
+            if inner.yandex_ear.as_ref().is_some_and(|(_, held)| Arc::ptr_eq(held, &relay)) {
+                inner.yandex_ear = None;
             }
             if inner.yandex_relay.as_ref().is_some_and(|current| Arc::ptr_eq(current, &relay)) {
                 inner.yandex_relay = None;
             }
             inner.player_relays.retain(|(id, kept)| !(id == &message_id && Arc::ptr_eq(kept, &relay)));
-            if let Some(trip) = &trip {
+            // A request taken from Yandex is ours from here: our answer ends its trip.
+            if let Some(trip) = trip.as_ref().filter(|_| !declined) {
                 if !answer.text.is_empty() {
                     trip.answered(&answer.text);
                 }
@@ -4079,6 +4290,7 @@ impl StationSession {
                 NO_EVENTS,
                 &label,
                 player_callback(&name),
+                false,
             );
         }
         let shown = if name.is_empty() { "(no name)" } else { name.as_str() };

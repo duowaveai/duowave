@@ -14,8 +14,9 @@ import { ask } from '../ui/confirm';
 import { Sheet } from '../ui/sheet';
 import { noteVoiceInput, useOnComputer } from '../voice-input';
 import { LISTEN_RATE } from '../voice/mic';
+import { DEFAULT_TALK_KEY, keyLabel, keyOf, same, setChoosingTalkKey, setTalkKey, useTalkKeyChoice } from '../voice/talk-key';
 import { tr } from '../i18n';
-import { localAsrNeedsCard, useLocalAsr } from './local-asr';
+import { languageName, localAsrNeedsCard, useLocalAsr } from './local-asr';
 
 /** Выбор есть только у шлюза на компьютере: у шлюза на самой колонке и у её помощника — колонка. */
 export function useTalkChoiceHere(): boolean {
@@ -158,6 +159,9 @@ export function Readiness({ onGo }: { onGo?: () => void }) {
     const health = panel.health;
     const hears = !!health?.speech && health.speech.asr !== 'off';
     const preparing = localAsrNeedsCard(local);
+    // Язык дома, которого не знает ни одна модель здесь: слух работает, но этот язык не поймёт.
+    const neededFor = local?.language && local.needs ? local.language : null;
+    const needed = local?.needs && neededFor ? (models?.asr.find((card) => card.model === local.needs)?.title ?? local.needs) : null;
     const brain = health?.brain;
     const thinks = !!brain && brain.provider !== 'none';
     const ownVoice = models?.voice === 'own' && !!models.ttsActive.modelId;
@@ -165,9 +169,15 @@ export function Readiness({ onGo }: { onGo?: () => void }) {
         {
             key: 'hear',
             title: tr.voiceInput.hearTitle,
-            ok: hears && !preparing,
-            state: preparing ? tr.voiceInput.hearPreparing : hears ? tr.voiceInput.hearOk : tr.voiceInput.hearOff,
-            fix: hears || preparing ? undefined : { label: tr.voiceInput.hearFix, go: go('settings', 'station') },
+            ok: hears && !preparing && !needed,
+            state: preparing
+                ? tr.voiceInput.hearPreparing
+                : !hears
+                  ? tr.voiceInput.hearOff
+                  : needed && neededFor
+                    ? tr.voiceInput.hearNeeds(languageName(neededFor), needed)
+                    : tr.voiceInput.hearOk,
+            fix: preparing ? undefined : !hears ? { label: tr.voiceInput.hearFix, go: go('settings', 'station') } : needed ? { label: tr.voiceInput.hearNeedsFix, go: go('settings', 'station') } : undefined,
         },
         {
             key: 'voice',
@@ -262,6 +272,66 @@ export function MicCheck() {
             </div>
             <div class="mic-check" role="meter" aria-label={tr.voiceInput.micLevel} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round((level ?? 0) * 100)}>
                 <span style={{ width: `${Math.round((level ?? 0) * 100)}%` }} />
+            </div>
+            {problem && (
+                <p role="alert" class="w-cap m-0 c-dot-offline">
+                    {problem}
+                </p>
+            )}
+        </div>
+    );
+}
+
+/**
+ * Клавиша «Сказать» (voice/talk-key.ts): какая сейчас и смена нажатием. Пока ждём нажатия, прежняя клавиша не слушает;
+ * Esc — отмена.
+ */
+export function TalkKeyChoice() {
+    const key = useTalkKeyChoice();
+    const [waiting, setWaiting] = useState(false);
+    const [problem, setProblem] = useState<string | null>(null);
+    useEffect(() => {
+        if (!waiting) return;
+        setChoosingTalkKey(true);
+        const onKey = (event: KeyboardEvent) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (event.code === 'Escape') return setWaiting(false);
+            const next = keyOf(event);
+            if (!next) return;
+            if ('problem' in next) return setProblem(next.problem);
+            setTalkKey(next);
+            setProblem(null);
+            setWaiting(false);
+        };
+        window.addEventListener('keydown', onKey, true);
+        return () => {
+            window.removeEventListener('keydown', onKey, true);
+            setChoosingTalkKey(false);
+        };
+    }, [waiting]);
+    const label = keyLabel(key);
+    return (
+        <div class="flex flex-col gap-10">
+            <div class="w-row">
+                <span class="flex-1 min-w-0 flex flex-col">
+                    <span class="w-strong">{waiting ? tr.voiceInput.keyPress : label}</span>
+                    <span class="w-cap">{waiting ? tr.voiceInput.keyPressSub : tr.voiceInput.keyAbout(label)}</span>
+                </span>
+                {!waiting && !same(key, DEFAULT_TALK_KEY) && (
+                    <button class="w-btn" onClick={() => setTalkKey(DEFAULT_TALK_KEY)}>
+                        {tr.voiceInput.keyDefault(keyLabel(DEFAULT_TALK_KEY))}
+                    </button>
+                )}
+                <button
+                    class="w-btn"
+                    onClick={() => {
+                        setProblem(null);
+                        setWaiting(!waiting);
+                    }}
+                >
+                    {waiting ? tr.voiceInput.keyCancel : tr.voiceInput.keyChange}
+                </button>
             </div>
             {problem && (
                 <p role="alert" class="w-cap m-0 c-dot-offline">

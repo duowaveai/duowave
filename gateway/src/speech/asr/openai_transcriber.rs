@@ -99,8 +99,10 @@ impl OpenAiTranscriber {
         let file = Part::bytes(encode_wav(pcm, sample_rate)).file_name("speech.wav").mime_str("audio/wav")?;
         let mut form =
             Form::new().part("file", file).text("model", config.model.clone()).text("response_format", "json");
-        if let Some(language) = config.language.as_ref().filter(|language| !language.is_empty()) {
-            form = form.text("language", language.clone());
+        // ASR_LANGUAGE, else the household's language as the gateway last told it (src/locale/text.rs).
+        if let Some(language) = super::wanted_language(config.language.as_deref(), crate::locale::text::household_now())
+        {
+            form = form.text("language", language);
         }
         if let Some(prompt) = config.prompt.as_ref().filter(|prompt| !prompt.is_empty()) {
             form = form.text("prompt", prompt.clone());

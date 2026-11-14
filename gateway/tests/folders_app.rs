@@ -137,19 +137,19 @@ async fn home(yandex: bool) -> Home {
     let places =
         Places::new(&dir.path().join("data"), &dir.path().join("content"), false).with_home(Some(root.clone()));
     places.prepare();
-    std::fs::create_dir_all(root.join("Фото/Отпуск 2025")).unwrap();
+    std::fs::create_dir_all(root.join("Photos/Отпуск 2025")).unwrap();
     for n in 1..=3 {
         image::RgbImage::from_pixel(64, 48, image::Rgb([n * 40, 90, 120]))
-            .save(root.join(format!("Фото/Отпуск 2025/{n}.png")))
+            .save(root.join(format!("Photos/Отпуск 2025/{n}.png")))
             .unwrap();
     }
     std::fs::create_dir_all(root.join("Рецепты/Супы")).unwrap();
     std::fs::write(root.join("Рецепты/Супы/Борщ украинский.txt"), "Свёкла, капуста, картошка.\n\nВарить час.").unwrap();
     std::fs::write(root.join("Рецепты/Щи.txt"), "Капуста.").unwrap();
-    std::fs::write(root.join("Видео/Море.mp4"), b"not really a video").unwrap();
-    std::fs::write(root.join("Документы/Голос.wav"), b"not really a sound").unwrap();
+    std::fs::write(root.join("Videos/Море.mp4"), b"not really a video").unwrap();
+    std::fs::write(root.join("Documents/Голос.wav"), b"not really a sound").unwrap();
     image::RgbImage::from_pixel(32, 24, image::Rgb([200, 200, 200]))
-        .save(root.join("Картинки/Screenshot 2026-11-13 at 16.01.11.png"))
+        .save(root.join("Pictures/Screenshot 2026-11-13 at 16.01.11.png"))
         .unwrap();
     let files = Arc::new(Files::new(places.clone(), Arc::new(|_| 64)));
     let folders = Folders::new(Arc::new(Db::memory()), places, None);
@@ -209,10 +209,10 @@ async fn a_walk_by_voice_through_the_photos_with_the_card_following() {
     let first = said(&home, "номер один").await;
     assert_eq!(speech(&first), "Показываю «1».");
     let shown = card(&home).await;
-    assert_eq!(shown["picture"]["address"], "files/home/Фото/Отпуск 2025/1.png");
+    assert_eq!(shown["picture"]["address"], "files/home/Photos/Отпуск 2025/1.png");
     assert_eq!(shown["cap"], "Фото › Отпуск 2025 › 1.png · 1 из 3");
     assert_eq!(speech(&said(&home, "следующая").await), "Показываю «2».");
-    assert_eq!(card(&home).await["picture"]["address"], "files/home/Фото/Отпуск 2025/2.png");
+    assert_eq!(card(&home).await["picture"]["address"], "files/home/Photos/Отпуск 2025/2.png");
     assert_eq!(speech(&said(&home, "предыдущая").await), "Показываю «1».");
     let back = said(&home, "назад").await;
     assert!(speech(&back).starts_with("В «Отпуск 2025» 3 файла"), "{back}");
@@ -222,7 +222,7 @@ async fn a_walk_by_voice_through_the_photos_with_the_card_following() {
     // The card's own buttons walk the same way.
     let tapped = home
         .plugin
-        .call("cardOpen", json!({ "address": "files/home/Фото/Отпуск 2025" }), CallKind::Background)
+        .call("cardOpen", json!({ "address": "files/home/Photos/Отпуск 2025" }), CallKind::Background)
         .await
         .unwrap();
     assert_eq!(tapped["rows"].as_array().unwrap().len(), 3);
@@ -235,6 +235,8 @@ async fn the_apps_own_phrases_work_inside_its_conversation() {
     let home = home(false).await;
     let listed = phrase(&home, "folders", json!({})).await;
     assert!(speech(&listed).starts_with("Папки: "), "{listed}");
+    // On the disk the folders are Photos, Documents…; the voice says them in the household's language.
+    assert!(speech(&listed).contains("Фото, Документы") && !speech(&listed).contains("Photos"), "{listed}");
     assert_eq!(speech(&said(&home, "Открой фото.").await), "В «Фото» 1 папка: Отпуск 2025. Что открыть?");
     // Another home folder, said from inside «Фото».
     let other = said(&home, "Что в папке рецепты?").await;
@@ -276,14 +278,14 @@ async fn photos_and_videos_open_windows_on_the_screen_temporary_unless_kept() {
         .plugin
         .call(
             "toolShow",
-            json!({ "addresses": ["files/home/Фото/Отпуск 2025/1.png", "files/home/Фото/Отпуск 2025/3.png", "files/home/Видео/Море.mp4"], "add": true }),
+            json!({ "addresses": ["files/home/Photos/Отпуск 2025/1.png", "files/home/Photos/Отпуск 2025/3.png", "files/home/Videos/Море.mp4"], "add": true }),
             CallKind::Tool,
         )
         .await
         .unwrap();
     assert_eq!(shown["opened"].as_array().unwrap().len(), 3, "{shown}");
     assert_eq!(home.screen.windows().len(), 4);
-    let video = "files/home/Видео/Море.mp4";
+    let video = "files/home/Videos/Море.mp4";
     let pause = json!({ "address": video, "action": "pause" });
     home.plugin.call("toolPlay", pause, CallKind::Tool).await.unwrap();
     assert!(home.screen.windows().iter().find(|window| window.title == "Море").unwrap().paused);
@@ -315,7 +317,7 @@ async fn all_at_once_names_across_alphabets_and_a_sound_on_the_station() {
     phrase(&home, "openFolder", json!({ "name": "картинки" })).await;
     assert_eq!(speech(&said(&home, "открой скриншот").await), "Показываю «Screenshot 2026-11-13 at 16.01.11».");
 
-    let sound = "files/home/Документы/Голос.wav";
+    let sound = "files/home/Documents/Голос.wav";
     let station = json!({ "station": true });
     let input = json!({ "address": sound, "request": station });
     let played = home.plugin.call("toolOpen", input, CallKind::Tool).await.unwrap();

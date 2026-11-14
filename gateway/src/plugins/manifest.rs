@@ -132,7 +132,7 @@ pub enum Permission {
     /// `net:<host>`: `http.fetch` to this host; `net:*.example.com` to its subdomains.
     Net(String),
     /// `see:<адрес>`, `listen:…`, `call:…`, `edit:…`: a step of the ladder towards a pattern of addresses on the bus
-    /// (src/bus): `call:system/voice`, `call:app/notes`, `listen:device/midi`, `edit:files/home/Документы/*`. Asked
+    /// (src/bus): `call:system/voice`, `call:app/notes`, `listen:device/midi`, `edit:files/home/Documents/*`. Asked
     /// of a person the first time it is needed, like a phone; a built-in app has its own from the start.
     Bus { level: crate::bus::Level, pattern: crate::bus::Pattern },
 }
@@ -1453,7 +1453,7 @@ fn bus_spec(value: Option<&Value>, permissions: &[Permission], problems: &mut Ve
         let at = format!("contributes.bus.on[{index}]");
         let from = item.get("from").and_then(Value::as_str).map(crate::bus::Pattern::parse);
         let Some(Ok(from)) = from else {
-            problems.push(crate::tr!("{at}: from — чей адрес (app/shopping, files/home/Фото/*)", at = at));
+            problems.push(crate::tr!("{at}: from — чей адрес (app/shopping, files/home/Photos/*)", at = at));
             continue;
         };
         let event = item.get("event").and_then(Value::as_str).unwrap_or_default().to_string();

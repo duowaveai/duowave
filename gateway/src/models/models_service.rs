@@ -27,7 +27,8 @@ use crate::config::{Config, TtsProvider, UniproxyMode};
 use crate::core::events::{Actor, EventBus, GatewayEvent};
 use crate::platform::http::ApiError;
 use crate::settings::definitions::{
-    PanelMode, PendingWait, VoicePending, VoiceRecipe, ASR_MODEL, MODE, VOICE_CHOICE, VOICE_PENDING, VOICE_PROVIDER,
+    PanelMode, PendingWait, VoicePending, VoiceRecipe, ASR_MODEL, LANGUAGE, MODE, VOICE_CHOICE, VOICE_PENDING,
+    VOICE_PROVIDER,
 };
 use crate::settings::SettingsService;
 use crate::speech::asr::local::catalog as local_catalog;
@@ -476,6 +477,20 @@ pub struct AsrCard {
     pub local: Option<LocalCard>,
 }
 
+/// Whether we advise a recognition model («Советуем»): the showcase's advice, and with a language wanted on this
+/// computer — only the models here that know it, the language's own model among them.
+fn advised(card: &AsrModelRecord, language: Option<&str>) -> bool {
+    let showcase = SHOWCASE.asr.iter().find(|entry| entry.id == card.id).is_some_and(|entry| entry.recommended);
+    let Some(language) = language else { return showcase };
+    match local_catalog::find(&card.model) {
+        Some(gguf) => {
+            gguf.knows(language)
+                && (showcase || local_catalog::default_for(language).is_some_and(|own| own.model == gguf.model))
+        }
+        None => false,
+    }
+}
+
 /// A recognition model as this computer's own engine sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -795,6 +810,17 @@ impl ModelsService {
         });
         // One from before a restart: what it waited for ended with the gateway.
         self.look_at_pending();
+        // Recognition here follows the household's language: a new one is served at once.
+        if let Some(local) = &self.links.local_asr {
+            let local = Arc::downgrade(local);
+            self.events.on("asr-language", move |event| {
+                if let GatewayEvent::SettingsChanged { key, user_id: None, .. } = &*event {
+                    if let (true, Some(local)) = (key == LANGUAGE.key, local.upgrade()) {
+                        local.relook();
+                    }
+                }
+            });
+        }
         Ok(())
     }
 
@@ -862,23 +888,11 @@ impl ModelsService {
             let chosen = self.catalog.list_asr()?.into_iter().find(|entry| entry.id == asr || entry.model == asr);
             *lock(&self.asr_chosen) = chosen;
         }
-        // Recognition on this computer serves the chosen model, or GigaAM v3 on a new computer. A choice it cannot
-        // run (an external server's model) leaves the default serving here.
+        // Recognition on this computer serves the chosen model, or GigaAM v3 on a new computer — as the household's
+        // language allows (a model here that knows it, when the choice does not). A choice it cannot run (an
+        // external server's model) leaves the default serving here.
         if let Some(local) = &self.links.local_asr {
-            let chosen = self.chosen_asr().map(|chosen| chosen.model);
-            let model = match chosen.as_deref().filter(|model| local_catalog::find(model).is_some()) {
-                Some(model) => model.to_string(),
-                None => {
-                    if let Some(other) = chosen {
-                        tracing::warn!(
-                            "asr: {other} runs only on a recognition server; this computer hears with {}",
-                            local_catalog::DEFAULT_MODEL
-                        );
-                    }
-                    local_catalog::DEFAULT_MODEL.to_string()
-                }
-            };
-            local.choose(&model);
+            local.serve(self.chosen_asr().map(|chosen| chosen.model).as_deref());
         }
         // The choice lives in the settings, the Mac's run script reads a file: for a server that takes a new model
         // only with its restart, the file follows the choice, or a restart by launchd brings the default model back.
@@ -1050,18 +1064,20 @@ impl ModelsService {
         tts.extend(models.iter().filter(|model| model.source == "builtin").map(&card));
         tts.extend(own_cards);
         tts.extend(registry.into_iter().map(&card));
-        let asr_chosen = self.chosen_asr();
+        // What waits to serve: on this computer the model it was told to serve (the household's language may have
+        // put another in place of the choice); with a server, the choice.
+        let asr_chosen = match &local_asr {
+            Some(local) => local.model.clone(),
+            None => self.chosen_asr().map(|chosen| chosen.model),
+        };
+        let language = local_asr.as_ref().and_then(|local| local.language.clone());
         Ok(ModelsView {
             asr: asr_cards
                 .into_iter()
                 .map(|entry| AsrCard {
-                    recommended: SHOWCASE
-                        .asr
-                        .iter()
-                        .find(|card| card.id == entry.id)
-                        .is_some_and(|card| card.recommended),
+                    recommended: advised(&entry, language.as_deref()),
                     active: asr_loaded.as_deref() == Some(entry.model.as_str()),
-                    pending: asr_chosen.as_ref().is_some_and(|chosen| chosen.model == entry.model)
+                    pending: asr_chosen.as_deref() == Some(entry.model.as_str())
                         && asr_loaded.as_deref() != Some(entry.model.as_str()),
                     local: local_asr.as_ref().map(|local| {
                         let gguf = local_catalog::find(&entry.model);
@@ -1759,7 +1775,7 @@ impl ModelsService {
             }
             *lock(&self.asr_chosen) = Some(card.clone());
             self.settings.set(&ASR_MODEL, &card.id, actor)?;
-            local.choose(&card.model);
+            local.serve(Some(&card.model));
             return Ok(Activated { needs_restart: false });
         }
         *lock(&self.asr_chosen) = Some(card.clone());
@@ -2406,6 +2422,32 @@ mod tests {
     use crate::config::Env;
     use crate::models::model_files::UPLOAD_DEADLINE;
     use crate::models::model_servers::{Finished, Launcher, RunError};
+
+    #[test]
+    fn the_advised_recognition_models_are_the_ones_that_know_the_household_s_language() {
+        let advised_ids = |language: Option<&str>| -> Vec<String> {
+            SHOWCASE
+                .asr
+                .iter()
+                .map(|entry| AsrModelRecord {
+                    id: entry.id.clone(),
+                    model: entry.model.clone(),
+                    title: entry.title.clone(),
+                    description: String::new(),
+                    badge: None,
+                    license: None,
+                    source: None,
+                })
+                .filter(|card| advised(card, language))
+                .map(|card| card.id)
+                .collect()
+        };
+        let gigaam = ["gigaam-v3-e2e", "gigaam-v3-e2e-ctc", "gigaam-v3-rnnt", "gigaam-v3-ctc"];
+        assert_eq!(advised_ids(None), gigaam);
+        assert_eq!(advised_ids(Some("ru")), gigaam);
+        assert_eq!(advised_ids(Some("en")), ["parakeet-v3"]);
+        assert_eq!(advised_ids(Some("ja")), ["whisper-large-v3-turbo"]);
+    }
 
     /// The voice as VoiceService decides it, without the synthesis: whose voice, which pair, what it was told.
     struct FakeVoice {

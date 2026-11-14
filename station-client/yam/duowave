@@ -100,7 +100,7 @@ case "${1:-}" in
         ;;
     gateway)
         # The Rust gateway built for the station, in this package: its own commands do the work (the same the
-        # computer's panel runs over SSH); the program stays in the package — `yam upgrade duowave/gateway` updates it.
+        # computer's panel runs over SSH); the program stays in the package — `yam install duowave/gateway@<version>` updates it.
         [ -x "$PROGRAM" ] || { echo "this package has no gateway program ($PROGRAM)" >&2; exit 1; }
         case "${2:-}" in
             install)

@@ -88,7 +88,8 @@ impl StationWatch {
         let _ = self.elsewhere.set(elsewhere);
     }
 
-    fn none_expected(&self) -> bool {
+    /// Whether no station is awaited here now: its absence is not told.
+    pub fn none_expected(&self) -> bool {
         self.elsewhere.get().is_some_and(|elsewhere| elsewhere())
     }
 

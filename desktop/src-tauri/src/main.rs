@@ -270,7 +270,7 @@ fn build_window(app: &AppHandle) -> tauri::Result<()> {
             let _ = hide.hide();
         }
         // A folder dropped on the window: an offer on the desk «Подключить «Отпуск»?» — the admin's press attaches it
-        // to the home folder's «Подключено» (docs/plans/shared-folders.md). Files are not attached.
+        // to the home folder's Connected (docs/plans/shared-folders.md). Files are not attached.
         WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) => {
             let gateway = dropping.state::<Arc<Gateway>>();
             let Some(drives) = gateway

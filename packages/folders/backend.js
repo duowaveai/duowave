@@ -12,7 +12,7 @@
 // даётся. Без `speak` «Папки» говорят только числа и «на экране».
 
 const HOME = "files/home";
-const ATTACHED = "files/home/Подключено";
+const ATTACHED = "files/home/Connected";
 const PAGE = 200;
 const SAID = 5;
 const CHUNK = 900;
@@ -143,11 +143,11 @@ function counted(folders, files) {
 
 const nameOf = (address) => String(address ?? "").split("/").pop();
 
-// Папка-участник, в которой лежит адрес: files/home/Фото или files/home/Подключено/Флешка.
+// Папка-участник, в которой лежит адрес: files/home/Photos или files/home/Connected/Флешка.
 function folderOf(address) {
   const parts = String(address ?? "").split("/");
   if (parts[0] !== "files") return address;
-  if (parts[1] === "home" && parts[2] === "Подключено" && parts.length > 3) return parts.slice(0, 4).join("/");
+  if (parts[1] === "home" && parts[2] === "Connected" && parts.length > 3) return parts.slice(0, 4).join("/");
   return parts.slice(0, 3).join("/");
 }
 
@@ -214,6 +214,17 @@ async function known() {
     .map((participant) => ({ address: participant.address, name: participant.title, folder: true, kind: "folder" }));
 }
 
+// Подписи папок дома, как их даёт шлюз на языке дома: на диске Photos, вслух — «Фото». Своя папка человека — своё имя.
+async function titles() {
+  const seen = await host.bus.list();
+  return new Map(seen.filter((participant) => participant.address.startsWith(`${HOME}/`)).map((participant) => [participant.address, participant.title]));
+}
+
+// Имя для голоса и карточки: у папки дома — её подпись, у остального — имя на диске.
+function titleOf(address, names) {
+  return names?.get(address) ?? nameOf(address);
+}
+
 // Можно ли называть файлы этой папки вслух (шлюз считает: свой голос или галочка «Голос может называть файлы»).
 async function speakable(address) {
   try {
@@ -228,14 +239,18 @@ async function listing(path) {
   return host.files.list(path, { limit: PAGE });
 }
 
-function crumbs(path) {
-  const parts = String(path ?? "").split("/").slice(2);
-  return parts.filter((part) => part !== "Подключено" || parts.length === 1).join(" › ");
+// «Фото › Отпуск 2025 › 1.png»: папка дома — подписью, «Подключено» перед флешкой не говорится.
+function crumbs(path, names) {
+  const text = String(path ?? "");
+  const parts = text.split("/").slice(2);
+  if (!text.startsWith(`${HOME}/`)) return parts.join(" › ");
+  if (parts[0] === "Connected" && parts.length > 1) return parts.slice(1).join(" › ");
+  return [titleOf(`${HOME}/${parts[0]}`, names), ...parts.slice(1)].join(" › ");
 }
 
 // Список вслух: до пяти имён и «и ещё», или — без `speak` — только числа.
-function sayList(path, page, speak, from = 0) {
-  const title = nameOf(path);
+async function sayList(path, page, speak, from = 0) {
+  const title = titleOf(path, await titles());
   if (page.total === 0) return `В «${title}» пусто.`;
   const folders = page.items.filter((item) => item.folder).length;
   const counts = counted(folders, page.total - folders);
@@ -250,7 +265,7 @@ async function goTo(device, path) {
   const page = await listing(path);
   const speak = await speakable(path);
   keep(device, { path, items: page.items, total: page.total, said: SAID, open: null, kind: null, part: 0, offset: 0 });
-  return { say: sayList(path, page, speak), continue: WALK };
+  return { say: await sayList(path, page, speak), continue: WALK };
 }
 
 // Открыть строку списка: папку — зайти, картинку — показать, документ — прочитать, звук — сыграть.
@@ -318,7 +333,7 @@ async function step(device, walk, by) {
       const page = { items: walk.items, total: walk.total };
       const speak = await speakable(walk.path);
       keep(device, { ...walk, said: walk.said + SAID });
-      return { say: speak ? sayList(walk.path, page, true, walk.said) : "Остальное на экране.", continue: WALK };
+      return { say: speak ? await sayList(walk.path, page, true, walk.said) : "Остальное на экране.", continue: WALK };
     }
     return { say: by > 0 ? "Больше ничего. Скажите название или «назад»." : "Это начало списка.", continue: WALK };
   }
@@ -365,10 +380,11 @@ export async function photos({ name, request }) {
   const page = await listing(folder.address);
   keep(device, { path: folder.address, items: page.items, total: page.total, said: SAID, open: null, kind: "image" });
   const first = page.items.find((item) => item.kind === "image");
-  if (!first) return { say: `В «${nameOf(folder.address)}» нет фотографий.`, continue: WALK };
+  const title = titleOf(folder.address, await titles());
+  if (!first) return { say: `В «${title}» нет фотографий.`, continue: WALK };
   const pictures = page.items.filter((item) => item.kind === "image").length;
   const answer = await openItem(device, walkOf(device), first);
-  return { ...answer, say: `В «${nameOf(folder.address)}» ${pictures} ${plural(pictures, "фото", "фото", "фото")}. Показываю первое.` };
+  return { ...answer, say: `В «${title}» ${pictures} ${plural(pictures, "фото", "фото", "фото")}. Показываю первое.` };
 }
 
 // Ищет по всем папкам дома (и по укороченному слову: «борща» — «борщ»).
@@ -444,7 +460,7 @@ async function writeInto(device, folder, said) {
   await host.files.write(address, `${body}\n`);
   const page = await listing(folder);
   keep(device, { path: folder, items: page.items, total: page.total, said: SAID, open: address, kind: "text", part: 0, offset: 0 });
-  return { say: `Записала «${nameOf(address).replace(/\.txt$/, "")}» в «${nameOf(folder)}».`, continue: WALK };
+  return { say: `Записала «${nameOf(address).replace(/\.txt$/, "")}» в «${titleOf(folder, await titles())}».`, continue: WALK };
 }
 
 export async function drive({ request }) {
@@ -577,7 +593,7 @@ export async function walk({ text, request }) {
     if (state.open) {
       keep(device, { ...state, open: null, kind: null });
       const speak = await speakable(state.path);
-      return { say: sayList(state.path, { items: state.items, total: state.total }, speak), continue: WALK };
+      return { say: await sayList(state.path, { items: state.items, total: state.total }, speak), continue: WALK };
     }
     if (!state.path) return folders({ request });
     const parts = state.path.split("/");
@@ -604,7 +620,7 @@ export async function walk({ text, request }) {
   }
   if (/^(что тут|что здесь|список|повтори)/.test(said)) {
     const speak = state.path ? await speakable(state.path) : true;
-    return { say: state.path ? sayList(state.path, { items: state.items, total: state.total }, speak) : "Скажите название папки.", continue: WALK };
+    return { say: state.path ? await sayList(state.path, { items: state.items, total: state.total }, speak) : "Скажите название папки.", continue: WALK };
   }
   const number = /^(номер|открой|покажи)?\s*\d/.test(said) || /^(номер|первую|вторую|третью|четвертую|пятую|первый|второй|третий)/.test(said) ? numberIn(said) : null;
   if (number && state.items[number - 1]) return openItem(device, state, state.items[number - 1]);
@@ -644,7 +660,7 @@ export async function card() {
       say: "Папки дома.",
     };
   }
-  const where = crumbs(state.open ? state.open : state.path);
+  const where = crumbs(state.open ? state.open : state.path, await titles());
   if (state.open && state.kind === "image") {
     const pictures = state.items.filter((item) => item.kind === "image");
     const at = pictures.findIndex((item) => item.address === state.open);

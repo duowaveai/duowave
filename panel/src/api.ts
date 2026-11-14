@@ -235,6 +235,9 @@ export interface ModeView {
     by?: 'person' | 'auto';
     /** Переход, который шлюз сделал сам: из какого режима, почему и когда. Вернётся сам, если человек не решит иначе. */
     auto?: { from: PanelMode; to: PanelMode; reason: string; at: string };
+    /** «Слух Яндекса» (docs/plans/yandex-ear.md): во «Вместе» без своего слуха распознаёт Яндекс, отвечает наш мозг.
+     * Шлюз постарше не присылает. */
+    yandexEar?: boolean;
 }
 
 export type LlmEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -768,6 +771,8 @@ export interface Health {
     /** gateway: отвечаем мы; relay: сессия колонки идёт в Яндекс, мы только журналируем. */
     mode?: 'gateway' | 'relay';
     panelMode?: PanelMode;
+    /** «Слух Яндекса» включён; шлюз постарше не присылает. */
+    yandexEar?: boolean;
     activeSessions?: number;
     speech?: { vad: string; asr: string };
     dialog?: string;
@@ -949,6 +954,13 @@ export interface LocalAsr {
     /** Перезапуски остановлены после трёх сбоев подряд. */
     paused: boolean;
     installed: string[];
+    /** Модель, которую назвал выбор (без выбора — модель по умолчанию), когда вместо неё слушает другая: она не знает
+     * языка дома. */
+    insteadOf?: string | null;
+    /** Язык, для которого распознаёт: ASR_LANGUAGE, иначе язык дома; нет — модель определяет сама. */
+    language?: string | null;
+    /** Модель, которую нужно скачать для этого языка: здесь его не знает ни одна. Скачивает человек. */
+    needs?: string | null;
 }
 
 /** Сервер своего голоса, который ставит и держит приложение (docs/plans/speech-servers.md, этап 5). */
@@ -2687,6 +2699,7 @@ export const api = {
     setMode: (mode: PanelMode) => post<ModeView>('/api/v1/station/mode', { mode }),
     /** «Остаться»: режим, в который шлюз перешёл сам, становится выбором человека. */
     keepMode: () => post<ModeView>('/api/v1/station/mode/keep'),
+    setYandexEar: (on: boolean) => post<ModeView>('/api/v1/station/mode/yandex-ear', { on }),
     availability: () => get<AvailabilityView>('/api/v1/availability'),
     placement: (station?: string, signal?: AbortSignal) => get<PlacementView>(forStation('/api/v1/placement', station), signal),
     startMove: (body: {

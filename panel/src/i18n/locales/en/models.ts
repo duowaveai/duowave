@@ -101,7 +101,13 @@ const en: Translation<typeof ru> = {
     gpuFailedCpu: 'The GPU failed — the CPU recognizes speech. “Retry” will try the GPU again.',
     retry: 'retry',
     advisedTitle: 'Recommended',
-    advisedAbout: 'GigaAM by Sber — for Russian speech',
+    advisedAbout: 'best for the household’s language',
+    languageNeeds: (language: string, serving: string, needed: string) =>
+        `The household’s language is ${language}, and ${serving} does not know it. It needs the model “${needed}”: it downloads once and starts by itself.`,
+    languageInstead: (language: string, serving: string, chosen: string) =>
+        `The household’s language is ${language}: ${serving} listens, because the chosen ${chosen} does not know it.`,
+    languageFetch: 'download and turn on',
+    languageFetchSize: (mb: number) => `download ${mb} MB and turn on`,
     moreModels: (n: number) => `Show more models · ${n}`,
     moreModelsHeader: (n: number) => `More models · ${n}`,
     collapse: 'Collapse',

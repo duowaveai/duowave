@@ -8,8 +8,9 @@ import type { Placement } from './availability';
  *
  * - «Яндекс» — всё делает Яндекс.
  * - «Свой» без ПК (одна колонка, ПК спит) — на деле «Шлюз».
- * - «Шлюз» без слуха (ни ПК, ни облачного распознавания) — голос уходит Яндексу целиком, отвечает он; выбранный мозг
- *   не участвует (так делает шлюз, station_session.rs: «no recognition here»).
+ * - «Шлюз» без слуха (ни ПК, ни облачного распознавания) — голос уходит Яндексу целиком. Со «Слухом Яндекса»
+ *   (по умолчанию) Яндекс только распознаёт, а отвечает выбранный мозг (station_session.rs, on_yandex_ear); без него
+ *   отвечает Яндекс, выбранный мозг не участвует.
  * - Мозг «модель на ПК» без ПК — отвечает Алиса.
  * - Голос: ПК на связи — свой; иначе облачный, если есть; иначе голос Алисы читает наш текст.
  * - Шлюз на ПК, а ПК спит — колонка молчит.
@@ -36,6 +37,9 @@ export interface Scenario {
     brain: { name: string; where: 'cloud' | 'pc' | 'yandex' | 'none' };
     /** Говорят микрофоном этого компьютера: колонки и Яндекса нет. */
     computer?: boolean;
+    /** «Слух Яндекса» (docs/plans/yandex-ear.md): во «Вместе» без своего слуха вопрос распознаёт Яндекс, а отвечает
+     * выбранный мозг. Шлюз постарше не присылает — как выключен. */
+    yandexEar?: boolean;
 }
 
 /** Чего не хватает и где это поставить: строка и место пульта (раздел и вкладка). */
@@ -197,11 +201,15 @@ export function solve(s: Scenario): Solved {
     if (mode === 'relay') return yandexWhole(tr.core.whyRelayMode);
 
     const pcEar = pcHelps && s.pcEar !== false;
-    const earHost: Host | null = pcEar ? 'pc' : s.cloudEar ? 'cloud' : null;
+    // Мозг, который может ответить: облачный, или на ПК, пока ПК помогает.
+    const brainOurs = s.brain.where === 'cloud' || (s.brain.where === 'pc' && pcHelps);
+    let earHost: Host | null = pcEar ? 'pc' : s.cloudEar ? 'cloud' : null;
+    if (!earHost && s.yandexEar && mode === 'gateway' && brainOurs) earHost = 'yandex';
     if (!earHost) {
         const chosen = s.brain.where === 'cloud' || s.brain.where === 'pc' ? tr.core.brainNotInvolved(s.brain.name) : '';
         const fix = s.placement === 'pc' ? tr.core.fixEarPc : s.placement === 'station' ? tr.core.fixEarStation : tr.core.fixEarOther;
-        return yandexWhole(tr.core.whyNoEarConnected, tr.core.noteNoEar(chosen, fix));
+        const ear = !s.yandexEar && mode === 'gateway' && brainOurs ? ` ${tr.core.fixEarYandex}` : '';
+        return yandexWhole(tr.core.whyNoEarConnected, tr.core.noteNoEar(chosen, fix + ear));
     }
 
     const hops: Hop[] = [];
@@ -211,12 +219,16 @@ export function solve(s: Scenario): Solved {
     const ear: Who =
         earHost === 'pc'
             ? { host: 'pc', value: tr.core.whoComputer, sub: tr.core.whyOwnEar, tone: 'own' }
-            : { host: 'cloud', value: tr.core.whoCloud, sub: tr.core.whyCloudEar, tone: 'cloud' };
+            : earHost === 'yandex'
+              ? { host: 'yandex', value: tr.core.yandex, sub: tr.core.whyYandexEar, tone: 'yandex' }
+              : { host: 'cloud', value: tr.core.whoCloud, sub: tr.core.whyCloudEar, tone: 'cloud' };
+    const recognizes = earHost === 'pc' ? tr.core.hopPcRecognizes : earHost === 'yandex' ? tr.core.hopYandexRecognizes : tr.core.hopCloudRecognizes;
     hops.push(
         earHost === gateway
             ? { from: gateway, to: gateway, tone: 'own', text: tr.core.hopPcRecognizes }
-            : { from: gateway, to: earHost, back: true, tone: toneOf(earHost), text: earHost === 'pc' ? tr.core.hopPcRecognizes : tr.core.hopCloudRecognizes },
+            : { from: gateway, to: earHost, back: true, tone: toneOf(earHost), text: recognizes },
     );
+    if (earHost === 'yandex') notes.push(tr.core.noteYandexEar(s.brain.name));
 
     let brain: Who;
     let brainHost: Host | null = null;

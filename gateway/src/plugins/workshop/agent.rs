@@ -52,7 +52,8 @@ pub fn game_doc() -> String {
 - Управление: стрелки и WASD (окошко слышит клавиши в фокусе — подсказка «нажмите на поле»), свайпы, кнопки на \
 экране; пробел — пауза; пауза, когда окошко теряет фокус.\n\
 - Звук — WebAudio после первого нажатия, короткие ноты синтезом, кнопка «без звука».\n\
-- Сочный вид: свой неон поверх любой темы, свечение, искры, тряска при ошибке; панели и кнопки поверх холста.\n\
+- Сочный вид: свой неон поверх любой темы — фон, текст, кнопки и текст на них своими цветами, так игра одинакова в \
+светлой и тёмной теме; свечение, искры, тряска при ошибке; панели и кнопки поверх холста.\n\
 - Рекорд и данные — в `backend.js` через `useApi(id).call`: функция чтения ничего не пишет, пишет функция действия.\n\
 - Тексты — словарём `{{ ru: {{…}}, en: {{…}} }}`: в компонентах `useT(T)`, подписи раздела и плитки в `definePlugin` — \
 `t(T, key)` из SDK; в манифесте — `languages` и `locales.en` (`docs`, тема `authoring`, «Языки»).\n\n\
@@ -66,6 +67,9 @@ pub const THEMES: &str = include_str!("../../../../docs/design/glass/THEMES.md")
 const ROUNDS: usize = 40;
 /// The time for one answer's tool rounds.
 const BUDGET_MS: u64 = 30 * 60_000;
+/// Times one answer's steps are asked again when the connection broke them (after 3, 10 and 30 s): about a minute
+/// of a network gone.
+const RETRIES: usize = 3;
 /// One round may write nothing this long at the least: the model writes a file in one call, and a streamed call comes
 /// only whole (LLM_TIMEOUT_MS, 10 s, cut such rounds off).
 const ROUND_MS: u64 = 10 * 60_000;
@@ -588,6 +592,9 @@ pub fn work(
     toolbox.cut_note = Some(cut_note);
     // A file written in parts: the pieces of one turn go in their order.
     toolbox.in_order = true;
+    // Long work outlives a network that blinks: a step the connection broke (14.11, «Anthropic stream broke … Operation
+    // timed out» in the middle of a game) is asked again instead of failing the whole run.
+    toolbox.retries = RETRIES;
     let answer = dialog.answer(key, message, context, run.cancel.clone(), Some(toolbox));
     workshop.activity().watch(run, answer)
 }

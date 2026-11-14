@@ -12,6 +12,8 @@ export default {
     collapse: 'свернуть',
     more: 'подробнее',
     adminSwitches: ' Переключает администратор.',
+    yandexEar: 'Слух Яндекса',
+    yandexEarNote: 'Без своего слуха вопрос распознаёт Яндекс, а отвечает ваш мозг. Голос при этом уходит в облако Яндекса.',
     autoNow: (mode: string, reason: string, since: string, from: string) => `Сейчас «${mode}»: ${reason} с ${since}. Вернусь в «${from}», когда он появится.`,
     stayIn: (mode: string) => `Остаться в «${mode}»`,
     warnTitle: 'Выбран голос Алисы — без Яндекса он не звучит',

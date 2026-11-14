@@ -82,6 +82,17 @@ pub const MODE: SettingDefinition<ModeSetting> = SettingDefinition {
     },
 };
 
+/// «Слух Яндекса» (docs/plans/yandex-ear.md): in «Вместе» with no ear of our own, Yandex recognizes the question and
+/// waits, and our router answers it — our brain, our skills — or lets Yandex go on. On unless the owner turns it off;
+/// off, Yandex both hears and answers, as before.
+pub const YANDEX_EAR: SettingDefinition<bool> = SettingDefinition {
+    key: "yandex_ear",
+    scope: SettingScope::Global,
+    description: "Слух Яндекса для своего мозга",
+    sensitive: false,
+    parse: Value::as_bool,
+};
+
 /// How the household talks to DuoWave (docs/plans/mic-mode.md): through the station with Alice, or by this computer's
 /// microphone — a place is left for other devices.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

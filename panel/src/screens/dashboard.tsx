@@ -334,6 +334,7 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
         connectors,
         availability,
         computer,
+        yandexEar: health?.yandexEar,
     };
     const truth = truthOf(data);
     const nodes = nodesOf(data, truth);

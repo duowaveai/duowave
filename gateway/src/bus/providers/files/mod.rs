@@ -4,11 +4,11 @@
 //! (`places.rs`) and keeps them in bounds (`path.rs`).
 //!
 //! - `files/app/<id>/…` — an app's own folder: free for it, unseen by others; `tmp/` in it is cleaned by itself.
-//! - `files/home/<папка>/…` — the household's, in the home folder (`~/DuoWave` in the app): Фото, Документы, Видео,
-//!   Загрузки, Картинки; Музыка and Сказки are the household's own music and tales (CONTENT_DIR), read only.
-//! - `files/home/Подключено/<имя>/…` — what a person attached: a drive, a folder dropped on the desk or picked.
+//! - `files/home/<папка>/…` — the household's, in the home folder (`~/DuoWave` in the app): Photos, Documents, Videos,
+//!   Downloads, Pictures; Music and Stories are the household's own music and tales (CONTENT_DIR), read only.
+//! - `files/home/Connected/<имя>/…` — what a person attached: a drive, a folder dropped on the desk or picked.
 //! - `files/person/<id>/…` — a person's: personal, open only to a link made for it.
-//! - `files/project/<id>/…` — a project's, in the home folder's «Проекты».
+//! - `files/project/<id>/…` — a project's, in the home folder's Projects.
 //!
 //! Removing a file of the household's, a person's or a project's puts it in the bin for a week.
 
@@ -326,7 +326,7 @@ impl Files {
     fn title(&self, folder: &Address) -> String {
         match folder.segments().collect::<Vec<_>>().as_slice() {
             ["app", id] => self.bus().map(|bus| bus.title_of(&Address::app(id))).unwrap_or_else(|| id.to_string()),
-            ["home", name] => name.to_string(),
+            ["home", name] => places::label(name).unwrap_or_else(|| name.to_string()),
             ["home", _, item] => item.to_string(),
             ["person", id] => crate::tr!("личное {id}", id = id),
             ["project", id] => crate::tr!("проект {id}", id = id),
@@ -349,7 +349,7 @@ impl Files {
         }
     }
 
-    /// What is attached, as the list of «Подключено».
+    /// What is attached, as the list of Connected.
     fn attached_list(&self) -> Value {
         let items: Vec<Value> = self
             .places
@@ -853,10 +853,10 @@ mod tests {
     #[test]
     fn places_name_where_each_address_lives() {
         let (files, _dir) = made(false);
-        let spot = files.places.spot(&Address::parse("files/home/Картинки/лето.png").unwrap()).unwrap();
-        assert_eq!(spot.folder.as_str(), "files/home/Картинки");
-        assert!(spot.path().ends_with("files/home/Картинки/лето.png"));
-        let music = files.places.spot(&Address::parse("files/home/Музыка/a.mp3").unwrap()).unwrap();
+        let spot = files.places.spot(&Address::parse("files/home/Pictures/лето.png").unwrap()).unwrap();
+        assert_eq!(spot.folder.as_str(), "files/home/Pictures");
+        assert!(spot.path().ends_with("files/home/Pictures/лето.png"));
+        let music = files.places.spot(&Address::parse("files/home/Music/a.mp3").unwrap()).unwrap();
         assert!(music.read_only && music.path().ends_with("content/music/a.mp3"));
         let person = files.places.spot(&Address::parse("files/person/u1/diary.txt").unwrap()).unwrap();
         assert!(person.private);
@@ -881,7 +881,7 @@ mod tests {
         assert_eq!(removed["bin"], false);
         // Music is the household's own and read only here.
         assert!(matches!(
-            run(&files, "files/home/Музыка/x.mp3", "write", json!({"text": "x"})).await,
+            run(&files, "files/home/Music/x.mp3", "write", json!({"text": "x"})).await,
             Err(BusError::Denied(_))
         ));
     }
@@ -892,15 +892,15 @@ mod tests {
         let big = B64.encode(vec![0u8; 1024 * 1024 + 10]);
         let over = run(&files, "files/app/paint/big.bin", "write", json!({"base64": big})).await;
         assert!(matches!(over, Err(BusError::Failed(ref why)) if why.contains("своя папка полна")), "{over:?}");
-        run(&files, "files/home/Документы/a.txt", "write", json!({"text": "x"})).await.unwrap();
-        let removed = run(&files, "files/home/Документы/a.txt", "remove", json!({})).await.unwrap();
+        run(&files, "files/home/Documents/a.txt", "write", json!({"text": "x"})).await.unwrap();
+        let removed = run(&files, "files/home/Documents/a.txt", "remove", json!({})).await.unwrap();
         assert_eq!(removed["bin"], true);
         assert_eq!(Places::size_of(&files.places.home_bin()), 1, "it waits in the home folder's bin");
         let (station, _dir) = made(true);
         let chunk = B64.encode(vec![0u8; 900 * 1024]);
         let mut refused = None;
         for index in 0..7 {
-            let at = format!("files/home/Фото/{index}.bin");
+            let at = format!("files/home/Photos/{index}.bin");
             if let Err(error) = run(&station, &at, "write", json!({"base64": chunk})).await {
                 refused = Some((index, error));
                 break;
@@ -920,29 +920,29 @@ mod tests {
         places.prepare();
         let files = Files::new(places, Arc::new(|_| 64));
         // A file a person put in Finder is the bus's at once.
-        std::fs::write(home.join("Фото/лето.jpg"), "jpeg").unwrap();
-        let list = run(&files, "files/home/Фото", "list", json!({})).await.unwrap();
-        assert_eq!(list["items"][0]["address"], "files/home/Фото/лето.jpg");
+        std::fs::write(home.join("Photos/лето.jpg"), "jpeg").unwrap();
+        let list = run(&files, "files/home/Photos", "list", json!({})).await.unwrap();
+        assert_eq!(list["items"][0]["address"], "files/home/Photos/лето.jpg");
         run(&files, "files/project/сайт/index.html", "write", json!({"text": "<p>"})).await.unwrap();
-        assert!(home.join("Проекты/сайт/index.html").is_file());
+        assert!(home.join("Projects/сайт/index.html").is_file());
         #[cfg(unix)]
         {
             // A link out of «Фото» — into «Документы» or to the disk — is no file for the bus.
-            std::fs::write(home.join("Документы/паспорт.txt"), "secret").unwrap();
-            std::os::unix::fs::symlink(home.join("Документы"), home.join("Фото/туда")).unwrap();
+            std::fs::write(home.join("Documents/паспорт.txt"), "secret").unwrap();
+            std::os::unix::fs::symlink(home.join("Documents"), home.join("Photos/туда")).unwrap();
             assert!(matches!(
-                run(&files, "files/home/Фото/туда/паспорт.txt", "read", json!({})).await,
+                run(&files, "files/home/Photos/туда/паспорт.txt", "read", json!({})).await,
                 Err(BusError::NotFound(_))
             ));
-            let list = run(&files, "files/home/Фото", "list", json!({})).await.unwrap();
+            let list = run(&files, "files/home/Photos", "list", json!({})).await.unwrap();
             assert_eq!(list["items"].as_array().unwrap().len(), 1, "the link is not listed: {list}");
             // Removing a link takes the link away, never what it points at.
-            let removed = run(&files, "files/home/Фото/туда", "remove", json!({})).await;
+            let removed = run(&files, "files/home/Photos/туда", "remove", json!({})).await;
             assert!(removed.is_err(), "a link out of the folder is not there to remove: {removed:?}");
-            assert!(home.join("Документы/паспорт.txt").is_file());
+            assert!(home.join("Documents/паспорт.txt").is_file());
         }
         assert!(matches!(
-            run(&files, "files/home/Фото/.hidden", "write", json!({"text": "x"})).await,
+            run(&files, "files/home/Photos/.hidden", "write", json!({"text": "x"})).await,
             Err(BusError::NotFound(_))
         ));
     }
@@ -957,17 +957,17 @@ mod tests {
         places.prepare();
         places.set_attached(vec![AttachedPlace { name: "Флешка".into(), path: usb.clone(), write: false }]);
         let files = Files::new(places, Arc::new(|_| 64));
-        let list = run(&files, "files/home/Подключено", "list", json!({})).await.unwrap();
+        let list = run(&files, "files/home/Connected", "list", json!({})).await.unwrap();
         assert_eq!(list["items"][0]["name"], "Флешка");
         assert_eq!(list["items"][0]["here"], true);
-        let read = run(&files, "files/home/Подключено/Флешка/DCIM/1.jpg", "read", json!({"as": "text"})).await.unwrap();
+        let read = run(&files, "files/home/Connected/Флешка/DCIM/1.jpg", "read", json!({"as": "text"})).await.unwrap();
         assert_eq!(read["text"], "jpeg");
         assert!(matches!(
-            run(&files, "files/home/Подключено/Флешка/new.txt", "write", json!({"text": "x"})).await,
+            run(&files, "files/home/Connected/Флешка/new.txt", "write", json!({"text": "x"})).await,
             Err(BusError::Denied(_))
         ));
         std::fs::remove_dir_all(&usb).unwrap();
-        let gone = run(&files, "files/home/Подключено/Флешка", "list", json!({})).await;
+        let gone = run(&files, "files/home/Connected/Флешка", "list", json!({})).await;
         assert!(matches!(gone, Err(BusError::NotFound(ref why)) if why.contains("сейчас нет")), "{gone:?}");
     }
 
@@ -977,7 +977,7 @@ mod tests {
         let places = Places::new(&dir.path().join("data"), &dir.path().join("content"), false);
         places.prepare();
         let files = Files::new(places.clone(), Arc::new(|_| 64));
-        let docs = places.home.join("Документы");
+        let docs = places.home.join("Documents");
         for n in [10, 2, 1] {
             std::fs::write(docs.join(format!("{n}.txt")), "x").unwrap();
         }
@@ -986,30 +986,30 @@ mod tests {
         let names = |list: &Value| -> Vec<String> {
             list["items"].as_array().unwrap().iter().map(|item| item["name"].as_str().unwrap().to_string()).collect()
         };
-        let first = run(&files, "files/home/Документы", "list", json!({"limit": 2})).await.unwrap();
+        let first = run(&files, "files/home/Documents", "list", json!({"limit": 2})).await.unwrap();
         assert_eq!(names(&first), ["Рецепты", "1.txt"], "folders first, then as people count");
         assert_eq!((&first["total"], &first["next"]), (&json!(4), &json!(2)));
         assert_eq!(first["items"][0]["kind"], "folder");
-        let rest = run(&files, "files/home/Документы", "list", json!({"from": 2})).await.unwrap();
+        let rest = run(&files, "files/home/Documents", "list", json!({"from": 2})).await.unwrap();
         assert_eq!(names(&rest), ["2.txt", "10.txt"]);
         assert!(rest["next"].is_null());
-        let found = run(&files, "files/home/Документы", "find", json!({"query": "борщ"})).await.unwrap();
-        assert_eq!(found["items"][0]["address"], "files/home/Документы/Рецепты/Борщ.txt");
-        let text = run(&files, "files/home/Документы/Рецепты/Борщ.txt", "text", json!({})).await.unwrap();
+        let found = run(&files, "files/home/Documents", "find", json!({"query": "борщ"})).await.unwrap();
+        assert_eq!(found["items"][0]["address"], "files/home/Documents/Рецепты/Борщ.txt");
+        let text = run(&files, "files/home/Documents/Рецепты/Борщ.txt", "text", json!({})).await.unwrap();
         assert_eq!((&text["text"], &text["parts"]), (&json!("Свёкла\n\nКапуста"), &json!(1)));
         // A file written through the bus is found at once: the walk is made again.
-        run(&files, "files/home/Документы/Борщ зелёный.txt", "write", json!({"text": "щавель"})).await.unwrap();
-        let found = run(&files, "files/home/Документы", "find", json!({"query": "борщ"})).await.unwrap();
+        run(&files, "files/home/Documents/Борщ зелёный.txt", "write", json!({"text": "щавель"})).await.unwrap();
+        let found = run(&files, "files/home/Documents", "find", json!({"query": "борщ"})).await.unwrap();
         assert_eq!(found["items"].as_array().unwrap().len(), 2, "{found}");
         // A picture made small.
-        image::RgbImage::from_pixel(800, 600, image::Rgb([10, 20, 30])).save(places.home.join("Фото/a.png")).unwrap();
-        let shown = run(&files, "files/home/Фото/a.png", "preview", json!({"size": 200})).await.unwrap();
+        image::RgbImage::from_pixel(800, 600, image::Rgb([10, 20, 30])).save(places.home.join("Photos/a.png")).unwrap();
+        let shown = run(&files, "files/home/Photos/a.png", "preview", json!({"size": 200})).await.unwrap();
         let bytes = B64.decode(shown["base64"].as_str().unwrap()).unwrap();
         assert_eq!(image::load_from_memory(&bytes).unwrap().width(), 200);
         // A song played on the station by a link for one file.
         std::fs::create_dir_all(places.content.join("music")).unwrap();
         std::fs::write(places.content.join("music/песня.mp3"), "mp3").unwrap();
-        let played = run(&files, "files/home/Музыка/песня.mp3", "play", json!({})).await.unwrap();
+        let played = run(&files, "files/home/Music/песня.mp3", "play", json!({})).await.unwrap();
         let token = played["file"].as_str().unwrap();
         assert!(files.played(token).unwrap().ends_with("песня.mp3"));
         assert!(files.played("0".repeat(48).as_str()).is_none());
@@ -1017,15 +1017,15 @@ mod tests {
         let item = crate::plugins::media::media_item("folders", kind, &played, Some("http://gw:80/media")).unwrap();
         assert_eq!(item.url, format!("http://gw:80/media/folder/{token}"));
         assert_eq!(item.title, "песня");
-        assert!(run(&files, "files/home/Документы/1.txt", "play", json!({})).await.is_err(), "not a sound");
+        assert!(run(&files, "files/home/Documents/1.txt", "play", json!({})).await.is_err(), "not a sound");
     }
 
     #[tokio::test]
     async fn a_replaced_file_of_the_household_waits_in_the_bin() {
         let (files, _dir) = made(false);
-        run(&files, "files/home/Документы/a.txt", "write", json!({"text": "старое"})).await.unwrap();
-        run(&files, "files/home/Документы/a.txt", "write", json!({"text": "новое"})).await.unwrap();
-        let read = run(&files, "files/home/Документы/a.txt", "read", json!({"as": "text"})).await.unwrap();
+        run(&files, "files/home/Documents/a.txt", "write", json!({"text": "старое"})).await.unwrap();
+        run(&files, "files/home/Documents/a.txt", "write", json!({"text": "новое"})).await.unwrap();
+        let read = run(&files, "files/home/Documents/a.txt", "read", json!({"as": "text"})).await.unwrap();
         assert_eq!(read["text"], "новое");
         let bin = files.places.home_bin();
         let kept: Vec<String> = std::fs::read_dir(&bin)

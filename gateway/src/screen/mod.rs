@@ -387,7 +387,7 @@ mod tests {
     const SEA: &str = "cccccccccccccccccccccccccccccccccccccccccccccccc";
 
     fn content(kind: Kind, title: &str, file: &str) -> Content {
-        Content { kind, title: title.into(), file: file.into(), from: Some(format!("files/home/Фото/{title}.jpg")) }
+        Content { kind, title: title.into(), file: file.into(), from: Some(format!("files/home/Photos/{title}.jpg")) }
     }
 
     fn screen() -> Arc<Screen> {
@@ -424,7 +424,7 @@ mod tests {
         assert_eq!(screen.find(&opened[0].id).unwrap(), [opened[0].id.clone()]);
         assert_eq!(screen.find("видео").unwrap(), [opened[1].id.clone()]);
         assert_eq!(screen.find("отпуск").unwrap(), [opened[0].id.clone()]);
-        assert_eq!(screen.find("files/home/Фото/Море.jpg").unwrap(), [opened[1].id.clone()]);
+        assert_eq!(screen.find("files/home/Photos/Море.jpg").unwrap(), [opened[1].id.clone()]);
         assert_eq!(screen.find("все").unwrap().len(), 2);
         assert!(screen.find("горы").is_err());
         screen.close("отпуск").unwrap();

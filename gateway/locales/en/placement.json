@@ -190,7 +190,7 @@
  "Подпись выпуска не читается ({error})": "The release signature can't be read ({error})",
  "Версия {version} не поставилась: {error}": "Version {version} was not installed: {error}",
  "Шлюз на колонке обновляет компьютер, который его поставил: «Настройки» → «Компьютер-помощник» → «Обновить до …».": "The gateway on the speaker is updated by the computer that installed it: “Settings” → “Helper computer” → “Update to …”.",
- "Шлюз поставлен через YAM: обновите его на колонке — yam install файла новой версии из выпуска.": "The gateway was installed through YAM: update it on the speaker — yam install the new version's file from the release.",
+ "Шлюз поставлен через YAM: обновите его на колонке — yam install duowave/gateway@<версия>.": "The gateway was installed through YAM: update it on the speaker — yam install duowave/gateway@<version>.",
  "Шлюз поставлен через yse: обновите его — yse upgrade duowave.": "The gateway was installed through yse: update it with yse upgrade duowave.",
  "Обновите образ: docker compose pull && docker compose up -d": "Update the image: docker compose pull && docker compose up -d",
  "Обновите дополнение в Home Assistant.": "Update the add-on in Home Assistant.",
@@ -293,5 +293,6 @@
  "Сначала свой, Яндекс подхватывает то, чего мы не умеем.": "Ours first; Yandex picks up what we can't do.",
  "Без Яндекса. Радио, сказки, напоминания и навыки пока не умеем.": "Without Yandex. No radio, stories, reminders or skills yet.",
  "mode: relay, gateway или own": "mode: relay, gateway or own",
+ "on: true или false": "on: true or false",
  "шлюз на колонке старше компьютера и не берёт его настройки — обновите колонку": "the gateway on the speaker is older than the computer and does not take its settings — update the speaker"
 }

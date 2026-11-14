@@ -1,6 +1,6 @@
 //! An address: what everything that lives in the system is called on the bus (docs/plans/bus.md) — `kind/path`.
 //! The kind is the first part and says which provider answers for it (`app`, `system`, `files`, `device`, `person`…);
-//! the path is the provider's own: `app/radio`, `files/home/Картинки/лето.png`, `device/midi`. An address never says
+//! the path is the provider's own: `app/radio`, `files/home/Pictures/лето.png`, `device/midi`. An address never says
 //! where its bytes live: a move between the station and the computer changes the place, not the address.
 //!
 //! A pattern names many addresses: an address, one ending in `/*` (it and everything below it) or `*` alone.
@@ -71,7 +71,7 @@ impl Address {
         Ok(Address(text.to_string()))
     }
 
-    /// A kind and a path below it (`files`, `home/Картинки`).
+    /// A kind and a path below it (`files`, `home/Pictures`).
     pub fn new(kind: &str, path: &str) -> Result<Address, String> {
         if path.is_empty() {
             Address::parse(kind)
@@ -122,7 +122,7 @@ impl Address {
         self.0.rsplit_once('/').map(|(parent, _)| Address(parent.to_string()))
     }
 
-    /// Whether this address is `other` or lies below it, part by part (`files/home/Фото` is below `files/home`,
+    /// Whether this address is `other` or lies below it, part by part (`files/home/Photos` is below `files/home`,
     /// `files/home2` is not).
     pub fn within(&self, other: &Address) -> bool {
         self.0 == other.0 || (self.0.starts_with(&other.0) && self.0.as_bytes().get(other.0.len()) == Some(&b'/'))
@@ -148,7 +148,7 @@ impl<'de> Deserialize<'de> for Address {
     }
 }
 
-/// Many addresses: `*`, `app/*`, `files/home/Картинки/*`, or one address.
+/// Many addresses: `*`, `app/*`, `files/home/Pictures/*`, or one address.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Pattern(String);
 
@@ -244,11 +244,11 @@ mod tests {
 
     #[test]
     fn reads_kinds_and_paths() {
-        let picture = address("files/home/Картинки/лето 2026.png");
+        let picture = address("files/home/Pictures/лето 2026.png");
         assert_eq!(picture.kind(), "files");
-        assert_eq!(picture.path(), "home/Картинки/лето 2026.png");
+        assert_eq!(picture.path(), "home/Pictures/лето 2026.png");
         assert_eq!(picture.name(), Some("home"));
-        assert_eq!(picture.parent().unwrap().as_str(), "files/home/Картинки");
+        assert_eq!(picture.parent().unwrap().as_str(), "files/home/Pictures");
         assert_eq!(address("home").path(), "");
         assert_eq!(Address::app("radio").as_str(), "app/radio");
         assert_eq!(address("files/app/x").join("tmp/a.txt").unwrap().as_str(), "files/app/x/tmp/a.txt");
@@ -263,9 +263,9 @@ mod tests {
 
     #[test]
     fn below_means_part_by_part() {
-        assert!(address("files/home/Фото/a.png").within(&address("files/home/Фото")));
-        assert!(address("files/home/Фото").within(&address("files/home/Фото")));
-        assert!(!address("files/home/Фото2").within(&address("files/home/Фото")));
+        assert!(address("files/home/Photos/a.png").within(&address("files/home/Photos")));
+        assert!(address("files/home/Photos").within(&address("files/home/Photos")));
+        assert!(!address("files/home/Photos2").within(&address("files/home/Photos")));
     }
 
     #[test]

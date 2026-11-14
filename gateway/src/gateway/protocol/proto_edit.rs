@@ -354,6 +354,60 @@ pub fn retext_text_input(
 /// EventType.text_input
 const TEXT_INPUT: u64 = 2;
 
+// ---------------------------------------------------------------- Yandex's ear, our brain (docs/plans/yandex-ear.md)
+
+/// AliceRequest.request.uniproxy_options and its wait_client_approval.
+const UNIPROXY_OPTIONS: u32 = 17;
+const WAIT_CLIENT_APPROVAL: u32 = 4;
+
+/// The station's VoiceInput asking Yandex to wait (`UniproxyOptions.WaitClientApproval`): Yandex recognizes the speech,
+/// sends its final AsrResult and holds its answer until a ContinueRequest or a CancelRequest. Everything else stays as
+/// the station sent it, the options it set itself included.
+pub fn wait_for_approval(voice_input: &[u8]) -> Result<Vec<u8>, ProtoError> {
+    let message = edit_message(body(voice_input)?, 1, |event| {
+        edit_message(event, 3, |request| {
+            edit_message(request, 3, |request_body| {
+                let options = get_bytes(request_body, UNIPROXY_OPTIONS)?.unwrap_or_default();
+                set_bytes(request_body, UNIPROXY_OPTIONS, set_varint(options, WAIT_CLIENT_APPROVAL, 1)?)
+            })
+        })
+    })?;
+    Ok(frame(&message))
+}
+
+/// Whether a VoiceInput asks Yandex to wait: a request without its body cannot be marked, and goes unmarked.
+pub fn waits_for_approval(voice_input: &[u8]) -> bool {
+    let read = || -> Result<Option<u64>, ProtoError> {
+        let event = get_bytes(body(voice_input)?, 1)?.unwrap_or_default();
+        let request = get_bytes(event, 3)?.unwrap_or_default();
+        let request_body = get_bytes(request, 3)?.unwrap_or_default();
+        let options = get_bytes(request_body, UNIPROXY_OPTIONS)?.unwrap_or_default();
+        get_varint(options, WAIT_CLIENT_APPROVAL)
+    };
+    read().ok().flatten() == Some(1)
+}
+
+/// «Answer it yourself»: the ContinueRequest for a VoiceInput Yandex holds. Its header is the request's own (as the
+/// station would send it) with a new message id, no reference and no stream.
+pub fn continue_request(voice_input: &[u8], message_id: &str) -> Result<Vec<u8>, ProtoError> {
+    let event = get_bytes(body(voice_input)?, 1)?.ok_or_else(|| ProtoError::new("a frame without its event"))?;
+    let request_header = get_bytes(event, 1)?.unwrap_or_default();
+    let request_message_id = get_string(request_header, 1)?.unwrap_or_default();
+    let header = remove_field(&remove_field(&set_bytes(request_header, 1, message_id)?, 2)?, 4)?;
+    let mut continued = length_delimited(1, &header);
+    continued.extend(length_delimited(10, &length_delimited(1, request_message_id.as_bytes())));
+    Ok(frame(&length_delimited(1, &continued)))
+}
+
+/// «We answer it here»: the CancelRequest of a request Yandex holds, its reason local execution.
+pub fn cancel_request(message_id: &str, request_message_id: &str) -> Vec<u8> {
+    let mut cancel = length_delimited(1, request_message_id.as_bytes());
+    cancel.extend(length_delimited(4, &[]));
+    let mut event = length_delimited(1, &length_delimited(1, message_id.as_bytes()));
+    event.extend(length_delimited(11, &cancel));
+    frame(&length_delimited(1, &event))
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -451,5 +505,70 @@ mod tests {
             json!({ "event": { "type": "text_input", "text": "ещё раз" }, "voiceSession": false })
         );
         assert_eq!(edit_frame(b"JSON", &FrameEdit::default()), Err(ProtoError::new("not an AAPI frame")));
+    }
+
+    fn station_voice(codec: &AapiCodec) -> bytes::Bytes {
+        codec
+            .encode_client_object(&json!({ "event": {
+                "header": { "messageId": "voice-7", "streamId": 3 },
+                "voiceInput": {
+                    "header": { "requestId": "req-7", "sequenceNumber": 2 },
+                    "request": { "event": { "type": "voice_input" }, "voiceSession": true, "activationType": "spotter" },
+                    "lang": "ru-RU",
+                },
+            } }))
+            .unwrap()
+    }
+
+    #[test]
+    fn asks_yandex_to_wait_keeping_the_request_and_the_options_the_station_set() {
+        let codec = AapiCodec::new();
+        let voice = station_voice(&codec);
+        assert!(!waits_for_approval(&voice));
+        let gated = wait_for_approval(&voice).unwrap();
+        assert!(waits_for_approval(&gated));
+        let decoded = codec.decode_client(&gated).unwrap().decoded;
+        assert_eq!(decoded["event"]["header"], json!({ "messageId": "voice-7", "streamId": 3 }));
+        assert_eq!(decoded["event"]["voiceInput"]["request"]["activationType"], "spotter");
+        // An option the station set itself (megamind_url, field 1) stays beside ours.
+        let with_option = edit_message(&voice[4..], 1, |event| {
+            edit_message(event, 3, |request| {
+                edit_message(request, 3, |request_body| set_bytes(request_body, 17, length_delimited(1, b"mm")))
+            })
+        })
+        .unwrap();
+        let gated = wait_for_approval(&frame(&with_option)).unwrap();
+        let event = get_bytes(&gated[4..], 1).unwrap().unwrap();
+        let options =
+            get_bytes(get_bytes(get_bytes(event, 3).unwrap().unwrap(), 3).unwrap().unwrap(), 17).unwrap().unwrap();
+        assert_eq!(get_string(options, 1).unwrap().as_deref(), Some("mm"));
+        assert_eq!(get_varint(options, 4).unwrap(), Some(1));
+        // Twice is once.
+        assert_eq!(wait_for_approval(&gated).unwrap(), gated);
+    }
+
+    #[test]
+    fn continues_and_cancels_the_request_yandex_holds() {
+        let codec = AapiCodec::new();
+        let voice = station_voice(&codec);
+        let continued = continue_request(&voice, "cont-1").unwrap();
+        let decoded = codec.decode_client(&continued).unwrap().decoded;
+        assert_eq!(decoded["event"]["header"], json!({ "messageId": "cont-1" }));
+        let request = get_bytes(get_bytes(&continued[4..], 1).unwrap().unwrap(), 10).unwrap().unwrap();
+        assert_eq!(get_string(request, 1).unwrap().as_deref(), Some("voice-7"));
+
+        let cancel = cancel_request("cancel-1", "voice-7");
+        let DecodedClientFrame { message, .. } = codec.decode_client(&cancel).unwrap();
+        assert_eq!(
+            message,
+            ClientMessage::Event(ClientEvent::CancelRequest {
+                header: crate::gateway::protocol::protocol_types::EventHeader {
+                    message_id: "cancel-1".into(),
+                    ..Default::default()
+                },
+                request_message_id: Some("voice-7".into()),
+                reason: crate::gateway::protocol::protocol_types::CancelReason::LocalExecution,
+            })
+        );
     }
 }

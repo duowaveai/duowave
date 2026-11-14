@@ -106,7 +106,7 @@ function CharacterPage({ onOpen }: { onOpen: (tab: CharacterTab) => void }) {
 
     const health = panel.health;
     const mode = health?.panelMode ?? (health?.mode === 'relay' ? 'relay' : 'gateway');
-    const data: DashData = { mode, routes: health?.skills?.routes, brain: brainView?.status ?? health?.brain, brainView, models, persona, connectors };
+    const data: DashData = { mode, routes: health?.skills?.routes, brain: brainView?.status ?? health?.brain, brainView, models, persona, connectors, yandexEar: health?.yandexEar };
     const nodes = nodesOf(data);
     const active = view?.active ?? null;
     const character = active?.id ? view?.characters.find((entry) => entry.id === active.id) : undefined;

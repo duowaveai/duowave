@@ -7,7 +7,7 @@ import { Dropdown } from '../ui/dropdown';
 import { Progress, needsWhat, useNeedsFlow, voicePill } from '../ui/needs';
 import { SectionTabs, TabEntry } from '../ui/tabs';
 import { OwnVoiceRows, OwnVoicesHeader, VoiceWizard } from './voice-lab';
-import { localAsrLine, localAsrPercent } from './local-asr';
+import { languageName, localAsrLine, localAsrPercent } from './local-asr';
 import { ask } from '../ui/confirm';
 import { onComputer } from '../voice-input';
 import { byMode } from '../words';
@@ -757,6 +757,10 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
     const asrCards = onComputer() ? view.asr.filter((card) => card.id !== 'yandex') : view.asr;
     const currentAsr = asrCards.filter((card) => card.active || card.pending);
     const advisedAsr = asrCards.filter((card) => advised(card) && !currentAsr.includes(card));
+    // Модель распознавания по её имени (как их называет шлюз): название карточки, иначе само имя.
+    const asrTitle = (model: string | null | undefined): string => view.asr.find((card) => card.model === model)?.title ?? model ?? '';
+    // Модель, которую просит язык дома: здесь его не знает ни одна.
+    const neededAsr = local?.needs ? view.asr.find((card) => card.model === local.needs) : undefined;
     const otherAsr = asrCards.filter((card) => !advised(card) && !currentAsr.includes(card));
 
     // Языки, какие есть в каталоге: русский и английский первыми, дальше по количеству голосов.
@@ -815,6 +819,25 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                                         label={tr.models.retry}
                                         busy={busy['asr-server'] || view.restarting === 'asr'}
                                         onClick={() => void restart('local-asr', 'asr')}
+                                    />
+                                )}
+                            </div>
+                        )}
+                        {local?.language && (local.needs || local.insteadOf) && (
+                            // Язык дома: модель, которая его не знает, уступила той, что знает, — или такой здесь нет,
+                            // и человек скачивает её сам (шлюз ничего не качает за него).
+                            <div class="flex items-center gap-12 py-8">
+                                <span class="t-caption flex-1" role="status">
+                                    {local.needs
+                                        ? tr.models.languageNeeds(languageName(local.language), asrTitle(local.serving ?? local.model), asrTitle(local.needs))
+                                        : tr.models.languageInstead(languageName(local.language), asrTitle(local.serving ?? local.model), asrTitle(local.insteadOf))}
+                                </span>
+                                {neededAsr && isAdmin && !neededAsr.pending && (
+                                    <Action
+                                        tone="on"
+                                        label={neededAsr.local?.size ? tr.models.languageFetchSize(Math.round(neededAsr.local.size / 1_000_000)) : tr.models.languageFetch}
+                                        busy={busy[neededAsr.id]}
+                                        onClick={() => void activateAsr(neededAsr.id, neededAsr.id)}
                                     />
                                 )}
                             </div>

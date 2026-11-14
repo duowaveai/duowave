@@ -1,7 +1,7 @@
 //! Where an address's bytes are on the disk, checked (docs/plans/shared-folders.md, «Проверка пути и ссылок»). The
 //! address's parts are plain names already (`bus/address.rs`: no `.`, `..`, `/`, `\`); here the disk has its word.
-//! Each folder is its own fence: a link inside «Фото» that leads out of it — to the rest of the disk, or even to
-//! «Документы» — is no file at all, so an app with a link to one folder never reads another through it. A part with
+//! Each folder is its own fence: a link inside Photos that leads out of it — to the rest of the disk, or even to
+//! Documents — is no file at all, so an app with a link to one folder never reads another through it. A part with
 //! a dot, and the systems' own clutter, is hidden: neither listed nor read nor written. A name a Mac stored in NFD is
 //! found as it was said or typed (NFC), and the other way round.
 //!
@@ -237,8 +237,8 @@ mod tests {
     #[test]
     fn a_folder_is_its_own_fence() {
         let dir = tempfile::tempdir().unwrap();
-        let photos = dir.path().join("Фото");
-        let docs = dir.path().join("Документы");
+        let photos = dir.path().join("Photos");
+        let docs = dir.path().join("Documents");
         std::fs::create_dir_all(photos.join("Отпуск")).unwrap();
         std::fs::create_dir_all(&docs).unwrap();
         std::fs::write(photos.join("Отпуск/1.jpg"), "x").unwrap();

@@ -45,12 +45,15 @@ async fn the_microphone_locks_svoi_and_the_station_brings_the_mode_back() {
     assert_eq!(message(gateway.get(input).signed(&admin), StatusCode::OK).await, json!({ "input": "station" }));
     let health = message(gateway.get("/health").signed(&admin), StatusCode::OK).await;
     assert_eq!((health["voiceInput"].clone(), health["panelMode"].clone()), (json!("station"), json!("relay")));
+    assert!(!gateway.app.station_watch.none_expected(), "a station is awaited");
 
     let chosen = message(gateway.put(input).signed(&admin).json(&json!({ "input": "computer" })), StatusCode::OK).await;
     assert_eq!(chosen, json!({ "input": "computer", "before": "relay" }));
     assert_eq!(mode(&gateway, &admin).await, "own");
     let health = message(gateway.get("/health").signed(&admin), StatusCode::OK).await;
     assert_eq!((health["voiceInput"].clone(), health["panelMode"].clone()), (json!("computer"), json!("own")));
+    // No station is awaited: no «колонка не подключена… вернуть к Яндексу» every five minutes (live 14.11).
+    assert!(gateway.app.station_watch.none_expected(), "the station watch keeps quiet");
 
     // The panel's switch and the debug API's alike: only «Своё» while the microphone is chosen.
     for path in ["/api/v1/station/mode", "/debug/mode"] {
@@ -70,6 +73,7 @@ async fn the_microphone_locks_svoi_and_the_station_brings_the_mode_back() {
     let back = message(gateway.put(input).signed(&admin).json(&json!({ "input": "station" })), StatusCode::OK).await;
     assert_eq!(back, json!({ "input": "station" }));
     assert_eq!(mode(&gateway, &admin).await, "relay", "the mode from before");
+    assert!(!gateway.app.station_watch.none_expected(), "a station is awaited again");
     let free = send(gateway.post("/api/v1/station/mode").signed(&admin).json(&json!({ "mode": "gateway" }))).await;
     assert_eq!(free.0, StatusCode::CREATED, "the lock is off");
 

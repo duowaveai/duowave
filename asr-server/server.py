@@ -93,7 +93,9 @@ class Recognizer:
         self.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32))  # warm-up: first MPS/CUDA call is slow
         log.info("loaded %s in %.1f s", model_name, time.monotonic() - started)
 
-    def transcribe(self, samples: np.ndarray) -> str:
+    def transcribe(self, samples: np.ndarray, language: str | None = None) -> str:
+        """`language`: the gateway's hint (the household's language); Whisper takes it, None — it detects. GigaAM and
+        Parakeet hear without one."""
         samples = samples[: MAX_SECONDS * SAMPLE_RATE]
         if self.parakeet is not None:
             with self.lock, torch.inference_mode():
@@ -110,7 +112,7 @@ class Recognizer:
                 os.close(fd)
                 try:
                     write_wav(path, samples)
-                    segments, _ = self.whisper.transcribe(path, language="ru", vad_filter=False)
+                    segments, _ = self.whisper.transcribe(path, language=language, vad_filter=False)
                     return " ".join(segment.text.strip() for segment in segments).strip()
                 finally:
                     os.unlink(path)
@@ -440,6 +442,7 @@ class Handler(BaseHTTPRequestHandler):
             if "file" not in fields:
                 raise ValueError("no 'file' field in the form")
             response_format = fields.get("response_format", (b"json", None))[0].decode() or "json"
+            language = fields.get("language", (b"", None))[0].decode().strip() or None
             samples = read_wav(fields["file"][0])
         except Exception as error:  # noqa: BLE001 - any bad input is the client's problem, report it
             self.reply(400, {"error": {"message": f"bad request: {error}"}})
@@ -449,7 +452,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(503, {"error": {"message": 'no model loaded yet: POST /v1/models/load {"model": "v3_e2e_rnnt"}'}})
             return
         try:
-            text = recognizer.transcribe(samples).strip()
+            text = recognizer.transcribe(samples, language).strip()
         except Exception as error:  # noqa: BLE001
             log.exception("recognition failed")
             self.reply(500, {"error": {"message": f"recognition failed: {error}"}})
@@ -460,7 +463,7 @@ class Handler(BaseHTTPRequestHandler):
         if response_format == "text":
             self.reply_text(text)
         elif response_format == "verbose_json":
-            self.reply(200, {"text": text, "language": "ru", "duration": duration})
+            self.reply(200, {"text": text, "language": language or "", "duration": duration})
         else:
             self.reply(200, {"text": text})
 

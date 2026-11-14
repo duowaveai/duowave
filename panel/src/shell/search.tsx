@@ -12,6 +12,7 @@ import { devMode } from './dev';
 import type { Place } from './links';
 import { onComputer } from '../voice-input';
 import { byMode } from '../words';
+import { choosingTalkKey, isTalkKey } from '../voice/talk-key';
 import { tr } from '../i18n';
 
 export interface SearchPlace {
@@ -193,13 +194,16 @@ export function SearchPalette({
     );
 }
 
-/** ⌥Пробел в окне пульта — то же, что кнопка «Сказать» (docs/plans/mic-mode.md): начать слушать или закончить фразу. */
+/**
+ * Клавиша «Сказать» в окне пульта (по умолчанию ⌥Пробел, своя — voice/talk-key.ts) — то же, что кнопка
+ * (docs/plans/mic-mode.md): начать слушать или закончить фразу.
+ */
 export function useTalkKey(talk: () => void): void {
     const latest = useRef(talk);
     latest.current = talk;
     useEffect(() => {
         const onKey = (event: KeyboardEvent) => {
-            if (event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey && event.code === 'Space' && !event.repeat) {
+            if (!choosingTalkKey() && isTalkKey(event)) {
                 event.preventDefault();
                 latest.current();
             }

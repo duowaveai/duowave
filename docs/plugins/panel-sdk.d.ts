@@ -115,11 +115,11 @@ declare module "@duowave/panel-sdk" {
     export function useFile(name: string): string | null;
 
     /**
-     * Картинка из домашней папки DuoWave по адресу (`files/home/Фото/лето.jpg`) для `<img src>` — уменьшенной (`size` —
-     * длинная сторона, до 2048, по умолчанию 960). Шлюз проверяет связь приложения с папкой (`call:files/home/Фото/*`)
+     * Картинка из домашней папки DuoWave по адресу (`files/home/Photos/лето.jpg`) для `<img src>` — уменьшенной (`size` —
+     * длинная сторона, до 2048, по умолчанию 960). Шлюз проверяет связь приложения с папкой (`call:files/home/Photos/*`)
      * и права того, кто смотрит; код сами байты не видит. Пока не пришла или её нет — null.
      *
-     *   const src = useFolderFile("files/home/Фото/Отпуск/1.jpg", { size: 320 });
+     *   const src = useFolderFile("files/home/Photos/Отпуск/1.jpg", { size: 320 });
      */
     export function useFolderFile(address: string, options?: { size?: number }): string | null;
 

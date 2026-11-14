@@ -88,6 +88,8 @@ export interface DashData {
     availability?: AvailabilityView | null;
     /** Режим «Микрофон»: говорят микрофоном этого компьютера, колонки и Яндекса нет. */
     computer?: boolean;
+    /** «Слух Яндекса» из /health: во «Вместе» без своего слуха распознаёт Яндекс, отвечает наш мозг. */
+    yandexEar?: boolean;
 }
 
 export const THINKING: Record<Thinking, { name: string; sub: string; pill: string }> = {
@@ -359,6 +361,7 @@ export function scenarioOf(data: DashData, placement?: Placement, assumeCloud = 
         cloudVoice: assumeCloud || feature('voice.own')?.runs === 'cloud' || cloud('tts'),
         brain: { name: brain.tone === 'yandex' ? tr.dashboard.alice : brain.value, where },
         computer: data.computer && placement === undefined,
+        yandexEar: data.yandexEar,
     };
 }
 

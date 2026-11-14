@@ -12,8 +12,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::describe_http_error as describe;
 use super::llm_client::{
-    bearer_of, describe_models, AssistantTurn, LlmClient, LlmEvent, LlmMessage, LlmRequest, LlmSettings, LlmStream,
-    TokensField, ToolCall, ToolCallCut, ToolChoice,
+    bearer_of, describe_models, interrupted, AssistantTurn, LlmClient, LlmEvent, LlmMessage, LlmRequest, LlmSettings,
+    LlmStream, TokensField, ToolCall, ToolCallCut, ToolChoice,
 };
 use super::sse::Lines;
 use crate::dialog::generator::{generate, Yielder};
@@ -217,7 +217,7 @@ async fn run(
     let send = client().post(url).headers(headers).body(Value::Object(body).to_string()).send();
     let response = tokio::select! {
         _ = cancel.cancelled() => return Err(aborted()),
-        response = send => response.map_err(|error| anyhow!("cannot reach {url}: {}", describe(&error)))?,
+        response = send => response.map_err(|error| interrupted(format!("cannot reach {url}: {}", describe(&error))))?,
     };
     if !response.status().is_success() {
         let status = response.status().as_u16();
@@ -244,7 +244,7 @@ async fn run(
         };
         let got = match chunk {
             Some(Ok(bytes)) => lines.push(&bytes),
-            Some(Err(error)) => bail!("the answer broke off: {}", describe(&error)),
+            Some(Err(error)) => return Err(interrupted(format!("the answer broke off: {}", describe(&error)))),
             None => {
                 finished = true;
                 lines.finish().into_iter().collect()

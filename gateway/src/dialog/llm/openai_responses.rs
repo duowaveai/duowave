@@ -5,15 +5,15 @@
 //! back — with it. The plan's limit can fail a response after it began (`response.failed`): the station says so in
 //! words, and the provider's card shows it.
 
-use anyhow::{anyhow, bail};
+use anyhow::anyhow;
 use futures::StreamExt;
 use serde_json::{json, Map, Value};
 use tokio_util::sync::CancellationToken;
 
 use super::describe_http_error as describe;
 use super::llm_client::{
-    describe_models, AssistantTurn, LlmClient, LlmEvent, LlmMessage, LlmRequest, LlmSettings, LlmStream, LlmUsage,
-    SpokenFailure, ToolCall, ToolCallCut, ToolChoice,
+    describe_models, interrupted, AssistantTurn, LlmClient, LlmEvent, LlmMessage, LlmRequest, LlmSettings, LlmStream,
+    LlmUsage, SpokenFailure, ToolCall, ToolCallCut, ToolChoice,
 };
 use super::openai_chat::{aborted, head, parse_arguments, request_headers, starts_with_error, OPENAI_BASE_URL};
 use super::sse::{Lines, SseDecoder};
@@ -206,7 +206,7 @@ async fn run(
     let send = client().post(url).headers(headers).body(body.to_string()).send();
     let response = tokio::select! {
         _ = cancel.cancelled() => return Err(aborted()),
-        response = send => response.map_err(|error| anyhow!("cannot reach {url}: {}", describe(&error)))?,
+        response = send => response.map_err(|error| interrupted(format!("cannot reach {url}: {}", describe(&error))))?,
     };
     if !response.status().is_success() {
         let status = response.status().as_u16();
@@ -235,7 +235,7 @@ async fn run(
         };
         let got: Vec<String> = match chunk {
             Some(Ok(bytes)) => lines.push(&bytes),
-            Some(Err(error)) => bail!("the answer broke off: {}", describe(&error)),
+            Some(Err(error)) => return Err(interrupted(format!("the answer broke off: {}", describe(&error)))),
             None => {
                 ended = true;
                 // A last event without its blank line still counts.
@@ -310,7 +310,7 @@ async fn run(
         }
     }
     if !done {
-        bail!("the answer broke off before it was complete");
+        return Err(interrupted("the answer broke off before it was complete"));
     }
     if let Some(access) = &settings.access {
         access.0.ok();

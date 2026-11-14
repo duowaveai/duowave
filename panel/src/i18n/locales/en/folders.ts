@@ -9,6 +9,18 @@ const en: Translation<typeof ru> = {
     groupAttached: 'Connected',
     groupAttachedEmpty: 'Nothing connected: plug in a USB drive or connect a folder from your disk.',
     groupProject: 'Projects',
+    /** The folders the gateway makes: English names on the disk (Photos), the words people read. */
+    standardNames: {
+        Photos: 'Photos',
+        Documents: 'Documents',
+        Videos: 'Videos',
+        Downloads: 'Downloads',
+        Pictures: 'Pictures',
+        Music: 'Music',
+        Stories: 'Stories',
+        Connected: 'Connected',
+        Projects: 'Projects',
+    },
     roleAdmin: 'you',
     roleMember: 'family',
     roleGuest: 'guests',

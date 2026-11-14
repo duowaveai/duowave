@@ -598,11 +598,16 @@ impl YandexSession {
     /// A station frame for Yandex as it is (a sync push response, an ack of a push, a stream of a request); false
     /// when the session is down.
     pub fn send(&self, frame: Bytes, kind: &str) -> bool {
+        self.tell(frame, kind, "from the station")
+    }
+
+    /// A frame of ours (not the station's) on the open session, journaled with what it is.
+    pub fn tell(&self, frame: Bytes, kind: &str, summary: &str) -> bool {
         let state = self.lock();
         let Some(socket) = state.open_socket() else { return false };
         let _ = socket.sender.send(Message::Binary(frame));
         if kind != "audio" {
-            self.journal.record(EventDirection::ToYandex, kind, Some("from the station".into()), None);
+            self.journal.record(EventDirection::ToYandex, kind, Some(summary.to_string()), None);
         }
         true
     }
