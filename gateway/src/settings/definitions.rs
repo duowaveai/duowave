@@ -510,13 +510,14 @@ pub struct Brain {
 
 /// The workshop agent's own model (src/plugins/workshop/agent.rs): a provider of the panel and its model; unset — the
 /// smart profile of «Мозг», as before. Only the agent reads it: the household's conversation keeps «Мозг».
-/// «На стол голосом» (docs/plans/audio-interface.md, the owner's decisions 2 and 8): a «да» said to a station after
+/// «Ставить голосом» (docs/plans/audio-interface.md, the owner's decisions 2 and 8): a «да» said to a station after
 /// «На стол или примерить?» installs the thing, named rights and hosts included; dangerous rights stay the panel's.
+/// MagicPlace's «Поставить «Ленту»?» and «Обновить всё?» obey it too (src/talk/store.rs, docs/plans/magicplace.md).
 /// On unless the owner turns it off: then «Одобрите в пульте», as before.
 pub const TALK_DESK_BY_VOICE: SettingDefinition<bool> = SettingDefinition {
     key: "talk.desk_by_voice",
     scope: SettingScope::Global,
-    description: "Ставить на стол голосом",
+    description: "Ставить голосом",
     sensitive: false,
     parse: Value::as_bool,
 };

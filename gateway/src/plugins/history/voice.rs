@@ -24,7 +24,7 @@ use crate::skills::capabilities::{CapabilityName, Intent};
 use crate::skills::quick_commands::QuickMatch;
 use crate::skills::router::{ExtraRules, EXECUTOR};
 use crate::skills::skill::{ContinuationRequest, ExecutionContext, Outcome};
-use crate::skills::text::normalize;
+use crate::skills::text::{alike, normalize};
 
 /// The rule's name in the journal.
 const RULE: &str = "history:voice";
@@ -78,16 +78,6 @@ pub struct VoiceHistory {
 
 /// The app a device's voice changed on the desk in the last minutes.
 pub type RecentEdit = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
-
-/// Two words alike enough for Russian endings: «погоду» and «погода».
-fn alike(a: &str, b: &str) -> bool {
-    if a == b {
-        return true;
-    }
-    let common = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
-    let longer = a.chars().count().max(b.chars().count());
-    common >= 3 && common + 2 >= longer
-}
 
 /// The installed app named by these words: (id, title).
 fn find_app(history: &History, words: &str) -> Option<(String, String)> {

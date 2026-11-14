@@ -61,7 +61,9 @@ export function searchPlaces(helper: boolean, onStation: boolean): SearchPlace[]
             when: () => can('connectors.view'),
         },
         { title: s.mcp.title, path: s.mcp.path, words: s.mcp.words, place: { section: 'skills', tab: 'connectors' }, when: () => can('connectors.view') },
-        { title: s.catalog.title, path: s.catalog.path, words: s.catalog.words, place: { section: 'skills', tab: 'catalog' }, when: () => can('station.view') },
+        // MagicPlace — магазин: находится по общим словам («магазин», «каталог», «маркет», «store»); чужих названий магазинов
+        // на экране и в поиске нет — они только голосом (docs/plans/magicplace.md).
+        { title: s.catalog.title, path: s.catalog.path, words: s.catalog.words, place: { section: 'magicplace' }, when: () => can('station.view') },
         { title: s.workshop.title, path: s.workshop.path, words: s.workshop.words, place: { section: 'skills', tab: 'workshop' }, when: admin },
         { title: s.routes.title, path: s.routes.path, words: s.routes.words, place: { section: 'skills', tab: 'routes' }, when: () => !onComputer() },
 

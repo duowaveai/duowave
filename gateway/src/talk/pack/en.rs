@@ -1,6 +1,8 @@
 //! The English pack.
 
-use super::{AnswerWords, DoingWords, EndWords, Pack, RuleWords, SayWords, SpokenUnits, Words, WorkWords};
+use super::{
+    AnswerWords, DoingWords, EndWords, Pack, RuleWords, SayWords, SpokenUnits, StoreSay, StoreWords, Words, WorkWords,
+};
 
 pub(super) const PACK: Pack = Pack {
     name: "Deevi",
@@ -26,6 +28,55 @@ pub(super) const PACK: Pack = Pack {
     here: "You are on a computer: there is no music, radio, timers, alarms, volume or light here — say that you \
            cannot do this on this computer yet.",
     work: &WORK,
+    store: &STORE,
+};
+
+/// MagicPlace by voice. Other stores' names live here only, for the voice: the screen never shows them.
+const STORE: StoreWords = StoreWords {
+    open: &["^(?:(?:open|launch|start|show(?: me)?|go to) )?(?:the )?(?:magic[ -]?place|apps?[ -]?store|play[ -]?store|play[ -]?market|google[ -]?play|app[ -]?gallery|galaxy[ -]?store|store|market|app[ -]?market|catalog|app catalog)$"],
+    install: &[
+        "^(?:install|download|get|add) (?:me )?(?:the )?(?:app|application) (?P<name>.+)$",
+        "^(?:install|download|get) (?:me )?(?:the )?(?P<name>.+?) from (?:the )?(?:store|market|catalog|magic[ -]?place)$",
+    ],
+    character: &["^(?:install|download|get|add) (?:me )?(?:the )?character (?P<name>.+)$"],
+    install_maybe: &["^(?:install|download) (?:me )?(?:the )?(?P<name>.+)$"],
+    put_maybe: &["^(?:get|add) (?:me )?(?:the )?(?P<name>.+)$"],
+    updates: &["^(?:what(?: s| is|s)? (?:been )?updated|what got updated|any updates|are there (?:any )?updates|(?:check|look) for updates|what can (?:i|we) update)$"],
+    update_all: &["^(?:update (?:all|everything|all apps|the apps|them)|install (?:all )?(?:the )?updates)$"],
+    new: &["^what(?: s| is|s)? new (?:in|at|on) (?:the )?(?:store|market|catalog|magic[ -]?place)$"],
+    say: StoreSay {
+        opened: "MagicPlace is open in the panel.",
+        where_is: "The store is in the DuoWave panel: MagicPlace.",
+        ask_install: "\"{title}\"{about}.{downloads}{rights} Install it?",
+        downloads: " It will download {list}.",
+        download_now: "{title}, about {mb}, right away",
+        download_later: "{title}, about {mb}, on first use",
+        rights: " It asks for its rights in its window.",
+        installed: "Done: \"{title}\" is installed.",
+        install_failed: "Couldn't install \"{title}\": {why}",
+        declined: "All right, not installing it.",
+        already: "\"{title}\" is already installed.",
+        already_newer: "\"{title}\" is already installed, and version {version} is out.",
+        update_one: " Update it?",
+        not_here: "\"{title}\" won't go here: {why}",
+        not_found: "MagicPlace has no \"{name}\".",
+        look_in_panel: " The store is open in the panel.",
+        in_panel: "Install \"{title}\" in the panel: its window is open.",
+        in_panel_closed: "\"{title}\" installs in the DuoWave panel, in MagicPlace.",
+        fresh: "Everything is up to date.",
+        updates: "New versions are out: {list}.",
+        update_all: " Update them all?",
+        update_in_panel: " Update them in the panel, in MagicPlace.",
+        waits: " New versions of {list} wait for a newer DuoWave.",
+        updated: "Updated: {list}.",
+        update_failed: " Not updated: {list}.",
+        nothing_new: "Nothing new in MagicPlace this month.",
+        new: "New in MagicPlace: {list}.",
+        catalog_off: "The catalog is off, so there is nothing to install from. Turn it on in the panel, in MagicPlace.",
+        and: " and ",
+        megabytes: ["megabyte", "megabytes", "megabytes"],
+        quotes: ("\"", "\""),
+    },
 };
 
 const WORK: WorkWords = WorkWords {

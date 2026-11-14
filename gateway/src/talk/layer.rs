@@ -55,6 +55,8 @@ pub struct TalkLayer {
     pub(super) planned: std::sync::Mutex<std::collections::HashSet<String>>,
     /// The day (since the epoch) each device last heard how to add on the way.
     hinted: std::sync::Mutex<std::collections::HashMap<String, u64>>,
+    /// MagicPlace by voice (store.rs): its rule, its questions.
+    pub(super) store: super::store::Store,
 }
 
 /// A device's conversation is remembered this long after its work last changed.
@@ -68,6 +70,7 @@ impl TalkLayer {
             works: Works::open(db),
             door: super::door::Door::default(),
             asked: super::asked::Asked::default(),
+            store: super::store::Store::new(events.clone()),
             events,
             executors: RwLock::new(Vec::new()),
             desk: OnceLock::new(),
@@ -108,6 +111,16 @@ impl TalkLayer {
     /// The apps on the desk, once the plugins stand.
     pub fn set_desk(&self, desk: Desk) {
         let _ = self.desk.set(desk);
+    }
+
+    /// MagicPlace by voice, once the catalog stands: what it installs from, the switch, whether a panel listens.
+    pub fn set_store(
+        &self,
+        catalog: std::sync::Weak<crate::plugins::catalog::PackageCatalog>,
+        settings: Arc<crate::settings::SettingsService>,
+        panels: super::store::Panels,
+    ) {
+        self.store.attach(catalog, settings, panels);
     }
 
     /// Who keeps phrases ahead in our own voice (src/speech/tts/phrase_cache.rs).

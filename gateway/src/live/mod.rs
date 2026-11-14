@@ -55,6 +55,8 @@ pub const RELAYED: &[&str] = &[
     // A plugin's data changed (its kv): its widgets read theirs again.
     "packages.data",
     "packages.catalog",
+    // MagicPlace asked for by voice (src/talk/store.rs): the panel opens it, on the package named.
+    "magicplace.open",
     // A keyboard plugged in or out (src/midi): the panel reads the keyboards again.
     "midi.devices",
     // The home folder's folders: something attached, a drive offered, a folder's ticks (src/bus/providers/files).
@@ -161,6 +163,10 @@ fn subject_of(event: &GatewayEvent) -> (Option<String>, Option<String>) {
         GatewayEvent::PackageDataChanged { package } => (Some(package.clone()), None),
         // A draft and what happened to it (docs/plans/voice-creation.md): `made`, `ready`, `parked`, `open:fitting`…
         GatewayEvent::WorkshopChanged { draft, change } => (Some(draft.clone()), Some(change.clone())),
+        // MagicPlace by voice: on which package, and `install` with its sheet or `open` (src/talk/store.rs).
+        GatewayEvent::MagicPlaceOpen { item, install, .. } => {
+            (item.clone(), Some(if *install { "install" } else { "open" }.to_string()))
+        }
         // Which work changed and how (src/talk): `started`, `ready`, `decided`…
         GatewayEvent::WorkChanged { work, change, .. } => (Some(work.clone()), Some(change.clone())),
         // Whose task moved and how (src/tasks): `started`, `progress`, `done`…

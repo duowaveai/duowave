@@ -200,6 +200,13 @@ events! {
     PackagesCatalog = "packages.catalog" {
         updates: Vec<String>,
     }
+    /// MagicPlace was asked for by voice (src/talk/store.rs): the panel opens it — on a package (`item`), with its
+    /// install sheet (`install`). `device` — where it was said: a station, or `computer` (a panel's microphone).
+    MagicPlaceOpen = "magicplace.open" {
+        #[serde(default, skip_serializing_if = "Option::is_none")] item: Option<String>,
+        install: bool,
+        device: String,
+    }
     /// A connector set up in the panel changed (src/connectors/settings.rs): which fields, never their values.
     ConnectorChanged = "connector.changed" {
         connector: String,

@@ -32,6 +32,7 @@ import mcp from './mcp';
 import connect from './connect';
 import connectors from './connectors';
 import catalog from './catalog';
+import magicplace from './magicplace';
 import plugins from './plugins';
 import skills from './skills';
 import folders from './folders';
@@ -86,6 +87,7 @@ const ru = {
     connect,
     connectors,
     catalog,
+    magicplace,
     plugins,
     skills,
     folders,

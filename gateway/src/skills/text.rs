@@ -79,6 +79,18 @@ pub fn normalize(text: &str) -> String {
     WAKE_PREFIX.replace(&words.join(" "), "").into_owned()
 }
 
+/// Two words (normalized) alike enough to be one in other endings: equal, or sharing three first letters and more —
+/// all of the longer but two («погоду» and «погода», «ленту» and «Лента»). The voice names apps so: the history's
+/// «верни погоду…», MagicPlace's «поставь ленту» (src/talk/store.rs).
+pub fn alike(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let common = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
+    let longer = a.chars().count().max(b.chars().count());
+    common >= 3 && common + 2 >= longer
+}
+
 /// A number read from words: its value and the index of the word after it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NumberRead {

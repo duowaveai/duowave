@@ -1,4 +1,4 @@
-// Texts: screens/catalog.tsx — package catalog, installed apps, own sources.
+// Texts: screens/catalog.tsx — the catalog, installed apps, own sources (MagicPlace shows them).
 import type { Translation } from '../../types';
 import type ru from '../ru/catalog';
 
@@ -50,25 +50,25 @@ const en: Translation<typeof ru> = {
     statusDisabled: 'The catalog is not loaded: showing what is installed.',
     statusOffline: 'The catalog is unavailable, showing what is installed.',
     feedOffline: (title: string, cached: boolean) => `The “${title}” feed is unavailable${cached ? ' — its apps are shown from the last copy' : ''}.`,
-    sourceClosed: 'Closed: it has no packages anymore, and those installed from it are hidden.',
-    sourceOffline: (cached: boolean) => `Unavailable${cached ? ' — its packages are shown from the last copy' : ''}.`,
-    sourceCount: (n: number) => `packages in the catalog: ${n}`,
+    sourceClosed: 'Closed: nothing is left in it, and what was installed from it is hidden.',
+    sourceOffline: (cached: boolean) => `Unavailable${cached ? ' — showing what it had last time' : ''}.`,
+    sourceCount: (n: number) => `in it: ${n}`,
     sourceFetched: (count: string, ago: string) => `${count} · updated ${ago}`,
     notALink: 'That is not a link: an address like https://…/catalog.json is needed.',
     addSourceTitle: (host: string) => `Add the source ${host}?`,
     addSourceText:
-        'Nobody has checked the packages from it, neither we nor the catalog. A character, its description and voice can be anyone’s, ' +
+        'Nobody has checked anything in it, neither we nor the catalog. A character, its description and voice can be anyone’s, ' +
         'and the voice may be recorded without consent. Add a source only if the link came from someone you trust. Only ' +
         'characters and themes can be installed from it, with no code; you can remove it right here.',
     add: 'Add',
     removeSourceTitle: (title: string) => `Remove the source “${title}”?`,
-    removeSourceText: 'Its packages will leave the catalog. What was installed from it stays as is.',
+    removeSourceText: 'Everything from it will leave MagicPlace. What was installed from it stays as is.',
     removeSource: 'Remove',
     ownSources: 'Own sources',
-    ownSourcesNote: 'A package feed at a link someone gave you personally. Nobody has checked its packages.',
+    ownSourcesNote: 'Your own app repository, at a link someone gave you personally. Nobody has checked what is in it.',
     removeShortLower: 'remove',
     sourcesFull: (max: number) => `No more than ${max} own sources: remove one you do not need to add another.`,
-    sourceLinkLabel: 'Package feed link',
+    sourceLinkLabel: 'App repository link',
     addLower: 'add',
     stateLoaded: 'running',
     stateReady: 'on',
@@ -83,7 +83,7 @@ const en: Translation<typeof ru> = {
     safeModeApps: 'safe mode: apps are not running',
     panelSafeMode: 'Panel safe mode (?safe=1): themes and parts of apps are not loaded into the panel.',
     nothingInstalledBefore: 'Nothing installed yet — choose',
-    inCatalog: 'from the catalog',
+    inCatalog: 'in MagicPlace',
     originGroup: 'Where the app is from',
     versionOf: (version: string) => `version ${version}`,
     open: 'open',

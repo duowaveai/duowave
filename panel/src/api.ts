@@ -2200,6 +2200,35 @@ export interface CatalogEntry {
     permissions?: string[];
     /** Код из главной ленты, подписанной ключом каталога: «Подписано DuoWave». */
     signed?: boolean;
+    // MagicPlace (docs/plans/magicplace.md; шлюз постарше этих полей не присылает).
+    /** Лица приложения: виджет, навык, окно, расписание. */
+    faces?: CatalogFace[];
+    /** Где работает: в шлюзе, на компьютере, в сети; у персонажа и темы — нет. */
+    place?: CatalogPlace | null;
+    /** Рекомендуем мы (только главная лента и наши). */
+    recommended?: boolean;
+    /** Когда появился в каталоге (ISO): ряд «Новое». */
+    addedAt?: string | null;
+    /** Название и описание на всех языках пакета — по ним ищет MagicPlace. */
+    texts?: Array<{ lang: string; title: string; description?: string | null }>;
+    /** Что скачает сам, кроме архива: Node шлюза, Remotion… — на языке пульта. */
+    downloads?: CatalogDownload[];
+    /** Новой версии поставленного нужен шлюз новее: его версия. */
+    waits?: string | null;
+}
+
+/** Лицо приложения в ленте каталога. */
+export type CatalogFace = 'widget' | 'skill' | 'window' | 'schedule';
+
+/** Где работает приложение каталога: в шлюзе, на компьютере, в сети. */
+export type CatalogPlace = 'gateway' | 'computer' | 'network';
+
+/** Что пакет скачает сам: что, около скольки МБ, когда (сразу или при первом использовании). */
+export interface CatalogDownload {
+    id: string;
+    title: string;
+    mb: number;
+    when: 'install' | 'first-use';
 }
 
 /** Дополнительная лента каталога — её называет главная: чья, как называется, на связи ли. */

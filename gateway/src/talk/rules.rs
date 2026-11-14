@@ -90,6 +90,10 @@ pub enum Heard {
         again: bool,
         answer: super::ready::Answer,
     },
+    /// MagicPlace by voice (store.rs): open it, install, the updates, the new — and the answer to its question.
+    Store {
+        heard: super::store::StoreHeard,
+    },
 }
 
 /// A pack's rules, compiled once.
@@ -218,6 +222,20 @@ impl TalkRules {
         if first(&rules.door_open, text, "").is_some() || words.door_open_any.matches(text) {
             return Some(Heard::DoorOpen);
         }
+        // MagicPlace before «покажи …» and «поставь …» of the works: those let go of what is not theirs, and «покажи
+        // магазин», «поставь ленту» would end there. A thing of the layer in play named after «поставь» stays the
+        // desk's.
+        if let Some(store) = layer.store.hear(lang, text) {
+            let desk = match &store {
+                super::store::StoreHeard::Install { name, .. } => {
+                    matches!(self.ours(&layer, pack, device, Some(name.as_str())), Some(Some(_)))
+                }
+                _ => false,
+            };
+            if !desk {
+                return Some(Heard::Store { heard: store });
+            }
+        }
         if let Some(found) = rules.start.iter().find_map(|rule| rule.captures(text)) {
             let face = found.name("what").and_then(|what| face_of(pack, what.as_str()));
             let ask = found.name("ask").map(|ask| ask.as_str().trim().to_string()).unwrap_or_default();
@@ -298,10 +316,15 @@ impl TalkRules {
     }
 
     /// The answer to the device's question, as the pack reads it; None when nothing is asked or it is not an answer.
+    /// A work's question first; else MagicPlace's («Поставить «Ленту»?»).
     pub fn answer_on(&self, normalized: &str, device: &str) -> Option<Heard> {
         let layer = self.layer.upgrade()?;
-        let question = layer.asked.open(device)?;
-        let answer = super::ready::answer_of(pack::of(layer.lang(device)), &words_of(normalized))?;
+        let pack = pack::of(layer.lang(device));
+        let Some(question) = layer.asked.open(device) else {
+            let heard = layer.store.answer_of(device, pack, &words_of(normalized))?;
+            return Some(Heard::Store { heard });
+        };
+        let answer = super::ready::answer_of(pack, &words_of(normalized))?;
         Some(Heard::Answer { work: question.work, question: question.kind, again: question.again, answer })
     }
 
@@ -314,6 +337,14 @@ impl TalkRules {
             Heard::Ready { work } => return layer.ready_said(&work, &device),
             Heard::Answer { work, question, again, answer } => {
                 return Some(layer.answer(origin, &work, question, again, answer).await);
+            }
+            Heard::Store { heard } => {
+                let (said, asks) = layer.store.act(heard, &device, layer.lang(&device)).await;
+                // The store's question is the device's newest: a work's earlier one is not awaited any more.
+                if asks {
+                    layer.asked.answered(&device);
+                }
+                return Some(said);
             }
             Heard::Status { thing } => layer.act(&origin, "status", thing.as_deref()).await,
             Heard::Add { text, thing } => layer.add(origin, &text, thing.as_deref(), false).await,
@@ -398,7 +429,13 @@ impl ExtraRules for TalkRules {
     }
 
     fn matched_with(&self, normalized: &str, input: &RouteInput) -> Option<QuickMatch> {
-        TalkRules::intent_of(&self.hear(normalized, &input.device_tag)?)
+        let heard = self.hear(normalized, &input.device_tag)?;
+        // «Яндекс Маркет», «Яндекс, открой маркет»: the router's text lost «Яндекс» as a wake word, the phrase did not —
+        // Yandex's own store is not MagicPlace.
+        if matches!(heard, Heard::Store { .. }) && super::store::names_yandex(&input.text) {
+            return None;
+        }
+        TalkRules::intent_of(&heard)
     }
 
     /// Before the built-in rules: the answer to the device's question, then the open door.

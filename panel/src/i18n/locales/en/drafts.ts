@@ -83,7 +83,7 @@ const en: Translation<typeof ru> = {
     sizeLarge: 'large',
     sizeSmall: 'small',
     put: 'Add',
-    catalog: 'Catalog',
+    catalog: 'MagicPlace',
     catalogCap: 'apps with widgets: weather, radio, exchange rates, a shopping list…',
     dragHint: 'Move a widget on the desk by its header and resize it by the corner.',
 };

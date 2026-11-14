@@ -45,7 +45,7 @@ const en: Translation<typeof ru> = {
         cantYet: { title: 'Not supported yet', path: 'Apps', words: 'teach can\'t do didn\'t understand skill make' },
         connections: { title: 'Connections', path: 'Apps', words: 'connectors connections telegram smart home home assistant calls news weather' },
         mcp: { title: 'Programs (MCP)', path: 'Apps → Connections', words: 'mcp programs tools agent server' },
-        catalog: { title: 'Catalog', path: 'Apps', words: 'catalog store add skill app plugin install' },
+        catalog: { title: 'MagicPlace', path: '', words: 'magicplace store catalog market apps characters themes add skill app plugin install update updates' },
         workshop: { title: 'Workshop', path: 'Apps', words: 'workshop make your own app skill plugin code widget agent draft' },
         routes: { title: 'Who answers', path: 'Apps', words: 'routes who answers own yandex table' },
         speaker: { title: 'Speaker', path: 'Settings', words: 'speaker name look station lite speakers' },

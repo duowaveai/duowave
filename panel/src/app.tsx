@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { AccessCatalog, ApiError, Health, MovedGateway, SessionSnapshot, Station, UnsupportedEntry, api, can, sessionStore } from './api';
+import { AccessCatalog, ApiError, CatalogEntry, Health, MovedGateway, SessionSnapshot, Station, UnsupportedEntry, api, can, sessionStore } from './api';
 import { noteAvailability } from './availability';
 import { language, tr } from './i18n';
 import { settingsPlace } from './builtin';
@@ -40,6 +40,10 @@ import { WidgetAgent } from './screens/widget-agent';
 import { noteWorkshopChange } from './voice/drafts';
 import { noteWorkChange } from './voice/works';
 import { CreationFlow } from './voice/flow';
+import { FirstAppsSheet, firstAppsOf } from './magicplace/first-apps';
+import { MagicPlaceFlow, noteMagicPlaceOpen } from './magicplace/open';
+import { STORE_TAB } from './magicplace/section';
+import { noteStoreChange } from './magicplace/state';
 import { toggleListening } from './voice/mic';
 import { onTextToStation } from './voice/strip';
 import { deskActions } from './shell/widgets';
@@ -199,11 +203,30 @@ export function App() {
      */
     const [firstRun, setFirstRun] = useState(false);
     const [talkChoiceOpen, setTalkChoiceOpen] = useState(false);
+    /**
+     * Шаг 3 первого запуска (docs/plans/magicplace.md): «Первые приложения» — то, что рекомендует каталог и что встанет
+     * здесь, после выбора, как говорить, или подключения колонки. Предложить нечего — листа нет.
+     */
+    const firstSteps = useRef(false);
+    const [firstApps, setFirstApps] = useState<CatalogEntry[] | null>(null);
+    const offerFirstApps = (): void => {
+        if (!firstSteps.current) return;
+        firstSteps.current = false;
+        void api
+            .packagesCatalog()
+            .then((view) => {
+                const offered = firstAppsOf(view);
+                if (offered.length > 0) setFirstApps(offered);
+            })
+            .catch(() => undefined);
+    };
     useEffect(() => {
         if (!firstRun || !health) return;
         setFirstRun(false);
+        firstSteps.current = true;
         if (health.placement?.role !== 'station' && can('station.mode')) setTalkChoiceOpen(true);
         else if (can('stations.manage')) setConnectOpen(true);
+        else offerFirstApps();
     }, [firstRun, health]);
     /** Колонки, которые ждут шлюз на прежнем порту этого компьютера, и та, что переподключают по «Переподключить». */
     const [moved, setMoved] = useState<MovedGateway[]>([]);
@@ -245,6 +268,9 @@ export function App() {
         if (name === 'workshop.changed' || name === 'hello') noteWorkshopChange(subject, change);
         // Работы разговора: «Готово…» на полосе и голосом компьютера, заметки на плитке (voice/works.ts).
         if (name === 'work.changed') noteWorkChange(subject, change);
+        // MagicPlace: снимок каталога для точки в доке и виджета; колонка попросила открыть магазин (magicplace/*).
+        noteStoreChange(name);
+        noteMagicPlaceOpen(name, subject, change);
         setVersion((value) => value + 1);
         readAvailability.current = 0;
         pollNow.current?.();
@@ -771,6 +797,8 @@ export function App() {
             )}
             {sayOpen && <SaySheet health={health} debug={debug} onClose={() => setSayOpen(false)} />}
             {auth === 'ok' && <CreationFlow />}
+            {auth === 'ok' && <MagicPlaceFlow tab={STORE_TAB} />}
+            {firstApps && <FirstAppsSheet entries={firstApps} onClose={() => setFirstApps(null)} />}
             {auth === 'ok' && <ConsentSheet />}
             {pickerOpen && (
                 <StationsPicker
@@ -797,7 +825,10 @@ export function App() {
             )}
             {talkChoiceOpen && (
                 <TalkChoiceSheet
-                    onClose={() => setTalkChoiceOpen(false)}
+                    onClose={() => {
+                        setTalkChoiceOpen(false);
+                        offerFirstApps();
+                    }}
                     onStation={() => {
                         setTalkChoiceOpen(false);
                         if (can('stations.manage')) setConnectOpen(true);
@@ -812,6 +843,7 @@ export function App() {
                         setReconnect(null);
                         void readStations();
                         readMoved();
+                        offerFirstApps();
                     }}
                     onConnected={() => {
                         // Первый запуск (этап 5): имя и вид — позже, плашкой на главной, без отдельного шага.
@@ -819,6 +851,7 @@ export function App() {
                         setReconnect(null);
                         void readStations();
                         readMoved();
+                        offerFirstApps();
                     }}
                     onOpenBrain={() => {
                         setConnectOpen(false);

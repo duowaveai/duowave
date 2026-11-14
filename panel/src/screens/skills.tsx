@@ -2,7 +2,7 @@
 // Яндекс, — чего она пока не умеет (и «Научить»), подключения и программы. Глубже — память персонажей
 // (screens/recall.tsx), установленное, каталог и мастерская вторым слоем, с «‹ Навыки» назад. Персонажи и темы из каталога живут у себя: в «Персонаже» и в «Оформлении».
 
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 
 import { can, sessionStore } from '../api';
 import { tr } from '../i18n';
@@ -24,11 +24,21 @@ import { onComputer } from '../voice-input';
 
 const isAdmin = (): boolean => can('plugins.manage') && sessionStore.get()?.role === 'admin';
 
-/** Вкладки второго слоя: свой экран целиком и «‹ Навыки» назад. Остальное (список, подключения) — главная страница. */
-const DEEPER = new Set(['memory', 'installed', 'catalog', 'workshop']);
+/**
+ * Вкладки второго слоя: свой экран целиком и «‹ Навыки» назад. Остальное (список, подключения) — главная страница.
+ * Каталог стал магазином MagicPlace (docs/plans/magicplace.md) — своим разделом.
+ */
+const DEEPER = new Set(['memory', 'installed', 'workshop']);
 
 export function SkillsSection() {
+    const panel = usePanel();
     const [tab, setTab] = useSectionTab<string>('skills', 'list');
+    // Раздел помнил вкладку «Каталог»: она теперь MagicPlace.
+    useEffect(() => {
+        if (tab !== 'catalog') return;
+        setTab('list');
+        panel.go('magicplace');
+    }, [tab]);
     // Вкладки плагинов из слота house.tabs («Дом» был их местом) — тоже второй слой.
     const extra = useSlot('house.tabs');
     const contributed = extra.find((entry) => entry.key === tab);
@@ -40,8 +50,7 @@ export function SkillsSection() {
                     {tr.skills.back}
                 </button>
                 {tab === 'memory' && can('memory.view') && <MemoryScreen />}
-                {tab === 'installed' && <PackagesTab part="installed" />}
-                {tab === 'catalog' && <PackagesTab part="catalog" />}
+                {tab === 'installed' && <PackagesTab />}
                 {/* Мастерская — у компьютера: черновики пишутся там, ставятся на колонку (этап 4). */}
                 {tab === 'workshop' && (TOP_VIA ? <OwnFrame page="workshop" title={tr.skills.workshop} /> : <WorkshopScreen />)}
                 {contributed && (
@@ -67,7 +76,7 @@ function SkillsList({ onOpen, extra }: { onOpen: (tab: string) => void; extra: A
     const places: Array<{ key: string; title: string; sub: string; shown: boolean }> = [
         { key: 'memory', title: tr.skills.placeMemory, sub: tr.skills.placeMemorySub, shown: can('memory.view') },
         { key: 'installed', title: tr.skills.placeInstalled, sub: tr.skills.placeInstalledSub, shown: can('station.view') },
-        { key: 'catalog', title: tr.skills.placeCatalog, sub: tr.skills.placeCatalogSub, shown: can('station.view') },
+        { key: 'magicplace', title: tr.skills.placeCatalog, sub: tr.skills.placeCatalogSub, shown: can('station.view') },
         { key: 'workshop', title: tr.skills.placeWorkshop, sub: tr.skills.placeWorkshopSub, shown: isAdmin() },
         ...extra.map((entry) => ({ key: entry.key, title: entry.title, sub: tr.skills.placeFromApp, shown: true })),
     ];
@@ -78,7 +87,7 @@ function SkillsList({ onOpen, extra }: { onOpen: (tab: string) => void; extra: A
                     {places
                         .filter((place) => place.shown)
                         .map((place) => (
-                            <button key={place.key} class="w-row w-row-btn" onClick={() => onOpen(place.key)}>
+                            <button key={place.key} class="w-row w-row-btn" onClick={() => (place.key === 'magicplace' ? panel.go('magicplace') : onOpen(place.key))}>
                                 <span class="flex-1 min-w-0 flex flex-col">
                                     <span class="w-text">{place.title}</span>
                                     <span class="w-cap">{place.sub}</span>

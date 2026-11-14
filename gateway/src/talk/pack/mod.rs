@@ -24,6 +24,100 @@ pub struct Pack {
     pub here: &'static str,
     /// The talk layer's words: the works.
     pub work: &'static WorkWords,
+    /// MagicPlace by voice (talk/store.rs).
+    pub store: &'static StoreWords,
+}
+
+/// MagicPlace by voice (talk/store.rs, docs/plans/magicplace.md, «Голос»): regular expressions over the normalized
+/// phrase (as `RuleWords`), and what is said. The other names of a store — a phone's, the people's — are for the voice
+/// only, never shown: they are other companies' marks; the screen says MagicPlace. A recognizer may write them in
+/// Latin letters: those are a pack's words too.
+pub struct StoreWords {
+    /// «магазин», «открой плей маркет», «зайди в app store».
+    pub open: &'static [&'static str],
+    /// «поставь приложение лента», «установи ленту из магазина»: `name` — the store's, whatever the name.
+    pub install: &'static [&'static str],
+    /// «поставь персонажа артур»: `name`, a character — the store's, whatever the name.
+    pub character: &'static [&'static str],
+    /// «установи ленту», «скачай ленту»: `name` — the store's only when it names a package of the catalog
+    /// («установи будильник» is the alarm's); one installed here is «уже стоит».
+    pub install_maybe: &'static [&'static str],
+    /// «поставь ленту»: `name` — the store's only when it names a package of the catalog not installed here: «поставь»
+    /// also plays («поставь радио», «поставь сказку») and sets (a timer, an alarm).
+    pub put_maybe: &'static [&'static str],
+    /// «что обновилось», «есть обновления»: the new versions, and the question.
+    pub updates: &'static [&'static str],
+    /// «обнови всё»: updates at once, no question — it was asked.
+    pub update_all: &'static [&'static str],
+    /// «что нового в магазине».
+    pub new: &'static [&'static str],
+    pub say: StoreSay,
+}
+
+/// What MagicPlace says by voice. Impersonal: the character may be of any gender and name.
+pub struct StoreSay {
+    /// The store is open in the panel.
+    pub opened: &'static str,
+    /// No panel is open: where the store is.
+    pub where_is: &'static str,
+    /// `{title} {about} {downloads} {rights}`: the question before an install.
+    pub ask_install: &'static str,
+    /// `{list}`: what it will download, said after `about`.
+    pub downloads: &'static str,
+    /// `{title} {mb}`: one download, at once.
+    pub download_now: &'static str,
+    /// `{title} {mb}`: one download, at its first use.
+    pub download_later: &'static str,
+    /// Code asks its rights itself, in its window.
+    pub rights: &'static str,
+    /// `{title}`: installed.
+    pub installed: &'static str,
+    /// `{title} {why}`.
+    pub install_failed: &'static str,
+    /// The answer was «нет».
+    pub declined: &'static str,
+    /// `{title}`: it is here already.
+    pub already: &'static str,
+    /// `{title} {version}`: here already, and a newer version is out.
+    pub already_newer: &'static str,
+    /// After `already_newer`: the question.
+    pub update_one: &'static str,
+    /// `{title} {why}`: it does not go here.
+    pub not_here: &'static str,
+    /// `{name}`: the catalog has no such thing.
+    pub not_found: &'static str,
+    /// Said after `not_found` when the panel opened the store.
+    pub look_in_panel: &'static str,
+    /// `{title}`: installing by voice is off — the panel's window is open.
+    pub in_panel: &'static str,
+    /// `{title}`: installing by voice is off, and no panel is open.
+    pub in_panel_closed: &'static str,
+    /// No updates.
+    pub fresh: &'static str,
+    /// `{list}`: new versions here.
+    pub updates: &'static str,
+    /// After `updates`: the question.
+    pub update_all: &'static str,
+    /// After `updates` or `already_newer` when updating by voice is off: where to update.
+    pub update_in_panel: &'static str,
+    /// `{list}`: their new versions wait for a newer DuoWave.
+    pub waits: &'static str,
+    /// `{list}`: updated.
+    pub updated: &'static str,
+    /// `{list}`: not updated.
+    pub update_failed: &'static str,
+    /// Nothing new in a month.
+    pub nothing_new: &'static str,
+    /// `{list}`: what is new.
+    pub new: &'static str,
+    /// The catalog is off or not set up here.
+    pub catalog_off: &'static str,
+    /// Joins the last two of a list: « и ».
+    pub and: &'static str,
+    /// «мегабайт» in the forms a number takes (`SayWords::plural`): sizes are said in words, not «МБ».
+    pub megabytes: [&'static str; 3],
+    /// The quotes a title takes in a list: «Лента».
+    pub quotes: (&'static str, &'static str),
 }
 
 /// The faces of a thing the workshop makes, in the order of `talk::works::Face`: a widget, a skill, a game, a theme.

@@ -21,6 +21,7 @@ pub mod reader;
 pub mod ready;
 pub mod routes;
 pub mod rules;
+pub mod store;
 mod tools;
 pub mod work_tools;
 pub mod works;

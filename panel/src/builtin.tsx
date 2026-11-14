@@ -27,6 +27,9 @@ import {
 } from './screens/desk-widgets';
 import { MusicWidget, TimersWidget } from './screens/station-widgets';
 import { useOfferedVersion } from './updates';
+import { IconMagicPlace } from './magicplace/icon';
+import { MagicPlaceSection } from './magicplace/section';
+import { MagicPlaceWidget, UpdatesBadge } from './magicplace/widget';
 
 /** Ссылка дашборда: в «Персонаж», «Навыки» или «Настройки», сразу на нужную вкладку. */
 export { settingsPlace } from './screens/places';
@@ -52,6 +55,9 @@ export default definePlugin({
         { id: 'character', get title() { return tr.core.sectionCharacter; }, icon: IconSmile, Screen: CharacterSection, order: 20 },
         // «Навыки» стали «Приложениями» (docs/plans/voice-creation.md, решение 11): навык — лицо приложения.
         { id: 'skills', get title() { return tr.core.sectionApps; }, icon: IconPackage, Screen: SkillsSection, order: 30 },
+        // MagicPlace — встроенный магазин (docs/plans/magicplace.md): часть пульта и шлюза, не пакет — не выключить и не
+        // удалить. В доке сразу после «Приложений», с числом обновлений; окно — `#/magicplace/store/<пакет>`.
+        { id: 'magicplace', get title() { return tr.magicplace.title; }, icon: IconMagicPlace, Screen: MagicPlaceSection, order: 32, permission: 'station.view', Badge: UpdatesBadge },
         // Домашняя папка DuoWave (docs/plans/shared-folders.md): что в ней, что подключено, кто что видит.
         { id: 'folders', get title() { return tr.core.sectionFolders; }, icon: IconFolder, Screen: FoldersSection, order: 35, permission: 'station.view' },
         { id: 'settings', get title() { return tr.core.sectionSettings; }, icon: IconGear, Screen: SettingsSection, order: 40, Badge: UpdateDot },
@@ -68,6 +74,8 @@ export default definePlugin({
             { id: 'character', get title() { return tr.core.widgetCharacter; }, Component: NowAnsweringCard, order: 15, size: 'small', bare: true, roles: ['gateway'], permission: 'station.view' },
             // Память: стартовый экран простой — на стол её ставят сами, через «Новый виджет» (владелец, 12.11).
             { id: 'memory', get title() { return tr.core.widgetMemory; }, icon: IconMemory, Component: MemoryWidget, order: 16, size: 'small', get source() { return tr.core.sourceHome; }, roles: ['gateway'], permission: 'memory.view', initial: false },
+            // MagicPlace на столе: знак и одна строка — обновления, новое, рекомендуем; убрать можно, магазин остаётся в доке.
+            { id: 'magicplace', get title() { return tr.magicplace.title; }, icon: IconMagicPlace, Component: MagicPlaceWidget, order: 18, size: 'small', bare: true, permission: 'station.view' },
             { id: 'recent', get title() { return tr.core.widgetRecent; }, icon: IconJournal, Component: RecentWidget, order: 20, size: 'large', get source() { return tr.core.sourceHistory; }, permission: 'journal.view' },
             { id: 'helper-card', get title() { return tr.core.widgetHelperCard; }, icon: IconLaptop, Component: HelperCardWidget, order: 25, size: 'small', get source() { return tr.core.sourceComputer; }, roles: ['gateway'], available: onStation },
             { id: 'alloc', get title() { return tr.core.widgetAlloc; }, Component: AllocWidget, order: 30, size: 'large', bare: true, roles: ['gateway'], available: withStation },

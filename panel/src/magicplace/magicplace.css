@@ -1,0 +1,145 @@
+/* MagicPlace (magicplace/*, docs/plans/magicplace.md): окно магазина — поиск со знаком и шестерёнкой, ряды витрины
+   плитками, список строками каталога (ui/packages.css), виджет стола, число обновлений у ячейки дока. Цвета — токены
+   темы; розовый — только сам знак MagicPlace. */
+
+.mp { display: flex; flex-direction: column; gap: var(--s-sm, 12px); }
+.mp-mark { display: block; flex: none; }
+
+/* Открытый раздел в доке и боковой панели: одноцветный знак становится розовым. */
+[aria-current='page'] .mp-mark { color: #EC136D; }
+
+/* ─── Поиск ───────────────────────────────────────────────────── */
+.mp-top { display: flex; align-items: center; gap: 10px; }
+.mp-search {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 6px 0 14px;
+    border-radius: var(--r-pill, 999px);
+    border: 1px solid var(--glass-border);
+    background: var(--icon-bg);
+    color: var(--sub);
+}
+.mp-search:focus-within { border-color: var(--text); }
+.mp-search-input {
+    flex: 1;
+    min-width: 0;
+    min-height: 40px;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    outline: none;
+}
+.mp-search-input::-webkit-search-cancel-button { display: none; }
+.mp-search-clear,
+.mp-gear {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    color: var(--sub);
+}
+.mp-search-clear { width: 32px; height: 32px; }
+.mp-gear { width: 44px; height: 44px; border: 1px solid var(--glass-border); background: var(--glass-bg); }
+.mp-search-clear:hover,
+.mp-gear:hover { color: var(--text); }
+
+/* Строка описания в списке — две строки, не больше. */
+.mp-line {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+
+/* ─── Ряды витрины: плитки ────────────────────────────────────── */
+.mp-tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+    gap: var(--s-sm, 12px);
+    padding-bottom: 4px;
+}
+.mp-tile {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    padding: calc(12px * var(--density, 1));
+    border-radius: 14px;
+    border: 1px solid var(--glass-border);
+    background: var(--icon-bg);
+}
+.mp-tile:hover { border-color: var(--accent); }
+.mp-tile-open {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    min-width: 0;
+    text-align: left;
+    color: var(--text);
+}
+.mp-tile-title { max-width: 100%; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp-tile-line {
+    font-size: 12px;
+    line-height: 16px;
+    color: var(--sub);
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+.mp-tile-actions { margin-top: auto; display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* «Ещё 3 — здесь не пойдут. Показать». */
+.mp-more {
+    align-self: flex-start;
+    min-height: 44px;
+    font-size: 13px;
+    color: var(--sub);
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+/* ─── Виджет стола ────────────────────────────────────────────── */
+.mp-widget {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-height: 56px;
+    text-align: left;
+    color: var(--text);
+    border-radius: 14px;
+}
+
+/* ─── Число обновлений у ячейки дока ──────────────────────────── */
+.mp-badge {
+    position: absolute;
+    top: -5px;
+    right: -9px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    line-height: 16px;
+    font-weight: 700;
+    color: #FFFFFF;
+    background: var(--dot-offline);
+}
+
+/* ─── Первый запуск ───────────────────────────────────────────── */
+.mp-first-footer { display: flex; flex-direction: column; gap: 8px; }
+
+/* Ссылка в MagicPlace из других экранов: «Каталог в MagicPlace ›» у «Персонажей». */
+.mp-link { display: inline-flex; align-items: center; gap: 4px; min-height: 44px; color: var(--text); font: inherit; cursor: pointer; }
+.mp-link:hover { text-decoration: underline; }

@@ -147,7 +147,37 @@ pub struct Entry {
     /// the catalog shows it in the person's language (docs/plans/i18n.md).
     pub languages: Vec<String>,
     pub locales: BTreeMap<String, (Option<String>, Option<String>)>,
+    /// An app's faces (`faces`: widget, skill, window, schedule): MagicPlace filters by them
+    /// (docs/plans/magicplace.md). None for a character or a theme.
+    pub faces: Vec<String>,
+    /// The catalog recommends it (`recommended`): the main feed's word, or that of an extra feed it vouches for —
+    /// never an own source's.
+    pub recommended: bool,
+    /// When it came into the catalog (`addedAt`, RFC 3339): MagicPlace's «Новое».
+    pub added_at: Option<String>,
+    /// What it downloads by itself besides its archive (`downloads`): MagicPlace says it in words before the install.
+    pub downloads: Vec<Download>,
 }
+
+/// Something a package downloads by itself besides its archive: Remotion and a browser for drawing, a model.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Download {
+    pub id: String,
+    pub title: String,
+    /// About how much, MB.
+    pub mb: u64,
+    /// `install` or `first-use`.
+    pub when: String,
+    /// Its title in the package's other languages (`locales.<code>.downloads.<id>`).
+    pub titles: BTreeMap<String, String>,
+}
+
+/// An app's faces as the feed may name them, in the order MagicPlace shows them.
+pub const FACES: [&str; 4] = ["widget", "skill", "window", "schedule"];
+/// The downloads a package may name, at most.
+const MAX_DOWNLOADS: usize = 8;
+/// Our Node's archive, about: what an app on Node downloads first when the gateway has no Node yet.
+pub const NODE_DOWNLOAD_MB: u64 = 50;
 
 /// An extra feed the main one names (`feeds`): read after it, its packages after the main's.
 #[derive(Debug, Clone, PartialEq)]
@@ -189,6 +219,49 @@ impl Entry {
         (self.title.clone(), self.description.clone())
     }
 
+    /// Its title and description in every language it has, its own first: MagicPlace searches them all. A language
+    /// whose translation lacks one takes its own.
+    pub fn all_texts(&self) -> Vec<(String, String, Option<String>)> {
+        let own = self.languages.first().map(String::as_str).unwrap_or(crate::locale::SOURCE).to_string();
+        let mut texts = vec![(own.clone(), self.title.clone(), self.description.clone())];
+        for (code, (title, description)) in &self.locales {
+            if *code == own {
+                continue;
+            }
+            texts.push((
+                code.clone(),
+                title.clone().unwrap_or_else(|| self.title.clone()),
+                description.clone().or_else(|| self.description.clone()),
+            ));
+        }
+        texts
+    }
+
+    /// A download's title in the first language of `preferences` it has one in; none — its own.
+    pub fn download_title(&self, download: &Download, preferences: &[String]) -> String {
+        let own = self.languages.first().map(String::as_str).unwrap_or(crate::locale::SOURCE);
+        for code in preferences {
+            if code == own {
+                break;
+            }
+            if let Some(title) = download.titles.get(code) {
+                return title.clone();
+            }
+        }
+        download.title.clone()
+    }
+
+    /// Where it works, in MagicPlace's words: `gateway` (a plugin: QuickJS, WASM), `computer` (an app, its own
+    /// program beside the gateway), `network` (a plugin on MCP: a service out there). None for data.
+    pub fn place(&self) -> Option<&'static str> {
+        match (self.kind, self.runtime.as_deref()) {
+            (PackageKind::Plugin, Some("mcp")) => Some("network"),
+            (PackageKind::Plugin, _) => Some("gateway"),
+            (PackageKind::App, _) => Some("computer"),
+            _ => None,
+        }
+    }
+
     /// The archive for this machine: its platform's, else the one archive.
     pub fn archive(&self) -> Archive {
         self.platforms.get(&super::manifest::platform()).cloned().unwrap_or_else(|| Archive {
@@ -211,6 +284,29 @@ pub struct Feed {
     pub feeds: Vec<ExtraFeed>,
     /// The packages it says to hide (`hidden: true`): not in `packages`, and an installed one from this feed is hidden.
     pub hidden: std::collections::BTreeSet<String>,
+    /// Packages of other feeds the catalog looked at and recommends, each by its archive's hash (`recommends`,
+    /// docs/plans/magicplace.md): taken from the main feed only.
+    pub recommends: Vec<Pin>,
+}
+
+/// A package of another feed the catalog looked at: that feed's address, the package's id, its archive's sha256.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pin {
+    pub feed: url::Url,
+    pub id: String,
+    pub sha256: String,
+}
+
+/// The packages of other feeds the main one may recommend, at most.
+const MAX_RECOMMENDS: usize = 32;
+
+/// A pin as the feed names it: the feed's address as a feed's (HTTPS), an id, 64 hex digits; else None.
+fn pin(value: &Value) -> Option<Pin> {
+    let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty());
+    let feed = feed_url(text("feed")?).ok()?;
+    let id = text("id").filter(|id| valid_id(id))?.to_string();
+    let sha256 = text("sha256").filter(|sha| sha.len() == 64 && sha.chars().all(|c| c.is_ascii_hexdigit()))?;
+    Some(Pin { feed, id, sha256: sha256.to_ascii_lowercase() })
 }
 
 /// The catalog's signature: the feed's own address and `.minisig`, from the same origin.
@@ -233,6 +329,7 @@ impl Feed {
             signed: false,
             feeds: Vec::new(),
             hidden: Default::default(),
+            recommends: Vec::new(),
         }
     }
 
@@ -276,6 +373,17 @@ impl Feed {
             }
             entry.publisher = Some(extra.publisher.clone());
             entry.verified &= extra.verified;
+            // We recommend only what we vouch for: never what an own source or an unvouched feed says of itself.
+            entry.recommended &= extra.verified && !extra.own;
+            // A package of it the main feed looked at and recommends — that very archive, by its hash: recommended and
+            // checked. Another archive under the same id is not what we looked at.
+            let pinned = self.recommends.iter().any(|pin| {
+                pin.feed == extra.url && pin.id == entry.id && pin.sha256 == entry.sha256.to_ascii_lowercase()
+            });
+            if pinned {
+                entry.recommended = true;
+                entry.verified = true;
+            }
             entry.extra = Some(extra.clone());
             self.packages.push(entry);
         }
@@ -442,6 +550,22 @@ fn entry(value: &Value, base: &url::Url) -> Result<Entry, String> {
             _ => return Err(at(&crate::tr!("platforms.{key}: url с того же адреса, sha256 и size", key = key))),
         }
     }
+    // MagicPlace's fields (docs/plans/magicplace.md): optional, and one that does not read is left out, never the
+    // package.
+    let faces = value
+        .get("faces")
+        .and_then(Value::as_array)
+        .map(|named| {
+            FACES
+                .iter()
+                .filter(|face| named.iter().any(|item| item.as_str() == Some(**face)))
+                .map(|face| face.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    let recommended = value.get("recommended").and_then(Value::as_bool).unwrap_or(false);
+    let added_at = text("addedAt").filter(|at| chrono::DateTime::parse_from_rfc3339(at).is_ok()).map(str::to_string);
+    let downloads = downloads_of(value);
     Ok(Entry {
         id,
         kind,
@@ -467,7 +591,50 @@ fn entry(value: &Value, base: &url::Url) -> Result<Entry, String> {
         extra: None,
         languages,
         locales,
+        faces,
+        recommended,
+        added_at,
+        downloads,
     })
+}
+
+/// A package's `downloads` as the feed names them, with their titles in other languages: each one whole — an id,
+/// a title, about how many MB, `install` or `first-use` — or left out.
+fn downloads_of(value: &Value) -> Vec<Download> {
+    let titles = |id: &str| -> BTreeMap<String, String> {
+        value
+            .get("locales")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+            .filter_map(|(code, texts)| {
+                let title = texts.pointer(&format!("/downloads/{id}")).and_then(Value::as_str)?.trim();
+                let code = crate::locale::normalize(code)?;
+                (!title.is_empty()).then(|| (code, title.chars().take(80).collect()))
+            })
+            .collect()
+    };
+    value
+        .get("downloads")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(Value::as_str).filter(|id| valid_id(id))?;
+            let title = item.get("title").and_then(Value::as_str).map(str::trim).filter(|title| !title.is_empty())?;
+            let mb = item.get("mb").and_then(Value::as_u64).filter(|mb| (1..=100_000).contains(mb))?;
+            let when =
+                item.get("when").and_then(Value::as_str).filter(|when| matches!(*when, "install" | "first-use"))?;
+            Some(Download {
+                id: id.to_string(),
+                title: title.chars().take(80).collect(),
+                mb,
+                when: when.to_string(),
+                titles: titles(id),
+            })
+        })
+        .take(MAX_DOWNLOADS)
+        .collect()
 }
 
 /// Reads a feed by its schema: the whole of it must be one (format 1, a list of packages); a package in it that is
@@ -528,6 +695,14 @@ pub fn parse_feed(text: &str, base: &url::Url) -> Result<Feed, String> {
             }
         }
         Some(_) => feed.skipped.push(crate::tr!("feeds: список лент")),
+    }
+    // Packages of other feeds the catalog looked at and recommends: read at any feed, taken from the main one alone
+    // (`take` reads the merged main's).
+    for item in value.get("recommends").and_then(Value::as_array).into_iter().flatten().take(MAX_RECOMMENDS) {
+        match pin(item) {
+            Some(pin) => feed.recommends.push(pin),
+            None => feed.skipped.push(crate::tr!("recommends: адрес ленты, id пакета и sha256 архива")),
+        }
     }
     Ok(feed)
 }
@@ -735,9 +910,10 @@ pub fn entry_state(
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PreviewView {
-    /// `/api/v1/packages/catalog/{id}/preview/image`, when the picture is here.
+    /// `/api/v1/packages/catalog/{id}/preview/image?v={version}`, when the picture is here. The version makes a new
+    /// address for a new version: the panel keeps a preview by its address for an hour.
     pub image: Option<String>,
-    /// `/api/v1/packages/catalog/{id}/preview/{n}`, from 1.
+    /// `/api/v1/packages/catalog/{id}/preview/{n}?v={version}`, from 1.
     pub samples: Vec<String>,
 }
 
@@ -771,6 +947,48 @@ pub struct CatalogEntryView {
     pub permissions: Vec<String>,
     /// Code from the main feed that the catalog's key signed: «Подписано DuoWave».
     pub signed: bool,
+    /// MagicPlace (docs/plans/magicplace.md): an app's faces (widget, skill, window, schedule)…
+    pub faces: Vec<String>,
+    /// …where it works: `gateway`, `computer`, `network`; None for a character or a theme…
+    pub place: Option<&'static str>,
+    /// …the catalog recommends it…
+    pub recommended: bool,
+    /// …when it came into the catalog…
+    pub added_at: Option<String>,
+    /// …its title and description in every language it has, its own first — the search reads them all…
+    pub texts: Vec<TextsView>,
+    /// …what it will download, in the request's language, our Node first when an app on Node will need it…
+    pub downloads: Vec<DownloadView>,
+    /// …and, when its newer version needs a newer gateway than this one, that version: «после обновления DuoWave».
+    pub waits: Option<String>,
+}
+
+/// A package's title and description in one language.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TextsView {
+    pub lang: String,
+    pub title: String,
+    pub description: Option<String>,
+}
+
+/// Something a package will download: what, about how much, when (`install`, `first-use`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DownloadView {
+    pub id: String,
+    pub title: String,
+    pub mb: u64,
+    pub when: String,
+}
+
+/// The gateway's version that an installed package's newer version waits for: it is newer than this gateway and is
+/// the only reason the newer version does not go here.
+fn waits_for(entry: &Entry, installed: Option<&semver::Version>, state: EntryState) -> Option<String> {
+    let installed = installed?;
+    if state != EntryState::Incompatible || *installed >= entry.version {
+        return None;
+    }
+    let gateway = semver::Version::parse(crate::VERSION).ok()?;
+    entry.min_gateway.as_ref().filter(|min| **min > gateway).map(ToString::to_string)
 }
 
 /// An extra feed for the panel: whose it is, what it is called, how its last read went.
@@ -870,6 +1088,9 @@ pub struct PackageCatalog {
     reading: tokio::sync::Mutex<()>,
     /// One install, update or removal at a time.
     installing: tokio::sync::Mutex<()>,
+    /// Where our Node lies, and a Node of one's own (DUOWAVE_NODE): whether an app on Node downloads it first.
+    node_dir: PathBuf,
+    own_node: Option<PathBuf>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -916,6 +1137,8 @@ impl PackageCatalog {
             status: Mutex::new(Status::default()),
             reading: tokio::sync::Mutex::new(()),
             installing: tokio::sync::Mutex::new(()),
+            node_dir: deps.config.node_dir.clone(),
+            own_node: deps.config.own_node.clone(),
         })
     }
 
@@ -1575,51 +1798,83 @@ impl PackageCatalog {
             .collect();
         // The entries in the request's language, else English (docs/plans/i18n.md).
         let languages = crate::locale::preferences(&self.settings);
-        let packages = feed
-            .as_ref()
-            .map(|feed| {
-                feed.newest()
-                    .into_iter()
-                    .map(|entry| {
-                        let mine = installed.get(&entry.id);
-                        let (state, reason) = entry_state(entry, mine, placement, signed, free_mb);
-                        let dir = self.preview_dir(entry);
-                        let base = format!("/api/v1/packages/catalog/{}/preview", entry.id);
-                        let (title, description) = entry.texts_in(&languages);
-                        CatalogEntryView {
-                            id: entry.id.clone(),
-                            kind: entry.kind,
-                            version: entry.version.to_string(),
-                            title,
-                            description,
-                            license: entry.license.clone(),
-                            verified: entry.verified,
-                            runs: entry.runs.iter().map(|runs| runs.as_str()).collect(),
-                            min_gateway: entry.min_gateway.as_ref().map(ToString::to_string),
-                            needs: entry.needs.clone(),
-                            preview: PreviewView {
-                                image: self.preview_file(&dir, "image").map(|_| format!("{base}/image")),
-                                samples: (1..=entry.samples.len())
-                                    .filter(|n| self.preview_file(&dir, &format!("sample-{n}")).is_some())
-                                    .map(|n| format!("{base}/{n}"))
+        // An app on Node downloads our Node first, once, when the gateway has none yet.
+        let node_missing = crate::apps::node::needs_download(&self.node_dir, self.own_node.as_deref());
+        let packages =
+            feed.as_ref()
+                .map(|feed| {
+                    feed.newest()
+                        .into_iter()
+                        .map(|entry| {
+                            let mine = installed.get(&entry.id);
+                            let (state, reason) = entry_state(entry, mine, placement, signed, free_mb);
+                            let dir = self.preview_dir(entry);
+                            let base = format!("/api/v1/packages/catalog/{}/preview", entry.id);
+                            // The version in the address: a new version is a new address, the panel's cache can't
+                            // show the old picture or phrases.
+                            let version = format!("?v={}", entry.version);
+                            let (title, description) = entry.texts_in(&languages);
+                            let node = (entry.runtime.as_deref() == Some("node") && node_missing && mine.is_none())
+                                .then(|| DownloadView {
+                                    id: "node".into(),
+                                    title: "Node".into(),
+                                    mb: NODE_DOWNLOAD_MB,
+                                    when: "install".into(),
+                                });
+                            let downloads = node
+                                .into_iter()
+                                .chain(entry.downloads.iter().map(|download| DownloadView {
+                                    id: download.id.clone(),
+                                    title: entry.download_title(download, &languages),
+                                    mb: download.mb,
+                                    when: download.when.clone(),
+                                }))
+                                .collect();
+                            CatalogEntryView {
+                                id: entry.id.clone(),
+                                kind: entry.kind,
+                                version: entry.version.to_string(),
+                                title,
+                                description,
+                                license: entry.license.clone(),
+                                verified: entry.verified,
+                                runs: entry.runs.iter().map(|runs| runs.as_str()).collect(),
+                                min_gateway: entry.min_gateway.as_ref().map(ToString::to_string),
+                                needs: entry.needs.clone(),
+                                preview: PreviewView {
+                                    image: self.preview_file(&dir, "image").map(|_| format!("{base}/image{version}")),
+                                    samples: (1..=entry.samples.len())
+                                        .filter(|n| self.preview_file(&dir, &format!("sample-{n}")).is_some())
+                                        .map(|n| format!("{base}/{n}{version}"))
+                                        .collect(),
+                                },
+                                installed: mine.map(ToString::to_string),
+                                state,
+                                reason,
+                                publisher: entry.publisher.clone(),
+                                source: entry.extra.as_ref().map(|extra| extra.title.clone()),
+                                own: entry.extra.as_ref().is_some_and(|extra| extra.own),
+                                runtime: entry.runtime.clone(),
+                                permissions: entry.permissions.clone(),
+                                signed: signed
+                                    && entry.extra.is_none()
+                                    && matches!(entry.kind, PackageKind::Plugin | PackageKind::App),
+                                faces: entry.faces.clone(),
+                                place: entry.place(),
+                                recommended: entry.recommended,
+                                added_at: entry.added_at.clone(),
+                                texts: entry
+                                    .all_texts()
+                                    .into_iter()
+                                    .map(|(lang, title, description)| TextsView { lang, title, description })
                                     .collect(),
-                            },
-                            installed: mine.map(ToString::to_string),
-                            state,
-                            reason,
-                            publisher: entry.publisher.clone(),
-                            source: entry.extra.as_ref().map(|extra| extra.title.clone()),
-                            own: entry.extra.as_ref().is_some_and(|extra| extra.own),
-                            runtime: entry.runtime.clone(),
-                            permissions: entry.permissions.clone(),
-                            signed: signed
-                                && entry.extra.is_none()
-                                && matches!(entry.kind, PackageKind::Plugin | PackageKind::App),
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+                                downloads,
+                                waits: waits_for(entry, mine, state),
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
         // The own sources are listed even without a copy: the admin removes them here.
         let own = self.url().and_then(Result::ok).map(|url| self.own_feeds(&url)).unwrap_or_default();
         let status = lock(&self.status);
@@ -1698,6 +1953,43 @@ impl PackageCatalog {
         }
         let url = self.url().and_then(Result::ok)?;
         self.copy(&url).and_then(|feed| feed.find(id, None).map(|entry| entry.kind))
+    }
+
+    /// The package of the catalog's copy here these words name — its title in any language it has, or its id — for
+    /// the voice (src/talk/store.rs): its id, and whether it is installed here. Every word said is a word of the title
+    /// and every word of the title is said, alike as «ленту» and «Лента» are; the longest title wins. `character` —
+    /// characters only («поставь персонажа …»). Reads the copy, never the network.
+    pub fn named(&self, words: &str, character: bool) -> Option<(String, bool)> {
+        use crate::skills::text::{alike, normalize};
+        let url = self.url()?.ok()?;
+        let (feed, _) = self.merged(&url)?;
+        let normalized = normalize(words);
+        let said: Vec<&str> = normalized.split(' ').filter(|word| !word.is_empty()).collect();
+        if said.is_empty() {
+            return None;
+        }
+        let mut best: Option<(usize, String)> = None;
+        for entry in feed.newest() {
+            if character && entry.kind != PackageKind::Character {
+                continue;
+            }
+            let names = entry.all_texts().into_iter().map(|(_, title, _)| title).chain([entry.id.replace('-', " ")]);
+            for name in names {
+                let name = normalize(&name);
+                let title: Vec<&str> = name.split(' ').filter(|word| word.chars().count() > 1).collect();
+                if title.is_empty() {
+                    continue;
+                }
+                let whole = title.iter().all(|word| said.iter().any(|said| alike(said, word)))
+                    && said.iter().all(|said| title.iter().any(|word| alike(said, word)));
+                if whole && best.as_ref().is_none_or(|(length, _)| title.len() > *length) {
+                    best = Some((title.len(), entry.id.clone()));
+                }
+            }
+        }
+        let (_, id) = best?;
+        let installed = self.host.installed(&id).is_some();
+        Some((id, installed))
     }
 
     /// The package from the feed: downloaded, checked against its size and hash, installed. `update` takes the newest
@@ -2297,8 +2589,8 @@ pub mod tests {
             (entry.id.as_str(), entry.state, entry.installed.as_deref()),
             ("arthur", EntryState::Available, None)
         );
-        assert_eq!(entry.preview.image.as_deref(), Some("/api/v1/packages/catalog/arthur/preview/image"));
-        assert_eq!(entry.preview.samples, ["/api/v1/packages/catalog/arthur/preview/1"]);
+        assert_eq!(entry.preview.image.as_deref(), Some("/api/v1/packages/catalog/arthur/preview/image?v=1.2.0"));
+        assert_eq!(entry.preview.samples, ["/api/v1/packages/catalog/arthur/preview/1?v=1.2.0"]);
         assert_eq!(entry.needs[0]["id"], "omnivoice");
         let (file, kind) = catalog.preview("arthur", "image").await.unwrap();
         assert_eq!((std::fs::read(file).unwrap(), kind), (WEBP.to_vec(), "image/webp"));
@@ -2399,6 +2691,27 @@ pub mod tests {
         assert_eq!(seen, ["installed", "catalog: arthur 1.3.0", "updated", "rolledBack", "removed"]);
     }
 
+    /// The voice names a package of the catalog's copy (src/talk/store.rs): by its title in any of its languages, in
+    /// another ending, or by its id — and learns whether it is installed here.
+    #[tokio::test]
+    async fn finds_a_package_by_the_name_said_in_any_of_its_languages() {
+        let site = site().await;
+        let mut butler = arthur("1.0.0");
+        butler["languages"] = json!(["ru", "en"]);
+        butler["locales"] = json!({ "en": { "title": "Arthur the Butler" } });
+        site.publish(&[(butler, vgp(&character_manifest("arthur", "1.0.0")))]);
+        let fixture = fixture(FeedSource::Url(site.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+        assert_eq!(catalog.named("артура", false), None, "no copy yet: nothing to name");
+        catalog.view(false).await;
+        assert_eq!(catalog.named("артура", false), Some(("arthur".into(), false)));
+        assert_eq!(catalog.named("Arthur the Butler", true), Some(("arthur".into(), false)));
+        assert_eq!(catalog.named("артур дворецкий", false), None, "every word said is of the title");
+        assert_eq!(catalog.named("радио", false), None);
+        catalog.install("arthur", None, false, None).await.unwrap();
+        assert_eq!(catalog.named("Артур", false), Some(("arthur".into(), true)));
+    }
+
     #[tokio::test]
     async fn refuses_an_archive_the_site_changed_and_code_from_an_unsigned_catalog() {
         let site = site().await;
@@ -2443,6 +2756,128 @@ pub mod tests {
             "runs": ["pc"], "url": "https://packages.example.org/packages/arthur.vgp", "sha256": "b".repeat(64), "size": 10 });
         let parsed = entry(&bare, &base).unwrap();
         assert!(parsed.runtime.is_none() && parsed.permissions.is_empty(), "a character has neither");
+    }
+
+    /// MagicPlace's fields (docs/plans/magicplace.md): optional — a feed without them reads as before, one that does
+    /// not read is left out and never the package; texts in every language for the search; the place by kind and
+    /// engine; what waits for a newer gateway.
+    #[test]
+    fn reads_magicplaces_fields_of_a_package_and_leaves_out_what_does_not_read() {
+        let base = url::Url::parse("https://packages.example.org/catalog.json").unwrap();
+        let value = json!({
+            "id": "feed", "kind": "app", "version": "0.4.1", "title": "Лента", "description": "Мини-сериалы.",
+            "api": "^2", "runs": ["pc"], "url": "packages/feed-0.4.1.vgp", "sha256": "a".repeat(64), "size": 1000,
+            "runtime": "node", "languages": ["ru", "en"],
+            "locales": { "en": { "title": "Feed", "description": "Mini-series.", "downloads": { "render": "Remotion and a browser" } } },
+            "faces": ["window", "widget", "dance", "skill"], "recommended": true, "addedAt": "2026-11-13T20:42:34Z",
+            "downloads": [
+                { "id": "render", "title": "Remotion и браузер", "mb": 250, "when": "first-use" },
+                { "id": "broken", "title": "", "mb": 0, "when": "sometime" }
+            ]
+        });
+        let feed = entry(&value, &base).unwrap();
+        assert_eq!(feed.faces, ["widget", "skill", "window"], "known faces in their order, an unknown one left out");
+        assert!(feed.recommended);
+        assert_eq!(feed.added_at.as_deref(), Some("2026-11-13T20:42:34Z"));
+        assert_eq!(feed.downloads.len(), 1, "a download that does not read is left out");
+        assert_eq!(feed.download_title(&feed.downloads[0], &["en".into()]), "Remotion and a browser");
+        assert_eq!(feed.download_title(&feed.downloads[0], &["ru".into(), "en".into()]), "Remotion и браузер");
+        assert_eq!(feed.place(), Some("computer"));
+        let texts: Vec<(String, String)> = feed.all_texts().into_iter().map(|(lang, title, _)| (lang, title)).collect();
+        assert_eq!(texts, [("ru".to_string(), "Лента".to_string()), ("en".to_string(), "Feed".to_string())]);
+
+        let mut odd = value.clone();
+        odd["addedAt"] = json!("вчера");
+        odd["faces"] = json!("widget");
+        odd["downloads"] = json!({ "id": "render" });
+        let odd = entry(&odd, &base).unwrap();
+        assert!(odd.added_at.is_none() && odd.faces.is_empty() && odd.downloads.is_empty(), "the package stays");
+
+        let plain = json!({ "id": "arthur", "kind": "character", "version": "1.0.0", "title": "Артур", "api": "^1",
+            "runs": ["pc"], "url": "arthur.vgp", "sha256": "b".repeat(64), "size": 10 });
+        let plain = entry(&plain, &base).unwrap();
+        assert!(!plain.recommended && plain.faces.is_empty() && plain.added_at.is_none() && plain.place().is_none());
+        assert_eq!(plain.all_texts().len(), 1, "its own language only");
+        let mut mcp = plain.clone();
+        (mcp.kind, mcp.runtime) = (PackageKind::Plugin, Some("mcp".into()));
+        assert_eq!(mcp.place(), Some("network"));
+        mcp.runtime = Some("js".into());
+        assert_eq!(mcp.place(), Some("gateway"));
+
+        // A newer version that needs a newer gateway: what it waits for, only beside an installed one.
+        let mut newer = plain;
+        newer.min_gateway = Some(semver::Version::new(99, 0, 0));
+        let installed = semver::Version::new(0, 9, 0);
+        let (state, _) = entry_state(&newer, Some(&installed), Placement::Pc, false, None);
+        assert_eq!(waits_for(&newer, Some(&installed), state).as_deref(), Some("99.0.0"));
+        assert_eq!(waits_for(&newer, None, entry_state(&newer, None, Placement::Pc, false, None).0), None);
+    }
+
+    /// We recommend what we vouch for: an own source's word «recommended» does not count, nor an unvouched feed's.
+    #[test]
+    fn only_the_main_feed_and_a_vouched_one_recommend() {
+        let base = url::Url::parse("https://packages.example.org/catalog.json").unwrap();
+        let package = |id: &str| {
+            json!({ "id": id, "kind": "character", "version": "1.0.0", "title": id, "api": "^1", "runs": ["pc"],
+                "url": format!("{id}.vgp"), "sha256": "c".repeat(64), "size": 10, "recommended": true })
+        };
+        let mut main = parse_feed(&json!({"format": 1, "packages": [package("main")]}).to_string(), &base).unwrap();
+        let extra_url = url::Url::parse("https://store.example.org/catalog.json").unwrap();
+        let copy =
+            |id: &str| parse_feed(&json!({"format": 1, "packages": [package(id)]}).to_string(), &extra_url).unwrap();
+        let vouched = ExtraFeed {
+            url: extra_url.clone(),
+            publisher: "duowave".into(),
+            title: "DuoWave Store".into(),
+            verified: true,
+            own: false,
+        };
+        main.take(&vouched, copy("store"));
+        main.take(&ExtraFeed { verified: false, ..vouched.clone() }, copy("partner"));
+        main.take(&own_feed(&url::Url::parse("https://friend.example.net/catalog.json").unwrap()), copy("friend"));
+        let recommended: Vec<&str> =
+            main.packages.iter().filter(|entry| entry.recommended).map(|entry| entry.id.as_str()).collect();
+        assert_eq!(recommended, ["main", "store"]);
+    }
+
+    /// A package of another feed the main one looked at (`recommends`: that feed, the id, the archive's hash) is
+    /// recommended and checked where its feed is read — that very archive only; another feed's `recommends` is nothing.
+    #[test]
+    fn the_main_feed_recommends_a_package_of_another_feed_by_its_archives_hash() {
+        let base = url::Url::parse("https://packages.example.org/catalog.json").unwrap();
+        let friend = url::Url::parse("https://friend.example.net/catalog.json").unwrap();
+        let package = |id: &str, sha: char| {
+            json!({ "id": id, "kind": "character", "version": "1.0.0", "title": id, "api": "^1", "runs": ["pc"],
+                "url": format!("{id}.vgp"), "sha256": sha.to_string().repeat(64), "size": 10 })
+        };
+        let main_text = json!({
+            "format": 1, "packages": [],
+            "recommends": [
+                { "feed": friend.as_str(), "id": "jarvis", "sha256": "A".repeat(64) },
+                { "feed": friend.as_str(), "id": "changed", "sha256": "a".repeat(64) },
+                { "feed": "http://evil.example.org/catalog.json", "id": "x", "sha256": "a".repeat(64) },
+                { "feed": friend.as_str(), "id": "short", "sha256": "abc" }
+            ]
+        });
+        let mut main = parse_feed(&main_text.to_string(), &base).unwrap();
+        assert_eq!(main.recommends.len(), 2, "a feed not over HTTPS and a short hash are left out");
+        assert_eq!(main.recommends[0].sha256, "a".repeat(64), "the hash in lower case");
+        assert_eq!(main.skipped.len(), 2, "{:?}", main.skipped);
+        // The friend's feed recommends itself and pins another feed's package: neither counts.
+        let copy = json!({
+            "format": 1,
+            "packages": [package("jarvis", 'a'), package("changed", 'b'), package("other", 'c')],
+            "recommends": [{ "feed": friend.as_str(), "id": "other", "sha256": "c".repeat(64) }]
+        });
+        let copy = parse_feed(&copy.to_string(), &friend).unwrap();
+        main.take(&own_feed(&friend), copy);
+        let marks: Vec<(&str, bool, bool)> =
+            main.packages.iter().map(|entry| (entry.id.as_str(), entry.recommended, entry.verified)).collect();
+        assert_eq!(
+            marks,
+            [("jarvis", true, true), ("changed", false, false), ("other", false, false)],
+            "the pinned archive is recommended and checked; another archive under a pinned id is not"
+        );
     }
 
     /// A plugin's `.vgp`: its manifest and its code.
@@ -2706,7 +3141,7 @@ pub mod tests {
         );
         assert_eq!((bublik.publisher.as_deref(), bublik.source.as_deref()), (Some("duowave"), Some("DuoWave Store")));
         assert!(arthur.verified && !bublik.verified, "the store's `verified` stands only when the main allows it");
-        assert_eq!(bublik.preview.image.as_deref(), Some("/api/v1/packages/catalog/bublik/preview/image"));
+        assert_eq!(bublik.preview.image.as_deref(), Some("/api/v1/packages/catalog/bublik/preview/image?v=1.0.0"));
         let (image, _) = catalog.preview("bublik", "image").await.unwrap();
         assert!(image.starts_with(catalog.extra_dir(&store.address())), "{}", image.display());
         let feed = &view.feeds[0];
@@ -2880,6 +3315,40 @@ pub mod tests {
         );
         let local = own_feed(&url::Url::parse("http://127.0.0.1:8781/catalog.json").unwrap());
         assert_eq!((local.title.as_str(), local.publisher.as_str()), ("127.0.0.1:8781", "own"));
+    }
+
+    /// The main feed recommends a package of an own source the admin added (`recommends`, docs/plans/magicplace.md):
+    /// the panel sees it recommended and checked, the install notes it vouched for — that very archive; a new archive
+    /// under the same id loses both until the catalog looks at it again.
+    #[tokio::test]
+    async fn the_main_feed_recommends_an_own_sources_package_by_its_archives_hash() {
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        own.publish(&[character("jarvis", "1.0.0"), character("friday", "1.0.0")]);
+        let looked_at = {
+            let feed: Value = serde_json::from_str(&lock(&own.feed)).unwrap();
+            feed["packages"][0]["sha256"].as_str().unwrap().to_string()
+        };
+        {
+            let mut feed: Value = serde_json::from_str(&lock(&main.feed)).unwrap();
+            feed["recommends"] = json!([{ "feed": own.url, "id": "jarvis", "sha256": looked_at }]);
+            *lock(&main.feed) = feed.to_string();
+        }
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+        let view = catalog.add_source(&own.url, None).await.unwrap();
+        let of = |view: &CatalogView, id: &str| view.packages.iter().find(|entry| entry.id == id).cloned().unwrap();
+        let jarvis = of(&view, "jarvis");
+        assert!(jarvis.recommended && jarvis.verified && jarvis.own, "{jarvis:?}");
+        let friday = of(&view, "friday");
+        assert!(!friday.recommended && !friday.verified, "{friday:?}");
+        let installed = catalog.install("jarvis", None, false, None).await.unwrap();
+        assert!(installed.verified, "vouched for: we looked at this very archive");
+
+        // A new archive under the same id is not what we looked at.
+        own.publish(&[character("jarvis", "1.1.0"), character("friday", "1.0.0")]);
+        let jarvis = of(&catalog.view(true).await, "jarvis");
+        assert!(!jarvis.recommended && !jarvis.verified, "{jarvis:?}");
     }
 
     #[tokio::test]

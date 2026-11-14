@@ -22,7 +22,7 @@ import {
     needsOf,
     problemOf,
 } from '../api';
-import { IconPlus } from '../icons';
+import { IconChevronRight, IconPlus } from '../icons';
 import { useLinkedItem, usePanel } from '../shell/context';
 import { Action, CardNote } from '../ui/cards';
 import { diffText } from '../ui/diff';
@@ -266,10 +266,16 @@ export function CharactersTab() {
                     {offered.length === 0 && ownTile}
                 </div>
 
-                {(offered.length > 0 || status) && (
+                {(offered.length > 0 || status || catalog.view) && (
                     <>
                         <div class="char-grid-head">
-                            <h3 class="t-title-xs m-0">{tr.characters.catalog}</h3>
+                            {/* Каталог — это MagicPlace (docs/plans/magicplace.md): заголовок ведёт туда, на персонажей. */}
+                            <h3 class="t-title-xs m-0">
+                                <button class="mp-link" onClick={() => panel.go('magicplace', 'store', undefined, { kind: 'character' })}>
+                                    {tr.magicplace.charactersLink}
+                                    <IconChevronRight size={14} />
+                                </button>
+                            </h3>
                             {catalog.view?.configured && catalog.view.enabled && (
                                 <button class="t-caption cursor-pointer underline min-h-44" disabled={catalog.refreshing} onClick={() => void catalog.reload(true)}>
                                     {catalog.refreshing ? tr.characters.checking : tr.characters.checkNew}

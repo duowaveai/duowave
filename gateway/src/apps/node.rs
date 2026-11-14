@@ -244,6 +244,12 @@ fn beside(program: &Path) -> Node {
 }
 
 /// Our Node unpacked in `home`, if it is whole.
+/// Whether an app on Node would download our Node first (about 50 MB, once): no Node of one's own (DUOWAVE_NODE), and
+/// ours of the pinned version not unpacked in `dir` yet. MagicPlace says it before the install.
+pub fn needs_download(dir: &Path, own: Option<&Path>) -> bool {
+    own.is_none() && placed(&dir.join(VERSION)).is_none()
+}
+
 fn placed(home: &Path) -> Option<Node> {
     let (program, npm, bin_dir) = if cfg!(windows) {
         (home.join("node.exe"), home.join("node_modules/npm/bin/npm-cli.js"), home.to_path_buf())

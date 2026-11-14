@@ -27,27 +27,37 @@ const TAB_ALIASES: Record<string, Record<string, string>> = {
 /**
  * Переехавшее (docs/plans/panel-rebuild.md, «Карта»). Разделов пять прежних — «Мозг», «Голос», «Дом», «Плагины»,
  * «Журнал» — и место у каждой их вкладки новое: в «Персонаже» (персонажи, голос, мозг), в «Навыках» (установленное,
- * подключения, каталог, мастерская, кто отвечает) или в «Настройках» (колонка, обновления, история). Ещё раньше «Дом» →
+ * подключения, мастерская, кто отвечает) или в «Настройках» (колонка, обновления, история). Ещё раньше «Дом» →
  * «Пакеты» и раздел «Мастерская» стали вкладками «Плагинов»; пакет по старой ссылке с `?install` — из каталога, без
- * него — из установленного.
+ * него — из установленного. Каталог теперь — магазин MagicPlace (`#/magicplace/store/<id>`): туда ведут все его
+ * прежние адреса.
  */
 function moved(section: string, tab: string | undefined, item: string | undefined, query: Record<string, string>): [string, string | undefined, string | undefined] {
     switch (section) {
         case 'mind':
             if (tab === 'routes') return ['skills', 'routes', item];
+            // «Установить в свой шлюз» сайта каталога (`#/mind/characters/<id>?install`) — в MagicPlace, на этого персонажа.
+            if (tab === 'characters' && item && 'install' in query) return ['magicplace', 'store', item];
             return ['character', tab === 'characters' || tab === 'brain' ? tab : undefined, tab ? item : undefined];
         case 'models':
             // Распознавание — это слух колонки: «Настройки» → «Колонка».
             if (tab === 'recognition') return ['settings', 'station', undefined];
             return ['character', 'voice', tab ? item : undefined];
         case 'house':
-            if (tab === 'packages' || tab === 'catalog') return ['skills', tab === 'catalog' || 'install' in query ? 'catalog' : 'installed', item];
+            // Каталог стал магазином MagicPlace (docs/plans/magicplace.md); пакет с `?install` — тоже оттуда.
+            if (tab === 'catalog' || (tab === 'packages' && 'install' in query)) return ['magicplace', 'store', item];
+            if (tab === 'packages') return ['skills', 'installed', item];
             if (tab === 'gateway') return ['settings', 'station', undefined];
             // «Коннекторы» и вкладки плагинов из слота house.tabs — в «Навыках».
             return ['skills', tab ?? 'connectors', tab ? item : undefined];
         case 'plugins':
         case 'packages':
+            if (tab === 'catalog') return ['magicplace', 'store', item];
             return ['skills', tab ?? 'installed', tab ? item : undefined];
+        case 'skills':
+            // «Приложения» → «Каталог» — теперь MagicPlace.
+            if (tab === 'catalog') return ['magicplace', 'store', item];
+            return [section, tab, item];
         case 'workshop': {
             // `#/workshop/drafts/<id>` — черновик; `#/workshop/<id>` тоже понимаем.
             const draft = tab === 'drafts' ? item : (tab ?? item);

@@ -969,6 +969,12 @@ impl App {
                 home: Some(home_server.clone() as Arc<dyn crate::plugins::controller::HomeLink>),
             })
         };
+        // MagicPlace by voice (src/talk/store.rs, docs/plans/magicplace.md): it installs from this catalog under the
+        // switch of the desk by voice, and the panel opens the store when one listens.
+        {
+            let live = live.clone();
+            talk.set_store(Arc::downgrade(&catalog), settings.clone(), Arc::new(move || live.size() > 0));
+        }
         let characters = CharactersService::new(db.clone(), events.clone(), personas.clone(), plugins.clone());
         memory.attach_characters(characters.clone());
         #[cfg(feature = "pc")]

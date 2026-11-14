@@ -1,7 +1,8 @@
-// Пакеты и общий каталог — один магазин для всех видов: персонажи, плагины, приложения, темы. «Плагины» → «Установлено»
-// показывает, что стоит (свои — первыми, с фильтром по происхождению), «Плагины» → «Каталог» — ленту с фильтром по виду; «Мозг» → «Персонажи» — тот же каталог, отфильтрованный по
-// виду character, на тех же хуках, метках и окне пакета отсюда. Каталог сам ничего не ставит и не обновляет: только
-// кнопка человека с правом на этот вид (шлюз всё равно проверяет каждое действие сам).
+// Пакеты и общий каталог: «Приложения» → «Установлено» показывает, что стоит (свои — первыми, с фильтром по
+// происхождению); сам каталог — магазин MagicPlace (magicplace/*, docs/plans/magicplace.md), «Персонаж» → «Персонажи» —
+// он же, отфильтрованный по виду character. Хуки, метки, окно пакета и «Свои источники» — отсюда, общие для них.
+// Каталог сам ничего не ставит и не обновляет: только кнопка человека с правом на этот вид (шлюз всё равно проверяет
+// каждое действие сам).
 
 import { useEffect, useState } from 'preact/hooks';
 
@@ -11,7 +12,6 @@ import { tr } from '../i18n';
 import { useLinkedItem, usePanel } from '../shell/context';
 import { timeAgo } from '../time';
 import { Action, CardNote } from '../ui/cards';
-import { Dropdown } from '../ui/dropdown';
 import { PlayButton, useMediaUrl } from '../ui/media';
 import { needsSize } from '../ui/needs';
 import { pluginMemoryLine } from './memory';
@@ -47,13 +47,6 @@ export function placeOf(kind: PackageKind | null | undefined, runtime?: string |
     if (runtime === 'process' || kind === 'app') return tr.catalog.kindApp;
     return KIND_TITLES[kind ?? 'plugin'] ?? tr.catalog.kindPlugin;
 }
-
-const kindFilters = (): Array<{ id: PackageKind; label: string }> => [
-    { id: 'character', label: tr.catalog.filterCharacters },
-    { id: 'plugin', label: tr.catalog.filterApps },
-    { id: 'app', label: tr.catalog.filterApps },
-    { id: 'theme', label: tr.catalog.filterThemes },
-];
 
 /** Может ли этот вход ставить и удалять пакеты такого вида: персонажа — с правом на характер, тему — на настройки, код — администратор. */
 export function canManage(kind?: PackageKind | null): boolean {
@@ -514,24 +507,21 @@ const filterOf = (entry: PackageView): OriginFilter => {
 const ORIGIN_ORDER: Record<OriginFilter, number> = { user: 0, catalog: 1, bundled: 2, all: 3 };
 
 /**
- * «Плагины» → «Установлено» и «Каталог»: что стоит (плагины включаются здесь же; свои — первыми, фильтр «свои ·
- * встроенные · из каталога») и лента каталога с фильтром по виду и выключателем. Окно пакета открывается по ссылке
- * `#/plugins/installed/<id>`, пакет каталога — `#/plugins/catalog/<id>`.
+ * «Приложения» → «Установлено»: что стоит (плагины включаются здесь же; свои — первыми, фильтр «свои · встроенные · из
+ * каталога»). Окно пакета — по ссылке `#/skills/installed/<id>`; ссылка на ещё не поставленный открывает его окно
+ * каталога. Сам каталог — MagicPlace.
  */
-export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
+export function PackagesTab() {
     const panel = usePanel();
     const catalog = useCatalog();
     const engines = useEngines();
-    const linked = useLinkedItem('skills', part);
+    const linked = useLinkedItem('skills', 'installed');
     const [installed, setInstalled] = useState<PackagesView | null>(null);
     const [installedError, setInstalledError] = useState<string | null>(null);
-    const [kind, setKind] = useState<string | null>(null);
     const [origin, setOrigin] = useState<OriginFilter>('all');
     const [switching, setSwitching] = useState<string | null>(null);
-    const [catalogBusy, setCatalogBusy] = useState(false);
-    const [catalogError, setCatalogError] = useState<string | null>(null);
     /** Открытое окно установленного пакета — по ссылке вкладки. */
-    const opened = part === 'installed' ? linked.item : null;
+    const opened = linked.item;
     const isAdmin = can('plugins.manage') && sessionStore.get()?.role === 'admin';
 
     const readInstalled = () =>
@@ -565,27 +555,11 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
         }
     };
 
-    const setCatalogOn = async (on: boolean) => {
-        setCatalogBusy(true);
-        setCatalogError(null);
-        try {
-            catalog.setView(await api.setPackagesCatalog(on));
-        } catch (e) {
-            setCatalogError(problemOf(e));
-        } finally {
-            setCatalogBusy(false);
-        }
-    };
-
     const view = catalog.view;
     const entries = view?.packages ?? [];
     const byId = new Map(entries.map((entry) => [entry.id, entry]));
-    const open = catalogOpen(view);
-    const shown = entries.filter((entry) => (!kind || entry.kind === kind) && (open || isInstalled(entry)));
-    const status = catalogStatus(catalog);
-    // Пакет каталога по ссылке; на вкладке «Установлено» — тот, которого здесь нет (ссылка вела на ещё не поставленный).
-    const linkedEntry = linked.item && (part === 'catalog' || !installed?.packages.some((entry) => entry.id === linked.item)) ? byId.get(linked.item) : undefined;
-    const kinds = kindFilters().filter((filter) => entries.some((entry) => entry.kind === filter.id));
+    // Ссылка вела на ещё не поставленный пакет: его окно каталога.
+    const linkedEntry = linked.item && !installed?.packages.some((entry) => entry.id === linked.item) ? byId.get(linked.item) : undefined;
     const all = installed?.packages ?? [];
     const counts = Object.fromEntries(originFilters().map((filter) => [filter.id, filter.id === 'all' ? all.length : all.filter((entry) => filterOf(entry) === filter.id).length]));
     const listed = all
@@ -596,7 +570,7 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
 
     return (
         <>
-            {part === 'installed' && can('connectors.view') && (
+            {can('connectors.view') && (
                 <section class="card glass card-list" aria-labelledby="packages-h">
                     <div class="card-head">
                         <h2 id="packages-h" class="t-title-xs m-0">
@@ -619,7 +593,7 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                     {installed && installed.packages.length === 0 && (
                         <p class="t-caption m-0 mb-6">
                             {tr.catalog.nothingInstalledBefore}{' '}
-                            <button class="underline cursor-pointer" onClick={() => panel.go('skills', 'catalog')}>
+                            <button class="underline cursor-pointer" onClick={() => panel.go('magicplace')}>
                                 {tr.catalog.inCatalog}
                             </button>
                             .
@@ -707,86 +681,6 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                         <p class="t-caption m-0 mt-8">{tr.catalog.adminTurnsOn}</p>
                     )}
                 </section>
-            )}
-
-            {part === 'catalog' && (
-            <section class="card glass card-list" aria-labelledby="catalog-h">
-                <div class="card-head">
-                    <h2 id="catalog-h" class="t-title-xs m-0">
-                        {tr.catalog.catalogTitle}
-                    </h2>
-                    {view?.configured && view.enabled && (
-                        <button class="t-caption cursor-pointer underline min-h-44" disabled={catalog.refreshing} onClick={() => void catalog.reload(true)}>
-                            {catalog.refreshing ? tr.catalog.checking : view.fetchedAt ? tr.catalog.updatedAgo(timeAgo(view.fetchedAt)) : tr.catalog.check}
-                        </button>
-                    )}
-                </div>
-                <p class="t-caption m-0 mb-6">{tr.catalog.catalogAbout}</p>
-                {status && (
-                    <p class={`t-caption m-0 mb-6 ${status.tone === 'warning' ? 'c-pill-yandex-fg' : ''}`} role="status">
-                        {status.text}
-                    </p>
-                )}
-                {feedLines(view).map((line) => (
-                    <p key={line} class="t-caption m-0 mb-6 c-pill-yandex-fg" role="status">
-                        {line}
-                    </p>
-                ))}
-                {kinds.length > 1 && (
-                    <div class="pkg-filters">
-                        <Dropdown
-                            label={tr.catalog.kindLabel}
-                            anyLabel={tr.catalog.anyKind}
-                            value={kind}
-                            options={kinds.map((filter) => ({ id: filter.id, label: filter.label, hint: String(entries.filter((entry) => entry.kind === filter.id).length) }))}
-                            onPick={setKind}
-                        />
-                    </div>
-                )}
-                {view && shown.length === 0 && !status && <p class="t-caption m-0 mb-6">{tr.catalog.emptyCatalog}</p>}
-                {shown.map((entry) => {
-                    const pills = entryPills(entry, engines);
-                    return (
-                        <div key={entry.id} class={`pkg-row${isBlocked(entry) ? ' is-dim' : ''}`}>
-                            <div class="pkg-main">
-                                <PackageThumb url={entry.preview?.image} />
-                                <button class="pkg-text text-left cursor-pointer" onClick={() => linked.open(entry.id)}>
-                                    <span class="pkg-title">
-                                        {entry.title}
-                                        <span class="pill pill-off">{KIND_TITLES[entry.kind] ?? entry.kind}</span>
-                                        {pills.map((pill) => (
-                                            <span key={pill.text} class={`pill ${pill.cls}`}>
-                                                {pill.text}
-                                            </span>
-                                        ))}
-                                    </span>
-                                    <span class="t-caption">{[entry.description, tr.catalog.versionOf(entry.version), entry.license].filter(Boolean).join(' · ')}</span>
-                                    {entry.reason && <span class="t-caption">{entry.reason}</span>}
-                                </button>
-                                <div class="pkg-actions">
-                                    <EntryButtons entry={entry} actions={actions} />
-                                </div>
-                            </div>
-                            <NoteLine note={actions.notes[entry.id]} />
-                        </div>
-                    );
-                })}
-                {isAdmin && view?.configured && view.enabled && <OwnSources view={view} onView={catalog.setView} />}
-                {view?.configured && can('settings.edit') && (
-                    <div class="pkg-switch">
-                        <div class="flex-1 min-w-0 flex flex-col gap-2">
-                            <span class="fw-700">{tr.catalog.noCatalogTitle}</span>
-                            <span class="t-caption">{tr.catalog.noCatalogNote}</span>
-                        </div>
-                        <Switch on={!view.enabled} label={tr.catalog.noCatalogTitle} disabled={catalogBusy} onChange={(off) => void setCatalogOn(!off)} />
-                    </div>
-                )}
-                {catalogError && (
-                    <p class="t-caption m-0 c-dot-offline" role="alert">
-                        {catalogError}
-                    </p>
-                )}
-            </section>
             )}
 
             {opened && installed?.packages.find((entry) => entry.id === opened) && (

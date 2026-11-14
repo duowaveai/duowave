@@ -569,6 +569,7 @@
  "нет format": "no format",
  "hidden: нет id": "hidden: no id",
  "feeds: список лент": "feeds: a list of feeds",
+ "recommends: адрес ленты, id пакета и sha256 архива": "recommends: a feed's address, a package id and the archive's sha256",
  "Подпись каталога не сошлась: приложения из него не ставятся.": "The catalog signature did not match: apps from it are not installed.",
  "Каталог выключен в .env (PACKAGES_FEED_URL=off).": "The catalog is turned off in .env (PACKAGES_FEED_URL=off).",
  "Каталог не настроен: в этой сборке нет его адреса (PACKAGES_FEED_URL).": "The catalog is not configured: this build has no address for it (PACKAGES_FEED_URL).",

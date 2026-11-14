@@ -70,7 +70,8 @@ export function AddWidgetPanel({ onClose, children }: { onClose: () => void; chi
                         class="add-item"
                         onClick={() => {
                             onClose();
-                            panel.go('skills', 'catalog');
+                            // Готовые виджеты — в MagicPlace (docs/plans/magicplace.md), сразу с фильтром «Виджет».
+                            panel.go('magicplace', 'store', undefined, { face: 'widget' });
                         }}
                     >
                         <span class="add-item-icon" aria-hidden="true">

@@ -377,7 +377,10 @@ Home Assistant, Telegram, LiveKit, SIP, город погоды и ленты н
   `packages.changed`, `plugins.resources`, `workshop.changed`; инструменты плагинов — MCP `/mcp/plugins`
   (`plugins.mcp`). Каталог — подписанная лента (`plugins/catalog.rs`, minisign); главная лента называет до четырёх
   дополнительных (`feeds`): у каждой своя копия в `packages-catalog/feeds/`, их пакеты — после главной, без кода
-  (план).
+  (план). Людям каталог показывает **MagicPlace** — встроенный магазин, часть пульта и
+  шлюза, а не пакет (`panel/src/magicplace/`, голосом — `talk/store.rs`, событие `magicplace.open`;
+  план): поиск на всех языках пакета, витрина, фильтры по виду, лицу, месту и состоянию, свои
+  источники в его настройках.
 - **Пульт** (`panel/src/shell/`, `panel/src/sdk/`, `panel/src/plugins/loader.ts`): тема — данные (палитры, раскладка,
   плотность, шрифт, скругления), оболочки `TabbarShell` и `SidebarShell`, реестр разделов и слоты с границами
   ошибок; `panel.js` пакетов грузится с шлюза на ходу через import map (её хеш — в CSP), SDK пульта —
