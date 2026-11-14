@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "plugin",
   "id": "radio",
-  "version": "2.0.0",
+  "version": "2.1.1",
   "title": "Радио",
   "description": "Радиостанции голосом: свой список популярных станций и открытый каталог Radio Browser. «Включи радио джаз», поиск и включение станций для «Мозга», источник радио для плеера шлюза; станцию, на которой колонка молчит, запоминает и включает следующую.",
   "api": "^2",
@@ -34,6 +34,29 @@
       "default": true
     }
   ],
+  "languages": [
+    "ru",
+    "en"
+  ],
+  "locales": {
+    "en": {
+      "title": "Radio",
+      "description": "Radio stations by voice: its own list of popular stations and the open Radio Browser catalog. “Play jazz radio”, station search and play for the “Brain”, a radio source for the gateway’s player; a station the speaker stays silent on is remembered and the next one plays.",
+      "settings": {
+        "country": {
+          "title": "Country to search the catalog in",
+          "description": "Country code (RU, DE, US…): its stations come first in the catalog"
+        },
+        "catalog": {
+          "title": "Search the Radio Browser catalog",
+          "description": "Off — only its own station list, no network"
+        }
+      },
+      "cards": {
+        "stations": "Radio"
+      }
+    }
+  },
   "contributes": {
     "intents": [
       {

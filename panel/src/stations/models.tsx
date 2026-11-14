@@ -1,9 +1,10 @@
 import { useId } from 'preact/hooks';
 import type { FunctionComponent, VNode } from 'preact';
 
+import { tr } from '../i18n';
 import { useWallTime } from './clock';
 import { colorInfo, type ColorInfo } from './colors';
-import { Defs, ellipse, Frame, FrontDisplay, Light, ringSpot, round, roundedRect, Shadow, skinOf, timeText, useReducedMotion, WORDS, type DisplayBox, type LightSpot, type Skin } from './kit';
+import { Defs, ellipse, Frame, FrontDisplay, Light, ringSpot, round, roundedRect, Shadow, skinOf, timeText, useReducedMotion, stageWord, type DisplayBox, type LightSpot, type Skin } from './kit';
 import './stations.css';
 import type { StationArtProps, StationGlyphProps, StationStage } from './types';
 
@@ -186,7 +187,9 @@ function CatSticker({ ctx }: { ctx: Ctx }) {
 }
 
 const lite2: Model = {
-    title: 'Станция Лайт 2',
+    get title() {
+        return tr.stations.modelTitle.lite2;
+    },
     fallback: 'azure',
     sticker: true,
     draw: (ctx) => {
@@ -232,7 +235,9 @@ const lite2: Model = {
 };
 
 const lite1: Model = {
-    title: 'Станция Лайт',
+    get title() {
+        return tr.stations.modelTitle.lite1;
+    },
     fallback: 'lilac',
     draw: (ctx) => {
         const top = 64,
@@ -273,7 +278,9 @@ const lite1: Model = {
 };
 
 const mini1: Model = {
-    title: 'Станция Мини',
+    get title() {
+        return tr.stations.modelTitle.mini1;
+    },
     fallback: 'graphite',
     draw: (ctx) => {
         const top = 84,
@@ -305,7 +312,9 @@ const mini1: Model = {
 };
 
 const mini2: Model = {
-    title: 'Станция Мини 2',
+    get title() {
+        return tr.stations.modelTitle.mini2;
+    },
     fallback: 'graphite',
     draw: (ctx) => {
         const top = 68,
@@ -338,7 +347,9 @@ const mini2: Model = {
 };
 
 const mini3: Model = {
-    title: 'Станция Мини 3',
+    get title() {
+        return tr.stations.modelTitle.mini3;
+    },
     fallback: 'graphite',
     draw: (ctx) => {
         const top = 60,
@@ -370,7 +381,9 @@ const mini3: Model = {
 };
 
 const mini3pro: Model = {
-    title: 'Станция Мини 3 Про',
+    get title() {
+        return tr.stations.modelTitle.mini3pro;
+    },
     fallback: 'graphite',
     draw: (ctx) => {
         const top = 50,
@@ -414,9 +427,11 @@ const mini3pro: Model = {
 };
 
 /** Высокие кирпичи (Станция, Макс): круглая шайба-кнопка на крышке и светящийся ободок вокруг неё. */
-function tower(title: string, w: number, h: number, display?: (g: BoxGeo) => DisplayBox): Model {
+function tower(key: 'station' | 'max', w: number, h: number, display?: (g: BoxGeo) => DisplayBox): Model {
     return {
-        title,
+        get title() {
+            return tr.stations.modelTitle[key];
+        },
         fallback: 'graphite',
         draw: (ctx) => {
             const g = boxGeo(w, h, 28, -16, 6);
@@ -462,11 +477,13 @@ function tower(title: string, w: number, h: number, display?: (g: BoxGeo) => Dis
     };
 }
 
-const station = tower('Станция', 84, 126);
-const max = tower('Станция Макс', 90, 134, (g) => ({ cx: (g.x0 + g.x1) / 2, cy: g.yt + (g.yb - g.yt) * 0.56, w: 58, h: 20 }));
+const station = tower('station', 84, 126);
+const max = tower('max', 90, 134, (g) => ({ cx: (g.x0 + g.x1) / 2, cy: g.yt + (g.yb - g.yt) * 0.56, w: 58, h: 20 }));
 
 const station2: Model = {
-    title: 'Станция 2',
+    get title() {
+        return tr.stations.modelTitle.station2;
+    },
     fallback: 'graphite',
     draw: (ctx) => {
         const g = boxGeo(148, 86, 24, -16, 9);
@@ -500,7 +517,9 @@ const station2: Model = {
 };
 
 const midi: Model = {
-    title: 'Станция Миди',
+    get title() {
+        return tr.stations.modelTitle.midi;
+    },
     fallback: 'graphite',
     draw: (ctx) => {
         const g = boxGeo(104, 100, 24, -15, 9);
@@ -530,7 +549,9 @@ const midi: Model = {
 };
 
 const duomax: Model = {
-    title: 'Станция Дуо Макс',
+    get title() {
+        return tr.stations.modelTitle.duomax;
+    },
     fallback: 'graphite',
     draw: (ctx) => {
         // Анфас, как на фото: широкий экран ровно над тканевой базой, у подошвы базы — полоса света.
@@ -593,7 +614,9 @@ const duomax: Model = {
 };
 
 const station3: Model = {
-    title: 'Станция 3',
+    get title() {
+        return tr.stations.modelTitle.station3;
+    },
     fallback: 'graphite',
     draw: (ctx) => {
         const g = boxGeo(90, 132, 14, -9, 10);
@@ -623,7 +646,9 @@ const station3: Model = {
 };
 
 const street: Model = {
-    title: 'Станция Стрит',
+    get title() {
+        return tr.stations.modelTitle.street;
+    },
     fallback: 'orange',
     draw: (ctx) => {
         // Туба лёжа: торец слева виден эллипсом, сверху — ремешок и панель кнопок.
@@ -676,7 +701,9 @@ const street: Model = {
 };
 
 const bork: Model = {
-    title: 'Станция BORK',
+    get title() {
+        return tr.stations.modelTitle.bork;
+    },
     fallback: 'white',
     draw: (ctx) => {
         const g = boxGeo(112, 132, 24, -15, 9);
@@ -725,7 +752,7 @@ function drawing(model: Model): { Art: FunctionComponent<StationArtProps>; Glyph
         const ctx: Ctx = { s, id, url, clock, sticker: sticker && !!model.sticker, ring, stage, offline };
         const drawn = model.draw(ctx);
         const showsTime = !!drawn.display && clock && !(stage === 'listen' || stage === 'speak');
-        const label = `${model.title}${showsTime ? `, на часах ${timeText(time)}` : ''}, ${offline ? 'не в сети' : WORDS[stage]}`;
+        const label = tr.stations.artLabel(model.title, showsTime ? timeText(time) : null, offline ? tr.stations.offline : stageWord(stage));
         return (
             <Frame label={label}>
                 <Defs id={id} skin={s} />
@@ -750,5 +777,13 @@ const ALL: Record<string, Model> = { lite2, lite1, mini1, mini2, mini3, mini3pro
 
 /** Рисунок и значок каждого семейства по id шлюза (gateway/src/stations/looks.rs). */
 export const MODELS: Record<string, { title: string; Art: FunctionComponent<StationArtProps>; Glyph: FunctionComponent<StationGlyphProps> }> = Object.fromEntries(
-    Object.entries(ALL).map(([id, model]) => [id, { title: model.title, ...drawing(model) }]),
+    Object.entries(ALL).map(([id, model]) => [
+            id,
+            {
+                get title() {
+                    return model.title;
+                },
+                ...drawing(model),
+            },
+        ]),
 );

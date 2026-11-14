@@ -13,7 +13,6 @@ pub mod chain;
 pub mod messenger;
 #[cfg(feature = "pc")]
 pub mod serve;
-
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -54,8 +53,9 @@ pub const NO_VOICE: &str = "голос компьютера выключен";
 pub const GIVEN: &str = "компьютер снова даёт колонке слух и голос";
 /// «Модель» off while «Мозг» on the station answers with the computer's model: the station would go on asking the
 /// computer (the provider cannot leave while a choice answers with it), so the switch is refused.
-pub const MODEL_ANSWERS: &str =
-    "Модель компьютера сейчас отвечает в «Мозге» колонки — сначала выберите там другую модель.";
+pub fn model_answers() -> String {
+    crate::tr!("Модель компьютера сейчас отвечает в «Мозге» колонки — сначала выберите там другую модель.")
+}
 
 #[derive(Debug, Clone, Default)]
 struct Watch {
@@ -222,18 +222,18 @@ impl HomeServerService {
                 self.secrets.delete(KEY_SECRET)?;
             }
             Some(url) => {
-                let parsed =
-                    url::Url::parse(url).map_err(|_| ApiError::bad_request("Адрес компьютера: http://адрес:порт"))?;
+                let parsed = url::Url::parse(url)
+                    .map_err(|_| ApiError::bad_request(crate::tr!("Адрес компьютера: http://адрес:порт")))?;
                 if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
-                    return Err(ApiError::bad_request("Адрес компьютера: http://адрес:порт"));
+                    return Err(ApiError::bad_request(crate::tr!("Адрес компьютера: http://адрес:порт")));
                 }
                 if let Some(key) = key.map(str::trim).filter(|key| !key.is_empty()) {
                     self.secrets.set(KEY_SECRET, Some(key))?;
                 }
                 if !self.secrets.has(KEY_SECRET) {
-                    return Err(ApiError::bad_request(
-                        "Нужен ключ с компьютера: «Доступ» → «Ключи», право «модели этого компьютера».",
-                    ));
+                    return Err(ApiError::bad_request(crate::tr!(
+                        "Нужен ключ с компьютера: «Доступ» → «Ключи», право «модели этого компьютера»."
+                    )));
                 }
                 let url = url.trim_end_matches('/').to_string();
                 let enabled = self.known().is_none_or(|setting| setting.enabled);
@@ -272,9 +272,9 @@ impl HomeServerService {
             let url = match url {
                 Some(url) => url.to_string(),
                 None => self.known().map(|setting| setting.url).ok_or_else(|| {
-                    ApiError::bad_request(
-                        "Адреса компьютера ещё нет: впишите его или включите помощь из пульта компьютера.",
-                    )
+                    ApiError::bad_request(crate::tr!(
+                        "Адреса компьютера ещё нет: впишите его или включите помощь из пульта компьютера."
+                    ))
                 })?,
             };
             self.set(Some(&url), key, actor.clone())?;
@@ -282,7 +282,7 @@ impl HomeServerService {
         if let Some(on) = enabled {
             let Some(mut setting) = self.known().filter(|_| self.secrets.has(KEY_SECRET)) else {
                 return Err(ApiError::bad_request(
-                    "Колонка ещё не знает компьютер: включите «Помогать колонке» в пульте компьютера — он пришлёт адрес и ключ.",
+                    crate::tr!("Колонка ещё не знает компьютер: включите «Помогать колонке» в пульте компьютера — он пришлёт адрес и ключ."),
                 ));
             };
             if setting.enabled != on {
@@ -301,9 +301,9 @@ impl HomeServerService {
             without.sort();
             without.dedup();
             let Some(mut setting) = self.known() else {
-                return Err(ApiError::bad_request(
-                    "Колонка ещё не знает компьютер: сначала включите «Помогать колонке» в пульте компьютера.",
-                ));
+                return Err(ApiError::bad_request(crate::tr!(
+                    "Колонка ещё не знает компьютер: сначала включите «Помогать колонке» в пульте компьютера."
+                )));
             };
             if setting.without != without {
                 setting.without = without;
@@ -418,10 +418,10 @@ impl HomeServerService {
         let outcome = match answer {
             Ok(response) if response.status().is_success() => Ok(()),
             Ok(response) if response.status().as_u16() == 401 || response.status().as_u16() == 403 => {
-                Err("компьютер не принимает ключ: сделайте новый в «Доступ» → «Ключи»".to_string())
+                Err(crate::tr!("компьютер не принимает ключ: сделайте новый в «Доступ» → «Ключи»"))
             }
-            Ok(response) => Err(format!("компьютер ответил {}", response.status().as_u16())),
-            Err(error) if error.is_timeout() => Err("компьютер не ответил вовремя".into()),
+            Ok(response) => Err(crate::tr!("Компьютер ответил {status}", status = response.status().as_u16())),
+            Err(error) if error.is_timeout() => Err(crate::tr!("компьютер не ответил вовремя")),
             Err(_) => Err(AWAY.into()),
         };
         let up = outcome.is_ok();
@@ -633,7 +633,7 @@ pub fn check_parts(
     without: &[String],
 ) -> Result<(), ApiError> {
     if home.takes_model_away(without) && brain_answers_with_computer(brain) {
-        return Err(ApiError::conflict(MODEL_ANSWERS));
+        return Err(ApiError::conflict(model_answers()));
     }
     Ok(())
 }
@@ -1036,7 +1036,7 @@ mod tests {
         pick(serde_json::json!({"provider": ours, "model": "home"}));
         assert!(brain_answers_with_computer(&brain));
         let refused = check_parts(&home, &brain, &["llm".into()]).unwrap_err();
-        assert_eq!((refused.status.as_u16(), refused.message.as_str()), (409, MODEL_ANSWERS));
+        assert_eq!((refused.status.as_u16(), refused.message.as_str()), (409, model_answers().as_str()));
         assert!(check_parts(&home, &brain, &["asr".into(), "tts".into()]).is_ok(), "hearing and voice go their way");
 
         // Another model answers: «Модель» goes, the provider with it.

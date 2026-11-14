@@ -2,7 +2,6 @@
 //! the admin's choices in the database (table `packages`: on or off, the version that last started well, where the
 //! package came from — the catalog or by hand — whether the catalog vouched for it, the feed it came from and whether
 //! that feed hides it: docs/plans/custom-feeds.md).
-
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,21 +32,21 @@ impl Package {
     /// Its code, read now: an edit on disk is the next load's.
     pub fn source(&self) -> Result<String, String> {
         let file = self.dir.join("backend.js");
-        let size = std::fs::metadata(&file).map_err(|_| "нет backend.js".to_string())?.len();
+        let size = std::fs::metadata(&file).map_err(|_| crate::tr!("нет backend.js"))?.len();
         if size > MAX_CODE {
-            return Err(format!("backend.js больше {} КБ", MAX_CODE / 1024));
+            return Err(crate::tr!("backend.js больше {max} КБ", max = MAX_CODE / 1024));
         }
-        std::fs::read_to_string(&file).map_err(|error| format!("backend.js не читается: {error}"))
+        std::fs::read_to_string(&file).map_err(|error| crate::tr!("backend.js не читается: {error}", error = error))
     }
 
     /// Its WebAssembly (`runtime: wasm`), read now.
     pub fn wasm(&self) -> Result<Vec<u8>, String> {
         let file = self.dir.join("backend.wasm");
-        let size = std::fs::metadata(&file).map_err(|_| "нет backend.wasm".to_string())?.len();
+        let size = std::fs::metadata(&file).map_err(|_| crate::tr!("нет backend.wasm"))?.len();
         if size > MAX_WASM {
-            return Err(format!("backend.wasm больше {} МБ", MAX_WASM / 1024 / 1024));
+            return Err(crate::tr!("backend.wasm больше {max} МБ", max = MAX_WASM / 1024 / 1024));
         }
-        std::fs::read(&file).map_err(|error| format!("backend.wasm не читается: {error}"))
+        std::fs::read(&file).map_err(|error| crate::tr!("backend.wasm не читается: {error}", error = error))
     }
 
     /// Its static files (`assets/`): what /media/packages/<id>/ serves.
@@ -82,14 +81,14 @@ pub fn read_package(dir: &Path, id: &str, version: &str) -> Candidate {
     let file = dir.join("manifest.json");
     match std::fs::metadata(&file) {
         Ok(meta) if meta.len() > MAX_MANIFEST => {
-            return broken(vec![format!("manifest.json больше {} КБ", MAX_MANIFEST / 1024)])
+            return broken(vec![crate::tr!("manifest.json больше {max} КБ", max = MAX_MANIFEST / 1024)])
         }
         Ok(_) => {}
-        Err(_) => return broken(vec!["нет manifest.json".into()]),
+        Err(_) => return broken(vec![crate::tr!("нет manifest.json")]),
     }
     let text = match std::fs::read_to_string(&file) {
         Ok(text) => text,
-        Err(error) => return broken(vec![format!("manifest.json не читается: {error}")]),
+        Err(error) => return broken(vec![crate::tr!("manifest.json не читается: {error}", error = error)]),
     };
     let manifest = match manifest::parse(&text) {
         Ok(manifest) => manifest,
@@ -97,10 +96,14 @@ pub fn read_package(dir: &Path, id: &str, version: &str) -> Candidate {
     };
     let mut problems = Vec::new();
     if manifest.id != id {
-        problems.push(format!("id «{}» не совпадает с папкой «{id}»", manifest.id));
+        problems.push(crate::tr!("id «{manifest}» не совпадает с папкой «{id}»", manifest = manifest.id, id = id));
     }
     if manifest.version.to_string() != version {
-        problems.push(format!("version {} не совпадает с папкой «{version}»", manifest.version));
+        problems.push(crate::tr!(
+            "version {manifest} не совпадает с папкой «{version}»",
+            manifest = manifest.version,
+            version = version
+        ));
     }
     let contributes = &manifest.contributes;
     let needs_code = !(contributes.intents.is_empty()
@@ -109,7 +112,7 @@ pub fn read_package(dir: &Path, id: &str, version: &str) -> Candidate {
         && contributes.events.is_empty());
     if needs_code {
         if let Some(file) = manifest.runtime.code_file().filter(|file| !dir.join(file).is_file()) {
-            problems.push(format!("нужен {file}: его функции обслуживают то, что плагин даёт"));
+            problems.push(crate::tr!("нужен {file}: его функции обслуживают то, что плагин даёт", file = file));
         }
     }
     if !problems.is_empty() {
@@ -205,22 +208,22 @@ impl Origin {
         self == Origin::User
     }
 
-    pub fn title(self) -> &'static str {
+    pub fn title(self) -> String {
         match self {
-            Origin::System => "системный",
-            Origin::Bundled => "встроенный",
-            Origin::User => "свой",
-            Origin::Catalog => "из каталога",
+            Origin::System => crate::tr!("системный"),
+            Origin::Bundled => crate::tr!("встроенный"),
+            Origin::User => crate::tr!("свой"),
+            Origin::Catalog => crate::tr!("из каталога"),
         }
     }
 
     /// The same for people, of an «приложение» (docs/ARCHITECTURE.md, «Как называем и где работает»).
-    pub fn word(self) -> &'static str {
+    pub fn word(self) -> String {
         match self {
-            Origin::System => "системное",
-            Origin::Bundled => "встроенное",
-            Origin::User => "своё",
-            Origin::Catalog => "из каталога",
+            Origin::System => crate::tr!("системное"),
+            Origin::Bundled => crate::tr!("встроенное"),
+            Origin::User => crate::tr!("своё"),
+            Origin::Catalog => crate::tr!("из каталога"),
         }
     }
 }

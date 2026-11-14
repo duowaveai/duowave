@@ -9,7 +9,6 @@
 //! - on the computer: `move`, `move/{id}`, `backup`, `restore`, `auto-update`, `update-station`, `inspect`, `retry`;
 //! - `GET|POST /api/v1/transfer` — the settings package: sealed with the pair's key between the two gateways, plain
 //!   for an admin who downloads or uploads one. A package received is applied at a restart.
-
 use std::sync::Arc;
 
 use axum::extract::{DefaultBodyLimit, Query, State};
@@ -123,14 +122,15 @@ pub(crate) fn sent_over(path: &str) -> bool {
         || matches!(segments.as_slice(), ["api", "v1", "packages", id, "settings"] if !id.is_empty())
 }
 
-pub const READ_ONLY: &str =
-    "Настройки этой колонки хранятся на компьютере: меняйте их в пульте компьютера, он пришлёт их колонке.";
+pub fn read_only() -> String {
+    crate::tr!("Настройки этой колонки хранятся на компьютере: меняйте их в пульте компьютера, он пришлёт их колонке.")
+}
 
 /// The same, said in the station's window on the computer (the helper's pass, src/placement/proxy.rs): there is the
 /// button that brings the settings back to the station.
-pub const SETTINGS_ON_PC: &str =
-    "Настройки этой колонки пока хранятся на компьютере и уходят на неё отсюда: правка в её окне пропала бы при \
-     следующей отправке. Сначала верните их на колонку: «Настройки» → «Колонка» → «Вернуть настройки на колонку».";
+pub fn settings_on_pc() -> String {
+    crate::tr!("Настройки этой колонки пока хранятся на компьютере и уходят на неё отсюда: правка в её окне пропала бы при следующей отправке. Сначала верните их на колонку: «Настройки» → «Колонка» → «Вернуть настройки на колонку».")
+}
 
 /// Refuses a change of the settings on the station while they live on the computer; the computer's own pushes pass,
 /// a person's change through its pass does not — the next push would overwrite it.
@@ -152,10 +152,10 @@ pub async fn guard(
         match caller {
             Ok(caller) if super::peer::from_peer(&caller, app.placement.peer_key()) => {
                 if super::peer::through_pass(&caller) {
-                    return ApiError::conflict(SETTINGS_ON_PC).into_response();
+                    return ApiError::conflict(settings_on_pc()).into_response();
                 }
             }
-            _ => return ApiError::conflict(READ_ONLY).into_response(),
+            _ => return ApiError::conflict(read_only()).into_response(),
         }
         return next.run(axum::extract::Request::from_parts(parts, body)).await;
     }
@@ -171,14 +171,18 @@ async fn pair(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
     use crate::core::identity::roles::Role as PersonRole;
     caller.zone_at_least(crate::platform::http::Zone::Home)?;
     if super::peer::from_peer(&caller, app.placement.peer_key()) {
-        return Err(ApiError::forbidden("Ключ пары отдаётся администратору, вошедшему в пульт самой колонки."));
+        return Err(ApiError::forbidden(crate::tr!(
+            "Ключ пары отдаётся администратору, вошедшему в пульт самой колонки."
+        )));
     }
     let principal = caller.permitted(USERS_MANAGE)?;
     if principal.kind != PrincipalKind::User || principal.role != Some(PersonRole::Admin) {
-        return Err(ApiError::forbidden("Ключ пары отдаётся только администратору колонки, вошедшему по паролю."));
+        return Err(ApiError::forbidden(crate::tr!(
+            "Ключ пары отдаётся только администратору колонки, вошедшему по паролю."
+        )));
     }
     if app.placement.role() != Role::Station {
-        return Err(ApiError::conflict("Ключ пары отдаёт шлюз колонки, а это компьютер."));
+        return Err(ApiError::conflict(crate::tr!("Ключ пары отдаёт шлюз колонки, а это компьютер.")));
     }
     let key = app.placement.pair_key()?;
     tracing::info!(target: "placement", "pair: the key given to a computer from {}", caller.source);
@@ -233,7 +237,7 @@ struct Pick {
 fn chosen(app: &App, pick: &Pick) -> Result<Arc<super::watch::StationGateway>, ApiError> {
     app.station_gateway
         .pick(pick.station.as_deref())
-        .ok_or_else(|| ApiError::conflict("Какая колонка? У нескольких свои шлюзы — укажите её (station)."))
+        .ok_or_else(|| ApiError::conflict(crate::tr!("Какая колонка? У нескольких свои шлюзы — укажите её (station).")))
 }
 
 #[cfg_attr(not(feature = "pc"), allow(unused_variables))]
@@ -273,7 +277,7 @@ fn home_of(body: &Value) -> Result<SettingsHome, ApiError> {
     match body.get("home").and_then(Value::as_str) {
         Some("station") => Ok(SettingsHome::Station),
         Some("pc") => Ok(SettingsHome::Pc),
-        _ => Err(ApiError::bad_request("home: station или pc")),
+        _ => Err(ApiError::bad_request(crate::tr!("home: station или pc"))),
     }
 }
 
@@ -310,7 +314,10 @@ async fn safety(
     Query(pick): Query<Pick>,
     Body(body): Body<Value>,
 ) -> ApiResult<Value> {
-    let on = body.get("on").and_then(Value::as_bool).ok_or_else(|| ApiError::bad_request("on: true или false"))?;
+    let on = body
+        .get("on")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| ApiError::bad_request(crate::tr!("on: true или false")))?;
     match app.placement.role() {
         Role::Station => {
             super::peer::peer_or_permitted(&caller, app.placement.peer_key(), SETTINGS_EDIT)?;
@@ -320,7 +327,9 @@ async fn safety(
             caller.permitted(STATIONS_MANAGE)?;
             #[cfg(feature = "pc")]
             {
-                let client = chosen(&app, &pick)?.client().ok_or_else(|| ApiError::conflict("Шлюз не на колонке."))?;
+                let client = chosen(&app, &pick)?
+                    .client()
+                    .ok_or_else(|| ApiError::conflict(crate::tr!("Шлюз не на колонке.")))?;
                 client.post("/api/v1/placement/safety", json!({ "on": on })).await.map_err(ApiError::unavailable)?;
             }
             Ok(created(json!({ "on": on })))
@@ -330,7 +339,7 @@ async fn safety(
 
 fn on_station(app: &App) -> Result<(), ApiError> {
     if app.placement.role() != Role::Station {
-        return Err(ApiError::conflict("Это делает шлюз на самой колонке."));
+        return Err(ApiError::conflict(crate::tr!("Это делает шлюз на самой колонке.")));
     }
     Ok(())
 }
@@ -380,7 +389,7 @@ async fn point_local(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<V
 /// The computer asks the station's gateway to start again (new settings are applied at the start).
 async fn restart(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
     if !super::peer::from_peer(&caller, app.placement.peer_key()) {
-        return Err(ApiError::forbidden("Только для компьютера пары."));
+        return Err(ApiError::forbidden(crate::tr!("Только для компьютера пары.")));
     }
     app.placement.restart();
     Ok(created(json!({ "restarting": true })))
@@ -422,7 +431,7 @@ async fn import(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Va
     let bundle: Bundle = if peer {
         transfer::open(&body, app.placement.peer_key().unwrap_or_default()).map_err(ApiError::bad_request)?
     } else {
-        serde_json::from_value(body).map_err(|_| ApiError::bad_request("Это не набор настроек шлюза."))?
+        serde_json::from_value(body).map_err(|_| ApiError::bad_request(crate::tr!("Это не набор настроек шлюза.")))?
     };
     if bundle.format != transfer::FORMAT || bundle.schema > transfer::SCHEMA {
         return Err(ApiError::bad_request(transfer::NOT_FOR_THIS_GATEWAY));
@@ -432,7 +441,7 @@ async fn import(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Va
         .skills
         .state_dir
         .clone()
-        .ok_or_else(|| ApiError::conflict("У этого шлюза нет папки данных: настройки не сохранить."))?;
+        .ok_or_else(|| ApiError::conflict(crate::tr!("У этого шлюза нет папки данных: настройки не сохранить.")))?;
     if peer {
         transfer::note_sync(&app.db, "received");
     }
@@ -462,7 +471,7 @@ mod pc {
     ) -> ApiResult<MoveJob> {
         caller.permitted(STATIONS_MANAGE)?;
         let to: MoveTo = serde_json::from_value(body.get("to").cloned().unwrap_or(Value::Null))
-            .map_err(|_| ApiError::bad_request("to: station, stationServer, pc или yandex"))?;
+            .map_err(|_| ApiError::bad_request(crate::tr!("to: station, stationServer, pc или yandex")))?;
         let picked = body.get("station").and_then(Value::as_str);
         let record = app.station_gateway.pick(picked).and_then(|station| station.record());
         let address = body
@@ -471,12 +480,12 @@ mod pc {
             .map(str::to_string)
             .or_else(|| record.as_ref().map(|record| record.address.clone()))
             .and_then(|address| plain_address(&address))
-            .ok_or_else(|| ApiError::bad_request("address: адрес колонки, IPv4"))?;
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("address: адрес колонки, IPv4")))?;
         let gateway = match body.get("gateway").and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty()) {
             // Typed without a port: this gateway's own port, not 80.
             Some(text) => Some(
                 parse_gateway_host_or(text, app.station_connect.port())
-                    .ok_or_else(|| ApiError::bad_request("gateway: адрес[:порт]"))?,
+                    .ok_or_else(|| ApiError::bad_request(crate::tr!("gateway: адрес[:порт]")))?,
             ),
             // Nobody typed it: this computer's address in the station's network.
             None if to != MoveTo::Yandex => {
@@ -524,7 +533,10 @@ mod pc {
         Body(body): Body<Value>,
     ) -> ApiResult<Value> {
         caller.permitted(STATIONS_MANAGE)?;
-        let id = body.get("id").and_then(Value::as_str).ok_or_else(|| ApiError::bad_request("id: какая копия"))?;
+        let id = body
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("id: какая копия")))?;
         chosen(&app, &pick)?.restore(id, caller.actor()).await.map_err(ApiError::unavailable)?;
         Ok(created(json!({ "restored": id })))
     }
@@ -536,7 +548,10 @@ mod pc {
         Body(body): Body<Value>,
     ) -> ApiResult<Value> {
         caller.permitted(SYSTEM_UPDATE)?;
-        let on = body.get("on").and_then(Value::as_bool).ok_or_else(|| ApiError::bad_request("on: true или false"))?;
+        let on = body
+            .get("on")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("on: true или false")))?;
         chosen(&app, &pick)?.set_auto_update(on, caller.actor())?;
         Ok(created(json!({ "on": on })))
     }
@@ -555,7 +570,7 @@ mod pc {
         chosen(app, pick)?
             .record()
             .map(|record| record.address)
-            .ok_or_else(|| ApiError::conflict("Шлюз не на колонке."))
+            .ok_or_else(|| ApiError::conflict(crate::tr!("Шлюз не на колонке.")))
     }
 
     /// «Что случилось»: the station's own account, over SSH.
@@ -577,9 +592,10 @@ mod pc {
         let path = match body.get("to").and_then(Value::as_str) {
             Some("local") => "/api/v1/placement/point-local",
             Some("yandex") => "/api/v1/placement/give-back",
-            _ => return Err(ApiError::bad_request("to: local или yandex")),
+            _ => return Err(ApiError::bad_request(crate::tr!("to: local или yandex"))),
         };
-        let client = chosen(&app, &pick)?.client().ok_or_else(|| ApiError::conflict("Шлюз не на колонке."))?;
+        let client =
+            chosen(&app, &pick)?.client().ok_or_else(|| ApiError::conflict(crate::tr!("Шлюз не на колонке.")))?;
         let answer = client.post(path, json!({})).await.map_err(ApiError::unavailable)?;
         Ok(created(answer))
     }
@@ -592,12 +608,12 @@ mod pc {
             .get("address")
             .and_then(Value::as_str)
             .and_then(plain_address)
-            .ok_or_else(|| ApiError::bad_request("address: адрес колонки, IPv4"))?;
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("address: адрес колонки, IPv4")))?;
         let port =
             body.get("port").and_then(Value::as_u64).filter(|port| (1..=65535).contains(port)).unwrap_or(8790) as u16;
         let key = body.get("key").and_then(Value::as_str).map(str::trim).unwrap_or("");
         if key.len() < 16 {
-            return Err(ApiError::bad_request("key: ключ пары — PEER_KEY из .env шлюза на колонке"));
+            return Err(ApiError::bad_request(crate::tr!("key: ключ пары — PEER_KEY из .env шлюза на колонке")));
         }
         let view = app.station_gateway.link(&address, port, key, caller.actor()).await.map_err(ApiError::conflict)?;
         Ok(created(serde_json::to_value(view)?))
@@ -616,12 +632,12 @@ mod pc {
             .get("address")
             .and_then(Value::as_str)
             .and_then(plain_address)
-            .ok_or_else(|| ApiError::bad_request("address: адрес колонки, IPv4"))?;
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("address: адрес колонки, IPv4")))?;
         let port =
             body.get("port").and_then(Value::as_u64).filter(|port| (1..=65535).contains(port)).unwrap_or(8790) as u16;
         let password = body.get("password").and_then(Value::as_str).unwrap_or("");
         if password.is_empty() {
-            return Err(ApiError::bad_request("password: пароль пульта колонки"));
+            return Err(ApiError::bad_request(crate::tr!("password: пароль пульта колонки")));
         }
         let name = body.get("name").and_then(Value::as_str).map(str::trim).filter(|name| !name.is_empty());
         let base = format!("http://{address}:{port}");
@@ -632,17 +648,20 @@ mod pc {
             .timeout(std::time::Duration::from_secs(15))
             .send()
             .await
-            .map_err(|_| ApiError::unavailable("Шлюз колонки не отвечает по этому адресу."))?;
+            .map_err(|_| ApiError::unavailable(crate::tr!("Шлюз колонки не отвечает по этому адресу.")))?;
         let status = login.status();
         let answer: Value = login.json().await.unwrap_or(Value::Null);
         if !status.is_success() {
-            let said = answer.get("message").and_then(Value::as_str).unwrap_or("пароль не подошёл");
-            return Err(ApiError::conflict(format!("Пульт колонки не пустил: {said}")));
+            let said = answer
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| crate::tr!("пароль не подошёл"));
+            return Err(ApiError::conflict(crate::tr!("Пульт колонки не пустил: {said}", said = said)));
         }
-        let token = answer
-            .pointer("/message/token")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ApiError::conflict("Пульт колонки ответил без входа: нужен пароль администратора."))?;
+        let token = answer.pointer("/message/token").and_then(Value::as_str).ok_or_else(|| {
+            ApiError::conflict(crate::tr!("Пульт колонки ответил без входа: нужен пароль администратора."))
+        })?;
         let paired = client
             .post(format!("{base}/api/v1/placement/pair"))
             .bearer_auth(token)
@@ -650,12 +669,16 @@ mod pc {
             .timeout(std::time::Duration::from_secs(15))
             .send()
             .await
-            .map_err(|_| ApiError::unavailable("Шлюз колонки не отвечает по этому адресу."))?;
+            .map_err(|_| ApiError::unavailable(crate::tr!("Шлюз колонки не отвечает по этому адресу.")))?;
         let ok_pair = paired.status().is_success();
         let answer: Value = paired.json().await.unwrap_or(Value::Null);
         let Some(key) = answer.pointer("/message/key").and_then(Value::as_str).filter(|_| ok_pair) else {
-            let said = answer.get("message").and_then(Value::as_str).unwrap_or("шлюз колонки постарше: обновите его");
-            return Err(ApiError::conflict(format!("Ключ пары колонка не отдала: {said}")));
+            let said = answer
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| crate::tr!("шлюз колонки постарше: обновите его"));
+            return Err(ApiError::conflict(crate::tr!("Ключ пары колонка не отдала: {said}", said = said)));
         };
         let view = app.station_gateway.link(&address, port, key, caller.actor()).await.map_err(ApiError::conflict)?;
         Ok(created(serde_json::to_value(view)?))
@@ -666,13 +689,13 @@ mod pc {
     /// it again every few seconds and holds the computer awake or lets it sleep.
     fn desktop_json(app: &App) -> Result<std::path::PathBuf, ApiError> {
         if app.config.placement.managed_by.as_deref() != Some("desktop") {
-            return Err(ApiError::conflict("Это настройка приложения DuoWave на компьютере."));
+            return Err(ApiError::conflict(crate::tr!("Это настройка приложения DuoWave на компьютере.")));
         }
         app.config
             .data_dir
             .as_ref()
             .map(|dir| dir.join("desktop.json"))
-            .ok_or_else(|| ApiError::conflict("Нет папки данных."))
+            .ok_or_else(|| ApiError::conflict(crate::tr!("Нет папки данных.")))
     }
 
     fn read_desktop(path: &std::path::Path) -> Value {
@@ -692,12 +715,15 @@ mod pc {
 
     pub async fn set_awake(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
         caller.permitted(SETTINGS_EDIT)?;
-        let on = body.get("on").and_then(Value::as_bool).ok_or_else(|| ApiError::bad_request("on: true или false"))?;
+        let on = body
+            .get("on")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("on: true или false")))?;
         let path = desktop_json(&app)?;
         let mut settings = read_desktop(&path);
         settings["keepAwake"] = Value::Bool(on);
         std::fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&settings).unwrap_or_default()))
-            .map_err(|error| ApiError::unavailable(format!("Настройка не записалась: {error}")))?;
+            .map_err(|error| ApiError::unavailable(crate::tr!("Настройка не записалась: {error}", error = error)))?;
         Ok(ok(json!({ "managed": true, "keepAwake": on })))
     }
 
@@ -711,7 +737,7 @@ mod pc {
         let address = query
             .get("address")
             .and_then(|address| plain_address(address))
-            .ok_or_else(|| ApiError::bad_request("address: адрес колонки, IPv4"))?;
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("address: адрес колонки, IPv4")))?;
         let port = query.get("port").and_then(|port| port.parse::<u16>().ok()).unwrap_or(8790);
         let answer = crate::utils::http::client()
             .get(format!("http://{address}:{port}/health"))
@@ -747,7 +773,10 @@ mod pc {
                 return Ok(created(serde_json::to_value(station.view())?));
             }
         }
-        let on = body.get("on").and_then(Value::as_bool).ok_or_else(|| ApiError::bad_request("on: true или false"))?;
+        let on = body
+            .get("on")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("on: true или false")))?;
         let key = if on && station.needs_home_key() {
             let created = app.access.keys.create(
                 &serde_json::Map::from_iter([
@@ -846,7 +875,7 @@ mod tests {
         let routes = json!({ "routes": { "weather": "yandex" } });
         let through = [("authorization", pair.as_str()), (HELPER_PERSON, "Мама"), (HELPER_ROLE, "admin")];
         let (status, body) = send(&app, "PUT", "/api/v1/station/routes", &through, routes.clone()).await;
-        assert_eq!((status, body["message"].as_str()), (StatusCode::CONFLICT, Some(SETTINGS_ON_PC)));
+        assert_eq!((status, body["message"].as_str()), (StatusCode::CONFLICT, Some(settings_on_pc().as_str())));
         // The computer's own call with the key is not stopped here: its route asks for its right itself.
         let own = [("authorization", pair.as_str())];
         let (status, body) = send(&app, "PUT", "/api/v1/station/routes", &own, routes).await;
@@ -854,14 +883,14 @@ mod tests {
         // A plugin's settings travel too; its call does not: the widget reads on.
         let settings = json!({ "settings": { "ics": "https://calendar.example/basic.ics" } });
         let (status, body) = send(&app, "PUT", "/api/v1/packages/calendar/settings", &through, settings).await;
-        assert_eq!((status, body["message"].as_str()), (StatusCode::CONFLICT, Some(SETTINGS_ON_PC)));
+        assert_eq!((status, body["message"].as_str()), (StatusCode::CONFLICT, Some(settings_on_pc().as_str())));
         // (Here the plugin is off: its route answers so itself, the guard does not stop the call.)
         let (_, body) = send(&app, "POST", "/api/v1/packages/calendar/call/today", &through, json!({})).await;
         assert_eq!(body["message"].as_str(), Some("Приложение calendar выключено."), "{body}");
 
         // Review G1: a character chosen is the persona, which travels; the mode is the station's own and goes on.
         let (status, body) = send(&app, "POST", "/api/v1/characters/alice/choose", &through, json!({})).await;
-        assert_eq!((status, body["message"].as_str()), (StatusCode::CONFLICT, Some(SETTINGS_ON_PC)));
+        assert_eq!((status, body["message"].as_str()), (StatusCode::CONFLICT, Some(settings_on_pc().as_str())));
         let gateway = json!({ "mode": "gateway" });
         let (status, body) = send(&app, "POST", "/api/v1/station/mode", &through, gateway.clone()).await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -870,7 +899,7 @@ mod tests {
         let admin = format!("Bearer {admin}");
         let own = [("authorization", admin.as_str())];
         let (status, body) = send(&app, "PUT", "/api/v1/requests/keep", &own, json!({ "days": 7 })).await;
-        assert_eq!((status, body["message"].as_str()), (StatusCode::CONFLICT, Some(READ_ONLY)));
+        assert_eq!((status, body["message"].as_str()), (StatusCode::CONFLICT, Some(read_only().as_str())));
         let (status, body) = send(&app, "POST", "/api/v1/station/mode", &own, gateway).await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
     }

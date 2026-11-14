@@ -17,7 +17,6 @@
 //!   «передай …» (messenger.rs): its contacts by name only, their chats stay here; a text to one of them.
 //! - `/home/v1/history/have`, `…/objects`, `…/lines`, `…/fetch` — the station's apps' history kept here too
 //!   (plugins/history/sync.rs): which objects are missing, the objects, its lines and marks, objects back.
-
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -121,7 +120,8 @@ fn allowed(caller: &Caller) -> Result<(), ApiError> {
 /// the extra feeds it names (`feeds: [{url, feed}]`, docs/plans/catalog-feeds.md).
 async fn catalog(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
     allowed(&caller)?;
-    let copy = app.catalog.export_for_station().ok_or_else(|| ApiError::not_found("Копии каталога здесь нет."))?;
+    let copy =
+        app.catalog.export_for_station().ok_or_else(|| ApiError::not_found(crate::tr!("Копии каталога здесь нет.")))?;
     Ok(axum::Json(copy).into_response())
 }
 
@@ -173,18 +173,18 @@ async fn plugin_call(
         _ => crate::plugins::runtime::CallKind::Tool,
     };
     if !app.plugins.is_active(&id) {
-        return Err(ApiError::conflict(format!("Приложение {id} здесь не включено.")));
+        return Err(ApiError::conflict(crate::tr!("Приложение {id} здесь не включено.", id = id)));
     }
     let answer = app
         .plugins
         .call(&id, function, input, kind)
         .await
-        .map_err(|error| ApiError::bad_gateway(format!("Приложение не ответило: {error}.")))?;
+        .map_err(|error| ApiError::bad_gateway(crate::tr!("Приложение не ответило: {error}.", error = error)))?;
     Ok(axum::Json(json!({ "result": answer })).into_response())
 }
 
 fn history_of(app: &App) -> Result<Arc<crate::plugins::history::History>, ApiError> {
-    app.history.clone().ok_or_else(|| ApiError::conflict("Истории приложений на этом компьютере нет."))
+    app.history.clone().ok_or_else(|| ApiError::conflict(crate::tr!("Истории приложений на этом компьютере нет.")))
 }
 
 fn ids_of(body: &Bytes) -> Result<Vec<String>, ApiError> {
@@ -250,15 +250,19 @@ async fn history_fetch(State(app): State<Arc<App>>, caller: Caller, body: Bytes)
     Ok(axum::Json(json!({ "objects": history.give(&ids_of(&body)?) })).into_response())
 }
 
-pub const NO_BOT: &str = "На этом компьютере не настроен бот Telegram: «Приложения» → «Подключения» → Telegram.";
-const SEND_SHAPE: &str = "JSON: {contact, text} — кому и что передать";
+pub fn no_bot() -> String {
+    crate::tr!("На этом компьютере не настроен бот Telegram: «Приложения» → «Подключения» → Telegram.")
+}
+fn send_shape() -> String {
+    crate::tr!("JSON: {contact, text} — кому и что передать")
+}
 
 /// The names of this computer's Telegram contacts, for the station's «передай …»: no chats.
 async fn messenger_contacts(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
     allowed(&caller)?;
     let bot = &app.calls.telegram;
     if !bot.enabled() {
-        return Err(ApiError::unavailable(NO_BOT));
+        return Err(ApiError::unavailable(no_bot()));
     }
     Ok(axum::Json(json!({ "contacts": bot.contact_names() })).into_response())
 }
@@ -266,11 +270,11 @@ async fn messenger_contacts(State(app): State<Arc<App>>, caller: Caller) -> Resu
 /// The station's «передай маме, что …»: a text to a contact of this computer's bot.
 async fn messenger_send(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
     allowed(&caller)?;
-    let request: Value = serde_json::from_slice(&body).map_err(|_| ApiError::bad_request(SEND_SHAPE))?;
+    let request: Value = serde_json::from_slice(&body).map_err(|_| ApiError::bad_request(send_shape()))?;
     let field = |name: &str| request.get(name).and_then(Value::as_str).map(str::trim).unwrap_or_default().to_string();
     let (contact, text) = (field("contact"), field("text"));
     if contact.is_empty() || text.is_empty() {
-        return Err(ApiError::bad_request(SEND_SHAPE));
+        return Err(ApiError::bad_request(send_shape()));
     }
     let started = Instant::now();
     let name = pass_on(&app.calls.telegram, &contact, &text).await?;
@@ -282,14 +286,17 @@ async fn messenger_send(State(app): State<Arc<App>>, caller: Caller, body: Bytes
 /// The bot's part of a send: the contact by the name the station gives, then Telegram. The contact's name.
 async fn pass_on(bot: &crate::calls::TelegramMessenger, contact: &str, text: &str) -> Result<String, ApiError> {
     if !bot.enabled() {
-        return Err(ApiError::unavailable(NO_BOT));
+        return Err(ApiError::unavailable(no_bot()));
     }
-    let found = bot
-        .contact(contact)
-        .ok_or_else(|| ApiError::not_found(format!("У бота Telegram на этом компьютере нет контакта «{contact}».")))?;
-    bot.send_text(&found.chat_id, text, None)
-        .await
-        .map_err(|error| ApiError::bad_gateway(format!("Telegram не принял сообщение: {error:#}.")))?;
+    let found = bot.contact(contact).ok_or_else(|| {
+        ApiError::not_found(crate::tr!(
+            "У бота Telegram на этом компьютере нет контакта «{contact}».",
+            contact = contact
+        ))
+    })?;
+    bot.send_text(&found.chat_id, text, None).await.map_err(|error| {
+        ApiError::bad_gateway(crate::tr!("Telegram не принял сообщение: {error}.", error = format!("{error:#}")))
+    })?;
     Ok(found.name)
 }
 
@@ -419,7 +426,7 @@ async fn forward(
         request = request.body(body);
     }
     let response = request.send().await.map_err(|error| {
-        ApiError::new(StatusCode::BAD_GATEWAY, format!("сервер этого компьютера не ответил: {error}"))
+        ApiError::new(StatusCode::BAD_GATEWAY, crate::tr!("Сервер этого компьютера не ответил: {error}", error = error))
     })?;
     let status = StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let kind = response.headers().get(header::CONTENT_TYPE).cloned();
@@ -441,7 +448,8 @@ async fn transcribe(
     body: Bytes,
 ) -> Result<Response, ApiError> {
     allowed(&caller)?;
-    let hearing = hearing(&app).ok_or_else(|| ApiError::unavailable("На этом компьютере нет своего распознавания."))?;
+    let hearing = hearing(&app)
+        .ok_or_else(|| ApiError::unavailable(crate::tr!("На этом компьютере нет своего распознавания.")))?;
     let started = Instant::now();
     let (base, key) = match hearing {
         Hearing::Server(base, key) => (base, key),
@@ -451,13 +459,16 @@ async fn transcribe(
             let file = parts
                 .into_iter()
                 .find(|(name, _)| name == "file")
-                .ok_or_else(|| ApiError::bad_request("file: звук WAV"))?
+                .ok_or_else(|| ApiError::bad_request(crate::tr!("file: звук WAV")))?
                 .1;
             let wav = crate::speech::audio::pcm::decode_wav(&file)
                 .map_err(|error| ApiError::bad_request(format!("file: {error}")))?;
             let text =
                 local.recognize(&wav.pcm, wav.sample_rate, &CancellationToken::new()).await.map_err(|error| {
-                    ApiError::new(StatusCode::SERVICE_UNAVAILABLE, format!("распознавание этого компьютера: {error:#}"))
+                    ApiError::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        crate::tr!("Распознавание этого компьютера: {error}", error = format!("{error:#}")),
+                    )
                 })?;
             count(0, started);
             return Ok(axum::Json(json!({ "text": text })).into_response());
@@ -482,7 +493,7 @@ async fn transcribe(
 async fn asr_models(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
     allowed(&caller)?;
     let (base, key) = match hearing(&app) {
-        None => return Err(ApiError::unavailable("На этом компьютере нет своего распознавания.")),
+        None => return Err(ApiError::unavailable(crate::tr!("На этом компьютере нет своего распознавания."))),
         // The one model the engine serves, as an OpenAI-compatible server lists it.
         Some(Hearing::Local(local)) => {
             let listed = json!({ "object": "list", "data": [{ "id": local.model(), "object": "model" }] });
@@ -496,21 +507,24 @@ async fn asr_models(State(app): State<Arc<App>>, caller: Caller) -> Result<Respo
 /// The voice this computer speaks with now, whatever the station asked: Ogg/Opus.
 async fn speak(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
     allowed(&caller)?;
-    let request: Value = serde_json::from_slice(&body).map_err(|_| ApiError::bad_request("input: текст"))?;
+    let request: Value =
+        serde_json::from_slice(&body).map_err(|_| ApiError::bad_request(crate::tr!("input: текст")))?;
     let text = request.get("input").and_then(Value::as_str).unwrap_or("").to_string();
     if text.trim().is_empty() {
-        return Err(ApiError::bad_request("input: текст"));
+        return Err(ApiError::bad_request(crate::tr!("input: текст")));
     }
     let own = app
         .voice
         .own_speech()
         .cloned()
-        .ok_or_else(|| ApiError::unavailable("На этом компьютере нет своего голоса."))?;
+        .ok_or_else(|| ApiError::unavailable(crate::tr!("На этом компьютере нет своего голоса.")))?;
     let started = Instant::now();
-    let spoken = own
-        .synthesize(&text, &CancellationToken::new())
-        .await
-        .map_err(|error| ApiError::new(StatusCode::BAD_GATEWAY, format!("голос этого компьютера: {error:#}")))?;
+    let spoken = own.synthesize(&text, &CancellationToken::new()).await.map_err(|error| {
+        ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            crate::tr!("Голос этого компьютера: {error}", error = format!("{error:#}")),
+        )
+    })?;
     count(1, started);
     Ok(([(header::CONTENT_TYPE, "audio/ogg")], spoken.audio).into_response())
 }
@@ -522,7 +536,8 @@ async fn chat(
     body: Bytes,
 ) -> Result<Response, ApiError> {
     allowed(&caller)?;
-    let (base, key) = own_model(&app).ok_or_else(|| ApiError::unavailable("На этом компьютере нет своей модели."))?;
+    let (base, key) =
+        own_model(&app).ok_or_else(|| ApiError::unavailable(crate::tr!("На этом компьютере нет своей модели.")))?;
     let started = Instant::now();
     let answer = forward(
         reqwest::Method::POST,
@@ -542,7 +557,8 @@ async fn chat(
 
 async fn llm_models(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
     allowed(&caller)?;
-    let (base, key) = own_model(&app).ok_or_else(|| ApiError::unavailable("На этом компьютере нет своей модели."))?;
+    let (base, key) =
+        own_model(&app).ok_or_else(|| ApiError::unavailable(crate::tr!("На этом компьютере нет своей модели.")))?;
     forward(reqwest::Method::GET, format!("{base}/models"), key, None, None, Duration::from_secs(10)).await
 }
 
@@ -633,16 +649,16 @@ mod tests {
             (StatusCode::NOT_FOUND, Some("У бота Telegram на этом компьютере нет контакта «Пете»."))
         );
         let (status, body) = send(&app, "POST", SEND, Some(&station), json!({ "contact": "мама" })).await;
-        assert_eq!((status, body["message"].as_str()), (StatusCode::BAD_REQUEST, Some(SEND_SHAPE)));
+        assert_eq!((status, body["message"].as_str()), (StatusCode::BAD_REQUEST, Some(send_shape().as_str())));
 
         // No bot on the computer: its contacts and its sends say so.
         let app = computer(&[]);
         let station = key(&app, &["home.models"]);
         let (status, body) = send(&app, "GET", CONTACTS, Some(&station), Value::Null).await;
-        assert_eq!((status, body["message"].as_str()), (StatusCode::SERVICE_UNAVAILABLE, Some(NO_BOT)));
+        assert_eq!((status, body["message"].as_str()), (StatusCode::SERVICE_UNAVAILABLE, Some(no_bot().as_str())));
         let message = json!({ "contact": "мама", "text": "Я задержусь" });
         let (status, body) = send(&app, "POST", SEND, Some(&station), message).await;
-        assert_eq!((status, body["message"].as_str()), (StatusCode::SERVICE_UNAVAILABLE, Some(NO_BOT)));
+        assert_eq!((status, body["message"].as_str()), (StatusCode::SERVICE_UNAVAILABLE, Some(no_bot().as_str())));
     }
 
     /// A Bot API server of our own: what was sent to it; `refuse` answers 400 as Telegram does to a bad chat.

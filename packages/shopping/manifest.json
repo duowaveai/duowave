@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "plugin",
   "id": "shopping",
-  "version": "2.0.0",
+  "version": "2.1.1",
   "title": "Список покупок",
   "description": "Свой список покупок: «добавь молоко в список покупок», «что в списке покупок», «вычеркни хлеб из списка покупок», «очисти список покупок» — и виджет на столе пульта, где список пополняют и вычёркивают. Хранится у шлюза, без Яндекса. Поставляется выключенным: включённый, забирает фразы о списке покупок у Яндекса при маршруте «Сервисы аккаунта» «свой + Яндекс» (по умолчанию) или «свой». Оставить список Яндекса — маршрут «Яндекс» («Мозг» → «Маршруты») или выключить приложение.",
   "api": "^2",
@@ -16,6 +16,19 @@
     "storageMb": 1
   },
   "permissions": [],
+  "languages": [
+    "ru",
+    "en"
+  ],
+  "locales": {
+    "en": {
+      "title": "Shopping list",
+      "description": "Your own shopping list: “add milk to the shopping list”, “what is on the shopping list”, “cross bread off the shopping list”, “clear the shopping list” — and a widget on the panel desk where the list is filled and crossed off. Kept by the gateway, without Yandex. Ships switched off: once on, it takes the shopping-list phrases from Yandex when the “Account services” route is “own + Yandex” (the default) or “own”.",
+      "cards": {
+        "list": "Shopping list"
+      }
+    }
+  },
   "contributes": {
     "intents": [
       {

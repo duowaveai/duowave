@@ -1,7 +1,6 @@
 //! The station's settings, kept on the computer (docs/plans/station-placement.md, section 10): the computer takes a
 //! copy whenever the station names a new revision, and before a move or an update; the last ten stay, sealed with the
 //! pair's key as they came. After a reset of the station — its settings back with one button.
-
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -58,7 +57,7 @@ impl Backups {
     }
 
     fn dir(&self) -> Result<&Path, String> {
-        self.dir.as_deref().ok_or_else(|| "копии настроек некуда сохранить: у шлюза нет папки данных".to_string())
+        self.dir.as_deref().ok_or_else(|| crate::tr!("копии настроек некуда сохранить: у шлюза нет папки данных"))
     }
 
     /// Keeps a sealed package and lets the oldest beyond ten go.
@@ -116,11 +115,11 @@ impl Backups {
     /// A copy, sealed as it was kept.
     pub fn read(&self, id: &str) -> Result<Value, String> {
         if !id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-') {
-            return Err("нет такой копии".into());
+            return Err(crate::tr!("нет такой копии"));
         }
         let path = self.dir()?.join(format!("{id}.json"));
-        let text = std::fs::read(&path).map_err(|_| "нет такой копии".to_string())?;
-        serde_json::from_slice(&text).map_err(|_| "копия повреждена".to_string())
+        let text = std::fs::read(&path).map_err(|_| crate::tr!("нет такой копии"))?;
+        serde_json::from_slice(&text).map_err(|_| crate::tr!("копия повреждена"))
     }
 }
 

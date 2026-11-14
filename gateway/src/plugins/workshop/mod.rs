@@ -24,7 +24,6 @@ pub mod routes;
 pub mod sandbox;
 pub mod templates;
 pub mod voice;
-
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -70,19 +69,29 @@ pub fn draft_path(path: &str) -> Result<PathBuf, String> {
             && part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
     };
     if parts.is_empty() || parts.len() > 4 || !parts.iter().all(plain) {
-        return Err(format!("«{path}»: путь из латинских букв, цифр, «.», «_», «-», до четырёх частей"));
+        return Err(crate::tr!(
+            "«{path}»: путь из латинских букв, цифр, «.», «_», «-», до четырёх частей",
+            path = path
+        ));
     }
     match parts.as_slice() {
         [file] if ROOT_FILES.contains(file) => Ok(PathBuf::from(file)),
-        [file] => Err(format!("«{file}»: в корне черновика только {}; остальное — в assets/", ROOT_FILES.join(", "))),
+        [file] => Err(crate::tr!(
+            "«{file}»: в корне черновика только {root_files}; остальное — в assets/",
+            file = file,
+            root_files = ROOT_FILES.join(", ")
+        )),
         ["assets", rest @ ..] => {
             let extension = rest.last().and_then(|name| name.rsplit_once('.')).map(|(_, e)| e.to_ascii_lowercase());
             if extension.as_deref().is_some_and(|extension| REFUSED.contains(&extension)) {
-                return Err(format!("«{path}»: в assets/ нельзя то, что браузер запустит (SVG, HTML, скрипты)"));
+                return Err(crate::tr!(
+                    "«{path}»: в assets/ нельзя то, что браузер запустит (SVG, HTML, скрипты)",
+                    path = path
+                ));
             }
             Ok(parts.iter().collect())
         }
-        _ => Err(format!("«{path}»: вне assets/ папок нет")),
+        _ => Err(crate::tr!("«{path}»: вне assets/ папок нет", path = path)),
     }
 }
 
@@ -208,6 +217,8 @@ pub struct Workshop {
     dialog: OnceLock<Arc<crate::dialog::DialogService>>,
     /// This gateway hears MIDI keyboards (src/midi): a teacher for one is made only where it can work (make.rs).
     midi: std::sync::atomic::AtomicBool,
+    /// Whether the home folder is this computer's (not the station's own gateway): an album of its photos is made here.
+    folders: std::sync::atomic::AtomicBool,
 }
 
 /// How long a preview's address works.
@@ -262,6 +273,7 @@ impl Workshop {
             card_followers: Mutex::new(Vec::new()),
             dialog: OnceLock::new(),
             midi: std::sync::atomic::AtomicBool::new(false),
+            folders: std::sync::atomic::AtomicBool::new(true),
         });
         // A draft's card follows the agent's work on it: working while it goes on, then ready, failed or stopped.
         let me = Arc::downgrade(&workshop);
@@ -305,11 +317,13 @@ impl Workshop {
     /// The draft back to a step of its history: a new step with its files.
     pub fn restore_step(&self, id: &str, record: &str, by: Author) -> Result<DraftView, ApiError> {
         let folder = self.folder(id)?;
-        let history = self.history().ok_or_else(|| ApiError::conflict("Истории здесь нет."))?;
-        let record = history.resolve(id, record).ok_or_else(|| ApiError::not_found("Такого шага нет."))?;
+        let history = self.history().ok_or_else(|| ApiError::conflict(crate::tr!("Истории здесь нет.")))?;
+        let record = history.resolve(id, record).ok_or_else(|| ApiError::not_found(crate::tr!("Такого шага нет.")))?;
         // The agent steps back within its own work; anyone else waits for it.
         if by.who != Who::Agent && self.activity.jobs().iter().any(|job| job.draft == id && job.busy) {
-            return Err(ApiError::conflict("Агент сейчас работает над черновиком: дождитесь или остановите его."));
+            return Err(ApiError::conflict(crate::tr!(
+                "Агент сейчас работает над черновиком: дождитесь или остановите его."
+            )));
         }
         history.restore_draft(id, &record, by).map_err(ApiError::conflict)?;
         Ok(self.view_of(id, &folder))
@@ -426,7 +440,7 @@ impl Workshop {
     pub fn preview(&self, id: &str) -> Result<(String, Option<String>), ApiError> {
         let folder = self.existing(id)?;
         if !folder.join("panel.js").is_file() {
-            return Err(ApiError::conflict("В черновике нет panel.js — нечего показать."));
+            return Err(ApiError::conflict(crate::tr!("В черновике нет panel.js — нечего показать.")));
         }
         let token = hex::encode(crate::utils::ids::random_bytes(16));
         let mut previews = self.previews.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -458,7 +472,10 @@ impl Workshop {
 
     fn folder(&self, id: &str) -> Result<PathBuf, ApiError> {
         if !manifest::valid_id(id) {
-            return Err(ApiError::field("id", "строчные латинские буквы, цифры и «-», с буквы, до 32 знаков"));
+            return Err(ApiError::field(
+                "id",
+                crate::tr!("строчные латинские буквы, цифры и «-», с буквы, до 32 знаков"),
+            ));
         }
         Ok(self.dir.join(id))
     }
@@ -466,7 +483,7 @@ impl Workshop {
     fn existing(&self, id: &str) -> Result<PathBuf, ApiError> {
         let folder = self.folder(id)?;
         if !folder.is_dir() {
-            return Err(ApiError::not_found(format!("Черновика {id} нет.")));
+            return Err(ApiError::not_found(crate::tr!("Черновика {id} нет.", id = id)));
         }
         Ok(folder)
     }
@@ -496,7 +513,7 @@ impl Workshop {
                     error.problems,
                 )
             }
-            None => (None, None, None, vec!["нет manifest.json".into()]),
+            None => (None, None, None, vec![crate::tr!("нет manifest.json")]),
         };
         let installed = self.host.installed(id);
         DraftView {
@@ -545,20 +562,22 @@ impl Workshop {
     ) -> Result<DraftView, ApiError> {
         let folder = self.folder(id)?;
         if folder.exists() {
-            return Err(ApiError::conflict(format!("Черновик {id} уже есть.")));
+            return Err(ApiError::conflict(crate::tr!("Черновик {id} уже есть.", id = id)));
         }
         // A new plugin or theme under an id a package already has would become that package's next version.
         if let Some(taken) = self.host.installed(id).filter(|_| kind.is_some() || openapi.is_some()) {
             let origin = self.host.origin_of(id);
             let way = if origin.editable() {
-                " Или откройте его самого: «Открыть в мастерской» в «Приложения»."
+                crate::tr!(" Или откройте его самого: «Открыть в мастерской» в «Приложения».")
             } else {
-                ""
+                String::new()
             };
-            return Err(ApiError::conflict(format!(
-                "id «{id}» уже занят: так зовётся {} пакет «{}». Выберите другой id.{way}",
-                origin.title(),
-                taken.manifest.title
+            return Err(ApiError::conflict(crate::tr!(
+                "id «{id}» уже занят: так зовётся {origin} пакет «{manifest}». Выберите другой id.{way}",
+                id = id,
+                origin = origin.title(),
+                manifest = taken.manifest.title,
+                way = way
             )));
         }
         let files: Vec<(String, String)> = if let Some(spec) = openapi {
@@ -566,13 +585,18 @@ impl Workshop {
         } else if let Some(installed) = self.host.installed(id).filter(|_| kind.is_none()) {
             let origin = self.host.origin_of(id);
             if !origin.editable() {
-                return Err(ApiError::conflict(format!(
-                    "«{id}» — {} пакет: его не правят, а делают свою копию («Сделать свою копию»).",
-                    origin.title()
+                return Err(ApiError::conflict(crate::tr!(
+                    "«{id}» — {origin} пакет: его не правят, а делают свою копию («Сделать свою копию»).",
+                    id = id,
+                    origin = origin.title()
                 )));
             }
             copy_dir(&installed.dir, &folder).map_err(ApiError::internal)?;
-            self.first_step(id, format!("черновик из поставленной версии {}", installed.version()), true);
+            self.first_step(
+                id,
+                crate::tr!("черновик из поставленной версии {version}", version = installed.version()),
+                true,
+            );
             return Ok(self.view_of(id, &folder));
         } else {
             match kind.unwrap_or("plugin") {
@@ -581,10 +605,14 @@ impl Workshop {
                 "widget" => templates::widget(id, title.unwrap_or(id)),
                 "quiz" => templates::quiz(id, title.unwrap_or(id)),
                 "midi" => templates::midi(id, title.unwrap_or("Учитель на MIDI-клавиатуре")),
+                "folders" => templates::folders(id, title.unwrap_or("Фотоальбом")),
                 other => {
                     return Err(ApiError::field(
                         "kind",
-                        format!("«{other}»: черновик — plugin, widget, quiz, midi или theme"),
+                        crate::tr!(
+                            "«{other}»: черновик — plugin, widget, quiz, midi, folders или theme",
+                            other = other
+                        ),
                     ))
                 }
             }
@@ -599,8 +627,8 @@ impl Workshop {
         }
         tracing::info!(target: "plugins", "workshop: draft {id} made");
         let from = match (openapi, kind) {
-            (Some(_), _) => "черновик из описания API".to_string(),
-            (None, kind) => format!("черновик из заготовки «{}»", kind.unwrap_or("plugin")),
+            (Some(_), _) => crate::tr!("черновик из описания API"),
+            (None, kind) => crate::tr!("черновик из заготовки «{plugin}»", plugin = kind.unwrap_or("plugin")),
         };
         self.first_step(id, from, false);
         Ok(self.view_of(id, &folder))
@@ -618,26 +646,27 @@ impl Workshop {
         let folder = self.existing(id)?;
         let path = draft_path(path).map_err(ApiError::bad_request)?;
         let file = folder.join(&path);
-        let size =
-            std::fs::metadata(&file).map_err(|_| ApiError::not_found(format!("Нет файла {}.", path.display())))?.len();
+        let size = std::fs::metadata(&file)
+            .map_err(|_| ApiError::not_found(crate::tr!("Нет файла {path}.", path = path.display())))?
+            .len();
         if size > MAX_FILE {
-            return Err(ApiError::bad_request("Файл больше 1 МБ."));
+            return Err(ApiError::bad_request(crate::tr!("Файл больше 1 МБ.")));
         }
         let bytes = std::fs::read(&file).map_err(ApiError::internal)?;
-        String::from_utf8(bytes).map_err(|_| ApiError::bad_request("Файл не текстовый."))
+        String::from_utf8(bytes).map_err(|_| ApiError::bad_request(crate::tr!("Файл не текстовый.")))
     }
 
     pub fn write(&self, id: &str, path: &str, content: &str) -> Result<DraftView, ApiError> {
         let folder = self.existing(id)?;
         let path = draft_path(path).map_err(ApiError::bad_request)?;
         if content.len() as u64 > MAX_FILE {
-            return Err(ApiError::bad_request("Файл больше 1 МБ."));
+            return Err(ApiError::bad_request(crate::tr!("Файл больше 1 МБ.")));
         }
         let mut files = Vec::new();
         walk(&folder, &folder, &mut files);
         let others: u64 = files.iter().filter(|file| Path::new(&file.path) != path).map(|file| file.size).sum();
         if others + content.len() as u64 > MAX_DRAFT {
-            return Err(ApiError::bad_request("Черновик больше 8 МБ."));
+            return Err(ApiError::bad_request(crate::tr!("Черновик больше 8 МБ.")));
         }
         let file = folder.join(&path);
         if let Some(parent) = file.parent() {
@@ -651,7 +680,7 @@ impl Workshop {
         let folder = self.existing(id)?;
         let path = draft_path(path).map_err(ApiError::bad_request)?;
         std::fs::remove_file(folder.join(&path))
-            .map_err(|_| ApiError::not_found(format!("Нет файла {}.", path.display())))?;
+            .map_err(|_| ApiError::not_found(crate::tr!("Нет файла {path}.", path = path.display())))?;
         Ok(self.view_of(id, &folder))
     }
 
@@ -675,6 +704,13 @@ impl Workshop {
     pub async fn check(&self, id: &str) -> Result<CheckReport, ApiError> {
         let folder = self.existing(id)?;
         let mut report = sandbox::check(&folder, id, self.handle.clone()).await;
+        // The household's own language, when it is neither Russian nor English: the app should speak it too.
+        let household = crate::locale::household(self.host.settings()).filter(|code| code != "ru" && code != "en");
+        if let (Some(code), Ok((manifest, _))) = (household, sandbox::read_draft(&folder)) {
+            if !manifest.languages.contains(&code) {
+                report.languages.push(crate::tr!("Языки: язык дома — «{code}», а приложение на нём не говорит: добавьте его в languages и locales.{code}.", code = code));
+            }
+        }
         if self.host.on_station() {
             report.warnings.extend(sandbox::station_warnings(&folder));
         }
@@ -706,7 +742,7 @@ impl Workshop {
         }
         let folder = self.existing(id)?;
         let text = std::fs::read_to_string(folder.join("manifest.json"))
-            .map_err(|_| ApiError::bad_request("В черновике нет manifest.json."))?;
+            .map_err(|_| ApiError::bad_request(crate::tr!("В черновике нет manifest.json.")))?;
         let draft = manifest::parse(&text).map_err(|error| ApiError::bad_request(error.to_string()))?;
         let mut plain = Map::new();
         for (key, value) in given {
@@ -714,15 +750,15 @@ impl Workshop {
                 .settings
                 .iter()
                 .find(|spec| &spec.key == key)
-                .ok_or_else(|| ApiError::field(key, "нет такой настройки"))?;
+                .ok_or_else(|| ApiError::field(key, crate::tr!("нет такой настройки")))?;
             if spec.secret {
-                return Err(ApiError::field(key, "личное сюда не передают: его вписывают при установке"));
+                return Err(ApiError::field(key, crate::tr!("личное сюда не передают: его вписывают при установке")));
             }
             if value.is_null() {
                 continue;
             }
             if !spec.accepts(value) {
-                return Err(ApiError::field(key, "значение не подходит к настройке"));
+                return Err(ApiError::field(key, crate::tr!("значение не подходит к настройке")));
             }
             plain.insert(key.clone(), value.clone());
         }
@@ -760,7 +796,10 @@ impl Workshop {
         let folder = self.existing(id)?;
         let report = sandbox::check(&folder, id, self.handle.clone()).await;
         if !report.ok {
-            return Err(ApiError::bad_request(format!("Черновик не ставится: {}.", problems_of(&report).join("; "))));
+            return Err(ApiError::bad_request(crate::tr!(
+                "Черновик не ставится: {report}.",
+                report = problems_of(&report).join("; ")
+            )));
         }
         let text = std::fs::read_to_string(folder.join("manifest.json")).map_err(ApiError::internal)?;
         let draft = manifest::parse(&text).map_err(|error| ApiError::bad_request(error.to_string()))?;
@@ -825,12 +864,12 @@ impl Workshop {
         actor: Option<Actor>,
     ) -> Result<InstallReport, ApiError> {
         if self.trial(id).is_some() {
-            return Err(ApiError::conflict("Проба уже идёт: закончите её или оставьте версию."));
+            return Err(ApiError::conflict(crate::tr!("Проба уже идёт: закончите её или оставьте версию.")));
         }
         let folder = self.existing(id)?;
         let text = std::fs::read_to_string(folder.join("manifest.json")).map_err(ApiError::internal)?;
         if manifest::parse(&text).map(|draft| draft.kind).ok() != Some(PackageKind::Plugin) {
-            return Err(ApiError::bad_request("На колонке пробуют плагин; тему примеряют в пульте."));
+            return Err(ApiError::bad_request(crate::tr!("На колонке пробуют плагин; тему примеряют в пульте.")));
         }
         let previous = self.host.installed(id).map(|package| package.version());
         let was_enabled = match previous {
@@ -841,7 +880,11 @@ impl Workshop {
         let Some(version) = report.version.clone().filter(|_| report.installed) else { return Ok(report) };
         if previous.is_some() && !was_enabled {
             if let Err(error) = self.host.enable(id, actor.clone()).await {
-                report.message = format!("{} Но не включилась: {}", report.message, error.message);
+                report.message = crate::tr!(
+                    "{message} Но не включилась: {message2}",
+                    message = report.message,
+                    message2 = error.message
+                );
             }
         }
         let minutes = minutes.clamp(1, MAX_TRIAL_MINUTES);
@@ -851,13 +894,15 @@ impl Workshop {
         std::fs::create_dir_all(self.trials_dir()).map_err(ApiError::internal)?;
         let json = serde_json::to_string_pretty(&trial).map_err(ApiError::internal)?;
         std::fs::write(self.trials_dir().join(format!("{id}.json")), json).map_err(ApiError::internal)?;
-        self.host.note_line(id, "load", &format!("проба: версия {version} на {minutes} мин"));
+        self.host.note_line(
+            id,
+            "load",
+            &crate::tr!("проба: версия {version} на {minutes} мин", version = version, minutes = minutes),
+        );
         self.watch_trial(id, trial);
         report.message = match previous {
-            Some(previous) => format!(
-                "Проба: версия {version} работает {minutes} мин, потом вернётся {previous}. Говорите колонке как обычно."
-            ),
-            None => format!("Проба: плагин работает {minutes} мин, потом уйдёт. Говорите колонке как обычно."),
+            Some(previous) => crate::tr!("Проба: версия {version} работает {minutes} мин, потом вернётся {previous}. Говорите колонке как обычно.", version = version, minutes = minutes, previous = previous),
+            None => crate::tr!("Проба: плагин работает {minutes} мин, потом уйдёт. Говорите колонке как обычно.", minutes = minutes),
         };
         Ok(report)
     }
@@ -902,17 +947,17 @@ impl Workshop {
     pub async fn end_trial(&self, id: &str, keep: bool, actor: Option<Actor>) -> Result<String, ApiError> {
         let _turn = self.installing.lock().await;
         let Some(trial) = self.trial(id) else {
-            return Err(ApiError::conflict("Пробы сейчас нет."));
+            return Err(ApiError::conflict(crate::tr!("Пробы сейчас нет.")));
         };
         self.forget_trial(id);
         if keep {
-            self.host.note_line(id, "load", &format!("проба: версия {} оставлена", trial.version));
-            return Ok(format!("Версия {} остаётся.", trial.version));
+            self.host.note_line(id, "load", &crate::tr!("проба: версия {version} оставлена", version = trial.version));
+            return Ok(crate::tr!("Версия {version} остаётся.", version = trial.version));
         }
         let now = self.host.installed(id).map(|package| package.version());
         if now.as_deref() != Some(trial.version.as_str()) {
             // Something else was installed or removed since: nothing of the trial's to take back.
-            return Ok("Проба закончилась; с тех пор пакет меняли — оставляю как есть.".into());
+            return Ok(crate::tr!("Проба закончилась; с тех пор пакет меняли — оставляю как есть."));
         }
         let message = match &trial.previous {
             Some(previous) => {
@@ -920,7 +965,7 @@ impl Workshop {
                 if !trial.was_enabled {
                     self.host.disable(id, actor.clone()).await?;
                 }
-                format!("Проба закончилась: вернулась версия {previous}.")
+                crate::tr!("Проба закончилась: вернулась версия {previous}.", previous = previous)
             }
             None => {
                 let root = self.host.packages_dir().to_path_buf();
@@ -928,10 +973,10 @@ impl Workshop {
                 super::install::remove_package(&root, id).map_err(ApiError::internal)?;
                 self.host.rescan();
                 self.host.announce(id, "removed", None, actor.clone());
-                "Проба закончилась: плагин убран.".to_string()
+                crate::tr!("Проба закончилась: плагин убран.")
             }
         };
-        self.host.note_line(id, "load", &format!("проба версии {} закончилась", trial.version));
+        self.host.note_line(id, "load", &crate::tr!("проба версии {version} закончилась", version = trial.version));
         tracing::info!(target: "plugins", "workshop: trial of {id} {} taken back", trial.version);
         Ok(message)
     }
@@ -950,7 +995,10 @@ impl Workshop {
         let folder = self.existing(id)?;
         let report = sandbox::check(&folder, id, self.handle.clone()).await;
         if !report.ok {
-            return Err(ApiError::bad_request(format!("Черновик не ставится: {}.", problems_of(&report).join("; "))));
+            return Err(ApiError::bad_request(crate::tr!(
+                "Черновик не ставится: {report}.",
+                report = problems_of(&report).join("; ")
+            )));
         }
         let text = std::fs::read_to_string(folder.join("manifest.json")).map_err(ApiError::internal)?;
         let draft = manifest::parse(&text).map_err(|error| ApiError::bad_request(error.to_string()))?;
@@ -958,9 +1006,10 @@ impl Workshop {
         if installed.is_some() {
             let origin = self.host.origin_of(id);
             if !origin.editable() {
-                return Err(ApiError::conflict(format!(
-                    "«{id}» — {} пакет: его не меняют, а делают свою копию.",
-                    origin.title()
+                return Err(ApiError::conflict(crate::tr!(
+                    "«{id}» — {origin} пакет: его не меняют, а делают свою копию.",
+                    id = id,
+                    origin = origin.title()
                 )));
             }
         }
@@ -980,9 +1029,9 @@ impl Workshop {
                 budget: draft.budget,
             };
             let message = if approval.first {
-                "Первую установку одобряет администратор в пульте: права, хосты и бюджет на экране.".to_string()
+                crate::tr!("Первую установку одобряет администратор в пульте: права, хосты и бюджет на экране.")
             } else {
-                format!("Новые права ({}) одобряет администратор в пульте.", added.join(", "))
+                crate::tr!("Новые права ({added}) одобряет администратор в пульте.", added = added.join(", "))
             };
             return Ok(InstallReport {
                 installed: false,
@@ -997,7 +1046,7 @@ impl Workshop {
         if draft.kind == PackageKind::Plugin {
             self.host
                 .room_for(crate::operations::system_memory::folder_mb(&folder))
-                .map_err(|why| ApiError::conflict(format!("Не поставить: {why}.")))?;
+                .map_err(|why| ApiError::conflict(crate::tr!("Не поставить: {why}.", why = why)))?;
         }
         // The version: the draft's, or the next patch when it is taken.
         let root = self.host.packages_dir().to_path_buf();
@@ -1033,26 +1082,28 @@ impl Workshop {
         }
         prune(&root, id, KEPT_VERSIONS, self.history().map(Arc::as_ref));
         let version = version.to_string();
-        self.host.note_line(id, "load", &format!("мастерская поставила версию {version}"));
+        self.host.note_line(id, "load", &crate::tr!("мастерская поставила версию {version}", version = version));
         self.host.announce(
             id,
             if installed.is_some() { "updated" } else { "installed" },
             Some(version.clone()),
             actor.clone(),
         );
-        let mut message = format!("Версия {version} поставлена.");
+        let mut message = crate::tr!("Версия {version} поставлена.", version = version);
         if draft.kind == PackageKind::Plugin {
             let enabled = self.host.view_one(id).await.map(|view| view.enabled).unwrap_or(false);
             let started = if enabled {
-                self.host.reload(id, actor.clone()).await.map(|_| "работает она".to_string())
+                self.host.reload(id, actor.clone()).await.map(|_| crate::tr!("работает она"))
             } else if installed.is_none() {
-                self.host.enable(id, actor.clone()).await.map(|_| "плагин включён".to_string())
+                self.host.enable(id, actor.clone()).await.map(|_| crate::tr!("плагин включён"))
             } else {
-                Ok("плагин выключен — включите его, когда нужно".to_string())
+                Ok(crate::tr!("плагин выключен — включите его, когда нужно"))
             };
             match started {
                 Ok(how) => message = format!("{message} {}.", capitalized(&how)),
-                Err(error) => message = format!("{message} Но не поднялась: {}", error.message),
+                Err(error) => {
+                    message = crate::tr!("{message} Но не поднялась: {why}", message = message, why = error.message)
+                }
             }
         }
         Ok(InstallReport {
@@ -1090,7 +1141,9 @@ impl activity::RunListener for RunSteps {
 fn problems_of(report: &CheckReport) -> Vec<String> {
     let mut problems = report.manifest.clone();
     problems.extend(report.code.iter().cloned());
-    problems.extend(report.missing.iter().map(|handler| format!("нет функции {handler} в backend.js")));
+    problems.extend(
+        report.missing.iter().map(|handler| crate::tr!("нет функции {handler} в backend.js", handler = handler)),
+    );
     problems
 }
 

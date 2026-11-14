@@ -4,7 +4,9 @@
 mod awake;
 mod engine;
 mod envfile;
+mod lang;
 mod place;
+mod screen;
 mod updates;
 
 use std::path::PathBuf;
@@ -13,14 +15,18 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use engine::{Gateway, Paths, Phase, Status};
+use lang::t;
 use serde::Serialize;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::webview::{NewWindowResponse, PageLoadEvent};
-use tauri::{AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent, Wry};
+use tauri::{
+    AppHandle, DragDropEvent, Manager, RunEvent, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent, Wry,
+};
 #[cfg(target_os = "macos")]
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt as _;
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 /// Passed by the login item: the app starts in the tray, without the window.
@@ -39,12 +45,17 @@ const SPLASH_URL: &str = if cfg!(windows) {
 
 static QUITTING: AtomicBool = AtomicBool::new(false);
 
+/// The folder a person picked in the system's window, when they picked one (the gateway's `files::routes::Picker`).
+type Picked = std::pin::Pin<Box<dyn std::future::Future<Output = Option<PathBuf>> + Send>>;
+
 struct Tray {
     icon: TrayIcon<Wry>,
     menu: Menu<Wry>,
     status: MenuItem<Wry>,
     autostart: CheckMenuItem<Wry>,
     keep_awake: CheckMenuItem<Wry>,
+    /// The items that only hold words: said anew when the language becomes known.
+    words: Vec<(MenuItem<Wry>, &'static str, &'static str)>,
 }
 
 fn main() {
@@ -87,6 +98,8 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         // «Доступна версия X»: one notification per new version (updates.rs).
         .plugin(tauri_plugin_notification::init())
+        // «Подключить папку…» in the panel opens the system's window to pick a folder (docs/plans/shared-folders.md).
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             gateway_status,
             gateway_restart,
@@ -130,6 +143,22 @@ fn main() {
             }
             build_window(&handle)?;
             build_tray(&handle)?;
+            // The computer's screen: a window of its own for each photo, video or sound the gateway shows.
+            screen::follow(&handle);
+            // The panel's «Подключить папку…»: the gateway asks this app for the system's window to pick a folder.
+            let picker = handle.clone();
+            duowave::bus::providers::files::routes::set_picker(Arc::new(move |title: String| -> Picked {
+                let picker = picker.clone();
+                Box::pin(async move {
+                    let picked = tauri::async_runtime::spawn_blocking(move || {
+                        picker.dialog().file().set_title(title).blocking_pick_folder()
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+                    picked.and_then(|path| path.into_path().ok())
+                })
+            }));
             let listener = handle.clone();
             gateway.on_change(move |status| status_changed(&listener, status.clone()));
             // «Не давать компьютеру спать» из пульта помощника (docs/plans/desk.md, этап 4): пульт пишет ту же
@@ -233,12 +262,31 @@ fn build_window(app: &AppHandle) -> tauri::Result<()> {
     place::restore(&window);
     place::keep(&window);
     let hide = window.clone();
-    window.on_window_event(move |event| {
+    let dropping = app.clone();
+    window.on_window_event(move |event| match event {
         // Closing the window hides it: the gateway keeps running, the tray brings the window back.
-        if let WindowEvent::CloseRequested { api, .. } = event {
+        WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
             let _ = hide.hide();
         }
+        // A folder dropped on the window: an offer on the desk «Подключить «Отпуск»?» — the admin's press attaches it
+        // to the home folder's «Подключено» (docs/plans/shared-folders.md). Files are not attached.
+        WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) => {
+            let gateway = dropping.state::<Arc<Gateway>>();
+            let Some(drives) = gateway
+                .app()
+                .and_then(|app| app.bus.files())
+                .and_then(|files| files.drives())
+            else {
+                return;
+            };
+            for path in paths.iter().filter(|path| path.is_dir()) {
+                if let Err(error) = drives.offer_dropped(path) {
+                    gateway.note(&format!("a folder dropped on the window was not offered: {error}"));
+                }
+            }
+        }
+        _ => {}
     });
     Ok(())
 }
@@ -251,24 +299,48 @@ fn bundled_uv() -> Option<PathBuf> {
 }
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "Открыть пульт", true, None::<&str>)?;
-    let site = MenuItem::with_id(app, "site", "Сайт DuoWave", true, None::<&str>)?;
-    let status = MenuItem::with_id(app, "status", "Шлюз запускается…", false, None::<&str>)?;
-    let restart = MenuItem::with_id(app, "restart", "Перезапустить шлюз", true, None::<&str>)?;
+    let item = |id: &str, ru: &'static str, en: &'static str| MenuItem::with_id(app, id, t(ru, en), true, None::<&str>);
+    let open = item("open", "Открыть пульт", "Open panel")?;
+    let site = item("site", "Сайт DuoWave", "DuoWave website")?;
+    let status = MenuItem::with_id(
+        app,
+        "status",
+        t("Шлюз запускается…", "Gateway is starting…"),
+        false,
+        None::<&str>,
+    )?;
+    let restart = item("restart", "Перезапустить шлюз", "Restart gateway")?;
     let at_login = app.autolaunch().is_enabled().unwrap_or(false);
-    let autostart = CheckMenuItem::with_id(app, "autostart", "Запускать при входе", true, at_login, None::<&str>)?;
+    let autostart = CheckMenuItem::with_id(
+        app,
+        "autostart",
+        t("Запускать при входе", "Start at login"),
+        true,
+        at_login,
+        None::<&str>,
+    )?;
     let awake = app.state::<Arc<Gateway>>().keep_awake();
     let keep_awake = CheckMenuItem::with_id(
         app,
         "keep-awake",
-        "Не давать компьютеру засыпать",
+        t("Не давать компьютеру засыпать", "Keep the computer awake"),
         true,
         awake,
         None::<&str>,
     )?;
-    let data = MenuItem::with_id(app, "data", "Папка с данными", true, None::<&str>)?;
-    let log = MenuItem::with_id(app, "log", "Журнал", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
+    let home = item("home", "Папка DuoWave", "DuoWave folder")?;
+    let data = item("data", "Папка с данными", "Data folder")?;
+    let log = item("log", "Журнал", "Log")?;
+    let quit = item("quit", "Выход", "Quit")?;
+    let words = vec![
+        (open.clone(), "Открыть пульт", "Open panel"),
+        (site.clone(), "Сайт DuoWave", "DuoWave website"),
+        (restart.clone(), "Перезапустить шлюз", "Restart gateway"),
+        (home.clone(), "Папка DuoWave", "DuoWave folder"),
+        (data.clone(), "Папка с данными", "Data folder"),
+        (log.clone(), "Журнал", "Log"),
+        (quit.clone(), "Выход", "Quit"),
+    ];
     let menu = Menu::with_items(
         app,
         &[
@@ -280,6 +352,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             &PredefinedMenuItem::separator(app)?,
             &autostart,
             &keep_awake,
+            &home,
             &data,
             &log,
             &PredefinedMenuItem::separator(app)?,
@@ -319,6 +392,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         status,
         autostart,
         keep_awake,
+        words,
     });
     Ok(())
 }
@@ -335,6 +409,7 @@ fn menu_event(app: &AppHandle, id: &str) {
         }
         "autostart" => toggle_autostart(app),
         "keep-awake" => toggle_keep_awake(app, &gateway),
+        "home" => open_home_folder(app),
         "data" => open_data_dir(app.clone()),
         "log" => open_log(app.clone()),
         "quit" => quit(app),
@@ -359,6 +434,17 @@ fn show_window(app: &AppHandle) {
 /// From the gateway's threads: the UI is changed on the main thread, without waiting for it (it may be waiting
 /// for the gateway to stop).
 fn status_changed(app: &AppHandle, status: Status) {
+    // The gateway answers: its home's language, asked once per start; the menu says itself anew when it differs.
+    if status.phase == Phase::Running && status.responding {
+        let handle = app.clone();
+        let port = status.port;
+        std::thread::spawn(move || {
+            if lang::refresh_home(port) {
+                let again = handle.clone();
+                let _ = handle.run_on_main_thread(move || relabel(&again));
+            }
+        });
+    }
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         let title = status.title();
@@ -379,6 +465,22 @@ fn status_changed(app: &AppHandle, status: Status) {
             _ => {}
         }
     });
+}
+
+/// The language changed: every word of the tray is said anew.
+fn relabel(app: &AppHandle) {
+    let Some(tray) = app.try_state::<Tray>() else { return };
+    for (item, ru, en) in &tray.words {
+        let _ = item.set_text(t(ru, en));
+    }
+    let _ = tray.autostart.set_text(t("Запускать при входе", "Start at login"));
+    let _ = tray
+        .keep_awake
+        .set_text(t("Не давать компьютеру засыпать", "Keep the computer awake"));
+    let title = app.state::<Arc<Gateway>>().status().title();
+    let _ = tray.status.set_text(&title);
+    let _ = tray.icon.set_tooltip(Some(format!("DuoWave — {title}")));
+    updates::relabel(app);
 }
 
 fn panel_url(port: u16) -> String {
@@ -542,6 +644,15 @@ fn open_log(app: AppHandle) {
     };
     let _ = std::fs::create_dir_all(log.parent().unwrap_or(log));
     let _ = app.opener().open_path(target.to_string_lossy(), None::<&str>);
+}
+
+/// The home folder of DuoWave (`~/DuoWave`): what the voice, the agent and the apps work in.
+fn open_home_folder(app: &AppHandle) {
+    let gateway = app.state::<Arc<Gateway>>();
+    if let Some(home) = gateway.home_folder() {
+        let _ = std::fs::create_dir_all(&home);
+        let _ = app.opener().open_path(home.to_string_lossy(), None::<&str>);
+    }
 }
 
 #[tauri::command]

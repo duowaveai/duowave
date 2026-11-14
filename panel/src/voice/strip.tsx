@@ -7,6 +7,7 @@
 import { useEffect, useState } from 'preact/hooks';
 
 import { IconMic, IconMicOff } from '../icons';
+import { tr } from '../i18n';
 
 /** Чей цвет у метки: своё и дома — лайм, снаружи — янтарь, агент — фиолет. */
 export type Tone = 'own' | 'out' | 'agent';
@@ -18,8 +19,11 @@ export interface StripChip {
 }
 
 export interface StripMessage {
-    /** listen — пульт слушает; agent — агент взял работу; ready — готово, ждём ответа; done — сделано; hold — микрофон выключен; note — просто слова. */
-    kind: 'listen' | 'agent' | 'ready' | 'done' | 'hold' | 'note';
+    /**
+     * listen — пульт слушает; agent — агент взял работу; ready — готово, ждём ответа; done — сделано; hold — микрофон
+     * выключен; note — просто слова; answer — ответ «Мозга» в режиме «Микрофон»: вопрос крупно, ответ растёт по фразам.
+     */
+    kind: 'listen' | 'agent' | 'ready' | 'done' | 'hold' | 'note' | 'answer';
     head: string;
     /** Метка справа: где слышали, где агент, сколько ещё слушаю. */
     chip?: { text: string; tone: Tone };
@@ -71,11 +75,35 @@ export function showStrip(message: StripMessage, ms = 0): void {
     tell();
 }
 
-/** Поправить то, что на полосе сейчас (уровень микрофона, отсчёт), если на ней это же. */
-export function updateStrip(kind: StripMessage['kind'], patch: Partial<StripMessage>): void {
+/**
+ * Поправить то, что на полосе сейчас (уровень микрофона, отсчёт, новая фраза ответа), если на ней это же. `ms` —
+ * сколько ещё держать с этой минуты; без него срок прежний.
+ */
+export function updateStrip(kind: StripMessage['kind'], patch: Partial<StripMessage>, ms?: number): void {
     if (!current || current.kind !== kind) return;
     current = { ...current, ...patch };
+    if (ms !== undefined) {
+        window.clearTimeout(timer);
+        hideAt = ms ? Date.now() + ms : 0;
+        if (ms) timer = window.setTimeout(() => hideStrip(), ms);
+    }
     tell();
+}
+
+// «×» на полосе — рука человека: кто говорит ответ (voice/speak.ts), обрывает и голос. Полоса, ушедшая по времени,
+// никого не обрывает.
+const closeListeners = new Set<() => void>();
+
+/** Кому сказать, что полосу закрыли рукой. Возвращает, как перестать. */
+export function onStripClosed(listener: () => void): () => void {
+    closeListeners.add(listener);
+    return () => closeListeners.delete(listener);
+}
+
+/** «×»: закрыть полосу и оборвать то, что за ней стоит. */
+export function closeStrip(): void {
+    for (const listener of [...closeListeners]) listener();
+    hideStrip();
 }
 
 export function hideStrip(): void {
@@ -128,7 +156,7 @@ function StripMic({ message }: { message: StripMessage }) {
 export function VoiceStrip() {
     const message = useStrip();
     if (!message) return null;
-    const dot = message.kind === 'agent' || message.kind === 'ready' ? 'agent' : message.kind === 'done' ? 'own' : null;
+    const dot = message.kind === 'agent' || message.kind === 'ready' ? 'agent' : message.kind === 'done' || message.kind === 'answer' ? 'own' : null;
     return (
         <section class={`voice-strip is-${message.kind}`} aria-live="polite">
             <div class="voice-strip-head">
@@ -141,7 +169,7 @@ export function VoiceStrip() {
                         {message.chip.text}
                     </span>
                 )}
-                <button class="voice-strip-close" aria-label="Скрыть полосу" onClick={hideStrip}>
+                <button class="voice-strip-close" aria-label={tr.voice.hideStrip} onClick={closeStrip}>
                     ×
                 </button>
             </div>
@@ -149,7 +177,7 @@ export function VoiceStrip() {
             {message.text && <p class="voice-strip-text">{message.text}</p>}
             {message.chips && message.chips.length > 0 && (
                 <div class="voice-strip-chips">
-                    <span class="w-cap">Можно сказать:</span>
+                    <span class="w-cap">{tr.voice.canSay}</span>
                     {message.chips.map((chip) => (
                         <button key={chip.label} class="say-chip" onClick={chip.act} disabled={!chip.act}>
                             {chip.label}

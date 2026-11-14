@@ -1,6 +1,5 @@
 //! Update signatures: minisign, with the key `tauri signer generate` made (Tauri keeps both the key and the signature
 //! as base64 of minisign's own text). A file without a valid signature by this key is never installed.
-
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use minisign_verify::{PublicKey, Signature};
@@ -16,7 +15,7 @@ pub fn public_key(text: &str) -> Result<PublicKey, String> {
         return Ok(key);
     }
     let decoded = B64.decode(text).ok().and_then(|bytes| String::from_utf8(bytes).ok()).unwrap_or_else(|| text.into());
-    PublicKey::decode(&decoded).map_err(|error| format!("ключ обновлений не читается ({error})"))
+    PublicKey::decode(&decoded).map_err(|error| crate::tr!("Ключ обновлений не читается ({error})", error = error))
 }
 
 /// All the keys from `text`: one per non-empty line (`updates.pub`, `UPDATE_PUBKEY`), so a rotation adds its key
@@ -30,26 +29,29 @@ pub fn public_keys(text: &str) -> Result<Vec<PublicKey>, String> {
         .filter(|line| !line.is_empty() && !line.starts_with("untrusted comment:"))
         .collect();
     if lines.is_empty() {
-        return Err("ключи обновлений не читаются: нет ни одной строки".to_string());
+        return Err(crate::tr!("ключи обновлений не читаются: нет ни одной строки"));
     }
     lines.into_iter().map(public_key).collect()
 }
 
-const MISMATCH: &str = "подпись не сходится: выпуск подписан не нашим ключом или повреждён";
+fn mismatch() -> String {
+    crate::tr!("Подпись не сходится: выпуск подписан не нашим ключом или повреждён.")
+}
 
 /// Whether `signature` (Tauri's base64 of the .sig text, or the text itself) signs `data` with `key`.
 pub fn verify(key: &PublicKey, data: &[u8], signature: &str) -> Result<(), String> {
     let signature = signature.trim();
     let text =
         B64.decode(signature).ok().and_then(|bytes| String::from_utf8(bytes).ok()).unwrap_or_else(|| signature.into());
-    let signature = Signature::decode(&text).map_err(|error| format!("подпись выпуска не читается ({error})"))?;
-    key.verify(data, &signature, false).map_err(|_| MISMATCH.to_string())
+    let signature =
+        Signature::decode(&text).map_err(|error| crate::tr!("Подпись выпуска не читается ({error})", error = error))?;
+    key.verify(data, &signature, false).map_err(|_| mismatch())
 }
 
 /// Whether `signature` signs `data` with any of `keys`: one trusted key is enough, so a release signed by a key
 /// that arrived with a rotation installs while the old key is still in the list.
 pub fn verify_any(keys: &[PublicKey], data: &[u8], signature: &str) -> Result<(), String> {
-    keys.iter().find_map(|key| verify(key, data, signature).ok()).ok_or_else(|| MISMATCH.to_string())
+    keys.iter().find_map(|key| verify(key, data, signature).ok()).ok_or_else(mismatch)
 }
 
 #[cfg(test)]

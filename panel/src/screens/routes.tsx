@@ -1,32 +1,34 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { devMode } from '../shell/dev';
 
-import { AccessCatalog, Health, RoutesSetting, api, can, plural, problemOf } from '../api';
+import { AccessCatalog, Health, RoutesSetting, api, can, problemOf } from '../api';
 import { CAPABILITIES, CapabilityMeta, capabilityIcon } from '../capabilities';
 import { capabilityIconComponent } from '../icons';
 import { Overlay } from '../ui/sheet';
+import { tr } from '../i18n';
 
 function routePill(route: string | undefined): { cls: string; label: string } {
+    const t = tr.routes;
     switch (route) {
         case 'own':
-            return { cls: 'pill-own', label: 'свой' };
+            return { cls: 'pill-own', label: t.pillOwn };
         case 'own,yandex':
-            return { cls: 'pill-own', label: 'свой + Яндекс' };
+            return { cls: 'pill-own', label: t.pillOwnYandex };
         case 'yandex':
-            return { cls: 'pill-yandex', label: 'Яндекс' };
+            return { cls: 'pill-yandex', label: t.pillYandex };
         case 'yandex,own':
-            return { cls: 'pill-yandex', label: 'Яндекс + свой' };
+            return { cls: 'pill-yandex', label: t.pillYandexOwn };
         default:
-            return { cls: 'pill-off', label: route === 'off' ? 'выкл' : '—' };
+            return { cls: 'pill-off', label: route === 'off' ? t.pillOff : '—' };
     }
 }
 
 /** Что можно выбрать в шите: значения те же, что понимает ROUTES. */
-const OPTIONS: Array<{ value: string; label: string; cls: string; note: string }> = [
-    { value: 'own', label: 'свой', cls: 'pill-own', note: 'отвечает только наш код' },
-    { value: 'own,yandex', label: 'свой + Яндекс', cls: 'pill-own', note: 'сначала наш, незнакомое подхватит Яндекс' },
-    { value: 'yandex', label: 'Яндекс', cls: 'pill-yandex', note: 'отдаём Яндексу целиком' },
-    { value: 'off', label: 'выкл', cls: 'pill-off', note: 'никто: просьба попадёт в «Пока не умеем»' },
+const options = (): Array<{ value: string; label: string; cls: string; note: string }> => [
+    { value: 'own', label: tr.routes.pillOwn, cls: 'pill-own', note: tr.routes.noteOwn },
+    { value: 'own,yandex', label: tr.routes.pillOwnYandex, cls: 'pill-own', note: tr.routes.noteOwnYandex },
+    { value: 'yandex', label: tr.routes.pillYandex, cls: 'pill-yandex', note: tr.routes.noteYandex },
+    { value: 'off', label: tr.routes.pillOff, cls: 'pill-off', note: tr.routes.noteOff },
 ];
 
 interface Props {
@@ -46,7 +48,7 @@ function capabilitiesOf(catalog: AccessCatalog | null): CapabilityMeta[] {
     }));
 }
 
-export function RoutesScreen({ health, catalog, title = 'Кто отвечает' }: Props) {
+export function RoutesScreen({ health, catalog, title = tr.routes.whoAnswers }: Props) {
     const served = health?.skills?.served;
     const implemented = health?.skills?.implemented;
     const mayEdit = can('routes.edit');
@@ -96,7 +98,7 @@ export function RoutesScreen({ health, catalog, title = 'Кто отвечает
                     {title}
                 </h2>
                 <p class="t-meta m-0">
-                    Ждём шлюз…
+                    {tr.routes.waitingGateway}
                 </p>
             </section>
         );
@@ -131,8 +133,8 @@ export function RoutesScreen({ health, catalog, title = 'Кто отвечает
                     <input
                         value={filter}
                         onInput={(e) => setFilter((e.target as HTMLInputElement).value)}
-                        placeholder="Поиск"
-                        aria-label="Поиск по возможностям"
+                        placeholder={tr.routes.search}
+                        aria-label={tr.routes.searchLabel}
                         class="field flex-none w-132"
                     />
                 </div>
@@ -149,7 +151,7 @@ export function RoutesScreen({ health, catalog, title = 'Кто отвечает
                             key={capability.name}
                             class="route-row w-full text-left flex"
                             onClick={() => setSheet(capability)}
-                            aria-label={`${capability.title}: ${pill.label}${mayEdit ? ', изменить' : ''}`}
+                            aria-label={`${capability.title}: ${pill.label}${mayEdit ? tr.routes.changeSuffix : ''}`}
                         >
                             <span class="route-icon" aria-hidden="true">
                                 <Icon size={18} />
@@ -160,10 +162,10 @@ export function RoutesScreen({ health, catalog, title = 'Кто отвечает
                                     {!served
                                         ? '—'
                                         : mine + yandex > 0
-                                          ? `своими — ${mine} · Яндексом — ${yandex}`
+                                          ? tr.routes.served(mine, yandex)
                                           : hasOwn
-                                            ? 'запросов пока не было'
-                                            : 'своей реализации нет'}
+                                            ? tr.routes.noRequests
+                                            : tr.routes.noOwnImplementation}
                                 </span>
                             </div>
                             <span class={`pill ${pill.cls}`}>{pill.label}</span>
@@ -172,22 +174,22 @@ export function RoutesScreen({ health, catalog, title = 'Кто отвечает
                 })}
                 {rows.length === 0 && (
                     <p class="t-meta m-0 py-12 px-0">
-                        Ничего не нашлось.
+                        {tr.routes.nothingFound}
                     </p>
                 )}
             </section>
             <p class="t-caption my-0 mx-6">
-                {health?.mode === 'relay' && 'Сейчас режим «Яндекс»: это заработает в режимах «Вместе» и «Своё». '}
-                {own && 'Сейчас «Своё»: шаги «Яндекс» пропускаются, а в «Вместе» они снова работают как есть. '}
-                {mayEdit ? 'Нажмите на строку, чтобы выбрать, кто отвечает, — сразу, без перезапуска. ' : 'Выбирать, кто отвечает, может администратор. '}
+                {health?.mode === 'relay' && tr.routes.relayNote}
+                {own && tr.routes.ownNote}
+                {mayEdit ? tr.routes.mayEditNote : tr.routes.adminOnlyNote}
                 {/* `.env` и дефолт — слова системы: только в слое разработчика (docs/plans/panel-rebuild.md, «Три слоя»). */}
                 {devMode() && (
                     <>
-                        ROUTES в .env остаётся дефолтом для новой базы
-                        {isDefault === false ? '; стоят изменения из пульта.' : isDefault === true ? '; сейчас стоит дефолт.' : '.'}{' '}
+                        {tr.routes.envDefault}
+                        {isDefault === false ? tr.routes.envChanged : isDefault === true ? tr.routes.envIsDefault : '.'}{' '}
                     </>
                 )}
-                {rows.length} {plural(rows.length, 'возможность', 'возможности', 'возможностей')}.
+                {tr.routes.count(rows.length)}
             </p>
             {error && (
                 <div class="banner-offline my-0 mx-6" role="alert">
@@ -197,17 +199,17 @@ export function RoutesScreen({ health, catalog, title = 'Кто отвечает
 
             {sheet && (
                 <Overlay onDismiss={close}>
-                    <div class="sheet glass-strong" role="dialog" aria-modal="true" aria-label={`Кто отвечает: ${sheet.title}`}>
+                    <div class="sheet glass-strong" role="dialog" aria-modal="true" aria-label={tr.routes.sheetLabel(sheet.title)}>
                         <div class="flex items-center gap-8">
                             <h2 class="t-title-xs m-0 flex-1">
                                 {sheet.title}
                             </h2>
                             <span class={`pill ${routePill(routes[sheet.name]).cls}`}>{routePill(routes[sheet.name]).label}</span>
-                            <button class="pill pill-off pill-btn-sm" onClick={close} aria-label="Закрыть">
+                            <button class="pill pill-off pill-btn-sm" onClick={close} aria-label={tr.routes.close}>
                                 ✕
                             </button>
                         </div>
-                        {OPTIONS.map((option, index) => {
+                        {options().map((option, index) => {
                             const current = routes[sheet.name] === option.value;
                             const marked = pending === option.value || (current && !pending);
                             return (
@@ -222,7 +224,7 @@ export function RoutesScreen({ health, catalog, title = 'Кто отвечает
                                     <span class={`pill ${option.cls}`}>{option.label}</span>
                                     <span class="t-caption flex-1 text-left">
                                         {option.note}
-                                        {own && option.value.includes('yandex') ? ' — в «Своём» без Яндекса' : ''}
+                                        {own && option.value.includes('yandex') ? tr.routes.withoutYandexInOwn : ''}
                                     </span>
                                 </button>
                             );
@@ -233,7 +235,7 @@ export function RoutesScreen({ health, catalog, title = 'Кто отвечает
                                 class="py-12 px-14 r-panel bg-pill-yandex-bg c-pill-yandex-fg"
                             >
                                 <p class="m-0 mb-10 fs-13 lh-18 fw-700">
-                                    Станет «{routePill(pending).label}» вместо «{routePill(routes[sheet.name]).label}»
+                                    {tr.routes.willBecome(routePill(pending).label, routePill(routes[sheet.name]).label)}
                                 </p>
                                 <div class="flex gap-8">
                                     <button
@@ -241,21 +243,21 @@ export function RoutesScreen({ health, catalog, title = 'Кто отвечает
                                         disabled={saving}
                                         onClick={() => void apply(sheet, pending)}
                                     >
-                                        {saving ? 'Применяю…' : 'Применить'}
+                                        {saving ? tr.routes.applying : tr.routes.apply}
                                     </button>
                                     <button
                                         class="pill pill-off pill-btn"
                                         disabled={saving}
                                         onClick={() => setPending(null)}
                                     >
-                                        Отменить
+                                        {tr.routes.cancel}
                                     </button>
                                 </div>
                             </div>
                         )}
                         {!mayEdit && (
                             <p class="t-caption m-0">
-                                Выбирать, кто отвечает, может администратор.
+                                {tr.routes.adminOnly}
                             </p>
                         )}
                     </div>

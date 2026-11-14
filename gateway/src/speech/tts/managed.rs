@@ -319,7 +319,7 @@ impl ManagedTts {
                     child.take();
                     self.lock().running = false;
                     let tail = self.log_tail();
-                    self.note_failure(format!("сервер голоса закончился сам{tail}"));
+                    self.note_failure(crate::tr!("сервер голоса закончился сам{tail}", tail = tail));
                     if self.lock().paused {
                         return;
                     }
@@ -376,7 +376,8 @@ impl ManagedTts {
             .kill_on_drop(true);
         #[cfg(windows)]
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        let child = command.spawn().map_err(|error| format!("сервер голоса не запустился: {error}"))?;
+        let child =
+            command.spawn().map_err(|error| crate::tr!("сервер голоса не запустился: {error}", error = error))?;
         tracing::info!("own voice server: starting on port {}", self.options.port);
         Ok(child)
     }
@@ -411,9 +412,13 @@ impl ManagedTts {
                 self.lock().starting = false;
                 let tail = self.log_tail();
                 let why = if exited {
-                    format!("сервер голоса не запустился{tail}")
+                    crate::tr!("сервер голоса не запустился{tail}", tail = tail)
                 } else {
-                    format!("сервер голоса не ответил за {} с{tail}", START_TIMEOUT.as_secs())
+                    crate::tr!(
+                        "сервер голоса не ответил за {seconds} с{tail}",
+                        seconds = START_TIMEOUT.as_secs(),
+                        tail = tail
+                    )
                 };
                 if let Some(mut child) = self.child.lock().await.take() {
                     let _ = child.kill().await;
@@ -440,7 +445,11 @@ impl ManagedTts {
         state.error = Some(why.clone());
         if state.failures.len() >= FAILURE_LIMIT {
             state.paused = true;
-            state.error = Some(format!("сервер голоса падал {} раза за 5 минут: {why}", state.failures.len()));
+            state.error = Some(crate::tr!(
+                "сервер голоса падал {count} раза за 5 минут: {why}",
+                count = state.failures.len(),
+                why = why
+            ));
         }
     }
 
@@ -464,7 +473,7 @@ impl ManagedTts {
             }
             state.installing = true;
             state.error = None;
-            state.stage = Some("Готовлю установку".into());
+            state.stage = Some(crate::tr!("Готовлю установку"));
             state.percent = 1;
         }
         let me = self.clone();
@@ -515,23 +524,24 @@ impl ManagedTts {
         });
     }
 
-    fn stage(&self, label: &str, percent: u32) {
+    fn stage(&self, label: &'static str, percent: u32) {
         let mut state = self.lock();
-        state.stage = Some(label.into());
+        state.stage = Some(crate::locale::text::translate(label, &[]));
         state.percent = percent;
     }
 
     async fn install_now(&self) -> Result<(), String> {
         let uv = find_uv().await.ok_or_else(|| {
-            "Не нашёл uv — установщик Python. В приложении он свой; без приложения: https://docs.astral.sh/uv/"
-                .to_string()
+            crate::tr!(
+                "Не нашёл uv — установщик Python. В приложении он свой; без приложения: https://docs.astral.sh/uv/"
+            )
         })?;
         let dir = &self.options.dir;
         std::fs::create_dir_all(self.logs()).map_err(|error| format!("{}: {error}", dir.display()))?;
         let free = crate::voice_lab::platform::free_disk_bytes(dir) / 1_000_000;
         let need = Self::sizes().1 + 500;
         if free > 0 && free < need {
-            return Err(format!("На диске свободно {free} МБ, а нужно около {need} МБ."));
+            return Err(crate::tr!("На диске свободно {free} МБ, а нужно около {need} МБ.", free = free, need = need));
         }
         let requirements = self.options.server_dir.join("requirements.txt");
         let piper_requirements = self.options.server_dir.join("requirements-piper.txt");
@@ -591,11 +601,11 @@ impl ManagedTts {
             .stdin(Stdio::null())
             .output()
             .await
-            .map_err(|error| format!("проверка не запустилась: {error}"))?;
+            .map_err(|error| crate::tr!("проверка не запустилась: {error}", error = error))?;
         if !check.status.success() {
-            return Err(format!(
-                "библиотеки голоса не загрузились: {}",
-                String::from_utf8_lossy(&check.stderr).lines().last().unwrap_or("")
+            return Err(crate::tr!(
+                "библиотеки голоса не загрузились: {why}",
+                why = String::from_utf8_lossy(&check.stderr).lines().last().unwrap_or("")
             ));
         }
         let ready = serde_json::json!({
@@ -646,12 +656,12 @@ impl ManagedTts {
             .kill_on_drop(true);
         #[cfg(windows)]
         command.creation_flags(0x0800_0000);
-        let mut child = command.spawn().map_err(|error| format!("uv не запустился: {error}"))?;
+        let mut child = command.spawn().map_err(|error| crate::tr!("uv не запустился: {error}", error = error))?;
         let status = tokio::select! {
             status = child.wait() => status.map_err(|error| error.to_string())?,
             _ = self.stop.cancelled() => {
                 let _ = child.kill().await;
-                return Err("остановлено".into());
+                return Err(crate::tr!("остановлено"));
             }
         };
         if status.success() {

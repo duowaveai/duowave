@@ -1,7 +1,6 @@
 //! The stations' HTTP: the panel's list and edits (`/api/v1/stations`), the wizard that connects a station over SSH
 //! (`/api/v1/stations/connect/...`, PC builds only), and the scripts the station fetches to connect itself
 //! (`/station/connect.sh`, `/station/restore.sh`), served as plain text without the envelope by every build.
-
 use std::sync::Arc;
 
 use axum::body::Body as AxumBody;
@@ -181,15 +180,15 @@ mod connect {
         body.get("address")
             .and_then(Value::as_str)
             .and_then(plain_address)
-            .ok_or_else(|| ApiError::bad_request("Адрес колонки — IPv4, например 192.168.1.23."))
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("Адрес колонки — IPv4, например 192.168.1.23.")))
     }
 
     /// The gateway's address as typed in the panel: without a port, the port a station dials for this gateway.
     fn gateway_host(body: &Value, key: &str, port: u16) -> Result<GatewayHost, ApiError> {
         body.get(key).and_then(Value::as_str).and_then(|text| parse_gateway_host_or(text, port)).ok_or_else(|| {
-            ApiError::bad_request(
-                "Адрес шлюза — IP или имя в домашней сети, можно с портом: 192.168.1.50 или gateway.local:8080.",
-            )
+            ApiError::bad_request(crate::tr!(
+                "Адрес шлюза — IP или имя в домашней сети, можно с портом: 192.168.1.50 или gateway.local:8080."
+            ))
         })
     }
 }

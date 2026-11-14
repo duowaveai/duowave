@@ -3,7 +3,6 @@
 //! top line shows a draft the agent works on, whoever started it (by voice, in the workshop, from «+»), and the
 //! workshop shows the log: the person sees that the work goes on and what it is at. The work goes on when the panel
 //! that started it is closed; «Остановить» ends it. In memory only: a restart forgets it.
-
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -225,7 +224,7 @@ impl Activity {
                         old.cancel.cancel();
                         old.log.push_back(self.step(
                             StepKind::Stopped,
-                            "Новая просьба — эта работа прервана.",
+                            &crate::tr!("Новая просьба — эта работа прервана."),
                             None,
                             false,
                         ));
@@ -308,7 +307,12 @@ impl Activity {
             match entries.get_mut(draft) {
                 Some(entry) if entry.ended.is_none() => {
                     entry.cancel.cancel();
-                    entry.log.push_back(self.step(StepKind::Stopped, "Остановлено в пульте.", None, false));
+                    entry.log.push_back(self.step(
+                        StepKind::Stopped,
+                        &crate::tr!("Остановлено в пульте."),
+                        None,
+                        false,
+                    ));
                     trim(&mut entry.log);
                     entry.ended = Some(now_ms());
                     Some(entry.summary())
@@ -448,9 +452,9 @@ fn about(input: &Map<String, Value>) -> String {
 /// Why the agent's work failed, as the panel writes it: the model's own words, and what to do when they are known.
 fn failure_words(error: &str) -> String {
     if error.contains("ran out of tokens") {
-        return format!(
-            "{error}: ответ модели оборвался на длинном файле. Скажите «переделай» — агент поправит файл кусками \
-(edit_file); не помогло — поднимите LLM_MAX_TOKENS."
+        return crate::tr!(
+            "{error}: ответ модели оборвался на длинном файле. Скажите «переделай» — агент поправит файл кусками (edit_file); не помогло — поднимите WORKSHOP_MAX_TOKENS.",
+            error = error
         );
     }
     error.to_string()

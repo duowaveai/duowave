@@ -74,7 +74,7 @@ impl HouseholdService {
         };
         let role = role
             .filter(|role| *role != Role::Admin)
-            .ok_or_else(|| ApiError::bad_request("role: member или guest — голос дома не администратор"))?;
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("role: member или guest — голос дома не администратор")))?;
         let restrictions = match input.get("restrictions") {
             None => current.restrictions,
             Some(value) => clean_restrictions(Some(value)),

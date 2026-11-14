@@ -19,7 +19,8 @@ import type { PanelPlugin } from '../shell/registry';
 import type { SectionDef } from '../shell/sections';
 import type { SlotContribution } from '../shell/slot';
 import { FRAME_SLOTS, FrameShape, ToFrame, ours } from './protocol';
-import { answered, iconName, installFrameSdk, midiEvent, send, setMidiState, setState } from './sdk';
+import { answered, iconName, installFrameSdk, midiEvent, send, setMidiState, setState, setTasks } from './sdk';
+import { setLanguage, tr, useLanguage } from '../i18n';
 
 // Ни одной лишней двери: соединения закрыты правилом страницы, а WebRTC правило не закрывает — убираем его до кода
 // приложения.
@@ -41,11 +42,11 @@ class Boundary extends Component<{ children: ComponentChildren }, { failed: stri
     }
 
     componentDidCatch(error: unknown): void {
-        console.error('Окошко: приложение упало', error);
+        console.error(tr.frame.appCrashedLog, error);
     }
 
     render() {
-        return this.state.failed ? <p class="t-caption m-0 c-dot-offline">Окошко приложения упало: {this.state.failed}</p> : this.props.children;
+        return this.state.failed ? <p class="t-caption m-0 c-dot-offline">{tr.frame.appCrashed} {this.state.failed}</p> : this.props.children;
     }
 }
 
@@ -109,9 +110,11 @@ async function start(message: Extract<ToFrame, { type: 'duowave:init' }>): Promi
     started = true;
     setState(message.state);
     applyTheme(message.state.theme);
+    // Язык пульта — до кода приложения: его тексты и детали SDK говорят на нём (docs/plans/i18n.md).
+    await setLanguage(message.state.locale ?? 'ru', false);
     const module = allowed(message.module);
     if (!module) {
-        send({ type: 'duowave:failed', message: 'модуль не с этого шлюза' });
+        send({ type: 'duowave:failed', message: tr.frame.moduleNotHere });
         return;
     }
     if (message.styles && allowed(message.styles)) {
@@ -124,7 +127,7 @@ async function start(message: Extract<ToFrame, { type: 'duowave:init' }>): Promi
     try {
         const loaded = await import(/* @vite-ignore */ module);
         plugin = loaded.default ?? loaded.plugin;
-        if (!plugin || typeof plugin !== 'object') throw new Error('модуль не отдаёт плагин: export default definePlugin({…})');
+        if (!plugin || typeof plugin !== 'object') throw new Error(tr.frame.noPlugin);
     } catch (error) {
         send({ type: 'duowave:failed', message: error instanceof Error ? error.message : String(error) });
         return;
@@ -138,16 +141,21 @@ async function start(message: Extract<ToFrame, { type: 'duowave:init' }>): Promi
     if (part.kind === 'section') Body = plugin.sections?.find((section) => section.id === part.id)?.Screen;
     else Body = plugin.slots?.[part.name]?.find((entry) => entry.id === part.id)?.Component as FunctionComponent | undefined;
     if (!Body) {
-        send({ type: 'duowave:failed', message: `у приложения нет «${part.kind === 'section' ? part.id : `${part.name}/${part.id}`}»` });
+        send({ type: 'duowave:failed', message: tr.frame.noPart(part.kind === 'section' ? part.id : `${part.name}/${part.id}`) });
         return;
     }
     const root = document.getElementById('root')!;
-    render(
-        <Boundary>
-            <Body />
-        </Boundary>,
-        root,
-    );
+    const Shown = Body;
+    // Смена языка пульта пересоздаёт окошко изнутри: и тексты приложения, и детали SDK — на новом языке.
+    const Root = () => {
+        const language = useLanguage();
+        return (
+            <Boundary key={language}>
+                <Shown />
+            </Boundary>
+        );
+    };
+    render(<Root />, root);
     reportSize();
 }
 
@@ -173,6 +181,7 @@ window.addEventListener('message', (event: MessageEvent) => {
         case 'duowave:state':
             setState(message.state);
             applyTheme(message.state.theme);
+            if (message.state.locale) void setLanguage(message.state.locale, false);
             break;
         case 'duowave:answer':
             answered(message.seq, message.ok, message.value, message.error);
@@ -182,6 +191,9 @@ window.addEventListener('message', (event: MessageEvent) => {
             break;
         case 'duowave:midi-event':
             midiEvent(message.event);
+            break;
+        case 'duowave:tasks-state':
+            setTasks(message.tasks);
             break;
     }
 });

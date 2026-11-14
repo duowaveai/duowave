@@ -66,6 +66,7 @@ fn new(args: &[String]) -> Result<(), String> {
         None if args.iter().any(|arg| arg == "--theme") => templates::theme(id, title),
         None if args.iter().any(|arg| arg == "--quiz") => templates::quiz(id, title),
         None if args.iter().any(|arg| arg == "--midi") => templates::midi(id, title),
+        None if args.iter().any(|arg| arg == "--folders") => templates::folders(id, title),
         None => templates::plugin(id, title),
     };
     for (path, text) in files {

@@ -7,6 +7,7 @@
 import { useEffect, useState } from 'preact/hooks';
 
 import { PackageView, PackagesResources, PluginFilesSummary, api, can, problemOf, sessionStore } from '../api';
+import { formatNumber, tr } from '../i18n';
 import { usePanel } from '../shell/context';
 import { HistoryRoomLine } from './history';
 
@@ -35,21 +36,21 @@ export function useResources(): { resources: PackagesResources | null; error: st
     return { resources, error };
 }
 
-const PRESSURE: Record<PackagesResources['pressure'], { text: string; cls: string }> = {
-    normal: { text: 'давление в норме', cls: 'pill-own' },
-    warn: { text: 'памяти мало', cls: 'pill-yandex' },
-    critical: { text: 'памяти очень мало', cls: 'pill-error' },
-};
+const pressureOf = (): Record<PackagesResources['pressure'], { text: string; cls: string }> => ({
+    normal: { text: tr.memory.pressureNormal, cls: 'pill-own' },
+    warn: { text: tr.memory.pressureWarn, cls: 'pill-yandex' },
+    critical: { text: tr.memory.pressureCritical, cls: 'pill-error' },
+});
 
 /** Сегменты полосы: система и Алиса, шлюз, плагины, свободно — в мегабайтах. */
 export function memorySegments(r: PackagesResources): Array<{ id: string; label: string; mb: number }> {
     const gateway = Math.max(0, (r.gatewayMb ?? 0) - r.pluginsMb);
     const system = Math.max(0, r.totalMb - r.availableMb - gateway - r.pluginsMb);
     return [
-        { id: 'system', label: 'Система и Алиса', mb: system },
-        { id: 'gateway', label: 'DuoWave', mb: gateway },
-        { id: 'plugins', label: 'Приложения', mb: r.pluginsMb },
-        { id: 'free', label: 'Свободно', mb: r.availableMb },
+        { id: 'system', label: tr.memory.segSystem, mb: system },
+        { id: 'gateway', label: tr.memory.segGateway, mb: gateway },
+        { id: 'plugins', label: tr.memory.segPlugins, mb: r.pluginsMb },
+        { id: 'free', label: tr.memory.segFree, mb: r.availableMb },
     ];
 }
 
@@ -60,18 +61,18 @@ export function StationMemoryCard() {
     if (!resources || !resources.enforced) return null;
     const total = Math.max(1, resources.totalMb);
     const segments = memorySegments(resources);
-    const pressure = PRESSURE[resources.pressure];
+    const pressure = pressureOf()[resources.pressure];
     return (
         <section class="card glass card-list" aria-labelledby="memory-h">
             <div class="section-head">
                 <h2 id="memory-h" class="t-title-xs m-0">
-                    Ресурсы колонки
+                    {tr.memory.title}
                 </h2>
                 {resources.measured && <span class={`pill ${pressure.cls}`}>{pressure.text}</span>}
             </div>
             {resources.measured ? (
                 <>
-                    <div class="mem-bar" role="img" aria-label={segments.map((s) => `${s.label}: ${s.mb} МБ`).join(', ')}>
+                    <div class="mem-bar" role="img" aria-label={segments.map((s) => `${s.label}: ${tr.memory.mb(s.mb)}`).join(', ')}>
                         {segments
                             .filter((segment) => segment.mb > 0)
                             .map((segment) => (
@@ -82,22 +83,19 @@ export function StationMemoryCard() {
                         {segments.map((segment) => (
                             <li key={segment.id}>
                                 <span class={`mem-dot mem-${segment.id}`} />
-                                {segment.label} · {segment.mb} МБ
+                                {segment.label} · {tr.memory.mb(segment.mb)}
                             </li>
                         ))}
                     </ul>
                     {/* Шлюз пишет сам: «Загружено приложений: 2, под них занято 8 МБ. Можно загрузить ещё 70 МБ.» */}
                     <p class="t-body-sm m-0">{resources.note}</p>
                     <p class="t-caption m-0">
-                        Бюджет приложений — {resources.budgetMb} МБ. Приложение занимает в нём свой объём, только пока загружено; простаивающие выгружаются и
-                        уступают место. Запас для системы и Алисы — {resources.reserveMb} МБ.
-                        {resources.action === 'warn'
-                            ? ' Под сильным давлением приложения не выключаются — только предупреждение.'
-                            : ' Под сильным давлением последнее включённое из загруженных приложений выключится само.'}
+                        {tr.memory.budget(resources.budgetMb, resources.reserveMb)}
+                        {resources.action === 'warn' ? tr.memory.actionWarn : tr.memory.actionOff}
                     </p>
                     {resources.disk.freeMb != null && (
                         <p class="t-caption m-0">
-                            Место: свободно {resources.disk.freeMb} МБ, приложения занимают {resources.disk.packagesMb} МБ, {resources.disk.reserveMb} МБ — запас на обновление шлюза.
+                            {tr.memory.disk(resources.disk.freeMb, resources.disk.packagesMb, resources.disk.reserveMb)}
                         </p>
                     )}
                     <PicturesLine />
@@ -120,10 +118,10 @@ function PicturesLine() {
             .catch(() => setSummary(null));
     }, [panel.version]);
     if (!summary || summary.bytes === 0) return null;
-    const mb = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1).replace('.', ',');
+    const mb = (bytes: number) => formatNumber(bytes / (1024 * 1024), { minimumFractionDigits: 1, maximumFractionDigits: 1 });
     return (
         <p class="t-caption m-0">
-            Картинки приложений: {mb(summary.bytes)} МБ{summary.limitBytes ? ` из ${mb(summary.limitBytes)}` : ''}.
+            {tr.memory.pictures(mb(summary.bytes), summary.limitBytes ? mb(summary.limitBytes) : null)}
         </p>
     );
 }
@@ -132,9 +130,9 @@ function PicturesLine() {
 export function pluginMemoryLine(entry: PackageView): string | null {
     const kind = entry.kind ?? 'plugin';
     if ((kind !== 'plugin' && kind !== 'app') || !entry.budget) return null;
-    const used = entry.memory ? (entry.memory.allocated / 1_048_576).toFixed(1).replace('.', ',') : null;
-    const parts = [used ? `память ${used} из ${entry.budget.memoryMb} МБ` : `бюджет ${entry.budget.memoryMb} МБ`];
-    if (entry.calls > 0) parts.push(`вызовов ${entry.calls}`);
-    if (entry.errors > 0) parts.push(`ошибок ${entry.errors}`);
+    const used = entry.memory ? formatNumber(entry.memory.allocated / 1_048_576, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : null;
+    const parts = [used ? tr.memory.lineMemory(used, entry.budget.memoryMb) : tr.memory.lineBudget(entry.budget.memoryMb)];
+    if (entry.calls > 0) parts.push(tr.memory.lineCalls(entry.calls));
+    if (entry.errors > 0) parts.push(tr.memory.lineErrors(entry.errors));
     return parts.join(' · ');
 }

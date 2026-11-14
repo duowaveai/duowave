@@ -31,6 +31,12 @@ pub fn router() -> Router<Arc<App>> {
 const RUNNABLE: &[&str] = &["svg", "svgz", "html", "htm", "xhtml", "xml", "js", "mjs"];
 
 /// A package's file at `path` under its assets, when it may be served.
+/// `size=<px>` of a query: the longer side of a photo asked for, within reason.
+fn size_asked(query: Option<&str>) -> Option<u32> {
+    let value = query?.split('&').find_map(|pair| pair.strip_prefix("size="))?;
+    value.parse::<u32>().ok().map(|side| side.clamp(64, crate::bus::providers::files::preview::SIDE_MOST))
+}
+
 pub fn package_file(assets: &Path, path: &str) -> Option<PathBuf> {
     let extension = path.rsplit_once('.').map(|(_, extension)| extension.to_ascii_lowercase()).unwrap_or_default();
     if RUNNABLE.contains(&extension.as_str()) {
@@ -65,6 +71,33 @@ async fn media(
     // A stream the gateway relays for the station (stream.rs): one the station kept silent on.
     if let Some(token) = relative.strip_prefix("stream/") {
         return app.streams.serve(token).await;
+    }
+    // One file of the home folder an app played: the link `play` made (src/bus/providers/files), for six hours.
+    if let Some(token) = relative.strip_prefix("folder/") {
+        let files = app.bus.files().ok_or_else(|| ApiError::not_found("Not Found"))?;
+        let file = files.played(token).ok_or_else(|| ApiError::not_found("Not Found"))?;
+        // A photo for a window of the computer's screen (src/screen): `?size=` — made smaller, turned by its EXIF,
+        // HEIC as JPEG, from the previews' cache.
+        if let Some(side) = size_asked(request.uri().query()) {
+            let name = file.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default();
+            if crate::bus::providers::files::kind_of(&name, false) == "image" {
+                let made = tokio::task::spawn_blocking(move || files.preview_of(&file, side))
+                    .await
+                    .map_err(|error| ApiError::internal(format!("media: {error}")))?
+                    .map_err(|error| ApiError::internal(format!("media: {error}")))?;
+                let mut response = made.into_response();
+                let headers = response.headers_mut();
+                headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
+                headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+                return Ok(response);
+            }
+        }
+        let mut response = match ServeFile::new(file).oneshot(request).await {
+            Ok(response) => response.into_response(),
+            Err(error) => return Err(ApiError::internal(format!("media: {error}"))),
+        };
+        response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        return Ok(response);
     }
     // An app's own sound, while it runs here: its /stream/<path> on localhost, nothing else of its server.
     if let Some(rest) = relative.strip_prefix("apps/") {

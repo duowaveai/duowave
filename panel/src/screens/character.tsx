@@ -12,6 +12,8 @@ import { BrainTab } from './brain';
 import { CharactersTab } from './characters';
 import { DashData, THINKING, Thinking, WHERE, nodesOf, thinkingOf, toneClass } from './dash-model';
 import { ModelsScreen } from './models';
+import { tr } from '../i18n';
+import { byMode } from '../words';
 
 export type CharacterTab = 'page' | 'characters' | 'voice' | 'brain';
 
@@ -30,7 +32,7 @@ function Deeper({ tab, onBack }: { tab: 'characters' | 'voice' | 'brain'; onBack
         <>
             <button class="deeper-back" onClick={onBack}>
                 <IconChevronLeft size={16} />
-                Персонаж
+                {tr.characters.characterWord}
             </button>
             {tab === 'characters' && <CharactersTab />}
             {tab === 'voice' && <ModelsScreen tab="voice" onTab={() => undefined} bare />}
@@ -108,7 +110,7 @@ function CharacterPage({ onOpen }: { onOpen: (tab: CharacterTab) => void }) {
     const nodes = nodesOf(data);
     const active = view?.active ?? null;
     const character = active?.id ? view?.characters.find((entry) => entry.id === active.id) : undefined;
-    const name = character?.title ?? (active ? 'Свой характер' : 'Персонаж');
+    const name = character?.title ?? (active ? tr.characters.ownCharacter : tr.characters.characterWord);
     const relay = mode === 'relay';
 
     const act = async (what: string, job: () => Promise<string>): Promise<void> => {
@@ -132,7 +134,7 @@ function CharacterPage({ onOpen }: { onOpen: (tab: CharacterTab) => void }) {
         void act(`tone:${id}`, async () => {
             const next = Object.fromEntries(tones.map((tone) => [tone.id, tone.id === id ? at : toneAt(tone.id, tone.default)]));
             await api.chooseCharacter(character.id, { tones: next, voice: false });
-            return 'Манера применена — со следующего вопроса.';
+            return tr.characters.mannerApplied;
         });
 
     // Мозг: глубина выбирается у Claude из пульта; у других моделей — только видно, какая модель.
@@ -142,40 +144,40 @@ function CharacterPage({ onOpen }: { onOpen: (tab: CharacterTab) => void }) {
     const setLevel = (next: Thinking) =>
         void act(`think:${next}`, async () => {
             await api.chooseBrain({ effort: EFFORT_OF[next] });
-            return 'Применено — со следующего вопроса.';
+            return tr.characters.appliedNext;
         });
 
     return (
         <div class="char-page">
-            <section class="card glass char-hero" aria-label="Кто отвечает">
+            <section class="card glass char-hero" aria-label={tr.characters.whoAnswers}>
                 <Avatar src={character?.avatar} title={name} color={character?.color} size="lg" mark={markOf(character)} />
                 <div class="char-hero-text">
-                    <span class="w-cap">Сейчас отвечает</span>
-                    <h2 class="char-hero-name">{relay ? 'Алиса' : name}</h2>
+                    <span class="w-cap">{tr.characters.nowAnswering}</span>
+                    <h2 class="char-hero-name">{relay ? tr.characters.alice : name}</h2>
                     <p class="t-meta m-0">
                         {relay
-                            ? 'Режим «Яндекс»: отвечает Алиса со своим голосом и характером.'
-                            : (character?.description ?? 'Свой текст: как отвечать, вы написали сами.')}
+                            ? tr.characters.relayAnswers
+                            : (character?.description ?? tr.characters.ownTextDescription)}
                     </p>
                 </div>
                 <div class="char-hero-actions">
                     {character && <PlayButton id={character.id} url={character.samples[0]?.url} label={character.title} className="char-play is-inline" />}
                     <button class="w-btn" onClick={() => onOpen('characters')}>
-                        Выбрать другого
+                        {tr.characters.chooseAnother}
                     </button>
                 </div>
             </section>
 
-            <section class="card glass char-rows" aria-label="Голос, манера и мозг">
+            <section class="card glass char-rows" aria-label={tr.characters.rowsLabel}>
                 <Row
                     icon={IconVoice}
-                    title="Голос"
+                    title={tr.characters.voice}
                     value={nodes.voice.value}
                     sub={nodes.voice.tone !== 'off' ? WHERE[nodes.voice.tone] : nodes.voice.detail}
                     tone={toneClass(nodes.voice.tone)}
                     onOpen={() => onOpen('voice')}
                 />
-                <Row icon={IconSmile} title="Манера" sub={tones.length ? 'как отвечает: длина, шутки, тон' : 'свой текст — у персонажа'} onOpen={() => panel.go('character', 'characters', active?.id ?? 'own')}>
+                <Row icon={IconSmile} title={tr.characters.manner} sub={tones.length ? tr.characters.mannerSubTones : tr.characters.mannerSubOwn} onOpen={() => panel.go('character', 'characters', active?.id ?? 'own')}>
                     {tones.length > 0 && !relay && (
                         <div class="char-tones">
                             {tones.map((tone) => (
@@ -207,7 +209,7 @@ function CharacterPage({ onOpen }: { onOpen: (tab: CharacterTab) => void }) {
                 </Row>
                 <Row
                     icon={IconSparkle}
-                    title="Мозг"
+                    title={tr.characters.brain}
                     value={nodes.brain.value}
                     sub={nodes.brain.tone !== 'off' ? WHERE[nodes.brain.tone] : nodes.brain.detail}
                     tone={toneClass(nodes.brain.tone)}
@@ -215,8 +217,8 @@ function CharacterPage({ onOpen }: { onOpen: (tab: CharacterTab) => void }) {
                 >
                     {claude && (
                         <div class="char-tone">
-                            <span class="w-cap">Думать дольше над трудным</span>
-                            <div class="glass grid grid-cols-3 gap-4 p-4 r-pill" role="radiogroup" aria-label="Как думать">
+                            <span class="w-cap">{tr.characters.thinkLonger}</span>
+                            <div class="glass grid grid-cols-3 gap-4 p-4 r-pill" role="radiogroup" aria-label={tr.characters.howToThink}>
                                 {(Object.keys(THINKING) as Thinking[]).map((id) => (
                                     <button
                                         key={id}
@@ -233,7 +235,7 @@ function CharacterPage({ onOpen }: { onOpen: (tab: CharacterTab) => void }) {
                         </div>
                     )}
                 </Row>
-                <Row icon={IconMic} title="Свой голос" sub="записать минуту — и колонка заговорит вашим голосом" onOpen={() => onOpen('voice')} />
+                <Row icon={IconMic} title={tr.characters.ownVoice} sub={byMode(tr.characters.ownVoiceSubStation, tr.characters.ownVoiceSubDevice)} onOpen={() => onOpen('voice')} />
             </section>
             {note && (
                 <p role={note.ok ? 'status' : 'alert'} class={`t-meta m-0 ${note.ok ? 'c-text' : 'c-dot-offline'}`}>

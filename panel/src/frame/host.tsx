@@ -7,10 +7,11 @@
 import { FunctionComponent, h } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { api, can, fetchPluginFile } from '../api';
+import { api, can, fetchBusPreview, fetchPluginFile } from '../api';
 import { usePluginVersion } from '../plugins/versions';
 import { useApi, useLive, useSettings, useStation } from '../sdk';
 import { channelOf } from '../sdk/midi';
+import { cancelTask, tasksOf, watchTasks } from '../tasks/state';
 import type { PanelPlugin } from '../shell/registry';
 import type { SectionDef } from '../shell/sections';
 import type { SlotContribution } from '../shell/slot';
@@ -20,6 +21,7 @@ import { ask } from '../ui/confirm';
 import { IconPackage } from '../icons';
 import { icons } from '../sdk';
 import { FramePart, FrameShape, FrameState, FromFrame, ToFrame, ours } from './protocol';
+import { language, tr, useLanguage } from '../i18n';
 
 /** Страница окошка — пульта же, не через проход: её код один на всех. */
 const FRAME_PAGE = '/panel/frame.html';
@@ -81,7 +83,7 @@ export function probeShape(id: string, module: string, styles: string | null | u
         const timer = window.setTimeout(() => {
             if (done) return;
             finish();
-            reject(new Error(`окошко приложения ${id} не ответило`));
+            reject(new Error(tr.frame.probeSilent(id)));
         }, PROBE_MS);
         window.addEventListener('message', onMessage);
         document.body.appendChild(frame);
@@ -95,7 +97,9 @@ function useFrameState(id: string, draft: boolean): FrameState {
     const station = useStation();
     const live = useLive();
     const theme = useTheme();
+    const locale = useLanguage();
     return {
+        locale,
         app: id,
         version,
         settings,
@@ -142,7 +146,7 @@ export function AppFrame({
 
     useEffect(() => {
         const frame = makeFrame(false);
-        frame.title = `Окошко приложения ${id}`;
+        frame.title = tr.frame.frameTitle(id);
         frame.style.cssText = `width:100%;border:0;display:block;height:${minHeight}px;background:transparent;color-scheme:inherit`;
         frameRef.current = frame;
         box.current?.appendChild(frame);
@@ -151,6 +155,9 @@ export function AppFrame({
         let midiHeld = false;
         let stopWatch: (() => void) | null = null;
         let stopEvents: (() => void) | null = null;
+        // Долгие задачи приложения (tasks/state.ts): пульт читает их, только пока окошко следит (`useTask`).
+        let stopTasks: (() => void) | null = null;
+        const tellTasks = (): void => post(frame, { type: 'duowave:tasks-state', tasks: tasksOf(id).tasks.map(({ app: _app, ...task }) => task) });
         const midiState = () => ({
             state: midi.state,
             via: midi.via,
@@ -175,7 +182,7 @@ export function AppFrame({
                 case 'duowave:ready':
                     // Окошко загрузилось заново (его код перешёл куда-то своим адресом) — второй раз ему ничего не дают.
                     if (started) {
-                        setFailed('окошко перезагрузилось само — закрыто');
+                        setFailed(tr.frame.reloadedItself);
                         frame.remove();
                         return;
                     }
@@ -192,16 +199,22 @@ export function AppFrame({
                     answer(message.seq, callRef.current(String(message.fn), message.input ?? {}));
                     break;
                 case 'duowave:file':
-                    answer(message.seq, fetchPluginFile(id, String(message.name)));
+                    // A picture of the home folder (`useFolderFile`): made small, as the app for whoever looks.
+                    answer(
+                        message.seq,
+                        message.address
+                            ? fetchBusPreview(id, String(message.address), Math.min(Math.max(Number(message.size) || 960, 64), 2048))
+                            : fetchPluginFile(id, String(message.name)),
+                    );
                     break;
                 case 'duowave:midi-file':
-                    answer(message.seq, message.file instanceof Blob ? api.midiRead(message.file) : Promise.reject(new Error('не файл')));
+                    answer(message.seq, message.file instanceof Blob ? api.midiRead(message.file) : Promise.reject(new Error(tr.frame.notAFile)));
                     break;
                 case 'duowave:ask':
                     answer(
                         message.seq,
                         ask({
-                            title: `«${id}» спрашивает: ${String(message.options?.title ?? '').slice(0, 120)}`,
+                            title: tr.frame.asks(id, String(message.options?.title ?? '').slice(0, 120)),
                             text: message.options?.text ? String(message.options.text).slice(0, 600) : undefined,
                             ok: message.options?.ok ? String(message.options.ok).slice(0, 40) : undefined,
                             danger: !!message.options?.danger,
@@ -210,6 +223,19 @@ export function AppFrame({
                     break;
                 case 'duowave:go':
                     panel.go(String(message.section), message.tab ? String(message.tab) : undefined, message.item ? String(message.item) : undefined);
+                    break;
+                case 'duowave:tasks':
+                    // У черновика на примере задач нет: долгую работу ведёт только поставленное приложение.
+                    if (message.op === 'retain' && !stopTasks) {
+                        if (draft) post(frame, { type: 'duowave:tasks-state', tasks: [] });
+                        else stopTasks = watchTasks(id, tellTasks);
+                    } else if (message.op === 'release' && stopTasks) {
+                        stopTasks();
+                        stopTasks = null;
+                    }
+                    break;
+                case 'duowave:task-cancel':
+                    answer(message.seq, cancelTask(id, String(message.id)));
                     break;
                 case 'duowave:midi': {
                     const args = Array.isArray(message.args) ? message.args : [];
@@ -240,6 +266,7 @@ export function AppFrame({
         window.addEventListener('message', onMessage);
         return () => {
             window.removeEventListener('message', onMessage);
+            stopTasks?.();
             if (midiHeld) {
                 stopWatch?.();
                 stopEvents?.();
@@ -263,7 +290,7 @@ export function AppFrame({
     return (
         <div class="app-frame-box">
             <div ref={box} />
-            {failed && <p class="t-caption m-0 c-dot-offline">Окошко не открылось: {failed}</p>}
+            {failed && <p class="t-caption m-0 c-dot-offline">{tr.frame.didNotOpen} {failed}</p>}
         </div>
     );
 }
@@ -315,6 +342,7 @@ export function framedPlugin(key: string, id: string, module: string, styles: st
 /** Состояние для разведки: без пульта вокруг, одни настройки и тема. */
 export function probeState(id: string, settings: Record<string, unknown>): FrameState {
     return {
+        locale: language(),
         app: id,
         version: 0,
         settings,

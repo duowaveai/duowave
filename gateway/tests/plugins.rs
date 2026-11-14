@@ -131,7 +131,7 @@ async fn plays_the_pilots_radio_when_the_station_says_vklyuchi_radio_and_leaves_
     );
     // Host API 2: its only right is where it goes on the internet; what it gives is in `contributes`.
     assert_eq!(radio["permissions"], json!(["net:*.api.radio-browser.info"]));
-    assert_eq!(radio["budget"], json!({"memoryMb": 4, "storageMb": 1, "filesMb": 64}));
+    assert_eq!(radio["budget"], json!({"memoryMb": 4, "storageMb": 1, "filesMb": 64, "tasks": 1}));
     // Its widget is a card the panel draws: no panel code of its own.
     assert!(radio["panelModule"].is_null(), "{radio}");
     let parts = env.get("/api/v1/packages/panel").await;

@@ -303,6 +303,23 @@ export async function stations({ query, limit }) {
   return await find(String(query ?? ""), Math.min(Number(limit) || 20, 50));
 }
 
+const T = {
+  ru: {
+    justNow: "только что",
+    min: "{n} мин",
+    playing: "Играет",
+    idleLast: "Сейчас не играет. Последнее: {last}.",
+    hint: "Скажите: «Алиса, включи радио» — и название станции или жанр.",
+  },
+  en: {
+    justNow: "just now",
+    min: "{n} min",
+    playing: "Playing",
+    idleLast: "Not playing now. Last one: {last}.",
+    hint: "Say «Алиса, включи радио» and a station name or genre.",
+  },
+};
+
 // Карточка на столе пульта (docs/plugins/cards.md): что играет и свои станции; молчавшие на колонке помечены. Пульт
 // перечитывает её раз в минуту — «играет 12 мин» идёт само.
 export function radioCard() {
@@ -310,14 +327,18 @@ export function radioCard() {
   const now = data.now && !(data.now.until && Date.now() > data.now.until) ? data.now : null;
   const minutes = now ? Math.max(0, Math.round((Date.now() - now.since) / 60000)) : 0;
   const rows = data.stations.slice(0, 6).map((station) => ({ text: station.title, mark: station.broken ? "warn" : "off" }));
-  if (now) rows.unshift({ text: now.title, value: minutes < 1 ? "только что" : `${minutes} мин`, mark: "on" });
+  if (now) rows.unshift({ text: now.title, value: minutes < 1 ? host.i18n.t(T, "justNow") : host.i18n.t(T, "min", { n: minutes }), mark: "on" });
   return {
     cap: now
-      ? "Играет"
+      ? host.i18n.t(T, "playing")
       : data.last
-        ? `Сейчас не играет. Последнее: ${data.last}.`
-        : "Скажите: «Алиса, включи радио» — и название станции или жанр.",
+        ? host.i18n.t(T, "idleLast", { last: data.last })
+        : host.i18n.t(T, "hint"),
     rows,
+    // Играет — волны звука, молчит — тихое сияние (docs/plugins/cards.md, «Вид»).
+    look: now
+      ? { scene: "waves", colors: ["#3d1a78", "#7b2ff7", "#e0479e"] }
+      : { scene: "aurora", colors: ["#0b1030", "#24124d"] },
     say: now ? `Играет ${now.title}.` : "Радио сейчас не играет.",
   };
 }

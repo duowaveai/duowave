@@ -234,14 +234,17 @@ mod tests {
     }
 
     /// Host API 2: the built-in apps' widgets are cards the panel draws — no code of theirs runs in the panel — and
-    /// each card's function is among their panel's calls (docs/plans/bus.md, «Один способ»).
+    /// each card's function is among their panel's calls (docs/plans/bus.md, «Один способ»). A game is the one
+    /// exception: its own drawing, keys and sound are a window's, in its frame like any app's («Неоновая змейка»).
     #[test]
     fn every_built_in_widget_is_a_card_and_no_built_in_brings_panel_code() {
+        const WINDOWS: &[&str] = &["neon-snake"];
         let mut cards = 0;
         for package in packages() {
-            assert!(
-                !package.files.iter().any(|(path, _)| path == "panel.js" || path == "panel.css"),
-                "{}: panel code",
+            assert_eq!(
+                package.files.iter().any(|(path, _)| path == "panel.js" || path == "panel.css"),
+                WINDOWS.contains(&package.id.as_str()),
+                "{}: panel code only for a game",
                 package.id
             );
             let manifest = package.files.iter().find(|(path, _)| path == "manifest.json").unwrap();

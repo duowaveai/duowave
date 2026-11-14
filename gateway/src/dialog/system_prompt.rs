@@ -56,6 +56,40 @@ pub fn build_character_prompt(persona: &str) -> String {
     format!("{}\n{}\n{}", persona.trim(), WAKE_WORD_LINE, VOICE_RULES.join("\n"))
 }
 
+/// Where an answer is said: through a station (its wake word, its commands), or by a computer — a talk without a
+/// station (src/talk), where the microphone opens by the button and nothing of a station exists.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Channel {
+    #[default]
+    Station,
+    Computer,
+}
+
+/// A character's prompt on a computer: who speaks, the rules of speech there and what a computer has not — in the
+/// character's own language (the talk's pack). No word of a station: neither its wake word nor its commands.
+pub fn build_computer_prompt(persona: &str) -> String {
+    let pack = crate::talk::pack::of(crate::memory::text::lang_of(persona));
+    format!("{}\n{}\n{}", persona.trim(), pack.voice_rules.join("\n"), pack.here)
+}
+
+/// The built-in character on a computer: the same regulators, the name and the place of a talk without a station.
+pub fn computer_text(positions: Option<&BTreeMap<String, usize>>) -> String {
+    let pack = crate::talk::pack::of(crate::memory::text::Lang::Ru);
+    crate::characters::contributes::compose(pack.persona, &alice_tones(), &alice_positions(positions))
+}
+
+/// The built-in character's card as the panel shows it while the household talks by the computer's microphone.
+pub fn computer_preset() -> PersonaPreset {
+    let pack = crate::talk::pack::of(crate::memory::text::Lang::Ru);
+    PersonaPreset {
+        id: ALICE.to_string(),
+        title: pack.name.to_string(),
+        description: pack.description.to_string(),
+        badge: Some("встроенная".to_string()),
+        text: computer_text(None),
+    }
+}
+
 /// Whether a card's id is a package's character (`<package>:<character>`): the built-in ones have no colon.
 pub fn is_package_character(id: &str) -> bool {
     id.contains(':')
@@ -299,6 +333,28 @@ pub mod tests {
             time_context(sunday, Some("UTC")),
             "Сейчас воскресенье, 15 марта 2026 г. в 23:59 (часовой пояс UTC)."
         );
+    }
+
+    #[test]
+    fn a_computers_prompt_has_no_word_of_a_station() {
+        let ironic = BTreeMap::from([("irony".to_string(), 2), ("warmth".to_string(), 0), ("detail".to_string(), 2)]);
+        for positions in [None, Some(&ironic)] {
+            let prompt = build_computer_prompt(&computer_text(positions));
+            assert!(prompt.starts_with("Ты — ДиВи, голосовой помощник на компьютере"), "{prompt}");
+            assert!(prompt.contains("микрофон несколько секунд слушает сам") && prompt.contains("Ты на компьютере:"));
+            for word in ["Алис", "колонк", "Яндекс"] {
+                assert!(!prompt.contains(word), "{word} in {prompt}");
+            }
+        }
+        assert_eq!(computer_text(Some(&ironic)).lines().count(), alice_text(Some(&ironic)).lines().count());
+        // A character in English speaks by the English rules.
+        let english = build_computer_prompt("You are Marvin, a gloomy robot.");
+        assert!(english.contains("Every answer will be said aloud") && english.ends_with("on this computer yet."));
+        let card = computer_preset();
+        assert_eq!((card.id.as_str(), card.title.as_str()), (ALICE, "ДиВи"));
+        // The station's prompt is what it was, word for word.
+        assert!(default_system_prompt().contains("например «Алиса, стоп»"));
+        assert!(build_character_prompt("Ты — Артур.").contains(WAKE_WORD_LINE));
     }
 
     #[test]

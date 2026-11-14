@@ -4,13 +4,20 @@
 // (решение 3). Услышанное — сначала к фразам на экране (phrases.ts); не нашлось — просьба «сделай…» (та же дорога, что у
 // колонки); не просьба — «Не понятно» и подсказки (решение 4). Микрофон открыт только по нажатию и ещё 6 с после
 // вопроса, который пульт задал на голосовую просьбу, — сам по себе никогда. Пока открыто поле личного, он выключен.
+//
+// В режиме «Микрофон» (docs/plans/mic-mode.md) колонки нет, и неузнанная фраза уходит «Мозгу»: ответ — на полосу и
+// голосом компьютера (speak.ts). Кончился ответ вопросом — микрофон те же 6 с слушает сам, и ответ уходит с пометкой
+// «ответ». Новое «Сказать» обрывает то, что пульт говорит.
 
 import { api, can, problemOf } from '../api';
+import { tr } from '../i18n';
 import { Recorder, recordingSupport } from '../recorder';
 import { devMode } from '../shell/dev';
 import { accusative, agentChip, askToMake } from './creation';
 import { matchAction, micHeld, visiblePhrases } from './phrases';
+import { ANSWER_WAIT_MS, answerTo, stopAnswer } from './speak';
 import { hideStrip, requestTextToStation, showStrip, updateStrip } from './strip';
+import { onComputer } from '../voice-input';
 
 /** «Слух» шлюза ждёт 16 кГц моно. */
 export const LISTEN_RATE = 16_000;
@@ -73,7 +80,7 @@ export function noteAgentPlace(cloud: boolean | null): void {
 /** Микрофон выключен, пока открыто поле личного: показать это вместо слушания. */
 function held(): boolean {
     if (!micHeld()) return false;
-    showStrip({ kind: 'hold', head: 'Микрофон выключен', text: 'Пока открыто поле ключа, пульт не слушает: личное вводят руками.' }, 4000);
+    showStrip({ kind: 'hold', head: tr.voice.micOff, text: tr.voice.micOffText }, 4000);
     return true;
 }
 
@@ -101,23 +108,25 @@ export function cancelListening(): void {
 
 async function listen(answer: boolean, wait: number): Promise<void> {
     if (held()) return;
+    // Новое «Сказать» обрывает ответ: пока пульт говорит, он себя не слушает.
+    if (!answer) stopAnswer();
     const support = recordingSupport();
     if (!support.ok) {
-        showStrip({ kind: 'note', head: 'Микрофона нет', text: support.reason }, 8000);
+        showStrip({ kind: 'note', head: tr.voice.noMic, text: support.reason }, 8000);
         return;
     }
     const now = Date.now();
     const current: Session = { recorder: null, began: now, startBy: now + wait, speechAt: null, lastSpeech: now, noise: [], ended: false, answer };
     session = current;
     tell();
-    if (!answer) showStrip({ kind: 'listen', head: 'Слушаю', chip: { text: 'слышит этот компьютер', tone: 'own' }, level: 0 });
+    if (!answer) showStrip({ kind: 'listen', head: tr.voice.listening, chip: { text: tr.voice.heardHere, tone: 'own' }, level: 0 });
     try {
         current.recorder = await Recorder.start(undefined, (db) => level(current, db), { rate: LISTEN_RATE, processed: true });
         if (current.ended) current.recorder.cancel();
     } catch (error) {
         if (session === current) session = null;
         tell();
-        showStrip({ kind: 'note', head: 'Микрофон не открылся', text: error instanceof Error ? error.message : String(error) }, 8000);
+        showStrip({ kind: 'note', head: tr.voice.micFailed, text: error instanceof Error ? error.message : String(error) }, 8000);
     }
 }
 
@@ -136,7 +145,7 @@ function level(current: Session, db: number): void {
     if (speaking) {
         if (current.speechAt === null) current.speechAt = now;
         current.lastSpeech = now;
-        if (current.answer) showStrip({ kind: 'listen', head: 'Слушаю ответ', chip: { text: 'слышит этот компьютер', tone: 'own' } });
+        if (current.answer) showStrip({ kind: 'listen', head: tr.voice.listeningAnswer, chip: { text: tr.voice.heardHere, tone: 'own' } });
     }
     updateStrip('listen', { level: Math.max(0, Math.min(1, (db - FLOOR_DB) / 45)) });
     const long = now - current.began > MAX_MS;
@@ -145,7 +154,7 @@ function level(current: Session, db: number): void {
     if (nobody) {
         cancelListening();
         if (current.answer) return;
-        showStrip({ kind: 'note', head: 'Не услышала', text: 'Нажмите «Сказать» и говорите — я слушаю до паузы.' }, 4000);
+        showStrip({ kind: 'note', head: tr.voice.notHeard, text: tr.voice.notHeardText }, 4000);
         return;
     }
     if (done || long) void finish();
@@ -165,54 +174,64 @@ async function finish(): Promise<void> {
         if (!current.answer) hideStrip();
         return;
     }
-    showStrip({ kind: 'listen', head: 'Распознаю…', chip: { text: 'слышит этот компьютер', tone: 'own' } });
+    showStrip({ kind: 'listen', head: tr.voice.recognizing, chip: { text: tr.voice.heardHere, tone: 'own' } });
     try {
         const { wav } = await recorder.stop();
+        const asked = Date.now();
         const heard = await api.listen(wav);
-        const chip = heard.heard === 'cloud' ? { text: 'слышало облако', tone: 'out' as const } : { text: 'слышит этот компьютер', tone: 'own' as const };
+        const ms = Date.now() - asked;
+        const chip = heard.heard === 'cloud' ? { text: tr.voice.heardCloud, tone: 'out' as const } : { text: tr.voice.heardHere, tone: 'own' as const };
         const text = heard.text.trim();
         if (!text) {
-            showStrip({ kind: 'note', head: 'Не расслышала', chip, text: 'Скажите ещё раз, чуть громче.' }, 5000);
+            showStrip({ kind: 'note', head: tr.voice.notCaught, chip, text: tr.voice.notCaughtText }, 5000);
             return;
         }
-        showStrip({ kind: 'listen', head: 'Услышала', chip, caps: text }, 4000);
-        act(text, chip);
+        showStrip({ kind: 'listen', head: tr.voice.heard, chip, caps: text }, 4000);
+        act(text, chip, { by: heard.heard, ms }, current.answer);
     } catch (error) {
-        showStrip({ kind: 'note', head: 'Не распознала', text: problemOf(error) }, 6000);
+        showStrip({ kind: 'note', head: tr.voice.notRecognized, text: problemOf(error) }, 6000);
     }
 }
 
-/** Что сказано: фраза кнопки на экране, просьба «сделай…» или «Не понятно». */
-function act(text: string, chip: { text: string; tone: 'own' | 'out' }): void {
+/**
+ * Что сказано: фраза кнопки на экране, просьба «сделай…», а остальное — «Мозгу» в режиме «Микрофон» и «Не понятно» в
+ * режиме «Колонка» (там отвечает колонка). `answered` — фраза сказана в ответ на вопрос, без нажатия.
+ */
+function act(text: string, chip: { text: string; tone: 'own' | 'out' }, heard?: { by: 'home' | 'cloud'; ms?: number }, answered = false): void {
     const action = matchAction(text);
     if (action) return action.run();
-    if (/^(алиса[\s,]+)?(сделай|создай|нарисуй|напиши|давай сделаем|давай создадим|добавь)\s/i.test(text.trim()) && can('plugins.manage')) {
+    if (/^((алиса|alice)[\s,]+)?(сделай|создай|нарисуй|напиши|давай сделаем|давай создадим|добавь|make|create|draw|write|add|build)\s/i.test(text.trim()) && can('plugins.manage')) {
         void askToMake(text, agentCloud)
             .then((made) => {
                 voiceDrafts.add(made.draft);
                 showStrip(
                     {
                         kind: 'agent',
-                        head: 'Агент',
+                        head: tr.voice.agent,
                         chip: agentChip(agentCloud),
                         caps: text,
-                        text: `Делаю ${accusative(made.kind)}. Скажу, когда будет готово — столом можно пользоваться.`,
+                        text: tr.voice.makingNew(accusative(made.kind)),
                     },
                     6000,
                 );
             })
-            .catch((error) => showStrip({ kind: 'note', head: 'Не получилось', caps: text, text: problemOf(error) }, 8000));
+            .catch((error) => showStrip({ kind: 'note', head: tr.voice.failedTry, caps: text, text: problemOf(error) }, 8000));
+        return;
+    }
+    if (onComputer()) {
+        // Может ли этот вход говорить (`use:chat`), знает шлюз: откажет — его слова встанут на полосу.
+        answerTo({ text, via: answered ? 'answer' : 'button', heard }, () => listenFor(ANSWER_WAIT_MS));
         return;
     }
     const hints = visiblePhrases().slice(0, 6);
     showStrip(
         {
             kind: 'note',
-            head: 'Не понятно',
+            head: tr.voice.notUnderstood,
             chip,
             caps: text,
-            text: 'Скажите то, что на кнопках, или «Сделай виджет: …». Что пульт не понял, никуда не уходит.',
-            chips: [...hints.map((label) => ({ label })), { label: 'Текстом колонке…', act: requestTextToStation }],
+            text: tr.voice.notUnderstoodText,
+            chips: [...hints.map((label) => ({ label })), { label: tr.voice.textToSpeaker, act: requestTextToStation }],
         },
         8000,
     );
@@ -220,8 +239,8 @@ function act(text: string, chip: { text: string; tone: 'own' | 'out' }): void {
 
 /** Услышанные слова, как их сделает пульт (без микрофона): проверить путь голосом, не говоря вслух. */
 export function hearWords(text: string): void {
-    showStrip({ kind: 'listen', head: 'Услышала', chip: { text: 'слышит этот компьютер', tone: 'own' }, caps: text }, 4000);
-    act(text, { text: 'слышит этот компьютер', tone: 'own' });
+    showStrip({ kind: 'listen', head: tr.voice.heard, chip: { text: tr.voice.heardHere, tone: 'own' }, caps: text }, 4000);
+    act(text, { text: tr.voice.heardHere, tone: 'own' }, { by: 'home' });
 }
 
 // Слой разработчика («Настройки» → «Для разработчиков»): `__hear('примерить')` в консоли — как сказать это пульту.

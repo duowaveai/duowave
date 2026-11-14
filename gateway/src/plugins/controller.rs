@@ -14,7 +14,6 @@
 //! - What the plugins that are on give is rebuilt on every change: their phrases (the router asks `matched`), their
 //!   tools (`tool_contributions`), their media sources.
 //! - The safe mode (PLUGINS_DISABLED=1) runs none of it, whatever is switched on.
-
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
@@ -96,12 +95,14 @@ async fn call_home(
         .json(&json!({ "function": function, "input": input, "kind": kind_name }))
         .send()
         .await
-        .map_err(|error| format!("компьютер не ответил: {}", error.without_url()))?;
+        .map_err(|error| crate::tr!("компьютер не ответил: {error}", error = error.without_url()))?;
     let status = response.status();
-    let body: Value = response.json().await.map_err(|_| format!("компьютер ответил не JSON (HTTP {status})"))?;
+    let body: Value =
+        response.json().await.map_err(|_| crate::tr!("компьютер ответил не JSON (HTTP {status})", status = status))?;
     if !status.is_success() {
-        let message = body.get("message").and_then(Value::as_str).unwrap_or("отказ").to_string();
-        return Err(format!("компьютер: {message}"));
+        let message =
+            body.get("message").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| crate::tr!("отказ"));
+        return Err(crate::tr!("компьютер: {message}", message = message));
     }
     Ok(body.pointer("/message/result").cloned().or_else(|| body.get("result").cloned()).unwrap_or(Value::Null))
 }
@@ -302,7 +303,7 @@ fn choose(found: &[Candidate], placement: Placement) -> (Option<Arc<Package>>, O
     for candidate in found {
         match candidate {
             Candidate::Ready(package) => {
-                let why = package.manifest.kind.not_a_plugin().map(str::to_string);
+                let why = package.manifest.kind.not_a_plugin();
                 match why.or_else(|| package.manifest.incompatible_with(placement)) {
                     None => return (Some(package.clone()), problem),
                     Some(why) => {
@@ -315,7 +316,7 @@ fn choose(found: &[Candidate], placement: Placement) -> (Option<Arc<Package>>, O
             }
         }
     }
-    (None, Some(problem.unwrap_or_else(|| "нет ни одной версии в папке".into())))
+    (None, Some(problem.unwrap_or_else(|| crate::tr!("нет ни одной версии в папке"))))
 }
 
 pub struct PluginHost {
@@ -357,11 +358,16 @@ pub struct PluginHost {
     data_news: Arc<DataNews>,
     /// The apps' history (src/plugins/history): set once it stands.
     history: std::sync::OnceLock<Arc<super::history::History>>,
+    /// The apps' long tasks (src/tasks): set once they stand.
+    long_tasks: std::sync::OnceLock<Arc<crate::tasks::Tasks>>,
     /// The gateway's safe: the plugins' private settings.
     secrets: Arc<SecretsService>,
     /// The bus's word on an app reaching a participant outside a letter (its speech by schedule, the model's answer
     /// in its words, its page hearing the keyboard): set once the bus stands.
     gate: std::sync::OnceLock<Gate>,
+    /// Whether the model of «Мозг» is in the cloud: its calls of the apps' tools carry that in their chain, and a
+    /// folder without «Модель может читать» gives such a chain nothing (docs/plans/shared-folders.md).
+    cloud_model: std::sync::OnceLock<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 /// May the app `app` reach `to`'s `handle` now (src/bus): its links, the owner's «да» — the reason in words when not.
@@ -407,6 +413,7 @@ impl PluginHost {
         let data_news = DataNews::new(events.clone(), handle.clone());
         let host = Arc::new_cyclic(|me| PluginHost {
             gate: std::sync::OnceLock::new(),
+            cloud_model: std::sync::OnceLock::new(),
             config,
             db,
             settings,
@@ -437,6 +444,7 @@ impl PluginHost {
             journals: Mutex::new(HashMap::new()),
             data_news,
             history: std::sync::OnceLock::new(),
+            long_tasks: std::sync::OnceLock::new(),
             secrets,
         });
         let _ = give_up_to.set(Arc::downgrade(&host));
@@ -670,7 +678,8 @@ impl PluginHost {
                         plugin: plugin.id.clone(),
                         title: manifest.title.clone(),
                         spec: spec.clone(),
-                        outside: !manifest.hosts().is_empty(),
+                        // Text from the internet, or from the household's folders: what follows it changes nothing.
+                        outside: !manifest.hosts().is_empty() || manifest.reads_household(),
                     });
                 }
                 for spec in &manifest.contributes.media {
@@ -768,6 +777,7 @@ impl PluginHost {
             return Vec::new();
         }
         let stored = self.settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default();
+        let languages = crate::locale::preferences(&self.settings);
         self.list()
             .iter()
             .filter_map(|plugin| {
@@ -782,18 +792,11 @@ impl PluginHost {
                 };
                 let module = part("panel.js");
                 let styles = part("panel.css");
-                let cards = package
-                    .manifest
-                    .contributes
-                    .panel
-                    .as_ref()
-                    .and_then(|panel| panel.get("cards"))
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
+                let cards = package.manifest.cards_in(&languages);
                 (module.is_some() || styles.is_some() || !cards.is_empty()).then(|| PanelPart {
                     id: plugin.id.clone(),
-                    title: package.manifest.title.clone(),
+                    title: package.manifest.title_in(&languages),
+                    languages: package.manifest.languages.clone(),
                     version: package.version(),
                     module,
                     styles,
@@ -810,7 +813,8 @@ impl PluginHost {
     /// in `contributes.panel.calls`, as a tool would be called.
     pub async fn panel_call(&self, id: &str, function: &str, input: Value) -> Result<Value, ApiError> {
         self.writable()?;
-        let package = self.package(id).ok_or_else(|| ApiError::conflict(format!("Приложение {id} выключено.")))?;
+        let package =
+            self.package(id).ok_or_else(|| ApiError::conflict(crate::tr!("Приложение {id} выключено.", id = id)))?;
         let allowed = package
             .manifest
             .contributes
@@ -820,13 +824,14 @@ impl PluginHost {
             .and_then(Value::as_array)
             .is_some_and(|calls| calls.iter().any(|call| call.as_str() == Some(function)));
         if !allowed {
-            return Err(ApiError::forbidden(format!(
-                "Пульт плагина зовёт только функции из contributes.panel.calls, а {function} там нет."
+            return Err(ApiError::forbidden(crate::tr!(
+                "Пульт плагина зовёт только функции из contributes.panel.calls, а {function} там нет.",
+                function = function
             )));
         }
         self.call(id, function, input, CallKind::Tool)
             .await
-            .map_err(|error| ApiError::bad_request(format!("Приложение не ответило: {error}.")))
+            .map_err(|error| ApiError::bad_request(crate::tr!("Приложение не ответило: {error}.", error = error)))
     }
 
     /// The themes of the packages installed here (a theme package's, a plugin's that is on), for the panel's choice:
@@ -924,6 +929,10 @@ impl PluginHost {
             }
         }
         registry::forget(&self.db, id)?;
+        // Its long tasks go with it.
+        if let Some(tasks) = self.long_tasks.get() {
+            tasks.forget_app(id);
+        }
         // Its keys go with it.
         self.secrets.delete_all(&crate::secrets::plugin_secrets(id))?;
         Ok(())
@@ -974,6 +983,23 @@ impl PluginHost {
         self.watch.clone()
     }
 
+    /// The apps' long tasks (src/tasks): an app at a task is not unloaded as idle, a task of an app whose program is
+    /// gone is interrupted, a removed app's tasks go with it.
+    pub fn set_tasks(&self, tasks: Arc<crate::tasks::Tasks>) {
+        let heard = Arc::downgrade(&tasks);
+        self.apps_engine.set_gone(Arc::new(move |id: &str, why: &str| {
+            if let Some(tasks) = heard.upgrade() {
+                tasks.interrupt_app(id, why);
+            }
+        }));
+        let _ = self.long_tasks.set(tasks);
+    }
+
+    /// How many long tasks an app may run at once: its manifest's `budget.tasks`.
+    pub fn tasks_at_once(&self, id: &str) -> u32 {
+        self.package(id).map(|package| package.manifest.budget.tasks).unwrap_or(crate::tasks::DEFAULT_AT_ONCE)
+    }
+
     /// The Host API of a running app, by its token (src/apps/host_http.rs).
     pub fn app_host(&self, token: &str) -> Option<crate::apps::supervisor::AppHost> {
         if token.is_empty() || self.config.disabled {
@@ -1002,14 +1028,25 @@ impl PluginHost {
         let _ = self.gate.set(gate);
     }
 
+    /// How the apps' tools learn whether the model calling them is in the cloud.
+    pub fn set_cloud_model(&self, cloud: Arc<dyn Fn() -> bool + Send + Sync>) {
+        let _ = self.cloud_model.set(cloud);
+    }
+
+    fn model_in_cloud(&self) -> bool {
+        self.cloud_model.get().is_some_and(|cloud| cloud())
+    }
+
     /// May the app `app`, on here, reach `to`'s `handle` now: the bus's word (its links, the owner's «да»); without a
     /// bus, what its manifest asked for.
     pub fn may(&self, app: &str, to: &str, handle: &str) -> Result<(), String> {
-        let package = self.package(app).ok_or_else(|| format!("приложение «{app}» выключено или не стоит здесь"))?;
+        let package = self
+            .package(app)
+            .ok_or_else(|| crate::tr!("приложение «{app}» выключено или не стоит здесь", app = app))?;
         match self.gate.get() {
             Some(gate) => gate(app, to, handle),
             None if package.manifest.asks(to) > crate::bus::Level::None => Ok(()),
-            None => Err(format!("приложение не просило связь с {to}")),
+            None => Err(crate::tr!("приложение не просило связь с {to}", to = to)),
         }
     }
 
@@ -1056,7 +1093,9 @@ impl PluginHost {
     /// memory) unloads it.
     pub async fn call(&self, id: &str, function: &str, input: Value, kind: CallKind) -> Result<Value, PluginError> {
         if self.config.disabled {
-            return Err(PluginError::Unavailable("безопасный режим: приложения не работают (PLUGINS_DISABLED)".into()));
+            return Err(PluginError::Unavailable(crate::tr!(
+                "безопасный режим: приложения не работают (PLUGINS_DISABLED)"
+            )));
         }
         // The trail (src/bus/trail.rs): the chain this call is part of, or the app's own when nobody started one; a
         // step further into this app — refused past the hops or back into an app that waits in the chain.
@@ -1067,7 +1106,8 @@ impl PluginHost {
 
     /// The call itself, inside its trail.
     async fn call_in(&self, id: &str, function: &str, input: Value, kind: CallKind) -> Result<Value, PluginError> {
-        let plugin = self.plugin(id).ok_or_else(|| PluginError::Unavailable(format!("нет приложения {id}")))?;
+        let plugin =
+            self.plugin(id).ok_or_else(|| PluginError::Unavailable(crate::tr!("нет приложения {id}", id = id)))?;
         let _busy = Busy::new(&plugin);
         plugin.used.store(self.now_ms(), Ordering::Relaxed);
         let began = Instant::now();
@@ -1081,7 +1121,11 @@ impl PluginHost {
                         self.note_line(
                             id,
                             "call",
-                            &format!("{function}: на компьютере, {} мс", began.elapsed().as_millis()),
+                            &crate::tr!(
+                                "{function}: на компьютере, {elapsed} мс",
+                                function = function,
+                                elapsed = began.elapsed().as_millis()
+                            ),
                         );
                         let mut stats = plugin.stats();
                         stats.calls += 1;
@@ -1091,27 +1135,36 @@ impl PluginHost {
                         // the computer's /media.
                         return Ok(super::media::from_home(answer, &url, id, &self.play_rights(id)));
                     }
-                    Err(why) => self.note_line(id, "warn", &format!("{function}: {why} — работает на колонке")),
+                    Err(why) => self.note_line(
+                        id,
+                        "warn",
+                        &crate::tr!("{function}: {why} — работает на колонке", function = function, why = why),
+                    ),
                 }
             }
         }
         let result = match self.instance(&plugin).await {
             Ok(instance) => instance.call(function, input, kind).await,
             Err(PluginError::NoRoom(why)) if away => {
-                Err(PluginError::NoRoom(format!("недоступно, пока компьютер не на связи: {why}")))
+                Err(PluginError::NoRoom(crate::tr!("недоступно, пока компьютер не на связи: {why}", why = why)))
             }
             Err(error) => Err(error),
         };
         let how = match kind {
-            CallKind::Voice => "фраза",
-            CallKind::Tool => "инструмент",
-            CallKind::Background => "в фоне",
+            CallKind::Voice => crate::tr!("фраза"),
+            CallKind::Tool => crate::tr!("инструмент"),
+            CallKind::Background => crate::tr!("в фоне"),
         };
         match &result {
             Ok(_) => self.note_line(
                 id,
                 "call",
-                &format!("{function} ({how}): ответил за {} мс", began.elapsed().as_millis()),
+                &crate::tr!(
+                    "{function} ({how}): ответил за {elapsed} мс",
+                    function = function,
+                    how = how,
+                    elapsed = began.elapsed().as_millis()
+                ),
             ),
             Err(error) => self.note_line(id, "error", &format!("{function} ({how}): {error}")),
         }
@@ -1168,7 +1221,7 @@ impl PluginHost {
             let state = plugin.state();
             (state.active.clone().filter(|_| state.enabled), state.good.clone())
         };
-        let package = package.ok_or_else(|| PluginError::Unavailable("приложение выключено".into()))?;
+        let package = package.ok_or_else(|| PluginError::Unavailable(crate::tr!("приложение выключено")))?;
         let version = package.version();
         if let Some(loaded) = slot.as_ref() {
             if loaded.version == version {
@@ -1199,7 +1252,7 @@ impl PluginHost {
                         _ => None,
                     })
                 });
-                let message = format!("версия {version} не поднялась: {error}");
+                let message = crate::tr!("версия {version} не поднялась: {error}", version = version, error = error);
                 if let Some(previous) =
                     previous.filter(|previous| previous.manifest.incompatible_with((self.placement)()).is_none())
                 {
@@ -1207,7 +1260,11 @@ impl PluginHost {
                     let loading = self.admit(plugin, &previous.manifest).await.ok();
                     let started = if loading.is_some() { self.start_package(&previous).await.ok() } else { None };
                     if let Some(instance) = started {
-                        let message = format!("{message}; работает прежняя {}", previous.version());
+                        let message = crate::tr!(
+                            "{message}; работает прежняя {version}",
+                            message = message,
+                            version = previous.version()
+                        );
                         let share_mb = share_of(&previous.manifest);
                         plugin.hold(
                             &mut slot,
@@ -1252,6 +1309,10 @@ impl PluginHost {
         for plugin in self.list() {
             let idle_for = now.saturating_sub(plugin.used.load(Ordering::Relaxed));
             if idle_for < idle || plugin.busy.load(Ordering::Relaxed) > 0 {
+                continue;
+            }
+            // An app at a long task is at work, though nobody calls it (src/tasks).
+            if self.long_tasks.get().is_some_and(|tasks| tasks.running(&plugin.id) > 0) {
                 continue;
             }
             let Ok(mut slot) = plugin.slot.try_lock() else { continue };
@@ -1370,7 +1431,7 @@ impl PluginHost {
         let held_mb = plugin.held_mb.load(Ordering::Relaxed);
         Some(PluginShare {
             id: plugin.id.clone(),
-            title: manifest.title.clone(),
+            title: manifest.title_in(&crate::locale::preferences(&self.settings)),
             enabled: enabled && !self.config.disabled,
             loaded: taken_mb > 0,
             busy: loading_mb > 0 || plugin.busy.load(Ordering::Relaxed) > 0,
@@ -1496,7 +1557,11 @@ impl PluginHost {
         drop(slot);
         loaded.instance.stop();
         tracing::info!(target: "plugins", "{}: unloaded to make room for {for_id}", plugin.id);
-        self.note_line(&plugin.id, "load", &format!("выгружен: память понадобилась плагину {for_id}"));
+        self.note_line(
+            &plugin.id,
+            "load",
+            &crate::tr!("выгружен: память понадобилась плагину {for_id}", for_id = for_id),
+        );
         self.changed(&plugin.id, "unloaded", Some(loaded.version), None, None);
         Some(loaded.share_mb)
     }
@@ -1579,11 +1644,11 @@ impl PluginHost {
         }
         let is_app = |id: &&String| self.package(id).is_some_and(|package| package.manifest.kind == PackageKind::App);
         let Some(id) = order.iter().find(is_app).or_else(|| order.first()).cloned() else { return };
-        let why = format!(
-            "колонке не хватало памяти: свободно {} МБ при запасе {} МБ, давление {}",
-            memory.available_mb,
-            self.config.reserve_mb,
-            memory.pressure.as_str()
+        let why = crate::tr!(
+            "колонке не хватало памяти: свободно {available_mb} МБ при запасе {reserve_mb} МБ, давление {pressure}",
+            available_mb = memory.available_mb,
+            reserve_mb = self.config.reserve_mb,
+            pressure = memory.pressure.as_str()
         );
         match self.config.pressure_action {
             PressureAction::Warn => {
@@ -1594,10 +1659,10 @@ impl PluginHost {
                 tracing::warn!(target: "plugins", "{id}: switched off — {why}");
                 if self.disable(&id, None).await.is_ok() {
                     if let Some(plugin) = self.plugin(&id) {
-                        plugin.state().problem = Some(format!("выключен сам: {why}"));
-                        self.note_error(&plugin, &format!("выключен сам: {why}"));
+                        plugin.state().problem = Some(crate::tr!("выключен сам: {why}", why = why));
+                        self.note_error(&plugin, &crate::tr!("выключен сам: {why}", why = why));
                     }
-                    self.changed(&id, "pressure", None, Some(format!("выключен: {why}")), None);
+                    self.changed(&id, "pressure", None, Some(crate::tr!("выключен: {why}", why = why)), None);
                 }
             }
         }
@@ -1624,28 +1689,37 @@ impl PluginHost {
         let plugin = self.known(id)?;
         let origin = Origin::of(&plugin.state().source);
         if origin == Origin::System {
-            return Err(ApiError::conflict("Системное приложение не копируют: оно часть шлюза."));
+            return Err(ApiError::conflict(crate::tr!("Системное приложение не копируют: оно часть шлюза.")));
         }
         let package = registry::newest_ready(&plugin.state().found)
-            .ok_or_else(|| ApiError::bad_request(format!("У {id} нет версии, которая читается.")))?;
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("У {id} нет версии, которая читается.", id = id)))?;
         let copy_id = match new_id.map(str::trim).filter(|new_id| !new_id.is_empty()) {
             Some(new_id) => new_id.to_string(),
             None => format!("my-{id}").chars().take(32).collect::<String>().trim_end_matches('-').to_string(),
         };
         if !manifest::valid_id(&copy_id) {
-            return Err(ApiError::field("id", "строчные латинские буквы, цифры и «-», с буквы, до 32 знаков"));
+            return Err(ApiError::field(
+                "id",
+                crate::tr!("строчные латинские буквы, цифры и «-», с буквы, до 32 знаков"),
+            ));
         }
         if self.config.packages_dir.join(&copy_id).exists() || self.plugin(&copy_id).is_some() {
-            return Err(ApiError::conflict(format!("«{copy_id}» уже есть — назовите копию иначе.")));
+            return Err(ApiError::conflict(crate::tr!(
+                "«{copy_id}» уже есть — назовите копию иначе.",
+                copy_id = copy_id
+            )));
         }
         let version = package.version();
         let target = self.config.packages_dir.join(&copy_id).join(&version);
-        let title = format!("{} (моя копия)", package.manifest.title).chars().take(80).collect::<String>();
+        let title = crate::tr!("{manifest} (моя копия)", manifest = package.manifest.title)
+            .chars()
+            .take(80)
+            .collect::<String>();
         let (from, to, new) = (package.dir.clone(), target.clone(), copy_id.clone());
         tokio::task::spawn_blocking(move || copy_package(&from, &to, &new, &title))
             .await
             .map_err(ApiError::internal)?
-            .map_err(|error| ApiError::internal(format!("копия не записалась: {error}")))?;
+            .map_err(|error| ApiError::internal(crate::tr!("копия не записалась: {error}", error = error)))?;
         registry::set_installed(
             &self.db,
             &copy_id,
@@ -1710,23 +1784,22 @@ impl PluginHost {
 
     fn writable(&self) -> Result<(), ApiError> {
         if self.config.disabled {
-            return Err(ApiError::conflict("Безопасный режим: приложения выключены (PLUGINS_DISABLED)."));
+            return Err(ApiError::conflict(crate::tr!("Безопасный режим: приложения выключены (PLUGINS_DISABLED).")));
         }
         Ok(())
     }
 
     fn known(&self, id: &str) -> Result<Arc<Plugin>, ApiError> {
-        self.plugin(id).ok_or_else(|| ApiError::not_found(format!("Нет приложения {id}.")))
+        self.plugin(id).ok_or_else(|| ApiError::not_found(crate::tr!("Нет приложения {id}.", id = id)))
     }
 
     /// A tool of this package already given by another plugin that is on.
     fn tool_taken(&self, id: &str, package: &Package) -> Option<String> {
         let tools = self.tools.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         package.manifest.contributes.tools.iter().find_map(|spec| {
-            tools
-                .iter()
-                .find(|offered| offered.spec.name == spec.name && offered.plugin != id)
-                .map(|offered| format!("инструмент {} уже даёт приложение {}", spec.name, offered.plugin))
+            tools.iter().find(|offered| offered.spec.name == spec.name && offered.plugin != id).map(|offered| {
+                crate::tr!("инструмент {name} уже даёт приложение {plugin}", name = spec.name, plugin = offered.plugin)
+            })
         })
     }
 
@@ -1738,10 +1811,13 @@ impl PluginHost {
         let plugin = self.known(id)?;
         let (package, problem) = choose(&plugin.state().found, (self.placement)());
         let Some(package) = package else {
-            return Err(ApiError::bad_request(format!("Приложение не включить: {}.", problem.unwrap_or_default())));
+            return Err(ApiError::bad_request(crate::tr!(
+                "Приложение не включить: {problem}.",
+                problem = problem.unwrap_or_default()
+            )));
         };
         if let Some(taken) = self.tool_taken(id, &package) {
-            return Err(ApiError::conflict(format!("Приложение не включить: {taken}.")));
+            return Err(ApiError::conflict(crate::tr!("Приложение не включить: {taken}.", taken = taken)));
         }
         // «Колонка + сервер»: a plugin that prefers home runs on the computer while it is up — nothing of it starts
         // on the station, and the station's memory is not asked.
@@ -1757,8 +1833,11 @@ impl PluginHost {
             match self.admit(&plugin, &package.manifest).await {
                 Ok(loading) => {
                     let instance = self.start_package(&package).await.map_err(|error| {
-                        self.note_error(&plugin, &format!("не запустился: {error}"));
-                        ApiError::bad_request(format!("Приложение не запустилось, оно остаётся выключенным: {error}."))
+                        self.note_error(&plugin, &crate::tr!("не запустился: {error}", error = error));
+                        ApiError::bad_request(crate::tr!(
+                            "Приложение не запустилось, оно остаётся выключенным: {error}.",
+                            error = error
+                        ))
                     })?;
                     let share_mb = share_of(&package.manifest);
                     plugin.hold(&mut slot, Loaded { version: version.clone(), instance, share_mb });
@@ -1770,8 +1849,9 @@ impl PluginHost {
                     self.note_line(
                         id,
                         "load",
-                        &format!(
-                            "включён, но пока не загружен: {why}. Загрузится при первом вызове, когда хватит памяти"
+                        &crate::tr!(
+                            "включён, но пока не загружен: {why}. Загрузится при первом вызове, когда хватит памяти",
+                            why = why
                         ),
                     );
                 }
@@ -1799,8 +1879,9 @@ impl PluginHost {
         self.writable()?;
         let plugin = self.known(id)?;
         if !Origin::of(&plugin.state().source).can_disable() {
-            return Err(ApiError::conflict(format!(
-                "«{id}» — системное приложение: без него колонка не работает как надо, его не выключить."
+            return Err(ApiError::conflict(crate::tr!(
+                "«{id}» — системное приложение: без него колонка не работает как надо, его не выключить.",
+                id = id
             )));
         }
         registry::set_enabled(&self.db, id, false, None, actor.as_ref().map(|actor| actor.name.as_str()))?;
@@ -1835,16 +1916,21 @@ impl PluginHost {
         }
         let (package, problem) = choose(&found, (self.placement)());
         let Some(package) = package else {
-            let message = format!("Новой версии нет: {}.", problem.unwrap_or_default());
+            let message = crate::tr!("Новой версии нет: {problem}.", problem = problem.unwrap_or_default());
             return Err(ApiError::bad_request(message));
         };
         if let Some(taken) = self.tool_taken(id, &package) {
-            return Err(ApiError::conflict(format!("Новая версия не включена: {taken}.")));
+            return Err(ApiError::conflict(crate::tr!("Новая версия не включена: {taken}.", taken = taken)));
         }
         let version = package.version();
         let running = running.unwrap_or_else(|| "—".into());
         let loading = self.admit(&plugin, &package.manifest).await.map_err(|why| {
-            ApiError::conflict(format!("Новая версия {version} не загрузилась: {why}. Работает прежняя {running}."))
+            ApiError::conflict(crate::tr!(
+                "Новая версия {version} не загрузилась: {why}. Работает прежняя {running}.",
+                version = version,
+                why = why,
+                running = running
+            ))
         })?;
         match self.start_package(&package).await {
             Ok(instance) => {
@@ -1868,12 +1954,20 @@ impl PluginHost {
                 Ok(self.view_of(&plugin).await)
             }
             Err(error) => {
-                let message = format!("версия {version} не поднялась: {error}; работает прежняя {running}");
+                let message = crate::tr!(
+                    "версия {version} не поднялась: {error}; работает прежняя {running}",
+                    version = version,
+                    error = error,
+                    running = running
+                );
                 tracing::warn!(target: "plugins", "{id}: {message}");
                 self.note_error(&plugin, &message);
                 self.changed(id, "failed", Some(version.clone()), Some(message.clone()), actor);
-                Err(ApiError::bad_request(format!(
-                    "Новая версия {version} не поднялась: {error}. Работает прежняя {running}."
+                Err(ApiError::bad_request(crate::tr!(
+                    "Новая версия {version} не поднялась: {error}. Работает прежняя {running}.",
+                    version = version,
+                    error = error,
+                    running = running
                 )))
             }
         }
@@ -1887,9 +1981,10 @@ impl PluginHost {
         let plugin = self.known(id)?;
         let origin = Origin::of(&plugin.state().source);
         if !origin.removable() {
-            return Err(ApiError::conflict(format!(
-                "«{id}» — {} приложение: его версия — версия шлюза.",
-                origin.word()
+            return Err(ApiError::conflict(crate::tr!(
+                "«{id}» — {word} приложение: его версия — версия шлюза.",
+                id = id,
+                word = origin.word()
             )));
         }
         let ready: Vec<Arc<Package>> = plugin
@@ -1902,7 +1997,7 @@ impl PluginHost {
             })
             .collect();
         let [newest, before, ..] = ready.as_slice() else {
-            return Err(ApiError::conflict("Откатываться не на что: версия одна."));
+            return Err(ApiError::conflict(crate::tr!("Откатываться не на что: версия одна.")));
         };
         let (gone, back) = (newest.version(), before.version());
         let dir = newest.dir.clone();
@@ -1934,7 +2029,7 @@ impl PluginHost {
         if let Some(history) = &history {
             history.note_rollback(id, &back_dir, &back, actor.as_ref());
         }
-        self.note_line(id, "load", &format!("откат: {gone} → {back}"));
+        self.note_line(id, "load", &crate::tr!("откат: {gone} → {back}", gone = gone, back = back));
         self.changed(id, "rolledBack", Some(back), None, actor);
         self.view_one(id).await
     }
@@ -1991,8 +2086,8 @@ impl PluginHost {
             let state = plugin.state();
             state.active.clone().or_else(|| choose(&state.found, (self.placement)()).0)
         };
-        let package =
-            package.ok_or_else(|| ApiError::bad_request("У приложения нет версии, которая работает здесь."))?;
+        let package = package
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("У приложения нет версии, которая работает здесь.")))?;
         let checked = check_settings(&package.manifest.settings, values)?;
         self.keep_settings(id, &checked, actor.clone())?;
         self.changed(id, "settings", Some(package.version()), None, actor);
@@ -2028,18 +2123,19 @@ impl PluginHost {
     /// Runs a plugin's tool as «Мозг» would, for the panel's check: its answer as the model reads it.
     pub async fn try_tool(&self, id: &str, name: &str, input: Value) -> Result<String, ApiError> {
         self.writable()?;
-        let package = self.package(id).ok_or_else(|| ApiError::conflict(format!("Приложение {id} выключено.")))?;
+        let package =
+            self.package(id).ok_or_else(|| ApiError::conflict(crate::tr!("Приложение {id} выключено.", id = id)))?;
         let spec = package
             .manifest
             .contributes
             .tools
             .iter()
             .find(|spec| spec.name == name)
-            .ok_or_else(|| ApiError::not_found(format!("Нет инструмента {name}.")))?;
+            .ok_or_else(|| ApiError::not_found(crate::tr!("Нет инструмента {name}.", name = name)))?;
         let answer = self
             .call(id, &spec.handler, input, CallKind::Tool)
             .await
-            .map_err(|error| ApiError::bad_request(format!("Инструмент не ответил: {error}.")))?;
+            .map_err(|error| ApiError::bad_request(crate::tr!("Инструмент не ответил: {error}.", error = error)))?;
         Ok(tool_text(answer))
     }
 
@@ -2072,12 +2168,17 @@ impl PluginHost {
                         parameters: offered.spec.input.clone(),
                     },
                     permission: use_of(offered.spec.capability),
-                    run: Arc::new(move |input: Map<String, Value>, context: ToolContext| {
+                    run: Arc::new(move |mut input: Map<String, Value>, context: ToolContext| {
                         let (me, plugin, handler) = (me.clone(), plugin.clone(), handler.clone());
                         Box::pin(async move {
                             let host = me.upgrade().ok_or_else(|| anyhow::anyhow!("plugins are gone"))?;
-                            // The chain is the speaker's: whatever the tool reaches on the bus, it reaches as them.
-                            let trail = crate::bus::Trail::principal(&context.principal);
+                            // Where the words came from, as a phrase's `request` says it: inside a station's answer
+                            // the tool may play on it (`play`, `player`); in the panel it shows on the screen instead.
+                            input.insert("request".into(), json!({ "station": context.station.is_some() }));
+                            // The chain is the speaker's: whatever the tool reaches on the bus, it reaches as them —
+                            // through the model, which may be in the cloud.
+                            let trail =
+                                crate::bus::Trail::principal(&context.principal).through_model(host.model_in_cloud());
                             let answer =
                                 trail.scope(host.call(&plugin, &handler, Value::Object(input), CallKind::Tool)).await?;
                             Ok(host.act(&plugin, capability, answer, context.station.as_ref()))
@@ -2102,8 +2203,28 @@ impl PluginHost {
         station: Option<&crate::core::connectors::StationAct>,
     ) -> String {
         let Value::Object(object) = &answer else { return tool_text(answer) };
-        let Some(play) = object.get("play") else { return tool_text(answer) };
         let say = object.get("say").and_then(Value::as_str).map(str::trim).filter(|say| !say.is_empty());
+        // `player`: what plays on the station now — «pause», «resume», «stop» (the agent's «поставь на паузу»).
+        if let Some(word) = object.get("player").and_then(Value::as_str) {
+            let directives = match word {
+                "pause" => vec![crate::skills::directives::pause_player()],
+                "resume" => vec![crate::skills::directives::continue_player()],
+                "stop" => crate::skills::directives::stop_player(),
+                _ => return tool_text(answer),
+            };
+            let Some(station) = station else {
+                return "No station here: nothing on its player was changed.".into();
+            };
+            if !(station.add)(directives) {
+                return "error: the answer went out already; ask the user to say it again".into();
+            }
+            tracing::info!(target: "plugins", "{plugin}: its tool tells the player «{word}»");
+            return match say {
+                Some(say) => format!("Done: the station's player — {word}. Tell the user: {say}"),
+                None => format!("Done: the station's player — {word}."),
+            };
+        }
+        let Some(play) = object.get("play") else { return tool_text(answer) };
         let kind = super::media::kind_for(capability);
         let base = station.and_then(|station| station.media_base_url.clone());
         let items = super::media::media_items_with(plugin, kind, play, base.as_deref(), &self.play_rights(plugin));
@@ -2141,7 +2262,7 @@ impl PluginHost {
                     version: candidate.version(),
                     problems: match candidate {
                         Candidate::Ready(package) => {
-                            let why = package.manifest.kind.not_a_plugin().map(str::to_string);
+                            let why = package.manifest.kind.not_a_plugin();
                             why.or_else(|| package.manifest.incompatible_with((self.placement)())).into_iter().collect()
                         }
                         Candidate::Broken { problems, .. } => problems.clone(),
@@ -2161,6 +2282,8 @@ impl PluginHost {
         let stats = plugin.stats().clone();
         let shown = package.clone().or(newest);
         let manifest = shown.as_ref().map(|package| package.manifest.clone());
+        // Its texts in the request's language, else the household's, else English (docs/plans/i18n.md).
+        let languages = crate::locale::preferences(&self.settings);
         // As the panel sees them: a secret one only as «••••••».
         let stored = self.settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default();
         let values = manifest
@@ -2210,8 +2333,9 @@ impl PluginHost {
             kind: manifest.as_ref().map(|manifest| manifest.kind),
             runtime: manifest.as_ref().map(|manifest| manifest.runtime),
             id: plugin.id.clone(),
-            title: manifest.as_ref().map(|manifest| manifest.title.clone()).unwrap_or_else(|| plugin.id.clone()),
-            description: manifest.as_ref().and_then(|manifest| manifest.description.clone()),
+            title: manifest.as_ref().map(|manifest| manifest.title_in(&languages)).unwrap_or_else(|| plugin.id.clone()),
+            description: manifest.as_ref().and_then(|manifest| manifest.description_in(&languages)),
+            languages: manifest.as_ref().map(|manifest| manifest.languages.clone()).unwrap_or_default(),
             license: manifest.as_ref().and_then(|manifest| manifest.license.clone()),
             source,
             verified,
@@ -2265,9 +2389,9 @@ impl PluginHost {
                 .as_ref()
                 .map(|manifest| {
                     manifest
-                        .settings
-                        .iter()
-                        .map(|spec| SettingView { value: values.get(&spec.key).cloned(), spec: spec.clone() })
+                        .settings_in(&languages)
+                        .into_iter()
+                        .map(|spec| SettingView { value: values.get(&spec.key).cloned(), spec })
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -2318,13 +2442,15 @@ pub fn check_settings(
 ) -> Result<CheckedSettings, ApiError> {
     let mut checked = CheckedSettings::default();
     for (key, value) in values {
-        let spec =
-            specs.iter().find(|spec| &spec.key == key).ok_or_else(|| ApiError::field(key, "нет такой настройки"))?;
+        let spec = specs
+            .iter()
+            .find(|spec| &spec.key == key)
+            .ok_or_else(|| ApiError::field(key, crate::tr!("нет такой настройки")))?;
         if spec.secret && value.as_str() == Some(manifest::SECRET_SHOWN) {
             continue;
         }
         if !value.is_null() && !spec.accepts(value) {
-            return Err(ApiError::field(key, "значение не подходит к настройке"));
+            return Err(ApiError::field(key, crate::tr!("значение не подходит к настройке")));
         }
         match (spec.secret, value) {
             (true, Value::Null) => checked.private.push((key.clone(), None)),
@@ -2363,28 +2489,37 @@ fn copy_package(from: &std::path::Path, to: &std::path::Path, id: &str, title: &
 pub fn theme_form(theme: &Value) -> Result<(), String> {
     let id = theme.get("id").and_then(Value::as_str).unwrap_or_default();
     if id.is_empty() || id.len() > 40 || !id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
-        return Err("id темы — строчные латинские буквы, цифры и «-»".into());
+        return Err(crate::tr!("id темы — строчные латинские буквы, цифры и «-»"));
     }
     if theme.get("title").and_then(Value::as_str).is_none_or(|title| title.trim().is_empty()) {
-        return Err(format!("{id}: нет title"));
+        return Err(crate::tr!("{id}: нет title", id = id));
     }
     for mode in ["dark", "light"] {
         let palette = theme.pointer(&format!("/palette/{mode}")).and_then(Value::as_object);
-        let Some(palette) = palette else { return Err(format!("{id}: нет palette.{mode}")) };
+        let Some(palette) = palette else {
+            return Err(crate::tr!("{id}: нет palette.{mode}", id = id, mode = mode));
+        };
         if let Some((token, _)) = palette.iter().find(|(token, value)| {
             !value.is_string()
                 || token.is_empty()
                 || !token.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         }) {
-            return Err(format!(
-                "{id}: palette.{mode}.{token} — токен из строчных букв, цифр и «-» со строкой-значением"
+            return Err(crate::tr!(
+                "{id}: palette.{mode}.{token} — токен из строчных букв, цифр и «-» со строкой-значением",
+                id = id,
+                mode = mode,
+                token = token
             ));
         }
     }
     match theme.get("layout").and_then(Value::as_str) {
         // «desk» — стол и док (docs/plans/desk.md); «tabbar» прежних тем — тоже стол.
         None | Some("desk") | Some("tabbar") | Some("sidebar") => Ok(()),
-        Some(other) => Err(format!("{id}: раскладка «{other}» — это код оболочки, плагин пульта, а не тема")),
+        Some(other) => Err(crate::tr!(
+            "{id}: раскладка «{other}» — это код оболочки, плагин пульта, а не тема",
+            id = id,
+            other = other
+        )),
     }
 }
 
@@ -2394,6 +2529,8 @@ pub fn theme_form(theme: &Value) -> Result<(), String> {
 pub struct PanelPart {
     pub id: String,
     pub title: String,
+    /// The languages it speaks, its own first: its window picks its texts by them (docs/plans/i18n.md).
+    pub languages: Vec<String>,
     pub version: String,
     /// Its panel code (`panel.js`): it runs in a window of its own — a sandboxed frame that reaches the gateway only
     /// through the panel's bridge (docs/plans/bus.md, «Окошки»); its styles load in that window.
@@ -2501,8 +2638,11 @@ pub struct PackageView {
     pub panel_module: Option<String>,
     pub panel_styles: Option<String>,
     pub id: String,
+    /// Its title and description in the request's language when it speaks it (docs/plans/i18n.md).
     pub title: String,
     pub description: Option<String>,
+    /// The languages it speaks, its own first (`languages` of its manifest).
+    pub languages: Vec<String>,
     pub license: Option<String>,
     /// catalog: installed from the catalog by a button; local: copied in by hand.
     pub source: String,
@@ -3238,7 +3378,10 @@ mod tests {
             "schema": 1, "id": "tuner", "version": "1.0.0", "title": "Тюнер", "api": "^2", "runs": ["pc"],
             "permissions": [],
             "contributes": {
-                "tools": [{ "name": "tuner_play", "description": "Включает станцию", "handler": "play", "capability": "radio" }],
+                "tools": [
+                    { "name": "tuner_play", "description": "Включает станцию", "handler": "play", "capability": "radio" },
+                    { "name": "tuner_pause", "description": "Пауза", "handler": "pause", "capability": "radio" }
+                ],
                 "media": [{ "id": "stations", "kind": "radio" }],
                 "events": [{ "name": "player.silent", "handler": "silent" }]
             }
@@ -3247,6 +3390,7 @@ mod tests {
             const A = { id: "a", title: "Станция А", url: "https://a.example/a.mp3" };
             const B = { id: "b", title: "Станция Б", url: "https://b.example/b.mp3" };
             export function play() { return { say: "Включаю станцию А", play: [A, B] }; }
+            export function pause({ request }) { return request.station ? { player: "pause", say: "Пауза" } : { station: false }; }
             export function stations() { return []; }
             export function silent({ payload }) { return payload.retrying ? null : { play: [B] }; }
         "#;
@@ -3287,6 +3431,23 @@ mod tests {
         // Without a station (the panel's check) nothing plays.
         let check = ToolContext { principal: system(), cancel: CancellationToken::new(), station: None };
         assert!((tool.run)(Map::new(), check).await.unwrap().contains("nothing played"));
+        // The tool knows where the words came from (`request.station`); `player` pauses the station's player.
+        let pause = host.tool_contributions().into_iter().find(|tool| tool.tool.name == "tuner_pause").unwrap();
+        let sink = added.clone();
+        let station = StationAct {
+            device: "kitchen".into(),
+            media_base_url: None,
+            add: Arc::new(move |directives| {
+                sink.lock().unwrap().extend(directives);
+                true
+            }),
+        };
+        let context = ToolContext { principal: system(), cancel: CancellationToken::new(), station: Some(station) };
+        let said = (pause.run)(Map::new(), context).await.unwrap();
+        assert!(said.contains("player — pause") && said.contains("Пауза"), "{said}");
+        assert_eq!(added.lock().unwrap().last().unwrap().name, "player_pause");
+        let check = ToolContext { principal: system(), cancel: CancellationToken::new(), station: None };
+        assert!((pause.run)(Map::new(), check).await.unwrap().contains("\"station\":false"));
 
         // The station kept silent on it, through the gateway too: the plugin answers with the next station.
         let (item, state) = player.current("kitchen").unwrap();

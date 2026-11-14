@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 
 import { HomeServerStatus, MoveJob, MoveTo, PlacementView, Station, StationGatewayView, api, can, problemOf } from '../api';
 import { FeatureRow, GROUP_TITLES, PLACEMENT_TITLES, Placement, useAvailability } from '../availability';
+import { locale, tr } from '../i18n';
 import { timeAgo } from '../time';
 import { Host, Solved, solve } from '../truth';
 import { DashData, ourBrain, scenarioOf } from './dash-model';
@@ -18,43 +19,26 @@ import { ask } from '../ui/confirm';
  * колонки — себя, свой домашний сервер и путь назад к Яндексу без компьютера. Что где доступно — список шлюза.
  */
 
-const STEP_TITLES: Record<MoveJob['steps'][number]['id'], string> = {
-    check: 'Проверка колонки: процессор, место, память',
-    copy: 'Путь назад: копия адресов и restore.sh',
-    install: 'Шлюз на колонку: сборка этого компьютера',
-    settings: 'Настройки',
-    point: 'Голос колонки — к шлюзу, перезагрузка',
-    arrive: 'Колонка на связи',
-    stop: 'Шлюз на колонке остановлен',
-};
-
-const MOVE_TITLES: Record<MoveTo, string> = {
-    station: 'Перенос шлюза на колонку',
-    stationServer: 'Перенос шлюза на колонку с домашним сервером',
-    pc: 'Возврат шлюза на компьютер',
-    yandex: 'Колонка — снова Яндексу',
-};
-
 const LEVEL_MARK: Record<FeatureRow['pc']['level'], string> = { yes: '✓', partial: '◐', no: '—' };
 
 function mb(kb?: number): string {
-    return kb === undefined ? '—' : `${Math.round(kb / 1024)} МБ`;
+    return kb === undefined ? '—' : tr.placement.mb(Math.round(kb / 1024));
 }
 
 /** «держит 10 МБ памяти, свободно 61 МБ · в /data свободно 40 МБ» — только то, что известно. */
 function resources(memory?: { rssKb?: number; availableKb?: number }, data?: { freeKb: number }): string {
     const parts = [];
-    if (memory?.rssKb !== undefined) parts.push(`держит ${mb(memory.rssKb)} памяти`);
-    if (memory?.availableKb !== undefined) parts.push(`свободно ${mb(memory.availableKb)}`);
-    if (data) parts.push(`в /data свободно ${mb(data.freeKb)}`);
+    if (memory?.rssKb !== undefined) parts.push(tr.placement.holdsMemory(mb(memory.rssKb)));
+    if (memory?.availableKb !== undefined) parts.push(tr.placement.freeMemory(mb(memory.availableKb)));
+    if (data) parts.push(tr.placement.freeData(mb(data.freeKb)));
     return parts.join(', ');
 }
 
 function clock(at?: string): string {
     if (!at) return '';
     const date = new Date(at);
-    const time = date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-    return date.toDateString() === new Date().toDateString() ? time : `${date.toLocaleDateString('ru-RU')} ${time}`;
+    const time = date.toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' });
+    return date.toDateString() === new Date().toDateString() ? time : `${date.toLocaleDateString(locale())} ${time}`;
 }
 
 function Line({ children, tone }: { children: preact.ComponentChildren; tone?: 'warn' | 'error' | 'ok' }) {
@@ -141,7 +125,7 @@ export function PlacementCard() {
             <section class="card glass px-16 pt-4 pb-14 flex flex-col gap-10" aria-labelledby="placement-h">
                 <div class="section-head">
                     <h2 id="placement-h" class="t-title-xs m-0">
-                        Где работает DuoWave
+                        {tr.placement.gatewayHead}
                     </h2>
                     <span class="pill pill-own">{PLACEMENT_TITLES[view.role === 'pc' ? (view.station?.record?.placement ?? 'pc') : view.placement]}</span>
                 </div>
@@ -191,9 +175,9 @@ export function PlacementCard() {
                     station={view.station}
                     onClose={() => setCopies(false)}
                     onRestore={(id) =>
-                        act('restore', () => api.restoreStationSettings(id), 'Копия отправлена: шлюз на колонке перезапустится на ней.')
+                        act('restore', () => api.restoreStationSettings(id), tr.placement.copySent)
                     }
-                    onBackup={() => act('backup', () => api.backupStation(), 'Копия настроек колонки сохранена на этом компьютере.')}
+                    onBackup={() => act('backup', () => api.backupStation(), tr.placement.copyBackedUp)}
                 />
             )}
             {inspected && <InspectSheet inspected={inspected} onClose={() => setInspected(null)} />}
@@ -201,7 +185,7 @@ export function PlacementCard() {
                 <GiveBackSheet
                     onClose={() => setGivingBack(false)}
                     onConfirm={async () => {
-                        await act('giveBack', () => api.giveBack(), 'Колонка перезагружается: через минуту отвечает Алиса, DuoWave ждёт здесь.');
+                        await act('giveBack', () => api.giveBack(), tr.placement.giveBackDone);
                         setGivingBack(false);
                     }}
                 />
@@ -256,14 +240,13 @@ function ComputerSide({
         return (
             <>
                 <Line>
-                    Шлюз работает на этом компьютере: колонка шлёт голос сюда. Пока компьютер спит, колонка молчит — шлюз можно
-                    перенести на саму колонку.
+                    {tr.placement.runsOnThisComputer}
                 </Line>
                 {station?.payload.source === 'none' && <Line tone="warn">{station.payload.note}</Line>}
                 {mayManage && (
                     <Row>
-                        <Action label="Сменить…" onClick={onChoose} />
-                        <Action label="Шлюз уже на колонке…" onClick={onLink} />
+                        <Action label={tr.placement.change} onClick={onChoose} />
+                        <Action label={tr.placement.gatewayAlreadyOnStation} onClick={onLink} />
                     </Row>
                 )}
             </>
@@ -278,55 +261,55 @@ function ComputerSide({
         <>
             <Line>
                 {live.reachable
-                    ? [`Шлюз на колонке ${station.version ?? ''} на связи`, resources(memory, health?.data)].filter(Boolean).join(' · ')
+                    ? [tr.placement.gatewayOnStationOnline(station.version ?? ''), resources(memory, health?.data)].filter(Boolean).join(' · ')
                     : live.seenAt
-                      ? `Шлюз на колонке не отвечает · последний раз ${timeAgo(live.seenAt)}`
-                      : 'Шлюз на колонке ещё не ответил.'}
+                      ? tr.placement.gatewayOnStationDown(timeAgo(live.seenAt))
+                      : tr.placement.gatewayOnStationSilent}
             </Line>
             <label class="helper-row">
                 <span class="helper-icon">
                     <SegIcon placement="pc" />
                 </span>
                 <span class="helper-text">
-                    Компьютер помогает колонке
+                    {tr.placement.pcHelps}
                     <span>
                         {record.placement !== 'stationServer'
-                            ? 'выключено: колонка обходится без компьютера'
+                            ? tr.placement.helperOff
                             : homeServer?.state === 'down'
-                              ? 'колонка не дотягивается до компьютера: работает через облако или Яндекс'
-                              : 'слух, свой голос и модели — у этого компьютера'}
+                              ? tr.placement.helperDown
+                              : tr.placement.helperOn}
                     </span>
                 </span>
                 <Switch
                     on={record.placement === 'stationServer'}
-                    label="Компьютер помогает колонке"
+                    label={tr.placement.pcHelps}
                     disabled={!mayManage || busy === 'helper' || !live.reachable}
                     onChange={(on) =>
-                        void act('helper', () => api.setStationHelper(on), on ? 'Колонка опирается на этот компьютер.' : 'Колонка работает без компьютера.')
+                        void act('helper', () => api.setStationHelper(on), on ? tr.placement.helperSwitchOn : tr.placement.helperSwitchOff)
                     }
                 />
             </label>
-            {!station.compatible && <Line tone="warn">Шлюз на колонке говорит на другой версии API: сначала обновите его.</Line>}
+            {!station.compatible && <Line tone="warn">{tr.placement.apiMismatch}</Line>}
             {station.warnings.map((warning) => (
                 <div key={warning.kind} class="flex flex-col gap-6">
                     <Line tone="warn">{warning.text}</Line>
                     {mayManage && warning.kind === 'silent' && (
                         <Row>
-                            <Action label="Проверить" busy={busy === 'inspect'} onClick={onInspect} />
+                            <Action label={tr.placement.check} busy={busy === 'inspect'} onClick={onInspect} />
                             <Action
-                                label="Попробовать снова"
+                                label={tr.placement.retry}
                                 busy={busy === 'retry'}
-                                onClick={() => void act('retry', () => api.retryStation(), 'Шлюз на колонке запущен, голос возвращается к нему.')}
+                                onClick={() => void act('retry', () => api.retryStation(), tr.placement.retried)}
                             />
                         </Row>
                     )}
                     {mayManage && warning.kind === 'voiceAway' && (
                         <Row>
                             <Action
-                                label="Вернуть голос DuoWave"
+                                label={tr.placement.giveVoiceBack}
                                 busy={busy === 'voice'}
                                 onClick={() =>
-                                    void act('voice', () => api.stationVoice('local'), 'Колонка перезагружается: через минуту её голос — у шлюза.')
+                                    void act('voice', () => api.stationVoice('local'), tr.placement.voiceBackDone)
                                 }
                             />
                         </Row>
@@ -335,54 +318,54 @@ function ComputerSide({
             ))}
             <Row>
                 <a class="pill pill-off py-8 px-14" href={`http://${record.address}:${record.port}/panel`} target="_blank" rel="noreferrer">
-                    Пульт колонки ↗
+                    {tr.placement.stationPanel}
                 </a>
-                {mayManage && <Action label="Сменить…" onClick={onChoose} />}
+                {mayManage && <Action label={tr.placement.change} onClick={onChoose} />}
             </Row>
             <SettingsLine view={view} busy={busy} act={act} mayManage={mayManage} onCopies={onCopies} />
             <div class="flex flex-col gap-6">
                 {update ? (
                     <Row>
-                        <Line>Есть шлюз для колонки новее: {update}.</Line>
+                        <Line>{tr.placement.newerGateway(update)}</Line>
                         {can('system.update') && (
                             <Action
                                 tone="on"
-                                label={live.updating ? 'обновляется…' : `Обновить колонку до ${update}`}
+                                label={live.updating ? tr.placement.updating : tr.placement.updateTo(update)}
                                 busy={live.updating || busy === 'update'}
                                 onClick={() => void act('update', () => api.updateStationGateway())}
                             />
                         )}
                     </Row>
                 ) : (
-                    live.reachable && <Line>У шлюза на колонке последняя версия.</Line>
+                    live.reachable && <Line>{tr.placement.latestGateway}</Line>
                 )}
-                {live.updateError && <Line tone="error">Колонка не обновилась: {live.updateError}</Line>}
+                {live.updateError && <Line tone="error">{tr.placement.updateFailed(live.updateError)}</Line>}
                 {can('system.update') && record.managed && (
                     <label class="t-caption flex items-center gap-10">
                         <Switch
                             on={record.autoUpdate}
-                            label="Обновлять колонку автоматически"
+                            label={tr.placement.autoUpdate}
                             disabled={busy === 'auto'}
                             onChange={(on) => void act('auto', () => api.setStationAutoUpdate(on))}
                         />
-                        Обновлять колонку вместе с компьютером, не спрашивая
+                        {tr.placement.autoUpdateAbout}
                     </label>
                 )}
                 {mayManage && health && (
                     <label class="t-caption flex items-center gap-10">
                         <Switch
                             on={health.safety !== false}
-                            label="Страховка"
+                            label={tr.placement.safety}
                             disabled={busy === 'safety' || !live.reachable}
                             onChange={(on) => void act('safety', () => api.setSafety(on))}
                         />
-                        Страховка: шлюз не поднимается — колонка вернётся к прежнему адресу
+                        {tr.placement.safetyAbout}
                     </label>
                 )}
             </div>
             {mayManage && (
                 <button class="danger-link" disabled={busy === 'yandex'} onClick={onUnlink}>
-                    Отвязать колонку и вернуть Яндексу…
+                    {tr.placement.unlink}
                 </button>
             )}
         </>
@@ -415,20 +398,19 @@ function SettingsLine({
         return (
             <div class="flex flex-col gap-6">
                 <Line tone="warn">
-                    Настройки этой колонки пока хранятся на компьютере и уходят на неё отсюда. Теперь они живут на колонке:
-                    верните их туда — помощник будет править их прямо на колонке и держать копии здесь.
+                    {tr.placement.settingsOnPc}
                 </Line>
                 {live.syncError && <Line tone="error">{live.syncError}</Line>}
                 {mayManage && (
                     <Row>
                         <Action
-                            label="Вернуть настройки на колонку"
+                            label={tr.placement.settingsToStation}
                             busy={busy === 'home'}
                             onClick={() =>
                                 void ask({
-                                    title: 'Настройки — на колонку?',
-                                    text: 'Последние настройки с компьютера уйдут на колонку, и дальше она хранит их сама; компьютер держит копии.',
-                                    ok: 'Вернуть',
+                                    title: tr.placement.settingsAskTitle,
+                                    text: tr.placement.settingsAskText,
+                                    ok: tr.placement.settingsAskOk,
                                 }).then((yes) => yes && void act('home', () => api.setSettingsHome('station')))
                             }
                         />
@@ -438,16 +420,16 @@ function SettingsLine({
         );
     const text = station.copyStale
         ? latest
-            ? `Настройки — на колонке · компьютер не видел колонку с ${clock(latest.at)} — копия старая`
-            : 'Настройки — на колонке · копии на этом компьютере ещё нет'
-        : `Настройки — на колонке, правятся в её окнах · копия здесь — ${latest ? timeAgo(latest.at) : '—'}`;
+            ? tr.placement.settingsStale(clock(latest.at))
+            : tr.placement.settingsNoCopy
+        : tr.placement.settingsFresh(latest ? timeAgo(latest.at) : '—');
     return (
         <div class="flex flex-col gap-6">
             <Line tone={station.copyStale ? 'warn' : undefined}>{text}</Line>
             {live.syncError && <Line tone="error">{live.syncError}</Line>}
             {mayManage && (
                 <Row>
-                    <Action label="Копии…" onClick={onCopies} />
+                    <Action label={tr.placement.copies} onClick={onCopies} />
                 </Row>
             )}
         </div>
@@ -472,57 +454,55 @@ function StationSide({
     const voiceHere = health.voice?.local !== false;
     const managed =
         view.managedBy === 'pc'
-            ? 'Обновления ставит компьютер, который поставил шлюз.'
+            ? tr.placement.managedPc
             : view.managedBy === 'yam'
-              ? 'Шлюз поставлен через YAM: обновление — yam install файла новой версии из выпуска, на колонке.'
+              ? tr.placement.managedYam
               : view.managedBy === 'yse'
-                ? 'Шлюз поставлен через yse: его обновляет yse.'
-                : 'Обновления — из ленты выпусков, в карточке «Обновления».';
+                ? tr.placement.managedYse
+                : tr.placement.managedFeed;
     return (
         <>
-            <Line>{['Шлюз работает на самой колонке', resources(health.memory, health.data)].filter(Boolean).join(' · ')}</Line>
+            <Line>{[tr.placement.runsOnStation, resources(health.memory, health.data)].filter(Boolean).join(' · ')}</Line>
             <StationHelper mayManage={can('connectors.manage')} onChanged={() => void act('helperRead', async () => undefined)} />
             <Line>
                 {view.state.settingsHome === 'pc'
-                    ? `Настройки этой колонки пока приходят с компьютера — верните их на колонку в его пульте: «Настройки» → «Колонка».${
-                          health.settingsReceivedAt ? ` Получены ${timeAgo(health.settingsReceivedAt)}.` : ''
-                      }`
+                    ? `${tr.placement.settingsComeFromPc}${health.settingsReceivedAt ? tr.placement.settingsReceived(timeAgo(health.settingsReceivedAt)) : ''}`
                     : health.settingsCopiedAt
-                      ? `Настройки хранятся здесь · копия на компьютере — ${timeAgo(health.settingsCopiedAt)}`
-                      : 'Настройки хранятся здесь · компьютер ещё не брал их копию'}
+                      ? tr.placement.settingsCopiedAt(timeAgo(health.settingsCopiedAt))
+                      : tr.placement.settingsNotCopied}
             </Line>
             <Line>{managed}</Line>
             {view.state.safetyLast && (
                 <Line tone="warn">
-                    Страховка сработала {clock(view.state.safetyLast.at)}:{' '}
-                    {view.state.safetyLast.what === 'previous-version' ? 'вернулась прежняя версия.' : 'колонка возвращалась к прежнему адресу.'}
+                    {tr.placement.safetyFired(clock(view.state.safetyLast.at))}
+                    {view.state.safetyLast.what === 'previous-version' ? tr.placement.safetyPrevious : tr.placement.safetyAddress}
                 </Line>
             )}
             {mayManage && (
                 <label class="t-caption flex items-center gap-10">
                     <Switch
                         on={view.state.safety}
-                        label="Страховка"
+                        label={tr.placement.safety}
                         disabled={busy === 'safety'}
                         onChange={(on) => void act('safety', () => api.setSafety(on))}
                     />
-                    Страховка: шлюз не поднимается — колонка вернётся к прежнему адресу
+                    {tr.placement.safetyAbout}
                 </label>
             )}
             {mayManage && (
                 <Row>
                     {voiceHere ? (
                         <button class="danger-link soft" disabled={busy === 'giveBack'} onClick={onGiveBack}>
-                            Отдать голос Яндексу…
+                            {tr.placement.giveVoice}
                         </button>
                     ) : (
                         <>
-                            <Line tone="warn">Голос колонки сейчас не у этого шлюза.</Line>
+                            <Line tone="warn">{tr.placement.voiceNotHere}</Line>
                             <Action
-                                label="Вернуть голос DuoWave"
+                                label={tr.placement.giveVoiceBack}
                                 busy={busy === 'pointLocal'}
                                 onClick={() =>
-                                    void act('pointLocal', () => api.pointLocal(), 'Колонка перезагружается: через минуту её голос — у шлюза.')
+                                    void act('pointLocal', () => api.pointLocal(), tr.placement.voiceBackDone)
                                 }
                             />
                         </>
@@ -538,15 +518,15 @@ function MoveProgress({ job }: { job: MoveJob }) {
     return (
         <div role="status" class="flex flex-col gap-4 py-10 px-12 r-panel bg-divider">
             <span class="fw-700 fs-13">
-                {MOVE_TITLES[job.to]}
-                {job.status === 'done' ? ' — готово' : job.status === 'failed' ? ' — не вышло' : '…'}
+                {tr.placement.moveTitles[job.to]}
+                {job.status === 'done' ? tr.placement.moveDone : job.status === 'failed' ? tr.placement.moveFailed : '…'}
             </span>
             {job.steps.map((step) => (
                 <span key={step.id} class={`t-caption flex gap-8${step.state === 'pending' || step.state === 'skipped' ? ' opacity-50' : ''}`}>
                     <span aria-hidden="true" class="w-14">
                         {step.state === 'done' ? '✓' : step.state === 'failed' ? '✕' : step.state === 'running' ? '…' : step.state === 'skipped' ? '–' : '·'}
                     </span>
-                    {STEP_TITLES[step.id]}
+                    {tr.placement.stepTitles[step.id]}
                 </span>
             ))}
             {job.note && <Line>{job.note}</Line>}
@@ -571,7 +551,7 @@ function FeatureList({ rows, placement }: { rows: FeatureRow[]; placement: Place
                             const cell = row[placement];
                             return (
                                 <span key={row.id} class={`t-caption flex gap-8${cell.level === 'no' ? ' opacity-55' : ''}`}>
-                                    <span aria-label={cell.level === 'yes' ? 'есть' : cell.level === 'partial' ? 'частично' : 'нет'} class="w-14 flex-none">
+                                    <span aria-label={cell.level === 'yes' ? tr.placement.levelYes : cell.level === 'partial' ? tr.placement.levelPartial : tr.placement.levelNo} class="w-14 flex-none">
                                         {LEVEL_MARK[cell.level]}
                                     </span>
                                     <span class="flex-1">
@@ -588,28 +568,13 @@ function FeatureList({ rows, placement }: { rows: FeatureRow[]; placement: Place
 }
 
 /** Что будет при каждом размещении — коротко, по четыре строки: переключение сегментов не двигает страницу. */
-const WHAT: Record<Placement, Array<['plus' | 'minus' | 'info', string]>> = {
-    pc: [
-        ['plus', 'Работает всё, включая «Своё» и звонки.'],
-        ['minus', 'Компьютер уснул — колонка молчит.'],
-        ['info', 'На колонку ничего не ставится.'],
-        ['info', 'Перенос на колонку — тем же окном.'],
-    ],
-    station: [
-        ['plus', 'Компьютер не нужен: колонка работает сама.'],
-        ['minus', 'Без «Своего» и своего голоса.'],
-        ['minus', 'Без облачного слуха отвечает Яндекс.'],
-        ['info', 'Компьютер можно позвать на помощь позже.'],
-    ],
-    stationServer: [
-        ['plus', 'Пока компьютер на связи — всё как дома.'],
-        ['plus', 'Компьютер уснул — колонка сама переходит в «Вместе».'],
-        ['minus', 'Без компьютера и облака слух у Яндекса.'],
-        ['info', 'Помощь компьютера — просто переключатель.'],
-    ],
+const WHAT_KINDS: Record<Placement, Array<'plus' | 'minus' | 'info'>> = {
+    pc: ['plus', 'minus', 'info', 'info'],
+    station: ['plus', 'minus', 'minus', 'info'],
+    stationServer: ['plus', 'plus', 'minus', 'info'],
 };
 
-const SEG_TITLES: Record<Placement, string> = { pc: 'На компьютере', station: 'На колонке', stationServer: 'Колонка + компьютер' };
+const segTitle = (placement: Placement): string => ({ pc: tr.placement.segPc, station: tr.placement.segStation, stationServer: tr.placement.segStationServer })[placement];
 
 function SegIcon({ placement }: { placement: Placement }) {
     return (
@@ -720,22 +685,22 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
         }
     };
     const label = busy
-        ? 'Начинаю…'
+        ? tr.placement.starting
         : same
-          ? 'Шлюз уже здесь'
+          ? tr.placement.already
           : helperOnly
             ? picked === 'stationServer'
-                ? 'Включить помощь компьютера'
-                : 'Выключить помощь компьютера'
+                ? tr.placement.helperTurnOn
+                : tr.placement.helperTurnOff
             : picked === 'pc'
-              ? 'Вернуть шлюз на компьютер'
+              ? tr.placement.moveToPc
               : picked === 'station'
-                ? 'Перенести на колонку'
-                : 'Перенести на колонку с компьютером';
+                ? tr.placement.moveToStation
+                : tr.placement.moveToStationServer;
     return (
         <Sheet
-            title="Где работает DuoWave"
-            about={helperOnly ? 'Без переноса и перезагрузки: колонка просто начнёт или перестанет опираться на компьютер.' : 'Перенос — копия конфига колонки, его правка и перезагрузка: минута без голоса.'}
+            title={tr.placement.gatewayHead}
+            about={helperOnly ? tr.placement.chooserAboutHelper : tr.placement.chooserAboutMove}
             onClose={onClose}
             footer={
                 <button class="dash-done" disabled={busy || same || noBuild || !address.trim()} onClick={() => void start()}>
@@ -743,33 +708,32 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
                 </button>
             }
         >
-            <div role="radiogroup" aria-label="Где работает DuoWave" class="place-seg">
+            <div role="radiogroup" aria-label={tr.placement.gatewayHead} class="place-seg">
                 {(['pc', 'station', 'stationServer'] as const).map((id) => (
                     <button key={id} role="radio" aria-checked={picked === id} onClick={() => setPicked(id)}>
                         <SegIcon placement={id} />
-                        {SEG_TITLES[id]}
-                        <span class="now">{id === current ? 'сейчас' : ''}</span>
+                        {segTitle(id)}
+                        <span class="now">{id === current ? tr.placement.now : ''}</span>
                     </button>
                 ))}
             </div>
 
-            <div class="settings-mini" role="note" aria-label="Настройки колонки">
+            <div class="settings-mini" role="note" aria-label={tr.placement.settingsOfStation}>
                 <span class="set-label">
                     <Gear size={16} />
-                    Настройки
+                    {tr.placement.settings}
                 </span>
                 <p class="meta">
                     {!onStation
-                        ? 'Шлюз на компьютере — настройки тоже на нём.'
-                        : 'Живут на колонке и меняются и без компьютера; компьютер правит их в её окнах и держит копии.'}
+                        ? tr.placement.settingsOnPcMini
+                        : tr.placement.settingsOnStationMini}
                 </p>
             </div>
 
             <PlacementMap solved={solved} placement={picked} settingsAt={settingsAt} brainName={brainName} />
             {cloudAssumed && (
                 <Line>
-                    Облако на схеме — как при подключённых ключах: заработает после облачного слуха или голоса в «Приложения» →
-                    «Подключения».
+                    {tr.placement.cloudAssumed}
                 </Line>
             )}
 
@@ -779,12 +743,12 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
                         <SegIcon placement="pc" />
                     </span>
                     <span class="helper-text">
-                        Компьютер помогает колонке
+                        {tr.placement.pcHelps}
                         <span>
-                            {picked === 'stationServer' ? 'слух, свой голос и модели — у компьютера, пока он на связи' : 'выключено: колонка обходится без компьютера'}
+                            {picked === 'stationServer' ? tr.placement.helperOnDeferred : tr.placement.helperOff}
                         </span>
                     </span>
-                    <Switch on={picked === 'stationServer'} label="Компьютер помогает колонке" onChange={(on) => setPicked(on ? 'stationServer' : 'station')} />
+                    <Switch on={picked === 'stationServer'} label={tr.placement.pcHelps} onChange={(on) => setPicked(on ? 'stationServer' : 'station')} />
                 </label>
             ) : (
                 // То же место, тем же размером: в «На компьютере» помощь ПК не нужна — шлюз и есть ПК.
@@ -793,8 +757,8 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
                         <SegIcon placement="pc" />
                     </span>
                     <span class="helper-text">
-                        Компьютер помогает колонке
-                        <span>не нужно: DuoWave и так на компьютере — колонка говорит с ним напрямую</span>
+                        {tr.placement.pcHelps}
+                        <span>{tr.placement.helperNotNeeded}</span>
                     </span>
                 </div>
             )}
@@ -803,14 +767,14 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
             {solved.notes.length > 0 && <p class="truth-note">{solved.notes.join(' ')}</p>}
 
             <div class="flex flex-col gap-8">
-                <span class="t-caption fw-700">Что будет</span>
+                <span class="t-caption fw-700">{tr.placement.whatWillBe}</span>
                 <ul class="what-list">
-                    {WHAT[picked].map(([kind, text]) => (
-                        <li key={text}>
+                    {WHAT_KINDS[picked].map((kind, index) => (
+                        <li key={index}>
                             <span class={`mk ${kind}`} aria-hidden="true">
                                 {kind === 'plus' ? '+' : kind === 'minus' ? '−' : '·'}
                             </span>
-                            <span>{text}</span>
+                            <span>{tr.placement.what[picked][index]}</span>
                         </li>
                     ))}
                 </ul>
@@ -818,53 +782,53 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
 
             {!helperOnly && (
                 <div class="flex flex-col gap-8">
-                    <span class="t-caption fw-700">Связь</span>
+                    <span class="t-caption fw-700">{tr.placement.link}</span>
                     <div class="link-rows">
                         <div class="link-row">
                             <span class={`link-dot${address.trim() ? '' : ' warn'}`} aria-hidden="true" />
                             <span class="link-text">
-                                {station ? `Колонка: ${station.name}` : address.trim() ? 'Колонка' : 'Колонка не найдена'}
-                                <span>{address.trim() ? (station ? 'нашлась в «Колонках»' : address.trim()) : 'подключите её в «Колонках» или впишите адрес'}</span>
+                                {station ? tr.placement.stationNamed(station.name) : address.trim() ? tr.placement.stationPlain : tr.placement.stationNotFound}
+                                <span>{address.trim() ? (station ? tr.placement.foundInStations : address.trim()) : tr.placement.connectInStations}</span>
                             </span>
                             <button class="link-edit" onClick={() => setEditing({ ...editing, station: !editing.station })}>
-                                {editing.station ? 'Готово' : 'Изменить'}
+                                {editing.station ? tr.placement.done : tr.placement.edit}
                             </button>
                         </div>
                         {(editing.station || !address.trim()) && (
                             <TextField
-                                label="Адрес колонки"
+                                label={tr.placement.stationAddress}
                                 value={address}
                                 placeholder="192.0.2.23"
                                 inputMode="url"
-                                hint={stations && !stations.length ? 'Колонок пока нет: сначала подключите её в «Колонках».' : undefined}
+                                hint={stations && !stations.length ? tr.placement.noStationsYet : undefined}
                                 onInput={setAddress}
                             />
                         )}
                         <div class="link-row">
                                 <span class={`link-dot${pcAddress ? '' : ' warn'}`} aria-hidden="true" />
                                 <span class="link-text">
-                                    Компьютер: этот
-                                    <span>{pcAddress ? 'виден колонке в домашней сети' : 'адрес в домашней сети не найден — впишите'}</span>
+                                    {tr.placement.pcThis}
+                                    <span>{pcAddress ? tr.placement.pcVisible : tr.placement.pcNotFound}</span>
                                 </span>
                                 <button class="link-edit" onClick={() => setEditing({ ...editing, pc: !editing.pc })}>
-                                    {editing.pc ? 'Готово' : 'Изменить'}
+                                    {editing.pc ? tr.placement.done : tr.placement.edit}
                                 </button>
                             </div>
                         {(editing.pc || !pcAddress) && (
                             <TextField
-                                label="Адрес этого компьютера для колонки"
+                                label={tr.placement.pcAddress}
                                 value={gateway}
                                 placeholder={pcAddress || '192.0.2.10:3000'}
                                 inputMode="url"
-                                hint={view.homeAddresses?.length ? `Этот компьютер в домашней сети: ${view.homeAddresses.join(', ')}` : undefined}
+                                hint={view.homeAddresses?.length ? tr.placement.pcOnNetwork(view.homeAddresses.join(', ')) : undefined}
                                 onInput={setGateway}
                             />
                         )}
                         <div class="link-row">
                             <span class="link-dot" aria-hidden="true" />
                             <span class="link-text">
-                                Ключ домашнего сервера
-                                <span>{onStation ? 'создастся сам и уедет на колонку при переносе' : 'остаётся на этом компьютере'}</span>
+                                {tr.placement.homeKey}
+                                <span>{onStation ? tr.placement.homeKeyStation : tr.placement.homeKeyPc}</span>
                             </span>
                         </div>
                     </div>
@@ -874,13 +838,13 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
             {!helperOnly && (
                 <Line tone={onStation ? 'warn' : undefined}>
                     {onStation
-                        ? 'Шлюзу на колонке нужны ключи облачных подключений: они будут лежать на колонке, а её SSH открыт без пароля.'
-                        : 'Ключи облачных подключений лежат на этом компьютере — при переносе на колонку уедут вместе со шлюзом.'}
+                        ? tr.placement.keysOnStation
+                        : tr.placement.keysOnPc}
                 </Line>
             )}
             {availability && (
                 <details>
-                    <summary class="t-caption cursor-pointer fw-700">Что доступно — подробно</summary>
+                    <summary class="t-caption cursor-pointer fw-700">{tr.placement.availabilityDetails}</summary>
                     <div class="pt-8 flex flex-col gap-8">
                         <FeatureList rows={availability.table} placement={picked} />
                         {view.station?.payload && onStation && <Line>{view.station.payload.note}</Line>}
@@ -912,7 +876,7 @@ function UnlinkSheet({ onClose, onConfirm }: { onClose: () => void; onConfirm: (
     }, []);
     return (
         <Sheet
-            title="Вернуть колонку Яндексу?"
+            title={tr.placement.unlinkTitle}
             onClose={onClose}
             footer={
                 <div class="flex flex-col gap-8">
@@ -924,10 +888,10 @@ function UnlinkSheet({ onClose, onConfirm }: { onClose: () => void; onConfirm: (
                             void onConfirm().finally(() => setBusy(false));
                         }}
                     >
-                        {busy ? 'Колонка перезагружается…' : `Вернуть колонку Яндексу${left > 0 ? ` · ${left}` : ''}`}
+                        {busy ? tr.placement.restarting : `${tr.placement.giveBackYandex}${left > 0 ? ` · ${left}` : ''}`}
                     </button>
                     <button class="dash-done ghost" onClick={onClose}>
-                        Отмена
+                        {tr.placement.cancel}
                     </button>
                 </div>
             }
@@ -935,24 +899,24 @@ function UnlinkSheet({ onClose, onConfirm }: { onClose: () => void; onConfirm: (
             <ul class="what-list">
                 <li>
                     <span class="mk minus">−</span>
-                    <span>DuoWave уйдёт с колонки. Она станет обычной Алисой, как до переноса.</span>
+                    <span>{tr.placement.unlinkGone}</span>
                 </li>
                 <li>
                     <span class="mk minus">−</span>
-                    <span>Колонка перезагрузится: около минуты без голоса.</span>
+                    <span>{tr.placement.unlinkReboot}</span>
                 </li>
                 <li>
                     <span class="mk info">·</span>
-                    <span>Настройки и история останутся на колонке и на компьютере.</span>
+                    <span>{tr.placement.unlinkKept}</span>
                 </li>
                 <li>
                     <span class="mk plus">+</span>
-                    <span>Вернуть DuoWave можно потом: «Сменить…» → перенос на колонку.</span>
+                    <span>{tr.placement.unlinkReturn}</span>
                 </li>
             </ul>
             <label class="understand">
                 <input type="checkbox" checked={sure} onChange={(event) => setSure((event.target as HTMLInputElement).checked)} />
-                <span>Понимаю, что колонка станет обычной Алисой, пока я снова не перенесу на неё DuoWave</span>
+                <span>{tr.placement.unlinkUnderstand}</span>
             </label>
         </Sheet>
     );
@@ -963,7 +927,7 @@ function GiveBackSheet({ onClose, onConfirm }: { onClose: () => void; onConfirm:
     const [busy, setBusy] = useState(false);
     return (
         <Sheet
-            title="Отдать голос Яндексу?"
+            title={tr.placement.giveTitle}
             onClose={onClose}
             footer={
                 <div class="flex flex-col gap-8">
@@ -975,10 +939,10 @@ function GiveBackSheet({ onClose, onConfirm }: { onClose: () => void; onConfirm:
                             void onConfirm().finally(() => setBusy(false));
                         }}
                     >
-                        {busy ? 'Колонка перезагружается…' : 'Отдать голос Яндексу'}
+                        {busy ? tr.placement.restarting : tr.placement.giveYandex}
                     </button>
                     <button class="dash-done ghost" onClick={onClose}>
-                        Отмена
+                        {tr.placement.cancel}
                     </button>
                 </div>
             }
@@ -986,15 +950,15 @@ function GiveBackSheet({ onClose, onConfirm }: { onClose: () => void; onConfirm:
             <ul class="what-list">
                 <li>
                     <span class="mk minus">−</span>
-                    <span>Голос колонки пойдёт Яндексу, отвечать будет Алиса.</span>
+                    <span>{tr.placement.giveVoiceGoes}</span>
                 </li>
                 <li>
                     <span class="mk info">·</span>
-                    <span>DuoWave остаётся на колонке. Колонка перезагрузится, около минуты без голоса.</span>
+                    <span>{tr.placement.giveStays}</span>
                 </li>
                 <li>
                     <span class="mk plus">+</span>
-                    <span>Вернуть можно здесь же: «Вернуть голос DuoWave».</span>
+                    <span>{tr.placement.giveReturn}</span>
                 </li>
             </ul>
         </Sheet>
@@ -1035,10 +999,10 @@ function StationHelper({ mayManage, onChanged }: { mayManage: boolean; onChanged
             const on = next.enabled ?? next.configured;
             setMessage(
                 !on
-                    ? { ok: true, text: 'Колонка работает без компьютера.' }
+                    ? { ok: true, text: tr.placement.helperNoComputer }
                     : next.state === 'up'
-                      ? { ok: true, text: 'Компьютер на связи.' }
-                      : { ok: false, text: next.error ?? 'Компьютер не отвечает.' },
+                      ? { ok: true, text: tr.placement.helperUp }
+                      : { ok: false, text: next.error ?? tr.placement.helperUnreachable },
             );
             onChanged();
         } catch (e) {
@@ -1048,12 +1012,12 @@ function StationHelper({ mayManage, onChanged }: { mayManage: boolean; onChanged
         }
     };
     const sub = !status.configured
-        ? 'колонка ещё не знает компьютер — включите в пульте компьютера'
+        ? tr.placement.subUnknown
         : !enabled
-          ? 'выключено · адрес и ключ уже есть, включится сразу'
+          ? tr.placement.subDisabled
           : status.state === 'up'
-            ? 'на связи: слух, свой голос и модели — у компьютера'
-            : `Компьютер не отвечает${status.since ? ` с ${clock(status.since)}` : ''}`;
+            ? tr.placement.subUp
+            : tr.placement.subDown(status.since ? clock(status.since) : '');
     const away = enabled && status.state !== 'up';
     return (
         <div class="flex flex-col gap-8">
@@ -1062,46 +1026,45 @@ function StationHelper({ mayManage, onChanged }: { mayManage: boolean; onChanged
                     <SegIcon placement="pc" />
                 </span>
                 <span class="helper-text">
-                    Компьютер помогает колонке
+                    {tr.placement.pcHelps}
                     <span>{sub}</span>
                 </span>
                 <Switch
                     on={enabled}
-                    label="Компьютер помогает колонке"
+                    label={tr.placement.pcHelps}
                     disabled={!mayManage || busy || !status.configured}
                     onChange={(on) => void run({ enabled: on })}
                 />
             </label>
             {away && (
                 <p class="truth-note">
-                    Если компьютер спит — колонка работает сама и подключится, когда он проснётся. Если не спит, а связи нет, его адрес мог
-                    смениться: обычно компьютер сообщает новый сам.
+                    {tr.placement.awayNote}
                 </p>
             )}
             {mayManage && status.configured && (away || editing) && (
                 <Row>
                     {status.url && (
                         <a class="pill pill-off py-8 px-14" href={`${status.url}/panel`} target="_blank" rel="noreferrer">
-                            Пульт компьютера ↗
+                            {tr.placement.pcPanel}
                         </a>
                     )}
-                    <Action label={editing ? 'Скрыть' : 'Изменить адрес…'} onClick={() => setEditing(!editing)} />
+                    <Action label={editing ? tr.placement.hide : tr.placement.editAddress} onClick={() => setEditing(!editing)} />
                 </Row>
             )}
             {mayManage && editing && (
                 <div class="flex flex-col gap-8">
-                    <TextField label="Адрес компьютера" value={url} placeholder="http://192.0.2.10:3000" inputMode="url" onInput={setUrl} />
+                    <TextField label={tr.placement.pcAddressLabel} value={url} placeholder="http://192.0.2.10:3000" inputMode="url" onInput={setUrl} />
                     <SecretField
-                        label="Ключ с компьютера"
+                        label={tr.placement.pcKey}
                         mask={status.key}
                         value={key}
                         removing={false}
-                        hint="Привезён переносом. Заменить — только если компьютер его отозвал."
+                        hint={tr.placement.pcKeyHint}
                         onInput={setKey}
                         onRemove={() => undefined}
                     />
                     <Row>
-                        <Action tone="on" label="Сохранить" busy={busy} onClick={() => void run({ url: url.trim(), key: key.trim() || undefined })} />
+                        <Action tone="on" label={tr.placement.save} busy={busy} onClick={() => void run({ url: url.trim(), key: key.trim() || undefined })} />
                     </Row>
                 </div>
             )}
@@ -1140,43 +1103,43 @@ export function LinkSheet({ onClose, onLinked, initialAddress }: { onClose: () =
     const ready = address.trim() && (byKey ? key.trim().length >= 16 : password.length > 0);
     return (
         <Sheet
-            title="Помогать колонке"
-            about="Шлюз уже работает на колонке: этот компьютер станет её помощником — слух, голос и модель, копии настроек, обновления, мастерская. Без SSH."
+            title={tr.placement.linkTitle}
+            about={tr.placement.linkAbout}
             onClose={onClose}
             footer={
                 <button class="dash-done" disabled={busy || !ready} onClick={() => void link()}>
-                    {busy ? 'Связываюсь…' : 'Стать помощником'}
+                    {busy ? tr.placement.linking : tr.placement.becomeHelper}
                 </button>
             }
         >
-            <TextField label="Адрес колонки" value={address} placeholder="192.0.2.23" inputMode="url" onInput={setAddress} />
+            <TextField label={tr.placement.stationAddress} value={address} placeholder="192.0.2.23" inputMode="url" onInput={setAddress} />
             {byKey ? (
                 <>
-                    <TextField label="Порт шлюза на колонке" value={port} placeholder="8790" inputMode="numeric" onInput={setPort} />
+                    <TextField label={tr.placement.gatewayPort} value={port} placeholder="8790" inputMode="numeric" onInput={setPort} />
                     <SecretField
-                        label="Ключ пары"
+                        label={tr.placement.pairKey}
                         value={key}
                         removing={false}
-                        hint="PEER_KEY из /data/opt/duowave/gateway/.env на колонке (duowave station install --peer-key …)."
+                        hint={tr.placement.pairKeyHint}
                         onInput={setKey}
                         onRemove={() => undefined}
                     />
                 </>
             ) : (
                 <>
-                    <TextField label="Имя в пульте колонки" value={name} placeholder="если там не один человек" onInput={setName} />
+                    <TextField label={tr.placement.nameInPanel} value={name} placeholder={tr.placement.nameHint} onInput={setName} />
                     <SecretField
-                        label="Пароль пульта колонки"
+                        label={tr.placement.panelPassword}
                         value={password}
                         removing={false}
-                        hint="Пароль администратора её пульта: компьютер войдёт один раз, возьмёт ключ пары и забудет пароль."
+                        hint={tr.placement.panelPasswordHint}
                         onInput={setPassword}
                         onRemove={() => undefined}
                     />
                 </>
             )}
             <button class="t-caption underline cursor-pointer self-start" onClick={() => setByKey(!byKey)}>
-                {byKey ? 'Связать по паролю пульта колонки' : 'Есть ключ пары — связать по нему'}
+                {byKey ? tr.placement.linkByPassword : tr.placement.linkByKey}
             </button>
             {error && <Line tone="error">{error}</Line>}
         </Sheet>
@@ -1195,23 +1158,23 @@ function CopiesSheet({
     onBackup: () => Promise<void>;
 }) {
     return (
-        <Sheet title="Копии настроек колонки" about="Компьютер берёт копию, как только колонка назовёт новую ревизию; последние десять здесь." onClose={onClose}>
+        <Sheet title={tr.placement.copiesTitle} about={tr.placement.copiesAbout} onClose={onClose}>
             <Row>
-                <Action label="Взять копию сейчас" onClick={() => void onBackup()} />
+                <Action label={tr.placement.takeCopy} onClick={() => void onBackup()} />
             </Row>
             {station.backups.length ? (
                 station.backups.map((copy) => (
                     <div key={copy.id} class="flex items-center gap-8 justify-between">
                         <span class="t-caption">
-                            {clock(copy.at)} · ревизия {copy.revision} · {Math.max(1, Math.round(copy.size / 1024))} КБ
+                            {tr.placement.copyLine(clock(copy.at), copy.revision, tr.placement.kb(Math.max(1, Math.round(copy.size / 1024))))}
                         </span>
                         <Action
-                            label="Восстановить"
+                            label={tr.placement.restore}
                             onClick={async () => {
                                 const yes = await ask({
-                                    title: `Вернуть колонке настройки от ${clock(copy.at)}?`,
-                                    text: 'Шлюз на колонке перезапустится на них.',
-                                    ok: 'Вернуть',
+                                    title: tr.placement.restoreAskTitle(clock(copy.at)),
+                                    text: tr.placement.restoreAskText,
+                                    ok: tr.placement.restoreAskOk,
                                 });
                                 if (yes) void onRestore(copy.id);
                             }}
@@ -1219,7 +1182,7 @@ function CopiesSheet({
                     </div>
                 ))
             ) : (
-                <Line>Копий пока нет.</Line>
+                <Line>{tr.placement.noCopies}</Line>
             )}
         </Sheet>
     );
@@ -1227,19 +1190,19 @@ function CopiesSheet({
 
 function InspectSheet({ inspected, onClose }: { inspected: Inspected; onClose: () => void }) {
     return (
-        <Sheet title="Что с шлюзом на колонке" about="Колонка сама о себе, по SSH." onClose={onClose}>
-            {!inspected.installed && <Line tone="warn">Шлюза на колонке нет: её сбросили или он удалён. «Сменить…» поставит его заново.</Line>}
+        <Sheet title={tr.placement.inspectTitle} about={tr.placement.inspectAbout} onClose={onClose}>
+            {!inspected.installed && <Line tone="warn">{tr.placement.notInstalled}</Line>}
             {inspected.installed && (
                 <Line>
                     {inspected.running
-                        ? 'Шлюз запущен.'
+                        ? tr.placement.running
                         : inspected.disabled
-                          ? 'Шлюз выключен страховкой: «Попробовать снова» включит его.'
-                          : 'Шлюз не запущен.'}{' '}
-                    {inspected.local ? 'Голос колонки идёт в него.' : 'Голос колонки идёт не в него.'}
+                          ? tr.placement.disabledBySafety
+                          : tr.placement.notRunning}{' '}
+                    {inspected.local ? tr.placement.voiceGoesIn : tr.placement.voiceNotIn}
                 </Line>
             )}
-            {inspected.fired && <Line tone="warn">Страховка: {inspected.fired}.</Line>}
+            {inspected.fired && <Line tone="warn">{tr.placement.fired(inspected.fired)}</Line>}
             {inspected.log && (
                 <pre class="t-meta pre-wrap max-h-40vh overflow-auto m-0">
                     {inspected.log}

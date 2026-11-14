@@ -4,6 +4,7 @@ import { BRANDS, type BrandId } from '../brand-icons';
 import type { Placement } from '../availability';
 import type { Host, Solved, Who } from '../truth';
 import { DuoWaveMark } from '../ui/duowave';
+import { tr } from '../i18n';
 
 /**
  * Схема «Где работает DuoWave» — по эскизам владельца (ноябрь 2026): две зоны, «Дома» и «Облако» через интернет, и
@@ -104,14 +105,14 @@ function layoutOf(placement: Placement, brainName?: string): { cards: Card[]; li
         x: CLOUD_X,
         y: 88,
         w: 120,
-        title: 'Модели и агенты',
-        sub: brainName ?? 'ChatGPT, DeepSeek…',
+        title: tr.placementMap.modelsTitle,
+        sub: brainName ?? tr.placementMap.modelsSub,
         home: false,
         brands: ['openai', 'claude', 'gemini', 'deepseek'],
     };
-    const service: Card = { id: 'service', x: CLOUD_X, y: 176, w: 120, title: 'Облачный сервис', sub: 'Алиса', home: false, alice: true };
-    const column = (caps?: Card['caps']): Card => ({ id: 'column', x: 111, y: 88, w: 150, title: 'Колонка', sub: 'слушает и говорит', home: true, caps });
-    const pcCard = (extra: Partial<Card>): Card => ({ id: 'pc', x: 111, y: 176, w: 150, title: 'Компьютер', home: true, ...extra });
+    const service: Card = { id: 'service', x: CLOUD_X, y: 176, w: 120, title: tr.placementMap.serviceTitle, sub: tr.placementMap.alice, home: false, alice: true };
+    const column = (caps?: Card['caps']): Card => ({ id: 'column', x: 111, y: 88, w: 150, title: tr.placementMap.columnTitle, sub: tr.placementMap.columnSub, home: true, caps });
+    const pcCard = (extra: Partial<Card>): Card => ({ id: 'pc', x: 111, y: 176, w: 150, title: tr.placementMap.computerTitle, home: true, ...extra });
     switch (placement) {
         case 'pc':
             return {
@@ -121,29 +122,29 @@ function layoutOf(placement: Placement, brainName?: string): { cards: Card[]; li
                     { a: 'pc', b: 'models', kind: 'net', lit: 'models' },
                     { a: 'pc', b: 'service', kind: 'net', lit: 'service' },
                 ],
-                homeSub: 'колонка и компьютер в вашей сети',
-                caption: 'Слух и голос — дома, на компьютере. Наружу — только текст запроса модели и облачному сервису.',
+                homeSub: tr.placementMap.homeSubPc,
+                caption: tr.placementMap.captionPc,
             };
         case 'station':
             return {
-                cards: [column(['conn']), pcCard({ sub: 'можно выключить', dim: true }), models, service],
+                cards: [column(['conn']), pcCard({ sub: tr.placementMap.pcOffSub, dim: true }), models, service],
                 links: [
                     { a: 'column', b: 'models', kind: 'net', lit: 'models' },
                     { a: 'column', b: 'service', kind: 'net', lit: 'service' },
                 ],
-                homeSub: 'только колонка — компьютер можно выключить',
-                caption: 'Шлюз на самой колонке. Слышит и говорит Алиса или облако на выбор, думает облачная модель.',
+                homeSub: tr.placementMap.homeSubStation,
+                caption: tr.placementMap.captionStation,
             };
         default:
             return {
-                cards: [column(['conn']), pcCard({ sub: 'помогает', caps: ['rec', 'tts'] }), models, service],
+                cards: [column(['conn']), pcCard({ sub: tr.placementMap.pcHelpsSub, caps: ['rec', 'tts'] }), models, service],
                 links: [
                     { a: 'column', b: 'pc', kind: 'local', lit: 'helps' },
                     { a: 'column', b: 'models', kind: 'net', lit: 'models' },
                     { a: 'column', b: 'service', kind: 'net', lit: 'service' },
                 ],
-                homeSub: 'колонка и компьютер вместе',
-                caption: 'Пока компьютер на связи — слух и голос на нём. Уснул — их берёт облако или Алиса, колонка не молчит.',
+                homeSub: tr.placementMap.homeSubTogether,
+                caption: tr.placementMap.captionTogether,
             };
     }
 }
@@ -175,7 +176,7 @@ function BrandGlyph({ id, on }: { id: BrandId; on: boolean }) {
 function AliceGlyph({ on }: { on: boolean }) {
     return (
         <g class={`cap alice${on ? ' on' : ''}`}>
-            <title>Алиса</title>
+            <title>{tr.placementMap.alice}</title>
             <svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true">
                 <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="12" cy="12" r="8.5" />
@@ -185,7 +186,7 @@ function AliceGlyph({ on }: { on: boolean }) {
         </g>
     );
 }
-const CAP_TITLES: Record<NonNullable<Card['caps']>[number], string> = { rec: 'Слух', tts: 'Голос', conn: 'Подключения' };
+const capTitle = (cap: NonNullable<Card['caps']>[number]): string => ({ rec: tr.placementMap.capEar, tts: tr.placementMap.capVoice, conn: tr.placementMap.capConn })[cap];
 const CAP_ON: Record<NonNullable<Card['caps']>[number], (solved: Solved) => boolean> = {
     rec: (solved) => solved.ear.host === 'pc',
     tts: (solved) => solved.voice.host === 'pc',
@@ -302,25 +303,25 @@ export function PlacementMap({
     const gatewayCard = placement === 'pc' ? 'pc' : 'column';
     const gearCard = settingsAt === 'pc' ? 'pc' : 'column';
     const gateway = at.get(gatewayCard);
-    const text = solved.silent ? 'Голосу некуда идти: DuoWave на компьютере, а компьютер спит.' : caption;
+    const text = solved.silent ? tr.placementMap.silent : caption;
 
     return (
         <div class="map-card">
-            <svg class="place-map" viewBox="0 0 360 244" role="img" aria-label={`Схема: куда идёт голос. ${text}`}>
+            <svg class="place-map" viewBox="0 0 360 244" role="img" aria-label={tr.placementMap.mapLabel(text)}>
                 {/* Зоны: дом и облако через интернет; подписи зон — выше карточек, ничего не перекрывают. */}
                 <rect x="4" y="22" width="214" height="200" rx="20" class="zone home" />
                 <rect x="228" y="22" width="128" height="200" rx="20" class="zone cloud" />
                 <text class="zone-title" x="16" y="42">
-                    Дома
+                    {tr.placementMap.zoneHome}
                 </text>
                 <text class="zone-sub" x="16" y="55">
                     {homeSub}
                 </text>
                 <text class="zone-title" x="292" y="42" text-anchor="middle">
-                    Облако
+                    {tr.placementMap.zoneCloud}
                 </text>
                 <text class="zone-sub" x="292" y="55" text-anchor="middle">
-                    через интернет
+                    {tr.placementMap.zoneCloudSub}
                 </text>
 
                 {/* Связи: зелёные — дома, оранжевые пунктирные — наружу; точка цвета — на середине. */}
@@ -353,7 +354,7 @@ export function PlacementMap({
                             <g transform={`translate(${(-(card.caps.length - 1) * 18) / 2 - 6.5}, -22)`}>
                                 {card.caps.map((cap) => (
                                     <g key={cap} class={`cap${CAP_ON[cap](solved) ? ' on' : ''}`} transform={`translate(${card.caps!.indexOf(cap) * 18}, 0)`}>
-                                        <title>{CAP_TITLES[cap]}</title>
+                                        <title>{capTitle(cap)}</title>
                                         <CapIcon cap={cap} />
                                     </g>
                                 ))}
@@ -400,19 +401,19 @@ export function PlacementMap({
             <div class="map-legend">
                 <span>
                     <i class="dot own" aria-hidden="true" />
-                    остаётся дома
+                    {tr.placementMap.legendHome}
                 </span>
                 <span>
                     <i class="dot out" aria-hidden="true" />
-                    через интернет
+                    {tr.placementMap.legendNet}
                 </span>
                 <span>
                     <DuoWaveMark size={16} />
-                    шлюз
+                    {tr.placementMap.legendGateway}
                 </span>
                 <span>
                     <Gear size={14} />
-                    настройки
+                    {tr.placementMap.legendSettings}
                 </span>
             </div>
             <p class="map-cap">{text}</p>
@@ -427,9 +428,9 @@ export function WhoThree({ ear, brain, voice }: { ear: Who; brain: Who; voice: W
         <div class="who3">
             {(
                 [
-                    ['Слышит', ear],
-                    ['Думает', brain],
-                    ['Говорит', voice],
+                    [tr.placementMap.hears, ear],
+                    [tr.placementMap.thinks, brain],
+                    [tr.placementMap.speaks, voice],
                 ] as const
             ).map(([label, who]) => (
                 <div key={label} class={tone(who)} title={who.sub}>

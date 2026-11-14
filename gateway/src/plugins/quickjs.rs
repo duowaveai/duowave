@@ -11,7 +11,6 @@
 //!
 //! A thread costs its stack (a megabyte reserved, little of it touched) only while the plugin is loaded: the host
 //! loads a plugin at its first call and unloads it after a while without one.
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -49,12 +48,34 @@ const PRELUDE: &str = r#"
   };
   const say = (level) => (...parts) =>
     raw.log(level, parts.map((part) => (typeof part === "string" ? part : JSON.stringify(part))).join(" "));
+  // Host calls begun and not ended. One still running when its function has answered was not awaited: the engine
+  // asks (`__duowaveLeft`, after every call) and the app's journal says so — the call may never end, its error is lost.
+  let begun = 0;
+  const running = new Map();
+  const tracked = async (name, work) => {
+    const id = ++begun;
+    running.set(id, name);
+    try {
+      return await work();
+    } finally {
+      running.delete(id);
+    }
+  };
+  const shown = (name) => (name.startsWith("folders.") ? `host.files.${name.slice(8)}` : `host.${name}`);
+  Object.defineProperty(globalThis, "__duowaveLeft", {
+    value: (fn) => {
+      if (running.size === 0) return;
+      const names = [...new Set(running.values())].map(shown);
+      running.clear();
+      say("warn")(`${fn} ответила, не дождавшись ${names.join(", ")}: вызов шлюза отвечает обещанием — пишите await, а функцию — async. Без этого шлюз его не ждёт: картинка может не скачаться, файл не записаться, а ошибка пропадёт молча.`);
+    },
+  });
   const http = Object.freeze({
     async fetch(url, options = {}) {
       const body = options.body === undefined || typeof options.body === "string" ? options.body : JSON.stringify(options.body);
-      const answer = unwrap(await raw.fetch(JSON.stringify({
+      const answer = unwrap(await tracked("http.fetch", () => raw.fetch(JSON.stringify({
         url: String(url), method: options.method, headers: options.headers, body, timeoutMs: options.timeoutMs,
-      })));
+      }))));
       return Object.freeze({
         status: answer.status,
         ok: answer.status >= 200 && answer.status < 300,
@@ -79,7 +100,8 @@ const PRELUDE: &str = r#"
   });
   const log = say("info");
   // Host API 2 (docs/plans/bus.md, «Один способ»): everything beyond the app is a letter on the bus, decided by it.
-  const call = async (name, input = {}) => unwrap(await raw.call(name, JSON.stringify(input ?? {})));
+  const call = (name, input = {}) =>
+    tracked(name, async () => unwrap(await raw.call(name, JSON.stringify(input ?? {}))));
   // The bus (src/bus): call another's handle, tell own news, see what is there, ask in words.
   const bus = Object.freeze({
     call: (to, handle, input = {}, options = {}) =>
@@ -91,7 +113,14 @@ const PRELUDE: &str = r#"
   // Folders: an address `files/…`, or a path inside the app's own folder («tmp/a.txt»); `download` keeps a picture
   // from the internet (its host among the `net:` rights) in it.
   const files = Object.freeze({
-    list: (at = "") => call("folders.list", { at: String(at ?? "") }),
+    list: (at = "", options = {}) =>
+      call("folders.list", { at: String(at ?? ""), from: options?.from, limit: options?.limit }),
+    find: (at, query, options = {}) =>
+      call("folders.find", { at: String(at ?? ""), query: String(query ?? ""), limit: options?.limit }),
+    text: (at, options = {}) => call("folders.text", { at: String(at), part: options?.part }),
+    preview: (at, options = {}) => call("folders.preview", { at: String(at), size: options?.size }),
+    play: (at) => call("folders.play", { at: String(at) }),
+    copy: (from, to) => call("folders.copy", { at: String(from), to: String(to) }),
     read: (at, options = {}) => call("folders.read", { at: String(at), as: options.as }),
     write: (at, data) => call("folders.write", typeof data === "string"
       ? { at: String(at), text: data }
@@ -102,10 +131,64 @@ const PRELUDE: &str = r#"
     stat: (at) => call("folders.stat", { at: String(at) }),
     download: (url, name) => call("folders.download", { url: String(url), name: String(name ?? "") }),
   });
+  // Languages (docs/plans/i18n.md): the household's language now, the app's own languages, a text picked by them.
+  // QuickJS has no Intl: the plural forms of the languages we know are here, the rest say «one» for 1, else «other».
+  const languages = Object.freeze(JSON.parse(raw.languages));
+  const pluralOf = (code, count) => {
+    const n = Math.abs(Number(count));
+    if (!Number.isFinite(n)) return "other";
+    const whole = Number.isInteger(n);
+    if (["ru", "uk", "be"].includes(code)) {
+      if (!whole) return "other";
+      const units = n % 10, tens = n % 100;
+      if (units === 1 && tens !== 11) return "one";
+      if (units >= 2 && units <= 4 && (tens < 12 || tens > 14)) return "few";
+      return "many";
+    }
+    if (code === "pl") {
+      if (!whole) return "other";
+      const units = n % 10, tens = n % 100;
+      if (n === 1) return "one";
+      if (units >= 2 && units <= 4 && (tens < 12 || tens > 14)) return "few";
+      return "many";
+    }
+    if (["fr", "pt"].includes(code)) return n < 2 ? "one" : "other";
+    if (["ja", "zh", "ko", "vi", "th", "id", "ms"].includes(code)) return "other";
+    return n === 1 ? "one" : "other";
+  };
+  // No text in the household's language — English, the language of last resort; then the app's own, then Russian.
+  const order = () => [...new Set([String(raw.locale()), "en", languages[0], "ru"])];
+  const pick = (variants) => {
+    if (variants === null || typeof variants !== "object") return variants;
+    for (const code of order()) if (variants[code] !== undefined) return variants[code];
+    return Object.values(variants)[0];
+  };
+  const t = (messages, key, params = {}) => {
+    for (const code of order()) {
+      let text = messages?.[code]?.[key];
+      if (text === undefined) continue;
+      if (text !== null && typeof text === "object") {
+        const form = pluralOf(code, params?.count);
+        text = text[form] ?? text.other ?? text.many ?? text.one ?? "";
+      }
+      return String(text).replace(/\{(\w+)\}/g, (whole, name) => (params && name in params ? String(params[name]) : whole));
+    }
+    return String(key);
+  };
+  const i18n = Object.freeze({
+    get locale() { return String(raw.locale()); },
+    languages,
+    pick,
+    t,
+    plural: (count, forms) => {
+      const form = pluralOf(String(raw.locale()), count);
+      return forms?.[form] ?? forms?.other ?? forms?.many ?? forms?.one ?? "";
+    },
+  });
   globalThis.host = Object.freeze({
     api: 2,
     plugin: Object.freeze({ id: raw.id, version: raw.version }),
-    http, kv, settings, log, bus, files,
+    http, kv, settings, log, bus, files, i18n,
   });
   globalThis.console = Object.freeze({ log, info: log, debug: log, warn: say("warn"), error: say("error") });
 })();
@@ -130,12 +213,12 @@ impl PluginRuntime for QuickJs {
                 .name(format!("plugin-{}", code.id))
                 .stack_size(THREAD_STACK)
                 .spawn(move || run(code, host, receiver, ready))
-                .map_err(|error| PluginError::Load(format!("поток не запустился: {error}")))?;
+                .map_err(|error| PluginError::Load(crate::tr!("поток не запустился: {error}", error = error)))?;
             // A load that hangs gives the thread up: its channel goes with this future, and the thread ends once
             // it gets past the load.
             let exports = match tokio::time::timeout(LOAD_LIMIT + GRACE, started).await {
                 Ok(Ok(loaded)) => loaded?,
-                Ok(Err(_)) => return Err(PluginError::Load("поток приложения завершился".into())),
+                Ok(Err(_)) => return Err(PluginError::Load(crate::tr!("поток приложения завершился"))),
                 Err(_) => return Err(PluginError::Timeout(LOAD_LIMIT.as_millis() as u64)),
             };
             Ok(Arc::new(Instance { jobs: Mutex::new(Some(jobs)), exports }) as Arc<dyn PluginInstance>)
@@ -170,7 +253,7 @@ impl Instance {
 }
 
 fn stopped() -> PluginError {
-    PluginError::Unavailable("приложение выгружено".into())
+    PluginError::Unavailable(crate::tr!("приложение выгружено"))
 }
 
 impl PluginInstance for Instance {
@@ -242,7 +325,7 @@ fn run(
     let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(runtime) => runtime,
         Err(error) => {
-            let _ = ready.send(Err(PluginError::Load(format!("нет среды исполнения: {error}"))));
+            let _ = ready.send(Err(PluginError::Load(crate::tr!("нет среды исполнения: {error}", error = error))));
             return;
         }
     };
@@ -432,6 +515,7 @@ async fn invoke(
             if let Some(promise) = answer.as_promise().cloned() {
                 answer = promise.into_future::<rquickjs::Value>().await.catch(&ctx).map_err(script)?;
             }
+            tell_left(&ctx, &function);
             if answer.is_undefined() {
                 return Ok(Value::Null);
             }
@@ -441,14 +525,23 @@ async fn invoke(
                 .map_err(script)?
                 .map(|text| text.to_string())
                 .transpose()
-                .map_err(|error| PluginError::Answer(format!("ответ не читается: {error}")))?
+                .map_err(|error| PluginError::Answer(crate::tr!("ответ не читается: {error}", error = error)))?
                 .unwrap_or_else(|| "null".into());
             if text.len() > MAX_ANSWER {
-                return Err(PluginError::Answer(format!("ответ больше {} КБ", MAX_ANSWER / 1024)));
+                return Err(PluginError::Answer(crate::tr!("ответ больше {max} КБ", max = MAX_ANSWER / 1024)));
             }
-            serde_json::from_str(&text).map_err(|error| PluginError::Answer(format!("ответ не JSON: {error}")))
+            serde_json::from_str(&text)
+                .map_err(|error| PluginError::Answer(crate::tr!("ответ не JSON: {error}", error = error)))
         })
         .await
+}
+
+/// Host calls the function began and did not await, still running now that it has answered: the prelude's
+/// `__duowaveLeft` says so in the app's journal (and the gateway's log).
+fn tell_left(ctx: &Ctx<'_>, function: &str) {
+    if let Ok(left) = ctx.globals().get::<_, Function>("__duowaveLeft") {
+        let _ = left.call::<_, ()>((function,)).catch(ctx);
+    }
 }
 
 /// A raw function's answer: `{"value": …}` or `{"error": "…"}`, never an exception.
@@ -474,7 +567,7 @@ fn install<'js>(ctx: &Ctx<'js>, host: Arc<dyn HostApi>, id: &str, version: &str)
                 async move {
                     let result = match serde_json::from_str::<Value>(&request) {
                         Ok(request) => host.fetch(request).await,
-                        Err(error) => Err(format!("запрос не читается: {error}")),
+                        Err(error) => Err(crate::tr!("запрос не читается: {error}", error = error)),
                     };
                     rquickjs::Result::Ok(answer(result))
                 }
@@ -495,7 +588,7 @@ fn install<'js>(ctx: &Ctx<'js>, host: Arc<dyn HostApi>, id: &str, version: &str)
                             let device = request.get("device").and_then(Value::as_str).map(str::to_string);
                             host.say(text, device).await.map(Value::Bool)
                         }
-                        Err(error) => Err(format!("запрос не читается: {error}")),
+                        Err(error) => Err(crate::tr!("запрос не читается: {error}", error = error)),
                     };
                     rquickjs::Result::Ok(answer(result))
                 }
@@ -512,7 +605,7 @@ fn install<'js>(ctx: &Ctx<'js>, host: Arc<dyn HostApi>, id: &str, version: &str)
                 async move {
                     let result = match serde_json::from_str::<Value>(&input) {
                         Ok(input) => host.call(&name, input).await,
-                        Err(error) => Err(format!("вход не читается: {error}")),
+                        Err(error) => Err(crate::tr!("вход не читается: {error}", error = error)),
                     };
                     rquickjs::Result::Ok(answer(result))
                 }
@@ -531,7 +624,7 @@ fn install<'js>(ctx: &Ctx<'js>, host: Arc<dyn HostApi>, id: &str, version: &str)
         "kvSet",
         Function::new(ctx.clone(), move |key: String, value: String| {
             let result = serde_json::from_str::<Value>(&value)
-                .map_err(|error| format!("значение не JSON: {error}"))
+                .map_err(|error| crate::tr!("значение не JSON: {error}", error = error))
                 .and_then(|value| store.kv_set(&key, value));
             answer(result.map(|()| Value::Null))
         })?,
@@ -550,6 +643,9 @@ fn install<'js>(ctx: &Ctx<'js>, host: Arc<dyn HostApi>, id: &str, version: &str)
     )?;
     let settings = host.clone();
     raw.set("settings", Function::new(ctx.clone(), move || Value::Object(settings.settings()).to_string())?)?;
+    let speaking_language = host.clone();
+    raw.set("locale", Function::new(ctx.clone(), move || speaking_language.locale())?)?;
+    raw.set("languages", serde_json::to_string(&host.languages()).unwrap_or_else(|_| "[\"ru\"]".into()))?;
     let logger = host;
     raw.set("log", Function::new(ctx.clone(), move |level: String, text: String| logger.log(&level, &text))?)?;
     ctx.globals().set("__duowave", raw)
@@ -564,6 +660,8 @@ mod tests {
     struct Host {
         fetch_ms: u64,
         kv: Mutex<Map<String, Value>>,
+        /// The app's journal: level and line.
+        logs: Mutex<Vec<(String, String)>>,
     }
 
     impl HostApi for Host {
@@ -594,7 +692,12 @@ mod tests {
         fn settings(&self) -> Map<String, Value> {
             json!({"country": "RU"}).as_object().cloned().unwrap()
         }
-        fn log(&self, _level: &str, _message: &str) {}
+        fn log(&self, level: &str, message: &str) {
+            self.logs.lock().unwrap().push((level.into(), message.into()));
+        }
+        fn locale(&self) -> String {
+            "ru".into()
+        }
         /// Host API 2: speech is a letter to `system/voice`.
         fn call(&self, name: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
             let said = name == "bus.call" && input["to"] == "system/voice" && input["input"]["text"] == "привет";
@@ -626,7 +729,78 @@ mod tests {
             memory_mb: 2,
             ..PluginCode::default()
         };
-        QuickJs.start(code, Arc::new(Host { fetch_ms, kv: Mutex::new(Map::new()) })).await
+        QuickJs.start(code, Arc::new(Host { fetch_ms, kv: Mutex::new(Map::new()), logs: Mutex::new(Vec::new()) })).await
+    }
+
+    #[tokio::test]
+    async fn tells_the_apps_journal_of_a_host_call_its_function_answered_without_awaiting() {
+        let host = Arc::new(Host { fetch_ms: 50, kv: Mutex::new(Map::new()), logs: Mutex::new(Vec::new()) });
+        let source = r#"
+            export function card() { host.files.download("https://picsum.photos/1", "a"); return { name: "a.jpg" }; }
+            export async function waited() { await host.files.download("https://picsum.photos/1", "a"); return 1; }
+            export function fetchedLate() { host.http.fetch("https://x.example"); return 2; }
+        "#;
+        let code = PluginCode {
+            id: "test".into(),
+            version: "1.0.0".into(),
+            source: source.into(),
+            memory_mb: 2,
+            ..PluginCode::default()
+        };
+        let plugin = QuickJs.start(code, host.clone()).await.unwrap();
+        assert_eq!(plugin.call("card", json!({}), CallKind::Background).await, Ok(json!({"name": "a.jpg"})));
+        let told = std::mem::take(&mut *host.logs.lock().unwrap());
+        assert!(
+            told.iter().any(|(level, line)| level == "warn"
+                && line.starts_with("card ответила, не дождавшись host.files.download")
+                && line.contains("await")),
+            "{told:?}"
+        );
+        assert_eq!(plugin.call("waited", json!({}), CallKind::Background).await, Ok(json!(1)));
+        assert!(host.logs.lock().unwrap().is_empty(), "an awaited call is not told");
+        assert_eq!(plugin.call("fetchedLate", json!({}), CallKind::Background).await, Ok(json!(2)));
+        let told = host.logs.lock().unwrap().clone();
+        assert!(told.iter().any(|(_, line)| line.contains("не дождавшись host.http.fetch")), "{told:?}");
+        plugin.stop();
+    }
+
+    #[tokio::test]
+    async fn host_i18n_picks_the_household_language_and_its_plural() {
+        const SPEAKS: &str = r#"
+            const T = {
+                ru: { found: "Нашлось {count} {what}", stations: { one: "станция", few: "станции", many: "станций" } },
+                en: { found: "Found {count} {what}", only: "English only" },
+            };
+            export function texts({ n }) {
+                return {
+                    locale: host.i18n.locale,
+                    languages: host.i18n.languages,
+                    found: host.i18n.t(T, "found", { count: n, what: host.i18n.t(T, "stations", { count: n }) }),
+                    only: host.i18n.t(T, "only"),
+                    missing: host.i18n.t(T, "nothing"),
+                    picked: host.i18n.pick({ en: "Hello", de: "Hallo" }),
+                    plural: host.i18n.plural(21, { one: "станция", few: "станции", many: "станций" }),
+                };
+            }
+        "#;
+        let plugin = start(SPEAKS, 10).await.unwrap();
+        assert_eq!(
+            plugin.call("texts", json!({"n": 3}), CallKind::Background).await,
+            Ok(json!({
+                "locale": "ru",
+                "languages": ["ru"],
+                "found": "Нашлось 3 станции",
+                "only": "English only",
+                "missing": "nothing",
+                "picked": "Hello",
+                "plural": "станция",
+            }))
+        );
+        assert_eq!(
+            plugin.call("texts", json!({"n": 11}), CallKind::Background).await.unwrap()["found"],
+            "Нашлось 11 станций"
+        );
+        plugin.stop();
     }
 
     #[tokio::test]

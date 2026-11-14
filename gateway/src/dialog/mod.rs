@@ -22,6 +22,7 @@ pub use dialog_service::{
 pub use llm::brain::{BrainProfile, BrainSource, BrainStatus, ModelSlot};
 pub use persona_service::PersonaService;
 pub use phrase_splitter::PhraseSplitter;
+pub use system_prompt::Channel;
 
 use crate::app::App;
 

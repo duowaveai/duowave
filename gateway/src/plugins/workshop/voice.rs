@@ -109,7 +109,7 @@ enum Awaited {
 fn step_words(tool: Option<&str>, text: &str) -> String {
     let about = text.split_whitespace().next().unwrap_or_default();
     match tool.unwrap_or_default() {
-        "write_file" | "edit_file" => format!("пишу {about}"),
+        "write_file" | "append_file" | "edit_file" => format!("пишу {about}"),
         "read_file" => format!("читаю {about}"),
         "delete_file" => format!("убираю {about}"),
         "check" => "проверяю".into(),

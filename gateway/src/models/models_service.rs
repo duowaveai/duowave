@@ -43,7 +43,9 @@ const PIPER: &str = "piper";
 pub const OWN_PREFIX: &str = "own:";
 
 /// Why a voice file is not downloaded from here (Silero's are given out by hand).
-const BY_HAND: &str = "Этот голос не скачивается отсюда: файл кладут вручную.";
+fn by_hand() -> String {
+    crate::tr!("Этот голос не скачивается отсюда: файл кладут вручную.")
+}
 
 /// The speakers a Silero model keeps inside; a Piper model is one voice.
 const SILERO_VOICES: &[&str] = &["aidar", "baya", "kseniya", "xenia", "eugene"];
@@ -1007,15 +1009,15 @@ impl ModelsService {
                     }),
                     title: voice.name.clone(),
                     description: if character {
-                        format!("Голос персонажа · {}", voice.engine_title)
+                        crate::tr!("Голос персонажа · {engine}", engine = voice.engine_title)
                     } else {
-                        format!(
-                            "Ваш голос · {} · отпечаток от {}",
-                            voice.engine_title,
-                            day_and_month(&voice.created_at)
+                        crate::tr!(
+                            "Ваш голос · {engine} · отпечаток от {date}",
+                            engine = voice.engine_title,
+                            date = day_and_month(&voice.created_at)
                         )
                     },
-                    badge: Some(if character { "персонаж" } else { "свой" }.into()),
+                    badge: Some(if character { crate::tr!("персонаж") } else { crate::tr!("свой") }),
                     license: Some(voice.engine_license.clone()),
                     locale: None,
                     quality: None,
@@ -1039,7 +1041,12 @@ impl ModelsService {
             choice.as_ref().and_then(|choice| choice.model_id.strip_prefix(OWN_PREFIX)).filter(|id| !id.is_empty());
         let mut registry: Vec<&VoiceModelRecord> = models.iter().filter(|model| model.source == "registry").collect();
         registry.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| locale_compare(&a.title, &b.title)));
-        let mut tts = vec![yandex_card(yandex_voice)];
+        // Alice's voice comes through a station: while the household talks by the computer's microphone (src/talk) its
+        // card is not sent.
+        let mut tts = Vec::new();
+        if !crate::talk::input::on_computer(&self.settings) {
+            tts.push(yandex_card(yandex_voice));
+        }
         tts.extend(models.iter().filter(|model| model.source == "builtin").map(&card));
         tts.extend(own_cards);
         tts.extend(registry.into_iter().map(&card));
@@ -1107,10 +1114,10 @@ impl ModelsService {
             let file = record.file.clone().filter(|file| safe_name(file) && safe_name(&record.id))?;
             Some((record, file))
         }) else {
-            return Err(ApiError::not_found(format!("нет скачиваемого голоса {id}")));
+            return Err(ApiError::not_found(crate::tr!("нет скачиваемого голоса {id}", id = id)));
         };
         if !self.files.allows(record.url.as_deref()) {
-            return Err(ApiError::bad_request("Этот голос не скачивается отсюда: файл кладут вручную."));
+            return Err(ApiError::bad_request(by_hand()));
         }
         let url = record.url.clone().unwrap_or_default();
         let download = {
@@ -1123,7 +1130,7 @@ impl ModelsService {
             if record.engine == SILERO {
                 let mut silero = lock(&self.silero_install);
                 if silero.as_deref().is_some_and(|other| other != id) {
-                    return Err(ApiError::conflict("Уже скачивается другая модель Silero — дождитесь её."));
+                    return Err(ApiError::conflict(crate::tr!("Уже скачивается другая модель Silero — дождитесь её.")));
                 }
                 *silero = Some(id.to_string());
             }
@@ -1199,19 +1206,19 @@ impl ModelsService {
             let file = record.file.clone()?;
             Some((record, file))
         }) else {
-            return Err(ApiError::not_found(format!("нет скачиваемого голоса {id}")));
+            return Err(ApiError::not_found(crate::tr!("нет скачиваемого голоса {id}", id = id)));
         };
         if lock(&self.downloads)
             .iter()
             .any(|download| download.id == id && download.phase() == DownloadPhase::Downloading)
         {
-            return Err(ApiError::conflict("Голос скачивается — сначала отмените скачивание."));
+            return Err(ApiError::conflict(crate::tr!("Голос скачивается — сначала отмените скачивание.")));
         }
         if !self.files.installed(&record.id, Some(&file)) {
-            return Err(ApiError::not_found("Этот голос не скачан."));
+            return Err(ApiError::not_found(crate::tr!("Этот голос не скачан.")));
         }
         if self.speaks(&record) {
-            return Err(ApiError::conflict("Этот голос говорит сейчас — сначала выберите другой."));
+            return Err(ApiError::conflict(crate::tr!("Этот голос говорит сейчас — сначала выберите другой.")));
         }
         self.files.remove(&record.id, &file).map_err(ApiError::internal)?;
         lock(&self.downloads).retain(|download| download.id != id);
@@ -1250,13 +1257,16 @@ impl ModelsService {
                 .filter(|entry| entry.engine == SILERO)
                 .map(|entry| entry.file.as_deref().unwrap_or(""))
                 .collect();
-            return Err(ApiError::bad_request(format!("Ожидается файл Silero из каталога: {}.", known.join(", "))));
+            return Err(ApiError::bad_request(crate::tr!(
+                "Ожидается файл Silero из каталога: {files}.",
+                files = known.join(", ")
+            )));
         };
         let placed = {
             {
                 let mut silero = lock(&self.silero_install);
                 if silero.is_some() {
-                    return Err(ApiError::conflict("Модель Silero уже скачивается — дождитесь её."));
+                    return Err(ApiError::conflict(crate::tr!("Модель Silero уже скачивается — дождитесь её.")));
                 }
                 *silero = Some(card_id.clone());
             }
@@ -1271,7 +1281,7 @@ impl ModelsService {
             .await
         };
         if let Err(error) = placed {
-            return Err(ApiError::bad_request(format!("Файл не принят: {error}")));
+            return Err(ApiError::bad_request(crate::tr!("Файл не принят: {error}", error = error)));
         }
         self.events.emit(GatewayEvent::ModelInstalled { kind: "tts".into(), id: card_id, actor });
         let heard =
@@ -1300,7 +1310,7 @@ impl ModelsService {
     pub async fn choose(self: &Arc<Self>, request: VoiceRequest, actor: Option<Actor>) -> Result<Chosen, ApiError> {
         let body = &request.body;
         let voice = self.links.voice.clone().ok_or_else(|| {
-            ApiError::unavailable("Синтез речи ещё не подключён к этому шлюзу — голос не переключить.")
+            ApiError::unavailable(crate::tr!("Синтез речи ещё не подключён к этому шлюзу — голос не переключить."))
         })?;
         if body.get("modelId").and_then(Value::as_str) == Some("yandex") {
             // Alice speaks: the app's own voice server gives its memory back.
@@ -1314,7 +1324,7 @@ impl ModelsService {
             return Ok(Chosen::Active(Activated { needs_restart: false }));
         }
         if !voice.has_own_speech() {
-            return Err(ApiError::bad_request("Свой голосовой сервер не настроен (TTS_OWN_URL)."));
+            return Err(ApiError::bad_request(crate::tr!("Свой голосовой сервер не настроен (TTS_OWN_URL).")));
         }
         if let Some(own) = own_id(body.get("modelId")) {
             if let Some(pending) = self.own_needs(&own, &request, actor.clone()).await? {
@@ -1322,7 +1332,8 @@ impl ModelsService {
             }
             // An own voice: its engine's server answering first (started under the memory rules: tight on memory,
             // only with the owner's «всё равно»), then the route.
-            let lab = self.links.own_voices.clone().ok_or_else(|| ApiError::not_found("нет такого голоса"))?;
+            let lab =
+                self.links.own_voices.clone().ok_or_else(|| ApiError::not_found(crate::tr!("нет такого голоса")))?;
             let prepared = lab.prepare(own.clone(), request.anyway).await?;
             let model_id = format!("{OWN_PREFIX}{own}");
             let choice = Choice {
@@ -1359,10 +1370,12 @@ impl ModelsService {
             }
         };
         let Some(choice) = choice else {
-            return Err(ApiError::not_found("нет такого голоса"));
+            return Err(ApiError::not_found(crate::tr!("нет такого голоса")));
         };
-        let record =
-            self.voice_model(&choice.model_id).await?.ok_or_else(|| ApiError::not_found("нет такого голоса"))?;
+        let record = self
+            .voice_model(&choice.model_id)
+            .await?
+            .ok_or_else(|| ApiError::not_found(crate::tr!("нет такого голоса")))?;
         // The app's own voice server: its Python first — a voice's need like a voice lab engine. With `install`
         // it is installed in the background and the voice waits for it (then its file, then it speaks).
         if let Some(tts) = &self.links.managed_tts {
@@ -1371,7 +1384,7 @@ impl ModelsService {
                 let needs = VoiceNeeds {
                     kind: "engine",
                     id: RUNTIME_ID.into(),
-                    title: RUNTIME_TITLE.into(),
+                    title: crate::locale::text::translate(RUNTIME_TITLE, &[]).to_string(),
                     download_mb: Some(download_mb),
                     disk_mb: Some(disk_mb),
                     minutes: Some(minutes_for(download_mb)),
@@ -1429,7 +1442,7 @@ impl ModelsService {
         let exists = lab.voice_engine(own);
         let recipe = request.recipe.clone().filter(|recipe| recipe.voice == own);
         let Some(engine_id) = exists.clone().or_else(|| recipe.as_ref().map(|recipe| recipe.engine.clone())) else {
-            return Err(ApiError::not_found("нет такого голоса"));
+            return Err(ApiError::not_found(crate::tr!("нет такого голоса")));
         };
         let engines = lab.engines().await;
         let Some(engine) = engines.iter().find(|engine| engine.id == engine_id) else {
@@ -1446,7 +1459,10 @@ impl ModelsService {
         let model_id = format!("{OWN_PREFIX}{own}");
         match engine.status.as_str() {
             "unsupported" => {
-                let reason = engine.reason.clone().unwrap_or_else(|| format!("{} здесь не работает.", engine.title));
+                let reason = engine
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| crate::tr!("{title} здесь не работает.", title = engine.title));
                 Err(ApiError {
                     status: axum::http::StatusCode::CONFLICT,
                     message: reason.clone(),
@@ -1456,7 +1472,7 @@ impl ModelsService {
             "ready" if exists.is_some() => Ok(None),
             "ready" => {
                 // A character's voice its package has no snapshot for: imprinted from its reference first.
-                let recipe = recipe.ok_or_else(|| ApiError::not_found("нет такого голоса"))?;
+                let recipe = recipe.ok_or_else(|| ApiError::not_found(crate::tr!("нет такого голоса")))?;
                 lab.imprint(recipe.clone(), request.anyway, actor.clone()).await?;
                 let wait = PendingWait { kind: "imprint".into(), id: own.to_string() };
                 Ok(Some(self.set_pending(&model_id, None, wait, request.anyway, Some(recipe), actor)?))
@@ -1488,8 +1504,8 @@ impl ModelsService {
         if !self.files.allows(record.url.as_deref()) {
             return Err(ApiError {
                 status: axum::http::StatusCode::CONFLICT,
-                message: BY_HAND.into(),
-                errors: Some(json!({ "state": "needs", "needs": needs, "reason": BY_HAND })),
+                message: by_hand(),
+                errors: Some(json!({ "state": "needs", "needs": needs, "reason": by_hand() })),
             });
         }
         let downloading = lock(&self.downloads)
@@ -1597,7 +1613,7 @@ impl ModelsService {
                     return;
                 }
                 if !tts.installed() {
-                    let why = tts.status().error.unwrap_or_else(|| "установка голоса прервалась".into());
+                    let why = tts.status().error.unwrap_or_else(|| crate::tr!("установка голоса прервалась"));
                     self.pending_failed(pending, why);
                     return;
                 }
@@ -1628,7 +1644,7 @@ impl ModelsService {
                     Some("installing") => return,
                     _ => {
                         let why = failed_job("install", Some(&pending.wait_for.id))
-                            .unwrap_or_else(|| "установка модели прервалась".into());
+                            .unwrap_or_else(|| crate::tr!("установка модели прервалась"));
                         self.pending_failed(pending, why);
                         return;
                     }
@@ -1641,7 +1657,7 @@ impl ModelsService {
                     if running {
                         return;
                     }
-                    let why = failed_job("imprint", None).unwrap_or_else(|| "отпечаток не снялся".into());
+                    let why = failed_job("imprint", None).unwrap_or_else(|| crate::tr!("отпечаток не снялся"));
                     self.pending_failed(pending, why);
                     return;
                 }
@@ -1649,7 +1665,7 @@ impl ModelsService {
             "file" => {
                 let record = match self.voice_model(&pending.wait_for.id).await {
                     Ok(Some(record)) => record,
-                    _ => return self.pending_failed(pending, "нет такого голоса".into()),
+                    _ => return self.pending_failed(pending, crate::tr!("нет такого голоса")),
                 };
                 if !self.files.installed(&record.id, record.file.as_deref()) {
                     let download =
@@ -1657,10 +1673,10 @@ impl ModelsService {
                     match download {
                         Some(download) if download.state == DownloadPhase::Downloading => return,
                         Some(download) => {
-                            let why = download.error.unwrap_or_else(|| "скачивание остановлено".into());
+                            let why = download.error.unwrap_or_else(|| crate::tr!("скачивание остановлено"));
                             self.pending_failed(pending, why);
                         }
-                        None => self.pending_failed(pending, "скачивание прервалось".into()),
+                        None => self.pending_failed(pending, crate::tr!("скачивание прервалось")),
                     }
                     return;
                 }
@@ -1737,9 +1753,9 @@ impl ModelsService {
         // On this computer: the model is fetched if it is not here and takes over once it is in — no restart.
         if let Some(local) = &self.links.local_asr {
             if local_catalog::find(&card.model).is_none() {
-                return Err(ApiError::bad_request(
-                    "Эта модель работает только на отдельном сервере распознавания — на этом компьютере её нет.",
-                ));
+                return Err(ApiError::bad_request(crate::tr!(
+                    "Эта модель работает только на отдельном сервере распознавания — на этом компьютере её нет."
+                )));
             }
             *lock(&self.asr_chosen) = Some(card.clone());
             self.settings.set(&ASR_MODEL, &card.id, actor)?;
@@ -1766,7 +1782,7 @@ impl ModelsService {
             let mut restarting = lock(&self.restarting);
             if let Some(running) = &*restarting {
                 if running.which != which {
-                    return Err(ApiError::conflict("Перезапускается другой сервер — дождитесь его."));
+                    return Err(ApiError::conflict(crate::tr!("Перезапускается другой сервер — дождитесь его.")));
                 }
                 running.done.clone()
             } else {
@@ -2130,24 +2146,24 @@ fn locale_compare(a: &str, b: &str) -> std::cmp::Ordering {
 
 /// `6 ноября`: a date as toLocaleDateString('ru-RU', {day: 'numeric', month: 'long'}) writes it, in local time.
 fn day_and_month(iso: &str) -> String {
-    const MONTHS: [&str; 12] = [
-        "января",
-        "февраля",
-        "марта",
-        "апреля",
-        "мая",
-        "июня",
-        "июля",
-        "августа",
-        "сентября",
-        "октября",
-        "ноября",
-        "декабря",
+    let months = [
+        crate::tr!("января"),
+        crate::tr!("февраля"),
+        crate::tr!("марта"),
+        crate::tr!("апреля"),
+        crate::tr!("мая"),
+        crate::tr!("июня"),
+        crate::tr!("июля"),
+        crate::tr!("августа"),
+        crate::tr!("сентября"),
+        crate::tr!("октября"),
+        crate::tr!("ноября"),
+        crate::tr!("декабря"),
     ];
     match chrono::DateTime::parse_from_rfc3339(iso) {
         Ok(at) => {
             let local = at.with_timezone(&chrono::Local);
-            format!("{} {}", local.day(), MONTHS[local.month0() as usize])
+            format!("{} {}", local.day(), months[local.month0() as usize])
         }
         Err(_) => "Invalid Date".into(),
     }
@@ -2214,21 +2230,24 @@ fn registry_record(
         title.push_str(letters.as_str());
     }
     let quality_title = match quality {
-        "high" => "Высокое",
-        "medium" => "Среднее",
-        _ => "Лёгкое",
+        "high" => crate::tr!("Высокое"),
+        "medium" => crate::tr!("Среднее"),
+        _ => crate::tr!("Лёгкое"),
     };
     Some(VoiceModelRecord {
         id,
         engine: PIPER.into(),
         title: format!("{title} · {lang}"),
-        description: format!("{quality_title} качество · {locale}"),
+        description: crate::tr!("{quality} качество · {locale}", quality = quality_title, locale = locale),
         badge: None,
         // The registry lists no licences: each voice has its own (CC0, CC BY, CC BY-NC-SA, unknown) in its MODEL_CARD.
-        license: Some("лицензия — в MODEL_CARD голоса на Hugging Face".into()),
+        license: Some(crate::tr!("лицензия — в MODEL_CARD голоса на Hugging Face")),
         locale: Some(locale.into()),
         quality: Some(quality.into()),
-        size: file.size.filter(|size| *size != 0.0).map(|size| format!("{} МБ", (size / 1_048_576.0).round().max(1.0))),
+        size: file
+            .size
+            .filter(|size| *size != 0.0)
+            .map(|size| crate::tr!("{size} МБ", size = (size / 1_048_576.0).round().max(1.0))),
         url: Some(format!(
             "https://huggingface.co/rhasspy/piper-voices/resolve/main/{}",
             parts.iter().map(|part| encode_uri_component(part)).collect::<Vec<_>>().join("/")
@@ -2275,9 +2294,9 @@ fn yandex_card(active: bool) -> TtsCard {
         group: None,
         source: None,
         own: None,
-        title: "Яндекс — голос Алисы".into(),
-        description: "Как на колонке из коробки: отвечает голосом Алисы, своим движком Яндекса.".into(),
-        badge: Some("как было".into()),
+        title: crate::tr!("Яндекс — голос Алисы"),
+        description: crate::tr!("Как на колонке из коробки: отвечает голосом Алисы, своим движком Яндекса."),
+        badge: Some(crate::tr!("как было")),
         license: None,
         locale: None,
         quality: None,
@@ -2313,16 +2332,16 @@ fn file_state(
         let percent = (download.bytes * 100).checked_div(download.total).map(|percent| percent.min(100) as u32);
         return (CardState::Installing, percent.or(Some(0)), None, Some(file_needs(record)));
     }
-    let reason = (!downloadable).then(|| BY_HAND.to_string());
+    let reason = (!downloadable).then(by_hand);
     (CardState::Needs, None, reason, Some(file_needs(record)))
 }
 
 /// The 409 of a voice whose model or file is not here: what it needs in the error's `errors`.
 fn needed(needs: &VoiceNeeds, installing: bool) -> ApiError {
     let message = match (needs.kind, installing) {
-        (_, true) => format!("{} ещё ставится — голос включится, когда встанет.", needs.title),
-        ("engine", _) => format!("Голосу нужна модель {}.", needs.title),
-        _ => format!("Голос «{}» ещё не скачан.", needs.title),
+        (_, true) => crate::tr!("{title} ещё ставится — голос включится, когда встанет.", title = needs.title),
+        ("engine", _) => crate::tr!("Голосу нужна модель {title}.", title = needs.title),
+        _ => crate::tr!("Голос «{title}» ещё не скачан.", title = needs.title),
     };
     ApiError {
         status: axum::http::StatusCode::CONFLICT,
@@ -3041,7 +3060,7 @@ mod tests {
         shop.start().await.unwrap();
 
         let refused = shop.activate_tts(&json!({"modelId": "piper-denis"}), None).await.unwrap_err();
-        assert_eq!((refused.status.as_u16(), refused.message.as_str()), (409, BY_HAND));
+        assert_eq!((refused.status.as_u16(), refused.message.as_str()), (409, by_hand().as_str()));
         assert_eq!(refused.errors.unwrap()["needs"]["kind"], "file", "what it needs, in the error's errors");
         put_on_disk(&world, "piper-denis", "ru_RU-denis-medium.onnx");
         let chosen = shop.activate_tts(&json!({"modelId": "piper-denis"}), None).await.unwrap();

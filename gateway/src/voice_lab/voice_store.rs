@@ -295,21 +295,25 @@ impl VoiceStore {
 
     /// A take from the panel: 16-bit PCM WAV, any rate, mono or stereo — kept as 24 kHz mono with its levels.
     pub fn add_take(&self, wav: &[u8], passage: Option<i64>) -> Result<TakeInfo, String> {
-        let enough = || format!("Хватит дублей: не больше {MAX_TAKES}. Удалите лишние.");
+        let enough = || crate::tr!("Хватит дублей: не больше {max}. Удалите лишние.", max = MAX_TAKES);
         if self.takes().len() >= MAX_TAKES {
             return Err(enough());
         }
-        let decoded = decode_wav(wav).map_err(|error| format!("Запись не принята: нужен WAV 16 бит ({error})."))?;
+        let decoded = decode_wav(wav)
+            .map_err(|error| crate::tr!("Запись не принята: нужен WAV 16 бит ({error}).", error = error))?;
         if decoded.sample_rate < 16_000 {
-            return Err("Запись не принята: частота ниже 16 кГц.".into());
+            return Err(crate::tr!("Запись не принята: частота ниже 16 кГц."));
         }
         let pcm = to_rate(decoded.pcm, decoded.sample_rate);
         let seconds = pcm.len() as f64 / RATE as f64;
         if seconds < 3.0 {
-            return Err("Запись слишком короткая — нужно хотя бы несколько фраз.".into());
+            return Err(crate::tr!("Запись слишком короткая — нужно хотя бы несколько фраз."));
         }
         if seconds > MAX_TAKE_SECONDS {
-            return Err(format!("Запись длиннее {MAX_TAKE_SECONDS} секунд — разбейте её на дубли."));
+            return Err(crate::tr!(
+                "Запись длиннее {seconds} секунд — разбейте её на дубли.",
+                seconds = MAX_TAKE_SECONDS
+            ));
         }
         let levels = analyse_take(&pcm, RATE);
         let encoded = encode_wav(&pcm, RATE);
@@ -371,7 +375,7 @@ impl VoiceStore {
 
     pub fn voice_dir(&self, id: &str) -> Result<PathBuf, String> {
         if !safe_name(id) || id.starts_with('.') {
-            return Err(format!("не голос: {id}"));
+            return Err(crate::tr!("не голос: {id}", id = id));
         }
         Ok(self.voices_dir.join(id))
     }
@@ -563,7 +567,7 @@ impl VoiceStore {
         let temporary = dir.join("meta.json.tmp");
         write_private(&temporary, pretty.as_bytes()).map_err(|error| error.to_string())?;
         std::fs::rename(&temporary, &meta_path).map_err(|error| error.to_string())?;
-        self.voice(id).ok_or_else(|| format!("не голос: {id}"))
+        self.voice(id).ok_or_else(|| crate::tr!("не голос: {id}", id = id))
     }
 
     pub fn remove(&self, id: &str) -> Result<(), String> {

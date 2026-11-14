@@ -22,7 +22,7 @@
 //
 // Окошко (Host API 2, docs/plans/bus.md, «Окошки»): panel.js любого приложения работает
 // в изолированном фрейме (/panel/frame.html: sandbox allow-scripts, connect-src 'none') — тот же SDK, но всё, что
-// выходит за окошко, идёт мостом пульта: useApi, useFile, ask, usePanelState().go, useMidi, readMidiFile. Ни входа
+// выходит за окошко, идёт мостом пульта: useApi, useFile, ask, usePanelState().go, useMidi, readMidiFile, useTask. Ни входа
 // человека, ни localStorage пульта, ни fetch у окошка нет; useLive() не видит запросов людей. Разделы и вклады в
 // desk.widgets, home.cards, house.tabs пульт рисует окошками; другие слоты окошку недоступны. Виджет, который только
 // показывает строки и кнопки, лучше сделать карточкой (docs/plugins/cards.md): её рисует сам пульт, без кода.
@@ -113,6 +113,39 @@ declare module "@duowave/panel-sdk" {
      *   return src ? h("img", { src, alt: "Картинка дня", class: "w-big" }) : h(Note, null, "…");
      */
     export function useFile(name: string): string | null;
+
+    /**
+     * Картинка из домашней папки DuoWave по адресу (`files/home/Фото/лето.jpg`) для `<img src>` — уменьшенной (`size` —
+     * длинная сторона, до 2048, по умолчанию 960). Шлюз проверяет связь приложения с папкой (`call:files/home/Фото/*`)
+     * и права того, кто смотрит; код сами байты не видит. Пока не пришла или её нет — null.
+     *
+     *   const src = useFolderFile("files/home/Фото/Отпуск/1.jpg", { size: 320 });
+     */
+    export function useFolderFile(address: string, options?: { size?: number }): string | null;
+
+    /**
+     * Тексты приложения по языкам (docs/plans/i18n.md): по коду языка — по ключу строка с `{параметрами}` или формы
+     * числа (`{ one, few, many, other }` по `params.count`).
+     */
+    export type AppMessages = Record<string, Record<string, string | { zero?: string; one?: string; two?: string; few?: string; many?: string; other?: string }>>;
+
+    /** Язык пульта сейчас — код BCP 47 (`ru`, `en`…); человек сменил язык — перерисовка. */
+    export function useLocale(): string;
+
+    /**
+     * `t(key, params)` на языке пульта; нет текста на нём — английский, затем русский, затем любой, затем сам ключ.
+     *
+     *   const T = { ru: { hello: "Привет, {name}" }, en: { hello: "Hello, {name}" } };
+     *   const t = useT(T);
+     *   return h(Card, { title: t("hello", { name }) });
+     */
+    export function useT(messages: AppMessages): (key: string, params?: Record<string, string | number>) => string;
+
+    /** То же без хука: для подписей разделов и виджетов в `definePlugin`. */
+    export function t(messages: AppMessages, key: string, params?: Record<string, string | number>): string;
+
+    /** Одно значение по языку пульта: `pick({ ru: "Станции", en: "Stations" })`. */
+    export function pick<T>(variants: Partial<Record<string, T>>): T | undefined;
 
     /** Значения настроек своего плагина (меняет их администратор в окне плагина). */
     export function useSettings(pluginId: string): Record<string, unknown>;
@@ -288,6 +321,51 @@ declare module "@duowave/panel-sdk" {
 
     /** Файл `.mid` (до 256 КБ) — дорожки с мелодиями; читает шлюз, файл нигде не хранится. Ошибка — словами. */
     export function readMidiFile(file: Blob): Promise<{ tempo: number; meter: [number, number]; tracks: MidiTrack[] }>;
+
+    /**
+     * Долгая задача приложения (docs/plugins/AUTHORING.md, «Долгие задачи»): работа дольше, чем ждёт вызов функции, —
+     * минуты, а не секунды. Начинает её программа приложения (Host API), окно видит ход и просит отменить.
+     */
+    export interface Task {
+        id: string;
+        /** Что делается, словами для человека: «Снимаю серию 3». */
+        title: string;
+        /**
+         * running — идёт; done — готова (`result`); failed — не получилась (`error`); cancelled — отменена человеком;
+         * interrupted — прервалась не по его слову: шлюз перезапустился, приложение упало или замолчало (`error`).
+         * Прерванную задачу никто не продолжит сам: решает приложение — предложить начать заново.
+         */
+        state: "running" | "done" | "failed" | "cancelled" | "interrupted";
+        /** 0–100; нет — приложение пока не знает. */
+        percent?: number;
+        /** Что делается сейчас: «Озвучка». */
+        text: string;
+        /** Что дала готовая задача: JSON до 64 КБ. Большое — файлом в своей папке, здесь — его имя. */
+        result?: unknown;
+        error?: string;
+        /** «Отменить» нажато, приложение ещё не остановилось (до 30 с — потом задачу закроет шлюз). */
+        cancelRequested: boolean;
+        /** Мс от эпохи, часы шлюза. */
+        startedAt: number;
+        updatedAt: number;
+        endedAt?: number;
+    }
+
+    /**
+     * Ход и отмена своей задачи. `useTask(id)` — задача с этим id (его вернула функция бэкенда, которая её начала);
+     * `useTask()` — та, что идёт сейчас, а нет такой — последняя. `tasks` — все свои: что идёт — первым, потом новые;
+     * законченные шлюз хранит сутки. `ready` — пульт уже прочитал задачи: до того `task` — null. Окно перерисуется
+     * с каждой переменой (ход — не чаще двух раз в секунду). `cancel()` просит приложение остановиться: задача
+     * станет cancelled, когда оно остановится.
+     *
+     *   const api = useApi("feed");
+     *   const { task, cancel } = useTask();
+     *   if (task?.state === "running")
+     *     return h("div", null, `${task.title}: ${task.percent ?? 0}% — ${task.text}`,
+     *              h(Action, { label: "Отменить", onClick: cancel }));
+     *   return h(Action, { label: "Снять серию", onClick: () => api.call("film", {}) });
+     */
+    export function useTask(id?: string): { task: Task | null; tasks: Task[]; ready: boolean; cancel(): Promise<void> };
 
     /** Мелодия дорожки с нуля: `[нота, начало, длина]` в долях. */
     export function melodyOf(track: MidiTrack): Array<[number, number, number]>;

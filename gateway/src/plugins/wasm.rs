@@ -14,7 +14,6 @@
 //!   `say(text_ptr, text_len) -> i32` (1 — said, 0 — no station, -1 — refused), and Host API 1.1's
 //!   `call(name_ptr, name_len, input_ptr, input_len) -> i64` (`{value}` or `{error}`: `content.search`, `tools.call`,
 //!   `smartHome.devices`, …). The rights are the manifest's, checked as for a script.
-
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -143,13 +142,13 @@ fn linker(engine: &Engine) -> Result<Linker<State>, wasmi::Error> {
             .and_then(|memory| text(&caller, &memory, ptr, len))
             .and_then(|text| serde_json::from_str::<Value>(&text).ok());
         let Some(request) = request else {
-            return give(&mut caller, &serde_json::json!({ "error": "запрос — JSON" }));
+            return give(&mut caller, &serde_json::json!({ "error": crate::tr!("запрос — JSON") }));
         };
         let future = caller.data().host.fetch(request);
         let answer = match wait(&caller.data().handle, future) {
             Some(Ok(answer)) => answer,
             Some(Err(why)) => serde_json::json!({ "error": why }),
-            None => serde_json::json!({ "error": "сеть недоступна" }),
+            None => serde_json::json!({ "error": crate::tr!("сеть недоступна") }),
         };
         give(&mut caller, &answer)
     })?;
@@ -170,7 +169,7 @@ fn linker(engine: &Engine) -> Result<Linker<State>, wasmi::Error> {
             let answer = match wait(&caller.data().handle, future) {
                 Some(Ok(value)) => serde_json::json!({ "value": value }),
                 Some(Err(why)) => serde_json::json!({ "error": why }),
-                None => serde_json::json!({ "error": "шлюз недоступен" }),
+                None => serde_json::json!({ "error": crate::tr!("шлюз недоступен") }),
             };
             give(&mut caller, &answer)
         },
@@ -195,8 +194,8 @@ fn start(
     let mut config = Config::default();
     config.consume_fuel(true);
     let engine = Engine::new(&config);
-    let module =
-        Module::new(&engine, &code.bytes).map_err(|error| PluginError::Load(format!("модуль не читается: {error}")))?;
+    let module = Module::new(&engine, &code.bytes)
+        .map_err(|error| PluginError::Load(crate::tr!("модуль не читается: {error}", error = error)))?;
     let limits = StoreLimitsBuilder::new().memory_size((code.memory_mb * 1024 * 1024) as usize).build();
     let mut store = Store::new(&engine, State { limits, host, handle });
     store.limiter(|state| &mut state.limits);
@@ -206,12 +205,13 @@ fn start(
     let linker = linker(&engine).map_err(|error| PluginError::Load(error.to_string()))?;
     let instance = linker
         .instantiate_and_start(&mut store, &module)
-        .map_err(|error| PluginError::Load(format!("модуль не запустился: {error}")))?;
-    let memory =
-        instance.get_memory(&store, "memory").ok_or_else(|| PluginError::Load("модуль не отдаёт memory".into()))?;
+        .map_err(|error| PluginError::Load(crate::tr!("модуль не запустился: {error}", error = error)))?;
+    let memory = instance
+        .get_memory(&store, "memory")
+        .ok_or_else(|| PluginError::Load(crate::tr!("модуль не отдаёт memory")))?;
     let alloc = instance
         .get_typed_func::<i32, i32>(&store, "alloc")
-        .map_err(|_| PluginError::Load("модуль не отдаёт alloc(len) -> ptr".into()))?;
+        .map_err(|_| PluginError::Load(crate::tr!("модуль не отдаёт alloc(len) -> ptr")))?;
     Ok(Started { store, memory, alloc, instance })
 }
 
@@ -251,19 +251,20 @@ fn call(started: &mut Started, function: &str, input: &Value, kind: CallKind) ->
     started
         .memory
         .write(&mut started.store, ptr as u32 as usize, &bytes)
-        .map_err(|_| PluginError::Script("вход не поместился в память модуля".into()))?;
+        .map_err(|_| PluginError::Script(crate::tr!("вход не поместился в память модуля")))?;
     let packed = handler.call(&mut started.store, (ptr, bytes.len() as i32)).map_err(trap)?;
     if packed == 0 {
         return Ok(Value::Null);
     }
     let (at, len) = unpack(packed);
     if len > MAX_ANSWER {
-        return Err(PluginError::Answer(format!("ответ больше {} КБ", MAX_ANSWER / 1024)));
+        return Err(PluginError::Answer(crate::tr!("ответ больше {max} КБ", max = MAX_ANSWER / 1024)));
     }
     let data = started.memory.data(&started.store);
-    let answer =
-        data.get(at..at.saturating_add(len)).ok_or_else(|| PluginError::Answer("ответ вне памяти модуля".into()))?;
-    serde_json::from_slice(answer).map_err(|_| PluginError::Answer("ответ — не JSON".into()))
+    let answer = data
+        .get(at..at.saturating_add(len))
+        .ok_or_else(|| PluginError::Answer(crate::tr!("ответ вне памяти модуля")))?;
+    serde_json::from_slice(answer).map_err(|_| PluginError::Answer(crate::tr!("ответ — не JSON")))
 }
 
 enum Job {
@@ -277,7 +278,7 @@ struct Instance {
 }
 
 fn stopped() -> PluginError {
-    PluginError::Unavailable("приложение выгружено".into())
+    PluginError::Unavailable(crate::tr!("приложение выгружено"))
 }
 
 impl PluginInstance for Instance {
@@ -368,10 +369,10 @@ impl PluginRuntime for Wasm {
                         }
                     }
                 })
-                .map_err(|error| PluginError::Load(format!("поток не запустился: {error}")))?;
+                .map_err(|error| PluginError::Load(crate::tr!("поток не запустился: {error}", error = error)))?;
             let exports = match tokio::time::timeout(LOAD_LIMIT + GRACE, started).await {
                 Ok(Ok(loaded)) => loaded?,
-                Ok(Err(_)) => return Err(PluginError::Load("поток приложения завершился".into())),
+                Ok(Err(_)) => return Err(PluginError::Load(crate::tr!("поток приложения завершился"))),
                 Err(_) => return Err(PluginError::Timeout(LOAD_LIMIT.as_millis() as u64)),
             };
             Ok(Arc::new(Instance { jobs: Mutex::new(Some(jobs)), exports }) as Arc<dyn PluginInstance>)

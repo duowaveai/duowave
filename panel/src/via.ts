@@ -3,6 +3,8 @@
 // сохраняется на колонке; колонки нет на связи — шлюз компьютера отдаёт последнюю копию (`x-duowave-copy-at`), а
 // правку не пропускает.
 
+import { tr } from './i18n';
+
 const params = (() => {
     try {
         return new URLSearchParams(location.search);
@@ -47,8 +49,8 @@ export function gw(path: string): string {
 }
 
 /** Подпись кнопки сохранения: в окне колонки — «Сохранить на колонке». */
-export function saveLabel(label = 'Сохранить'): string {
-    return VIA ? `${label} на колонке` : label;
+export function saveLabel(label = tr.core.saveLabel): string {
+    return VIA ? tr.core.saveOnStation(label) : label;
 }
 
 // Копия вместо ответа: колонка не на связи, шлюз компьютера показывает, что помнит.

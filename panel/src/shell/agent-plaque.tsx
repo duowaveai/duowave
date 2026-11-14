@@ -17,6 +17,7 @@ import { usePoll } from '../poll';
 import { ask } from '../ui/confirm';
 import { VIA } from '../via';
 import { usePanel } from './context';
+import { tr } from '../i18n';
 
 /** Закончившая работа видна на плашке столько — как её отдаёт шлюз (activity.rs, SHOWN_AFTER_MS). */
 const SHOWN_AFTER_MS = 90_000;
@@ -26,10 +27,10 @@ export const POLL_MS = 2000;
 /** Сколько прошло: «23 с», «1 мин 5 с», «1 ч 2 мин». */
 export function elapsed(ms: number): string {
     const seconds = Math.max(0, Math.floor(ms / 1000));
-    if (seconds < 60) return `${seconds} с`;
+    if (seconds < 60) return tr.shell.elapsedSec(seconds);
     const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes} мин ${seconds % 60} с`;
-    return `${Math.floor(minutes / 60)} ч ${minutes % 60} мин`;
+    if (minutes < 60) return tr.shell.elapsedMin(minutes, seconds % 60);
+    return tr.shell.elapsedHour(Math.floor(minutes / 60), minutes % 60);
 }
 
 /** Строка покороче: причина неудачи на плашке, ответ вызова в ходе работы. Шлюз пишет ошибку вызова как «error: …». */
@@ -53,33 +54,35 @@ export function toolWords(tool: string | undefined, about = ''): string {
     const what = shortText(about, 48);
     switch (tool) {
         case 'write_file':
-            return what ? `пишет ${what}` : 'пишет файл';
+            return what ? tr.shell.toolWrite(what) : tr.shell.toolWriteFile;
+        case 'append_file':
+            return what ? tr.shell.toolAppend(what) : tr.shell.toolAppendFile;
         case 'edit_file':
-            return what ? `правит ${what}` : 'правит файл';
+            return what ? tr.shell.toolEdit(what) : tr.shell.toolEditFile;
         case 'read_file':
-            return what ? `читает ${what}` : 'читает файл';
+            return what ? tr.shell.toolRead(what) : tr.shell.toolReadFile;
         case 'delete_file':
-            return what ? `удаляет ${what}` : 'удаляет файл';
+            return what ? tr.shell.toolDelete(what) : tr.shell.toolDeleteFile;
         case 'draft_files':
-            return 'смотрит файлы';
+            return tr.shell.toolDraftFiles;
         case 'check':
-            return 'проверяет';
+            return tr.shell.toolCheck;
         case 'try_phrase':
-            return 'пробует фразу';
+            return tr.shell.toolTryPhrase;
         case 'run_function':
-            return what ? `запускает ${what}` : 'запускает';
+            return what ? tr.shell.toolRun(what) : tr.shell.toolRunBare;
         case 'plugin_journal':
-            return 'читает журнал приложения';
+            return tr.shell.toolJournal;
         case 'install':
-            return 'ставит';
+            return tr.shell.toolInstall;
         case 'docs':
-            return 'читает справочник';
+            return tr.shell.toolDocs;
         case 'list_drafts':
-            return 'смотрит черновики';
+            return tr.shell.toolListDrafts;
         case 'new_draft':
-            return 'заводит черновик';
+            return tr.shell.toolNewDraft;
         default:
-            return tool ? `зовёт ${tool}` : 'работает';
+            return tool ? tr.shell.toolCalls(tool) : tr.shell.toolWorking;
     }
 }
 
@@ -88,15 +91,15 @@ export function toolWords(tool: string | undefined, about = ''): string {
  * словами, сказанное — «говорит». `now` — на тех же часах, что `step.at`.
  */
 export function doingWords(step: AgentStep | undefined, now: number): string {
-    if (!step) return 'начинает';
+    if (!step) return tr.shell.starting;
     switch (step.kind) {
         case 'tool':
             return toolWords(step.tool, step.text);
         case 'said':
-            return 'говорит';
+            return tr.shell.speaking;
         case 'asked':
         case 'result':
-            return `думает ${elapsed(now - step.at)}`;
+            return tr.shell.thinking(elapsed(now - step.at));
         default:
             return endWords(step).toLowerCase();
     }
@@ -104,9 +107,9 @@ export function doingWords(step: AgentStep | undefined, now: number): string {
 
 /** Как кончилась работа: «Готово», «Не вышло: <почему>», «Остановлено». */
 export function endWords(step: AgentStep | undefined): string {
-    if (step?.kind === 'failed') return `Не вышло: ${shortText(step.text, 60) || 'ошибка'}`;
-    if (step?.kind === 'stopped') return 'Остановлено';
-    return 'Готово';
+    if (step?.kind === 'failed') return tr.shell.failed(shortText(step.text, 60) || tr.shell.failedFallback);
+    if (step?.kind === 'stopped') return tr.shell.stopped;
+    return tr.shell.done;
 }
 
 /** Что в слотах пульта у манифеста: `contributes.panel.slots`. */
@@ -187,9 +190,9 @@ export function useSecondTick(on: boolean): number {
 /** Вопрос перед «Остановить»: работа агента над черновиком прервётся. true — останавливать. */
 export function askToStop(name: string): Promise<boolean> {
     return ask({
-        title: 'Остановить агента?',
-        text: `Работа над «${name}» прервётся. Что уже сделано, останется в черновике.`,
-        ok: 'Остановить',
+        title: tr.shell.stopAgentTitle,
+        text: tr.shell.stopAgentText(name),
+        ok: tr.shell.stopAgentOk,
     });
 }
 
@@ -238,16 +241,16 @@ export function plaqueWords(
     const name = job.title?.trim() || job.draft;
     const all = [current, ...others];
     const mixed = all.some((entry) => entry.whose === 'station') && all.some((entry) => entry.whose === 'own');
-    const label = `${widget ? 'виджет ' : ''}«${name}»${mixed && current.whose === 'station' ? ' на колонке' : ''}`;
+    const label = tr.shell.jobLabel(name, widget, mixed && current.whose === 'station');
     let tail: string | null = null;
-    if (others.length > 0 && !mixed) tail = `и ещё ${others.length}`;
+    if (others.length > 0 && !mixed) tail = tr.shell.andMore(others.length);
     else if (others.length > 0) {
         const own = others.filter((entry) => entry.whose === 'own').length;
         const there = others.length - own;
-        tail = `и ещё ${[own ? `${own} на компьютере` : '', there ? `${there} на колонке` : ''].filter(Boolean).join(' и ')}`;
+        tail = tr.shell.andMoreSplit(own, there);
     }
     return {
-        what: job.busy ? `Делаю ${label}` : endWords(job.last),
+        what: job.busy ? tr.shell.making(label) : endWords(job.last),
         doing: job.busy ? doingWords(job.last, at + current.offset) : label,
         tail,
     };
@@ -362,7 +365,7 @@ export function AgentPlaque({ place }: { place: 'top' | 'side' }) {
     // Черновик колонки — в её окне «Плагины», на вкладке мастерской (StationFrame кладёт его в адрес фрейма).
     const open = () =>
         whose === 'station' ? panel.go('skills', 'workshop', job.draft, { on: 'station' }) : panel.go('skills', 'workshop', job.draft);
-    const title = whose === 'station' ? 'Открыть в мастерской колонки' : 'Открыть в мастерской';
+    const title = whose === 'station' ? tr.shell.openStationWorkshop : tr.shell.openWorkshop;
     const stop = async () => {
         const key = asked;
         if (whose === 'station' && !key) return;
@@ -377,14 +380,14 @@ export function AgentPlaque({ place }: { place: 'top' | 'side' }) {
                 read();
             }
         } catch (e) {
-            setTrouble(`не остановить: ${problemOf(e)}`);
+            setTrouble(tr.shell.cannotStop(problemOf(e)));
         } finally {
             setStopping(false);
         }
     };
     const mark = job.busy ? <span class="agent-spin" aria-hidden="true" /> : <span class={`agent-dot ${state}`} aria-hidden="true" />;
     const stopButton = job.busy && (
-        <button class="agent-plaque-stop" disabled={stopping} aria-label="Остановить агента" title="Остановить агента" onClick={() => void stop()}>
+        <button class="agent-plaque-stop" disabled={stopping} aria-label={tr.shell.stopAgent} title={tr.shell.stopAgent} onClick={() => void stop()}>
             {stopping ? '…' : <IconClose size={12} />}
         </button>
     );
@@ -393,7 +396,7 @@ export function AgentPlaque({ place }: { place: 'top' | 'side' }) {
         job.busy && whose === 'own' && cloud !== null ? (
             <span class={`agent-plaque-place ${cloud ? 'is-cloud' : 'is-home'}`}>
                 <span class="agent-plaque-place-dot" aria-hidden="true" />
-                {cloud ? 'облако' : 'дома'}
+                {cloud ? tr.shell.cloud : tr.shell.athome}
             </span>
         ) : null;
 

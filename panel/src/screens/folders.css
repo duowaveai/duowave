@@ -1,0 +1,102 @@
+/* «Папки» (screens/folders.tsx): домашняя папка DuoWave. Только токены темы; янтарь — то, что уходит из дома. */
+
+.folders-page {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.folders-icon {
+    display: inline-flex;
+    color: var(--pill-own-fg, currentColor);
+}
+
+.folders-amber {
+    color: var(--pill-yandex-fg);
+}
+
+.link-button {
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    cursor: pointer;
+}
+
+.folders-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.folders-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 8px;
+    border: 0;
+    border-radius: 14px;
+    background: var(--pill-off-bg);
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    min-width: 0;
+}
+
+.folders-item:disabled {
+    cursor: default;
+}
+
+.folders-thumb,
+.folders-kind {
+    width: 96px;
+    height: 72px;
+    border-radius: 10px;
+    object-fit: cover;
+}
+
+.folders-kind {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--pill-off-fg);
+}
+
+.folders-name {
+    font-size: 12.5px;
+    line-height: 16px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.folder-offer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+}
+
+.folder-offer-text {
+    flex: 1;
+    min-width: 200px;
+}
+
+@media (max-width: 480px) {
+    .folders-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .folders-thumb,
+    .folders-kind {
+        width: 100%;
+    }
+}

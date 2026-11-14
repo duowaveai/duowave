@@ -42,10 +42,10 @@ impl JobKind {
     }
 
     /// «установка», «отпечаток».
-    pub fn title(self) -> &'static str {
+    pub fn title(self) -> String {
         match self {
-            JobKind::Install => "установка",
-            JobKind::Imprint => "отпечаток",
+            JobKind::Install => crate::tr!("установка"),
+            JobKind::Imprint => crate::tr!("отпечаток"),
         }
     }
 }
@@ -185,7 +185,9 @@ impl std::fmt::Display for JobError {
 
 /// What the panel is told of work that panicked: the panic itself (its text may carry a value of the environment) is
 /// in the gateway's log, where the panic hook printed it.
-pub(crate) const PANICKED: &str = "Сбой в шлюзе — подробности в его журнале.";
+pub(crate) fn panicked() -> String {
+    crate::tr!("Сбой в шлюзе — подробности в его журнале.")
+}
 
 /// What a job's work returns: its result for the panel, or nothing.
 pub type JobOutcome = Result<Option<Map<String, Value>>, JobError>;
@@ -265,7 +267,7 @@ impl Job {
     fn stopped(&self) -> JobError {
         let state = self.state();
         JobError::because(
-            state.error.clone().unwrap_or_else(|| "Остановлено.".into()),
+            state.error.clone().unwrap_or_else(|| crate::tr!("Остановлено.")),
             state.reason.unwrap_or(JobReason::Stopped),
         )
     }
@@ -345,7 +347,7 @@ impl JobRunner {
                     engine: engine.to_string(),
                     state: JobRunState::Running,
                     stage: "start".into(),
-                    label: "Начинаю".into(),
+                    label: crate::tr!("Начинаю"),
                     percent: 0,
                     log: Vec::new(),
                     memory_mb: None,
@@ -370,7 +372,7 @@ impl JobRunner {
             // A work that panics ends as a failed job (TS: its finally), never as one running forever that keeps
             // every other job and the takes refused.
             let worked = std::panic::AssertUnwindSafe(async move { work(context).await }).catch_unwind().await;
-            let outcome = match worked.unwrap_or_else(|_| Err(JobError::new(PANICKED))) {
+            let outcome = match worked.unwrap_or_else(|_| Err(JobError::new(panicked()))) {
                 Ok(_) if job.abort.is_cancelled() => Err(job.stopped()),
                 other => other,
             };
@@ -421,7 +423,7 @@ impl JobRunner {
         {
             let mut state = job.state();
             state.reason.get_or_insert(JobReason::Stopped);
-            state.error.get_or_insert_with(|| "Остановлено.".into());
+            state.error.get_or_insert_with(|| crate::tr!("Остановлено."));
         }
         job.abort.cancel();
         true
@@ -488,7 +490,10 @@ impl JobContext {
         let mut child = match program.spawn() {
             Ok(child) => child,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(JobError::because(format!("не найдена программа {command}"), JobReason::Error));
+                return Err(JobError::because(
+                    crate::tr!("не найдена программа {command}", command = command),
+                    JobReason::Error,
+                ));
             }
             Err(error) => return Err(JobError::because(error.to_string(), JobReason::Error)),
         };
@@ -625,9 +630,9 @@ impl JobContext {
             .or(spawn_error)
             .or(state.log.last().cloned())
             .unwrap_or_else(|| {
-                format!(
-                    "программа завершилась с кодом {}",
-                    code.map(|c| c.to_string()).unwrap_or_else(|| "null".into())
+                crate::tr!(
+                    "программа завершилась с кодом {code}",
+                    code = code.map(|c| c.to_string()).unwrap_or_else(|| "null".into())
                 )
             });
         Err(JobError::because(message, reason))
@@ -638,7 +643,7 @@ impl JobContext {
         line: &str,
         from: f64,
         to: f64,
-        labels: &[(&str, &str)],
+        labels: &'static [(&'static str, &'static str)],
         last_json: &mut Map<String, Value>,
         child_error: &mut Option<(String, JobReason)>,
     ) {
@@ -676,7 +681,7 @@ impl JobContext {
                     let label = labels
                         .iter()
                         .find(|(id, _)| *id == stage)
-                        .map(|(_, label)| label.to_string())
+                        .map(|(_, label)| crate::locale::text::translate(label, &[]))
                         .unwrap_or_else(|| job.state().label.clone());
                     job.stage(stage, &label, percent);
                 }
@@ -974,7 +979,7 @@ mod tests {
         .unwrap();
         let state = tokio::time::timeout(Duration::from_secs(5), heard).await.expect("the job ended").unwrap();
         assert_eq!((state.state, state.reason), (JobRunState::Error, Some(JobReason::Error)));
-        assert_eq!(state.error.as_deref(), Some(PANICKED));
+        assert_eq!(state.error.as_deref(), Some(panicked().as_str()));
         assert!(state.finished_at.is_some());
         assert!(!jobs.busy());
         assert!(jobs.start(JobKind::Install, "omnivoice", |_| async { Ok(None) }, None).is_ok(), "not busy any more");

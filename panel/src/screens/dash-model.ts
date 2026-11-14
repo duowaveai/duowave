@@ -2,6 +2,7 @@ import { BrainStatus, BrainView, ConnectorView, ModelsView, PanelMode, PersonaIn
 import type { AvailabilityView, FeatureState, Placement } from '../availability';
 import { Scenario, Solved, solve } from '../truth';
 import { executorOf } from '../executor';
+import { formatList, tr } from '../i18n';
 
 // Дашборд без отрисовки: что на самом деле работает в каждом узле орбиты при этом режиме и откуда, каким
 // цветом его показать и что сказать в подписи. Источник — API шлюза; макет — renderVals в
@@ -17,15 +18,41 @@ export type TripStage = 'idle' | 'listen' | 'think' | 'speak' | 'done';
 export type Thinking = 'fast' | 'smart' | 'deep';
 
 export const NODE_LABELS: Record<NodeKey, string> = {
-    brain: 'Мозг',
-    think: 'Думать дольше',
-    persona: 'Манера',
-    ear: 'Слух',
-    voice: 'Голос',
+    get brain() {
+        return tr.dashboard.nodeBrain;
+    },
+    get think() {
+        return tr.dashboard.nodeThink;
+    },
+    get persona() {
+        return tr.dashboard.nodePersona;
+    },
+    get ear() {
+        return tr.dashboard.nodeEar;
+    },
+    get voice() {
+        return tr.dashboard.nodeVoice;
+    },
 };
 
 /** Подпись к цвету: облако и Яндекс одного янтаря (The Outside-Is-Amber Rule), но называются по-своему. */
-export const WHERE: Record<Tone, string> = { own: 'дома', cloud: 'облако', yandex: 'Яндекс', agent: 'помощник', off: 'выкл' };
+export const WHERE: Record<Tone, string> = {
+    get own() {
+        return tr.dashboard.whereOwn;
+    },
+    get cloud() {
+        return tr.dashboard.whereCloud;
+    },
+    get yandex() {
+        return tr.dashboard.whereYandex;
+    },
+    get agent() {
+        return tr.dashboard.whereAgent;
+    },
+    get off() {
+        return tr.dashboard.whereOff;
+    },
+};
 
 /** Цвет полосы исполнителя: кольцо колонки, комета на орбите, обводка горящего узла. */
 export const LINE: Record<Tone, string> = {
@@ -59,12 +86,44 @@ export interface DashData {
     connectors?: ConnectorView[] | null;
     /** Что где доступно (список шлюза): на колонке слух и голос — у компьютера, в облаке или у Яндекса. */
     availability?: AvailabilityView | null;
+    /** Режим «Микрофон»: говорят микрофоном этого компьютера, колонки и Яндекса нет. */
+    computer?: boolean;
 }
 
 export const THINKING: Record<Thinking, { name: string; sub: string; pill: string }> = {
-    fast: { name: 'Быстро', sub: 'коротко, за секунду', pill: '≈ 1 с' },
-    smart: { name: 'С умом', sub: 'сложное — умной модели', pill: '1–3 с' },
-    deep: { name: 'Глубоко', sub: 'дольше думает, точнее', pill: '3–8 с' },
+    fast: {
+        get name() {
+            return tr.dashboard.thinkingFastName;
+        },
+        get sub() {
+            return tr.dashboard.thinkingFastSub;
+        },
+        get pill() {
+            return tr.dashboard.thinkingFastPill;
+        },
+    },
+    smart: {
+        get name() {
+            return tr.dashboard.thinkingSmartName;
+        },
+        get sub() {
+            return tr.dashboard.thinkingSmartSub;
+        },
+        get pill() {
+            return tr.dashboard.thinkingSmartPill;
+        },
+    },
+    deep: {
+        get name() {
+            return tr.dashboard.thinkingDeepName;
+        },
+        get sub() {
+            return tr.dashboard.thinkingDeepSub;
+        },
+        get pill() {
+            return tr.dashboard.thinkingDeepPill;
+        },
+    },
 };
 
 /** «claude-haiku-5-5» → «Haiku 5.5»; не Claude — как есть. */
@@ -90,7 +149,7 @@ const FAMILIES: Array<[RegExp, string]> = [
 export function familyName(model: string): string {
     const base = model.split('/').pop() ?? model;
     for (const [pattern, name] of FAMILIES) if (pattern.test(base)) return name;
-    return base.split(':')[0] || 'Модель';
+    return base.split(':')[0] || tr.dashboard.modelWord;
 }
 
 /** Глубина мышления по настройке шлюза: effort Claude и вторая, умная модель для сложного. */
@@ -102,13 +161,13 @@ export function thinkingOf(brain: BrainStatus): Thinking {
 
 /** Наша модель, как её назвать и где она: для узла и для строки выбора в шите. */
 export function ourBrain(brain: BrainStatus | undefined): { name: string; detail: string; tone: Tone; usable: boolean } {
-    if (!brain) return { name: 'Своя модель', detail: 'шлюз не сообщил, какая', tone: 'off', usable: false };
+    if (!brain) return { name: tr.dashboard.ownModel, detail: tr.dashboard.ownModelUnknown, tone: 'off', usable: false };
     const chosen = brain.profiles?.fast;
     if (brain.source === 'panel' && chosen) {
         const harder = brain.profiles?.smart;
         const named = (model: string, kind: string) => (kind === 'anthropic' ? claudeName(model) : model);
         const second =
-            harder && (harder.model !== chosen.model || harder.provider !== chosen.provider) ? `, сложное — ${named(harder.model, harder.kind)}` : '';
+            harder && (harder.model !== chosen.model || harder.provider !== chosen.provider) ? tr.dashboard.harder(named(harder.model, harder.kind)) : '';
         return {
             name: chosen.kind === 'anthropic' ? 'Claude' : familyName(chosen.model),
             detail: `${named(chosen.model, chosen.kind)} · ${chosen.title}${second}`,
@@ -119,20 +178,20 @@ export function ourBrain(brain: BrainStatus | undefined): { name: string; detail
     const { fast, smart } = brain.models;
     switch (brain.provider) {
         case 'none':
-            return { name: 'Своя модель', detail: 'не задана: DIALOG_PROVIDER=none', tone: 'off', usable: false };
+            return { name: tr.dashboard.ownModel, detail: tr.dashboard.ownModelNotSet, tone: 'off', usable: false };
         case 'echo':
-            return { name: 'Эхо', detail: 'повторяет вопрос — для проверки', tone: 'own', usable: true };
+            return { name: tr.dashboard.echoName, detail: tr.dashboard.echoDetail, tone: 'own', usable: true };
         case 'anthropic':
             return {
                 name: 'Claude',
-                detail: `${claudeName(fast)} · Anthropic${smart !== fast ? `, сложное — ${claudeName(smart)}` : ''}`,
+                detail: `${claudeName(fast)} · Anthropic${smart !== fast ? tr.dashboard.harder(claudeName(smart)) : ''}`,
                 tone: 'cloud',
                 usable: true,
             };
         default:
             return {
-                name: fast ? familyName(fast) : 'Своя модель',
-                detail: `${fast || 'LLM_MODEL не задан'} · ${brain.cloud ? 'облако' : 'дома'}`,
+                name: fast ? familyName(fast) : tr.dashboard.ownModel,
+                detail: `${fast || tr.dashboard.llmModelNotSet} · ${brain.cloud ? tr.dashboard.whereCloud : tr.dashboard.whereOwn}`,
                 tone: brain.cloud ? 'cloud' : 'own',
                 usable: !!fast,
             };
@@ -141,39 +200,40 @@ export function ourBrain(brain: BrainStatus | undefined): { name: string; detail
 
 /** Мозг — кто отвечает на разговор: маршрут «Разговор» под режимом, а при своём шаге — наша модель. */
 export function brainNode(data: DashData): NodeView {
-    const executor = executorOf(data.routes?.chat ?? 'own', data.mode);
-    if (executor === 'yandex') return { key: 'brain', value: 'Алиса', tone: 'yandex', detail: 'отвечает Яндекс' };
+    // Режим «Микрофон»: разговор без колонки идёт «Мозгу» всегда — маршрут «Разговор» про колонку и Яндекс.
+    const executor = data.computer ? 'own' : executorOf(data.routes?.chat ?? 'own', data.mode);
+    if (executor === 'yandex') return { key: 'brain', value: tr.dashboard.alice, tone: 'yandex', detail: tr.dashboard.yandexAnswers };
     if (executor === 'off')
         return {
             key: 'brain',
-            value: 'нет',
+            value: tr.dashboard.none,
             tone: 'off',
-            detail: data.mode === 'own' ? 'в маршруте разговора только Яндекс, а в «Своём» его нет' : 'разговор выключен в маршрутах',
+            detail: data.mode === 'own' ? tr.dashboard.brainOffRelayOnly : tr.dashboard.brainOffRoute,
         };
     const ours = ourBrain(data.brain);
-    return { key: 'brain', value: ours.usable ? ours.name : 'нет', tone: ours.usable ? ours.tone : 'off', detail: ours.detail };
+    return { key: 'brain', value: ours.usable ? ours.name : tr.dashboard.none, tone: ours.usable ? ours.tone : 'off', detail: ours.detail };
 }
 
 export function thinkNode(data: DashData, brain: NodeView): NodeView {
-    if (brain.tone === 'yandex') return { key: 'think', value: 'у Яндекса', tone: 'yandex', detail: 'думает Алиса' };
-    if (brain.tone === 'off' || !data.brain) return { key: 'think', value: 'нет', tone: 'off', detail: 'мозг не выбран' };
-    if (data.brain.provider === 'echo') return { key: 'think', value: 'нет', tone: 'off', detail: 'эхо не думает' };
+    if (brain.tone === 'yandex') return { key: 'think', value: tr.dashboard.atYandex, tone: 'yandex', detail: tr.dashboard.aliceThinks };
+    if (brain.tone === 'off' || !data.brain) return { key: 'think', value: tr.dashboard.none, tone: 'off', detail: tr.dashboard.brainNotChosen };
+    if (data.brain.provider === 'echo') return { key: 'think', value: tr.dashboard.none, tone: 'off', detail: tr.dashboard.echoNoThink };
     const { fast, smart } = data.brain.models;
-    const second = smart !== fast ? `сложное — ${data.brain.provider === 'anthropic' ? claudeName(smart) : smart}` : 'одна модель на всё';
+    const second = smart !== fast ? tr.dashboard.harderLine(data.brain.provider === 'anthropic' ? claudeName(smart) : smart) : tr.dashboard.oneModel;
     const effort = data.brain.provider === 'anthropic' ? `effort ${data.brain.effort ?? 'low'} · ` : '';
     return { key: 'think', value: THINKING[thinkingOf(data.brain)].name, tone: brain.tone, detail: `${effort}${second}` };
 }
 
 export function personaNode(data: DashData, brain: NodeView): NodeView {
-    if (brain.tone === 'yandex') return { key: 'persona', value: 'у Яндекса', tone: 'yandex', detail: 'Алиса отвечает своим характером' };
-    if (brain.tone === 'off') return { key: 'persona', value: 'нет', tone: 'off', detail: 'без мозга характер не звучит' };
+    if (brain.tone === 'yandex') return { key: 'persona', value: tr.dashboard.atYandex, tone: 'yandex', detail: tr.dashboard.aliceOwnPersona };
+    if (brain.tone === 'off') return { key: 'persona', value: tr.dashboard.none, tone: 'off', detail: tr.dashboard.noBrainNoPersona };
     const info = data.persona;
-    if (!info) return { key: 'persona', value: '—', tone: 'off', detail: 'характер не прочитан' };
+    if (!info) return { key: 'persona', value: '—', tone: 'off', detail: tr.dashboard.personaUnread };
     const preset = info.presets.find((entry) => entry.id === info.activePreset);
     if (preset) return { key: 'persona', value: preset.title, tone: 'own', detail: preset.description };
     return info.source === 'file'
-        ? { key: 'persona', value: 'Из файла', tone: 'own', detail: 'DIALOG_SYSTEM_PROMPT_FILE' }
-        : { key: 'persona', value: 'Свой', tone: 'own', detail: 'написан в пульте' };
+        ? { key: 'persona', value: tr.dashboard.fromFile, tone: 'own', detail: 'DIALOG_SYSTEM_PROMPT_FILE' }
+        : { key: 'persona', value: tr.dashboard.custom, tone: 'own', detail: tr.dashboard.writtenInPanel };
 }
 
 const cloudOf = (data: DashData, id: string): boolean =>
@@ -184,53 +244,54 @@ export const shortTitle = (title: string): string => title.split(' — ')[0];
 
 /** Слух — что распознаёт речь сейчас: модель, которую загрузил сервер, а не только выбранная. */
 export function earNode(data: DashData): NodeView {
-    if (data.mode === 'relay') return { key: 'ear', value: 'Яндекс', tone: 'yandex', detail: 'колонка слушает Яндекс целиком' };
+    if (data.mode === 'relay') return { key: 'ear', value: tr.dashboard.yandexWord, tone: 'yandex', detail: tr.dashboard.stationListensToYandex };
     const view = data.models;
-    if (!view) return { key: 'ear', value: '—', tone: 'off', detail: 'модели не прочитаны' };
+    if (!view) return { key: 'ear', value: '—', tone: 'off', detail: tr.dashboard.modelsUnread };
     const tone: Tone = cloudOf(data, 'asr') ? 'cloud' : 'own';
     const active = view.asr.find((card) => card.active);
     if (active) return { key: 'ear', value: shortTitle(active.title), tone, detail: active.description };
-    if (view.asrLoaded) return { key: 'ear', value: view.asrLoaded, tone, detail: 'модель не из каталога' };
+    if (view.asrLoaded) return { key: 'ear', value: view.asrLoaded, tone, detail: tr.dashboard.modelNotInCatalog };
     const waiting = view.asr.find((card) => card.pending);
-    return { key: 'ear', value: waiting ? shortTitle(waiting.title) : 'нет', tone: 'off', detail: 'сервер распознавания молчит' };
+    return { key: 'ear', value: waiting ? shortTitle(waiting.title) : tr.dashboard.none, tone: 'off', detail: tr.dashboard.recognitionServerSilent };
 }
 
-/** Голоса Silero по-русски: в каталоге они латиницей. */
-const SILERO_NAMES: Record<string, string> = { aidar: 'Айдар', baya: 'Бая', kseniya: 'Ксения', xenia: 'Ксения', eugene: 'Евгений' };
+/** Голоса Silero по-русски: в каталоге они латиницей (имена — в словаре языка). */
 
 export function voiceName(card: TtsCard, voiceId?: string): string {
     if (card.engine !== 'silero') return card.title.replace(/\s*\(Piper\)\s*$/i, '');
     const name = card.voices.find((voice) => voice.id === voiceId)?.name ?? voiceId?.split('/').pop() ?? '';
-    return SILERO_NAMES[name] ?? (name || shortTitle(card.title));
+    return tr.dashboard.sileroNames[name] ?? (name || shortTitle(card.title));
 }
 
 /** Голос — что звучит: с режимом (в «Своём» голос Алисы уступает нашему) и с тем, отвечает ли голосовой сервер. */
 export function voiceNode(data: DashData): NodeView {
-    if (data.mode === 'relay') return { key: 'voice', value: 'Алиса', tone: 'yandex', detail: 'голос Яндекса' };
+    if (data.mode === 'relay') return { key: 'voice', value: tr.dashboard.alice, tone: 'yandex', detail: tr.dashboard.yandexVoice };
     const view = data.models;
-    if (!view) return { key: 'voice', value: '—', tone: 'off', detail: 'модели не прочитаны' };
-    if (view.speaking === 'yandex') return { key: 'voice', value: 'Алиса', tone: 'yandex', detail: 'голос Яндекса' };
-    if (!view.ownVoiceServer) return { key: 'voice', value: 'нет', tone: 'off', detail: 'свой голосовой сервер не задан (TTS_OWN_URL)' };
+    if (!view) return { key: 'voice', value: '—', tone: 'off', detail: tr.dashboard.modelsUnread };
+    // Режим «Микрофон»: голос Алисы идёт через колонку, без неё он молчит — нужен свой.
+    if (data.computer && view.voice === 'yandex') return { key: 'voice', value: tr.dashboard.none, tone: 'off', detail: tr.dashboard.ownVoiceNotChosen };
+    if (view.speaking === 'yandex') return { key: 'voice', value: tr.dashboard.alice, tone: 'yandex', detail: tr.dashboard.yandexVoice };
+    if (!view.ownVoiceServer) return { key: 'voice', value: tr.dashboard.none, tone: 'off', detail: tr.dashboard.ownVoiceServerNotSet };
     const card = view.tts.find((entry) => entry.active && entry.engine !== 'yandex');
     if (!view.ttsUp)
         return {
             key: 'voice',
-            value: card ? voiceName(card, view.ttsActive.voiceId) : 'нет',
+            value: card ? voiceName(card, view.ttsActive.voiceId) : tr.dashboard.none,
             tone: 'off',
-            detail: 'голосовой сервер молчит',
+            detail: tr.dashboard.voiceServerSilent,
         };
     const tone: Tone = cloudOf(data, 'tts') ? 'cloud' : 'own';
-    if (!card) return { key: 'voice', value: 'свой', tone, detail: 'голос из .env шлюза' };
+    if (!card) return { key: 'voice', value: tr.dashboard.ownShort, tone, detail: tr.dashboard.voiceFromEnv };
     // Выбран, но голосовой сервер его не загрузил (не скачан или скачан после его старта): так он не звучит.
     if (!card.loaded)
         return {
             key: 'voice',
             value: voiceName(card, view.ttsActive.voiceId),
             tone: 'off',
-            detail: card.installed ? 'не загружен — перезапустите голосовой сервер' : 'не скачан — скачайте в «Персонаж» → «Голос»',
+            detail: card.installed ? tr.dashboard.notLoadedRestart : tr.dashboard.notDownloaded,
         };
-    const engine = card.group === 'own' ? `свой · ${card.own?.engineTitle ?? card.engine}` : card.engine === 'silero' ? shortTitle(card.title) : 'Piper';
-    const instead = view.voice === 'yandex' ? ' · вместо Алисы: в «Своём» её голоса нет' : '';
+    const engine = card.group === 'own' ? tr.dashboard.ownEngine(card.own?.engineTitle ?? card.engine) : card.engine === 'silero' ? shortTitle(card.title) : 'Piper';
+    const instead = view.voice === 'yandex' ? tr.dashboard.insteadOfAlice : '';
     return { key: 'voice', value: voiceName(card, view.ttsActive.voiceId), tone, detail: `${engine}${instead}` };
 }
 
@@ -240,16 +301,15 @@ export function voiceNode(data: DashData): NodeView {
  */
 export function placedNode(key: 'ear' | 'voice', feature: FeatureState | undefined, fallback: NodeView): NodeView {
     if (!feature) return fallback;
-    const lead = key === 'ear' ? 'Распознаёт' : 'Говорит';
     switch (feature.runs) {
         case 'homeServer':
-            return { key, value: 'Компьютер', tone: 'own', detail: `${lead} домашний сервер — компьютер со шлюзом` };
+            return { key, value: tr.dashboard.computerWord, tone: 'own', detail: key === 'ear' ? tr.dashboard.homeServerEar : tr.dashboard.homeServerVoice };
         case 'cloud':
-            return { key, value: 'Облако', tone: 'cloud', detail: feature.state === 'fallback' ? feature.reason : `${lead} облако` };
+            return { key, value: tr.dashboard.cloudWord, tone: 'cloud', detail: feature.state === 'fallback' ? feature.reason : key === 'ear' ? tr.dashboard.cloudEar : tr.dashboard.cloudVoice };
         case 'yandex':
-            return { key, value: key === 'ear' ? 'Яндекс' : 'Алиса', tone: 'yandex', detail: feature.reason };
+            return { key, value: key === 'ear' ? tr.dashboard.yandexWord : tr.dashboard.alice, tone: 'yandex', detail: feature.reason };
         default:
-            return feature.state === 'off' ? { key, value: 'нет', tone: 'off', detail: feature.reason } : fallback;
+            return feature.state === 'off' ? { key, value: tr.dashboard.none, tone: 'off', detail: feature.reason } : fallback;
     }
 }
 
@@ -297,7 +357,8 @@ export function scenarioOf(data: DashData, placement?: Placement, assumeCloud = 
         pcVoice,
         cloudEar: assumeCloud || feature('asr.own')?.runs === 'cloud' || cloud('asr'),
         cloudVoice: assumeCloud || feature('voice.own')?.runs === 'cloud' || cloud('tts'),
-        brain: { name: brain.tone === 'yandex' ? 'Алиса' : brain.value, where },
+        brain: { name: brain.tone === 'yandex' ? tr.dashboard.alice : brain.value, where },
+        computer: data.computer && placement === undefined,
     };
 }
 
@@ -313,17 +374,17 @@ export function truthOf(data: DashData): Solved {
 export function nodesOf(data: DashData, truth: Solved = truthOf(data)): Record<NodeKey, NodeView> {
     const nodes = rawNodesOf(data);
     if (truth.silent) {
-        const none = (key: NodeKey): NodeView => ({ key, value: 'нет', tone: 'off', detail: 'компьютер спит — колонка молчит' });
+        const none = (key: NodeKey): NodeView => ({ key, value: tr.dashboard.none, tone: 'off', detail: tr.dashboard.computerSleeps });
         return { brain: none('brain'), think: none('think'), persona: none('persona'), ear: none('ear'), voice: none('voice') };
     }
-    if (truth.ear.host === 'yandex' && nodes.ear.tone !== 'yandex') nodes.ear = { key: 'ear', value: 'Яндекс', tone: 'yandex', detail: truth.ear.sub };
+    if (truth.ear.host === 'yandex' && nodes.ear.tone !== 'yandex') nodes.ear = { key: 'ear', value: tr.dashboard.yandexWord, tone: 'yandex', detail: truth.ear.sub };
     if (truth.brain.host === 'yandex' && nodes.brain.tone !== 'yandex') {
-        const brain: NodeView = { key: 'brain', value: 'Алиса', tone: 'yandex', detail: `${truth.brain.sub} · выбран ${nodes.brain.value}, но он не отвечает` };
+        const brain: NodeView = { key: 'brain', value: tr.dashboard.alice, tone: 'yandex', detail: tr.dashboard.chosenButSilent(truth.brain.sub, nodes.brain.value) };
         nodes.brain = brain;
         nodes.think = thinkNode(data, brain);
         nodes.persona = personaNode(data, brain);
     }
-    if (truth.voice.host === 'yandex' && nodes.voice.tone !== 'yandex') nodes.voice = { key: 'voice', value: 'Алиса', tone: 'yandex', detail: truth.voice.sub };
+    if (truth.voice.host === 'yandex' && nodes.voice.tone !== 'yandex') nodes.voice = { key: 'voice', value: tr.dashboard.alice, tone: 'yandex', detail: truth.voice.sub };
     return nodes;
 }
 
@@ -331,17 +392,61 @@ export function nodesOf(data: DashData, truth: Solved = truthOf(data)): Record<N
 export type SatKey = 'home' | 'mcp' | 'agent' | 'calls' | 'chats';
 
 export const SATELLITES: Array<{ key: SatKey; title: string; kinds: string[] }> = [
-    { key: 'home', title: 'Умный дом', kinds: ['smart_home'] },
-    { key: 'mcp', title: 'MCP-серверы', kinds: ['mcp'] },
-    { key: 'agent', title: 'Агенты', kinds: ['agent'] },
-    { key: 'calls', title: 'Звонки', kinds: ['calls'] },
-    { key: 'chats', title: 'Мессенджеры', kinds: ['messenger'] },
+    {
+        key: 'home',
+        get title() {
+            return tr.dashboard.satHome;
+        },
+        kinds: ['smart_home'],
+    },
+    {
+        key: 'mcp',
+        get title() {
+            return tr.dashboard.satMcp;
+        },
+        kinds: ['mcp'],
+    },
+    {
+        key: 'agent',
+        get title() {
+            return tr.dashboard.satAgent;
+        },
+        kinds: ['agent'],
+    },
+    {
+        key: 'calls',
+        get title() {
+            return tr.dashboard.satCalls;
+        },
+        kinds: ['calls'],
+    },
+    {
+        key: 'chats',
+        get title() {
+            return tr.dashboard.satChats;
+        },
+        kinds: ['messenger'],
+    },
 ];
 
 /** Строка вида без единого подключения: MCP-серверы добавляют в «Дом» → «Коннекторы», помощников шлюз ещё не умеет. */
 export const STUBS: Partial<Record<SatKey, { sub: string; pill: string }>> = {
-    mcp: { sub: 'программ пока нет — добавьте в «Приложения» → «Подключения»', pill: 'нет' },
-    agent: { sub: 'OpenClaw и другие агенты с правами — в работе', pill: 'скоро' },
+    mcp: {
+        get sub() {
+            return tr.dashboard.stubMcp;
+        },
+        get pill() {
+            return tr.dashboard.stubMcpPill;
+        },
+    },
+    agent: {
+        get sub() {
+            return tr.dashboard.stubAgent;
+        },
+        get pill() {
+            return tr.dashboard.stubAgentPill;
+        },
+    },
 };
 
 export interface SatView {
@@ -372,40 +477,43 @@ export function satellitesOf(data: DashData): SatView[] {
 export function outsideOf(nodes: Record<NodeKey, NodeView>): string[] {
     const outside = (tone: Tone): boolean => tone === 'cloud' || tone === 'yandex';
     const out: string[] = [];
-    if (outside(nodes.ear.tone)) out.push('слух');
+    if (outside(nodes.ear.tone)) out.push(tr.dashboard.outsideEar);
     if (outside(nodes.brain.tone)) out.push(nodes.brain.value);
-    if (outside(nodes.voice.tone)) out.push('голос');
+    if (outside(nodes.voice.tone)) out.push(tr.dashboard.outsideVoice);
     return out;
 }
 
 /** «слух, Claude и голос». */
 export function joinRu(items: string[]): string {
-    return items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} и ${items[items.length - 1]}`;
+    return items.length < 2 ? items.join('') : formatList(items);
 }
 
-/** Подпись под колонкой на каждом шаге пути. Пример пути, а не живой запрос: шапка показывает настоящее состояние. */
-export function captionOf(stage: TripStage, nodes: Record<NodeKey, NodeView>, mode: PanelMode): [string, string] {
+/**
+ * Подпись под колонкой на каждом шаге пути. Пример пути, а не живой запрос: шапка показывает настоящее состояние. В
+ * режиме «Микрофон» (`computer`) в покое она зовёт к кнопке: там и начинается разговор.
+ */
+export function captionOf(stage: TripStage, nodes: Record<NodeKey, NodeView>, mode: PanelMode, computer = false): [string, string] {
     switch (stage) {
         case 'listen':
-            return ['Слушает…', `слух: ${nodes.ear.value}`];
+            return [tr.dashboard.capListening, tr.dashboard.capEar(nodes.ear.value)];
         case 'think':
             return [
-                'Думает…',
+                tr.dashboard.capThinking,
                 nodes.brain.tone === 'off'
-                    ? 'мозг не выбран'
+                    ? tr.dashboard.capBrainOff
                     : nodes.brain.tone === 'yandex'
-                      ? 'думает Алиса'
+                      ? tr.dashboard.aliceThinks
                       : `${nodes.brain.value} · ${nodes.think.value.toLowerCase()}`,
             ];
         case 'speak':
-            return ['Отвечает…', nodes.voice.tone === 'off' ? 'голос молчит' : `говорит ${nodes.voice.value}`];
+            return [tr.dashboard.capSpeaking, nodes.voice.tone === 'off' ? tr.dashboard.capVoiceSilent : tr.dashboard.capSpeaks(nodes.voice.value)];
         case 'done': {
-            if (mode === 'relay') return ['Всё ответил Яндекс', 'так идёт разговор'];
+            if (mode === 'relay') return [tr.dashboard.capAllYandex, tr.dashboard.capThisIsHow];
             const out = outsideOf(nodes);
-            return [out.length ? `Наружу: ${joinRu(out)}` : 'Всё осталось дома', 'так идёт разговор'];
+            return [out.length ? tr.dashboard.capOutside(joinRu(out)) : tr.dashboard.capAllHome, tr.dashboard.capThisIsHow];
         }
         default:
-            return ['Нажмите на колонку —', 'покажу путь вопроса'];
+            return computer ? [tr.dashboard.capPressTalk, tr.dashboard.capAskSomething] : [tr.dashboard.capPressStation, tr.dashboard.capShowPath];
     }
 }
 

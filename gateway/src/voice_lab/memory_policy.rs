@@ -74,20 +74,24 @@ pub fn admit(snapshot: &MemorySnapshot, reserve: u64, need: u64, video_need_mb: 
     if snapshot.pressure != Pressure::Normal {
         return verdict(
             AdmissionVerdict::Tight,
-            Some("Системе уже не хватает памяти — лучше подождать или закрыть тяжёлые программы.".into()),
+            Some(crate::tr!("Системе уже не хватает памяти — лучше подождать или закрыть тяжёлые программы.")),
         );
     }
     if snapshot.swap_in_mbps.unwrap_or(0.0) > START_SWAP_MBPS {
         return verdict(
             AdmissionVerdict::Tight,
-            Some("Компьютер сейчас подкачивает память с диска — лучше подождать минуту.".into()),
+            Some(crate::tr!("Компьютер сейчас подкачивает память с диска — лучше подождать минуту.")),
         );
     }
     if let (Some(video), Some(free)) = (video_need_mb, snapshot.vram_free_mb) {
         if free < video as f64 {
             return verdict(
                 AdmissionVerdict::Tight,
-                Some(format!("Видеопамяти свободно {} ГБ, а нужно около {} ГБ.", gb(free), gb(video as f64))),
+                Some(crate::tr!(
+                    "Видеопамяти свободно {free} ГБ, а нужно около {need} ГБ.",
+                    free = gb(free),
+                    need = gb(video as f64)
+                )),
             );
         }
     }
@@ -96,18 +100,17 @@ pub fn admit(snapshot: &MemorySnapshot, reserve: u64, need: u64, video_need_mb: 
         return verdict(AdmissionVerdict::Go, None);
     }
     let reason = if snapshot.pool_mb >= need {
-        format!(
-            "Памяти впритык: свободно {} ГБ, нужно около {} ГБ, а {} ГБ держу для колонки — она может подтормаживать.",
-            gb(pool),
-            gb(need as f64),
-            gb(reserve as f64)
+        crate::tr!(
+            "Памяти впритык: свободно {free} ГБ, нужно около {need} ГБ, а {reserve} ГБ держу для колонки — она может подтормаживать.",
+            free = gb(pool),
+            need = gb(need as f64),
+            reserve = gb(reserve as f64)
         )
     } else {
-        format!(
-            "Памяти мало: свободно {} ГБ, а нужно около {} ГБ — Мак начнёт подкачивать память с диска, колонка будет \
-             подтормаживать.",
-            gb(pool),
-            gb(need as f64)
+        crate::tr!(
+            "Памяти мало: свободно {free} ГБ, а нужно около {need} ГБ — Мак начнёт подкачивать память с диска, колонка будет подтормаживать.",
+            free = gb(pool),
+            need = gb(need as f64)
         )
     };
     verdict(AdmissionVerdict::Tight, Some(reason))
@@ -191,13 +194,15 @@ impl MemoryWatch {
 pub fn stop_message(reason: StopReason, limit: u64) -> String {
     match reason {
         StopReason::Memory => {
-            format!(
-                "Остановлено: модель заняла больше {} ГБ — намного больше обычного, похоже на сбой.",
-                gb(limit as f64)
+            crate::tr!(
+                "Остановлено: модель заняла больше {limit} ГБ — намного больше обычного, похоже на сбой.",
+                limit = gb(limit as f64)
             )
         }
-        StopReason::Pressure => "Остановлено: системе стало не хватать памяти — колонка важнее.".into(),
-        StopReason::Swap => "Остановлено: компьютер начал подкачивать память с диска — колонка важнее.".into(),
+        StopReason::Pressure => crate::tr!("Остановлено: системе стало не хватать памяти — колонка важнее."),
+        StopReason::Swap => {
+            crate::tr!("Остановлено: компьютер начал подкачивать память с диска — колонка важнее.")
+        }
     }
 }
 

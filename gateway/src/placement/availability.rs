@@ -2,7 +2,6 @@
 //! its home server, its cloud, its mode. `/api/v1/availability` answers from here, the mode switch asks here, and
 //! when anything changes — the home server comes or goes, the mode or a connector changes — the panels hear
 //! `availability.changed` and read again.
-
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
@@ -49,9 +48,9 @@ pub struct AvailabilityView {
 #[serde(rename_all = "camelCase")]
 pub struct PlacementCard {
     pub id: Placement,
-    pub title: &'static str,
-    pub summary: &'static str,
-    pub risk: &'static str,
+    pub title: String,
+    pub summary: String,
+    pub risk: String,
 }
 
 pub struct AvailabilityService {
@@ -171,7 +170,12 @@ impl AvailabilityService {
             features: evaluate_all(&context),
             placements: Placement::ALL
                 .into_iter()
-                .map(|id| PlacementCard { id, title: id.title(), summary: id.summary(), risk: id.risk() })
+                .map(|id| PlacementCard {
+                    id,
+                    title: id.title_text(),
+                    summary: id.summary_text(),
+                    risk: id.risk_text(),
+                })
                 .collect(),
             table: table(),
         }
@@ -221,8 +225,10 @@ impl ModeGate for AvailabilityService {
     fn check(&self, mode: PanelMode) -> Result<(), String> {
         match self.get(mode_feature(mode)) {
             Some(state) if !state.on() => Err(match mode {
-                PanelMode::Own if state.reason.starts_with('«') => state.reason,
-                PanelMode::Own => format!("«Своё» сейчас не включить: {}.", lowercase_first(&state.reason)),
+                PanelMode::Own if state.reason.starts_with(['«', '“']) => state.reason,
+                PanelMode::Own => {
+                    crate::tr!("«Своё» сейчас не включить: {reason}.", reason = lowercase_first(&state.reason))
+                }
                 _ => state.reason,
             }),
             _ => Ok(()),

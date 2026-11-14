@@ -5,6 +5,7 @@
 import { useEffect, useRef } from 'preact/hooks';
 
 import { api, can } from '../api';
+import { tr } from '../i18n';
 import { usePanel } from '../shell/context';
 import { ask } from '../ui/confirm';
 import { announceReady, failed } from './creation';
@@ -31,7 +32,7 @@ export function CreationFlow() {
                 .workshopDraft(draft)
                 .then((view) => {
                     if (view.meta.stage === 'failed') {
-                        showStrip({ kind: 'note', head: 'Не вышло', text: view.meta.note ?? `«${view.title ?? draft}»: что случилось — в мастерской.` }, 10_000);
+                        showStrip({ kind: 'note', head: tr.voice.failedHead, text: view.meta.note ?? tr.voice.failedNote(view.title ?? draft) }, 10_000);
                         return;
                     }
                     if (view.meta.stage !== 'ready') return;
@@ -42,9 +43,9 @@ export function CreationFlow() {
                             fit: () => go('fitting', draft),
                             desk: () => go('fitting', draft, undefined, { yes: '' }),
                             redo: () => go('fitting', draft, undefined, { redo: '' }),
-                            park: () => void api.parkDraft(draft).catch((e) => showStrip({ kind: 'note', head: 'Не вышло', text: failed(e) }, 6000)),
+                            park: () => void api.parkDraft(draft).catch((e) => showStrip({ kind: 'note', head: tr.voice.failedHead, text: failed(e) }, 6000)),
                             drop: () =>
-                                void ask({ title: 'Удалить черновик?', text: `«${view.title ?? draft}» уйдёт из мастерской.`, ok: 'Удалить', danger: true }).then(
+                                void ask({ title: tr.voice.deleteDraftTitle, text: tr.voice.deleteDraftText(view.title ?? draft), ok: tr.voice.delete, danger: true }).then(
                                     (yes) => yes && api.deleteDraft(draft),
                                 ),
                         },

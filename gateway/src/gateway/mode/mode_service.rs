@@ -3,7 +3,6 @@
 //! station reconnects into the new one (the session registry hears `mode.changed`). «Свой» is the gateway with
 //! Yandex forbidden: no session with Yandex opens and no route step goes to it. It is an overlay — the routes stay
 //! the household's preference and come back as they were on the way out of «Свой».
-
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
@@ -19,18 +18,18 @@ use crate::settings::SettingsService;
 use crate::speech::voice_service::Whose;
 use crate::speech::VoiceService;
 
-fn note(mode: PanelMode) -> &'static str {
+fn note(mode: PanelMode) -> String {
     match mode {
-        PanelMode::Relay => "Всё отвечает Яндекс, как до DuoWave. Звонки по ссылке и помощник не работают.",
-        PanelMode::Gateway => "Сначала свой, Яндекс подхватывает то, чего мы не умеем.",
-        PanelMode::Own => "Без Яндекса. Радио, сказки, напоминания и навыки пока не умеем.",
+        PanelMode::Relay => crate::tr!("Всё отвечает Яндекс, как до DuoWave. Звонки по ссылке и помощник не работают."),
+        PanelMode::Gateway => crate::tr!("Сначала свой, Яндекс подхватывает то, чего мы не умеем."),
+        PanelMode::Own => crate::tr!("Без Яндекса. Радио, сказки, напоминания и навыки пока не умеем."),
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ModeView {
     pub mode: PanelMode,
-    pub note: &'static str,
+    pub note: String,
     /// Whose voice is chosen: what «Свой» warns about when it is Alice's (it cannot speak without Yandex).
     pub voice: Whose,
     /// Whose voice speaks now, after the mode: in «Свой» Alice's gives way to ours.
@@ -149,12 +148,33 @@ impl ModeService {
     /// the gateway's own switch: no going back by itself after it.
     pub fn switch(&self, to: Option<&Value>, actor: Option<Actor>) -> Result<ModeView, ApiError> {
         let Some(to) = to.and_then(Value::as_str).and_then(PanelMode::parse) else {
-            return Err(ApiError::bad_request("mode: relay, gateway или own"));
+            return Err(ApiError::bad_request(crate::tr!("mode: relay, gateway или own")));
         };
+        if to != PanelMode::Own && self.locked() {
+            return Err(ApiError::conflict(crate::talk::input::ONLY_OWN));
+        }
         self.gate.check(to).map_err(ApiError::conflict)?;
         self.change(to, actor.clone(), None)?;
         self.record(ModeBy::Person, None, actor)?;
         Ok(self.view())
+    }
+
+    /// The computer's microphone is chosen (src/talk/input.rs): «Своё» under a lock — every way out of it is refused,
+    /// the panel's switch and a station's emergency words alike.
+    pub fn locked(&self) -> bool {
+        crate::talk::input::on_computer(&self.settings)
+    }
+
+    /// Whether a mode has a way here now: what the way back from the microphone asks before it returns one.
+    pub fn possible(&self, mode: PanelMode) -> bool {
+        self.gate.check(mode).is_ok()
+    }
+
+    /// «Своё» for the microphone, when the mode in force is another (the start, a setting written past the switch).
+    pub fn hold_own(&self) -> Result<(), ApiError> {
+        self.gate.check(PanelMode::Own).map_err(ApiError::conflict)?;
+        self.change(PanelMode::Own, None, None)?;
+        self.record(ModeBy::Person, None, None)
     }
 
     /// «Остаться»: the mode in force becomes the person's choice; the gateway will not switch back by itself.
@@ -166,7 +186,7 @@ impl ModeService {
     /// The gateway leaves a mode by itself (its home server went): to `to`, kept as its own switch, with why.
     /// Nothing happens when the mode is not `from` any more.
     pub fn leave_by_itself(&self, from: PanelMode, to: PanelMode, reason: &str) -> Result<bool, ApiError> {
-        if self.current() != from {
+        if self.current() != from || (to != PanelMode::Own && self.locked()) {
             return Ok(false);
         }
         self.gate.check(to).map_err(ApiError::conflict)?;

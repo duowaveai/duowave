@@ -12,7 +12,7 @@ pub const PERMISSIONS: &[(&str, &str)] = &[
     ("station.mode", "Переключать режим: Яндекс, Шлюз, Свой"),
     ("routes.edit", "Менять маршруты возможностей"),
     ("models.manage", "Скачивать, удалять и выбирать голоса и распознавание, перезапускать их серверы"),
-    ("persona.edit", "Менять характер Алисы"),
+    ("persona.edit", "Менять характер"),
     ("journal.view", "Читать журнал запросов: что говорили колонке"),
     ("users.manage", "Добавлять людей, менять их роли, права и ключи доступа"),
     ("stations.manage", "Подключать колонки, давать им имена, отключать чужие"),
@@ -66,8 +66,12 @@ pub fn is_panel_permission(value: &str) -> bool {
 }
 
 /// The title of a panel permission, for people; the permission itself when it has none.
-pub fn title_of(permission: &str) -> &str {
-    PERMISSIONS.iter().find(|(name, _)| *name == permission).map(|(_, title)| *title).unwrap_or(permission)
+pub fn title_of(permission: &str) -> String {
+    PERMISSIONS
+        .iter()
+        .find(|(name, _)| *name == permission)
+        .map(|(_, title)| crate::core::tx(title))
+        .unwrap_or_else(|| permission.to_string())
 }
 
 /// Whether a string is a grant the catalog knows: a permission, `*`, `use:*`, `<group>.*` or `use:<capability>`.

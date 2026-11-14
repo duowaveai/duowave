@@ -280,6 +280,22 @@ impl RequestHandle {
         });
     }
 
+    /// The phrase was recognized before the request began (the panel's microphone, src/talk): the ear's step, done,
+    /// with the time it took there.
+    pub fn heard_before(&self, by: Place, what: Option<&str>, ms: u64) {
+        self.change(|state, _| {
+            let step = RequestStep {
+                phase: RequestPhase::Recognize,
+                at: 0,
+                ms: Some(ms),
+                by: Some(by),
+                what: what.filter(|what| !what.is_empty()).map(|what| what.chars().take(200).collect()),
+            };
+            state.view.steps.insert(0, step);
+            true
+        });
+    }
+
     /// What was asked: the recognition ends, the request waits for its executor.
     pub fn heard(&self, text: &str) {
         self.change(|state, elapsed| {

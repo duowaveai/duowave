@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
@@ -41,6 +41,10 @@ const MEMORY_EVERY: Duration = Duration::from_secs(10);
 
 /// Who is told an app gave up (five falls): the plugin host switches it off with the reason.
 pub type GiveUp = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
+/// Who is told an app's program is gone — it fell, was stopped or unloaded — with the reason in words: the long tasks
+/// it ran are interrupted (src/tasks).
+pub type Gone = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 /// An app that runs: its id and its Host API, with its rights.
 pub type AppHost = (String, Arc<dyn HostApi>);
@@ -73,11 +77,18 @@ pub struct ProcessRuntime {
     gateway_url: Mutex<String>,
     tokens: Arc<AppTokens>,
     give_up: GiveUp,
+    /// Set once the long tasks stand.
+    gone: Arc<OnceLock<Gone>>,
 }
 
 impl ProcessRuntime {
     pub fn new(gateway_url: String, tokens: Arc<AppTokens>, give_up: GiveUp) -> ProcessRuntime {
-        ProcessRuntime { gateway_url: Mutex::new(gateway_url), tokens, give_up }
+        ProcessRuntime { gateway_url: Mutex::new(gateway_url), tokens, give_up, gone: Arc::default() }
+    }
+
+    /// Who hears that an app's program is gone.
+    pub fn set_gone(&self, gone: Gone) {
+        let _ = self.gone.set(gone);
     }
 
     /// The address the gateway's server listens on, once it does.
@@ -91,13 +102,16 @@ pub fn checked_build(dir: &Path, manifest: &Manifest) -> Result<PathBuf, String>
     let key = platform();
     let target = manifest.targets.get(&key).ok_or_else(|| {
         let known: Vec<&str> = manifest.targets.keys().map(String::as_str).collect();
-        format!("нет сборки под эту платформу ({key}); есть {}", known.join(", "))
+        crate::tr!("нет сборки под эту платформу ({key}); есть {known}", key = key, known = known.join(", "))
     })?;
     let file = dir.join(&target.file);
-    let bytes = std::fs::read(&file).map_err(|_| format!("нет файла {}", target.file))?;
+    let bytes = std::fs::read(&file).map_err(|_| crate::tr!("нет файла {file}", file = target.file))?;
     let actual = hex::encode(Sha256::digest(&bytes));
     if !actual.eq_ignore_ascii_case(&target.sha256) {
-        return Err(format!("{}: хеш не совпал с манифестом — сборка подменена или испорчена", target.file));
+        return Err(crate::tr!(
+            "{file}: хеш не совпал с манифестом — сборка подменена или испорчена",
+            file = target.file
+        ));
     }
     #[cfg(unix)]
     {
@@ -108,8 +122,8 @@ pub fn checked_build(dir: &Path, manifest: &Manifest) -> Result<PathBuf, String>
 }
 
 fn free_port() -> Result<u16, String> {
-    let listener =
-        std::net::TcpListener::bind("127.0.0.1:0").map_err(|error| format!("нет свободного порта: {error}"))?;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|error| crate::tr!("нет свободного порта: {error}", error = error))?;
     listener.local_addr().map(|address| address.port()).map_err(|error| error.to_string())
 }
 
@@ -154,7 +168,7 @@ fn spawn(launch: &Launch, host: &Arc<dyn HostApi>) -> Result<tokio::process::Chi
             });
         }
     }
-    let mut child = command.spawn().map_err(|error| format!("не запустилось: {error}"))?;
+    let mut child = command.spawn().map_err(|error| crate::tr!("не запустилось: {error}", error = error))?;
     for (stream, level) in [
         (child.stdout.take().map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Unpin + Send>), "info"),
         (child.stderr.take().map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Unpin + Send>), "warn"),
@@ -199,12 +213,20 @@ struct Shared {
     child: tokio::sync::Mutex<Option<tokio::process::Child>>,
     client: reqwest::Client,
     give_up: GiveUp,
+    gone: Arc<OnceLock<Gone>>,
     handlers: Vec<String>,
 }
 
 impl Shared {
     fn note(&self, level: &str, message: &str) {
         self.host.log(level, message);
+    }
+
+    /// The program is gone: whatever it was at is over.
+    fn gone(&self, why: &str) {
+        if let Some(gone) = self.gone.get() {
+            gone(&self.launch.id, why);
+        }
     }
 
     async fn kill(&self) {
@@ -223,7 +245,7 @@ impl Shared {
             Ok(())
         } else {
             self.kill().await;
-            Err(format!("не сказало, что здорово, за {} с", START_LIMIT.as_secs()))
+            Err(crate::tr!("не сказало, что здорово, за {seconds} с", seconds = START_LIMIT.as_secs()))
         }
     }
 
@@ -243,10 +265,10 @@ impl Shared {
                 let mut child = self.child.lock().await;
                 match child.as_mut() {
                     Some(child) => child.try_wait().ok().flatten().map(|status| status.to_string()),
-                    None => Some("не запущено".into()),
+                    None => Some(crate::tr!("не запущено")),
                 }
             };
-            let mut fell = exited.map(|status| format!("упало ({status})"));
+            let mut fell = exited.map(|status| crate::tr!("упало ({status})", status = status));
             if fell.is_none() && last_health.elapsed() >= health_every {
                 last_health = Instant::now();
                 let url = format!("http://127.0.0.1:{}{}", self.launch.port, self.launch.health);
@@ -259,13 +281,17 @@ impl Shared {
                     .is_ok_and(|answer| answer.status().is_success());
                 sick = if ok { 0 } else { sick + 1 };
                 if sick >= 3 {
-                    fell = Some("три раза подряд не ответило, здорово ли".into());
+                    fell = Some(crate::tr!("три раза подряд не ответило, здорово ли"));
                 }
                 let pid = *self.pid.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 if let Some(rss) = pid.and_then(|pid| crate::operations::system_memory::process_rss_mb(Some(pid))) {
                     over_budget = if rss > self.launch.memory_mb { over_budget + 1 } else { 0 };
                     if over_budget >= OVER_BUDGET_LOOKS {
-                        fell = Some(format!("держит {rss} МБ при бюджете {} МБ", self.launch.memory_mb));
+                        fell = Some(crate::tr!(
+                            "держит {rss} МБ при бюджете {budget} МБ",
+                            rss = rss,
+                            budget = self.launch.memory_mb
+                        ));
                     }
                 }
             }
@@ -274,18 +300,26 @@ impl Shared {
                     return;
                 }
                 self.kill().await;
+                self.gone(&crate::tr!("Приложение {why}.", why = why));
                 if healthy_since.elapsed() > FORGIVEN_AFTER {
                     self.falls.store(0, Ordering::SeqCst);
                 }
                 let falls = self.falls.fetch_add(1, Ordering::SeqCst) + 1;
                 if falls >= MAX_FALLS {
-                    let reason = format!("приложение падало {falls} раз подряд ({why}) — выключено");
+                    let reason = crate::tr!(
+                        "приложение падало {falls} раз подряд ({why}) — выключено",
+                        falls = falls,
+                        why = why
+                    );
                     self.note("error", &reason);
                     (self.give_up)(&self.launch.id, &reason);
                     return;
                 }
                 let pause = Duration::from_secs(1 << (falls - 1).min(5));
-                self.note("warn", &format!("{why}; новый запуск через {} с", pause.as_secs()));
+                self.note(
+                    "warn",
+                    &crate::tr!("{why}; новый запуск через {seconds} с", why = why, seconds = pause.as_secs()),
+                );
                 tokio::time::sleep(pause).await;
                 if self.stopping.load(Ordering::SeqCst) {
                     return;
@@ -295,7 +329,7 @@ impl Shared {
                         healthy_since = Instant::now();
                         over_budget = 0;
                         sick = 0;
-                        self.note("info", "запущено снова");
+                        self.note("info", &crate::tr!("запущено снова"));
                     }
                     Err(error) => self.note("error", &error),
                 }
@@ -317,7 +351,7 @@ impl PluginInstance for Instance {
         let function = function.to_string();
         Box::pin(async move {
             if shared.stopping.load(Ordering::SeqCst) || shared.falls.load(Ordering::SeqCst) >= MAX_FALLS {
-                return Err(PluginError::Unavailable("приложение остановлено".into()));
+                return Err(PluginError::Unavailable(crate::tr!("приложение остановлено")));
             }
             let limit = kind.limit();
             let url = format!("http://127.0.0.1:{}/call/{function}", shared.launch.port);
@@ -333,16 +367,17 @@ impl PluginInstance for Instance {
                     if error.is_timeout() {
                         PluginError::Timeout(limit.as_millis() as u64)
                     } else {
-                        PluginError::Script(format!("приложение не ответило: {}", error.without_url()))
+                        PluginError::Script(crate::tr!("приложение не ответило: {error}", error = error.without_url()))
                     }
                 })?;
             match answer.status().as_u16() {
                 404 => Err(PluginError::Missing(function)),
                 code if !(200..300).contains(&code) => {
                     let text = answer.text().await.unwrap_or_default();
-                    Err(PluginError::Script(format!(
-                        "приложение: HTTP {code} {}",
-                        text.chars().take(300).collect::<String>()
+                    Err(PluginError::Script(crate::tr!(
+                        "приложение: HTTP {code} {text}",
+                        code = code,
+                        text = text.chars().take(300).collect::<String>()
                     )))
                 }
                 _ => {
@@ -350,7 +385,8 @@ impl PluginInstance for Instance {
                     if bytes.is_empty() {
                         return Ok(Value::Null);
                     }
-                    serde_json::from_slice(&bytes).map_err(|_| PluginError::Answer("ответ приложения — не JSON".into()))
+                    serde_json::from_slice(&bytes)
+                        .map_err(|_| PluginError::Answer(crate::tr!("ответ приложения — не JSON")))
                 }
             }
         })
@@ -381,6 +417,7 @@ impl PluginInstance for Instance {
     fn stop(&self) {
         self.shared.stopping.store(true, Ordering::SeqCst);
         self.tokens.remove(&self.shared.launch.token);
+        self.shared.gone(&crate::tr!("Приложение остановлено."));
         let shared = self.shared.clone();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move { shared.kill().await });
@@ -399,10 +436,11 @@ impl PluginRuntime for ProcessRuntime {
         host: Arc<dyn HostApi>,
     ) -> BoxFuture<'static, Result<Arc<dyn PluginInstance>, PluginError>> {
         let gateway_url = self.gateway_url.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
-        let (tokens, give_up) = (self.tokens.clone(), self.give_up.clone());
+        let (tokens, give_up, gone) = (self.tokens.clone(), self.give_up.clone(), self.gone.clone());
         Box::pin(async move {
-            let manifest = code.manifest.clone().ok_or_else(|| PluginError::Load("нет манифеста приложения".into()))?;
-            let dir = code.dir.clone().ok_or_else(|| PluginError::Load("нет папки приложения".into()))?;
+            let manifest =
+                code.manifest.clone().ok_or_else(|| PluginError::Load(crate::tr!("нет манифеста приложения")))?;
+            let dir = code.dir.clone().ok_or_else(|| PluginError::Load(crate::tr!("нет папки приложения")))?;
             let program = {
                 let (dir, manifest) = (dir.clone(), manifest.clone());
                 tokio::task::spawn_blocking(move || checked_build(&dir, &manifest))
@@ -442,6 +480,7 @@ impl PluginRuntime for ProcessRuntime {
                 child: tokio::sync::Mutex::new(None),
                 client: crate::utils::http::client(),
                 give_up,
+                gone,
                 handlers,
             });
             tokens.insert(&launch.token, &launch.id, host.clone());
@@ -449,7 +488,7 @@ impl PluginRuntime for ProcessRuntime {
                 tokens.remove(&launch.token);
                 return Err(PluginError::Load(error));
             }
-            host.log("info", &format!("приложение запущено на порту {}", launch.port));
+            host.log("info", &crate::tr!("приложение запущено на порту {port}", port = launch.port));
             tokio::spawn(shared.clone().watch());
             Ok(Arc::new(Instance { shared, tokens }) as Arc<dyn PluginInstance>)
         })

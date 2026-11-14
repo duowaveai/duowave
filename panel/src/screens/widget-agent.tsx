@@ -9,6 +9,8 @@ import { can } from '../api';
 import { askToMake, asRequest, failed } from '../voice/creation';
 import { useAgentPlace } from '../voice/drafts';
 import { useVoiceAction } from '../voice/phrases';
+import { tr } from '../i18n';
+import { byMode } from '../words';
 
 export { DraftWidgetPreview, mayRunDraft } from './draft-preview';
 
@@ -37,12 +39,12 @@ export function WidgetAgent({ onMade }: { onMade: () => void }) {
     // «Нарисовать» — фраза кнопки: «нарисуй …» голосом идёт сюда же.
     useVoiceAction(mayMake ? ['нарисуй', 'нарисовать'] : [], (rest) => void make(rest || undefined));
 
-    if (!mayMake) return <p class="w-cap m-0">Новый виджет рисует агент мастерской — это может администратор.</p>;
+    if (!mayMake) return <p class="w-cap m-0">{tr.drafts.adminOnly}</p>;
 
     return (
         <section class="widget-agent" aria-labelledby="widget-agent-h">
             <h3 id="widget-agent-h" class="add-sub">
-                Скажите или напишите, что показать
+                {tr.drafts.askTitle}
             </h3>
             <form
                 class="widget-agent-ask"
@@ -55,19 +57,19 @@ export function WidgetAgent({ onMade }: { onMade: () => void }) {
                     class="field"
                     rows={2}
                     value={request}
-                    placeholder="Мои дела на сегодня из Тудуиста — и чтобы можно было отмечать"
-                    aria-label="Что показать на виджете"
+                    placeholder={tr.drafts.askPlaceholder}
+                    aria-label={tr.drafts.askLabel}
                     disabled={busy}
                     onInput={(event) => setRequest((event.target as HTMLTextAreaElement).value)}
                 />
                 <div class="flex items-center gap-8">
                     <button type="submit" class="w-btn w-btn-ink" disabled={busy || !request.trim()}>
-                        {busy ? 'Отдаю агенту…' : 'Нарисовать'}
+                        {busy ? tr.drafts.handingToAgent : tr.drafts.draw}
                     </button>
-                    <span class="w-cap">или «Сказать» в доке, или колонке: «Алиса, сделай виджет…»</span>
+                    <span class="w-cap">{byMode(tr.drafts.askedSpeakerHint, tr.drafts.askedVoiceHint)}</span>
                 </div>
             </form>
-            <p class="w-cap m-0">Вещь появится на столе плиткой — там видно, как агент её делает, и пример данных.</p>
+            <p class="w-cap m-0">{tr.drafts.appearsAsTile}</p>
             {error && (
                 <p class="w-cap c-dot-offline m-0" role="alert">
                     {error}

@@ -110,9 +110,9 @@ async fn place_file(
 async fn activate_tts(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
     caller.permitted(MODELS_MANAGE)?;
     if !body.get("modelId").is_some_and(Value::is_string) && !body.get("model").is_some_and(Value::is_string) {
-        return Err(ApiError::bad_request(
-            r#"body: {"modelId": "piper-ru_RU-denis-medium"} или {"modelId": "yandex"}"#,
-        ));
+        return Err(ApiError::bad_request(crate::tr!(
+            "body: {\"modelId\": \"piper-ru_RU-denis-medium\"} или {\"modelId\": \"yandex\"}"
+        )));
     }
     match app.models.choose(VoiceRequest::of(&body), caller.actor()).await? {
         Chosen::Active(activated) => Ok(created(serde_json::to_value(activated)?)),
@@ -150,9 +150,9 @@ async fn restart(
         return Err(ApiError::not_found("asr or tts"));
     };
     app.models.restart_server(which, caller.actor()).await.map_err(|error| {
-        ApiError::bad_request(format!(
-            "{} Работающий сервер не тронут — выбор остаётся ждать следующей попытки.",
-            error.message
+        ApiError::bad_request(crate::tr!(
+            "{message} Работающий сервер не тронут — выбор остаётся ждать следующей попытки.",
+            message = error.message
         ))
     })?;
     Ok(created(json!({"restarted": true})))

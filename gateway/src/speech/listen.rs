@@ -41,7 +41,7 @@ pub struct Heard {
 /// The samples of a WAV: PCM, 16-bit, mono, 16 kHz — what the panel's recorder writes (panel/src/voice/mic.ts).
 pub fn wav_pcm(bytes: &[u8]) -> Result<Vec<i16>, String> {
     if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-        return Err("нужен WAV".into());
+        return Err(crate::tr!("нужен WAV"));
     }
     let mut at = 12;
     let mut format: Option<(u16, u16, u32, u16)> = None;
@@ -58,13 +58,17 @@ pub fn wav_pcm(bytes: &[u8]) -> Result<Vec<i16>, String> {
             }
             b"data" => {
                 let Some((kind, channels, rate, bits)) = format else {
-                    return Err("в WAV нет описания звука".into());
+                    return Err(crate::tr!("в WAV нет описания звука"));
                 };
                 if kind != 1 || bits != 16 {
-                    return Err("нужен WAV PCM 16 бит".into());
+                    return Err(crate::tr!("нужен WAV PCM 16 бит"));
                 }
                 if channels != 1 || rate != RATE {
-                    return Err(format!("нужен WAV 16 кГц моно, а пришёл {rate} Гц, каналов: {channels}"));
+                    return Err(crate::tr!(
+                        "нужен WAV 16 кГц моно, а пришёл {rate} Гц, каналов: {channels}",
+                        rate = rate,
+                        channels = channels
+                    ));
                 }
                 return Ok(bytes[body..end].as_chunks::<2>().0.iter().map(|pair| i16::from_le_bytes(*pair)).collect());
             }
@@ -72,32 +76,36 @@ pub fn wav_pcm(bytes: &[u8]) -> Result<Vec<i16>, String> {
         }
         at = body + size + (size & 1);
     }
-    Err("в WAV нет звука".into())
+    Err(crate::tr!("в WAV нет звука"))
 }
 
 /// The phrase recognized by «Слух», as the station's would be.
 async fn listen(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> ApiResult<Heard> {
     caller.permitted(STATION_SAY)?;
     if body.len() > MAX_BYTES {
-        return Err(ApiError::bad_request("Фраза больше 1 МБ."));
+        return Err(ApiError::bad_request(crate::tr!("Фраза больше 1 МБ.")));
     }
     let pcm = wav_pcm(&body).map_err(ApiError::bad_request)?;
     let seconds = pcm.len() as f64 / RATE as f64;
     if seconds > MAX_SECONDS + 0.5 {
-        return Err(ApiError::bad_request("Фраза длиннее 15 с."));
+        return Err(ApiError::bad_request(crate::tr!("Фраза длиннее 15 с.")));
     }
     if !app.speech.recognizes() {
+        // The page of «Слух» goes by the way the household talks (src/talk/input.rs).
+        let page = if crate::talk::input::on_computer(&app.settings) {
+            crate::tr!("Микрофон")
+        } else {
+            crate::tr!("Колонка")
+        };
         return Err(ApiError::new(
             StatusCode::CONFLICT,
-            "«Слух» выключен: распознавание не настроено (Настройки → Колонка → «Слух»).",
+            crate::tr!("«Слух» выключен: распознавание не настроено (Настройки → {page} → «Слух»).", page = page),
         ));
     }
     let audio = UtteranceAudio { pcm, from_ms: 0.0, to_ms: seconds * 1000.0, gain_db: 0.0 };
-    let recognition = app
-        .speech
-        .recognize(&audio, &[], &CancellationToken::new())
-        .await
-        .map_err(|error| ApiError::bad_gateway(format!("«Слух» не ответил: {error:#}")))?;
+    let recognition = app.speech.recognize(&audio, &[], &CancellationToken::new()).await.map_err(|error| {
+        ApiError::bad_gateway(crate::tr!("«Слух» не ответил: {error}", error = format!("{error:#}")))
+    })?;
     Ok(ok(Heard { text: recognition.text, heard: if app.speech.at_home() { "home" } else { "cloud" } }))
 }
 

@@ -101,8 +101,9 @@ impl StationWatch {
                 let Some(me) = me.upgrade() else { return };
                 let address = address.clone();
                 tokio::spawn(async move {
-                    me.alert(&format!(
-                        "Новая колонка с адреса {address} просит подключиться к шлюзу. Разрешить — в пульте, раздел «Колонки»."
+                    me.alert(&crate::tr!(
+                        "Новая колонка с адреса {address} просит подключиться к шлюзу. Разрешить — в пульте, раздел «Колонки».",
+                        address = address
                     ))
                     .await;
                 });
@@ -158,7 +159,7 @@ impl StationWatch {
         let mut seen = self.seen();
         if connected {
             seen.last_seen = now;
-            return std::mem::take(&mut seen.alerted).then(|| "Колонка снова на связи со шлюзом.".to_string());
+            return std::mem::take(&mut seen.alerted).then(|| crate::tr!("Колонка снова на связи со шлюзом."));
         }
         // The clock not set yet (a station's boot): nothing counted. Set now while the watch's last look was before:
         // the count starts now.
@@ -176,8 +177,9 @@ impl StationWatch {
         }
         seen.alerted = true;
         let minutes = (now.saturating_sub(seen.last_seen) as f64 / 60_000.0).round() as u64;
-        Some(format!(
-            "Колонка не подключена к шлюзу {minutes} мин. Голоса у неё нет; вернуть к Яндексу: scripts/station-voice.sh yandex."
+        Some(crate::tr!(
+            "Колонка не подключена к шлюзу {minutes} мин. Голоса у неё нет; вернуть к Яндексу: scripts/station-voice.sh yandex.",
+            minutes = minutes
         ))
     }
 

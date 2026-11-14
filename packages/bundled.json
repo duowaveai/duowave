@@ -43,5 +43,13 @@
   "calendar": {
     "origin": "bundled",
     "enabled": true
+  },
+  "folders": {
+    "origin": "bundled",
+    "enabled": true
+  },
+  "neon-snake": {
+    "origin": "bundled",
+    "enabled": true
   }
 }

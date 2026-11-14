@@ -10,7 +10,6 @@
 //!   a conflicting file; the agent reads the three versions (`merge_state`), the requests of both sides since the base,
 //!   writes the result, checks it and ends the merge (`finish_merge`) — or asks (`ask_owner`) and waits.
 //! - **The state** of a merge under way: `<drafts>/.merge/<id>.json`. «Отменить» puts the draft back as it was.
-
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
@@ -165,7 +164,7 @@ pub fn merge_json(
             Some(Value::Object(merged))
         }
         _ => {
-            conflicts.push(if path.is_empty() { "весь манифест".into() } else { path.to_string() });
+            conflicts.push(if path.is_empty() { crate::tr!("весь манифест") } else { path.to_string() });
             ours.cloned()
         }
     }
@@ -249,9 +248,9 @@ impl History {
             };
             let Some((base, ours, theirs)) = texts else {
                 if oe.is_none() || te.is_none() {
-                    conflict("удалён с одной стороны, изменён с другой".into(), Vec::new());
+                    conflict(crate::tr!("удалён с одной стороны, изменён с другой"), Vec::new());
                 } else {
-                    conflict("двоичный файл изменён с обеих сторон".into(), Vec::new());
+                    conflict(crate::tr!("двоичный файл изменён с обеих сторон"), Vec::new());
                 }
                 take(oe, &mut entries);
                 continue;
@@ -268,13 +267,16 @@ impl History {
                                 .map_err(|error| error.to_string())?;
                             Ok(format!("{pretty}\n"))
                         } else {
-                            Err((format!("поля манифеста изменены с обеих сторон: {}", paths.join(", ")), Vec::new()))
+                            Err((
+                                crate::tr!("поля манифеста изменены с обеих сторон: {paths}", paths = paths.join(", ")),
+                                Vec::new(),
+                            ))
                         }
                     }
-                    _ => Err(("манифест не читается как JSON".to_string(), Vec::new())),
+                    _ => Err((crate::tr!("манифест не читается как JSON"), Vec::new())),
                 }
             } else {
-                diff::merge3(&base, &ours, &theirs).map_err(|stretches| ("правки в одном месте".to_string(), stretches))
+                diff::merge3(&base, &ours, &theirs).map_err(|stretches| (crate::tr!("правки в одном месте"), stretches))
             };
             match merged {
                 Ok(text) => {
@@ -389,26 +391,29 @@ impl Workshop {
         by: Author,
         asked: Option<String>,
     ) -> Result<MergeReport, ApiError> {
-        let history = self.history().ok_or_else(|| ApiError::conflict("Истории здесь нет."))?.clone();
+        let history = self.history().ok_or_else(|| ApiError::conflict(crate::tr!("Истории здесь нет.")))?.clone();
         self.draft(id)?;
         if state(&history, id).is_some() {
-            return Err(ApiError::conflict("Объединение уже идёт: закончите его или отмените."));
+            return Err(ApiError::conflict(crate::tr!("Объединение уже идёт: закончите его или отмените.")));
         }
         if by.who != Who::Agent && self.activity().jobs().iter().any(|job| job.draft == id && job.busy) {
-            return Err(ApiError::conflict("Агент сейчас работает над черновиком: дождитесь или остановите его."));
+            return Err(ApiError::conflict(crate::tr!(
+                "Агент сейчас работает над черновиком: дождитесь или остановите его."
+            )));
         }
         history.before_work(id);
-        let ours =
-            history.store().ref_get(id, DRAFT).ok_or_else(|| ApiError::conflict("У черновика ещё нет истории."))?;
-        let theirs_record = history.record(record).ok_or_else(|| ApiError::not_found("Такой записи нет."))?;
+        let ours = history
+            .store()
+            .ref_get(id, DRAFT)
+            .ok_or_else(|| ApiError::conflict(crate::tr!("У черновика ещё нет истории.")))?;
+        let theirs_record =
+            history.record(record).ok_or_else(|| ApiError::not_found(crate::tr!("Такой записи нет.")))?;
         if history.is_ancestor(record, &ours) {
             // The draft's own past: nothing merges by itself — the agent takes from it what was asked.
             if !agent && asked.is_none() && by.who != Who::Agent {
                 return Ok(MergeReport {
                     state: "nothing",
-                    message: "Эта версия — прошлое черновика: всё из неё уже было. Чтобы взять из неё что-то, скажите \
-агенту, что именно."
-                        .into(),
+                    message: crate::tr!("Эта версия — прошлое черновика: всё из неё уже было. Чтобы взять из неё что-то, скажите агенту, что именно."),
                     record: None,
                     merge: None,
                 });
@@ -421,7 +426,7 @@ impl Workshop {
                 .filter(|path| now.get(*path).map(|e| &e.file) != then.get(*path).map(|e| &e.file))
                 .map(|path| FileConflict {
                     path: path.clone(),
-                    why: "в той версии иначе".into(),
+                    why: crate::tr!("в той версии иначе"),
                     stretches: Vec::new(),
                 })
                 .collect();
@@ -431,7 +436,10 @@ impl Workshop {
                 ours,
                 theirs: record.to_string(),
                 conflicts,
-                reason: format!("взять из версии от {} то, что просили", super::restore::local_time(&theirs_record.at)),
+                reason: crate::tr!(
+                    "взять из версии от {at} то, что просили",
+                    at = super::restore::local_time(&theirs_record.at)
+                ),
                 question: None,
                 asked,
                 by,
@@ -441,7 +449,7 @@ impl Workshop {
             history.tell(id, "merge");
             return Ok(MergeReport {
                 state: "agent",
-                message: format!("Агент берёт из прошлой версии то, что просили: {}.", merge.reason),
+                message: crate::tr!("Агент берёт из прошлой версии то, что просили: {reason}.", reason = merge.reason),
                 record: None,
                 merge: Some(merge),
             });
@@ -460,24 +468,27 @@ impl Workshop {
             let mut meta = StepMeta::new(RecordKind::Merge, by);
             meta.other = Some(record.to_string());
             meta.asked = asked;
-            meta.note = Some(format!("объединено само с записью от {}", super::restore::local_time(&theirs_record.at)));
+            meta.note = Some(crate::tr!(
+                "объединено само с записью от {at}",
+                at = super::restore::local_time(&theirs_record.at)
+            ));
             let step = history.step(id, meta);
             return Ok(MergeReport {
                 state: "merged",
-                message: "Объединено само, проверка прошла. Поставить можно кнопкой «Поставить».".into(),
+                message: crate::tr!("Объединено само, проверка прошла. Поставить можно кнопкой «Поставить»."),
                 record: step,
                 merge: None,
             });
         }
         let reason = if agent {
-            "вы попросили объединить через агента".to_string()
+            crate::tr!("вы попросили объединить через агента")
         } else if !mechanical.conflicts.is_empty() {
-            format!(
-                "правки в одних и тех же местах: {}",
-                mechanical.conflicts.iter().map(|c| c.path.as_str()).collect::<Vec<_>>().join(", ")
+            crate::tr!(
+                "правки в одних и тех же местах: {list}",
+                list = mechanical.conflicts.iter().map(|c| c.path.as_str()).collect::<Vec<_>>().join(", ")
             )
         } else {
-            "само объединилось, но проверка не прошла".to_string()
+            crate::tr!("само объединилось, но проверка не прошла")
         };
         let merge = MergeState {
             app: id.to_string(),
@@ -495,7 +506,10 @@ impl Workshop {
         history.tell(id, "merge");
         Ok(MergeReport {
             state: "agent",
-            message: format!("Объединяет агент: {reason}. Если ему будет непонятно, что оставить, он спросит."),
+            message: crate::tr!(
+                "Объединяет агент: {reason}. Если ему будет непонятно, что оставить, он спросит.",
+                reason = reason
+            ),
             record: None,
             merge: Some(merge),
         })
@@ -528,8 +542,8 @@ impl Workshop {
 
     /// The merge under way, for the agent: the three versions of its conflicting files (or of `path`).
     pub fn merge_files(&self, id: &str, path: Option<&str>) -> Result<Value, ApiError> {
-        let history = self.history().ok_or_else(|| ApiError::conflict("Истории здесь нет."))?;
-        let merge = state(history, id).ok_or_else(|| ApiError::conflict("Объединения сейчас нет."))?;
+        let history = self.history().ok_or_else(|| ApiError::conflict(crate::tr!("Истории здесь нет.")))?;
+        let merge = state(history, id).ok_or_else(|| ApiError::conflict(crate::tr!("Объединения сейчас нет.")))?;
         let tree_of = |record: Option<&str>| record.and_then(|record| history.record(record)).map(|record| record.tree);
         let (base, ours, theirs) =
             (tree_of(merge.base.as_deref()), tree_of(Some(&merge.ours)), tree_of(Some(&merge.theirs)));
@@ -565,8 +579,8 @@ impl Workshop {
 
     /// The agent's end of a merge: the draft checked, a step with both parents, the merge gone.
     pub async fn finish_merge(&self, id: &str) -> Result<String, ApiError> {
-        let history = self.history().ok_or_else(|| ApiError::conflict("Истории здесь нет."))?.clone();
-        let merge = state(&history, id).ok_or_else(|| ApiError::conflict("Объединения сейчас нет."))?;
+        let history = self.history().ok_or_else(|| ApiError::conflict(crate::tr!("Истории здесь нет.")))?.clone();
+        let merge = state(&history, id).ok_or_else(|| ApiError::conflict(crate::tr!("Объединения сейчас нет.")))?;
         let report = self.check(id).await?;
         if !report.ok {
             return Err(ApiError::bad_request("Проверка не прошла: исправь, потом finish_merge."));
@@ -574,7 +588,7 @@ impl Workshop {
         let mut meta = StepMeta::new(RecordKind::Merge, Author { who: Who::Agent, name: None, via: None });
         meta.other = Some(merge.theirs.clone());
         meta.asked = merge.asked.clone();
-        meta.note = Some(format!("объединено агентом: {}", merge.reason));
+        meta.note = Some(crate::tr!("объединено агентом: {reason}", reason = merge.reason));
         history.step(id, meta);
         forget(&history, id);
         history.tell(id, "merge");
@@ -583,7 +597,7 @@ impl Workshop {
 
     /// The agent's question: the merge waits for the owner's answer.
     pub fn ask_owner(&self, id: &str, text: &str, options: Vec<String>) -> Result<String, ApiError> {
-        let history = self.history().ok_or_else(|| ApiError::conflict("Истории здесь нет."))?;
+        let history = self.history().ok_or_else(|| ApiError::conflict(crate::tr!("Истории здесь нет.")))?;
         let Some(mut merge) = state(history, id) else {
             return Ok("Объединения нет: просто задай вопрос в ответе.".into());
         };
@@ -601,9 +615,9 @@ impl Workshop {
 
     /// The owner's answer: the message the agent goes on with.
     pub fn answer_merge(&self, id: &str, choice: &str) -> Result<String, ApiError> {
-        let history = self.history().ok_or_else(|| ApiError::conflict("Истории здесь нет."))?;
-        let mut merge = state(history, id).ok_or_else(|| ApiError::conflict("Объединения сейчас нет."))?;
-        let question = merge.question.take().ok_or_else(|| ApiError::conflict("Вопроса нет."))?;
+        let history = self.history().ok_or_else(|| ApiError::conflict(crate::tr!("Истории здесь нет.")))?;
+        let mut merge = state(history, id).ok_or_else(|| ApiError::conflict(crate::tr!("Объединения сейчас нет.")))?;
+        let question = merge.question.take().ok_or_else(|| ApiError::conflict(crate::tr!("Вопроса нет.")))?;
         save(history, &merge).map_err(ApiError::internal)?;
         history.tell(id, "merge");
         Ok(format!(
@@ -615,15 +629,17 @@ impl Workshop {
 
     /// «Отменить»: the draft back to its step before the merge.
     pub fn cancel_merge(&self, id: &str) -> Result<(), ApiError> {
-        let history = self.history().ok_or_else(|| ApiError::conflict("Истории здесь нет."))?.clone();
-        let merge = state(&history, id).ok_or_else(|| ApiError::conflict("Объединения сейчас нет."))?;
+        let history = self.history().ok_or_else(|| ApiError::conflict(crate::tr!("Истории здесь нет.")))?.clone();
+        let merge = state(&history, id).ok_or_else(|| ApiError::conflict(crate::tr!("Объединения сейчас нет.")))?;
         self.activity().stop(id);
-        let ours = history.record(&merge.ours).ok_or_else(|| ApiError::conflict("Шага до объединения уже нет."))?;
+        let ours = history
+            .record(&merge.ours)
+            .ok_or_else(|| ApiError::conflict(crate::tr!("Шага до объединения уже нет.")))?;
         history.materialize(&ours.tree, &history.dev_dir().join(id), true).map_err(ApiError::conflict)?;
         forget(&history, id);
         let mut meta = StepMeta::new(RecordKind::Restore, Author::new(Who::Hand));
         meta.from = Some(merge.ours.clone());
-        meta.note = Some("объединение отменено".into());
+        meta.note = Some(crate::tr!("объединение отменено"));
         history.step(id, meta);
         history.tell(id, "merge");
         Ok(())

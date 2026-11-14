@@ -6,6 +6,7 @@
 import { useEffect, useState } from 'preact/hooks';
 
 import { BusQuestion, api, can, problemOf } from '../api';
+import { tr } from '../i18n';
 import { Action } from '../ui/cards';
 import { Sheet } from '../ui/sheet';
 import { busChanged, useBusVersion } from './state';
@@ -55,31 +56,30 @@ export function ConsentSheet() {
     const waiting = questions.filter((entry) => !later.has(entry.id)).length;
     return (
         <Sheet
-            title={once ? `«${question.fromTitle}» хочет сделать опасное` : `«${question.fromTitle}» просит доступ`}
-            about={waiting > 1 ? `ещё вопросов: ${waiting - 1}` : undefined}
+            title={once ? tr.bus.wantsDanger(question.fromTitle) : tr.bus.asksAccess(question.fromTitle)}
+            about={waiting > 1 ? tr.bus.moreQuestions(waiting - 1) : undefined}
             onClose={postpone}
             footer={
                 <div class="flex flex-wrap items-center gap-8">
-                    <Action tone="on" label={once ? 'Разрешить один раз' : 'Разрешить'} busy={busy === 'yes'} disabled={!!busy} onClick={() => void answer(true)} />
-                    <Action label={once ? 'Нет' : 'Не разрешать'} busy={busy === 'no'} disabled={!!busy} onClick={() => void answer(false)} />
-                    <Action label="Позже" disabled={!!busy} onClick={postpone} />
+                    <Action tone="on" label={once ? tr.bus.allowOnce : tr.bus.allow} busy={busy === 'yes'} disabled={!!busy} onClick={() => void answer(true)} />
+                    <Action label={once ? tr.bus.no : tr.bus.deny} busy={busy === 'no'} disabled={!!busy} onClick={() => void answer(false)} />
+                    <Action label={tr.bus.later} disabled={!!busy} onClick={postpone} />
                 </div>
             }
         >
             <p class="t-body m-0">
-                «{question.fromTitle}» хочет {question.what}.
+                {tr.bus.wants(question.fromTitle, question.what)}
             </p>
             {once && question.danger && (
                 <p class="t-caption m-0 c-pill-yandex-fg">
-                    Опасное: {DANGER_TITLES[question.danger] ?? question.danger}. Этого не начинал человек — разрешите, только если
-                    ждёте этого сейчас.
+                    {tr.bus.dangerNote(DANGER_TITLES[question.danger] ?? question.danger)}
                 </p>
             )}
-            {question.root && <p class="t-caption m-0">Начал: {question.root}.</p>}
+            {question.root && <p class="t-caption m-0">{tr.bus.startedBy(question.root)}</p>}
             <p class="t-caption m-0">
                 {once
-                    ? 'Ответ — на это одно действие: в следующий раз приложение спросит снова.'
-                    : 'Ответ запомнится, как в телефоне: приложение больше не спросит. Поменять — в окне приложения, «Связи».'}
+                    ? tr.bus.answerOnce
+                    : tr.bus.answerRemembered}
             </p>
             {error && (
                 <p class="t-caption m-0 c-dot-offline" role="alert">

@@ -57,8 +57,14 @@ pub const RELAYED: &[&str] = &[
     "packages.catalog",
     // A keyboard plugged in or out (src/midi): the panel reads the keyboards again.
     "midi.devices",
+    // The home folder's folders: something attached, a drive offered, a folder's ticks (src/bus/providers/files).
+    "folders.changed",
+    // The windows of the computer's screen (src/screen): their pages read the list again.
+    "screen.changed",
     "plugins.resources",
     "workshop.changed",
+    // An app's long task moved (src/tasks): its window and the panel read its tasks again.
+    "tasks.changed",
     "connector.changed",
     "station.updated",
     "station.pending",
@@ -153,6 +159,8 @@ fn subject_of(event: &GatewayEvent) -> (Option<String>, Option<String>) {
         GatewayEvent::PackageDataChanged { package } => (Some(package.clone()), None),
         // A draft and what happened to it (docs/plans/voice-creation.md): `made`, `ready`, `parked`, `open:fitting`…
         GatewayEvent::WorkshopChanged { draft, change } => (Some(draft.clone()), Some(change.clone())),
+        // Whose task moved and how (src/tasks): `started`, `progress`, `done`…
+        GatewayEvent::TasksChanged { app, change, .. } => (Some(app.clone()), Some(change.clone())),
         // Whose links changed and how; who asks; who told which news (src/bus).
         GatewayEvent::BusChanged { target, change, .. } => (target.clone(), Some(change.clone())),
         GatewayEvent::BusAsked { from, .. } => (Some(from.clone()), Some("asked".into())),
@@ -652,6 +660,8 @@ mod tests {
         });
         // A draft and what happened to it: the desk's tile knows which one (docs/plans/voice-creation.md).
         events.emit(GatewayEvent::WorkshopChanged { draft: "widget-1".into(), change: "ready".into() });
+        // An app's long task and how it moved (src/tasks): the app's window reads its tasks again.
+        events.emit(GatewayEvent::TasksChanged { app: "feed".into(), task: "t1".into(), change: "progress".into() });
         tick().await;
         let changes: Vec<Value> =
             panel.messages()[1..].iter().map(|message| serde_json::to_value(message).unwrap()).collect();
@@ -661,6 +671,7 @@ mod tests {
                 serde_json::json!({"type": "changed", "name": "packages.data", "subject": "shopping"}),
                 serde_json::json!({"type": "changed", "name": "packages.changed", "subject": "weather", "change": "unloaded"}),
                 serde_json::json!({"type": "changed", "name": "workshop.changed", "subject": "widget-1", "change": "ready"}),
+                serde_json::json!({"type": "changed", "name": "tasks.changed", "subject": "feed", "change": "progress"}),
             ]
         );
     }

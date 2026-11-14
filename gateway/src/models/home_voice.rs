@@ -109,7 +109,7 @@ async fn view(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<HomeVoic
 async fn choose(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<HomeVoiceView> {
     caller.permitted(MODELS_MANAGE)?;
     if !app.voice.has_home() {
-        return Err(ApiError::conflict("Голос этого шлюза выбирают в каталоге голосов."));
+        return Err(ApiError::conflict(crate::tr!("Голос этого шлюза выбирают в каталоге голосов.")));
     }
     let actor = caller.actor();
     match body.get("voice").and_then(Value::as_str) {
@@ -120,15 +120,17 @@ async fn choose(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Va
         }
         Some("computer") => {
             if !offered(&app) {
-                return Err(ApiError::conflict(
-                    "Компьютер не даёт колонке голос: включите «Помогать колонке» в пульте компьютера.",
-                ));
+                return Err(ApiError::conflict(crate::tr!(
+                    "Компьютер не даёт колонке голос: включите «Помогать колонке» в пульте компьютера."
+                )));
             }
             let provider = app.voice.use_home().map_err(ApiError::internal)?;
             app.settings.set(&VOICE_PROVIDER, &provider.as_str().to_string(), actor)?;
             tracing::info!(target: "voice", "the station speaks the computer's voice ({}, its «Голос»)", provider.as_str());
         }
-        _ => return Err(ApiError::bad_request(r#"body: {"voice": "computer"} или {"voice": "alice"}"#)),
+        _ => {
+            return Err(ApiError::bad_request(crate::tr!("body: {\"voice\": \"computer\"} или {\"voice\": \"alice\"}")))
+        }
     }
     Ok(created(current(&app).await))
 }

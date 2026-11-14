@@ -59,6 +59,7 @@ impl AuthKind {
 pub struct PresetField {
     /// For a program: the variable's name; for a server by address: `token`.
     pub name: &'static str,
+    #[serde(serialize_with = "translated")]
     pub title: &'static str,
     pub secret: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -66,6 +67,11 @@ pub struct PresetField {
     /// Where the owner gets it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<&'static str>,
+}
+
+/// A card's words go out in the reader's language: the source text is the catalog's key (locales/en/services.json).
+fn translated<S: serde::Serializer>(text: &&'static str, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&crate::locale::text::translate(text, &[]))
 }
 
 /// What the first start downloads, for the panel to say.
@@ -90,7 +96,9 @@ pub struct Enable {
 #[derive(Debug, Clone, Serialize)]
 pub struct McpPreset {
     pub id: &'static str,
+    #[serde(serialize_with = "translated")]
     pub title: &'static str,
+    #[serde(serialize_with = "translated")]
     pub description: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brand: Option<&'static str>,
@@ -289,7 +297,7 @@ pub fn preset_view(preset: &McpPreset, ha_url: Option<&str>) -> Value {
     let unknown = matches!(url, Some(None));
     view["ready"] = json!(!unknown);
     if unknown {
-        view["why"] = json!("Нужен адрес Home Assistant: в «Приложения» → «Подключения» или свой адрес.");
+        view["why"] = json!(crate::tr!("Нужен адрес Home Assistant: в «Приложения» → «Подключения» или свой адрес."));
     }
     view
 }

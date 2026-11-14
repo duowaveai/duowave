@@ -5,7 +5,6 @@
 //!
 //! The channel of notes carries them as short JSON frames: `{"t":"on","c":1,"n":60,"v":96}` — `c` the MIDI channel
 //! 1–16, `n` the note 0–127, `v` its force or a value.
-
 use serde_json::{json, Map, Value};
 
 /// A channel message.
@@ -135,20 +134,19 @@ impl Message {
     }
 
     fn read(kind: &str, frame: &Value) -> Result<Message, String> {
-        let field = |key: &str, max: i64| -> Result<i64, String> {
-            frame
-                .get(key)
-                .and_then(Value::as_i64)
-                .filter(|value| (0..=max).contains(value))
-                .ok_or_else(|| format!("{kind}: «{key}» — целое от 0 до {max}"))
-        };
+        let field =
+            |key: &str, max: i64| -> Result<i64, String> {
+                frame.get(key).and_then(Value::as_i64).filter(|value| (0..=max).contains(value)).ok_or_else(|| {
+                    crate::tr!("{kind}: «{key}» — целое от 0 до {max}", kind = kind, key = key, max = max)
+                })
+            };
         let channel = match frame.get("c") {
             None => 1,
             Some(_) => frame
                 .get("c")
                 .and_then(Value::as_i64)
                 .filter(|channel| (1..=16).contains(channel))
-                .ok_or_else(|| format!("{kind}: канал «c» — от 1 до 16"))? as u8,
+                .ok_or_else(|| crate::tr!("{kind}: канал «c» — от 1 до 16", kind = kind))? as u8,
         };
         let byte = |key: &str| field(key, 127).map(|value| value as u8);
         Ok(match kind {
@@ -166,7 +164,7 @@ impl Message {
                     .get("v")
                     .and_then(Value::as_i64)
                     .filter(|value| (-8192..=8191).contains(value))
-                    .ok_or_else(|| "bend: «v» — от −8192 до 8191".to_string())?;
+                    .ok_or_else(|| crate::tr!("bend: «v» — от −8192 до 8191"))?;
                 Message::Bend { channel, value: value as i16 }
             }
         })
@@ -190,15 +188,16 @@ pub const MELODY_MS: u64 = 10 * 60 * 1000;
 
 /// `[[нота, сила, начало мс, длина мс, канал?], …]`, checked whole: sorted by the start, within the limits.
 pub fn melody(value: &Value) -> Result<Vec<Step>, String> {
-    let notes = value.as_array().ok_or_else(|| "notes: список [нота, сила, начало мс, длина мс]".to_string())?;
+    let notes = value.as_array().ok_or_else(|| crate::tr!("notes: список [нота, сила, начало мс, длина мс]"))?;
     if notes.len() > MELODY_NOTES {
-        return Err(format!("мелодия длиннее {MELODY_NOTES} нот"));
+        return Err(crate::tr!("Мелодия длиннее {max} нот.", max = MELODY_NOTES));
     }
     let mut steps = Vec::with_capacity(notes.len());
     for (i, note) in notes.iter().enumerate() {
         let parts = note.as_array().filter(|parts| (4..=5).contains(&parts.len()));
         let number = |k: usize| parts.and_then(|parts| parts.get(k)).and_then(Value::as_u64);
-        let wrong = || format!("нота {}: [нота 0–127, сила 1–127, начало мс, длина мс, канал 1–16?]", i + 1);
+        let wrong =
+            || crate::tr!("Нота {number}: [нота 0–127, сила 1–127, начало мс, длина мс, канал 1–16?]", number = i + 1);
         let (Some(note), Some(velocity), Some(at_ms), Some(length_ms)) = (number(0), number(1), number(2), number(3))
         else {
             return Err(wrong());
@@ -211,7 +210,7 @@ pub fn melody(value: &Value) -> Result<Vec<Step>, String> {
             return Err(wrong());
         }
         if at_ms + length_ms > MELODY_MS {
-            return Err("мелодия длиннее 10 минут".into());
+            return Err(crate::tr!("мелодия длиннее 10 минут"));
         }
         steps.push(Step { note: note as u8, velocity: velocity as u8, at_ms, length_ms, channel: channel as u8 });
     }

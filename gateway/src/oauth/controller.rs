@@ -46,7 +46,7 @@ pub struct SignInDone {
 }
 
 fn cancelled() -> ApiError {
-    ApiError::bad_request("Вход отменён на странице сервиса. Нажмите «Войти» ещё раз.")
+    ApiError::bad_request(crate::tr!("Вход отменён на странице сервиса. Нажмите «Войти» ещё раз."))
 }
 
 /// The longest code a service hands over that we take.
@@ -71,7 +71,9 @@ async fn callback(
         _ => Err(stale()),
     };
     Ok(match outcome {
-        Ok(done) => page(StatusCode::OK, &format!("Вход в «{}» выполнен. Это окно можно закрыть.", done.title)),
+        Ok(done) => {
+            page(StatusCode::OK, &crate::tr!("Вход в «{title}» выполнен. Это окно можно закрыть.", title = done.title))
+        }
         Err(error) => page(error.status, &error.message),
     })
 }
@@ -103,11 +105,12 @@ async fn complete(
 ) -> ApiResult<SignInDone> {
     let principal = caller.permitted(CONNECTORS_MANAGE)?;
     if principal.kind != PrincipalKind::User {
-        return Err(ApiError::forbidden("Это для людей, не для ключей."));
+        return Err(ApiError::forbidden(crate::tr!("Это для людей, не для ключей.")));
     }
     let text = body.text.as_deref().map(str::trim).unwrap_or_default();
     let named = body.id.map(|id| id.trim().to_string()).filter(|id| !id.is_empty());
-    let missing = || ApiError::bad_request("Вставьте код со страницы сервиса или адрес страницы после входа.");
+    let missing =
+        || ApiError::bad_request(crate::tr!("Вставьте код со страницы сервиса или адрес страницы после входа."));
     let (id, given) = match url::Url::parse(text) {
         Ok(url) if url.query().is_some() => {
             let get = |key: &str| url.query_pairs().find(|(name, _)| name == key).map(|(_, value)| value.into_owned());
@@ -132,7 +135,7 @@ async fn complete(
 /// «Вошли?» — the panel asks while the owner signs in on the service's page.
 async fn status(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<SignInStatus> {
     caller.permitted(CONNECTORS_MANAGE)?;
-    app.oauth.status(&id).map(ok).ok_or_else(|| ApiError::not_found("Такого входа нет: он устарел."))
+    app.oauth.status(&id).map(ok).ok_or_else(|| ApiError::not_found(crate::tr!("Такого входа нет: он устарел.")))
 }
 
 /// Exchanges the code and gives what it brought to who began the sign-in; the panel that waits learns how it ended.

@@ -14,7 +14,6 @@
 pub mod feed;
 pub mod install;
 pub mod verify;
-
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -212,7 +211,9 @@ impl UpdatesService {
             error: state
                 .failed
                 .as_ref()
-                .map(|(version, error)| format!("Версия {version} не поставилась: {error}"))
+                .map(|(version, error)| {
+                    crate::tr!("Версия {version} не поставилась: {error}", version = version, error = error)
+                })
                 .or_else(|| state.error.clone()),
             managed_by: self.managed(),
             can_install: can_install && state.available.is_some() && !state.installing,
@@ -229,24 +230,21 @@ impl UpdatesService {
             Some("pc") => (
                 false,
                 Some(
-                    "Шлюз на колонке обновляет компьютер, который его поставил: «Настройки» → «Компьютер-помощник» → \
-                     «Обновить до …»."
-                        .into(),
+                    crate::tr!("Шлюз на колонке обновляет компьютер, который его поставил: «Настройки» → «Компьютер-помощник» → «Обновить до …»."),
                 ),
             ),
             Some("yam") => (
                 false,
                 Some(
-                    "Шлюз поставлен через YAM: обновите его на колонке — yam install файла новой версии из выпуска."
-                        .into(),
+                    crate::tr!("Шлюз поставлен через YAM: обновите его на колонке — yam install файла новой версии из выпуска."),
                 ),
             ),
-            Some("yse") => (false, Some("Шлюз поставлен через yse: обновите его — yse upgrade duowave.".into())),
-            Some("docker") => (false, Some("Обновите образ: docker compose pull && docker compose up -d".into())),
-            Some("home-assistant") => (false, Some("Обновите дополнение в Home Assistant.".into())),
-            Some("desktop") => (false, Some("Обновите приложение из меню в трее.".into())),
-            Some(other) => (false, Some(format!("Шлюзом управляет {other}: обновите его там."))),
-            None if self.keys.is_err() => (false, Some("Нет ключа подписи обновлений: установка выключена.".into())),
+            Some("yse") => (false, Some(crate::tr!("Шлюз поставлен через yse: обновите его — yse upgrade duowave."))),
+            Some("docker") => (false, Some(crate::tr!("Обновите образ: docker compose pull && docker compose up -d"))),
+            Some("home-assistant") => (false, Some(crate::tr!("Обновите дополнение в Home Assistant."))),
+            Some("desktop") => (false, Some(crate::tr!("Обновите приложение из меню в трее."))),
+            Some(other) => (false, Some(crate::tr!("Шлюзом управляет {other}: обновите его там.", other = other))),
+            None if self.keys.is_err() => (false, Some(crate::tr!("Нет ключа подписи обновлений: установка выключена."))),
             None => (true, None),
         }
     }
@@ -302,15 +300,15 @@ impl UpdatesService {
     pub fn install(self: &Arc<Self>) -> Result<UpdateStatus, ApiError> {
         let (can_install, hint) = self.how_to_install();
         if !can_install {
-            return Err(ApiError::conflict(hint.unwrap_or_else(|| "Здесь обновление не ставится.".into())));
+            return Err(ApiError::conflict(hint.unwrap_or_else(|| crate::tr!("Здесь обновление не ставится."))));
         }
         let offer = {
             let mut state = self.state.lock().unwrap();
             if state.installing {
-                return Err(ApiError::conflict("Обновление уже ставится."));
+                return Err(ApiError::conflict(crate::tr!("Обновление уже ставится.")));
             }
             let Some(offer) = state.available.clone() else {
-                return Err(ApiError::conflict("Новой версии нет."));
+                return Err(ApiError::conflict(crate::tr!("Новой версии нет.")));
             };
             state.installing = true;
             state.error = None;
@@ -335,10 +333,13 @@ impl UpdatesService {
 
     /// Downloads, checks and puts the new program in place, then starts it.
     async fn install_here(&self, offer: &Offer, restart: bool) -> Result<(), String> {
-        let asset = offer
-            .asset
-            .as_ref()
-            .ok_or_else(|| format!("в выпуске {} нет сборки для {}", offer.version, self.platform))?;
+        let asset = offer.asset.as_ref().ok_or_else(|| {
+            crate::tr!(
+                "В выпуске {version} нет сборки для {platform}.",
+                version = offer.version,
+                platform = self.platform
+            )
+        })?;
         let keys = self.keys.as_ref().map_err(Clone::clone)?;
         let archive = install::download(&asset.url).await?;
         verify::verify_any(keys, &archive, &asset.signature)?;
@@ -371,10 +372,10 @@ impl UpdatesService {
     fn station_room(&self, current: &std::path::Path) -> Result<(), String> {
         let folder = current.parent().unwrap_or(std::path::Path::new("/data"));
         match crate::placement::station_fs::space_of(folder) {
-            Some(space) if space.free_kb < STATION_FREE_KB => Err(format!(
-                "на колонке свободно {} МБ, а обновлению нужно {} МБ",
-                space.free_kb / 1024,
-                STATION_FREE_KB / 1024
+            Some(space) if space.free_kb < STATION_FREE_KB => Err(crate::tr!(
+                "На колонке свободно {free} МБ, а обновлению нужно {needed} МБ.",
+                free = space.free_kb / 1024,
+                needed = STATION_FREE_KB / 1024
             )),
             _ => Ok(()),
         }
@@ -403,7 +404,7 @@ impl UpdatesService {
         {
             let mut state = self.state.lock().unwrap();
             if state.installing {
-                return Err(ApiError::conflict("Обновление уже ставится."));
+                return Err(ApiError::conflict(crate::tr!("Обновление уже ставится.")));
             }
             state.installing = true;
             state.failed = None;
@@ -514,7 +515,7 @@ async fn ask_feed(url: &str, current: &str) -> Result<Feed, String> {
             Err(why) => error = error.or(Some(why)),
         }
     }
-    answered.ok_or_else(|| error.unwrap_or_else(|| "лента обновлений не задана".to_string()))
+    answered.ok_or_else(|| error.unwrap_or_else(|| crate::tr!("лента обновлений не задана")))
 }
 
 async fn fetch_feed(url: &str) -> Result<Feed, String> {
@@ -556,7 +557,7 @@ async fn archive(
     body: axum::body::Bytes,
 ) -> ApiResult<UpdateStatus> {
     if !crate::placement::peer::from_peer(&caller, app.placement.peer_key()) {
-        return Err(ApiError::forbidden("Обновление колонке присылает только компьютер пары."));
+        return Err(ApiError::forbidden(crate::tr!("Обновление колонке присылает только компьютер пары.")));
     }
     let header = |name: &str| headers.get(name).and_then(|value| value.to_str().ok()).unwrap_or("").trim().to_string();
     let (version, signature) = (header(VERSION_HEADER), header(SIGNATURE_HEADER));

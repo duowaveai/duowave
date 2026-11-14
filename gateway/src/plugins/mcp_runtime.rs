@@ -3,7 +3,6 @@
 //! is a tool of that server (`handler` — the server's name for it). The admin sees in the manifest what reaches
 //! «Мозг»; nothing else of the server does. The address must be on a host of the plugin's `net:` rights; an
 //! `apiKey` setting, when the manifest has one, goes as the bearer token.
-
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -34,7 +33,7 @@ fn answer(result: crate::mcp::mcp_tools::ToolCallResult) -> Result<Value, Plugin
             .filter_map(|item| item.get("text").and_then(Value::as_str))
             .map(str::to_string)
             .collect();
-        return Err(PluginError::Script(format!("сервер MCP: {}", text.join(" "))));
+        return Err(PluginError::Script(crate::tr!("сервер MCP: {text}", text = text.join(" "))));
     }
     if let Some(structured) = result.structured_content {
         return Ok(structured);
@@ -48,11 +47,16 @@ impl PluginInstance for Instance {
         let connection = self.connection.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         let function = function.to_string();
         Box::pin(async move {
-            let connection = connection.ok_or_else(|| PluginError::Unavailable("приложение выгружено".into()))?;
+            let connection = connection.ok_or_else(|| PluginError::Unavailable(crate::tr!("приложение выгружено")))?;
             let arguments: Map<String, Value> = match input {
                 Value::Object(map) => map,
                 Value::Null => Map::new(),
-                other => return Err(PluginError::Script(format!("вход инструмента — объект, а не {other}"))),
+                other => {
+                    return Err(PluginError::Script(crate::tr!(
+                        "вход инструмента — объект, а не {other}",
+                        other = other
+                    )))
+                }
             };
             let limit = kind.limit();
             match connection.call(&function, arguments, &CancellationToken::new(), limit).await {
@@ -60,7 +64,7 @@ impl PluginInstance for Instance {
                 Err(crate::mcp::mcp_connection::CallError::Timeout) => {
                     Err(PluginError::Timeout(limit.as_millis() as u64))
                 }
-                Err(error) => Err(PluginError::Script(format!("сервер MCP: {error}"))),
+                Err(error) => Err(PluginError::Script(crate::tr!("сервер MCP: {error}", error = error))),
             }
         })
     }
@@ -93,7 +97,7 @@ impl PluginRuntime for McpRuntime {
         host: Arc<dyn HostApi>,
     ) -> BoxFuture<'static, Result<Arc<dyn PluginInstance>, PluginError>> {
         Box::pin(async move {
-            let url = code.endpoint.clone().ok_or_else(|| PluginError::Load("нет mcp.url".into()))?;
+            let url = code.endpoint.clone().ok_or_else(|| PluginError::Load(crate::tr!("нет mcp.url")))?;
             let url = checked_url(&code.hosts, &url).map_err(PluginError::Load)?;
             let token =
                 host.settings().get("apiKey").and_then(Value::as_str).map(str::to_string).filter(|key| !key.is_empty());
@@ -117,13 +121,15 @@ impl PluginRuntime for McpRuntime {
                 open_connection(&spec, Arc::new(move |line: String| log_host.log("info", &line))),
             )
             .await
-            .map_err(|_| PluginError::Load("сервер MCP не ответил вовремя".into()))?
-            .map_err(|error| PluginError::Load(format!("сервер MCP не подключился: {error}")))?;
+            .map_err(|_| PluginError::Load(crate::tr!("сервер MCP не ответил вовремя")))?
+            .map_err(|error| PluginError::Load(crate::tr!("сервер MCP не подключился: {error}", error = error)))?;
             let connection = Arc::new(opened.0);
             let tools = connection
                 .tools()
                 .await
-                .map_err(|error| PluginError::Load(format!("сервер MCP не дал список инструментов: {error}")))?
+                .map_err(|error| {
+                    PluginError::Load(crate::tr!("сервер MCP не дал список инструментов: {error}", error = error))
+                })?
                 .into_iter()
                 .map(|tool| tool.name)
                 .collect();

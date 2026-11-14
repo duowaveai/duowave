@@ -3,7 +3,6 @@
 //! through only when a person stands at the start of the chain, or after that person's «да» for this one action. What
 //! is dangerous is not wired into code: a provider says it of its handles, a manifest may add it to its own (never
 //! take it away), and the owner has the last word for an app's handle — «всегда можно» or «опасно».
-
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -51,14 +50,14 @@ impl Danger {
     }
 
     /// For people: «тратит деньги».
-    pub fn title(self) -> &'static str {
+    pub fn title(self) -> String {
         match self {
-            Danger::Money => "тратит деньги",
-            Danger::Delete => "удаляет без возврата",
-            Danger::Outside => "пишет или отправляет наружу",
-            Danger::Locks => "управляет замками и дверями",
-            Danger::Camera => "смотрит или слушает",
-            Danger::Access => "меняет права и ключи",
+            Danger::Money => crate::tr!("тратит деньги"),
+            Danger::Delete => crate::tr!("удаляет без возврата"),
+            Danger::Outside => crate::tr!("пишет или отправляет наружу"),
+            Danger::Locks => crate::tr!("управляет замками и дверями"),
+            Danger::Camera => crate::tr!("смотрит или слушает"),
+            Danger::Access => crate::tr!("меняет права и ключи"),
         }
     }
 

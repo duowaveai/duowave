@@ -16,7 +16,6 @@
 //!   stage 8);
 //! - nothing (`null`, `undefined`): it lets the words go — when they were a built-in rule's too, the built-in
 //!   implementation serves them; so it does when the plugin fails.
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
@@ -112,10 +111,15 @@ fn turn_of(timeout: &Value) -> Result<Option<(u64, TimeUp)>, String> {
         return Ok(None);
     }
     let Some(seconds) = timeout.get("seconds").and_then(Value::as_f64) else {
-        return Err("нет seconds".into());
+        return Err(crate::tr!("нет seconds"));
     };
     if !(TURN_MIN_S as f64..=TURN_MAX_S as f64).contains(&seconds) {
-        return Err(format!("seconds {seconds} — вне {TURN_MIN_S}–{TURN_MAX_S}"));
+        return Err(crate::tr!(
+            "seconds {seconds} — вне {min}–{max}",
+            seconds = seconds,
+            min = TURN_MIN_S,
+            max = TURN_MAX_S
+        ));
     }
     let seconds = seconds.round() as u64;
     if let Some(handler) = timeout.get("handler").and_then(Value::as_str).filter(|handler| !handler.trim().is_empty()) {
@@ -123,7 +127,7 @@ fn turn_of(timeout: &Value) -> Result<Option<(u64, TimeUp)>, String> {
     }
     match timeout.get("say").and_then(Value::as_str).map(str::trim).filter(|say| !say.is_empty()) {
         Some(say) => Ok(Some((seconds, TimeUp::Say(say.chars().take(1000).collect())))),
-        None => Err("нужен handler или say".into()),
+        None => Err(crate::tr!("нужен handler или say")),
     }
 }
 
@@ -135,12 +139,14 @@ const STATION_LISTENS_S: u64 = 5;
 /// listens without «Алиса».
 pub fn turn_warning(answer: &Value) -> Option<String> {
     if answer.get("timeout").is_some() {
-        return Some("timeout — только внутри continue: {handler, timeout}; так таймер хода не встанет.".into());
+        return Some(crate::tr!("timeout — только внутри continue: {handler, timeout}; так таймер хода не встанет."));
     }
     match turn_of(answer.get("continue").and_then(|next| next.get("timeout"))?) {
-        Err(why) => Some(format!("Таймер хода не встанет: {why}.")),
-        Ok(Some((seconds, _))) if seconds > STATION_LISTENS_S => Some(format!(
-            "Таймер хода {seconds} с: без «Алиса» колонка слушает около {STATION_LISTENS_S} с, под конец отвечать — с «Алиса»."
+        Err(why) => Some(crate::tr!("Таймер хода не встанет: {why}.", why = why)),
+        Ok(Some((seconds, _))) if seconds > STATION_LISTENS_S => Some(crate::tr!(
+            "Таймер хода {seconds} с: без «Алиса» колонка слушает около {listens} с, под конец отвечать — с «Алиса».",
+            seconds = seconds,
+            listens = STATION_LISTENS_S
         )),
         Ok(_) => None,
     }
@@ -397,7 +403,7 @@ impl PluginSkill {
             host.note_line(
                 plugin,
                 "warn",
-                "таймер хода не встал: timeout — только внутри continue: {handler, timeout}",
+                &crate::tr!("таймер хода не встал: timeout — только внутри continue: {handler, timeout}"),
             );
         }
         // The conversation goes on with the plugin: the next words come back to it without the wake word.
@@ -442,7 +448,7 @@ impl PluginSkill {
                     outcome.on_spoken = Some(Box::new(move |ended_ms| timers.arm(device, id, ended_ms)));
                 }
             }
-            Some(Err(why)) => host.note_line(plugin, "warn", &format!("таймер хода не встал: {why}")),
+            Some(Err(why)) => host.note_line(plugin, "warn", &crate::tr!("таймер хода не встал: {why}", why = why)),
             Some(Ok(None)) | None => {}
         }
         self.going().insert(device.clone(), going);

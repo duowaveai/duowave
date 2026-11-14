@@ -4,13 +4,24 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-const FIRST_ENV: &str = "\
+/// The first .env's comments, in the system's language (the gateway has not said the home's yet).
+fn first_env() -> String {
+    let comments = crate::lang::t(
+        "\
 # Настройки шлюза. Шлюз читает этот файл при запуске: после правки — «Перезапустить шлюз» в меню значка.
 #
 # Порт шлюза: пульт — http://<адрес компьютера>:<порт>/panel, колонка ходит на ws://<адрес компьютера>:<порт>/uni.ws.
 # Порт может быть любым свободным. Сменили его — колонку, уже подключённую к шлюзу, переподключите (пульт предложит).
-PORT=7780
-";
+",
+        "\
+# Gateway settings. The gateway reads this file at startup: after editing, choose “Restart gateway” in the tray menu.
+#
+# Gateway port: the panel is http://<computer address>:<port>/panel, the speaker connects to ws://<computer address>:<port>/uni.ws.
+# Any free port will do. If you change it, reconnect a speaker already connected to the gateway (the panel will offer to).
+",
+    );
+    format!("{comments}PORT=7780\n")
+}
 
 /// Writes the first .env when there is none; an existing one is the household's and stays as it is.
 pub fn ensure(path: &Path) -> io::Result<bool> {
@@ -20,7 +31,7 @@ pub fn ensure(path: &Path) -> io::Result<bool> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    fs::write(path, FIRST_ENV)?;
+    fs::write(path, first_env())?;
     Ok(true)
 }
 

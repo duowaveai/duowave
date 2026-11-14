@@ -18,6 +18,8 @@ import { useAgentPlace } from '../voice/drafts';
 import { useVoiceAction } from '../voice/phrases';
 import { DraftWidgetPreview, madeByVoice, trustOwnDraft, trustedCode } from './draft-preview';
 import { DraftCardPreview } from '../cards/draft-card';
+import { tr } from '../i18n';
+import { byMode } from '../words';
 
 /** Черновики, к которым комета уже летала: второй раз — без полёта, контур на месте. */
 const flown = new Set<string>();
@@ -30,13 +32,13 @@ const ROWS = 3;
 export function faceWord(draft: DraftView): string {
     switch (draft.meta.kind) {
         case 'game':
-            return 'игра';
+            return tr.drafts.faceGame;
         case 'theme':
-            return 'тема';
+            return tr.drafts.faceTheme;
         case 'skill':
-            return 'навык';
+            return tr.drafts.faceSkill;
         default:
-            return 'виджет';
+            return tr.drafts.faceWidget;
     }
 }
 
@@ -103,7 +105,7 @@ function Example({ draft }: { draft: DraftView }) {
     // Без окошка — карточка, если она есть (её рисует пульт), иначе фразы навыка.
     if (!hasPanel) return <DraftCardPreview id={draft.id} nonce={draft.meta.updated} trying={{ example: true }} fallback={<Phrases draft={draft} />} />;
     if (problem) return <p class="w-cap m-0">{problem}</p>;
-    if (!code) return <p class="w-cap m-0">{voice ? 'Попросили у колонки. Загружаю пример…' : 'Загружаю пример…'}</p>;
+    if (!code) return <p class="w-cap m-0">{voice ? byMode(tr.drafts.askedSpeakerLoading, tr.drafts.askedVoiceLoading) : tr.drafts.loadingExample}</p>;
     return <DraftWidgetPreview id={draft.id} nonce={draft.meta.updated} code={code} trying={{ example: true }} bare />;
 }
 
@@ -119,8 +121,8 @@ function Phrases({ draft }: { draft: DraftView }) {
             })
             .catch(() => setPhrases([]));
     }, [draft.id, draft.meta.updated]);
-    if (phrases === null) return <p class="w-cap m-0">Читаю…</p>;
-    if (phrases.length === 0) return <p class="w-cap m-0">{draft.meta.kind === 'theme' ? 'Тема пульта — её примеряют.' : 'Фраз пока нет.'}</p>;
+    if (phrases === null) return <p class="w-cap m-0">{tr.drafts.reading}</p>;
+    if (phrases.length === 0) return <p class="w-cap m-0">{draft.meta.kind === 'theme' ? tr.drafts.themeExample : tr.drafts.noPhrases}</p>;
     return (
         <div class="draft-rows">
             {phrases.map((phrase) => (
@@ -146,7 +148,7 @@ export function DraftTile({ draft, more }: { draft: DraftView; more: number }) {
     const [words, setWords] = useState('');
     const [busy, setBusy] = useState<string | null>(null);
     const [trouble, setTrouble] = useState<string | null>(null);
-    const title = draft.title?.trim() || 'новая вещь';
+    const title = draft.title?.trim() || tr.drafts.newThing;
     const word = faceWord(draft);
 
     // Только что попросили: комета от «Мозга» к плитке, потом контур рисуется.
@@ -187,24 +189,24 @@ export function DraftTile({ draft, more }: { draft: DraftView; more: number }) {
     // Плитка поднялась на стенд «Примерки»: её место на столе ждёт пунктиром.
     if (panel.link.section === 'fitting' && panel.link.tab === draft.id)
         return (
-            <div class="draft-slot" aria-label={`Место для «${title}»`}>
-                <span class="w-cap">его место</span>
+            <div class="draft-slot" aria-label={tr.drafts.slotLabel(title)}>
+                <span class="w-cap">{tr.drafts.slotCap}</span>
             </div>
         );
 
     const rows = steps.filter((step) => step.kind === 'tool').slice(-ROWS);
     const last = steps[steps.length - 1];
-    const asked = draft.meta.by === 'voice' ? 'попросили у колонки' : null;
+    const asked = draft.meta.by === 'voice' ? byMode(tr.drafts.askedSpeaker, tr.drafts.askedVoice) : null;
 
     return (
         <div class={`draft-place is-${stage}`}>
             {ready && (
                 <span class="draft-flag">
                     <span class="draft-flag-dot" aria-hidden="true" />
-                    на примерке
+                    {tr.drafts.onFitting}
                 </span>
             )}
-            <section ref={box} class={`draft-tile is-${stage}${drawing ? ' is-drawing' : ''}`} aria-label={`${word} «${title}»`} aria-busy={working}>
+            <section ref={box} class={`draft-tile is-${stage}${drawing ? ' is-drawing' : ''}`} aria-label={tr.drafts.faceLabel(word, title)} aria-busy={working}>
                 <Outline drawing={drawing} working={working} />
                 <header class="draft-head">
                     <IconSparkle size={16} />
@@ -230,44 +232,44 @@ export function DraftTile({ draft, more }: { draft: DraftView; more: number }) {
                     </div>
                 )}
                 {(stage === 'failed' || stage === 'stopped') && (
-                    <p class="draft-end">{stage === 'failed' ? `Не вышло. ${draft.meta.note ?? 'Что случилось — в мастерской.'}` : 'Остановлено. Что агент успел, осталось в черновике.'}</p>
+                    <p class="draft-end">{stage === 'failed' ? tr.drafts.failedWithNote(draft.meta.note ?? tr.drafts.failedNoteDefault) : tr.drafts.stoppedNote}</p>
                 )}
                 <footer class="draft-foot">
                     {working ? (
                         <>
                             <span class="agent-spin" aria-hidden="true" />
-                            <span class="draft-doing">{last && (last.kind === 'asked' || last.kind === 'result') ? 'думает' : doingWords(last, now)}</span>
+                            <span class="draft-doing">{last && (last.kind === 'asked' || last.kind === 'result') ? tr.drafts.thinking : doingWords(last, now)}</span>
                             <span class="draft-time">{elapsed(now - since)}</span>
                         </>
                     ) : ready ? (
                         <>
                             <span class="draft-foot-dot" aria-hidden="true" />
-                            пример данных
+                            {tr.drafts.sampleData}
                         </>
                     ) : (
-                        <span>{stage === 'failed' ? 'не вышло' : 'остановлено'}</span>
+                        <span>{stage === 'failed' ? tr.drafts.failedShort : tr.drafts.stoppedShort}</span>
                     )}
-                    {more > 0 && <span class="draft-more">и ещё {more}</span>}
+                    {more > 0 && <span class="draft-more">{tr.drafts.andMore(more)}</span>}
                 </footer>
             </section>
             {ready && (
                 <div class="draft-acts">
                     <button class="pill" onClick={fit}>
-                        Примерить
+                        {tr.drafts.tryOn}
                     </button>
                     <button class="pill pill-own" onClick={put}>
-                        {draft.meta.kind === 'widget' ? 'На стол' : 'Включить'}
+                        {draft.meta.kind === 'widget' ? tr.drafts.toDesk : tr.drafts.enable}
                     </button>
-                    <span class="w-cap">или скажите это</span>
+                    <span class="w-cap">{tr.drafts.orSayIt}</span>
                 </div>
             )}
             {(stage === 'failed' || stage === 'stopped') && (
                 <div class="draft-acts">
                     <button class="pill" disabled={busy !== null} onClick={() => setRedo(!redo)}>
-                        Переделать…
+                        {tr.drafts.redoEllipsis}
                     </button>
                     <button class="pill" disabled={busy !== null} onClick={() => void act('park', () => api.parkDraft(draft.id))}>
-                        В черновики
+                        {tr.drafts.toDrafts}
                     </button>
                 </div>
             )}
@@ -276,19 +278,19 @@ export function DraftTile({ draft, more }: { draft: DraftView; more: number }) {
                     class="draft-redo"
                     onSubmit={(event) => {
                         event.preventDefault();
-                        again(words || 'Переделай');
+                        again(words || tr.drafts.redoDefault);
                     }}
                 >
                     <input
                         class="field"
                         value={words}
-                        placeholder="Что поменять: крупнее, другой источник…"
-                        aria-label="Что поменять"
+                        placeholder={tr.drafts.redoPlaceholder}
+                        aria-label={tr.drafts.redoLabel}
                         disabled={busy !== null}
                         onInput={(event) => setWords((event.target as HTMLInputElement).value)}
                     />
                     <button type="submit" class="w-btn" disabled={busy !== null}>
-                        {busy === 'redo' ? 'Отдаю…' : 'Переделать'}
+                        {busy === 'redo' ? tr.drafts.handing : tr.drafts.redo}
                     </button>
                 </form>
             )}
@@ -308,9 +310,9 @@ export function AddTile({ onAdd, small }: { onAdd: () => void; small?: boolean }
         <button class={`desk-add-tile${small ? ' is-small' : ''}`} onClick={onAdd}>
             <span class="flex items-center gap-6">
                 <IconPlus size={16} />
-                Новый виджет
+                {tr.drafts.newWidget}
             </span>
-            {!small && <span class="w-cap">скажите, что показать, — нарисую</span>}
+            {!small && <span class="w-cap">{tr.drafts.newWidgetCap}</span>}
         </button>
     );
 }

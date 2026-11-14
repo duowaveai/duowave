@@ -3,6 +3,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { ConnectorSettings, ConnectorView, ContactView, TelegramStranger, api, can, problemOf } from '../api';
 import { type BrandId } from '../brand-icons';
 import { IconEar, IconGlobe, IconHome, IconLinks, IconMcp, IconPhone, IconRobot, IconSend, IconSparkle, IconSpeaker, IconVoice } from '../icons';
+import { tr } from '../i18n';
 import { timeAgo } from '../time';
 import { BrandMark } from '../ui/brand';
 import { Action } from '../ui/cards';
@@ -13,16 +14,18 @@ import type { SettingsTab } from './mind';
 import { NewsSheet } from './news';
 import { ask } from '../ui/confirm';
 import { saveLabel } from '../via';
+import { onComputer } from '../voice-input';
+import { byMode } from '../words';
 
 /** Работает и настроено — лайм, не настроено и выключено — сланец, нет связи — коралл, «скоро» — чего в этой сборке ещё нет. */
-const STATE_PILL: Record<ConnectorView['status']['state'], { cls: string; label: string }> = {
-    ready: { cls: 'pill-own', label: 'работает' },
-    configured: { cls: 'pill-own', label: 'настроено' },
-    unset: { cls: 'pill-off', label: 'не настроено' },
-    off: { cls: 'pill-off', label: 'выключено' },
-    soon: { cls: 'pill-off', label: 'скоро' },
-    error: { cls: 'pill-error', label: 'нет связи' },
-};
+const statePill = (): Record<ConnectorView['status']['state'], { cls: string; label: string }> => ({
+    ready: { cls: 'pill-own', label: tr.connectors.stateReady },
+    configured: { cls: 'pill-own', label: tr.connectors.stateConfigured },
+    unset: { cls: 'pill-off', label: tr.connectors.stateUnset },
+    off: { cls: 'pill-off', label: tr.connectors.stateOff },
+    soon: { cls: 'pill-off', label: tr.connectors.stateSoon },
+    error: { cls: 'pill-error', label: tr.connectors.stateError },
+});
 
 /** Знак подключения: сервис, если его знак есть (Telegram, Home Assistant…), иначе наш значок по виду. У Яндекса знака нет. */
 const CONNECTOR_BRANDS: Record<string, BrandId> = {
@@ -112,9 +115,9 @@ export function Connectors({
             <section class="card glass card-list card-list-tight" aria-labelledby="connectors-h">
                 <div class="section-head">
                     <h2 id="connectors-h" class="t-title-xs m-0">
-                        Подключения
+                        {tr.connectors.title}
                     </h2>
-                    <span class="t-meta">{mayManage ? 'нажмите, чтобы настроить' : 'MCP-серверы — ниже'}</span>
+                    <span class="t-meta">{mayManage ? tr.connectors.tapToSetUp : tr.connectors.mcpBelow}</span>
                 </div>
                 {error && (
                     <p class="t-caption c-dot-offline m-0 mb-8" role="alert">
@@ -123,30 +126,30 @@ export function Connectors({
                 )}
                 {!list && !error && (
                     <p class="t-meta m-0 mb-8">
-                        Спрашиваем шлюз…
+                        {tr.connectors.askingGateway}
                     </p>
                 )}
                 {list
-                    ?.filter(({ manifest }) => manifest.kind !== 'mcp')
+                    ?.filter(({ manifest }) => manifest.kind !== 'mcp' && !(onComputer() && WITH_STATION.has(manifest.id)))
                     .map((view) => {
                         const { manifest, status } = view;
                         const action = go(view);
                         const where =
-                            manifest.setup === 'brain' ? ' · в «Мозге»' : manifest.setup === 'voice' ? ' · в «Голосе»' : '';
+                            manifest.setup === 'brain' ? tr.connectors.inBrain : manifest.setup === 'voice' ? tr.connectors.inVoice : '';
                         const body = (
                             <>
                                 <ConnectorIcon id={manifest.id} kind={manifest.kind} />
                                 <span class="flex-1 min-w-0 flex flex-col gap-2">
                                     <b class="flex gap-8 items-center flex-wrap">
                                         {manifest.title}
-                                        {manifest.cloud && status.state !== 'unset' && <span class="pill pill-yandex">через интернет</span>}
+                                        {manifest.cloud && status.state !== 'unset' && <span class="pill pill-yandex">{tr.connectors.viaInternet}</span>}
                                     </b>
                                     <span class="t-caption">
-                                        {status.detail ?? manifest.description}
+                                        {status.detail ?? (onComputer() ? (withoutStation()[manifest.id] ?? manifest.description) : manifest.description)}
                                         {where}
                                     </span>
                                 </span>
-                                <span class={`pill ${STATE_PILL[status.state].cls}`}>{STATE_PILL[status.state].label}</span>
+                                <span class={`pill ${statePill()[status.state].cls}`}>{statePill()[status.state].label}</span>
                             </>
                         );
                         const row = 'flex items-center gap-12 w-full py-10 px-0 bt-divider';
@@ -185,9 +188,9 @@ function ConnectorSheet({ id, kind, onClose, onChanged }: { id: string; kind: st
     if (id === 'news') return <NewsSheet onClose={onClose} onChanged={onChanged} />;
     if (!view)
         return (
-            <Sheet title="Подключение" icon={<ConnectorIcon id={id} kind={kind} />} onClose={onClose}>
+            <Sheet title={tr.connectors.sheetTitle} icon={<ConnectorIcon id={id} kind={kind} />} onClose={onClose}>
                 <p class={`t-meta m-0${error ? ' c-dot-offline' : ''}`} role={error ? 'alert' : undefined}>
-                    {error ?? 'Читаем настройки…'}
+                    {error ?? tr.connectors.readingSettings}
                 </p>
             </Sheet>
         );
@@ -215,25 +218,36 @@ interface FormSpec {
     switchable: boolean;
 }
 
+/**
+ * Подключения, которым нужна колонка: сессия с Яндексом и звонки на колонку. В режиме «Микрофон»
+ * (docs/plans/mic-mode.md) колонки нет — их нет в списке.
+ */
+const WITH_STATION = new Set(['yandex', 'livekit', 'sip']);
+
+/** Что о подключении сказать без колонки: шлюз описывает его для колонки. */
+const withoutStation = (): Record<string, string> => ({
+    telegram: tr.connectors.withoutStationTelegram,
+});
+
 function specOf(id: string, values: Record<string, unknown>): FormSpec {
     const homeUrl = typeof values.url === 'string' && values.url ? values.url : null;
     switch (id) {
         case 'home-assistant':
             return {
-                about: 'Свет, розетки, климат и сценарии дома. Колонка говорит с Home Assistant напрямую, по домашней сети.',
-                fields: [{ name: 'url', label: 'Адрес Home Assistant дома', placeholder: 'http://homeassistant.local:8123' }],
+                about: byMode(tr.connectors.haAboutSpeaker, tr.connectors.haAboutOwn),
+                fields: [{ name: 'url', label: tr.connectors.haUrl, placeholder: 'http://homeassistant.local:8123' }],
                 secrets: [
                     {
                         name: 'token',
-                        label: 'Долгосрочный токен',
+                        label: tr.connectors.haToken,
                         hint: (
                             <>
-                                В Home Assistant: профиль → «Безопасность» → «Долгосрочные токены доступа» → «Создать токен».
+                                {tr.connectors.haTokenHint}
                                 {homeUrl && (
                                     <>
                                         {' '}
                                         <a href={`${homeUrl.replace(/\/+$/, '')}/profile/security`} target="_blank" rel="noreferrer">
-                                            Открыть
+                                            {tr.connectors.open}
                                         </a>
                                     </>
                                 )}
@@ -245,64 +259,64 @@ function specOf(id: string, values: Record<string, unknown>): FormSpec {
             };
         case 'telegram':
             return {
-                about: 'Голосовые сообщения семье через своего бота, ссылки на звонки и оповещения о колонке. Сообщения уходят через Telegram.',
+                about: byMode(tr.connectors.tgAboutSpeaker, tr.connectors.tgAboutOwn),
                 fields: [],
                 secrets: [
                     {
                         name: 'token',
-                        label: 'Токен бота',
+                        label: tr.connectors.tgToken,
                         hint: (
                             <>
-                                Его выдаёт{' '}
+                                {tr.connectors.tgTokenHintBefore}{' '}
                                 <a href="https://t.me/BotFather" target="_blank" rel="noreferrer">
                                     @BotFather
                                 </a>{' '}
-                                в Telegram: команда /newbot.
+                                {tr.connectors.tgTokenHintAfter}
                             </>
                         ),
                     },
                 ],
-                contacts: { title: 'Контакты: кому колонка передаёт и чьи сообщения слышит', targetLabel: 'чат', targetPlaceholder: 'номер чата', targetMode: 'numeric' },
+                contacts: { title: byMode(tr.connectors.tgContactsSpeaker, tr.connectors.tgContactsOwn), targetLabel: tr.connectors.tgTargetLabel, targetPlaceholder: tr.connectors.tgTargetPlaceholder, targetMode: 'numeric' },
                 switchable: true,
             };
         case 'livekit':
             return {
-                about: 'Звонки на колонку из браузера и приложения, дома и вне дома. Свой сервер LiveKit: deploy/livekit.',
+                about: tr.connectors.lkAbout,
                 fields: [
-                    { name: 'url', label: 'Адрес сервера для шлюза', placeholder: 'ws://127.0.0.1:7880' },
-                    { name: 'publicUrl', label: 'Адрес для телефонов вне дома', placeholder: 'wss://livekit.example.com', hint: 'Пусто — только дома.' },
+                    { name: 'url', label: tr.connectors.lkUrl, placeholder: 'ws://127.0.0.1:7880' },
+                    { name: 'publicUrl', label: tr.connectors.lkPublicUrl, placeholder: 'wss://livekit.example.com', hint: tr.connectors.lkPublicUrlHint },
                     {
                         name: 'pageUrl',
-                        label: 'Страница звонка',
+                        label: tr.connectors.lkPageUrl,
                         placeholder: 'https://call.example.com/calls/livekit',
-                        hint: 'По ней колонка зовёт контакт из Telegram («позвони маме»). Пусто — без ссылок.',
+                        hint: tr.connectors.lkPageUrlHint,
                     },
-                    { name: 'room', label: 'Комната', placeholder: 'home' },
+                    { name: 'room', label: tr.connectors.lkRoom, placeholder: 'home' },
                 ],
                 secrets: [
-                    { name: 'apiKey', label: 'API-ключ', hint: 'Ключ и секрет — из keys в livekit.yaml сервера.' },
-                    { name: 'apiSecret', label: 'API-секрет' },
+                    { name: 'apiKey', label: tr.connectors.lkApiKey, hint: tr.connectors.lkApiKeyHint },
+                    { name: 'apiSecret', label: tr.connectors.lkApiSecret },
                 ],
                 switchable: true,
             };
         case 'sip':
             return {
-                about: 'Звонки на обычные телефоны через свой Asterisk (deploy/asterisk): звонок с телефона звонит на колонку, «позвони маме» набирает номер.',
+                about: tr.connectors.sipAbout,
                 fields: [
-                    { name: 'url', label: 'Адрес ARI', placeholder: 'http://127.0.0.1:8088' },
-                    { name: 'user', label: 'Логин ARI', placeholder: 'duowave' },
-                    { name: 'app', label: 'Приложение Stasis', placeholder: 'duowave' },
-                    { name: 'rtpHost', label: 'Адрес шлюза для звука (RTP)', placeholder: '127.0.0.1' },
-                    { name: 'rtpPort', label: 'Порт RTP', placeholder: '40000', numeric: true },
+                    { name: 'url', label: tr.connectors.sipUrl, placeholder: 'http://127.0.0.1:8088' },
+                    { name: 'user', label: tr.connectors.sipUser, placeholder: 'duowave' },
+                    { name: 'app', label: tr.connectors.sipApp, placeholder: 'duowave' },
+                    { name: 'rtpHost', label: tr.connectors.sipRtpHost, placeholder: '127.0.0.1' },
+                    { name: 'rtpPort', label: tr.connectors.sipRtpPort, placeholder: '40000', numeric: true },
                 ],
-                secrets: [{ name: 'password', label: 'Пароль ARI', hint: 'Из ari.conf Asterisk.' }],
-                contacts: { title: 'Контакты: номера и внутренние', targetLabel: 'номер', targetPlaceholder: '+7… или 101', targetMode: 'tel' },
+                secrets: [{ name: 'password', label: tr.connectors.sipPassword, hint: tr.connectors.sipPasswordHint }],
+                contacts: { title: tr.connectors.sipContacts, targetLabel: tr.connectors.sipTargetLabel, targetPlaceholder: tr.connectors.sipTargetPlaceholder, targetMode: 'tel' },
                 switchable: true,
             };
         default:
             return {
-                about: 'Прогноз Open-Meteo без ключа. Город, о котором колонка говорит, если в вопросе города нет.',
-                fields: [{ name: 'location', label: 'Город', placeholder: 'пусто — по часовому поясу колонки' }],
+                about: byMode(tr.connectors.weatherAboutSpeaker, tr.connectors.weatherAboutOwn),
+                fields: [{ name: 'location', label: tr.connectors.weatherCity, placeholder: byMode(tr.connectors.weatherCityPlaceholderSpeaker, tr.connectors.weatherCityPlaceholderOwn) }],
                 secrets: [],
                 switchable: false,
             };
@@ -380,16 +394,16 @@ function SettingsForm({ view, kind, onClose, onSaved }: { view: ConnectorSetting
         });
     const clear = async () => {
         const yes = await ask({
-            title: `Очистить настройки «${view.title}»?`,
-            text: 'Адреса, ключи и контакты удалятся; .env их не вернёт.',
-            ok: 'Очистить',
+            title: tr.connectors.clearTitle(view.title),
+            text: tr.connectors.clearText,
+            ok: tr.connectors.clear,
             danger: true,
         });
         if (!yes) return;
         void act('clear', () => api.clearConnector(view.id));
     };
     const ready = view.status.state !== 'unset' && view.status.state !== 'off';
-    const pill = STATE_PILL[view.status.state];
+    const pill = statePill()[view.status.state];
     const named = contacts.filter((contact) => contact.name.trim());
     const known = new Set(contacts.map((contact) => contact.stranger).filter(Boolean));
 
@@ -408,10 +422,10 @@ function SettingsForm({ view, kind, onClose, onSaved }: { view: ConnectorSetting
                             aria-busy={busy === 'save'}
                             onClick={save}
                         >
-                            {busy === 'save' ? (changed ? 'Сохраняем…' : 'Проверяем…') : changed ? `${saveLabel()} и проверить` : 'Проверить'}
+                            {busy === 'save' ? (changed ? tr.connectors.saving : tr.connectors.checking) : changed ? tr.connectors.andCheck(saveLabel()) : tr.connectors.check}
                         </button>
                         <button class="pill pill-off dash-confirm-btn" onClick={onClose}>
-                            Закрыть
+                            {tr.connectors.close}
                         </button>
                     </div>
                 ) : undefined
@@ -422,7 +436,7 @@ function SettingsForm({ view, kind, onClose, onSaved }: { view: ConnectorSetting
             </p>
             {!view.available ? (
                 <p class="t-meta m-0">
-                    В сборке для колонки звонков нет: Telegram, LiveKit и SIP настраиваются на шлюзе с компьютера.
+                    {tr.connectors.noCallsOnStation}
                 </p>
             ) : (
                 <>
@@ -430,16 +444,16 @@ function SettingsForm({ view, kind, onClose, onSaved }: { view: ConnectorSetting
                     <CheckLine check={view.check} />
                     {view.busy && (
                         <p class="t-meta m-0 c-pill-yandex-fg" role="status">
-                            Сейчас идёт звонок через этот мост: сохранение его прервёт.
+                            {tr.connectors.callInProgress}
                         </p>
                     )}
                     {spec.switchable && (
                         <label class="flex items-center justify-between gap-12 min-h-44">
                             <span class="flex flex-col">
-                                <b>Включено</b>
-                                <span class="t-caption">Выключенное подключение помнит свои настройки.</span>
+                                <b>{tr.connectors.enabled}</b>
+                                <span class="t-caption">{tr.connectors.enabledHint}</span>
                             </span>
-                            <Switch on={enabled} label="Включено" onChange={setEnabled} />
+                            <Switch on={enabled} label={tr.connectors.enabled} onChange={setEnabled} />
                         </label>
                     )}
                     {spec.fields.map((field) => (
@@ -477,7 +491,7 @@ function SettingsForm({ view, kind, onClose, onSaved }: { view: ConnectorSetting
                     )}
                     {view.id === 'telegram' && strangers.some((stranger) => !known.has(stranger.id)) && (
                         <div class="flex flex-col gap-6">
-                            <span class="t-caption">Написали боту — добавьте, кого колонка должна слышать</span>
+                            <span class="t-caption">{byMode(tr.connectors.wroteToBotSpeaker, tr.connectors.wroteToBotOwn)}</span>
                             {strangers
                                 .filter((stranger) => !known.has(stranger.id))
                                 .map((stranger) => (
@@ -485,11 +499,11 @@ function SettingsForm({ view, kind, onClose, onSaved }: { view: ConnectorSetting
                                         <span class="flex-1 min-w-0">
                                             <b>{stranger.name}</b>{' '}
                                             <span class="t-caption">
-                                                чат {stranger.hint} · {timeAgo(stranger.at)}
+                                                {tr.connectors.chatWithAgo(stranger.hint, timeAgo(stranger.at))}
                                             </span>
                                         </span>
                                         <Action
-                                            label="добавить"
+                                            label={tr.connectors.add}
                                             tone="on"
                                             onClick={() =>
                                                 setContacts((all) => [
@@ -504,10 +518,10 @@ function SettingsForm({ view, kind, onClose, onSaved }: { view: ConnectorSetting
                     )}
                     {view.id === 'telegram' && (
                         <label class="flex flex-col gap-4">
-                            <span class="t-caption">Оповещения о колонке («пропала», «снова на связи», новая колонка)</span>
+                            <span class="t-caption">{byMode(tr.connectors.alertsSpeaker, tr.connectors.alertsOwn)}</span>
                             <select class="field" value={alertTo} onChange={(e) => setAlertTo((e.target as HTMLSelectElement).value)}>
-                                {typeof view.values.alertHint === 'string' && <option value={KEEP}>чат {view.values.alertHint} — не из контактов</option>}
-                                <option value="">никуда</option>
+                                {typeof view.values.alertHint === 'string' && <option value={KEEP}>{tr.connectors.chatNotFromContacts(view.values.alertHint)}</option>}
+                                <option value="">{tr.connectors.nowhere}</option>
                                 {named.map((contact) => (
                                     <option key={contact.key} value={contact.name.trim()}>
                                         {contact.name.trim()}
@@ -517,11 +531,11 @@ function SettingsForm({ view, kind, onClose, onSaved }: { view: ConnectorSetting
                         </label>
                     )}
                     <p class="t-meta m-0">
-                        Ключи и пароли хранятся в шлюзе зашифрованными; пульт показывает только их последние знаки.
+                        {tr.connectors.secretsNote}
                     </p>
                     {view.stored && (
                         <span>
-                            <Action label="очистить настройки" busy={busy === 'clear'} disabled={busy !== null} onClick={clear} />
+                            <Action label={tr.connectors.clearSettings} busy={busy === 'clear'} disabled={busy !== null} onClick={clear} />
                         </span>
                     )}
                 </>

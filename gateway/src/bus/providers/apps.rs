@@ -3,7 +3,6 @@
 //! for is its manifest's `see:/listen:/call:/edit:` rights (Host API 2): asked of a person the first time, like a
 //! phone; a built-in app — ours, in the gateway's build — has them from the start, and the owner may take them away
 //! in «Связи».
-
 use std::sync::{OnceLock, Weak};
 
 use futures::future::BoxFuture;
@@ -154,10 +153,11 @@ impl Provider for Apps {
         }
         // Its own answer in words, or the household's model with its tools when it has any.
         if bus.ask.is_some() || (!manifest.contributes.tools.is_empty() && self.words.get().is_some()) {
-            handles.push(Handle::new("ask", Level::Call).titled("ответить словами").private(private("ask")));
+            handles
+                .push(Handle::new("ask", Level::Call).titled(&crate::tr!("ответить словами")).private(private("ask")));
         }
         for news in &bus.emits {
-            handles.push(Handle::new(news, Level::Listen).titled("новость"));
+            handles.push(Handle::new(news, Level::Listen).titled(&crate::tr!("новость")));
         }
         handles
     }
@@ -185,13 +185,13 @@ impl Provider for Apps {
         let manifest = self.manifest(&letter.to);
         let words = self.words.get().cloned();
         Box::pin(async move {
-            let host = host.ok_or_else(|| BusError::Failed("приложения остановлены".into()))?;
+            let host = host.ok_or_else(|| BusError::Failed(crate::tr!("приложения остановлены")))?;
             let manifest = manifest.ok_or_else(|| BusError::NotFound(letter.to.to_string()))?;
             if letter.handle == "ask" && manifest.contributes.bus.ask.is_none() {
                 let words = words.ok_or_else(|| BusError::NotFound(format!("{}: ask", letter.to)))?;
                 let text = letter.input.get("text").and_then(Value::as_str).unwrap_or_default().trim().to_string();
                 if text.is_empty() {
-                    return Err(BusError::Failed("вопрос пустой".into()));
+                    return Err(BusError::Failed(crate::tr!("вопрос пустой")));
                 }
                 return words.answer(letter.trail, letter.from, letter.to, text).await;
             }
@@ -237,7 +237,7 @@ impl Provider for Apps {
         let manifest = self.manifest(to);
         let to = to.clone();
         Box::pin(async move {
-            let host = host.ok_or_else(|| BusError::Failed("приложения остановлены".into()))?;
+            let host = host.ok_or_else(|| BusError::Failed(crate::tr!("приложения остановлены")))?;
             let manifest = manifest.ok_or_else(|| BusError::NotFound(to.to_string()))?;
             let handler = manifest
                 .contributes

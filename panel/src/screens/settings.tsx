@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 
-import { AccessCatalog, ApiKey, AuditEntry, Person, Role, api, can, plural, problemOf, sessionStore } from '../api';
+import { AccessCatalog, ApiKey, AuditEntry, Person, Role, api, can, problemOf, sessionStore } from '../api';
 import { IconJournal, IconKey, IconPalette } from '../icons';
 import { timeAgo } from '../time';
 import { ThemeCard } from '../shell/theme-picker';
@@ -8,6 +8,9 @@ import { Sheet } from '../ui/sheet';
 import { SectionTabs, TabEntry } from '../ui/tabs';
 import { ask } from '../ui/confirm';
 import { BusCard } from '../bus/settings-card';
+import { byMode } from '../words';
+import { tr } from '../i18n';
+import { LanguageCard } from '../i18n/picker';
 
 export type SettingsSectionTab = 'access' | 'look';
 
@@ -32,13 +35,13 @@ export function SettingsScreen({
     bare?: boolean;
 }) {
     const tabs: Array<TabEntry<string>> = [
-        { id: 'access', label: 'Доступ', icon: <IconKey size={16} /> },
-        { id: 'look', label: 'Оформление', icon: <IconPalette size={16} /> },
+        { id: 'access', label: tr.settings.tabAccess, icon: <IconKey size={16} /> },
+        { id: 'look', label: tr.settings.tabLook, icon: <IconPalette size={16} /> },
     ];
     const shown = tabs.some((entry) => entry.id === tab) ? tab : tabs[0].id;
     return (
         <>
-            {!bare && <SectionTabs label="Настройки" tabs={tabs} tab={shown} onPick={onTab} />}
+            {!bare && <SectionTabs label={tr.settings.title} tabs={tabs} tab={shown} onPick={onTab} />}
             {shown === 'access' && (
                 <>
                     {can('users.manage') && <People catalog={catalog} />}
@@ -48,12 +51,19 @@ export function SettingsScreen({
                     {can('audit.view') && <History />}
                 </>
             )}
-            {shown === 'look' && <ThemeCard />}
+            {shown === 'look' && (
+                <>
+                    <LanguageCard />
+                    <ThemeCard />
+                </>
+            )}
         </>
     );
 }
 
-const ROLE_TITLES: Record<Role, string> = { admin: 'Администратор', member: 'Домашний', guest: 'Гость' };
+/** Названия ролей на языке пульта: функция — словарь читается при отрисовке. */
+const roleTitles = (): Record<Role, string> => ({ admin: tr.settings.roleAdmin, member: tr.settings.roleMember, guest: tr.settings.roleGuest });
+const ROLES: Role[] = ['admin', 'member', 'guest'];
 
 /** Люди дома и голос дома: роль, ограничения на возможности, вход в пульт. */
 function People({ catalog }: { catalog: AccessCatalog | null }) {
@@ -108,11 +118,11 @@ function People({ catalog }: { catalog: AccessCatalog | null }) {
         <section class="card glass card-list" aria-labelledby="people-h">
             <div class="section-head">
                 <h2 id="people-h" class="t-title-xs m-0">
-                    Люди
+                    {tr.settings.people}
                 </h2>
                 {people && (
                     <span class="t-meta">
-                        {people.length} {plural(people.length, 'человек', 'человека', 'человек')}
+                        {tr.settings.peopleCount(people.length)}
                     </span>
                 )}
             </div>
@@ -124,18 +134,18 @@ function People({ catalog }: { catalog: AccessCatalog | null }) {
 
             <div class="list-row">
                 <div class="flex-1 min-w-160 flex flex-col gap-2">
-                    <span class="fw-700">Голос дома</span>
-                    <span class="t-caption">Кто говорит с колонкой, пока она не узнаёт людей по голосу или по имени.</span>
+                    <span class="fw-700">{tr.settings.householdVoice}</span>
+                    <span class="t-caption">{byMode(tr.settings.householdVoiceAbout, tr.settings.householdVoiceAboutComputer)}</span>
                 </div>
                 <select
                     class="field"
-                    aria-label="Роль голоса дома"
+                    aria-label={tr.settings.householdVoiceRole}
                     value={household ?? 'member'}
                     disabled={busy}
                     onChange={(e) => void run(() => api.setHousehold({ role: (e.target as HTMLSelectElement).value as Role }))}
                 >
-                    <option value="member">Домашний — всё, кроме настроек</option>
-                    <option value="guest">Гость — простые вещи</option>
+                    <option value="member">{tr.settings.householdMember}</option>
+                    <option value="guest">{tr.settings.householdGuest}</option>
                 </select>
             </div>
 
@@ -148,27 +158,27 @@ function People({ catalog }: { catalog: AccessCatalog | null }) {
                         <div class="flex-1 min-w-160 flex flex-col gap-2">
                             <span class="fw-700">{person.name}</span>
                             <span class="t-caption">
-                                {ROLE_TITLES[person.role]}
+                                {roleTitles()[person.role]}
                                 {person.canSignIn
                                     ? person.lastLoginAt
-                                        ? ` · входил ${timeAgo(person.lastLoginAt)}`
-                                        : ' · ещё не входил'
-                                    : ' · без входа в пульт'}
-                                {person.restrictions.deny?.length ? ` · запретов: ${person.restrictions.deny.length}` : ''}
+                                        ? tr.settings.signedInAgo(timeAgo(person.lastLoginAt))
+                                        : tr.settings.neverSignedIn
+                                    : tr.settings.noSignIn}
+                                {person.restrictions.deny?.length ? tr.settings.denials(person.restrictions.deny.length) : ''}
                             </span>
                         </div>
                         <select
                             class="field"
-                            aria-label={`Роль: ${person.name}`}
+                            aria-label={tr.settings.roleOf(person.name)}
                             value={person.role}
                             disabled={busy}
                             onChange={(e) =>
                                 void run(() => api.updatePerson(person.id, { role: (e.target as HTMLSelectElement).value as Role }))
                             }
                         >
-                            {(Object.keys(ROLE_TITLES) as Role[]).map((value) => (
+                            {ROLES.map((value) => (
                                 <option key={value} value={value}>
-                                    {ROLE_TITLES[value]}
+                                    {roleTitles()[value]}
                                 </option>
                             ))}
                         </select>
@@ -177,12 +187,12 @@ function People({ catalog }: { catalog: AccessCatalog | null }) {
                             aria-expanded={open === person.id}
                             onClick={() => setOpen(open === person.id ? null : person.id)}
                         >
-                            {open === person.id ? 'свернуть' : 'права'}
+                            {open === person.id ? tr.settings.collapse : tr.settings.rights}
                         </button>
                     </div>
                     {open === person.id && (
                         <div class="flex flex-col gap-8">
-                            <span class="t-caption">Нельзя голосом — снимите, чтобы разрешить снова:</span>
+                            <span class="t-caption">{tr.settings.deniedByVoice}</span>
                             <div class="flex flex-wrap gap-6">
                                 {(catalog?.capabilities ?? []).map((capability) => {
                                     const denied = person.restrictions.deny?.includes(capability.permission) ?? false;
@@ -210,22 +220,22 @@ function People({ catalog }: { catalog: AccessCatalog | null }) {
                                         )
                                     }
                                 >
-                                    {person.status === 'active' ? 'приостановить' : 'вернуть'}
+                                    {person.status === 'active' ? tr.settings.suspend : tr.settings.restore}
                                 </button>
                                 <button
                                     class="pill pill-off pill-btn"
                                     disabled={busy}
                                     onClick={async () => {
                                         const yes = await ask({
-                                            title: `Удалить «${person.name}»?`,
-                                            text: 'Его настройки уйдут вместе с ним.',
-                                            ok: 'Удалить',
+                                            title: tr.settings.removePersonTitle(person.name),
+                                            text: tr.settings.removePersonText,
+                                            ok: tr.settings.removeOk,
                                             danger: true,
                                         });
                                         if (yes) void run(() => api.removePerson(person.id));
                                     }}
                                 >
-                                    удалить
+                                    {tr.settings.removeAction}
                                 </button>
                             </div>
                         </div>
@@ -237,27 +247,27 @@ function People({ catalog }: { catalog: AccessCatalog | null }) {
                 <input
                     class="field flex-1 min-w-120"
                     value={name}
-                    placeholder="Имя"
-                    aria-label="Имя нового человека"
+                    placeholder={tr.settings.namePlaceholder}
+                    aria-label={tr.settings.newPersonName}
                     onInput={(e) => setName((e.target as HTMLInputElement).value)}
                 />
                 <input
                     class="field flex-1 min-w-120"
                     type="password"
                     value={password}
-                    placeholder="Пароль (не обязательно)"
-                    aria-label="Пароль для входа в пульт — не обязательно"
+                    placeholder={tr.settings.passwordOptional}
+                    aria-label={tr.settings.passwordOptionalLabel}
                     onInput={(e) => setPassword((e.target as HTMLInputElement).value)}
                 />
                 <select
                     class="field"
-                    aria-label="Роль нового человека"
+                    aria-label={tr.settings.newPersonRole}
                     value={role}
                     onChange={(e) => setRole((e.target as HTMLSelectElement).value as Role)}
                 >
-                    {(Object.keys(ROLE_TITLES) as Role[]).map((value) => (
+                    {ROLES.map((value) => (
                         <option key={value} value={value}>
-                            {ROLE_TITLES[value]}
+                            {roleTitles()[value]}
                         </option>
                     ))}
                 </select>
@@ -266,11 +276,11 @@ function People({ catalog }: { catalog: AccessCatalog | null }) {
                     disabled={busy || name.trim().length < 2}
                     onClick={() => void add()}
                 >
-                    добавить
+                    {tr.settings.addAction}
                 </button>
             </div>
             <p class="t-caption m-0 mt-8">
-                Без пароля человек не входит в пульт — это профиль, который колонка будет узнавать.
+                {byMode(tr.settings.noPasswordNote, tr.settings.noPasswordNoteComputer)}
             </p>
         </section>
     );
@@ -301,7 +311,7 @@ function Keys({ catalog }: { catalog: AccessCatalog | null }) {
         }
     };
     const revoke = async (key: ApiKey) => {
-        const yes = await ask({ title: `Отозвать ключ «${key.name}»?`, text: 'Всё, что им пользуется, перестанет работать.', ok: 'Отозвать', danger: true });
+        const yes = await ask({ title: tr.settings.revokeTitle(key.name), text: tr.settings.revokeText, ok: tr.settings.revokeOk, danger: true });
         if (!yes) return;
         try {
             await api.revokeApiKey(key.id);
@@ -315,9 +325,9 @@ function Keys({ catalog }: { catalog: AccessCatalog | null }) {
         <section class="card glass card-list" aria-labelledby="keys-h">
             <div class="section-head">
                 <h2 id="keys-h" class="t-title-xs m-0">
-                    Ключи доступа
+                    {tr.settings.keys}
                 </h2>
-                <span class="t-meta">для скриптов и агентов</span>
+                <span class="t-meta">{tr.settings.keysFor}</span>
             </div>
             {error && (
                 <p class="t-caption c-dot-offline m-0 mb-8" role="alert">
@@ -329,11 +339,11 @@ function Keys({ catalog }: { catalog: AccessCatalog | null }) {
                     role="status"
                     class="py-12 px-14 r-panel bg-pill-yandex-bg c-pill-yandex-fg mb-8"
                 >
-                    <p class="m-0 mb-6 fs-13 fw-700">Скопируйте ключ сейчас — больше он не покажется:</p>
+                    <p class="m-0 mb-6 fs-13 fw-700">{tr.settings.copyKeyNow}</p>
                     <code class="break-all fs-13">{secret}</code>
                     <div class="mt-8">
                         <button class="pill pill-off pill-btn-sm" onClick={() => setSecret(null)}>
-                            скопировал
+                            {tr.settings.copiedKey}
                         </button>
                     </div>
                 </div>
@@ -349,11 +359,11 @@ function Keys({ catalog }: { catalog: AccessCatalog | null }) {
                             <span class="fw-700">{key.name}</span>
                             <span class="t-caption">
                                 {key.grants.join(', ')} ·{' '}
-                                {key.lastUsedAt ? `пользовались ${timeAgo(key.lastUsedAt)}` : 'ещё не пользовались'}
+                                {key.lastUsedAt ? tr.settings.usedAgo(timeAgo(key.lastUsedAt)) : tr.settings.neverUsed}
                             </span>
                         </div>
                         <button class="pill pill-off pill-btn" onClick={() => void revoke(key)}>
-                            отозвать
+                            {tr.settings.revokeAction}
                         </button>
                     </div>
                 ))}
@@ -361,8 +371,8 @@ function Keys({ catalog }: { catalog: AccessCatalog | null }) {
                 <input
                     class="field"
                     value={name}
-                    placeholder="Для чего ключ: OpenClaw, скрипт…"
-                    aria-label="Имя ключа"
+                    placeholder={tr.settings.keyPlaceholder}
+                    aria-label={tr.settings.keyName}
                     onInput={(e) => setName((e.target as HTMLInputElement).value)}
                 />
                 <div class="flex flex-wrap gap-6">
@@ -388,7 +398,7 @@ function Keys({ catalog }: { catalog: AccessCatalog | null }) {
                     disabled={name.trim().length < 2 || !grants.length}
                     onClick={() => void create()}
                 >
-                    создать ключ
+                    {tr.settings.createKey}
                 </button>
             </div>
         </section>
@@ -396,40 +406,15 @@ function Keys({ catalog }: { catalog: AccessCatalog | null }) {
 }
 
 /** Подключение в «Истории изменений»: какое (поля и значения шлюз в историю не пишет). */
-const CONNECTOR_TITLES: Record<string, string> = {
+const connectorTitles = (): Record<string, string> => ({
     'home-assistant': 'Home Assistant',
     telegram: 'Telegram',
     livekit: 'LiveKit',
-    sip: 'телефония',
-    weather: 'погода',
-    news: 'новости',
-};
+    sip: tr.settings.connectorTelephony,
+    weather: tr.settings.connectorWeather,
+    news: tr.settings.connectorNews,
+});
 
-const ACTIONS: Record<string, string> = {
-    'mode.changed': 'режим',
-    'routes.changed': 'маршруты',
-    'voice.changed': 'голос',
-    'persona.changed': 'характер',
-    'settings.changed': 'настройка',
-    'model.installed': 'скачана модель',
-    'model.removed': 'удалена модель',
-    'model.server.restarted': 'перезапуск сервера',
-    'connector.changed': 'подключение',
-    'brain.changed': 'модели',
-    'mcp.changed': 'MCP-сервер',
-    'user.created': 'новый человек',
-    'user.updated': 'изменён человек',
-    'user.deleted': 'удалён человек',
-    'apiKey.created': 'новый ключ',
-    'apiKey.revoked': 'отозван ключ',
-    'auth.login': 'вход',
-    'auth.failed': 'неверный пароль',
-    'station.pending': 'новая колонка просится',
-    'station.updated': 'колонка',
-    'station.switched': 'голос колонки',
-    'station.firmware': 'прошивка колонки обновилась',
-    'safety.fired': 'страховка колонки',
-};
 
 /** Кто что менял — по кнопке: список длинный, а нужен редко. */
 function History() {
@@ -440,14 +425,14 @@ function History() {
             <section class="card glass card-list" aria-labelledby="history-h">
                 <div class="section-head">
                     <h2 id="history-h" class="t-title-xs m-0">
-                        История изменений
+                        {tr.settings.history}
                     </h2>
                     <button class="pill pill-off pill-btn" onClick={() => setOpen(true)}>
-                        открыть
+                        {tr.settings.openAction}
                     </button>
                 </div>
                 <p class="t-caption m-0">
-                    Кто что менял: настройки, люди, колонки и входы.
+                    {byMode(tr.settings.historyAbout, tr.settings.historyAboutComputer)}
                 </p>
             </section>
             {open && <HistorySheet onClose={() => setOpen(false)} />}
@@ -466,7 +451,7 @@ function HistorySheet({ onClose }: { onClose: () => void }) {
             .catch((e) => setError(problemOf(e)));
     }, []);
     return (
-        <Sheet title="История изменений" about="Кто что менял, новые сверху" icon={<span class="route-icon w-38 h-38 flex-none" aria-hidden="true"><IconJournal size={19} /></span>} onClose={onClose}>
+        <Sheet title={tr.settings.history} about={tr.settings.historySheetAbout} icon={<span class="route-icon w-38 h-38 flex-none" aria-hidden="true"><IconJournal size={19} /></span>} onClose={onClose}>
             {error && (
                 <p class="t-caption c-dot-offline m-0" role="alert">
                     {error}
@@ -474,12 +459,12 @@ function HistorySheet({ onClose }: { onClose: () => void }) {
             )}
             {!entries && !error && (
                 <p class="t-meta m-0">
-                    Спрашиваем шлюз…
+                    {tr.settings.askingGateway}
                 </p>
             )}
             {entries?.length === 0 && (
                 <p class="t-meta m-0">
-                    Пока ничего не меняли.
+                    {tr.settings.nothingChanged}
                 </p>
             )}
             {!!entries?.length && (
@@ -490,9 +475,9 @@ function HistorySheet({ onClose }: { onClose: () => void }) {
                             class="flex justify-between gap-12 py-8 px-0 bt-divider"
                         >
                             <span>
-                                <b>{ACTIONS[entry.action] ?? entry.action}</b>
+                                <b>{tr.settings.actions[entry.action] ?? entry.action}</b>
                                 {entry.action === 'connector.changed' && typeof entry.details.connector === 'string'
-                                    ? ` ${CONNECTOR_TITLES[entry.details.connector] ?? entry.details.connector}`
+                                    ? ` ${connectorTitles()[entry.details.connector] ?? entry.details.connector}`
                                     : ''}
                                 {entry.actor?.name ? ` · ${entry.actor.name}` : ''}
                             </span>
@@ -519,13 +504,13 @@ function Account({ onSignOut }: { onSignOut: () => void }) {
             if (session) sessionStore.set({ ...session, token });
             setCurrent('');
             setNext('');
-            setMessage({ ok: true, text: 'Пароль сменён: на других устройствах войдите заново.' });
+            setMessage({ ok: true, text: tr.settings.passwordChanged });
         } catch (e) {
             setMessage({ ok: false, text: problemOf(e) });
         }
     };
     const everywhere = async () => {
-        if (!(await ask({ title: 'Выйти на всех устройствах?', text: 'И на этом тоже.', ok: 'Выйти везде', danger: true }))) return;
+        if (!(await ask({ title: tr.settings.signOutEverywhereTitle, text: tr.settings.signOutEverywhereText, ok: tr.settings.signOutEverywhereOk, danger: true }))) return;
         try {
             await api.logoutEverywhere();
         } finally {
@@ -536,7 +521,7 @@ function Account({ onSignOut }: { onSignOut: () => void }) {
         <section class="card glass card-list" aria-labelledby="account-h">
             <div class="section-head">
                 <h2 id="account-h" class="t-title-xs m-0">
-                    Мой вход
+                    {tr.settings.myAccount}
                 </h2>
                 <span class="t-meta">{session?.name}</span>
             </div>
@@ -545,16 +530,16 @@ function Account({ onSignOut }: { onSignOut: () => void }) {
                     class="field flex-1 min-w-120"
                     type="password"
                     value={current}
-                    placeholder="Текущий пароль"
-                    aria-label="Текущий пароль"
+                    placeholder={tr.settings.currentPassword}
+                    aria-label={tr.settings.currentPassword}
                     onInput={(e) => setCurrent((e.target as HTMLInputElement).value)}
                 />
                 <input
                     class="field flex-1 min-w-120"
                     type="password"
                     value={next}
-                    placeholder="Новый, от 8 символов"
-                    aria-label="Новый пароль"
+                    placeholder={tr.settings.newPasswordPlaceholder}
+                    aria-label={tr.settings.newPassword}
                     onInput={(e) => setNext((e.target as HTMLInputElement).value)}
                 />
                 <button
@@ -562,7 +547,7 @@ function Account({ onSignOut }: { onSignOut: () => void }) {
                     disabled={!current || next.length < 8}
                     onClick={() => void change()}
                 >
-                    сменить
+                    {tr.settings.changeAction}
                 </button>
             </div>
             {message && (
@@ -575,10 +560,10 @@ function Account({ onSignOut }: { onSignOut: () => void }) {
             )}
             <div class="flex gap-8 flex-wrap mt-10">
                 <button class="pill pill-off pill-btn" onClick={onSignOut}>
-                    выйти
+                    {tr.settings.signOut}
                 </button>
                 <button class="pill pill-off pill-btn" onClick={() => void everywhere()}>
-                    выйти везде
+                    {tr.settings.signOutEverywhere}
                 </button>
             </div>
         </section>

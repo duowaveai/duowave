@@ -1,6 +1,6 @@
 [package]
 name = "duowave-desktop"
-version = "0.7.1"
+version = "0.8.0"
 description = "The voice gateway in the tray: runs the gateway (the Rust engine, crate duowave, inside the app) and shows its panel"
 edition = "2021"
 publish = false
@@ -28,6 +28,8 @@ serde_json = "1"
 # Where the app keeps its data, known before Tauri starts (the same folder as Tauri's app_data_dir).
 dirs = "7"
 tauri-plugin-notification = "2"
+# «Подключить папку…»: the system's window to pick a folder for the home folder's «Подключено».
+tauri-plugin-dialog = "2"
 
 [dev-dependencies]
 tempfile = "3"

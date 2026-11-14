@@ -8,9 +8,11 @@
 <h1 align="center">DuoWave</h1>
 
 <p align="center">
-  <b>Ваша колонка. Любой ИИ.</b><br>
-  Открытый голосовой шлюз для Яндекс Станции: своя модель, свой голос, свои навыки —<br>
-  и вы сами решаете, что уходит в облако, что Яндексу, а что остаётся дома.
+  DuoWave — бесплатный открытый голосовой помощник: одна маленькая программа между вашими вещами и любым ИИ. Скажите, что нужно, — он соберёт приложение, возьмёт на себя рутину и долгие задачи в фоне, а когда закончит — скажет.
+</p>
+
+<p align="center">
+  DuoWave is a free, open-source AI assistant: one small program between your things and any AI. Say what you need — it builds small apps, automates your routine and takes on long tasks in the background, then tells you when they're done.
 </p>
 
 <p align="center">

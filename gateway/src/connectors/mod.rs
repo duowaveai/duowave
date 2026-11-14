@@ -188,18 +188,18 @@ impl crate::core::connectors::ContributedTools for ConnectorsService {
 
 fn mcp_view(server: McpServerState) -> ConnectorView {
     let status = match server.state {
-        McpState::Ready => ConnectorStatus::ready(format!("инструментов включено: {}", server.tools)),
-        McpState::Off => ConnectorStatus::off("выключен"),
-        McpState::Connecting => ConnectorStatus::configured(Some("подключается".into())),
-        McpState::Login => ConnectorStatus::error("нужно войти"),
-        McpState::Error => ConnectorStatus::error(server.detail.unwrap_or_else(|| "не отвечает".into())),
+        McpState::Ready => ConnectorStatus::ready(crate::tr!("инструментов включено: {count}", count = server.tools)),
+        McpState::Off => ConnectorStatus::off(crate::tr!("выключен")),
+        McpState::Connecting => ConnectorStatus::configured(Some(crate::tr!("подключается"))),
+        McpState::Login => ConnectorStatus::error(crate::tr!("нужно войти")),
+        McpState::Error => ConnectorStatus::error(server.detail.unwrap_or_else(|| crate::tr!("не отвечает"))),
     };
     ConnectorView {
         manifest: ConnectorManifest {
             id: format!("mcp:{}", server.id),
             kind: ConnectorKind::Mcp,
             title: server.title,
-            description: "MCP-сервер: инструменты для модели".into(),
+            description: crate::tr!("MCP-сервер: инструменты для модели"),
             cloud: server.cloud,
             env: Vec::new(),
             capabilities: None,
@@ -249,6 +249,9 @@ pub mod builtin {
     impl Connector for Builtin {
         fn manifest(&self) -> ConnectorManifest {
             let mut manifest = self.manifest.clone();
+            // The built-ins keep their words in the source language; they are told in the reader's now.
+            manifest.title = crate::core::tx_dyn(&manifest.title);
+            manifest.description = crate::core::tx_dyn(&manifest.description);
             if let Some(cloud) = &self.cloud {
                 manifest.cloud = cloud();
             }
@@ -315,12 +318,12 @@ pub mod builtin {
             let asr = asr.clone();
             async move {
                 if !asr.enabled {
-                    return ConnectorStatus::off("своё распознавание не используется");
+                    return ConnectorStatus::off(crate::tr!("своё распознавание не используется"));
                 }
                 if probe(&asr.base_url).await {
                     ConnectorStatus::ready(asr.base_url.clone())
                 } else {
-                    ConnectorStatus::error(format!("{} не отвечает", asr.base_url))
+                    ConnectorStatus::error(crate::tr!("{url} не отвечает", url = asr.base_url))
                 }
             }
             .boxed()
@@ -412,18 +415,18 @@ pub mod builtin {
         let status: StatusFn = Arc::new(move || {
             let mode = modes.current();
             let status = if mode == PanelMode::Own {
-                ConnectorStatus::off("режим «Своё»: без Яндекса")
+                ConnectorStatus::off(crate::tr!("режим «Своё»: без Яндекса"))
             } else if mode == PanelMode::Relay {
                 let state = if sessions.open() > 0 {
                     crate::core::connectors::ConnectorState::Ready
                 } else {
                     crate::core::connectors::ConnectorState::Configured
                 };
-                ConnectorStatus::new(state, Some("колонка говорит с Яндексом сама".into()))
+                ConnectorStatus::new(state, Some(crate::tr!("колонка говорит с Яндексом сама")))
             } else if sessions.yandex_connected() {
-                ConnectorStatus::ready("сессия открыта")
+                ConnectorStatus::ready(crate::tr!("сессия открыта"))
             } else {
-                ConnectorStatus::configured(Some("сессия откроется с колонкой".into()))
+                ConnectorStatus::configured(Some(crate::tr!("сессия откроется с колонкой")))
             };
             futures::future::ready(status).boxed()
         });
@@ -460,7 +463,7 @@ pub mod builtin {
             let status = if checked.enabled() {
                 ConnectorStatus::configured(Some(checked.description()))
             } else {
-                ConnectorStatus::unset("модель не выбрана")
+                ConnectorStatus::unset(crate::tr!("модель не выбрана"))
             };
             futures::future::ready(status).boxed()
         });
@@ -495,12 +498,12 @@ pub mod builtin {
             let (url, voice, modes) = (url.clone(), voice.clone(), modes.clone());
             async move {
                 let Some(url) = url else {
-                    return ConnectorStatus::unset("свой голосовой сервер не задан");
+                    return ConnectorStatus::unset(crate::tr!("свой голосовой сервер не задан"));
                 };
                 if probe(&url).await {
                     ConnectorStatus::ready(voice.describe(modes.current() != PanelMode::Own))
                 } else {
-                    ConnectorStatus::error(format!("{url} не отвечает"))
+                    ConnectorStatus::error(crate::tr!("{url} не отвечает", url = url))
                 }
             }
             .boxed()
@@ -529,7 +532,7 @@ pub fn routes() -> Router<Arc<App>> {
 #[derive(Debug, Serialize)]
 struct Kind {
     id: ConnectorKind,
-    title: &'static str,
+    title: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -543,7 +546,7 @@ async fn list(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Connecto
     caller.permitted(CONNECTORS_VIEW)?;
     Ok(ok(Connectors {
         connectors: app.connectors.views().await,
-        kinds: CONNECTOR_KINDS.iter().map(|(id, title)| Kind { id: *id, title }).collect(),
+        kinds: CONNECTOR_KINDS.iter().map(|(id, title)| Kind { id: *id, title: crate::core::tx(title) }).collect(),
     }))
 }
 

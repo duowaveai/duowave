@@ -161,24 +161,30 @@ pub fn compose(prompt: &str, tones: &[Tone], positions: &BTreeMap<String, usize>
 /// bigger than `max`.
 fn asset(assets: &Path, value: Option<&Value>, what: &str, kinds: &[&str], max: u64) -> Result<String, String> {
     let path = value.and_then(Value::as_str).map(str::trim).filter(|path| !path.is_empty());
-    let path = path.ok_or_else(|| format!("{what}: путь к файлу в assets/"))?;
+    let path = path.ok_or_else(|| crate::tr!("{what}: путь к файлу в assets/", what = what))?;
     let parts: Vec<Component> = Path::new(path).components().collect();
     let inside =
         parts.iter().all(|part| matches!(part, Component::Normal(name) if !name.to_string_lossy().starts_with('.')));
     if !inside || path.contains('\\') {
-        return Err(format!("{what}: «{path}» — путь внутри assets/, без «..»"));
+        return Err(crate::tr!("{what}: «{path}» — путь внутри assets/, без «..»", what = what, path = path));
     }
     let extension = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     if !kinds.contains(&extension.as_str()) {
-        return Err(format!("{what}: «{path}» — нужен файл {}", kinds.join(", ")));
+        return Err(crate::tr!(
+            "{what}: «{path}» — нужен файл {kinds}",
+            what = what,
+            path = path,
+            kinds = kinds.join(", ")
+        ));
     }
     let file = assets.join(path);
-    let meta = std::fs::symlink_metadata(&file).map_err(|_| format!("{what}: нет файла «{path}» в assets/"))?;
+    let meta = std::fs::symlink_metadata(&file)
+        .map_err(|_| crate::tr!("{what}: нет файла «{path}» в assets/", what = what, path = path))?;
     if !meta.is_file() {
-        return Err(format!("{what}: «{path}» — не файл"));
+        return Err(crate::tr!("{what}: «{path}» — не файл", what = what, path = path));
     }
     if meta.len() > max {
-        return Err(format!("{what}: «{path}» больше {} КБ", max / 1024));
+        return Err(crate::tr!("{what}: «{path}» больше {size} КБ", what = what, path = path, size = max / 1024));
     }
     Ok(path.to_string())
 }
@@ -195,22 +201,22 @@ fn tone_id(id: &str) -> bool {
 fn tones(value: Option<&Value>, problems: &mut Vec<String>) -> Vec<Tone> {
     let Some(value) = value else { return Vec::new() };
     let Some(items) = value.as_array() else {
-        problems.push("tones: список регуляторов".into());
+        problems.push(crate::tr!("tones: список регуляторов"));
         return Vec::new();
     };
     if items.len() > MAX_TONES {
-        problems.push(format!("tones: не больше {MAX_TONES}"));
+        problems.push(crate::tr!("tones: не больше {max}", max = MAX_TONES));
     }
     let mut found: Vec<Tone> = Vec::new();
     for (index, item) in items.iter().enumerate().take(MAX_TONES) {
         let at = format!("tones[{index}]");
         let id = text(item, "id").unwrap_or_default();
         if !tone_id(&id) {
-            problems.push(format!("{at}: id — строчные латинские буквы, цифры и «-»"));
+            problems.push(crate::tr!("{at}: id — строчные латинские буквы, цифры и «-»", at = at));
             continue;
         }
         if found.iter().any(|tone| tone.id == id) {
-            problems.push(format!("{at}: id «{id}» дважды"));
+            problems.push(crate::tr!("{at}: id «{id}» дважды", at = at, id = id));
             continue;
         }
         let title: String = text(item, "title").unwrap_or_else(|| id.clone()).chars().take(40).collect();
@@ -223,16 +229,16 @@ fn tones(value: Option<&Value>, problems: &mut Vec<String>) -> Vec<Tone> {
                 })
                 .collect(),
             _ => {
-                problems.push(format!("{at}: options — от 2 до {MAX_OPTIONS} положений"));
+                problems.push(crate::tr!("{at}: options — от 2 до {max} положений", at = at, max = MAX_OPTIONS));
                 continue;
             }
         };
         if options.iter().any(|option| option.label.is_empty()) {
-            problems.push(format!("{at}: у каждого положения нужна label"));
+            problems.push(crate::tr!("{at}: у каждого положения нужна label", at = at));
             continue;
         }
         if options.iter().any(|option| option.line.chars().count() > MAX_LINE) {
-            problems.push(format!("{at}: строка положения — до {MAX_LINE} знаков"));
+            problems.push(crate::tr!("{at}: строка положения — до {max} знаков", at = at, max = MAX_LINE));
             continue;
         }
         let default = match item.get("default") {
@@ -240,7 +246,11 @@ fn tones(value: Option<&Value>, problems: &mut Vec<String>) -> Vec<Tone> {
             Some(position) => match position.as_u64().map(|position| position as usize) {
                 Some(position) if position < options.len() => position,
                 _ => {
-                    problems.push(format!("{at}: default — номер положения от 0 до {}", options.len() - 1));
+                    problems.push(crate::tr!(
+                        "{at}: default — номер положения от 0 до {last}",
+                        at = at,
+                        last = options.len() - 1
+                    ));
                     continue;
                 }
             },
@@ -266,16 +276,16 @@ fn character(package: &Package, value: &Value, index: usize) -> Result<Character
     };
     let mut problems = Vec::new();
     if local.is_none() {
-        problems.push("id: строчные латинские буквы, цифры и «-», с буквы".into());
+        problems.push(crate::tr!("id: строчные латинские буквы, цифры и «-», с буквы"));
     }
     let description = text(value, "description")
         .or_else(|| manifest.description.clone())
         .map(|description| description.chars().take(500).collect());
     let prompt = text(value, "prompt").unwrap_or_default();
     if prompt.is_empty() {
-        problems.push("нет prompt".into());
+        problems.push(crate::tr!("нет prompt"));
     } else if prompt.chars().count() > MAX_PROMPT {
-        problems.push(format!("prompt: до {MAX_PROMPT} знаков"));
+        problems.push(crate::tr!("prompt: до {max} знаков", max = MAX_PROMPT));
     }
     let gender = match text(value, "gender").as_deref() {
         None => None,
@@ -283,7 +293,7 @@ fn character(package: &Package, value: &Value, index: usize) -> Result<Character
         Some("female") => Some(Gender::Female),
         Some("any" | "neutral") => Some(Gender::Any),
         Some(other) => {
-            problems.push(format!("gender «{other}»: male, female или any"));
+            problems.push(crate::tr!("gender «{other}»: male, female или any", other = other));
             None
         }
     };
@@ -294,7 +304,7 @@ fn character(package: &Package, value: &Value, index: usize) -> Result<Character
         })
     };
     if color.as_deref().is_some_and(|color| !hex(color)) {
-        problems.push("color: цвет вида #7A8CA5".into());
+        problems.push(crate::tr!("color: цвет вида #7A8CA5"));
     }
     let avatar = match value.get("avatar") {
         None => None,
@@ -323,13 +333,13 @@ fn character(package: &Package, value: &Value, index: usize) -> Result<Character
                 }
             }
         }
-        Some(_) => problems.push(format!("samples: не больше {MAX_SAMPLES} фраз")),
+        Some(_) => problems.push(crate::tr!("samples: не больше {max} фраз", max = MAX_SAMPLES)),
     }
     let fallback_voice = text(value, "fallbackVoice");
     if fallback_voice.as_deref().is_some_and(|voice| {
         voice.len() > 100 || !voice.chars().all(|c| c.is_ascii_alphanumeric() || "-_./:".contains(c))
     }) {
-        problems.push("fallbackVoice: id карточки голоса, например piper-denis".into());
+        problems.push(crate::tr!("fallbackVoice: id карточки голоса, например piper-denis"));
     }
     let mut voices = BTreeMap::new();
     let mut skipped = Vec::new();
@@ -349,7 +359,7 @@ fn character(package: &Package, value: &Value, index: usize) -> Result<Character
                 }
             }
         }
-        Some(_) => problems.push("voices: снимки по id модели".into()),
+        Some(_) => problems.push(crate::tr!("voices: снимки по id модели")),
     }
     let reference = match value.get("ref") {
         None => None,
@@ -362,7 +372,7 @@ fn character(package: &Package, value: &Value, index: usize) -> Result<Character
                     None
                 }
                 (Ok(_), None) => {
-                    problems.push("ref: нужен text — слова образца".into());
+                    problems.push(crate::tr!("ref: нужен text — слова образца"));
                     None
                 }
             }
@@ -374,10 +384,12 @@ fn character(package: &Package, value: &Value, index: usize) -> Result<Character
         // `unknown`: no one checked whose it is — only from an own source or by hand (docs/plans/custom-feeds.md); the
         // panel says so beside the character.
         Some("synthetic" | "consent" | "unknown") => {}
-        Some(other) => problems.push(format!("voiceOrigin «{other}»: synthetic, consent или unknown")),
+        Some(other) => {
+            problems.push(crate::tr!("voiceOrigin «{other}»: synthetic, consent или unknown", other = other))
+        }
         // A voice of someone who never agreed is not taken: whose it is must be said.
         None if speaks => {
-            problems.push("voiceOrigin: synthetic (голос по описанию) или consent (диктор с согласием)".into())
+            problems.push(crate::tr!("voiceOrigin: synthetic (голос по описанию) или consent (диктор с согласием)"))
         }
         None => {}
     }
@@ -413,7 +425,7 @@ pub fn read(package: &Package) -> Vec<Result<Character, Rejected>> {
     if manifest.kind != PackageKind::Character {
         return Vec::new();
     }
-    let whole = |problem: &str| {
+    let whole = |problem: String| {
         vec![Err(Rejected {
             id: manifest.id.clone(),
             package: manifest.id.clone(),
@@ -423,10 +435,10 @@ pub fn read(package: &Package) -> Vec<Result<Character, Rejected>> {
         })]
     };
     let Some(list) = manifest.contributes.characters.as_ref() else {
-        return whole("нет contributes.characters");
+        return whole(crate::tr!("нет contributes.characters"));
     };
     let Some(items) = list.as_array().filter(|items| !items.is_empty()) else {
-        return whole("contributes.characters: непустой список персонажей");
+        return whole(crate::tr!("contributes.characters: непустой список персонажей"));
     };
     let mut found: Vec<Result<Character, Rejected>> = Vec::new();
     for (index, item) in items.iter().enumerate() {
@@ -437,7 +449,7 @@ pub fn read(package: &Package) -> Vec<Result<Character, Rejected>> {
                 package: manifest.id.clone(),
                 version: manifest.version.to_string(),
                 title: manifest.title.clone(),
-                problem: format!("не больше {MAX_CHARACTERS} персонажей в пакете"),
+                problem: crate::tr!("не больше {max} персонажей в пакете", max = MAX_CHARACTERS),
             })
         } else {
             character(package, item, index)
@@ -456,7 +468,7 @@ pub fn read(package: &Package) -> Vec<Result<Character, Rejected>> {
                 package: manifest.id.clone(),
                 version: manifest.version.to_string(),
                 title: manifest.title.clone(),
-                problem: format!("персонаж «{id}» дважды"),
+                problem: crate::tr!("персонаж «{id}» дважды", id = id),
             });
         }
         found.push(checked);

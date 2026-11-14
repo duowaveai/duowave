@@ -63,6 +63,7 @@ html[data-theme='dark'] .app-card {
 
 .app-card-picture { display: flex; flex-direction: column; gap: 4px; }
 .app-card-picture img { width: 100%; max-height: 240px; object-fit: cover; border-radius: 12px; }
+.app-card-picture-missing { display: flex; align-items: center; justify-content: center; min-height: 96px; padding: 12px; border: 1px dashed var(--track, rgba(127, 127, 127, 0.35)); border-radius: 12px; text-align: center; }
 
 .app-card-clocks { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 8px; }
 .app-card-clock b { display: block; font-size: 22px; line-height: 28px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--text); }
@@ -101,3 +102,73 @@ html[data-theme='dark'] .app-card {
 .app-card-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .app-card-toggle { display: flex; align-items: center; gap: 12px; }
 .app-card-toggle span { flex: 1; font-size: 14px; line-height: 20px; color: var(--text); }
+
+/* Вид карточки (look.tsx, scenes.ts): градиент, фото и живая сцена за содержимым — на весь виджет вместе с шапкой
+   (.widget-painted) или на свою коробку, где рамки нет (.app-card-painted). Слои обрезаются сами: метка «новый»
+   над рамкой остаётся видна. */
+.look-layers { position: absolute; inset: 0; z-index: 0; overflow: hidden; border-radius: inherit; pointer-events: none; }
+.look-picture { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.look-scene { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+.look-shade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0) 38%, rgba(0, 0, 0, 0.16)); }
+.look-picture ~ .look-shade { background: linear-gradient(180deg, rgba(0, 0, 0, 0.32), rgba(0, 0, 0, 0.12) 45%, rgba(0, 0, 0, 0.42)); }
+.look-shade[data-ink='dark'] { background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0) 45%); }
+
+.widget-painted { border-color: transparent; isolation: isolate; box-shadow: 0 10px 28px rgba(20, 28, 60, 0.2); }
+.widget-painted > .widget-head,
+.widget-painted > .widget-body { position: relative; z-index: 1; }
+.app-card-painted { position: relative; isolation: isolate; overflow: hidden; border-radius: 16px; padding: 12px 14px; }
+.app-card-painted > .app-card-painted-body { position: relative; z-index: 1; }
+
+/* Светлый текст на цветном фоне: свои значения токенов только для содержимого и шапки — меню «…» остаётся как было. */
+.widget-painted.look-ink-light > .widget-head { color: #fff; }
+.widget-painted.look-ink-light > .widget-head .widget-title { text-shadow: 0 1px 10px rgba(0, 0, 0, 0.25); }
+.widget-painted.look-ink-light > .widget-head .widget-src { color: rgba(255, 255, 255, 0.78); }
+.widget-painted.look-ink-light > .widget-head .widget-more { color: rgba(255, 255, 255, 0.85); }
+.widget-painted.look-ink-light > .widget-head .widget-more:hover { background: rgba(255, 255, 255, 0.18); color: #fff; }
+.widget-painted.look-ink-dark > .widget-head { color: #10131a; }
+.widget-painted.look-ink-dark > .widget-head .widget-src,
+.widget-painted.look-ink-dark > .widget-head .widget-more { color: rgba(16, 19, 26, 0.65); }
+
+.widget-painted.look-ink-light > .widget-body,
+.app-card-painted.look-ink-light > .app-card-painted-body,
+.look-ink-light .app-card {
+    --text: #ffffff;
+    --sub: rgba(255, 255, 255, 0.8);
+    --card-line: rgba(255, 255, 255, 0.95);
+    --card-area: rgba(255, 255, 255, 0.2);
+    --card-up: #dcffc6;
+    --card-down: #ffd9d2;
+    --tone-bg: rgba(255, 255, 255, 0.16);
+    --divider: rgba(255, 255, 255, 0.22);
+    --track: rgba(255, 255, 255, 0.28);
+    --bar-off: rgba(255, 255, 255, 0.45);
+    --pill-off-bg: rgba(255, 255, 255, 0.2);
+    --pill-off-fg: #ffffff;
+    --pill-own-bg: #ffffff;
+    --pill-own-fg: #10131a;
+    --accent: #ffffff;
+    color: #fff;
+}
+.widget-painted.look-ink-dark > .widget-body,
+.app-card-painted.look-ink-dark > .app-card-painted-body,
+.look-ink-dark .app-card {
+    --text: #10131a;
+    --sub: rgba(16, 19, 26, 0.68);
+    --card-line: rgba(16, 19, 26, 0.85);
+    --card-area: rgba(16, 19, 26, 0.12);
+    --card-up: #1d5c12;
+    --card-down: #a11c12;
+    --tone-bg: rgba(255, 255, 255, 0.45);
+    --divider: rgba(16, 19, 26, 0.14);
+    --track: rgba(16, 19, 26, 0.18);
+    --pill-off-bg: rgba(255, 255, 255, 0.55);
+    --pill-off-fg: #10131a;
+    color: #10131a;
+}
+.look-ink-light .app-card-big { font-size: 40px; line-height: 46px; text-shadow: 0 2px 18px rgba(0, 0, 0, 0.22); }
+.look-ink-light .app-card-tile,
+.look-ink-dark .app-card-tile { backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.look-ink-light .app-card .field { background: rgba(255, 255, 255, 0.18); border-color: rgba(255, 255, 255, 0.32); color: #fff; }
+.look-ink-light .app-card .field::placeholder { color: rgba(255, 255, 255, 0.72); }
+.look-ink-light .app-card-row .mark[data-mark='warn'] { background: #ffd166; }
+.look-ink-light .app-card .pill-off { backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }

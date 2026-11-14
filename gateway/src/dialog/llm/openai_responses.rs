@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use super::describe_http_error as describe;
 use super::llm_client::{
     describe_models, AssistantTurn, LlmClient, LlmEvent, LlmMessage, LlmRequest, LlmSettings, LlmStream, LlmUsage,
-    SpokenFailure, ToolCall, ToolChoice,
+    SpokenFailure, ToolCall, ToolCallCut, ToolChoice,
 };
 use super::openai_chat::{aborted, head, parse_arguments, request_headers, starts_with_error, OPENAI_BASE_URL};
 use super::sse::{Lines, SseDecoder};
@@ -223,6 +223,8 @@ async fn run(
     let mut decoder = SseDecoder::default();
     let mut text = String::new();
     let mut calls: Vec<ToolCall> = Vec::new();
+    // Calls begun and not yet done: their item, name and arguments so far (an answer the limit cut names them).
+    let mut begun: Vec<(String, String, String)> = Vec::new();
     let mut usage = None;
     let mut ended = false;
     let mut done = false;
@@ -255,10 +257,25 @@ async fn run(
                         y.send(Ok(LlmEvent::Text(delta.to_string()))).await;
                     }
                 }
+                "response.output_item.added" => {
+                    let item = &data["item"];
+                    if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                        let field = |name: &str| item.get(name).and_then(Value::as_str).unwrap_or_default();
+                        begun.push((field("id").to_string(), field("name").to_string(), String::new()));
+                    }
+                }
+                "response.function_call_arguments.delta" => {
+                    let item = data.get("item_id").and_then(Value::as_str).unwrap_or_default();
+                    let delta = data.get("delta").and_then(Value::as_str).unwrap_or_default();
+                    if let Some((_, _, arguments)) = begun.iter_mut().find(|(id, _, _)| id == item) {
+                        arguments.push_str(delta);
+                    }
+                }
                 "response.output_item.done" => {
                     let item = &data["item"];
                     if item.get("type").and_then(Value::as_str) == Some("function_call") {
                         let field = |name: &str| item.get(name).and_then(Value::as_str).unwrap_or_default();
+                        begun.retain(|(id, _, _)| id != field("id"));
                         let id = Some(field("call_id")).filter(|id| !id.is_empty()).unwrap_or(field("id"));
                         let (input, error) = parse_arguments(field("arguments"));
                         calls.push(ToolCall { id: id.to_string(), name: field("name").to_string(), input, error });
@@ -271,6 +288,10 @@ async fn run(
                 "response.incomplete" => {
                     let reason = data.pointer("/response/incomplete_details/reason").and_then(Value::as_str);
                     tracing::warn!(target: "dialog", "ChatGPT ended the answer early: {}", reason.unwrap_or("no reason"));
+                    // The limit cut a call short: it is not run.
+                    if let (Some("max_output_tokens"), Some((_, name, arguments))) = (reason, begun.last()) {
+                        return Err(anyhow::Error::new(ToolCallCut::new("the model", name, arguments)));
+                    }
                     done = true;
                 }
                 "response.failed" => {
@@ -398,6 +419,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_call_the_plans_limit_cut_short_is_not_run_and_says_its_file() {
+        let (stub, url) = stub().await;
+        *stub.events.lock().unwrap() = vec![
+            json!({"type": "response.output_item.added", "item": {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "write_file", "arguments": ""}}),
+            json!({"type": "response.function_call_arguments.delta", "item_id": "fc_1", "delta": "{\"path\": \"panel.js\", "}),
+            json!({"type": "response.function_call_arguments.delta", "item_id": "fc_1", "delta": "\"content\": \"export"}),
+            json!({"type": "response.incomplete", "response": {"incomplete_details": {"reason": "max_output_tokens"}}}),
+        ];
+        let llm = OpenAiResponsesLlm::new(settings(&url, Arc::new(Signed::default())));
+        let request = LlmRequest { system: "s".into(), tools: vec![tool()], ..LlmRequest::default() };
+        let error = events(&llm, request).await.unwrap_err();
+        let cut = error.downcast_ref::<ToolCallCut>().expect("a typed cut");
+        assert_eq!((cut.tool.as_str(), cut.path.as_deref()), ("write_file", Some("panel.js")));
+    }
+
+    #[tokio::test]
     async fn asks_by_the_plans_rules_and_streams_the_text_then_the_namespaced_call() {
         let (stub, url) = stub().await;
         *stub.events.lock().unwrap() = vec![
@@ -436,6 +473,7 @@ mod tests {
             model: Some("gpt-plan-mini".into()),
             tools: vec![tool()],
             tool_choice: ToolChoice::Auto,
+            max_tokens: None,
         };
         let got = events(&llm, request).await.unwrap();
         assert_eq!(got[0], LlmEvent::Text("Сейчас ".into()));

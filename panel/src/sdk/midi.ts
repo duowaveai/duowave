@@ -14,6 +14,7 @@ import * as hooks from 'preact/hooks';
 
 import { api } from '../api';
 import { available, whyNot } from '../availability';
+import { tr } from '../i18n';
 import { PluginScope } from '../plugins/versions';
 import { DraftPreview } from './index';
 import type { MidiSong } from './notes';
@@ -83,8 +84,8 @@ function browserPossible(): boolean {
 /** Почему через браузер нельзя — словами. */
 function browserWhy(): string {
     if (!('requestMIDIAccess' in navigator))
-        return 'В этом окне MIDI в браузере нет (приложение DuoWave, Safari): клавиатуру слышит шлюз на компьютере.';
-    return 'На странице по адресу дома (http) браузер MIDI не даёт: откройте пульт на компьютере с клавиатурой.';
+        return tr.sdk.noBrowserMidi;
+    return tr.sdk.httpNoMidi;
 }
 
 /** Сообщение MIDI байтами — событие; не канальное (SysEx, такт) — ничего. */
@@ -226,7 +227,7 @@ export class Channel {
         if (example) {
             this.state = 'example';
             this.via = 'example';
-            this.why = 'Пример: клавиатура на экране. Своя клавиатура подключится после «да».';
+            this.why = tr.sdk.exampleKeyboard;
         }
     }
 
@@ -293,8 +294,8 @@ export class Channel {
             this.via = 'gateway';
             this.state = browserPossible() ? 'browser' : 'off';
             this.why = browserPossible()
-                ? 'У шлюза клавиатуры нет. Клавиатура у этого устройства? Подключите её через браузер.'
-                : `${whyNot('plugins.midi') ?? 'У шлюза клавиатуры нет.'} ${browserWhy()}`;
+                ? tr.sdk.gatewayNoKeyboardBrowser
+                : `${whyNot('plugins.midi') ?? tr.sdk.gatewayNoKeyboard} ${browserWhy()}`;
             this.changed();
             return;
         }
@@ -407,8 +408,8 @@ export class Channel {
         } else {
             this.state = 'nodevice';
             this.why = browserPossible()
-                ? 'Подключите клавиатуру к компьютеру с DuoWave (USB). Клавиатура у этого устройства? Подключите через браузер.'
-                : 'Подключите клавиатуру к компьютеру с DuoWave (USB).';
+                ? tr.sdk.plugKeyboardBrowser
+                : tr.sdk.plugKeyboard;
         }
         this.changed();
     }
@@ -496,7 +497,7 @@ export class Channel {
             this.access = await navigator.requestMIDIAccess({ sysex: false });
         } catch {
             this.state = 'off';
-            this.why = 'Браузер не разрешил MIDI: разрешение — в настройках сайта (значок замка в адресной строке).';
+            this.why = tr.sdk.midiDenied;
             this.changed();
             return;
         }
@@ -513,7 +514,7 @@ export class Channel {
         this.input = this.inputs.find((port) => port.id === this.input?.id) ?? this.inputs[0] ?? null;
         this.output = this.outputs.find((port) => port.name === this.input?.name) ?? this.outputs[0] ?? null;
         this.state = this.input ? 'ready' : 'nodevice';
-        this.why = this.input ? null : 'Браузер не видит клавиатуру: подключите её к этому устройству.';
+        this.why = this.input ? null : tr.sdk.browserNoKeyboard;
         this.bindBrowser();
         this.changed();
     }
@@ -615,6 +616,6 @@ export type { MidiSong, MidiTrack } from './notes';
 
 /** Файл `.mid` — дорожки с мелодиями (читает шлюз, файл нигде не хранится). Ошибка — словами. */
 export async function readMidiFile(file: Blob): Promise<MidiSong> {
-    if (file.size > 256 * 1024) throw new Error('Файл больше 256 КБ — это не простая мелодия.');
+    if (file.size > 256 * 1024) throw new Error(tr.sdk.midiTooBig);
     return api.midiRead(file);
 }

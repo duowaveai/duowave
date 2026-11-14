@@ -81,7 +81,7 @@ async fn pause(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Pau
         Some("hour") => PauseSpan::Hour,
         Some("morning") | None => PauseSpan::Morning,
         Some("manual") => PauseSpan::UntilResumed,
-        Some(other) => return Err(ApiError::bad_request(format!("Нет такой паузы: {other}."))),
+        Some(other) => return Err(ApiError::bad_request(crate::tr!("Нет такой паузы: {name}.", name = other))),
     };
     let (state, _) = app.memory.pause(span, body.timezone.as_deref(), caller.actor())?;
     Ok(ok(state))
@@ -108,9 +108,8 @@ async fn add_entity(State(app): State<Arc<App>>, caller: Caller, Body(body): Bod
     let principal = caller.permitted(MEMORY_MANAGE)?;
     let kind = match body.kind.as_deref() {
         None => EntityKind::Person,
-        Some(kind) => {
-            EntityKind::parse(kind).ok_or_else(|| ApiError::bad_request(format!("Нет такого вида: {kind}.")))?
-        }
+        Some(kind) => EntityKind::parse(kind)
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("Нет такого вида: {kind}.", kind = kind)))?,
     };
     Ok(created(app.memory.add_entity(kind, &body.name, principal)?))
 }

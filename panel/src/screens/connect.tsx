@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 
 import { ConnectJob, ConnectStepId, FoundStation, StationCheck, api, can, problemOf } from '../api';
 import { IconCheck } from '../icons';
+import { tr } from '../i18n';
 import { drawingOf } from '../stations';
 import { confetti } from '../ui/confetti';
 import { DuoWaveMark } from '../ui/duowave';
@@ -16,19 +17,19 @@ import { CharactersTab } from './characters';
 const WIKI_ROOT = 'https://hackalice.me/start/';
 const WIKI_SSH = 'https://hackalice.me/start/ssh/';
 
-const STEP_LABELS: Record<ConnectStepId, string> = {
-    copy: 'Путь назад: старые адреса — в шлюзе, restore.sh — на колонке',
-    write: 'Копия quasar.cfg с адресом шлюза — поверх файла прошивки',
-    verify: 'Проверка: колонка читает копию',
-    reboot: 'Перезагрузка колонки',
-    arrive: 'Колонка выходит на связь со шлюзом',
-};
+const stepLabels = (): Record<ConnectStepId, string> => ({
+    copy: tr.connect.stepCopy,
+    write: tr.connect.stepWrite,
+    verify: tr.connect.stepVerify,
+    reboot: tr.connect.stepReboot,
+    arrive: tr.connect.stepArrive,
+});
 
-const RESTORE_LABELS: Partial<Record<ConnectStepId, string>> = {
-    write: 'Прежние адреса голосового сервера',
-    verify: 'Проверка: колонка читает то, что задумано',
-    reboot: 'Перезагрузка колонки',
-};
+const restoreLabels = (): Partial<Record<ConnectStepId, string>> => ({
+    write: tr.connect.restoreWrite,
+    verify: tr.connect.restoreVerify,
+    reboot: tr.connect.restoreReboot,
+});
 
 /** Адрес шлюза, каким его видит колонка: адрес страницы, если он домашний; иначе его вводят. */
 export function suggestedGateway(): string {
@@ -41,24 +42,24 @@ export function suggestedGateway(): string {
 function problemText(problem: string | undefined): string {
     switch (problem) {
         case 'no-ssh':
-            return 'SSH на колонке не отвечает (порт 2222). Сначала root и SSH по вики hackalice — шаг 2.';
+            return tr.connect.problemNoSsh;
         case 'no-config':
-            return 'На колонке нет quasar.cfg там, где его ждёт шлюз: эту модель он пока не знает.';
+            return tr.connect.problemNoConfig;
         case 'host-key-changed':
-            return 'Ключ SSH у колонки не тот, что был: это другая колонка по тому же адресу или её перепрошили. Шлюз остановился, ничего не меняя.';
+            return tr.connect.problemHostKeyChanged;
         case 'auth-failed':
-            return 'Колонка не пустила по SSH: шлюз входит как root без пароля, как открывает вики.';
+            return tr.connect.problemAuthFailed;
         case 'unreachable':
-            return 'Колонка не отвечает по этому адресу: та же сеть? Не гостевая? Нет изоляции клиентов в роутере?';
+            return tr.connect.problemUnreachable;
         case 'no-arrival':
-            return 'Колонка не пришла на шлюз за 3 минуты.';
+            return tr.connect.problemNoArrival;
         default:
-            return problem ?? 'Что-то пошло не так.';
+            return problem ?? tr.connect.problemOther;
     }
 }
 
 function where(pointsTo: 'yandex' | 'gateway' | 'other' | undefined): string {
-    return pointsTo === 'yandex' ? 'к Яндексу' : pointsTo === 'gateway' ? 'к шлюзу' : 'на незнакомый сервер';
+    return pointsTo === 'yandex' ? tr.connect.pointsYandex : pointsTo === 'gateway' ? tr.connect.pointsGateway : tr.connect.pointsOther;
 }
 
 function Steps({ job, labels }: { job: ConnectJob; labels: Partial<Record<ConnectStepId, string>> }) {
@@ -72,7 +73,7 @@ function Steps({ job, labels }: { job: ConnectJob; labels: Partial<Record<Connec
                     <span>
                         {labels[step.id] ?? step.id}
                         <span class="sr-only">
-                            {step.state === 'done' ? ' — готово' : step.state === 'running' ? ' — сейчас' : step.state === 'failed' ? ' — ошибка' : ''}
+                            {step.state === 'done' ? tr.connect.srDone : step.state === 'running' ? tr.connect.srRunning : step.state === 'failed' ? tr.connect.srFailed : ''}
                         </span>
                     </span>
                 </li>
@@ -96,9 +97,9 @@ function Command({ text }: { text: string }) {
     };
     return (
         <div class="connect-command">
-            <textarea ref={field} class="field" readOnly rows={3} value={text} aria-label="Команда для колонки" onFocus={(e) => (e.target as HTMLTextAreaElement).select()} />
+            <textarea ref={field} class="field" readOnly rows={3} value={text} aria-label={tr.connect.commandLabel} onFocus={(e) => (e.target as HTMLTextAreaElement).select()} />
             <button class="pill pill-off" onClick={() => void copy()}>
-                {copied ? 'Скопировано' : 'Скопировать'}
+                {copied ? tr.connect.copied : tr.connect.copy}
             </button>
         </div>
     );
@@ -123,28 +124,28 @@ export function ConnectFirstCard({ onConnect }: { onConnect: () => void }) {
     return (
         <section class="card glass flex flex-col gap-12" aria-labelledby="connect-first-h">
             <h2 id="connect-first-h" class="t-title m-0">
-                Подключите колонку
+                {tr.connect.firstTitle}
             </h2>
             <p class="t-meta m-0 c-text">
-                DuoWave встаёт между колонкой и облаком: что ответить, решаете вы. Сначала колонку нужно направить на этот шлюз.
+                {tr.connect.firstIntro}
             </p>
             <ol class="t-meta m-0 connect-first-steps">
                 <li>
-                    Нужна Яндекс Станция с root и SSH — по{' '}
+                    {tr.connect.firstStep1Before}{' '}
                     <a href={WIKI_ROOT} target="_blank" rel="noreferrer">
-                        вики hackalice
+                        {tr.connect.wikiHackalice}
                     </a>
-                    . Шлюз root не делает.
+                    {tr.connect.firstStep1After}
                 </li>
-                <li>Мастер найдёт колонку в сети, прочитает её настройки и покажет, что изменит, — до вашего «Подключить».</li>
-                <li>Сначала всё работает как раньше: отвечает Яндекс. Вернуть как было — одной кнопкой.</li>
+                <li>{tr.connect.firstStep2}</li>
+                <li>{tr.connect.firstStep3}</li>
             </ol>
             {mayManage ? (
                 <button class="dash-done" onClick={onConnect}>
-                    Подключить колонку
+                    {tr.connect.connectSpeaker}
                 </button>
             ) : (
-                <p class="t-caption m-0">Колонку подключает администратор шлюза.</p>
+                <p class="t-caption m-0">{tr.connect.adminConnects}</p>
             )}
         </section>
     );
@@ -175,8 +176,8 @@ function PhoneLine() {
     const url = `http://${withPort}/panel/`;
     return (
         <div class="connect-phone">
-            <b>Пульт на телефоне</b>
-            <span class="t-meta">Откройте на телефоне в той же сети Wi-Fi и войдите с паролем пульта:</span>
+            <b>{tr.connect.phoneTitle}</b>
+            <span class="t-meta">{tr.connect.phoneText}</span>
             <span class="connect-path">{url}</span>
         </div>
     );
@@ -280,27 +281,27 @@ export function ConnectSheet({
     if (step === 'find')
         return (
             <Sheet
-                title="Привет! Найдём вашу колонку"
-                about="Шаг 1 из 4 · компьютер и колонка — в одной домашней сети Wi-Fi"
+                title={tr.connect.findTitle}
+                about={tr.connect.findAbout}
                 icon={guide}
                 onClose={onClose}
                 footer={
                     <div class="dash-actions">
                         <button class="dash-done" disabled={!address.trim()} onClick={() => setStep('consent')}>
-                            Дальше
+                            {tr.connect.next}
                         </button>
                         <button class="pill pill-off dash-wide" onClick={onClose}>
-                            Отмена
+                            {tr.connect.cancel}
                         </button>
                     </div>
                 }
             >
                 {found === null ? (
                     <p class="t-meta m-0">
-                        Ищу колонки в сети…
+                        {tr.connect.searching}
                     </p>
                 ) : found.length ? (
-                    <div role="radiogroup" aria-label="Колонки в сети" class="flex flex-col">
+                    <div role="radiogroup" aria-label={tr.connect.foundLabel} class="flex flex-col">
                         {found.map((station) => (
                             <button
                                 key={station.address}
@@ -310,9 +311,9 @@ export function ConnectSheet({
                                 onClick={() => setAddress(station.address)}
                             >
                                 <span class="dash-option-text">
-                                    <b>{station.txt.platform ? drawingOf(null, station.txt.platform).title : station.name || 'Колонка'}</b>
+                                    <b>{station.txt.platform ? drawingOf(null, station.txt.platform).title : station.name || tr.connect.speakerDefault}</b>
                                     <span class="t-caption">
-                                        {station.address} · {station.ssh ? 'SSH есть' : 'SSH нет — сначала шаг 2 вики'}
+                                        {station.address} · {station.ssh ? tr.connect.sshYes : tr.connect.sshNo}
                                     </span>
                                 </span>
                                 <span class={`dash-radio${address === station.address ? ' on' : ''}`} aria-hidden="true">
@@ -323,29 +324,28 @@ export function ConnectSheet({
                     </div>
                 ) : (
                     <p class="t-meta m-0">
-                        В сети колонок не нашлось. Введите адрес — он есть в приложении Яндекса или в списке устройств роутера. Шлюз в
-                        Docker колонки не видит: там адрес вводят всегда.
+                        {tr.connect.noneFound}
                     </p>
                 )}
                 <input
                     class="field"
                     value={address}
                     inputMode="decimal"
-                    placeholder="Адрес колонки, например 192.168.1.23"
-                    aria-label="Адрес колонки"
+                    placeholder={tr.connect.addressPlaceholder}
+                    aria-label={tr.connect.addressLabel}
                     onInput={(event) => setAddress((event.target as HTMLInputElement).value)}
                     onKeyDown={(event) => {
                         if (event.key === 'Enter' && address.trim()) setStep('consent');
                     }}
                 />
                 <p class="t-caption m-0">
-                    Колонка и шлюз — в одной сети, не гостевой, без изоляции клиентов в роутере. Нет root —{' '}
+                    {tr.connect.lanHint}{' '}
                     <a href={WIKI_ROOT} target="_blank" rel="noreferrer">
-                        вики, шаг 1
+                        {tr.connect.wikiStep1}
                     </a>
-                    ; нет SSH —{' '}
+                    {tr.connect.lanHintMid}{' '}
                     <a href={WIKI_SSH} target="_blank" rel="noreferrer">
-                        шаг 2
+                        {tr.connect.wikiStep2}
                     </a>
                     .
                 </p>
@@ -355,38 +355,36 @@ export function ConnectSheet({
     if (step === 'consent')
         return (
             <Sheet
-                title="Проверим колонку"
-                about={`Шаг 2 из 4 · ${address.trim()}`}
+                title={tr.connect.consentTitle}
+                about={tr.connect.step2About(address.trim())}
                 icon={guide}
                 onClose={onClose}
                 footer={
                     <div class="dash-actions">
                         <button class="dash-done" disabled={busy} onClick={() => void read()}>
-                            {busy ? 'Читаю…' : 'Прочитать'}
+                            {busy ? tr.connect.reading : tr.connect.read}
                         </button>
                         <button class="pill pill-off dash-wide" disabled={busy} onClick={() => setStep('find')}>
-                            Назад
+                            {tr.connect.back}
                         </button>
                     </div>
                 }
             >
                 <p class="t-meta m-0 c-text">
-                    Шлюз зайдёт на колонку по SSH и прочитает: модель и прошивку, куда она сейчас отправляет голос, отключены ли
-                    обновления, сколько места в /data. Ничего не изменит.
+                    {tr.connect.consentText}
                 </p>
                 <label class="t-caption flex flex-col gap-6">
-                    Адрес этого шлюза для колонки
+                    {tr.connect.gatewayAddress}
                     <input
                         class="field"
                         value={gateway}
-                        placeholder="Например, 192.168.1.50"
-                        aria-label="Адрес шлюза для колонки"
+                        placeholder={tr.connect.gatewayPlaceholder}
+                        aria-label={tr.connect.gatewayLabel}
                         onInput={(event) => setGateway((event.target as HTMLInputElement).value)}
                     />
                 </label>
                 <p class="t-caption m-0">
-                    Колонка пойдёт на порт {gatewayPort(gateway, ownPort)} — он должен быть открыт. Закрепите адрес компьютера в роутере
-                    (резервирование DHCP), иначе однажды колонка его потеряет.
+                    {tr.connect.portNote(gatewayPort(gateway, ownPort))}
                 </p>
                 {problem}
             </Sheet>
@@ -397,35 +395,35 @@ export function ConnectSheet({
         const ready = !check.problem && !!facts && !!check.target;
         return (
             <Sheet
-                title={check.problem ? 'Подключить не выйдет' : check.connected ? 'Уже подключена' : 'Что изменится'}
+                title={check.problem ? tr.connect.planCannot : check.connected ? tr.connect.planAlready : tr.connect.planTitle}
                 icon={guide}
-                about={`Шаг 2 из 4 · ${
+                about={tr.connect.step2About(
                     facts
-                        ? [facts.deviceType && drawingOf(null, facts.deviceType).title, facts.softwareVersion && `прошивка ${facts.softwareVersion}`, check.address]
+                        ? [facts.deviceType && drawingOf(null, facts.deviceType).title, facts.softwareVersion && tr.connect.firmware(facts.softwareVersion), check.address]
                               .filter(Boolean)
                               .join(' · ')
-                        : check.address
-                }`}
+                        : check.address,
+                )}
                 onClose={onClose}
                 footer={
                     <div class="dash-actions">
                         {ready && !check.connected && (
                             <button class="dash-done" disabled={busy || !gateway.trim()} onClick={() => void connect()}>
-                                {busy ? 'Подключаю…' : 'Подключить'}
+                                {busy ? tr.connect.connecting : tr.connect.connect}
                             </button>
                         )}
                         {ready && !check.connected && (
                             <button class="pill pill-off dash-wide" disabled={busy} onClick={() => setStep('manual')}>
-                                Сделаю сам
+                                {tr.connect.doItMyself}
                             </button>
                         )}
                         {(!ready || check.connected) && (
                             <button class="dash-done" onClick={onClose}>
-                                Закрыть
+                                {tr.connect.close}
                             </button>
                         )}
                         <button class="pill pill-off dash-wide" disabled={busy} onClick={() => setStep('consent')}>
-                            Назад
+                            {tr.connect.back}
                         </button>
                     </div>
                 }
@@ -435,13 +433,13 @@ export function ConnectSheet({
                         {problemText(check.problem)}{' '}
                         {(check.problem === 'no-ssh' || check.problem === 'auth-failed') && (
                             <a href={WIKI_SSH} target="_blank" rel="noreferrer">
-                                SSH по вики
+                                {tr.connect.sshWiki}
                             </a>
                         )}
                     </p>
                 ) : check.connected ? (
                     <p class="t-meta m-0 c-text">
-                        Колонка уже отправляет голос на этот шлюз. Если её нет в списке — она подождёт одобрения там.
+                        {tr.connect.alreadyOnGateway}
                     </p>
                 ) : (
                     facts &&
@@ -449,52 +447,50 @@ export function ConnectSheet({
                         <>
                             <ul class="connect-plan">
                                 <li>
-                                    Голосовой сервер: <code>{facts.addresses.url}</code> → <code>{check.target.url}</code>
+                                    {tr.connect.planVoiceServer} <code>{facts.addresses.url}</code> → <code>{check.target.url}</code>
                                 </li>
                                 <li>
-                                    Адрес QUIC: <code>{facts.addresses.quic || 'пусто'}</code> → пусто, чтобы голос не уходил к Яндексу мимо шлюза
+                                    {tr.connect.planQuic} <code>{facts.addresses.quic || tr.connect.emptyWord}</code>
+                                    {tr.connect.planQuicAfter}
                                 </li>
                                 <li>
-                                    Файл прошивки <code>quasar.cfg</code> не меняется: поверх него подключается наша копия из{' '}
-                                    <code>/data/opt/duowave</code>, при каждой загрузке заново. Сброс колонки или обновление прошивки — и это
-                                    снова обычная Алиса. Откат без шлюза — <code>/data/opt/duowave/restore.sh</code>.
+                                    {tr.connect.planFwBefore} <code>quasar.cfg</code> {tr.connect.planFwMid} <code>/data/opt/duowave</code>
+                                    {tr.connect.planFwAfter} <code>/data/opt/duowave/restore.sh</code>.
                                 </li>
-                                <li>Колонка перезагрузится — около минуты — и придёт на шлюз. Не придёт за 3 минуты — шлюз предложит вернуть как было.</li>
+                                <li>{tr.connect.planReboot}</li>
                             </ul>
                             {facts.pointsTo === 'gateway' ? (
                                 <p class="t-meta connect-warning m-0">
-                                    Колонка уже работает с другим шлюзом: <code>{facts.addresses.url}</code>. После переключения он её потеряет;
-                                    «Вернуть как было» вернёт её туда.
+                                    {tr.connect.otherGatewayBefore} <code>{facts.addresses.url}</code>
+                                    {tr.connect.otherGatewayAfter}
                                 </p>
                             ) : (
                                 <p class="t-caption m-0">
-                                    Сейчас голос идёт {where(facts.pointsTo)}. После подключения колонка работает как раньше — режим «Яндекс», а
-                                    своё включают по одному в «Приложения» → «Кто отвечает».
+                                    {tr.connect.voiceGoes(where(facts.pointsTo))}
                                 </p>
                             )}
                             {check.updates === 'on' && (
                                 <p class="t-meta connect-warning m-0">
-                                    Обновления от Яндекса не отключены. Обновление вернёт колонку к Яндексу и может закрыть root —{' '}
+                                    {tr.connect.updatesBefore}{' '}
                                     <a href={WIKI_SSH} target="_blank" rel="noreferrer">
-                                        отключите по вики
+                                        {tr.connect.updatesLink}
                                     </a>
                                     .
                                 </p>
                             )}
                             {check.copy?.refused === 'firmware-changed' && (
                                 <p class="t-meta connect-warning m-0">
-                                    Колонка обновилась: прошивка сменила свой quasar.cfg, и наша копия при загрузке не
-                                    подключилась — сейчас это обычная Алиса. «Подключить» соберёт копию заново.
+                                    {tr.connect.firmwareChanged}
                                 </p>
                             )}
                             {check.copy?.refused === 'gateway-off' && (
                                 <p class="t-meta m-0">
-                                    Шлюз на самой колонке выключен страховкой: голос колонки пока идёт мимо него.
+                                    {tr.connect.gatewayOff}
                                 </p>
                             )}
                             {check.dataFreeKb !== undefined && check.dataFreeKb < 2048 && (
                                 <p class="t-meta m-0">
-                                    В /data меньше 2 МБ: копии конфига может не хватить места.
+                                    {tr.connect.lowSpace}
                                 </p>
                             )}
                         </>
@@ -509,26 +505,25 @@ export function ConnectSheet({
         const command = `ssh -p 2222 root@${check.address} 'wget -qO- http://${gateway.trim()}/station/connect.sh | sh'`;
         return (
             <Sheet
-                title="Сделаю сам"
-                about="Одна команда на компьютере с ssh: macOS, Linux, Windows 10 и новее"
+                title={tr.connect.manualTitle}
+                about={tr.connect.manualAbout}
                 icon={guide}
                 onClose={onClose}
                 footer={
                     <div class="dash-actions">
                         <button class="dash-done" onClick={onClose}>
-                            Готово
+                            {tr.connect.done}
                         </button>
                         <button class="pill pill-off dash-wide" onClick={() => setStep('plan')}>
-                            Назад
+                            {tr.connect.back}
                         </button>
                     </div>
                 }
             >
                 <Command text={command} />
                 <p class="t-caption m-0">
-                    Колонка возьмёт скрипт у шлюза и сделает то же, что кнопка: копия, два адреса, проверка, перезагрузка. Откат без
-                    шлюза: <code>ssh -p 2222 root@{check.address} sh /data/opt/duowave/restore.sh</code>. После перезагрузки колонка
-                    появится в списке и подождёт, пока вы её одобрите.
+                    {tr.connect.manualBefore} <code>ssh -p 2222 root@{check.address} sh /data/opt/duowave/restore.sh</code>
+                    {tr.connect.manualAfter}
                 </p>
             </Sheet>
         );
@@ -538,20 +533,20 @@ export function ConnectSheet({
     if (step === 'ready' && job?.device)
         return (
             <Sheet
-                title="Кто будет отвечать?"
-                about="Шаг 3 из 4 · послушайте и выберите; поменять можно в любой момент в «Персонаже»"
+                title={tr.connect.whoTitle}
+                about={tr.connect.whoAbout}
                 onClose={onClose}
                 footer={
                     <div class="dash-actions">
                         <button class="dash-done" onClick={() => setStep('who')}>
-                            Дальше
+                            {tr.connect.next}
                         </button>
                     </div>
                 }
             >
                 <p class="connect-now m-0">
-                    <span class="pill pill-yandex">Яндекс</span>
-                    <span class="t-meta">Колонка подключена. Пока вы не выберете иначе, отвечает всё та же Алиса — как раньше.</span>
+                    <span class="pill pill-yandex">{tr.connect.pillYandex}</span>
+                    <span class="t-meta">{tr.connect.connectedNote}</span>
                 </p>
                 <CharactersTab />
             </Sheet>
@@ -562,13 +557,13 @@ export function ConnectSheet({
         const device = job.device;
         return (
             <Sheet
-                title="Готово"
-                about="Шаг 4 из 4"
+                title={tr.connect.readyTitle}
+                about={tr.connect.step4About}
                 onClose={() => onConnected(device)}
                 footer={
                     <div class="dash-actions">
                         <button class="dash-done" onClick={() => onConnected(device)}>
-                            Открыть главную
+                            {tr.connect.openHome}
                         </button>
                     </div>
                 }
@@ -577,8 +572,8 @@ export function ConnectSheet({
                 <div class="connect-hero">
                     <DuoWaveMark size={72} live cheer idle="lively" />
                 </div>
-                <p class="t-meta m-0">Скажите колонке:</p>
-                <p class="connect-say m-0">«Алиса, какая погода завтра?»</p>
+                <p class="t-meta m-0">{tr.connect.sayToSpeaker}</p>
+                <p class="connect-say m-0">{tr.connect.sayExample}</p>
                 <PhoneLine />
             </Sheet>
         );
@@ -588,31 +583,31 @@ export function ConnectSheet({
     const restoring = job?.kind === 'restore';
     return (
         <Sheet
-            title={restoring ? 'Возвращаю как было' : 'Подключаю колонку'}
+            title={restoring ? tr.connect.restoringTitle : tr.connect.connectingTitle}
             about={check?.address}
             onClose={onClose}
             dismissable={job?.status !== 'running'}
             footer={
                 job?.status === 'done' && !restoring ? (
                     <button class="dash-done" onClick={() => setStep('ready')}>
-                        Дальше
+                        {tr.connect.next}
                     </button>
                 ) : job?.status === 'timeout' ? (
                     <div class="dash-actions">
                         <button class="dash-done" disabled={busy} onClick={() => void restore()}>
-                            Вернуть как было
+                            {tr.connect.restoreBack}
                         </button>
                         <button class="pill pill-off dash-wide" disabled={busy} onClick={onClose}>
-                            Оставить
+                            {tr.connect.keep}
                         </button>
                     </div>
                 ) : job?.status === 'running' ? (
                     <button class="dash-done" disabled>
-                        Подождите…
+                        {tr.connect.wait}
                     </button>
                 ) : (
                     <button class="dash-done" onClick={onClose}>
-                        Закрыть
+                        {tr.connect.close}
                     </button>
                 )
             }
@@ -622,22 +617,21 @@ export function ConnectSheet({
                     <DuoWaveMark size={72} live idle="lively" />
                 </div>
             )}
-            {job && <Steps job={job} labels={restoring ? RESTORE_LABELS : STEP_LABELS} />}
+            {job && <Steps job={job} labels={restoring ? restoreLabels() : stepLabels()} />}
             {job?.status === 'timeout' && (
                 <p class="t-meta m-0 c-text">
-                    {problemText('no-arrival')} Проверьте адрес шлюза и что порт {gatewayPort(gateway, ownPort)} открыт. «Вернуть как было» поставит прежние адреса и
-                    перезагрузит колонку.
+                    {problemText('no-arrival')} {tr.connect.timeoutHint(gatewayPort(gateway, ownPort))}
                 </p>
             )}
             {job?.status === 'failed' && (
                 <p role="alert" class="t-meta m-0 c-text">
                     {problemText(job.error)}
-                    {job.copy ? ` Наша копия на колонке: ${job.copy}.` : ''}
+                    {job.copy ? tr.connect.ourCopy(job.copy) : ''}
                 </p>
             )}
             {job?.status === 'done' && restoring && (
                 <p class="t-meta m-0 c-text">
-                    Прежние адреса на месте, колонка перезагружается и вернётся к Яндексу.
+                    {tr.connect.restoredOk}
                 </p>
             )}
             {problem}
@@ -675,7 +669,7 @@ export function RestoreSheet({ address, name, onClose }: { address: string; name
 
     return (
         <Sheet
-            title="Вернуть к Яндексу"
+            title={tr.connect.restoreTitle}
             about={`${name} · ${address}`}
             onClose={onClose}
             dismissable={job?.status !== 'running'}
@@ -683,35 +677,34 @@ export function RestoreSheet({ address, name, onClose }: { address: string; name
                 !job ? (
                     <div class="dash-actions">
                         <button class="dash-done" disabled={busy} onClick={() => void start()}>
-                            {busy ? 'Начинаю…' : 'Вернуть'}
+                            {busy ? tr.connect.starting : tr.connect.restore}
                         </button>
                         <button class="pill pill-off dash-wide" disabled={busy} onClick={onClose}>
-                            Отмена
+                            {tr.connect.cancel}
                         </button>
                     </div>
                 ) : (
                     <button class="dash-done" disabled={job.status === 'running'} onClick={onClose}>
-                        {job.status === 'running' ? 'Подождите…' : 'Закрыть'}
+                        {job.status === 'running' ? tr.connect.wait : tr.connect.close}
                     </button>
                 )
             }
         >
             {!job ? (
                 <p class="t-meta m-0 c-text">
-                    Шлюз зайдёт на колонку по SSH, поставит голосовому серверу прежние адреса — те, что были до шлюза, — и перезагрузит её.
-                    Колонка будет работать с Яндексом напрямую, без шлюза.
+                    {tr.connect.restoreText}
                 </p>
             ) : (
-                <Steps job={job} labels={RESTORE_LABELS} />
+                <Steps job={job} labels={restoreLabels()} />
             )}
             {job?.status === 'failed' && (
                 <p role="alert" class="t-meta m-0 c-text">
-                    {problemText(job.error)} Без шлюза: <code>ssh -p 2222 root@{address} sh /data/opt/duowave/restore.sh</code>
+                    {problemText(job.error)} {tr.connect.withoutGateway} <code>ssh -p 2222 root@{address} sh /data/opt/duowave/restore.sh</code>
                 </p>
             )}
             {job?.status === 'done' && (
                 <p class="t-meta m-0 c-text">
-                    Готово: колонка перезагружается и вернётся к Яндексу.
+                    {tr.connect.restoreDone}
                 </p>
             )}
             {error && (

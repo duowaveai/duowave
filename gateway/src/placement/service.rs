@@ -2,7 +2,6 @@
 //! the station's is on the station, alone or with a home server (its connector says which). /health's `placement`
 //! comes from here — on the station its settings revision, space, memory, home server and where its voice goes,
 //! which the computer reads every 30 s.
-
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -117,7 +116,7 @@ impl PlacementService {
             return Ok(key.to_string());
         }
         if !self.profile.station {
-            return Err(ApiError::conflict("Ключ пары отдаёт шлюз колонки, а это компьютер."));
+            return Err(ApiError::conflict(crate::tr!("Ключ пары отдаёт шлюз колонки, а это компьютер.")));
         }
         let key = super::peer::new_key();
         self.secrets.set(MADE_PEER_SECRET, Some(&key))?;

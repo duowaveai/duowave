@@ -425,9 +425,11 @@ impl CharactersService {
         }
     }
 
-    fn builtin_views() -> Vec<CharacterView> {
+    /// The built-in cards as the panel shows them now (the talk without a station names the built-in one its way).
+    fn builtin_views(&self) -> Vec<CharacterView> {
         persona_presets()
             .into_iter()
+            .map(|preset| self.personas.shown(preset))
             .map(|preset| CharacterView {
                 gender: (preset.id == ALICE).then_some(Gender::Female),
                 tones: if preset.id == ALICE { alice_tones() } else { Vec::new() },
@@ -484,7 +486,7 @@ impl CharactersService {
     /// Every character: the built-in ones, then the packages' (those that do not check out with their reason).
     pub async fn view(&self) -> Result<CharactersView, ApiError> {
         self.sync();
-        let mut characters = Self::builtin_views();
+        let mut characters = self.builtin_views();
         for found in self.known() {
             characters.push(match &found {
                 Ok(character) => self.view_of(character).await,
@@ -507,12 +509,15 @@ impl CharactersService {
         self.sync();
         let wants_voice = body.voice != Some(false);
         if let Some(rejected) = self.known().into_iter().filter_map(Result::err).find(|rejected| rejected.id == id) {
-            return Err(ApiError::bad_request(format!("Персонаж не выбирается: {}.", rejected.problem)));
+            return Err(ApiError::bad_request(crate::tr!(
+                "Персонаж не выбирается: {problem}.",
+                problem = rejected.problem
+            )));
         }
         if let Some(character) = self.character(id) {
             if wants_voice && !voice_allowed && (character.speaks() || character.fallback_voice.is_some()) {
                 return Err(ApiError::forbidden(
-                    "Голос персонажа меняет тот, у кого право на голоса (models.manage); выберите без голоса: \"voice\": false.",
+                    crate::tr!("Голос персонажа меняет тот, у кого право на голоса (models.manage); выберите без голоса: \"voice\": false."),
                 ));
             }
             let positions = character.positions(body.tones.as_ref());
@@ -534,7 +539,7 @@ impl CharactersService {
         }
         let card = persona_presets().into_iter().find(|preset| preset.id == id);
         let Some(card) = card else {
-            return Err(ApiError::not_found(format!("Нет персонажа {id}.")));
+            return Err(ApiError::not_found(crate::tr!("Нет персонажа {id}.", id = id)));
         };
         let persona = if card.id == ALICE {
             // Her voice is the one chosen: only the text and the positions change.
@@ -545,7 +550,7 @@ impl CharactersService {
             Persona { preset_id: Some(card.id.clone()), text: card.text.clone(), base: Some(card.text), tones: None }
         };
         self.personas.choose(persona, actor)?;
-        let character = Self::builtin_views().into_iter().find(|view| view.id == id).unwrap_or_else(|| unreachable!());
+        let character = self.builtin_views().into_iter().find(|view| view.id == id).unwrap_or_else(|| unreachable!());
         Ok(ChooseAnswer { character, voice: ChosenVoice { state: VoiceState::None, needs: None, pending: None } })
     }
 
@@ -603,7 +608,7 @@ fn station_voice(character: &Character) -> VoiceView {
         fallback: card.map(|card| FallbackView { title: card.clone(), card_id: card, installed: false }),
         needs: None,
         progress: None,
-        reason: Some("Голоса персонажей звучат с компьютера: их модели там.".into()),
+        reason: Some(crate::tr!("Голоса персонажей звучат с компьютера: их модели там.")),
     }
 }
 

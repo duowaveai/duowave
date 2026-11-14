@@ -11,6 +11,7 @@ import { FunctionComponent, h } from 'preact';
 
 import { CardSpec, PanelPart, api } from '../api';
 import { AppCard } from '../cards/card';
+import { tr, language } from '../i18n';
 import { framedPlugin, probeShape, probeState } from '../frame/host';
 import { icons } from '../sdk';
 import type { SlotContribution } from '../shell/slot';
@@ -90,7 +91,7 @@ function cardWidgets(part: PanelPart): SlotContribution[] {
             size: spec.size === 'large' ? 'large' : 'small',
             initial: spec.initial ?? false,
             // Чья карточка — подписью справа; совпадает с её заголовком — просто «приложение», как у прежних виджетов.
-            source: (spec.title ?? part.title) === part.title ? 'приложение' : part.title,
+            source: (spec.title ?? part.title) === part.title ? tr.core.sourceApp : part.title,
             Component: (() => h(AppCard, { app: part.id, spec })) as SlotContribution['Component'],
         }));
 }
@@ -115,7 +116,8 @@ async function syncParts(): Promise<void> {
     for (const part of parts) {
         seen.add(part.id);
         packageSettings.set(part.id, part.settings ?? {});
-        const signature = JSON.stringify([part.module ?? null, part.styles ?? null, part.cards ?? []]);
+        // Язык пульта — в подписи: сменили язык — разведка окошка заново, подписи разделов и виджетов на новом языке.
+        const signature = JSON.stringify([language(), part.title, part.module ?? null, part.styles ?? null, part.cards ?? []]);
         if (loaded.get(part.id) === signature) continue;
         loaded.set(part.id, signature);
         let plugin: PanelPlugin = { id: pluginKey(part.id) };

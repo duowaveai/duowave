@@ -6,13 +6,15 @@ use axum::response::{Html, IntoResponse, Response};
 
 pub fn page(status: StatusCode, text: &str) -> Response {
     let page = format!(
-        "<!doctype html><html lang=\"ru\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" \
-         content=\"width=device-width, initial-scale=1\"><title>Вход</title></head>\
+        "<!doctype html><html lang=\"{lang}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" \
+         content=\"width=device-width, initial-scale=1\"><title>{title}</title></head>\
          <body style=\"font-family: system-ui, sans-serif; background: #090C10; color: #F3F6F8; display: grid; \
          place-items: center; min-height: 100vh; margin: 0; padding: 16px;\">\
-         <p style=\"max-width: 420px; line-height: 1.5;\">{} <a href=\"/panel/\" style=\"color: #B6F36A;\">Вернуться в \
-         пульт</a></p></body></html>",
-        escape_html(text)
+         <p style=\"max-width: 420px; line-height: 1.5;\">{} <a href=\"/panel/\" style=\"color: #B6F36A;\">{back}</a></p></body></html>",
+        escape_html(text),
+        lang = crate::locale::text::language_now().unwrap_or_else(|| "ru".into()),
+        title = escape_html(&crate::tr!("Вход")),
+        back = escape_html(&crate::tr!("Вернуться в пульт")),
     );
     (status, Html(page)).into_response()
 }

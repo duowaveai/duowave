@@ -14,7 +14,6 @@
 //! A package is applied at the gateway's start, before any service reads the database (`apply_incoming`), the whole
 //! database copied first (`copy_database`): a running gateway that receives one keeps it and starts again. Between
 //! the two gateways it travels sealed with the pair's key (`seal`, `open`): plain HTTP at home does not show it.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -90,6 +89,8 @@ pub const LOCAL_SETTINGS: &[&str] = &[
     "station_self",
     // The apps' history: where each gateway keeps its own and how much (plugins/history/gc.rs).
     "package_history",
+    // «Как говорить с DuoWave»: the computer's choice of its own microphone (src/talk/input.rs).
+    "voice_input",
 ];
 
 /// Of each side's own settings (`LOCAL_SETTINGS`), the ones a move to the station sets there all the same when its
@@ -572,10 +573,13 @@ pub fn for_earlier(mut bundle: Bundle, theirs: &Bundle) -> Bundle {
 /// have (`apply_plugins`). One transaction for the database; the secrets after it.
 pub fn import(db: &Db, secrets: &SecretsService, bundle: &Bundle, station: bool) -> Result<Imported, String> {
     if bundle.format != FORMAT {
-        return Err("это не набор настроек шлюза".into());
+        return Err(crate::tr!("это не набор настроек шлюза"));
     }
     if bundle.schema > SCHEMA {
-        return Err(format!("набор настроек новее этого шлюза (схема {}): сначала обновите шлюз", bundle.schema));
+        return Err(crate::tr!(
+            "Набор настроек новее этого шлюза (схема {schema}): сначала обновите шлюз.",
+            schema = bundle.schema
+        ));
     }
     let mut imported = Imported::default();
     // The station's provider for its home server, never the computer's: by id, with its key.
@@ -669,7 +673,7 @@ pub fn import(db: &Db, secrets: &SecretsService, bundle: &Bundle, station: bool)
         }
         Ok(())
     })
-    .map_err(|error| format!("база шлюза: {error}"))?;
+    .map_err(|error| crate::tr!("База шлюза: {error}", error = error))?;
     for id in secrets.ids("") {
         if travels(&id) && !(bundle.secrets.contains_key(&id) && kept_secret(&id)) {
             secrets.delete(&id).map_err(|error| error.message)?;
@@ -699,7 +703,8 @@ pub struct PluginsPackage {
 
 /// The plugins' state of a package alone, applied in a transaction of its own.
 pub fn import_plugins(db: &Db, plugins: &BTreeMap<String, PluginState>) -> Result<usize, String> {
-    db.transaction(|transaction| apply_plugins(transaction, plugins)).map_err(|error| format!("база шлюза: {error}"))
+    db.transaction(|transaction| apply_plugins(transaction, plugins))
+        .map_err(|error| crate::tr!("База шлюза: {error}", error = error))
 }
 
 /// What the other gateway of the pair left for this one's start (a package of settings, the plugins' state of a move
@@ -930,13 +935,13 @@ pub fn seal(bundle: &Bundle, pair_key: &str) -> Value {
 pub fn open(sealed: &Value, pair_key: &str) -> Result<Bundle, String> {
     let field = |name: &str| sealed.get(name).and_then(Value::as_str).and_then(|text| B64.decode(text).ok());
     let (Some(nonce), Some(data)) = (field("nonce"), field("data")) else {
-        return Err("это не запечатанный набор настроек".into());
+        return Err(crate::tr!("это не запечатанный набор настроек"));
     };
-    let nonce = Nonce::try_from(&nonce[..]).map_err(|_| "набор настроек повреждён".to_string())?;
+    let nonce = Nonce::try_from(&nonce[..]).map_err(|_| crate::tr!("набор настроек повреждён"))?;
     let plain = pair_cipher(pair_key)
         .decrypt(&nonce, data.as_slice())
-        .map_err(|_| "набор настроек не открывается: другой ключ пары или он повреждён".to_string())?;
-    serde_json::from_slice(&plain).map_err(|error| format!("набор настроек не читается: {error}"))
+        .map_err(|_| crate::tr!("набор настроек не открывается: другой ключ пары или он повреждён"))?;
+    serde_json::from_slice(&plain).map_err(|error| crate::tr!("Набор настроек не читается: {error}", error = error))
 }
 
 /// The import of every build before schema 2 (the apply loop in 708eec6 and earlier, the release 0.2.0's), its settings
@@ -947,7 +952,10 @@ pub fn open(sealed: &Value, pair_key: &str) -> Result<Bundle, String> {
 pub(crate) fn earlier_import(stored: &mut BTreeMap<String, Value>, bundle: &Bundle) -> Result<(), String> {
     let own = |key: &str| key != "voice_pending" && LOCAL_SETTINGS.contains(&key);
     if bundle.schema > 1 {
-        return Err(format!("набор настроек новее этого шлюза (схема {}): сначала обновите шлюз", bundle.schema));
+        return Err(crate::tr!(
+            "Набор настроек новее этого шлюза (схема {schema}): сначала обновите шлюз.",
+            schema = bundle.schema
+        ));
     }
     stored.retain(|key, _| own(key) || bundle.settings.contains_key(key));
     for (key, value) in bundle.settings.iter().filter(|(key, _)| !own(key)) {

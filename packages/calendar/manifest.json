@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "plugin",
   "id": "calendar",
-  "version": "2.0.0",
+  "version": "2.1.1",
   "title": "Календарь",
   "description": "Ваш календарь голосом и виджетом на столе пульта: что сегодня, завтра и на неделе. Календарь — по ссылке iCal (.ics), её дают Google, Яндекс и iCloud; без входа в аккаунт, только чтение. Ссылка — в настройках приложения. Время — по поясу календаря, «сегодня» голосом — по поясу колонки.",
   "api": "^2",
@@ -31,6 +31,25 @@
       "description": "Google: настройки календаря → «Секретный адрес в формате iCal». Яндекс: календарь → «Экспорт» → ссылка ICS. iCloud: «Поделиться» → «Открытый календарь» (webcal:// подойдёт)."
     }
   ],
+  "languages": [
+    "ru",
+    "en"
+  ],
+  "locales": {
+    "en": {
+      "title": "Calendar",
+      "description": "Your calendar by voice and as a widget on the panel desk: what is on today, tomorrow and this week. The calendar comes from an iCal (.ics) link — Google, Yandex and iCloud give one; no account sign-in, read only. The link goes in the app’s settings. Times follow the calendar’s time zone, “today” by voice follows the speaker’s.",
+      "settings": {
+        "ics": {
+          "title": "Calendar link (iCal, .ics)",
+          "description": "Google: calendar settings → “Secret address in iCal format”. Yandex: calendar → “Export” → ICS link. iCloud: “Share” → “Public calendar” (webcal:// works)."
+        }
+      },
+      "cards": {
+        "events": "Calendar"
+      }
+    }
+  },
   "contributes": {
     "intents": [
       {

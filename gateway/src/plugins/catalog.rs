@@ -24,7 +24,6 @@
 //! A feed may say a package is `hidden`: it is not listed or installed, and the installed one that came from that very
 //! feed is hidden here (registry `hidden`) — not listed, its code off, its characters not offered — until the feed
 //! stops saying so.
-
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -96,12 +95,12 @@ impl FeedSource {
 
 /// A feed's address the gateway may read: HTTPS, or HTTP on this computer (a catalog being tried).
 pub fn feed_url(text: &str) -> Result<url::Url, String> {
-    let url = url::Url::parse(text).map_err(|_| format!("адрес каталога «{text}» — не адрес"))?;
+    let url = url::Url::parse(text).map_err(|_| crate::tr!("адрес каталога «{text}» — не адрес", text = text))?;
     let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1"));
     match url.scheme() {
         "https" => Ok(url),
         "http" if local => Ok(url),
-        _ => Err("каталог — только по HTTPS (HTTP — только с localhost и 127.0.0.1)".into()),
+        _ => Err(crate::tr!("каталог — только по HTTPS (HTTP — только с localhost и 127.0.0.1)")),
     }
 }
 
@@ -140,6 +139,10 @@ pub struct Entry {
     pub publisher: Option<String>,
     /// The extra feed it comes from; None — the main one.
     pub extra: Option<ExtraFeed>,
+    /// The languages it speaks, its own first (`languages`), and its title and description in the others (`locales`):
+    /// the catalog shows it in the person's language (docs/plans/i18n.md).
+    pub languages: Vec<String>,
+    pub locales: BTreeMap<String, (Option<String>, Option<String>)>,
 }
 
 /// An extra feed the main one names (`feeds`): read after it, its packages after the main's.
@@ -165,6 +168,23 @@ pub struct Archive {
 }
 
 impl Entry {
+    /// Its title and description in the first language of `preferences` it has them in; none — its own.
+    pub fn texts_in(&self, preferences: &[String]) -> (String, Option<String>) {
+        let own = self.languages.first().map(String::as_str).unwrap_or(crate::locale::SOURCE);
+        for code in preferences {
+            if code == own {
+                break;
+            }
+            if let Some((title, description)) = self.locales.get(code) {
+                return (
+                    title.clone().unwrap_or_else(|| self.title.clone()),
+                    description.clone().or_else(|| self.description.clone()),
+                );
+            }
+        }
+        (self.title.clone(), self.description.clone())
+    }
+
     /// The archive for this machine: its platform's, else the one archive.
     pub fn archive(&self) -> Archive {
         self.platforms.get(&super::manifest::platform()).cloned().unwrap_or_else(|| Archive {
@@ -262,10 +282,11 @@ impl Feed {
 /// An extra feed as the main one declares it: HTTPS as the main, its publisher an id, a title for people.
 fn extra_feed(value: &Value) -> Result<ExtraFeed, String> {
     let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty());
-    let url = feed_url(text("url").ok_or("feeds: нет url")?).map_err(|problem| format!("feeds: {problem}"))?;
+    let url = feed_url(text("url").ok_or_else(|| crate::tr!("feeds: нет url"))?)
+        .map_err(|problem| format!("feeds: {problem}"))?;
     let publisher = text("publisher")
         .filter(|publisher| valid_id(publisher))
-        .ok_or_else(|| format!("feeds: {url}: publisher — строчные латинские буквы, цифры и «-»"))?
+        .ok_or_else(|| crate::tr!("feeds: {url}: publisher — строчные латинские буквы, цифры и «-»", url = url))?
         .to_string();
     let title = text("title").map(|title| title.chars().take(MAX_FEED_TITLE).collect());
     let verified = value.get("verified").and_then(Value::as_bool).unwrap_or(false);
@@ -315,12 +336,43 @@ fn feed_folder(url: &url::Url) -> String {
 
 fn entry(value: &Value, base: &url::Url) -> Result<Entry, String> {
     let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty());
-    let id = text("id").filter(|id| valid_id(id)).ok_or("id: строчные латинские буквы, цифры и «-»")?.to_string();
+    let id = text("id")
+        .filter(|id| valid_id(id))
+        .ok_or_else(|| crate::tr!("id: строчные латинские буквы, цифры и «-»"))?
+        .to_string();
     let at = |problem: &str| format!("{id}: {problem}");
-    let kind = PackageKind::parse(text("kind").unwrap_or("plugin")).ok_or_else(|| at("kind: нет такого вида"))?;
+    let kind =
+        PackageKind::parse(text("kind").unwrap_or("plugin")).ok_or_else(|| at(&crate::tr!("kind: нет такого вида")))?;
     let version = text("version").and_then(|v| semver::Version::parse(v).ok()).ok_or_else(|| at("version"))?;
-    let title: String = text("title").ok_or_else(|| at("нет title"))?.chars().take(80).collect();
+    let title: String = text("title").ok_or_else(|| at(&crate::tr!("нет title")))?.chars().take(80).collect();
     let description = text("description").map(|text| text.chars().take(500).collect());
+    let languages: Vec<String> = value
+        .get("languages")
+        .and_then(Value::as_array)
+        .map(|codes| codes.iter().filter_map(Value::as_str).filter_map(crate::locale::normalize).take(40).collect())
+        .unwrap_or_default();
+    let locales: BTreeMap<String, (Option<String>, Option<String>)> = value
+        .get("locales")
+        .and_then(Value::as_object)
+        .map(|locales| {
+            locales
+                .iter()
+                .filter_map(|(code, texts)| {
+                    let code = crate::locale::normalize(code)?;
+                    let field = |key: &str, limit: usize| {
+                        texts
+                            .get(key)
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|text| !text.is_empty())
+                            .map(|text| text.chars().take(limit).collect::<String>())
+                    };
+                    Some((code, (field("title", 80), field("description", 500))))
+                })
+                .take(40)
+                .collect()
+        })
+        .unwrap_or_default();
     let api = text("api").unwrap_or("^1").to_string();
     semver::VersionReq::parse(&api).map_err(|_| at("api"))?;
     let runs: Vec<Placement> = match value.get("runs").and_then(Value::as_array) {
@@ -331,29 +383,33 @@ fn entry(value: &Value, base: &url::Url) -> Result<Entry, String> {
         Some(min) => Some(semver::Version::parse(min.trim_start_matches('v')).map_err(|_| at("minGateway"))?),
         None => None,
     };
-    let url = text("url").and_then(|url| same_origin(base, url)).ok_or_else(|| at("url: архив с того же адреса"))?;
+    let url = text("url")
+        .and_then(|url| same_origin(base, url))
+        .ok_or_else(|| at(&crate::tr!("url: архив с того же адреса")))?;
     let sha256 = text("sha256")
         .filter(|sha| sha.len() == 64 && sha.chars().all(|c| c.is_ascii_hexdigit()))
-        .ok_or_else(|| at("sha256: 64 шестнадцатеричных знака"))?
+        .ok_or_else(|| at(&crate::tr!("sha256: 64 шестнадцатеричных знака")))?
         .to_ascii_lowercase();
     let size = value.get("size").and_then(Value::as_u64).filter(|size| (1..=MAX_ARCHIVE).contains(size));
-    let size = size.ok_or_else(|| at("size: размер архива, до 16 МБ"))?;
+    let size = size.ok_or_else(|| at(&crate::tr!("size: размер архива, до 16 МБ")))?;
     let preview = value.get("preview");
     let image = preview.and_then(|preview| preview.get("image")).and_then(Value::as_str);
     let image = match image {
-        Some(image) => Some(same_origin(base, image).ok_or_else(|| at("preview.image: с того же адреса"))?),
+        Some(image) => {
+            Some(same_origin(base, image).ok_or_else(|| at(&crate::tr!("preview.image: с того же адреса")))?)
+        }
         None => None,
     };
     let mut samples = Vec::new();
     for sample in preview.and_then(|preview| preview.get("samples")).and_then(Value::as_array).into_iter().flatten() {
         let sample = sample.as_str().and_then(|sample| same_origin(base, sample));
-        samples.push(sample.ok_or_else(|| at("preview.samples: с того же адреса"))?);
+        samples.push(sample.ok_or_else(|| at(&crate::tr!("preview.samples: с того же адреса")))?);
     }
     samples.truncate(MAX_SAMPLES);
     let needs = match value.get("needs") {
         None => Value::Array(Vec::new()),
         Some(Value::Array(needs)) if needs.iter().all(Value::is_object) => Value::Array(needs.clone()),
-        Some(_) => return Err(at("needs: список")),
+        Some(_) => return Err(at(&crate::tr!("needs: список"))),
     };
     let license = text("license").map(|license| license.chars().take(MAX_LICENSE).collect());
     let publisher = text("publisher").filter(|publisher| valid_id(publisher)).map(str::to_string);
@@ -371,7 +427,7 @@ fn entry(value: &Value, base: &url::Url) -> Result<Entry, String> {
             (Some(url), Some(sha256), Some(size)) => {
                 platforms.insert(key.clone(), Archive { url, sha256: sha256.to_ascii_lowercase(), size });
             }
-            _ => return Err(at(&format!("platforms.{key}: url с того же адреса, sha256 и size"))),
+            _ => return Err(at(&crate::tr!("platforms.{key}: url с того же адреса, sha256 и size", key = key))),
         }
     }
     Ok(Entry {
@@ -395,19 +451,27 @@ fn entry(value: &Value, base: &url::Url) -> Result<Entry, String> {
         platforms,
         publisher,
         extra: None,
+        languages,
+        locales,
     })
 }
 
 /// Reads a feed by its schema: the whole of it must be one (format 1, a list of packages); a package in it that is
 /// not one is left out with its reason, and so is an extra feed it names (`feeds`) that is not one, or past the 4th.
 pub fn parse_feed(text: &str, base: &url::Url) -> Result<Feed, String> {
-    let value: Value = serde_json::from_str(text).map_err(|error| format!("не JSON: {error}"))?;
+    let value: Value = serde_json::from_str(text).map_err(|error| crate::tr!("не JSON: {error}", error = error))?;
     match value.get("format").and_then(Value::as_u64) {
         Some(FEED_FORMAT) => {}
-        Some(other) => return Err(format!("format {other}: этот шлюз читает каталог версии {FEED_FORMAT}")),
-        None => return Err("нет format".into()),
+        Some(other) => {
+            return Err(crate::tr!(
+                "format {other}: этот шлюз читает каталог версии {FEED_FORMAT}",
+                other = other,
+                FEED_FORMAT = FEED_FORMAT
+            ))
+        }
+        None => return Err(crate::tr!("нет format")),
     }
-    let list = value.get("packages").and_then(Value::as_array).ok_or("нет списка packages")?;
+    let list = value.get("packages").and_then(Value::as_array).ok_or_else(|| crate::tr!("нет списка packages"))?;
     let mut feed =
         Feed { updated_at: value.get("updatedAt").and_then(Value::as_str).map(str::to_string), ..Feed::empty() };
     for item in list {
@@ -417,13 +481,13 @@ pub fn parse_feed(text: &str, base: &url::Url) -> Result<Feed, String> {
                 Some(id) => {
                     feed.hidden.insert(id.to_string());
                 }
-                None => feed.skipped.push("hidden: нет id".into()),
+                None => feed.skipped.push(crate::tr!("hidden: нет id")),
             }
             continue;
         }
         match entry(item, base) {
             Ok(entry) if feed.packages.iter().any(|known| known.id == entry.id && known.version == entry.version) => {
-                feed.skipped.push(format!("{} {}: дважды", entry.id, entry.version));
+                feed.skipped.push(crate::tr!("{id} {version}: дважды", id = entry.id, version = entry.version));
             }
             Ok(entry) => feed.packages.push(entry),
             Err(problem) => feed.skipped.push(problem),
@@ -435,17 +499,21 @@ pub fn parse_feed(text: &str, base: &url::Url) -> Result<Feed, String> {
             for item in feeds {
                 match extra_feed(item) {
                     Ok(extra) if extra.url == *base || feed.feeds.iter().any(|known| known.url == extra.url) => {
-                        feed.skipped.push(format!("feeds: {}: эта лента уже читается", extra.url));
+                        feed.skipped.push(crate::tr!("feeds: {url}: эта лента уже читается", url = extra.url));
                     }
                     Ok(extra) if feed.feeds.len() == MAX_FEEDS => {
-                        feed.skipped.push(format!("feeds: {}: больше {MAX_FEEDS} лент", extra.url));
+                        feed.skipped.push(crate::tr!(
+                            "feeds: {url}: больше {MAX_FEEDS} лент",
+                            url = extra.url,
+                            MAX_FEEDS = MAX_FEEDS
+                        ));
                     }
                     Ok(extra) => feed.feeds.push(extra),
                     Err(problem) => feed.skipped.push(problem),
                 }
             }
         }
-        Some(_) => feed.skipped.push("feeds: список лент".into()),
+        Some(_) => feed.skipped.push(crate::tr!("feeds: список лент")),
     }
     Ok(feed)
 }
@@ -570,8 +638,12 @@ pub enum EntryState {
     NeedsSignature,
 }
 
-pub const NEEDS_SIGNATURE: &str = "Плагины и приложения ставятся из каталога только с его подписью: у этой сборки нет \
-ключа каталога (PACKAGES_PUBKEY) или подпись ленты не сошлась.";
+#[cfg(test)]
+pub const NEEDS_SIGNATURE: &str = "Плагины и приложения ставятся из каталога только с его подписью: у этой сборки нет ключа каталога (PACKAGES_PUBKEY) или подпись ленты не сошлась.";
+
+pub fn needs_signature() -> String {
+    crate::tr!("Плагины и приложения ставятся из каталога только с его подписью: у этой сборки нет ключа каталога (PACKAGES_PUBKEY) или подпись ленты не сошлась.")
+}
 
 /// Whether a package of the feed can be installed here, and how it stands against the installed version. Code — a
 /// plugin, an app — only from a signed feed, and never from an extra one (no signature for them yet); on the station,
@@ -587,9 +659,12 @@ pub fn entry_state(
         // What is installed stays installed; a new version of code waits for a signed feed.
         let why = match &entry.extra {
             Some(extra) => {
-                format!("Приложения из ленты «{}» не ставятся: подписи для дополнительных лент пока нет.", extra.title)
+                crate::tr!(
+                    "Приложения из ленты «{extra}» не ставятся: подписи для дополнительных лент пока нет.",
+                    extra = extra.title
+                )
             }
-            None => NEEDS_SIGNATURE.into(),
+            None => needs_signature(),
         };
         return match installed {
             Some(installed) if *installed >= entry.version => (EntryState::Installed, None),
@@ -602,7 +677,7 @@ pub fn entry_state(
     {
         return (
             EntryState::Incompatible,
-            Some(format!("нет сборки под эту платформу ({})", super::manifest::platform())),
+            Some(crate::tr!("нет сборки под эту платформу ({platform})", platform = super::manifest::platform())),
         );
     }
     if placement.on_station() && matches!(entry.kind, PackageKind::Plugin | PackageKind::App) {
@@ -610,7 +685,11 @@ pub fn entry_state(
             if need > free && installed.is_none() {
                 return (
                     EntryState::Incompatible,
-                    Some(format!("на колонке не хватит памяти: нужно {need} МБ, свободно {free}")),
+                    Some(crate::tr!(
+                        "на колонке не хватит памяти: нужно {need} МБ, свободно {free}",
+                        need = need,
+                        free = free
+                    )),
                 );
             }
         }
@@ -620,15 +699,15 @@ pub fn entry_state(
     let coded = matches!(entry.kind, PackageKind::Plugin | PackageKind::App);
     let why = if coded && !semver::VersionReq::parse(&entry.api).is_ok_and(|requirement| requirement.matches(&HOST_API))
     {
-        Some(format!("нужен Host API {}, а у шлюза {HOST_API}", entry.api))
+        Some(crate::tr!("нужен Host API {api}, а у шлюза {HOST_API}", api = entry.api, HOST_API = HOST_API))
     } else if !entry.runs.contains(&placement) {
-        Some(format!("не работает здесь: размещение «{}»", placement.title()))
+        Some(crate::tr!("не работает здесь: размещение «{placement}»", placement = placement.title_text()))
     } else {
         entry
             .min_gateway
             .as_ref()
             .filter(|min| **min > gateway)
-            .map(|min| format!("нужен шлюз {min} или новее, а этот — {gateway}"))
+            .map(|min| crate::tr!("нужен шлюз {min} или новее, а этот — {gateway}", min = min, gateway = gateway))
     };
     if let Some(why) = why {
         return (EntryState::Incompatible, Some(why));
@@ -995,7 +1074,7 @@ impl PackageCatalog {
             tracing::warn!(target: "plugins", "packages catalog: {url}: {error}; the copy before stays");
             let mut status = lock(&self.status);
             status.offline = true;
-            status.problem = Some(format!("Каталог недоступен: {error}"));
+            status.problem = Some(crate::tr!("Каталог недоступен: {error}", error = error));
             Read::Kept
         };
         let (text, new_etag) = match ask(url, etag.as_deref()).await {
@@ -1017,14 +1096,14 @@ impl PackageCatalog {
                 if code.is_server_error() && self.through_home(url).await {
                     return Read::Home;
                 }
-                return failed(format!("Каталог ответил HTTP {code}"));
+                return failed(crate::tr!("Каталог ответил HTTP {code}", code = code));
             }
-            Answer::TooBig => return failed(format!("Каталог больше {} КБ", MAX_FEED / 1024)),
+            Answer::TooBig => return failed(crate::tr!("Каталог больше {max_feed} КБ", max_feed = MAX_FEED / 1024)),
         };
         let now = now_iso();
         let feed = match parse_feed(&text, url) {
             Ok(feed) => feed,
-            Err(problem) => return failed(format!("Каталог не разобрался: {problem}")),
+            Err(problem) => return failed(crate::tr!("Каталог не разобрался: {problem}", problem = problem)),
         };
         for skipped in &feed.skipped {
             tracing::warn!(target: "plugins", "packages catalog: left out — {skipped}");
@@ -1050,11 +1129,12 @@ impl PackageCatalog {
                 write_whole(&self.dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default())
             });
         if let Err(error) = written {
-            return failed(format!("Копия каталога не записалась: {error}"));
+            return failed(crate::tr!("Копия каталога не записалась: {error}", error = error));
         }
         if !self.keys.is_empty() && !self.signed(text.as_bytes()) {
             tracing::warn!(target: "plugins", "packages catalog: its signature is missing or does not match: no code from it");
-            lock(&self.status).problem = Some("Подпись каталога не сошлась: приложения из него не ставятся.".into());
+            lock(&self.status).problem =
+                Some(crate::tr!("Подпись каталога не сошлась: приложения из него не ставятся."));
             return Read::New;
         }
         {
@@ -1160,7 +1240,7 @@ impl PackageCatalog {
                 Ok(false)
             }
             Answer::Unreachable(error) | Answer::Broken(error) => {
-                Err((true, format!("Лента «{title}» недоступна: {error}")))
+                Err((true, crate::tr!("Лента «{title}» недоступна: {error}", title = title, error = error)))
             }
             // An own source taken down: closed — its copy goes, and what came from it is hidden.
             Answer::Status(code)
@@ -1177,15 +1257,28 @@ impl PackageCatalog {
                 status.extras.insert(
                     url.to_string(),
                     FeedStatus {
-                        offline: false, problem: Some(format!("Источник «{title}» закрыт (HTTP {code})."))
+                        offline: false,
+                        problem: Some(crate::tr!(
+                            "Источник «{title}» закрыт (HTTP {code}).",
+                            title = title,
+                            code = code
+                        )),
                     },
                 );
                 return !was;
             }
-            Answer::Status(code) => Err((false, format!("Лента «{title}» ответила HTTP {code}"))),
-            Answer::TooBig => Err((false, format!("Лента «{title}» больше {} КБ", MAX_FEED / 1024))),
+            Answer::Status(code) => {
+                Err((false, crate::tr!("Лента «{title}» ответила HTTP {code}", title = title, code = code)))
+            }
+            Answer::TooBig => Err((
+                false,
+                crate::tr!("Лента «{title}» больше {max_feed} КБ", title = title, max_feed = MAX_FEED / 1024),
+            )),
             Answer::Text(text, new_etag) => match parse_feed(&text, url) {
-                Err(problem) => Err((false, format!("Лента «{title}» не разобралась: {problem}"))),
+                Err(problem) => Err((
+                    false,
+                    crate::tr!("Лента «{title}» не разобралась: {problem}", title = title, problem = problem),
+                )),
                 Ok(feed) => {
                     for skipped in &feed.skipped {
                         tracing::warn!(target: "plugins", "packages catalog: {url}: left out — {skipped}");
@@ -1204,7 +1297,10 @@ impl PackageCatalog {
                             tracing::info!(target: "plugins", "packages catalog: {} package(s) from {url} ({})", feed.packages.len(), extra.publisher);
                             Ok(true)
                         }
-                        Err(error) => Err((false, format!("Копия ленты «{title}» не записалась: {error}"))),
+                        Err(error) => Err((
+                            false,
+                            crate::tr!("Копия ленты «{title}» не записалась: {error}", title = title, error = error),
+                        )),
                     }
                 }
             },
@@ -1312,11 +1408,15 @@ impl PackageCatalog {
                     .await
                     .map_err(|_| error.clone())?;
                 if !answer.status().is_success() {
-                    return Err(format!("{error}; через компьютер — HTTP {}", answer.status()));
+                    return Err(crate::tr!(
+                        "{error}; через компьютер — HTTP {status}",
+                        error = error,
+                        status = answer.status()
+                    ));
                 }
                 let bytes = answer.bytes().await.map_err(|_| error.clone())?;
                 if bytes.len() as u64 > max {
-                    return Err(format!("файл больше {} КБ", max / 1024));
+                    return Err(crate::tr!("файл больше {max} КБ", max = max / 1024));
                 }
                 Ok(bytes.to_vec())
             }
@@ -1343,10 +1443,13 @@ impl PackageCatalog {
     /// A file for the station: only from the origin of a feed this computer reads — the main one, or an extra one it
     /// names.
     pub async fn fetch_for_station(&self, wanted: &str) -> Result<Vec<u8>, ApiError> {
-        let base = self.url().and_then(Result::ok).ok_or_else(|| ApiError::conflict("Каталог здесь не настроен."))?;
+        let base = self
+            .url()
+            .and_then(Result::ok)
+            .ok_or_else(|| ApiError::conflict(crate::tr!("Каталог здесь не настроен.")))?;
         let extras = self.declared(&base).into_iter().map(|extra| extra.url);
         let url = std::iter::once(base).chain(extras).find_map(|base| same_origin(&base, wanted));
-        let url = url.ok_or_else(|| ApiError::forbidden("Только файлы каталога."))?;
+        let url = url.ok_or_else(|| ApiError::forbidden(crate::tr!("Только файлы каталога.")))?;
         install::download(url.as_str(), MAX_ARCHIVE, ARCHIVE_TIMEOUT).await.map_err(ApiError::bad_gateway)
     }
 
@@ -1451,6 +1554,8 @@ impl PackageCatalog {
             .into_iter()
             .map(|package| (package.manifest.id.clone(), package.manifest.version.clone()))
             .collect();
+        // The entries in the request's language, else English (docs/plans/i18n.md).
+        let languages = crate::locale::preferences(&self.settings);
         let packages = feed
             .as_ref()
             .map(|feed| {
@@ -1461,12 +1566,13 @@ impl PackageCatalog {
                         let (state, reason) = entry_state(entry, mine, placement, signed, free_mb);
                         let dir = self.preview_dir(entry);
                         let base = format!("/api/v1/packages/catalog/{}/preview", entry.id);
+                        let (title, description) = entry.texts_in(&languages);
                         CatalogEntryView {
                             id: entry.id.clone(),
                             kind: entry.kind,
                             version: entry.version.to_string(),
-                            title: entry.title.clone(),
-                            description: entry.description.clone(),
+                            title,
+                            description,
                             license: entry.license.clone(),
                             verified: entry.verified,
                             runs: entry.runs.iter().map(|runs| runs.as_str()).collect(),
@@ -1521,9 +1627,9 @@ impl PackageCatalog {
             })
             .collect();
         let problem = match &self.source {
-            FeedSource::Off => Some("Каталог выключен в .env (PACKAGES_FEED_URL=off).".into()),
+            FeedSource::Off => Some(crate::tr!("Каталог выключен в .env (PACKAGES_FEED_URL=off).")),
             FeedSource::Missing => {
-                Some("Каталог не настроен: в этой сборке нет его адреса (PACKAGES_FEED_URL).".into())
+                Some(crate::tr!("Каталог не настроен: в этой сборке нет его адреса (PACKAGES_FEED_URL)."))
             }
             FeedSource::Url(_) => status.problem.clone(),
         };
@@ -1546,7 +1652,7 @@ impl PackageCatalog {
 
     /// A preview of a package in the feed: `image` or the n-th phrase (from 1). Only from the copy here.
     pub async fn preview(&self, id: &str, which: &str) -> Result<(PathBuf, &'static str), ApiError> {
-        let missing = || ApiError::not_found("Нет такого превью.");
+        let missing = || ApiError::not_found(crate::tr!("Нет такого превью."));
         let url = self.url().and_then(Result::ok).ok_or_else(missing)?;
         let feed = self.copy(&url).ok_or_else(missing)?;
         let entry = feed.find(id, None).ok_or_else(missing)?;
@@ -1580,22 +1686,28 @@ impl PackageCatalog {
         actor: Option<Actor>,
     ) -> Result<PackageView, ApiError> {
         if !matches!(self.source, FeedSource::Url(_)) {
-            return Err(ApiError::conflict("Каталог не настроен — ставить неоткуда."));
+            return Err(ApiError::conflict(crate::tr!("Каталог не настроен — ставить неоткуда.")));
         }
         if !self.enabled() {
-            return Err(ApiError::conflict("Каталог выключен в настройках: включите его, чтобы ставить приложения."));
+            return Err(ApiError::conflict(crate::tr!(
+                "Каталог выключен в настройках: включите его, чтобы ставить приложения."
+            )));
         }
         self.host.rescan();
         let feed = self.feed(false).await.ok_or_else(|| {
-            ApiError::unavailable(lock(&self.status).problem.clone().unwrap_or_else(|| "Каталог недоступен.".into()))
+            ApiError::unavailable(
+                lock(&self.status).problem.clone().unwrap_or_else(|| crate::tr!("Каталог недоступен.")),
+            )
         })?;
         let entry = feed.find(id, version).cloned().ok_or_else(|| match version {
-            Some(version) => ApiError::not_found(format!("В каталоге нет {id} {version}.")),
-            None => ApiError::not_found(format!("В каталоге нет «{id}».")),
+            Some(version) => {
+                ApiError::not_found(crate::tr!("В каталоге нет {id} {version}.", id = id, version = version))
+            }
+            None => ApiError::not_found(crate::tr!("В каталоге нет «{id}».", id = id)),
         })?;
         let installed = self.host.installed(id).map(|package| package.manifest.version.clone());
         if update && installed.is_none() {
-            return Err(ApiError::not_found(format!("«{id}» не установлено — обновлять нечего.")));
+            return Err(ApiError::not_found(crate::tr!("«{id}» не установлено — обновлять нечего.", id = id)));
         }
         let (state, reason) =
             entry_state(&entry, installed.as_ref(), (self.placement)(), feed.signed, self.host.free_memory_mb());
@@ -1604,26 +1716,30 @@ impl PackageCatalog {
                 return Err(ApiError::conflict(reason.unwrap_or_default()));
             }
             EntryState::Installed if installed.as_ref() == Some(&entry.version) => {
-                return Err(ApiError::conflict(format!("{} {} уже установлен.", entry.title, entry.version)));
+                return Err(ApiError::conflict(crate::tr!(
+                    "{entry} {version} уже установлен.",
+                    entry = entry.title,
+                    version = entry.version
+                )));
             }
             EntryState::Installed if update => {
-                return Err(ApiError::conflict(format!(
-                    "Новее {} в каталоге нет.",
-                    installed.unwrap_or(entry.version)
+                return Err(ApiError::conflict(crate::tr!(
+                    "Новее {version} в каталоге нет.",
+                    version = installed.unwrap_or(entry.version)
                 )));
             }
             _ => {}
         }
         // Room on the disk (on the station): the archive unpacked, roughly twice its size, and the reserve.
         if let Err(why) = self.host.room_for(entry.archive().size.div_ceil(1_048_576) * 2) {
-            return Err(ApiError::conflict(format!("Не поставить: {why}.")));
+            return Err(ApiError::conflict(crate::tr!("Не поставить: {why}.", why = why)));
         }
         let _turn = self.installing.lock().await;
         let archive = entry.archive();
         let bytes = self
             .download(&archive.url, MAX_ARCHIVE, ARCHIVE_TIMEOUT)
             .await
-            .map_err(|error| ApiError::bad_gateway(format!("Не скачалось: {error}")))?;
+            .map_err(|error| ApiError::bad_gateway(crate::tr!("Не скачалось: {error}", error = error)))?;
         let root = self.host.packages_dir().to_path_buf();
         let version = entry.version.to_string();
         let placed = {
@@ -1635,25 +1751,22 @@ impl PackageCatalog {
             .await
             .map_err(ApiError::internal)?
         };
-        let placed = placed.map_err(|error| ApiError::bad_request(format!("Не поставлено: {error}.")))?;
+        let placed =
+            placed.map_err(|error| ApiError::bad_request(crate::tr!("Не поставлено: {error}.", error = error)))?;
         // A voice of no known origin comes only from an own source the admin added, never from the catalog.
         let own = entry.extra.as_ref().is_some_and(|extra| extra.own);
         if !own && unknown_voice(&placed.dir) {
             let _ = std::fs::remove_dir_all(&placed.dir);
             self.host.rescan();
-            return Err(ApiError::bad_request(format!(
-                "Не поставлено: у «{}» голос неизвестного происхождения (voiceOrigin unknown) — из каталога такое не \
-                 ставится.",
-                entry.title
-            )));
+            return Err(ApiError::bad_request(crate::tr!("Не поставлено: у «{entry}» голос неизвестного происхождения (voiceOrigin unknown) — из каталога такое не ставится.", entry = entry.title)));
         }
         if placed.kind != entry.kind {
             let _ = std::fs::remove_dir_all(&placed.dir);
             self.host.rescan();
-            return Err(ApiError::bad_request(format!(
-                "Не поставлено: в каталоге это {}, а в архиве — {}.",
-                entry.kind.as_str(),
-                placed.kind.as_str()
+            return Err(ApiError::bad_request(crate::tr!(
+                "Не поставлено: в каталоге это {kind}, а в архиве — {kind2}.",
+                kind = entry.kind.as_str(),
+                kind2 = placed.kind.as_str()
             )));
         }
         // The version in the app's history (docs/plans/package-history.md), with the plugin's data just before it.
@@ -1713,38 +1826,51 @@ impl PackageCatalog {
     pub async fn add_source(&self, link: &str, actor: Option<Actor>) -> Result<CatalogView, ApiError> {
         let main = match self.url() {
             Some(Ok(url)) => url,
-            _ => return Err(ApiError::conflict("Каталог не настроен: свои источники читаются вместе с ним.")),
+            _ => {
+                return Err(ApiError::conflict(crate::tr!(
+                    "Каталог не настроен: свои источники читаются вместе с ним."
+                )))
+            }
         };
         if !self.enabled() {
-            return Err(ApiError::conflict("Каталог выключен в настройках: включите его, чтобы добавить источник."));
+            return Err(ApiError::conflict(crate::tr!(
+                "Каталог выключен в настройках: включите его, чтобы добавить источник."
+            )));
         }
         let url = feed_url(link.trim()).map_err(ApiError::bad_request)?;
         if url == main || self.declared(&main).iter().any(|extra| extra.url == url) {
-            return Err(ApiError::conflict("Эта лента уже читается: её пакеты и так в каталоге."));
+            return Err(ApiError::conflict(crate::tr!("Эта лента уже читается: её пакеты и так в каталоге.")));
         }
         {
             let sources = self.sources();
             if sources.iter().any(|source| source.url == url.as_str()) {
-                return Err(ApiError::conflict("Этот источник уже добавлен."));
+                return Err(ApiError::conflict(crate::tr!("Этот источник уже добавлен.")));
             }
             if sources.len() >= MAX_SOURCES {
-                return Err(ApiError::conflict(format!(
-                    "Своих источников — не больше {MAX_SOURCES}: сначала уберите ненужный."
+                return Err(ApiError::conflict(crate::tr!(
+                    "Своих источников — не больше {MAX_SOURCES}: сначала уберите ненужный.",
+                    MAX_SOURCES = MAX_SOURCES
                 )));
             }
         }
         // It must answer as a feed: a link with a typo is not kept.
         let problem = match ask(&url, None).await {
-            Answer::Text(text, _) => {
-                parse_feed(&text, &url).err().map(|problem| format!("это не лента пакетов: {problem}"))
-            }
+            Answer::Text(text, _) => parse_feed(&text, &url)
+                .err()
+                .map(|problem| crate::tr!("это не лента пакетов: {problem}", problem = problem)),
             Answer::Same => None,
-            Answer::Unreachable(error) | Answer::Broken(error) => Some(format!("не отвечает: {error}")),
-            Answer::Status(code) => Some(format!("ответил HTTP {code}")),
-            Answer::TooBig => Some(format!("лента больше {} КБ", MAX_FEED / 1024)),
+            Answer::Unreachable(error) | Answer::Broken(error) => {
+                Some(crate::tr!("не отвечает: {error}", error = error))
+            }
+            Answer::Status(code) => Some(crate::tr!("ответил HTTP {code}", code = code)),
+            Answer::TooBig => Some(crate::tr!("лента больше {max_feed} КБ", max_feed = MAX_FEED / 1024)),
         };
         if let Some(problem) = problem {
-            return Err(ApiError::bad_gateway(format!("Источник не добавлен: {url} {problem}.")));
+            return Err(ApiError::bad_gateway(crate::tr!(
+                "Источник не добавлен: {url} {problem}.",
+                url = url,
+                problem = problem
+            )));
         }
         {
             let _turn = self.reading.lock().await;
@@ -1776,7 +1902,7 @@ impl PackageCatalog {
             let before = sources.len();
             sources.retain(|source| feed_url(&source.url).ok().as_ref() != Some(&url));
             if sources.len() == before {
-                return Err(ApiError::not_found("Такого источника здесь нет."));
+                return Err(ApiError::not_found(crate::tr!("Такого источника здесь нет.")));
             }
             self.write_sources(&sources)?;
             let _ = std::fs::remove_dir_all(self.extra_dir(&url));
@@ -1794,18 +1920,22 @@ impl PackageCatalog {
         let origin = self.host.origin_of(id);
         if !origin.removable() {
             return Err(ApiError::conflict(format!(
-                "«{id}» — {} приложение: оно обновляется вместе со шлюзом и не удаляется.{}",
-                origin.word(),
+                "{}{}",
+                crate::tr!(
+                    "«{id}» — {word} приложение: оно обновляется вместе со шлюзом и не удаляется.",
+                    id = id,
+                    word = origin.word()
+                ),
                 if origin.can_disable() {
-                    " Его можно выключить или сделать свою копию."
+                    crate::tr!(" Его можно выключить или сделать свою копию.")
                 } else {
-                    ""
+                    String::new()
                 }
             )));
         }
         let root = self.host.packages_dir().to_path_buf();
         if !valid_id(id) || !root.join(id).is_dir() {
-            return Err(ApiError::not_found(format!("Нет приложения {id}.")));
+            return Err(ApiError::not_found(crate::tr!("Нет приложения {id}.", id = id)));
         }
         self.host.forget(id).await?;
         install::remove_package(&root, id).map_err(ApiError::internal)?;
@@ -2104,7 +2234,7 @@ pub mod tests {
         plugin.kind = PackageKind::Plugin;
         assert_eq!(
             entry_state(&plugin, None, Placement::Pc, false, None),
-            (EntryState::NeedsSignature, Some(NEEDS_SIGNATURE.into()))
+            (EntryState::NeedsSignature, Some(needs_signature()))
         );
         let mut app = character.clone();
         app.kind = PackageKind::App;

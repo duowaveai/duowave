@@ -1,4 +1,5 @@
 import { ComponentChildren } from 'preact';
+import { tr } from '../i18n';
 
 export interface TabEntry<T extends string> {
     id: T;
@@ -47,7 +48,7 @@ export function SectionTabs<T extends string>({ label, tabs, tab, onPick }: { la
                         {entry.icon}
                     </span>
                     <span class="section-tab-label">{entry.label}</span>
-                    {entry.dot && <span class="badge-dot" role="img" aria-label="новая версия шлюза" />}
+                    {entry.dot && <span class="badge-dot" role="img" aria-label={tr.ui.newGatewayVersion} />}
                 </button>
             ))}
         </div>

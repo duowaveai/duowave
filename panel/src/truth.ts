@@ -1,4 +1,5 @@
 import type { PanelMode } from './api';
+import { tr } from './i18n';
 import type { Placement } from './availability';
 
 /**
@@ -12,6 +13,8 @@ import type { Placement } from './availability';
  * - Мозг «модель на ПК» без ПК — отвечает Алиса.
  * - Голос: ПК на связи — свой; иначе облачный, если есть; иначе голос Алисы читает наш текст.
  * - Шлюз на ПК, а ПК спит — колонка молчит.
+ * - Режим «Микрофон» (`computer`, docs/plans/mic-mode.md): колонки и Яндекса нет вовсе. Нет слуха, голоса или мозга —
+ *   так и сказано, и где их поставить (`fixes`); Алиса никого не подменяет.
  */
 
 /** Где работает часть: колонка, ПК, облако, Яндекс. */
@@ -31,6 +34,15 @@ export interface Scenario {
     cloudVoice: boolean;
     /** Выбранный мозг: его имя и где он работает; yandex — разговор отдан Алисе маршрутом; none — не выбран. */
     brain: { name: string; where: 'cloud' | 'pc' | 'yandex' | 'none' };
+    /** Говорят микрофоном этого компьютера: колонки и Яндекса нет. */
+    computer?: boolean;
+}
+
+/** Чего не хватает и где это поставить: строка и место пульта (раздел и вкладка). */
+export interface Fix {
+    text: string;
+    place: [string, string];
+    label: string;
 }
 
 export interface Who {
@@ -63,23 +75,83 @@ export interface Solved {
     chosenAnswers: boolean;
     hops: Hop[];
     notes: string[];
+    /** Режим «Микрофон»: чего не хватает и где это поставить. */
+    fixes?: Fix[];
     /** «Сейчас отвечает DeepSeek». */
     title: string;
 }
 
 const toneOf = (host: Host | null): WhoTone => (host === null ? 'off' : host === 'cloud' ? 'cloud' : host === 'yandex' ? 'yandex' : 'own');
 
-const ALICE_EAR = (why: string): Who => ({ host: 'yandex', value: 'Яндекс', sub: why, tone: 'yandex' });
-const ALICE_BRAIN: Who = { host: 'yandex', value: 'Алиса', sub: 'думает Яндекс', tone: 'yandex' };
-const ALICE_VOICE: Who = { host: 'yandex', value: 'Алиса', sub: 'голос Яндекса', tone: 'yandex' };
+// Читаются при обращении (функции, не константы): язык пульта меняется без перезагрузки.
+const aliceEar = (why: string): Who => ({ host: 'yandex', value: tr.core.yandex, sub: why, tone: 'yandex' });
+const aliceBrain = (): Who => ({ host: 'yandex', value: tr.core.alice, sub: tr.core.aliceThinks, tone: 'yandex' });
+const aliceVoice = (): Who => ({ host: 'yandex', value: tr.core.alice, sub: tr.core.aliceVoiceSub, tone: 'yandex' });
 
-export const MODE_TITLES: Record<PanelMode, string> = { relay: 'Яндекс', gateway: 'Вместе', own: 'Своё' };
+export const MODE_TITLES: Record<PanelMode, string> = {
+    get relay() {
+        return tr.core.modeRelay;
+    },
+    get gateway() {
+        return tr.core.modeGateway;
+    },
+    get own() {
+        return tr.core.modeOwn;
+    },
+};
+
+/** Режим «Микрофон»: всё на этом компьютере или в облаке; чего нет — «нет», со ссылкой, где поставить. */
+function solveComputer(s: Scenario): Solved {
+    const fixes: Fix[] = [];
+    const hops: Hop[] = [{ from: 'pc', to: 'pc', tone: 'own', text: tr.core.hopComputerMic }];
+    const earHost: Host | null = s.pcEar !== false ? 'pc' : s.cloudEar ? 'cloud' : null;
+    const ear: Who =
+        earHost === 'pc'
+            ? { host: 'pc', value: tr.core.whoComputer, sub: tr.core.whyOwnEar, tone: 'own' }
+            : earHost === 'cloud'
+              ? { host: 'cloud', value: tr.core.whoCloud, sub: tr.core.whyCloudEar, tone: 'cloud' }
+              : { host: null, value: tr.core.whoNone, sub: tr.core.whyNoEar, tone: 'off' };
+    if (earHost) hops.push({ from: 'pc', to: earHost, back: earHost !== 'pc', tone: toneOf(earHost), text: earHost === 'pc' ? tr.core.hopPcRecognizes : tr.core.hopCloudRecognizes });
+    else fixes.push({ text: tr.core.fixNoEar, place: ['settings', 'station'], label: tr.core.fixNoEarLabel });
+
+    const brainHost: Host | null = s.brain.where === 'pc' ? 'pc' : s.brain.where === 'cloud' ? 'cloud' : null;
+    const brain: Who = brainHost
+        ? { host: brainHost, value: s.brain.name, sub: brainHost === 'pc' ? tr.core.whyHomeModel : tr.core.whyCloud, tone: toneOf(brainHost) }
+        : { host: null, value: tr.core.whoNone, sub: tr.core.whyNoBrain, tone: 'off' };
+    if (brainHost) hops.push({ from: 'pc', to: brainHost, back: brainHost !== 'pc', tone: toneOf(brainHost), text: tr.core.hopThinks(s.brain.name) });
+    else fixes.push({ text: tr.core.fixNoBrain, place: ['character', 'brain'], label: tr.core.fixNoBrainLabel });
+
+    const voiceHost: Host | null = s.pcVoice !== false ? 'pc' : s.cloudVoice ? 'cloud' : null;
+    const voice: Who =
+        voiceHost === 'pc'
+            ? { host: 'pc', value: tr.core.whoOwnVoice, sub: tr.core.whyPcSynth, tone: 'own' }
+            : voiceHost === 'cloud'
+              ? { host: 'cloud', value: tr.core.whoCloud, sub: tr.core.whyCloudVoice, tone: 'cloud' }
+              : { host: null, value: tr.core.whoNone, sub: tr.core.whyNoVoice, tone: 'off' };
+    if (voiceHost && brainHost) hops.push({ from: 'pc', to: voiceHost, back: voiceHost !== 'pc', tone: toneOf(voiceHost), text: tr.core.hopPcVoice });
+    if (!voiceHost) fixes.push({ text: tr.core.fixNoVoice, place: ['character', 'voice'], label: tr.core.fixNoVoiceLabel });
+
+    return {
+        mode: 'own',
+        gateway: 'pc',
+        silent: false,
+        ear,
+        brain,
+        voice,
+        chosenAnswers: !!brainHost,
+        hops,
+        notes: fixes.map((fix) => fix.text),
+        fixes,
+        title: brainHost ? tr.core.titleAnswering(brain.value) : tr.core.titleNobody,
+    };
+}
 
 export function solve(s: Scenario): Solved {
+    if (s.computer) return solveComputer(s);
     const gateway: Host = s.placement === 'pc' ? 'pc' : 'station';
     const pcHelps = s.placement !== 'station' && s.pcUp;
     const notes: string[] = [];
-    const nobody: Who = { host: null, value: 'никто', sub: 'компьютер спит', tone: 'off' };
+    const nobody: Who = { host: null, value: tr.core.whoNobody, sub: tr.core.whyPcAsleep, tone: 'off' };
 
     if (s.placement === 'pc' && !s.pcUp) {
         return {
@@ -91,8 +163,8 @@ export function solve(s: Scenario): Solved {
             voice: nobody,
             chosenAnswers: false,
             hops: [],
-            notes: ['Компьютер спит или выключен — колонке некуда отправить голос. Колонка молчит, пока компьютер не проснётся.'],
-            title: 'Колонка молчит',
+            notes: [tr.core.notePcAsleep],
+            title: tr.core.titleSilent,
         };
     }
 
@@ -101,8 +173,8 @@ export function solve(s: Scenario): Solved {
         mode = 'gateway';
         notes.push(
             s.placement === 'station'
-                ? '«Своё» на одной колонке не работает: ему нужен компьютер. Колонка работает в режиме «Вместе».'
-                : 'Компьютер не на связи — колонка сама перешла из «Своего» в «Вместе». Вернётся, когда компьютер проснётся.',
+                ? tr.core.noteOwnNeedsPc
+                : tr.core.notePcOfflineSwitched,
         );
     }
 
@@ -112,80 +184,80 @@ export function solve(s: Scenario): Solved {
             mode,
             gateway,
             silent: false,
-            ear: ALICE_EAR(why),
-            brain: ALICE_BRAIN,
-            voice: ALICE_VOICE,
+            ear: aliceEar(why),
+            brain: aliceBrain(),
+            voice: aliceVoice(),
             chosenAnswers: s.brain.where === 'yandex',
-            hops: [{ from: 'station', to: 'yandex', back: true, tone: 'yandex', text: 'Голос уходит Яндексу, отвечает Алиса' }],
+            hops: [{ from: 'station', to: 'yandex', back: true, tone: 'yandex', text: tr.core.hopVoiceToYandex }],
             notes,
-            title: 'Сейчас отвечает Алиса',
+            title: tr.core.titleAliceAnswers,
         };
     };
 
-    if (mode === 'relay') return yandexWhole('режим «Яндекс»');
+    if (mode === 'relay') return yandexWhole(tr.core.whyRelayMode);
 
     const pcEar = pcHelps && s.pcEar !== false;
     const earHost: Host | null = pcEar ? 'pc' : s.cloudEar ? 'cloud' : null;
     if (!earHost) {
-        const chosen = s.brain.where === 'cloud' || s.brain.where === 'pc' ? `${s.brain.name} в разговоре не участвует. ` : '';
-        const fix = s.placement === 'pc' ? 'Запустите слух на компьютере.' : s.placement === 'station' ? 'Чтобы отвечал ваш мозг, подключите облачный слух или позовите на помощь компьютер.' : 'Чтобы отвечал ваш мозг, подключите облачный слух или разбудите компьютер.';
-        return yandexWhole('слух не подключён', `Слух: нет → вопросы слышит Яндекс, и отвечает тоже он. ${chosen}${fix}`);
+        const chosen = s.brain.where === 'cloud' || s.brain.where === 'pc' ? tr.core.brainNotInvolved(s.brain.name) : '';
+        const fix = s.placement === 'pc' ? tr.core.fixEarPc : s.placement === 'station' ? tr.core.fixEarStation : tr.core.fixEarOther;
+        return yandexWhole(tr.core.whyNoEarConnected, tr.core.noteNoEar(chosen, fix));
     }
 
     const hops: Hop[] = [];
-    if (gateway === 'pc') hops.push({ from: 'station', to: 'pc', tone: 'own', text: 'Колонка отправляет голос в DuoWave на компьютере' });
-    else hops.push({ from: 'station', to: 'station', tone: 'own', text: 'Голос принимает DuoWave на колонке' });
+    if (gateway === 'pc') hops.push({ from: 'station', to: 'pc', tone: 'own', text: tr.core.hopVoiceToPc });
+    else hops.push({ from: 'station', to: 'station', tone: 'own', text: tr.core.hopVoiceToStation });
 
     const ear: Who =
         earHost === 'pc'
-            ? { host: 'pc', value: 'Компьютер', sub: 'свой слух', tone: 'own' }
-            : { host: 'cloud', value: 'Облако', sub: 'облачное распознавание', tone: 'cloud' };
+            ? { host: 'pc', value: tr.core.whoComputer, sub: tr.core.whyOwnEar, tone: 'own' }
+            : { host: 'cloud', value: tr.core.whoCloud, sub: tr.core.whyCloudEar, tone: 'cloud' };
     hops.push(
         earHost === gateway
-            ? { from: gateway, to: gateway, tone: 'own', text: 'Компьютер распознаёт речь' }
-            : { from: gateway, to: earHost, back: true, tone: toneOf(earHost), text: earHost === 'pc' ? 'Компьютер распознаёт речь' : 'Облако распознаёт речь' },
+            ? { from: gateway, to: gateway, tone: 'own', text: tr.core.hopPcRecognizes }
+            : { from: gateway, to: earHost, back: true, tone: toneOf(earHost), text: earHost === 'pc' ? tr.core.hopPcRecognizes : tr.core.hopCloudRecognizes },
     );
 
     let brain: Who;
     let brainHost: Host | null = null;
-    if (s.brain.where === 'yandex') brain = { ...ALICE_BRAIN, sub: 'разговор отдан Алисе в маршрутах' };
-    else if (s.brain.where === 'none') brain = { host: null, value: 'нет', sub: 'мозг не выбран', tone: 'off' };
+    if (s.brain.where === 'yandex') brain = { ...aliceBrain(), sub: tr.core.whyBrainGivenToAlice };
+    else if (s.brain.where === 'none') brain = { host: null, value: tr.core.whoNone, sub: tr.core.whyNoBrain, tone: 'off' };
     else if (s.brain.where === 'pc' && !pcHelps) {
-        brain = { ...ALICE_BRAIN, sub: 'модель на компьютере недоступна' };
-        notes.push(`Выбрана ${s.brain.name}, а компьютер не на связи. На вопросы отвечает Алиса.`);
+        brain = { ...aliceBrain(), sub: tr.core.whyModelUnavailable };
+        notes.push(tr.core.notePcModelOffline(s.brain.name));
     } else {
         brainHost = s.brain.where === 'pc' ? 'pc' : 'cloud';
-        brain = { host: brainHost, value: s.brain.name, sub: brainHost === 'pc' ? 'модель дома' : 'облако', tone: toneOf(brainHost) };
+        brain = { host: brainHost, value: s.brain.name, sub: brainHost === 'pc' ? tr.core.whyHomeModel : tr.core.whyCloud, tone: toneOf(brainHost) };
     }
     if (brainHost) {
         hops.push(
             brainHost === gateway
-                ? { from: gateway, to: gateway, tone: 'own', text: `${s.brain.name} придумывает ответ` }
-                : { from: gateway, to: brainHost, back: true, tone: toneOf(brainHost), text: `${s.brain.name} придумывает ответ` },
+                ? { from: gateway, to: gateway, tone: 'own', text: tr.core.hopThinks(s.brain.name) }
+                : { from: gateway, to: brainHost, back: true, tone: toneOf(brainHost), text: tr.core.hopThinks(s.brain.name) },
         );
     } else if (brain.host === 'yandex') {
-        hops.push({ from: 'station', to: 'yandex', back: true, tone: 'yandex', text: 'Вопрос отвечает Алиса' });
+        hops.push({ from: 'station', to: 'yandex', back: true, tone: 'yandex', text: tr.core.hopAliceAnswers });
     }
 
     let voice: Who;
     if (brain.host === null) {
-        voice = { host: null, value: '—', sub: 'отвечать нечего', tone: 'off' };
-        notes.push('Мозг не выбран: выберите его в «Персонаж» → «Мозг».');
-    } else if (brain.host === 'yandex') voice = ALICE_VOICE;
-    else if (pcHelps && s.pcVoice !== false) voice = { host: 'pc', value: 'Свой голос', sub: 'синтез на компьютере', tone: 'own' };
-    else if (s.cloudVoice) voice = { host: 'cloud', value: 'Облако', sub: 'облачный голос', tone: 'cloud' };
-    else voice = { host: 'yandex', value: 'Голос Алисы', sub: 'текст ваш, озвучивает Яндекс', tone: 'yandex' };
+        voice = { host: null, value: tr.core.whoDash, sub: tr.core.whyNothingToAnswer, tone: 'off' };
+        notes.push(tr.core.noteChooseBrain);
+    } else if (brain.host === 'yandex') voice = aliceVoice();
+    else if (pcHelps && s.pcVoice !== false) voice = { host: 'pc', value: tr.core.whoOwnVoice, sub: tr.core.whyPcSynth, tone: 'own' };
+    else if (s.cloudVoice) voice = { host: 'cloud', value: tr.core.whoCloud, sub: tr.core.whyCloudVoice, tone: 'cloud' };
+    else voice = { host: 'yandex', value: tr.core.whoAliceVoice, sub: tr.core.whyAliceVoice, tone: 'yandex' };
     if (brain.host !== 'yandex' && brain.host !== null) {
         if (voice.host === 'pc')
             hops.push(
                 gateway === 'pc'
-                    ? { from: 'pc', to: 'station', tone: 'own', text: 'Ответ своим голосом звучит из колонки' }
-                    : { from: 'station', to: 'pc', back: true, tone: 'own', text: 'Компьютер озвучивает ответ своим голосом' },
+                    ? { from: 'pc', to: 'station', tone: 'own', text: tr.core.hopStationVoice }
+                    : { from: 'station', to: 'pc', back: true, tone: 'own', text: tr.core.hopPcSpeaks },
             );
-        else if (voice.host === 'cloud') hops.push({ from: gateway, to: 'cloud', back: true, tone: 'cloud', text: 'Облако озвучивает ответ' });
-        else hops.push({ from: 'station', to: 'yandex', back: true, tone: 'yandex', text: 'Яндекс озвучивает готовый текст голосом Алисы' });
+        else if (voice.host === 'cloud') hops.push({ from: gateway, to: 'cloud', back: true, tone: 'cloud', text: tr.core.hopCloudSpeaks });
+        else hops.push({ from: 'station', to: 'yandex', back: true, tone: 'yandex', text: tr.core.hopYandexSpeaks });
     }
-    if (mode === 'own' && voice.host !== 'pc' && voice.host !== 'cloud') notes.push('В «Своём» голоса Алисы нет: без своего голоса ответ не прозвучит.');
+    if (mode === 'own' && voice.host !== 'pc' && voice.host !== 'cloud') notes.push(tr.core.noteOwnNoAliceVoice);
 
     const chosenAnswers = brain.host !== null && brain.host !== 'yandex' ? true : s.brain.where === 'yandex';
     return {
@@ -198,6 +270,6 @@ export function solve(s: Scenario): Solved {
         chosenAnswers,
         hops,
         notes,
-        title: brain.host === null ? 'Ответить некому' : `Сейчас отвечает ${brain.value}`,
+        title: brain.host === null ? tr.core.titleNobody : tr.core.titleAnswering(brain.value),
     };
 }

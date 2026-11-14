@@ -335,7 +335,7 @@ impl ConnectorRegistry {
 async fn checked(connector: &dyn Connector) -> ConnectorStatus {
     match tokio::time::timeout(STATUS_TIMEOUT, connector.status()).await {
         Ok(status) => status,
-        Err(_) => ConnectorStatus::error("не ответил вовремя"),
+        Err(_) => ConnectorStatus::error(crate::tr!("не ответил вовремя")),
     }
 }
 

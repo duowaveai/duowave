@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 
 import { ApiError, AskEvent, askBrain, problemOf } from '../api';
 import { IconSparkle } from '../icons';
+import { formatNumber, tr } from '../i18n';
 import { Sheet } from '../ui/sheet';
+import { byMode } from '../words';
 
 /** Одна реплика разговора: вопрос, ответ модели или шаг инструмента. */
 type Line =
@@ -36,7 +38,7 @@ export function AskSheet({ onClose }: { onClose: () => void }) {
             const last = next[next.length - 1];
             switch (event.type) {
                 case 'start':
-                    setMeta(`${event.model || 'модель'}${event.provider ? ` · ${event.provider}` : ''} · инструментов MCP: ${event.tools}`);
+                    setMeta(tr.ask.meta(event.model || tr.ask.metaModel, event.provider ?? '', event.tools));
                     return next;
                 case 'text':
                     if (last?.kind === 'answer') next[next.length - 1] = { ...last, text: `${last.text} ${event.text}`.trim(), ms: last.ms ?? event.ms };
@@ -75,7 +77,7 @@ export function AskSheet({ onClose }: { onClose: () => void }) {
             fresh.current = false;
         } catch (e) {
             if (!controller.signal.aborted) {
-                setLines((all) => [...all, { kind: 'note', text: e instanceof ApiError ? problemOf(e) : 'Шлюз недоступен — попробуйте ещё раз.', error: true }]);
+                setLines((all) => [...all, { kind: 'note', text: e instanceof ApiError ? problemOf(e) : tr.ask.unreachable, error: true }]);
             }
         } finally {
             setBusy(false);
@@ -91,8 +93,8 @@ export function AskSheet({ onClose }: { onClose: () => void }) {
 
     return (
         <Sheet
-            title="Спросить мозг"
-            about={meta ?? 'та же модель и те же инструменты, что у колонки — без колонки'}
+            title={tr.ask.title}
+            about={meta ?? byMode(tr.ask.aboutStation, tr.ask.aboutComputer)}
             icon={
                 <span class="dash-circle dash-sheet-icon" aria-hidden="true">
                     <IconSparkle size={20} />
@@ -109,17 +111,17 @@ export function AskSheet({ onClose }: { onClose: () => void }) {
                 >
                     <input
                         class="field flex-1 min-w-0"
-                        aria-label="Вопрос"
-                        placeholder="Например: что у нас на сегодня в Todoist?"
+                        aria-label={tr.ask.questionLabel}
+                        placeholder={tr.ask.placeholder}
                         value={text}
                         onInput={(e) => setText((e.target as HTMLInputElement).value)}
                     />
                     <button class="pill pill-own dash-confirm-btn" type="submit" disabled={busy || !text.trim()}>
-                        {busy ? '…' : 'Спросить'}
+                        {busy ? '…' : tr.ask.ask}
                     </button>
                     {lines.length > 0 && (
                         <button class="pill pill-off dash-confirm-btn" type="button" onClick={restart}>
-                            Заново
+                            {tr.ask.restart}
                         </button>
                     )}
                 </form>
@@ -128,8 +130,7 @@ export function AskSheet({ onClose }: { onClose: () => void }) {
             <div role="log" aria-live="polite" class="flex flex-col gap-8 max-h-52vh-460 overflow-y-auto">
                 {!lines.length && (
                     <p class="t-caption m-0">
-                        Спросите то, что спросили бы колонку: модель ответит словами и, если нужно, вызовет инструменты подключённых
-                        серверов. Команды самой колонке здесь не выполняются.
+                        {byMode(tr.ask.introStation, tr.ask.introComputer)}
                     </p>
                 )}
                 {lines.map((line, index) => {
@@ -144,7 +145,7 @@ export function AskSheet({ onClose }: { onClose: () => void }) {
                         return (
                             <div key={index} class="flex flex-col gap-2 max-w-92p">
                                 <p class="m-0">{line.text}</p>
-                                {line.ms !== undefined && <span class="t-caption">первое слово за {(line.ms / 1000).toFixed(1).replace('.', ',')} с</span>}
+                                {line.ms !== undefined && <span class="t-caption">{tr.ask.firstWord(formatNumber(line.ms / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 }))}</span>}
                             </div>
                         );
                     }
@@ -154,8 +155,8 @@ export function AskSheet({ onClose }: { onClose: () => void }) {
                                 <span class="flex gap-6 items-center flex-wrap">
                                     <b class="fs-14">{toolTitle(line.name)}</b>
                                     {line.server && <span class="pill pill-off">{line.server}</span>}
-                                    {line.result?.outside && <span class="pill pill-yandex">текст из интернета</span>}
-                                    {!line.result && <span class="spinner spinner-sm" aria-label="ждём ответ сервера" />}
+                                    {line.result?.outside && <span class="pill pill-yandex">{tr.ask.outsideText}</span>}
+                                    {!line.result && <span class="spinner spinner-sm" aria-label={tr.ask.waitingServer} />}
                                 </span>
                                 <span class="t-mono opacity-80">
                                     {JSON.stringify(line.input)}

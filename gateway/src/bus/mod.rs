@@ -20,7 +20,6 @@ pub mod provider;
 pub mod providers;
 pub mod routes;
 pub mod trail;
-
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -167,15 +166,19 @@ impl Bus {
             Verdict::Allow => Ok(()),
             Verdict::Ask(kind) => {
                 let question = self.question(kind, trail, from, &decision);
-                let why = format!("«{}» хочет {} — ждёт вашего «да»", question.from_title, question.what);
+                let why = crate::tr!(
+                    "«{who}» хочет {what} — ждёт вашего «да»",
+                    who = question.from_title,
+                    what = question.what
+                );
                 let (id, new) = self.consent.ask(question);
                 if new {
                     self.events.emit(GatewayEvent::BusAsked { id, from: from.to_string(), to: to.to_string() });
                 }
                 Err(why)
             }
-            Verdict::Deny(Reason::NotFound) => Err(format!("нет такого: {to}")),
-            Verdict::Deny(_) => Err(format!("нет связи с «{}»", decision.participant.title)),
+            Verdict::Deny(Reason::NotFound) => Err(crate::tr!("нет такого: {what}", what = to)),
+            Verdict::Deny(_) => Err(crate::tr!("нет связи с «{who}»", who = decision.participant.title)),
         }
     }
 
@@ -191,8 +194,8 @@ impl Bus {
     pub fn title_of(&self, address: &Address) -> String {
         if let Some(principal_like) = PEOPLE.iter().find(|kind| **kind == address.kind()) {
             return match *principal_like {
-                address::HOME => "Дом".into(),
-                address::GATEWAY => "Шлюз".into(),
+                address::HOME => crate::tr!("Дом"),
+                address::GATEWAY => crate::tr!("Шлюз"),
                 _ => address.to_string(),
             };
         }
@@ -215,6 +218,10 @@ impl Bus {
             (Some(right), Some(principal)) => principal.kind == PrincipalKind::System || can(Some(principal), right),
             _ => true,
         };
+        // A folder closed to the starter's role is not there for the chain at all: «чего не видишь — того нет».
+        if !handle.admits(trail.root.principal()) {
+            return Err(BusError::NotFound(to.to_string()));
+        }
         let (danger, always) =
             danger_of(handle.danger, &self.links.dangers(), participant.address.as_str(), &handle.name, from.as_str());
         let confirmed = danger.is_some() && self.consent.has_once(from, to, &handle.name);
@@ -267,10 +274,11 @@ impl Bus {
         let entry = pairs.entry((from.to_string(), to.to_string())).or_insert((today, 0));
         entry.1 += 1;
         if entry.1 > PAIR_BUDGET {
-            return Err(BusError::Fuse(format!(
-                "«{}» сегодня уже {PAIR_BUDGET} раз звало «{}» без человека: хватит до завтра",
-                self.title_of(from),
-                self.title_of(to)
+            return Err(BusError::Fuse(crate::tr!(
+                "«{from}» сегодня уже {times} раз звало «{to}» без человека: хватит до завтра",
+                from = self.title_of(from),
+                times = PAIR_BUDGET,
+                to = self.title_of(to)
             )));
         }
         Ok(())
@@ -319,8 +327,13 @@ impl Bus {
         question.to_title = decision.participant.title.clone();
         let doing = decision.handle.title.clone().unwrap_or_else(|| decision.handle.name.clone());
         question.what = match (kind, decision.danger) {
-            (AskKind::Once, Some(danger)) => format!("«{doing}» у «{}» — {}", question.to_title, danger.title()),
-            _ => format!("{} «{}»", level.verb(to.kind()), question.to_title),
+            (AskKind::Once, Some(danger)) => crate::tr!(
+                "«{doing}» у «{who}» — {danger}",
+                doing = doing,
+                who = question.to_title,
+                danger = danger.title()
+            ),
+            _ => crate::tr!("{verb} «{who}»", verb = level.verb(to.kind()), who = question.to_title),
         };
         question.root = trail.root.title();
         question
@@ -352,7 +365,7 @@ impl Bus {
             Verdict::Allow => {}
             Verdict::Ask(kind) => {
                 let question = self.question(kind, &trail, &from, &decision);
-                let why = format!("«{}» хочет {}", question.from_title, question.what);
+                let why = crate::tr!("«{who}» хочет {what}", who = question.from_title, what = question.what);
                 let (id, new) = self.consent.ask(question);
                 if new {
                     self.events.emit(GatewayEvent::BusAsked {
@@ -377,14 +390,14 @@ impl Bus {
                 );
                 return Err(match reason {
                     Reason::NotFound => BusError::NotFound(to.to_string()),
-                    Reason::NotAllowed => BusError::Denied(format!(
-                        "нет связи: «{}» не может {} «{}»",
-                        self.title_of(&from),
-                        decision.handle.level.verb(to.kind()),
-                        decision.participant.title
+                    Reason::NotAllowed => BusError::Denied(crate::tr!(
+                        "нет связи: «{from}» не может {verb} «{to}»",
+                        from = self.title_of(&from),
+                        verb = decision.handle.level.verb(to.kind()),
+                        to = decision.participant.title
                     )),
                     Reason::RootCannot => {
-                        BusError::Denied(format!("тому, кто начал ({}), это нельзя", trail.root.title()))
+                        BusError::Denied(crate::tr!("тому, кто начал ({who}), это нельзя", who = trail.root.title()))
                     }
                 });
             }
@@ -457,7 +470,7 @@ impl Bus {
                             Question::new(AskKind::Remember, listener.clone(), from.clone(), "news", Level::Listen);
                         question.from_title = self.title_of(&listener);
                         question.to_title = self.title_of(&from);
-                        question.what = format!("слышать новости «{}»", question.to_title);
+                        question.what = crate::tr!("слышать новости «{who}»", who = question.to_title);
                         question.root = trail.root.title();
                         let (id, new) = self.consent.ask(question);
                         if new {
@@ -638,7 +651,7 @@ pub fn letter(
             folder if folder.starts_with("folders.") => {
                 let handle = folder.trim_start_matches("folders.");
                 let mut carried = input.clone();
-                if handle == "move" {
+                if handle == "move" || handle == "copy" {
                     carried = serde_json::json!({ "to": at("to")?.to_string() });
                 }
                 bus.call(trail, me, at("at")?, handle, carried, vec![]).await.map_err(text)

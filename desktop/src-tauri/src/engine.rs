@@ -6,6 +6,7 @@
 //! working copy's .env, never a PORT from the shell the app was started in), writes its log to the app's log file,
 //! and is told it is managed by the desktop app: its updates come through the app's updater (updates.rs).
 
+use crate::lang::t;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
@@ -132,17 +133,27 @@ pub struct Status {
 impl Status {
     pub fn title(&self) -> String {
         match self.phase {
-            Phase::Starting => "Шлюз запускается…".into(),
-            Phase::Running if !self.responding => "Шлюз не отвечает".into(),
-            Phase::Running if self.station_gateway == Some(true) => "Шлюз на колонке · на связи".into(),
-            Phase::Running if self.station_gateway == Some(false) => "Шлюз на колонке не отвечает".into(),
-            Phase::Running if self.station => "Шлюз работает · колонка на связи".into(),
-            Phase::Running => "Шлюз работает".into(),
-            Phase::Stopping => "Шлюз останавливается…".into(),
-            Phase::Stopped => "Шлюз остановлен".into(),
+            Phase::Starting => t("Шлюз запускается…", "Gateway is starting…").into(),
+            Phase::Running if !self.responding => t("Шлюз не отвечает", "Gateway is not responding").into(),
+            Phase::Running if self.station_gateway == Some(true) => {
+                t("Шлюз на колонке · на связи", "Gateway on the speaker · connected").into()
+            }
+            Phase::Running if self.station_gateway == Some(false) => t(
+                "Шлюз на колонке не отвечает",
+                "Gateway on the speaker is not responding",
+            )
+            .into(),
+            Phase::Running if self.station => t(
+                "Шлюз работает · колонка на связи",
+                "Gateway is running · speaker connected",
+            )
+            .into(),
+            Phase::Running => t("Шлюз работает", "Gateway is running").into(),
+            Phase::Stopping => t("Шлюз останавливается…", "Gateway is stopping…").into(),
+            Phase::Stopped => t("Шлюз остановлен", "Gateway is stopped").into(),
             Phase::Failed => match &self.problem {
-                Some(problem) => format!("Шлюз остановлен: {}", problem.short),
-                None => "Шлюз остановлен".into(),
+                Some(problem) => format!("{}: {}", t("Шлюз остановлен", "Gateway is stopped"), problem.short),
+                None => t("Шлюз остановлен", "Gateway is stopped").into(),
             },
         }
     }
@@ -235,6 +246,21 @@ impl Gateway {
         self.keep_awake.load(Ordering::SeqCst)
     }
 
+    /// The engine running now, if it is up: the window gives it a folder dropped on it.
+    pub fn app(&self) -> Option<Arc<duowave::app::App>> {
+        self.state
+            .lock()
+            .unwrap()
+            .engine
+            .as_ref()
+            .map(|(_, engine)| engine.clone())
+    }
+
+    /// The home folder of DuoWave, as the engine's environment names it (`~/DuoWave` unless the .env says).
+    pub fn home_folder(&self) -> Option<PathBuf> {
+        engine_env(&self.paths).get("HOME_FILES").map(PathBuf::from)
+    }
+
     /// Switches the hold now: on while the engine runs, off at once.
     pub fn set_keep_awake(&self, on: bool) {
         self.keep_awake.store(on, Ordering::SeqCst);
@@ -285,9 +311,14 @@ impl Gateway {
     /// «Взять свободный порт»: the first free one from the default up, written into .env (PORT), then a start. A
     /// station already connected to the old port is the panel's to re-point (its «Переподключить» banner).
     pub fn take_free_port(self: &Arc<Self>) -> Result<u16, String> {
-        let port = free_port().ok_or("свободного порта не нашлось")?;
-        crate::envfile::set_port(&self.paths.data.join(".env"), port)
-            .map_err(|error| format!("не удалось записать .env: {error}"))?;
+        let port = free_port().ok_or(t("свободного порта не нашлось", "no free port found"))?;
+        crate::envfile::set_port(&self.paths.data.join(".env"), port).map_err(|error| {
+            t(
+                &format!("не удалось записать .env: {error}"),
+                &format!("could not write .env: {error}"),
+            )
+            .to_owned()
+        })?;
         self.note(&format!("took the free port {port} (written into .env)"));
         self.restart();
         Ok(port)
@@ -324,8 +355,15 @@ impl Gateway {
 
         if let Err(error) = duowave::config::data_dir::prepare_data_dir(&env) {
             return self.fail(Problem {
-                short: "папка данных недоступна".into(),
-                advice: format!("Не удалось подготовить {}: {error}.", self.paths.data.display()),
+                short: t("папка данных недоступна", "data folder unavailable").into(),
+                advice: {
+                    let path = self.paths.data.display();
+                    t(
+                        &format!("Не удалось подготовить {path}: {error}."),
+                        &format!("Could not prepare {path}: {error}."),
+                    )
+                    .into()
+                },
             });
         }
         let config = match duowave::config::Config::load(&env) {
@@ -333,13 +371,23 @@ impl Gateway {
             Err(error) => {
                 self.note(&error.to_string());
                 return self.fail(Problem {
-                    short: "ошибка в .env".into(),
-                    advice: format!(
-                        "В файле {} есть значения, которые шлюз не принимает: {}.\n\n\
-                         Исправьте файл и нажмите «Запустить снова».",
-                        self.paths.data.join(".env").display(),
-                        error.problems.join("; ")
-                    ),
+                    short: t("ошибка в .env", "error in .env").into(),
+                    advice: {
+                        let file = self.paths.data.join(".env");
+                        let file = file.display();
+                        let problems = error.problems.join("; ");
+                        t(
+                            &format!(
+                                "В файле {file} есть значения, которые шлюз не принимает: {problems}.\n\n\
+                                 Исправьте файл и нажмите «Запустить снова»."
+                            ),
+                            &format!(
+                                "The file {file} has values the gateway does not accept: {problems}.\n\n\
+                                 Fix the file and press “Start again”."
+                            ),
+                        )
+                        .into()
+                    },
                 });
             }
         };
@@ -361,8 +409,16 @@ impl Gateway {
             }
             Err(error) => {
                 return self.fail(Problem {
-                    short: format!("порт {port} не открывается"),
-                    advice: format!("Не удалось открыть порт {port}: {error}."),
+                    short: t(
+                        &format!("порт {port} не открывается"),
+                        &format!("port {port} will not open"),
+                    )
+                    .into(),
+                    advice: t(
+                        &format!("Не удалось открыть порт {port}: {error}."),
+                        &format!("Could not open port {port}: {error}."),
+                    )
+                    .into(),
                 })
             }
         };
@@ -394,8 +450,12 @@ impl Gateway {
             };
             let outcome = serving.await.unwrap_or_else(|error| {
                 Err(Problem {
-                    short: "сбой".into(),
-                    advice: format!("Шлюз прервался: {error}. Подробности — в журнале."),
+                    short: t("сбой", "crashed").into(),
+                    advice: t(
+                        &format!("Шлюз прервался: {error}. Подробности — в журнале."),
+                        &format!("The gateway was interrupted: {error}. See the log for details."),
+                    )
+                    .into(),
                 })
             });
             let _ = done.send(());
@@ -416,15 +476,23 @@ impl Gateway {
         stop_signal: tokio::sync::oneshot::Receiver<()>,
     ) -> Result<(), Problem> {
         let engine = duowave::app::App::build(config).map_err(|error| Problem {
-            short: "не запускается".into(),
-            advice: format!("Шлюз не собрался: {error:#}. Подробности — в журнале."),
+            short: t("не запускается", "will not start").into(),
+            advice: t(
+                &format!("Шлюз не собрался: {error:#}. Подробности — в журнале."),
+                &format!("The gateway could not be built: {error:#}. See the log for details."),
+            )
+            .into(),
         })?;
         if let Some(installer) = self.installer.lock().unwrap().clone() {
             engine.updates.set_installer(installer);
         }
         engine.start().await.map_err(|error| Problem {
-            short: "не запускается".into(),
-            advice: format!("Шлюз не запустился: {error:#}. Подробности — в журнале."),
+            short: t("не запускается", "will not start").into(),
+            advice: t(
+                &format!("Шлюз не запустился: {error:#}. Подробности — в журнале."),
+                &format!("The gateway did not start: {error:#}. See the log for details."),
+            )
+            .into(),
         })?;
         self.state.lock().unwrap().engine = Some((generation, engine.clone()));
         let listener = tokio::net::TcpListener::from_std(listener).map_err(|error| Problem {
@@ -448,8 +516,12 @@ impl Gateway {
             }
         }
         served.map_err(|error| Problem {
-            short: "остановился".into(),
-            advice: format!("Шлюз остановился: {error}. Подробности — в журнале."),
+            short: t("остановился", "stopped").into(),
+            advice: t(
+                &format!("Шлюз остановился: {error}. Подробности — в журнале."),
+                &format!("The gateway stopped: {error}. See the log for details."),
+            )
+            .into(),
         })
     }
 
@@ -490,8 +562,12 @@ impl Gateway {
     /// A run that ended without a stop: started once more after a good run, otherwise left failed with the reason.
     fn ended(self: Arc<Self>, generation: u64, started: Instant, outcome: Result<(), Problem>) {
         let problem = outcome.err().unwrap_or_else(|| Problem {
-            short: "остановился".into(),
-            advice: "Шлюз остановился сам. Подробности — в журнале.".into(),
+            short: t("остановился", "stopped").into(),
+            advice: t(
+                "Шлюз остановился сам. Подробности — в журнале.",
+                "The gateway stopped on its own. See the log for details.",
+            )
+            .into(),
         });
         {
             let _op = self.ops.lock().unwrap();
@@ -559,11 +635,17 @@ impl Gateway {
                     }
                     self.stop_locked(STOP_GRACE);
                     return self.fail(Problem {
-                        short: "не отвечает".into(),
-                        advice: format!(
-                            "Шлюз не запустился за {} секунд. Подробности — в журнале.",
-                            START_TIMEOUT.as_secs()
-                        ),
+                        short: t("не отвечает", "not responding").into(),
+                        advice: {
+                            let seconds = START_TIMEOUT.as_secs();
+                            t(
+                                &format!("Шлюз не запустился за {seconds} секунд. Подробности — в журнале."),
+                                &format!(
+                                    "The gateway did not start within {seconds} seconds. See the log for details."
+                                ),
+                            )
+                            .into()
+                        },
                     });
                 }
                 Phase::Running => {
@@ -645,7 +727,19 @@ fn engine_env(paths: &Paths) -> duowave::config::Env {
     vars.insert("DATA_DIR".into(), paths.data.to_string_lossy().into_owned());
     vars.insert("NODE_ENV".into(), "production".into());
     vars.insert(MANAGED_ENV.into(), "desktop".into());
-    duowave::config::Env::with_files(vars, &[paths.data.join(".env")])
+    let env = duowave::config::Env::with_files(vars.clone(), &[paths.data.join(".env")]);
+    // The home folder of DuoWave is the person's own `~/DuoWave` (docs/plans/shared-folders.md, the owner's decision
+    // 14.11): seen in Finder like any folder. A HOME_FILES of the .env names another place.
+    if env.get("HOME_FILES").is_some() {
+        return env;
+    }
+    match dirs::home_dir() {
+        Some(home) => {
+            vars.insert("HOME_FILES".into(), home.join("DuoWave").to_string_lossy().into_owned());
+            duowave::config::Env::with_files(vars, &[paths.data.join(".env")])
+        }
+        None => env,
+    }
 }
 
 /// The port the engine will listen on, as its configuration reads PORT.
@@ -673,11 +767,18 @@ fn port_taken(port: u16) -> Option<Problem> {
     TcpStream::connect_timeout(&address, Duration::from_millis(500)).ok()?;
     Some(if health(port).is_some() {
         Problem {
-            short: format!("порт {port} занят"),
-            advice: format!(
-                "На порту {port} уже работает другой шлюз — например, запущенный вручную из папки с кодом или \
-                 службой. Остановите его и нажмите «Запустить снова» или возьмите для этого шлюза свободный порт."
-            ),
+            short: t(&format!("порт {port} занят"), &format!("port {port} is busy")).into(),
+            advice: t(
+                &format!(
+                    "На порту {port} уже работает другой шлюз — например, запущенный вручную из папки с кодом или \
+                     службой. Остановите его и нажмите «Запустить снова» или возьмите для этого шлюза свободный порт."
+                ),
+                &format!(
+                    "Another gateway is already running on port {port} — for example one started by hand from the \
+                     code folder, or a service. Stop it and press “Start again”, or take a free port for this gateway."
+                ),
+            )
+            .into(),
         }
     } else {
         busy(port)
@@ -686,32 +787,58 @@ fn port_taken(port: u16) -> Option<Problem> {
 
 fn busy(port: u16) -> Problem {
     Problem {
-        short: format!("порт {port} занят"),
-        advice: format!(
-            "Порт {port} держит другая программа. Возьмите для шлюза свободный порт — приложение запишет его в .env \
-             в папке с данными (строка PORT) — или закройте ту программу и нажмите «Запустить снова». Колонку, уже \
-             подключённую к этому шлюзу, после смены порта пульт предложит переподключить."
-        ),
+        short: t(&format!("порт {port} занят"), &format!("port {port} is busy")).into(),
+        advice: t(
+            &format!(
+                "Порт {port} держит другая программа. Возьмите для шлюза свободный порт — приложение запишет его в .env \
+                 в папке с данными (строка PORT) — или закройте ту программу и нажмите «Запустить снова». Колонку, уже \
+                 подключённую к этому шлюзу, после смены порта пульт предложит переподключить."
+            ),
+            &format!(
+                "Another program is holding port {port}. Take a free port for the gateway — the app writes it into .env \
+                 in the data folder (the PORT line) — or close that program and press “Start again”. A speaker already \
+                 connected to this gateway will be offered a reconnect in the panel after the port changes."
+            ),
+        )
+        .into(),
     }
 }
 
 fn no_permission(port: u16) -> Problem {
     let advice = if cfg!(target_os = "linux") {
-        format!(
-            "На Linux порты ниже 1024 открывает только root. Разрешите их приложению и нажмите «Запустить снова»:\n\n\
-             sudo setcap cap_net_bind_service=+ep '{}'\n\n\
-             или всем программам сразу (так же и для AppImage):\n\n\
-             sudo sysctl -w net.ipv4.ip_unprivileged_port_start={port}\n\n\
-             Чтобы это пережило перезагрузку, та же настройка — строкой в /etc/sysctl.d/90-duowave.conf.",
-            std::env::current_exe()
-                .map(|path| path.display().to_string())
-                .unwrap_or_default()
+        let program = std::env::current_exe()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        t(
+            &format!(
+                "На Linux порты ниже 1024 открывает только root. Разрешите их приложению и нажмите «Запустить снова»:\n\n\
+                 sudo setcap cap_net_bind_service=+ep '{program}'\n\n\
+                 или всем программам сразу (так же и для AppImage):\n\n\
+                 sudo sysctl -w net.ipv4.ip_unprivileged_port_start={port}\n\n\
+                 Чтобы это пережило перезагрузку, та же настройка — строкой в /etc/sysctl.d/90-duowave.conf."
+            ),
+            &format!(
+                "On Linux only root opens ports below 1024. Allow the app to and press “Start again”:\n\n\
+                 sudo setcap cap_net_bind_service=+ep '{program}'\n\n\
+                 or allow all programs at once (the same for an AppImage):\n\n\
+                 sudo sysctl -w net.ipv4.ip_unprivileged_port_start={port}\n\n\
+                 To keep it after a reboot, put the same setting as a line in /etc/sysctl.d/90-duowave.conf."
+            ),
         )
+        .to_owned()
     } else {
-        format!("Система не дала шлюзу открыть порт {port}. Подробности — в журнале.")
+        t(
+            &format!("Система не дала шлюзу открыть порт {port}. Подробности — в журнале."),
+            &format!("The system did not let the gateway open port {port}. See the log for details."),
+        )
+        .to_owned()
     };
     Problem {
-        short: format!("нет прав на порт {port}"),
+        short: t(
+            &format!("нет прав на порт {port}"),
+            &format!("no permission for port {port}"),
+        )
+        .into(),
         advice,
     }
 }

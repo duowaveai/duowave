@@ -11,8 +11,10 @@ use super::say_latin::say_latin;
 use super::say_numbers::say_numbers;
 use crate::config::OwnSpeechConfig;
 use crate::speech::asr::transcript::is_js_space;
+use crate::speech::audio::ogg_opus_demuxer::{OggOpusDemuxer, OggOpusEvent};
 use crate::speech::audio::ogg_opus_encoder::{encode_ogg_opus, EncodeRate};
-use crate::speech::audio::pcm::{decode_wav, try_resample};
+use crate::speech::audio::opus_pcm_decoder::{OpusPcmDecoder, SPEECH_SAMPLE_RATE};
+use crate::speech::audio::pcm::{decode_wav, encode_wav, try_resample};
 use crate::utils::http::client;
 
 /// Our synthesis of one phrase: Ogg/Opus, whole (the server's answer is read to its end). The TS gave it as an
@@ -180,6 +182,27 @@ impl std::fmt::Debug for SpeechRoute {
     }
 }
 
+/// Whether a synthesis failed because nothing answered at all: the voice server is not up (yet).
+pub fn is_unreachable(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.downcast_ref::<reqwest::Error>().is_some_and(unreachable))
+}
+
+/// A server's Ogg/Opus as a WAV: 16 kHz mono, the rate our decoder gives.
+fn opus_to_wav(audio: &[u8]) -> Result<Vec<u8>> {
+    let mut decoder = OpusPcmDecoder::new();
+    let mut pcm = Vec::new();
+    for event in OggOpusDemuxer::new().push(audio) {
+        match event {
+            OggOpusEvent::Head { head, .. } => decoder.reset(&head),
+            OggOpusEvent::Packet { data, .. } => pcm.extend(decoder.decode(&data)),
+        }
+    }
+    if pcm.is_empty() {
+        bail!("own speech: no sound in the server's Ogg/Opus");
+    }
+    Ok(encode_wav(&pcm, SPEECH_SAMPLE_RATE))
+}
+
 /// Nothing answered: refused, reset, unknown host — not an HTTP error from a server that is there, not a timeout.
 fn unreachable(error: &reqwest::Error) -> bool {
     if error.is_timeout() {
@@ -249,6 +272,40 @@ impl OwnSpeech {
     }
 
     pub async fn synthesize(&self, text: &str, cancel: &CancellationToken) -> Result<Synthesis> {
+        let (format, bytes) = self.ask(text, cancel).await?;
+        if format == "opus" {
+            return Ok(Synthesis { format: "audio/opus".into(), audio: bytes });
+        }
+        // Full band: at 16 kHz our voice sounded like a phone line next to Alice's. Encoding is CPU work, off the
+        // async threads. The rate is the server's word: bounded, so a bogus one fails this phrase, not the gateway.
+        let audio = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
+            let wav = decode_wav(&bytes)?;
+            encode_ogg_opus(&try_resample(&wav.pcm, wav.sample_rate, 48000)?, EncodeRate::FullBand)
+        })
+        .await
+        .map_err(|error| anyhow!("own speech: the encoder stopped: {error}"))??;
+        Ok(Synthesis { format: "audio/opus".into(), audio: Bytes::from(audio) })
+    }
+
+    /// The same phrase for a computer's speakers (the talk without a station, src/talk): a WAV, 16-bit mono. The
+    /// server's WAV keeps its rate — only its header is written anew, whole; a server that answers in Ogg/Opus is
+    /// decoded, which gives 16 kHz.
+    pub async fn synthesize_wav(&self, text: &str, cancel: &CancellationToken) -> Result<Bytes> {
+        let (format, bytes) = self.ask(text, cancel).await?;
+        let wav = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
+            if format == "opus" {
+                return opus_to_wav(&bytes);
+            }
+            let wav = decode_wav(&bytes)?;
+            Ok(encode_wav(&wav.pcm, wav.sample_rate))
+        })
+        .await
+        .map_err(|error| anyhow!("own speech: the decoder stopped: {error}"))??;
+        Ok(Bytes::from(wav))
+    }
+
+    /// One phrase asked of the voice server: the format it answered in (`opus`, or a WAV) and its bytes.
+    async fn ask(&self, text: &str, cancel: &CancellationToken) -> Result<(String, Bytes)> {
         let (config, route) = {
             let chosen = self.lock();
             (chosen.config.clone(), chosen.route.clone())
@@ -294,18 +351,7 @@ impl OwnSpeech {
             let text: String = String::from_utf8_lossy(&bytes).chars().take(200).collect();
             bail!("own speech: HTTP {} {text}", status.as_u16());
         }
-        if format == "opus" {
-            return Ok(Synthesis { format: "audio/opus".into(), audio: bytes });
-        }
-        // Full band: at 16 kHz our voice sounded like a phone line next to Alice's. Encoding is CPU work, off the
-        // async threads. The rate is the server's word: bounded, so a bogus one fails this phrase, not the gateway.
-        let audio = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
-            let wav = decode_wav(&bytes)?;
-            encode_ogg_opus(&try_resample(&wav.pcm, wav.sample_rate, 48000)?, EncodeRate::FullBand)
-        })
-        .await
-        .map_err(|error| anyhow!("own speech: the encoder stopped: {error}"))??;
-        Ok(Synthesis { format: "audio/opus".into(), audio: Bytes::from(audio) })
+        Ok((format, bytes))
     }
 }
 
@@ -392,6 +438,34 @@ mod tests {
         );
         assert_eq!(synthesis.format, "audio/opus");
         assert_eq!(packets(&synthesis.audio), 25);
+    }
+
+    #[tokio::test]
+    async fn gives_a_computer_the_phrase_as_a_wav_at_the_servers_rate_and_decodes_a_server_that_answers_in_opus() {
+        // 0.5 s at 22050 Hz, as Piper voices speak: the WAV keeps the rate, its header is written whole.
+        let (url, heard) = voice_server(500.0, 22050, 0).await;
+        let speech = OwnSpeech::new(config(&url, "wav"));
+        let wav = speech.synthesize_wav("<speaker voice=\"x\"> 5 минут", &CancellationToken::new()).await.unwrap();
+        assert_eq!(heard.requests.lock().unwrap().last().unwrap().0["input"], "пять минут", "the same preparation");
+        assert_eq!((&wav[0..4], &wav[8..12]), (&b"RIFF"[..], &b"WAVE"[..]));
+        assert_eq!(u16::from_le_bytes([wav[34], wav[35]]), 16, "16-bit");
+        let decoded = decode_wav(&wav).unwrap();
+        assert_eq!((decoded.sample_rate, decoded.pcm.len()), (22050, 11025));
+        assert_eq!(u32::from_le_bytes([wav[40], wav[41], wav[42], wav[43]]) as usize, decoded.pcm.len() * 2);
+
+        // A server in the opus format: decoded to PCM, which is 16 kHz.
+        let opus = encode_ogg_opus(&resample(&voice(500.0, -20.0), 16000, 48000), EncodeRate::FullBand).unwrap();
+        let (opus_url, _) = wav_server(opus, 0).await;
+        let speech = OwnSpeech::new(config(&opus_url, "opus"));
+        let wav = speech.synthesize_wav("Привет.", &CancellationToken::new()).await.unwrap();
+        let decoded = decode_wav(&wav).unwrap();
+        assert_eq!(decoded.sample_rate, 16000);
+        assert!((7000..=8200).contains(&decoded.pcm.len()), "about half a second: {}", decoded.pcm.len());
+
+        // Nothing listens there: the error says the server did not answer at all.
+        let gone = OwnSpeech::new(config("http://127.0.0.1:9/v1", "wav"));
+        let error = gone.synthesize_wav("Привет.", &CancellationToken::new()).await.unwrap_err();
+        assert!(is_unreachable(&error), "{error:#}");
     }
 
     #[tokio::test]

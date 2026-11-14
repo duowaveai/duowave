@@ -22,7 +22,6 @@ pub mod routes;
 pub mod store;
 pub mod sync;
 pub mod voice;
-
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, Weak};
@@ -443,9 +442,9 @@ impl History {
     /// A folder's files put in; its tree's id.
     pub fn snapshot_dir(&self, dir: &Path) -> Result<String, String> {
         let mut files = Vec::new();
-        walk(dir, dir, &mut files).map_err(|error| format!("папка не читается: {error}"))?;
+        walk(dir, dir, &mut files).map_err(|error| crate::tr!("папка не читается: {error}", error = error))?;
         if files.len() > MAX_FILES {
-            return Err(format!("больше {MAX_FILES} файлов"));
+            return Err(crate::tr!("больше {MAX_FILES} файлов", MAX_FILES = MAX_FILES));
         }
         let mut entries = Vec::new();
         let mut total = 0u64;
@@ -453,7 +452,7 @@ impl History {
             let bytes = std::fs::read(&full).map_err(|error| format!("{path}: {error}"))?;
             total += bytes.len() as u64;
             if total > MAX_BYTES {
-                return Err(format!("больше {} МБ", MAX_BYTES / 1024 / 1024));
+                return Err(crate::tr!("больше {max_bytes} МБ", max_bytes = MAX_BYTES / 1024 / 1024));
             }
             let file = self.store.put(Kind::File, &bytes).map_err(|error| format!("{path}: {error}"))?;
             entries.push(TreeEntry { path, file, size: bytes.len() as u64 });
@@ -479,16 +478,16 @@ impl History {
 
     /// The tree's files written into `into`; `clean` — files of `into` not in the tree go (hidden ones stay).
     pub fn materialize(&self, tree: &str, into: &Path, clean: bool) -> Result<(), String> {
-        let entries = self.tree(tree).ok_or("этой версии в истории уже нет")?;
+        let entries = self.tree(tree).ok_or_else(|| crate::tr!("этой версии в истории уже нет"))?;
         let mut contents = Vec::new();
         for entry in &entries {
             if !plain_path(&entry.path) {
-                return Err(format!("путь «{}» не годится", entry.path));
+                return Err(crate::tr!("путь «{path}» не годится", path = entry.path));
             }
             let bytes = self
                 .store
                 .get_kind(&entry.file, Kind::File)
-                .ok_or_else(|| format!("файла {} в истории уже нет", entry.path))?;
+                .ok_or_else(|| crate::tr!("файла {path} в истории уже нет", path = entry.path))?;
             contents.push((entry.path.clone(), bytes));
         }
         std::fs::create_dir_all(into).map_err(|error| error.to_string())?;
@@ -733,26 +732,29 @@ impl History {
     /// step becomes a step of its own, so nothing of it is lost.
     pub fn before_work(&self, app: &str) {
         let mut meta = StepMeta::new(RecordKind::Step, Author::new(Who::Hand));
-        meta.note = Some("правки руками".into());
+        meta.note = Some(crate::tr!("правки руками"));
         self.step(app, meta);
     }
 
     /// The draft back to a record's files: a new step with them (forward only). Its id.
     pub fn restore_draft(&self, app: &str, record: &str, by: Author) -> Result<String, String> {
-        let target = self.record(record).filter(|target| target.app == app).ok_or("такой записи у приложения нет")?;
+        let target = self
+            .record(record)
+            .filter(|target| target.app == app)
+            .ok_or_else(|| crate::tr!("такой записи у приложения нет"))?;
         let dir = self.draft_dir(app);
         if !dir.is_dir() {
             std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
         }
         self.before_work(app);
         if self.head(app, DRAFT).is_some_and(|(_, head)| head.tree == target.tree) {
-            return Err("черновик и так такой".into());
+            return Err(crate::tr!("черновик и так такой"));
         }
         self.materialize(&target.tree, &dir, true)?;
         let mut meta = StepMeta::new(RecordKind::Restore, by);
         meta.from = Some(record.to_string());
-        meta.note = Some(format!("черновик как в записи от {}", target.at));
-        self.step(app, meta).ok_or_else(|| "шаг не записался".to_string())
+        meta.note = Some(crate::tr!("черновик как в записи от {at}", at = target.at));
+        self.step(app, meta).ok_or_else(|| crate::tr!("шаг не записался"))
     }
 
     // Versions of the installed app.
@@ -778,7 +780,7 @@ impl History {
         }
         let mut record = self.new_record(app, RecordKind::Found, tree, Author::new(Who::System));
         record.version = Some(version.to_string());
-        record.note = Some("найдено на диске".into());
+        record.note = Some(crate::tr!("найдено на диске"));
         if let Some(at) = std::fs::metadata(dir.join("manifest.json"))
             .and_then(|meta| meta.modified())
             .ok()
@@ -943,14 +945,11 @@ impl History {
                 continue;
             }
             let mut meta = StepMeta::new(RecordKind::Found, Author::new(Who::System));
-            meta.note = Some(
-                if self.store.ref_get(&app, DRAFT).is_some() {
-                    "правки руками"
-                } else {
-                    "черновик найден"
-                }
-                .into(),
-            );
+            meta.note = Some(if self.store.ref_get(&app, DRAFT).is_some() {
+                crate::tr!("правки руками")
+            } else {
+                crate::tr!("черновик найден")
+            });
             if self.store.ref_get(&app, DRAFT).is_some() {
                 meta.kind = RecordKind::Step;
                 meta.by = Author::new(Who::Hand);
@@ -999,7 +998,7 @@ impl History {
     /// Two versions compared: `from` and `to` are records; `to` None — the draft as it is on disk.
     pub fn compare(&self, app: &str, from: Option<&str>, to: Option<&str>) -> Result<Comparison, String> {
         let tree_of = |record: &str| -> Result<String, String> {
-            self.record(record).filter(|r| r.app == app).map(|r| r.tree).ok_or_else(|| "такой записи нет".to_string())
+            self.record(record).filter(|r| r.app == app).map(|r| r.tree).ok_or_else(|| crate::tr!("такой записи нет"))
         };
         let from_tree = match from {
             Some(record) => Some(tree_of(record)?),
@@ -1104,14 +1103,14 @@ pub fn manifest_changes(before: Option<Value>, after: Option<Value>) -> Vec<Stri
     };
     let (old_version, new_version) = (field(&before, "version"), field(&after, "version"));
     if old_version != new_version {
-        lines.push(format!(
-            "Версия: {} → {}",
-            old_version.unwrap_or_else(|| "—".into()),
-            new_version.unwrap_or_else(|| "—".into())
+        lines.push(crate::tr!(
+            "Версия: {old_version} → {new_version}",
+            old_version = old_version.unwrap_or_else(|| "—".into()),
+            new_version = new_version.unwrap_or_else(|| "—".into())
         ));
     }
     if field(&before, "title") != field(&after, "title") {
-        lines.push(format!("Название: «{}»", field(&after, "title").unwrap_or_default()));
+        lines.push(crate::tr!("Название: «{after}»", after = field(&after, "title").unwrap_or_default()));
     }
     let (old_rights, new_rights) = (strings(&before, "permissions"), strings(&after, "permissions"));
     let added: Vec<&String> = new_rights.iter().filter(|right| !old_rights.contains(right)).collect();
@@ -1127,29 +1126,35 @@ pub fn manifest_changes(before: Option<Value>, after: Option<Value>) -> Vec<Stri
             .join(", ")
     };
     if !rights_added.is_empty() {
-        lines.push(format!("Новые права: {}", join(&rights_added, false)));
+        lines.push(crate::tr!("Новые права: {list}", list = join(&rights_added, false)));
     }
     if !rights_removed.is_empty() {
-        lines.push(format!("Больше не нужны права: {}", join(&rights_removed, false)));
+        lines.push(crate::tr!("Больше не нужны права: {list}", list = join(&rights_removed, false)));
     }
     if !hosts_added.is_empty() {
-        lines.push(format!("Новые адреса: {}", join(&hosts_added, true)));
+        lines.push(crate::tr!("Новые адреса: {list}", list = join(&hosts_added, true)));
     }
     if !hosts_removed.is_empty() {
-        lines.push(format!("Больше не ходит на: {}", join(&hosts_removed, true)));
+        lines.push(crate::tr!("Больше не ходит на: {list}", list = join(&hosts_removed, true)));
     }
     let (old_phrases, new_phrases) = (phrases(&before), phrases(&after));
     let new: Vec<&String> = new_phrases.iter().filter(|phrase| !old_phrases.contains(phrase)).collect();
     let gone: Vec<&String> = old_phrases.iter().filter(|phrase| !new_phrases.contains(phrase)).collect();
     if !new.is_empty() {
-        lines.push(format!("Новые фразы: {}", new.iter().map(|p| format!("«{p}»")).collect::<Vec<_>>().join(", ")));
+        lines.push(crate::tr!(
+            "Новые фразы: {list}",
+            list = new.iter().map(|p| format!("«{p}»")).collect::<Vec<_>>().join(", ")
+        ));
     }
     if !gone.is_empty() {
-        lines.push(format!("Ушли фразы: {}", gone.iter().map(|p| format!("«{p}»")).collect::<Vec<_>>().join(", ")));
+        lines.push(crate::tr!(
+            "Ушли фразы: {list}",
+            list = gone.iter().map(|p| format!("«{p}»")).collect::<Vec<_>>().join(", ")
+        ));
     }
     let data_version = |manifest: &Option<Value>| manifest.as_ref().and_then(|m| m.get("dataVersion")).cloned();
     if data_version(&before) != data_version(&after) {
-        lines.push("Изменился вид данных (dataVersion)".into());
+        lines.push(crate::tr!("Изменился вид данных (dataVersion)"));
     }
     lines
 }

@@ -46,6 +46,8 @@ import {
 } from './catalog';
 import { PersonaEditor, PersonaTab } from './persona';
 import { OwnVoiceRows, VoiceWizard } from './voice-lab';
+import { tr } from '../i18n';
+import { byMode } from '../words';
 
 /** id «Собрать своего» в адресе: `#/mind/characters/own`. */
 const OWN = 'own';
@@ -69,15 +71,15 @@ function updateText(active: ActiveCharacter | null, persona: PersonaInfo | null,
 function characterPills(character: CharacterView, active: ActiveCharacter | null, entry?: CatalogEntry): Pill[] {
     const pills: Pill[] = [];
     const speaking = active?.id === character.id;
-    if (speaking) pills.push({ text: 'говорит', cls: 'pill-own' });
-    if (entry?.state === 'update' || (speaking && active?.update)) pills.push({ text: 'новая версия', cls: 'pill-agent' });
-    if (character.problem) pills.push({ text: 'не пойдёт здесь', cls: 'pill-off' });
+    if (speaking) pills.push({ text: tr.characters.speaks, cls: 'pill-own' });
+    if (entry?.state === 'update' || (speaking && active?.update)) pills.push({ text: tr.characters.newVersion, cls: 'pill-agent' });
+    if (character.problem) pills.push({ text: tr.characters.pillDoesntFit, cls: 'pill-off' });
     const voice = voicePill(character.voice);
     if (voice) pills.push(voice);
     // Чей голос — никто не проверял (свой источник): сказать прежде всего прочего о пакете.
-    if (character.voiceOrigin === 'unknown') pills.push({ text: 'голос не проверен', cls: 'pill-yandex' });
-    else if (character.package && !character.package.verified) pills.push({ text: 'не из каталога', cls: 'pill-off' });
-    else if (character.package && pills.length === 0) pills.push({ text: 'установлен', cls: 'pill-off' });
+    if (character.voiceOrigin === 'unknown') pills.push({ text: tr.characters.voiceNotChecked, cls: 'pill-yandex' });
+    else if (character.package && !character.package.verified) pills.push({ text: tr.characters.notFromCatalog, cls: 'pill-off' });
+    else if (character.package && pills.length === 0) pills.push({ text: tr.characters.pillInstalled, cls: 'pill-off' });
     return pills.slice(0, 2);
 }
 
@@ -196,7 +198,7 @@ export function CharactersTab() {
         return (
             <section class="card glass">
                 <p class="t-meta m-0" role={error ? 'alert' : undefined}>
-                    {error ?? 'Читаем персонажей…'}
+                    {error ?? tr.characters.reading}
                 </p>
             </section>
         );
@@ -217,9 +219,9 @@ export function CharactersTab() {
         <Tile
             key={OWN}
             id={OWN}
-            title="Собрать своего"
-            line="Свой голос из лаборатории и свой текст характера."
-            pills={ownSpeaks ? [{ text: 'говорит', cls: 'pill-own' }] : []}
+            title={tr.characters.buildOwn}
+            line={tr.characters.buildOwnLine}
+            pills={ownSpeaks ? [{ text: tr.characters.speaks, cls: 'pill-own' }] : []}
             active={ownSpeaks}
             add
             onOpen={() => linked.open(OWN)}
@@ -231,15 +233,15 @@ export function CharactersTab() {
             <section class="card glass card-list" aria-labelledby="characters-h">
                 <div class="card-head">
                     <h2 id="characters-h" class="t-title-xs m-0">
-                        Персонажи
+                        {tr.characters.characters}
                     </h2>
-                    <span class="t-meta">со следующего вопроса</span>
+                    <span class="t-meta">{tr.characters.fromNextQuestion}</span>
                 </div>
                 {active?.replacedBy && !view.characters.some((character) => character.package?.id === active.replacedBy) && (
                     <p class="t-caption m-0" role="status">
-                        Мажордома теперь заменяет персонаж из каталога. Пока он говорит прежним текстом —{' '}
+                        {tr.characters.majordomoReplaced}
                         <button class="underline cursor-pointer min-h-44" onClick={() => linked.open(active.replacedBy!)}>
-                            поставить Артура
+                            {tr.characters.installArthur}
                         </button>
                         .
                     </p>
@@ -267,10 +269,10 @@ export function CharactersTab() {
                 {(offered.length > 0 || status) && (
                     <>
                         <div class="char-grid-head">
-                            <h3 class="t-title-xs m-0">Каталог</h3>
+                            <h3 class="t-title-xs m-0">{tr.characters.catalog}</h3>
                             {catalog.view?.configured && catalog.view.enabled && (
                                 <button class="t-caption cursor-pointer underline min-h-44" disabled={catalog.refreshing} onClick={() => void catalog.reload(true)}>
-                                    {catalog.refreshing ? 'проверяю…' : 'проверить новые'}
+                                    {catalog.refreshing ? tr.characters.checking : tr.characters.checkNew}
                                 </button>
                             )}
                         </div>
@@ -304,7 +306,7 @@ export function CharactersTab() {
                         )}
                     </>
                 )}
-                {!mayEdit && <p class="t-caption m-0 mt-10">Выбирать и ставить персонажей может тот, кому можно менять характер.</p>}
+                {!mayEdit && <p class="t-caption m-0 mt-10">{tr.characters.onlyEditors}</p>}
             </section>
 
             {opened && (
@@ -325,17 +327,17 @@ export function CharactersTab() {
             {openedEntry && (
                 <CatalogEntrySheet entry={openedEntry} actions={actions} engines={engines} onClose={linked.close}>
                     {intent === openedEntry.id && !isInstalled(openedEntry) && (
-                        <p class="t-caption m-0">После установки откроется персонаж: выбрать его и, если нужно, поставить модель голоса.</p>
+                        <p class="t-caption m-0">{tr.characters.afterInstall}</p>
                     )}
                 </CatalogEntrySheet>
             )}
             {item === OWN && <OwnSheet active={active} persona={persona} onPersona={setPersona} onChanged={changed} onClose={linked.close} />}
             {lost && (
-                <Sheet title="Персонаж не найден" about={item ?? undefined} onClose={linked.close}>
+                <Sheet title={tr.characters.notFoundTitle} about={item ?? undefined} onClose={linked.close}>
                     <p class="t-body-sm m-0">
                         {catalogOpen(catalog.view)
-                            ? `«${item}» нет ни среди поставленных, ни в каталоге.`
-                            : `«${item}» здесь не поставлен, а каталог сейчас недоступен — попробуйте позже.`}
+                            ? tr.characters.notInstalledNorCatalog(item)
+                            : tr.characters.notInstalledCatalogDown(item)}
                     </p>
                 </Sheet>
             )}
@@ -347,35 +349,35 @@ export function CharactersTab() {
 function VoiceLine({ character, onInstall }: { character: CharacterView; onInstall?: () => void }) {
     const voice = character.voice;
     const fallback = voice.fallback?.title;
-    const similar = fallback ? `Сейчас звучит похожим (${fallback})` : 'Сейчас звучит запасной голос';
+    const similar = fallback ? tr.characters.voiceFallbackSimilar(fallback) : tr.characters.voiceFallbackReserve;
     let text: string;
     switch (voice.state) {
         case 'ready':
-            text = 'Голос свой — готов.';
+            text = tr.characters.voiceReady;
             break;
         case 'needs':
-            text = `${similar}.`;
+            text = tr.characters.voiceNeeds(similar);
             break;
         case 'installing':
-            text = `Свой голос ставится. ${similar}.`;
+            text = tr.characters.voiceInstalling(similar);
             break;
         case 'unsupported':
-            text = `Свой голос здесь не пойдёт${voice.reason ? `: ${voice.reason}` : ''}. ${similar}.`;
+            text = tr.characters.voiceUnsupported(voice.reason ?? '', similar);
             break;
         case 'fallback':
-            text = `${similar}${voice.reason ? ` — ${voice.reason}` : ''}.`;
+            text = tr.characters.voiceFallback(similar, voice.reason ?? '');
             break;
         default:
-            text = 'Своего голоса у персонажа нет — говорит голос, выбранный в «Голосе».';
+            text = tr.characters.voiceNone;
     }
     return (
         <div class="char-block">
-            <span class="t-meta fw-700">Голос</span>
+            <span class="t-meta fw-700">{tr.characters.voice}</span>
             <div class="flex flex-wrap items-center gap-8">
                 <span class="t-body-sm flex-1 min-w-0">{text}</span>
-                {voice.state === 'needs' && onInstall && <Action tone="on" label="Поставить настоящий" onClick={onInstall} />}
+                {voice.state === 'needs' && onInstall && <Action tone="on" label={tr.characters.installReal} onClick={onInstall} />}
             </div>
-            {voice.state === 'installing' && voice.progress !== undefined && <Progress percent={voice.progress} label="Установка модели голоса" />}
+            {voice.state === 'installing' && voice.progress !== undefined && <Progress percent={voice.progress} label={tr.characters.installingModel} />}
         </div>
     );
 }
@@ -455,18 +457,18 @@ function CharacterSheet({
             const state = result.voice?.state;
             const wanted = result.voice?.needs ?? character.voice.needs;
             if (voice && state === 'needs' && wanted && !mayVoice)
-                setNote({ notice: 'Говорит этим характером. Голос пока запасной: модель голоса ставит тот, кому можно менять модели.' });
+                setNote({ notice: tr.characters.spokenReserveRestricted });
             else if (voice && state === 'needs' && wanted) {
-                setNote({ notice: 'Говорит этим характером. Голос пока запасной — нужна модель.' });
+                setNote({ notice: tr.characters.spokenReserveNeeds });
                 needs.open({
                     who: character.title,
                     needs: wanted,
                     fallback: character.voice.fallback?.title,
                     retry: ({ install, anyway }) => api.chooseCharacter(character.id, { tones, install, anyway }),
                 });
-            } else if (what === 'update') setNote({ notice: 'Обновлён — со следующего вопроса.' });
-            else if (what === 'tones') setNote({ notice: 'Тон применён — со следующего вопроса.' });
-            else setNote({ notice: result.voice?.pending ? 'Выбран. Модель ставится — голос включится сам.' : 'Выбран — со следующего вопроса.' });
+            } else if (what === 'update') setNote({ notice: tr.characters.updated });
+            else if (what === 'tones') setNote({ notice: tr.characters.toneApplied });
+            else setNote({ notice: result.voice?.pending ? tr.characters.chosenModelInstalling : tr.characters.chosen });
             onChanged();
         } catch (e) {
             const wanted = needsOf(e);
@@ -490,7 +492,7 @@ function CharacterSheet({
         try {
             // Непустой текст — правка этого персонажа (он остаётся выбранным); пустой — назад к стандартной.
             onPersona(draft.trim() ? await api.setCharacterText(character.id, draft.trim()) : await api.setPersonaText(''));
-            setNote({ notice: draft.trim() ? `Сохранено — ${character.title} говорит вашим текстом.` : 'Текст очищен — вернулись к стандартной.' });
+            setNote({ notice: draft.trim() ? tr.characters.savedSpeaks(character.title) : tr.characters.textCleared });
             onChanged();
         } catch (e) {
             setNote({ error: problemOf(e) });
@@ -508,7 +510,7 @@ function CharacterSheet({
     if (needs.dialog) return needs.dialog;
 
     const greeting = character.samples[0];
-    const meta = [character.package && `версия ${character.package.version}`, character.package?.license].filter(Boolean).join(' · ');
+    const meta = [character.package && tr.characters.versionMeta(character.package.version), character.package?.license].filter(Boolean).join(' · ');
     const fresh = speaking && active?.update ? updateText(active, persona, character.id) : null;
     const diff = fresh && persona ? diffText(persona.persona, fresh) : null;
     const removing = actions.busy[character.package?.id ?? ''];
@@ -518,17 +520,17 @@ function CharacterSheet({
             <div class="char-hero">
                 <Avatar src={character.avatar} title={character.title} color={character.color} size="lg" mark={markOf(character)} />
                 <div class="char-hero-text">
-                    {greeting && <p class="char-greeting">«{greeting.text}»</p>}
+                    {greeting && <p class="char-greeting">{tr.characters.quoted(greeting.text)}</p>}
                     <div class="flex flex-wrap items-center gap-8">
                         {greeting && <PlayButton id={`sheet:${character.id}`} url={greeting.url} label={character.title} className="char-play is-inline" />}
-                        {speaking && <span class="pill pill-own">говорит</span>}
-                        {character.package && !character.package.verified && <span class="pill pill-off">не из каталога</span>}
-                        {character.voiceOrigin === 'unknown' && <span class="pill pill-yandex">голос не проверен</span>}
-                        {character.builtin && <span class="pill pill-off">встроенный</span>}
+                        {speaking && <span class="pill pill-own">{tr.characters.speaks}</span>}
+                        {character.package && !character.package.verified && <span class="pill pill-off">{tr.characters.notFromCatalog}</span>}
+                        {character.voiceOrigin === 'unknown' && <span class="pill pill-yandex">{tr.characters.voiceNotChecked}</span>}
+                        {character.builtin && <span class="pill pill-off">{tr.characters.builtin}</span>}
                     </div>
                     {meta && <span class="t-caption">{meta}</span>}
                     {character.voiceOrigin === 'unknown' && (
-                        <span class="t-caption c-pill-yandex-fg">Чей это голос и есть ли согласие его хозяина, никто не проверял: персонаж из своего источника.</span>
+                        <span class="t-caption c-pill-yandex-fg">{tr.characters.unknownVoiceOwner}</span>
                     )}
                 </div>
             </div>
@@ -540,7 +542,7 @@ function CharacterSheet({
 
             {character.tones.length > 0 && (
                 <div class="char-block">
-                    <span class="t-meta fw-700">Тон</span>
+                    <span class="t-meta fw-700">{tr.characters.tone}</span>
                     {character.tones.map((tone) => (
                         <div key={tone.id} class="tone-row">
                             <span class="t-caption">{tone.title}</span>
@@ -568,22 +570,22 @@ function CharacterSheet({
 
             <div class="char-actions">
                 {speaking ? (
-                    tonesChanged && mayEdit && <Action tone="on" label="Применить тон" busy={busy === 'tones'} onClick={() => void choose('tones', false)} />
+                    tonesChanged && mayEdit && <Action tone="on" label={tr.characters.applyTone} busy={busy === 'tones'} onClick={() => void choose('tones', false)} />
                 ) : (
                     mayEdit && (
                         <Action
                             tone="on"
-                            label={tight !== null ? 'Выбрать всё равно' : 'Выбрать'}
+                            label={tight !== null ? tr.characters.chooseAnyway : tr.characters.choose}
                             busy={busy === 'choose'}
                             disabled={!!character.problem}
                             onClick={() => void choose('choose')}
                         />
                     )
                 )}
-                <Action label={tuning ? 'Скрыть текст' : 'Тонкая настройка'} disabled={!persona} onClick={openTuning} />
+                <Action label={tuning ? tr.characters.hideText : tr.characters.fineTuning} disabled={!persona} onClick={openTuning} />
                 {character.package && canManage('character') && (
                     <Action
-                        label="Удалить"
+                        label={tr.characters.remove}
                         busy={removing === 'remove'}
                         disabled={!!removing}
                         onClick={() =>
@@ -604,15 +606,15 @@ function CharacterSheet({
 
             {entry?.state === 'update' && (
                 <div class="char-block">
-                    <span class="t-meta fw-700">В каталоге версия {entry.version}</span>
+                    <span class="t-meta fw-700">{tr.characters.inCatalogVersion(entry.version)}</span>
                     <span class="t-caption">
-                        Скачается новая версия персонажа. Что говорит персонаж, поменяется только после «Обновить» — сначала покажем, что изменится.
+                        {tr.characters.downloadsNew}
                     </span>
                     {canManage('character') && (
                         <div>
                             <Action
                                 tone="on"
-                                label="Скачать новую версию"
+                                label={tr.characters.downloadNew}
                                 busy={actions.busy[entry.id] === 'update'}
                                 disabled={!!actions.busy[entry.id]}
                                 onClick={() => void actions.update(entry.id, entry.title)}
@@ -624,9 +626,9 @@ function CharacterSheet({
 
             {speaking && active?.update && (
                 <div class="char-block">
-                    <span class="t-meta fw-700">В новой версии другой характер</span>
+                    <span class="t-meta fw-700">{tr.characters.newVersionOtherCharacter}</span>
                     {diff ? (
-                        <div class="diff" aria-label="Что поменяется в характере">
+                        <div class="diff" aria-label={tr.characters.whatChanges}>
                             {diff.map((part, at) => (
                                 <span key={at} class={`diff-${part.op}`}>
                                     {part.op === 'del' ? '− ' : part.op === 'add' ? '+ ' : ''}
@@ -635,14 +637,14 @@ function CharacterSheet({
                             ))}
                         </div>
                     ) : (
-                        <span class="t-caption">Читаем, что поменялось…</span>
+                        <span class="t-caption">{tr.characters.readingChanges}</span>
                     )}
                     <span class="t-caption">
-                        {active.edited ? 'Текст правили вручную: ваши правки останутся. ' : ''}Пока не нажмёте «Обновить», говорит прежним текстом.
+                        {active.edited ? tr.characters.editedKept : ''}{tr.characters.untilUpdate}
                     </span>
                     {mayEdit && (
                         <div>
-                            <Action tone="on" label="Обновить" busy={busy === 'update'} onClick={() => void choose('update', false)} />
+                            <Action tone="on" label={tr.characters.update} busy={busy === 'update'} onClick={() => void choose('update', false)} />
                         </div>
                     )}
                 </div>
@@ -650,13 +652,13 @@ function CharacterSheet({
 
             {tuning && (
                 <div class="char-block">
-                    <span class="t-meta fw-700">Тонкая настройка</span>
+                    <span class="t-meta fw-700">{tr.characters.fineTuning}</span>
                     {speaking && mayEdit ? (
                         <>
-                            {active?.edited && <span class="t-caption">Текст уже правили вручную.</span>}
+                            {active?.edited && <span class="t-caption">{tr.characters.editedByHand}</span>}
                             <PersonaEditor
                                 editorRef={editor}
-                                label={`Текст характера: ${character.title}`}
+                                label={tr.characters.characterText(character.title)}
                                 draft={draft}
                                 onDraft={setDraft}
                                 busy={busy === 'text'}
@@ -667,11 +669,11 @@ function CharacterSheet({
                         <>
                             <pre class="prompt-view">{draft}</pre>
                             <span class="t-caption">
-                                {mayEdit ? 'Править текст можно у того, кто говорит: сначала «Выбрать».' : 'Менять характер может администратор.'}
+                                {mayEdit ? tr.characters.editOnlySpeaking : tr.characters.adminChangesCharacter}
                             </span>
                         </>
                     ) : (
-                        <span class="t-caption">Полный текст появится, когда персонаж заговорит.</span>
+                        <span class="t-caption">{tr.characters.fullTextLater}</span>
                     )}
                 </div>
             )}
@@ -731,7 +733,7 @@ function OwnSheet({
         setNote({});
         try {
             onPersona(await api.setPersonaText(draft.trim()));
-            setNote({ notice: draft.trim() ? 'Говорит вашим характером.' : 'Вернулись к стандартной.' });
+            setNote({ notice: draft.trim() ? tr.characters.spokenYours : tr.characters.returnedToStandard });
             onChanged();
         } catch (e) {
             setNote({ error: problemOf(e) });
@@ -748,17 +750,17 @@ function OwnSheet({
             return;
         }
         setVoiceBusy((all) => ({ ...all, [cardId]: true }));
-        setVoiceNotes((all) => ({ ...all, [cardId]: { notice: 'Загружаю модель голоса — до минуты…' } }));
+        setVoiceNotes((all) => ({ ...all, [cardId]: { notice: tr.characters.loadingVoiceModel } }));
         try {
             await api.activateTts(cardId, undefined, tightFor === cardId);
             setTightFor(null);
-            setVoiceNotes((all) => ({ ...all, [cardId]: { notice: `Говорит «${card.title}».` } }));
+            setVoiceNotes((all) => ({ ...all, [cardId]: { notice: tr.characters.speaksCard(card.title) } }));
             readModels();
         } catch (e) {
             const wanted = needsOf(e);
             if (isTight(e)) {
                 setTightFor(cardId);
-                setVoiceNotes((all) => ({ ...all, [cardId]: { warning: `Голос не включён. ${problemOf(e)}` } }));
+                setVoiceNotes((all) => ({ ...all, [cardId]: { warning: tr.characters.voiceNotEnabled(problemOf(e)) } }));
             } else if (wanted) {
                 setVoiceNotes((all) => ({ ...all, [cardId]: {} }));
                 needs.open({ who: card.title, needs: wanted, ownId: card.own?.id, retry: ({ install, anyway }) => api.activateTts(cardId, undefined, anyway, install) });
@@ -782,42 +784,44 @@ function OwnSheet({
 
     const ownCards = models?.tts.filter((card) => card.group === 'own') ?? [];
     return (
-        <Sheet title="Собрать своего" about="свой текст и свой голос" onClose={onClose}>
+        <Sheet title={tr.characters.buildOwn} about={tr.characters.buildOwnAbout} onClose={onClose}>
             <div class="char-block">
-                <span class="t-meta fw-700">Манера</span>
-                {own && <span class="pill pill-own self-start">говорит</span>}
+                <span class="t-meta fw-700">{tr.characters.manner}</span>
+                {own && <span class="pill pill-own self-start">{tr.characters.speaks}</span>}
                 {mayEdit ? (
                     <PersonaEditor
-                        label="Свой характер"
+                        label={tr.characters.ownCharacter}
                         draft={draft}
                         onDraft={setDraft}
                         busy={saving}
                         onSave={() => void save()}
-                        placeholder="Кто отвечает и как говорит: «Ты — старый морской волк, отвечаешь коротко и с юмором…» О себе — в женском или мужском роде."
+                        placeholder={tr.characters.ownPlaceholder}
                     />
                 ) : (
-                    <span class="t-caption">Менять характер может администратор.</span>
+                    <span class="t-caption">{tr.characters.adminChangesCharacter}</span>
                 )}
                 <NoteLine note={note} />
             </div>
             <div class="char-block">
                 <div class="flex items-center justify-between gap-8">
-                    <span class="t-meta fw-700">Голос</span>
+                    <span class="t-meta fw-700">{tr.characters.voice}</span>
                     {mayVoice && !noVoices && models && (
                         <button class="pill pill-own pill-btn-sm inline-flex items-center gap-6" onClick={() => setWizard(true)}>
                             <IconPlus size={14} />
-                            Записать голос
+                            {tr.characters.recordVoice}
                         </button>
                     )}
                 </div>
                 {noVoices ? (
                     <span class={noVoices.absent ? 't-caption' : 't-caption c-dot-offline'} role={noVoices.absent ? undefined : 'alert'}>
-                        {noVoices.absent ? `Свой голос — на компьютере. ${noVoices.text}` : noVoices.text}
+                        {noVoices.absent ? tr.characters.ownVoiceOnComputer(noVoices.text) : noVoices.text}
                     </span>
                 ) : !models ? (
-                    <span class="t-caption">Читаем голоса…</span>
+                    <span class="t-caption">{tr.characters.readingVoices}</span>
                 ) : ownCards.length === 0 ? (
-                    <span class="t-caption">Своих голосов пока нет. Прочитайте вслух минуту-две текста — и колонка будет отвечать этим голосом.</span>
+                    <span class="t-caption">
+                        {byMode(tr.characters.noOwnVoicesStation, tr.characters.noOwnVoicesDevice)}
+                    </span>
                 ) : (
                     <OwnVoiceRows
                         cards={ownCards}
@@ -851,17 +855,17 @@ export function NowAnsweringCard() {
     const active = view?.active;
     if (!view || !active) return null;
     const character = active.id ? view.characters.find((entry) => entry.id === active.id) : undefined;
-    const name = character?.title ?? (active.id ? active.id : 'свой характер');
+    const name = character?.title ?? (active.id ? active.id : tr.characters.ownLowerCase);
     const voice = character ? voicePill(character.voice) : null;
     return (
-        <section class="card glass" aria-label="Кто отвечает">
+        <section class="card glass" aria-label={tr.characters.whoAnswers}>
             <button type="button" class="now-char" onClick={() => panel.go('character', 'characters', character?.id ?? OWN)}>
                 <Avatar src={character?.avatar} title={name} color={character?.color} size="sm" mark={markOf(character)} />
                 <span class="now-char-text">
-                    <span class="t-meta">Сейчас отвечает</span>
+                    <span class="t-meta">{tr.characters.nowAnswering}</span>
                     <span class="char-name">{name}</span>
                 </span>
-                {voice ? <span class={`pill ${voice.cls}`}>{voice.text}</span> : active.update ? <span class="pill pill-agent">новая версия</span> : null}
+                {voice ? <span class={`pill ${voice.cls}`}>{voice.text}</span> : active.update ? <span class="pill pill-agent">{tr.characters.newVersion}</span> : null}
             </button>
         </section>
     );

@@ -7,6 +7,7 @@ import { useEffect, useState } from 'preact/hooks';
 
 import { ApiError, CatalogEntry, CatalogSource, CatalogView, PackageKind, PackageOrigin, PackageView, PackagesView, VoiceLabEngine, api, can, problemOf, sessionStore } from '../api';
 import { IconPackage } from '../icons';
+import { tr } from '../i18n';
 import { useLinkedItem, usePanel } from '../shell/context';
 import { timeAgo } from '../time';
 import { Action, CardNote } from '../ui/cards';
@@ -25,24 +26,32 @@ import { ask } from '../ui/confirm';
  * называем и где работает»): плагин — в шлюзе, приложение со своей программой — на компьютере.
  */
 export const KIND_TITLES: Record<PackageKind, string> = {
-    character: 'персонаж',
-    plugin: 'в шлюзе',
-    app: 'на компьютере',
-    theme: 'тема',
+    get character() {
+        return tr.catalog.kindCharacter;
+    },
+    get plugin() {
+        return tr.catalog.kindPlugin;
+    },
+    get app() {
+        return tr.catalog.kindApp;
+    },
+    get theme() {
+        return tr.catalog.kindTheme;
+    },
 };
 
 /** Где работает приложение — словами для людей: «в шлюзе», «на компьютере», «в сети» (MCP); персонаж и тема — как есть. */
 export function placeOf(kind: PackageKind | null | undefined, runtime?: string | null): string {
-    if (runtime === 'mcp') return 'в сети';
-    if (runtime === 'process' || kind === 'app') return 'на компьютере';
-    return KIND_TITLES[kind ?? 'plugin'] ?? 'в шлюзе';
+    if (runtime === 'mcp') return tr.catalog.placeNetwork;
+    if (runtime === 'process' || kind === 'app') return tr.catalog.kindApp;
+    return KIND_TITLES[kind ?? 'plugin'] ?? tr.catalog.kindPlugin;
 }
 
-const KIND_FILTERS: Array<{ id: PackageKind; label: string }> = [
-    { id: 'character', label: 'Персонажи' },
-    { id: 'plugin', label: 'Приложения' },
-    { id: 'app', label: 'Приложения' },
-    { id: 'theme', label: 'Темы' },
+const kindFilters = (): Array<{ id: PackageKind; label: string }> => [
+    { id: 'character', label: tr.catalog.filterCharacters },
+    { id: 'plugin', label: tr.catalog.filterApps },
+    { id: 'app', label: tr.catalog.filterApps },
+    { id: 'theme', label: tr.catalog.filterThemes },
 ];
 
 /** Может ли этот вход ставить и удалять пакеты такого вида: персонажа — с правом на характер, тему — на настройки, код — администратор. */
@@ -124,17 +133,17 @@ export function missingEngine(entry: CatalogEntry, engines: Record<string, Voice
 export function entryPills(entry: CatalogEntry, engines: Record<string, VoiceLabEngine['status']> | null): Array<{ text: string; cls: string }> {
     const pills: Array<{ text: string; cls: string }> = [];
     // Свой источник — заметно: его пакеты никто не проверял.
-    if (entry.own) pills.push({ text: `свой источник · ${entry.source ?? ''}`.trim(), cls: 'pill-yandex' });
+    if (entry.own) pills.push({ text: `${tr.catalog.pillOwnSource} · ${entry.source ?? ''}`.trim(), cls: 'pill-yandex' });
     else if (entry.source) pills.push({ text: entry.source, cls: 'pill-off' });
-    if (entry.state === 'update') pills.push({ text: 'новая версия', cls: 'pill-agent' });
-    else if (isInstalled(entry)) pills.push({ text: 'установлен', cls: 'pill-off' });
-    if (entry.state === 'incompatible') pills.push({ text: 'не пойдёт здесь', cls: 'pill-off' });
-    if (entry.state === 'needsSignature') pills.push({ text: 'нужна подпись', cls: 'pill-off' });
-    if (entry.verified === false) pills.push({ text: 'не проверен', cls: 'pill-off' });
+    if (entry.state === 'update') pills.push({ text: tr.catalog.pillNewVersion, cls: 'pill-agent' });
+    else if (isInstalled(entry)) pills.push({ text: tr.catalog.pillInstalled, cls: 'pill-off' });
+    if (entry.state === 'incompatible') pills.push({ text: tr.catalog.pillIncompatible, cls: 'pill-off' });
+    if (entry.state === 'needsSignature') pills.push({ text: tr.catalog.pillNeedsSignature, cls: 'pill-off' });
+    if (entry.verified === false) pills.push({ text: tr.catalog.pillUnverified, cls: 'pill-off' });
     const missing = !isInstalled(entry) && !isBlocked(entry) ? missingEngine(entry, engines) : null;
     if (missing) {
         const size = needsSize(missing);
-        pills.push({ text: size ? `нужна модель · ${size}` : 'нужна модель', cls: 'pill-yandex' });
+        pills.push({ text: size ? tr.catalog.pillNeedsModelSize(size) : tr.catalog.pillNeedsModel, cls: 'pill-yandex' });
     }
     return pills;
 }
@@ -143,8 +152,8 @@ export function entryPills(entry: CatalogEntry, engines: Record<string, VoiceLab
 function needsLines(entry: CatalogEntry): string[] {
     return (entry.needs ?? []).map((need) => {
         const size = needsSize(need);
-        const what = need.kind === 'engine' ? `модель голоса ${need.title ?? need.id}` : `файл ${need.title ?? need.id}`;
-        return `Понадобится ${what}${size ? ` — ~${size} на диске` : ''}${need.optional ? '; без неё говорит запасной голос' : ''}.`;
+        const what = need.kind === 'engine' ? tr.catalog.needVoiceModel(need.title ?? need.id) : tr.catalog.needFile(need.title ?? need.id);
+        return tr.catalog.needLine(what, size || null, !!need.optional);
     });
 }
 
@@ -185,13 +194,13 @@ export function usePackageActions(onChanged: () => void): PackageActions {
         busy,
         notes,
         say,
-        install: (entry) => run(entry.id, 'install', () => api.installPackage(entry.id, entry.version), 'Поставлен.'),
-        update: (id) => run(id, 'update', () => api.updatePackage(id), 'Обновлён.'),
+        install: (entry) => run(entry.id, 'install', () => api.installPackage(entry.id, entry.version), tr.catalog.installedNote),
+        update: (id) => run(id, 'update', () => api.updatePackage(id), tr.catalog.updatedNote),
         remove: async (id, title, kind) => {
-            const what = kind === 'character' ? 'Персонаж уйдёт вместе с его голосами.' : 'Его файлы и настройки уйдут.';
-            if (!(await ask({ title: `Удалить «${title}»?`, text: `${what} Вернуть можно из каталога.`, ok: 'Удалить', danger: true })))
+            const what = kind === 'character' ? tr.catalog.removeCharacterWhat : tr.catalog.removeWhat;
+            if (!(await ask({ title: tr.catalog.removeTitle(title), text: tr.catalog.removeText(what), ok: tr.catalog.remove, danger: true })))
                 return false;
-            return run(id, 'remove', () => api.removePackage(id), 'Удалён.');
+            return run(id, 'remove', () => api.removePackage(id), tr.catalog.removedNote);
         },
     };
 }
@@ -230,12 +239,12 @@ export function EntryButtons({ entry, actions }: { entry: CatalogEntry; actions:
     return (
         <>
             {entry.state === 'update' && (
-                <Action tone="on" label="обновить" busy={busy === 'update'} disabled={!!busy} onClick={() => void actions.update(entry.id, entry.title)} />
+                <Action tone="on" label={tr.catalog.update} busy={busy === 'update'} disabled={!!busy} onClick={() => void actions.update(entry.id, entry.title)} />
             )}
             {isInstalled(entry) ? (
-                <Action label="удалить" busy={busy === 'remove'} disabled={!!busy} onClick={() => void actions.remove(entry.id, entry.title, entry.kind)} />
+                <Action label={tr.catalog.removeShort} busy={busy === 'remove'} disabled={!!busy} onClick={() => void actions.remove(entry.id, entry.title, entry.kind)} />
             ) : (
-                <Action tone="on" label="установить" busy={busy === 'install'} disabled={!!busy} onClick={() => void actions.install(entry)} />
+                <Action tone="on" label={tr.catalog.install} busy={busy === 'install'} disabled={!!busy} onClick={() => void actions.install(entry)} />
             )}
         </>
     );
@@ -259,7 +268,7 @@ export function CatalogEntrySheet({
     const samples = entry.preview?.samples ?? [];
     const pills = entryPills(entry, engines);
     return (
-        <Sheet title={entry.title} about={`${KIND_TITLES[entry.kind] ?? entry.kind} · версия ${entry.version}`} icon={<PackageThumb url={entry.preview?.image} />} onClose={onClose}>
+        <Sheet title={entry.title} about={tr.catalog.aboutEntry(KIND_TITLES[entry.kind] ?? entry.kind, entry.version)} icon={<PackageThumb url={entry.preview?.image} />} onClose={onClose}>
             {entry.description && <p class="t-body-sm m-0">{entry.description}</p>}
             {pills.length > 0 && (
                 <div class="flex flex-wrap gap-6">
@@ -279,8 +288,8 @@ export function CatalogEntrySheet({
                 <div class="flex flex-wrap items-center gap-8">
                     {samples.map((url, at) => (
                         <span key={url} class="inline-flex items-center gap-6 t-caption">
-                            <PlayButton id={`catalog:${entry.id}:${at}`} url={url} label={`${entry.title}, фраза ${at + 1}`} className="char-play is-inline" />
-                            фраза {at + 1}
+                            <PlayButton id={`catalog:${entry.id}:${at}`} url={url} label={tr.catalog.phraseLabel(entry.title, at + 1)} className="char-play is-inline" />
+                            {tr.catalog.phrase(at + 1)}
                         </span>
                     ))}
                 </div>
@@ -290,10 +299,10 @@ export function CatalogEntrySheet({
                     {line}
                 </p>
             ))}
-            {entry.license && <p class="t-caption m-0">Лицензия: {entry.license}</p>}
+            {entry.license && <p class="t-caption m-0">{tr.catalog.license(entry.license)}</p>}
             {!canManage(entry.kind) && (
                 <p class="t-caption m-0">
-                    {entry.kind === 'character' ? 'Ставить персонажей может тот, кому можно менять характер.' : 'Ставить такие приложения может администратор.'}
+                    {entry.kind === 'character' ? tr.catalog.onlyCharacterEditor : tr.catalog.onlyAdmin}
                 </p>
             )}
             <div class="flex flex-wrap items-center gap-8">
@@ -308,12 +317,12 @@ export function CatalogEntrySheet({
 /** Что сказать о самом каталоге: не настроен, выключен, без сети, когда скачан. */
 export function catalogStatus(catalog: CatalogState): { text: string; tone: 'meta' | 'warning' } | null {
     const view = catalog.view;
-    if (catalog.absent) return { text: 'Этот шлюз пока без каталога — показаны установленные.', tone: 'meta' };
-    if (catalog.error && !view) return { text: `Каталог не прочитать: ${catalog.error}`, tone: 'warning' };
+    if (catalog.absent) return { text: tr.catalog.statusAbsent, tone: 'meta' };
+    if (catalog.error && !view) return { text: tr.catalog.statusError(catalog.error), tone: 'warning' };
     if (!view) return null;
-    if (!view.configured) return { text: 'Каталог не настроен в этой сборке — показаны установленные.', tone: 'meta' };
-    if (!view.enabled) return { text: 'Каталог не загружается — показаны установленные.', tone: 'meta' };
-    if (view.offline) return { text: 'Каталог недоступен, показаны установленные.', tone: 'warning' };
+    if (!view.configured) return { text: tr.catalog.statusNotConfigured, tone: 'meta' };
+    if (!view.enabled) return { text: tr.catalog.statusDisabled, tone: 'meta' };
+    if (view.offline) return { text: tr.catalog.statusOffline, tone: 'warning' };
     if (view.problem) return { text: view.problem, tone: 'warning' };
     return null;
 }
@@ -330,7 +339,7 @@ export function feedLines(view: CatalogView | null): string[] {
         .filter((feed) => !feed.own && (feed.offline || feed.problem))
         .map((feed) =>
             feed.offline || !feed.problem
-                ? `Лента «${feed.title}» недоступна${feed.count > 0 ? ' — её приложения показаны по последней копии' : ''}.`
+                ? tr.catalog.feedOffline(feed.title, feed.count > 0)
                 : feed.problem,
         );
 }
@@ -340,11 +349,11 @@ const MAX_SOURCES = 4;
 
 /** Что сказать о своём источнике одной строкой. */
 function sourceLine(feed: CatalogSource): { text: string; warning: boolean } {
-    if (feed.closed) return { text: 'Закрыт: его пакетов больше нет, поставленные из него скрыты.', warning: true };
-    if (feed.offline) return { text: `Недоступен${feed.count > 0 ? ' — его пакеты показаны по последней копии' : ''}.`, warning: true };
+    if (feed.closed) return { text: tr.catalog.sourceClosed, warning: true };
+    if (feed.offline) return { text: tr.catalog.sourceOffline(feed.count > 0), warning: true };
     if (feed.problem) return { text: feed.problem, warning: true };
-    const count = `пакетов в каталоге: ${feed.count}`;
-    return { text: feed.fetchedAt ? `${count} · обновлён ${timeAgo(feed.fetchedAt)}` : count, warning: false };
+    const count = tr.catalog.sourceCount(feed.count);
+    return { text: feed.fetchedAt ? tr.catalog.sourceFetched(count, timeAgo(feed.fetchedAt)) : count, warning: false };
 }
 
 /**
@@ -364,16 +373,13 @@ export function OwnSources({ view, onView }: { view: CatalogView | null; onView:
         try {
             host = new URL(url).host;
         } catch {
-            setError('Это не ссылка: нужен адрес вида https://…/catalog.json.');
+            setError(tr.catalog.notALink);
             return;
         }
         const yes = await ask({
-            title: `Добавить источник ${host}?`,
-            text:
-                'Пакеты из него никто не проверял — ни мы, ни каталог. Персонаж, его описание и голос могут быть чьими угодно, ' +
-                'голос — снятым без согласия. Добавляйте источник, только если ссылку дал тот, кому вы доверяете. Из него ' +
-                'ставятся только персонажи и темы, без кода; убрать его можно здесь же.',
-            ok: 'Добавить',
+            title: tr.catalog.addSourceTitle(host),
+            text: tr.catalog.addSourceText,
+            ok: tr.catalog.add,
             danger: true,
         });
         if (!yes) return;
@@ -391,9 +397,9 @@ export function OwnSources({ view, onView }: { view: CatalogView | null; onView:
 
     const remove = async (feed: CatalogSource) => {
         const yes = await ask({
-            title: `Убрать источник «${feed.title}»?`,
-            text: 'Его пакеты уйдут из каталога. Поставленное из него останется как есть.',
-            ok: 'Убрать',
+            title: tr.catalog.removeSourceTitle(feed.title),
+            text: tr.catalog.removeSourceText,
+            ok: tr.catalog.removeSource,
             danger: true,
         });
         if (!yes) return;
@@ -411,9 +417,9 @@ export function OwnSources({ view, onView }: { view: CatalogView | null; onView:
     return (
         <div class="pkg-own" aria-labelledby="own-sources-h">
             <span id="own-sources-h" class="fw-700">
-                Свои источники
+                {tr.catalog.ownSources}
             </span>
-            <span class="t-caption">Лента пакетов по ссылке, которую вам дали лично. Её пакеты никто не проверял.</span>
+            <span class="t-caption">{tr.catalog.ownSourcesNote}</span>
             {own.map((feed) => {
                 const line = sourceLine(feed);
                 return (
@@ -422,7 +428,7 @@ export function OwnSources({ view, onView }: { view: CatalogView | null; onView:
                             <span class="pkg-text">
                                 <span class="pkg-title">
                                     {feed.title}
-                                    <span class="pill pill-yandex">не проверен</span>
+                                    <span class="pill pill-yandex">{tr.catalog.pillUnverified}</span>
                                 </span>
                                 <span class="t-caption break-all">{feed.url}</span>
                                 <span class={`t-caption${line.warning ? ' c-pill-yandex-fg' : ''}`} role={line.warning ? 'status' : undefined}>
@@ -430,14 +436,14 @@ export function OwnSources({ view, onView }: { view: CatalogView | null; onView:
                                 </span>
                             </span>
                             <div class="pkg-actions">
-                                <Action label="убрать" busy={busy === feed.url} disabled={busy !== null} onClick={() => void remove(feed)} />
+                                <Action label={tr.catalog.removeShortLower} busy={busy === feed.url} disabled={busy !== null} onClick={() => void remove(feed)} />
                             </div>
                         </div>
                     </div>
                 );
             })}
             {full ? (
-                <span class="t-caption">Своих источников — не больше {MAX_SOURCES}: чтобы добавить, уберите ненужный.</span>
+                <span class="t-caption">{tr.catalog.sourcesFull(MAX_SOURCES)}</span>
             ) : (
                 <form
                     class="flex gap-8 items-center"
@@ -450,7 +456,7 @@ export function OwnSources({ view, onView }: { view: CatalogView | null; onView:
                         type="url"
                         inputMode="url"
                         autocomplete="off"
-                        aria-label="Ссылка на ленту пакетов"
+                        aria-label={tr.catalog.sourceLinkLabel}
                         placeholder="https://…/catalog.json"
                         value={link}
                         onInput={(e) => {
@@ -458,7 +464,7 @@ export function OwnSources({ view, onView }: { view: CatalogView | null; onView:
                             setError(null);
                         }}
                     />
-                    <Action label="добавить" busy={busy === 'add'} disabled={!link.trim() || busy !== null} onClick={() => void add()} />
+                    <Action label={tr.catalog.addLower} busy={busy === 'add'} disabled={!link.trim() || busy !== null} onClick={() => void add()} />
                 </form>
             )}
             {error && (
@@ -471,22 +477,22 @@ export function OwnSources({ view, onView }: { view: CatalogView | null; onView:
 }
 
 /** Состояние плагина одним словом. */
-const PLUGIN_STATE: Record<string, { text: string; cls: string }> = {
-    loaded: { text: 'работает', cls: 'pill-own' },
-    ready: { text: 'включён', cls: 'pill-own' },
-    off: { text: 'выкл', cls: 'pill-off' },
-    error: { text: 'ошибка', cls: 'pill-error' },
-    safeMode: { text: 'безопасный режим', cls: 'pill-off' },
-};
+const pluginStates = (): Record<string, { text: string; cls: string }> => ({
+    loaded: { text: tr.catalog.stateLoaded, cls: 'pill-own' },
+    ready: { text: tr.catalog.stateReady, cls: 'pill-own' },
+    off: { text: tr.catalog.stateOff, cls: 'pill-off' },
+    error: { text: tr.catalog.stateError, cls: 'pill-error' },
+    safeMode: { text: tr.catalog.stateSafeMode, cls: 'pill-off' },
+});
 
 /** Фильтр установленного по происхождению: свои, встроенные (и системные), из каталога. */
 type OriginFilter = 'all' | 'user' | 'bundled' | 'catalog';
 
-const ORIGIN_FILTERS: Array<{ id: OriginFilter; label: string }> = [
-    { id: 'all', label: 'Все' },
-    { id: 'user', label: 'Свои' },
-    { id: 'bundled', label: 'Встроенные' },
-    { id: 'catalog', label: 'Из каталога' },
+const originFilters = (): Array<{ id: OriginFilter; label: string }> => [
+    { id: 'all', label: tr.catalog.filterAll },
+    { id: 'user', label: tr.catalog.filterUser },
+    { id: 'bundled', label: tr.catalog.filterBundled },
+    { id: 'catalog', label: tr.catalog.filterCatalog },
 ];
 
 const originOf = (entry: PackageView): PackageOrigin => entry.origin ?? (entry.source === 'catalog' ? 'catalog' : 'user');
@@ -569,9 +575,9 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
     const status = catalogStatus(catalog);
     // Пакет каталога по ссылке; на вкладке «Установлено» — тот, которого здесь нет (ссылка вела на ещё не поставленный).
     const linkedEntry = linked.item && (part === 'catalog' || !installed?.packages.some((entry) => entry.id === linked.item)) ? byId.get(linked.item) : undefined;
-    const kinds = KIND_FILTERS.filter((filter) => entries.some((entry) => entry.kind === filter.id));
+    const kinds = kindFilters().filter((filter) => entries.some((entry) => entry.kind === filter.id));
     const all = installed?.packages ?? [];
-    const counts = Object.fromEntries(ORIGIN_FILTERS.map((filter) => [filter.id, filter.id === 'all' ? all.length : all.filter((entry) => filterOf(entry) === filter.id).length]));
+    const counts = Object.fromEntries(originFilters().map((filter) => [filter.id, filter.id === 'all' ? all.length : all.filter((entry) => filterOf(entry) === filter.id).length]));
     const listed = all
         .map((entry, index) => ({ entry, index }))
         .filter(({ entry }) => origin === 'all' || filterOf(entry) === origin)
@@ -584,9 +590,9 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                 <section class="card glass card-list" aria-labelledby="packages-h">
                     <div class="card-head">
                         <h2 id="packages-h" class="t-title-xs m-0">
-                            Установлено
+                            {tr.catalog.installedTitle}
                         </h2>
-                        <span class="t-meta">{installed?.safeMode ? 'безопасный режим: приложения не работают' : installed ? `${installed.packages.length}` : ''}</span>
+                        <span class="t-meta">{installed?.safeMode ? tr.catalog.safeModeApps : installed ? `${installed.packages.length}` : ''}</span>
                     </div>
                     {installedError && (
                         <p class="t-caption m-0 c-dot-offline" role="alert">
@@ -595,23 +601,23 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                     )}
                     {panelSafeMode() && (
                         <p class="t-caption m-0 mb-6 c-pill-yandex-fg" role="status">
-                            Безопасный режим пульта (?safe=1): темы и части приложений в пульт не загружены.
+                            {tr.catalog.panelSafeMode}
                         </p>
                     )}
                     {installed && installed.packages.some((entry) => entry.permissions.includes('schedule')) && <SchedulesSwitchLine />}
                     <LaterLine />
                     {installed && installed.packages.length === 0 && (
                         <p class="t-caption m-0 mb-6">
-                            Пока ничего не поставлено — выберите{' '}
+                            {tr.catalog.nothingInstalledBefore}{' '}
                             <button class="underline cursor-pointer" onClick={() => panel.go('skills', 'catalog')}>
-                                в каталоге
+                                {tr.catalog.inCatalog}
                             </button>
                             .
                         </p>
                     )}
-                    {all.length > 0 && ORIGIN_FILTERS.filter((filter) => filter.id === 'all' || counts[filter.id] > 0).length > 2 && (
-                        <div class="pkg-chips" role="group" aria-label="Откуда приложение">
-                            {ORIGIN_FILTERS.filter((filter) => filter.id === 'all' || counts[filter.id] > 0).map((filter) => (
+                    {all.length > 0 && originFilters().filter((filter) => filter.id === 'all' || counts[filter.id] > 0).length > 2 && (
+                        <div class="pkg-chips" role="group" aria-label={tr.catalog.originGroup}>
+                            {originFilters().filter((filter) => filter.id === 'all' || counts[filter.id] > 0).map((filter) => (
                                 <button
                                     key={filter.id}
                                     class={`pill ${origin === filter.id ? 'pill-own' : 'pill-off'} cursor-pointer min-h-36`}
@@ -628,7 +634,7 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                         const fromCatalog = byId.get(entry.id);
                         // Плагин и приложение включаются и работают; персонаж и тема — данные.
                         const runs = kindOf === 'plugin' || kindOf === 'app';
-                        const state = runs ? PLUGIN_STATE[entry.state] : undefined;
+                        const state = runs ? pluginStates()[entry.state] : undefined;
                         const from = originOf(entry);
                         const editable = isAdmin && (entry.editable ?? from === 'user') && (kindOf === 'plugin' || kindOf === 'theme');
                         const busy = actions.busy[entry.id];
@@ -642,27 +648,27 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                                             <span class="pill pill-off">{KIND_TITLES[kindOf] ?? kindOf}</span>
                                             {from !== 'catalog' && <span class={`pill ${from === 'user' ? 'pill-own' : 'pill-off'}`}>{ORIGIN_TITLES[from]}</span>}
                                             {state && <span class={`pill ${state.cls}`}>{state.text}</span>}
-                                            {fromCatalog?.state === 'update' && <span class="pill pill-agent">новая версия</span>}
+                                            {fromCatalog?.state === 'update' && <span class="pill pill-agent">{tr.catalog.pillNewVersion}</span>}
                                         </span>
                                         <span class="t-caption">
-                                            {[entry.version && `версия ${entry.version}`, entry.license, entry.description].filter(Boolean).join(' · ')}
+                                            {[entry.version && tr.catalog.versionOf(entry.version), entry.license, entry.description].filter(Boolean).join(' · ')}
                                         </span>
                                     </button>
                                     <div class="pkg-actions">
                                         {kindOf === 'character' && (
-                                            <Action label="открыть" onClick={() => panel.go('character', 'characters', entry.id)} />
+                                            <Action label={tr.catalog.open} onClick={() => panel.go('character', 'characters', entry.id)} />
                                         )}
-                                        {editable && <Action label="в мастерской →" onClick={() => panel.go('skills', 'workshop', entry.id)} />}
+                                        {editable && <Action label={tr.catalog.inWorkshop} onClick={() => panel.go('skills', 'workshop', entry.id)} />}
                                         {fromCatalog?.state === 'update' && canManage(kindOf) && (
-                                            <Action tone="on" label="обновить" busy={busy === 'update'} disabled={!!busy} onClick={() => void actions.update(entry.id, entry.title)} />
+                                            <Action tone="on" label={tr.catalog.update} busy={busy === 'update'} disabled={!!busy} onClick={() => void actions.update(entry.id, entry.title)} />
                                         )}
                                         {canManage(kindOf) && (entry.removable ?? true) && (
-                                            <Action label="удалить" busy={busy === 'remove'} disabled={!!busy} onClick={() => void actions.remove(entry.id, entry.title, kindOf)} />
+                                            <Action label={tr.catalog.removeShort} busy={busy === 'remove'} disabled={!!busy} onClick={() => void actions.remove(entry.id, entry.title, kindOf)} />
                                         )}
                                         {runs && isAdmin && (
                                             <Switch
                                                 on={entry.enabled}
-                                                label={`${entry.title}: ${entry.enabled ? 'выключить' : 'включить'}`}
+                                                label={tr.catalog.switchLabel(entry.title, entry.enabled)}
                                                 disabled={switching === entry.id || !!installed?.safeMode || (entry.enabled && entry.canDisable === false)}
                                                 onChange={(on) => void toggle(entry, on)}
                                             />
@@ -676,14 +682,14 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                                     </span>
                                 )}
                                 {entry.lastError && entry.lastError.message !== entry.problem && (
-                                    <span class="t-caption c-dot-offline">Последняя ошибка {timeAgo(entry.lastError.at)}: {entry.lastError.message}</span>
+                                    <span class="t-caption c-dot-offline">{tr.catalog.lastError(timeAgo(entry.lastError.at), entry.lastError.message)}</span>
                                 )}
                                 <NoteLine note={actions.notes[entry.id]} />
                             </div>
                         );
                     })}
                     {!isAdmin && installed?.packages.some((entry) => (entry.kind ?? 'plugin') === 'plugin') && (
-                        <p class="t-caption m-0 mt-8">Включать приложения может администратор.</p>
+                        <p class="t-caption m-0 mt-8">{tr.catalog.adminTurnsOn}</p>
                     )}
                 </section>
             )}
@@ -692,15 +698,15 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
             <section class="card glass card-list" aria-labelledby="catalog-h">
                 <div class="card-head">
                     <h2 id="catalog-h" class="t-title-xs m-0">
-                        Каталог
+                        {tr.catalog.catalogTitle}
                     </h2>
                     {view?.configured && view.enabled && (
                         <button class="t-caption cursor-pointer underline min-h-44" disabled={catalog.refreshing} onClick={() => void catalog.reload(true)}>
-                            {catalog.refreshing ? 'проверяю…' : view.fetchedAt ? `обновлён ${timeAgo(view.fetchedAt)}` : 'проверить'}
+                            {catalog.refreshing ? tr.catalog.checking : view.fetchedAt ? tr.catalog.updatedAgo(timeAgo(view.fetchedAt)) : tr.catalog.check}
                         </button>
                     )}
                 </div>
-                <p class="t-caption m-0 mb-6">Проверенные нами приложения, персонажи и темы. Ставится только то, что вы выберете.</p>
+                <p class="t-caption m-0 mb-6">{tr.catalog.catalogAbout}</p>
                 {status && (
                     <p class={`t-caption m-0 mb-6 ${status.tone === 'warning' ? 'c-pill-yandex-fg' : ''}`} role="status">
                         {status.text}
@@ -714,15 +720,15 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                 {kinds.length > 1 && (
                     <div class="pkg-filters">
                         <Dropdown
-                            label="Вид"
-                            anyLabel="Все виды"
+                            label={tr.catalog.kindLabel}
+                            anyLabel={tr.catalog.anyKind}
                             value={kind}
                             options={kinds.map((filter) => ({ id: filter.id, label: filter.label, hint: String(entries.filter((entry) => entry.kind === filter.id).length) }))}
                             onPick={setKind}
                         />
                     </div>
                 )}
-                {view && shown.length === 0 && !status && <p class="t-caption m-0 mb-6">В каталоге пока пусто.</p>}
+                {view && shown.length === 0 && !status && <p class="t-caption m-0 mb-6">{tr.catalog.emptyCatalog}</p>}
                 {shown.map((entry) => {
                     const pills = entryPills(entry, engines);
                     return (
@@ -739,7 +745,7 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                                             </span>
                                         ))}
                                     </span>
-                                    <span class="t-caption">{[entry.description, `версия ${entry.version}`, entry.license].filter(Boolean).join(' · ')}</span>
+                                    <span class="t-caption">{[entry.description, tr.catalog.versionOf(entry.version), entry.license].filter(Boolean).join(' · ')}</span>
                                     {entry.reason && <span class="t-caption">{entry.reason}</span>}
                                 </button>
                                 <div class="pkg-actions">
@@ -754,10 +760,10 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                 {view?.configured && can('settings.edit') && (
                     <div class="pkg-switch">
                         <div class="flex-1 min-w-0 flex flex-col gap-2">
-                            <span class="fw-700">Не загружать каталог</span>
-                            <span class="t-caption">Запрос каталога сообщает нашему сайту адрес шлюза. Выключите — шлюз не будет ходить за ним.</span>
+                            <span class="fw-700">{tr.catalog.noCatalogTitle}</span>
+                            <span class="t-caption">{tr.catalog.noCatalogNote}</span>
                         </div>
-                        <Switch on={!view.enabled} label="Не загружать каталог" disabled={catalogBusy} onChange={(off) => void setCatalogOn(!off)} />
+                        <Switch on={!view.enabled} label={tr.catalog.noCatalogTitle} disabled={catalogBusy} onChange={(off) => void setCatalogOn(!off)} />
                     </div>
                 )}
                 {catalogError && (
@@ -785,7 +791,7 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                 <CatalogEntrySheet entry={linkedEntry} actions={actions} engines={engines} onClose={linked.close}>
                     {linkedEntry.kind === 'character' && isInstalled(linkedEntry) && (
                         <div>
-                            <Action label="Открыть персонажа" onClick={() => panel.go('character', 'characters', linkedEntry.id)} />
+                            <Action label={tr.catalog.openCharacter} onClick={() => panel.go('character', 'characters', linkedEntry.id)} />
                         </div>
                     )}
                 </CatalogEntrySheet>

@@ -3,7 +3,6 @@
 //! a JSON Schema of its parameters — and one function of backend.js that calls it through `host.http.fetch`. The
 //! server's host becomes the plugin's only `net:` right; an API key the document asks for becomes a setting, never a
 //! line of code. The agent then adds phrases and a card, and keeps the tools that matter.
-
 use std::collections::BTreeSet;
 
 use serde_json::{json, Map, Value};
@@ -77,16 +76,20 @@ fn server(spec: &Value) -> Result<url::Url, String> {
     let address = match spec.pointer("/servers/0/url").and_then(Value::as_str) {
         Some(address) => address.to_string(),
         None => {
-            let host = spec.get("host").and_then(Value::as_str).ok_or("в описании нет servers[0].url (или host)")?;
+            let host = spec
+                .get("host")
+                .and_then(Value::as_str)
+                .ok_or_else(|| crate::tr!("в описании нет servers[0].url (или host)"))?;
             format!("https://{host}{}", spec.get("basePath").and_then(Value::as_str).unwrap_or(""))
         }
     };
-    let url = url::Url::parse(&address).map_err(|_| format!("адрес сервера «{address}» не читается"))?;
+    let url = url::Url::parse(&address)
+        .map_err(|_| crate::tr!("адрес сервера «{address}» не читается", address = address))?;
     if url.scheme() != "https" {
-        return Err(format!("сервер {address}: плагин ходит в сеть только по https"));
+        return Err(crate::tr!("сервер {address}: плагин ходит в сеть только по https", address = address));
     }
     if url.host_str().is_none_or(|host| host.parse::<std::net::IpAddr>().is_ok() || !host.contains('.')) {
-        return Err("у сервера нет имени в интернете".into());
+        return Err(crate::tr!("у сервера нет имени в интернете"));
     }
     Ok(url)
 }
@@ -185,13 +188,13 @@ fn handler_of(name: &str) -> String {
 
 /// The draft's files from a document in JSON.
 pub fn draft_from(id: &str, title: Option<&str>, document: &str) -> Result<Vec<(String, String)>, String> {
-    let spec: Value = serde_json::from_str(document).map_err(|_| "нужен JSON (YAML переведите в JSON)".to_string())?;
+    let spec: Value = serde_json::from_str(document).map_err(|_| crate::tr!("нужен JSON (YAML переведите в JSON)"))?;
     let server = server(&spec)?;
     let host = server.host_str().unwrap_or_default().to_ascii_lowercase();
     let base = server.as_str().trim_end_matches('/').to_string();
     let operations = operations(&spec);
     if operations.is_empty() {
-        return Err("в описании нет операций (paths)".into());
+        return Err(crate::tr!("в описании нет операций (paths)"));
     }
     let title =
         title.map(str::to_string).or_else(|| spec.pointer("/info/title").and_then(Value::as_str).map(str::to_string));

@@ -2,7 +2,6 @@
 //! through it. The same routes answer at /api/v1/station (the panel) and at /debug (the debug API of the docs and
 //! curl; off with DEBUG_API_ENABLED=false). Who may do what is the caller's: a signed-in person or a key with the right
 //! named on each route. The debug paths stay at home.
-
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -243,11 +242,11 @@ async fn player_command(
     gate(&app, &caller, &uri)?;
     caller.permitted(STATION_SAY)?;
     if !matches!(action.as_str(), "pause" | "resume" | "next" | "previous" | "stop" | "like" | "dislike") {
-        return Err(ApiError::bad_request("action: pause, resume, next, previous, stop, like или dislike"));
+        return Err(ApiError::bad_request(crate::tr!("action: pause, resume, next, previous, stop, like или dislike")));
     }
     let device = app.skills.device_or_latest(query.get("device").map(String::as_str)).unwrap_or_else(|| "*".into());
     let Some(session) = app.sessions.speaking_on(&device) else {
-        return Err(ApiError::conflict("Колонка не на связи."));
+        return Err(ApiError::conflict(crate::tr!("Колонка не на связи.")));
     };
     let yandex = app.modes.yandex_allowed() && session.yandex_connected();
     let directives = app.skills.player_command(&session.device_tag, &action, yandex).await?;
@@ -299,7 +298,7 @@ fn speaking(
     let text = body.get("text").and_then(Value::as_str).filter(|text| !crate::skills::js::trim(text).is_empty());
     let Some(text) = text else { return Err(ApiError::bad_request("body: {\"text\": \"...\"}")) };
     if text.encode_utf16().count() > 1000 {
-        return Err(ApiError::bad_request("text: до 1000 символов"));
+        return Err(ApiError::bad_request(crate::tr!("text: до 1000 символов")));
     }
     let session =
         if id == "latest" { app.sessions.latest_speaking().map(AnySession::Station) } else { app.sessions.find(id) };

@@ -5,16 +5,15 @@
 import { useState } from 'preact/hooks';
 
 import type { CharacterVoice, TtsCard, VoiceNeeds } from '../api';
-import { api, isTight, plural, problemOf } from '../api';
+import { api, isTight, problemOf } from '../api';
 import { Sheet } from './sheet';
-
-const decimal = (value: number): string => String(value).replace('.', ',');
+import { formatNumber, tr } from '../i18n';
 
 /** «60 МБ», «3,1 ГБ», «10 ГБ». */
 export function sizeText(mb: number): string {
-    if (mb < 1024) return `${Math.max(1, Math.round(mb))} МБ`;
+    if (mb < 1024) return tr.ui.sizeMb(Math.max(1, Math.round(mb)));
     const gb = mb / 1024;
-    return `${decimal(gb >= 10 ? Math.round(gb) : Math.round(gb * 10) / 10)} ГБ`;
+    return tr.ui.sizeGb(formatNumber(gb >= 10 ? Math.round(gb) : Math.round(gb * 10) / 10));
 }
 
 /** Сколько займёт на диске (а не известно — сколько скачать). */
@@ -25,7 +24,7 @@ export function needsSize(needs?: VoiceNeeds | null): string | null {
 
 /** «модель OmniVoice», «файл голоса». */
 export function needsWhat(needs: VoiceNeeds): string {
-    return needs.kind === 'engine' ? `модель ${needs.title ?? needs.id}` : 'файл голоса';
+    return needs.kind === 'engine' ? tr.ui.needsModel(needs.title ?? needs.id) : tr.ui.needsVoiceFile;
 }
 
 /** Метка готовности голоса: нужна модель, качается, не пойдёт здесь. Готовому голосу метка не нужна. */
@@ -33,12 +32,12 @@ export function voicePill(voice: Pick<TtsCard, 'state' | 'progress' | 'needs'> |
     if (!voice?.state) return null;
     if (voice.state === 'needs') {
         const size = needsSize(voice.needs);
-        const what = voice.needs?.kind === 'file' ? 'нужен файл' : 'нужна модель';
+        const what = voice.needs?.kind === 'file' ? tr.ui.pillNeedsFile : tr.ui.pillNeedsModel;
         return { text: size ? `${what} · ${size}` : what, cls: 'pill-yandex' };
     }
     if (voice.state === 'installing')
-        return { text: voice.progress !== undefined ? `качается ${Math.round(voice.progress)} %` : 'качается', cls: 'pill-off' };
-    if (voice.state === 'unsupported') return { text: 'не пойдёт здесь', cls: 'pill-off' };
+        return { text: voice.progress !== undefined ? tr.ui.pillDownloadingPct(Math.round(voice.progress)) : tr.ui.pillDownloading, cls: 'pill-off' };
+    if (voice.state === 'unsupported') return { text: tr.ui.pillUnsupported, cls: 'pill-off' };
     return null;
 }
 
@@ -58,10 +57,10 @@ export function Progress({ percent, label }: { percent: number; label: string })
 /** «Скачать ~3 ГБ, на диске ~4 ГБ, около 2 минут.» — что известно. */
 function facts(needs: VoiceNeeds): string {
     const parts: string[] = [];
-    if (needs.downloadMb) parts.push(`${needs.kind === 'file' ? 'скачать голос' : 'скачать'} ~${sizeText(needs.downloadMb)}`);
-    if (needs.diskMb && needs.kind === 'engine') parts.push(`на диске ~${sizeText(needs.diskMb)}`);
-    if (needs.minutes) parts.push(`около ${needs.minutes} ${plural(needs.minutes, 'минуты', 'минут', 'минут')}`);
-    if (parts.length === 0) return needs.kind === 'file' ? 'Голос скачается с сайта Piper или Silero.' : 'Модель скачается и встанет на этот компьютер.';
+    if (needs.downloadMb) parts.push(tr.ui.factDownload(needs.kind === 'file', sizeText(needs.downloadMb)));
+    if (needs.diskMb && needs.kind === 'engine') parts.push(tr.ui.factDisk(sizeText(needs.diskMb)));
+    if (needs.minutes) parts.push(tr.ui.factMinutes(needs.minutes));
+    if (parts.length === 0) return needs.kind === 'file' ? tr.ui.factsFileDefault : tr.ui.factsModelDefault;
     const text = parts.join(', ');
     return `${text[0].toUpperCase()}${text.slice(1)}.`;
 }
@@ -91,8 +90,8 @@ export function NeedsBody({ needs, fallback, busy = null, error, tight, onInstal
         <>
             <p class="needs-facts">{facts(needs)}</p>
             <p class="t-caption m-0">
-                {needs.kind === 'file' ? 'Голос включится сам, когда файл скачается.' : 'Голос включится сам, когда модель встанет.'}
-                {fallback ? ` Пока — говорит «${fallback}».` : ''}
+                {needs.kind === 'file' ? tr.ui.willEnableFile : tr.ui.willEnableModel}
+                {fallback ? ` ${tr.ui.meanwhileSpeaks(fallback)}` : ''}
             </p>
             {tight && (
                 <p class="t-caption m-0 c-pill-yandex-fg" role="status">
@@ -107,7 +106,7 @@ export function NeedsBody({ needs, fallback, busy = null, error, tight, onInstal
             <div class="needs-actions">
                 <button type="button" class="pill pill-own pill-btn inline-flex items-center gap-6" disabled={waiting} onClick={onInstall}>
                     {spin('install')}
-                    {tight ? 'Включить всё равно' : 'Скачать и включить'}
+                    {tight ? tr.ui.enableAnyway : tr.ui.downloadAndEnable}
                 </button>
                 {alternatives.map((entry) => (
                     <button
@@ -118,13 +117,13 @@ export function NeedsBody({ needs, fallback, busy = null, error, tight, onInstal
                         onClick={() => onReimprint?.(entry.engine)}
                     >
                         {spin('reimprint')}
-                        Переснять для {entry.title ?? entry.engine} из записей
+                        {tr.ui.reimprintFor(entry.title ?? entry.engine)}
                     </button>
                 ))}
                 {fallback && onFallback && (
                     <button type="button" class="pill pill-off pill-btn inline-flex items-center gap-6" disabled={waiting} onClick={onFallback}>
                         {spin('fallback')}
-                        Пока говорить голосом «{fallback}»
+                        {tr.ui.speakWithFallback(fallback)}
                     </button>
                 )}
             </div>
@@ -137,12 +136,12 @@ export function NeedsDialog({ who, onClose, ...props }: NeedsProps & { who: stri
     const what = needsWhat(props.needs);
     return (
         <Sheet
-            title={`${props.needs.kind === 'file' ? 'Нужен' : 'Нужна'} ${what}`}
+            title={tr.ui.needsTitle(props.needs.kind === 'file', what)}
             about={who}
             onClose={onClose}
             footer={
                 <button type="button" class="pill pill-off pill-btn justify-center min-h-44" onClick={onClose}>
-                    Не сейчас
+                    {tr.ui.notNow}
                 </button>
             }
         >
@@ -209,15 +208,15 @@ export function useNeedsFlow(onDone: (message: string) => void) {
                 'install',
                 () => ask.retry({ install: true, anyway: tight !== null }),
                 tight !== null
-                    ? 'Включаю всё равно.'
+                    ? tr.ui.enablingAnyway
                     : ask.needs.kind === 'file'
-                      ? 'Голос скачивается — включится сам.'
-                      : 'Модель ставится — голос включится сам, когда она встанет.',
+                      ? tr.ui.voiceDownloading
+                      : tr.ui.modelInstalling,
             ),
-        onFallback: ask.fallback ? () => void run('fallback', () => ask.onFallback?.(), `Пока говорит «${ask.fallback}».`) : undefined,
+        onFallback: ask.fallback ? () => void run('fallback', () => ask.onFallback?.(), tr.ui.meanwhileSpeaks(ask.fallback ?? '')) : undefined,
         onReimprint: ask.ownId
             ? (engine: string) =>
-                  void run('reimprint', () => api.reimprintVoice(ask.ownId!, engine), 'Переснимаю голос из записей — около минуты. Потом выберите его снова.')
+                  void run('reimprint', () => api.reimprintVoice(ask.ownId!, engine), tr.ui.reimprinting)
             : undefined,
     };
     return {

@@ -63,7 +63,12 @@ async fn sized_download<T>(
         let done = (mb / expected_mb as f64).min(1.0);
         context.stage(
             "weights",
-            &format!("{label} · {} из ~{} ГБ", gb(mb), gb(expected_mb as f64)),
+            &crate::tr!(
+                "{label} · {done} из ~{total} ГБ",
+                label = label,
+                done = gb(mb),
+                total = gb(expected_mb as f64)
+            ),
             Some(from + (to - from) * done),
         );
     };
@@ -171,7 +176,7 @@ async fn download(url: &str, target: &Path, signal: &tokio_util::sync::Cancellat
     // does).
     for _attempt in 1..=5 {
         if signal.is_cancelled() {
-            return Err("Остановлено.".into());
+            return Err(crate::tr!("Остановлено.").into());
         }
         let fetch = async {
             let response = crate::utils::http::client()
@@ -201,7 +206,7 @@ async fn download(url: &str, target: &Path, signal: &tokio_util::sync::Cancellat
     }
     let tail: Vec<&str> = url.rsplit('/').take(3).collect();
     let tail: Vec<&str> = tail.into_iter().rev().collect();
-    Err(format!("не скачался {}", tail.join("/")).into())
+    Err(crate::tr!("не скачался {file}", file = tail.join("/")).into())
 }
 
 pub struct InstallPlan {
@@ -228,10 +233,10 @@ fn strings(items: &[&str]) -> Vec<String> {
 pub async fn install_engine(context: &JobContext, plan: &InstallPlan) -> Result<ReadyInfo, JobError> {
     let engine = plan.engine;
     let platform = &plan.platform;
-    context.stage("check", "Проверяю компьютер", Some(2.0));
+    context.stage("check", &crate::tr!("Проверяю компьютер"), Some(2.0));
     let fits = verdict(engine, platform);
     if !fits.supported {
-        return Err(fits.reason.unwrap_or_else(|| "не поддерживается".into()).into());
+        return Err(fits.reason.unwrap_or_else(|| crate::tr!("не поддерживается")).into());
     }
     let target = js::resolve(&plan.runtime_dir.join(engine.id.as_str()));
     let python = arg(&python_of(&target, platform.os));
@@ -242,16 +247,14 @@ pub async fn install_engine(context: &JobContext, plan: &InstallPlan) -> Result<
     let uv = platform.tools.uv.clone();
     if copy_from.is_none() && uv.is_none() {
         return Err(if platform.os == OsName::Win32 {
-            "Нужен uv — менеджер Python. Установите: powershell -c \"irm https://astral.sh/uv/install.ps1 | iex\" — и \
-             нажмите ещё раз."
+            crate::tr!("Нужен uv — менеджер Python. Установите: powershell -c \"irm https://astral.sh/uv/install.ps1 | iex\" — и нажмите ещё раз.")
         } else {
-            "Нужен uv — менеджер Python. Установите: curl -LsSf https://astral.sh/uv/install.sh | sh (или brew install \
-             uv) — и нажмите ещё раз."
+            crate::tr!("Нужен uv — менеджер Python. Установите: curl -LsSf https://astral.sh/uv/install.sh | sh (или brew install uv) — и нажмите ещё раз.")
         }
         .into());
     }
     if copy_from.is_none() && engine.id == EngineId::Cosyvoice3 && !platform.tools.git {
-        return Err("Для CosyVoice нужен git.".into());
+        return Err(crate::tr!("Для CosyVoice нужен git.").into());
     }
     let need_mb = if copy_from.is_some() && platform.os == OsName::Darwin {
         0
@@ -259,10 +262,10 @@ pub async fn install_engine(context: &JobContext, plan: &InstallPlan) -> Result<
         engine.disk_mb.of(flavour(platform)) + 1_024
     };
     if platform.disk_free_mb < need_mb {
-        return Err(format!(
-            "На диске свободно {} ГБ, а нужно около {} ГБ.",
-            js::round_i64(platform.disk_free_mb as f64 / 1024.0),
-            js::round_i64(need_mb as f64 / 1024.0)
+        return Err(crate::tr!(
+            "На диске свободно {free} ГБ, а нужно около {need} ГБ.",
+            free = js::round_i64(platform.disk_free_mb as f64 / 1024.0),
+            need = js::round_i64(need_mb as f64 / 1024.0)
         )
         .into());
     }
@@ -281,7 +284,7 @@ pub async fn install_engine(context: &JobContext, plan: &InstallPlan) -> Result<
     let with_env = || RunOptions { env: Some(env.clone()), ..RunOptions::default() };
 
     let source = if let Some((bench, parts)) = &copy_from {
-        context.stage("copy", "Копирую готовую установку со стенда", Some(10.0));
+        context.stage("copy", &crate::tr!("Копирую готовую установку со стенда"), Some(10.0));
         let count = parts.len() as f64;
         for (index, part) in parts.iter().enumerate() {
             let mut args =
@@ -294,15 +297,15 @@ pub async fn install_engine(context: &JobContext, plan: &InstallPlan) -> Result<
         InstallSource::Bench
     } else {
         let uv = uv.unwrap_or_default();
-        context.stage("python", &format!("Ставлю Python {}", engine.python), Some(5.0));
+        context.stage("python", &crate::tr!("Ставлю Python {version}", version = engine.python), Some(5.0));
         let venv = vec!["venv".into(), "--python".into(), engine.python.into(), arg(&target.join("env"))];
         context.run(&uv, &venv, with_env()).await?;
-        context.stage("torch", "Ставлю PyTorch", Some(10.0));
+        context.stage("torch", &crate::tr!("Ставлю PyTorch"), Some(10.0));
         let mut torch = strings(&["pip", "install", "-p", &python]);
         torch.extend(torch_packages(engine, platform));
         context.run(&uv, &torch, with_env()).await?;
         if engine.id == EngineId::Cosyvoice3 {
-            context.stage("repo", "Скачиваю CosyVoice", Some(30.0));
+            context.stage("repo", &crate::tr!("Скачиваю CosyVoice"), Some(30.0));
             let repo = arg(&target.join("repo"));
             std::fs::create_dir_all(&repo).map_err(|error| error.to_string())?;
             for args in [
@@ -315,7 +318,7 @@ pub async fn install_engine(context: &JobContext, plan: &InstallPlan) -> Result<
                 context.run("git", &args, with_env()).await?;
             }
         }
-        context.stage("packages", "Ставлю библиотеки", Some(40.0));
+        context.stage("packages", &crate::tr!("Ставлю библиотеки"), Some(40.0));
         if engine.id == EngineId::Cosyvoice3 {
             context.run(&uv, &strings(&["pip", "install", "-p", &python, "setuptools<81"]), with_env()).await?;
         }
@@ -329,7 +332,7 @@ pub async fn install_engine(context: &JobContext, plan: &InstallPlan) -> Result<
             let whisper =
                 strings(&["pip", "install", "-p", &python, "--no-build-isolation", "openai-whisper==20250625"]);
             context.run(&uv, &whisper, with_env()).await?;
-            context.stage("wetext", "Скачиваю словари нормализации текста", Some(55.0));
+            context.stage("wetext", &crate::tr!("Скачиваю словари нормализации текста"), Some(55.0));
             let mirror = target.join("wetext-mirror");
             for lang in ["en", "zh"] {
                 std::fs::create_dir_all(mirror.join(lang).join("tn")).map_err(|error| error.to_string())?;
@@ -358,7 +361,7 @@ pub async fn install_engine(context: &JobContext, plan: &InstallPlan) -> Result<
             context,
             &watched,
             engine.weights_mb,
-            "Скачиваю веса модели",
+            &crate::tr!("Скачиваю веса модели"),
             (60.0, 88.0),
             context.run(&python, &args, with_env()),
         )
@@ -366,7 +369,7 @@ pub async fn install_engine(context: &JobContext, plan: &InstallPlan) -> Result<
         InstallSource::Download
     };
 
-    context.stage("verify", "Проверяю установку", Some(90.0));
+    context.stage("verify", &crate::tr!("Проверяю установку"), Some(90.0));
     let mut offline = env.clone();
     offline.insert("HF_HUB_OFFLINE".into(), "1".into());
     let check = vec!["-c".to_string(), check_script(engine), arg(&target.join("repo"))];

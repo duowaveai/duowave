@@ -6,18 +6,17 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { sessionStore } from '../api';
 import { IconAuto, IconMoon, IconSun } from '../icons';
 import { ModePick, useTheme } from './theme';
+import { tr } from '../i18n';
 
 /** Тема в одно нажатие; «Авто» — как у системы: светлая днём, тёмная вечером, и в темноте не режет глаза. */
-const MODES: Array<{ id: ModePick; label: string; Icon: typeof IconSun }> = [
-    { id: 'light', label: 'Светлая', Icon: IconSun },
-    { id: 'dark', label: 'Тёмная', Icon: IconMoon },
-    { id: 'auto', label: 'Авто', Icon: IconAuto },
+const modes = (): Array<{ id: ModePick; label: string; Icon: typeof IconSun }> => [
+    { id: 'light', label: tr.shell.modeLight, Icon: IconSun },
+    { id: 'dark', label: tr.shell.modeDark, Icon: IconMoon },
+    { id: 'auto', label: tr.shell.modeAuto, Icon: IconAuto },
 ];
 
-const ROLE_WORDS: Record<string, string> = { admin: 'администратор', member: 'домашний', guest: 'гость' };
-
 /** Первая буква имени — на аватаре; без имени — «Я». */
-const initial = (name: string | undefined): string => (name?.trim()[0] ?? 'Я').toUpperCase();
+const initial = (name: string | undefined): string => (name?.trim()[0] ?? tr.shell.initialFallback).toUpperCase();
 
 export function AccountMenu({ onLook, onAccess, onSignOut }: { onLook: () => void; onAccess: () => void; onSignOut: () => void }) {
     const [open, setOpen] = useState(false);
@@ -53,7 +52,7 @@ export function AccountMenu({ onLook, onAccess, onSignOut }: { onLook: () => voi
             <button
                 ref={button}
                 class="account-btn"
-                aria-label={`${me?.name ?? 'Вход'}: тема, оформление, выход`}
+                aria-label={tr.shell.accountButton(me?.name ?? tr.shell.signIn)}
                 aria-haspopup="menu"
                 aria-expanded={open}
                 onClick={() => setOpen(!open)}
@@ -61,13 +60,13 @@ export function AccountMenu({ onLook, onAccess, onSignOut }: { onLook: () => voi
                 {initial(me?.name)}
             </button>
             {open && (
-                <div class="account-menu menu" role="menu" aria-label="Аккаунт">
+                <div class="account-menu menu" role="menu" aria-label={tr.shell.account}>
                     <div class="account-who">
-                        <b>{me?.name ?? 'Вы'}</b>
-                        {me?.role && <span class="w-cap">{ROLE_WORDS[me.role] ?? me.role}</span>}
+                        <b>{me?.name ?? tr.shell.you}</b>
+                        {me?.role && <span class="w-cap">{tr.shell.roleWords[me.role] ?? me.role}</span>}
                     </div>
-                    <div class="account-theme" role="group" aria-label="Тема">
-                        {MODES.map(({ id, label, Icon }) => (
+                    <div class="account-theme" role="group" aria-label={tr.shell.themeLabel}>
+                        {modes().map(({ id, label, Icon }) => (
                             <button key={id} role="menuitemradio" aria-checked={theme.pick === id} class={theme.pick === id ? 'on' : ''} onClick={() => theme.setMode(id)}>
                                 <Icon size={16} />
                                 {label}
@@ -75,13 +74,13 @@ export function AccountMenu({ onLook, onAccess, onSignOut }: { onLook: () => voi
                         ))}
                     </div>
                     <button role="menuitem" class="tab-more-item" onClick={() => pick(onLook)}>
-                        Оформление
+                        {tr.shell.look}
                     </button>
                     <button role="menuitem" class="tab-more-item" onClick={() => pick(onAccess)}>
-                        Люди и доступ
+                        {tr.shell.peopleAccess}
                     </button>
                     <button role="menuitem" class="tab-more-item" onClick={() => pick(onSignOut)}>
-                        Выйти
+                        {tr.shell.signOut}
                     </button>
                 </div>
             )}

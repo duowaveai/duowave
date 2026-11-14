@@ -6,7 +6,6 @@
 //! It travels two ways. In the gateway's own tasks it is a task-local (`Trail::scope`, `current`). An engine that
 //! runs a plugin's code on a thread of its own (QuickJS: one call at a time per plugin) holds the trail of the call
 //! it runs in a slot of that thread (`Trail::hold`), where the plugin's host calls read it.
-
 use std::cell::RefCell;
 use std::future::Future;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -81,23 +80,37 @@ impl Root {
     pub fn title(&self) -> String {
         match self {
             Root::Principal(principal) => principal.name.clone(),
-            Root::App(id) => format!("приложение {id}"),
+            Root::App(id) => crate::tr!("приложение {id}", id = id),
         }
     }
 }
 
 /// Why a chain may not go on.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrailError {
-    #[error("цепочка слишком длинная: больше {MAX_HOPS} шагов от приложения к приложению")]
     Hops,
-    #[error("круг: приложение {0} уже в этой цепочке и ждёт ответа")]
     Loop(String),
-    #[error("цепочка исчерпала свои {MAX_LETTERS} писем")]
     Letters,
-    #[error("цепочку отменили")]
     Cancelled,
 }
+
+impl std::fmt::Display for TrailError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TrailError::Hops => f.write_str(&crate::tr!(
+                "цепочка слишком длинная: больше {max} шагов от приложения к приложению",
+                max = MAX_HOPS
+            )),
+            TrailError::Loop(id) => {
+                f.write_str(&crate::tr!("круг: приложение {id} уже в этой цепочке и ждёт ответа", id = id))
+            }
+            TrailError::Letters => f.write_str(&crate::tr!("цепочка исчерпала свои {max} писем", max = MAX_LETTERS)),
+            TrailError::Cancelled => f.write_str(&crate::tr!("цепочку отменили")),
+        }
+    }
+}
+
+impl std::error::Error for TrailError {}
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -122,6 +135,12 @@ pub struct Trail {
     letters: Arc<AtomicU32>,
     /// «Алиса, отмени»: cancels the whole chain below.
     pub cancel: CancellationToken,
+    /// The chain goes through the model of «Мозг» — its tool, its answer in words: `Some(true)` when that model is in
+    /// the cloud. What a folder gives such a chain leaves the house, so a folder without its tick «Модель может
+    /// читать» gives it nothing (docs/plans/shared-folders.md, the owner's decision 3).
+    pub model: Option<bool>,
+    /// The chain was started from outside the home (the tunnel): a folder without «и вне дома» is not there for it.
+    pub remote: bool,
 }
 
 tokio::task_local! {
@@ -156,7 +175,26 @@ impl Trail {
             hops: 0,
             letters: Arc::new(AtomicU32::new(0)),
             cancel: CancellationToken::new(),
+            model: None,
+            remote: false,
         }
+    }
+
+    /// The chain from here on goes through the model of «Мозг»; `cloud` — that model is in the cloud.
+    pub fn through_model(mut self, cloud: bool) -> Trail {
+        self.model = Some(cloud || self.model == Some(true));
+        self
+    }
+
+    /// The chain was started from outside the home.
+    pub fn from_afar(mut self, remote: bool) -> Trail {
+        self.remote |= remote;
+        self
+    }
+
+    /// What it reaches leaves the house through a model in the cloud.
+    pub fn through_cloud(&self) -> bool {
+        self.model == Some(true)
     }
 
     /// A chain a person, the household, a key or the gateway starts.

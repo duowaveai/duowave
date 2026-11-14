@@ -5,7 +5,6 @@
 //! station — the computer takes a copy; the settings live on the computer and its own changed — it sends them, the way
 //! the station's build takes them. A newer station build inside this one — it offers the update, or installs it when
 //! the household said «автоматически».
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -78,8 +77,11 @@ pub struct Refusal {
 
 /// The card's words when the station's gateway refuses the computer's settings for their schema all the same — its
 /// /health said it knew the schema, and it is older (rolled back since, say). «Вернуть» asks it anew first.
-pub const STATION_OLDER: &str =
-    "Шлюз на колонке старше компьютера и не берёт его настройки: обновите колонку или верните настройки на неё.";
+pub fn station_older() -> String {
+    crate::tr!(
+        "Шлюз на колонке старше компьютера и не берёт его настройки: обновите колонку или верните настройки на неё."
+    )
+}
 
 /// Something about the station's gateway the household should know.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -204,8 +206,8 @@ impl StationGateway {
         key: Option<(String, String)>,
         actor: Option<Actor>,
     ) -> Result<(), String> {
-        let mut record = self.on_station().ok_or("шлюз не на колонке")?;
-        let client = self.client().ok_or("нет ключа пары")?;
+        let mut record = self.on_station().ok_or(crate::tr!("шлюз не на колонке"))?;
+        let client = self.client().ok_or(crate::tr!("нет ключа пары"))?;
         let mut body = serde_json::json!({ "enabled": on });
         self.helper_body(&mut body, key, &mut record)?;
         client.post("/api/v1/home-server/link", body).await?;
@@ -220,7 +222,7 @@ impl StationGateway {
     /// (docs/plans/desk.md, stage 4). The switch itself stays as it is.
     pub async fn set_helper_parts(&self, without: Vec<String>, actor: Option<Actor>) -> Result<(), String> {
         let _ = actor;
-        let client = self.client().ok_or("нет ключа пары")?;
+        let client = self.client().ok_or(crate::tr!("нет ключа пары"))?;
         client.post("/api/v1/home-server/link", serde_json::json!({ "without": without })).await?;
         self.events.emit(GatewayEvent::PlacementChanged { what: "helper".into() });
         self.poll().await;
@@ -234,7 +236,8 @@ impl StationGateway {
         record: &mut StationPlacement,
     ) -> Result<(), String> {
         if let Some((secret, id)) = key {
-            body["url"] = Value::String(self.home_url().ok_or("не вижу адрес этого компьютера в домашней сети")?);
+            body["url"] =
+                Value::String(self.home_url().ok_or(crate::tr!("не вижу адрес этого компьютера в домашней сети"))?);
             body["key"] = Value::String(secret);
             record.home_key_id = Some(id);
         }
@@ -330,31 +333,33 @@ impl StationGateway {
             && quiet(live.seen_at.as_deref())
             && quiet(record.moved_at.as_deref());
         if silent {
-            let since = live.seen_at.as_deref().map(local_time).map(|at| format!(" с {at}")).unwrap_or_default();
+            let since =
+                live.seen_at.as_deref().map(local_time).map(|at| crate::tr!(" с {at}", at = at)).unwrap_or_default();
             warnings.push(Warning {
                 kind: "silent",
-                text: format!(
-                    "Шлюз на колонке не отвечает{since}. Колонка выключена, перезагружается, её сбросили — или шлюз                      не поднимается и страховка вернула её Яндексу. «Проверить» скажет."
+                text: crate::tr!(
+                    "Шлюз на колонке не отвечает{since}. Колонка выключена, перезагружается, её сбросили — или шлюз не поднимается и страховка вернула её Яндексу. «Проверить» скажет.",
+                    since = since
                 ),
             });
         }
         if let (true, Some(health)) = (live.reachable, live.health.as_ref()) {
             if health.pointer("/placement/voice/local").and_then(Value::as_bool) == Some(false) {
                 let text = match health.pointer("/placement/voice/pointsTo").and_then(Value::as_str) {
-                    Some("yandex") => "Голос колонки снова у Яндекса, мимо её шлюза: её вернула прошивка, страховка или                                        кнопка «Отдать голос Яндексу». «Вернуть голос DuoWave» — обратно."
-                        .to_string(),
-                    _ => "Голос колонки идёт не в её шлюз.".to_string(),
+                    Some("yandex") => crate::tr!("Голос колонки снова у Яндекса, мимо её шлюза: её вернула прошивка, страховка или кнопка «Отдать голос Яндексу». «Вернуть голос DuoWave» — обратно."),
+                    _ => crate::tr!("Голос колонки идёт не в её шлюз."),
                 };
                 warnings.push(Warning { kind: "voiceAway", text });
             }
             if let Some(case) = health.pointer("/placement/safetyLast") {
                 let at = case.get("at").and_then(Value::as_str).map(local_time).unwrap_or_default();
                 let what = match case.get("what").and_then(Value::as_str) {
-                    Some("previous-version") => "новая версия не поднялась — вернулась прежняя",
-                    _ => "шлюз не поднимался — колонка возвращалась к прежнему адресу",
+                    Some("previous-version") => crate::tr!("новая версия не поднялась — вернулась прежняя"),
+                    _ => crate::tr!("шлюз не поднимался — колонка возвращалась к прежнему адресу"),
                 };
                 warnings.push(Warning {
-                    kind: "safety", text: format!("Страховка сработала {at}: {what}.")
+                    kind: "safety",
+                    text: crate::tr!("Страховка сработала {at}: {what}.", at = at, what = what),
                 });
             }
         }
@@ -464,7 +469,7 @@ impl StationGateway {
         let sealed = self.backups.read(id)?;
         let mut keys: Vec<String> = [self.pair_key(), self.secrets.get(PEER_SECRET)].into_iter().flatten().collect();
         keys.dedup();
-        let mut problem = "нет ключа пары".to_string();
+        let mut problem = crate::tr!("нет ключа пары");
         for key in keys {
             match transfer::open(&sealed, &key) {
                 Ok(bundle) => return Ok(bundle),
@@ -485,10 +490,10 @@ impl StationGateway {
         let client = PeerClient::new(address, port, key);
         let health = client.health().await?;
         if health.pointer("/placement/role").and_then(Value::as_str) != Some("station") {
-            return Err("по этому адресу отвечает не шлюз колонки".into());
+            return Err(crate::tr!("по этому адресу отвечает не шлюз колонки"));
         }
         // The key is checked by what only the pair may read.
-        client.settings().await.map_err(|_| "шлюз колонки не принял ключ пары".to_string())?;
+        client.settings().await.map_err(|_| crate::tr!("шлюз колонки не принял ключ пары"))?;
         let placement = match health.pointer("/placement/placement").and_then(Value::as_str) {
             Some("stationServer") => Placement::StationServer,
             _ => Placement::Station,
@@ -687,7 +692,7 @@ impl StationGateway {
                     return Ok(());
                 }
                 if self.held_back(&print) {
-                    return Err(STATION_OLDER.into());
+                    return Err(station_older());
                 }
                 self.push(client, whole, own, print).await
             }
@@ -733,7 +738,7 @@ impl StationGateway {
             Err(error) if error.contains(transfer::NOT_FOR_THIS_GATEWAY) => {
                 tracing::warn!("placement: the station's gateway (schema {schema} by its /health) refused: {error}");
                 self.lock().refused = Some(Refusal { print, version, schema });
-                Err(STATION_OLDER.into())
+                Err(station_older())
             }
             outcome => outcome,
         }
@@ -754,13 +759,13 @@ impl StationGateway {
 
     /// Takes a copy of the station's settings now.
     pub async fn backup_now(&self) -> Result<BackupEntry, String> {
-        let client = self.client().ok_or("шлюз не на колонке")?;
+        let client = self.client().ok_or(crate::tr!("шлюз не на колонке"))?;
         self.backup_from(&client).await
     }
 
     async fn backup_from(&self, client: &PeerClient) -> Result<BackupEntry, String> {
         let bundle = client.settings().await?;
-        let key = self.pair_key().ok_or("нет ключа пары")?;
+        let key = self.pair_key().ok_or(crate::tr!("нет ключа пары"))?;
         let entry = self.backups.save(&transfer::seal(&bundle, &key), bundle.revision)?;
         tracing::info!("placement: a copy of the station's settings, revision {}", bundle.revision);
         self.events.emit(GatewayEvent::PlacementChanged { what: "backup".into() });
@@ -788,7 +793,7 @@ impl StationGateway {
 
     /// Sends a kept copy back to the station: it applies it at a restart.
     pub async fn restore(&self, id: &str, actor: Option<Actor>) -> Result<(), String> {
-        let client = self.client().ok_or("шлюз не на колонке")?;
+        let client = self.client().ok_or(crate::tr!("шлюз не на колонке"))?;
         let bundle = self.open_copy(id)?;
         client.send_settings(&bundle).await?;
         self.events.emit(GatewayEvent::GatewayStateChanged { what: format!("restore {id}"), actor });
@@ -802,20 +807,20 @@ impl StationGateway {
     /// it before; should it not, a second press only tells it, the package is not sent again. Not taken: the record
     /// stays «на ПК», the station as it was, and the person hears why.
     pub async fn set_settings_home(&self, home: SettingsHome, actor: Option<Actor>) -> Result<(), String> {
-        let mut record = self.on_station().ok_or("шлюз не на колонке")?;
+        let mut record = self.on_station().ok_or(crate::tr!("шлюз не на колонке"))?;
         let client = self.client();
         if record.settings_home == SettingsHome::Pc && home == SettingsHome::Station {
             let delivered = match &client {
                 Some(client) => self.deliver(client).await,
-                None => Err("нет ключа пары".to_string()),
+                None => Err(crate::tr!("нет ключа пары")),
             };
             delivered.map_err(|error| {
-                let why = if error == STATION_OLDER {
-                    "шлюз на колонке старше компьютера и не берёт его настройки — обновите колонку"
+                let why = if error == station_older() {
+                    crate::tr!("шлюз на колонке старше компьютера и не берёт его настройки — обновите колонку")
                 } else {
-                    error.as_str()
+                    error.clone()
                 };
-                format!("Колонка не приняла последние настройки компьютера: {why}")
+                crate::tr!("Колонка не приняла последние настройки компьютера: {why}", why = why)
             })?;
         }
         if let Some(client) = &client {
@@ -839,7 +844,7 @@ impl StationGateway {
 
     pub fn set_auto_update(&self, on: bool, actor: Option<Actor>) -> Result<(), ApiError> {
         let Some(mut record) = self.on_station() else {
-            return Err(ApiError::conflict("Шлюз не на колонке."));
+            return Err(ApiError::conflict(crate::tr!("Шлюз не на колонке.")));
         };
         record.auto_update = on;
         self.store(&record, actor)?;
@@ -850,15 +855,15 @@ impl StationGateway {
     /// «Обновить колонку»: in the background, the panel follows it in the view.
     pub fn start_update(self: &Arc<Self>, actor: Option<Actor>) -> Result<(), ApiError> {
         if self.update_offer().is_none() {
-            return Err(ApiError::conflict("У колонки последняя версия."));
+            return Err(ApiError::conflict(crate::tr!("У колонки последняя версия.")));
         }
         if self.too_old_for_archive() {
-            return Err(ApiError::conflict(peer::OLD_STATION));
+            return Err(ApiError::conflict(peer::old_station()));
         }
         {
             let mut live = self.lock();
             if live.updating {
-                return Err(ApiError::conflict("Колонка уже обновляется."));
+                return Err(ApiError::conflict(crate::tr!("Колонка уже обновляется.")));
             }
             live.updating = true;
             live.update_error = None;
@@ -879,10 +884,10 @@ impl StationGateway {
     /// The station's gateway updated from this computer: a copy of its settings first, then the signed archive over
     /// the home network; the station checks the signature with its own key, puts it in place and starts again.
     pub async fn update_station(&self, actor: Option<Actor>) -> Result<String, String> {
-        let client = self.client().ok_or("шлюз не на колонке")?;
-        let version = self.update_offer().ok_or("у колонки последняя версия")?;
+        let client = self.client().ok_or(crate::tr!("шлюз не на колонке"))?;
+        let version = self.update_offer().ok_or(crate::tr!("у колонки последняя версия"))?;
         if self.too_old_for_archive() {
-            return Err(peer::OLD_STATION.into());
+            return Err(peer::old_station());
         }
         if let Err(error) = self.backup_from(&client).await {
             tracing::warn!("placement: no copy of the station's settings before its update: {error}");
@@ -1538,12 +1543,12 @@ mod tests {
 
         watch.poll().await;
         let view = watch.view();
-        assert_eq!(view.live.sync_error.as_deref(), Some(STATION_OLDER));
+        assert_eq!(view.live.sync_error.as_deref(), Some(station_older().as_str()));
         assert!(view.station_behind && view.live.sent_revision.is_none() && station.received().is_empty());
         watch.poll().await;
         watch.poll().await;
         assert_eq!(station.calls(), vec!["refused"], "the same print to the same station: not again");
-        assert_eq!(watch.live().sync_error.as_deref(), Some(STATION_OLDER), "and the card still says why");
+        assert_eq!(watch.live().sync_error.as_deref(), Some(station_older().as_str()), "and the card still says why");
 
         // Another version by its /health: tried again (refused again here).
         *station.version.lock().unwrap() = "0.0.2".into();

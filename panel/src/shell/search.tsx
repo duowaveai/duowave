@@ -10,6 +10,9 @@ import { IconSearch } from '../icons';
 import { useDialogFocus } from '../ui/sheet';
 import { devMode } from './dev';
 import type { Place } from './links';
+import { onComputer } from '../voice-input';
+import { byMode } from '../words';
+import { tr } from '../i18n';
 
 export interface SearchPlace {
     title: string;
@@ -28,72 +31,78 @@ const admin = (): boolean => can('plugins.manage') && sessionStore.get()?.role =
 
 /** Места пульта. Новое место — строка здесь: тогда его найдут. */
 export function searchPlaces(helper: boolean, onStation: boolean): SearchPlace[] {
+    const s = tr.shell.search;
     return [
-        { title: 'Главная', path: '', words: 'стол колонка виджеты дом главный экран', place: { section: 'home' } },
-        { title: 'Новый виджет', path: 'Главная', words: 'добавить виджет плитка плюс', act: 'add' },
+        { title: s.home.title, path: s.home.path, words: s.home.words, place: { section: 'home' } },
+        { title: s.newWidget.title, path: s.newWidget.path, words: s.newWidget.words, act: 'add' },
         // «Сказать» в доке — микрофон пульта (docs/plans/voice-creation.md, решение 1); текст, который колонка произнесёт, — здесь.
-        { title: 'Текстом колонке…', path: 'Главная', words: 'сказать через колонку произнести озвучить текст колонке', act: 'say', when: () => can('station.say') },
+        { title: s.sayText.title, path: s.sayText.path, words: s.sayText.words, act: 'say', when: () => can('station.say') && !onComputer() },
 
-        { title: 'Персонаж', path: '', words: 'персонажи кто отвечает алиса артур мила свой персонаж', place: { section: 'character', tab: 'page' } },
-        { title: 'Все персонажи', path: 'Персонаж', words: 'выбрать другого персонажа каталог персонажей', place: { section: 'character', tab: 'characters' } },
-        { title: 'Голос', path: 'Персонаж', words: 'голос озвучка tts silero piper бая ксения айдар голоса', place: { section: 'character', tab: 'voice' } },
-        { title: 'Свой голос', path: 'Персонаж → Голос', words: 'клон записать свой голос лаборатория минута', place: { section: 'character', tab: 'voice' } },
-        { title: 'Манера', path: 'Персонаж', words: 'характер манера длина ответа шутки промпт как отвечает', place: { section: 'character', tab: 'page' } },
-        { title: 'Мозг', path: 'Персонаж', words: 'мозг модель llm claude qwen gpt deepseek мышление думать дольше', place: { section: 'character', tab: 'brain' } },
+        { title: s.character.title, path: s.character.path, words: s.character.words, place: { section: 'character', tab: 'page' } },
+        { title: s.allCharacters.title, path: s.allCharacters.path, words: s.allCharacters.words, place: { section: 'character', tab: 'characters' } },
+        { title: s.voice.title, path: s.voice.path, words: s.voice.words, place: { section: 'character', tab: 'voice' } },
+        { title: s.ownVoice.title, path: s.ownVoice.path, words: s.ownVoice.words, place: { section: 'character', tab: 'voice' } },
+        { title: s.manner.title, path: s.manner.path, words: s.manner.words, place: { section: 'character', tab: 'page' } },
+        { title: s.brain.title, path: s.brain.path, words: s.brain.words, place: { section: 'character', tab: 'brain' } },
 
-        { title: 'Память', path: 'Приложения', words: 'память что помнит запомнить запомни забыть забудь факты', place: { section: 'skills', tab: 'memory', item: 'overview' }, when: () => can('memory.view') },
-        { title: 'Что помнит персонаж', path: 'Приложения → Память', words: 'глазами персонажа что знает помнит подсказка', place: { section: 'skills', tab: 'memory', item: 'overview' }, when: () => can('memory.view') },
-        { title: 'Люди и вещи дома', path: 'Приложения → Память', words: 'люди питомцы комнаты кто где кто с кем связи семья', place: { section: 'skills', tab: 'memory', item: 'house' }, when: () => can('memory.view') },
-        { title: 'Не запоминать: пауза', path: 'Приложения → Память', words: 'пауза не запоминай не запоминать', place: { section: 'skills', tab: 'memory', item: 'overview' }, when: () => can('memory.view') },
-        { title: 'Настройки памяти', path: 'Приложения → Память', words: 'запоминать мимоходом выключить память сон рефлексия', place: { section: 'skills', tab: 'memory', item: 'settings' }, when: () => can('memory.view') },
+        { title: s.memory.title, path: s.memory.path, words: s.memory.words, place: { section: 'skills', tab: 'memory', item: 'overview' }, when: () => can('memory.view') },
+        { title: s.whatRemembers.title, path: s.whatRemembers.path, words: s.whatRemembers.words, place: { section: 'skills', tab: 'memory', item: 'overview' }, when: () => can('memory.view') },
+        { title: s.house.title, path: s.house.path, words: s.house.words, place: { section: 'skills', tab: 'memory', item: 'house' }, when: () => can('memory.view') },
+        { title: s.pause.title, path: s.pause.path, words: s.pause.words, place: { section: 'skills', tab: 'memory', item: 'overview' }, when: () => can('memory.view') },
+        { title: s.memorySettings.title, path: s.memorySettings.path, words: s.memorySettings.words, place: { section: 'skills', tab: 'memory', item: 'settings' }, when: () => can('memory.view') },
 
-        { title: 'Приложения', path: '', words: 'приложения навыки плагины пакеты что умеет колонка возможности', place: { section: 'skills', tab: 'list' }, when: () => can('station.view') },
-        { title: 'Установленные приложения', path: 'Приложения', words: 'установленные навыки плагины пакеты установлено включить выключить обновить', place: { section: 'skills', tab: 'installed' }, when: () => can('station.view') },
-        { title: 'Пока не умеем', path: 'Приложения', words: 'научить не умеет не понял навык сделать', place: { section: 'skills', tab: 'list' }, when: () => can('journal.view') },
+        { title: s.apps.title, path: s.apps.path, words: s.apps.words, place: { section: 'skills', tab: 'list' }, when: () => can('station.view') },
+        { title: s.installed.title, path: s.installed.path, words: s.installed.words, place: { section: 'skills', tab: 'installed' }, when: () => can('station.view') },
+        { title: s.cantYet.title, path: s.cantYet.path, words: s.cantYet.words, place: { section: 'skills', tab: 'list' }, when: () => can('journal.view') },
         {
-            title: 'Подключения',
-            path: 'Приложения',
-            words: 'коннекторы подключения telegram телеграм умный дом home assistant звонки новости погода',
+            title: s.connections.title, path: s.connections.path, words: s.connections.words,
             place: { section: 'skills', tab: 'connectors' },
             when: () => can('connectors.view'),
         },
-        { title: 'Программы (MCP)', path: 'Приложения → Подключения', words: 'mcp программы инструменты агент сервер', place: { section: 'skills', tab: 'connectors' }, when: () => can('connectors.view') },
-        { title: 'Каталог', path: 'Приложения', words: 'каталог магазин добавить навык приложение плагин установить', place: { section: 'skills', tab: 'catalog' }, when: () => can('station.view') },
-        { title: 'Мастерская', path: 'Приложения', words: 'мастерская сделать своё приложение свой навык плагин код виджет агент черновик', place: { section: 'skills', tab: 'workshop' }, when: admin },
-        { title: 'Кто отвечает', path: 'Приложения', words: 'маршруты кто отвечает свой яндекс таблица', place: { section: 'skills', tab: 'routes' } },
+        { title: s.mcp.title, path: s.mcp.path, words: s.mcp.words, place: { section: 'skills', tab: 'connectors' }, when: () => can('connectors.view') },
+        { title: s.catalog.title, path: s.catalog.path, words: s.catalog.words, place: { section: 'skills', tab: 'catalog' }, when: () => can('station.view') },
+        { title: s.workshop.title, path: s.workshop.path, words: s.workshop.words, place: { section: 'skills', tab: 'workshop' }, when: admin },
+        { title: s.routes.title, path: s.routes.path, words: s.routes.words, place: { section: 'skills', tab: 'routes' }, when: () => !onComputer() },
 
-        { title: 'Колонка', path: 'Настройки', words: 'колонка имя вид станция лайт колонки', place: { section: 'settings', tab: 'station' } },
-        { title: 'Режим', path: 'Настройки → Колонка', words: 'режим яндекс вместе своё шлюз', place: { section: 'settings', tab: 'station' } },
-        { title: 'Слух', path: 'Настройки → Колонка', words: 'слух распознавание asr whisper gigaam речь', place: { section: 'settings', tab: 'station' } },
+        // Страница колонки в режиме «Микрофон» — страница микрофона (docs/plans/mic-mode.md): адрес тот же.
+        byMode<SearchPlace>(
+            { title: s.speaker.title, path: s.speaker.path, words: s.speaker.words, place: { section: 'settings', tab: 'station' } },
+            { title: s.mic.title, path: s.mic.path, words: s.mic.words, place: { section: 'settings', tab: 'station' } },
+        ),
         {
-            title: 'Ресурсы колонки',
-            path: 'Настройки → Колонка',
-            words: 'ресурсы оперативная озу место диск плагины давление',
+            title: s.howToTalk.title,
+            path: byMode(s.howToTalk.path, s.howToTalk.pathMic),
+            words: s.howToTalk.words,
+            place: { section: 'settings', tab: 'station' },
+            when: () => !helper && !onStation,
+        },
+        { title: s.mode.title, path: s.mode.path, words: s.mode.words, place: { section: 'settings', tab: 'station' }, when: () => !onComputer() },
+        { title: s.hearing.title,
+            path: byMode(s.hearing.path, s.hearing.pathMic),
+            words: s.hearing.words, place: { section: 'settings', tab: 'station' } },
+        {
+            title: s.resources.title, path: s.resources.path, words: s.resources.words,
             place: { section: 'settings', tab: 'station' },
             when: () => onStation,
         },
         {
-            title: 'Где работает DuoWave',
-            path: 'Настройки → Колонка',
-            words: 'размещение где работает шлюз на колонке на компьютере перенести вернуть',
+            title: s.placement.title, path: s.placement.path, words: s.placement.words,
             place: { section: 'settings', tab: 'station' },
-            when: () => can('station.view'),
+            when: () => can('station.view') && !onComputer(),
         },
         {
-            title: 'Компьютер-помощник',
-            path: 'Настройки',
-            words: 'помощник компьютер помогать колонке не засыпать модели на компьютере',
+            title: s.helper.title, path: s.helper.path, words: s.helper.words,
             place: { section: 'settings', tab: 'helper' },
             when: () => helper || onStation,
         },
-        { title: 'Люди и доступ', path: 'Настройки', words: 'люди доступ пароль вход пользователи роли гость', place: { section: 'settings', tab: 'access' } },
-        { title: 'Оформление', path: 'Настройки', words: 'тема оформление тёмная светлая вид боковая панель цвет', place: { section: 'settings', tab: 'look' } },
-        { title: 'Тёмная или светлая тема', path: 'Оформление', words: 'тема тёмная светлая авто автоматическая системная ночь день', act: 'theme' },
-        { title: 'Обновления и копии', path: 'Настройки', words: 'обновление версия копия страховка резерв', place: { section: 'settings', tab: 'updates' }, when: () => can('station.view') },
-        { title: 'История разговоров', path: 'Настройки', words: 'история журнал вопросы разговоры что спрашивали', place: { section: 'settings', tab: 'history' }, when: () => can('journal.view') },
-        { title: 'Для разработчиков', path: 'Настройки', words: 'разработчик env провайдер ключ api журнал запросов слой', place: { section: 'settings', tab: 'dev' } },
-        { title: 'Ключи API', path: 'Настройки → Люди и доступ', words: 'ключи api токен home assistant', place: { section: 'settings', tab: 'access' }, when: () => can('users.manage') && devMode() },
-        { title: 'Модели и провайдеры', path: 'Персонаж → Мозг', words: 'провайдер env ключ модели ollama openai anthropic', place: { section: 'character', tab: 'brain' }, when: devMode },
+        { title: s.access.title, path: s.access.path, words: s.access.words, place: { section: 'settings', tab: 'access' } },
+        { title: s.look.title, path: s.look.path, words: s.look.words, place: { section: 'settings', tab: 'look' } },
+        { title: s.darkLight.title, path: s.darkLight.path, words: s.darkLight.words, act: 'theme' },
+        { title: s.updates.title, path: s.updates.path, words: s.updates.words, place: { section: 'settings', tab: 'updates' }, when: () => can('station.view') },
+        { title: s.history.title, path: s.history.path, words: s.history.words, place: { section: 'settings', tab: 'history' }, when: () => can('journal.view') },
+        { title: s.dev.title, path: s.dev.path, words: s.dev.words, place: { section: 'settings', tab: 'dev' } },
+        { title: s.apiKeys.title, path: s.apiKeys.path, words: s.apiKeys.words, place: { section: 'settings', tab: 'access' }, when: () => can('users.manage') && devMode() },
+        { title: s.models.title, path: s.models.path, words: s.models.words, place: { section: 'character', tab: 'brain' }, when: devMode },
     ];
 }
 
@@ -145,15 +154,15 @@ export function SearchPalette({
     };
     return (
         <div class="search-layer">
-            <button class="search-scrim" aria-label="Закрыть поиск" tabIndex={-1} onClick={onClose} />
-            <div ref={box} class="search-box glass-strong" role="dialog" aria-modal="true" aria-label="Поиск по пульту">
+            <button class="search-scrim" aria-label={tr.shell.closeSearch} tabIndex={-1} onClick={onClose} />
+            <div ref={box} class="search-box glass-strong" role="dialog" aria-modal="true" aria-label={tr.shell.searchPanel}>
                 <label class="search-field">
                     <IconSearch size={18} />
                     <input
                         type="search"
                         value={query}
-                        placeholder="Найти: голос, тема, Telegram, история…"
-                        aria-label="Что найти"
+                        placeholder={tr.shell.searchPlaceholder}
+                        aria-label={tr.shell.searchWhat}
                         aria-controls="search-results"
                         aria-activedescendant={found[at] ? `search-hit-${at}` : undefined}
                         data-autofocus
@@ -162,7 +171,7 @@ export function SearchPalette({
                     />
                     <kbd class="search-kbd">esc</kbd>
                 </label>
-                <ul id="search-results" class="search-results" role="listbox" aria-label="Найдено">
+                <ul id="search-results" class="search-results" role="listbox" aria-label={tr.shell.searchFound}>
                     {found.map((entry, index) => (
                         <li
                             key={`${entry.title}-${entry.path}`}
@@ -177,11 +186,27 @@ export function SearchPalette({
                             {entry.path && <span class="w-cap">{entry.path}</span>}
                         </li>
                     ))}
-                    {found.length === 0 && <li class="search-none w-cap">Ничего не нашлось. Попробуйте другое слово.</li>}
+                    {found.length === 0 && <li class="search-none w-cap">{tr.shell.searchNone}</li>}
                 </ul>
             </div>
         </div>
     );
+}
+
+/** ⌥Пробел в окне пульта — то же, что кнопка «Сказать» (docs/plans/mic-mode.md): начать слушать или закончить фразу. */
+export function useTalkKey(talk: () => void): void {
+    const latest = useRef(talk);
+    latest.current = talk;
+    useEffect(() => {
+        const onKey = (event: KeyboardEvent) => {
+            if (event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey && event.code === 'Space' && !event.repeat) {
+                event.preventDefault();
+                latest.current();
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, []);
 }
 
 /** ⌘K или Ctrl+K в любом месте пульта — открыть поиск. */

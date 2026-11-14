@@ -2,9 +2,12 @@ import { useEffect, useMemo, useState } from 'preact/hooks';
 
 import { AccessCatalog, ApiError, RequestView, SessionSnapshot, Station, UnsupportedEntry, api, can, problemOf } from '../api';
 import { CAPABILITY_TITLES } from '../capabilities';
+import { tr } from '../i18n';
 import { clock, timeAgo } from '../time';
 import { toneClass } from './dash-model';
 import { KIND_WORDS, PLACE_WORDS, STEP_TITLES, answeredBy, seconds, statusOf } from './trip';
+import { byMode } from '../words';
+import { onComputer } from '../voice-input';
 
 interface Props {
     debug: { sessions: SessionSnapshot[] | null; unsupported: UnsupportedEntry[]; error: ApiError | null };
@@ -15,11 +18,11 @@ interface Props {
 }
 
 /** Сколько журнал запросов хранится: варианты сегмента, дни. */
-const KEEP: Array<{ days: number; label: string }> = [
-    { days: 0, label: 'Не хранить' },
-    { days: 7, label: 'Неделю' },
-    { days: 30, label: 'Месяц' },
-    { days: 365, label: 'Год' },
+const keepOptions = (): Array<{ days: number; label: string }> => [
+    { days: 0, label: tr.journal.keepNone },
+    { days: 7, label: tr.journal.keepWeek },
+    { days: 30, label: tr.journal.keepMonth },
+    { days: 365, label: tr.journal.keepYear },
 ];
 const PAGE = 30;
 
@@ -28,7 +31,7 @@ const byStart = (a: RequestView, b: RequestView): number => b.startedAt.localeCo
 function debugHint(error: ApiError | null): string | null {
     if (!error) return null;
     if (error.status === 403) return problemOf(error);
-    return 'Шлюз не отдал сессии — попробуйте позже.';
+    return tr.journal.noSessions;
 }
 
 function SessionCard({ sessions }: { sessions: SessionSnapshot[] }) {
@@ -36,13 +39,13 @@ function SessionCard({ sessions }: { sessions: SessionSnapshot[] }) {
     if (!live) return null;
     const device = live.device;
     return (
-        <section class="card glass flex flex-col gap-10" aria-label="Колонка">
+        <section class="card glass flex flex-col gap-10" aria-label={tr.journal.stationTitle}>
             <div class="flex items-baseline justify-between gap-8">
                 <h2 class="t-title-xs m-0">
-                    Колонка
+                    {tr.journal.stationTitle}
                 </h2>
                 <span class="t-meta">
-                    {live.closedAt ? `отключилась ${timeAgo(live.closedAt)}` : `подключена ${timeAgo(live.connectedAt)}`}
+                    {live.closedAt ? tr.journal.disconnected(timeAgo(live.closedAt)) : tr.journal.connected(timeAgo(live.connectedAt))}
                 </span>
             </div>
             <div class="flex flex-wrap gap-8">
@@ -53,19 +56,19 @@ function SessionCard({ sessions }: { sessions: SessionSnapshot[] }) {
                 )}
                 {device?.firmwareVersion && (
                     <span class="stat-chip">
-                        <b>прошивка</b>
+                        <b>{tr.journal.firmware}</b>
                         <span class="val">{device.firmwareVersion}</span>
                     </span>
                 )}
                 <span class="stat-chip">
-                    <b>событий</b>
+                    <b>{tr.journal.events}</b>
                     <span class="val">{live.events}</span>
                 </span>
-                {live.canSpeak && <span class="pill pill-own">умеет говорить</span>}
+                {live.canSpeak && <span class="pill pill-own">{tr.journal.canSpeak}</span>}
                 {live.yandexConnected ? (
-                    <span class="pill pill-yandex">Яндекс на связи</span>
+                    <span class="pill pill-yandex">{tr.journal.yandexOn}</span>
                 ) : (
-                    <span class="pill pill-off">Яндекса нет</span>
+                    <span class="pill pill-off">{tr.journal.yandexOff}</span>
                 )}
             </div>
         </section>
@@ -114,7 +117,7 @@ export function RequestRow({
             <button class="req-head" aria-expanded={open} onClick={onToggle}>
                 <span class="req-time t-caption">{clock(request.startedAt)}</span>
                 <span class="req-words">
-                    <b>{request.text ? `«${request.text}»` : request.partial ? `«${request.partial}…»` : 'Без слов'}</b>
+                    <b>{request.text ? tr.journal.quote(request.text) : request.partial ? tr.journal.quotePartial(request.partial) : tr.journal.noWords}</b>
                     {request.answer && <span class="t-meta">{request.answer}</span>}
                 </span>
                 <span class={`pill ${status.cls}`}>{status.label}</span>
@@ -130,13 +133,13 @@ export function RequestRow({
                         <li key={index}>
                             <b>{STEP_TITLES[step.phase]}</b>
                             {/* Плеер — отметка того, что сказала колонка, не шаг со своей длительностью: когда это было. */}
-                            {step.phase === 'play' ? ` на ${seconds(step.at)}` : ` ${step.ms !== undefined ? seconds(step.ms) : '…'}`}
+                            {step.phase === 'play' ? tr.journal.playAt(seconds(step.at)) : ` ${step.ms !== undefined ? seconds(step.ms) : '…'}`}
                             {step.by ? ` · ${PLACE_WORDS[step.by]}` : ''}
                             {step.what ? ` · ${step.what}` : ''}
                         </li>
                     ))}
                     {request.error && <li class="req-error">{request.error}</li>}
-                    {!request.steps.length && !request.error && <li>Шагов нет: запрос закончился, не начавшись.</li>}
+                    {!request.steps.length && !request.error && <li>{tr.journal.noSteps}</li>}
                 </ol>
             )}
         </li>
@@ -148,7 +151,8 @@ function KeepChoice({ days, onChanged }: { days: number; onChanged: (days: numbe
     const [pending, setPending] = useState<number | null>(null);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const options = KEEP.some((option) => option.days === days) ? KEEP : [...KEEP, { days, label: `${days} дн.` }];
+    const keep = keepOptions();
+    const options = keep.some((option) => option.days === days) ? keep : [...keep, { days, label: tr.journal.keepDays(days) }];
     const apply = async (next: number): Promise<void> => {
         setBusy(true);
         setError(null);
@@ -170,10 +174,10 @@ function KeepChoice({ days, onChanged }: { days: number; onChanged: (days: numbe
     };
     return (
         <div class="keep-choice">
-            <span class="t-caption">Хранить журнал</span>
+            <span class="t-caption">{tr.journal.keepLabel}</span>
             <div
                 role="radiogroup"
-                aria-label="Сколько хранить журнал запросов"
+                aria-label={tr.journal.keepAria}
                 class={`look-seg glass keep-seg${options.length > 4 ? ' keep-seg-5' : ''}`}
             >
                 {options.map((option) => (
@@ -191,14 +195,14 @@ function KeepChoice({ days, onChanged }: { days: number; onChanged: (days: numbe
             {pending !== null && (
                 <div class="keep-confirm" role="alert">
                     <span class="t-meta">
-                        {pending === 0 ? 'Весь журнал запросов удалится сейчас.' : `Запросы старше ${pending} дн. удалятся сейчас.`}
+                        {pending === 0 ? tr.journal.deleteAllNow : tr.journal.deleteOlderNow(pending)}
                     </span>
                     <div class="flex gap-8">
                         <button class="pill pill-error dash-confirm-btn" disabled={busy} onClick={() => void apply(pending)}>
-                            Удалить
+                            {tr.journal.delete}
                         </button>
                         <button class="pill pill-off dash-confirm-btn" disabled={busy} onClick={() => setPending(null)}>
-                            Отмена
+                            {tr.journal.cancel}
                         </button>
                     </div>
                 </div>
@@ -254,9 +258,9 @@ function RequestsCard({ live, stations, titles }: { live: RequestView[]; station
         <section class="card glass px-16 pt-4 pb-12 flex flex-col" aria-labelledby="requests-h">
             <div class="card-head">
                 <h2 id="requests-h" class="t-title-xs m-0">
-                    Запросы
+                    {tr.journal.requests}
                 </h2>
-                <span class="t-meta">{keepDays === null ? '' : keepDays === 0 ? 'не хранятся' : `хранятся ${keepDays} дн.`}</span>
+                <span class="t-meta">{keepDays === null ? '' : keepDays === 0 ? tr.journal.notKept : tr.journal.keptFor(keepDays)}</span>
             </div>
             {error && (
                 <p class="t-meta m-0 mb-8" role="alert">
@@ -265,7 +269,7 @@ function RequestsCard({ live, stations, titles }: { live: RequestView[]; station
             )}
             {rows.length === 0 && !loading ? (
                 <p class="t-meta m-0 p-0 pt-8 pb-12">
-                    Пока пусто: спросите колонку — запрос появится здесь, пока она отвечает.
+                    {byMode(tr.journal.emptyStation, tr.journal.emptyComputer)}
                 </p>
             ) : (
                 <ol class="req-list">
@@ -287,7 +291,7 @@ function RequestsCard({ live, stations, titles }: { live: RequestView[]; station
                     disabled={loading}
                     onClick={() => void load(history.at(-1)?.startedAt)}
                 >
-                    {loading ? 'Загружаю…' : 'Ещё'}
+                    {loading ? tr.journal.loading : tr.journal.more}
                 </button>
             )}
             {keepDays !== null && can('settings.edit') && (
@@ -305,7 +309,7 @@ function RequestsCard({ live, stations, titles }: { live: RequestView[]; station
 
 export function JournalScreen({ debug, catalog, live, stations }: Props) {
     const allowed = can('journal.view');
-    const hint = debugHint(debug.error) ?? (allowed ? null : 'Что говорили колонке, видит тот, кому администратор дал право на журнал.');
+    const hint = debugHint(debug.error) ?? (allowed ? null : byMode(tr.journal.noRightStation, tr.journal.noRightComputer));
     const titles: Record<string, string> = catalog
         ? Object.fromEntries(catalog.capabilities.map((capability) => [capability.id, capability.title]))
         : CAPABILITY_TITLES;
@@ -319,7 +323,7 @@ export function JournalScreen({ debug, catalog, live, stations }: Props) {
                     </p>
                 </section>
             ) : (
-                debug.sessions && <SessionCard sessions={debug.sessions} />
+                debug.sessions && !onComputer() && <SessionCard sessions={debug.sessions} />
             )}
 
             {allowed && <RequestsCard live={live} stations={stations} titles={titles} />}
@@ -327,13 +331,13 @@ export function JournalScreen({ debug, catalog, live, stations }: Props) {
             <section class="card glass card-list card-list-tight" aria-labelledby="journal-h">
                 <div class="card-head">
                     <h2 id="journal-h" class="t-title-xs m-0">
-                        Пока не умеем
+                        {tr.journal.unsupported}
                     </h2>
                     <span class="t-meta">{debug.unsupported.length}</span>
                 </div>
                 {debug.unsupported.length === 0 ? (
                     <p class="t-meta m-0 p-0 pt-8 pb-12">
-                        Пусто: всё, что просили, кто-то обслужил.
+                        {tr.journal.unsupportedEmpty}
                     </p>
                 ) : (
                     debug.unsupported.map((entry, index) => (
@@ -345,7 +349,7 @@ export function JournalScreen({ debug, catalog, live, stations }: Props) {
                                 <span class="pill pill-off">{titles[entry.capability] ?? entry.capability}</span>
                                 <span class="t-caption">{timeAgo(entry.at)}</span>
                             </div>
-                            <span class="fw-700">«{entry.text}»</span>
+                            <span class="fw-700">{tr.journal.quote(entry.text)}</span>
                             <span class="t-caption">{entry.reason}</span>
                         </div>
                     ))

@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use super::activity::By;
 use super::Workshop;
 use crate::config::ModelProfile;
-use crate::dialog::llm::{LlmTool, ToolCall};
+use crate::dialog::llm::{LlmTool, ToolCall, ToolCallCut};
 use crate::dialog::{DialogContext, DialogService, PhraseStream, ToolBox, ToolOutcome};
 use crate::plugins::history::{Author, Who};
 use crate::settings::definitions::{BrainPick, WORKSHOP_AGENT};
@@ -23,24 +23,74 @@ pub const AUTHORING: &str = include_str!("../../../../docs/plugins/AUTHORING.md"
 pub const STATION: &str = include_str!("../../../../docs/plugins/skill/station.md");
 pub const PANEL_SDK: &str = include_str!("../../../../docs/plugins/panel-sdk.d.ts");
 pub const CARDS: &str = include_str!("../../../../docs/plugins/cards.md");
+/// A window made to delight (a game): «Неоновая змейка», the built-in the agent learns windows from (`docs game`).
+pub const GAME_PANEL: &str = include_str!("../../../../packages/neon-snake/panel.js");
+pub const GAME_STYLES: &str = include_str!("../../../../packages/neon-snake/panel.css");
+pub const GAME_MANIFEST: &str = include_str!("../../../../packages/neon-snake/manifest.json");
 
 /// Cards for the agent: the guide and the parts as the gateway knows them (src/bus/cards.rs) — one list for all.
 pub fn cards_doc() -> String {
     let parts: Vec<String> =
         crate::bus::cards::PARTS.iter().map(|(name, what)| format!("- `{name}` — {what}")).collect();
-    format!("{CARDS}\n{}\n", parts.join("\n"))
+    let scenes: Vec<String> =
+        crate::bus::cards::SCENES.iter().map(|(name, what)| format!("- `{name}` — {what}")).collect();
+    format!("{CARDS}\n{}\n\nСцены вида (`look.scene`):\n\n{}\n", parts.join("\n"), scenes.join("\n"))
+}
+
+/// A game window to learn from: what makes it, then the whole built-in «Неоновая змейка» — its manifest, panel.js and
+/// panel.css.
+pub fn game_doc() -> String {
+    format!(
+        "# Окошко-игра: образец «Неоновая змейка» (встроенная)\n\n\
+Игра, своё рисование, живая графика — окошко (`panel.js`), не карточка. Что делает её красивой и живой:\n\n\
+- Плитка стола со своей рамкой: `bare: true` в `desk.widgets`, корень с классом `widget`, свой фон и свет; на ней \
+уже что-то движется (змейка играет сама), рядом рекорд и кнопка «Играть» → `usePanelState().go(id)`.\n\
+- Сама игра — раздел `sections: [{{ id, title, icon, Screen, nav: \"link\" }}]`, его открывает `go`.\n\
+- Холст по ширине окошка (высоту окошко берёт по содержимому): ширина × доля, с пределами; `devicePixelRatio`.\n\
+- Один цикл `requestAnimationFrame` (60 кадров в игре, 30 на плитке), стоп при `document.hidden`.\n\
+- Сети у окошка нет (`connect-src 'none'`): 3D и эффекты — своим кодом на canvas, без библиотек.\n\
+- Управление: стрелки и WASD (окошко слышит клавиши в фокусе — подсказка «нажмите на поле»), свайпы, кнопки на \
+экране; пробел — пауза; пауза, когда окошко теряет фокус.\n\
+- Звук — WebAudio после первого нажатия, короткие ноты синтезом, кнопка «без звука».\n\
+- Сочный вид: свой неон поверх любой темы, свечение, искры, тряска при ошибке; панели и кнопки поверх холста.\n\
+- Рекорд и данные — в `backend.js` через `useApi(id).call`: функция чтения ничего не пишет, пишет функция действия.\n\
+- Тексты — словарём `{{ ru: {{…}}, en: {{…}} }}`: в компонентах `useT(T)`, подписи раздела и плитки в `definePlugin` — \
+`t(T, key)` из SDK; в манифесте — `languages` и `locales.en` (`docs`, тема `authoring`, «Языки»).\n\n\
+## manifest.json\n\n```json\n{GAME_MANIFEST}```\n\n## panel.js\n\n```js\n{GAME_PANEL}```\n\n## panel.css\n\n\
+```css\n{GAME_STYLES}```\n"
+    )
 }
 pub const THEMES: &str = include_str!("../../../../docs/design/glass/THEMES.md");
 
-/// Rounds of tool calls in one answer of the agent: writing and checking code takes many.
-const ROUNDS: usize = 16;
+/// Rounds of tool calls in one answer of the agent: an app written in parts and checked takes many.
+const ROUNDS: usize = 40;
 /// The time for one answer's tool rounds.
-const BUDGET_MS: u64 = 300_000;
-/// One round may write nothing this long: the model writes a whole file in one call, and a streamed call comes only
-/// whole (LLM_TIMEOUT_MS, 10 s, cut such rounds off).
-const ROUND_MS: u64 = 120_000;
+const BUDGET_MS: u64 = 30 * 60_000;
+/// One round may write nothing this long at the least: the model writes a file in one call, and a streamed call comes
+/// only whole (LLM_TIMEOUT_MS, 10 s, cut such rounds off).
+const ROUND_MS: u64 = 10 * 60_000;
+/// A slow model's pace, milliseconds a token (25 tokens a second): a round that writes WORKSHOP_MAX_TOKENS whole may
+/// take this long for each.
+const MS_PER_TOKEN: u64 = 40;
 /// What a tool's answer gives the model at most.
 const ANSWER: usize = 24 * 1024;
+
+/// How long one round may write nothing: a whole answer of `max_tokens` at a slow model's pace, ROUND_MS at the least.
+fn round_ms(max_tokens: u32) -> u64 {
+    (u64::from(max_tokens) * MS_PER_TOKEN).max(ROUND_MS)
+}
+
+/// What the agent hears when its turn ran out of tokens in a call (a whole file did not fit in one answer): the call
+/// did not run, and the rounds go on.
+fn cut_note(cut: &ToolCallCut) -> String {
+    let file = cut.path.as_deref().map(|path| format!(" ({path})")).unwrap_or_default();
+    format!(
+        "Шлюз: твой прошлый ответ оборвался на вызове {}{file} — он не влез в предел длины ответа. Вызов не выполнен, \
+файл не изменён. Пиши большой файл частями: первый кусок — write_file, следующие — append_file, по 100–200 строк за \
+вызов; большой файл правь кусками через edit_file. Продолжай с того, что не записано.",
+        cut.tool
+    )
+}
 
 /// The skill without its front matter (the lines between the first two `---`).
 pub fn skill_text() -> &'static str {
@@ -79,8 +129,19 @@ pub fn tools(with_draft: bool) -> Vec<LlmTool> {
         },
         LlmTool {
             name: "write_file".into(),
-            description: "Записывает файл черновика целиком (создаёт или заменяет): для нового или маленького файла. Большой файл (заготовки, panel.js) правь edit_file — длинный ответ модель не допишет. После правки — check.".into(),
+            description: "Записывает файл черновика целиком (создаёт или заменяет). Большой файл (окошко panel.js, длинный backend.js) пиши частями: первый кусок здесь, следующие — append_file, по 100–200 строк за вызов: длинный файл целиком в один ответ не влезет. Готовый большой файл правь edit_file. После записи — check.".into(),
             parameters: draft(json!({ "path": { "type": "string" }, "content": { "type": "string" } }), &["path", "content"]),
+        },
+        LlmTool {
+            name: "append_file".into(),
+            description: "Дописывает кусок в конец файла черновика, с новой строки (файла нет — создаёт). Так пишется большой файл: первый кусок — write_file, следующие — append_file, по 100–200 строк за вызов. После последнего куска — check.".into(),
+            parameters: draft(
+                json!({
+                    "path": { "type": "string" },
+                    "content": { "type": "string", "description": "Следующий кусок файла" }
+                }),
+                &["path", "content"],
+            ),
         },
         LlmTool {
             name: "edit_file".into(),
@@ -185,8 +246,8 @@ pub fn tools(with_draft: bool) -> Vec<LlmTool> {
         },
         LlmTool {
             name: "docs".into(),
-            description: "Справочник: authoring — манифест, Host API, шина, лимиты; station — что умеет колонка; cards — карточки виджетов и когда нужно окошко; panel — SDK пульта (panel.js, окошко); themes — контракт темы.".into(),
-            parameters: schema(json!({ "topic": { "type": "string", "enum": ["authoring", "station", "cards", "panel", "themes"] } }), &["topic"]),
+            description: "Справочник: authoring — манифест, Host API, шина, лимиты; station — что умеет колонка; cards — карточки виджетов, их вид (сцены, цвета, фото) и когда нужно окошко; panel — SDK пульта (panel.js, окошко); game — образец красивого окошка-игры («Неоновая змейка» целиком); themes — контракт темы.".into(),
+            parameters: schema(json!({ "topic": { "type": "string", "enum": ["authoring", "station", "cards", "panel", "game", "themes"] } }), &["topic"]),
         },
     ];
     if with_draft {
@@ -201,7 +262,7 @@ pub fn tools(with_draft: bool) -> Vec<LlmTool> {
             parameters: schema(
                 json!({
                     "draft": { "type": "string" },
-                    "kind": { "type": "string", "enum": ["plugin", "quiz", "midi", "theme"] },
+                    "kind": { "type": "string", "enum": ["plugin", "quiz", "midi", "folders", "theme"] },
                     "title": { "type": "string" },
                     "openapi": { "type": "string", "description": "Документ OpenAPI в JSON" }
                 }),
@@ -222,6 +283,25 @@ fn text_of(value: &impl serde::Serialize) -> String {
         end -= 1;
     }
     format!("{}…", &text[..end])
+}
+
+/// A piece added at the end of a draft's file, on a new line; a file not there yet begins with it. A big file is
+/// written so, in parts: whole, it may not fit in one answer of the model (the turn is cut off at its output limit in
+/// the middle of the call, and the cut call is not run).
+pub fn append(workshop: &Workshop, draft: &str, path: &str, piece: &str) -> Result<(), String> {
+    if piece.is_empty() {
+        return Err("content пустой: какой кусок дописать?".into());
+    }
+    let mut text = match workshop.read(draft, path) {
+        Ok(text) => text,
+        Err(error) if error.status == axum::http::StatusCode::NOT_FOUND => String::new(),
+        Err(error) => return Err(error.message),
+    };
+    if !text.is_empty() && !text.ends_with('\n') && !piece.starts_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(piece);
+    workshop.write(draft, path, &text).map(|_| ()).map_err(|error| error.message)
 }
 
 /// A piece of a draft's file replaced: `old` must be there exactly once — a model that rewrites a big file whole runs
@@ -252,6 +332,8 @@ pub async fn run_tool(workshop: &Workshop, draft: &str, name: &str, input: &Map<
             .write(draft, &field("path"), &field("content"))
             .map(|_| format!("Записан {}. Теперь check.", field("path")))
             .map_err(|error| error.message),
+        "append_file" => append(workshop, draft, &field("path"), &field("content"))
+            .map(|_| format!("Дописан {}. Дальше — следующий кусок или check.", field("path"))),
         "edit_file" => edit(workshop, draft, &field("path"), &field("old"), &field("new"))
             .map(|_| format!("Поправлен {}. Теперь check.", field("path"))),
         "delete_file" => {
@@ -303,6 +385,7 @@ pub async fn run_tool(workshop: &Workshop, draft: &str, name: &str, input: &Map<
             "station" => STATION.to_string(),
             "cards" => cards_doc(),
             "panel" => PANEL_SDK.to_string(),
+            "game" => game_doc(),
             "themes" => THEMES.to_string(),
             _ => AUTHORING.to_string(),
         }),
@@ -466,6 +549,9 @@ pub fn work(
     cancel: CancellationToken,
 ) -> PhraseStream {
     let mut context = context(&workshop, draft, model_of(&workshop));
+    // The agent's turns write files: their own, longer limit (WORKSHOP_MAX_TOKENS), not a spoken answer's.
+    let max_tokens = dialog.config.workshop_max_tokens;
+    context.max_tokens = Some(max_tokens);
     if let Some(rules) = how.rules {
         context.system = context.system.map(|system| format!("{system}\n\n{rules}"));
     }
@@ -479,11 +565,11 @@ pub fn work(
             if let Some(told) = &told {
                 told(ChatStep::Tool { name: call.name.clone(), input: call.input.clone() });
             }
-            // The calls of one turn run at once: the answer names its call.
+            // The answer names its call: the activity pairs each answer with the call it is for.
             let asked = workshop.activity().call(&run, &call.name, &call.input);
             let (content, failed) = run_tool(&workshop, &draft, &call.name, &call.input).await;
             workshop.activity().answer(&run, asked, &call.name, &content, failed);
-            if matches!(call.name.as_str(), "write_file" | "edit_file" | "delete_file") {
+            if matches!(call.name.as_str(), "write_file" | "append_file" | "edit_file" | "delete_file") {
                 workshop.tell(&draft, "edited");
             }
             if let Some(told) = &told {
@@ -498,7 +584,10 @@ pub fn work(
     });
     toolbox.rounds = Some(ROUNDS);
     toolbox.budget_ms = Some(BUDGET_MS);
-    toolbox.round_ms = Some(ROUND_MS);
+    toolbox.round_ms = Some(round_ms(max_tokens));
+    toolbox.cut_note = Some(cut_note);
+    // A file written in parts: the pieces of one turn go in their order.
+    toolbox.in_order = true;
     let answer = dialog.answer(key, message, context, run.cancel.clone(), Some(toolbox));
     workshop.activity().watch(run, answer)
 }
@@ -560,5 +649,27 @@ mod tests {
         let (said, failed) = run_tool(workshop, "uchitel", "edit_file", &input("h(", "h (")).await;
         assert!(failed && said.contains("раз"), "{said}");
         assert!(tools(true).iter().any(|tool| tool.name == "edit_file"));
+
+        // A big file in parts: the first piece makes it, the next go on a new line.
+        let piece =
+            |path: &str, content: &str| json!({ "path": path, "content": content }).as_object().cloned().unwrap();
+        let (said, failed) = run_tool(workshop, "uchitel", "append_file", &piece("assets/notes.md", "# Заметки")).await;
+        assert!(!failed && said.starts_with("Дописан assets/notes.md"), "{said}");
+        run_tool(workshop, "uchitel", "append_file", &piece("assets/notes.md", "- первая\n")).await;
+        run_tool(workshop, "uchitel", "append_file", &piece("assets/notes.md", "- вторая\n")).await;
+        assert_eq!(workshop.read("uchitel", "assets/notes.md").unwrap(), "# Заметки\n- первая\n- вторая\n");
+        let (said, failed) = run_tool(workshop, "uchitel", "append_file", &piece("assets/notes.md", "")).await;
+        assert!(failed && said.contains("пустой"), "{said}");
+        let (said, failed) = run_tool(workshop, "uchitel", "append_file", &piece("../escape.js", "x")).await;
+        assert!(failed, "only the draft's own files: {said}");
+        assert!(tools(false).iter().any(|tool| tool.name == "append_file"));
+    }
+
+    #[test]
+    fn the_agent_hears_which_file_did_not_fit_and_a_round_may_write_a_whole_answer_slowly() {
+        let note = cut_note(&ToolCallCut::new("Claude", "write_file", r#"{"path": "panel.js", "content": "exp"#));
+        assert!(note.contains("write_file (panel.js)") && note.contains("append_file"), "{note}");
+        assert_eq!(round_ms(4096), ROUND_MS, "ten minutes at the least");
+        assert_eq!(round_ms(32_000), 32_000 * MS_PER_TOKEN);
     }
 }

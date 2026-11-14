@@ -16,6 +16,8 @@ import { Switch } from '../ui/switch';
 import { AllocPanel, ModeCard } from './home';
 import { readStationRequests } from './station-widgets';
 import { feltMs, seconds } from './trip';
+import { locale, tr } from '../i18n';
+import { byMode } from '../words';
 
 /** Строка «Слышит · Думает · Говорит» на сцене стола: её раскрывает «подробнее» у режима. Общая для сцены и виджета. */
 let whoOpen = false;
@@ -45,7 +47,7 @@ export function ModeWidget() {
     return <ModeCard health={panel.health} onOpenSettings={() => panel.go('character', 'voice')} detailsOpen={open} onToggleDetails={toggle} />;
 }
 
-const hhmm = (iso: string): string => new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+const hhmm = (iso: string): string => new Date(iso).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' });
 
 /**
  * Через проход отказала сама колонка, а не проход компьютера. Тело ошибки шлюза называет путь, как его видел тот, кто
@@ -88,14 +90,14 @@ export function RecentWidget() {
                 })
                 .catch((e) => {
                     if (signal.aborted || !(e instanceof ApiError) || e.status !== 403) return;
-                    setRefused(refusedByStation(e) ? 'Историю колонки видит администратор.' : problemOf(e));
+                    setRefused(refusedByStation(e) ? tr.desk.historyAdminOnly : problemOf(e));
                 }),
     });
     if (station && refused) return <p class="w-cap m-0">{refused}</p>;
     const list = station
         ? (stationList ?? []).slice(0, 4)
         : panel.feed.requests.filter((request) => !device || request.device === device).slice(0, 4);
-    if (list.length === 0) return <p class="w-cap m-0">Скажите что-нибудь колонке — вопросы появятся здесь.</p>;
+    if (list.length === 0) return <p class="w-cap m-0">{byMode(tr.desk.askStation, tr.desk.askDevice)}</p>;
     // У помощника это вопросы колонки — и журнал её: окно колонки, а не журнал компьютера, где их нет.
     const openJournal = () => (station ? panel.go('settings', 'history', undefined, { on: 'station' }) : panel.go('settings', 'history'));
     return (
@@ -105,8 +107,8 @@ export function RecentWidget() {
                 return (
                     <button key={request.id} class="w-row w-row-btn" onClick={openJournal}>
                         <span class="w-cap w-time">{hhmm(request.startedAt)}</span>
-                        <span class="w-text">{request.text ?? (request.kind === 'say' ? 'сказала сама' : 'вопрос голосом')}</span>
-                        <span class="w-cap">{request.status === 'active' ? 'идёт…' : ms !== undefined ? seconds(ms) : ''}</span>
+                        <span class="w-text">{request.text ?? (request.kind === 'say' ? tr.desk.saidItself : tr.desk.voiceQuestion)}</span>
+                        <span class="w-cap">{request.status === 'active' ? tr.desk.going : ms !== undefined ? seconds(ms) : ''}</span>
                     </button>
                 );
             })}
@@ -124,12 +126,12 @@ export function AllocWidget() {
 export function UnsupportedWidget() {
     const panel = usePanel();
     const list = panel.debug.unsupported;
-    if (list.length === 0) return <p class="w-cap m-0">Всё, о чём спрашивали, колонка умеет.</p>;
+    if (list.length === 0) return <p class="w-cap m-0">{tr.desk.allSupported}</p>;
     return (
         <div class="w-rows">
             {list.slice(0, 3).map((entry) => (
                 <button key={entry.at + entry.text} class="w-row w-row-btn w-row-col" onClick={() => panel.go('settings', 'history')}>
-                    <span class="w-text">«{entry.text}»</span>
+                    <span class="w-text">{tr.desk.quoted(entry.text)}</span>
                     <span class="w-cap">
                         {timeAgo(entry.at)} · {entry.reason}
                     </span>
@@ -214,32 +216,25 @@ function stationOf(view: PlacementView | null, device?: string) {
 
 const mb = (kb?: number): string => (kb === undefined ? '—' : `${Math.round(kb / 1024)}`);
 
-/** «214 вопросов», «198 фраз», «31 ответ». */
-function counted(count: number, one: string, few: string, many: string): string {
-    const mod10 = count % 10;
-    const mod100 = count % 100;
-    const word = mod10 === 1 && mod100 !== 11 ? one : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14) ? few : many;
-    return `${count} ${word}`;
-}
-
-const PARTS: Array<{ id: HelperPart; title: string; served: (n: number) => string; without: string }> = [
-    { id: 'asr', title: 'Слух', served: (n) => counted(n, 'вопрос', 'вопроса', 'вопросов'), without: 'облако' },
-    { id: 'tts', title: 'Голос', served: (n) => counted(n, 'фраза', 'фразы', 'фраз'), without: 'Алиса' },
-    { id: 'llm', title: 'Модель', served: (n) => counted(n, 'ответ', 'ответа', 'ответов'), without: 'Алиса' },
+/** «214 вопросов», «198 фраз», «31 ответ» — слова и числа по языку. */
+const parts = (): Array<{ id: HelperPart; title: string; served: (n: number) => string; without: string }> => [
+    { id: 'asr', title: tr.desk.partEar, served: tr.desk.questionsCount, without: tr.desk.withoutCloud },
+    { id: 'tts', title: tr.desk.partVoice, served: tr.desk.phrasesCount, without: tr.desk.withoutAlice },
+    { id: 'llm', title: tr.desk.partModel, served: tr.desk.answersCount, without: tr.desk.withoutAlice },
     // Бот Telegram этого компьютера для колонки, в обе стороны: «Передай маме, что…» и сообщения контактов. У колонки
     // своего бота нет. Один переключатель на оба направления; счёт — тоже за оба.
-    { id: 'messages', title: 'Сообщения', served: (n) => counted(n, 'сообщение', 'сообщения', 'сообщений'), without: 'никто' },
+    { id: 'messages', title: tr.desk.partMessages, served: tr.desk.messagesCount, without: tr.desk.withoutNobody },
 ];
 
 /** «сегодня 14:02», «вчера 22:10», «08.11 09:30» — когда снята копия. */
 function copyDay(at: string): string {
     const date = new Date(at);
-    const time = date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    const time = date.toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' });
     const day = new Date();
-    if (date.toDateString() === day.toDateString()) return `сегодня ${time}`;
+    if (date.toDateString() === day.toDateString()) return tr.desk.today(time);
     day.setDate(day.getDate() - 1);
-    if (date.toDateString() === day.toDateString()) return `вчера ${time}`;
-    return `${date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })} ${time}`;
+    if (date.toDateString() === day.toDateString()) return tr.desk.yesterday(time);
+    return `${date.toLocaleDateString(locale(), { day: '2-digit', month: '2-digit' })} ${time}`;
 }
 
 /**
@@ -276,28 +271,28 @@ export function HelperWidget() {
         <div class="flex flex-col gap-10">
             <label class="w-toggle">
                 <span class="flex-1 min-w-0 flex flex-col">
-                    <span class="w-strong">Помогать колонке</span>
+                    <span class="w-strong">{tr.desk.helpStation}</span>
                     <span class="w-cap">
                         {!helping
-                            ? 'выключено: колонка обходится без компьютера'
+                            ? tr.desk.helpOff
                             : home?.state === 'down'
-                              ? 'колонка не дотягивается до компьютера: отвечает через облако'
-                              : 'даю колонке слух, голос, модель и сообщения'}
+                              ? tr.desk.helpDown
+                              : tr.desk.helpOn}
                     </span>
                 </span>
                 <Switch
                     on={helping}
-                    label="Помогать колонке"
+                    label={tr.desk.helpStation}
                     disabled={!mayManage || busy !== null || !reachable}
                     onChange={(on) => run('all', () => api.setStationHelper(on, station?.key))}
                 />
             </label>
             {/* Один переключатель; по частям — «Тонкая настройка», слой разработчика (docs/plans/panel-rebuild.md, этап 6). */}
-            {!dev && helping && <p class="w-cap m-0">Компьютер даёт колонке всё, что может, пока включён; уснёт — колонка обойдётся сама.</p>}
-            {dev && <span class="w-cap">Тонкая настройка</span>}
+            {!dev && helping && <p class="w-cap m-0">{tr.desk.helpAll}</p>}
+            {dev && <span class="w-cap">{tr.desk.fineTuning}</span>}
             {dev && (
             <div class="w-rows">
-                {PARTS.map((part) => {
+                {parts().map((part) => {
                     const on = helping && !without.includes(part.id);
                     const today = served?.[part.id];
                     return (
@@ -310,14 +305,14 @@ export function HelperWidget() {
                                     {on
                                         ? today && today.count > 0
                                             ? `${part.served(today.count)} · ${seconds(today.avgMs)}`
-                                            : 'здесь'
-                                        : `сейчас ${part.without}`}
+                                            : tr.desk.here
+                                        : tr.desk.nowWithout(part.without)}
                                 </span>
                             </span>
-                            <span class="w-cap">иначе {part.without}</span>
+                            <span class="w-cap">{tr.desk.otherwise(part.without)}</span>
                             <Switch
                                 on={on}
-                                label={`Давать колонке: ${part.title.toLowerCase()}`}
+                                label={tr.desk.giveToStation(part.title.toLowerCase())}
                                 disabled={!mayManage || busy !== null || !reachable || !helping}
                                 onChange={(next) =>
                                     run(part.id, () =>
@@ -330,7 +325,7 @@ export function HelperWidget() {
                 })}
             </div>
             )}
-            {dev && served && <p class="w-cap m-0">Счёт — за сегодня, с запуска DuoWave на этом компьютере.</p>}
+            {dev && served && <p class="w-cap m-0">{tr.desk.countToday}</p>}
             <KeepAwake />
             {error && (
                 <p class="w-cap c-dot-offline m-0" role="alert">
@@ -362,12 +357,12 @@ function KeepAwake() {
     return (
         <label class="w-toggle">
             <span class="flex-1 min-w-0 flex flex-col">
-                <span class="w-strong">Не давать компьютеру спать</span>
-                <span class="w-cap">уснёт — колонка обойдётся облаком и голосом Алисы, «Своё» вернётся с ним</span>
+                <span class="w-strong">{tr.desk.keepAwake}</span>
+                <span class="w-cap">{tr.desk.keepAwakeNote}</span>
             </span>
             <Switch
                 on={state.keepAwake !== false}
-                label="Не давать компьютеру спать"
+                label={tr.desk.keepAwake}
                 disabled={busy || !can('settings.edit')}
                 onChange={(on) => {
                     setBusy(true);
@@ -398,7 +393,7 @@ export function Watch({ onOpen, opened = false }: { onOpen?: () => void; opened?
     const [busy, setBusy] = useState<string | null>(null);
     const [note, setNote] = useState<string | null>(null);
     const station = stationOf(view, panel.current?.device);
-    if (!station) return <p class="w-cap m-0">{view ? 'Колонки со своим шлюзом нет.' : 'Читаю…'}</p>;
+    if (!station) return <p class="w-cap m-0">{view ? tr.desk.noOwnGateway : tr.desk.reading}</p>;
     const health = station.live.health?.placement;
     const last = station.backups[0];
     const memory = health?.memory;
@@ -419,21 +414,21 @@ export function Watch({ onOpen, opened = false }: { onOpen?: () => void; opened?
         <div class="flex flex-col gap-8">
             <div class="w-rows">
                 <div class="w-row">
-                    <span class="w-text">Копия настроек</span>
-                    <span class="w-cap">{last ? `${copyDay(last.at)} ✓` : 'ещё нет'}</span>
+                    <span class="w-text">{tr.desk.settingsCopy}</span>
+                    <span class="w-cap">{last ? `${copyDay(last.at)} ✓` : tr.desk.none}</span>
                 </div>
                 <div class="w-row">
-                    <span class="w-text">Обновления</span>
-                    <span class="w-cap">{station.update ? `есть ${station.update}` : `${station.version ?? '—'} — последняя`}</span>
+                    <span class="w-text">{tr.desk.updates}</span>
+                    <span class="w-cap">{station.update ? tr.desk.updateAvailable(station.update) : tr.desk.latest(station.version ?? '—')}</span>
                 </div>
                 <div class="w-row">
-                    <span class="w-text">Страховка</span>
-                    <span class="w-cap">{health?.safety === false ? 'выключена' : 'включена'}</span>
+                    <span class="w-text">{tr.desk.safety}</span>
+                    <span class="w-cap">{health?.safety === false ? tr.desk.safetyOff : tr.desk.safetyOn}</span>
                 </div>
                 <div class="w-row">
-                    <span class="w-text">Оперативная память</span>
+                    <span class="w-text">{tr.desk.ram}</span>
                     <span class="w-cap">
-                        {memory?.rssKb !== undefined ? `${mb(memory.rssKb)}${memory.totalKb ? ` из ${mb(memory.totalKb)}` : ''} МБ` : '—'}
+                        {memory?.rssKb !== undefined ? (memory.totalKb ? tr.desk.mbOf(mb(memory.rssKb), mb(memory.totalKb)) : tr.desk.mbUsed(mb(memory.rssKb))) : '—'}
                     </span>
                 </div>
             </div>
@@ -444,8 +439,8 @@ export function Watch({ onOpen, opened = false }: { onOpen?: () => void; opened?
             ))}
             <div class="w-actions">
                 {mayManage && station.live.reachable && (
-                    <button class="w-btn" disabled={busy !== null} onClick={() => act('copy', () => api.backupStation(station.key), 'Копия взята.')}>
-                        {busy === 'copy' ? 'Беру копию…' : 'Взять копию'}
+                    <button class="w-btn" disabled={busy !== null} onClick={() => act('copy', () => api.backupStation(station.key), tr.desk.copyTaken)}>
+                        {busy === 'copy' ? tr.desk.takingCopy : tr.desk.takeCopy}
                     </button>
                 )}
                 {mayManage && station.update && (
@@ -454,21 +449,21 @@ export function Watch({ onOpen, opened = false }: { onOpen?: () => void; opened?
                         disabled={busy !== null || updating}
                         onClick={() => act('update', () => api.updateStationGateway(station.key))}
                     >
-                        {busy === 'update' || updating ? 'Обновляю…' : `Обновить до ${station.update}`}
+                        {busy === 'update' || updating ? tr.desk.updating : tr.desk.updateTo(station.update)}
                     </button>
                 )}
                 <button class="w-btn" aria-expanded={onOpen ? opened : undefined} onClick={() => (onOpen ? onOpen() : panel.go('settings', 'station'))}>
-                    {opened ? 'Свернуть' : 'Открыть'}
+                    {opened ? tr.desk.collapse : tr.desk.open}
                 </button>
             </div>
             {/* Обновление идёт в фоне: что с ним — из размещения компьютера, а не из ответа на нажатие. */}
             {updating ? (
                 <p class="w-cap m-0" role="status">
-                    Колонка обновляется: копия настроек, загрузка, перезапуск — около минуты.
+                    {tr.desk.stationUpdating}
                 </p>
             ) : station.live.updateError ? (
                 <p class="w-cap c-pill-yandex-fg m-0" role="status">
-                    Колонка не обновилась: {station.live.updateError}
+                    {tr.desk.stationUpdateFailed(station.live.updateError)}
                 </p>
             ) : (
                 note && (
@@ -497,15 +492,15 @@ export function WorkshopWidget() {
                 .catch(() => !signal.aborted && setDrafts([])),
     });
     const open = (id?: string) => panel.go('skills', 'workshop', id);
-    if (!drafts) return <p class="w-cap m-0">Читаю…</p>;
+    if (!drafts) return <p class="w-cap m-0">{tr.desk.reading}</p>;
     const draft = drafts[0];
     if (!draft)
         return (
             <div class="flex flex-col gap-8">
-                <p class="w-cap m-0">Черновиков нет. Здесь делаются приложения, а работают они на колонке — и без компьютера.</p>
+                <p class="w-cap m-0">{tr.desk.noDrafts}</p>
                 <div class="w-actions">
                     <button class="w-btn" onClick={() => open()}>
-                        Открыть
+                        {tr.desk.open}
                     </button>
                 </div>
             </div>
@@ -520,19 +515,19 @@ export function WorkshopWidget() {
                         </span>
                         <span class="w-cap">
                             {entry.trial
-                                ? `проба до ${hhmm(entry.trial.until)}`
+                                ? tr.desk.trialUntil(hhmm(entry.trial.until))
                                 : entry.problems.length > 0
-                                  ? 'черновик с ошибками'
+                                  ? tr.desk.draftWithErrors
                                   : entry.installed
-                                    ? `стоит ${entry.installed}`
-                                    : 'черновик'}
+                                    ? tr.desk.installedVersion(entry.installed)
+                                    : tr.desk.draft}
                         </span>
                     </button>
                 ))}
             </div>
             <div class="w-actions">
                 <button class="w-btn" onClick={() => open(draft.id)}>
-                    Открыть
+                    {tr.desk.open}
                 </button>
             </div>
         </div>
@@ -543,7 +538,7 @@ export function WorkshopWidget() {
 export function HelperCardWidget() {
     const panel = usePanel();
     const home = panel.health?.placement?.homeServer;
-    if (!home?.url) return <p class="w-cap m-0">Компьютер не помогает: колонка отвечает сама.</p>;
+    if (!home?.url) return <p class="w-cap m-0">{tr.desk.helperNotHelping}</p>;
     let panelUrl: string | null = null;
     try {
         panelUrl = `${new URL(home.url).origin}/panel`;
@@ -556,19 +551,19 @@ export function HelperCardWidget() {
             <div class="w-row">
                 <span class={`w-dot ${up ? 'w-dot-own' : 'w-dot-off'}`} aria-hidden="true" />
                 <span class="w-text">
-                    {home.enabled === false ? 'помощь выключена' : up ? 'на связи' : 'не на связи'}
-                    {home.since && <span class="w-cap"> · с {hhmm(home.since)}</span>}
+                    {home.enabled === false ? tr.desk.helpDisabled : up ? tr.desk.online : tr.desk.offline}
+                    {home.since && <span class="w-cap">{tr.desk.since(hhmm(home.since))}</span>}
                 </span>
             </div>
             <p class="w-cap m-0">
                 {up
-                    ? 'Слух, голос и модель — у компьютера. На нём же мастерская приложений, лаборатория голоса и копии настроек этой колонки.'
-                    : 'Пока его нет, колонка отвечает сама: слышит облако, говорит Алиса.'}
+                    ? tr.desk.helperUp
+                    : tr.desk.helperDown}
             </p>
             {panelUrl && (
                 <div class="w-actions">
                     <a class="w-btn" href={panelUrl} target="_blank" rel="noreferrer">
-                        Открыть пульт компьютера ↗
+                        {tr.desk.openComputerPanel}
                     </a>
                 </div>
             )}

@@ -27,10 +27,21 @@ pub fn actor_of(principal: Option<&Principal>) -> Option<Actor> {
     principal.map(Actor::from)
 }
 
-const ADMIN_NEEDS_PASSWORD: &str = "Администратору нужен пароль: он входит в пульт.";
-const NAME_TAKEN: &str = "Такое имя уже есть.";
-const LAST_ADMIN: &str = "Это последний администратор: сначала назначьте другого.";
-const NO_SUCH_PERSON: &str = "Нет такого человека.";
+fn admin_needs_password() -> String {
+    crate::tr!("Администратору нужен пароль: он входит в пульт.")
+}
+
+fn name_taken() -> String {
+    crate::tr!("Такое имя уже есть.")
+}
+
+fn last_admin() -> String {
+    crate::tr!("Это последний администратор: сначала назначьте другого.")
+}
+
+fn no_such_person() -> String {
+    crate::tr!("Нет такого человека.")
+}
 
 /// The longest name a person may have, in UTF-16 units as the panel counts.
 pub const MAX_NAME: usize = 40;
@@ -56,7 +67,7 @@ impl UsersService {
     pub async fn create(&self, input: &PersonInput, actor: Option<Actor>) -> Result<PersonView, ApiError> {
         let name = valid_name(input.get("name"))?;
         if self.users.by_name(&name)?.is_some() {
-            return Err(ApiError::bad_request(NAME_TAKEN));
+            return Err(ApiError::bad_request(name_taken()));
         }
         let role = match input.get("role") {
             None => Role::Member,
@@ -74,7 +85,7 @@ impl UsersService {
             }
         };
         if role == Role::Admin && password_hash.is_none() {
-            return Err(ApiError::bad_request(ADMIN_NEEDS_PASSWORD));
+            return Err(ApiError::bad_request(admin_needs_password()));
         }
         let now = now_iso();
         let user = UserRecord {
@@ -93,7 +104,7 @@ impl UsersService {
         // Checked again where it is written: «Аня» and «аня» added at once cannot both pass.
         self.users.transaction(|users| {
             if users.by_name(&user.name)?.is_some() {
-                return Err(ApiError::bad_request(NAME_TAKEN));
+                return Err(ApiError::bad_request(name_taken()));
             }
             Ok(users.insert(&user)?)
         })?;
@@ -113,16 +124,16 @@ impl UsersService {
         self.found(id)?;
         let wanted = self.wanted(id, input).await?;
         let (next, changed) = self.users.transaction(|users| {
-            let user = users.by_id(id)?.ok_or_else(|| ApiError::not_found(NO_SUCH_PERSON))?;
+            let user = users.by_id(id)?.ok_or_else(|| ApiError::not_found(no_such_person()))?;
             let (changes, changed, end_sessions) = wanted.against(&user);
             if let Some(name) = &changes.name {
                 if users.by_name(name)?.is_some_and(|other| other.id != id) {
-                    return Err(ApiError::bad_request(NAME_TAKEN));
+                    return Err(ApiError::bad_request(name_taken()));
                 }
             }
             let next = changes.applied_to(&user);
             if next.role == Role::Admin && next.password_hash.is_none() {
-                return Err(ApiError::bad_request(ADMIN_NEEDS_PASSWORD));
+                return Err(ApiError::bad_request(admin_needs_password()));
             }
             keep_an_admin(users, &user, Some(&next))?;
             if !changed.is_empty() {
@@ -150,7 +161,7 @@ impl UsersService {
         if let Some(value) = input.get("name") {
             let name = valid_name(Some(value))?;
             if self.users.by_name(&name)?.is_some_and(|other| other.id != id) {
-                return Err(ApiError::bad_request(NAME_TAKEN));
+                return Err(ApiError::bad_request(name_taken()));
             }
             wanted.name = Some(name);
         }
@@ -161,7 +172,7 @@ impl UsersService {
             wanted.status = Some(match value.as_str() {
                 Some("active") => UserStatus::Active,
                 Some("disabled") => UserStatus::Disabled,
-                _ => return Err(ApiError::bad_request("status: active или disabled")),
+                _ => return Err(ApiError::bad_request(crate::tr!("status: active или disabled"))),
             });
         }
         if let Some(value) = input.get("password") {
@@ -187,7 +198,7 @@ impl UsersService {
 
     pub fn remove(&self, id: &str, actor: Option<Actor>) -> Result<(), ApiError> {
         let user = self.users.transaction(|users| {
-            let user = users.by_id(id)?.ok_or_else(|| ApiError::not_found(NO_SUCH_PERSON))?;
+            let user = users.by_id(id)?.ok_or_else(|| ApiError::not_found(no_such_person()))?;
             keep_an_admin(users, &user, None)?;
             users.remove(id)?;
             Ok(user)
@@ -217,7 +228,7 @@ impl UsersService {
         next: Option<&Value>,
     ) -> Result<(), ApiError> {
         if principal.kind != PrincipalKind::User {
-            return Err(ApiError::forbidden("Пароль меняет человек, а не ключ."));
+            return Err(ApiError::forbidden(crate::tr!("Пароль меняет человек, а не ключ.")));
         }
         let user = self.found(&principal.id)?;
         let right = match current.and_then(Value::as_str) {
@@ -225,7 +236,7 @@ impl UsersService {
             None => false,
         };
         if !right {
-            return Err(ApiError::bad_request("Текущий пароль не тот."));
+            return Err(ApiError::bad_request(crate::tr!("Текущий пароль не тот.")));
         }
         if let Some(problem) = password_problem(next) {
             return Err(ApiError::bad_request(problem));
@@ -243,7 +254,7 @@ impl UsersService {
     }
 
     fn found(&self, id: &str) -> Result<UserRecord, ApiError> {
-        self.users.by_id(id)?.ok_or_else(|| ApiError::not_found(NO_SUCH_PERSON))
+        self.users.by_id(id)?.ok_or_else(|| ApiError::not_found(no_such_person()))
     }
 }
 
@@ -255,7 +266,7 @@ fn keep_an_admin(users: &Users<'_>, before: &UserRecord, after: Option<&UserReco
     }
     let others = users.list()?.into_iter().filter(|user| user.id != before.id && user.active_admin()).count();
     if others == 0 {
-        return Err(ApiError::bad_request(LAST_ADMIN));
+        return Err(ApiError::bad_request(last_admin()));
     }
     Ok(())
 }
@@ -312,13 +323,16 @@ impl Wanted {
 fn valid_name(value: Option<&Value>) -> Result<String, ApiError> {
     let name = value.and_then(Value::as_str).map(str::trim).unwrap_or("");
     if !(2..=MAX_NAME).contains(&js_len(name)) {
-        return Err(ApiError::bad_request("Имя — от 2 до 40 символов."));
+        return Err(ApiError::bad_request(crate::tr!("Имя — от 2 до 40 символов.")));
     }
     Ok(name.to_string())
 }
 
 fn valid_role(value: &Value) -> Result<Role, ApiError> {
-    value.as_str().and_then(Role::parse).ok_or_else(|| ApiError::bad_request("role: admin, member или guest"))
+    value
+        .as_str()
+        .and_then(Role::parse)
+        .ok_or_else(|| ApiError::bad_request(crate::tr!("role: admin, member или guest")))
 }
 
 #[cfg(test)]
@@ -346,9 +360,9 @@ mod tests {
         assert_eq!((kid.name.as_str(), kid.role, kid.can_sign_in), ("Миша", Role::Guest, false));
         assert!(matches!(&*events.try_recv().unwrap(), GatewayEvent::UserCreated { role, .. } if role == "guest"));
         let taken = service.create(&input(json!({"name": "миша"})), None).await.unwrap_err();
-        assert_eq!(taken.message, NAME_TAKEN);
+        assert_eq!(taken.message, name_taken());
         let admin = service.create(&input(json!({"name": "Без пароля", "role": "admin"})), None).await.unwrap_err();
-        assert_eq!(admin.message, ADMIN_NEEDS_PASSWORD);
+        assert_eq!(admin.message, admin_needs_password());
         let short = service.create(&input(json!({"name": "Аня", "password": "short"})), None).await.unwrap_err();
         assert_eq!(short.message, "Пароль — хотя бы 8 символов.");
         assert_eq!(
@@ -409,7 +423,7 @@ mod tests {
             };
             let (first, second) = (demote("a"), demote("b"));
             let results = [first.await.unwrap(), second.await.unwrap()];
-            let refused = results.iter().filter(|result| result.as_ref().is_err_and(|e| e.message == LAST_ADMIN));
+            let refused = results.iter().filter(|result| result.as_ref().is_err_and(|e| e.message == last_admin()));
             assert_eq!(refused.count(), 1, "round {round}: {results:?}");
             let admins = users.list().unwrap().into_iter().filter(UserRecord::active_admin).count();
             assert_eq!(admins, 1, "round {round}");
@@ -425,7 +439,7 @@ mod tests {
         assert_eq!(service.update("a", &input(json!({"status": "disabled"})), None).await.unwrap_err().message, last);
         assert_eq!(
             service.update("a", &input(json!({"password": ""})), None).await.unwrap_err().message,
-            ADMIN_NEEDS_PASSWORD
+            admin_needs_password()
         );
         assert_eq!(service.remove("a", None).unwrap_err().message, last);
         users.insert(&person("b", "второй", Role::Admin, Some("scrypt:x:y"))).unwrap();

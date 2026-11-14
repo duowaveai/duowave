@@ -42,6 +42,19 @@ impl Placement {
         self != Placement::Pc
     }
 
+    /// The three texts of a placement in the language of now (`title` and the rest are the source texts).
+    pub fn title_text(self) -> String {
+        super::tx(self.title())
+    }
+
+    pub fn summary_text(self) -> String {
+        super::tx(self.summary())
+    }
+
+    pub fn risk_text(self) -> String {
+        super::tx(self.risk())
+    }
+
     pub fn title(self) -> &'static str {
         match self {
             Placement::Pc => "На компьютере",
@@ -162,6 +175,7 @@ pub enum Level {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Cell {
     pub level: Level,
+    #[serde(serialize_with = "crate::core::translated")]
     pub note: &'static str,
 }
 
@@ -559,6 +573,7 @@ pub enum State {
 #[serde(rename_all = "camelCase")]
 pub struct FeatureState {
     pub id: &'static str,
+    #[serde(serialize_with = "crate::core::translated")]
     pub title: &'static str,
     pub group: Group,
     pub state: State,
@@ -590,18 +605,18 @@ pub fn evaluate(feature: &'static Feature, context: &Context) -> FeatureState {
         .filter(|way| way.needs.iter().filter(|need| need.structural()).all(|need| context.meets(*need)))
         .collect();
     let Some(meant) = here.first() else {
-        return state(State::Off, None, feature.absent.to_string());
+        return state(State::Off, None, super::tx(feature.absent));
     };
     let unmet = |way: &Way| way.needs.iter().copied().find(|need| !context.meets(*need));
     match here.iter().enumerate().find(|(_, way)| unmet(way).is_none()) {
-        Some((0, way)) => state(State::Ready, Some(way.runs), context.place(way.runs).to_string()),
+        Some((0, way)) => state(State::Ready, Some(way.runs), super::tx(context.place(way.runs))),
         Some((_, way)) => {
-            let why = unmet(meant).map(|need| context.why(need)).unwrap_or_default();
-            state(State::Fallback, Some(way.runs), format!("{why} — {}", context.place(way.runs)))
+            let why = unmet(meant).map(|need| super::tx(context.why(need))).unwrap_or_default();
+            state(State::Fallback, Some(way.runs), format!("{why} — {}", super::tx(context.place(way.runs))))
         }
         None => {
-            let why = unmet(meant).map(|need| context.why(need)).unwrap_or_default();
-            state(State::Off, None, capitalized(why))
+            let why = unmet(meant).map(|need| super::tx(context.why(need))).unwrap_or_default();
+            state(State::Off, None, capitalized(&why))
         }
     }
 }
@@ -633,6 +648,7 @@ pub fn mode_feature(mode: PanelMode) -> &'static str {
 #[serde(rename_all = "camelCase")]
 pub struct TableRow {
     pub id: &'static str,
+    #[serde(serialize_with = "crate::core::translated")]
     pub title: &'static str,
     pub group: Group,
     pub pc: Cell,

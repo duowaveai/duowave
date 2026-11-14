@@ -1,16 +1,12 @@
 // Ноты словами и мелодии дорожек (docs/plans/midi.md): чистые помощники без шлюза и без пульта — их берут и пульт
 // (sdk/midi.ts), и окошко приложения (frame/sdk.tsx).
 
-/** Ноты по-русски: «до», «до♯», …, «си». */
-const NAMES = ['до', 'до♯', 'ре', 'ре♯', 'ми', 'фа', 'фа♯', 'соль', 'соль♯', 'ля', 'ля♯', 'си'];
-const OCTAVES = ['субконтроктавы', 'контроктавы', 'большой октавы', 'малой октавы', 'первой октавы', 'второй октавы', 'третьей октавы', 'четвёртой октавы', 'пятой октавы'];
+import { tr } from '../i18n';
 
-/** `noteName(60)` → «до первой октавы»; `noteName(60, true)` → «до». */
+/** `noteName(60)` → «до первой октавы»; `noteName(60, true)` → «до». Имена и октавы — по языку пульта. */
 export function noteName(note: number, short = false): string {
-    const name = NAMES[((note % 12) + 12) % 12];
-    if (short) return name;
-    const octave = OCTAVES[Math.floor(note / 12) - 1];
-    return octave ? `${name} ${octave}` : name;
+    const index = ((note % 12) + 12) % 12;
+    return short ? tr.sdk.noteShort(index) : tr.sdk.noteFull(index, Math.floor(note / 12) - 1);
 }
 
 export interface MidiTrack {

@@ -149,7 +149,7 @@ impl AskToolbox {
     pub async fn run(&self, call: &ToolCall, cancel: &CancellationToken) -> Result<ToolOutcome, Cancelled> {
         let contributed = self.contributed.as_ref().filter(|contributed| contributed.owns(&call.name));
         let server = match contributed {
-            Some(_) => Some("Приложения".to_string()),
+            Some(_) => Some(crate::tr!("Приложения")),
             None => self.offer.as_ref().and_then(|offer| offer.server_of(&call.name)).map(|server| server.title),
         };
         let _ = self.events.send(AskEvent::Tool { name: call.name.clone(), server, input: call.input.clone() });
@@ -190,13 +190,11 @@ async fn ask(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<AskBo
         .map(|q| q.trim().chars().take(1000).collect())
         .unwrap_or_default();
     if question.is_empty() {
-        return Err(ApiError::bad_request("Напишите вопрос."));
+        return Err(ApiError::bad_request(crate::tr!("Напишите вопрос.")));
     }
-    let dialog = app
-        .mcp
-        .dialog()
-        .filter(|dialog| dialog.enabled())
-        .ok_or_else(|| ApiError::conflict("Модель не выбрана: добавьте провайдера в «Персонаж» → «Мозг»."))?;
+    let dialog = app.mcp.dialog().filter(|dialog| dialog.enabled()).ok_or_else(|| {
+        ApiError::conflict(crate::tr!("Модель не выбрана: добавьте провайдера в «Персонаж» → «Мозг»."))
+    })?;
     let key = format!("panel:{}", principal.id);
     if body.fresh.as_ref().and_then(Json::as_bool) == Some(true) {
         dialog.forget(&key);

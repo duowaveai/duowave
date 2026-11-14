@@ -1,18 +1,20 @@
 import { useEffect, useState } from 'preact/hooks';
 
-import { Station, UpdateStatus, api, can, plural, problemOf } from '../api';
+import { Station, UpdateStatus, api, can, problemOf } from '../api';
+import { locale, tr } from '../i18n';
 import { timeAgo } from '../time';
 import { checkIsStale, setUpdateStatus } from '../updates';
 import { ask } from '../ui/confirm';
+import { byMode } from '../words';
 
 // Карточки прежнего «Дома»: колонки, которым отвечаем, и обновления DuoWave. Теперь они в «Настройки» → «Колонка» и
 // «Обновления и копии» (screens/places.tsx); подключения и MCP — в «Навыках».
 
-const STATION_PILL: Record<Station['status'], { cls: string; label: string }> = {
-    approved: { cls: 'pill-own', label: 'отвечаем' },
-    pending: { cls: 'pill-yandex', label: 'ждёт разрешения' },
-    blocked: { cls: 'pill-off', label: 'не пускаем' },
-};
+const stationPill = (): Record<Station['status'], { cls: string; label: string }> => ({
+    approved: { cls: 'pill-own', label: tr.house.pillApproved },
+    pending: { cls: 'pill-yandex', label: tr.house.pillPending },
+    blocked: { cls: 'pill-off', label: tr.house.pillBlocked },
+});
 
 /** Колонки: первая подключилась сама, каждую следующую пускает администратор. */
 export function Stations() {
@@ -34,9 +36,9 @@ export function Stations() {
         if (
             status === 'blocked' &&
             !(await ask({
-                title: `Не пускать «${station.name}»?`,
-                text: 'Она перестанет отвечать, пока вы её не разрешите.',
-                ok: 'Не пускать',
+                title: tr.house.blockTitle(station.name),
+                text: tr.house.blockText,
+                ok: tr.house.blockOk,
                 danger: true,
             }))
         )
@@ -55,11 +57,11 @@ export function Stations() {
         <section class="card glass card-list card-list-tight" aria-labelledby="stations-h">
             <div class="section-head">
                 <h2 id="stations-h" class="t-title-xs m-0">
-                    Колонки
+                    {tr.house.stations}
                 </h2>
                 {list && (
                     <span class="t-meta">
-                        {list.length} {plural(list.length, 'колонка', 'колонки', 'колонок')}
+                        {tr.house.stationsCount(list.length)}
                     </span>
                 )}
             </div>
@@ -70,7 +72,7 @@ export function Stations() {
             )}
             {list?.length === 0 && (
                 <p class="t-meta m-0 mb-8">
-                    Ни одна колонка ещё не подключалась.
+                    {tr.house.noStations}
                 </p>
             )}
             {list?.map((station) => (
@@ -81,17 +83,17 @@ export function Stations() {
                     <div class="flex-1 min-w-160 flex flex-col gap-2">
                         <span class="fw-700">{station.name}</span>
                         <span class="t-caption">
-                            {station.lastAddress ?? 'адрес неизвестен'} · была {timeAgo(station.lastSeen)}
+                            {tr.house.lastSeen(station.lastAddress ?? tr.house.addressUnknown, timeAgo(station.lastSeen))}
                         </span>
                     </div>
-                    <span class={`pill ${STATION_PILL[station.status].cls}`}>{STATION_PILL[station.status].label}</span>
+                    <span class={`pill ${stationPill()[station.status].cls}`}>{stationPill()[station.status].label}</span>
                     {mayManage && station.status !== 'approved' && (
                         <button
                             class="pill pill-own pill-btn"
                             disabled={busy === station.device}
                             onClick={() => void set(station, 'approved')}
                         >
-                            разрешить
+                            {tr.house.allow}
                         </button>
                     )}
                     {mayManage && station.status === 'approved' && (
@@ -100,7 +102,7 @@ export function Stations() {
                             disabled={busy === station.device}
                             onClick={() => void set(station, 'blocked')}
                         >
-                            не пускать
+                            {tr.house.block}
                         </button>
                     )}
                 </div>
@@ -168,7 +170,7 @@ export function Updates() {
             const answer = await api.checkUpdates();
             setStatus(answer);
             if (!answer.available)
-                setMessage({ ok: true, text: answer.error ? `Лента не ответила: ${answer.error}` : 'Стоит последняя версия.' });
+                setMessage({ ok: true, text: answer.error ? tr.house.feedNoAnswer(answer.error) : tr.house.latestInstalled });
         } catch (e) {
             setMessage({ ok: false, text: problemOf(e) });
         } finally {
@@ -178,9 +180,9 @@ export function Updates() {
     const install = async () => {
         if (!status.available) return;
         const yes = await ask({
-            title: `Поставить версию ${status.available.version}?`,
-            text: 'Шлюз перезапустится, колонка переподключится сама.',
-            ok: 'Поставить',
+            title: tr.house.installTitle(status.available.version),
+            text: byMode(tr.house.installTextStation, tr.house.installTextDevice),
+            ok: tr.house.installOk,
         });
         if (!yes) return;
         setBusy(true);
@@ -198,23 +200,22 @@ export function Updates() {
         <section class="card glass card-list" aria-labelledby="updates-h">
             <div class="section-head">
                 <h2 id="updates-h" class="t-title-xs m-0">
-                    Обновления
+                    {tr.house.updates}
                 </h2>
-                <span class="t-meta">версия {status.current}</span>
+                <span class="t-meta">{tr.house.version(status.current)}</span>
             </div>
             {offer ? (
                 <div>
                     {offer.critical && (
                         <p class="t-caption m-0 mb-4 c-dot-offline" role="alert">
-                            <b>Срочное обновление</b> — исправляет важное в этой версии.{' '}
-                            {status.autoCritical
-                                ? 'Шлюз поставит его сам в течение часа, можно и сейчас.'
-                                : 'Поставьте его как можно скорее.'}
+                            <b>{tr.house.urgent}</b>
+                            {tr.house.urgentText} {status.autoCritical ? tr.house.urgentAuto : tr.house.urgentManual}
                         </p>
                     )}
                     <p class="t-body m-0 mb-4">
-                        Доступна версия <b>{offer.version}</b>
-                        {offer.date ? `, ${new Date(offer.date).toLocaleDateString('ru-RU')}` : ''}
+                        {tr.house.availableVersion}
+                        <b>{offer.version}</b>
+                        {offer.date ? `, ${new Date(offer.date).toLocaleDateString(locale())}` : ''}
                     </p>
                     {offer.notes && (
                         <p class="t-caption m-0 mb-8 pre-line">
@@ -225,12 +226,12 @@ export function Updates() {
             ) : (
                 <p class="t-caption m-0 mb-8">
                     {!status.feed
-                        ? 'Лента выпусков не задана: шлюз не проверяет обновления.'
+                        ? tr.house.noFeed
                         : checking
-                          ? 'Проверяю, нет ли новой версии…'
+                          ? tr.house.checking
                           : status.checkedAt
-                          ? `Новых версий нет · проверено ${timeAgo(status.checkedAt)}`
-                          : 'Ещё не проверял.'}
+                          ? tr.house.noNewVersions(timeAgo(status.checkedAt))
+                          : tr.house.notChecked}
                 </p>
             )}
             {status.hint && offer && (
@@ -241,7 +242,7 @@ export function Updates() {
             {/* Пока ставится — об этом; не поставилось — почему, словами шлюза. */}
             {status.installing && (
                 <p class="t-caption m-0 mb-8 c-accent-text" role="status">
-                    Ставится. Шлюз перезапустится и вернётся через несколько секунд.
+                    {tr.house.installing}
                 </p>
             )}
             {status.error && !status.installing && (
@@ -264,7 +265,7 @@ export function Updates() {
                         disabled={busy || status.installing}
                         onClick={() => void check()}
                     >
-                        проверить
+                        {tr.house.check}
                     </button>
                     {status.canInstall && (
                         <button
@@ -272,7 +273,7 @@ export function Updates() {
                             disabled={busy || status.installing}
                             onClick={() => void install()}
                         >
-                            {status.installing ? 'ставится…' : 'обновить'}
+                            {status.installing ? tr.house.installingShort : tr.house.update}
                         </button>
                     )}
                 </div>

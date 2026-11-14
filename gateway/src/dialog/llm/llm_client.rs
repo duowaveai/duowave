@@ -155,6 +155,52 @@ pub struct LlmRequest {
     pub model: Option<String>,
     pub tools: Vec<LlmTool>,
     pub tool_choice: ToolChoice,
+    /// A longer output limit than the client's own (LLM_MAX_TOKENS), for this request only: the workshop's agent
+    /// writes files, not spoken answers (WORKSHOP_MAX_TOKENS). The ChatGPT plan sends no limit at all.
+    pub max_tokens: Option<u32>,
+}
+
+/// A turn cut off by its output limit in the middle of a tool call. The call is not run: its input is cut short.
+/// Rounds that know what to do about it (the workshop agent's, `ToolBox::cut_note`) go on and tell the model;
+/// anywhere else the answer fails with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCallCut {
+    /// Who ran out, in the log's words: «Claude», «the model».
+    pub who: &'static str,
+    /// The tool it was calling.
+    pub tool: String,
+    /// The file the call was writing, when its input named it before the cut.
+    pub path: Option<String>,
+}
+
+impl ToolCallCut {
+    /// A cut call of `tool`; its file is read from the input written so far.
+    pub fn new(who: &'static str, tool: &str, partial_input: &str) -> ToolCallCut {
+        ToolCallCut { who, tool: tool.to_string(), path: path_in(partial_input) }
+    }
+}
+
+impl fmt::Display for ToolCallCut {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ran out of tokens in a tool call", self.who)
+    }
+}
+
+impl std::error::Error for ToolCallCut {}
+
+/// The `path` of a tool input cut short: the JSON string after `"path":`, when it was written whole.
+fn path_in(partial: &str) -> Option<String> {
+    let (_, after) = partial.split_once("\"path\"")?;
+    let mut chars = after.trim_start().strip_prefix(':')?.trim_start().strip_prefix('"')?.chars();
+    let mut path = String::new();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(path).filter(|path| !path.is_empty()),
+            '\\' => path.push(chars.next()?),
+            c => path.push(c),
+        }
+    }
+    None
 }
 
 /// Text as the model writes it; once the turn is over, its tool calls and the turn itself.
@@ -257,5 +303,24 @@ pub fn create_llm(settings: &LlmSettings) -> Option<Arc<dyn LlmClient>> {
         DialogProvider::OpenAi => Some(Arc::new(OpenAiChatLlm::new(settings.clone()))),
         DialogProvider::Echo => Some(Arc::new(EchoLlm)),
         DialogProvider::None => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cut_call_names_its_file_when_the_input_wrote_it_whole() {
+        let cut = ToolCallCut::new("Claude", "write_file", r#"{"path": "panel.js", "content": "export function"#);
+        assert_eq!(cut.path.as_deref(), Some("panel.js"));
+        assert_eq!(cut.to_string(), "Claude ran out of tokens in a tool call");
+        assert_eq!(
+            ToolCallCut::new("the model", "write_file", r#"{"path":"ui/main.js","content":"#).path.as_deref(),
+            Some("ui/main.js")
+        );
+        assert_eq!(ToolCallCut::new("the model", "write_file", r#"{"path": "pan"#).path, None, "cut inside the name");
+        assert_eq!(ToolCallCut::new("the model", "write_file", r#"{"content": "x"#).path, None);
+        assert_eq!(ToolCallCut::new("the model", "write_file", "").path, None);
     }
 }

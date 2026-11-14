@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'preact/hooks';
 
 import { ConnectorSettings, FeedPreview, NewsCatalog, NewsFeedEntry, api, problemOf } from '../api';
+import { tr } from '../i18n';
 import { BrandIconCircle } from '../ui/brand';
 import { Action } from '../ui/cards';
 import { CheckLine, EnvNote } from '../ui/fields';
 import { Sheet } from '../ui/sheet';
 import { Switch } from '../ui/switch';
+import { byMode } from '../words';
 
 /** Ленты в том виде, что ждёт шлюз: адрес, имя, тема и включена ли. */
 const asInput = (feeds: NewsFeedEntry[]) => feeds.map(({ url, title, topic, enabled }) => ({ url, title, topic, enabled }));
@@ -40,7 +42,7 @@ function opmlOf(feeds: NewsFeedEntry[]): string {
             return `    <outline type="rss" text="${title}" title="${title}" xmlUrl="${escape(feed.url)}"/>`;
         })
         .join('\n');
-    return `<?xml version="1.0" encoding="UTF-8"?>\n<opml version="2.0">\n  <head><title>Новости колонки</title></head>\n  <body>\n${outlines}\n  </body>\n</opml>\n`;
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<opml version="2.0">\n  <head><title>${byMode(tr.news.opmlTitleSpeaker, tr.news.opmlTitleOwn)}</title></head>\n  <body>\n${outlines}\n  </body>\n</opml>\n`;
 }
 
 /**
@@ -100,7 +102,7 @@ export function NewsSheet({ onClose, onChanged }: { onClose: () => void; onChang
     const importOpml = async (file: File) => {
         const found = opmlFeeds(await file.text()).filter((feed) => feed.url && !has(feed.url));
         if (!found.length) {
-            setError('В файле нет новых лент.');
+            setError(tr.news.noNewFeeds);
             return;
         }
         await act('opml', () =>
@@ -122,8 +124,8 @@ export function NewsSheet({ onClose, onChanged }: { onClose: () => void; onChang
     const shown = catalog?.feeds.filter((feed) => feed.topic === topic) ?? [];
     return (
         <Sheet
-            title="Новости"
-            about={view ? (view.status.detail ?? '') : 'Читаем настройки…'}
+            title={tr.news.title}
+            about={view ? (view.status.detail ?? '') : tr.news.reading}
             icon={<BrandIconCircle id="rss" />}
             onClose={onClose}
             footer={
@@ -134,25 +136,24 @@ export function NewsSheet({ onClose, onChanged }: { onClose: () => void; onChang
                         aria-busy={busy === 'check'}
                         onClick={() => void act('check', () => api.checkConnector('news'))}
                     >
-                        {busy === 'check' ? 'Открываем ленты…' : 'Проверить ленты'}
+                        {busy === 'check' ? tr.news.checkBusy : tr.news.check}
                     </button>
                     <button class="pill pill-off dash-confirm-btn" onClick={onClose}>
-                        Готово
+                        {tr.news.done}
                     </button>
                 </div>
             }
         >
             <p class="t-meta m-0">
-                «Алиса, что нового?» — колонка читает заголовки этих лент, модель пересказывает. «Новости спорта» и другие темы
-                каталога — ленты этой темы. Без лент новости остаются Яндексу.
+                {byMode(tr.news.aboutSpeaker, tr.news.aboutOwn)}
             </p>
             {view && <EnvNote fromEnv={view.fromEnv} envLeft={view.envLeft} />}
             <CheckLine check={view?.check} />
 
             <div class="flex flex-col">
-                <b class="my-4 mx-0">Ваши ленты{feeds.length ? ` · ${feeds.filter((feed) => feed.enabled).length} из ${feeds.length}` : ''}</b>
+                <b class="my-4 mx-0">{tr.news.yourFeeds}{feeds.length ? tr.news.yourFeedsCount(feeds.filter((feed) => feed.enabled).length, feeds.length) : ''}</b>
                 {view && !feeds.length && (
-                    <span class="t-meta">Пока ни одной: добавьте из каталога ниже или свою по адресу.</span>
+                    <span class="t-meta">{tr.news.noFeeds}</span>
                 )}
                 {feeds.map((feed) => {
                     const item = itemOf(feed.url);
@@ -163,7 +164,7 @@ export function NewsSheet({ onClose, onChanged }: { onClose: () => void; onChang
                         >
                             <Switch
                                 on={feed.enabled}
-                                label={`Лента ${feed.title ?? hostOf(feed.url)}`}
+                                label={tr.news.feedLabel(feed.title ?? hostOf(feed.url))}
                                 disabled={busy !== null}
                                 onChange={(on) => save(`on:${feed.url}`, feeds.map((other) => (other.url === feed.url ? { ...other, enabled: on } : other)))}
                             />
@@ -177,7 +178,7 @@ export function NewsSheet({ onClose, onChanged }: { onClose: () => void; onChang
                                 </span>
                             </span>
                             <Action
-                                label="убрать"
+                                label={tr.news.remove}
                                 disabled={busy !== null}
                                 onClick={() => save(`off:${feed.url}`, feeds.filter((other) => other.url !== feed.url))}
                             />
@@ -187,8 +188,8 @@ export function NewsSheet({ onClose, onChanged }: { onClose: () => void; onChang
             </div>
 
             <div class="flex flex-col gap-8">
-                <b>Каталог</b>
-                <div role="group" aria-label="Темы каталога" class="flex gap-6 flex-wrap">
+                <b>{tr.news.catalog}</b>
+                <div role="group" aria-label={tr.news.topics} class="flex gap-6 flex-wrap">
                     {catalog?.topics.map((entry) => (
                         <button
                             key={entry.id}
@@ -200,7 +201,7 @@ export function NewsSheet({ onClose, onChanged }: { onClose: () => void; onChang
                         </button>
                     ))}
                 </div>
-                {!catalog && <span class="t-meta">Читаем каталог…</span>}
+                {!catalog && <span class="t-meta">{tr.news.readingCatalog}</span>}
                 {shown.map((feed) => {
                     const added = has(feed.url);
                     return (
@@ -210,7 +211,7 @@ export function NewsSheet({ onClose, onChanged }: { onClose: () => void; onChang
                                 <span class="t-caption">{feed.site}</span>
                             </span>
                             <Action
-                                label={added ? 'добавлена' : 'добавить'}
+                                label={added ? tr.news.added : tr.news.add}
                                 tone={added ? 'off' : 'on'}
                                 disabled={added || busy !== null}
                                 busy={busy === `add:${feed.id}`}
@@ -222,7 +223,7 @@ export function NewsSheet({ onClose, onChanged }: { onClose: () => void; onChang
                     );
                 })}
                 <span class="t-meta">
-                    Каталог собран из открытых списков (awesome-rss-feeds, Wikidata) и лент самих изданий; каждая проверена из дома.
+                    {tr.news.catalogNote}
                 </span>
             </div>
 
@@ -233,37 +234,37 @@ export function NewsSheet({ onClose, onChanged }: { onClose: () => void; onChang
                     if (address.trim()) look();
                 }}
             >
-                <b>Своя лента</b>
+                <b>{tr.news.ownFeed}</b>
                 <span class="flex gap-8 items-center">
                     <input
                         class="field flex-1 min-w-0"
                         type="url"
                         inputMode="url"
                         autocomplete="off"
-                        aria-label="Адрес ленты RSS или Atom"
-                        placeholder="https://… — адрес RSS или Atom"
+                        aria-label={tr.news.addressLabel}
+                        placeholder={tr.news.addressPlaceholder}
                         value={address}
                         onInput={(e) => {
                             setAddress((e.target as HTMLInputElement).value);
                             setPreview(null);
                         }}
                     />
-                    <Action label="посмотреть" busy={busy === 'look'} disabled={!address.trim() || busy !== null} onClick={look} />
+                    <Action label={tr.news.look} busy={busy === 'look'} disabled={!address.trim() || busy !== null} onClick={look} />
                 </span>
                 {preview && (
                     <div class="dash-confirm flex flex-col gap-6 bg-icon-bg c-text">
                         <b>{preview.title ?? hostOf(preview.url)}</b>
                         <span class="t-caption">
-                            заголовков сейчас: {preview.count}. Первые: {preview.headlines.slice(0, 3).join(' · ')}
+                            {tr.news.headlines(preview.count, preview.headlines.slice(0, 3).join(' · '))}
                         </span>
                         <span class="flex gap-8 items-center flex-wrap">
                             <select
                                 class="field flex-1-1-160"
-                                aria-label="Тема ленты"
+                                aria-label={tr.news.topicLabel}
                                 value={previewTopic}
                                 onChange={(e) => setPreviewTopic((e.target as HTMLSelectElement).value)}
                             >
-                                <option value="">без темы</option>
+                                <option value="">{tr.news.noTopic}</option>
                                 {catalog?.topics.map((entry) => (
                                     <option key={entry.id} value={entry.id}>
                                         {entry.title}
@@ -271,7 +272,7 @@ export function NewsSheet({ onClose, onChanged }: { onClose: () => void; onChang
                                 ))}
                             </select>
                             <Action
-                                label={has(preview.url) ? 'уже есть' : 'добавить'}
+                                label={has(preview.url) ? tr.news.alreadyHave : tr.news.add}
                                 tone="on"
                                 disabled={has(preview.url) || busy !== null}
                                 onClick={() => {
@@ -287,10 +288,10 @@ export function NewsSheet({ onClose, onChanged }: { onClose: () => void; onChang
 
             <div class="flex gap-8 items-center flex-wrap">
                 <span class="t-caption flex-1-1-100p">
-                    Ленты из другой читалки — файлом OPML, и обратно.
+                    {tr.news.opmlNote}
                 </span>
                 <label class="pill pill-off cursor-pointer py-8 px-14 min-h-36 inline-flex items-center">
-                    {busy === 'opml' ? 'Читаем…' : 'импорт OPML'}
+                    {busy === 'opml' ? tr.news.opmlReading : tr.news.opmlImport}
                     <input
                         type="file"
                         accept=".opml,.xml,text/xml,text/x-opml"
@@ -302,7 +303,7 @@ export function NewsSheet({ onClose, onChanged }: { onClose: () => void; onChang
                         }}
                     />
                 </label>
-                <Action label="экспорт OPML" disabled={!feeds.length} onClick={exportOpml} />
+                <Action label={tr.news.opmlExport} disabled={!feeds.length} onClick={exportOpml} />
             </div>
 
             {error && (

@@ -31,13 +31,13 @@ pub fn routes() -> Router<Arc<App>> {
 fn manager(caller: &Caller) -> Result<(), ApiError> {
     caller.zone_at_least(Zone::Home)?;
     if caller.permitted(CONNECTORS_MANAGE)?.kind != PrincipalKind::User {
-        return Err(ApiError::forbidden("Это для людей, не для ключей."));
+        return Err(ApiError::forbidden(crate::tr!("Это для людей, не для ключей.")));
     }
     Ok(())
 }
 
 fn connector(id: &str) -> Result<ConnectorId, ApiError> {
-    ConnectorId::parse(id).ok_or_else(|| ApiError::not_found("Нет такого подключения."))
+    ConnectorId::parse(id).ok_or_else(|| ApiError::not_found(crate::tr!("Нет такого подключения.")))
 }
 
 /// A connector's settings, and whether a call goes on through it now (a change would end it).
@@ -80,7 +80,7 @@ async fn update(
     manager(&caller)?;
     let id = connector(&id)?;
     let Value::Object(mut input) = body else {
-        return Err(ApiError::bad_request("Нужен объект с полями."));
+        return Err(ApiError::bad_request(crate::tr!("Нужен объект с полями.")));
     };
     if id == ConnectorId::Telegram {
         strangers_to_chats(&app, &mut input)?;
@@ -97,7 +97,9 @@ fn strangers_to_chats(app: &App, input: &mut Map<String, Value>) -> Result<(), A
         let Some(stranger) = contact.remove("stranger") else { continue };
         let found = stranger.as_str().and_then(|handle| app.calls.telegram.stranger(handle));
         let Some(found) = found else {
-            return Err(ApiError::bad_request("Этого чата уже нет среди написавших боту: откройте лист заново."));
+            return Err(ApiError::bad_request(crate::tr!(
+                "Этого чата уже нет среди написавших боту: откройте лист заново."
+            )));
         };
         contact.insert("to".into(), Value::String(found.chat_id));
     }

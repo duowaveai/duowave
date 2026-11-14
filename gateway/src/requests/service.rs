@@ -2,7 +2,6 @@
 //! ones, publishes every change on the bus once per tick (`request.updated`, whole), and writes a finished one to the
 //! journal for as many days as the household keeps it. A request nobody ended in three minutes is closed as failed.
 //! The live channel (src/live) and scenarios to come listen on the bus, not here.
-
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -308,7 +307,8 @@ impl RequestsService {
         let days = days
             .and_then(Value::as_f64)
             .filter(|days| days.fract() == 0.0 && (0.0..=3650.0).contains(days))
-            .ok_or_else(|| ApiError::bad_request("days: целое число от 0 до 3650."))? as u32;
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("days: целое число от 0 до 3650.")))?
+            as u32;
         self.settings.set(&KEEP_REQUESTS, &days, actor)?;
         self.keep_days.store(days, Ordering::Relaxed);
         self.prune(now_ms());

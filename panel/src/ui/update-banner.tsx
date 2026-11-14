@@ -1,4 +1,5 @@
 import { IconSparkle } from '../icons';
+import { tr } from '../i18n';
 
 /**
  * Строка на главном экране: вышла новая версия шлюза. «Обновить» ведёт в «Дом → Шлюз → Обновления», где человек
@@ -21,7 +22,7 @@ export function UpdateBanner({
     return (
         <section
             class="card glass setup-banner"
-            aria-label={critical ? 'Срочное обновление шлюза' : 'Новая версия шлюза'}
+            aria-label={critical ? tr.ui.updateUrgentLabel : tr.ui.newGatewayVersion}
             role={critical ? 'alert' : undefined}
         >
             <span class="picker-glyph" aria-hidden="true">
@@ -29,21 +30,21 @@ export function UpdateBanner({
             </span>
             <div class="flex-1 min-w-0 flex flex-col">
                 <b class={critical ? 'fs-14 lh-20 c-dot-offline' : 'fs-14 lh-20'}>
-                    {critical ? `Срочное обновление ${version}` : `Доступна версия ${version}`}
+                    {critical ? tr.ui.updateUrgent(version) : tr.ui.updateAvailable(version)}
                 </b>
                 <span class="t-caption">
                     {!critical
-                        ? 'что нового — в «Обновлениях»'
+                        ? tr.ui.updateWhatsNew
                         : auto
-                          ? 'исправляет важное — шлюз поставит его сам в течение часа'
-                          : 'исправляет важное — поставьте его как можно скорее'}
+                          ? tr.ui.updateAutoSoon
+                          : tr.ui.updateInstallSoon}
                 </span>
             </div>
             <button class="pill pill-own setup-go" onClick={onOpen}>
-                Обновить
+                {tr.ui.update}
             </button>
             {!critical && (
-                <button class="banner-hide" aria-label="Скрыть до следующей версии" title="Скрыть до следующей версии" onClick={onHide}>
+                <button class="banner-hide" aria-label={tr.ui.hideUntilNext} title={tr.ui.hideUntilNext} onClick={onHide}>
                     ×
                 </button>
             )}

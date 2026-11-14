@@ -54,7 +54,7 @@ type Input = Body<Map<String, Value>>;
 /// «Too many tries»: in minutes, as the panel shows it.
 fn too_many_tries(wait_ms: u64) -> ApiError {
     let minutes = wait_ms.div_ceil(60_000).max(1);
-    ApiError::too_many(format!("Слишком много попыток — подождите {minutes} мин."))
+    ApiError::too_many(crate::tr!("Слишком много попыток — подождите {minutes} мин.", minutes = minutes))
 }
 
 #[derive(Debug, Serialize)]
@@ -82,7 +82,9 @@ async fn setup(State(app): State<Arc<App>>, caller: Caller, Body(body): Input) -
             Ok(()) => {}
             Err(SetupRefused::Throttled { wait_ms }) => return Err(too_many_tries(wait_ms)),
             Err(SetupRefused::WrongCode) => {
-                return Err(ApiError::forbidden("Нужен код настройки — он в журнале шлюза (logs/duowave.log)."))
+                return Err(ApiError::forbidden(crate::tr!(
+                    "Нужен код настройки — он в журнале шлюза (logs/duowave.log)."
+                )))
             }
         }
     }
@@ -96,20 +98,20 @@ async fn setup(State(app): State<Arc<App>>, caller: Caller, Body(body): Input) -
     let password = body.get("password").and_then(Value::as_str).unwrap_or_default();
     match auth.setup(password, name, &caller.source).await? {
         Some(signed_in) => Ok(created(signed_in)),
-        None => Err(ApiError::forbidden("Администратор уже задан — войдите с его паролем.")),
+        None => Err(ApiError::forbidden(crate::tr!("Администратор уже задан — войдите с его паролем."))),
     }
 }
 
 async fn login(State(app): State<Arc<App>>, caller: Caller, Body(body): Input) -> ApiResult<SignedIn> {
     if caller.zone == Zone::Remote && !app.config.gateway.panel_remote {
-        return Err(ApiError::forbidden("Вход вне дома выключен (PANEL_REMOTE)."));
+        return Err(ApiError::forbidden(crate::tr!("Вход вне дома выключен (PANEL_REMOTE).")));
     }
     let name = body.get("name").and_then(Value::as_str);
     let password = body.get("password").and_then(Value::as_str).unwrap_or("");
     match app.access.auth.login(name, password, &caller.source).await? {
         LoginResult::Ok(signed_in) => Ok(ok(*signed_in)),
         LoginResult::Throttled { wait_ms } => Err(too_many_tries(wait_ms)),
-        LoginResult::Wrong => Err(ApiError::unauthorized("Неверное имя или пароль.")),
+        LoginResult::Wrong => Err(ApiError::unauthorized(crate::tr!("Неверное имя или пароль."))),
     }
 }
 
@@ -147,7 +149,7 @@ async fn password(State(app): State<Arc<App>>, caller: Caller, Body(body): Input
 async fn logout_everywhere(State(app): State<Arc<App>>, caller: Caller) -> Result<StatusCode, ApiError> {
     let principal = caller.signed_in()?;
     if principal.kind != PrincipalKind::User {
-        return Err(ApiError::forbidden("Это для людей, не для ключей."));
+        return Err(ApiError::forbidden(crate::tr!("Это для людей, не для ключей.")));
     }
     app.access.users.sign_out_everywhere(&principal.id, caller.actor())?;
     Ok(StatusCode::NO_CONTENT)
@@ -156,21 +158,21 @@ async fn logout_everywhere(State(app): State<Arc<App>>, caller: Caller) -> Resul
 #[derive(Debug, Serialize)]
 struct RoleEntry {
     id: Role,
-    title: &'static str,
-    description: &'static str,
+    title: String,
+    description: String,
     grants: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct Entry {
     id: &'static str,
-    title: &'static str,
+    title: String,
 }
 
 #[derive(Debug, Serialize)]
 struct CapabilityEntry {
     id: &'static str,
-    title: &'static str,
+    title: String,
     permission: String,
 }
 
@@ -189,15 +191,20 @@ async fn catalog(caller: Caller) -> ApiResult<Catalog> {
             .iter()
             .map(|role| {
                 let info = role.info();
-                RoleEntry { id: *role, title: info.title, description: info.description, grants: info.grants }
+                RoleEntry {
+                    id: *role,
+                    title: crate::core::tx(info.title),
+                    description: crate::core::tx(info.description),
+                    grants: info.grants,
+                }
             })
             .collect(),
-        permissions: PERMISSIONS.iter().map(|(id, title)| Entry { id, title }).collect(),
+        permissions: PERMISSIONS.iter().map(|(id, title)| Entry { id, title: crate::core::tx(title) }).collect(),
         capabilities: CAPABILITY_NAMES
             .iter()
             .map(|name| CapabilityEntry {
                 id: name.as_str(),
-                title: name.info().title,
+                title: crate::core::tx(name.info().title),
                 permission: format!("use:{}", name.as_str()),
             })
             .collect(),

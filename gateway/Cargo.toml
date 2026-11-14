@@ -55,16 +55,22 @@ bytes = "1.12.1"
 chrono = { version = "0.4.45", features = ["serde"] }
 chrono-tz = "0.10.4"
 dotenvy = "0.15.7"
+# A Russian RTF's letters in Windows-1251 (src/bus/providers/files/text.rs); reqwest has it already.
+encoding_rs = "0.8.44"
 flate2 = "1.1.10"
 futures = "0.3.34"
 hex = "0.4.3"
 hmac = "0.13.0"
+# The home folder's pictures shown small (src/bus/providers/files/preview.rs): the common photo formats only.
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 livekit = { version = "0.10.1", default-features = false, features = ["native", "rustls-tls-webpki-roots"], optional = true }
 minisign-verify = "0.3.0"
 # Pinned: later release candidates need a newer Rust.
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-rustls", "tracing", "api-27"], optional = true }
 # Signals to an MCP program's whole process group (pc).
 libc = { version = "0.2.191", optional = true }
+# A PDF's text for the home folder's «прочитай» (src/bus/providers/files/text.rs): no clock, no threads of its own.
+lopdf = { version = "0.47.0", default-features = false }
 if-addrs = { version = "0.15.0", optional = true }
 prost = "0.14.4"
 prost-reflect = "0.16.5"
@@ -103,12 +109,16 @@ tower-http = { version = "0.7.1", features = ["fs"] }
 transcribe-cpp = { version = "=0.4.1", default-features = false, optional = true }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+# The household's folders (src/bus/providers/files): a name a Mac stored in NFD is found as it was said, in NFC.
+unicode-normalization = "0.1.25"
 # Opus: libopus 1.3.1 in Rust (c2rust), nothing to compile in C — the station's build needs no cmake, no C toolchain.
 unsafe-libopus = "0.2.0"
 url = "2.5.8"
 uuid = { version = "1.29.0", features = ["v4", "serde"] }
 webpki-roots = "1.0.11"
 webrtc = { version = "0.21.1", optional = true }
+# A Word document's text (.docx is a zip of XML), inflated by the flate2 the gateway has already.
+zip = { version = "9.4.1", default-features = false, features = ["deflate-flate2"] }
 wasmi = { version = "2.0.0", default-features = false, features = ["stable", "std", "validate", "auto-dispatch"], optional = true }
 
 midir = { version = "0.11.1", optional = true }

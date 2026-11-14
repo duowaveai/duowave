@@ -114,6 +114,16 @@ impl VoiceService {
         self.home.get().and_then(|home| home.speech()).or_else(|| self.own_speech.clone())
     }
 
+    /// The engine a computer speaks with (the talk without a station, src/talk): our voice as chosen — `mixed` is ours
+    /// too. Alice's voice comes through the station's session with Yandex and cannot speak there, so with hers chosen,
+    /// or none, there is no engine: the caller says so in words.
+    pub fn for_computer(&self) -> Option<Arc<OwnSpeech>> {
+        match self.chosen_provider() {
+            TtsProvider::Own | TtsProvider::Mixed => self.speaker(),
+            TtsProvider::Yandex | TtsProvider::None => None,
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Chosen> {
         self.chosen.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }

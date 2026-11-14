@@ -120,6 +120,13 @@ pub fn media_item_with(
             format!("{}/{}", base()?, encoded(path)?)
         }
         (None, None, None, Some(path)) if rights.streams => format!("{}/apps/{plugin}/{}", base()?, encoded(path)?),
+        // A file of the home folder: the link `host.files.play` made for it, one file for a while.
+        (None, None, None, None) => match text("file") {
+            Some(token) if token.len() == 48 && token.chars().all(|c| c.is_ascii_hexdigit()) => {
+                format!("{}/folder/{token}", base()?)
+            }
+            _ => return None,
+        },
         _ => return None,
     };
     let format = match text("format").map(str::to_ascii_uppercase) {

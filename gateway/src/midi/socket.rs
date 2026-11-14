@@ -14,7 +14,6 @@
 //! The socket lives 15 minutes, as the panel's: a key taken back stops working as soon. Ten seconds before its end the
 //! gateway says `renew`; the page opens a new socket and sends `resume` with the old one's token, and the owner moves
 //! over whole — nothing is let go and no note is lost on the joint.
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -215,7 +214,7 @@ async fn run(
 /// What the page asked: done, and an answer when it needs one.
 pub fn answer(service: &Arc<MidiService>, owner: u64, text: &str) -> Option<Value> {
     let Ok(frame) = serde_json::from_str::<Value>(text) else {
-        return Some(json!({ "t": "why", "text": "не JSON" }));
+        return Some(json!({ "t": "why", "text": crate::tr!("не JSON") }));
     };
     let field = |key: &str| frame.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
     let failed = |why: String| Some(json!({ "t": "why", "text": why, "of": frame.get("t") }));
@@ -249,10 +248,10 @@ pub fn answer(service: &Arc<MidiService>, owner: u64, text: &str) -> Option<Valu
         }
         "resume" => match service.resume(owner, &field("token")) {
             true => Some(json!({ "t": "resumed" })),
-            false => failed("прежний канал уже закрыт".into()),
+            false => failed(crate::tr!("Прежний канал уже закрыт.")),
         },
         "ping" => Some(json!({ "t": "pong", "at": frame.get("at"), "now": service.now_ms() })),
-        other => failed(format!("кадр «{other}» не знаю")),
+        other => failed(crate::tr!("Кадр «{other}» не знаю.", other = other)),
     }
 }
 

@@ -4,7 +4,6 @@
 //! folder, regular files and folders only, within the limits below; its manifest must read as a package and name the
 //! id and version expected; then the folder is renamed into `PACKAGES_DIR/<id>/<version>/`. Whatever fails on the
 //! way, nothing of it is left behind: the registry never sees half a package. Removing is the folder of every version.
-
 use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
@@ -45,14 +44,14 @@ pub struct Installed {
 /// The archive is what the catalog said: its size, then its hash.
 pub fn check_archive(bytes: &[u8], sha256: &str, size: u64) -> Result<(), String> {
     if bytes.len() as u64 > MAX_ARCHIVE {
-        return Err(format!("архив больше {} МБ", MAX_ARCHIVE / 1024 / 1024));
+        return Err(crate::tr!("архив больше {max} МБ", max = MAX_ARCHIVE / 1024 / 1024));
     }
     if bytes.len() as u64 != size {
-        return Err(format!("размер архива {} байт, а в каталоге — {size}", bytes.len()));
+        return Err(crate::tr!("размер архива {got} байт, а в каталоге — {size}", got = bytes.len(), size = size));
     }
     let actual = hex::encode(Sha256::digest(bytes));
     if !actual.eq_ignore_ascii_case(sha256) {
-        return Err("хеш архива не совпал с каталогом: архив подменён или испорчен".into());
+        return Err(crate::tr!("хеш архива не совпал с каталогом: архив подменён или испорчен"));
     }
     Ok(())
 }
@@ -66,7 +65,7 @@ fn inside(path: &Path) -> Result<Option<PathBuf>, String> {
             Component::Normal(part) => clean.push(part),
             Component::CurDir => {}
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(format!("путь «{}» ведёт из папки приложения", path.display()));
+                return Err(crate::tr!("путь «{path}» ведёт из папки приложения", path = path.display()));
             }
         }
     }
@@ -75,7 +74,7 @@ fn inside(path: &Path) -> Result<Option<PathBuf>, String> {
 
 /// Unpacks a tar.gz into `into` (made here): regular files and folders only, inside it, within the limits.
 pub fn unpack(bytes: &[u8], into: &Path) -> Result<(), String> {
-    let broken = |error: std::io::Error| format!("архив не читается: {error}");
+    let broken = |error: std::io::Error| crate::tr!("архив не читается: {error}", error = error);
     std::fs::create_dir_all(into).map_err(|error| format!("{}: {error}", into.display()))?;
     let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(bytes));
     let (mut files, mut entries, mut total) = (0usize, 0usize, 0u64);
@@ -88,7 +87,7 @@ pub fn unpack(bytes: &[u8], into: &Path) -> Result<(), String> {
         }
         entries += 1;
         if entries > MAX_FILES * 2 {
-            return Err(format!("в архиве больше {MAX_FILES} файлов"));
+            return Err(crate::tr!("в архиве больше {max} файлов", max = MAX_FILES));
         }
         let path = entry.path().map_err(broken)?.into_owned();
         let Some(relative) = inside(&path)? else { continue };
@@ -100,11 +99,11 @@ pub fn unpack(bytes: &[u8], into: &Path) -> Result<(), String> {
             tar::EntryType::Regular | tar::EntryType::Continuous => {
                 files += 1;
                 if files > MAX_FILES {
-                    return Err(format!("в архиве больше {MAX_FILES} файлов"));
+                    return Err(crate::tr!("в архиве больше {max} файлов", max = MAX_FILES));
                 }
                 let extension = relative.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
                 if REFUSED.contains(&extension.as_str()) {
-                    return Err(format!("«{}»: SVG в приложении нельзя", relative.display()));
+                    return Err(crate::tr!("«{path}»: SVG в приложении нельзя", path = relative.display()));
                 }
                 if let Some(parent) = target.parent() {
                     std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -119,16 +118,23 @@ pub fn unpack(bytes: &[u8], into: &Path) -> Result<(), String> {
                 let written = std::io::copy(&mut (&mut entry).take(room + 1), &mut file).map_err(broken)?;
                 total += written;
                 if total > MAX_UNPACKED {
-                    return Err(format!("распакованное приложение больше {} МБ", MAX_UNPACKED / 1024 / 1024));
+                    return Err(crate::tr!(
+                        "распакованное приложение больше {max} МБ",
+                        max = MAX_UNPACKED / 1024 / 1024
+                    ));
                 }
             }
             other => {
-                return Err(format!("«{}»: в приложении только файлы и папки, а это {other:?}", relative.display()));
+                return Err(crate::tr!(
+                    "«{path}»: в приложении только файлы и папки, а это {other}",
+                    path = relative.display(),
+                    other = format!("{other:?}")
+                ));
             }
         }
     }
     if !into.join("manifest.json").is_file() {
-        return Err("в корне архива нет manifest.json".into());
+        return Err(crate::tr!("в корне архива нет manifest.json"));
     }
     Ok(())
 }
@@ -145,7 +151,7 @@ fn remove_dir(dir: &Path) -> std::io::Result<()> {
 /// version already there is replaced only once the new one has read whole.
 pub fn install_archive(root: &Path, bytes: &[u8], expected: Expected<'_>) -> Result<Installed, String> {
     if !valid_id(expected.id) || semver::Version::parse(expected.version).is_err() {
-        return Err(format!("не то приложение: {} {}", expected.id, expected.version));
+        return Err(crate::tr!("не то приложение: {id} {version}", id = expected.id, version = expected.version));
     }
     check_archive(bytes, expected.sha256, expected.size)?;
     std::fs::create_dir_all(root).map_err(|error| format!("{}: {error}", root.display()))?;
@@ -156,7 +162,7 @@ pub fn install_archive(root: &Path, bytes: &[u8], expected: Expected<'_>) -> Res
         let package = match registry::read_package(&partial, expected.id, expected.version) {
             Candidate::Ready(package) => package,
             Candidate::Broken { problems, .. } => {
-                return Err(format!("приложение не читается: {}", problems.join("; ")))
+                return Err(crate::tr!("приложение не читается: {problems}", problems = problems.join("; ")))
             }
         };
         let target = root.join(expected.id).join(expected.version);
@@ -227,25 +233,28 @@ pub fn keep_versions(root: &Path, id: &str, keep: usize) -> std::io::Result<()> 
 /// A package's folder, every version of it.
 pub fn remove_package(root: &Path, id: &str) -> std::io::Result<()> {
     if !valid_id(id) {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("не приложение: {id}")));
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, crate::tr!("не приложение: {id}", id = id)));
     }
     remove_dir(&root.join(id))
 }
 
 /// A file at `url`, whole, at most `max` bytes.
 pub async fn download(url: &str, max: u64, timeout: Duration) -> Result<Vec<u8>, String> {
-    let client =
-        crate::utils::http::client_builder().timeout(timeout).build().map_err(|error| format!("загрузка: {error}"))?;
-    let mut response = client.get(url).send().await.map_err(|error| format!("загрузка: {error}"))?;
+    let client = crate::utils::http::client_builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|error| crate::tr!("загрузка: {error}", error = error))?;
+    let mut response = client.get(url).send().await.map_err(|error| crate::tr!("загрузка: {error}", error = error))?;
     if !response.status().is_success() {
-        return Err(format!("загрузка: HTTP {}", response.status()));
+        return Err(crate::tr!("загрузка: HTTP {status}", status = response.status()));
     }
-    let too_big = || format!("загрузка: файл больше {} КБ", max / 1024);
+    let too_big = || crate::tr!("загрузка: файл больше {max} КБ", max = max / 1024);
     if response.content_length().is_some_and(|length| length > max) {
         return Err(too_big());
     }
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|error| format!("загрузка: {error}"))? {
+    while let Some(chunk) = response.chunk().await.map_err(|error| crate::tr!("загрузка: {error}", error = error))?
+    {
         bytes.extend_from_slice(&chunk);
         if bytes.len() as u64 > max {
             return Err(too_big());

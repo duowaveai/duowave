@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use crate::core::build::{ModeGate, Profile};
 use crate::requests::ModeSource;
-use crate::settings::definitions::PanelMode;
+use crate::settings::definitions::{PanelMode, TalkInput};
 
 /// What anyone may know: the gateway is up. Docker's and launchd's checks need nothing more.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -93,6 +93,10 @@ pub struct HealthStatus {
     pub brain: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tts: Option<String>,
+    /// «Как говорить с DuoWave» (src/talk/input.rs): `station`, or `computer` — the panel then hides Alice, Yandex
+    /// and the station.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice_input: Option<TalkInput>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub station: Option<StationHealth>,
     /// Gateway mode only: who serves each capability, what is ours, and the counters since the start.
@@ -123,6 +127,10 @@ pub trait HealthSources: Send + Sync {
     }
     /// Whose voice speaks, after the mode (src/speech: VoiceService::describe).
     fn tts(&self, _yandex_allowed: bool) -> Option<String> {
+        None
+    }
+    /// How the household talks to DuoWave (src/talk/input.rs).
+    fn voice_input(&self) -> Option<TalkInput> {
         None
     }
     /// Whether a station is connected, and when one was last seen (src/operations: StationWatch::status).
@@ -192,6 +200,7 @@ impl HealthStatusService {
             dialog: first(&sources, |s| s.dialog()),
             brain: first(&sources, |s| s.brain()),
             tts: first(&sources, |s| s.tts(panel_mode != PanelMode::Own)),
+            voice_input: first(&sources, |s| s.voice_input()),
             station: first(&sources, |s| s.station()),
             skills: if mode == "gateway" { first(&sources, |s| s.skills()) } else { None },
             placement: placement.map(|source| source.health()),

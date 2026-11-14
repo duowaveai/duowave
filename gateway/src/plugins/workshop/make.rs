@@ -3,7 +3,6 @@
 //! face is made from its template, its card says who asked and what, and the workshop's agent works on it in the
 //! background: the panel and the station are free meanwhile, the card says when it is ready. Words for a draft that is
 //! there already («переделай: крупнее») are new work on it.
-
 use std::sync::{Arc, LazyLock};
 
 use axum::http::StatusCode;
@@ -80,15 +79,31 @@ pub fn about_midi(words: &str) -> bool {
     MIDI_WORDS.is_match(&words_of(words))
 }
 
-/// The template a request starts from: the teacher for a MIDI keyboard when the words are about one, the face's own
-/// otherwise.
+/// Words about the home folder's photos (docs/plans/shared-folders.md, «Заготовка «Фотоальбом»»): «фото дня из папки
+/// Фото», «фотоальбом», «мои фотографии».
+static PHOTO_WORDS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new("(?:фото|фотк|фотограф|снимк|альбом|из папки|в папке)").expect("a valid pattern"));
+
+/// Whether the words ask for something of the home folder's photos.
+pub fn about_photos(words: &str) -> bool {
+    PHOTO_WORDS.is_match(&words_of(words))
+}
+
+/// The template a request starts from: the teacher for a MIDI keyboard when the words are about one, the photo album
+/// when they are about the home folder's photos, the face's own otherwise.
 pub fn template_of(request: &Request, words: &str) -> &'static str {
     if request.face == Face::Widget && about_midi(words) {
         "midi"
+    } else if request.face == Face::Widget && about_photos(words) {
+        "folders"
     } else {
         request.face.template()
     }
 }
+
+/// Said when the station's own gateway is asked for an album of the home folder: the folder is a computer's.
+pub const FOLDERS_ELSEWHERE: &str =
+    "Фотоальбому нужен компьютер с DuoWave: домашняя папка с фото — на нём. Попросите в пульте на компьютере.";
 
 /// Said when a gateway that hears no keyboard is asked for a teacher (the station's own, a build without MIDI).
 pub const MIDI_ELSEWHERE: &str =
@@ -158,6 +173,15 @@ impl Workshop {
         self.midi.store(here, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Whether the home folder is here: a computer's gateway, not the station's own.
+    pub fn set_folders(&self, here: bool) {
+        self.folders.store(here, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn folders_here(&self) -> bool {
+        self.folders.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// The model the agent answers with: «Мозг», once the gateway gives it.
     pub fn set_dialog(&self, dialog: Arc<crate::dialog::DialogService>) {
         let _ = self.dialog.set(dialog);
@@ -182,12 +206,9 @@ impl Workshop {
         who: Option<String>,
     ) -> Result<Made, ApiError> {
         let words: String = words.trim().chars().take(4000).collect();
-        let dialog = self
-            .dialog
-            .get()
-            .cloned()
-            .filter(|dialog| dialog.enabled())
-            .ok_or_else(|| ApiError::conflict("Модель не выбрана: добавьте провайдера в «Персонаж» → «Мозг»."))?;
+        let dialog = self.dialog.get().cloned().filter(|dialog| dialog.enabled()).ok_or_else(|| {
+            ApiError::conflict(crate::tr!("Модель не выбрана: добавьте провайдера в «Персонаж» → «Мозг»."))
+        })?;
         if words.is_empty() {
             return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "Скажите, что сделать."));
         }
@@ -216,6 +237,8 @@ impl Workshop {
                 let id = self.free_id(prefix(by, request.face));
                 let title = if template == "midi" {
                     "Учитель на MIDI-клавиатуре".to_string()
+                } else if template == "folders" && !self.folders_here() {
+                    return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, FOLDERS_ELSEWHERE));
                 } else {
                     title_of(request.face, &request.ask)
                 };
@@ -282,6 +305,11 @@ mod tests {
         assert_eq!(template_of(&station, "сделай виджет громкости миди"), "widget", "«Миди» alone is a station");
         let game = request_of("сделай игру на пианино").unwrap();
         assert_eq!(template_of(&game, "сделай игру на пианино"), "quiz", "a game keeps its own face");
+        // The home folder's photos (docs/plans/shared-folders.md): from the album's template.
+        let album = request_of("Сделай виджет: фото дня из папки Фото").unwrap();
+        assert_eq!(template_of(&album, "Сделай виджет: фото дня из папки Фото"), "folders");
+        let plain = request_of("сделай виджет: мои дела на сегодня").unwrap();
+        assert_eq!(template_of(&plain, "сделай виджет: мои дела на сегодня"), "widget");
         for not in ["сделай погромче", "сделай виджеты", "давай сделаем уроки", "добавь молоко в список"]
         {
             assert!(request_of(not).is_none(), "{not}");

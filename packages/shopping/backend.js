@@ -128,13 +128,27 @@ export function panelClear() {
   return { items: [] };
 }
 
+const T = {
+  ru: {
+    add: "Добавить",
+    empty: "Пусто. Скажите: «добавь молоко в список покупок».",
+    full: "Список полон: {max} покупок. Вычеркните купленное.",
+  },
+  en: {
+    add: "Add",
+    empty: "Empty. Say «добавь молоко в список покупок» (add milk to the shopping list).",
+    full: "The list is full: {max} items. Cross off what you've bought.",
+  },
+};
+
 // Карточка на столе пульта (docs/plugins/cards.md): строка — вычеркнуть, поле — добавить. Рисует пульт.
 function card(note) {
   const list = items();
   return {
     rows: list.map((entry) => ({ text: entry.text, mark: "on", tap: "removeCard", with: { id: entry.id } })),
-    input: { placeholder: "Добавить", submit: "addCard" },
-    cap: note ?? (list.length === 0 ? "Пусто. Скажите: «добавь молоко в список покупок»." : undefined),
+    input: { placeholder: host.i18n.t(T, "add"), submit: "addCard" },
+    cap: note ?? (list.length === 0 ? host.i18n.t(T, "empty") : undefined),
+    look: { scene: "bubbles", colors: ["#0b7a72", "#18b07a", "#7ad77f"] },
     say: list.length === 0 ? "Список покупок пуст." : `В списке покупок: ${list.map((entry) => entry.text).join(", ")}.`,
   };
 }
@@ -145,7 +159,7 @@ export function listCard() {
 
 export function addCard({ text }) {
   const { full } = add(split(text));
-  return card(full ? FULL : undefined);
+  return card(full ? host.i18n.t(T, "full", { max: MAX_ITEMS }) : undefined);
 }
 
 export function removeCard({ id }) {

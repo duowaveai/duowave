@@ -1,6 +1,5 @@
 //! The ladder: one step for each pair of participants (docs/plans/bus.md). Each step holds the ones below it:
 //! whoever may call an app also hears its news and sees it; whoever has nothing does not know it exists.
-
 use serde::{Deserialize, Serialize};
 
 use super::address::FILES;
@@ -46,27 +45,27 @@ impl Level {
     }
 
     /// What reaching this step is, in people's words for a question: «звать», «читать».
-    pub fn verb(self, kind: &str) -> &'static str {
+    pub fn verb(self, kind: &str) -> String {
         match (self, kind == FILES) {
-            (Level::None, _) => "ничего",
-            (Level::See, _) => "видеть",
-            (Level::Listen, _) => "слышать",
-            (Level::Call, false) => "звать",
-            (Level::Call, true) => "читать файлы в папке",
-            (Level::Edit, false) => "править",
-            (Level::Edit, true) => "менять файлы в папке",
+            (Level::None, _) => crate::tr!("ничего"),
+            (Level::See, _) => crate::tr!("видеть"),
+            (Level::Listen, _) => crate::tr!("слышать"),
+            (Level::Call, false) => crate::tr!("звать"),
+            (Level::Call, true) => crate::tr!("читать файлы в папке"),
+            (Level::Edit, false) => crate::tr!("править"),
+            (Level::Edit, true) => crate::tr!("менять файлы в папке"),
         }
     }
 
     /// The step in people's words, as it reads for a participant of this kind.
-    pub fn word(self, kind: &str) -> &'static str {
+    pub fn word(self, kind: &str) -> String {
         match (self, kind == FILES) {
-            (Level::None, _) => "не знает",
-            (Level::See, _) => "видит",
-            (Level::Listen, _) => "слышит",
-            (Level::Call, false) => "зовёт",
-            (Level::Call, true) => "читает",
-            (Level::Edit, _) => "правит",
+            (Level::None, _) => crate::tr!("не знает"),
+            (Level::See, _) => crate::tr!("видит"),
+            (Level::Listen, _) => crate::tr!("слышит"),
+            (Level::Call, false) => crate::tr!("зовёт"),
+            (Level::Call, true) => crate::tr!("читает"),
+            (Level::Edit, _) => crate::tr!("правит"),
         }
     }
 }

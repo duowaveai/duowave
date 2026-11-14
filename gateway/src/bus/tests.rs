@@ -282,3 +282,56 @@ async fn two_apps_answering_each_other_stop_at_the_days_budget() {
     let person = Trail::principal(&user_principal("u1", "Мама", Role::Admin, None));
     bus.call(person, a(), b(), "list", json!({}), vec![]).await.unwrap();
 }
+
+#[tokio::test]
+async fn a_folder_is_closed_to_roles_not_ticked_to_a_model_in_the_cloud_and_outside_the_home() {
+    let (bus, _) = bus();
+    let dir = tempfile::tempdir().unwrap();
+    let places = providers::files::Places::new(&dir.path().join("data"), &dir.path().join("content"), false);
+    places.prepare();
+    let files = Arc::new(providers::files::Files::new(places.clone(), Arc::new(|_| 64)));
+    let folders = providers::files::rules::Folders::new(Arc::new(crate::storage::Db::memory()), places, None);
+    files.set_folders(folders.clone());
+    // Yandex's voice says our answers; the model is in the cloud.
+    files.set_leaving(Arc::new(|| false), Arc::new(|| true));
+    files.set_bus(Arc::downgrade(&bus));
+    bus.register(files);
+    let docs = Pattern::parse("files/home/Документы/*").unwrap();
+    bus.links.grant(Link::new(Pattern::exact(&a()), docs, Level::Edit, LinkSource::Owner), None).unwrap();
+    let doc = Address::parse("files/home/Документы/a.txt").unwrap();
+    bus.call(Trail::app("a"), a(), doc.clone(), "write", json!({"text": "x"}), vec![]).await.unwrap();
+    let guest = || Trail::principal(&household_principal(Role::Guest, None));
+    let member = || Trail::principal(&user_principal("u1", "Мама", Role::Member, None));
+    // A guest's chain: the folder is not there for it at all.
+    let unseen = bus.call(guest().entering("a").unwrap(), a(), doc.clone(), "read", json!({}), vec![]).await;
+    assert!(matches!(unseen, Err(BusError::NotFound(_))), "{unseen:?}");
+    // Through a model in the cloud: nothing — neither the file nor the list of names.
+    let folder = Address::parse("files/home/Документы").unwrap();
+    for (to, handle) in [(doc.clone(), "read"), (folder.clone(), "list")] {
+        let cloud =
+            bus.call(member().through_model(true).entering("a").unwrap(), a(), to, handle, json!({}), vec![]).await;
+        assert!(matches!(cloud, Err(BusError::Denied(ref why)) if why.contains("Модель может читать")), "{cloud:?}");
+    }
+    // Our own model reads at home.
+    bus.call(member().through_model(false).entering("a").unwrap(), a(), doc.clone(), "read", json!({}), vec![])
+        .await
+        .unwrap();
+    // From outside the home: not there.
+    let afar =
+        bus.call(member().from_afar(true).entering("a").unwrap(), a(), doc.clone(), "read", json!({}), vec![]).await;
+    assert!(matches!(afar, Err(BusError::NotFound(_))), "{afar:?}");
+    // The household's ticks open each.
+    let change = providers::files::rules::Change {
+        roles: Some(vec!["member".into(), "guest".into()]),
+        model: Some(true),
+        remote: Some(true),
+        ..Default::default()
+    };
+    folders.change(&folder, &change).unwrap();
+    for trail in [guest(), member().through_model(true), member().from_afar(true)] {
+        bus.call(trail.entering("a").unwrap(), a(), doc.clone(), "read", json!({}), vec![]).await.unwrap();
+    }
+    // Yandex's voice names the files only with its own tick.
+    let stat = bus.call(member().entering("a").unwrap(), a(), folder, "stat", json!({}), vec![]).await.unwrap();
+    assert_eq!((&stat["speak"], &stat["model"]), (&json!(false), &json!(true)));
+}

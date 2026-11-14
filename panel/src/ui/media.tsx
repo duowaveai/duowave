@@ -5,6 +5,7 @@ import { useEffect, useId, useState } from 'preact/hooks';
 
 import { api } from '../api';
 import { useAudio } from '../audio';
+import { tr } from '../i18n';
 
 const cache = new Map<string, Promise<string | null>>();
 
@@ -107,7 +108,7 @@ export function PlayButton({ id, url, label, className = 'char-play' }: { id: st
             type="button"
             class={className}
             aria-pressed={playing}
-            aria-label={playing ? 'Остановить' : `Послушать: ${label}`}
+            aria-label={playing ? tr.ui.stop : tr.ui.listen(label)}
             onClick={(event) => {
                 event.stopPropagation();
                 void audio.toggle(key, () => api.media(url));

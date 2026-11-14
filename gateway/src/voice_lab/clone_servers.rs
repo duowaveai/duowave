@@ -16,7 +16,7 @@ use serde_json::Value;
 
 use super::clone_engines::{Device, EngineId};
 use super::engine_installer::python_of;
-use super::jobs::{with_limits, LIMITER_REFUSED_WITHIN, PANICKED};
+use super::jobs::{panicked, with_limits, LIMITER_REFUSED_WITHIN};
 use super::js;
 use super::platform::PlatformInfo;
 use crate::utils::files::owner_only;
@@ -255,7 +255,7 @@ impl CloneServers {
             return Ok(());
         }
         if !self.local(engine) {
-            return Err(format!("Сервер голоса {} не отвечает.", self.url(engine)));
+            return Err(crate::tr!("Сервер голоса {url} не отвечает.", url = self.url(engine)));
         }
         let starting = {
             let mut starting = locked(&self.starting);
@@ -270,7 +270,7 @@ impl CloneServers {
                             .catch_unwind()
                             .await
                             .unwrap_or_else(|_| {
-                                let why = format!("сервер голоса не запустился: {PANICKED}");
+                                let why = crate::tr!("сервер голоса не запустился: {why}", why = panicked());
                                 locked(&servers.errors).insert(engine, why.clone());
                                 Err(why)
                             });
@@ -311,12 +311,12 @@ impl CloneServers {
     }
 
     async fn start(&self, engine: EngineId, start: StartOptions) -> Result<(), String> {
-        let platform = (self.options.platform)().ok_or_else(|| "Система ещё не проверена.".to_string())?;
+        let platform = (self.options.platform)().ok_or_else(|| crate::tr!("Система ещё не проверена.").to_string())?;
         locked(&self.errors).remove(&engine);
         let runtime = self.options.runtime_dir.join(engine.as_str());
         let python = python_of(&runtime, platform.os);
         if !python.exists() {
-            return Err("Модель не установлена.".into());
+            return Err(crate::tr!("Модель не установлена."));
         }
         let port = url::Url::parse(&self.url(engine)).ok().and_then(|url| url.port()).unwrap_or(80);
         let instance = uuid();
@@ -406,12 +406,12 @@ impl CloneServers {
         let tail = read_tail(&log_path);
         let why = if exited.load(Ordering::SeqCst) {
             if tail.is_empty() {
-                "сервер голоса не запустился".to_string()
+                crate::tr!("сервер голоса не запустился")
             } else {
-                format!("сервер голоса не запустился: {tail}")
+                crate::tr!("сервер голоса не запустился: {why}", why = tail)
             }
         } else {
-            "сервер голоса не ответил за две минуты — модель грузится слишком долго".to_string()
+            crate::tr!("сервер голоса не ответил за две минуты — модель грузится слишком долго").to_string()
         };
         locked(&self.errors).insert(engine, why.clone());
         Err(why)
@@ -740,7 +740,7 @@ mod tests {
         let clone = fixture.make_with(spawner.clone(), env);
         let start = StartOptions { device: Device::Mps, limit_mb: 6000, threads: 4 };
         let failed = clone.ensure(EngineId::Omnivoice, start).await.unwrap_err();
-        assert_eq!(failed, format!("сервер голоса не запустился: {PANICKED}"));
+        assert_eq!(failed, crate::tr!("сервер голоса не запустился: {why}", why = panicked()));
         let state = clone.state(EngineId::Omnivoice).await;
         assert_eq!((state.up, state.starting, state.error), (false, false, Some(failed)));
         assert!(spawner.calls().is_empty());

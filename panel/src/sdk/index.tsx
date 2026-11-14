@@ -10,6 +10,7 @@ import * as hooks from 'preact/hooks';
 
 import { DraftTrying as DraftTryingValue, PackagesView, PanelMode, RequestView, StationPresence, api, fetchPluginFile, stationCall } from '../api';
 import { IconCoins, IconGlobe, IconHeart, IconList, IconMusic, IconPackage, IconSparkle, IconSpeaker, IconTimer, IconWeather } from '../icons';
+import { tr } from '../i18n';
 import { enabledHere, packageSettings } from '../plugins/loader';
 import { PluginScope, usePluginVersion } from '../plugins/versions';
 import { PanelContext, usePanel } from '../shell/context';
@@ -34,7 +35,7 @@ export const DraftTrying = preact.createContext<DraftTryingValue>({});
 
 async function callDraft<T>(id: string, fn: string, input: unknown, trying: DraftTryingValue): Promise<T> {
     const report = await api.runDraft(id, fn, input, trying);
-    if (!report.ok) throw new Error(report.error ?? `${fn} не отработала`);
+    if (!report.ok) throw new Error(report.error ?? tr.sdk.fnFailed(fn));
     return report.result as T;
 }
 
@@ -91,7 +92,7 @@ async function callPlugin<T>(id: string, fn: string, input: unknown, station: st
             const path = `/api/v1/packages/${encodeURIComponent(id)}/call/${encodeURIComponent(fn)}`;
             return (await stationCall<{ result: T }>(station, 'POST', path, input)).result;
         }
-        if (there && !enabledHere(id)) throw new Error(`Приложение «${there.title || id}» выключено на колонке.`);
+        if (there && !enabledHere(id)) throw new Error(tr.sdk.appOffOnStation(there.title || id));
     }
     return api.callPackage<T>(id, fn, input);
 }
@@ -226,3 +227,6 @@ export function Note({ tone = 'meta', children }: { tone?: 'meta' | 'warning' | 
 export function Pill({ tone = 'off', children }: { tone?: 'own' | 'yandex' | 'agent' | 'off'; children?: ComponentChildren }) {
     return <span class={`pill pill-${tone}`}>{children}</span>;
 }
+
+// Языки для приложений (docs/plans/i18n.md): язык пульта и тексты приложения по нему — те же, что в окошке.
+export { useLocale, useT, translate as t, pickText as pick } from '../i18n/app';

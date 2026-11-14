@@ -109,11 +109,11 @@ impl ApiKeysService {
     pub fn create(&self, input: &Map<String, Value>, actor: Option<Actor>) -> Result<CreatedKey, ApiError> {
         let name = input.get("name").and_then(Value::as_str).map(str::trim).unwrap_or("").to_string();
         if !(2..=60).contains(&js_len(&name)) {
-            return Err(ApiError::bad_request("Имя ключа — от 2 до 60 символов."));
+            return Err(ApiError::bad_request(crate::tr!("Имя ключа — от 2 до 60 символов.")));
         }
         let grants = grants_of(input.get("grants"));
         if grants.is_empty() {
-            return Err(ApiError::bad_request("Ключу нужны права: хотя бы одно из каталога."));
+            return Err(ApiError::bad_request(crate::tr!("Ключу нужны права: хотя бы одно из каталога.")));
         }
         let days = input.get("expiresInDays").and_then(Value::as_f64).filter(|days| *days > 0.0).map(|d| d.min(3650.0));
         let id: String = uuid().replace('-', "").chars().take(12).collect();
@@ -149,7 +149,7 @@ impl ApiKeysService {
         let name: Option<String> = self.db.with(|c| {
             c.query_row("SELECT name FROM api_keys WHERE id = ?1", params![id], |row| row.get(0)).optional()
         })?;
-        let Some(name) = name else { return Err(ApiError::not_found("Нет такого ключа.")) };
+        let Some(name) = name else { return Err(ApiError::not_found(crate::tr!("Нет такого ключа."))) };
         self.db.with(|c| c.execute("UPDATE api_keys SET revoked_at = ?1 WHERE id = ?2", params![now_iso(), id]))?;
         self.events.emit(GatewayEvent::ApiKeyRevoked { key_id: id.to_string(), name, actor });
         Ok(())

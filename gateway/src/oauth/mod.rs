@@ -226,12 +226,15 @@ pub fn plain_token(text: &str, max: usize) -> bool {
 }
 
 pub fn stale() -> ApiError {
-    ApiError::bad_request("Этот вход устарел или начат не здесь: нажмите «Войти» ещё раз.")
+    ApiError::bad_request(crate::tr!("Этот вход устарел или начат не здесь: нажмите «Войти» ещё раз."))
 }
 
 /// The return of a sign-in the service did not confirm (its own words are never shown).
 fn refused(with: &str) -> ApiError {
-    ApiError::bad_request(format!("Войти не получилось: сервис {with} не подтвердил вход. Нажмите «Войти» ещё раз."))
+    ApiError::bad_request(crate::tr!(
+        "Войти не получилось: сервис {with} не подтвердил вход. Нажмите «Войти» ещё раз.",
+        with = with
+    ))
 }
 
 /// A request to a service's exchange that did not go through: the status and the OAuth error code when it answered.
@@ -433,8 +436,8 @@ impl OAuthService {
         let entry = entries.get_mut(id).filter(|entry| entry.at.elapsed() <= WAIT).ok_or_else(stale)?;
         match entry.status {
             SignInStatus::Waiting => {}
-            SignInStatus::Working => return Err(ApiError::conflict("Вход уже завершается — подождите.")),
-            SignInStatus::Done { .. } => return Err(ApiError::bad_request("Вход уже выполнен.")),
+            SignInStatus::Working => return Err(ApiError::conflict(crate::tr!("Вход уже завершается — подождите."))),
+            SignInStatus::Done { .. } => return Err(ApiError::bad_request(crate::tr!("Вход уже выполнен."))),
             SignInStatus::Failed { .. } => return Err(stale()),
         }
         entry.status = SignInStatus::Working;
@@ -515,7 +518,7 @@ impl OAuthService {
                 })?;
                 TokenRecord::issued(&answer, &issued, &taken.nonce, flow, taken.with)
                     .map(Credential::Tokens)
-                    .map_err(|why| ApiError::bad_request(format!("{why} Нажмите «Войти» ещё раз.")))
+                    .map_err(|why| ApiError::bad_request(crate::tr!("{why} Нажмите «Войти» ещё раз.", why = why)))
             }
         }
     }

@@ -31,8 +31,10 @@ const PLACE = 60;
 const STEPS = 50000;
 
 // Беда с лентой, которую можно сказать человеку; lasting — ссылку надо поправить, кэш тут не поможет.
-function trouble(text, lasting = false) {
+function trouble(text, lasting = false, key = null, params = undefined) {
   const error = new Error(text);
+  error.key = key;
+  error.params = params;
   error.calendar = true;
   error.lasting = lasting;
   return error;
@@ -42,6 +44,11 @@ function message(error) {
   if (error?.calendar) return error.message;
   console.warn(`календарь: ${error?.message ?? error}`);
   return "Не получилось прочитать календарь.";
+}
+
+// The dictionary key (and params) of a trouble, for the card's own wording; "unreadable" for anything else.
+function troubleKey(error) {
+  return error?.calendar && error.key ? { key: error.key, params: error.params } : { key: "unreadable" };
 }
 
 function link() {
@@ -66,21 +73,21 @@ async function download(url, timeoutMs) {
     answer = await host.http.fetch(url, { timeoutMs });
   } catch (error) {
     const text = String(error?.message ?? error);
-    if (/больше \d+ КБ/.test(text)) throw trouble("Лента календаря больше 1 МБ — столько шлюз не берёт.", true);
+    if (/больше \d+ КБ/.test(text)) throw trouble("Лента календаря больше 1 МБ — столько шлюз не берёт.", true, "tooBig");
     if (/не разрешён|не читается|только http|нет хоста|адрес этого компьютера/.test(text)) {
-      throw trouble("По этой ссылке календарь не открыть: подходят ссылки iCal от Google, Яндекса, iCloud и Outlook.", true);
+      throw trouble("По этой ссылке календарь не открыть: подходят ссылки iCal от Google, Яндекса, iCloud и Outlook.", true, "badLink");
     }
-    throw trouble("Календарь сейчас не открывается — попробуйте чуть позже.");
+    throw trouble("Календарь сейчас не открывается — попробуйте чуть позже.", false, "closed");
   }
   if (!answer.ok) {
     if (answer.status >= 400 && answer.status < 500) {
-      throw trouble(`Ссылка на календарь не работает (ответ ${answer.status}) — проверьте её в настройках приложения «Календарь».`, true);
+      throw trouble(`Ссылка на календарь не работает (ответ ${answer.status}) — проверьте её в настройках приложения «Календарь».`, true, "linkDead", { status: answer.status });
     }
-    throw trouble(`Сервер календаря ответил ошибкой ${answer.status} — попробуйте позже.`);
+    throw trouble(`Сервер календаря ответил ошибкой ${answer.status} — попробуйте позже.`, false, "serverError", { status: answer.status });
   }
   const text = await answer.text();
   if (!/^\s*BEGIN:VCALENDAR/i.test(text.slice(0, 200))) {
-    throw trouble("По ссылке не календарь iCal (.ics) — проверьте её в настройках приложения «Календарь».", true);
+    throw trouble("По ссылке не календарь iCal (.ics) — проверьте её в настройках приложения «Календарь».", true, "notIcs");
   }
   return text;
 }
@@ -915,11 +922,17 @@ export async function calendarEvents({ days, timezone }) {
 // Виджет на столе пульта: сегодня и ближайшие дни. Время виджет показывает по поясу браузера, день события на весь
 // день — по date.
 export async function panelEvents() {
+  const { _err, ...data } = await panelData();
+  return data;
+}
+
+// The same, with `_err` (a dictionary key and params) beside the Russian error text: the card words it itself.
+async function panelData() {
   let cache;
   try {
     cache = await source(TIMEOUT);
   } catch (error) {
-    return { configured: true, error: message(error), events: [] };
+    return { configured: true, error: message(error), _err: troubleKey(error), events: [] };
   }
   if (!cache) return { configured: false, events: [] };
   const { zone } = listener(cache, null);
@@ -938,19 +951,58 @@ export async function panelEvents() {
   };
 }
 
+// Вид по времени суток (docs/plugins/cards.md, «Вид»): утро — тёплый рассвет, день — чистое небо, вечер — сияние,
+// ночь — звёзды. Время — шлюза.
+function dayLook() {
+  const hour = new Date().getHours();
+  if (hour >= 5 && hour < 11) return { scene: "sun", colors: ["#e8665c", "#f39a5d", "#f8cd72"] };
+  if (hour >= 11 && hour < 17) return { colors: ["#2563c9", "#3b8fe0", "#6cc0f2"] };
+  if (hour >= 17 && hour < 22) return { scene: "aurora", colors: ["#2a1b54", "#5b2a7a", "#a63d72"] };
+  return { scene: "stars", colors: ["#070b2a", "#1c1a4f"] };
+}
+
+const T = {
+  ru: {
+    notSet: "Добавьте ссылку iCal своего календаря в настройках приложения — Google, Яндекс и iCloud её дают.",
+    empty: "На неделе в календаре пусто.",
+    allDay: "весь день",
+    unreadable: "Не получилось прочитать календарь.",
+    tooBig: "Лента календаря больше 1 МБ — столько шлюз не берёт.",
+    badLink: "По этой ссылке календарь не открыть: подходят ссылки iCal от Google, Яндекса, iCloud и Outlook.",
+    closed: "Календарь сейчас не открывается — попробуйте чуть позже.",
+    linkDead: "Ссылка на календарь не работает (ответ {status}) — проверьте её в настройках приложения «Календарь».",
+    serverError: "Сервер календаря ответил ошибкой {status} — попробуйте позже.",
+    notIcs: "По ссылке не календарь iCal (.ics) — проверьте её в настройках приложения «Календарь».",
+  },
+  en: {
+    notSet: "Add your calendar's iCal link in the app settings: Google, Yandex and iCloud all provide one.",
+    empty: "Nothing on the calendar this week.",
+    allDay: "all day",
+    unreadable: "Couldn't read the calendar.",
+    tooBig: "The calendar feed is over 1 MB, which is more than the gateway takes.",
+    badLink: "This link can't be opened as a calendar: iCal links from Google, Yandex, iCloud and Outlook work.",
+    closed: "The calendar isn't opening right now. Try again a little later.",
+    linkDead: "The calendar link isn't working (response {status}). Check it in the Calendar app settings.",
+    serverError: "The calendar server answered with error {status}. Try again later.",
+    notIcs: "That link isn't an iCal (.ics) calendar. Check it in the Calendar app settings.",
+  },
+};
+
 // Карточка на столе пульта (docs/plugins/cards.md): ближайшие события недели. Время — в строке, пульт пишет его
 // по-людски. Рисует пульт.
 export async function eventsCard() {
-  const data = await panelEvents();
+  const data = await panelData();
+  const look = dayLook();
   if (!data.configured) {
-    return { empty: "Добавьте ссылку iCal своего календаря в настройках приложения — Google, Яндекс и iCloud её дают." };
+    return { empty: host.i18n.t(T, "notSet"), look };
   }
-  if (data.error) return { empty: data.error };
-  if (data.events.length === 0) return { empty: "На неделе в календаре пусто." };
+  if (data.error) return { empty: host.i18n.t(T, data._err?.key ?? "unreadable", data._err?.params), look };
+  if (data.events.length === 0) return { empty: host.i18n.t(T, "empty"), look };
   return {
+    look,
     rows: data.events.slice(0, 8).map((event) => ({
       text: event.place ? `${event.title} · ${event.place}` : event.title,
-      ...(event.allDay ? { value: "весь день", time: `${event.date}T12:00:00` } : { time: new Date(event.start).toISOString() }),
+      ...(event.allDay ? { value: host.i18n.t(T, "allDay"), time: `${event.date}T12:00:00` } : { time: new Date(event.start).toISOString() }),
     })),
     say: `Ближайшее: ${data.events[0].title}.`,
   };

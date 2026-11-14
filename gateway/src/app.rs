@@ -92,6 +92,8 @@ pub struct App {
     pub skills: Arc<SkillsService>,
     /// The plugins (src/plugins): their packages, the admin's choices, the code of those that are on.
     pub plugins: Arc<PluginHost>,
+    /// The apps' long tasks (src/tasks): what an app started and reports on, for the panel to follow and cancel.
+    pub tasks: Arc<crate::tasks::Tasks>,
     /// The plugins' schedules (plugins/schedule.rs): rhythms of their manifests and tasks of their code.
     pub schedules: Arc<crate::plugins::schedule::Scheduler>,
     /// The plugins' pictures (plugins/files.rs).
@@ -101,6 +103,9 @@ pub struct App {
     /// «Связи» (src/bus, docs/plans/bus.md): the bus between everything with an address — apps, the gateway's
     /// services, folders, devices — with its one rule, its questions «да» and its journal.
     pub bus: Arc<crate::bus::Bus>,
+    /// The computer's screen (src/screen): windows of temporary content — a photo, a video, a sound — the DuoWave app
+    /// opens over all the others; `device/screen` on the bus, the brain's `screen_*` tools.
+    pub screen: Arc<crate::screen::Screen>,
     /// The packages' catalog and the installer (src/plugins/catalog.rs): one feed for every kind.
     pub catalog: Arc<PackageCatalog>,
     /// Streams the gateway relays for the station: the fallback for one it keeps silent on (gateway/media/stream.rs).
@@ -175,6 +180,8 @@ impl App {
         self.skills.start();
         // The plugins' idle unloading and the events they follow; their schedules' tick.
         self.plugins.start();
+        // The apps' long tasks: a cancel nobody answered, an app that fell silent, results kept long enough.
+        self.tasks.watch();
         self.schedules.start();
         // The keyboards: the system's news of them first (a Mac), then the list and the keeper of idle ports.
         self.midi.start();
@@ -183,6 +190,12 @@ impl App {
         if self.config.data_dir.is_some() {
             if let Some(files) = self.bus.files() {
                 files.places().prepare();
+                if let Some(folders) = files.folders() {
+                    folders.apply();
+                }
+                if let Some(drives) = files.drives() {
+                    drives.start();
+                }
                 let places = files.places().clone();
                 tokio::spawn(async move {
                     let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
@@ -248,6 +261,8 @@ impl App {
             crate::placement::transfer::apply_incoming(dir, &db, &secrets, station, Some(&pictures));
         }
         let settings = Arc::new(SettingsService::new(db.clone(), events.clone()));
+        // The household's language for the gateway's own words (src/locale/text.rs).
+        crate::locale::text::remember_household(crate::locale::household(&settings));
         // «Связи» (src/bus): made before what registers on it; each kind of participant joins as it stands.
         let bus = crate::bus::Bus::new(crate::bus::BusDeps {
             db: db.clone(),
@@ -305,6 +320,8 @@ impl App {
             voice.clone(),
             availability.clone(),
         ));
+        // The computer's microphone holds «Своё» (src/talk/input.rs), whatever mode was stored.
+        crate::talk::input::hold_at_start(&mode_service, &settings, profile.station);
         let modes: Arc<dyn ModeSource> = mode_service.clone();
         availability.set_modes(modes.clone());
         // The gateway's own switch out of «Свой» and back, as its home server goes and comes.
@@ -592,6 +609,14 @@ impl App {
         };
         let (plugins, plugin_skill) = plugins;
         plugin_services.set_plugins(&plugins);
+        // The apps' long tasks (src/tasks): what ran when the gateway stopped is marked interrupted here. The plugin
+        // host tells them when an app's program is gone and when an app is removed.
+        let tasks = crate::tasks::Tasks::new(db.clone(), events.clone());
+        plugins.set_tasks(tasks.clone());
+        {
+            let dialog = dialog.clone();
+            plugins.set_cloud_model(Arc::new(move || dialog.brain().cloud));
+        }
         // Apps and the gateway's services on the bus; the services reach the bus for the plugins' `host.bus`.
         {
             let apps = Arc::new(crate::bus::providers::apps::Apps::new());
@@ -613,12 +638,15 @@ impl App {
             bus.register(system);
             plugin_services.set_bus(&bus);
             // Folders: DATA_DIR/files and the household's music and tales; an app's own folder within its budget.
+            // The home folder is a person's own folder in the app (HOME_FILES: `~/DuoWave`), the data's elsewhere.
             let places = crate::bus::providers::files::Places::new(
                 &config.data_dir.clone().unwrap_or_else(|| std::path::PathBuf::from("data")),
                 &config.skills.content_dir,
                 placement.role() == crate::placement::service::Role::Station,
-            );
+            )
+            .with_home(config.files.home.clone());
             let host = Arc::downgrade(&plugins);
+            let folders_places = places.clone();
             let files = Arc::new(crate::bus::providers::files::Files::new(
                 places,
                 Arc::new(move |id: &str| {
@@ -629,6 +657,22 @@ impl App {
                 }),
             ));
             files.set_bus(Arc::downgrade(&bus));
+            // The household's word on its folders and what is attached (docs/plans/shared-folders.md); drives are
+            // watched by a computer's gateway with FOLDERS on.
+            let folders =
+                crate::bus::providers::files::rules::Folders::new(db.clone(), folders_places, Some(events.clone()));
+            files.set_folders(folders.clone());
+            // What leaves the house: the station's voice (ours, or Yandex's) and the model's place, as they are now.
+            {
+                let (voice, dialog) = (voice.clone(), dialog.clone());
+                files.set_leaving(
+                    Arc::new(move || voice.whose(true) == crate::speech::voice_service::Whose::Own),
+                    Arc::new(move || dialog.brain().cloud),
+                );
+            }
+            if config.files.attach && placement.role() != crate::placement::service::Role::Station {
+                files.set_drives(crate::bus::providers::files::drives::Drives::new(folders, Some(events.clone())));
+            }
             bus.set_files(files.clone());
             bus.register(files);
         }
@@ -678,10 +722,19 @@ impl App {
             }));
             midi
         };
-        // Devices on the bus: the MIDI keyboard first; a new device is one more `add`.
+        // The computer's screen: its windows show only links the gateway made (Files' `media`).
+        let screen = crate::screen::Screen::new(Some(events.clone()));
+        {
+            let bus = Arc::downgrade(&bus);
+            screen.set_known(Arc::new(move |token| {
+                bus.upgrade().and_then(|bus| bus.files()).is_some_and(|files| files.played(token).is_some())
+            }));
+        }
+        // Devices on the bus: the MIDI keyboard first, the screen; a new device is one more `add`.
         {
             let devices = Arc::new(crate::bus::providers::devices::Devices::new());
             devices.add(Arc::new(crate::bus::providers::devices::MidiKeyboard::new(midi.clone())));
+            devices.add(Arc::new(crate::screen::device::ScreenDevice::new(screen.clone())));
             bus.register(devices);
         }
 
@@ -704,6 +757,7 @@ impl App {
         let workshop = crate::plugins::workshop::Workshop::new(config.plugins.dev_dir.clone(), plugins.clone());
         // A teacher for a MIDI keyboard is made only where a keyboard is heard (docs/plans/midi.md).
         workshop.set_midi(midi.available());
+        workshop.set_folders(placement.role() != crate::placement::service::Role::Station);
         // The agent's steps reach the panel as `workshop.changed` (the plaque «Делаю виджет», the workshop's log).
         workshop.attach_events(events.clone());
         // A trial left running before a restart is still taken back on its time.
@@ -808,6 +862,10 @@ impl App {
         if let Err(error) = connectors.register(Arc::new(crate::memory::tools::MemoryConnector::new(&memory))) {
             tracing::error!("{error}");
         }
+        // The screen's windows for the model: which are open, keep, close, pause (src/screen/tools.rs).
+        if let Err(error) = connectors.register(Arc::new(crate::screen::tools::ScreenConnector::new(&screen))) {
+            tracing::error!("{error}");
+        }
 
         // The station link (session-registry.ts): the station's sessions, answered with the speech, the dialog, the
         // skills, the voice and the MCP servers, or relayed to Yandex, as the mode says. The offline watch counts
@@ -843,6 +901,31 @@ impl App {
         // The plugins' turn timer says «время вышло» on the device's live station; their schedules speak there too.
         plugin_skill.set_turns(station_sessions.turns());
         voice_workshop.set_turns(station_sessions.turns());
+        // A drive plugged in: the station asks about it when it is free, by the app «Папки» (its function
+        // `driveFound`); the tile on the desk asks in any case (docs/plans/shared-folders.md, the owner's decision 3).
+        if let Some(drives) = bus.files().and_then(|files| files.drives()) {
+            let turns = station_sessions.turns();
+            let host = Arc::downgrade(&plugins);
+            let watched = Arc::downgrade(&drives);
+            drives.set_on_offer(Arc::new(move |offer: &crate::bus::providers::files::drives::Offer| {
+                let (turns, host, watched, offer) = (turns.clone(), host.clone(), watched.clone(), offer.clone());
+                tokio::spawn(async move {
+                    let app = crate::bus::providers::files::FOLDERS_APP;
+                    if !host.upgrade().is_some_and(|host| host.is_active(app)) || turns.busy("*") {
+                        return;
+                    }
+                    use crate::skills::capabilities::{CapabilityName, Intent};
+                    let mut intent = Intent::new(CapabilityName::Plugins, "drive");
+                    intent.params.insert("plugin".into(), serde_json::json!(app));
+                    intent.params.insert("handler".into(), serde_json::json!("driveFound"));
+                    intent.params.insert("slots".into(), serde_json::json!({ "name": offer.name, "offer": offer.id }));
+                    let id = offer.id.clone();
+                    let still = Arc::new(move || watched.upgrade().is_some_and(|drives| drives.offer(&id).is_some()))
+                        as Arc<dyn Fn() -> bool + Send + Sync>;
+                    turns.ask("*", intent, format!("флешка · {}", offer.name), still).await;
+                });
+            }));
+        }
         schedules.set_station(station_sessions.schedule_station());
         // The nights keep to the station's clock.
         let clock = station_sessions.schedule_station();
@@ -920,6 +1003,7 @@ impl App {
         // /health reads the speech, the dialog, the voice and the skills (health-status.service.ts); the station
         // link adds its own source for the sessions and the station.
         health.add_sources(Arc::new(links::health::ModuleHealth {
+            settings: settings.clone(),
             speech: speech.clone(),
             dialog: dialog.clone(),
             voice: voice.clone(),
@@ -966,10 +1050,12 @@ impl App {
             workshop,
             history,
             plugins,
+            tasks,
             schedules,
             files,
             midi,
             bus,
+            screen,
             catalog,
             streams,
             characters,
@@ -1005,6 +1091,8 @@ impl App {
     pub async fn shutdown(&self) {
         self.mcp.shutdown().await;
         self.skills.shutdown();
+        // Before the apps stop: what they ran was cut short by the gateway, not by them.
+        self.tasks.shutdown();
         self.plugins.shutdown();
         self.schedules.stop();
         self.sleep.stop();
@@ -1060,12 +1148,17 @@ pub fn router(app: Arc<App>) -> Router {
         .merge(crate::oauth::routes())
         .merge(crate::plugins::routes())
         .merge(crate::bus::routes::routes())
+        .merge(crate::bus::providers::files::routes::routes())
+        .merge(crate::screen::routes::routes())
         .merge(crate::midi::routes::routes())
         .merge(crate::skills::own::later_skill::routes())
         .merge(crate::plugins::workshop::routes::routes())
         .merge(crate::plugins::history::routes::routes())
         .merge(crate::speech::listen::routes())
+        .merge(crate::talk::routes())
+        .merge(crate::locale::routes())
         .merge(crate::apps::host_http::routes())
+        .merge(crate::tasks::routes::routes())
         .merge(crate::characters::routes())
         .merge(crate::stations::router())
         .merge(crate::placement::router())
@@ -1085,6 +1178,8 @@ pub fn router(app: Arc<App>) -> Router {
         // On the station, while its settings live on the computer, they are read-only here (src/placement).
         .layer(axum::middleware::from_fn_with_state(app.clone(), crate::placement::routes::guard))
         .layer(axum::middleware::from_fn(error_bodies))
+        // The language of the request (`Accept-Language`): the views of the apps answer in it (src/locale).
+        .layer(axum::middleware::from_fn(crate::locale::request_language))
         .layer(axum::middleware::from_fn_with_state(names, security))
         // The station's voice socket (an upgrade to UNIPROXY_PATH), before the Host check: Node's 'upgrade' listener
         // never went through Express's middleware. The upgrade has its own checks.

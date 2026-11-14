@@ -16,7 +16,9 @@ import { useSynth } from '../sdk/synth';
 import { Action } from '../ui/cards';
 import { Sheet } from '../ui/sheet';
 import { Switch } from '../ui/switch';
-import type { FrameMidiState, FrameState, FromFrame } from './protocol';
+import type { FrameMidiState, FrameState, FrameTask, FromFrame } from './protocol';
+import { tr } from '../i18n';
+import { pickText, translate, useLocale, useT } from '../i18n/app';
 
 // ——— Состояние, что прислал пульт ———
 
@@ -68,7 +70,7 @@ export function answered(id: number, ok: boolean, value: unknown, error?: string
     if (!pending) return;
     waiting.delete(id);
     if (ok) pending.resolve(value);
-    else pending.reject(new Error(error ?? 'не вышло'));
+    else pending.reject(new Error(error ?? tr.frame.failed));
 }
 
 // ——— Хуки и детали SDK ———
@@ -84,6 +86,31 @@ function useSettings(_pluginId?: string): Record<string, unknown> {
 }
 
 /** Картинка своего приложения: пульт берёт её с ключом входа и отдаёт окошку из памяти. */
+/** A picture of the home folder by its address (`files/home/Фото/лето.jpg`), made small: the app's link to that
+ *  folder and the person's own rights both hold. */
+function useFolderFile(address: string, options: { size?: number } = {}): string | null {
+    const [url, setUrl] = hooks.useState<string | null>(null);
+    const version = useFrameState()?.version ?? 0;
+    const size = options.size ?? 960;
+    hooks.useEffect(() => {
+        if (!address) return;
+        let alive = true;
+        let made: string | null = null;
+        request<Blob>((id) => ({ type: 'duowave:file', seq: id, name: '', address, size }))
+            .then((blob) => {
+                if (!alive) return;
+                made = URL.createObjectURL(blob);
+                setUrl(made);
+            })
+            .catch(() => alive && setUrl(null));
+        return () => {
+            alive = false;
+            if (made) URL.revokeObjectURL(made);
+        };
+    }, [address, size, version]);
+    return url;
+}
+
 function useFile(name: string): string | null {
     const [url, setUrl] = hooks.useState<string | null>(null);
     const version = useFrameState()?.version ?? 0;
@@ -241,9 +268,49 @@ function useMidi() {
     );
 }
 
+// ——— Долгие задачи своего приложения через мост: ход и отмена (gateway/src/tasks) ———
+
+let tasks: FrameTask[] = [];
+/** Пульт прислал задачи хоть раз. */
+let tasksReady = false;
+const taskWatchers = new Set<() => void>();
+let taskRefs = 0;
+
+export function setTasks(next: FrameTask[]): void {
+    tasks = next;
+    tasksReady = true;
+    for (const watch of [...taskWatchers]) watch();
+}
+
+/**
+ * Долгая задача своего приложения: её начинает бэкенд (Host API, `POST /api/v1/apps/host/tasks`) и возвращает id из
+ * своей функции — а окошко видит ход и просит отменить. Без id — задача, что идёт сейчас, а нет такой — последняя.
+ */
+function useTask(id?: string): { task: FrameTask | null; tasks: FrameTask[]; ready: boolean; cancel: () => Promise<void> } {
+    const [, rerender] = hooks.useState(0);
+    hooks.useEffect(() => {
+        const watch = (): void => rerender((n) => n + 1);
+        taskWatchers.add(watch);
+        taskRefs += 1;
+        if (taskRefs === 1) send({ type: 'duowave:tasks', op: 'retain' });
+        return () => {
+            taskWatchers.delete(watch);
+            taskRefs -= 1;
+            if (taskRefs === 0) send({ type: 'duowave:tasks', op: 'release' });
+        };
+    }, []);
+    const task = (id ? tasks.find((entry) => entry.id === id) : tasks[0]) ?? null;
+    const taskId = task?.id;
+    const cancel = hooks.useCallback(
+        () => (taskId ? request<void>((seq) => ({ type: 'duowave:task-cancel', seq, id: taskId })) : Promise.reject(new Error(tr.frame.noTask))),
+        [taskId],
+    );
+    return { task, tasks, ready: tasksReady, cancel };
+}
+
 /** Файл `.mid` читает шлюз — через пульт. */
 async function readMidiFile(file: Blob): Promise<MidiSong> {
-    if (file.size > 256 * 1024) throw new Error('Файл больше 256 КБ — это не простая мелодия.');
+    if (file.size > 256 * 1024) throw new Error(tr.frame.midiTooBig);
     return request<MidiSong>((id) => ({ type: 'duowave:midi-file', seq: id, file }));
 }
 
@@ -252,6 +319,7 @@ export const sdk = {
     useApi,
     useSettings,
     useFile,
+    useFolderFile,
     usePanelState,
     useLive,
     useStation,
@@ -265,11 +333,17 @@ export const sdk = {
     Pill,
     ask,
     useMidi,
+    useTask,
     useSynth,
     PianoKeys,
     readMidiFile,
     melodyOf,
     noteName,
+    // Языки (docs/plans/i18n.md): язык пульта и тексты приложения по нему.
+    useLocale,
+    useT,
+    t: translate,
+    pick: pickText,
 };
 
 /** Отдать модулю приложения Preact и SDK окошка — до его загрузки (import map ведёт к public/sdk/*). */

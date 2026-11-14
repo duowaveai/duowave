@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "plugin",
   "id": "smart-home",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "title": "Умный дом",
   "description": "Свет и устройства Home Assistant голосом: «включи свет на кухне», «выключи свет», и что включено дома — для «Мозга». Подключение и его ключ — в «Дом» → «Коннекторы», приложение их не видит. Встроенное приложение: без него умным домом управляет встроенный навык.",
   "api": "^2",
@@ -18,6 +18,16 @@
   "permissions": [
     "call:system/smart-home"
   ],
+  "languages": [
+    "ru",
+    "en"
+  ],
+  "locales": {
+    "en": {
+      "title": "Smart home",
+      "description": "Home Assistant lights and devices by voice: “turn on the kitchen light”, “turn off the light”, and what is on at home — for the “Brain”. The connection and its key are in “Home” → “Connections”; the app does not see them. A built-in app: without it the built-in skill runs the smart home."
+    }
+  },
   "contributes": {
     "intents": [
       {

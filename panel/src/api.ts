@@ -6,6 +6,7 @@
 
 import type { AvailabilityView, Placement } from './availability';
 import { VIA, gw, noteAnswer } from './via';
+import { language, tr } from './i18n';
 
 /** Ошибка шлюза: его слова из тела ответа (`message`), а нет их — код ответа. */
 export class ApiError extends Error {
@@ -13,7 +14,7 @@ export class ApiError extends Error {
         readonly status: number,
         readonly body: string,
     ) {
-        super(gatewayMessage(body) ?? `Ошибка ${status}`);
+        super(gatewayMessage(body) ?? tr.common.errorCode(status));
     }
 }
 
@@ -97,9 +98,14 @@ export function can(permission: string): boolean {
     return sessionStore.get()?.permissions?.includes(permission) ?? false;
 }
 
+/**
+ * Заголовки каждого запроса к шлюзу: ключ входа и язык пульта — шлюз отвечает текстами приложений на нём
+ * (docs/plans/i18n.md).
+ */
 function authHeaders(): Record<string, string> {
     const session = sessionStore.get();
-    return session ? { Authorization: `Bearer ${session.token}` } : {};
+    const lang = { 'Accept-Language': language() };
+    return session ? { ...lang, Authorization: `Bearer ${session.token}` } : lang;
 }
 
 /** `signal` обрывает запрос: виджет ушёл со стола, опрос начался заново (poll.ts). */
@@ -168,7 +174,7 @@ export async function viaRefusal(): Promise<{ kind: 'signed-out' | 'pair' | 'oth
         if (own.status === 401) return { kind: 'signed-out' };
         const through = await fetch(gw('/api/v1/auth/me'), { headers });
         if (through.status === 401) return { kind: 'pair' };
-        if (through.ok) return { kind: 'other', message: 'Колонка снова отвечает — попробуйте ещё раз.' };
+        if (through.ok) return { kind: 'other', message: tr.common.stationAnswersAgain };
         return { kind: 'other', message: problemOf(new ApiError(through.status, await through.text().catch(() => ''))) };
     } catch {
         return { kind: 'other' };
@@ -186,6 +192,18 @@ export function liveHeaders(): Record<string, string> {
 /** Картинка плагина (plugins/files.rs) с ключом входа — для `useFile` в SDK пульта: `<img src>` ключа не передаёт. */
 export async function fetchPluginFile(id: string, name: string): Promise<Blob> {
     return fetchAudio(`/api/v1/packages/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`);
+}
+
+/** Картинка из папки дома, уменьшенная (docs/plans/shared-folders.md): для самого пульта — от лица вошедшего. */
+export async function fetchFolderPreview(address: string, size = 640): Promise<Blob> {
+    const query = new URLSearchParams({ address, size: String(size) });
+    return fetchAudio(`/api/v1/folders/preview?${query}`);
+}
+
+/** Картинка из папки дома для карточки или окошка приложения: от его лица и за того, кто смотрит. */
+export async function fetchBusPreview(app: string, address: string, size = 640): Promise<Blob> {
+    const query = new URLSearchParams({ app, address, size: String(size) });
+    return fetchAudio(`/api/v1/bus/preview?${query}`);
 }
 
 /** Звук и картинки из шлюза с ключом входа: `<audio src>` и `<img src>` ключ не передают, поэтому — fetch в blob. */
@@ -693,9 +711,60 @@ export interface PlacementHealth {
     stations?: PlacedStation[];
 }
 
+/** «Как говорить с DuoWave»: через колонку с Алисой или микрофоном этого компьютера (voice-input.ts). */
+export type VoiceInput = 'station' | 'computer';
+
+/** Выбор, как его хранит шлюз: `before` — режим, который вернётся вместе с колонкой. */
+export interface VoiceInputSetting {
+    input: VoiceInput;
+    before?: PanelMode;
+}
+
+/** Событие ответа в разговоре без колонки (`POST /api/v1/talk`): фразы приходят по одной. */
+export type TalkEvent =
+    | { type: 'start'; request: string; by: 'home' | 'cloud' }
+    | { type: 'phrase'; text: string }
+    | { type: 'tool'; name: string }
+    | { type: 'done'; said: string; by: 'home' | 'cloud'; ms: number }
+    | { type: 'error'; message: string };
+
+/** Фраза в разговор: чем она открыта, где её распознали, скажет ли компьютер ответ вслух. */
+export interface TalkTurn {
+    text: string;
+    via?: 'button' | 'answer' | 'text';
+    heard?: { by: 'home' | 'cloud'; ms?: number };
+    voice?: boolean;
+    fresh?: boolean;
+}
+
+/** Фраза уходит «Мозгу»; события ответа приходят по мере того, как он пишется; abort — оборвать ответ. */
+export async function talk(turn: TalkTurn, onEvent: (event: TalkEvent) => void, signal?: AbortSignal): Promise<void> {
+    const response = await fetch(gw('/api/v1/talk'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...authHeaders() },
+        body: JSON.stringify(turn),
+        signal,
+    });
+    await readEvents(response, onEvent);
+}
+
+/** Фраза ответа своим голосом дома: WAV для динамиков компьютера. */
+export async function talkSpeech(text: string, signal?: AbortSignal): Promise<Blob> {
+    const response = await fetch(gw('/api/v1/talk/speech'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ text }),
+        signal,
+    });
+    if (!response.ok) throw new ApiError(response.status, await response.text().catch(() => ''));
+    return response.blob();
+}
+
 export interface Health {
     status: string;
     build?: BuildInfo;
+    /** Как говорят с DuoWave; шлюз постарше его не присылает — тогда через колонку. */
+    voiceInput?: VoiceInput;
     /** gateway: отвечаем мы; relay: сессия колонки идёт в Яндекс, мы только журналируем. */
     mode?: 'gateway' | 'relay';
     panelMode?: PanelMode;
@@ -1165,7 +1234,7 @@ export interface PackageView {
     /** Что плагин даёт шлюзу. */
     contributes?: { phrases: string[]; tools: string[]; media: string[]; events: string[]; panel: boolean; themes: boolean };
     /** Сколько плагин просит: память — это лимит, место — его хранилище. */
-    budget?: { memoryMb: number; storageMb: number; filesMb?: number } | null;
+    budget?: { memoryMb: number; storageMb: number; filesMb?: number; tasks?: number } | null;
     /** Пока код загружен: сколько держит движок, байты. */
     memory?: { allocated: number; used: number; limit: number } | null;
     /** Его хранилище kv, байты. */
@@ -1205,6 +1274,96 @@ export interface CardSpec {
 
 /** Ступень связи: не знает, видит, слышит, зовёт (у файлов — читает), правит. */
 export type BusLevel = 'none' | 'see' | 'listen' | 'call' | 'edit';
+
+/** Роль человека: кто видит папку. */
+export type FolderRole = 'admin' | 'member' | 'guest';
+
+/** Слово дома о папке (gateway/src/bus/providers/files/rules.rs). */
+export interface FolderRule {
+    address: string;
+    /** Где подключённое на этом компьютере (видит администратор). */
+    path?: string;
+    how?: 'drive' | 'dropped' | 'picked';
+    remember: boolean;
+    write: boolean;
+    roles: FolderRole[];
+    model: boolean;
+    speak: boolean;
+    remote: boolean;
+    addedAt?: string;
+}
+
+/** Папка домашней папки DuoWave для пульта. */
+export interface FolderView {
+    address: string;
+    name: string;
+    kind: 'home' | 'content' | 'attached' | 'project';
+    /** Она на месте: подключённую могли вынуть. */
+    here: boolean;
+    path?: string;
+    rule: FolderRule;
+    /** Приложения, которые до неё дотягиваются (видит администратор). */
+    apps?: Array<{ id: string; title: string; level: BusLevel }>;
+}
+
+/** Что можно подключить одним нажатием: флешку или папку, брошенную на окно. */
+export interface FolderOffer {
+    id: string;
+    kind: 'drive' | 'dropped';
+    name: string;
+    at: string;
+}
+
+/** Окно на экране компьютера (gateway/src/screen): фото, видео или звук, временное или оставленное. */
+export interface ScreenWindow {
+    id: string;
+    title: string;
+    kind: 'image' | 'video' | 'audio';
+    /** Ссылка шлюза: /media/folder/<token>. */
+    url: string;
+    from?: string;
+    kept: boolean;
+    paused: boolean;
+    openedAt: string;
+}
+
+export interface ScreenView {
+    available: boolean;
+    windows: ScreenWindow[];
+}
+
+export type ScreenAction = 'keep' | 'temporary' | 'close' | 'pause' | 'resume' | 'ended';
+
+export interface FoldersView {
+    home?: string;
+    visible: boolean;
+    attach: boolean;
+    pick: boolean;
+    local: boolean;
+    /** Наши ответы говорит голос Алисы — его озвучивает Яндекс. */
+    yandexVoice: boolean;
+    /** Модель «Мозга» в облаке. */
+    cloudModel: boolean;
+    folders: FolderView[];
+    offers: FolderOffer[];
+    notes?: string[];
+}
+
+/** Строка списка папки. */
+export interface FolderItem {
+    name: string;
+    address: string;
+    folder: boolean;
+    kind: 'folder' | 'image' | 'text' | 'pdf' | 'doc' | 'audio' | 'video' | 'other';
+    size: number;
+    modified?: string | null;
+}
+
+export interface FolderPage {
+    items: FolderItem[];
+    total: number;
+    next: number | null;
+}
 /** Режим: «Отдельно», «По правилам», «Свободно». */
 export type BusMode = 'isolated' | 'rules' | 'free';
 /** Кто поставил связь: владелец руками, «да» на вопрос, «нет» на вопрос, установка. */
@@ -1327,6 +1486,34 @@ export interface AgentStep {
     /** У result — seq его вызова (шага tool): вызовы одного хода идут разом, и ответ находит свой вызов по нему. */
     call?: number;
     failed?: boolean;
+}
+
+/**
+ * Долгая задача приложения (gateway/src/tasks): что оно делает словами, ход в процентах и словах, чем кончилась.
+ * `interrupted` — прервалась не по слову человека: шлюз перезапустился, приложение упало или замолчало.
+ */
+export interface AppTask {
+    id: string;
+    /** Чья: id приложения. */
+    app: string;
+    title: string;
+    state: 'running' | 'done' | 'failed' | 'cancelled' | 'interrupted';
+    /** 0–100; нет — приложение пока не знает. */
+    percent?: number;
+    text: string;
+    result?: unknown;
+    error?: string;
+    /** «Отменить» нажато, приложение ещё не остановилось. */
+    cancelRequested: boolean;
+    /** Мс от эпохи, часы шлюза. */
+    startedAt: number;
+    updatedAt: number;
+    endedAt?: number;
+}
+
+/** Задача с журналом её шагов. */
+export interface AppTaskLog extends AppTask {
+    log: Array<{ at: number; percent?: number; text: string }>;
 }
 
 /** Работа агента, как её отдаёт шлюз: `now` — его часы (мс от эпохи); у помощника по ним считают время работы колонки. */
@@ -1488,6 +1675,8 @@ export interface CheckReport {
     exports: string[];
     missing: string[];
     warnings: string[];
+    /** Чего не хватает в переводах (docs/plans/i18n.md): совет автору, не ошибка. */
+    languages?: string[];
     ms: number;
 }
 
@@ -2482,6 +2671,12 @@ export type MemoryPause = 'hour' | 'morning' | 'manual';
 
 export const api = {
     health: () => get<Health>('/health'),
+    /** «Как говорить с DuoWave»: микрофон компьютера запирает режим «Своё», колонка возвращает прежний. */
+    /** Язык дома (docs/plans/i18n.md): его читает код приложений и пульт, где человек не выбрал свой. */
+    language: () => get<HouseholdLanguage>('/api/v1/language'),
+    setLanguage: (language: string) => put<HouseholdLanguage>('/api/v1/language', { language }),
+    talkInput: () => get<VoiceInputSetting>('/api/v1/talk/input'),
+    setTalkInput: (input: VoiceInput) => put<VoiceInputSetting>('/api/v1/talk/input', { input }),
     // Колонка
     sessions: () => get<SessionSnapshot[]>('/api/v1/station/sessions'),
     unsupported: (limit = 30) => get<UnsupportedEntry[]>(`/api/v1/station/unsupported?limit=${limit}`),
@@ -2737,6 +2932,10 @@ export const api = {
     /** Пульт плагина зовёт свой бэкенд: только функции из contributes.panel.calls. */
     callPackage: <T = unknown>(id: string, fn: string, input: unknown = {}) =>
         post<{ result: T }>(`/api/v1/packages/${encodeURIComponent(id)}/call/${encodeURIComponent(fn)}`, input).then((answer) => answer.result),
+    // Долгие задачи приложений (gateway/src/tasks): ход и отмена — тому, кто пользуется приложениями.
+    tasks: (app?: string) => get<{ tasks: AppTask[] }>(`/api/v1/tasks${app ? `?app=${encodeURIComponent(app)}` : ''}`),
+    task: (id: string) => get<AppTaskLog>(`/api/v1/tasks/${encodeURIComponent(id)}`),
+    cancelTask: (id: string) => post<AppTask>(`/api/v1/tasks/${encodeURIComponent(id)}/cancel`),
     // Шина «Связи»: связи, режимы, вопросы «да», журнал (docs/plans/bus.md). Менять — администратору дома.
     bus: () => get<BusOverview>('/api/v1/bus'),
     busQuestions: () => get<{ questions: BusQuestion[] }>('/api/v1/bus/questions'),
@@ -2756,6 +2955,23 @@ export const api = {
         return get<{ lines: BusJournalLine[] }>(`/api/v1/bus/journal?${query}`);
     },
     busApp: (id: string) => get<BusAppView>(`/api/v1/bus/apps/${encodeURIComponent(id)}`),
+    // Домашняя папка DuoWave (docs/plans/shared-folders.md): папки, подключённое, предложения, галочки.
+    folders: () => get<FoldersView>('/api/v1/folders'),
+    folderBrowse: (address: string, from = 0, limit = 120) =>
+        get<FolderPage>(`/api/v1/folders/browse?${new URLSearchParams({ address, from: String(from), limit: String(limit) })}`),
+    folderSize: (address: string) =>
+        get<{ files: number; bytes: number; partial: boolean }>(`/api/v1/folders/size?${new URLSearchParams({ address })}`),
+    folderAttach: (path: string) => post<FolderRule>('/api/v1/folders/attach', { path }),
+    folderPick: () => post<{ rule?: FolderRule; cancelled?: boolean }>('/api/v1/folders/pick'),
+    folderLook: (offer: string) => post<FolderRule>(`/api/v1/folders/offers/${encodeURIComponent(offer)}/look`),
+    folderSkip: (offer: string) => post<{ skipped: string }>(`/api/v1/folders/offers/${encodeURIComponent(offer)}/skip`),
+    folderDetach: (name: string) => del<{ detached: string }>(`/api/v1/folders/attached/${encodeURIComponent(name)}`),
+    folderRule: (address: string, change: Partial<Pick<FolderRule, 'roles' | 'write' | 'model' | 'speak' | 'remote' | 'remember'>>) =>
+        put<FolderRule>('/api/v1/folders/rules', { address, ...change }),
+    folderReveal: (address: string) => post<{ shown: string }>('/api/v1/folders/reveal', { address }),
+    // Окна на экране компьютера (gateway/src/screen): страница окна читает своё и шлёт свои нажатия.
+    screen: () => get<ScreenView>('/api/v1/screen'),
+    screenAct: (id: string, action: ScreenAction) => post<{ windows: ScreenWindow[] }>(`/api/v1/screen/${encodeURIComponent(id)}`, { action }),
     /** Письмо от лица своего приложения (кнопка карточки, окошко): за того, кто вошёл, не больше. */
     busCall: <T = unknown>(from: string, to: string, handle: string, input: unknown = {}) =>
         post<{ result: T }>('/api/v1/bus/call', { from, to, handle, input }).then((answer) => answer.result),
@@ -2898,16 +3114,21 @@ export const api = {
      * не запрашивается: ключ входа уходит только своему шлюзу.
      */
     media: (url: string) =>
-        url.startsWith('/') && !url.startsWith('//') ? fetchAudio(url) : Promise.reject(new ApiError(400, 'Файл не со шлюза')),
+        url.startsWith('/') && !url.startsWith('//') ? fetchAudio(url) : Promise.reject(new ApiError(400, tr.common.notFromGateway)),
 };
+
+/** Язык дома на шлюзе: `null` — не задан (пульт берёт язык системы). */
+export interface HouseholdLanguage {
+    language: string | null;
+}
 
 /** Что сказать пользователю об ошибке запроса: текст шлюза, если он есть. */
 export function problemOf(error: unknown): string {
-    if (!(error instanceof ApiError)) return 'Шлюз недоступен — попробуйте ещё раз.';
+    if (!(error instanceof ApiError)) return tr.common.gatewayUnavailable;
     try {
         return String(JSON.parse(error.body)?.message ?? error.body).slice(0, 200);
     } catch {
-        return error.body.slice(0, 200) || `Ошибка ${error.status}`;
+        return error.body.slice(0, 200) || tr.common.errorCode(error.status);
     }
 }
 

@@ -5,7 +5,6 @@
 //! - `GET|POST /api/v1/packages/{id}/restore` — what a step back of the installed app would do, and the step back.
 //! - `POST /api/v1/workshop/drafts/{id}/restore` — the draft back to a step.
 //! - `/api/v1/workshop/drafts/{id}/merge` — a merge: start, its state, the answer to the agent's question, «Отменить».
-
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -43,7 +42,9 @@ pub fn routes() -> Router<Arc<App>> {
 }
 
 fn history_of(app: &App) -> Result<Arc<History>, ApiError> {
-    app.history.clone().ok_or_else(|| ApiError::conflict("Истории приложений здесь нет: её папка не создаётся."))
+    app.history
+        .clone()
+        .ok_or_else(|| ApiError::conflict(crate::tr!("Истории приложений здесь нет: её папка не создаётся.")))
 }
 
 fn by_of(actor: Option<&crate::core::events::Actor>) -> Author {
@@ -73,16 +74,16 @@ async fn set_settings(
     let history = history_of(&app)?;
     let mut stored = app.settings.get(&PACKAGE_HISTORY, None).unwrap_or_else(|| json!({}));
     if let Some(place) = body.place {
-        let place = Place::parse(&place).ok_or_else(|| ApiError::field("place", "here, home или both"))?;
+        let place = Place::parse(&place).ok_or_else(|| ApiError::field("place", crate::tr!("here, home или both")))?;
         if place != Place::Here && !history.on_station() {
-            return Err(ApiError::field("place", "компьютер хранит историю у себя"));
+            return Err(ApiError::field("place", crate::tr!("компьютер хранит историю у себя")));
         }
         stored["place"] = json!(place);
     }
     for (key, value) in [("budgetMb", body.budget_mb), ("days", body.days), ("steps", body.steps)] {
         if let Some(value) = value {
             if value == 0 {
-                return Err(ApiError::field(key, "больше нуля"));
+                return Err(ApiError::field(key, crate::tr!("больше нуля")));
             }
             stored[key] = json!(value);
         }
@@ -139,9 +140,10 @@ async fn compare(
     let history = history_of(&app)?;
     let resolve = |record: Option<String>| -> Result<Option<String>, ApiError> {
         match record.filter(|record| !record.is_empty()) {
-            Some(record) => {
-                history.resolve(&id, &record).map(Some).ok_or_else(|| ApiError::not_found("Такой записи нет."))
-            }
+            Some(record) => history
+                .resolve(&id, &record)
+                .map(Some)
+                .ok_or_else(|| ApiError::not_found(crate::tr!("Такой записи нет."))),
             None => Ok(None),
         }
     };
@@ -160,9 +162,9 @@ async fn record(
 ) -> ApiResult<Value> {
     admin(&caller)?;
     let history = history_of(&app)?;
-    let record = history.resolve(&id, &record).ok_or_else(|| ApiError::not_found("Такой записи нет."))?;
+    let record = history.resolve(&id, &record).ok_or_else(|| ApiError::not_found(crate::tr!("Такой записи нет.")))?;
     history.ensure_local(&record).await;
-    let view = history.record_view(&id, &record).ok_or_else(|| ApiError::not_found("Такой записи нет."))?;
+    let view = history.record_view(&id, &record).ok_or_else(|| ApiError::not_found(crate::tr!("Такой записи нет.")))?;
     let data = view
         .record
         .data
@@ -179,11 +181,16 @@ async fn file(
 ) -> ApiResult<Value> {
     admin(&caller)?;
     let history = history_of(&app)?;
-    let record = history.resolve(&id, &record).ok_or_else(|| ApiError::not_found("Такой записи нет."))?;
+    let record = history.resolve(&id, &record).ok_or_else(|| ApiError::not_found(crate::tr!("Такой записи нет.")))?;
     history.ensure_local(&record).await;
-    let tree = history.record(&record).map(|record| record.tree).ok_or_else(|| ApiError::not_found("Записи нет."))?;
-    let bytes = history.file_at(&tree, &path).ok_or_else(|| ApiError::not_found(format!("Нет файла {path}.")))?;
-    let content = String::from_utf8(bytes).map_err(|_| ApiError::bad_request("Файл не текстовый."))?;
+    let tree = history
+        .record(&record)
+        .map(|record| record.tree)
+        .ok_or_else(|| ApiError::not_found(crate::tr!("Записи нет.")))?;
+    let bytes = history
+        .file_at(&tree, &path)
+        .ok_or_else(|| ApiError::not_found(crate::tr!("Нет файла {path}.", path = path)))?;
+    let content = String::from_utf8(bytes).map_err(|_| ApiError::bad_request(crate::tr!("Файл не текстовый.")))?;
     Ok(ok(json!({ "path": path, "content": content })))
 }
 
@@ -196,7 +203,7 @@ pub struct RestoreQuery {
 fn what_of(text: Option<&str>) -> Result<What, ApiError> {
     match text {
         None => Ok(What::Code),
-        Some(text) => What::parse(text).ok_or_else(|| ApiError::field("what", "code, data или code+data")),
+        Some(text) => What::parse(text).ok_or_else(|| ApiError::field("what", crate::tr!("code, data или code+data"))),
     }
 }
 
@@ -208,7 +215,8 @@ async fn restore_plan(
 ) -> ApiResult<RestorePlan> {
     admin(&caller)?;
     let history = history_of(&app)?;
-    let record = history.resolve(&id, &query.record).ok_or_else(|| ApiError::not_found("Такой записи нет."))?;
+    let record =
+        history.resolve(&id, &query.record).ok_or_else(|| ApiError::not_found(crate::tr!("Такой записи нет.")))?;
     history.ensure_local(&record).await;
     Ok(ok(history.restore_plan(&id, &record, what_of(query.what.as_deref())?)?))
 }
@@ -229,7 +237,8 @@ async fn restore(
 ) -> ApiResult<RestoreReport> {
     let actor = admin(&caller)?;
     let history = history_of(&app)?;
-    let record = history.resolve(&id, &body.record).ok_or_else(|| ApiError::not_found("Такой записи нет."))?;
+    let record =
+        history.resolve(&id, &body.record).ok_or_else(|| ApiError::not_found(crate::tr!("Такой записи нет.")))?;
     history.ensure_local(&record).await;
     let what = what_of(body.what.as_deref())?;
     let report =
@@ -263,7 +272,7 @@ async fn restore_draft(
 /// The agent's work on a draft in the background, as the panel's chat starts it: the plaque and the log follow it.
 pub fn start_agent(app: &App, caller: &Caller, id: &str, message: String) -> Result<(), ApiError> {
     if !app.dialog.enabled() {
-        return Err(ApiError::conflict("Модель не выбрана: добавьте провайдера в «Персонаж» → «Мозг»."));
+        return Err(ApiError::conflict(crate::tr!("Модель не выбрана: добавьте провайдера в «Персонаж» → «Мозг».")));
     }
     let principal = caller.principal().map(|principal| principal.id.clone()).unwrap_or_default();
     let key = format!("workshop:{principal}:{id}");
@@ -293,7 +302,9 @@ async fn merge(
     let actor = admin(&caller)?;
     let history = history_of(&app)?;
     let record = if body.record == "upstream" {
-        history.upstream_record(&id).ok_or_else(|| ApiError::conflict("Новой версии исходного приложения нет."))?
+        history
+            .upstream_record(&id)
+            .ok_or_else(|| ApiError::conflict(crate::tr!("Новой версии исходного приложения нет.")))?
     } else {
         history
             .resolve(&id, &body.record)
@@ -303,7 +314,7 @@ async fn merge(
                     .then(|| body.record.clone())
                     .filter(|r| history.record(r).is_some())
             })
-            .ok_or_else(|| ApiError::not_found("Такой записи нет."))?
+            .ok_or_else(|| ApiError::not_found(crate::tr!("Такой записи нет.")))?
     };
     history.ensure_local(&record).await;
     let asked = body.asked.map(|asked| asked.trim().chars().take(600).collect::<String>()).filter(|a| !a.is_empty());
@@ -333,7 +344,7 @@ async fn answer(
 ) -> ApiResult<Value> {
     admin(&caller)?;
     if body.choice.trim().is_empty() {
-        return Err(ApiError::field("choice", "ответ на вопрос"));
+        return Err(ApiError::field("choice", crate::tr!("ответ на вопрос")));
     }
     let message = app.workshop.answer_merge(&id, &body.choice)?;
     start_agent(&app, &caller, &id, message)?;

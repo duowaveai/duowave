@@ -56,17 +56,18 @@ impl Words for BrainWords {
     ) -> BoxFuture<'static, Result<Value, BusError>> {
         let (dialog, plugins, bus) = (self.dialog.upgrade(), self.plugins.upgrade(), self.bus.upgrade());
         Box::pin(async move {
-            let gone = || BusError::Failed("шлюз останавливается".into());
+            let gone = || BusError::Failed(crate::tr!("шлюз останавливается"));
             let (dialog, plugins, bus) = (dialog.ok_or_else(gone)?, plugins.ok_or_else(gone)?, bus.ok_or_else(gone)?);
             if !dialog.enabled() {
-                return Err(BusError::Failed("отвечать словами некому: модель «Мозга» не выбрана".into()));
+                return Err(BusError::Failed(crate::tr!("отвечать словами некому: модель «Мозга» не выбрана")));
             }
             if dialog.brain().cloud && !bus.links.options().cloud_asks {
                 return Err(BusError::Denied(
-                    "вопросы словами через облако выключены: модель «Мозга» — облачная («Настройки» → «Связи приложений»)"
-                        .into(),
+                    crate::tr!("вопросы словами через облако выключены: модель «Мозга» — облачная («Настройки» → «Связи приложений»)"),
                 ));
             }
+            // What the app's tools give back goes to this model: a folder without its tick gives it nothing.
+            let trail = trail.through_model(dialog.brain().cloud);
             let id = app.name().unwrap_or_default().to_string();
             let package = plugins.package(&id).ok_or_else(|| BusError::NotFound(app.to_string()))?;
             let tools: Vec<LlmTool> = package

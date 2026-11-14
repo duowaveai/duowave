@@ -23,7 +23,7 @@ use super::generator::{generate, Yielder};
 use super::llm::brain::{Backup, BrainOrigin, BrainSource, BrainStatus, EnvBrain, ModelSlot};
 use super::llm::{
     AssistantTurn, LlmClient, LlmEvent, LlmMessage, LlmRequest, LlmSettings, LlmStream, LlmTool, SpokenFailure,
-    ToolCall, ToolChoice, ToolResult,
+    ToolCall, ToolCallCut, ToolChoice, ToolResult,
 };
 use super::persona_service::PersonaService;
 use super::phrase_splitter::PhraseSplitter;
@@ -56,6 +56,10 @@ const LAST_ROUND_RESERVE_MS: u64 = 6_000;
 
 /// The result of a call the model made but the gateway did not run: one command per request.
 const NOT_RUN: &str = "not run: one command per request";
+
+/// Turns cut off in a tool call that one answer goes on after (`ToolBox::cut_note`): a model that keeps writing too
+/// much at once will not fit the next time either.
+const MAX_CUTS: usize = 3;
 
 /// A phrase to say once when the calls have not returned in `after_ms` and the answer has said nothing yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +132,12 @@ pub struct ToolBox {
     pub instructions: Option<String>,
     /// The tools still offered after a tainted result (those that change nothing); all of them without it.
     pub safe_after_taint: Option<ToolFilter>,
+    /// What the model is told when its turn ran out of tokens in a tool call (a whole file did not fit): the rounds
+    /// go on with it, `MAX_CUTS` times at most. Without it such a turn fails the answer.
+    pub cut_note: Option<fn(&ToolCallCut) -> String>,
+    /// A turn's calls run one after another, in the turn's order, instead of at once: they change the same files (the
+    /// workshop's: a piece appended after the piece written).
+    pub in_order: bool,
 }
 
 impl ToolBox {
@@ -145,6 +155,8 @@ impl ToolBox {
             round_ms: None,
             instructions: None,
             safe_after_taint: None,
+            cut_note: None,
+            in_order: false,
         }
     }
 }
@@ -163,6 +175,12 @@ pub struct DialogContext {
     /// A model of its own, apart from the profiles (the workshop agent's choice); a provider that is gone falls back to
     /// `profile`.
     pub model: Option<crate::settings::definitions::BrainPick>,
+    /// Where the answer is said: through a station (by default), or by a computer — a talk without a station, whose
+    /// prompt has no word of one (src/talk).
+    pub channel: crate::dialog::system_prompt::Channel,
+    /// A longer output limit for every turn of this answer than LLM_MAX_TOKENS: the workshop's agent writes files
+    /// (WORKSHOP_MAX_TOKENS). A model that refuses it as too long answers with LLM_MAX_TOKENS.
+    pub max_tokens: Option<u32>,
 }
 
 /// Who answered an exchange that is remembered without the model's words.
@@ -542,11 +560,14 @@ impl DialogService {
         let deadline = Instant::now() + Duration::from_millis(budget);
         let mut offered = toolbox.as_ref().map(|toolbox| toolbox.tools.clone()).unwrap_or_default();
         let mut filler_said = false;
+        let mut cuts = 0;
         for round in 0.. {
             let given = if round == 0 { first.take() } else { None };
             let short =
                 deadline.saturating_duration_since(Instant::now()) < Duration::from_millis(LAST_ROUND_RESERVE_MS);
             let last = given.is_none() && (round >= rounds || short);
+            // What the model is told when this round's turn ran out of tokens in a call: the next round hears it.
+            let mut cut_off = None;
             let turn = match given {
                 Some((text, turn)) => {
                     speaker.push(&text).await;
@@ -587,25 +608,59 @@ impl DialogService {
                             None => events.next().await,
                         };
                         let Some(event) = event else { break };
-                        match event? {
-                            LlmEvent::Text(text) => {
+                        match event {
+                            Ok(LlmEvent::Text(text)) => {
                                 thinking = None;
                                 speaker.push(&text).await
                             }
-                            LlmEvent::Turn(done) => turn = Some(done),
-                            LlmEvent::Tool(_) => {}
+                            Ok(LlmEvent::Turn(done)) => turn = Some(done),
+                            Ok(LlmEvent::Tool(_)) => {}
+                            Err(error) => {
+                                let note =
+                                    toolbox.as_ref().and_then(|toolbox| toolbox.cut_note).filter(|_| cuts < MAX_CUTS);
+                                let (Some(cut), Some(note)) = (error.downcast_ref::<ToolCallCut>(), note) else {
+                                    return Err(error);
+                                };
+                                tracing::info!(
+                                    target: "dialog",
+                                    "{}: {error} ({}{}): the model goes on, told to write in parts",
+                                    slot.model,
+                                    cut.tool,
+                                    cut.path.as_deref().map(|path| format!(", {path}")).unwrap_or_default()
+                                );
+                                cut_off = Some(note(cut));
+                                break;
+                            }
                         }
                     }
                     turn
                 }
             };
+            // The cut turn is dropped (its call never ran) and the model hears why, after what it was asked.
+            if let Some(note) = cut_off {
+                cuts += 1;
+                speaker.flush().await;
+                messages.push(LlmMessage::User(note));
+                continue;
+            }
             let Some(toolbox) = toolbox.as_ref() else { break };
             let Some(turn) = turn.filter(|turn| !last && !turn.tool_calls.is_empty()) else { break };
             speaker.flush().await;
             let names: HashSet<String> = offered.iter().map(|tool| tool.name.clone()).collect();
-            let mut running = Box::pin(join_all(
-                turn.tool_calls.iter().map(|call| run_tool(toolbox, call.clone(), cancel.clone(), &names)),
-            ));
+            let mut running: BoxFuture<'_, Vec<Ran>> = if toolbox.in_order {
+                let calls = turn.tool_calls.clone();
+                async move {
+                    let mut ran = Vec::with_capacity(calls.len());
+                    for call in calls {
+                        ran.push(run_tool(toolbox, call, cancel.clone(), &names).await);
+                    }
+                    ran
+                }
+                .boxed()
+            } else {
+                join_all(turn.tool_calls.iter().map(|call| run_tool(toolbox, call.clone(), cancel.clone(), &names)))
+                    .boxed()
+            };
             // Not part of the answer the history keeps: only what the model said.
             let outcomes = match &toolbox.filler {
                 Some(filler) if !filler_said && speaker.said.is_empty() => {
@@ -719,7 +774,7 @@ impl DialogService {
         context: &DialogContext,
         offer: Option<&Offer>,
     ) -> LlmRequest {
-        let prompt = self.personas.system_prompt(None);
+        let prompt = self.personas.system_prompt_for(None, context.channel);
         {
             let mut known = self.prompt_problem.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if *known != prompt.problem {
@@ -768,6 +823,7 @@ impl DialogService {
             model: Some(slot.model.clone()),
             tools,
             tool_choice,
+            max_tokens: context.max_tokens,
         }
     }
 
@@ -810,8 +866,32 @@ impl DialogService {
                 on_backup(backup, request).await;
                 return;
             }
-            let first = attempt(client, model, request.clone(), &cancel, until, timeout_ms, backup.is_some(), &y).await;
-            let (Attempt::Early(error), Some(backup)) = (first, backup.as_deref()) else { return };
+            // A longer limit than LLM_MAX_TOKENS (the workshop agent's) may be too long for this model: it is asked
+            // again with LLM_MAX_TOKENS before the backup.
+            let longer = request.max_tokens.is_some();
+            let mut request = request;
+            let hand_over = longer || backup.is_some();
+            let mut first =
+                attempt(client.clone(), model.clone(), request.clone(), &cancel, until, timeout_ms, hand_over, &y)
+                    .await;
+            if let (true, Attempt::Early(error)) = (longer, &first) {
+                if refused_length(error) {
+                    tracing::warn!(
+                        target: "dialog",
+                        "{model} refused the longer limit ({}): asked again with LLM_MAX_TOKENS",
+                        head_of(&error.to_string(), 200)
+                    );
+                    request.max_tokens = None;
+                    first =
+                        attempt(client, model, request.clone(), &cancel, until, timeout_ms, backup.is_some(), &y).await;
+                }
+            }
+            let Attempt::Early(error) = first else { return };
+            let Some(backup) = backup.as_deref() else {
+                // Handed back for the longer limit's sake only: without a backup it goes out as any failure.
+                y.send(Err(error)).await;
+                return;
+            };
             tracing::warn!(
                 target: "dialog",
                 "the model gave no answer ({}): the backup {} via {} answers",
@@ -830,6 +910,17 @@ impl DialogService {
 enum Attempt {
     Done,
     Early(anyhow::Error),
+}
+
+/// Whether a model refused a request's output limit as too long: a 400 that names the limit's field («max_tokens:
+/// 32000 > 8192», «Invalid max_tokens value», «max_completion_tokens is too large»). Each provider words it its own
+/// way; the field's name is what they share.
+fn refused_length(error: &anyhow::Error) -> bool {
+    let text = error.to_string().to_lowercase();
+    text.contains("400")
+        && ["max_tokens", "max_completion_tokens", "max_output_tokens", "maxtokens"]
+            .iter()
+            .any(|field| text.contains(field))
 }
 
 /// The first `max` characters.
@@ -980,7 +1071,7 @@ mod tests {
     use axum::extract::State;
     use axum::response::IntoResponse;
     use axum::routing::post;
-    use serde_json::{json, Value};
+    use serde_json::{json, Map, Value};
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
     /// An OpenAI-compatible chat: streams `reply` in small deltas after `delay_ms` (or calls the tools) and records
@@ -1789,6 +1880,201 @@ mod tests {
             collect(service.answer("d", "Привет, как дела?", DialogContext::default(), CancellationToken::new(), None))
                 .await,
             vec!["Вы сказали: Привет, как дела?"]
+        );
+    }
+
+    type Script = Box<dyn Fn(usize, &LlmRequest) -> Vec<anyhow::Result<LlmEvent>> + Send + Sync>;
+
+    /// A model that answers its n-th request as `script` says, and keeps the requests.
+    struct Scripted {
+        script: Script,
+        requests: Mutex<Vec<LlmRequest>>,
+    }
+
+    impl LlmClient for Scripted {
+        fn description(&self) -> String {
+            "scripted".into()
+        }
+
+        fn tools(&self) -> bool {
+            true
+        }
+
+        fn stream(&self, request: LlmRequest, _cancel: CancellationToken) -> LlmStream {
+            let mut requests = self.requests.lock().unwrap();
+            let events = (self.script)(requests.len(), &request);
+            requests.push(request);
+            futures::stream::iter(events).boxed()
+        }
+    }
+
+    fn scripted(script: Script) -> (Arc<Scripted>, Arc<DialogService>) {
+        let llm = Arc::new(Scripted { script, requests: Mutex::new(Vec::new()) });
+        let brain = Arc::new(Switching { client: llm.clone(), model: Arc::new(Mutex::new("test-llm".into())) });
+        let service = Arc::new(DialogService {
+            config: config(None),
+            personas: personas(),
+            brain,
+            history: Mutex::new(DialogHistory::new(2, 60_000)),
+            prompt_problem: Mutex::new(None),
+            memory: std::sync::OnceLock::new(),
+        });
+        (llm, service)
+    }
+
+    fn words(text: &str) -> Vec<anyhow::Result<LlmEvent>> {
+        vec![
+            Ok(LlmEvent::Text(text.into())),
+            Ok(LlmEvent::Turn(AssistantTurn { content: text.into(), ..AssistantTurn::default() })),
+        ]
+    }
+
+    fn cut_short() -> anyhow::Result<LlmEvent> {
+        Err(anyhow::Error::new(ToolCallCut::new("Claude", "write_file", r#"{"path": "panel.js", "content": "exp"#)))
+    }
+
+    fn writer(cut_note: Option<fn(&ToolCallCut) -> String>) -> ToolBox {
+        let mut toolbox =
+            ToolBox::new(vec![tool("write_file")], |_, _| async { Ok(ToolOutcome::from("Записано.")) });
+        toolbox.rounds = Some(10);
+        toolbox.cut_note = cut_note;
+        toolbox
+    }
+
+    fn note(cut: &ToolCallCut) -> String {
+        format!("Оборвался {} ({}): пиши частями.", cut.tool, cut.path.as_deref().unwrap_or("?"))
+    }
+
+    fn last_user(request: &LlmRequest) -> Option<&str> {
+        match request.messages.last() {
+            Some(LlmMessage::User(text)) => Some(text.as_str()),
+            _ => None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_turn_cut_off_in_a_call_goes_on_with_the_toolboxs_note_a_few_times_and_fails_without_one() {
+        let (llm, service) = scripted(Box::new(|n, _| match n {
+            0 => vec![Ok(LlmEvent::Text("Пишу окошко.".into())), cut_short()],
+            _ => words("Записала частями."),
+        }));
+        let said = collect(service.answer(
+            "device-31",
+            "Сделай окошко",
+            DialogContext::default(),
+            CancellationToken::new(),
+            Some(writer(Some(note))),
+        ))
+        .await;
+        assert_eq!(said, vec!["Пишу окошко.", "Записала частями."]);
+        let requests = llm.requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(last_user(&requests[1]), Some("Оборвался write_file (panel.js): пиши частями."));
+        assert_eq!(
+            requests[1].messages[requests[1].messages.len() - 2],
+            LlmMessage::User("Сделай окошко".into()),
+            "the cut turn is dropped: the note comes right after the question"
+        );
+
+        // A model that keeps cutting: three notes, then the answer fails.
+        let (llm, service) = scripted(Box::new(|_, _| vec![cut_short()]));
+        let got: Vec<anyhow::Result<String>> = service
+            .answer(
+                "device-32",
+                "Сделай окошко",
+                DialogContext::default(),
+                CancellationToken::new(),
+                Some(writer(Some(note))),
+            )
+            .collect()
+            .await;
+        assert!(got.last().unwrap().as_ref().is_err_and(|error| error.is::<ToolCallCut>()));
+        assert_eq!(llm.requests.lock().unwrap().len(), 1 + MAX_CUTS);
+
+        // Without a note the cut fails the answer at once, as before.
+        let (llm, service) = scripted(Box::new(|_, _| vec![cut_short()]));
+        let got: Vec<anyhow::Result<String>> = service
+            .answer(
+                "device-33",
+                "Сделай окошко",
+                DialogContext::default(),
+                CancellationToken::new(),
+                Some(writer(None)),
+            )
+            .collect()
+            .await;
+        assert!(got
+            .last()
+            .unwrap()
+            .as_ref()
+            .is_err_and(|error| error.to_string() == "Claude ran out of tokens in a tool call"));
+        assert_eq!(llm.requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn asks_for_the_longer_limit_and_with_llm_max_tokens_when_the_model_refuses_it_as_too_long() {
+        let (llm, service) = scripted(Box::new(|_, request| match request.max_tokens {
+            Some(asked) => {
+                vec![Err(anyhow!("HTTP 400: max_tokens is too large: {asked}. This model supports at most 8192"))]
+            }
+            None => words("Готово."),
+        }));
+        let longer = DialogContext { max_tokens: Some(16_000), ..DialogContext::default() };
+        assert_eq!(
+            collect(service.answer("device-34", "Сделай", longer, CancellationToken::new(), None)).await,
+            vec!["Готово."]
+        );
+        let asked: Vec<Option<u32>> = llm.requests.lock().unwrap().iter().map(|request| request.max_tokens).collect();
+        assert_eq!(asked, vec![Some(16_000), None]);
+
+        // Any other failure is not a reason to ask again.
+        let (llm, service) =
+            scripted(Box::new(|_, _| vec![Err(anyhow!("HTTP 400: messages: text content blocks must be non-empty"))]));
+        let longer = DialogContext { max_tokens: Some(16_000), ..DialogContext::default() };
+        let got: Vec<anyhow::Result<String>> =
+            service.answer("device-35", "Сделай", longer, CancellationToken::new(), None).collect().await;
+        assert!(got.last().unwrap().is_err());
+        assert_eq!(llm.requests.lock().unwrap().len(), 1);
+        assert!(refused_length(&anyhow!("Anthropic API 400: 400 max_tokens: 64000 > 32000, which is the maximum")));
+        assert!(!refused_length(&anyhow!("Anthropic rate limit: 429 max_tokens per minute")));
+    }
+
+    #[tokio::test]
+    async fn a_toolbox_in_order_runs_a_turns_calls_one_after_another() {
+        let call = |id: &str, name: &str| ToolCall { id: id.into(), name: name.into(), input: Map::new(), error: None };
+        let calls = vec![call("c1", "write_file"), call("c2", "append_file")];
+        let (_, service) = scripted(Box::new(move |n, _| match n {
+            0 => vec![Ok(LlmEvent::Turn(AssistantTurn { tool_calls: calls.clone(), ..AssistantTurn::default() }))],
+            _ => words("Готово."),
+        }));
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let kept = log.clone();
+        let mut toolbox = ToolBox::new(vec![tool("write_file"), tool("append_file")], move |call: ToolCall, _| {
+            let log = kept.clone();
+            async move {
+                log.lock().unwrap().push(format!("start {}", call.name));
+                // The first piece takes longer: run at once, the second would end first.
+                if call.name == "write_file" {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                log.lock().unwrap().push(format!("end {}", call.name));
+                Ok(ToolOutcome::from("Записано."))
+            }
+        });
+        toolbox.rounds = Some(4);
+        toolbox.in_order = true;
+        let said = collect(service.answer(
+            "device-36",
+            "Пиши",
+            DialogContext::default(),
+            CancellationToken::new(),
+            Some(toolbox),
+        ))
+        .await;
+        assert_eq!(said, vec!["Готово."]);
+        assert_eq!(
+            *log.lock().unwrap(),
+            ["start write_file", "end write_file", "start append_file", "end append_file"]
         );
     }
 }

@@ -61,8 +61,8 @@ pub struct EngineNeed {
 pub struct EngineCard {
     pub id: EngineId,
     pub title: &'static str,
-    pub about: &'static str,
-    pub license: &'static str,
+    pub about: String,
+    pub license: String,
     pub recommended: bool,
     pub status: EngineStatus,
     /// Where its voice speaks here.
@@ -165,6 +165,7 @@ pub trait OwnSpeech: Send + Sync {
     fn own_choice(&self) -> Option<(String, String)>;
 }
 
+/// The labels are the source texts: jobs.rs puts them through the catalog as the stages come.
 const IMPRINT_LABELS: &[(&str, &str)] = &[
     ("prepare", "Готовлю записи"),
     ("select", "Выбираю лучший фрагмент"),
@@ -460,7 +461,7 @@ impl VoiceLabService {
             return Err(ApiError::bad_request(fits.reason.unwrap_or_default()));
         }
         if self.installed(spec.id) {
-            return Err(ApiError::conflict(format!("{} уже установлена.", spec.title)));
+            return Err(ApiError::conflict(crate::tr!("{title} уже установлена.", title = spec.title)));
         }
         let bench =
             self.config.bench_dir.as_ref().map(|dir| js::resolve(&dir.join("models"))).filter(|dir| dir.exists());
@@ -513,9 +514,9 @@ impl VoiceLabService {
 
     pub fn remove_take(&self, n: Option<i64>) -> Result<(), ApiError> {
         if self.imprint_running() {
-            return Err(ApiError::conflict("Идёт отпечаток — дубли пока нельзя трогать."));
+            return Err(ApiError::conflict(crate::tr!("Идёт отпечаток — дубли пока нельзя трогать.")));
         }
-        let missing = || ApiError::not_found("нет такого дубля");
+        let missing = || ApiError::not_found(crate::tr!("нет такого дубля"));
         let n = n.and_then(|n| u32::try_from(n).ok()).ok_or_else(missing)?;
         // A take that could not be removed is the 500 Node answered: never «deleted» with the voice left on disk.
         if !self.store.remove_take(n).map_err(ApiError::internal)? {
@@ -526,7 +527,7 @@ impl VoiceLabService {
 
     pub fn clear_draft(&self) -> Result<(), ApiError> {
         if self.imprint_running() {
-            return Err(ApiError::conflict("Идёт отпечаток — дубли пока нельзя трогать."));
+            return Err(ApiError::conflict(crate::tr!("Идёт отпечаток — дубли пока нельзя трогать.")));
         }
         Ok(self.store.clear_draft()?)
     }
@@ -536,7 +537,7 @@ impl VoiceLabService {
             .and_then(|n| u32::try_from(n).ok())
             .map(|n| self.store.take_file(n))
             .filter(|path| path.exists())
-            .ok_or_else(|| ApiError::not_found("нет такого дубля"))
+            .ok_or_else(|| ApiError::not_found(crate::tr!("нет такого дубля")))
     }
 
     /// «Снять отпечаток»: the best 5-8 seconds of the takes become a voice, under the memory guard. Tight on memory,
@@ -553,13 +554,14 @@ impl VoiceLabService {
         let takes = self.store.takes();
         let seconds: f64 = takes.iter().map(|take| take.seconds).sum();
         if takes.is_empty() || seconds < SHORT_TAKE_SECONDS {
-            return Err(ApiError::bad_request(format!(
-                "Нужна хотя бы одна запись от {SHORT_TAKE_SECONDS} секунд — лучше три по 40."
+            return Err(ApiError::bad_request(crate::tr!(
+                "Нужна хотя бы одна запись от {seconds} секунд — лучше три по 40.",
+                seconds = SHORT_TAKE_SECONDS
             )));
         }
         let label = match name.and_then(Value::as_str).map(js::trim).filter(|name| !name.is_empty()) {
             Some(name) => js::slice(name, 60).to_string(),
-            None => "Мой голос".to_string(),
+            None => crate::tr!("Мой голос").to_string(),
         };
         let files = takes.iter().map(|take| self.store.take_file(take.n)).collect();
         let finish = Finish { adopt: takes, ..Finish::default() };
@@ -586,10 +588,12 @@ impl VoiceLabService {
         let info = self.ready_to_imprint(spec).await?;
         self.store.voice_dir(voice_id).map_err(ApiError::bad_request)?;
         if self.store.voice(voice_id).is_some() {
-            return Err(ApiError::conflict(format!("Голос {voice_id} уже есть.")));
+            return Err(ApiError::conflict(crate::tr!("Голос {id} уже есть.", id = voice_id)));
         }
         if !reference.is_file() || words.trim().is_empty() {
-            return Err(ApiError::bad_request("Нет образца голоса или его слов — снять отпечаток не из чего."));
+            return Err(ApiError::bad_request(crate::tr!(
+                "Нет образца голоса или его слов — снять отпечаток не из чего."
+            )));
         }
         let source = ImprintSource::Reference { file: reference.to_path_buf(), words: words.trim().to_string() };
         let finish = Finish { meta, ..Finish::default() };
@@ -617,11 +621,11 @@ impl VoiceLabService {
         actor: Option<Actor>,
     ) -> Result<JobState, ApiError> {
         let Some(voice) = self.store.voice(id) else {
-            return Err(ApiError::not_found("нет такого голоса"));
+            return Err(ApiError::not_found(crate::tr!("нет такого голоса")));
         };
         let spec = self.spec(engine)?;
         if spec.id == voice.engine {
-            return Err(ApiError::bad_request(format!("Голос уже снят для {}.", spec.title)));
+            return Err(ApiError::bad_request(crate::tr!("Голос уже снят для {title}.", title = spec.title)));
         }
         let info = self.ready_to_imprint(spec).await?;
         let dir = self.store.voice_dir(id).map_err(ApiError::bad_request)?;
@@ -630,9 +634,9 @@ impl VoiceLabService {
             _ => {
                 let takes = self.store.takes_of(id);
                 if takes.is_empty() {
-                    return Err(ApiError::bad_request(
-                        "У голоса не сохранились ни образец, ни записи — переснять не из чего.",
-                    ));
+                    return Err(ApiError::bad_request(crate::tr!(
+                        "У голоса не сохранились ни образец, ни записи — переснять не из чего."
+                    )));
                 }
                 ImprintSource::Takes(takes)
             }
@@ -666,7 +670,7 @@ impl VoiceLabService {
             return Err(ApiError::bad_request(fits.reason.unwrap_or_default()));
         }
         if !self.installed(spec.id) {
-            return Err(ApiError::bad_request(format!("Сначала установите {}.", spec.title)));
+            return Err(ApiError::bad_request(crate::tr!("Сначала установите {title}.", title = spec.title)));
         }
         Ok(info)
     }
@@ -685,9 +689,9 @@ impl VoiceLabService {
         actor: Option<Actor>,
     ) -> Result<JobState, ApiError> {
         if matches!(source, ImprintSource::Takes(_)) && (!self.asr.enabled || !local_url(&self.asr.base_url)) {
-            return Err(ApiError::bad_request(
-                "Для отпечатка нужно своё распознавание на этом компьютере: слова образца не отправляются в облако.",
-            ));
+            return Err(ApiError::bad_request(crate::tr!(
+                "Для отпечатка нужно своё распознавание на этом компьютере: слова образца не отправляются в облако."
+            )));
         }
         let fits = verdict(spec, &info);
         let device = fits.imprint_device.unwrap_or(Device::Cpu);
@@ -745,7 +749,7 @@ impl VoiceLabService {
             JobKind::Imprint,
             spec.id,
             move |context: JobContext| async move {
-                context.stage("prepare", "Готовлю записи", Some(1.0));
+                context.stage("prepare", &crate::tr!("Готовлю записи"), Some(1.0));
                 let options = RunOptions {
                     cwd: Some(lab.server_dir.clone()),
                     env: Some(child_env()),
@@ -817,10 +821,10 @@ impl VoiceLabService {
 
     pub fn rename(&self, id: &str, name: Option<&Value>, actor: Option<Actor>) -> Result<OwnVoice, ApiError> {
         if self.store.voice(id).is_none() {
-            return Err(ApiError::not_found("нет такого голоса"));
+            return Err(ApiError::not_found(crate::tr!("нет такого голоса")));
         }
         let Some(name) = name.and_then(Value::as_str).map(js::trim).filter(|name| !name.is_empty()) else {
-            return Err(ApiError::bad_request("Имя не может быть пустым."));
+            return Err(ApiError::bad_request(crate::tr!("Имя не может быть пустым.")));
         };
         let renamed = self.store.rename(id, js::slice(name, 60)).map_err(ApiError::internal)?;
         self.events.emit(GatewayEvent::VoiceOwnRenamed { id: id.to_string(), actor });
@@ -829,10 +833,10 @@ impl VoiceLabService {
 
     pub fn remove(&self, id: &str, actor: Option<Actor>) -> Result<(), ApiError> {
         if self.store.voice(id).is_none() {
-            return Err(ApiError::not_found("нет такого голоса"));
+            return Err(ApiError::not_found(crate::tr!("нет такого голоса")));
         }
         if self.chosen_voice().as_deref() == Some(id) {
-            return Err(ApiError::conflict("Этот голос выбран — сначала выберите другой."));
+            return Err(ApiError::conflict(crate::tr!("Этот голос выбран — сначала выберите другой.")));
         }
         self.store.remove(id).map_err(ApiError::internal)?;
         self.events.emit(GatewayEvent::VoiceOwnDeleted { id: id.to_string(), actor });
@@ -845,7 +849,7 @@ impl VoiceLabService {
             (Some(_), Some(n)) => self.store.sample_path(id, n),
             _ => None,
         };
-        path.ok_or_else(|| ApiError::not_found("нет такой пробы"))
+        path.ok_or_else(|| ApiError::not_found(crate::tr!("нет такой пробы")))
     }
 
     /// Every engine as the panel's card shows it here.
@@ -914,10 +918,13 @@ impl VoiceLabService {
     /// afterwards: only the chosen voice holds memory.
     pub async fn prepare(self: &Arc<Self>, id: &str, anyway: bool) -> Result<PreparedVoice, ApiError> {
         let Some(voice) = self.store.voice(id) else {
-            return Err(ApiError::not_found("нет такого голоса"));
+            return Err(ApiError::not_found(crate::tr!("нет такого голоса")));
         };
         if !self.installed(voice.engine) {
-            return Err(ApiError::bad_request(format!("Модель {} не установлена.", spec(voice.engine).title)));
+            return Err(ApiError::bad_request(crate::tr!(
+                "Модель {title} не установлена.",
+                title = spec(voice.engine).title
+            )));
         }
         self.ensure(voice.engine, anyway).await?;
         for other in ENGINE_IDS.into_iter().filter(|other| *other != voice.engine) {
@@ -1064,7 +1071,7 @@ impl VoiceLabService {
         };
         self.jobs
             .start(kind, engine.as_str(), work, Some(Box::new(finished)))
-            .map_err(|busy| ApiError::conflict(format!("Уже идёт {} — дождитесь её.", busy.kind.title())))
+            .map_err(|busy| ApiError::conflict(crate::tr!("Уже идёт {job} — дождитесь её.", job = busy.kind.title())))
     }
 
     fn engine_card(&self, engine: EngineId, info: Option<&PlatformInfo>) -> EngineCard {
@@ -1072,7 +1079,7 @@ impl VoiceLabService {
         let fits = match info {
             Some(info) => verdict(spec, info),
             None => Verdict {
-                supported: false, reason: Some("Проверяю компьютер…".into()), ..Verdict::default()
+                supported: false, reason: Some(crate::tr!("Проверяю компьютер…")), ..Verdict::default()
             },
         };
         let installing = self.jobs.state().is_some_and(|job| {
@@ -1093,8 +1100,8 @@ impl VoiceLabService {
         EngineCard {
             id: engine,
             title: spec.title,
-            about: spec.about,
-            license: spec.license,
+            about: crate::locale::text::translate(spec.about, &[]),
+            license: crate::locale::text::translate(spec.license, &[]),
             recommended: spec.recommended,
             status,
             device: fits.device,
@@ -1119,10 +1126,12 @@ impl VoiceLabService {
         if !self.own_speech {
             return (
                 false,
-                Some("Свой голосовой сервер не настроен (TTS_OWN_URL): свои голоса пока не зазвучат.".into()),
+                Some(crate::tr!("Свой голосовой сервер не настроен (TTS_OWN_URL): свои голоса пока не зазвучат.")),
             );
         }
-        let Some(info) = info else { return (false, Some("Проверяю компьютер…".into())) };
+        let Some(info) = info else {
+            return (false, Some(crate::tr!("Проверяю компьютер…")));
+        };
         if !ENGINE_IDS.iter().any(|engine| verdict(spec(*engine), info).supported) {
             return (false, verdict(spec(EngineId::Omnivoice), info).reason);
         }
@@ -1142,7 +1151,9 @@ impl VoiceLabService {
     }
 
     fn spec(&self, engine: &str) -> Result<&'static EngineSpec, ApiError> {
-        EngineId::parse(engine).map(spec).ok_or_else(|| ApiError::not_found(format!("нет модели {engine}")))
+        EngineId::parse(engine)
+            .map(spec)
+            .ok_or_else(|| ApiError::not_found(crate::tr!("нет модели {engine}", engine = engine)))
     }
 
     /// The own voice chosen to speak (whatever the mode): it cannot be deleted.
@@ -1163,7 +1174,7 @@ impl VoiceLabService {
 fn admitted(admission: &Admission, anyway: bool) -> Result<(), ApiError> {
     match admission.verdict {
         AdmissionVerdict::Tight if !anyway => {
-            Err(tight_memory(admission.reason.clone().unwrap_or_else(|| "Памяти впритык.".into())))
+            Err(tight_memory(admission.reason.clone().unwrap_or_else(|| crate::tr!("Памяти впритык."))))
         }
         _ => Ok(()),
     }

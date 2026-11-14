@@ -14,6 +14,7 @@ use crate::skills::SkillsService;
 use crate::speech::{SpeechService, VoiceService};
 
 pub struct ModuleHealth {
+    pub settings: Arc<crate::settings::SettingsService>,
     pub speech: Arc<SpeechService>,
     pub dialog: Arc<DialogService>,
     pub voice: Arc<VoiceService>,
@@ -35,6 +36,10 @@ impl HealthSources for ModuleHealth {
 
     fn tts(&self, yandex_allowed: bool) -> Option<String> {
         Some(self.voice.describe(yandex_allowed))
+    }
+
+    fn voice_input(&self) -> Option<crate::settings::definitions::TalkInput> {
+        Some(crate::talk::input::current(&self.settings).input)
     }
 
     /// Who serves each capability, what is ours (and set up), and the counters since the start.

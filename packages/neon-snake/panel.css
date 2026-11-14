@@ -1,0 +1,218 @@
+/* Неоновая змейка: свой неон поверх любой темы — это игра. Классы с ns-, чтобы не задеть пульт. */
+
+.ns-game {
+  position: relative;
+  border-radius: 20px;
+  overflow: hidden;
+  outline: none;
+  background: #05040f;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  color: #fff;
+  box-shadow: 0 0 0 1px rgba(160, 120, 255, 0.25), 0 18px 60px rgba(90, 30, 200, 0.35);
+}
+
+.ns-game:focus-visible {
+  box-shadow: 0 0 0 2px rgba(120, 220, 255, 0.7), 0 18px 60px rgba(90, 30, 200, 0.35);
+}
+
+.ns-canvas {
+  display: block;
+}
+
+.ns-hud {
+  position: absolute;
+  z-index: 2;
+  inset: 12px 14px auto 14px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  pointer-events: none;
+}
+
+.ns-score b {
+  display: block;
+  font-size: 34px;
+  line-height: 36px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  text-shadow: 0 0 8px #ff6fd2, 0 0 22px rgba(255, 110, 220, 0.6);
+}
+
+.ns-score span {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(220, 225, 255, 0.7);
+}
+
+.ns-tools {
+  display: flex;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.ns-tool {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  border: 1px solid rgba(170, 140, 255, 0.45);
+  background: rgba(20, 12, 50, 0.55);
+  color: #fff;
+  font-size: 15px;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.ns-overlay {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: radial-gradient(circle at 50% 45%, rgba(10, 6, 30, 0.35), rgba(5, 4, 15, 0.72));
+  text-align: center;
+  padding: 16px;
+}
+
+/* Неоновая вывеска: светлая трубка и свечение вокруг, без заливки градиентом. */
+.ns-title {
+  font-size: clamp(26px, 6vw, 46px);
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  color: #f6eeff;
+  text-shadow: 0 0 6px #c9a2ff, 0 0 18px #ff6fd2, 0 0 40px rgba(110, 240, 255, 0.55);
+}
+
+.ns-title.ns-small {
+  font-size: clamp(22px, 4.5vw, 34px);
+}
+
+.ns-hint {
+  font-size: 13px;
+  color: rgba(220, 225, 255, 0.75);
+}
+
+.ns-record {
+  font-size: 16px;
+  font-weight: 800;
+  color: #ffd36e;
+  text-shadow: 0 0 14px rgba(255, 200, 80, 0.8);
+}
+
+.ns-score-big {
+  font-size: 64px;
+  line-height: 64px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  text-shadow: 0 0 22px rgba(255, 110, 220, 0.85);
+}
+
+.ns-go {
+  border: 0;
+  border-radius: 999px;
+  padding: 12px 30px;
+  font-size: 17px;
+  font-weight: 800;
+  color: #12062b;
+  cursor: pointer;
+  background: linear-gradient(90deg, #6ff7ff, #ff7ad9);
+  box-shadow: 0 0 24px rgba(255, 110, 220, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.ns-go:active {
+  transform: scale(0.97);
+}
+
+.ns-go-small {
+  padding: 8px 18px;
+  font-size: 14px;
+}
+
+.ns-focus {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: rgba(20, 12, 50, 0.7);
+  border: 1px solid rgba(170, 140, 255, 0.4);
+  color: rgba(230, 230, 255, 0.9);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.ns-pad {
+  position: absolute;
+  z-index: 2;
+  right: 12px;
+  bottom: 12px;
+  display: grid;
+  grid-template-areas: ". up ." "left . right" ". down .";
+  grid-template-columns: repeat(3, 40px);
+  grid-template-rows: repeat(3, 40px);
+  gap: 4px;
+  opacity: 0.72;
+}
+
+.ns-pad-key {
+  border-radius: 12px;
+  border: 1px solid rgba(130, 220, 255, 0.45);
+  background: rgba(20, 12, 50, 0.5);
+  color: #bff6ff;
+  font-size: 14px;
+  cursor: pointer;
+  touch-action: none;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.ns-pad-key:active {
+  background: rgba(255, 110, 220, 0.4);
+  color: #fff;
+}
+
+/* Плитка стола: своя рамка (bare). */
+.widget.ns-tile {
+  position: relative;
+  border-radius: 22px;
+  overflow: hidden;
+  background: #070418;
+  box-shadow: 0 0 0 1px rgba(200, 120, 255, 0.35), 0 10px 40px rgba(120, 40, 220, 0.35);
+  color: #fff;
+}
+
+.ns-tile-body {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 28px 14px 12px;
+  background: linear-gradient(180deg, rgba(7, 4, 24, 0) 0%, rgba(7, 4, 24, 0.82) 55%);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.ns-tile-title {
+  font-size: 18px;
+  font-weight: 900;
+  color: #fff;
+  text-shadow: 0 0 8px #ff6fd2, 0 0 20px rgba(110, 240, 255, 0.5);
+}
+
+.ns-tile-cap {
+  font-size: 12px;
+  color: rgba(225, 228, 255, 0.8);
+  margin-bottom: 4px;
+}

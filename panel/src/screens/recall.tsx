@@ -10,7 +10,6 @@ import { useEffect, useState } from 'preact/hooks';
 import {
     api,
     can,
-    plural,
     problemOf,
     MemoryChange,
     MemoryEntityCard,
@@ -39,6 +38,7 @@ import {
     IconUndo,
     IconUser,
 } from '../icons';
+import { formatDate, formatNumber, locale, tr } from '../i18n';
 import { usePoll } from '../poll';
 import { useLinkedItem, usePanel } from '../shell/context';
 import { timeAgo } from '../time';
@@ -46,28 +46,29 @@ import { ask } from '../ui/confirm';
 import { Switch } from '../ui/switch';
 import { SectionTabs, TabEntry } from '../ui/tabs';
 import { MemoryModelSetting, NightTab, SleepSettings } from './sleep';
+import { assistant, byMode } from '../words';
 
 export type MemoryTab = 'overview' | 'house' | 'night' | 'settings';
 
-const KIND_TITLES: Record<MemoryEntityKind, string> = {
-    household: 'Дом',
-    person: 'Человек',
-    pet: 'Питомец',
-    room: 'Комната',
-    thing: 'Вещь',
-    place: 'Место',
-    org: 'Организация',
-    character: 'Персонаж',
-};
+const kindTitles = (): Record<MemoryEntityKind, string> => ({
+    household: tr.recall.kindHousehold,
+    person: tr.recall.kindPerson,
+    pet: tr.recall.kindPet,
+    room: tr.recall.kindRoom,
+    thing: tr.recall.kindThing,
+    place: tr.recall.kindPlace,
+    org: tr.recall.kindOrg,
+    character: tr.recall.kindCharacter,
+});
 
 /** Группы списка «Дом», по порядку. */
-const GROUPS: Array<{ title: string; kinds: MemoryEntityKind[] }> = [
-    { title: 'Люди', kinds: ['person'] },
-    { title: 'Питомцы', kinds: ['pet'] },
-    { title: 'Комнаты и места', kinds: ['room', 'place', 'org'] },
-    { title: 'Вещи', kinds: ['thing'] },
-    { title: 'Дом: привычки и дела', kinds: ['household'] },
-    { title: 'Персонажи', kinds: ['character'] },
+const groups = (): Array<{ title: string; kinds: MemoryEntityKind[] }> => [
+    { title: tr.recall.groupPeople, kinds: ['person'] },
+    { title: tr.recall.groupPets, kinds: ['pet'] },
+    { title: tr.recall.groupRooms, kinds: ['room', 'place', 'org'] },
+    { title: tr.recall.groupThings, kinds: ['thing'] },
+    { title: tr.recall.groupHousehold, kinds: ['household'] },
+    { title: tr.recall.groupCharacters, kinds: ['character'] },
 ];
 
 /** Что можно добавить руками. */
@@ -102,22 +103,23 @@ function Avatar({ kind, name }: { kind: MemoryEntityKind; name: string }) {
 
 /** «5 КБ», «1,3 МБ», «8 МБ». */
 function size(bytes: number): string {
-    if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} КБ`;
+    if (bytes < 1024 * 1024) return tr.recall.kb(Math.max(1, Math.round(bytes / 1024)));
     const mb = bytes / (1024 * 1024);
-    return `${Number.isInteger(mb) || mb >= 10 ? Math.round(mb) : mb.toFixed(1).replace('.', ',')} МБ`;
+    return tr.recall.mb(
+        Number.isInteger(mb) || mb >= 10 ? String(Math.round(mb)) : formatNumber(mb, { minimumFractionDigits: 1, maximumFractionDigits: 1 }),
+    );
 }
 
 /** «7:00» по часам этого браузера. */
 function clock(iso: string): string {
-    const at = new Date(iso);
-    return `${at.getHours()}:${String(at.getMinutes()).padStart(2, '0')}`;
+    return formatDate(new Date(iso), { hour: 'numeric', minute: '2-digit' });
 }
 
 /** Персонаж по его id: «alice» — Алиса, «пакет:персонаж» — по имени персонажа. */
 function characterName(id: string | null, known?: { id: string; title: string }): string {
     if (!id) return '';
     if (known && known.id === id) return known.title;
-    if (id === 'alice') return 'Алиса';
+    if (id === 'alice') return assistant();
     const local = id.includes(':') ? id.split(':').pop() ?? id : id;
     return local.charAt(0).toUpperCase() + local.slice(1);
 }
@@ -126,27 +128,27 @@ function characterName(id: string | null, known?: { id: string; title: string })
 function originOf(fact: MemoryFact, stationName: (device: string) => string | null): string {
     const how =
         fact.source === 'panel'
-            ? 'добавлено в пульте'
+            ? tr.recall.howPanel
             : fact.source === 'voice'
-              ? '«запомни» голосом'
+              ? tr.recall.howVoice
               : fact.source === 'model'
-                ? 'запомнено в разговоре'
+                ? tr.recall.howModel
                 : fact.source === 'reflection'
-                  ? 'вывод рефлексии'
+                  ? tr.recall.howReflection
                   : fact.source === 'package'
-                    ? 'из пакета'
-                    : 'из разбора разговора';
+                    ? tr.recall.howPackage
+                    : tr.recall.howConversation;
     if (fact.source === 'panel') return how;
     const station = fact.origin.station ? stationName(fact.origin.station) : null;
     const where =
         fact.origin.channel === 'station'
             ? station
-                ? ` у колонки «${station}»`
-                : ' у колонки'
+                ? tr.recall.whereStationNamed(station)
+                : byMode(tr.recall.whereStation, tr.recall.whereVoice)
             : fact.origin.channel === 'panel'
-              ? ' в пульте'
+              ? tr.recall.wherePanel
               : fact.origin.channel === 'telegram'
-                ? ' в Telegram'
+                ? tr.recall.whereTelegram
                 : '';
     return `${how}${where}`;
 }
@@ -154,20 +156,20 @@ function originOf(fact: MemoryFact, stationName: (device: string) => string | nu
 function whoKnows(fact: MemoryFact): string {
     switch (fact.visibility) {
         case 'person':
-            return 'только этот человек';
+            return tr.recall.knowsPerson;
         case 'people':
-            return 'несколько людей';
+            return tr.recall.knowsPeople;
         case 'character':
-            return 'только этот персонаж';
+            return tr.recall.knowsCharacter;
         case 'world':
-            return 'персонажи мира';
+            return tr.recall.knowsWorld;
         default:
-            return 'весь дом';
+            return tr.recall.knowsHouse;
     }
 }
 
 function certainty(confidence: number): string {
-    return confidence >= 0.95 ? 'точно' : confidence >= 0.7 ? 'скорее да' : 'догадка';
+    return confidence >= 0.95 ? tr.recall.certain : confidence >= 0.7 ? tr.recall.likely : tr.recall.guess;
 }
 
 /** Имя колонки по метке устройства, если пульт её знает. */
@@ -178,11 +180,11 @@ function useStationName(): (device: string) => string | null {
 
 /** Строка состояния под переключателем. */
 function stateLine(overview: MemoryOverview | null): string {
-    if (!overview) return 'Читаю…';
+    if (!overview) return tr.recall.reading;
     const { state, counts, bytes } = overview;
-    if (!state.enabled) return 'Персонажи не пользуются тем, что выросло из разговоров. Ничего не стёрто.';
-    const parts = [`${counts.home} ${plural(counts.home, 'запись', 'записи', 'записей')} о доме`, `около ${size(bytes)}`];
-    if (state.paused) parts.push(state.pausedUntil ? `на паузе до ${clock(state.pausedUntil)}` : 'на паузе, пока не включат');
+    if (!state.enabled) return tr.recall.stateOff;
+    const parts = [tr.recall.homeRecords(counts.home), tr.recall.aboutSize(size(bytes))];
+    if (state.paused) parts.push(state.pausedUntil ? tr.recall.pausedUntil(clock(state.pausedUntil)) : tr.recall.pausedManual);
     return parts.join(' · ');
 }
 
@@ -229,16 +231,16 @@ export function MemoryScreen() {
                 }),
     });
     const tabs: Array<TabEntry<MemoryTab>> = [
-        { id: 'overview', label: 'Обзор', icon: <IconMemory size={16} /> },
-        { id: 'house', label: 'Дом', icon: <IconHome size={16} /> },
-        { id: 'night', label: 'За ночь', icon: <IconMoon size={16} /> },
-        { id: 'settings', label: 'Настройки', icon: <IconGear size={16} /> },
+        { id: 'overview', label: tr.recall.tabOverview, icon: <IconMemory size={16} /> },
+        { id: 'house', label: tr.recall.tabHouse, icon: <IconHome size={16} /> },
+        { id: 'night', label: tr.recall.tabNight, icon: <IconMoon size={16} /> },
+        { id: 'settings', label: tr.recall.tabSettings, icon: <IconGear size={16} /> },
     ];
     const shown: MemoryTab = tabs.some((entry) => entry.id === tab) ? tab : 'overview';
     return (
         <>
             <MemoryHead overview={overview} error={error} onChanged={reread} />
-            <SectionTabs label="Память" tabs={tabs} tab={shown} onPick={setTab} />
+            <SectionTabs label={tr.recall.tabsLabel} tabs={tabs} tab={shown} onPick={setTab} />
             {shown === 'overview' && <OverviewTab overview={overview} onChanged={reread} />}
             {shown === 'house' && <HouseTab />}
             {shown === 'night' && (
@@ -266,23 +268,23 @@ function MemoryHead({ overview, error, onChanged }: { overview: MemoryOverview |
     const toggle = async (on: boolean) => {
         if (!on) {
             const sure = await ask({
-                title: 'Выключить память?',
-                text: 'Персонажи перестанут пользоваться тем, что выросло из разговоров, и пополнять его. Ничего не сотрётся; мир и знания персонажей из пакетов останутся.',
-                ok: 'Выключить',
+                title: tr.recall.turnOffTitle,
+                text: tr.recall.turnOffText,
+                ok: tr.recall.turnOffOk,
             });
             if (!sure) return;
         }
         run(() => api.setMemoryState({ enabled: on }));
     };
     return (
-        <section class="card glass rc-head" aria-label="Состояние памяти">
+        <section class="card glass rc-head" aria-label={tr.recall.headLabel}>
             <div class="rc-head-row">
                 <label class="w-toggle flex-1 min-w-0">
                     <span class="flex-1 min-w-0 flex flex-col">
-                        <span class="w-strong">{!state ? 'Память' : state.enabled ? 'Память включена' : 'Память выключена'}</span>
+                        <span class="w-strong">{!state ? tr.recall.headTitle : state.enabled ? tr.recall.headOn : tr.recall.headOff}</span>
                         <span class="w-cap">{stateLine(overview)}</span>
                     </span>
-                    <Switch on={!!state?.enabled} label="Память" disabled={!manage || !state || busy} onChange={(on) => void toggle(on)} />
+                    <Switch on={!!state?.enabled} label={tr.recall.headTitle} disabled={!manage || !state || busy} onChange={(on) => void toggle(on)} />
                 </label>
                 {state?.enabled && <PauseControl paused={state.paused} busy={busy} onRun={run} />}
             </div>
@@ -301,7 +303,7 @@ function PauseControl({ paused, busy, onRun }: { paused: boolean; busy: boolean;
     if (paused) {
         return (
             <button class="w-btn" disabled={busy} onClick={() => onRun(() => api.resumeMemory())}>
-                Снять паузу
+                {tr.recall.resume}
             </button>
         );
     }
@@ -313,20 +315,20 @@ function PauseControl({ paused, busy, onRun }: { paused: boolean; busy: boolean;
         <div class="rc-pause">
             <button class="w-btn" aria-haspopup="menu" aria-expanded={open} disabled={busy} onClick={() => setOpen(!open)}>
                 <IconPause size={14} />
-                Пауза
+                {tr.recall.pause}
             </button>
             {open && (
-                <div class="menu rc-menu" role="menu" aria-label="Не запоминать">
+                <div class="menu rc-menu" role="menu" aria-label={tr.recall.dontRemember}>
                     <button role="menuitem" class="tab-more-item" onClick={() => pick('hour')}>
-                        На час
+                        {tr.recall.forHour}
                     </button>
                     <button role="menuitem" class="tab-more-item" onClick={() => pick('morning')}>
-                        До утра
+                        {tr.recall.untilMorning}
                     </button>
                     <button role="menuitem" class="tab-more-item" onClick={() => pick('manual')}>
-                        Пока не включу
+                        {tr.recall.untilOn}
                     </button>
-                    <p class="w-cap rc-menu-note">Пауза останавливает только запись: что уже известно, персонажи помнят.</p>
+                    <p class="w-cap rc-menu-note">{tr.recall.pauseNote}</p>
                 </div>
             )}
         </div>
@@ -335,40 +337,41 @@ function PauseControl({ paused, busy, onRun }: { paused: boolean; busy: boolean;
 
 /** «Обзор»: сколько чего, «Новое», «Глазами персонажа», что уходит наружу. */
 function OverviewTab({ overview, onChanged }: { overview: MemoryOverview | null; onChanged: () => void }) {
-    if (!overview) return <p class="w-cap">Читаю…</p>;
+    if (!overview) return <p class="w-cap">{tr.recall.reading}</p>;
     const { counts, bytes, limitBytes } = overview;
     const share = Math.min(100, Math.round((bytes / Math.max(1, limitBytes)) * 1000) / 10);
     return (
         <>
-            <section class="card glass card-list" aria-label="Что в памяти">
+            <section class="card glass card-list" aria-label={tr.recall.whatsInMemory}>
                 <div class="rc-stats">
                     <div class="rc-stat rc-home">
                         <span class="rc-stat-label">
                             <IconHome size={14} />
-                            Дом
+                            {tr.recall.statHome}
                         </span>
                         <b>{counts.home}</b>
-                        <span class="w-cap">люди, питомцы, комнаты, привычки</span>
+                        <span class="w-cap">{tr.recall.statHomeAbout}</span>
                     </div>
                     <div class="rc-stat rc-pers">
                         <span class="rc-stat-label">
                             <IconMemory size={14} />
-                            Личное персонажей
+                            {tr.recall.statPersonal}
                         </span>
                         <b>{counts.personal}</b>
-                        <span class="w-cap">мнения и впечатления; дневник — со следующим этапом</span>
+                        <span class="w-cap">{tr.recall.statPersonalAbout}</span>
                     </div>
                     <div class="rc-stat">
-                        <span class="rc-stat-label">Разговоры</span>
+                        <span class="rc-stat-label">{tr.recall.statTalks}</span>
                         <b>{counts.episodes}</b>
-                        <span class="w-cap">дословно за 7 дней, потом остаётся только суть</span>
+                        <span class="w-cap">{tr.recall.statTalksAbout}</span>
                     </div>
                 </div>
                 <div class="rc-size">
                     <span class="w-cap">
-                        Занято около <b>{size(bytes)}</b> из {size(limitBytes)}
+                        {tr.recall.usedBefore} <b>{size(bytes)}</b>
+                        {tr.recall.usedOf(size(limitBytes))}
                     </span>
-                    <span class="rc-bar" role="img" aria-label={`Занято ${share} %`}>
+                    <span class="rc-bar" role="img" aria-label={tr.recall.usedPercent(formatNumber(share))}>
                         <i style={{ width: `${Math.max(share, bytes > 0 ? 1 : 0)}%` }} />
                     </span>
                 </div>
@@ -378,12 +381,11 @@ function OverviewTab({ overview, onChanged }: { overview: MemoryOverview | null;
             <section class="card glass card-list" aria-labelledby="rc-out-h">
                 <div class="section-head">
                     <h2 id="rc-out-h" class="t-title-xs m-0">
-                        Что уходит наружу
+                        {tr.recall.outTitle}
                     </h2>
                 </div>
                 <p class="w-cap m-0">
-                    Сама память ничего не отправляет наружу: записи хранит шлюз, разговор идёт туда же, куда и всегда, — к модели «Мозга». Разбор
-                    разговоров, поиск по смыслу и рефлексия появятся на следующих этапах, и здесь будет видно, кому они что отдают.
+                    {tr.recall.outText}
                 </p>
             </section>
         </>
@@ -406,15 +408,15 @@ function RecentCard({ overview, onChanged }: { overview: MemoryOverview; onChang
         <section class="card glass card-list" aria-labelledby="rc-new-h">
             <div class="section-head">
                 <h2 id="rc-new-h" class="t-title-xs m-0">
-                    Новое
+                    {tr.recall.newTitle}
                 </h2>
                 <button class="rc-link" onClick={() => panel.go('skills', 'memory', 'house')}>
-                    Весь дом
+                    {tr.recall.wholeHouse}
                 </button>
             </div>
             {overview.recent.length === 0 ? (
                 <p class="w-cap m-0">
-                    Пока ничего. Скажите колонке: «Запомни: у Маши аллергия на орехи» — или расскажите о доме в разговоре: персонаж запомнит сам.
+                    {byMode(tr.recall.emptyStation, tr.recall.emptyComputer)}
                 </p>
             ) : (
                 <ul class="rc-list">
@@ -426,19 +428,19 @@ function RecentCard({ overview, onChanged }: { overview: MemoryOverview; onChang
                                 <span class="rc-item-meta">
                                     <span class={`rc-chip rc-${item.layer === 'personal' ? 'pers' : 'home'}`}>
                                         {item.layer === 'personal'
-                                            ? `Личное: ${characterName(item.visibilityOwner)}`
+                                            ? tr.recall.personal(characterName(item.visibilityOwner))
                                             : item.subjectKind === 'household'
-                                              ? 'Дом'
-                                              : `Дом → ${item.subjectName}`}
+                                              ? tr.recall.house
+                                              : tr.recall.houseAbout(item.subjectName)}
                                     </span>
                                     <span>{originOf(item, stationName)}</span>
-                                    {item.validTo && <span>закрыт</span>}
+                                    {item.validTo && <span>{tr.recall.closed}</span>}
                                 </span>
                             </span>
                             {manage && item.changeId && !item.validTo ? (
                                 <button class="w-btn rc-undo" onClick={() => undo(item.changeId!)}>
                                     <IconUndo size={13} />
-                                    Отменить
+                                    {tr.recall.undo}
                                 </button>
                             ) : (
                                 <span />
@@ -464,13 +466,13 @@ function EyesCard({ overview }: { overview: MemoryOverview }) {
         <section class="card glass card-list" aria-labelledby="rc-eyes-h">
             <div class="section-head">
                 <h2 id="rc-eyes-h" class="t-title-xs m-0">
-                    Глазами персонажа
+                    {tr.recall.eyesTitle}
                 </h2>
                 <span class="pill pill-off">{eyes.character.title}</span>
             </div>
-            <p class="w-cap m-0">Это всегда в подсказке того, кто сейчас отвечает, — то, что он знает наверняка. Остальное он находит по вопросу.</p>
+            <p class="w-cap m-0">{tr.recall.eyesAbout}</p>
             {eyes.items.length === 0 ? (
-                <p class="w-cap m-0">Пока пусто: в подсказку ничего не идёт.</p>
+                <p class="w-cap m-0">{tr.recall.eyesEmpty}</p>
             ) : (
                 <ul class="rc-eyes">
                     {eyes.items.map((item) => (
@@ -481,11 +483,11 @@ function EyesCard({ overview }: { overview: MemoryOverview }) {
                     ))}
                 </ul>
             )}
-            <span class="rc-bar rc-bar-ink" role="img" aria-label={`Подсказка занята на ${share} %`}>
+            <span class="rc-bar rc-bar-ink" role="img" aria-label={tr.recall.eyesPercent(share)}>
                 <i style={{ width: `${share}%` }} />
             </span>
             <span class="w-cap">
-                {eyes.items.length} {plural(eyes.items.length, 'запись', 'записи', 'записей')} из {eyes.maxItems} · около {eyes.tokens} из {eyes.maxTokens} токенов
+                {tr.recall.eyesCount(eyes.items.length, eyes.maxItems, eyes.tokens, eyes.maxTokens)}
             </span>
         </section>
     );
@@ -529,12 +531,12 @@ function EntityList({ onOpen }: { onOpen: (id: string) => void }) {
         <section class="card glass card-list" aria-labelledby="rc-house-h">
             <div class="section-head">
                 <h2 id="rc-house-h" class="t-title-xs m-0">
-                    Кто и что в доме
+                    {tr.recall.houseTitle}
                 </h2>
                 {manage && !adding && (
                     <button class="w-btn" onClick={() => setAdding(true)}>
                         <IconPlus size={14} />
-                        Добавить
+                        {tr.recall.add}
                     </button>
                 )}
             </div>
@@ -542,8 +544,8 @@ function EntityList({ onOpen }: { onOpen: (id: string) => void }) {
             <input
                 class="field rc-search"
                 type="search"
-                placeholder="Найти в доме"
-                aria-label="Найти в доме"
+                placeholder={tr.recall.searchHouse}
+                aria-label={tr.recall.searchHouse}
                 value={query}
                 onInput={(event) => setQuery((event.target as HTMLInputElement).value)}
             />
@@ -553,13 +555,13 @@ function EntityList({ onOpen }: { onOpen: (id: string) => void }) {
                 </p>
             )}
             {!list ? (
-                <p class="w-cap m-0">Читаю…</p>
+                <p class="w-cap m-0">{tr.recall.reading}</p>
             ) : list.length === 0 || (list.length === 1 && list[0].kind === 'household' && list[0].facts === 0) ? (
                 <p class="w-cap m-0">
-                    Пока в памяти никого. Люди, питомцы и комнаты появятся, когда о них расскажут колонке, — или добавьте их здесь.
+                    {byMode(tr.recall.houseEmptyStation, tr.recall.houseEmptyComputer)}
                 </p>
             ) : (
-                GROUPS.map((group) => {
+                groups().map((group) => {
                     const members = found.filter((entity) => group.kinds.includes(entity.kind) && (entity.kind !== 'household' || entity.facts > 0));
                     if (members.length === 0) return null;
                     return (
@@ -570,7 +572,7 @@ function EntityList({ onOpen }: { onOpen: (id: string) => void }) {
                                     <Avatar kind={entity.kind} name={entity.name} />
                                     <span class="min-w-0 flex flex-col">
                                         <span class="w-strong">{entity.name}</span>
-                                        <span class="w-cap rc-ellipsis">{entity.aliases.length ? entity.aliases.join(', ') : (entity.note ?? KIND_TITLES[entity.kind])}</span>
+                                        <span class="w-cap rc-ellipsis">{entity.aliases.length ? entity.aliases.join(', ') : (entity.note ?? kindTitles()[entity.kind])}</span>
                                     </span>
                                     <span class="w-cap">{entity.facts}</span>
                                 </button>
@@ -599,19 +601,19 @@ function AddEntity({ onDone }: { onDone: (id?: string) => void }) {
     };
     return (
         <form class="rc-form" onSubmit={add}>
-            <select class="field rc-kind" aria-label="Кто это" value={kind} onChange={(event) => setKind((event.target as HTMLSelectElement).value as MemoryEntityKind)}>
+            <select class="field rc-kind" aria-label={tr.recall.whoIsIt} value={kind} onChange={(event) => setKind((event.target as HTMLSelectElement).value as MemoryEntityKind)}>
                 {ADDABLE.map((value) => (
                     <option key={value} value={value}>
-                        {KIND_TITLES[value]}
+                        {kindTitles()[value]}
                     </option>
                 ))}
             </select>
-            <input class="field flex-1 min-w-0" placeholder="Имя: Маша, кот Барсик, детская" aria-label="Имя" value={name} onInput={(event) => setName((event.target as HTMLInputElement).value)} />
+            <input class="field flex-1 min-w-0" placeholder={tr.recall.namePlaceholder} aria-label={tr.recall.nameLabel} value={name} onInput={(event) => setName((event.target as HTMLInputElement).value)} />
             <button class="w-btn w-btn-ink" type="submit" disabled={busy || !name.trim()}>
-                Добавить
+                {tr.recall.add}
             </button>
             <button class="w-btn" type="button" onClick={() => onDone()}>
-                Отмена
+                {tr.recall.cancel}
             </button>
             {problem && (
                 <p class="w-cap c-dot-offline m-0 rc-form-note" role="alert">
@@ -665,7 +667,7 @@ function EntityView({ id, onBack, onOpen }: { id: string; onBack: () => void; on
     const back = (
         <button class="deeper-back" onClick={onBack}>
             <IconChevronLeft size={16} />
-            Весь дом
+            {tr.recall.wholeHouse}
         </button>
     );
     if (!card) {
@@ -673,7 +675,7 @@ function EntityView({ id, onBack, onOpen }: { id: string; onBack: () => void; on
             <>
                 {back}
                 <p class={error ? 'w-cap c-dot-offline' : 'w-cap'} role={error ? 'alert' : undefined}>
-                    {error ?? 'Читаю…'}
+                    {error ?? tr.recall.reading}
                 </p>
             </>
         );
@@ -682,18 +684,18 @@ function EntityView({ id, onBack, onOpen }: { id: string; onBack: () => void; on
     const household = entity.kind === 'household';
     const remove = async () => {
         const sure = await ask({
-            title: `Стереть «${entity.name}»?`,
-            text: 'Сотрётся и всё, что о нём известно, вместе с историей. Вернуть нельзя.',
-            ok: 'Стереть',
+            title: tr.recall.eraseTitle(entity.name),
+            text: tr.recall.eraseText,
+            ok: tr.recall.eraseOk,
             danger: true,
         });
         if (sure) act(() => api.deleteMemoryEntity(entity.id), onBack);
     };
     const merge = async (other: MemoryEntityItem) => {
         const sure = await ask({
-            title: `Склеить «${other.name}» с «${entity.name}»?`,
-            text: `Всё, что известно о «${other.name}», перейдёт сюда, а «${other.name}» станет другим именем.`,
-            ok: 'Склеить',
+            title: tr.recall.mergeTitle(other.name, entity.name),
+            text: tr.recall.mergeText(other.name),
+            ok: tr.recall.mergeOk,
         });
         if (sure) act(() => api.mergeMemoryEntity(other.id, entity.id), () => (setMerging(false), reread()));
     };
@@ -707,14 +709,14 @@ function EntityView({ id, onBack, onOpen }: { id: string; onBack: () => void; on
                         <h2 id="rc-card-h" class="t-title-xs m-0">
                             {entity.name}
                         </h2>
-                        <span class="w-cap">{KIND_TITLES[entity.kind]}</span>
+                        <span class="w-cap">{kindTitles()[entity.kind]}</span>
                     </div>
                     {manage && !household && (
                         <div class="rc-head-actions">
                             <button class="w-btn" onClick={() => setMerging(!merging)} aria-expanded={merging}>
-                                Склеить с…
+                                {tr.recall.mergeWith}
                             </button>
-                            <button class="w-btn rc-danger" onClick={() => void remove()} aria-label={`Стереть «${entity.name}»`}>
+                            <button class="w-btn rc-danger" onClick={() => void remove()} aria-label={tr.recall.eraseLabel(entity.name)}>
                                 <IconTrash size={14} />
                             </button>
                         </div>
@@ -723,7 +725,7 @@ function EntityView({ id, onBack, onOpen }: { id: string; onBack: () => void; on
                 {!household && <Aliases card={card} manage={manage} onChanged={reread} />}
                 {merging && (
                     <div class="rc-merge">
-                        <span class="w-cap">Это одна и та же запись — с кем склеить:</span>
+                        <span class="w-cap">{tr.recall.mergeAsk}</span>
                         <div class="rc-chips">
                             {others
                                 .filter((other) => other.id !== entity.id && other.kind !== 'household')
@@ -745,18 +747,18 @@ function EntityView({ id, onBack, onOpen }: { id: string; onBack: () => void; on
             <section class="card glass card-list" aria-labelledby="rc-now-h">
                 <div class="section-head">
                     <h2 id="rc-now-h" class="t-title-xs m-0">
-                        Сейчас
+                        {tr.recall.now}
                     </h2>
                     {manage && !adding && (
                         <button class="w-btn" onClick={() => setAdding(true)}>
                             <IconPlus size={14} />
-                            Факт
+                            {tr.recall.fact}
                         </button>
                     )}
                 </div>
                 {adding && <AddFact subjectId={entity.id} onDone={() => (setAdding(false), reread())} />}
                 {card.current.length === 0 ? (
-                    <p class="w-cap m-0">Ничего не известно.</p>
+                    <p class="w-cap m-0">{tr.recall.nothingKnown}</p>
                 ) : (
                     <ul class="rc-list">
                         {card.current.map((fact) => (
@@ -770,7 +772,7 @@ function EntityView({ id, onBack, onOpen }: { id: string; onBack: () => void; on
                 <section class="card glass card-list" aria-labelledby="rc-links-h">
                     <div class="section-head">
                         <h2 id="rc-links-h" class="t-title-xs m-0">
-                            Связи
+                            {tr.recall.links}
                         </h2>
                     </div>
                     <LinksGraph name={entity.name} links={card.links} onOpen={onOpen} />
@@ -789,7 +791,7 @@ function EntityView({ id, onBack, onOpen }: { id: string; onBack: () => void; on
                 <section class="card glass card-list" aria-labelledby="rc-history-h">
                     <div class="section-head">
                         <h2 id="rc-history-h" class="t-title-xs m-0">
-                            История
+                            {tr.recall.history}
                         </h2>
                     </div>
                     <ul class="rc-list">
@@ -798,13 +800,13 @@ function EntityView({ id, onBack, onOpen }: { id: string; onBack: () => void; on
                                 <span class="min-w-0 flex flex-col">
                                     <span class="rc-item-text rc-closed">{fact.text}</span>
                                     <span class="rc-item-meta">
-                                        до {fact.validTo ? new Date(fact.validTo).toLocaleDateString('ru-RU') : '—'}
+                                        {tr.recall.until(fact.validTo ? new Date(fact.validTo).toLocaleDateString(locale()) : '—')}
                                         {fact.closedReason ? ` · ${fact.closedReason}` : ''}
                                     </span>
                                 </span>
                                 {manage ? (
                                     <button class="w-btn" onClick={() => act(() => api.reopenMemoryFact(fact.id))}>
-                                        Вернуть
+                                        {tr.recall.restore}
                                     </button>
                                 ) : (
                                     <span />
@@ -833,12 +835,12 @@ function Aliases({ card, manage, onChanged }: { card: MemoryEntityCard; manage: 
     if (!manage && aliases.length === 0) return null;
     return (
         <div class="flex flex-col gap-4">
-            <div class="rc-chips" aria-label="Другие имена">
+            <div class="rc-chips" aria-label={tr.recall.otherNames}>
                 {aliases.map((alias) => (
                     <span key={alias} class="rc-chip">
                         {alias}
                         {manage && (
-                            <button class="rc-chip-x" aria-label={`Убрать имя «${alias}»`} onClick={() => save(aliases.filter((a) => a !== alias))}>
+                            <button class="rc-chip-x" aria-label={tr.recall.removeName(alias)} onClick={() => save(aliases.filter((a) => a !== alias))}>
                                 ×
                             </button>
                         )}
@@ -853,14 +855,14 @@ function Aliases({ card, manage, onChanged }: { card: MemoryEntityCard; manage: 
                                 if (name.trim()) save([...aliases, name.trim()]);
                             }}
                         >
-                            <input class="field" placeholder="Другое имя" aria-label="Другое имя" value={name} onInput={(event) => setName((event.target as HTMLInputElement).value)} />
+                            <input class="field" placeholder={tr.recall.otherName} aria-label={tr.recall.otherName} value={name} onInput={(event) => setName((event.target as HTMLInputElement).value)} />
                             <button class="w-btn" type="submit" disabled={!name.trim()}>
-                                Добавить
+                                {tr.recall.add}
                             </button>
                         </form>
                     ) : (
                         <button class="rc-chip rc-chip-btn rc-chip-add" onClick={() => setAdding(true)}>
-                            + имя
+                            {tr.recall.plusName}
                         </button>
                     ))}
             </div>
@@ -889,16 +891,16 @@ function AddFact({ subjectId, onDone }: { subjectId: string; onDone: () => void 
     };
     return (
         <form class="rc-form" onSubmit={add}>
-            <input class="field flex-1 min-w-0" placeholder="Одно короткое предложение: у Маши аллергия на орехи" aria-label="Факт" value={text} onInput={(event) => setText((event.target as HTMLInputElement).value)} />
+            <input class="field flex-1 min-w-0" placeholder={tr.recall.factPlaceholder} aria-label={tr.recall.fact} value={text} onInput={(event) => setText((event.target as HTMLInputElement).value)} />
             <label class="rc-check">
                 <input type="checkbox" checked={pinned} onChange={(event) => setPinned((event.target as HTMLInputElement).checked)} />
-                всегда в подсказке
+                {tr.recall.alwaysInPrompt}
             </label>
             <button class="w-btn w-btn-ink" type="submit" disabled={busy || !text.trim()}>
-                Запомнить
+                {tr.recall.remember}
             </button>
             <button class="w-btn" type="button" onClick={onDone}>
-                Отмена
+                {tr.recall.cancel}
             </button>
             {problem && (
                 <p class="w-cap c-dot-offline m-0 rc-form-note" role="alert">
@@ -916,7 +918,7 @@ function FactRow({ fact, manage, onAct }: { fact: MemoryFact; manage: boolean; o
     const [editing, setEditing] = useState(false);
     const [text, setText] = useState(fact.text);
     const erase = async () => {
-        const sure = await ask({ title: 'Стереть совсем?', text: `«${fact.text}» исчезнет из памяти и из её журнала. Вернуть нельзя.`, ok: 'Стереть', danger: true });
+        const sure = await ask({ title: tr.recall.eraseFactTitle, text: tr.recall.eraseFactText(fact.text), ok: tr.recall.eraseOk, danger: true });
         if (sure) onAct(() => api.eraseMemoryFact(fact.id));
     };
     return (
@@ -931,12 +933,12 @@ function FactRow({ fact, manage, onAct }: { fact: MemoryFact; manage: boolean; o
                         onAct(() => api.updateMemoryFact(fact.id, { text: text.trim() }));
                     }}
                 >
-                    <input class="field flex-1 min-w-0" aria-label="Факт" value={text} onInput={(event) => setText((event.target as HTMLInputElement).value)} />
+                    <input class="field flex-1 min-w-0" aria-label={tr.recall.fact} value={text} onInput={(event) => setText((event.target as HTMLInputElement).value)} />
                     <button class="w-btn w-btn-ink" type="submit" disabled={!text.trim()}>
-                        Сохранить
+                        {tr.recall.save}
                     </button>
                     <button class="w-btn" type="button" onClick={() => (setEditing(false), setText(fact.text))}>
-                        Отмена
+                        {tr.recall.cancel}
                     </button>
                 </form>
             ) : (
@@ -947,48 +949,48 @@ function FactRow({ fact, manage, onAct }: { fact: MemoryFact; manage: boolean; o
                     </span>
                     <span class="rc-item-meta">
                         {originOf(fact, stationName)} · {timeAgo(fact.createdAt)}
-                        {fact.kind === 'insight' && <span class="rc-chip">вывод</span>}
+                        {fact.kind === 'insight' && <span class="rc-chip">{tr.recall.insight}</span>}
                     </span>
                 </button>
             )}
             {open && !editing && (
                 <div class="rc-fact-more">
                     <dl class="rc-kv">
-                        <dt>Уверенность</dt>
+                        <dt>{tr.recall.certainty}</dt>
                         <dd>{certainty(fact.confidence)}</dd>
-                        <dt>Кто знает</dt>
+                        <dt>{tr.recall.whoKnows}</dt>
                         <dd>
                             {whoKnows(fact)}
-                            {fact.origin.heardBy ? ` · услышал(а) ${characterName(fact.origin.heardBy)}` : ''}
+                            {fact.origin.heardBy ? tr.recall.heardBy(characterName(fact.origin.heardBy)) : ''}
                         </dd>
-                        <dt>Кто сказал</dt>
+                        <dt>{tr.recall.whoSaid}</dt>
                         <dd>
                             {fact.origin.saidByKind === 'household'
-                                ? 'голос у колонки, человек не узнан'
+                                ? byMode(tr.recall.saidHouseStation, tr.recall.saidHouseComputer)
                                 : fact.origin.saidByKind === 'user'
-                                  ? 'человек, вошедший в пульт'
+                                  ? tr.recall.saidUser
                                   : fact.origin.saidByKind === 'contact'
-                                    ? 'контакт Telegram'
-                                    : 'шлюз'}
+                                    ? tr.recall.saidContact
+                                    : tr.recall.saidGateway}
                         </dd>
-                        <dt>В подсказке</dt>
-                        <dd>{fact.pinned ? 'всегда — закреплено' : 'по важности и свежести'}</dd>
+                        <dt>{tr.recall.inPrompt}</dt>
+                        <dd>{fact.pinned ? tr.recall.pinnedAlways : tr.recall.byImportance}</dd>
                     </dl>
                     {manage && (
                         <div class="rc-fact-actions">
                             <button class="w-btn" onClick={() => setEditing(true)}>
-                                Исправить
+                                {tr.recall.fix}
                             </button>
                             <button class="w-btn" onClick={() => onAct(() => api.updateMemoryFact(fact.id, { pinned: !fact.pinned }))}>
                                 <IconPin size={13} />
-                                {fact.pinned ? 'Открепить' : 'Закрепить'}
+                                {fact.pinned ? tr.recall.unpin : tr.recall.pin}
                             </button>
                             <button class="w-btn" onClick={() => onAct(() => api.closeMemoryFact(fact.id))}>
-                                Больше не так
+                                {tr.recall.noLongerTrue}
                             </button>
                             <button class="w-btn rc-danger" onClick={() => void erase()}>
                                 <IconTrash size={13} />
-                                Стереть
+                                {tr.recall.eraseOk}
                             </button>
                         </div>
                     )}
@@ -1059,9 +1061,9 @@ function SettingsTab({ overview, onChanged }: { overview: MemoryOverview | null;
     const toggleMemory = async (on: boolean) => {
         if (!on) {
             const sure = await ask({
-                title: 'Выключить память?',
-                text: 'Персонажи перестанут пользоваться тем, что выросло из разговоров, и пополнять его. Ничего не сотрётся; мир и знания персонажей из пакетов останутся.',
-                ok: 'Выключить',
+                title: tr.recall.turnOffTitle,
+                text: tr.recall.turnOffText,
+                ok: tr.recall.turnOffOk,
             });
             if (!sure) return;
         }
@@ -1072,23 +1074,23 @@ function SettingsTab({ overview, onChanged }: { overview: MemoryOverview | null;
             <section class="card glass card-list" aria-labelledby="rc-set-h">
                 <div class="section-head">
                     <h2 id="rc-set-h" class="t-title-xs m-0">
-                        Память
+                        {tr.recall.settingsMemory}
                     </h2>
                 </div>
                 <div class="rc-toggles">
                 <label class="w-toggle">
                     <span class="flex-1 min-w-0 flex flex-col">
-                        <span class="w-strong">Память</span>
-                        <span class="w-cap">Дом и личное персонажей. Мир и знания персонажей из пакетов работают всегда.</span>
+                        <span class="w-strong">{tr.recall.settingsMemory}</span>
+                        <span class="w-cap">{tr.recall.memoryAbout}</span>
                     </span>
-                    <Switch on={!!state?.enabled} label="Память" disabled={!manage || !state || busy} onChange={(on) => void toggleMemory(on)} />
+                    <Switch on={!!state?.enabled} label={tr.recall.settingsMemory} disabled={!manage || !state || busy} onChange={(on) => void toggleMemory(on)} />
                 </label>
                 <label class="w-toggle">
                     <span class="flex-1 min-w-0 flex flex-col">
-                        <span class="w-strong">Запоминать мимоходом</span>
-                        <span class="w-cap">Персонаж сам записывает то, что стоит помнить о доме. Выключено — только по «запомни».</span>
+                        <span class="w-strong">{tr.recall.inPassing}</span>
+                        <span class="w-cap">{tr.recall.inPassingAbout}</span>
                     </span>
-                    <Switch on={!!state?.inPassing} label="Запоминать мимоходом" disabled={!manage || !state || busy || !state?.enabled} onChange={(on) => set({ inPassing: on })} />
+                    <Switch on={!!state?.inPassing} label={tr.recall.inPassing} disabled={!manage || !state || busy || !state?.enabled} onChange={(on) => set({ inPassing: on })} />
                 </label>
                 <MemoryModelSetting />
                 </div>
@@ -1097,31 +1099,31 @@ function SettingsTab({ overview, onChanged }: { overview: MemoryOverview | null;
                         {problem}
                     </p>
                 )}
-                {!manage && <p class="w-cap m-0">Менять может тот, у кого есть право «Менять память».</p>}
+                {!manage && <p class="w-cap m-0">{tr.recall.needRight}</p>}
             </section>
             <SleepSettings onNight={(id) => place.openNight(id)} />
             <section class="card glass card-list" aria-labelledby="rc-keep-h">
                 <div class="section-head">
                     <h2 id="rc-keep-h" class="t-title-xs m-0">
-                        Хранение
+                        {tr.recall.keepTitle}
                     </h2>
                 </div>
                 <div class="rc-rows">
                     <div class="rc-row">
-                        <span class="w-text">Разговоры дословно</span>
-                        <span class="w-cap">7 дней, потом остаётся только то, что из них запомнено</span>
+                        <span class="w-text">{tr.recall.keepTalks}</span>
+                        <span class="w-cap">{tr.recall.keepTalksAbout}</span>
                     </div>
                     <div class="rc-row">
-                        <span class="w-text">Место</span>
-                        <span class="w-cap">до {overview ? size(overview.limitBytes) : '8 МБ'}; заполнится — новое не пишется, пока не сотрёте лишнее</span>
+                        <span class="w-text">{tr.recall.keepSpace}</span>
+                        <span class="w-cap">{tr.recall.keepSpaceAbout(overview ? size(overview.limitBytes) : tr.recall.mb('8'))}</span>
                     </div>
                     <div class="rc-row">
-                        <span class="w-text">Кто знает</span>
-                        <span class="w-cap">пока весь дом; каждая запись помнит, кто её сказал, — потом память разделится по людям</span>
+                        <span class="w-text">{tr.recall.keepWho}</span>
+                        <span class="w-cap">{tr.recall.keepWhoAbout}</span>
                     </div>
                 </div>
                 <p class="w-cap m-0">
-                    <IconLock size={13} /> Голосом нельзя выключить память и стереть её: только здесь и с правом «Менять память». Права даёт администратор в «Настройки → Люди и доступ».
+                    <IconLock size={13} /> {tr.recall.voiceLock}
                 </p>
             </section>
         </>
@@ -1143,7 +1145,7 @@ export function MemoryWidget() {
                 })
                 .catch(() => {}),
     });
-    if (!overview) return <p class="w-cap m-0">Читаю…</p>;
+    if (!overview) return <p class="w-cap m-0">{tr.recall.reading}</p>;
     const { state, counts, recent } = overview;
     const latest = recent.find((item) => !item.validTo);
     return (
@@ -1151,15 +1153,15 @@ export function MemoryWidget() {
             <button class="w-row w-row-btn" onClick={() => panel.go('skills', 'memory', 'overview')}>
                 <span class={`w-dot ${state.enabled && !state.paused ? 'w-dot-own' : 'w-dot-off'}`} aria-hidden="true" />
                 <span class="w-text">
-                    {!state.enabled ? 'Выключена' : state.paused ? (state.pausedUntil ? `На паузе до ${clock(state.pausedUntil)}` : 'На паузе') : 'Включена'}
+                    {!state.enabled ? tr.recall.widgetOff : state.paused ? (state.pausedUntil ? tr.recall.widgetPausedUntil(clock(state.pausedUntil)) : tr.recall.widgetPaused) : tr.recall.widgetOn}
                 </span>
                 <span class="w-cap">
-                    {counts.home} {plural(counts.home, 'запись', 'записи', 'записей')}
+                    {tr.recall.widgetRecords(counts.home)}
                 </span>
             </button>
             {latest && (
                 <button class="w-row w-row-btn w-row-col" onClick={() => panel.go('skills', 'memory', 'overview')}>
-                    <span class="w-cap">Новое · {timeAgo(latest.createdAt)}</span>
+                    <span class="w-cap">{tr.recall.widgetNew(timeAgo(latest.createdAt))}</span>
                     <span class="w-text">{latest.text}</span>
                 </button>
             )}
@@ -1199,10 +1201,10 @@ export function RememberedLine() {
     return (
         <div class="rc-remembered" role="status">
             <IconMemory size={14} />
-            <span class="min-w-0 rc-ellipsis">Запомнено: {change.summary}</span>
+            <span class="min-w-0 rc-ellipsis">{tr.recall.remembered(change.summary)}</span>
             {can('memory.manage') && (
                 <button class="rc-link" onClick={() => void undo()}>
-                    Отменить
+                    {tr.recall.undo}
                 </button>
             )}
         </div>

@@ -37,8 +37,8 @@ impl Connector for MemoryConnector {
             id: "memory".into(),
             // Not listed: the memory has its own section in the panel; the kind is only a label.
             kind: ConnectorKind::Lookup,
-            title: "Память".into(),
-            description: "Что персонажи помнят о доме: запомнить, забыть, вспомнить".into(),
+            title: crate::tr!("Память"),
+            description: crate::tr!("Что персонажи помнят о доме: запомнить, забыть, вспомнить"),
             cloud: false,
             env: Vec::new(),
             capabilities: Some(vec![CapabilityName::Memory]),
@@ -53,9 +53,9 @@ impl Connector for MemoryConnector {
     fn status(&self) -> BoxFuture<'_, ConnectorStatus> {
         Box::pin(async move {
             match self.memory.upgrade() {
-                Some(memory) if memory.enabled() => ConnectorStatus::ready("включена"),
-                Some(_) => ConnectorStatus::off("выключена"),
-                None => ConnectorStatus::off("не запущена"),
+                Some(memory) if memory.enabled() => ConnectorStatus::ready(crate::tr!("включена")),
+                Some(_) => ConnectorStatus::off(crate::tr!("выключена")),
+                None => ConnectorStatus::off(crate::tr!("не запущена")),
             }
         })
     }

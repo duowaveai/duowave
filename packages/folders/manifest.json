@@ -1,0 +1,262 @@
+{
+  "schema": 1,
+  "kind": "plugin",
+  "id": "folders",
+  "version": "1.0.4",
+  "title": "Папки",
+  "description": "Голосом по домашней папке DuoWave (~/DuoWave): «какие у меня папки», «что в папке Фото», «открой папку Рецепты», «покажи фото из Отпуска», «прочитай файл борщ», «найди рецепт борща», «запиши в папку Рецепты блины два яйца», «что на флешке». В разговоре — «дальше», «предыдущая», «назад», «номер три», «прочитай», «оставь», «закрой», «пауза», «продолжи», «хватит». Фото и видео открываются окном на экране компьютера; большая карточка на столе показывает то же место. Имена файлов вслух — только своим голосом или с галочкой папки; облачной модели — только с галочкой.",
+  "api": "^2",
+  "runs": [
+    "pc"
+  ],
+  "budget": {
+    "memoryMb": 6,
+    "storageMb": 1
+  },
+  "permissions": [
+    "edit:files/home/*",
+    "edit:files/project/*",
+    "call:device/screen"
+  ],
+  "languages": [
+    "ru",
+    "en"
+  ],
+  "locales": {
+    "en": {
+      "title": "Folders",
+      "description": "Your DuoWave home folder (~/DuoWave) by voice: what folders there are, what is in a folder, open it, show photos, read a file, find, write a note, what is on a USB drive. In a conversation: next, previous, back, number three, read, keep, close, pause, go on, stop. Photos and videos open in a window on the computer’s screen.",
+      "cards": {
+        "place": "Folders"
+      }
+    }
+  },
+  "contributes": {
+    "intents": [
+      {
+        "phrases": [
+          "какие у меня папки",
+          "какие есть папки",
+          "что в домашней папке",
+          "мои папки"
+        ],
+        "handler": "folders"
+      },
+      {
+        "phrases": [
+          "что в папке {name}",
+          "что лежит в папке {name}",
+          "открой папку {name}",
+          "покажи папку {name}",
+          "зайди в папку {name}"
+        ],
+        "handler": "openFolder"
+      },
+      {
+        "phrases": [
+          "покажи фото из {name}",
+          "покажи фотографии из {name}",
+          "покажи картинки из {name}",
+          "покажи снимки из {name}"
+        ],
+        "handler": "photos"
+      },
+      {
+        "phrases": [
+          "прочитай файл {name}",
+          "прочитай документ {name}",
+          "открой файл {name}",
+          "открой документ {name}"
+        ],
+        "handler": "readFile"
+      },
+      {
+        "phrases": [
+          "найди в папках {query}",
+          "найди файл {query}",
+          "найди документ {query}",
+          "найди рецепт {query}"
+        ],
+        "handler": "find"
+      },
+      {
+        "phrases": [
+          "запиши в папку {rest}",
+          "сохрани в папку {rest}"
+        ],
+        "handler": "write"
+      },
+      {
+        "phrases": [
+          "что на флешке",
+          "открой флешку",
+          "покажи флешку",
+          "что на диске"
+        ],
+        "handler": "drive"
+      }
+    ],
+    "tools": [
+      {
+        "name": "folder_find",
+        "description": "Ищет по именам в домашней папке DuoWave (фото, документы, рецепты, подключённая флешка). Возвращает адреса files/… найденного; открыть — folder_open, прочитать документ — folder_read.",
+        "input": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Что искать: часть имени файла или папки"
+            },
+            "folder": {
+              "type": "string",
+              "description": "Адрес папки files/home/…, где искать; без него — во всех"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        },
+        "handler": "toolFind",
+        "annotations": {
+          "readOnlyHint": true
+        }
+      },
+      {
+        "name": "folder_open",
+        "description": "Открывает папку или файл домашней папки и отдаёт, что в ней: имена и виды. Фото, видео и звук — окном на экране компьютера (временным: следующее окно встанет на его место). Без адреса — список папок.",
+        "input": {
+          "type": "object",
+          "properties": {
+            "address": {
+              "type": "string",
+              "description": "Адрес files/home/… папки или файла"
+            }
+          }
+        },
+        "handler": "toolOpen",
+        "annotations": {
+          "readOnlyHint": true
+        }
+      },
+      {
+        "name": "folder_show",
+        "description": "Показывает фото, видео и звук из домашней папки окнами на экране компьютера — каждое своим окном. Новые окна встают на место временных (оставленные остаются); add=true — открыть рядом с уже открытыми. Возвращает окна с их id: ими окна оставляют, закрывают, ставят на паузу инструментами screen_keep, screen_close, screen_pause, screen_resume.",
+        "input": {
+          "type": "object",
+          "properties": {
+            "addresses": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Адреса files/home/… фото, видео или звука, до 8"
+            },
+            "add": {
+              "type": "boolean",
+              "description": "true — открыть рядом с открытыми, не закрывая временные"
+            }
+          },
+          "required": [
+            "addresses"
+          ]
+        },
+        "handler": "toolShow"
+      },
+      {
+        "name": "folder_play",
+        "description": "Видео или звук из домашней папки в окне на экране компьютера: play — включить по адресу, pause — пауза, resume — продолжить, stop — остановить и закрыть окно. Без адреса pause и resume — для всего, что играет, stop — для временных окон.",
+        "input": {
+          "type": "object",
+          "properties": {
+            "address": {
+              "type": "string",
+              "description": "Адрес files/home/… видео или звука"
+            },
+            "action": {
+              "type": "string",
+              "enum": [
+                "play",
+                "pause",
+                "resume",
+                "stop"
+              ],
+              "description": "Что сделать; по умолчанию play"
+            }
+          }
+        },
+        "handler": "toolPlay"
+      },
+      {
+        "name": "folder_read",
+        "description": "Текст документа из домашней папки (txt, md, rtf, docx, pdf) по частям.",
+        "input": {
+          "type": "object",
+          "properties": {
+            "address": {
+              "type": "string",
+              "description": "Адрес файла files/home/…"
+            },
+            "part": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Какая часть, с нуля"
+            }
+          },
+          "required": [
+            "address"
+          ]
+        },
+        "handler": "toolRead",
+        "annotations": {
+          "readOnlyHint": true
+        }
+      },
+      {
+        "name": "folder_write",
+        "description": "Записывает текстовый файл в папку домашней папки DuoWave. Есть файл с таким именем — новый получит имя «… 2».",
+        "input": {
+          "type": "object",
+          "properties": {
+            "folder": {
+              "type": "string",
+              "description": "Адрес папки files/home/…"
+            },
+            "name": {
+              "type": "string",
+              "description": "Имя файла без расширения"
+            },
+            "text": {
+              "type": "string",
+              "description": "Что записать"
+            }
+          },
+          "required": [
+            "folder",
+            "name",
+            "text"
+          ]
+        },
+        "handler": "toolWrite"
+      }
+    ],
+    "panel": {
+      "calls": [
+        "card",
+        "cardOpen",
+        "cardUp",
+        "cardNext",
+        "cardPrev"
+      ],
+      "cards": [
+        {
+          "id": "place",
+          "title": "Папки",
+          "function": "card",
+          "size": "large",
+          "initial": true,
+          "icon": "list"
+        }
+      ]
+    }
+  }
+}

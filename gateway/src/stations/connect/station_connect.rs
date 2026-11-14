@@ -4,7 +4,6 @@
 //! (station_scripts.rs: the firmware's file is never changed), the result checked, the station rebooted — then waits
 //! for it to come to /uni.ws. A station that has not come in 3 minutes is offered its way back. Nothing on a station
 //! changes but by the admin's press, and every change goes to «Кто что менял».
-
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -432,7 +431,7 @@ impl StationConnectService {
     }
 
     pub fn job(&self, id: &str) -> Result<ConnectJob, ApiError> {
-        self.jobs().get(id).cloned().ok_or_else(|| ApiError::not_found("Нет такого подключения."))
+        self.jobs().get(id).cloned().ok_or_else(|| ApiError::not_found(crate::tr!("Нет такого подключения.")))
     }
 
     fn jobs(&self) -> std::sync::MutexGuard<'_, HashMap<String, ConnectJob>> {
@@ -442,7 +441,7 @@ impl StationConnectService {
     fn begin(&self, kind: JobKind, address: &str) -> Result<ConnectJob, ApiError> {
         let mut jobs = self.jobs();
         if jobs.values().any(|job| job.address == address && job.status == JobStatus::Running) {
-            return Err(ApiError::conflict("С этой колонкой уже идёт подключение."));
+            return Err(ApiError::conflict(crate::tr!("С этой колонкой уже идёт подключение.")));
         }
         let ids: &[StepId] = match kind {
             JobKind::Connect => &[StepId::Copy, StepId::Write, StepId::Verify, StepId::Reboot, StepId::Arrive],

@@ -6,45 +6,48 @@ import { useEffect, useState } from 'preact/hooks';
 
 import { LocalAsr, api, can, problemOf } from '../api';
 import { Progress } from '../ui/needs';
+import { tr } from '../i18n';
 
 /** Мегабайты, как их считают люди и Hugging Face (274 МБ у GigaAM v3). */
 const MB = 1_000_000;
 
 /** На чём распознаёт: «видеокарте Мака», «процессоре»… */
 function where(backend: string | null): string {
+    const t = tr.localAsr;
     switch ((backend ?? '').toLowerCase()) {
         case 'metal':
-            return 'видеокарте Мака';
+            return t.backendMetal;
         case 'vulkan':
-            return 'видеокарте';
+            return t.backendVulkan;
         case 'cuda':
-            return 'видеокарте NVIDIA';
+            return t.backendCuda;
         case 'rocm':
-            return 'видеокарте AMD';
+            return t.backendRocm;
         case 'cpu':
         case 'cpu-accel':
-            return 'процессоре';
+            return t.backendCpu;
         default:
-            return backend ? backend : 'этом компьютере';
+            return backend ? backend : t.backendThis;
     }
 }
 
 /** Строка состояния: «работает на видеокарте Мака (Apple M4 Max)», «скачиваю модель · 120 из 274 МБ». */
 export function localAsrLine(local: LocalAsr): string {
+    const t = tr.localAsr;
     switch (local.phase) {
         case 'downloading':
-            return `скачиваю модель · ${Math.round(local.bytes / MB)} из ${Math.round(local.total / MB)} МБ`;
+            return t.downloading(Math.round(local.bytes / MB), Math.round(local.total / MB));
         case 'loading':
-            return local.serving ? `загружаю новую модель, пока работает ${local.serving}` : 'загружаю модель…';
+            return local.serving ? t.loadingWhile(local.serving) : t.loading;
         case 'ready': {
             const device = local.device ? ` (${local.device})` : '';
-            const fallback = local.gpuFailed ? ' — видеокарта отказала' : '';
-            return `работает здесь, на ${where(local.backend)}${device}${fallback}`;
+            const fallback = local.gpuFailed ? t.gpuFailed : '';
+            return t.readyHere(where(local.backend), device, fallback);
         }
         case 'failed':
-            return local.serving ? `работает ${local.serving}; новая не встала` : 'не работает';
+            return local.serving ? t.failedServing(local.serving) : t.failed;
         default:
-            return 'модель не выбрана';
+            return t.noModel;
     }
 }
 
@@ -107,27 +110,26 @@ export function LocalAsrSetup({ local, onChange }: { local: LocalAsr; onChange: 
     return (
         <section class="card glass first-run" aria-labelledby="local-asr-h">
             <h2 id="local-asr-h" class="t-title m-0">
-                {failed ? 'Слух не встал' : 'Готовлю слух'}
+                {failed ? tr.localAsr.titleFailed : tr.localAsr.titleSetup}
             </h2>
             {local.phase === 'downloading' ? (
                 <>
                     <p class="t-caption m-0">
-                        Скачиваю модель распознавания речи — один раз. Дальше она работает на этом компьютере, без
-                        интернета.
+                        {tr.localAsr.downloadingNote}
                     </p>
-                    <Progress percent={localAsrPercent(local)} label="Модель распознавания" />
+                    <Progress percent={localAsrPercent(local)} label={tr.localAsr.progressLabel} />
                     <p class="t-caption m-0">{localAsrLine(local)}</p>
                 </>
             ) : failed ? (
                 <>
                     <p class="t-caption m-0 c-dot-offline" role="alert">
-                        {local.error ?? 'Распознавание не запустилось.'}
+                        {local.error ?? tr.localAsr.notStarted}
                     </p>
-                    {local.serving && <p class="t-caption m-0">Пока слушает {local.serving}.</p>}
+                    {local.serving && <p class="t-caption m-0">{tr.localAsr.listening(local.serving)}</p>}
                     {can('models.manage') && (
                         <div>
                             <button class="w-btn w-btn-ink" disabled={retrying} onClick={() => void retry()}>
-                                {retrying ? 'Пробую…' : 'Повторить'}
+                                {retrying ? tr.localAsr.retrying : tr.localAsr.retry}
                             </button>
                         </div>
                     )}

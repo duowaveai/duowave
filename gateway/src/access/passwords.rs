@@ -82,9 +82,9 @@ pub async fn verify_password(password: &str, stored: Option<&str>) -> bool {
 pub fn password_problem(password: Option<&Value>) -> Option<String> {
     match password.and_then(Value::as_str) {
         Some(text) if js_len(text) >= MIN_PASSWORD => {
-            (js_len(text) > MAX_PASSWORD).then(|| "Пароль слишком длинный.".to_string())
+            (js_len(text) > MAX_PASSWORD).then(|| crate::tr!("Пароль слишком длинный."))
         }
-        _ => Some(format!("Пароль — хотя бы {MIN_PASSWORD} символов.")),
+        _ => Some(crate::tr!("Пароль — хотя бы {min} символов.", min = MIN_PASSWORD)),
     }
 }
 

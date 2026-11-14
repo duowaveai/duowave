@@ -1,5 +1,7 @@
 import { Place, RequestPhase, RequestView } from '../api';
 import { joinRu, LIT, NodeKey, NodeView, Tone, TripStage } from './dash-model';
+import { device } from '../words';
+import { formatNumber, tr } from '../i18n';
 
 // Живой путь вопроса на дашборде: настоящий запрос колонки (живой канал шлюза) как шаги орбиты — кто сейчас
 // работает (цвет кометы и кольца), какие узлы горят, что сказать под колонкой. Без отрисовки.
@@ -26,29 +28,36 @@ export function toneOf(by: Place | undefined): Tone | undefined {
 }
 
 /** Где был шаг, по-человечески: для «Наружу: мозг и голос». */
-const NODE_OF: Record<RequestPhase, string> = { listen: 'слух', recognize: 'слух', think: 'мозг', tool: 'справка', speak: 'голос', play: 'плеер' };
+const nodeOf = (): Record<RequestPhase, string> => ({
+    listen: tr.trip.nodeEar,
+    recognize: tr.trip.nodeEar,
+    think: tr.trip.nodeBrain,
+    tool: tr.trip.nodeTool,
+    speak: tr.trip.nodeVoice,
+    play: tr.trip.nodePlayer,
+});
 
 /** Что из запроса уходило из дома: шаги облака и Яндекса. */
 export function outsideOfTrip(request: RequestView): string[] {
-    const outside = request.steps.filter((step) => step.by === 'cloud' || step.by === 'yandex').map((step) => NODE_OF[step.phase]);
+    const outside = request.steps.filter((step) => step.by === 'cloud' || step.by === 'yandex').map((step) => nodeOf()[step.phase]);
     return [...new Set(outside)];
 }
 
 /** «1,8 с», «0,4 с», «12 с». */
 export function seconds(ms: number): string {
     const value = ms / 1000;
-    return `${value < 10 ? value.toFixed(1).replace('.', ',') : Math.round(value)} с`;
+    return tr.trip.secondsShort(value < 10 ? formatNumber(value, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : formatNumber(Math.round(value)));
 }
 
-const quote = (text: string | undefined): string | undefined => (text ? `«${text.replace(/[.!?…]+$/u, '')}»` : undefined);
+const quote = (text: string | undefined): string | undefined => (text ? tr.trip.quoted(text.replace(/[.!?…]+$/u, '')) : undefined);
 
 /** Почему прервано: то, что говорит журнал, словами пульта. */
 function cancelReason(error: string | undefined): string {
     if (!error) return '';
-    if (/superseded/.test(error)) return 'новым вопросом';
-    if (/disconnected/.test(error)) return 'колонка отключилась';
-    if (/gateway stopped/.test(error)) return 'шлюз остановился';
-    if (/cancel/.test(error)) return 'колонка отменила';
+    if (/superseded/.test(error)) return tr.trip.cancelSuperseded;
+    if (/disconnected/.test(error)) return tr.trip.cancelDisconnected;
+    if (/gateway stopped/.test(error)) return tr.trip.cancelGatewayStopped;
+    if (/cancel/.test(error)) return tr.trip.cancelByStation;
     return '';
 }
 
@@ -80,41 +89,41 @@ export function liveTripOf(request: RequestView | undefined, now: number, nodes:
                     stage,
                     tone,
                     lit,
-                    caption: ['Слушает…', quote(request.partial) ?? `слух: ${open?.what ?? nodes.ear.value}`],
-                    label: 'Колонка слушает',
+                    caption: [tr.trip.listening, quote(request.partial) ?? tr.trip.earLine(open?.what ?? nodes.ear.value)],
+                    label: tr.trip.labelListening,
                 };
             case 'recognize':
                 return {
                     stage,
                     tone,
                     lit,
-                    caption: ['Распознаёт…', quote(request.partial) ?? `слух: ${open?.what ?? nodes.ear.value}`],
-                    label: 'Колонка распознаёт сказанное',
+                    caption: [tr.trip.recognizing, quote(request.partial) ?? tr.trip.earLine(open?.what ?? nodes.ear.value)],
+                    label: tr.trip.labelRecognizing,
                 };
             case 'tool':
                 return {
                     stage,
                     tone,
                     lit: ['brain'],
-                    caption: ['Смотрит…', `${open?.what ?? 'справка'}${open?.by === 'yandex' ? ' · Яндекс' : ''}`],
-                    label: `Мозг наводит справку${open?.what ? `: ${open.what}` : ''}`,
+                    caption: [tr.trip.looking, `${open?.what ?? tr.trip.toolDefault}${open?.by === 'yandex' ? tr.trip.yandexSuffix : ''}`],
+                    label: open?.what ? tr.trip.labelToolWhat(open.what) : tr.trip.labelTool,
                 };
             case 'speak':
                 return {
                     stage,
                     tone,
                     lit,
-                    caption: ['Отвечает…', quote(request.answer) ?? `говорит ${open?.what ?? nodes.voice.value}`],
-                    label: 'Колонка отвечает',
+                    caption: [tr.trip.answering, quote(request.answer) ?? tr.trip.speaksLine(open?.what ?? nodes.voice.value)],
+                    label: tr.trip.labelAnswering(device('nom', true)),
                 };
             default: {
-                const who = open?.by === 'yandex' ? 'думает Алиса' : (open?.what ?? nodes.brain.value);
+                const who = open?.by === 'yandex' ? tr.trip.yandexThinks : (open?.what ?? nodes.brain.value);
                 return {
                     stage,
                     tone,
                     lit,
-                    caption: ['Думает…', quote(request.text) ?? who],
-                    label: `Думает: ${who}`,
+                    caption: [tr.trip.thinking, quote(request.text) ?? who],
+                    label: tr.trip.labelThinking(who),
                 };
             }
         }
@@ -124,32 +133,33 @@ export function liveTripOf(request: RequestView | undefined, now: number, nodes:
     switch (request.status) {
         case 'answered': {
             const out = outsideOfTrip(request);
-            const sub = request.mode === 'relay' ? 'всё ответил Яндекс' : out.length ? `наружу: ${joinRu(out)}` : 'всё осталось дома';
+            const sub = request.mode === 'relay' ? tr.trip.allAnsweredByYandex : out.length ? tr.trip.outsideTo(joinRu(out)) : tr.trip.allStayedHome;
             // Что чувствует человек — через сколько колонка заговорила после того, как он договорил (или написал);
             // без речи — сколько шёл весь запрос.
             const spoke = request.steps.find((step) => step.phase === 'speak');
             const listen = request.steps.find((step) => step.phase === 'listen');
             const said = listen?.ms !== undefined ? listen.at + listen.ms : 0;
             const title = spoke
-                ? `Ответ через ${seconds(Math.max(0, spoke.at - said))}`
+                ? tr.trip.answerIn(seconds(Math.max(0, spoke.at - said)))
                 : request.ms !== undefined
-                  ? `Готово за ${seconds(request.ms)}`
-                  : 'Готово';
+                  ? tr.trip.doneIn(seconds(request.ms))
+                  : tr.trip.done;
             return { stage: 'done', lit: [], caption: [title, sub], label: `${title}. ${sub}` };
         }
         case 'silent':
             return {
                 stage: 'done',
                 lit: [],
-                caption: request.kind === 'voice' ? ['Не расслышала', 'после «Алиса» — тишина'] : ['Без ответа', 'сказать было нечего'],
-                label: 'Ответа не было',
+                // У колонки тишина после её слова — не расслышала; у разговора без колонки фраза уже распознана.
+                caption: request.kind === 'voice' && request.device !== 'computer' ? [tr.trip.didntCatch, tr.trip.silenceAfterWake] : [tr.trip.noAnswer, tr.trip.nothingToSay],
+                label: tr.trip.labelNoAnswer,
             };
         case 'cancelled': {
             const why = cancelReason(request.error);
-            return { stage: 'done', lit: [], caption: ['Прервано', why], label: `Прервано${why ? `: ${why}` : ''}` };
+            return { stage: 'done', lit: [], caption: [tr.trip.cancelled, why], label: why ? tr.trip.labelCancelled(why) : tr.trip.cancelled };
         }
         default:
-            return { stage: 'done', lit: [], caption: ['Не получилось', 'подробности — в журнале'], label: 'Запрос не удался' };
+            return { stage: 'done', lit: [], caption: [tr.trip.failed, tr.trip.detailsInJournal], label: tr.trip.labelFailed };
     }
 }
 
@@ -168,43 +178,90 @@ export function feltMs(request: RequestView): number | undefined {
 }
 
 export const PHASE_WORDS: Record<RequestPhase, string> = {
-    listen: 'слушает',
-    recognize: 'распознаёт',
-    think: 'думает',
-    tool: 'смотрит',
-    speak: 'отвечает',
-    play: 'играет',
+    get listen() {
+        return tr.trip.phaseListen;
+    },
+    get recognize() {
+        return tr.trip.phaseRecognize;
+    },
+    get think() {
+        return tr.trip.phaseThink;
+    },
+    get tool() {
+        return tr.trip.phaseTool;
+    },
+    get speak() {
+        return tr.trip.phaseSpeak;
+    },
+    get play() {
+        return tr.trip.phasePlay;
+    },
 };
 
 export const STEP_TITLES: Record<RequestPhase, string> = {
-    listen: 'Слушала',
-    recognize: 'Распознала',
-    think: 'Думала',
-    tool: 'Справка',
-    speak: 'Говорила',
+    get listen() {
+        return tr.trip.stepListen;
+    },
+    get recognize() {
+        return tr.trip.stepRecognize;
+    },
+    get think() {
+        return tr.trip.stepThink;
+    },
+    get tool() {
+        return tr.trip.stepTool;
+    },
+    get speak() {
+        return tr.trip.stepSpeak;
+    },
     // Что колонка сказала о включённом: начала играть, молчит, остановила (шлюз, этап 5а).
-    play: 'Плеер',
+    get play() {
+        return tr.trip.stepPlay;
+    },
 };
 
-export const PLACE_WORDS: Record<Place, string> = { own: 'дома', cloud: 'облако', yandex: 'Яндекс', agent: 'помощник' };
+export const PLACE_WORDS: Record<Place, string> = {
+    get own() {
+        return tr.trip.placeOwn;
+    },
+    get cloud() {
+        return tr.trip.placeCloud;
+    },
+    get yandex() {
+        return tr.trip.placeYandex;
+    },
+    get agent() {
+        return tr.trip.placeAgent;
+    },
+};
 
-export const KIND_WORDS: Record<RequestView['kind'], string> = { voice: 'голосом', text: 'текстом', say: 'сказала сама' };
+export const KIND_WORDS: Record<RequestView['kind'], string> = {
+    get voice() {
+        return tr.trip.kindVoice;
+    },
+    get text() {
+        return tr.trip.kindText;
+    },
+    get say() {
+        return tr.trip.kindSay;
+    },
+};
 
 /** Кто ответил — пилюлей: цвет и слово. */
 export function answeredBy(request: RequestView): { tone: Tone; label: string } | undefined {
     switch (request.executor) {
         case 'yandex':
-            return { tone: 'yandex', label: 'Яндекс' };
+            return { tone: 'yandex', label: tr.trip.yandex };
         case 'model': {
             const think = request.steps.filter((step) => step.phase === 'think').at(-1);
-            return think?.by === 'cloud' ? { tone: 'cloud', label: 'модель · облако' } : { tone: 'own', label: 'модель · дома' };
+            return think?.by === 'cloud' ? { tone: 'cloud', label: tr.trip.modelCloud } : { tone: 'own', label: tr.trip.modelHome };
         }
         case 'own':
-            return { tone: 'own', label: 'навык шлюза' };
+            return { tone: 'own', label: tr.trip.gatewaySkill };
         case 'unsupported':
-            return { tone: 'off', label: 'пока не умеем' };
+            return { tone: 'off', label: tr.trip.notYet };
         default:
-            return request.kind === 'say' ? { tone: 'own', label: 'шлюз' } : undefined;
+            return request.kind === 'say' ? { tone: 'own', label: tr.trip.gateway } : undefined;
     }
 }
 
@@ -212,14 +269,14 @@ export function answeredBy(request: RequestView): { tone: Tone; label: string } 
 export function statusOf(request: RequestView): { cls: string; label: string } {
     switch (request.status) {
         case 'active':
-            return { cls: 'pill-own req-going', label: request.phase ? PHASE_WORDS[request.phase] : 'идёт' };
+            return { cls: 'pill-own req-going', label: request.phase ? PHASE_WORDS[request.phase] : tr.trip.going };
         case 'answered':
-            return { cls: 'pill-off', label: request.ms !== undefined ? seconds(request.ms) : 'ответ' };
+            return { cls: 'pill-off', label: request.ms !== undefined ? seconds(request.ms) : tr.trip.answer };
         case 'silent':
-            return { cls: 'pill-off', label: 'тишина' };
+            return { cls: 'pill-off', label: tr.trip.silence };
         case 'cancelled':
-            return { cls: 'pill-off', label: 'прервано' };
+            return { cls: 'pill-off', label: tr.trip.cancelledShort };
         default:
-            return { cls: 'pill-error', label: 'ошибка' };
+            return { cls: 'pill-error', label: tr.trip.error };
     }
 }

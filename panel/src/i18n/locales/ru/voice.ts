@@ -1,0 +1,73 @@
+// Тексты: voice/*.
+
+export default {
+    // creation.ts
+    makeWidget: 'виджет',
+    makeGame: 'игру',
+    makeTheme: 'тему',
+    makeSkill: 'навык',
+    makeRequest: (what: string, words: string) => `Сделай ${what}: ${words}`,
+    agentCloud: 'агент — облако',
+    agentHome: 'агент — дома',
+    agent: 'Агент',
+    makingNew: (what: string) => `Делаю ${what}. Скажу, когда будет готово — столом можно пользоваться.`,
+    makingAgain: (what: string) => `Переделываю ${what}. Скажу, когда будет готово — столом можно пользоваться.`,
+    readyLine: (title: string) => `Готово: «${title}».`,
+    readyHead: 'Агент · готово',
+    listenMore: (seconds: number) => `слушаю ещё ${seconds} с`,
+    chipFit: 'примерить',
+    chipDesk: 'на стол',
+    chipEnable: 'включить',
+    chipRedo: 'переделай…',
+    chipPark: 'в черновики',
+    chipDrop: 'не надо',
+    afterWidget: 'Промолчите — черновик подождёт здесь, на столе.',
+    afterTile: 'Промолчите — черновик подождёт здесь, на столе плиткой.',
+    knowStation: (phrase: string) => ` Колонка теперь тоже знает: «${phrase}».`,
+    knowComputer: (phrase: string) => ` Голосом теперь тоже можно: «${phrase}».`,
+    done: 'Готово',
+    onDesk: (title: string, know: string) => `«${title}» на столе.${know}`,
+    chipRemove: 'убери',
+    chipAgain: 'сделай ещё…',
+
+    // flow.tsx
+    failedHead: 'Не вышло',
+    failedNote: (title: string) => `«${title}»: что случилось — в мастерской.`,
+    deleteDraftTitle: 'Удалить черновик?',
+    deleteDraftText: (title: string) => `«${title}» уйдёт из мастерской.`,
+    delete: 'Удалить',
+
+    // mic.ts
+    micOff: 'Микрофон выключен',
+    micOffText: 'Пока открыто поле ключа, пульт не слушает: личное вводят руками.',
+    noMic: 'Микрофона нет',
+    listening: 'Слушаю',
+    heardHere: 'слышит этот компьютер',
+    heardCloud: 'слышало облако',
+    micFailed: 'Микрофон не открылся',
+    listeningAnswer: 'Слушаю ответ',
+    notHeard: 'Не услышала',
+    notHeardText: 'Нажмите «Сказать» и говорите — я слушаю до паузы.',
+    recognizing: 'Распознаю…',
+    notCaught: 'Не расслышала',
+    notCaughtText: 'Скажите ещё раз, чуть громче.',
+    heard: 'Услышала',
+    notRecognized: 'Не распознала',
+    failedTry: 'Не получилось',
+    notUnderstood: 'Не понятно',
+    notUnderstoodText: 'Скажите то, что на кнопках, или «Сделай виджет: …». Что пульт не понял, никуда не уходит.',
+    textToSpeaker: 'Текстом колонке…',
+
+    // speak.ts
+    chipCloud: 'облако',
+    chipHome: 'дома',
+    waitingAnswer: 'Жду ответа',
+    answer: 'Ответ',
+    thinking: 'Думаю…',
+    looking: (name: string) => `Смотрю: ${name}…`,
+    answering: 'Отвечаю',
+
+    // strip.tsx
+    hideStrip: 'Скрыть полосу',
+    canSay: 'Можно сказать:',
+};

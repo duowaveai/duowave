@@ -2398,6 +2398,8 @@ impl StationSession {
                 facts: Some(data.clone()),
                 system: None,
                 model: None,
+                max_tokens: None,
+                ..DialogContext::default()
             };
             return self.deps.dialog.answer(&self.device_tag, text, context, answer.token(), None);
         }
@@ -2443,6 +2445,8 @@ impl StationSession {
             facts: None,
             system: None,
             model: None,
+            max_tokens: None,
+            ..DialogContext::default()
         };
         let session = self.clone();
         let answer = answer.clone();
@@ -2586,6 +2590,8 @@ impl StationSession {
             facts: None,
             system: None,
             model: None,
+            max_tokens: None,
+            ..DialogContext::default()
         };
         let toolbox = self.lookup_toolbox(r#ref, request, text, &answer, profile, None);
         let phrases = self.deps.dialog.answer(&self.device_tag, text, context, answer.token(), toolbox);

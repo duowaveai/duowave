@@ -36,8 +36,9 @@ mod station {
     use crate::app::App;
     use crate::platform::http::ApiError;
 
-    pub const NOT_IN_THIS_BUILD: &str =
-        "Свои модели — только в сборке шлюза для компьютера: в этой сборке (для колонки) их нет.";
+    pub fn not_in_this_build_text() -> String {
+        crate::tr!("Свои модели — только в сборке шлюза для компьютера: в этой сборке (для колонки) их нет.")
+    }
 
     /// `/api/v1/models` and everything under it: 501 in the envelope — but the computer's voice for the station's
     /// «Голос» (home_voice.rs).
@@ -49,7 +50,7 @@ mod station {
     }
 
     async fn not_in_this_build() -> ApiError {
-        ApiError::new(StatusCode::NOT_IMPLEMENTED, NOT_IN_THIS_BUILD)
+        ApiError::new(StatusCode::NOT_IMPLEMENTED, not_in_this_build_text())
     }
 }
 
@@ -76,7 +77,7 @@ mod tests {
             let body: serde_json::Value =
                 serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
             assert_eq!(body["code"], 501);
-            assert_eq!(body["message"], super::station::NOT_IN_THIS_BUILD);
+            assert_eq!(body["message"], super::station::not_in_this_build_text());
             assert_eq!(body["path"], uri);
         }
         // The station's «Голос» while the computer gives it its voice is this build's (home_voice.rs).

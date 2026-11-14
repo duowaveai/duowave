@@ -2,7 +2,6 @@
 //! reads it with midly and answers with its tracks — a name, whether it is drums, how many notes, and the track's
 //! melody: its top voice, of notes struck together the highest. Times are in beats, so a page can play it at any
 //! tempo. The file itself is kept nowhere.
-
 use serde::Serialize;
 
 /// A file at most this big, tracks and events at most this many (docs/plans/midi.md, «Лимиты»).
@@ -70,10 +69,10 @@ pub fn melody_of(notes: &[FileNote]) -> Vec<[f64; 3]> {
 /// The file's tracks with their melodies, or why it does not read — in people's words.
 pub fn read(bytes: &[u8]) -> Result<SongView, String> {
     if bytes.len() > FILE_MAX {
-        return Err(format!("Файл больше {} КБ — это не простая мелодия.", FILE_MAX / 1024));
+        return Err(crate::tr!("Файл больше {size} КБ — это не простая мелодия.", size = FILE_MAX / 1024));
     }
     if !bytes.starts_with(b"MThd") {
-        return Err("Это не MIDI-файл (.mid).".into());
+        return Err(crate::tr!("Это не MIDI-файл (.mid)."));
     }
     parse(bytes)
 }
@@ -82,13 +81,13 @@ pub fn read(bytes: &[u8]) -> Result<SongView, String> {
 fn parse(bytes: &[u8]) -> Result<SongView, String> {
     use midly::{MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
 
-    let smf = Smf::parse(bytes).map_err(|error| format!("Файл повреждён: {error}"))?;
+    let smf = Smf::parse(bytes).map_err(|error| crate::tr!("Файл повреждён: {error}", error = error))?;
     if smf.tracks.len() > TRACKS_MAX {
-        return Err(format!("В файле больше {TRACKS_MAX} дорожек."));
+        return Err(crate::tr!("В файле больше {max} дорожек.", max = TRACKS_MAX));
     }
     let events: usize = smf.tracks.iter().map(Vec::len).sum();
     if events > EVENTS_MAX {
-        return Err(format!("В файле больше {EVENTS_MAX} событий — это не простая мелодия."));
+        return Err(crate::tr!("В файле больше {max} событий — это не простая мелодия.", max = EVENTS_MAX));
     }
     let mut tempo_us: Option<u32> = None;
     let mut meter: Option<[u8; 2]> = None;
@@ -154,7 +153,7 @@ fn parse(bytes: &[u8]) -> Result<SongView, String> {
         tracks.push(TrackView { index, name, drums, notes: notes.len(), melody });
     }
     if tracks.is_empty() {
-        return Err("В файле нет нот.".into());
+        return Err(crate::tr!("В файле нет нот.").into());
     }
     Ok(SongView { tempo: (tempo * 10.0).round() / 10.0, meter: meter.unwrap_or([4, 4]), tracks })
 }
@@ -171,7 +170,7 @@ fn note_of(note: u8, velocity: u8, start: u64, end: u64, beats_per_tick: f64) ->
 
 #[cfg(not(feature = "midi"))]
 fn parse(_bytes: &[u8]) -> Result<SongView, String> {
-    Err(super::ports::NOT_IN_BUILD.into())
+    Err(super::ports::not_in_build())
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "plugin",
   "id": "currency",
-  "version": "2.0.0",
+  "version": "2.1.1",
   "title": "Курсы валют",
   "description": "Курсы ЦБ России голосом и виджетом на столе пульта: доллар, евро, юань и другие, на сегодня и как изменились. Открытый источник cbr-xml-daily.ru, без ключа; курс держится час.",
   "api": "^2",
@@ -18,6 +18,19 @@
   "permissions": [
     "net:www.cbr-xml-daily.ru"
   ],
+  "languages": [
+    "ru",
+    "en"
+  ],
+  "locales": {
+    "en": {
+      "title": "Exchange rates",
+      "description": "Central Bank of Russia rates by voice and as a widget on the panel desk: dollar, euro, yuan and more, today and how they changed. Open source cbr-xml-daily.ru, no key; a rate is kept for an hour.",
+      "cards": {
+        "rates": "Exchange rates"
+      }
+    }
+  },
   "contributes": {
     "intents": [
       {

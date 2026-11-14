@@ -6,6 +6,7 @@
 import { useEffect, useState } from 'preact/hooks';
 
 import { LaterCommandView, PackageOrigin, PackageView, MidiView, PluginFilesView, ScheduleJob, ScheduleSpec, ScheduleView, api, problemOf, sessionStore, can } from '../api';
+import { formatNumber, locale, tr } from '../i18n';
 import { usePanel } from '../shell/context';
 import { timeAgo } from '../time';
 import { Action } from '../ui/cards';
@@ -20,25 +21,43 @@ import { ask } from '../ui/confirm';
 import { saveLabel } from '../via';
 import { LinksBlock } from '../bus/links-block';
 import { rightTitle } from '../bus/rights';
+import { byMode } from '../words';
 
 /** Вид пакета по тому, откуда он, — на метке и в окне. */
 export const ORIGIN_TITLES: Record<PackageOrigin, string> = {
-    system: 'системный',
-    bundled: 'встроенный',
-    user: 'свой',
-    catalog: 'из каталога',
+    get system() {
+        return tr.plugins.originSystem;
+    },
+    get bundled() {
+        return tr.plugins.originBundled;
+    },
+    get user() {
+        return tr.plugins.originUser;
+    },
+    get catalog() {
+        return tr.plugins.originCatalog;
+    },
 };
 
 const ORIGIN_RULES: Record<PackageOrigin, string> = {
-    system: 'Системный: в сборке шлюза, без него колонка не работает как надо — его не выключить и не удалить.',
-    bundled: 'Встроенный: в сборке шлюза и обновляется вместе с ним. Его можно выключить; чтобы менять — сделайте свою копию.',
-    user: 'Свой: написан в мастерской или поставлен руками. С ним можно всё — менять, выключать, удалять.',
-    catalog: 'Из каталога: обновляется из каталога. Его можно выключить и удалить; чтобы менять — сделайте свою копию.',
+    // Читается при отрисовке: в режиме «Микрофон» колонки нет.
+    get system() {
+        return byMode(tr.plugins.ruleSystemSpeaker, tr.plugins.ruleSystemOwn);
+    },
+    get bundled() {
+        return tr.plugins.ruleBundled;
+    },
+    get user() {
+        return tr.plugins.ruleUser;
+    },
+    get catalog() {
+        return tr.plugins.ruleCatalog;
+    },
 };
 
 
 /** Мегабайты одной цифрой после запятой: «2,1». */
-const mb = (bytes: number): string => (bytes / (1024 * 1024)).toFixed(1).replace('.', ',');
+const mb = (bytes: number): string => formatNumber(bytes / (1024 * 1024), { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
 /** Картинки плагина в его окне (этап 10): сколько их и сколько места. На компьютере предел у каждого плагина свой
  *  (budget.storageMb); на колонке предел общий на все плагины — показываем, сколько из него занято всеми вместе. */
@@ -61,12 +80,11 @@ function FilesLine({ id }: { id: string }) {
     return (
         <div class="flex flex-col gap-4">
             <span class="t-caption">
-                Картинки: {view.files.length} · {mb(view.bytes)} МБ{view.onStation ? '' : ` из ${mb(view.limitBytes)} МБ`}
+                {tr.plugins.filesLine(view.files.length, mb(view.bytes), view.onStation ? null : mb(view.limitBytes))}
             </span>
             {view.onStation && (
                 <span class="t-caption">
-                    На колонке места мало: картинка — до 1 МБ, картинки всех приложений вместе — до {mb(view.limitBytes)} МБ
-                    {allBytes != null ? ` (занято ${mb(allBytes)} МБ)` : ''}.
+                    {tr.plugins.filesStation(mb(view.limitBytes), allBytes != null ? mb(allBytes) : null)}
                 </span>
             )}
         </div>
@@ -84,18 +102,19 @@ function MidiLine({ id }: { id: string }) {
             .catch(() => setView(null));
     }, [id, panel.version]);
     if (!view) return null;
-    if (!view.available) return <span class="t-caption">MIDI-клавиатура: {view.why ?? 'в этом шлюзе её нет'}</span>;
+    if (!view.available) return <span class="t-caption">{tr.plugins.midiUnavailable(view.why ?? tr.plugins.midiNone)}</span>;
     const listening = view.listeners.filter((listener) => listener.package === id);
-    const where = (zone: string): string => (zone === 'local' ? 'этот компьютер' : zone === 'home' ? 'дом' : 'вне дома');
+    const where = (zone: string): string => (zone === 'local' ? tr.plugins.zoneLocal : zone === 'home' ? tr.plugins.zoneHome : tr.plugins.zoneAway);
     return (
         <span class="t-caption">
             {listening.length > 0
-                ? `Сейчас слушает клавиатуру: ${[...new Set(listening.flatMap((listener) => listener.devices))].join(', ')} · ${[
-                      ...new Set(listening.map((listener) => where(listener.zone))),
-                  ].join(', ')}`
+                ? tr.plugins.midiListening(
+                      [...new Set(listening.flatMap((listener) => listener.devices))].join(', '),
+                      [...new Set(listening.map((listener) => where(listener.zone)))].join(', '),
+                  )
                 : view.devices.length > 0
-                  ? `Клавиатура у компьютера: ${view.devices.map((device) => device.name).join(', ')} · сейчас не слушает`
-                  : 'Клавиатура не подключена к компьютеру'}
+                  ? tr.plugins.midiIdle(view.devices.map((device) => device.name).join(', '))
+                  : tr.plugins.midiNotConnected}
         </span>
     );
 }
@@ -121,7 +140,7 @@ function SettingsForm({ entry, onSaved }: { entry: PackageView; onSaved: (view: 
         setNote(null);
         try {
             onSaved(await api.setPackageSettings(entry.id, values));
-            setNote({ ok: true, text: 'Сохранено.' });
+            setNote({ ok: true, text: tr.plugins.saved });
         } catch (e) {
             setNote({ ok: false, text: problemOf(e) });
         } finally {
@@ -130,7 +149,7 @@ function SettingsForm({ entry, onSaved }: { entry: PackageView; onSaved: (view: 
     };
     return (
         <div class="flex flex-col gap-8">
-            <h3 class="t-title-xs m-0">Настройки</h3>
+            <h3 class="t-title-xs m-0">{tr.plugins.settings}</h3>
             <SettingsFields fields={fields} values={values} busy={busy} onChange={setValues} onPrivate={setPrivateOpen} />
             <div>
                 <Action tone="on" label={saveLabel()} busy={busy} onClick={() => void save()} />
@@ -144,25 +163,29 @@ function SettingsForm({ entry, onSaved }: { entry: PackageView; onSaved: (view: 
     );
 }
 
-const WEEK = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'];
-
 /** Время колонки из её ISO-строки: «13.11 в 07:30». */
 function stationTime(iso: string): string {
-    return `${iso.slice(8, 10)}.${iso.slice(5, 7)} в ${iso.slice(11, 16)}`;
+    return tr.plugins.stationTime(`${iso.slice(8, 10)}.${iso.slice(5, 7)}`, iso.slice(11, 16));
 }
 
 /** Срок словами: «по будням в 07:30», «каждые 2 ч с 09:00 до 21:00», «один раз». */
 export function scheduleWords(spec: ScheduleSpec): string {
     if (spec.type === 'at') {
         const days =
-            spec.days === 'daily' ? 'каждый день' : spec.days === 'weekdays' ? 'по будням' : spec.days === 'weekends' ? 'по выходным' : spec.days.on.map((day) => WEEK[day]).join(', ');
-        return `${days} в ${spec.at.startsWith('{') ? 'время из настроек' : spec.at}`;
+            spec.days === 'daily'
+                ? tr.plugins.daysDaily
+                : spec.days === 'weekdays'
+                  ? tr.plugins.daysWeekdays
+                  : spec.days === 'weekends'
+                    ? tr.plugins.daysWeekends
+                    : spec.days.on.map((day) => tr.plugins.weekdays[day]).join(', ');
+        return tr.plugins.atTime(days, spec.at.startsWith('{') ? tr.plugins.timeFromSettings : spec.at);
     }
     if (spec.type === 'every') {
-        const every = spec.minutes % 60 === 0 ? `${spec.minutes / 60} ч` : `${spec.minutes} мин`;
-        return `каждые ${every} с ${spec.from} до ${spec.to}`;
+        const every = spec.minutes % 60 === 0 ? tr.plugins.everyHours(spec.minutes / 60) : tr.plugins.everyMinutes(spec.minutes);
+        return tr.plugins.everyRange(every, spec.from, spec.to);
     }
-    return 'один раз';
+    return tr.plugins.once;
 }
 
 /** Расписание плагина (docs/plans/plugin-schedules.md, этап 3): ритмы манифеста и задачи из кода — когда, следующий
@@ -189,7 +212,7 @@ function ScheduleBlock({ id, admin }: { id: string; admin: boolean }) {
             const answer = await action();
             if ('jobs' in answer) setView(answer);
             else {
-                setNote({ ok: true, text: answer.outcome || 'Готово.' });
+                setNote({ ok: true, text: answer.outcome || tr.plugins.done });
                 setView(await api.packageSchedule(id));
             }
         } catch (e) {
@@ -201,17 +224,17 @@ function ScheduleBlock({ id, admin }: { id: string; admin: boolean }) {
     const line = (job: ScheduleJob): string =>
         [
             scheduleWords(job.spec),
-            job.source === 'code' ? 'из кода' : null,
-            job.say ? `скажет «${job.say}»` : null,
-            job.paused ? 'на паузе' : job.next ? `следующий — ${stationTime(job.next)}` : null,
-            job.last ? `прошлый раз: ${job.last.outcome}` : null,
+            job.source === 'code' ? tr.plugins.fromCode : null,
+            job.say ? tr.plugins.willSay(job.say) : null,
+            job.paused ? tr.plugins.paused : job.next ? tr.plugins.nextAt(stationTime(job.next)) : null,
+            job.last ? tr.plugins.lastTime(job.last.outcome) : null,
         ]
             .filter(Boolean)
             .join(' · ');
     return (
         <div class="flex flex-col gap-8">
-            <h3 class="t-title-xs m-0">Расписание</h3>
-            {!view.on && <span class="t-caption c-pill-yandex-fg">Расписания приложений выключены: сроки ждут, ничего не запускается.</span>}
+            <h3 class="t-title-xs m-0">{tr.plugins.schedule}</h3>
+            {!view.on && <span class="t-caption c-pill-yandex-fg">{tr.plugins.schedulesOff}</span>}
             {view.jobs.map((job) => (
                 <div key={job.id} class="flex flex-col gap-4">
                     <span class="fw-700">{job.title}</span>
@@ -223,15 +246,15 @@ function ScheduleBlock({ id, admin }: { id: string; admin: boolean }) {
                     )}
                     {admin && (
                         <div class="flex flex-wrap items-center gap-8">
-                            <Action label="Запустить сейчас" busy={busy === `run:${job.id}`} disabled={!!busy} onClick={() => void act(`run:${job.id}`, () => api.runScheduleJob(id, job.id))} />
+                            <Action label={tr.plugins.runNow} busy={busy === `run:${job.id}`} disabled={!!busy} onClick={() => void act(`run:${job.id}`, () => api.runScheduleJob(id, job.id))} />
                             <Action
-                                label={job.paused ? 'Продолжить' : 'Пауза'}
+                                label={job.paused ? tr.plugins.resume : tr.plugins.pause}
                                 busy={busy === `pause:${job.id}`}
                                 disabled={!!busy}
                                 onClick={() => void act(`pause:${job.id}`, () => api.pauseScheduleJob(id, job.id, !job.paused))}
                             />
                             {job.source === 'code' && (
-                                <Action label="Снять" busy={busy === `remove:${job.id}`} disabled={!!busy} onClick={() => void act(`remove:${job.id}`, () => api.removeScheduleJob(id, job.id))} />
+                                <Action label={tr.plugins.removeJob} busy={busy === `remove:${job.id}`} disabled={!!busy} onClick={() => void act(`remove:${job.id}`, () => api.removeScheduleJob(id, job.id))} />
                             )}
                         </div>
                     )}
@@ -259,7 +282,7 @@ export function SchedulesSwitchLine() {
             .catch(() => setState(null));
     }, [panel.version]);
     if (!state) return null;
-    if (!state.allowed) return <p class="t-caption m-0 mb-6">Расписания приложений выключены переменной PLUGINS_SCHEDULES.</p>;
+    if (!state.allowed) return <p class="t-caption m-0 mb-6">{tr.plugins.schedulesEnvOff}</p>;
     const flip = async (on: boolean) => {
         setBusy(true);
         setError(null);
@@ -275,10 +298,10 @@ export function SchedulesSwitchLine() {
         <div class="flex flex-col gap-4 mb-6">
             <div class="pkg-switch">
                 <div class="flex-1 min-w-0 flex flex-col gap-2">
-                    <span class="fw-700">Расписания приложений</span>
-                    <span class="t-caption">{state.on ? 'Приложения сами действуют в свой срок.' : 'Выключены: сроки ждут, ничего не запускается.'}</span>
+                    <span class="fw-700">{tr.plugins.schedulesTitle}</span>
+                    <span class="t-caption">{state.on ? tr.plugins.schedulesOn : tr.plugins.schedulesOffShort}</span>
                 </div>
-                <Switch on={state.on} label="Расписания приложений" disabled={busy || !isAdmin()} onChange={(on) => void flip(on)} />
+                <Switch on={state.on} label={tr.plugins.schedulesTitle} disabled={busy || !isAdmin()} onChange={(on) => void flip(on)} />
             </div>
             {error && (
                 <span class="t-caption c-dot-offline" role="alert">
@@ -315,16 +338,16 @@ export function LaterLine() {
             setBusy(null);
         }
     };
-    const when = (at: number) => new Date(at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const when = (at: number) => new Date(at).toLocaleString(locale(), { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
     return (
         <div class="flex flex-col gap-4 mb-6">
-            <span class="fw-700">Отложенные команды</span>
+            <span class="fw-700">{tr.plugins.laterTitle}</span>
             {commands.map((command) => (
                 <div key={command.id} class="flex flex-wrap items-center gap-8">
                     <span class="t-caption">
-                        «{command.command}» — {when(command.at)}
+                        {tr.plugins.laterItem(command.command, when(command.at))}
                     </span>
-                    <Action label="Снять" busy={busy === command.id} disabled={!!busy} onClick={() => void cancel(command.id)} />
+                    <Action label={tr.plugins.removeJob} busy={busy === command.id} disabled={!!busy} onClick={() => void cancel(command.id)} />
                 </div>
             ))}
             {error && (
@@ -382,13 +405,13 @@ export function InstalledPackageSheet({
     const forkable = admin && (origin === 'bundled' || origin === 'catalog') && (kind === 'plugin' || kind === 'theme');
     const editable = admin && (view.editable ?? origin === 'user') && (kind === 'plugin' || kind === 'theme');
     return (
-        <Sheet title={view.title} about={`${ORIGIN_TITLES[origin]} · ${placeOf(kind, view.runtime)}${view.version ? ` · версия ${view.version}` : ''}`} onClose={onClose}>
+        <Sheet title={view.title} about={`${ORIGIN_TITLES[origin]} · ${placeOf(kind, view.runtime)}${view.version ? tr.plugins.versionSuffix(view.version) : ''}`} onClose={onClose}>
             {view.description && <p class="t-body-sm m-0">{view.description}</p>}
             <p class="t-caption m-0">{ORIGIN_RULES[origin]}</p>
             {runs && (
                 <div class="flex flex-col gap-4">
                     {memory && <span class="t-caption">{memory}</span>}
-                    {view.lastCallAt && <span class="t-caption">Последний вызов {timeAgo(view.lastCallAt)}.</span>}
+                    {view.lastCallAt && <span class="t-caption">{tr.plugins.lastCall(timeAgo(view.lastCallAt))}</span>}
                     {view.problem && (
                         <span class="t-caption c-dot-offline" role="alert">
                             {view.problem}
@@ -396,42 +419,42 @@ export function InstalledPackageSheet({
                     )}
                     {view.lastError && (
                         <span class="t-caption c-dot-offline">
-                            Последняя ошибка {timeAgo(view.lastError.at)}: {view.lastError.message}
+                            {tr.plugins.lastError(timeAgo(view.lastError.at), view.lastError.message)}
                         </span>
                     )}
                 </div>
             )}
             {contributes && runs && (
                 <div class="flex flex-col gap-4">
-                    <h3 class="t-title-xs m-0">Что даёт</h3>
-                    {contributes.phrases.length > 0 && <span class="t-caption">Фразы: {contributes.phrases.slice(0, 6).map((phrase) => `«${phrase}»`).join(', ')}{contributes.phrases.length > 6 ? ` и ещё ${contributes.phrases.length - 6}` : ''}</span>}
-                    {contributes.tools.length > 0 && <span class="t-caption">Инструменты «Мозга»: {contributes.tools.join(', ')}</span>}
-                    {contributes.media.length > 0 && <span class="t-caption">Источники: {contributes.media.join(', ')}</span>}
-                    {contributes.events.length > 0 && <span class="t-caption">События: {contributes.events.join(', ')}</span>}
+                    <h3 class="t-title-xs m-0">{tr.plugins.contributes}</h3>
+                    {contributes.phrases.length > 0 && <span class="t-caption">{tr.plugins.phrases(contributes.phrases.slice(0, 6), Math.max(0, contributes.phrases.length - 6))}</span>}
+                    {contributes.tools.length > 0 && <span class="t-caption">{tr.plugins.brainTools(contributes.tools.join(', '))}</span>}
+                    {contributes.media.length > 0 && <span class="t-caption">{tr.plugins.sources(contributes.media.join(', '))}</span>}
+                    {contributes.events.length > 0 && <span class="t-caption">{tr.plugins.events(contributes.events.join(', '))}</span>}
                     {contributes.panel && (
                         <span class="t-caption">
-                            Своя часть пульта
+                            {tr.plugins.panelPart}
                             {view.panelModule
                                 ? origin === 'system' || origin === 'bundled'
                                     ? ''
-                                    : ' — в своём окошке: без вашего входа и без сети, только через пульт'
+                                    : tr.plugins.panelOwnWindow
                                 : view.enabled
-                                  ? ': карточки и вызовы'
-                                  : ' (загрузится, когда приложение включено)'}
+                                  ? tr.plugins.panelCards
+                                  : tr.plugins.panelWhenOn}
                         </span>
                     )}
                 </div>
             )}
             {view.permissions.length > 0 && (
                 <div class="flex flex-col gap-4">
-                    <h3 class="t-title-xs m-0">Права</h3>
+                    <h3 class="t-title-xs m-0">{tr.plugins.rights}</h3>
                     {rights.length > 0 && <span class="t-caption">{rights.map(permissionTitle).join(', ')}</span>}
-                    {hosts.length > 0 && <span class="t-caption">Ходит в сеть: {hosts.map((host) => host.slice(4)).join(', ')}</span>}
+                    {hosts.length > 0 && <span class="t-caption">{tr.plugins.network(hosts.map((host) => host.slice(4)).join(', '))}</span>}
                 </div>
             )}
-            {view.runsAt === 'home' && <span class="t-caption">Тяжёлое — на компьютере: пока он на связи, приложение работает там.</span>}
-            {view.runsAt === 'here' && <span class="t-caption">Компьютер не на связи — приложение работает на колонке, если хватает памяти.</span>}
-            {view.runs.length > 0 && <span class="t-caption">Работает: {view.runs.map((runs) => ({ pc: 'на компьютере', station: 'на колонке', stationServer: 'колонка + сервер' })[runs] ?? runs).join(', ')}</span>}
+            {view.runsAt === 'home' && <span class="t-caption">{tr.plugins.runsAtHome}</span>}
+            {view.runsAt === 'here' && <span class="t-caption">{tr.plugins.runsAtHere}</span>}
+            {view.runs.length > 0 && <span class="t-caption">{tr.plugins.runsList(view.runs.map((runs) => ({ pc: tr.plugins.runsPc, station: tr.plugins.runsStation, stationServer: tr.plugins.runsStationServer })[runs] ?? runs).join(', '))}</span>}
             {runs && view.permissions.includes('call:system/schedule') && <ScheduleBlock id={view.id} admin={admin} />}
             {runs && <FilesLine id={view.id} />}
             {runs && view.permissions.includes('listen:device/midi') && <MidiLine id={view.id} />}
@@ -442,21 +465,21 @@ export function InstalledPackageSheet({
                     {runs && (view.canDisable ?? true) && (
                         <Action
                             tone={view.enabled ? 'off' : 'on'}
-                            label={view.enabled ? 'Выключить' : 'Включить'}
+                            label={view.enabled ? tr.plugins.turnOff : tr.plugins.turnOn}
                             busy={busy === 'toggle'}
                             disabled={!!busy}
                             onClick={() => void run('toggle', () => (view.enabled ? api.disablePackage(view.id) : api.enablePackage(view.id)))}
                         />
                     )}
                     {runs && view.enabled && (
-                        <Action label="Перезагрузить" busy={busy === 'reload'} disabled={!!busy} onClick={() => void run('reload', () => api.reloadPackage(view.id))} />
+                        <Action label={tr.plugins.reload} busy={busy === 'reload'} disabled={!!busy} onClick={() => void run('reload', () => api.reloadPackage(view.id))} />
                     )}
                     {origin !== 'system' && (
-                        <Action label={history ? 'Скрыть историю' : 'История и версии'} disabled={!!busy} onClick={() => setHistory((open) => !open)} />
+                        <Action label={history ? tr.plugins.hideHistory : tr.plugins.history} disabled={!!busy} onClick={() => setHistory((open) => !open)} />
                     )}
                     {editable && (
                         <Action
-                            label="Открыть в мастерской"
+                            label={tr.plugins.openWorkshop}
                             disabled={!!busy}
                             onClick={() => {
                                 onClose();
@@ -466,7 +489,7 @@ export function InstalledPackageSheet({
                     )}
                     {forkable && (
                         <Action
-                            label="Сделать свою копию"
+                            label={tr.plugins.fork}
                             busy={busy === 'fork'}
                             disabled={!!busy}
                             onClick={() =>
@@ -479,7 +502,7 @@ export function InstalledPackageSheet({
                         />
                     )}
                     {(view.removable ?? origin !== 'bundled') && origin !== 'system' && (
-                        <Action label="Удалить" disabled={!!busy} onClick={() => onRemove(view)} />
+                        <Action label={tr.plugins.remove} disabled={!!busy} onClick={() => onRemove(view)} />
                     )}
                 </div>
             )}
@@ -496,7 +519,7 @@ export function InstalledPackageSheet({
                     }
                 />
             )}
-            {!admin && runs && <p class="t-caption m-0">Включать, настраивать и менять приложения может администратор.</p>}
+            {!admin && runs && <p class="t-caption m-0">{tr.plugins.adminOnly}</p>}
             {error && (
                 <p class="t-caption m-0 c-dot-offline" role="alert">
                     {error}

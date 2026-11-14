@@ -20,6 +20,8 @@ export interface FrameState {
     theme: { css: string; attrs: Record<string, string> };
     /** Черновик на примере: клавиатура — экранная, сеть — пример. */
     draft: boolean;
+    /** Язык пульта (docs/plans/i18n.md): код BCP 47 — `ru`, `en`… Окошко говорит на нём (`useLocale`, `useT`). */
+    locale: string;
 }
 
 /** Раздел или вклад, как окошко его описывает пульту: без кода, только слова и значок по имени. */
@@ -59,7 +61,8 @@ export type ToFrame =
     | { type: 'duowave:state'; state: FrameState }
     | { type: 'duowave:answer'; seq: number; ok: boolean; value?: unknown; error?: string }
     | { type: 'duowave:midi-state'; state: FrameMidiState }
-    | { type: 'duowave:midi-event'; event: unknown };
+    | { type: 'duowave:midi-event'; event: unknown }
+    | { type: 'duowave:tasks-state'; tasks: FrameTask[] };
 
 /** Окошко → пульт. */
 export type FromFrame =
@@ -68,11 +71,31 @@ export type FromFrame =
     | { type: 'duowave:failed'; message: string }
     | { type: 'duowave:size'; height: number }
     | { type: 'duowave:call'; seq: number; fn: string; input: unknown }
-    | { type: 'duowave:file'; seq: number; name: string }
+    | { type: 'duowave:file'; seq: number; name: string; address?: string; size?: number }
     | { type: 'duowave:midi-file'; seq: number; file: Blob }
     | { type: 'duowave:ask'; seq: number; options: { title: string; text?: string; ok?: string; danger?: boolean } }
     | { type: 'duowave:go'; section: string; tab?: string; item?: string }
-    | { type: 'duowave:midi'; op: string; args?: unknown[] };
+    | { type: 'duowave:midi'; op: string; args?: unknown[] }
+    | { type: 'duowave:tasks'; op: 'retain' | 'release' }
+    | { type: 'duowave:task-cancel'; seq: number; id: string };
+
+/**
+ * Долгая задача своего приложения, как её видит окошко (gateway/src/tasks): то же, что отдаёт шлюз, без `app` — окошко
+ * видит только свои.
+ */
+export interface FrameTask {
+    id: string;
+    title: string;
+    state: 'running' | 'done' | 'failed' | 'cancelled' | 'interrupted';
+    percent?: number;
+    text: string;
+    result?: unknown;
+    error?: string;
+    cancelRequested: boolean;
+    startedAt: number;
+    updatedAt: number;
+    endedAt?: number;
+}
 
 /** Клавиатура приложения, как её видит окошко: то же, что `useMidi()` в пульте, без методов. */
 export interface FrameMidiState {

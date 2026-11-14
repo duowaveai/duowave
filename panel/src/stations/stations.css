@@ -31,3 +31,12 @@
 @media (prefers-reduced-motion: reduce) {
     .st2-anim { animation: none !important; }
 }
+
+/* ДиВи в центре орбиты (divi.tsx): моргает, пока ждёт и слушает; думая, переводит взгляд; говоря, покачивает улыбкой. */
+.divi-eyes { transform-box: fill-box; transform-origin: center; }
+.divi-eyes path { transition: transform 0.26s ease; }
+@keyframes divi-blink { 0%, 93%, 100% { transform: scaleY(1); } 96% { transform: scaleY(0.08); } }
+@keyframes divi-talk { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+.divi-art.is-idle .divi-eyes,
+.divi-art.is-listen .divi-eyes { animation: divi-blink 5.2s ease-in-out infinite; }
+.divi-art.is-speak .divi-eyes { animation: divi-talk 0.7s ease-in-out infinite; }

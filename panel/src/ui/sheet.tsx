@@ -3,6 +3,7 @@ import { createPortal } from 'preact/compat';
 import { useEffect, useId, useLayoutEffect, useRef } from 'preact/hooks';
 
 import { VIA } from '../via';
+import { tr } from '../i18n';
 
 /** Номер окна по первой отрисовке: внешнее рисуется раньше вложенного, позже открытое — позже. */
 let drawn = 0;
@@ -176,9 +177,9 @@ class OverlayBoundary extends Component<FailedProps, { failed: boolean; closed: 
                     if (event.target === event.currentTarget) close();
                 }}
             >
-                <section role="alertdialog" aria-modal="true" aria-label="Окно не открылось" class="sheet glass-strong dash-sheet">
-                    <h2 class="t-title m-0">Окно не открылось</h2>
-                    <p class="t-meta m-0">В нём ошибка. Закройте его — остальной пульт работает.</p>
+                <section role="alertdialog" aria-modal="true" aria-label={tr.ui.sheetFailedTitle} class="sheet glass-strong dash-sheet">
+                    <h2 class="t-title m-0">{tr.ui.sheetFailedTitle}</h2>
+                    <p class="t-meta m-0">{tr.ui.sheetFailedAbout}</p>
                     <button
                         ref={(node) => {
                             this.button = node;
@@ -186,7 +187,7 @@ class OverlayBoundary extends Component<FailedProps, { failed: boolean; closed: 
                         class="dash-done"
                         onClick={close}
                     >
-                        Закрыть
+                        {tr.ui.close}
                     </button>
                 </section>
             </div>
@@ -275,7 +276,7 @@ export function Sheet({ title, about, icon, onClose, children, footer, dismissab
                 {children}
                 {footer ?? (
                     <button class="dash-done" onClick={onClose}>
-                        Готово
+                        {tr.ui.done}
                     </button>
                 )}
             </section>

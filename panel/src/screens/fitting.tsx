@@ -28,11 +28,13 @@ import { placeOnCanvas } from './desk-canvas';
 import { DraftWidgetPreview, madeByVoice, mayRunDraft, trustOwnDraft, trustedCode } from './draft-preview';
 import { DraftCardPreview } from '../cards/draft-card';
 import { faceWord } from './draft-tile';
+import { formatList, tr } from '../i18n';
+import { byMode } from '../words';
 
 /** Ширина плитки на столе: так она встанет. */
 const WIDTHS = { narrow: 240, normal: 300, wide: 420 } as const;
 type Width = keyof typeof WIDTHS;
-const WIDTH_WORDS: Record<Width, string> = { narrow: 'Узкий', normal: 'Обычный', wide: 'Широкий' };
+const widthWords = (): Record<Width, string> => ({ narrow: tr.fitting.widthNarrow, normal: tr.fitting.widthNormal, wide: tr.fitting.widthWide });
 /** Тема на примерке — своя запись в реестре пульта, как у мастерской. */
 const THEME_TRY = 'fitting.theme';
 
@@ -44,21 +46,21 @@ const shown = (template: string): string => template.replace(/\{[^}]+\}/g, '…'
 /** Что станет — словами плашки «Станет: …». */
 function willBe(draft: DraftView, plan: InstallPlan): string {
     const parts: string[] = [];
-    if (draft.meta.kind === 'widget') parts.push('виджет на столе');
-    else if (draft.meta.kind === 'theme') parts.push('тема в «Виде пульта»');
-    else parts.push(draft.meta.kind === 'game' ? 'игра у колонки' : 'навык у колонки');
-    if (plan.phrases.length) parts.push(`${plan.phrases.length} ${plan.phrases.length === 1 ? 'фраза' : plan.phrases.length < 5 ? 'фразы' : 'фраз'} у колонки`);
+    if (draft.meta.kind === 'widget') parts.push(tr.fitting.willWidget);
+    else if (draft.meta.kind === 'theme') parts.push(tr.fitting.willTheme);
+    else parts.push(draft.meta.kind === 'game' ? byMode(tr.fitting.willGameSpeaker, tr.fitting.willGameVoice) : byMode(tr.fitting.willSkillSpeaker, tr.fitting.willSkillVoice));
+    if (plan.phrases.length) parts.push(byMode(tr.fitting.phrasesSpeaker, tr.fitting.phrasesVoice)(plan.phrases.length));
     const hosts = plan.hostsAdded.length ? plan.hostsAdded : [];
-    const goes = hosts.length ? ` Сможет ходить в интернет — ${hosts.join(', ')}.` : '';
-    const first = plan.first ? '' : plan.from ? ` Версия ${plan.from} → ${plan.to}.` : '';
-    return `${parts.join(' и ')}.${goes}${first}`;
+    const goes = hosts.length ? tr.fitting.willGoOnline(hosts.join(', ')) : '';
+    const first = plan.first ? '' : plan.from ? tr.fitting.willVersion(plan.from, plan.to) : '';
+    return `${formatList(parts)}.${goes}${first}`;
 }
 
 export function FittingSection() {
     const panel = usePanel();
     const id = panel.link.section === 'fitting' ? panel.link.tab : undefined;
-    if (!can('plugins.manage')) return <p class="t-caption m-0">«Примерка» — у того, кто может мастерскую.</p>;
-    if (!id) return <p class="t-caption m-0">Нечего примерять: черновик появится на столе плиткой, когда агент его сделает.</p>;
+    if (!can('plugins.manage')) return <p class="t-caption m-0">{tr.fitting.needManage}</p>;
+    if (!id) return <p class="t-caption m-0">{tr.fitting.nothingToTry}</p>;
     return <Fitting key={id} id={id} yes={'yes' in panel.link.query} redo={'redo' in panel.link.query} />;
 }
 
@@ -133,7 +135,7 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
     const plainValues = Object.fromEntries(plain.map((need) => [need.key, values[need.key]]).filter(([, value]) => value !== null && value !== ''));
     const keyMissing = draft ? missingKey(draft, values) : false;
     const title = draft?.title?.trim() || id;
-    const word = draft ? faceWord(draft) : 'вещь';
+    const word = draft ? faceWord(draft) : tr.fitting.thing;
 
     const act = async (name: string, run: () => Promise<unknown>) => {
         setBusy(name);
@@ -217,13 +219,13 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
     const park = () => act('park', () => api.parkDraft(id).then(() => panel.go('home')));
     const again = (words: string) =>
         act('redo', async () => {
-            await askToMake(words.trim() || 'Переделай', cloud, id);
+            await askToMake(words.trim() || tr.fitting.redoDefault, cloud, id);
             setRedoOpen(false);
             setRedoWords('');
             panel.go('home');
         });
     const dropDraft = () =>
-        void ask({ title: 'Удалить черновик?', text: `«${title}» уйдёт из мастерской.`, ok: 'Удалить', danger: true }).then(
+        void ask({ title: tr.fitting.dropTitle, text: tr.fitting.dropText(title), ok: tr.fitting.dropOk, danger: true }).then(
             (sure) => {
                 if (sure) void act('drop', () => api.deleteDraft(id).then(() => panel.go('home')));
             },
@@ -231,9 +233,9 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
     const tryTheme = () =>
         act('theme', async () => {
             const found = normalizeTheme(JSON.parse((await api.readDraftFile(id, 'manifest.json')).content)?.contributes?.themes?.[0]);
-            if (!found) throw new Error('В манифесте нет темы, которую можно примерить.');
+            if (!found) throw new Error(tr.fitting.noThemeInManifest);
             const before = themeBefore ?? theme.id;
-            registerPlugin({ id: THEME_TRY, themes: [{ ...found, id: `fitting-${found.id}`, title: `${found.title} (примерка)` }] });
+            registerPlugin({ id: THEME_TRY, themes: [{ ...found, id: `fitting-${found.id}`, title: tr.fitting.themeTryTitle(found.title) }] });
             setTheme(`fitting-${found.id}`);
             setThemeBefore(before);
         });
@@ -273,10 +275,10 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
     });
 
     if (problem && !draft) return <p class="t-caption c-dot-offline m-0">{problem}</p>;
-    if (!draft || !plan) return <p class="t-caption m-0">Открываю черновик…</p>;
+    if (!draft || !plan) return <p class="t-caption m-0">{tr.fitting.openingDraft}</p>;
 
     const face = draft.meta.kind;
-    const asked = draft.meta.by === 'voice' ? 'попросили у колонки' : null;
+    const asked = draft.meta.by === 'voice' ? byMode(tr.fitting.askedSpeaker, tr.fitting.askedVoice) : null;
     const seconds = draft.meta.stage === 'ready' ? null : draft.meta.stage;
 
     return (
@@ -284,13 +286,13 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
             <div class="fitting-chips">
                 <span class="fit-chip">
                     <span class="fit-dot is-agent" aria-hidden="true" />
-                    сделал агент{asked ? ` · ${asked}` : ''}
+                    {tr.fitting.madeByAgent}{asked ? ` · ${asked}` : ''}
                 </span>
-                <span class="fit-chip">черновик · ничего не поставлено</span>
-                {seconds && <span class="fit-chip">{seconds === 'working' ? 'агент ещё работает' : seconds}</span>}
+                <span class="fit-chip">{tr.fitting.draftNothingInstalled}</span>
+                {seconds && <span class="fit-chip">{seconds === 'working' ? tr.fitting.agentStillWorking : seconds}</span>}
                 <span class="fitting-sp" />
                 <button class="pill" onClick={() => panel.go('skills', 'workshop', id)}>
-                    Открыть код
+                    {tr.fitting.openCode}
                 </button>
             </div>
             <div class="fitting-body">
@@ -302,32 +304,32 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
                     <div class="fitting-stand">
                         <div class="fitting-stand-top">
                             {face === 'widget' && (
-                                <div class="seg" role="group" aria-label="Ширина виджета">
+                                <div class="seg" role="group" aria-label={tr.fitting.widthLabel}>
                                     {(Object.keys(WIDTHS) as Width[]).map((entry) => (
                                         <button key={entry} aria-pressed={width === entry} onClick={() => setWidth(entry)}>
-                                            {WIDTH_WORDS[entry]}
+                                            {widthWords()[entry]}
                                         </button>
                                     ))}
                                 </div>
                             )}
-                            <span class="t-caption">{asWindow ? 'окно приложения, на примере' : face === 'widget' ? 'так он встанет на стол' : 'пример данных'}</span>
+                            <span class="t-caption">{asWindow ? tr.fitting.standWindow : face === 'widget' ? tr.fitting.standWidget : tr.fitting.standSample}</span>
                             {hasWindow && (
                                 <button class="pill" aria-pressed={asWindow} onClick={() => setAsWindow(!asWindow)}>
-                                    {asWindow ? 'Свернуть' : 'Развернуть'}
+                                    {asWindow ? tr.fitting.collapse : tr.fitting.expand}
                                 </button>
                             )}
                         </div>
                         <div class="fitting-tile" style={{ width: asWindow ? '100%' : `${face === 'widget' ? WIDTHS[width] : 340}px` }}>
                             {face === 'theme' ? (
                                 <div class="flex flex-col gap-8">
-                                    <p class="t-caption m-0">Тему видно сразу на всём пульте.</p>
+                                    <p class="t-caption m-0">{tr.fitting.themeVisible}</p>
                                     {themeBefore ? (
                                         <button class="pill" onClick={untryTheme}>
-                                            Снять примерку
+                                            {tr.fitting.untryTheme}
                                         </button>
                                     ) : (
                                         <button class="pill" disabled={busy !== null} onClick={() => void tryTheme()}>
-                                            Примерить тему
+                                            {tr.fitting.tryTheme}
                                         </button>
                                     )}
                                 </div>
@@ -343,10 +345,10 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
                                 />
                             ) : draft.files.some((file) => file.path === 'panel.js') ? (
                                 <div class="draft-ask">
-                                    <p class="t-caption m-0">{asked ? 'Попросили у колонки: код покажется после вашего «да».' : 'Загружаю…'}</p>
+                                    <p class="t-caption m-0">{asked ? byMode(tr.fitting.askedSpeakerCode, tr.fitting.askedVoiceCode) : tr.fitting.loading}</p>
                                     {asked && (
                                         <button class="pill" onClick={() => void mayRunDraft(id).then(setCode)}>
-                                            Показать
+                                            {tr.fitting.show}
                                         </button>
                                     )}
                                 </div>
@@ -356,24 +358,24 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
                                     nonce={draft.meta.updated + version}
                                     trying={{ example: true, settings: plainValues }}
                                     onWidget={setWidget}
-                                    fallback={<p class="t-caption m-0">У {word === 'тема' ? 'темы' : 'него'} нет виджета — только фразы для колонки.</p>}
+                                    fallback={<p class="t-caption m-0">{(draft.meta.kind === 'theme' ? tr.fitting.noWidgetTheme : tr.fitting.noWidgetThing)(byMode(tr.fitting.onlyPhrasesSpeaker, tr.fitting.onlyPhrasesVoice))}</p>}
                                 />
                             )}
                         </div>
-                        <span class="fitting-note t-caption">пример данных · до «да» в сеть не ходит</span>
+                        <span class="fitting-note t-caption">{tr.fitting.sampleNote}</span>
                     </div>
                     {plan.phrases.length > 0 && (
                         <>
                             <div class="fitting-h">
-                                Что он слышит <span class="t-caption">нажмите или скажите «попробуй»</span>
+                                {tr.fitting.hears} <span class="t-caption">{tr.fitting.hearsHint}</span>
                             </div>
                             <div class="fitting-phrases">
                                 {plan.phrases.map((template) => {
                                     const answer = tried[template];
-                                    const said = typeof answer === 'string' ? answer : (answer?.speech ?? answer?.error ?? (answer?.matched ? 'Ответил без речи' : answer ? 'Не узнал фразу' : null));
+                                    const said = typeof answer === 'string' ? answer : (answer?.speech ?? answer?.error ?? (answer?.matched ? tr.fitting.answeredNoSpeech : answer ? tr.fitting.unknownPhrase : null));
                                     return (
                                         <div key={template} class="fitting-phrase">
-                                            <button class="fitting-play" aria-label={`Попробовать «${shown(template)}»`} disabled={busy !== null} onClick={() => void tryPhrase(template)}>
+                                            <button class="fitting-play" aria-label={tr.fitting.tryPhrase(shown(template))} disabled={busy !== null} onClick={() => void tryPhrase(template)}>
                                                 <IconPlay size={10} />
                                             </button>
                                             «{shown(template)}»
@@ -387,12 +389,12 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
                 </div>
                 <div class="fitting-col">
                     <div class="fitting-block">
-                        <div class="fitting-h">Что ему нужно</div>
-                        {draft.needs.length === 0 && <p class="t-caption m-0">Ничего вписывать не нужно.</p>}
+                        <div class="fitting-h">{tr.fitting.needs}</div>
+                        {draft.needs.length === 0 && <p class="t-caption m-0">{tr.fitting.needsNothing}</p>}
                         {plain.length > 0 && (
                             <>
                                 <div class="fitting-group">
-                                    <b>Обычное</b> — можно сказать вслух
+                                    <b>{tr.fitting.groupPlainBold}</b>{tr.fitting.groupPlainRest}
                                 </div>
                                 {plain.map((need) => (
                                     <label key={need.key} class="fitting-row">
@@ -407,7 +409,7 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
                                 {plain.length > 0 && <div class="fitting-sep" />}
                                 <div class="fitting-group">
                                     <IconLock size={13} />
-                                    <b>Личное</b> — только руками
+                                    <b>{tr.fitting.groupPrivateBold}</b>{tr.fitting.groupPrivateRest}
                                 </div>
                                 <div
                                     ref={keyField}
@@ -419,7 +421,7 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
                                         <label key={need.key} class="fitting-row">
                                             <span>
                                                 {need.title}
-                                                {need.required ? '' : ' · можно без него'}
+                                                {need.required ? '' : tr.fitting.optionalSuffix}
                                             </span>
                                             <SettingInput field={{ ...need, secret: true }} value={values[need.key]} busy={busy !== null} onChange={(value) => setValues((before) => ({ ...before, [need.key]: value }))} onPrivate={setPrivateOpen} />
                                         </label>
@@ -429,16 +431,16 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
                                     {privateOpen && (
                                         <li class="is-mic">
                                             <IconMicOff size={13} />
-                                            Микрофон выключен, пока открыт ключ
+                                            {tr.fitting.micOffWhileKey}
                                         </li>
                                     )}
                                     <li>
                                         <span class="fit-dot is-own" aria-hidden="true" />
-                                        Остаётся в шлюзе у вас дома
+                                        {tr.fitting.staysInGateway}
                                     </li>
                                     <li>
                                         <span class="fit-dot is-own" aria-hidden="true" />
-                                        Агент и облако его не видят
+                                        {tr.fitting.agentCantSee}
                                     </li>
                                 </ul>
                             </>
@@ -446,7 +448,7 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
                     </div>
                     <div class="fitting-block">
                         <div class="fitting-h">
-                            Что ему можно <span class="t-caption">одобряете вы</span>
+                            {tr.fitting.allowed} <span class="t-caption">{tr.fitting.youApprove}</span>
                         </div>
                         <PermissionLines plan={plan} needs={draft.needs} />
                     </div>
@@ -460,23 +462,23 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
                         void again(redoWords);
                     }}
                 >
-                    <input class="field" value={redoWords} placeholder="Что поменять: крупнее, только проект «Дом»…" aria-label="Что поменять" onInput={(event) => setRedoWords((event.target as HTMLInputElement).value)} />
+                    <input class="field" value={redoWords} placeholder={tr.fitting.redoPlaceholder} aria-label={tr.fitting.redoLabel} onInput={(event) => setRedoWords((event.target as HTMLInputElement).value)} />
                     <button type="submit" class="pill" disabled={busy !== null}>
-                        {busy === 'redo' ? 'Отдаю агенту…' : 'Переделать'}
+                        {busy === 'redo' ? tr.fitting.handingToAgent : tr.fitting.redo}
                     </button>
                 </form>
             )}
             <footer class="fitting-foot">
                 {consent ? (
-                    <div class="fitting-will" role="group" aria-label="Одобрение">
+                    <div class="fitting-will" role="group" aria-label={tr.fitting.approvalLabel}>
                         <p>
-                            <b>Станет:</b> {willBe(draft, plan)} Одобряете вы — рукой, не голосом.
+                            <b>{tr.fitting.willBeLabel}</b> {willBe(draft, plan)}{tr.fitting.approveByHand}
                         </p>
                         <button class="pill pill-lg" disabled={busy !== null} onClick={() => setConsent(false)}>
-                            Отменить
+                            {tr.fitting.cancel}
                         </button>
                         <button class="pill pill-lg pill-own fitting-approve" disabled={busy !== null} autoFocus onClick={() => void install(true)}>
-                            {busy === 'install' ? 'Ставлю…' : 'Одобрить и поставить'}
+                            {busy === 'install' ? tr.fitting.installing : tr.fitting.approveAndInstall}
                             <span class="kbd">Enter</span>
                         </button>
                     </div>
@@ -486,7 +488,7 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
                             <IconMicOff size={18} />
                         </span>
                         <p>
-                            <b>Микрофон выключен.</b> Ключ вводят руками: вслух его мог бы услышать кто угодно.
+                            <b>{tr.fitting.micOffBold}</b>{tr.fitting.keyByHand}
                         </p>
                         <button
                             class="pill pill-lg pill-ink"
@@ -494,44 +496,44 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
                             onMouseDown={(event) => event.preventDefault()}
                             onClick={() => (document.activeElement as HTMLElement | null)?.blur()}
                         >
-                            Готово
+                            {tr.fitting.done}
                         </button>
                     </div>
                 ) : (
                     <>
                         <div class="fitting-say">
                             <p>
-                                Говорите то, что на кнопках.{' '}
+                                {tr.fitting.sayButtons}{' '}
                                 {keyMissing ? (
                                     <>
-                                        Ключ вслух не называют — <b>вставьте его руками</b>.
+                                        {tr.fitting.keyNotAloud}<b>{tr.fitting.keyByHandBold}</b>.
                                     </>
                                 ) : plain.length > 0 ? (
                                     <>
-                                        Или так: <b>«{plain[0].title.toLowerCase()} — …»</b>, <b>«сделай шире»</b>.
+                                        {tr.fitting.orLike}<b>{tr.fitting.orLikeSay(plain[0].title.toLowerCase())}</b>, <b>{tr.fitting.orLikeWider}</b>.
                                     </>
                                 ) : null}
                             </p>
                         </div>
                         <button class="pill pill-lg" disabled={busy !== null} onClick={() => setRedoOpen(!redoOpen)}>
-                            Переделать…
+                            {tr.fitting.redoEllipsis}
                         </button>
                         <button class="pill pill-lg" disabled={busy !== null} onClick={() => void park()}>
-                            В черновики
+                            {tr.fitting.toDrafts}
                         </button>
                         {keyMissing ? (
                             <button class="pill pill-lg pill-own" onClick={toDesk}>
-                                Вставить ключ
+                                {tr.fitting.pasteKey}
                             </button>
                         ) : (
                             <>
                                 {face === 'widget' && plan.phrases.length > 0 && (
                                     <button class="pill pill-lg pill-ink" disabled={busy !== null} onClick={() => (needsYes(plan) ? setConsent(true) : void install(false, true))}>
-                                        Только фразы
+                                        {tr.fitting.onlyPhrases}
                                     </button>
                                 )}
                                 <button class="pill pill-lg pill-own" disabled={busy !== null} onClick={toDesk}>
-                                    {busy === 'install' ? 'Ставлю…' : face === 'widget' ? 'На стол' : 'Включить'}
+                                    {busy === 'install' ? tr.fitting.installing : face === 'widget' ? tr.fitting.toDesk : tr.fitting.enable}
                                 </button>
                             </>
                         )}
@@ -540,10 +542,10 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
             </footer>
             <div class="fitting-more">
                 <button class="linkish" onClick={() => panel.go('skills', 'workshop', id)}>
-                    Проба на колонке…
+                    {byMode(tr.fitting.tryOnSpeaker, tr.fitting.tryOnVoice)}
                 </button>
                 <button class="linkish" onClick={dropDraft}>
-                    Не надо — удалить черновик
+                    {tr.fitting.dropDraft}
                 </button>
             </div>
             {trouble && (

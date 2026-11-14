@@ -154,12 +154,31 @@ events! {
     MidiDevices = "midi.devices" {
         devices: Vec<String>,
     }
+    /// The home folder's folders changed (src/bus/providers/files): something attached or taken away, a drive in or
+    /// out, a folder's ticks; `what` names it (`attached`, `detached`, `offer`, `drives`, `rules`). No path, no file.
+    FoldersChanged = "folders.changed" {
+        what: String,
+    }
+    /// The windows of the computer's screen changed (src/screen): opened, kept, closed, paused; `what` names it. The
+    /// windows' own pages read the list again; the DuoWave app follows it in-process.
+    ScreenChanged = "screen.changed" {
+        what: String,
+    }
     /// A draft of the workshop changed by its agent or by voice (src/plugins/workshop): the panel reads it again. The
     /// change: `agent` (a step of the agent), `voice.*`, and the draft's card (docs/plans/voice-creation.md) — `made`,
     /// `ready`, `failed`, `stopped`, `parked`, `installed`, `deleted`; `open:fitting` and `open:consent` when a station
     /// asks the panel to open «Примерка» or the «да».
     WorkshopChanged = "workshop.changed" {
         draft: String,
+        change: String,
+    }
+    /// A long task of an app moved (src/tasks): the panel reads the app's tasks again. The change: `started`,
+    /// `progress` (at most twice a second per task), `cancelling` (a person asked to cancel it), how it ended —
+    /// `done`, `failed`, `cancelled`, `interrupted` — and `forgotten` (old tasks went; `task` is empty). Never what
+    /// the task says or gave.
+    TasksChanged = "tasks.changed" {
+        app: String,
+        task: String,
         change: String,
     }
     /// The plugins' memory changed enough to tell (src/plugins/budget.rs): what is free of their budget, the

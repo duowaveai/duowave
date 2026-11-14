@@ -5,7 +5,9 @@
 //!
 //! The parts are fixed: an app cannot invent one. A part a widget needs and the set lacks is either a window (its own
 //! drawing) or a new part added here and in the panel (`panel/src/cards/`) once, for everyone.
-
+//!
+//! A card's `look` paints the whole widget: its colours as a gradient, a picture of its own behind, and a living scene
+//! the panel draws — rain, snow, the sun, stars, waves. The scenes are the panel's too: an app names one, never draws it.
 use serde_json::{Map, Value};
 
 /// The parts a card may have, with what each is for: the workshop's agent reads this list.
@@ -16,7 +18,7 @@ pub const PARTS: &[(&str, &str)] = &[
     ("line", "линия: {points: [числа], area?: true} — до 200 точек"),
     ("bars", "столбики: {points: [числа], labels?: [строки]} — до 60"),
     ("tiles", "плитки: [{label, value}] — до 8, как дни погоды"),
-    ("picture", "картинка из своей папки: {name, caption?}"),
+    ("picture", "картинка: из своей папки {name} или из папки дома по связи {address: files/…}, caption?"),
     ("clocks", "часы: [{label, offset: минуты от UTC}] — до 6, тикают в пульте"),
     ("rings", "кольца с отсчётом: [{label, endsAt: время ISO, total?: секунды}] — до 6"),
     ("shares", "полоса долей: {parts: [{label, value}]} — до 6"),
@@ -28,7 +30,77 @@ pub const PARTS: &[(&str, &str)] = &[
     ("toggle", "переключатель: {text, on, tap: функция}"),
     ("empty", "что сказать, когда показывать нечего"),
     ("say", "своя фраза для голоса"),
+    (
+        "look",
+        "вид всего виджета: {scene?: сцена ниже, colors?: [\"#rrggbb\"] — 1–3 цвета градиента фона, picture?: {name} или \
+{address: files/…} — фото фоном, ink?: light|dark — светлый текст (по умолчанию) или тёмный на светлом фоне}",
+    ),
 ];
+
+/// The living scenes behind a card (`look.scene`), drawn by the panel, with what each suits.
+pub const SCENES: &[(&str, &str)] = &[
+    ("sun", "солнце с лучами и бликами — ясно, утро, лето, хорошие новости"),
+    ("clouds", "плывущие облака — облачно, спокойно"),
+    ("rain", "дождь"),
+    ("storm", "гроза: ливень и вспышки молний"),
+    ("snow", "снег"),
+    ("fog", "туман"),
+    ("stars", "мерцающие звёзды и падающая — ночь, вечер, сон"),
+    ("aurora", "северное сияние — музыка, отдых, медитация"),
+    ("waves", "волны — звук, радио, море, ровный поток"),
+    ("bubbles", "всплывающие пузырьки — покупки, вода, лёгкие списки"),
+    ("sparkles", "искры — деньги, награды, праздник"),
+    ("grid", "неоновая сетка и закат — игры, техника, ретро"),
+];
+
+/// `#rgb` or `#rrggbb`.
+fn color_ok(value: &Value) -> bool {
+    value.as_str().is_some_and(|color| {
+        let digits = color.strip_prefix('#').unwrap_or("");
+        matches!(digits.len(), 3 | 6) && digits.chars().all(|c| c.is_ascii_hexdigit())
+    })
+}
+
+/// What is wrong with a card's `look`, in words for the agent; None — the panel paints it.
+fn look_problem(look: &Value) -> Option<String> {
+    let Some(fields) = look.as_object() else {
+        return Some(crate::tr!("look: объект {scene?, colors?, picture?, ink?}"));
+    };
+    for (name, value) in fields {
+        let fine = match name.as_str() {
+            "scene" => value.as_str().is_some_and(|scene| SCENES.iter().any(|(known, _)| *known == scene)),
+            "colors" => {
+                value.as_array().is_some_and(|colors| (1..=3).contains(&colors.len()) && colors.iter().all(color_ok))
+            }
+            "ink" => matches!(value.as_str(), Some("light" | "dark")),
+            "picture" => picture_ok(value),
+            _ => false,
+        };
+        if !fine {
+            return Some(match name.as_str() {
+                "scene" => crate::tr!(
+                    "look.scene: одна из сцен — {scenes}",
+                    scenes = SCENES.iter().map(|(scene, _)| *scene).collect::<Vec<_>>().join(", ")
+                ),
+                "colors" => crate::tr!("look.colors: 1–3 цвета \"#rrggbb\""),
+                "ink" => crate::tr!("look.ink: light или dark"),
+                "picture" => crate::tr!("look.picture: {name: имя файла в своей папке} или {address: files/…}"),
+                other => crate::tr!("look: нет поля «{other}» — scene, colors, picture, ink", other = other),
+            });
+        }
+    }
+    None
+}
+
+/// A picture of the app's own folder (`name`) or of the home's folders by a link (`address: files/…`).
+fn picture_ok(value: &Value) -> bool {
+    let named = value.get("name").is_some_and(|name| text_ok(name, 200));
+    let addressed = value
+        .get("address")
+        .and_then(Value::as_str)
+        .is_some_and(|address| address.starts_with("files/") && crate::bus::Address::parse(address).is_ok());
+    named || addressed
+}
 
 fn text_ok(value: &Value, max: usize) -> bool {
     value.as_str().is_some_and(|text| text.chars().count() <= max)
@@ -42,32 +114,32 @@ fn function_ok(value: &Value) -> bool {
 pub fn check(card: &Value) -> Vec<String> {
     let mut problems = Vec::new();
     let Some(fields) = card.as_object() else {
-        return vec!["карточка — объект".into()];
+        return vec![crate::tr!("карточка — объект")];
     };
     let mut problem = |text: String| problems.push(text);
     for (name, value) in fields {
         match name.as_str() {
             "big" | "cap" | "empty" => {
                 if !text_ok(value, 300) {
-                    problem(format!("{name}: строка до 300 знаков"));
+                    problem(crate::tr!("{name}: строка до 300 знаков", name = name));
                 }
             }
             "say" => {
                 if !text_ok(value, 1000) {
-                    problem("say: строка до 1000 знаков".into());
+                    problem(crate::tr!("say: строка до 1000 знаков"));
                 }
             }
             "delta" => {
                 let tone = value.get("tone").and_then(Value::as_str).unwrap_or("flat");
                 if !value.get("text").is_some_and(|text| text_ok(text, 80)) || !matches!(tone, "up" | "down" | "flat") {
-                    problem("delta: {text, tone: up|down|flat}".into());
+                    problem(crate::tr!("delta: {text, tone: up|down|flat}"));
                 }
             }
             "line" | "bars" => {
                 let max = if name == "line" { 200 } else { 60 };
                 let points = value.get("points").and_then(Value::as_array);
                 if !points.is_some_and(|points| points.len() <= max && points.iter().all(Value::is_number)) {
-                    problem(format!("{name}: points — до {max} чисел"));
+                    problem(crate::tr!("{name}: points — до {max} чисел", name = name, max = max));
                 }
             }
             "tiles" | "clocks" | "rings" | "rows" | "buttons" => {
@@ -85,12 +157,17 @@ pub fn check(card: &Value) -> Vec<String> {
                             }
                         }
                     }
-                    _ => problem(format!("{name}: список до {max}")),
+                    _ => problem(crate::tr!("{name}: список до {max}", name = name, max = max)),
                 }
             }
             "picture" => {
-                if !value.get("name").is_some_and(|name| text_ok(name, 200)) {
-                    problem("picture: {name: имя файла в своей папке, caption?}".into());
+                if !picture_ok(value) {
+                    problem(crate::tr!("picture: {name: имя файла в своей папке} или {address: files/…}, caption?"));
+                }
+            }
+            "look" => {
+                if let Some(why) = look_problem(value) {
+                    problem(why);
                 }
             }
             "shares" => {
@@ -103,18 +180,18 @@ pub fn check(card: &Value) -> Vec<String> {
                         })
                 });
                 if !fine {
-                    problem("shares: {parts: [{label, value}]} — до 6".into());
+                    problem(crate::tr!("shares: {parts: [{label, value}]} — до 6"));
                 }
             }
             "progress" => {
                 let fine = value.get("value").and_then(Value::as_f64).is_some_and(|share| (0.0..=1.0).contains(&share));
                 if !fine {
-                    problem("progress: {value: 0…1, text?}".into());
+                    problem(crate::tr!("progress: {value: 0…1, text?}"));
                 }
             }
             "input" => {
                 if !value.get("submit").is_some_and(function_ok) {
-                    problem("input: {placeholder, submit: имя функции}".into());
+                    problem(crate::tr!("input: {placeholder, submit: имя функции}"));
                 }
             }
             "choice" => {
@@ -124,17 +201,18 @@ pub fn check(card: &Value) -> Vec<String> {
                         && options.iter().all(|option| option.get("id").is_some() && option.get("text").is_some())
                 });
                 if !fine || !value.get("tap").is_some_and(function_ok) {
-                    problem("choice: {options: [{id, text}] до 8, selected, tap: функция}".into());
+                    problem(crate::tr!("choice: {options: [{id, text}] до 8, selected, tap: функция}"));
                 }
             }
             "toggle" => {
                 if !value.get("on").is_some_and(Value::is_boolean) || !value.get("tap").is_some_and(function_ok) {
-                    problem("toggle: {text, on: да/нет, tap: функция}".into());
+                    problem(crate::tr!("toggle: {text, on: да/нет, tap: функция}"));
                 }
             }
-            other => problem(format!(
-                "нет такой детали: «{other}» — детали карточки: {}; своё рисование — окошко",
-                PARTS.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(", ")
+            other => problem(crate::tr!(
+                "нет такой детали: «{other}» — детали карточки: {parts}; своё рисование — окошко",
+                other = other,
+                parts = PARTS.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(", ")
             )),
         }
     }
@@ -145,22 +223,22 @@ fn item_problem(part: &str, item: &Value) -> Option<String> {
     let fields = item.as_object()?;
     let tap = fields.get("tap");
     if tap.is_some_and(|tap| !function_ok(tap)) {
-        return Some("tap — имя функции".into());
+        return Some(crate::tr!("tap — имя функции"));
     }
     match part {
         "tiles" => (!fields.get("label").is_some_and(|text| text_ok(text, 40))
             || !fields.get("value").is_some_and(|text| text_ok(text, 40)))
-        .then(|| "{label, value}".into()),
+        .then(|| crate::tr!("{label, value}")),
         "clocks" => (!fields.get("label").is_some_and(|text| text_ok(text, 40))
             || !fields.get("offset").and_then(Value::as_i64).is_some_and(|offset| offset.abs() <= 14 * 60))
-        .then(|| "{label, offset: минуты от UTC}".into()),
+        .then(|| crate::tr!("{label, offset: минуты от UTC}")),
         "rings" => (!fields.get("label").is_some_and(|text| text_ok(text, 40))
             || !fields.get("endsAt").is_some_and(Value::is_string))
-        .then(|| "{label, endsAt: время ISO}".into()),
+        .then(|| crate::tr!("{label, endsAt: время ISO}")),
         "rows" => (!fields.get("text").is_some_and(|text| text_ok(text, 200)))
-            .then(|| "{text, value?, time?, mark?, tap?}".into()),
+            .then(|| crate::tr!("{text, value?, time?, mark?, tap?}")),
         "buttons" => (!fields.get("text").is_some_and(|text| text_ok(text, 40)) || tap.is_none())
-            .then(|| "{text, tap: функция}".into()),
+            .then(|| crate::tr!("{text, tap: функция}")),
         _ => None,
     }
 }
@@ -287,6 +365,28 @@ mod tests {
             .iter()
             .any(|problem| problem.contains("нет такой детали: «canvas»") && problem.contains("окошко")));
         assert_eq!(functions(&card), vec!["remove", "refresh", "add", "sound"]);
+    }
+
+    #[test]
+    fn a_look_names_a_scene_of_the_panels_and_colours_it_can_paint() {
+        let painted = json!({
+            "big": "+7°",
+            "look": {"scene": "rain", "colors": ["#36475d", "#5d7894"], "ink": "light", "picture": {"name": "sky.jpg"}}
+        });
+        assert_eq!(check(&painted), Vec::<String>::new());
+        assert_eq!(check(&json!({"big": "1", "look": {"colors": ["#fff"]}})), Vec::<String>::new());
+        for (look, about) in [
+            (json!({"scene": "lava"}), "look.scene: одна из сцен"),
+            (json!({"colors": ["red"]}), "look.colors"),
+            (json!({"colors": ["#111", "#222", "#333", "#444"]}), "look.colors"),
+            (json!({"ink": "white"}), "look.ink"),
+            (json!({"picture": {}}), "look.picture"),
+            (json!({"blur": 3}), "нет поля «blur»"),
+            (json!("rain"), "look: объект"),
+        ] {
+            let problems = check(&json!({"big": "1", "look": look}));
+            assert!(problems.len() == 1 && problems[0].contains(about), "{look}: {problems:?}");
+        }
     }
 
     #[test]

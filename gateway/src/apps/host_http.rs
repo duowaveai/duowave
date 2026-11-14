@@ -8,6 +8,17 @@
 //! - `POST /api/v1/apps/host/say` `{text, device?}` → `{said}`
 //! - `POST /api/v1/apps/host/fetch` `{url, method, headers, body, timeoutMs}` → the answer, by its `net:` rights
 //! - `GET /api/v1/apps/host/settings`
+//!
+//! Long tasks (src/tasks; docs/plugins/AUTHORING.md, «Долгие задачи»): work that takes longer than a call may.
+//!
+//! - `POST /api/v1/apps/host/tasks` `{title, text?, percent?}` → 201, the task with its `id`; 429 when the app already
+//!   runs as many as it may (`budget.tasks`, one by default)
+//! - `GET /api/v1/apps/host/tasks` → `{tasks}`: its own, what was interrupted while it was down too
+//! - `GET /api/v1/apps/host/tasks/{id}?waitMs=` → the task; with `waitMs` (up to a minute) the answer comes once a
+//!   person asked to cancel it (`cancelRequested`) or it ended — or when the wait is over
+//! - `POST /api/v1/apps/host/tasks/{id}/progress` `{percent?, text?}` → `{cancelRequested}`
+//! - `POST /api/v1/apps/host/tasks/{id}/done` `{result?}`, `…/fail` `{error}`, `…/cancelled` → the task as it ended;
+//!   409 with its `state` when it is over already (cancelled after the grace, interrupted)
 
 use std::sync::Arc;
 
@@ -21,6 +32,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::apps::supervisor::AppHost;
+use crate::tasks::{Outcome, TaskError};
 
 pub fn routes() -> Router<Arc<App>> {
     Router::new()
@@ -31,16 +43,23 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/api/v1/apps/host/fetch", post(fetch))
         .route("/api/v1/apps/host/settings", get(settings))
         .route("/api/v1/apps/host/call/{name}", post(call))
+        .route("/api/v1/apps/host/tasks", get(tasks).post(task_start))
+        .route("/api/v1/apps/host/tasks/{id}", get(task))
+        .route("/api/v1/apps/host/tasks/{id}/progress", post(task_progress))
+        .route("/api/v1/apps/host/tasks/{id}/{end}", post(task_end))
 }
 
-fn refused(status: StatusCode, message: &str) -> Response {
-    (status, Json(json!({ "error": message }))).into_response()
+fn refused(status: StatusCode, message: impl AsRef<str>) -> Response {
+    (status, Json(json!({ "error": message.as_ref() }))).into_response()
 }
 
 /// The app by its token, from this machine only; the refusal to answer otherwise.
 fn app_of(app: &App, peer: std::net::SocketAddr, headers: &HeaderMap) -> Result<AppHost, Box<Response>> {
     if !peer.ip().is_loopback() {
-        return Err(Box::new(refused(StatusCode::FORBIDDEN, "Host API приложений — только с этого компьютера")));
+        return Err(Box::new(refused(
+            StatusCode::FORBIDDEN,
+            crate::tr!("Host API приложений — только с этого компьютера"),
+        )));
     }
     let token = headers
         .get(header::AUTHORIZATION)
@@ -49,7 +68,7 @@ fn app_of(app: &App, peer: std::net::SocketAddr, headers: &HeaderMap) -> Result<
         .unwrap_or_default();
     app.plugins
         .app_host(token)
-        .ok_or_else(|| Box::new(refused(StatusCode::UNAUTHORIZED, "нет такого приложения: токен не тот")))
+        .ok_or_else(|| Box::new(refused(StatusCode::UNAUTHORIZED, crate::tr!("нет такого приложения: токен не тот"))))
 }
 
 type Peer = ConnectInfo<std::net::SocketAddr>;
@@ -117,7 +136,7 @@ async fn kv_set(
     match app_of(&app, peer, &headers) {
         Ok((_, host)) => {
             let Ok(value) = serde_json::from_slice::<Value>(&body) else {
-                return refused(StatusCode::BAD_REQUEST, "значение — JSON");
+                return refused(StatusCode::BAD_REQUEST, crate::tr!("значение — JSON"));
             };
             match host.kv_set(&key, value) {
                 Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -200,6 +219,140 @@ async fn call(
 async fn settings(State(app): State<Arc<App>>, ConnectInfo(peer): Peer, headers: HeaderMap) -> Response {
     match app_of(&app, peer, &headers) {
         Ok((_, host)) => Json(Value::Object(host.settings())).into_response(),
+        Err(response) => *response,
+    }
+}
+
+/// A refusal of the tasks: its words, and how the task ended when it is over.
+fn task_refused(error: TaskError) -> Response {
+    let status = match error {
+        TaskError::TooMany { .. } => StatusCode::TOO_MANY_REQUESTS,
+        TaskError::NotFound => StatusCode::NOT_FOUND,
+        TaskError::Ended(_) => StatusCode::CONFLICT,
+        TaskError::Invalid(_) => StatusCode::BAD_REQUEST,
+    };
+    let mut body = json!({ "error": error.to_string() });
+    if let TaskError::Ended(state) = error {
+        body["state"] = json!(state);
+    }
+    (status, Json(body)).into_response()
+}
+
+async fn tasks(State(app): State<Arc<App>>, ConnectInfo(peer): Peer, headers: HeaderMap) -> Response {
+    match app_of(&app, peer, &headers) {
+        Ok((id, _)) => Json(json!({ "tasks": app.tasks.list(Some(&id)) })).into_response(),
+        Err(response) => *response,
+    }
+}
+
+async fn task_start(State(app): State<Arc<App>>, ConnectInfo(peer): Peer, headers: HeaderMap, body: Bytes) -> Response {
+    match app_of(&app, peer, &headers) {
+        Ok((id, host)) => {
+            let body = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
+            let started = app.tasks.start(
+                &id,
+                body.get("title").and_then(Value::as_str).unwrap_or_default(),
+                body.get("text").and_then(Value::as_str),
+                body.get("percent").and_then(Value::as_f64),
+                app.plugins.tasks_at_once(&id),
+            );
+            match started {
+                Ok(task) => {
+                    host.log("info", &crate::tr!("задача «{title}» начата", title = task.title));
+                    (StatusCode::CREATED, Json(task)).into_response()
+                }
+                Err(error) => task_refused(error),
+            }
+        }
+        Err(response) => *response,
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Wait {
+    #[serde(default)]
+    wait_ms: u64,
+}
+
+/// The longest an app's wait for a cancel is held: it asks again after.
+const WAIT_MS: u64 = 60_000;
+
+async fn task(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    Path(task): Path<String>,
+    Query(wait): Query<Wait>,
+) -> Response {
+    match app_of(&app, peer, &headers) {
+        Ok((id, _)) => {
+            let found = if wait.wait_ms == 0 {
+                app.tasks.own(&id, &task)
+            } else {
+                app.tasks.wait(&id, &task, std::time::Duration::from_millis(wait.wait_ms.min(WAIT_MS))).await
+            };
+            match found {
+                Ok(task) => Json(task).into_response(),
+                Err(error) => task_refused(error),
+            }
+        }
+        Err(response) => *response,
+    }
+}
+
+async fn task_progress(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    Path(task): Path<String>,
+    body: Bytes,
+) -> Response {
+    match app_of(&app, peer, &headers) {
+        Ok((id, _)) => {
+            let body = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
+            let percent = body.get("percent").and_then(Value::as_f64);
+            match app.tasks.progress(&id, &task, percent, body.get("text").and_then(Value::as_str)) {
+                Ok(asked) => Json(json!({ "cancelRequested": asked })).into_response(),
+                Err(error) => task_refused(error),
+            }
+        }
+        Err(response) => *response,
+    }
+}
+
+/// How the app ends its task: `done` `{result?}`, `fail` `{error}`, `cancelled`.
+async fn task_end(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    Path((task, end)): Path<(String, String)>,
+    body: Bytes,
+) -> Response {
+    match app_of(&app, peer, &headers) {
+        Ok((id, host)) => {
+            let mut body = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
+            let outcome = match end.as_str() {
+                "done" => Outcome::Done(body.get_mut("result").map(Value::take)),
+                "fail" => Outcome::Failed(body.get("error").and_then(Value::as_str).unwrap_or_default().to_string()),
+                "cancelled" => Outcome::Cancelled,
+                _ => return refused(StatusCode::NOT_FOUND, crate::tr!("задачу заканчивают done, fail или cancelled")),
+            };
+            match app.tasks.finish(&id, &task, outcome) {
+                Ok(task) => {
+                    let how = match (&task.state, &task.error) {
+                        (crate::tasks::TaskState::Failed, Some(error)) => {
+                            crate::tr!("не получилась: {error}", error = error)
+                        }
+                        (crate::tasks::TaskState::Cancelled, _) => crate::tr!("отменена").to_string(),
+                        _ => crate::tr!("готова").to_string(),
+                    };
+                    host.log("info", &crate::tr!("задача «{title}» {how}", title = task.title, how = how));
+                    Json(task).into_response()
+                }
+                Err(error) => task_refused(error),
+            }
+        }
         Err(response) => *response,
     }
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 
 import type { FeatureId } from './availability-ids';
+import { tr } from './i18n';
 
 export type { FeatureId } from './availability-ids';
 
@@ -54,26 +55,53 @@ export interface AvailabilityView {
     table: FeatureRow[];
 }
 
+// Подписи читаются при обращении (геттеры): язык пульта меняется без перезагрузки.
 export const GROUP_TITLES: Record<string, string> = {
-    modes: 'Режимы',
-    voice: 'Голос',
-    brain: 'Мозг',
-    skills: 'Навыки',
-    house: 'Дом',
-    system: 'Система',
+    get modes() {
+        return tr.core.groupModes;
+    },
+    get voice() {
+        return tr.core.groupVoice;
+    },
+    get brain() {
+        return tr.core.groupBrain;
+    },
+    get skills() {
+        return tr.core.groupSkills;
+    },
+    get house() {
+        return tr.core.groupHouse;
+    },
+    get system() {
+        return tr.core.groupSystem;
+    },
 };
 
 export const RUNS_TITLES: Record<Runs, string> = {
-    here: 'здесь',
-    homeServer: 'на компьютере',
-    cloud: 'в облаке',
-    yandex: 'у Яндекса',
+    get here() {
+        return tr.core.runsHere;
+    },
+    get homeServer() {
+        return tr.core.runsHomeServer;
+    },
+    get cloud() {
+        return tr.core.runsCloud;
+    },
+    get yandex() {
+        return tr.core.runsYandex;
+    },
 };
 
 export const PLACEMENT_TITLES: Record<Placement, string> = {
-    pc: 'На компьютере',
-    station: 'На колонке',
-    stationServer: 'Колонка + компьютер',
+    get pc() {
+        return tr.core.placementPc;
+    },
+    get station() {
+        return tr.core.placementStation;
+    },
+    get stationServer() {
+        return tr.core.placementStationServer;
+    },
 };
 
 let current: AvailabilityView | null = null;

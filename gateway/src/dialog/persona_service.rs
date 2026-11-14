@@ -12,8 +12,9 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use super::system_prompt::{
-    alice_positions, alice_text, build_character_prompt, build_system_prompt, is_legacy_text, is_package_character,
-    legacy, load_system_prompt, persona_presets, Legacy, PersonaPreset, SystemPrompt, ALICE, DEFAULT_PERSONA,
+    alice_positions, alice_text, build_character_prompt, build_computer_prompt, build_system_prompt, computer_preset,
+    computer_text, is_legacy_text, is_package_character, legacy, load_system_prompt, persona_presets, Channel, Legacy,
+    PersonaPreset, SystemPrompt, ALICE, DEFAULT_PERSONA,
 };
 use crate::config::DialogConfig;
 use crate::core::events::{Actor, EventBus, GatewayEvent};
@@ -113,6 +114,48 @@ impl PersonaService {
         }
     }
 
+    /// The same for a channel. On a computer (a talk without a station, src/talk) no word of a station goes in: the
+    /// built-in character is put together anew from its regulators under the name of that talk, a package's character
+    /// gets no line about the station's wake word, and the rules of speech are the computer's. The owner's own text —
+    /// an edited card, one's own character, the prompt file — is said as written.
+    pub fn system_prompt_for(&self, user_id: Option<&str>, channel: Channel) -> SystemPrompt {
+        if channel == Channel::Station {
+            return self.system_prompt(user_id);
+        }
+        let text = match self.stored(user_id) {
+            Some(persona) if built_in_as_given(&persona) => computer_text(persona.tones.as_ref()),
+            Some(persona) => persona.text,
+            None => match &self.system_prompt_file {
+                // A whole prompt of the owner's: said as written, on any channel.
+                Some(file) => {
+                    let own = load_system_prompt(Some(file));
+                    if own.problem.is_none() {
+                        return own;
+                    }
+                    computer_text(None)
+                }
+                None => computer_text(None),
+            },
+        };
+        SystemPrompt { text: build_computer_prompt(&text), problem: None }
+    }
+
+    /// Whether the household talks by the computer's microphone: the built-in character then goes by that talk's name
+    /// in the panel too.
+    fn on_computer(&self) -> bool {
+        crate::talk::input::on_computer(&self.settings)
+    }
+
+    /// A card as the panel shows it now: the built-in one under the name of the talk without a station while the
+    /// microphone is chosen.
+    pub fn shown(&self, preset: PersonaPreset) -> PersonaPreset {
+        if preset.id == ALICE && self.on_computer() {
+            computer_preset()
+        } else {
+            preset
+        }
+    }
+
     /// Выбор пульта: карточка по id, или свой текст (пустой — вернуться к стандартному). Карточка с текстом — её текст,
     /// поправленный владельцем («Тонкая настройка»): карточка остаётся выбранной, правка хранится в выборе и не
     /// пропадает, когда пакет персонажа обновится.
@@ -124,8 +167,9 @@ impl PersonaService {
                     return self.save(alice(Some(&tones)), actor);
                 }
                 Some(Legacy::Replaced(package)) => {
-                    return Err(ApiError::bad_request(format!(
-                        "Мажордома заменил персонаж из каталога ({package}): он в «Персонаже»."
+                    return Err(ApiError::bad_request(crate::tr!(
+                        "Мажордома заменил персонаж из каталога ({package}): он в «Персонаже».",
+                        package = package
                     )));
                 }
                 _ => {}
@@ -135,18 +179,23 @@ impl PersonaService {
                 let before = self.stored(None).filter(|stored| stored.preset_id.as_deref() == Some(ALICE));
                 return self.save(alice(before.as_ref().and_then(|before| before.tones.as_ref())), actor);
             }
-            let preset = self
-                .characters()?
-                .into_iter()
-                .find(|character| character.id == preset_id)
-                .ok_or_else(|| ApiError::bad_request(format!("нет такой карточки характера: {preset_id}")))?;
+            let preset =
+                self.characters()?.into_iter().find(|character| character.id == preset_id).ok_or_else(|| {
+                    ApiError::bad_request(crate::tr!("нет такой карточки характера: {id}", id = preset_id))
+                })?;
             let edited = body.get("text").and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty());
+            // The built-in character's text as the panel shows it while the microphone is chosen is no edit of it.
+            let stored_tones = self.stored(None).filter(|stored| stored.preset_id.as_deref() == Some(ALICE));
+            let stored_tones = stored_tones.as_ref().and_then(|stored| stored.tones.as_ref());
+            if preset_id == ALICE && edited.is_some_and(|edited| edited == computer_text(stored_tones)) {
+                return self.save(alice(stored_tones), actor);
+            }
             let Some(edited) = edited else {
                 let base = Some(preset.text.clone());
                 return self.save(Persona { preset_id: Some(preset.id), text: preset.text, base, tones: None }, actor);
             };
             if edited.encode_utf16().count() > MAX_EDITED {
-                return Err(ApiError::bad_request(format!("Слишком длинно — до {MAX_EDITED} символов.")));
+                return Err(ApiError::bad_request(crate::tr!("Слишком длинно — до {max} символов.", max = MAX_EDITED)));
             }
             // The same card as before keeps the text it gave then and its tones: what an edit is measured against.
             let before =
@@ -160,10 +209,10 @@ impl PersonaService {
         let text = body.get("text").and_then(Value::as_str).map(str::trim).unwrap_or("");
         let length = text.encode_utf16().count();
         if length > 2000 {
-            return Err(ApiError::bad_request("Слишком длинно — до 2000 символов."));
+            return Err(ApiError::bad_request(crate::tr!("Слишком длинно — до 2000 символов.")));
         }
         if !text.is_empty() && length < 10 {
-            return Err(ApiError::bad_request("Опишите характер хотя бы в паре слов."));
+            return Err(ApiError::bad_request(crate::tr!("Опишите характер хотя бы в паре слов.")));
         }
         self.save(Persona::plain(None, text.to_string()), actor)
     }
@@ -171,14 +220,19 @@ impl PersonaService {
     /// Характер для карточек: что говорит сейчас и какая из них горит.
     pub fn view(&self) -> Result<PersonaView, ApiError> {
         let stored = self.stored(None);
-        let presets = self.characters()?;
+        let presets: Vec<PersonaPreset> = self.characters()?.into_iter().map(|preset| self.shown(preset)).collect();
+        let on_computer = self.on_computer();
         let file = match (&stored, &self.system_prompt_file) {
             (None, Some(file)) => Some(load_system_prompt(Some(file))).filter(|prompt| prompt.problem.is_none()),
             _ => None,
         };
         Ok(match stored {
             Some(stored) => PersonaView {
-                persona: stored.text,
+                persona: if on_computer && built_in_as_given(&stored) {
+                    computer_text(stored.tones.as_ref())
+                } else {
+                    stored.text
+                },
                 active_preset: stored.preset_id,
                 source: PersonaSource::Panel,
                 presets,
@@ -188,7 +242,7 @@ impl PersonaService {
                     PersonaView { persona: file.text, active_preset: None, source: PersonaSource::File, presets }
                 }
                 None => PersonaView {
-                    persona: DEFAULT_PERSONA.to_string(),
+                    persona: if on_computer { computer_text(None) } else { DEFAULT_PERSONA.to_string() },
                     active_preset: Some(ALICE.into()),
                     source: PersonaSource::Default,
                     presets,
@@ -249,6 +303,11 @@ impl PersonaService {
     }
 }
 
+/// Whether a choice is the built-in character as its regulators give it — not a text its owner edited.
+fn built_in_as_given(persona: &Persona) -> bool {
+    persona.preset_id.as_deref() == Some(ALICE) && persona.text == alice_text(persona.tones.as_ref())
+}
+
 /// Alisa in these positions: her text, kept as the measure of later edits, and the positions.
 fn alice(tones: Option<&std::collections::BTreeMap<String, usize>>) -> Persona {
     let positions = alice_positions(tones);
@@ -296,6 +355,88 @@ mod tests {
 
     fn body(value: serde_json::Value) -> Map<String, Value> {
         value.as_object().cloned().unwrap()
+    }
+
+    /// «Как говорить с DuoWave»: the computer's microphone, or back to the station.
+    fn talk_by(personas: &PersonaService, input: crate::settings::definitions::TalkInput) {
+        use crate::settings::definitions::{VoiceInput, VOICE_INPUT};
+        personas.settings.set(&VOICE_INPUT, &VoiceInput { input, before: None }, None).unwrap();
+    }
+
+    #[test]
+    fn a_computers_prompt_has_no_word_of_a_station_and_the_stations_is_what_it_was() {
+        use crate::settings::definitions::TalkInput;
+        let personas = service(None);
+        let no_station = |prompt: &str| {
+            for word in ["Алис", "колонк", "Яндекс"] {
+                assert!(!prompt.contains(word), "{word} in {prompt}");
+            }
+        };
+        // Nothing chosen: the built-in character, under the name of the talk without a station.
+        let station = personas.system_prompt(None).text;
+        let computer = personas.system_prompt_for(None, Channel::Computer).text;
+        assert!(computer.starts_with("Ты — ДиВи, голосовой помощник на компьютере"), "{computer}");
+        assert!(computer.contains("микрофон несколько секунд слушает сам") && computer.contains("Ты на компьютере:"));
+        no_station(&computer);
+        assert_eq!(station, default_system_prompt(), "the station's prompt, word for word");
+        assert_eq!(personas.system_prompt_for(None, Channel::Station).text, station);
+
+        // Her regulators say the same on both channels.
+        personas.set(&body(json!({"presetId": "irony"})), None).unwrap();
+        let ironic = personas.system_prompt_for(None, Channel::Computer).text;
+        assert!(ironic.starts_with("Ты — ДиВи") && ironic.contains("лёгкая ирония"));
+        no_station(&ironic);
+        assert!(personas.system_prompt(None).text.starts_with(DEFAULT_PERSONA));
+
+        // A package's character: no line about the station's wake word on a computer.
+        personas
+            .choose(
+                Persona {
+                    preset_id: Some("arthur:arthur".into()),
+                    text: "Ты — Артур, дворецкий.".into(),
+                    base: Some("Ты — Артур, дворецкий.".into()),
+                    tones: None,
+                },
+                None,
+            )
+            .unwrap();
+        let arthur = personas.system_prompt_for(None, Channel::Computer).text;
+        assert!(arthur.starts_with("Ты — Артур, дворецкий.\nКаждый ответ будет озвучен"), "{arthur}");
+        no_station(&arthur);
+        assert!(personas.system_prompt(None).text.contains("Колонку будят словом «Алиса»"));
+
+        // The owner's own words are said as written, whatever they name.
+        personas.set(&body(json!({"text": "Ты — Алиса, пиратка с колонки."})), None).unwrap();
+        let own = personas.system_prompt_for(None, Channel::Computer).text;
+        assert!(own.starts_with("Ты — Алиса, пиратка с колонки.\nКаждый ответ будет озвучен"));
+        assert!(own.contains("Ты на компьютере:") && !own.contains("Алиса, стоп"));
+        personas.set(&body(json!({"presetId": "alice", "text": "Ты — Алиса, но строже."})), None).unwrap();
+        assert!(personas.system_prompt_for(None, Channel::Computer).text.starts_with("Ты — Алиса, но строже."));
+
+        // The panel names the built-in character by the talk's name while the microphone is chosen — only then.
+        personas.set(&body(json!({"presetId": "alice"})), None).unwrap();
+        assert_eq!(personas.view().unwrap().presets[0].title, "Алиса");
+        talk_by(&personas, TalkInput::Computer);
+        let view = personas.view().unwrap();
+        assert_eq!((view.presets[0].id.as_str(), view.presets[0].title.as_str()), ("alice", "ДиВи"));
+        no_station(&format!("{} {} {}", view.persona, view.presets[0].description, view.presets[0].text));
+        // Her text as shown there, sent back, is no edit of hers.
+        personas.set(&body(json!({"presetId": "alice", "text": view.persona})), None).unwrap();
+        assert_eq!(personas.chosen().unwrap().text, alice_text(personas.chosen().unwrap().tones.as_ref()));
+        talk_by(&personas, TalkInput::Station);
+        let back = personas.view().unwrap();
+        assert_eq!((back.presets[0].title.as_str(), back.persona.as_str()), ("Алиса", DEFAULT_PERSONA));
+    }
+
+    #[test]
+    fn the_prompt_file_is_the_owners_whole_prompt_on_a_computer_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("prompt.txt");
+        std::fs::write(&file, "Ты — Боб.").unwrap();
+        let personas = service(Some(file.clone()));
+        assert_eq!(personas.system_prompt_for(None, Channel::Computer).text, "Ты — Боб.");
+        std::fs::remove_file(&file).unwrap();
+        assert!(personas.system_prompt_for(None, Channel::Computer).text.starts_with("Ты — ДиВи"));
     }
 
     #[test]

@@ -6,6 +6,7 @@
 import type { JSX } from 'preact';
 import * as hooks from 'preact/hooks';
 
+import { tr } from '../i18n';
 import { noteName } from './notes';
 
 const BLACK = new Set([1, 3, 6, 8, 10]);
@@ -62,7 +63,7 @@ export function PianoKeys({ from, to, next = [], down = [], wrong = [], names = 
         wrong.includes(note) ? ' is-wrong' : next.includes(note) ? ' is-next' : down.includes(note) ? ' is-down' : '';
 
     return (
-        <div class="piano-keys" ref={scroller} role="group" aria-label="Клавиатура">
+        <div class="piano-keys" ref={scroller} role="group" aria-label={tr.sdk.keyboard}>
             <div class="piano-keys-bed" style={{ height: `${height}px`, minWidth: `${whites.length * 22}px` }}>
                 {whites.map((note, i) => (
                     <button

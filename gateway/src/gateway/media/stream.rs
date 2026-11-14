@@ -12,7 +12,6 @@
 //!
 //! A token stands for one stream link the playback watch chose to relay; the station fetches it from the home
 //! network only (the /media rules), unsigned like the rest of /media. Tokens live for a day.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -122,7 +121,7 @@ impl StreamRelays {
         let Some(ffmpeg) = self.transcoder.as_ref().filter(|_| (self.transcode_here)()) else {
             return Err(ApiError::new(
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                "AAC здесь не перекодировать: на колонке это большая нагрузка (MEDIA_TRANSCODE_ON_STATION), или нет ffmpeg",
+                crate::tr!("AAC здесь не перекодировать: на колонке это большая нагрузка (MEDIA_TRANSCODE_ON_STATION), или нет ffmpeg"),
             ));
         };
         let child = transcoder(ffmpeg, url).map_err(|error| ApiError::internal(format!("ffmpeg: {error}")))?;
@@ -151,13 +150,11 @@ async fn open(url: &str, local: bool) -> Result<reqwest::Response, ApiError> {
         builder = builder.no_proxy();
     }
     let client = builder.build().map_err(|error| ApiError::internal(format!("stream relay: {error}")))?;
-    let upstream = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| ApiError::bad_gateway(format!("поток не открылся: {}", error.without_url())))?;
+    let upstream = client.get(url).send().await.map_err(|error| {
+        ApiError::bad_gateway(crate::tr!("Поток не открылся: {error}", error = error.without_url()))
+    })?;
     if !upstream.status().is_success() {
-        return Err(ApiError::bad_gateway(format!("поток ответил HTTP {}", upstream.status())));
+        return Err(ApiError::bad_gateway(crate::tr!("Поток ответил HTTP {status}", status = upstream.status())));
     }
     Ok(upstream)
 }

@@ -4,6 +4,7 @@
 // текста, прокрутка общая; очень большой файл остаётся без подсветки.
 
 import { useLayoutEffect, useRef } from 'preact/hooks';
+import { tr } from '../i18n';
 
 const KEYWORDS =
     'const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|import|export|from|default|async|await|new|class|extends|try|catch|finally|throw|typeof|instanceof|in|of|null|true|false|undefined|this|yield|delete|void';
@@ -93,7 +94,7 @@ export function CodeEditor({
                 spellcheck={false}
                 autocapitalize="off"
                 autocomplete="off"
-                aria-label={`Файл ${path}`}
+                aria-label={tr.ui.fileLabel(path)}
                 value={value}
                 onInput={(event) => onInput((event.target as HTMLTextAreaElement).value)}
                 onScroll={sync}

@@ -12,7 +12,6 @@
 //!
 //! The station changes only at the household's press, every move is in «Кто что менял», and quasar.cfg is changed by
 //! one at a time (the station's lock).
-
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -201,7 +200,7 @@ impl MovesService {
     }
 
     pub fn job(&self, id: &str) -> Result<MoveJob, ApiError> {
-        self.jobs().get(id).cloned().ok_or_else(|| ApiError::not_found("Нет такого перехода."))
+        self.jobs().get(id).cloned().ok_or_else(|| ApiError::not_found(crate::tr!("Нет такого перехода.")))
     }
 
     /// The move going now, if any: the panel shows it after a reload.
@@ -212,7 +211,7 @@ impl MovesService {
     /// Starts a move; the panel follows it by its id.
     pub fn start(self: &Arc<Self>, request: MoveRequest, actor: Option<Actor>) -> Result<MoveJob, ApiError> {
         if matches!(request.to, MoveTo::Pc | MoveTo::StationServer) && request.gateway.is_none() {
-            return Err(ApiError::bad_request("Нужен адрес этого компьютера, как его видит колонка."));
+            return Err(ApiError::bad_request(crate::tr!("Нужен адрес этого компьютера, как его видит колонка.")));
         }
         if matches!(request.to, MoveTo::Station | MoveTo::StationServer)
             && payload::info(&self.deps.config).source == payload::PayloadSource::None
@@ -234,7 +233,7 @@ impl MovesService {
         let job = {
             let mut jobs = self.jobs();
             if jobs.values().any(|job| job.status == MoveStatus::Running) {
-                return Err(ApiError::conflict("Переход уже идёт."));
+                return Err(ApiError::conflict(crate::tr!("Переход уже идёт.")));
             }
             let job = MoveJob {
                 id: crate::utils::ids::uuid(),
@@ -392,21 +391,28 @@ impl MovesService {
         if to_station {
             let machine = self.run_ok(shell, "uname -m", None).await?;
             if machine.trim() != "aarch64" {
-                anyhow::bail!("колонка — {}, а сборка для колонки — aarch64", machine.trim());
+                anyhow::bail!(crate::tr!(
+                    "Колонка — {machine}, а сборка для колонки — aarch64.",
+                    machine = machine.trim()
+                ));
             }
             let space = self.run_ok(shell, "df -k /data | tail -n 1", None).await?;
             let free = space.split_whitespace().nth(3).and_then(|kb| kb.parse::<u64>().ok()).unwrap_or(0);
             if free < NEEDED_KB {
-                anyhow::bail!("в /data свободно {} МБ, а шлюзу нужно {} МБ", free / 1024, NEEDED_KB / 1024);
+                anyhow::bail!(crate::tr!(
+                    "В /data свободно {free} МБ, а шлюзу нужно {needed} МБ.",
+                    free = free / 1024,
+                    needed = NEEDED_KB / 1024
+                ));
             }
             let memory = self.run_ok(shell, "grep MemAvailable /proc/meminfo", None).await?;
             let available = memory.split_whitespace().nth(1).and_then(|kb| kb.parse::<u64>().ok()).unwrap_or(u64::MAX);
             if available < NEEDED_MEMORY_KB {
-                anyhow::bail!(
-                    "у колонки свободно {} МБ памяти, а шлюзу нужно {} МБ",
-                    available / 1024,
-                    NEEDED_MEMORY_KB / 1024
-                );
+                anyhow::bail!(crate::tr!(
+                    "У колонки свободно {free} МБ памяти, а шлюзу нужно {needed} МБ.",
+                    free = available / 1024,
+                    needed = NEEDED_MEMORY_KB / 1024
+                ));
             }
         }
         Ok(facts.addresses)
@@ -482,7 +488,14 @@ impl MovesService {
                 .unwrap_or(Value::Null);
         let port = status.get("port").and_then(Value::as_u64).unwrap_or(super::station_fs::DEFAULT_PORT as u64) as u16;
         if port != super::station_fs::DEFAULT_PORT {
-            self.note(id, &format!("Порт {} на колонке занят: шлюз слушает {port}.", super::station_fs::DEFAULT_PORT));
+            self.note(
+                id,
+                &crate::tr!(
+                    "Порт {busy} на колонке занят: шлюз слушает {port}.",
+                    busy = super::station_fs::DEFAULT_PORT,
+                    port = port
+                ),
+            );
         }
         self.step(id, MoveStep::Install, StepState::Done);
 
@@ -518,9 +531,9 @@ impl MovesService {
                 all.iter().filter(|picture| !fit.contains(picture)).map(|picture| picture.data.len() * 3 / 4).sum();
             self.note(
                 id,
-                &format!(
-                    "Картинки приложений, {:.1} МБ, на колонку не поедут: там для них 5 МБ. Приложения скачают их снова, когда понадобятся.",
-                    left as f64 / (1024.0 * 1024.0)
+                &crate::tr!(
+                    "Картинки приложений, {size} МБ, на колонку не поедут: там для них 5 МБ. Приложения скачают их снова, когда понадобятся.",
+                    size = format!("{:.1}", left as f64 / (1024.0 * 1024.0))
                 ),
             );
         }
@@ -544,13 +557,12 @@ impl MovesService {
         let client = PeerClient::new(address, port, &key);
         self.wait(self.deps.timing.start_ms, || async { client.health().await.is_ok() })
             .await
-            .ok_or_else(|| anyhow::anyhow!("шлюз на колонке не запустился: duowave station log"))?;
+            .ok_or_else(|| anyhow::anyhow!(crate::tr!("Шлюз на колонке не запустился: duowave station log.")))?;
         if request.to == MoveTo::Station && home.is_some() {
             // Alone: the computer stays known, the station does not lean on it.
-            client
-                .post("/api/v1/home-server/link", json!({ "enabled": false }))
-                .await
-                .map_err(|error| anyhow::anyhow!("помощь компьютера не выключилась: {error}"))?;
+            client.post("/api/v1/home-server/link", json!({ "enabled": false })).await.map_err(|error| {
+                anyhow::anyhow!(crate::tr!("Помощь компьютера не выключилась: {error}", error = error))
+            })?;
         }
         self.step(id, MoveStep::Settings, StepState::Done);
 
@@ -581,7 +593,7 @@ impl MovesService {
             })
             .await;
         if arrived.is_none() {
-            anyhow::bail!("колонка не вернулась к своему шлюзу за 3 минуты: где она сейчас — «Настройки» → «Колонка» → «Где работает DuoWave»");
+            anyhow::bail!(crate::tr!("Колонка не вернулась к своему шлюзу за 3 минуты: где она сейчас — «Настройки» → «Колонка» → «Где работает DuoWave»."));
         }
         // Where the main settings live from now: the station's gateway is told (it keeps them, or takes them).
         let home = if request.settings_home == SettingsHome::Pc { "pc" } else { "station" };
@@ -618,14 +630,14 @@ impl MovesService {
                 let bundle = client.settings_and_plugins().await.map_err(|error| anyhow::anyhow!(error))?;
                 // Sealed with the key the station opens with now, as its other copies are. A copy is the settings':
                 // its restore leaves the plugins' data as it is then.
-                let key = watch.pair_key().ok_or_else(|| anyhow::anyhow!("нет ключа пары"))?;
+                let key = watch.pair_key().ok_or_else(|| anyhow::anyhow!(crate::tr!("нет ключа пары")))?;
                 let copy = transfer::Bundle { plugins: None, ..bundle.clone() };
                 let _ = watch.backups.save(&transfer::seal(&copy, &key), bundle.revision);
                 let dir =
                     self.deps.config.skills.state_dir.clone().ok_or_else(|| anyhow::anyhow!("no state folder"))?;
                 std::fs::write(transfer::incoming_file(&dir), serde_json::to_vec(&bundle)?)?;
                 restart = true;
-                self.note(id, "Настройки взяты с колонки: шлюз перезапустится на них.");
+                self.note(id, &crate::tr!("Настройки взяты с колонки: шлюз перезапустится на них."));
                 self.step(id, MoveStep::Settings, StepState::Done);
             }
             (Some(SettingsHome::Pc), Some(client)) => {
@@ -638,13 +650,16 @@ impl MovesService {
                 match taken {
                     Ok(true) => {
                         restart = true;
-                        self.note(id, "Приложения и их данные взяты с колонки: шлюз перезапустится на них.");
+                        self.note(
+                            id,
+                            &crate::tr!("Приложения и их данные взяты с колонки: шлюз перезапустится на них."),
+                        );
                         self.step(id, MoveStep::Settings, StepState::Done);
                     }
                     Ok(false) => self.step(id, MoveStep::Settings, StepState::Skipped),
                     Err(error) => {
                         tracing::warn!("placement: the plugins' state stays on the station: {error}");
-                        self.note(id, &format!("Данные приложений остались на колонке: {error}"));
+                        self.note(id, &crate::tr!("Данные приложений остались на колонке: {error}", error = error));
                         self.step(id, MoveStep::Settings, StepState::Skipped);
                     }
                 }
@@ -677,7 +692,7 @@ impl MovesService {
         self.step(id, MoveStep::Arrive, StepState::Running);
         let device = self.await_arrival(receiver, address).await;
         if device.is_none() {
-            anyhow::bail!("колонка не пришла к этому шлюзу за 3 минуты");
+            anyhow::bail!(crate::tr!("колонка не пришла к этому шлюзу за 3 минуты"));
         }
         self.step(id, MoveStep::Arrive, StepState::Done);
 
@@ -857,8 +872,8 @@ impl MovesService {
         let lines: Vec<&str> = found.lines().map(str::trim).collect();
         let fired = lines.iter().find_map(|line| line.strip_prefix("fired ")).map(|what| {
             match what.split_whitespace().next() {
-                Some("previous-version") => "новая версия не поднялась — вернулась прежняя".to_string(),
-                Some("previous-address") => "шлюз не поднимался — колонка вернулась к прежнему адресу".to_string(),
+                Some("previous-version") => crate::tr!("новая версия не поднялась — вернулась прежняя"),
+                Some("previous-address") => crate::tr!("шлюз не поднимался — колонка вернулась к прежнему адресу"),
                 _ => what.to_string(),
             }
         });
@@ -894,9 +909,11 @@ impl MovesService {
             .await;
         let outcome = async {
             started.map_err(|error| error.to_string())?;
-            let client = watch.client().ok_or("шлюз не на колонке")?;
+            let client = watch.client().ok_or(crate::tr!("шлюз не на колонке"))?;
             self.wait(self.deps.timing.start_ms, || async { client.health().await.is_ok() }).await.ok_or(
-                "шлюз на колонке снова не запустился: что с ним — «Настройки» → «Колонка» → «Где работает DuoWave»",
+                crate::tr!(
+                    "шлюз на колонке снова не запустился: что с ним — «Настройки» → «Колонка» → «Где работает DuoWave»"
+                ),
             )?;
             self.run_ok(shell.as_ref(), &format!("{BIN} station point local --reboot"), None)
                 .await

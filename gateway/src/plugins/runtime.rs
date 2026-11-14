@@ -1,7 +1,6 @@
 //! The engine a plugin's code runs in, behind an interface: QuickJS now (quickjs.rs); WASM and processes later stand
 //! beside it without changes to the host. An engine starts a plugin's code in a context of its own with its budget,
 //! calls the functions it exports with JSON in and out, and keeps every call within its time.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -31,31 +30,40 @@ impl CallKind {
 pub const LOAD_LIMIT: Duration = Duration::from_secs(2);
 
 /// Why a call or a start failed. The gateway goes on either way; the panel shows the message.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginError {
     /// The code did not load: a syntax error, its top level threw.
-    #[error("код не загрузился: {0}")]
     Load(String),
-    #[error("не уложился в {0} мс")]
     Timeout(u64),
-    #[error("превысил свою память ({0} МБ)")]
     Memory(u64),
     /// It threw, or a Host API call it made was refused and it did not catch that.
-    #[error("{0}")]
     Script(String),
-    #[error("нет функции {0} в backend.js")]
     Missing(String),
     /// Its answer is not one the gateway takes (too big, not JSON).
-    #[error("{0}")]
     Answer(String),
     /// Off, unloaded, or the safe mode is on.
-    #[error("{0}")]
     Unavailable(String),
     /// Its context did not load: the station's memory has no room for its budget now, even with the idle contexts
     /// unloaded (budget.rs). Nothing of it ran; the next call tries again.
-    #[error("{0}")]
     NoRoom(String),
 }
+
+impl std::fmt::Display for PluginError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PluginError::Load(why) => f.write_str(&crate::tr!("код не загрузился: {why}", why = why)),
+            PluginError::Timeout(ms) => f.write_str(&crate::tr!("не уложился в {ms} мс", ms = ms)),
+            PluginError::Memory(mb) => f.write_str(&crate::tr!("превысил свою память ({mb} МБ)", mb = mb)),
+            PluginError::Missing(name) => f.write_str(&crate::tr!("нет функции {name} в backend.js", name = name)),
+            PluginError::Script(text)
+            | PluginError::Answer(text)
+            | PluginError::Unavailable(text)
+            | PluginError::NoRoom(text) => f.write_str(text),
+        }
+    }
+}
+
+impl std::error::Error for PluginError {}
 
 impl PluginError {
     /// A failure after which the context is not to be trusted: it starts afresh on the next call.
@@ -128,11 +136,20 @@ pub trait HostApi: Send + Sync {
     fn settings(&self) -> Map<String, Value>;
     /// `console` and `host.log`: into the gateway's log under the plugin's name.
     fn log(&self, level: &str, message: &str);
+    /// `host.i18n.locale` (docs/plans/i18n.md): the household's language now — read on every call, a change in
+    /// «Настройки» applies at once.
+    fn locale(&self) -> String {
+        crate::locale::text::household_now().unwrap_or_else(|| crate::locale::FALLBACK.to_string())
+    }
+    /// `host.i18n.languages`: the languages its manifest says it speaks, its own first.
+    fn languages(&self) -> Vec<String> {
+        vec![crate::locale::SOURCE.to_string()]
+    }
     /// `host.call(name, input)` (Host API 1.1): the gateway's services by name, each behind its right —
     /// `content.search`, `tools.call`, `smartHome.devices`, `smartHome.act`, `weather.place`, `news.feeds`.
     fn call(&self, name: &str, _input: Value) -> BoxFuture<'static, Result<Value, String>> {
         let name = name.to_string();
-        Box::pin(async move { Err(format!("нет функции {name}")) })
+        Box::pin(async move { Err(crate::tr!("нет функции {name}", name = name)) })
     }
 }
 
@@ -166,7 +183,7 @@ pub fn engine_for(
             Ok((Arc::new(super::wasm::Wasm), code))
         }
         #[cfg(not(feature = "wasm"))]
-        Runtime::Wasm => Err(PluginError::Load("в этой сборке шлюза нет WebAssembly (фича wasm)".into())),
+        Runtime::Wasm => Err(PluginError::Load(crate::tr!("в этой сборке шлюза нет WebAssembly (фича wasm)"))),
         Runtime::Mcp => Ok((Arc::new(super::mcp_runtime::McpRuntime), code)),
         // An app: its program under the supervisor (src/apps).
         Runtime::Process => Ok((process.clone(), code)),

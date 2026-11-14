@@ -103,6 +103,30 @@ const POSES = {
     happy: (): Pose => ({ l: arch(L), r: arch(R), b: body() }),
 };
 
+/** Тело знака на холсте 256×256 — для рисунка ДиВи в центре орбиты (stations/divi.tsx). */
+export const DIVI_BODY = BODY;
+
+/** Глаз позы как линия: путь, толщина и сдвиг вбок. */
+export interface DiviEye {
+    d: string;
+    width: number;
+    dx: number;
+}
+
+/**
+ * Глаза ДиВи в позе, без движения: `open` — смотрит (слушает), `look` — смотрит в сторону (думает), `happy` —
+ * улыбается дужками (говорит). Те же кривые, что у живого знака.
+ */
+export function diviEyes(pose: 'open' | 'look' | 'happy'): [DiviEye, DiviEye] {
+    const drawn = pose === 'happy' ? POSES.happy() : pose === 'look' ? POSES.look() : POSES.listen();
+    const eye = (one: Eye): DiviEye => ({
+        d: `M${one.x1} ${one.y1}C${one.ax} ${one.ay} ${one.bx} ${one.by} ${one.x2} ${one.y2}`,
+        width: one.w,
+        dx: one.dx,
+    });
+    return [eye(drawn.l), eye(drawn.r)];
+}
+
 const clone = (pose: Pose): Pose => ({ l: { ...pose.l }, r: { ...pose.r }, b: { ...pose.b } });
 
 function mix<T extends object>(from: T, to: T, t: number): T {

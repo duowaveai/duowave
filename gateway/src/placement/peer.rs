@@ -3,7 +3,6 @@
 //! a secret, each station's own): its settings package, its updates, a restart. Only from the home network. The
 //! station reaches the computer's — its home server — with a key of the computer's own (an API key with the right
 //! `home.models`, src/home_server).
-
 use std::time::Duration;
 
 use axum::http::header::AUTHORIZATION;
@@ -156,7 +155,7 @@ impl PeerClient {
             .await
             .map_err(|error| describe(&error))?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(OLD_STATION.into());
+            return Err(old_station());
         }
         answer(response).await
     }
@@ -166,8 +165,9 @@ impl PeerClient {
 pub const ARCHIVE_SINCE_PEER_API: u64 = 2;
 
 /// Said of a station's gateway too old to take an update from the computer that way.
-pub const OLD_STATION: &str = "Шлюз на колонке старше 0.5.1: такое обновление с компьютера он не примет. Поставьте \
-                               новую версию на колонку вручную — дальше она будет обновляться отсюда.";
+pub fn old_station() -> String {
+    crate::tr!("Шлюз на колонке старше 0.5.1: такое обновление с компьютера он не примет. Поставьте новую версию на колонку вручную — дальше она будет обновляться отсюда.")
+}
 
 /// A station's answer, unwrapped from the API's envelope ({message, code}); a failure as the station said it.
 async fn answer(response: reqwest::Response) -> Result<Value, String> {
@@ -176,21 +176,25 @@ async fn answer(response: reqwest::Response) -> Result<Value, String> {
     let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
     if !status.is_success() {
         let message = value.get("message").and_then(Value::as_str).unwrap_or(text.as_str());
-        return Err(format!("шлюз колонки: {} {}", status.as_u16(), message.chars().take(200).collect::<String>()));
+        return Err(crate::tr!(
+            "Шлюз колонки: {status} {message}",
+            status = status.as_u16(),
+            message = message.chars().take(200).collect::<String>()
+        ));
     }
     Ok(value.get("message").cloned().unwrap_or(value))
 }
 
 fn describe(error: &reqwest::Error) -> String {
     if error.is_timeout() {
-        "шлюз колонки не ответил вовремя".into()
+        crate::tr!("шлюз колонки не ответил вовремя")
     } else if error.is_connect() {
-        "шлюз колонки не отвечает".into()
+        crate::tr!("шлюз колонки не отвечает")
     } else if error.is_request() || error.is_body() {
         // Cut off midway: the station's gateway went away under the request (restarted, or killed for memory).
-        "связь со шлюзом колонки оборвалась на полпути".into()
+        crate::tr!("связь со шлюзом колонки оборвалась на полпути")
     } else {
-        format!("шлюз колонки: {error}")
+        crate::tr!("Шлюз колонки: {error}", error = error)
     }
 }
 

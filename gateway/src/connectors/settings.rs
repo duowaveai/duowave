@@ -186,6 +186,7 @@ impl CheckResult {
 #[serde(rename_all = "camelCase")]
 pub struct ConnectorSettingsView {
     pub id: &'static str,
+    #[serde(serialize_with = "crate::core::translated")]
     pub title: &'static str,
     pub values: Value,
     pub secrets: BTreeMap<&'static str, SecretMask>,
@@ -530,9 +531,9 @@ impl ConnectorSettings {
             // A computer's build without the piece says it is coming, so people don't look for a setting that
             // cannot work yet; the station's build simply has no calls.
             return if cfg!(feature = "pc") {
-                ConnectorStatus::soon("пока недоступно — будет с обновлением")
+                ConnectorStatus::soon(crate::tr!("пока недоступно — будет с обновлением"))
             } else {
-                ConnectorStatus::off("в сборке для колонки звонков нет")
+                ConnectorStatus::off(crate::tr!("в сборке для колонки звонков нет"))
             };
         }
         let snapshot = self.snapshot();
@@ -544,7 +545,7 @@ impl ConnectorSettings {
             ConnectorId::Weather | ConnectorId::News => true,
         };
         if !enabled {
-            return ConnectorStatus::off("выключено");
+            return ConnectorStatus::off(crate::tr!("выключено"));
         }
         if let Some(missing) = self.missing(id, &snapshot) {
             return ConnectorStatus::unset(missing);
@@ -560,16 +561,16 @@ impl ConnectorSettings {
     fn missing(&self, id: ConnectorId, snapshot: &Snapshot) -> Option<String> {
         let has = |secret: &str| self.secrets.has(secret);
         // Each part as «нужны …» and as «нет …» name it.
-        let need = |parts: Vec<(&str, &str, bool)>| -> Option<String> {
-            let lacking: Vec<(&str, &str)> =
+        let need = |parts: Vec<(&'static str, &'static str, bool)>| -> Option<String> {
+            let lacking: Vec<(&'static str, &'static str)> =
                 parts.iter().filter(|(_, _, ok)| !ok).map(|(named, none, _)| (*named, *none)).collect();
             match lacking.as_slice() {
                 [] => None,
-                [(_, none)] => Some(format!("нет {none}")),
+                [(_, none)] => Some(crate::tr!("нет {what}", what = crate::core::tx(none))),
                 many => {
-                    let names: Vec<&str> = many.iter().map(|(named, _)| *named).collect();
+                    let names: Vec<String> = many.iter().map(|(named, _)| crate::core::tx(named)).collect();
                     let (last, first) = names.split_last().expect("not empty");
-                    Some(format!("нужны {} и {last}", first.join(", ")))
+                    Some(crate::tr!("нужны {names} и {last}", names = first.join(", "), last = last))
                 }
             }
         };
@@ -590,7 +591,7 @@ impl ConnectorSettings {
                 ("пароль", "пароля", has(SIP_PASSWORD)),
             ]),
             ConnectorId::Weather => None,
-            ConnectorId::News => (!snapshot.news.feeds.iter().any(|feed| feed.enabled)).then(|| "лент нет".to_string()),
+            ConnectorId::News => (!snapshot.news.feeds.iter().any(|feed| feed.enabled)).then(|| crate::tr!("лент нет")),
         }
     }
 
@@ -598,9 +599,9 @@ impl ConnectorSettings {
     fn summary(&self, id: ConnectorId, snapshot: &Snapshot) -> String {
         let contacts = |count: usize| {
             if count == 0 {
-                "контактов нет".to_string()
+                crate::tr!("контактов нет")
             } else {
-                format!("контактов: {count}")
+                crate::tr!("контактов: {count}", count = count)
             }
         };
         match id {
@@ -612,11 +613,11 @@ impl ConnectorSettings {
             ConnectorId::Sip => format!("{} · {}", host_of(&snapshot.sip.url), contacts(snapshot.sip.contacts.len())),
             ConnectorId::Weather => match snapshot.weather.location.as_deref().and_then(filled) {
                 Some(place) => place,
-                None => "город по часовому поясу".into(),
+                None => crate::tr!("город по часовому поясу"),
             },
             ConnectorId::News => {
                 let on = snapshot.news.feeds.iter().filter(|feed| feed.enabled).count();
-                format!("лент: {on}")
+                crate::tr!("лент: {on}", on = on)
             }
         }
     }
@@ -692,9 +693,9 @@ impl ConnectorSettings {
     ) -> Result<ConnectorSettingsView, ApiError> {
         if !id.available() {
             return Err(ApiError::bad_request(if cfg!(feature = "pc") {
-                "Пока недоступно — будет с обновлением."
+                crate::tr!("Пока недоступно — будет с обновлением.")
             } else {
-                "В сборке для колонки звонков нет."
+                crate::tr!("В сборке для колонки звонков нет.")
             }));
         }
         let guard = lock(&self.mutation);
@@ -707,11 +708,11 @@ impl ConnectorSettings {
         for (field, secret) in &secrets {
             if let Some(value) = input.remove(*field) {
                 let Value::String(value) = value else {
-                    return Err(ApiError::bad_request(format!("{field}: нужна строка.")));
+                    return Err(ApiError::bad_request(crate::tr!("{field}: нужна строка.", field = field)));
                 };
                 let value = value.trim().to_string();
                 if value.chars().any(char::is_whitespace) {
-                    return Err(ApiError::bad_request("В ключе не бывает пробелов: вставьте его ещё раз."));
+                    return Err(ApiError::bad_request(crate::tr!("В ключе не бывает пробелов: вставьте его ещё раз.")));
                 }
                 secret_changes.push((secret, Some(value).filter(|value| !value.is_empty())));
                 fields.push(field.to_string());
@@ -725,7 +726,7 @@ impl ConnectorSettings {
                 if let Some(enabled) = input.flag("enabled")? {
                     home.enabled = enabled;
                 }
-                if let Some(url) = input.url("url", "Адрес Home Assistant", &["http", "https"])? {
+                if let Some(url) = input.url("url", crate::tr!("Адрес Home Assistant"), &["http", "https"])? {
                     home.url = url;
                 }
                 fields.extend(input.changed(&json!(snapshot.home), &json!(home)));
@@ -748,7 +749,12 @@ impl ConnectorSettings {
                             telegram.contacts.iter().find(|entry| entry.name.to_lowercase() == alert.to_lowercase());
                         match found {
                             Some(entry) => Some(entry.to.clone()),
-                            None => return Err(ApiError::bad_request(format!("Оповещения: нет контакта «{alert}»."))),
+                            None => {
+                                return Err(ApiError::bad_request(crate::tr!(
+                                    "Оповещения: нет контакта «{alert}».",
+                                    alert = alert
+                                )))
+                            }
                         }
                     };
                 }
@@ -761,20 +767,22 @@ impl ConnectorSettings {
                 if let Some(enabled) = input.flag("enabled")? {
                     livekit.enabled = enabled;
                 }
-                if let Some(url) = input.url("url", "Адрес LiveKit для шлюза", &["ws", "wss", "http", "https"])?
+                if let Some(url) =
+                    input.url("url", crate::tr!("Адрес LiveKit для шлюза"), &["ws", "wss", "http", "https"])?
                 {
                     livekit.url = url;
                 }
-                if let Some(url) = input.url("publicUrl", "Адрес LiveKit снаружи", &["ws", "wss"])? {
+                if let Some(url) = input.url("publicUrl", crate::tr!("Адрес LiveKit снаружи"), &["ws", "wss"])?
+                {
                     livekit.public_url = Some(url).filter(|url| !url.is_empty());
                 }
-                if let Some(url) = input.url("pageUrl", "Адрес страницы звонка", &["http", "https"])?
+                if let Some(url) = input.url("pageUrl", crate::tr!("Адрес страницы звонка"), &["http", "https"])?
                 {
                     livekit.page_url = Some(url).filter(|url| !url.is_empty());
                 }
                 if let Some(room) = input.text("room", 64)? {
                     if !room.is_empty() && !room.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-                        return Err(ApiError::bad_request("Комната: латинские буквы, цифры, - и _."));
+                        return Err(ApiError::bad_request(crate::tr!("Комната: латинские буквы, цифры, - и _.")));
                     }
                     livekit.room = if room.is_empty() { "home".into() } else { room };
                 }
@@ -787,7 +795,7 @@ impl ConnectorSettings {
                 if let Some(enabled) = input.flag("enabled")? {
                     sip.enabled = enabled;
                 }
-                if let Some(url) = input.url("url", "Адрес ARI", &["http", "https"])? {
+                if let Some(url) = input.url("url", crate::tr!("Адрес ARI"), &["http", "https"])? {
                     sip.url = url;
                 }
                 if let Some(user) = input.text("user", 64)? {
@@ -795,7 +803,9 @@ impl ConnectorSettings {
                 }
                 if let Some(app) = input.text("app", 64)? {
                     if !app.is_empty() && !app.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-                        return Err(ApiError::bad_request("Приложение ARI: латинские буквы, цифры, - и _."));
+                        return Err(ApiError::bad_request(crate::tr!(
+                            "Приложение ARI: латинские буквы, цифры, - и _."
+                        )));
                     }
                     sip.app = if app.is_empty() { "duowave".into() } else { app };
                 }
@@ -899,7 +909,7 @@ impl Fields {
     /// Only these fields: anything else is the panel's mistake, said plainly.
     fn only(&self, known: &[&str]) -> Result<(), ApiError> {
         match self.0.keys().find(|key| !known.contains(&key.as_str())) {
-            Some(key) => Err(ApiError::bad_request(format!("Неизвестное поле: {key}."))),
+            Some(key) => Err(ApiError::bad_request(crate::tr!("Неизвестное поле: {key}.", key = key))),
             None => Ok(()),
         }
     }
@@ -908,7 +918,7 @@ impl Fields {
         match self.0.get(name) {
             None => Ok(None),
             Some(Value::Bool(value)) => Ok(Some(*value)),
-            Some(_) => Err(ApiError::bad_request(format!("{name}: нужно да или нет."))),
+            Some(_) => Err(ApiError::bad_request(crate::tr!("{name}: нужно да или нет.", name = name))),
         }
     }
 
@@ -920,16 +930,20 @@ impl Fields {
             Some(Value::String(text)) => {
                 let text = text.trim();
                 if text.chars().count() > max {
-                    return Err(ApiError::bad_request(format!("{name}: не длиннее {max} знаков.")));
+                    return Err(ApiError::bad_request(crate::tr!(
+                        "{name}: не длиннее {max} знаков.",
+                        name = name,
+                        max = max
+                    )));
                 }
                 Ok(Some(text.to_string()))
             }
-            Some(_) => Err(ApiError::bad_request(format!("{name}: нужна строка."))),
+            Some(_) => Err(ApiError::bad_request(crate::tr!("{name}: нужна строка.", name = name))),
         }
     }
 
     /// An address with one of these schemes; Some("") clears it.
-    fn url(&self, name: &str, title: &str, schemes: &[&str]) -> Result<Option<String>, ApiError> {
+    fn url(&self, name: &str, title: String, schemes: &[&str]) -> Result<Option<String>, ApiError> {
         let Some(text) = self.text(name, 300)? else { return Ok(None) };
         if text.is_empty() {
             return Ok(Some(text));
@@ -937,7 +951,11 @@ impl Fields {
         let parsed = url::Url::parse(&text).ok().filter(|url| schemes.contains(&url.scheme()) && url.host().is_some());
         match parsed {
             Some(_) => Ok(Some(text.trim_end_matches('/').to_string())),
-            None => Err(ApiError::bad_request(format!("{title}: нужен адрес вида {}://…", schemes.join("://… или ")))),
+            None => Err(ApiError::bad_request(crate::tr!(
+                "{title}: нужен адрес вида {schemes}://…",
+                title = title,
+                schemes = schemes.join(&format!("://… {} ", crate::tr!("или")))
+            ))),
         }
     }
 
@@ -946,7 +964,7 @@ impl Fields {
             None => Ok(None),
             Some(value) => match value.as_u64().filter(|port| (1..=65_535).contains(port)) {
                 Some(port) => Ok(Some(port as u16)),
-                None => Err(ApiError::bad_request("Порт: число от 1 до 65535.")),
+                None => Err(ApiError::bad_request(crate::tr!("Порт: число от 1 до 65535."))),
             },
         }
     }
@@ -961,22 +979,28 @@ impl Fields {
     ) -> Result<Option<Vec<ContactEntry>>, ApiError> {
         let Some(value) = self.0.get(name) else { return Ok(None) };
         let Some(items) = value.as_array() else {
-            return Err(ApiError::bad_request("Контакты: нужен список."));
+            return Err(ApiError::bad_request(crate::tr!("Контакты: нужен список.")));
         };
         if items.len() > MAX_CONTACTS {
-            return Err(ApiError::bad_request(format!("Контактов не больше {MAX_CONTACTS}.")));
+            return Err(ApiError::bad_request(crate::tr!("Контактов не больше {max}.", max = MAX_CONTACTS)));
         }
         let mut result: Vec<ContactEntry> = Vec::new();
         for item in items {
             let text = |field: &str| item.get(field).and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());
             let Some(contact) = text("name") else {
-                return Err(ApiError::bad_request("У контакта нет имени."));
+                return Err(ApiError::bad_request(crate::tr!("У контакта нет имени.")));
             };
             if contact.chars().count() > 40 {
-                return Err(ApiError::bad_request(format!("Имя «{contact}»: не длиннее 40 знаков.")));
+                return Err(ApiError::bad_request(crate::tr!(
+                    "Имя «{contact}»: не длиннее 40 знаков.",
+                    contact = contact
+                )));
             }
             if result.iter().any(|known| known.name.to_lowercase() == contact.to_lowercase()) {
-                return Err(ApiError::bad_request(format!("Имя «{contact}» встречается дважды.")));
+                return Err(ApiError::bad_request(crate::tr!(
+                    "Имя «{contact}» встречается дважды.",
+                    contact = contact
+                )));
             }
             let kept = |was: &str| {
                 existing
@@ -990,8 +1014,10 @@ impl Fields {
                     Some(to) => to,
                     None => {
                         return Err(ApiError::bad_request(match kind {
-                            ContactKind::Chat => format!("У контакта «{contact}» нет номера чата."),
-                            ContactKind::Phone => format!("У контакта «{contact}» нет номера."),
+                            ContactKind::Chat => {
+                                crate::tr!("У контакта «{contact}» нет номера чата.", contact = contact)
+                            }
+                            ContactKind::Phone => crate::tr!("У контакта «{contact}» нет номера.", contact = contact),
                         }))
                     }
                 },
@@ -1014,8 +1040,12 @@ impl Fields {
             };
             if !fits {
                 return Err(ApiError::bad_request(match kind {
-                    ContactKind::Chat => format!("Чат «{contact}»: нужен номер чата (цифры) или @имя канала."),
-                    ContactKind::Phone => format!("Номер «{contact}»: цифры, можно с + в начале."),
+                    ContactKind::Chat => {
+                        crate::tr!("Чат «{contact}»: нужен номер чата (цифры) или @имя канала.", contact = contact)
+                    }
+                    ContactKind::Phone => {
+                        crate::tr!("Номер «{contact}»: цифры, можно с + в начале.", contact = contact)
+                    }
                 }));
             }
             result.push(ContactEntry { name: contact.to_string(), to });
@@ -1027,20 +1057,23 @@ impl Fields {
     fn feeds(&self, name: &str) -> Result<Option<Vec<NewsFeedEntry>>, ApiError> {
         let Some(value) = self.0.get(name) else { return Ok(None) };
         let Some(items) = value.as_array() else {
-            return Err(ApiError::bad_request("Ленты: нужен список."));
+            return Err(ApiError::bad_request(crate::tr!("Ленты: нужен список.")));
         };
         if items.len() > MAX_FEEDS {
-            return Err(ApiError::bad_request(format!("Лент не больше {MAX_FEEDS}: вопрос открывает их все сразу.")));
+            return Err(ApiError::bad_request(crate::tr!(
+                "Лент не больше {max}: вопрос открывает их все сразу.",
+                max = MAX_FEEDS
+            )));
         }
         let mut result: Vec<NewsFeedEntry> = Vec::new();
         for item in items {
             let text = |field: &str| item.get(field).and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());
             let Some(url) = text("url") else {
-                return Err(ApiError::bad_request("У ленты нет адреса."));
+                return Err(ApiError::bad_request(crate::tr!("У ленты нет адреса.")));
             };
             let parsed = url::Url::parse(url).ok().filter(|parsed| matches!(parsed.scheme(), "http" | "https"));
             if parsed.is_none() || url.len() > 500 {
-                return Err(ApiError::bad_request(format!("Лента «{url}»: нужен адрес вида https://…")));
+                return Err(ApiError::bad_request(crate::tr!("Лента «{url}»: нужен адрес вида https://…", url = url)));
             }
             if result.iter().any(|known| same_feed(&known.url, url)) {
                 continue;
@@ -1051,7 +1084,7 @@ impl Fields {
             }
             if let Some(topic) = text("topic") {
                 if NEWS_CATALOG.topic(topic).is_none() {
-                    return Err(ApiError::bad_request(format!("Неизвестная тема: {topic}.")));
+                    return Err(ApiError::bad_request(crate::tr!("Неизвестная тема: {topic}.", topic = topic)));
                 }
                 entry.topic = Some(topic.to_string());
             }

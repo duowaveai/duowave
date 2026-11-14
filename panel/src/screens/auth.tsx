@@ -3,6 +3,8 @@ import { useState } from 'preact/hooks';
 
 import { PanelUser, api, problemOf, sessionStore } from '../api';
 import { DuoWaveMark } from '../ui/duowave';
+import { language, tr } from '../i18n';
+import { LanguageSwitch } from '../i18n/picker';
 
 /**
  * Первый запуск и вход. Визард задаёт пароль администратора — первый вошедший им и становится; дальше вход
@@ -31,15 +33,17 @@ export function AuthScreen({
 
     const finish = (session: { token: string; user: PanelUser }): void => {
         sessionStore.set({ token: session.token, name: session.user.name, role: session.user.role });
+        // Первая настройка: язык, выбранный здесь, становится языком дома — на нём говорят приложения и уведомления.
+        if (mode === 'setup') void api.setLanguage(language()).catch(() => undefined);
         onDone();
     };
 
     const submit = async () => {
         setError(null);
-        if (mode === 'setup' && password.length < 8) return setError('Пароль — хотя бы 8 символов.');
-        if (mode === 'setup' && password !== repeat) return setError('Пароли не совпадают.');
-        if (mode === 'setup' && needsCode && !code.trim()) return setError('Введите код настройки из журнала шлюза.');
-        if (mode === 'login' && accounts > 1 && name.trim().length < 2) return setError('Введите имя.');
+        if (mode === 'setup' && password.length < 8) return setError(tr.auth.passwordShort);
+        if (mode === 'setup' && password !== repeat) return setError(tr.auth.passwordsDiffer);
+        if (mode === 'setup' && needsCode && !code.trim()) return setError(tr.auth.codeNeeded);
+        if (mode === 'login' && accounts > 1 && name.trim().length < 2) return setError(tr.auth.nameNeeded);
         setBusy(true);
         try {
             const session =
@@ -61,31 +65,33 @@ export function AuthScreen({
         <div class="screen justify-center min-h-screen">
             <section class="card glass flex flex-col gap-14 p-24">
                 {/* ДиВи встречает: оглядывается, моргает, изредка здоровается (ui/divi.ts, 'lively'). */}
+                {/* Язык — первым: определён по системе, его можно сменить до всего остального. */}
+                <LanguageSwitch class="self-center" />
                 <div class="auth-hero">
                     <DuoWaveMark size={96} live idle="lively" />
                 </div>
                 <div class="auth-head">
-                    <h1 class="t-title m-0">{mode === 'setup' ? 'Добро пожаловать в DuoWave' : 'Пульт'}</h1>
+                    <h1 class="t-title m-0">{mode === 'setup' ? tr.auth.welcome : tr.auth.panel}</h1>
                     <p class="t-meta m-0 mt-4">
                         {mode === 'setup'
-                            ? 'Шаг 1 из 2 — пароль администратора: первый, кто его задаёт, управляет пультом. Шаг 2 — подключим колонку.'
+                            ? tr.auth.setupSteps
                             : accounts > 1
-                              ? 'Имя и пароль — как администратор вас записал.'
-                              : 'Введите пароль администратора.'}
+                              ? tr.auth.loginNamed
+                              : tr.auth.loginPassword}
                     </p>
                 </div>
 
                 {mode === 'setup' && needsCode && (
                     <Field
-                        label="Код настройки"
-                        hint="Строка «первая настройка пульта» в журнале шлюза: на Mac — logs/duowave.log, в Docker — docker compose logs gateway."
+                        label={tr.auth.setupCode}
+                        hint={tr.auth.setupCodeHint}
                     >
                         <input
                             value={code}
                             onInput={(e) => setCode((e.target as HTMLInputElement).value)}
                             onKeyDown={onEnter}
                             placeholder="1234-5678"
-                            aria-label="Код настройки"
+                            aria-label={tr.auth.setupCode}
                             inputMode="numeric"
                             autoComplete="one-time-code"
                             autoFocus
@@ -94,40 +100,40 @@ export function AuthScreen({
                     </Field>
                 )}
                 {mode === 'login' && accounts > 1 && (
-                    <Field label="Имя">
+                    <Field label={tr.auth.name}>
                         <input
                             value={name}
                             onInput={(e) => setName((e.target as HTMLInputElement).value)}
                             onKeyDown={onEnter}
                             autoComplete="username"
-                            aria-label="Имя"
+                            aria-label={tr.auth.name}
                             autoFocus
                             class={field}
                         />
                     </Field>
                 )}
-                <Field label={mode === 'setup' ? 'Пароль администратора' : 'Пароль'}>
+                <Field label={mode === 'setup' ? tr.auth.adminPassword : tr.auth.password}>
                     <input
                         type="password"
                         value={password}
                         onInput={(e) => setPassword((e.target as HTMLInputElement).value)}
                         onKeyDown={onEnter}
-                        placeholder={mode === 'setup' ? 'от 8 символов' : undefined}
-                        aria-label={mode === 'setup' ? 'Пароль администратора' : 'Пароль'}
+                        placeholder={mode === 'setup' ? tr.auth.passwordPlaceholder : undefined}
+                        aria-label={mode === 'setup' ? tr.auth.adminPassword : tr.auth.password}
                         autoComplete={mode === 'setup' ? 'new-password' : 'current-password'}
                         autoFocus={!(mode === 'setup' && needsCode) && !(mode === 'login' && accounts > 1)}
                         class={field}
                     />
                 </Field>
                 {mode === 'setup' && (
-                    <Field label="Пароль ещё раз">
+                    <Field label={tr.auth.passwordAgain}>
                         <input
                             type="password"
                             value={repeat}
                             onInput={(e) => setRepeat((e.target as HTMLInputElement).value)}
                             onKeyDown={onEnter}
                             autoComplete="new-password"
-                            aria-label="Пароль ещё раз"
+                            aria-label={tr.auth.passwordAgain}
                             class={field}
                         />
                     </Field>
@@ -144,15 +150,15 @@ export function AuthScreen({
                     disabled={busy}
                     onClick={() => void submit()}
                 >
-                    {busy ? 'Секунду…' : mode === 'setup' ? 'Сохранить и войти' : 'Войти'}
+                    {busy ? tr.auth.wait : mode === 'setup' ? tr.auth.saveAndEnter : tr.auth.enter}
                 </button>
 
                 <p class="t-caption m-0">
                     {mode === 'setup'
                         ? needsCode
-                            ? 'Вы настраиваете не с компьютера шлюза, поэтому нужен код. Пароль хранится в базе шлюза в виде хэша.'
-                            : 'Пароль хранится в базе шлюза в виде хэша. Людей и их права добавите потом: «Настройки» → «Люди и доступ».'
-                        : 'Пульт запомнит это устройство на месяц.'}
+                            ? tr.auth.setupNoteCode
+                            : tr.auth.setupNote
+                        : tr.auth.loginNote}
                 </p>
             </section>
         </div>

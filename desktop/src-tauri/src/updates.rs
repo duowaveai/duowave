@@ -3,6 +3,7 @@
 //! «Обновления») the app checks half a minute after start and then every hour, as the gateway inside does, and offers
 //! the update in the tray menu; each new version is also told once in a macOS notification.
 
+use crate::lang::t;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -90,7 +91,13 @@ impl duowave::updates::Installer for AppInstaller {
                 .check()
                 .await
                 .map_err(|error| error.to_string())?
-                .ok_or_else(|| format!("лента не предлагает приложение {version}"))?;
+                .ok_or_else(|| {
+                    t(
+                        &format!("лента не предлагает приложение {version}"),
+                        &format!("the feed does not offer the app {version}"),
+                    )
+                    .to_owned()
+                })?;
             let gateway = app.state::<Arc<Gateway>>().inner().clone();
             gateway.note(&format!("installing the app {} (offered {version})", update.version));
             // Downloaded and its signature checked while the gateway serves. Then, as for the tray's update, the
@@ -144,7 +151,7 @@ fn feed_configured(app: &AppHandle) -> bool {
 
 fn offer(app: &AppHandle, update: Update) {
     let version = update.version.clone();
-    let label = format!("Обновить до {version}");
+    let label = label_for(&version);
     *app.state::<Pending>().update.lock().unwrap() = Some(update);
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -163,6 +170,26 @@ fn offer(app: &AppHandle, update: Update) {
     notify_once(app, &version);
 }
 
+/// The tray item's text for an update to `version`.
+pub fn label_for(version: &str) -> String {
+    t(&format!("Обновить до {version}"), &format!("Update to {version}")).to_owned()
+}
+
+/// The language changed: the update item (when there is one) says it anew.
+pub fn relabel(app: &AppHandle) {
+    let pending = app.state::<Pending>();
+    let version = pending
+        .update
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|update| update.version.clone());
+    let item = pending.item.lock().unwrap();
+    if let (Some(version), Some(item)) = (version, item.as_ref()) {
+        let _ = item.set_text(label_for(&version));
+    }
+}
+
 /// One macOS notification per new version: the tray item is easy to miss, the menu stays closed until opened.
 fn notify_once(app: &AppHandle, version: &str) {
     let gateway = app.state::<Arc<Gateway>>().inner().clone();
@@ -173,8 +200,14 @@ fn notify_once(app: &AppHandle, version: &str) {
     let shown = app
         .notification()
         .builder()
-        .title(format!("Доступна версия {version}"))
-        .body("Обновить можно в меню значка в трее или в пульте: Настройки → Обновления и копии.")
+        .title(t(
+            &format!("Доступна версия {version}"),
+            &format!("Version {version} is available"),
+        ))
+        .body(t(
+            "Обновить можно в меню значка в трее или в пульте: Настройки → Обновления и копии.",
+            "Update from the tray icon's menu or in the panel: Settings → Updates and backups.",
+        ))
         .show();
     match shown {
         Ok(()) => {

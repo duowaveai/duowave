@@ -15,15 +15,18 @@ import { WidgetFrame, WidgetMenu } from '../ui/widget';
 import { settingsPlace } from '../builtin';
 import { ConnectFirstCard } from './connect';
 import { FirstRun } from './first-run';
+import { MicFirstCard } from './voice-input';
 import { LocalAsrSetup, localAsrNeedsCard, useLocalAsr } from './local-asr';
 import { Dashboard } from './dashboard';
 import { DeskCanvas } from './desk-canvas';
 import { useWhoOpen } from './desk-widgets';
 import { AddTile, DraftTile } from './draft-tile';
+import { FolderOffers, useFolderOffers } from './folder-offers';
 import { useDeskDrafts } from '../voice/drafts';
 
 export { AddTile };
 import { RememberedLine } from './recall';
+import { tr } from '../i18n';
 
 /** С этой ширины виджеты стоят по сторонам от колонки; уже — лентой. */
 const WIDE = '(min-width: 1100px)';
@@ -69,8 +72,8 @@ function Scene({ room }: { room?: number }) {
                         <IconLaptop size={18} />
                     </span>
                     <span class="flex flex-col">
-                        <b>Этот компьютер помогает колонке</b>
-                        <span class="w-cap">даёт колонке «{placedName(panel.role.station) ?? panel.current?.name ?? panel.drawing.title}» слух, голос и модель</span>
+                        <b>{tr.desk.helperPcTitle}</b>
+                        <span class="w-cap">{tr.desk.helperPcLine(placedName(panel.role.station) ?? panel.current?.name ?? panel.drawing.title)}</span>
                     </span>
                 </div>
             )}
@@ -126,11 +129,14 @@ export function DeskScreen() {
     // Слух этого компьютера, пока он готовится или упал: над всем остальным, в любой раскладке.
     const [localAsr, setLocalAsr] = useLocalAsr();
     const setup = localAsrNeedsCard(localAsr) ? <LocalAsrSetup local={localAsr} onChange={setLocalAsr} /> : null;
+    // Флешку воткнули или папку бросили на окно: плитка «Посмотреть?» — над столом, в любой раскладке.
+    const offers = useFolderOffers();
     const banner =
-        panel.banner || setup ? (
+        panel.banner || setup || offers.length > 0 ? (
             <>
                 {panel.banner}
                 {setup}
+                <FolderOffers offers={offers} />
             </>
         ) : null;
     // Без колонки столу нечего показать: режимы и орбита были бы о колонке, которой нет.
@@ -140,6 +146,7 @@ export function DeskScreen() {
                 {banner}
                 <FirstRun />
                 <ConnectFirstCard onConnect={panel.openConnect} />
+                <MicFirstCard />
             </div>
         );
     const shown = orderedOnDesk(widgets, layout);

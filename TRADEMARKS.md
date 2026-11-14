@@ -4,7 +4,7 @@
 квадрат с двумя глазами) — товарные знаки проекта, и лицензия кода прав на них не даёт (Apache-2.0, раздел 6). Так
 люди знают, что программа под этим именем — от нас.
 
-*In English: the code is Apache-2.0; the name "DuoWave" and the DiVi mark are the project's trademarks, which the
+*In English: the code is Apache-2.0; the name "DuoWave" and the Deevi mark are the project's trademarks, which the
 licence does not cover (section 6). A modified version goes under its own name.*
 
 ## Можно без спроса

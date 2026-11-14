@@ -4,6 +4,7 @@
 // поле личного открыто, микрофон пульта выключен (`onPrivate`).
 
 import { Switch } from './switch';
+import { tr } from '../i18n';
 
 /** Маска секрета (ссылка с ключом внутри): значение шлюз не отдаёт, а та же маска при сохранении оставляет прежнее. */
 export const SECRET_MASK = '••••••';
@@ -47,7 +48,7 @@ export function SettingInput({
                 autocomplete="off"
                 spellcheck={false}
                 value={value === SECRET_MASK ? '' : String(value ?? '')}
-                placeholder={field.value === SECRET_MASK ? 'задано · впишите новое, чтобы заменить' : 'вставьте сюда'}
+                placeholder={field.value === SECRET_MASK ? tr.ui.secretSetReplace : tr.ui.pasteHere}
                 disabled={busy}
                 onFocus={() => onPrivate?.(true)}
                 onBlur={() => onPrivate?.(false)}

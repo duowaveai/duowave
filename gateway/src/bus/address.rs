@@ -4,7 +4,6 @@
 //! where its bytes live: a move between the station and the computer changes the place, not the address.
 //!
 //! A pattern names many addresses: an address, one ending in `/*` (it and everything below it) or `*` alone.
-
 use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -28,8 +27,8 @@ const MAX_LEN: usize = 512;
 pub struct Address(String);
 
 /// Why an address or a pattern is not one.
-fn bad(text: &str, why: &str) -> String {
-    format!("адрес «{}»: {why}", text.chars().take(80).collect::<String>())
+fn bad(text: &str, why: String) -> String {
+    crate::tr!("адрес «{text}»: {why}", text = text.chars().take(80).collect::<String>(), why = why)
 }
 
 /// A kind: lower case Latin letters, digits and `-`, a letter first.
@@ -54,19 +53,19 @@ impl Address {
     pub fn parse(text: &str) -> Result<Address, String> {
         let text = text.trim();
         if text.is_empty() {
-            return Err(bad(text, "пустой"));
+            return Err(bad(text, crate::tr!("пустой")));
         }
         if text.len() > MAX_LEN {
-            return Err(bad(text, "слишком длинный"));
+            return Err(bad(text, crate::tr!("слишком длинный")));
         }
         let mut parts = text.split('/');
         let kind = parts.next().unwrap_or_default();
         if !kind_ok(kind) {
-            return Err(bad(text, "вид — латинские буквы, цифры и «-»"));
+            return Err(bad(text, crate::tr!("вид — латинские буквы, цифры и «-»")));
         }
         for segment in parts {
             if !segment_ok(segment) {
-                return Err(bad(text, "часть пути пустая или с недопустимыми знаками"));
+                return Err(bad(text, crate::tr!("часть пути пустая или с недопустимыми знаками")));
             }
         }
         Ok(Address(text.to_string()))

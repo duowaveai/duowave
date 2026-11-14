@@ -3,7 +3,6 @@
 //!
 //! A phrase starts with a word of its own: a slot first would take any command that ends in the right words. Two
 //! slots never stand side by side: there would be no telling where one ends.
-
 use regex::Regex;
 use serde_json::{Map, Value};
 
@@ -39,7 +38,7 @@ impl Phrase {
     /// The phrase, or why it cannot be one (said in the manifest's check).
     pub fn parse(template: &str) -> Result<Phrase, String> {
         if template.chars().count() > MAX_LENGTH {
-            return Err(format!("фраза «{template}» длиннее {MAX_LENGTH} знаков"));
+            return Err(crate::tr!("фраза «{template}» длиннее {max} знаков", template = template, max = MAX_LENGTH));
         }
         let mut parts = Vec::new();
         let mut rest = template;
@@ -49,29 +48,42 @@ impl Phrase {
                 parts.push(Part::Words(words));
             }
             let after = &rest[open + 1..];
-            let close = after.find('}').ok_or_else(|| format!("фраза «{template}»: нет закрывающей «}}»"))?;
+            let close = after
+                .find('}')
+                .ok_or_else(|| crate::tr!("фраза «{template}»: нет закрывающей «}»", template = template))?;
             let name = after[..close].trim();
             if !slot_name(name) {
-                return Err(format!("фраза «{template}»: «{{{name}}}» — имя из латинских букв, цифр и _"));
+                return Err(crate::tr!(
+                    "фраза «{template}»: «{slot}» — имя из латинских букв, цифр и _",
+                    template = template,
+                    slot = format!("{{{name}}}")
+                ));
             }
             if name == REQUEST {
-                return Err(format!("фраза «{template}»: имя «{REQUEST}» занято: под ним функция получает сам запрос"));
+                return Err(crate::tr!(
+                    "фраза «{template}»: имя «{name}» занято: под ним функция получает сам запрос",
+                    template = template,
+                    name = REQUEST
+                ));
             }
             if matches!(parts.last(), Some(Part::Slot(_))) {
-                return Err(format!("фраза «{template}»: два места подряд, между ними нужно слово"));
+                return Err(crate::tr!(
+                    "фраза «{template}»: два места подряд, между ними нужно слово",
+                    template = template
+                ));
             }
             parts.push(Part::Slot(name.to_string()));
             rest = &after[close + 1..];
         }
         if rest.contains('}') {
-            return Err(format!("фраза «{template}»: лишняя «}}»"));
+            return Err(crate::tr!("фраза «{template}»: лишняя «}»", template = template));
         }
         let words = normalize(rest);
         if !words.is_empty() {
             parts.push(Part::Words(words));
         }
         if !matches!(parts.first(), Some(Part::Words(_))) {
-            return Err(format!("фраза «{template}» должна начинаться со слова"));
+            return Err(crate::tr!("фраза «{template}» должна начинаться со слова", template = template));
         }
         let slots: Vec<String> = parts
             .iter()
@@ -81,10 +93,10 @@ impl Phrase {
             })
             .collect();
         if slots.len() > MAX_SLOTS {
-            return Err(format!("фраза «{template}»: больше {MAX_SLOTS} мест"));
+            return Err(crate::tr!("фраза «{template}»: больше {max} мест", template = template, max = MAX_SLOTS));
         }
         if (1..slots.len()).any(|i| slots[..i].contains(&slots[i])) {
-            return Err(format!("фраза «{template}»: одно имя места дважды"));
+            return Err(crate::tr!("фраза «{template}»: одно имя места дважды", template = template));
         }
         let last = parts.len() - 1;
         let pattern: Vec<String> = parts
@@ -97,8 +109,8 @@ impl Phrase {
                 Part::Slot(name) => format!("(?P<{name}>.+?)"),
             })
             .collect();
-        let pattern =
-            Regex::new(&format!("^{}$", pattern.join(" "))).map_err(|error| format!("фраза «{template}»: {error}"))?;
+        let pattern = Regex::new(&format!("^{}$", pattern.join(" ")))
+            .map_err(|error| crate::tr!("фраза «{template}»: {error}", template = template, error = error))?;
         Ok(Phrase { template: template.to_string(), pattern, slots })
     }
 

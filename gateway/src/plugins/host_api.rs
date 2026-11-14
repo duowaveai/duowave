@@ -8,7 +8,6 @@
 //!   removal tells the panel (`packages.data`): the package's widgets read their data again.
 //! - `settings` are the values of the settings its manifest declares, as the admin set them.
 //! - `log` goes to the gateway's log under its name, a burst cut short.
-
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -140,7 +139,7 @@ impl reqwest::dns::Resolve for OutsideOnly {
             let found: Vec<SocketAddr> =
                 tokio::net::lookup_host((host.as_str(), 0)).await?.filter(|address| !forbidden(address.ip())).collect();
             if found.is_empty() {
-                return Err(format!("{host}: нет адреса вне этого компьютера").into());
+                return Err(crate::tr!("{host}: нет адреса вне этого компьютера", host = host).into());
             }
             Ok(Box::new(found.into_iter()) as reqwest::dns::Addrs)
         })
@@ -165,24 +164,24 @@ fn client() -> reqwest::Client {
 /// The URL if the plugin may reach it, or why not.
 pub fn checked_url(hosts: &[String], text: &str) -> Result<url::Url, String> {
     let url = url::Url::parse(text)
-        .map_err(|_| format!("адрес «{}» не читается", text.chars().take(200).collect::<String>()))?;
+        .map_err(|_| crate::tr!("адрес «{url}» не читается", url = text.chars().take(200).collect::<String>()))?;
     if !matches!(url.scheme(), "http" | "https") {
-        return Err(format!("только http и https, не {}", url.scheme()));
+        return Err(crate::tr!("только http и https, не {scheme}", scheme = url.scheme()));
     }
     let host = match url.host() {
         Some(url::Host::Domain(name)) => name.to_string(),
         Some(url::Host::Ipv4(ip)) => ip.to_string(),
         Some(url::Host::Ipv6(ip)) => ip.to_string(),
-        None => return Err("в адресе нет хоста".into()),
+        None => return Err(crate::tr!("в адресе нет хоста")),
     };
     if host.parse::<IpAddr>().is_ok_and(forbidden) {
-        return Err(format!("{host} — адрес этого компьютера, плагинам туда нельзя"));
+        return Err(crate::tr!("{host} — адрес этого компьютера, плагинам туда нельзя", host = host));
     }
     if hosts.is_empty() {
-        return Err("нет права net: плагин не ходит в сеть".into());
+        return Err(crate::tr!("нет права net: плагин не ходит в сеть"));
     }
     if !host_allowed(hosts, &host) {
-        return Err(format!("хост {host} не разрешён: в манифесте нет права net:{host}"));
+        return Err(crate::tr!("хост {host} не разрешён: в манифесте нет права net:{host}", host = host));
     }
     Ok(url)
 }
@@ -206,13 +205,15 @@ fn fetch_of(hosts: &[String], request: &Value) -> Result<Fetch, String> {
             "PATCH" => reqwest::Method::PATCH,
             "DELETE" => reqwest::Method::DELETE,
             "HEAD" => reqwest::Method::HEAD,
-            other => return Err(format!("метод {other} не поддерживается")),
+            other => return Err(crate::tr!("метод {other} не поддерживается", other = other)),
         },
     };
     let mut headers = Vec::new();
     if let Some(given) = request.get("headers").and_then(Value::as_object) {
         for (name, value) in given.iter().take(50) {
-            let Some(value) = value.as_str() else { return Err(format!("заголовок {name}: строка")) };
+            let Some(value) = value.as_str() else {
+                return Err(crate::tr!("заголовок {name}: строка", name = name));
+            };
             // The host and the length are the client's to set.
             if ["host", "content-length", "connection", "transfer-encoding"]
                 .contains(&name.to_ascii_lowercase().as_str())
@@ -224,7 +225,7 @@ fn fetch_of(hosts: &[String], request: &Value) -> Result<Fetch, String> {
     }
     let body = request.get("body").and_then(Value::as_str).map(str::to_string);
     if body.as_ref().is_some_and(|body| body.len() > MAX_REQUEST) {
-        return Err(format!("тело запроса больше {} КБ", MAX_REQUEST / 1024));
+        return Err(crate::tr!("тело запроса больше {max} КБ", max = MAX_REQUEST / 1024));
     }
     let timeout =
         request.get("timeoutMs").and_then(Value::as_u64).unwrap_or(DEFAULT_TIMEOUT_MS).clamp(1, MAX_TIMEOUT_MS);
@@ -250,7 +251,7 @@ async fn send_raw(
 ) -> Result<(u16, String, Map<String, Value>, Vec<u8>), String> {
     let Fetch { mut url, mut method, headers, mut body, timeout } = fetch;
     let deadline = tokio::time::Instant::now() + timeout;
-    let late = || format!("нет ответа за {} мс", timeout.as_millis());
+    let late = || crate::tr!("нет ответа за {ms} мс", ms = timeout.as_millis());
     let mut redirects = 0;
     let response = loop {
         let mut request = client().request(method.clone(), url.clone());
@@ -263,7 +264,7 @@ async fn send_raw(
         let response = tokio::time::timeout_at(deadline, request.send())
             .await
             .map_err(|_| late())?
-            .map_err(|error| format!("запрос не прошёл: {}", without_url(error)))?;
+            .map_err(|error| crate::tr!("запрос не прошёл: {error}", error = without_url(error)))?;
         if !response.status().is_redirection() {
             break response;
         }
@@ -272,8 +273,8 @@ async fn send_raw(
         let (Some(location), true) = (location, redirects <= MAX_REDIRECTS) else {
             break response;
         };
-        let next = url.join(location).map_err(|_| "перенаправление не читается".to_string())?;
-        url = checked_url(&hosts, next.as_str()).map_err(|why| format!("перенаправление: {why}"))?;
+        let next = url.join(location).map_err(|_| crate::tr!("перенаправление не читается"))?;
+        url = checked_url(&hosts, next.as_str()).map_err(|why| crate::tr!("перенаправление: {why}", why = why))?;
         // 303, and a POST's 301 and 302: the next request is a GET without the body, as browsers do.
         let status = response.status().as_u16();
         if status == 303 || ((status == 301 || status == 302) && method == reqwest::Method::POST) {
@@ -294,9 +295,9 @@ async fn send_raw(
     loop {
         let chunk = tokio::time::timeout_at(deadline, stream.next()).await.map_err(|_| late())?;
         let Some(chunk) = chunk else { break };
-        let chunk = chunk.map_err(|error| format!("ответ оборвался: {}", without_url(error)))?;
+        let chunk = chunk.map_err(|error| crate::tr!("ответ оборвался: {error}", error = without_url(error)))?;
         if bytes.len() + chunk.len() > max {
-            return Err(format!("ответ больше {} КБ", max / 1024));
+            return Err(crate::tr!("ответ больше {max} КБ", max = max / 1024));
         }
         bytes.extend_from_slice(&chunk);
     }
@@ -314,11 +315,11 @@ pub fn download_checked(
     let prepared = fetch_of(&hosts, &json!({ "url": url, "timeoutMs": MAX_TIMEOUT_MS }));
     Box::pin(async move {
         let fetch = prepared?;
-        let Some(handle) = handle else { return Err("сеть недоступна".into()) };
+        let Some(handle) = handle else { return Err(crate::tr!("сеть недоступна")) };
         let (status, _, _, bytes) =
-            handle.spawn(send_raw(hosts, fetch, max)).await.map_err(|_| "запрос прервался".to_string())??;
+            handle.spawn(send_raw(hosts, fetch, max)).await.map_err(|_| crate::tr!("запрос прервался"))??;
         if status != 200 {
-            return Err(format!("картинка не скачалась: ответ {status}"));
+            return Err(crate::tr!("картинка не скачалась: ответ {status}", status = status));
         }
         Ok(bytes)
     })
@@ -334,8 +335,8 @@ pub fn fetch_checked(
     let prepared = fetch_of(&hosts, request);
     Box::pin(async move {
         let fetch = prepared?;
-        let Some(handle) = handle else { return Err("сеть недоступна".into()) };
-        handle.spawn(send(hosts, fetch)).await.map_err(|_| "запрос прервался".to_string())?
+        let Some(handle) = handle else { return Err(crate::tr!("сеть недоступна")) };
+        handle.spawn(send(hosts, fetch)).await.map_err(|_| crate::tr!("запрос прервался"))?
     })
 }
 
@@ -377,7 +378,7 @@ pub trait HostServices: Send + Sync {
     /// A message to the owner from the plugin `caller` (`system/notify`, plugins/schedule.rs).
     fn notify(&self, caller: &str, text: String) -> BoxFuture<'static, Result<Value, String>> {
         let _ = (caller, text);
-        Box::pin(async { Err("сообщений владельцу здесь нет".to_string()) })
+        Box::pin(async { Err(crate::tr!("сообщений владельцу здесь нет")) })
     }
     /// The plugin's pictures in its own folder (plugins/files.rs): `put` (the downloaded bytes), `list`, `delete`.
     fn files(
@@ -388,12 +389,12 @@ pub trait HostServices: Send + Sync {
         bytes: Option<Vec<u8>>,
     ) -> BoxFuture<'static, Result<Value, String>> {
         let _ = (caller, action, input, bytes);
-        Box::pin(async { Err("картинок здесь нет".to_string()) })
+        Box::pin(async { Err(crate::tr!("картинок здесь нет")) })
     }
     /// The plugin's own schedule (`system/schedule`, plugins/schedule.rs): `set`, `list`, `cancel`, `parse`.
     fn schedule(&self, caller: &str, action: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
         let _ = (caller, action, input);
-        Box::pin(async { Err("расписаний здесь нет".to_string()) })
+        Box::pin(async { Err(crate::tr!("расписаний здесь нет")) })
     }
     /// A letter on the bus for the plugin `caller` in its call's trail (src/bus): `bus.call`, `bus.tell`, `bus.list`,
     /// `bus.ask`, `folders.*`. None where there is no bus.
@@ -488,7 +489,7 @@ impl PluginHostApi {
 
     fn key(key: &str) -> Result<(), String> {
         if key.is_empty() || key.len() > MAX_KEY {
-            return Err(format!("ключ: от 1 до {MAX_KEY} байт"));
+            return Err(crate::tr!("ключ: от 1 до {max} байт", max = MAX_KEY));
         }
         Ok(())
     }
@@ -550,7 +551,7 @@ impl HostApi for PluginHostApi {
                 )
                 .optional()
             })
-            .map_err(|_| "хранилище не читается".to_string())?;
+            .map_err(|_| crate::tr!("хранилище не читается"))?;
         Ok(text.and_then(|text| serde_json::from_str(&text).ok()))
     }
 
@@ -559,7 +560,7 @@ impl HostApi for PluginHostApi {
         PluginHostApi::key(key)?;
         let text = value.to_string();
         if text.len() > MAX_VALUE {
-            return Err(format!("значение больше {} КБ", MAX_VALUE / 1024));
+            return Err(crate::tr!("значение больше {max} КБ", max = MAX_VALUE / 1024));
         }
         let stored: Option<String> = self
             .db
@@ -582,7 +583,10 @@ impl HostApi for PluginHostApi {
         let before = stored.map(|stored| (key.len() + stored.len()) as u64).unwrap_or(0);
         let after = storage_used(&self.db, &self.id).saturating_sub(before) + (key.len() + text.len()) as u64;
         if after > budget {
-            return Err(format!("хранилище плагина заполнено: бюджет {} МБ", self.manifest.budget.storage_mb));
+            return Err(crate::tr!(
+                "хранилище плагина заполнено: бюджет {mb} МБ",
+                mb = self.manifest.budget.storage_mb
+            ));
         }
         self.db
             .with(|c| {
@@ -592,7 +596,7 @@ impl HostApi for PluginHostApi {
                     params![self.id, key, text, now_iso()],
                 )
             })
-            .map_err(|_| "хранилище не записалось".to_string())?;
+            .map_err(|_| crate::tr!("хранилище не записалось"))?;
         self.data_changed();
         Ok(())
     }
@@ -603,7 +607,7 @@ impl HostApi for PluginHostApi {
         let removed = self
             .db
             .with(|c| c.execute("DELETE FROM plugin_kv WHERE plugin_id = ?1 AND key = ?2", params![self.id, key]))
-            .map_err(|_| "хранилище не записалось".to_string())?;
+            .map_err(|_| crate::tr!("хранилище не записалось"))?;
         if removed > 0 {
             self.data_changed();
         }
@@ -624,7 +628,7 @@ impl HostApi for PluginHostApi {
                     })?;
                 rows.collect()
             })
-            .map_err(|_| "хранилище не читается".to_string())?;
+            .map_err(|_| crate::tr!("хранилище не читается"))?;
         Ok(keys)
     }
 
@@ -647,6 +651,14 @@ impl HostApi for PluginHostApi {
         }
     }
 
+    fn locale(&self) -> String {
+        crate::locale::current(&self.settings)
+    }
+
+    fn languages(&self) -> Vec<String> {
+        self.manifest.languages.clone()
+    }
+
     /// Everything beyond the plugin itself is a letter on the bus (Host API 2): `bus.*` and its folders, `folders.*`.
     /// `folders.download` fetches a picture by the plugin's `net:` hosts here, then keeps it in its own folder.
     fn call(&self, name: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
@@ -657,21 +669,21 @@ impl HostApi for PluginHostApi {
         // The trail of the call this runs in: the engine's thread holds it while the call goes (src/bus/trail.rs).
         let trail = crate::bus::trail::current();
         Box::pin(async move {
-            let services = services.ok_or_else(|| "служб шлюза здесь нет".to_string())?;
+            let services = services.ok_or_else(|| crate::tr!("служб шлюза здесь нет"))?;
             if name == "folders.download" {
                 let url = input.get("url").and_then(Value::as_str).unwrap_or_default().to_string();
                 if url.is_empty() {
-                    return Err("files.download(url, name): нужна ссылка".into());
+                    return Err(crate::tr!("files.download(url, name): нужна ссылка"));
                 }
                 let max = crate::plugins::files::FILE_MAX as usize;
                 let bytes = download_checked(manifest.hosts(), &url, max, handle).await?;
                 return services.files(&id, "put", input, Some(bytes)).await;
             }
             if name.starts_with("bus.") || name.starts_with("folders.") {
-                let letter = services.bus(&id, &name, input, trail).ok_or_else(|| "шины здесь нет".to_string())?;
+                let letter = services.bus(&id, &name, input, trail).ok_or_else(|| crate::tr!("шины здесь нет"))?;
                 return letter.await;
             }
-            Err(format!("нет функции {name}: с Host API 2 всё вне приложения — письма шины, host.bus.call(адрес, умение, данные)"))
+            Err(crate::tr!("нет функции {name}: с Host API 2 всё вне приложения — письма шины, host.bus.call(адрес, умение, данные)", name = name))
         })
     }
 

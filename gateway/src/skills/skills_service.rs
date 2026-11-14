@@ -215,7 +215,9 @@ pub struct SkillsService {
 
 /// The panel's «продолжить» for the station's own radio after we stopped it: its player_continue brings nothing back
 /// once the queue is cleared (live 03.11, `yandex_content`) — the words that do.
-const STATION_RADIO_STOPPED: &str = "Радио колонки так не вернуть — скажите ей «Алиса, включи радио».";
+fn station_radio_stopped() -> String {
+    crate::tr!("Радио колонки так не вернуть — скажите ей «Алиса, включи радио».")
+}
 
 /// What plays on a station, for the panel's widget: our player's item, else what the station said it plays.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -666,7 +668,7 @@ impl SkillsService {
         // The station's own radio we stopped: its queue went with the station, its player_continue brings nothing
         // back — and Yandex's «продолжи» starts music instead. A pause the station made itself goes on as it was.
         if action == "resume" && !js::is_true(&intent.params, "ours") && self.stopped_radio(device) {
-            return Err(ApiError::conflict(STATION_RADIO_STOPPED));
+            return Err(ApiError::conflict(station_radio_stopped()));
         }
         if yandex_available && js::is_true(&intent.params, "external") {
             return Err(ApiError::conflict(yandex_plays(action)));
@@ -878,9 +880,9 @@ fn yandex_plays(action: &str) -> String {
         "replay" => "сначала",
         "like" => "мне нравится",
         "dislike" => "не нравится",
-        _ => return "Это играет Яндекс: им управляет он — скажите колонке голосом.".into(),
+        _ => return crate::tr!("Это играет Яндекс: им управляет он — скажите колонке голосом."),
     };
-    format!("Это играет Яндекс: им управляет он — скажите колонке «Алиса, {words}».")
+    crate::tr!("Это играет Яндекс: им управляет он — скажите колонке «Алиса, {words}».", words = words)
 }
 
 /// Controlling what our player plays is ours, whatever the route says of Yandex: only we hold the queue and know the
@@ -1286,7 +1288,7 @@ mod tests {
         for yandex in [false, true] {
             let refused = skills.player_command("hall", "resume", yandex).await.unwrap_err();
             assert_eq!(refused.status, axum::http::StatusCode::CONFLICT);
-            assert_eq!(refused.message, STATION_RADIO_STOPPED, "Yandex up: {yandex}");
+            assert_eq!(refused.message, station_radio_stopped(), "Yandex up: {yandex}");
         }
         // It plays again (asked of the station), then the station pauses it itself: its «продолжить» goes on.
         skills.note_device_state("hall", Some(&radio), now + 60_000);

@@ -76,9 +76,15 @@ impl ProviderKind {
     }
 }
 
+/// A card's words go out in the reader's language: the source text is the catalog's key (locales/en/services.json).
+fn translated<S: serde::Serializer>(text: &&'static str, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&crate::locale::text::translate(text, &[]))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PresetField {
     pub id: &'static str,
+    #[serde(serialize_with = "translated")]
     pub title: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub placeholder: Option<&'static str>,
@@ -97,8 +103,10 @@ pub struct Suggested {
 #[serde(rename_all = "camelCase")]
 pub struct ProviderPreset {
     pub id: &'static str,
+    #[serde(serialize_with = "translated")]
     pub title: &'static str,
     /// One line for people: what it is and why one would pick it.
+    #[serde(serialize_with = "translated")]
     pub description: &'static str,
     pub kind: ProviderKind,
     /// The address; the custom ones have none and ask for it.

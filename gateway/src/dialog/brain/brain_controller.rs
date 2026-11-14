@@ -34,7 +34,7 @@ pub fn routes() -> Router<Arc<App>> {
 /// Keys are entered by people, never by a script's key.
 fn person(principal: &Principal) -> Result<(), ApiError> {
     if principal.kind != PrincipalKind::User {
-        return Err(ApiError::forbidden("Это для людей, не для ключей."));
+        return Err(ApiError::forbidden(crate::tr!("Это для людей, не для ключей.")));
     }
     Ok(())
 }

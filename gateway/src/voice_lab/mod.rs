@@ -49,8 +49,9 @@ mod station {
     use crate::app::App;
     use crate::platform::http::ApiError;
 
-    pub const NOT_IN_THIS_BUILD: &str =
-        "Голосовой лаборатории нет в этой сборке: свои голоса делаются в шлюзе на компьютере.";
+    pub fn not_in_this_build_text() -> String {
+        crate::tr!("Голосовой лаборатории нет в этой сборке: свои голоса делаются в шлюзе на компьютере.")
+    }
 
     pub fn router() -> Router<Arc<App>> {
         Router::new()
@@ -59,7 +60,7 @@ mod station {
     }
 
     async fn not_in_this_build() -> ApiError {
-        ApiError::new(StatusCode::NOT_IMPLEMENTED, NOT_IN_THIS_BUILD)
+        ApiError::new(StatusCode::NOT_IMPLEMENTED, not_in_this_build_text())
     }
 
     #[cfg(test)]
@@ -82,7 +83,7 @@ mod station {
                 let body: serde_json::Value =
                     serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
                 assert_eq!(body["code"], 501);
-                assert_eq!(body["message"], NOT_IN_THIS_BUILD);
+                assert_eq!(body["message"], not_in_this_build_text());
             }
         }
     }

@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 use super::describe_http_error as describe;
 use super::llm_client::{
     bearer_of, describe_models, AssistantTurn, LlmClient, LlmEvent, LlmMessage, LlmRequest, LlmSettings, LlmStream,
-    LlmUsage, ToolCall, ToolChoice,
+    LlmUsage, ToolCall, ToolCallCut, ToolChoice,
 };
 use super::sse::{Lines, SseDecoder, SseEvent};
 use crate::dialog::generator::{generate, Yielder};
@@ -177,7 +177,7 @@ fn body_of(settings: &LlmSettings, request: &LlmRequest, model: &str, haiku: boo
     }
     let mut body = Map::new();
     body.insert("model".into(), json!(model));
-    body.insert("max_tokens".into(), json!(settings.max_tokens));
+    body.insert("max_tokens".into(), json!(request.max_tokens.unwrap_or(settings.max_tokens)));
     body.insert("system".into(), Value::Array(system));
     body.insert("messages".into(), Value::Array(request.messages.iter().map(to_param).collect()));
     body.insert("output_config".into(), json!({"effort": settings.effort}));
@@ -385,6 +385,8 @@ struct Message {
     content: Vec<Value>,
     /// The partial JSON of tool inputs, by block.
     inputs: HashMap<usize, String>,
+    /// A finished block's input as it streamed: a cut-off call names its file from it.
+    streamed: HashMap<usize, String>,
     /// A tool input that did not parse.
     unparsed: Option<String>,
     stop_reason: Option<String>,
@@ -529,6 +531,7 @@ impl Message {
             })
         };
         block.insert("input".into(), input);
+        self.streamed.insert(index, buffer);
     }
 
     /// The turn, once the stream is over: its tool calls, its blocks as they came (`native`) and the usage.
@@ -549,13 +552,19 @@ impl Message {
             bail!("Claude declined to answer ({category})");
         }
         let mut calls = Vec::new();
-        for block in &self.content {
+        for (index, block) in self.content.iter().enumerate() {
             if block.get("type").and_then(Value::as_str) != Some("tool_use") {
                 continue;
             }
             // A cut-off turn may hold a truncated input: no command is run on it.
             if out_of_tokens {
-                bail!("Claude ran out of tokens in a tool call");
+                let name = block.get("name").and_then(Value::as_str).unwrap_or_default();
+                let streamed = self.streamed.get(&index).or_else(|| self.inputs.get(&index));
+                return Err(anyhow::Error::new(ToolCallCut::new(
+                    "Claude",
+                    name,
+                    streamed.map(String::as_str).unwrap_or_default(),
+                )));
             }
             calls.push(ToolCall {
                 id: block.get("id").and_then(Value::as_str).unwrap_or("").to_string(),
@@ -853,6 +862,38 @@ mod tests {
         cut.unparsed = Some("Unable to parse".into());
         assert_eq!(cut.finish(String::new()).unwrap_err().to_string(), "Claude ran out of tokens in a tool call");
         assert!(Message::default().finish(String::new()).is_err());
+    }
+
+    #[test]
+    fn a_call_cut_off_by_the_limit_says_which_tool_and_file_it_was_writing() {
+        for closed in [true, false] {
+            let mut message = Message::default();
+            let mut events = vec![
+                json!({"type": "message_start", "message": {"content": [], "usage": {"input_tokens": 9}}}),
+                json!({"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "toolu_1", "name": "write_file", "input": {}}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"path\": \"panel.js\", \"content\": \"export function App() {"}}),
+            ];
+            if closed {
+                events.push(json!({"type": "content_block_stop", "index": 0}));
+            }
+            events.push(json!({"type": "message_delta", "delta": {"stop_reason": "max_tokens"}, "usage": {"output_tokens": 4096}}));
+            events.push(json!({"type": "message_stop"}));
+            for event in &events {
+                message.apply(event).unwrap();
+            }
+            let error = message.finish(String::new()).unwrap_err();
+            let cut = error.downcast_ref::<ToolCallCut>().expect("a typed cut");
+            assert_eq!((cut.tool.as_str(), cut.path.as_deref()), ("write_file", Some("panel.js")), "closed: {closed}");
+        }
+    }
+
+    #[test]
+    fn a_request_may_ask_for_a_longer_answer_than_the_client_gives() {
+        let settings = settings("http://127.0.0.1:9", true, Some("k"));
+        let usual = LlmRequest { system: "s".into(), messages: ask("q"), ..LlmRequest::default() };
+        assert_eq!(body_of(&settings, &usual, "claude-opus-5-5", false)["max_tokens"], json!(300));
+        let longer = LlmRequest { max_tokens: Some(16_000), ..usual };
+        assert_eq!(body_of(&settings, &longer, "claude-opus-5-5", false)["max_tokens"], json!(16_000));
     }
 
     #[tokio::test]

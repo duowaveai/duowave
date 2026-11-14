@@ -3,6 +3,8 @@ import type { ComponentChildren } from 'preact';
 import type { ConnectorCheck } from '../api';
 import { timeAgo } from '../time';
 import { Action } from './cards';
+import { byMode } from '../words';
+import { tr } from '../i18n';
 
 /** Поле с подписью над ним и подсказкой под ним. */
 export function TextField({
@@ -64,7 +66,7 @@ export function SecretField({
     onInput: (value: string) => void;
     onRemove: (removing: boolean) => void;
 }) {
-    const state = removing ? 'будет убран' : mask?.set ? `задан · ${mask.hint ?? ''}` : 'не задан';
+    const state = removing ? tr.ui.secretRemoving : mask?.set ? tr.ui.secretSet(mask.hint ?? '') : tr.ui.secretUnset;
     return (
         <label class="flex flex-col gap-4">
             <span class="t-caption flex gap-8 items-center flex-wrap">
@@ -79,13 +81,13 @@ export function SecretField({
                     type="password"
                     autocomplete="off"
                     spellcheck={false}
-                    placeholder={placeholder ?? (mask?.set ? 'новое значение' : 'вставьте сюда')}
+                    placeholder={placeholder ?? (mask?.set ? tr.ui.secretNewValue : tr.ui.pasteHere)}
                     value={value}
                     disabled={removing}
                     onInput={(e) => onInput((e.target as HTMLInputElement).value)}
                 />
                 {mask?.set && (
-                    <Action label={removing ? 'оставить' : 'убрать'} onClick={() => onRemove(!removing)} />
+                    <Action label={removing ? tr.ui.secretKeep : tr.ui.secretRemove} onClick={() => onRemove(!removing)} />
                 )}
             </span>
             {hint && <span class="t-meta">{hint}</span>}
@@ -129,23 +131,23 @@ export function ContactsField({
         <div class="flex flex-col gap-6">
             <span class="t-caption">{title}</span>
             {contacts.length === 0 && (
-                <span class="t-meta">Пока никого. Имя — как его скажут колонке: «передай маме…» найдёт «мама».</span>
+                <span class="t-meta">{byMode(tr.ui.contactsEmptySpeaker, tr.ui.contactsEmptyAloud)}</span>
             )}
             {contacts.map((contact) => (
                 <div key={contact.key} class="grid grid-pair-36 gap-6 items-center">
                     <input
                         class="field min-w-0"
-                        aria-label="Имя"
-                        placeholder="имя, например мама"
+                        aria-label={tr.ui.contactName}
+                        placeholder={tr.ui.contactNamePlaceholder}
                         value={contact.name}
                         onInput={(e) => edit(contact.key, { name: (e.target as HTMLInputElement).value })}
                     />
                     {contact.stranger ? (
-                        <span class="t-caption">написал боту · {contact.hint}</span>
+                        <span class="t-caption">{tr.ui.contactWroteBot(contact.hint)}</span>
                     ) : (
                         <input
                             class="field min-w-0"
-                            aria-label={contact.hint ? `${targetLabel} ${contact.name}: новый вместо ${contact.hint}` : `${targetLabel} ${contact.name}`}
+                            aria-label={contact.hint ? tr.ui.contactTargetNew(targetLabel, contact.name, contact.hint) : `${targetLabel} ${contact.name}`}
                             inputMode={targetMode}
                             autocomplete="off"
                             placeholder={contact.hint ? `${targetLabel} ${contact.hint}` : targetPlaceholder}
@@ -156,8 +158,8 @@ export function ContactsField({
                     <button
                         type="button"
                         class="pill pill-off cursor-pointer w-36 h-36 p-0 inline-flex items-center justify-center fs-18"
-                        aria-label={`Убрать контакт ${contact.name}`}
-                        title="Убрать"
+                        aria-label={tr.ui.contactRemove(contact.name)}
+                        title={tr.ui.remove}
                         onClick={() => onChange(contacts.filter((other) => other.key !== contact.key))}
                     >
                         ×
@@ -165,11 +167,11 @@ export function ContactsField({
                 </div>
             ))}
             {contacts.some((contact) => contact.hint && !contact.stranger) && (
-                <span class="t-meta">Номер уже заданного виден последними цифрами; впишите новый, чтобы заменить.</span>
+                <span class="t-meta">{tr.ui.contactsHintNote}</span>
             )}
             <span>
                 <Action
-                    label="добавить контакт"
+                    label={tr.ui.contactAdd}
                     onClick={() => onChange([...contacts, { key: `new-${Date.now()}`, name: '', to: '' }])}
                 />
             </span>
@@ -200,7 +202,7 @@ export function CheckLine({ check }: { check?: ConnectorCheck | null }) {
         >
             <span aria-hidden="true">{check.ok ? '●' : '○'}</span>
             <span>
-                {check.ok ? 'Проверено' : 'Не работает'}: {check.text}
+                {check.ok ? tr.ui.checkOk : tr.ui.checkFail}: {check.text}
                 <span class="t-caption ml-6">
                     {timeAgo(check.at)}
                 </span>
@@ -214,11 +216,11 @@ export function EnvNote({ fromEnv, envLeft }: { fromEnv: boolean; envLeft: strin
     if (!fromEnv && envLeft.length === 0) return null;
     return (
         <p class="t-meta m-0">
-            {fromEnv ? 'Перенесено из .env при обновлении шлюза; дальше меняется здесь.' : 'Настроено здесь.'}
+            {fromEnv ? tr.ui.envMoved : tr.ui.envHere}
             {envLeft.length > 0 && (
                 <>
                     {' '}
-                    Шлюз больше не читает из .env: {envLeft.join(', ')} — {envLeft.length === 1 ? 'эту строку' : 'эти строки'} можно убрать.
+                    {tr.ui.envLeft(envLeft.join(', '), envLeft.length)}
                 </>
             )}
         </p>

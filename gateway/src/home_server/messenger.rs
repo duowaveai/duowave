@@ -9,7 +9,6 @@
 //! The other way: the bot's messages from the contacts come from the computer (src/placement/messages.rs) to
 //! `POST /api/v1/home-server/message` here, with the pair's key, and the calls skill says or plays them. The same part
 //! of «Что даю колонке», «Сообщения», governs both ways.
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -39,9 +38,15 @@ const WAITING: usize = 5;
 /// A copy left behind (a restart while it played) is removed after this long.
 const STALE: Duration = Duration::from_secs(600);
 /// The station's answers to the computer.
-pub const NOT_TAKEN: &str = "Колонка не берёт сообщения у компьютера: «Сообщения» в «Что даю колонке» выключены.";
-pub const ONLY_PAIR: &str = "Сообщения колонке передаёт только компьютер пары.";
-pub const BUSY: &str = "Колонка ещё не проиграла прежние голосовые сообщения.";
+pub fn not_taken() -> String {
+    crate::tr!("Колонка не берёт сообщения у компьютера: «Сообщения» в «Что даю колонке» выключены.")
+}
+pub fn only_pair() -> String {
+    crate::tr!("Сообщения колонке передаёт только компьютер пары.")
+}
+pub fn busy() -> String {
+    crate::tr!("Колонка ещё не проиграла прежние голосовые сообщения.")
+}
 
 /// What the station says when the message cannot go.
 pub const AWAY: &str = "Компьютер не на связи — передать сообщение некому.";
@@ -195,18 +200,18 @@ fn waiting(dir: &Path) -> usize {
 /// takes «Сообщения» from it.
 pub async fn receive(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> ApiResult<Value> {
     if !crate::placement::peer::from_peer(&caller, app.placement.peer_key()) {
-        return Err(ApiError::forbidden(ONLY_PAIR));
+        return Err(ApiError::forbidden(only_pair()));
     }
     if crate::placement::peer::through_pass(&caller) {
         caller.permitted(STATIONS_MANAGE)?;
     }
     if app.home_server.configured().is_none() || !app.home_server.serves("messages") {
-        return Err(ApiError::conflict(NOT_TAKEN));
+        return Err(ApiError::conflict(not_taken()));
     }
-    let request: Value =
-        serde_json::from_slice(&body).map_err(|_| ApiError::bad_request("JSON: {from, text | voice, at}"))?;
+    let request: Value = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::bad_request(crate::tr!("JSON: {from, text | voice, at}")))?;
     let field = |name: &str| request.get(name).and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty());
-    let from = field("from").ok_or_else(|| ApiError::bad_request("from: от кого сообщение"))?.to_string();
+    let from = field("from").ok_or_else(|| ApiError::bad_request(crate::tr!("from: от кого сообщение")))?.to_string();
     let text = field("text").map(str::to_string);
     let at = field("at").unwrap_or("-").to_string();
     let file = match field("voice") {
@@ -215,13 +220,16 @@ pub async fn receive(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -
             use base64::Engine as _;
             let audio = base64::engine::general_purpose::STANDARD
                 .decode(voice)
-                .map_err(|_| ApiError::bad_request("voice: base64 голосового сообщения"))?;
+                .map_err(|_| ApiError::bad_request(crate::tr!("voice: base64 голосового сообщения")))?;
             if audio.len() > VOICE_LIMIT {
-                return Err(ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "Голосовое сообщение больше 2 МБ."));
+                return Err(ApiError::new(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    crate::tr!("Голосовое сообщение больше 2 МБ."),
+                ));
             }
             let dir = waiting_room(&app);
             if waiting(&dir) >= WAITING {
-                return Err(ApiError::unavailable(BUSY));
+                return Err(ApiError::unavailable(busy()));
             }
             let file = dir.join(format!("{}.ogg", hex::encode(crate::utils::ids::random_bytes(8))));
             tokio::fs::create_dir_all(&dir).await.map_err(ApiError::internal)?;
@@ -230,7 +238,7 @@ pub async fn receive(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -
         }
     };
     if file.is_none() && text.is_none() {
-        return Err(ApiError::bad_request("text или voice: что сказать"));
+        return Err(ApiError::bad_request(crate::tr!("text или voice: что сказать")));
     }
     tracing::info!(
         "home server: a {} from «{from}» (at {at}) came from the computer's bot",
@@ -551,7 +559,7 @@ mod tests {
         let (app, spoken) = station_gateway(dir.path());
         let text = json!({ "from": "мама", "text": "Скоро буду" });
         let (status, body) = hand(&app, None, &[], text.clone()).await;
-        assert_eq!((status, body["message"].as_str()), (StatusCode::FORBIDDEN, Some(ONLY_PAIR)));
+        assert_eq!((status, body["message"].as_str()), (StatusCode::FORBIDDEN, Some(only_pair().as_str())));
         let (status, _) = hand(&app, Some("another-key-0123456789abcdef0123"), &[], text.clone()).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         // A guest at the computer, through the pass: not one who manages the stations.
@@ -569,7 +577,7 @@ mod tests {
         // One switch for both ways: «Сообщения» off in «Что даю колонке» — the station does not take them.
         app.home_server.link(None, None, None, Some(vec!["messages".into()]), None).unwrap();
         let (status, body) = hand(&app, Some(PAIR), &[], text).await;
-        assert_eq!((status, body["message"].as_str()), (StatusCode::CONFLICT, Some(NOT_TAKEN)));
+        assert_eq!((status, body["message"].as_str()), (StatusCode::CONFLICT, Some(not_taken().as_str())));
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(spoken.0.lock().unwrap().is_empty(), "nothing said");
     }

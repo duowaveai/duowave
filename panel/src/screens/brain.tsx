@@ -9,12 +9,14 @@ import { Sheet } from '../ui/sheet';
 import { useSignIn } from '../ui/sign-in';
 import { AskSheet } from './ask';
 import { ask } from '../ui/confirm';
+import { byMode } from '../words';
+import { formatNumber, tr } from '../i18n';
 
 /** Глубина мышления Claude: три понятных ступени из пяти уровней effort. */
-const EFFORTS: Array<{ id: LlmEffort; name: string; sub: string }> = [
-    { id: 'low', name: 'Быстро', sub: 'думает меньше всех, первое слово за секунду' },
-    { id: 'medium', name: 'С умом', sub: 'думает чуть дольше, точнее' },
-    { id: 'high', name: 'Глубоко', sub: 'думает дольше всех над сложным' },
+const efforts = (): Array<{ id: LlmEffort; name: string; sub: string }> => [
+    { id: 'low', name: tr.brain.effortLowName, sub: tr.brain.effortLowSub },
+    { id: 'medium', name: tr.brain.effortMediumName, sub: tr.brain.effortMediumSub },
+    { id: 'high', name: tr.brain.effortHighName, sub: tr.brain.effortHighSub },
 ];
 
 /** Значок провайдера в круге строки (как у маршрутов): знак сервиса или ключ у своего. */
@@ -28,10 +30,12 @@ export function ProviderIcon({ brand, size = 38 }: { brand?: string; size?: numb
 
 /** Итог проверки словами для карточки. */
 export function checkWords(check: ProviderCheck | null): { text: string; ok: boolean | null } {
-    if (!check) return { text: 'ещё не проверен', ok: null };
-    if (!check.ok) return { text: check.problem ?? 'не работает', ok: false };
-    const seconds = check.firstWordMs !== undefined ? ` · первое слово за ${(check.firstWordMs / 1000).toFixed(1).replace('.', ',')} с` : '';
-    return { text: `работает${seconds} · ${check.tools ? 'умеет инструменты' : 'без инструментов'}`, ok: true };
+    const t = tr.brain;
+    if (!check) return { text: t.notChecked, ok: null };
+    if (!check.ok) return { text: check.problem ?? t.notWorking, ok: false };
+    const seconds =
+        check.firstWordMs !== undefined ? t.firstWord(formatNumber(check.firstWordMs / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })) : '';
+    return { text: t.working(seconds, !!check.tools), ok: true };
 }
 
 /** Модели провайдера для выбора: что он назвал, иначе проверенная и советы пресета. */
@@ -101,7 +105,7 @@ export function BrainTab() {
         say('choice', {});
         try {
             setView(await api.chooseBrain({ [profile]: pick }));
-            say('choice', { notice: 'Применено — со следующего вопроса.' });
+            say('choice', { notice: tr.brain.applied });
         } catch (e) {
             say('choice', { error: problemOf(e) });
         } finally {
@@ -113,7 +117,7 @@ export function BrainTab() {
         mark('effort', true);
         try {
             setView(await api.chooseBrain({ effort }));
-            say('choice', { notice: 'Применено — со следующего вопроса.' });
+            say('choice', { notice: tr.brain.applied });
         } catch (e) {
             say('choice', { error: problemOf(e) });
         } finally {
@@ -127,7 +131,7 @@ export function BrainTab() {
         try {
             const result = await api.checkProvider(id);
             const words = checkWords(result);
-            say(id, words.ok ? { notice: `${done ? `${done} ` : ''}Проверено: ${words.text}.` } : { error: words.text });
+            say(id, words.ok ? { notice: tr.brain.checkedNote(done ?? '', words.text) } : { error: words.text });
             await load();
         } catch (e) {
             say(id, { error: problemOf(e) });
@@ -137,7 +141,7 @@ export function BrainTab() {
     };
 
     /** «Войти через …» на карточке: ключ придёт входом, потом провайдер сам проверится. */
-    const signIn = useSignIn((id, title) => void check(id, `Вход в «${title}» выполнен — ключ у шлюза.`));
+    const signIn = useSignIn((id, title) => void check(id, tr.brain.signedIn(title)));
 
     const saveKey = async (provider: ProviderView, key: string) => {
         mark(provider.id, true);
@@ -145,7 +149,7 @@ export function BrainTab() {
             await api.updateProvider(provider.id, { key });
             setKeyFor(null);
             setKeyDraft('');
-            say(provider.id, { notice: key ? 'Ключ сохранён. Нажмите «проверить».' : 'Ключ убран.' });
+            say(provider.id, { notice: key ? tr.brain.keySaved : tr.brain.keyRemoved });
             await load();
         } catch (e) {
             say(provider.id, { error: problemOf(e) });
@@ -155,7 +159,7 @@ export function BrainTab() {
     };
 
     const remove = async (provider: ProviderView) => {
-        if (!(await ask({ title: `Убрать «${provider.title}»?`, text: 'Вместе с ключом.', ok: 'Убрать', danger: true }))) return;
+        if (!(await ask({ title: tr.brain.removeTitle(provider.title), text: tr.brain.removeText, ok: tr.brain.removeOk, danger: true }))) return;
         mark(provider.id, true);
         try {
             await api.removeProvider(provider.id);
@@ -171,7 +175,7 @@ export function BrainTab() {
         return (
             <section class="card glass">
                 <p class="t-meta m-0" role={loadError ? 'alert' : undefined}>
-                    {loadError ?? 'Спрашиваем шлюз…'}
+                    {loadError ?? tr.brain.askingGateway}
                 </p>
             </section>
         );
@@ -186,7 +190,7 @@ export function BrainTab() {
         .find((preset) => preset?.signIn?.keyless);
     const envAnswers = status.source !== 'panel';
     const backup = choice.backup ?? null;
-    const envLabel = `из .env: ${env.title} · ${env.models.fast}`;
+    const envLabel = tr.brain.envLabel(env.title, env.models.fast);
     /** Куда уйдёт вопрос, если ответит запасная: её название и дома она или в интернете. */
     const backupWhere = !backup
         ? null
@@ -197,7 +201,7 @@ export function BrainTab() {
     const options = (profile: 'fast' | 'smart' | 'backup') => (
         <>
             <option value="">
-                {profile === 'backup' ? 'не нужна' : profile === 'smart' ? 'как быстрая' : env.usable ? envLabel : 'не выбрана'}
+                {profile === 'backup' ? tr.brain.optNotNeeded : profile === 'smart' ? tr.brain.optLikeFast : env.usable ? envLabel : tr.brain.optNotChosen}
             </option>
             {profile === 'backup' && env.usable && (
                 <option value={pickValue({ provider: 'env', model: backup?.provider === 'env' ? backup.model : env.models.fast })}>{envLabel}</option>
@@ -221,14 +225,14 @@ export function BrainTab() {
 
     return (
         <>
-            <section class="card glass card-list" aria-label="Кто думает">
+            <section class="card glass card-list" aria-label={tr.brain.whoThinks}>
                 <div class="section-head flex items-center justify-between min-h-44 gap-8 flex-wrap">
                     <h2 class="t-title-xs m-0">
-                        Кто думает
+                        {tr.brain.whoThinks}
                     </h2>
                     <span class="flex items-center gap-8">
-                        <span class="t-meta">{!envAnswers ? 'со следующего вопроса' : env.usable ? 'сейчас — модель из .env' : 'модель не выбрана'}</span>
-                        {can('mcp.use') && (status.source === 'panel' || env.usable) && <Action label="спросить" onClick={() => setAsking(true)} />}
+                        <span class="t-meta">{!envAnswers ? tr.brain.fromNextQuestion : env.usable ? tr.brain.nowEnvModel : tr.brain.noModelChosen}</span>
+                        {can('mcp.use') && (status.source === 'panel' || env.usable) && <Action label={tr.brain.ask} onClick={() => setAsking(true)} />}
                     </span>
                 </div>
                 {(['fast', 'smart'] as const).map((profile) => (
@@ -237,8 +241,8 @@ export function BrainTab() {
                         class="list-row"
                     >
                         <span class="flex-1 min-w-180 flex flex-col gap-2">
-                            <b>{profile === 'fast' ? 'Быстрая' : 'Умная'}</b>
-                            <span class="t-caption">{profile === 'fast' ? 'разговор и команды' : 'сказки, игры и сложные вопросы'}</span>
+                            <b>{profile === 'fast' ? tr.brain.fast : tr.brain.smart}</b>
+                            <span class="t-caption">{profile === 'fast' ? tr.brain.fastSub : tr.brain.smartSub}</span>
                         </span>
                         <select
                             class="field max-w-full min-w-0 flex-1-1-220"
@@ -252,8 +256,8 @@ export function BrainTab() {
                 ))}
                 <label class="list-row">
                     <span class="flex-1 min-w-180 flex flex-col gap-2">
-                        <b>Запасная</b>
-                        <span class="t-caption">если выбранная не ответит</span>
+                        <b>{tr.brain.backup}</b>
+                        <span class="t-caption">{tr.brain.backupSub}</span>
                     </span>
                     <select
                         class="field max-w-full min-w-0 flex-1-1-220"
@@ -266,18 +270,17 @@ export function BrainTab() {
                 </label>
                 {backupWhere && (
                     <p class="t-caption m-0 mt-4">
-                        Запасная отвечает, когда выбранная модель не ответила: кончился лимит подписки, нет связи или сервис отказал. Вопрос
-                        тогда уйдёт в «{backupWhere.title}» — {backupWhere.cloud ? 'в интернет' : 'дома, без интернета'}.
+                        {tr.brain.backupExplain(backupWhere.title, !!backupWhere.cloud)}
                     </p>
                 )}
                 {anthropic && (
                     <div class="list-row">
                         <span class="flex-1 min-w-180 flex flex-col gap-2">
-                            <b>Глубина мышления</b>
-                            <span class="t-caption">только у Claude: сколько думать до первого слова</span>
+                            <b>{tr.brain.depth}</b>
+                            <span class="t-caption">{tr.brain.depthSub}</span>
                         </span>
-                        <div role="radiogroup" aria-label="Глубина мышления" class="flex gap-6 flex-wrap">
-                            {EFFORTS.map((effort) => (
+                        <div role="radiogroup" aria-label={tr.brain.depth} class="flex gap-6 flex-wrap">
+                            {efforts().map((effort) => (
                                 <button
                                     key={effort.id}
                                     role="radio"
@@ -295,12 +298,12 @@ export function BrainTab() {
                 )}
                 {plan?.signIn && (
                     <p class="t-caption m-0 mt-4">
-                        Отвечает подписка {plan.signIn.with}: тратится ваш план, а не ключ API.
+                        {tr.brain.planAnswers(plan.signIn.with)}
                         {plan.usageUrl && (
                             <>
                                 {' '}
                                 <a class="c-accent-text" href={plan.usageUrl} target="_blank" rel="noopener noreferrer">
-                                    Лимиты
+                                    {tr.brain.limits}
                                 </a>
                             </>
                         )}
@@ -316,20 +319,19 @@ export function BrainTab() {
                         {notes.choice.error}
                     </p>
                 )}
-                {!mayChoose && <p class="t-caption m-0 mt-8">Выбирать модели может администратор.</p>}
+                {!mayChoose && <p class="t-caption m-0 mt-8">{tr.brain.adminChooses}</p>}
             </section>
 
-            <section class="card glass card-list" aria-label="Провайдеры моделей">
+            <section class="card glass card-list" aria-label={tr.brain.providersLabel}>
                 <div class="flex items-center justify-between min-h-44 gap-8">
                     <h2 class="t-title-xs m-0">
-                        Провайдеры
+                        {tr.brain.providers}
                     </h2>
-                    {mayManage && <Action label="добавить" tone="on" onClick={() => setAdding(true)} />}
+                    {mayManage && <Action label={tr.brain.add} tone="on" onClick={() => setAdding(true)} />}
                 </div>
                 {providers.length === 0 && (
                     <p class="t-caption m-0 mb-8">
-                        Пока ни одного: отвечает модель из .env. Добавьте провайдера со своим ключом — Claude, OpenAI, модель на этом Mac или
-                        любой совместимый сервис, — или войдите в аккаунт OpenRouter.
+                        {tr.brain.noProviders}
                     </p>
                 )}
                 {providers.map((provider) => {
@@ -341,20 +343,20 @@ export function BrainTab() {
                     const account = provider.account;
                     const keyLine = account
                         ? account.signedIn
-                            ? `подписка ${via?.with ?? ''}${account.who ? ` · ${account.who}` : ''}`
-                            : 'нужно войти'
+                            ? tr.brain.keyPlan(via?.with ?? '', account.who ?? '')
+                            : tr.brain.needLogin
                         : provider.key.set
-                          ? `ключ ${provider.key.hint ?? ''}`
+                          ? tr.brain.keyHint(provider.key.hint ?? '')
                           : provider.needsKey
-                            ? 'нет ключа'
-                            : 'без ключа';
-                    const noKey = via ? `Без ключа сервис не ответит: войдите через ${via.with} или вставьте ключ.` : 'Без ключа сервис не ответит.';
+                            ? tr.brain.noKey
+                            : tr.brain.keyless;
+                    const noKey = via ? tr.brain.noKeyVia(via.with) : tr.brain.noKeyPlain;
                     const accountNote: CardNote | undefined = !account
                         ? undefined
                         : !account.signedIn
-                          ? { warning: `Без входа ${via?.with ?? 'сервис'} не ответит: нажмите «войти».` }
+                          ? { warning: tr.brain.noLogin(via?.with ?? tr.brain.noLoginService) }
                           : account.problem === 'limit'
-                            ? { warning: `Лимит подписки ${via?.with ?? ''} исчерпан: подождите, пока он восстановится, или выберите другую модель.` }
+                            ? { warning: tr.brain.planLimit(via?.with ?? '') }
                             : undefined;
                     return (
                         <Card
@@ -362,9 +364,9 @@ export function BrainTab() {
                             icon={<ProviderIcon brand={provider.brand} />}
                             title={provider.title}
                             pills={[
-                                provider.cloud ? { text: 'облако', cls: 'pill-yandex' } : { text: 'дома', cls: 'pill-own' },
-                                ...(answering ? [{ text: 'отвечает', cls: 'pill-own' }] : []),
-                                ...(backup?.provider === provider.id ? [{ text: 'запасная', cls: 'pill-off' }] : []),
+                                provider.cloud ? { text: tr.brain.pillCloud, cls: 'pill-yandex' } : { text: tr.brain.pillHome, cls: 'pill-own' },
+                                ...(answering ? [{ text: tr.brain.pillAnswers, cls: 'pill-own' }] : []),
+                                ...(backup?.provider === provider.id ? [{ text: tr.brain.pillBackup, cls: 'pill-off' }] : []),
                             ]}
                             description={`${words.text} · ${keyLine}`}
                             note={
@@ -376,10 +378,10 @@ export function BrainTab() {
                         >
                             {mayManage && (
                                 <div class="flex items-center gap-6 flex-wrap pl-50">
-                                    <Action label="проверить" tone="on" busy={busy[provider.id]} onClick={() => void check(provider.id)} />
+                                    <Action label={tr.brain.check} tone="on" busy={busy[provider.id]} onClick={() => void check(provider.id)} />
                                     {via && (
                                         <Action
-                                            label={account?.signedIn ? 'войти заново' : 'войти'}
+                                            label={account?.signedIn ? tr.brain.signInAgain : tr.brain.signInAction}
                                             tone={(account ? account.signedIn : provider.key.set) ? 'off' : 'on'}
                                             busy={signIn.starting && signIn.target === provider.id}
                                             disabled={busy[provider.id]}
@@ -388,7 +390,7 @@ export function BrainTab() {
                                     )}
                                     {!via?.keyless && (
                                         <Action
-                                            label="ключ"
+                                            label={tr.brain.key}
                                             disabled={busy[provider.id]}
                                             onClick={() => {
                                                 setKeyFor(keyFor === provider.id ? null : provider.id);
@@ -403,10 +405,10 @@ export function BrainTab() {
                                             target="_blank"
                                             rel="noopener noreferrer"
                                         >
-                                            лимиты
+                                            {tr.brain.limitsLower}
                                         </a>
                                     )}
-                                    <Action label="убрать" disabled={busy[provider.id]} onClick={() => void remove(provider)} />
+                                    <Action label={tr.brain.remove} disabled={busy[provider.id]} onClick={() => void remove(provider)} />
                                 </div>
                             )}
                             {signIn.target === provider.id && signIn.steps && <div class="pl-50">{signIn.steps}</div>}
@@ -422,13 +424,13 @@ export function BrainTab() {
                                         class="field flex-1-1-200 min-w-0"
                                         type="password"
                                         autocomplete="off"
-                                        aria-label={`Новый ключ ${provider.title}`}
-                                        placeholder="Новый ключ"
+                                        aria-label={tr.brain.newKeyLabel(provider.title)}
+                                        placeholder={tr.brain.newKey}
                                         value={keyDraft}
                                         onInput={(e) => setKeyDraft((e.target as HTMLInputElement).value)}
                                     />
-                                    <Action label="сохранить" tone="on" busy={busy[provider.id]} disabled={!keyDraft.trim()} onClick={() => void saveKey(provider, keyDraft.trim())} />
-                                    {provider.key.set && <Action label="убрать ключ" onClick={() => void saveKey(provider, '')} />}
+                                    <Action label={tr.brain.save} tone="on" busy={busy[provider.id]} disabled={!keyDraft.trim()} onClick={() => void saveKey(provider, keyDraft.trim())} />
+                                    {provider.key.set && <Action label={tr.brain.removeKey} onClick={() => void saveKey(provider, '')} />}
                                 </form>
                             )}
                             {mayChoose && models.length === 0 && (
@@ -442,13 +444,13 @@ export function BrainTab() {
                                 >
                                     <input
                                         class="field flex-1-1-200 min-w-0"
-                                        aria-label={`Модель ${provider.title}`}
-                                        placeholder="Модель, например llama3.1:8b"
+                                        aria-label={tr.brain.modelLabel(provider.title)}
+                                        placeholder={tr.brain.modelPlaceholder}
                                         value={typed[provider.id] ?? ''}
                                         onInput={(e) => setTyped((all) => ({ ...all, [provider.id]: (e.target as HTMLInputElement).value }))}
                                     />
                                     <Action
-                                        label="сделать быстрой"
+                                        label={tr.brain.makeFast}
                                         disabled={!(typed[provider.id] ?? '').trim()}
                                         onClick={() => void choose('fast', { provider: provider.id, model: (typed[provider.id] ?? '').trim() })}
                                     />
@@ -459,14 +461,16 @@ export function BrainTab() {
                 })}
                 <Card
                     icon={<ProviderIcon />}
-                    title="Из .env"
-                    pills={envAnswers && env.usable ? [{ text: 'отвечает', cls: 'pill-own' }] : []}
+                    title={tr.brain.envTitle}
+                    pills={envAnswers && env.usable ? [{ text: tr.brain.pillAnswers, cls: 'pill-own' }] : []}
                     description={
                         env.usable
-                            ? `${env.title} · ${env.models.fast}${env.models.smart !== env.models.fast ? `, умная — ${env.models.smart}` : ''}`
-                            : 'не задана: DIALOG_PROVIDER=none'
+                            ? env.models.smart !== env.models.fast
+                                ? tr.brain.envSmart(env.title, env.models.fast, env.models.smart)
+                                : tr.brain.envPlain(env.title, env.models.fast)
+                            : tr.brain.envUnset
                     }
-                    meta={backup?.provider === 'env' ? 'запасная' : undefined}
+                    meta={backup?.provider === 'env' ? tr.brain.envBackup : undefined}
                     action={null}
                 />
             </section>
@@ -588,7 +592,7 @@ function AddProvider({
 
     if (!preset) {
         return (
-            <Sheet title="Добавить провайдера" about="Готовые адреса или свой сервис — ключ ваш" onClose={onClose}>
+            <Sheet title={tr.brain.addTitle} about={tr.brain.addAbout} onClose={onClose}>
                 <div class="grid grid-fill-220 gap-8">
                     {presets.map((entry) => (
                         <button
@@ -600,7 +604,7 @@ function AddProvider({
                             <span class="flex flex-col gap-2 min-w-0">
                                 <b class="flex gap-6 items-center flex-wrap">
                                     {entry.title}
-                                    {entry.local && <span class="pill pill-own">дома</span>}
+                                    {entry.local && <span class="pill pill-own">{tr.brain.pillHome}</span>}
                                 </b>
                                 <span class="t-caption">{entry.description}</span>
                             </span>
@@ -617,10 +621,10 @@ function AddProvider({
             title={preset.title}
             about={
                 preset.local || (preset.editableUrl && url.trim() && isHomeAddress(url.trim()))
-                    ? 'адрес дома — вопросы не уходят из дома'
+                    ? tr.brain.aboutHome
                     : preset.editableUrl && !url.trim()
-                      ? 'свой адрес: дома или в интернете'
-                      : 'вопросы уходят в интернет'
+                      ? tr.brain.aboutOwnAddress
+                      : tr.brain.aboutInternet
             }
             icon={<ProviderIcon brand={preset.brand} />}
             onClose={onClose}
@@ -629,11 +633,11 @@ function AddProvider({
                     <>
                         {firstOne && result.check.ok && result.check.model && (
                             <button class="pill pill-own dash-confirm-btn self-start" disabled={busy} onClick={() => void useIt()}>
-                                Отвечать им: {result.check.model}
+                                {tr.brain.useIt(result.check.model)}
                             </button>
                         )}
                         <button class="dash-done" onClick={onClose}>
-                            Готово
+                            {tr.brain.done}
                         </button>
                     </>
                 ) : (
@@ -644,11 +648,11 @@ function AddProvider({
                                 disabled={busy || (preset.needsKey && !key.trim()) || (preset.editableUrl && !url.trim())}
                                 onClick={() => void save()}
                             >
-                                {busy ? 'Проверяем…' : 'Проверить и сохранить'}
+                                {busy ? tr.brain.checking : tr.brain.checkAndSave}
                             </button>
                         )}
                         <button class="pill pill-off dash-confirm-btn" onClick={() => setPreset(null)}>
-                            Назад
+                            {tr.brain.back}
                         </button>
                     </div>
                 )
@@ -673,25 +677,23 @@ function AddProvider({
                                 disabled={busy || signIn.starting}
                                 onClick={() => preset.signIn && beginSignIn(preset, preset.signIn.with)}
                             >
-                                {signIn.starting ? 'Открываем…' : (preset.signIn.label ?? `Войти через ${preset.signIn.with}`)}
+                                {signIn.starting ? tr.brain.opening : (preset.signIn.label ?? tr.brain.signInWith(preset.signIn.with))}
                             </button>
                             {preset.signIn.keyless ? (
                                 <span class="t-caption">
-                                    Ответы пойдут из вашей подписки {preset.signIn.with}, ключ API не нужен. Сколько DuoWave может тратить из
-                                    плана, задаётся в настройках {preset.signIn.with}.
+                                    {tr.brain.keylessNote(preset.signIn.with)}
                                     {preset.usageUrl && (
                                         <>
                                             {' '}
                                             <a class="c-accent-text" href={preset.usageUrl} target="_blank" rel="noopener noreferrer">
-                                                Лимиты
+                                                {tr.brain.limits}
                                             </a>
                                         </>
                                     )}
                                 </span>
                             ) : (
                                 <span class="t-caption">
-                                    Ключ создастся в вашем аккаунте {preset.signIn.with} и придёт в шлюз сам. Удалить его можно там же. Или вставьте
-                                    свой ключ ниже.
+                                    {tr.brain.keyCreated(preset.signIn.with)}
                                 </span>
                             )}
                             {signIn.steps}
@@ -699,13 +701,13 @@ function AddProvider({
                     )}
                     {preset.editableUrl && (
                         <label class="flex flex-col gap-4">
-                            <span class="t-caption">Адрес</span>
+                            <span class="t-caption">{tr.brain.address}</span>
                             <input class="field" value={url} placeholder="http://localhost:8000/v1" onInput={(e) => setUrl((e.target as HTMLInputElement).value)} />
                         </label>
                     )}
                     {!preset.signIn?.keyless && (
                         <label class="flex flex-col gap-4">
-                            <span class="t-caption">{preset.needsKey ? 'Ключ' : 'Ключ, если сервис его просит'}</span>
+                            <span class="t-caption">{preset.needsKey ? tr.brain.keyField : tr.brain.keyFieldOptional}</span>
                             <input
                                 class="field"
                                 type="password"
@@ -717,7 +719,7 @@ function AddProvider({
                     )}
                     {preset.keyUrl && (
                         <a class="t-caption c-accent-text" href={preset.keyUrl} target="_blank" rel="noopener noreferrer">
-                            Где взять ключ
+                            {tr.brain.whereKey}
                         </a>
                     )}
                     {(preset.fields ?? []).map((field) => (
@@ -732,19 +734,19 @@ function AddProvider({
                         </label>
                     ))}
                     <label class="flex flex-col gap-4">
-                        <span class="t-caption">Название в пульте (необязательно)</span>
+                        <span class="t-caption">{tr.brain.titleField}</span>
                         <input class="field" value={title} placeholder={preset.title} onInput={(e) => setTitle((e.target as HTMLInputElement).value)} />
                     </label>
                     <p class="t-caption m-0">
                         {preset.signIn?.keyless
-                            ? 'Вход хранится в шлюзе зашифрованным и остаётся на этом компьютере: на колонку и другие компьютеры он не переезжает.'
-                            : 'Ключ хранится в шлюзе зашифрованным; пульт потом покажет только его последние символы.'}
+                            ? byMode(tr.brain.loginStoredSpeaker, tr.brain.loginStoredComputer)
+                            : tr.brain.keyStored}
                     </p>
                 </form>
             )}
             {result && words && (
                 <p role="status" class={`t-meta m-0 ${words.ok ? 'c-accent-text' : 'c-dot-offline'}`}>
-                    {words.ok ? `Сохранён. Проверка: ${words.text}.` : `Сохранён, но проверка не прошла: ${words.text}`}
+                    {words.ok ? tr.brain.savedOk(words.text) : tr.brain.savedFailed(words.text)}
                 </p>
             )}
             {error && (

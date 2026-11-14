@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "plugin",
   "id": "games",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "title": "Игры",
   "description": "Голосовые игры с моделью шлюза: викторина, города, загадки. Колонка слушает ходы без «Алиса», пока игрок не скажет «хватит». Встроенное приложение: если оно выключено, игры ведёт встроенный навык.",
   "api": "^2",
@@ -18,6 +18,16 @@
   "permissions": [
     "call:system/brain"
   ],
+  "languages": [
+    "ru",
+    "en"
+  ],
+  "locales": {
+    "en": {
+      "title": "Games",
+      "description": "Voice games with the gateway’s model: quiz, cities, riddles. The speaker listens to moves without “Alice” until the player says “stop”. A built-in app: when it is off, the built-in skill runs the games."
+    }
+  },
   "contributes": {
     "intents": [
       {

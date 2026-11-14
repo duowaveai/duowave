@@ -1,4 +1,5 @@
 import { StationPresence } from './api';
+import { tr } from './i18n';
 import { timeAgo } from './time';
 
 // Как колонку слышно — для шапки и окна «Колонки». Шлюз узнаёт это без единого запроса к колонке: по её
@@ -35,14 +36,14 @@ export function dotClass(reach: Reach): string {
 export function reachLine(reach: Reach, modeWord: string, lastSeen?: string): string {
     switch (reach) {
         case 'online':
-            return `в сети · ${modeWord}`;
+            return tr.core.reachOnline(modeWord);
         case 'waiting':
-            return 'в сети · голос ждёт «Алиса»';
+            return tr.core.reachWaiting;
         case 'reconnecting':
-            return 'переподключается…';
+            return tr.core.reachReconnecting;
         case 'unknown':
-            return 'проверяю связь…';
+            return tr.core.reachUnknown;
         default:
-            return lastSeen ? `не в сети · была ${timeAgo(lastSeen)}` : 'не в сети';
+            return lastSeen ? tr.core.reachOfflineSeen(timeAgo(lastSeen)) : tr.core.reachOffline;
     }
 }

@@ -38,27 +38,36 @@ const SAME_FACT: f32 = 0.85;
 const FORGET_MATCH: f32 = 0.5;
 
 /// Why the memory did not write.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum MemoryError {
-    #[error("Память выключена.")]
     Off,
-    #[error("Память на паузе: ничего нового не запоминаю.")]
     Paused,
-    #[error("Нечего запоминать.")]
     Empty,
-    #[error("Слишком длинно: факт — одно короткое предложение.")]
     TooLong,
-    #[error("Память заполнена: сотрите лишнее в пульте.")]
     Full,
-    #[error("Такой записи нет.")]
     NotFound,
-    #[error("Эту перемену отменить нельзя.")]
     NotUndoable,
-    #[error("{0}")]
     Bad(String),
-    #[error("память: {0}")]
     Db(String),
 }
+
+impl std::fmt::Display for MemoryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MemoryError::Off => f.write_str(&crate::tr!("Память выключена.")),
+            MemoryError::Paused => f.write_str(&crate::tr!("Память на паузе: ничего нового не запоминаю.")),
+            MemoryError::Empty => f.write_str(&crate::tr!("Нечего запоминать.")),
+            MemoryError::TooLong => f.write_str(&crate::tr!("Слишком длинно: факт — одно короткое предложение.")),
+            MemoryError::Full => f.write_str(&crate::tr!("Память заполнена: сотрите лишнее в пульте.")),
+            MemoryError::NotFound => f.write_str(&crate::tr!("Такой записи нет.")),
+            MemoryError::NotUndoable => f.write_str(&crate::tr!("Эту перемену отменить нельзя.")),
+            MemoryError::Bad(text) => f.write_str(text),
+            MemoryError::Db(text) => f.write_str(&crate::tr!("память: {text}", text = text)),
+        }
+    }
+}
+
+impl std::error::Error for MemoryError {}
 
 impl From<rusqlite::Error> for MemoryError {
     fn from(error: rusqlite::Error) -> MemoryError {
@@ -339,7 +348,17 @@ impl MemoryService {
             Some(character) => {
                 Answering { feminine: !matches!(character.gender, Some(Gender::Male)), title: character.title, id }
             }
-            None => Answering { id, title: "Алиса".into(), feminine: true },
+            None => Answering { title: self.built_in_name(), id, feminine: true },
+        }
+    }
+
+    /// The built-in character's name: the talk without a station gives its own while the computer's microphone is
+    /// chosen (src/talk); a card of before or one's own text keeps answering as her.
+    fn built_in_name(&self) -> String {
+        if crate::talk::input::on_computer(&self.settings) {
+            crate::talk::pack::of(Lang::Ru).name.to_string()
+        } else {
+            "Алиса".to_string()
         }
     }
 
@@ -351,7 +370,7 @@ impl MemoryService {
                 title: character.title,
                 id: id.to_string(),
             },
-            None if id == ALICE => Answering { id: id.to_string(), title: "Алиса".into(), feminine: true },
+            None if id == ALICE => Answering { id: id.to_string(), title: self.built_in_name(), feminine: true },
             None => Answering { id: id.to_string(), title: id.to_string(), feminine: true },
         }
     }
@@ -810,10 +829,10 @@ impl MemoryService {
     pub fn add_entity(&self, kind: EntityKind, name: &str, actor: &Principal) -> Result<Entity, MemoryError> {
         let name = name.trim();
         if name.is_empty() {
-            return Err(MemoryError::Bad("Нужно имя.".into()));
+            return Err(MemoryError::Bad(crate::tr!("Нужно имя.")));
         }
         if kind == EntityKind::Household {
-            return Err(MemoryError::Bad("Дом в памяти один.".into()));
+            return Err(MemoryError::Bad(crate::tr!("Дом в памяти один.")));
         }
         let entity = self.db.transaction(|c| {
             let entity = store::insert_entity(c, kind, name)?;
@@ -875,7 +894,7 @@ impl MemoryService {
     /// Two entries for one: everything moves to `into`, the other's name becomes another name.
     pub fn merge_entities(&self, from: &str, into: &str, actor: &Principal) -> Result<Entity, MemoryError> {
         if from == into {
-            return Err(MemoryError::Bad("Это одна и та же запись.".into()));
+            return Err(MemoryError::Bad(crate::tr!("Это одна и та же запись.")));
         }
         let entity = self.db.transaction(|c| {
             let (Some(old), Some(_)) = (store::entity(c, from)?, store::entity(c, into)?) else { return Ok(None) };
@@ -1524,6 +1543,11 @@ mod tests {
         assert_eq!(eyes.items.len(), 1);
         assert_eq!(eyes.character.id, "alice");
         assert!(eyes.character.feminine);
+        // The talk without a station names the built-in character its way, here too.
+        use crate::settings::definitions::{TalkInput, VoiceInput, VOICE_INPUT};
+        assert_eq!((memory.answering().title, memory.character("alice").title), ("Алиса".into(), "Алиса".to_string()));
+        memory.settings.set(&VOICE_INPUT, &VoiceInput { input: TalkInput::Computer, before: None }, None).unwrap();
+        assert_eq!((memory.answering().title, memory.character("alice").title), ("ДиВи".into(), "ДиВи".to_string()));
     }
 
     #[test]

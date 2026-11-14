@@ -8,7 +8,6 @@
 //! example's mode takes each `fetch` from there by the start of its address; one the example lacks fails with «нет
 //! примера для …», and nothing goes out. The desk's tile and «Примерка» run so; the plain settings a person gave
 //! («Показывать: 3») go with it, the private ones never.
-
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -94,12 +93,19 @@ impl Examples {
         match std::fs::metadata(&file) {
             Err(_) => return Ok(None),
             Ok(meta) if meta.len() > MAX_EXAMPLES => {
-                return Err(format!("{EXAMPLES} больше {} КБ", MAX_EXAMPLES / 1024));
+                return Err(crate::tr!(
+                    "{EXAMPLES} больше {max_examples} КБ",
+                    EXAMPLES = EXAMPLES,
+                    max_examples = MAX_EXAMPLES / 1024
+                ));
             }
             Ok(_) => {}
         }
-        let text = std::fs::read_to_string(&file).map_err(|error| format!("{EXAMPLES} не читается: {error}"))?;
-        serde_json::from_str(&text).map(Some).map_err(|error| format!("{EXAMPLES} не читается: {error}"))
+        let text = std::fs::read_to_string(&file)
+            .map_err(|error| crate::tr!("{EXAMPLES} не читается: {error}", EXAMPLES = EXAMPLES, error = error))?;
+        serde_json::from_str(&text)
+            .map(Some)
+            .map_err(|error| crate::tr!("{EXAMPLES} не читается: {error}", EXAMPLES = EXAMPLES, error = error))
     }
 
     /// The network's answer from the example, as `fetch_checked` gives it: the address checked against the rights
@@ -115,7 +121,11 @@ impl Examples {
             .filter(|example| example.method.as_deref().is_none_or(|wanted| wanted.eq_ignore_ascii_case(&method)))
             .max_by_key(|example| example.url.len())
             .ok_or_else(|| {
-                format!("нет примера для {}: допишите его в {EXAMPLES}", text.chars().take(200).collect::<String>())
+                crate::tr!(
+                    "нет примера для {list}: допишите его в {EXAMPLES}",
+                    list = text.chars().take(200).collect::<String>(),
+                    EXAMPLES = EXAMPLES
+                )
             })?;
         let body = match (&found.json, &found.text) {
             (Some(json), _) => json.to_string(),
@@ -159,7 +169,7 @@ impl SandboxHost {
         if self.manifest.asks(to) > crate::bus::Level::None {
             Ok(())
         } else {
-            Err(format!("нет такого: {to} — приложение не просило связь (permissions: call:{to})"))
+            Err(crate::tr!("нет такого: {to} — приложение не просило связь (permissions: call:{to})", to = to))
         }
     }
 
@@ -169,18 +179,41 @@ impl SandboxHost {
         let path = match at.strip_prefix(&own) {
             Some(rest) => rest.to_string(),
             None if at.starts_with("files/") => {
-                return Err(format!("в песочнице только своя папка: {at} — после установки"))
+                return Err(crate::tr!("в песочнице только своя папка: {at} — после установки", at = at))
             }
             None => at.trim_matches('/').to_string(),
         };
         if path.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
-            return Err(format!("путь «{at}» не читается"));
+            return Err(crate::tr!("путь «{at}» не читается", at = at));
         }
         Ok(path)
     }
 
     fn folder(&self, name: &str, input: &Value) -> Result<Value, String> {
         let at = input.get("at").and_then(Value::as_str).unwrap_or_default();
+        // A folder of the home folder (docs/plans/shared-folders.md): the sandbox has none — it answers from the
+        // example (`examples.json`, «bus»: `{to: "files/home/Фото", handle: "list", result}`), for what the draft asked.
+        let own = format!("files/app/{}", self.manifest.id);
+        if at.starts_with("files/") && at != own && !at.starts_with(&format!("{own}/")) {
+            let handle = name.trim_start_matches("folders.");
+            if self.manifest.asks(at) == crate::bus::Level::None {
+                return Err(crate::tr!(
+                    "нет такого: {at} — приложение не просило связь (permissions: call:{at})",
+                    at = at
+                ));
+            }
+            return self
+                .bus
+                .iter()
+                .find(|example| example.to == at && example.handle == handle)
+                .map(|example| {
+                    self.note("files", crate::tr!("{at}: {handle} — из примера", at = at, handle = handle));
+                    example.result.clone()
+                })
+                .ok_or_else(|| {
+                    crate::tr!("в «Примерке» домашней папки нет: ответ «{at}» на {handle} — допишите пример в {EXAMPLES}, «bus»", at = at, handle = handle, EXAMPLES = EXAMPLES)
+                });
+        }
         let mut kv = self.kv.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if name == "folders.list" {
             let base = if at.is_empty() { String::new() } else { format!("{}/", self.own_path(at)?) };
@@ -207,13 +240,13 @@ impl SandboxHost {
                 Ok(json!({ "at": format!("files/app/{}/{path}", self.manifest.id), "size": size }))
             }
             "folders.read" => {
-                let file = kv.get(&key).ok_or_else(|| format!("нет такого: {at}"))?;
+                let file = kv.get(&key).ok_or_else(|| crate::tr!("нет такого: {at}", at = at))?;
                 Ok(json!({ "text": file.get("text"), "base64": file.get("base64"), "size": file.get("size") }))
             }
             "folders.stat" => match kv.get(&key) {
                 Some(file) => Ok(json!({ "size": file.get("size"), "folder": false })),
                 None if kv.keys().any(|known| known.starts_with(&format!("{key}/"))) => Ok(json!({ "folder": true })),
-                None => Err(format!("нет такого: {at}")),
+                None => Err(crate::tr!("нет такого: {at}", at = at)),
             },
             "folders.remove" => {
                 let inside = format!("{key}/");
@@ -224,12 +257,12 @@ impl SandboxHost {
             "folders.move" => {
                 let to = input.get("to").and_then(Value::as_str).unwrap_or_default();
                 let target = format!("{FOLDER}{}", self.own_path(to)?);
-                let file = kv.remove(&key).ok_or_else(|| format!("нет такого: {at}"))?;
+                let file = kv.remove(&key).ok_or_else(|| crate::tr!("нет такого: {at}", at = at))?;
                 kv.insert(target, file);
                 Ok(json!({ "moved": true }))
             }
             "folders.mkdir" => Ok(json!({ "made": true })),
-            other => Err(format!("нет функции {other}")),
+            other => Err(crate::tr!("нет функции {other}", other = other)),
         }
     }
 
@@ -249,7 +282,7 @@ impl HostApi for SandboxHost {
     fn fetch(&self, request: Value) -> BoxFuture<'static, Result<Value, String>> {
         let url = request.get("url").and_then(Value::as_str).unwrap_or_default().to_string();
         if let Some(examples) = &self.examples {
-            self.note("net", format!("fetch {} — из примера", url.chars().take(200).collect::<String>()));
+            self.note("net", crate::tr!("fetch {list} — из примера", list = url.chars().take(200).collect::<String>()));
             let answer = examples.answer(&self.manifest.hosts(), &request);
             return Box::pin(async move { answer });
         }
@@ -265,10 +298,10 @@ impl HostApi for SandboxHost {
     fn kv_set(&self, key: &str, value: Value) -> Result<(), String> {
         self.kv_allowed()?;
         if key.is_empty() || key.len() > 200 {
-            return Err("ключ: от 1 до 200 байт".into());
+            return Err(crate::tr!("ключ: от 1 до 200 байт"));
         }
         if value.to_string().len() > 64 * 1024 {
-            return Err("значение больше 64 КБ".into());
+            return Err(crate::tr!("значение больше 64 КБ"));
         }
         self.kv.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(key.to_string(), value);
         Ok(())
@@ -323,11 +356,17 @@ impl HostApi for SandboxHost {
                     }
                     ("system/notify", "send") => {
                         let text = letter.get("text").and_then(Value::as_str).unwrap_or_default();
-                        self.note("notify", format!("прислала бы владельцу: «{text}»"));
+                        self.note("notify", crate::tr!("прислала бы владельцу: «{text}»", text = text));
                         Ok(Value::Bool(true))
                     }
-                    ("system/schedule", "set") => schedule::try_task(&letter, &self.manifest.permissions)
-                        .inspect(|set| self.note("schedule", format!("поставлено бы: {set} — {letter}"))),
+                    ("system/schedule", "set") => {
+                        schedule::try_task(&letter, &self.manifest.permissions).inspect(|set| {
+                            self.note(
+                                "schedule",
+                                crate::tr!("поставлено бы: {set} — {letter}", set = set, letter = letter),
+                            )
+                        })
+                    }
                     ("system/schedule", "list") => Ok(Value::Array(Vec::new())),
                     ("system/schedule", "cancel") => Ok(Value::Bool(false)),
                     ("system/schedule", "parse") => {
@@ -338,12 +377,15 @@ impl HostApi for SandboxHost {
                         .iter()
                         .find(|example| example.to == to && example.handle == handle)
                         .map(|example| {
-                            self.note("bus", format!("{to}: {handle} — из примера"));
+                            self.note("bus", crate::tr!("{to}: {handle} — из примера", to = to, handle = handle));
                             example.result.clone()
                         })
                         .ok_or_else(|| {
-                            format!(
-                                "в песочнице шины нет: ответ «{to}» на {handle} — допишите пример в {EXAMPLES}, «bus»"
+                            crate::tr!(
+                                "в песочнице шины нет: ответ «{to}» на {handle} — допишите пример в {EXAMPLES}, «bus»",
+                                to = to,
+                                handle = handle,
+                                EXAMPLES = EXAMPLES
                             )
                         }),
                 })
@@ -356,8 +398,10 @@ impl HostApi for SandboxHost {
                         .find(|example| example.to == to && example.handle == "ask")
                         .map(|example| example.result.clone())
                         .ok_or_else(|| {
-                            format!(
-                                "в песочнице шины нет: ответ «{to}» словами — пример в {EXAMPLES}, «bus», handle «ask»"
+                            crate::tr!(
+                                "в песочнице шины нет: ответ «{to}» словами — пример в {EXAMPLES}, «bus», handle «ask»",
+                                to = to,
+                                EXAMPLES = EXAMPLES
                             )
                         })
                 })
@@ -365,10 +409,10 @@ impl HostApi for SandboxHost {
             "bus.tell" => {
                 let event = field("event");
                 if self.manifest.contributes.bus.emits.contains(&event) {
-                    self.note("bus", format!("рассказала бы новость «{event}»"));
+                    self.note("bus", crate::tr!("рассказала бы новость «{event}»", event = event));
                     Ok(Value::Bool(true))
                 } else {
-                    Err(format!("новость «{event}» не объявлена в contributes.bus.emits"))
+                    Err(crate::tr!("новость «{event}» не объявлена в contributes.bus.emits", event = event))
                 }
             }
             "bus.list" => Ok(Value::Array(
@@ -388,14 +432,17 @@ impl HostApi for SandboxHost {
                 let host =
                     url::Url::parse(&url).ok().and_then(|url| url.host_str().map(str::to_string)).unwrap_or_default();
                 if !crate::plugins::manifest::host_allowed(&self.manifest.hosts(), &host) {
-                    Err(format!("хоста {host} нет в правах net:"))
+                    Err(crate::tr!("хоста {host} нет в правах net:", host = host))
                 } else {
-                    self.note("files", format!("скачала бы картинку {url}"));
+                    self.note("files", crate::tr!("скачала бы картинку {url}", url = url));
                     Ok(json!({ "name": input.get("name").cloned().unwrap_or(Value::Null), "size": 0, "type": "?" }))
                 }
             }
             folder if folder.starts_with("folders.") => self.folder(folder, &input),
-            other => Err(format!("нет функции {other}: с Host API 2 всё вне приложения — письма шины, host.bus.call")),
+            other => Err(crate::tr!(
+                "нет функции {other}: с Host API 2 всё вне приложения — письма шины, host.bus.call",
+                other = other
+            )),
         };
         Box::pin(async move { answer })
     }
@@ -418,6 +465,9 @@ pub struct CheckReport {
     pub missing: Vec<String>,
     /// What the station is known to do with it, and other advice.
     pub warnings: Vec<String>,
+    /// Languages (docs/plans/i18n.md): what is not translated yet — advice to the author, not a fault.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub languages: Vec<String>,
     pub ms: u64,
 }
 
@@ -477,28 +527,159 @@ pub struct PhraseReport {
 }
 
 /// What the station is known not to play, and what plugins cannot do, as warnings on the code.
+/// Languages (docs/plans/i18n.md): an app speaks the household's languages from the start — Russian and English at
+/// least, the household's own when it is another. What is said: a language missing from `languages`, a language with
+/// no translation of the manifest's texts, a setting or schedule left untranslated, people's words in the code with
+/// no dictionary.
+pub fn language_warnings(manifest: &Manifest, source: Option<&str>, household: Option<&str>) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if manifest.kind == PackageKind::Theme {
+        return warnings;
+    }
+    let speaks = |code: &str| manifest.languages.iter().any(|language| language == code);
+    for code in ["ru", "en"].into_iter().chain(household) {
+        if !speaks(code) {
+            warnings.push(crate::tr!("Языки: приложение не говорит на «{code}» — добавьте его в languages и переводы в locales.{code} (docs: authoring → «Языки»).", code = code));
+        }
+    }
+    for code in manifest.languages.iter().skip(1) {
+        let Some(texts) = manifest.locales.get(code) else {
+            warnings.push(crate::tr!(
+                "Языки: «{code}» в languages, а locales.{code} нет — название и настройки останутся непереведёнными.",
+                code = code
+            ));
+            continue;
+        };
+        let mut missing: Vec<String> = Vec::new();
+        if texts.title.is_none() {
+            missing.push("title".into());
+        }
+        if manifest.description.is_some() && texts.description.is_none() {
+            missing.push("description".into());
+        }
+        for setting in &manifest.settings {
+            if texts.settings.get(&setting.key).is_none_or(|(title, _)| title.is_none()) {
+                missing.push(format!("settings.{}", setting.key));
+            }
+        }
+        for card in manifest.cards_in(&[]) {
+            let id = card.get("id").and_then(Value::as_str).unwrap_or_default();
+            if !texts.cards.contains_key(id) {
+                missing.push(format!("cards.{id}"));
+            }
+        }
+        for schedule in &manifest.contributes.schedules {
+            if !texts.schedules.contains_key(&schedule.id) {
+                missing.push(format!("schedules.{}", schedule.id));
+            }
+        }
+        if !missing.is_empty() {
+            warnings.push(crate::tr!(
+                "Языки: в locales.{code} нет перевода: {missing}.",
+                code = code,
+                missing = missing.join(", ")
+            ));
+        }
+    }
+    // People's words straight in the code: a string literal with letters of another alphabet than the ASCII one, and
+    // no `host.i18n` to pick it by the language.
+    if let Some(source) = source {
+        let worded = source.lines().any(|line| {
+            let code = line.trim_start();
+            !code.starts_with("//")
+                && !code.starts_with('*')
+                && code.chars().any(|c| c.is_alphabetic() && !c.is_ascii())
+        });
+        if worded && !source.contains("host.i18n") {
+            warnings.push(
+                crate::tr!("Языки: в backend.js текст для людей прямо в коде — вынесите его в словарь { ru: {…}, en: {…} } и берите host.i18n.t(T, key, params)."),
+            );
+        }
+    }
+    warnings
+}
+
 pub fn code_warnings(source: &str) -> Vec<String> {
     let mut warnings = Vec::new();
     if source.contains("\"http://") || source.contains("'http://") || source.contains("`http://") {
         warnings.push(
-            "Ссылка по http: поток из интернета по http колонка не играет и молчит — нужен https (проверено 07.11.2026)."
-                .into(),
+            crate::tr!("Ссылка по http: поток из интернета по http колонка не играет и молчит — нужен https (проверено 07.11.2026)."),
         );
     }
     let lower = source.to_ascii_lowercase();
     if lower.contains(".aac") || lower.contains("aacp") {
         warnings.push(
-            "AAC колонка не играет: шлюз перекодирует его в MP3 на компьютере, на колонке — только с флагом MEDIA_TRANSCODE_ON_STATION. Лучше MP3 или HLS."
-                .into(),
+            crate::tr!("AAC колонка не играет: шлюз перекодирует его в MP3 на компьютере, на колонке — только с флагом MEDIA_TRANSCODE_ON_STATION. Лучше MP3 или HLS."),
         );
     }
     if source.contains("setTimeout") || source.contains("setInterval") {
-        warnings.push("setTimeout и setInterval нет: код работает, только когда его позвали.".into());
+        warnings.push(crate::tr!("setTimeout и setInterval нет: код работает, только когда его позвали."));
     }
     if source.lines().any(|line| line.trim_start().starts_with("import ")) {
-        warnings.push("import не поддерживается: backend.js — один модуль (собирайте esbuild).".into());
+        warnings.push(crate::tr!("import не поддерживается: backend.js — один модуль (собирайте esbuild)."));
+    }
+    let mut unawaited: Vec<(String, Vec<usize>)> = Vec::new();
+    for (name, line) in unawaited_calls(source) {
+        match unawaited.iter_mut().find(|(known, _)| *known == name) {
+            Some((_, lines)) => lines.push(line),
+            None => unawaited.push((name, vec![line])),
+        }
+    }
+    if !unawaited.is_empty() {
+        let calls: Vec<String> = unawaited
+            .iter()
+            .map(|(name, lines)| {
+                let lines: Vec<String> = lines.iter().map(usize::to_string).collect();
+                crate::tr!("{name} (строка {lines})", name = name, lines = lines.join(", "))
+            })
+            .collect();
+        warnings.push(crate::tr!("Вызов шлюза без await: {calls}. Он отвечает обещанием — без await функция ответит раньше, чем он кончится: картинка не скачается, файл не запишется, отказ пропадёт молча. Пишите await, а функцию — async.", calls = calls.join("; ")));
     }
     warnings
+}
+
+/// Host calls that answer with a promise (`host.http.fetch`, `host.bus.*`, `host.files.*`) left as a statement or a
+/// value without `await`, with their lines: the function answers before they end. Read by what stands before each
+/// call on its line; a call handed on (`return`, `=>`, an argument, an element of `Promise.all`'s array) is awaited
+/// where it goes.
+fn unawaited_calls(source: &str) -> Vec<(String, usize)> {
+    let mut found = Vec::new();
+    for (number, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*") || trimmed.ends_with(',')
+        {
+            continue;
+        }
+        for (at, _) in line.match_indices("host.") {
+            if line[..at].chars().next_back().is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '$' | '.'))
+            {
+                continue;
+            }
+            let rest = &line[at + "host.".len()..];
+            let name = if rest.starts_with("http.fetch") {
+                "http.fetch".to_string()
+            } else if let Some(part) = ["bus.", "files."].into_iter().find(|part| rest.starts_with(part)) {
+                let method: String =
+                    rest[part.len()..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+                if method.is_empty() {
+                    continue;
+                }
+                format!("{part}{method}")
+            } else {
+                continue;
+            };
+            if !rest[name.len()..].trim_start().starts_with('(') {
+                continue;
+            }
+            let before = line[..at].trim_end();
+            let assigned = before.ends_with('=') && !["==", "!=", "<=", ">="].iter().any(|op| before.ends_with(op));
+            let statement = before.is_empty() || [";", "{", "}", ")", "else"].iter().any(|end| before.ends_with(end));
+            if statement || assigned {
+                found.push((format!("host.{name}"), number + 1));
+            }
+        }
+    }
+    found
 }
 
 /// What the workshop says of a draft with pictures while the gateway runs on the station (the owner, 12.11.2026:
@@ -510,7 +691,7 @@ pub fn station_warnings(folder: &Path) -> Vec<String> {
     if !pictures || manifest.prefer_home {
         return Vec::new();
     }
-    vec!["Шлюз на колонке, а места там мало: картинка — до 1 МБ, все картинки плагинов — до 5 МБ. Лучше \"prefer\": \"home\" — тогда картинки живут на компьютере.".into()]
+    vec![crate::tr!("Шлюз на колонке, а места там мало: картинка — до 1 МБ, все картинки плагинов — до 5 МБ. Лучше \"prefer\": \"home\" — тогда картинки живут на компьютере.")]
 }
 
 /// What a link of an item says about the station.
@@ -518,28 +699,34 @@ fn link_warnings(play: &[PlayView]) -> Vec<String> {
     let mut warnings = Vec::new();
     for item in play {
         if item.url.starts_with("http://") && !item.url.starts_with(SANDBOX_MEDIA) {
-            warnings.push(format!("«{}»: ссылка по http — колонка её не сыграет, нужен https.", item.title));
+            warnings
+                .push(crate::tr!("«{item}»: ссылка по http — колонка её не сыграет, нужен https.", item = item.title));
         }
         let path = item.url.split(['?', '#']).next().unwrap_or_default().to_ascii_lowercase();
         if path.ends_with(".aac") || path.ends_with(".aacp") {
-            warnings
-                .push(format!("«{}»: AAC — колонка не играет, шлюз перекодирует только на компьютере.", item.title));
+            warnings.push(crate::tr!(
+                "«{item}»: AAC — колонка не играет, шлюз перекодирует только на компьютере.",
+                item = item.title
+            ));
         }
     }
     warnings
 }
 
 /// The draft's manifest and code, read.
-fn read_draft(folder: &Path) -> Result<(Manifest, Option<String>), Vec<String>> {
+pub(super) fn read_draft(folder: &Path) -> Result<(Manifest, Option<String>), Vec<String>> {
     let text =
-        std::fs::read_to_string(folder.join("manifest.json")).map_err(|_| vec!["нет manifest.json".to_string()])?;
+        std::fs::read_to_string(folder.join("manifest.json")).map_err(|_| vec![crate::tr!("нет manifest.json")])?;
     let manifest = manifest::parse(&text).map_err(|error| error.problems)?;
     let code = folder.join("backend.js");
     let source = match std::fs::metadata(&code) {
-        Ok(meta) if meta.len() > MAX_CODE => return Err(vec![format!("backend.js больше {} КБ", MAX_CODE / 1024)]),
-        Ok(_) => {
-            Some(std::fs::read_to_string(&code).map_err(|error| vec![format!("backend.js не читается: {error}")])?)
+        Ok(meta) if meta.len() > MAX_CODE => {
+            return Err(vec![crate::tr!("backend.js больше {max_code} КБ", max_code = MAX_CODE / 1024)])
         }
+        Ok(_) => Some(
+            std::fs::read_to_string(&code)
+                .map_err(|error| vec![crate::tr!("backend.js не читается: {error}", error = error)])?,
+        ),
         Err(_) => None,
     };
     Ok((manifest, source))
@@ -587,21 +774,21 @@ fn engine(
     };
     match manifest.runtime {
         Runtime::Js => {
-            code.source = source.ok_or("нет backend.js")?;
+            code.source = source.ok_or_else(|| crate::tr!("нет backend.js"))?;
             Ok((Arc::new(QuickJs), code))
         }
         #[cfg(feature = "wasm")]
         Runtime::Wasm => {
-            code.bytes = std::fs::read(folder.join("backend.wasm")).map_err(|_| "нет backend.wasm".to_string())?;
+            code.bytes = std::fs::read(folder.join("backend.wasm")).map_err(|_| crate::tr!("нет backend.wasm"))?;
             Ok((Arc::new(crate::plugins::wasm::Wasm), code))
         }
         #[cfg(not(feature = "wasm"))]
         Runtime::Wasm => {
             let _ = folder;
-            Err("в этой сборке шлюза нет WebAssembly".into())
+            Err(crate::tr!("в этой сборке шлюза нет WebAssembly"))
         }
         Runtime::Mcp => Ok((Arc::new(crate::plugins::mcp_runtime::McpRuntime), code)),
-        Runtime::Process => Err("приложение проверяется своим запуском, не в песочнице плагинов".into()),
+        Runtime::Process => Err(crate::tr!("приложение проверяется своим запуском, не в песочнице плагинов")),
     }
 }
 
@@ -654,27 +841,30 @@ pub async fn check(folder: &Path, id: &str, handle: Option<tokio::runtime::Handl
     report.kind = Some(manifest.kind);
     report.version = Some(manifest.version.to_string());
     if manifest.id != id {
-        report.manifest.push(format!("id «{}» в манифесте, а черновик — «{id}»", manifest.id));
+        report.manifest.push(crate::tr!("id «{id}» в манифесте, а черновик — «{id}»", id = manifest.id));
     }
     if let Some(themes) = manifest.contributes.themes.as_ref().and_then(Value::as_array) {
         for theme in themes {
             if let Err(why) = theme_form(theme) {
-                report.manifest.push(format!("тема: {why}"));
+                report.manifest.push(crate::tr!("тема: {why}", why = why));
             }
         }
     }
     if manifest.kind == PackageKind::Theme
         && manifest.contributes.themes.as_ref().and_then(Value::as_array).is_none_or(Vec::is_empty)
     {
-        report.manifest.push("тема без contributes.themes".into());
+        report.manifest.push(crate::tr!("тема без contributes.themes"));
     }
     let wanted = handlers(&manifest);
     let has_code = source.is_some() || manifest.runtime != Runtime::Js;
     // Host API 2: what the code reaches is a letter on the bus, and the manifest must ask for it.
     let letters = source.as_ref().map(|source| bus_warnings(&manifest, source)).unwrap_or_default();
+    let languages = language_warnings(&manifest, source.as_deref(), None);
     let card_handle = handle.clone();
     match (has_code, wanted.is_empty()) {
-        (false, false) => report.code = Some("нужен backend.js: его функции обслуживают то, что плагин даёт".into()),
+        (false, false) => {
+            report.code = Some(crate::tr!("нужен backend.js: его функции обслуживают то, что плагин даёт"))
+        }
         (false, true) => {}
         (true, _) => {
             if let Some(source) = &source {
@@ -693,20 +883,18 @@ pub async fn check(folder: &Path, id: &str, handle: Option<tokio::runtime::Handl
         }
     }
     report.warnings.extend(letters);
+    report.languages = languages;
     if manifest.asks("device/midi") >= crate::bus::Level::Listen
         && manifest.runs.iter().any(|placement| *placement != crate::core::availability::Placement::Pc)
     {
-        report.warnings.push(
-            "MIDI-клавиатура есть только у шлюза на компьютере: на колонке приложение будет работать без неё.".into(),
-        );
+        report.warnings.push(crate::tr!(
+            "MIDI-клавиатура есть только у шлюза на компьютере: на колонке приложение будет работать без неё."
+        ));
     }
     // Before the «да» the tile and «Примерка» show the example: a draft that reaches the network needs one.
     match Examples::read(folder) {
-        Err(why) => report.warnings.push(format!("Пример не читается: {why}.")),
-        Ok(None) if !manifest.hosts().is_empty() && manifest.kind != PackageKind::Theme => report.warnings.push(format!(
-            "Нужен пример: черновик ходит в сеть ({}), а {EXAMPLES} нет. До «да» плитка и «Примерка» показывают пример — без него там будет пусто.",
-            manifest.hosts().join(", ")
-        )),
+        Err(why) => report.warnings.push(crate::tr!("Пример не читается: {why}.", why = why)),
+        Ok(None) if !manifest.hosts().is_empty() && manifest.kind != PackageKind::Theme => report.warnings.push(crate::tr!("Нужен пример: черновик ходит в сеть ({hosts}), а {EXAMPLES} нет. До «да» плитка и «Примерка» показывают пример — без него там будет пусто.", hosts = manifest.hosts().join(", "), EXAMPLES = EXAMPLES)),
         _ => {}
     }
     let cards = manifest
@@ -724,8 +912,7 @@ pub async fn check(folder: &Path, id: &str, handle: Option<tokio::runtime::Handl
         && !folder.join("panel.css").is_file()
     {
         report.warnings.push(
-            "contributes.panel без карточек и без panel.js: в пульте приложению нечего показать (карточка — contributes.panel.cards)."
-                .into(),
+            crate::tr!("contributes.panel без карточек и без panel.js: в пульте приложению нечего показать (карточка — contributes.panel.cards)."),
         );
     }
     // Cards (docs/plugins/cards.md): each one's function among panel.calls, its answer a card of the panel's own parts,
@@ -733,24 +920,28 @@ pub async fn check(folder: &Path, id: &str, handle: Option<tokio::runtime::Handl
     for (index, spec) in cards.iter().enumerate() {
         let name = spec.get("id").and_then(Value::as_str).unwrap_or_default();
         let label = if name.is_empty() {
-            format!("карточка {}", index + 1)
+            crate::tr!("карточка {index}", index = index + 1)
         } else {
-            format!("карточка «{name}»")
+            crate::tr!("карточка «{name}»", name = name)
         };
         if !crate::plugins::manifest::identifier(name) {
-            report.manifest.push(format!("{label}: id — латиница, цифры, «_» и «-»"));
+            report.manifest.push(crate::tr!("{label}: id — латиница, цифры, «_» и «-»", label = label));
         }
         if spec.get("size").and_then(Value::as_str).is_some_and(|size| !matches!(size, "small" | "large")) {
-            report.warnings.push(format!("{label}: size — small или large"));
+            report.warnings.push(crate::tr!("{label}: size — small или large", label = label));
         }
         let Some(function) = spec.get("function").and_then(Value::as_str) else {
-            report.manifest.push(format!("{label}: нет function — функции backend.js, что отдаёт её данные"));
+            report
+                .manifest
+                .push(crate::tr!("{label}: нет function — функции backend.js, что отдаёт её данные", label = label));
             continue;
         };
         if !calls.iter().any(|call| call == function) {
-            report
-                .manifest
-                .push(format!("{label}: функции {function} нет в contributes.panel.calls — пульт её не позовёт"));
+            report.manifest.push(crate::tr!(
+                "{label}: функции {function} нет в contributes.panel.calls — пульт её не позовёт",
+                label = label,
+                function = function
+            ));
             continue;
         }
         if report.code.is_some() || !report.missing.is_empty() {
@@ -763,17 +954,24 @@ pub async fn check(folder: &Path, id: &str, handle: Option<tokio::runtime::Handl
                 for problem in crate::bus::cards::check(&card) {
                     report.warnings.push(format!("{label}: {problem}"));
                 }
+                if card.is_object() && card.get("look").is_none() {
+                    report.warnings.push(crate::tr!("{label}: без вида карточка — простая серая. Дайте ей look: сцену и цвета по смыслу (погода — небо за окном, музыка — волны, покупки — пузырьки), docs cards, «Вид».", label = label));
+                }
                 for tapped in crate::bus::cards::functions(&card) {
                     if !calls.contains(&tapped) {
-                        report.warnings.push(format!(
-                            "{label}: нажатие зовёт {tapped}, а её нет в contributes.panel.calls — пульт её не позовёт"
+                        report.warnings.push(crate::tr!(
+                            "{label}: нажатие зовёт {tapped}, а её нет в contributes.panel.calls — пульт её не позовёт",
+                            label = label,
+                            tapped = tapped
                         ));
                     }
                 }
             }
-            Ok(ran) => report.warnings.push(format!(
-                "{label}: {function} не отработала на примере: {}",
-                ran.error.unwrap_or_else(|| "без ответа".into())
+            Ok(ran) => report.warnings.push(crate::tr!(
+                "{label}: {function} не отработала на примере: {error}",
+                label = label,
+                function = function,
+                error = ran.error.unwrap_or_else(|| crate::tr!("без ответа"))
             )),
             Err(error) => report.warnings.push(format!("{label}: {error}")),
         }
@@ -790,7 +988,7 @@ pub async fn check(folder: &Path, id: &str, handle: Option<tokio::runtime::Handl
             && ["useMidi", "requestMIDIAccess"].iter().any(|word| panel.contains(word))
         {
             report.warnings.push(
-                "panel.js берёт MIDI-клавиатуру (useMidi или requestMIDIAccess), а связи нет: добавьте \"listen:device/midi\" в permissions.".into(),
+                crate::tr!("panel.js берёт MIDI-клавиатуру (useMidi или requestMIDIAccess), а связи нет: добавьте \"listen:device/midi\" в permissions."),
             );
         }
         if let Err(error) = crate::plugins::quickjs::syntax_of("panel.js", &panel).await {
@@ -823,10 +1021,7 @@ fn bus_warnings(manifest: &Manifest, source: &str) -> Vec<String> {
     .filter(|word| source.contains(word))
     .collect();
     if !older.is_empty() {
-        warnings.push(format!(
-            "Код зовёт Host API 1 ({}): в Host API 2 этого нет — всё вне приложения письма шины, например host.bus.call(\"system/smart-home\", \"act\", {{ device, action }}), host.bus.call(\"system/voice\", \"say\", {{ text }}).",
-            older.join(", ")
-        ));
+        warnings.push(crate::tr!("Код зовёт Host API 1 ({older}): в Host API 2 этого нет — всё вне приложения письма шины, например host.bus.call(\"system/smart-home\", \"act\", { device, action }), host.bus.call(\"system/voice\", \"say\", { text }).", older = older.join(", ")));
     }
     let mut named = Vec::new();
     for call in ["host.bus.call(", "host.bus.ask("] {
@@ -842,9 +1037,7 @@ fn bus_warnings(manifest: &Manifest, source: &str) -> Vec<String> {
     }
     for address in named {
         if crate::bus::Address::parse(&address).is_ok() && manifest.asks(&address) == crate::bus::Level::None {
-            warnings.push(format!(
-                "Код пишет «{address}», а манифест не просит связь с ним: добавьте \"call:{address}\" в permissions — иначе для приложения его нет."
-            ));
+            warnings.push(crate::tr!("Код пишет «{address}», а манифест не просит связь с ним: добавьте \"call:{address}\" в permissions — иначе для приложения его нет.", address = address));
         }
     }
     warnings
@@ -879,8 +1072,7 @@ fn could_be_card(panel: &str) -> Option<String> {
         return None;
     }
     Some(
-        "panel.js только показывает строки и кнопки — это может быть карточкой (contributes.panel.cards): она легче, безопаснее и видна везде — на столе, в телефоне, в чате, голосом. Окошко нужно для своего рисования, игры, клавиатуры, звука, движения."
-            .into(),
+        crate::tr!("panel.js только показывает строки и кнопки — это может быть карточкой (contributes.panel.cards): она легче, безопаснее и видна везде — на столе, в телефоне, в чате, голосом. Окошко нужно для своего рисования, игры, клавиатуры, звука, движения."),
     )
 }
 
@@ -989,10 +1181,9 @@ pub async fn try_phrase(
                             })
                             .collect();
                         if report.play.is_empty() {
-                            report.warnings.push(
+                            report.warnings.push(crate::tr!(
                                 "play есть, но ни один элемент не годится: нужны id, title и url по http(s) или path"
-                                    .into(),
-                            );
+                            ));
                         }
                     }
                     report.listen = object.get("listen").and_then(Value::as_bool).unwrap_or(false);
@@ -1204,6 +1395,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_album_template_passes_and_shows_the_example_folders_photo_of_the_day() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("album");
+        std::fs::create_dir_all(&folder).unwrap();
+        for (path, text) in crate::plugins::workshop::templates::folders("album", "Фотоальбом") {
+            std::fs::write(folder.join(path), text).unwrap();
+        }
+        let checked = check(&folder, "album", None).await;
+        assert!(checked.ok && checked.warnings.is_empty(), "{checked:?}");
+        let kv = Arc::new(Mutex::new(Map::new()));
+        let card = run(&folder, "album", "today", json!({}), kv.clone(), None, &Trying::example()).await.unwrap();
+        let address = card.result["picture"]["address"].as_str().unwrap().to_string();
+        assert!(address.starts_with("files/home/Фото/"), "{}", card.result);
+        assert_eq!(card.result["cap"], "Фото дня · 3 в папке");
+        assert!(crate::bus::cards::check(&card.result).is_empty(), "{:?}", crate::bus::cards::check(&card.result));
+        let other = run(&folder, "album", "next", json!({}), kv.clone(), None, &Trying::example()).await.unwrap();
+        assert_ne!(other.result["picture"]["address"], json!(address), "«Другое» shows another");
+        let page = run(&folder, "album", "page", json!({ "from": 0 }), kv, None, &Trying::example()).await.unwrap();
+        assert_eq!(page.result["total"], 3);
+    }
+
+    #[tokio::test]
     async fn the_midi_template_passes_reads_its_tunes_takes_ones_own_and_hears_a_name() {
         let dir = tempfile::tempdir().unwrap();
         let folder = dir.path().join("uchitel");
@@ -1305,5 +1518,37 @@ mod tests {
         std::fs::write(folder.join("manifest.json"), manifest.to_string()).unwrap();
         let warned = check(&folder, "uchitel", None).await;
         assert!(warned.warnings.iter().any(|warning| warning.contains("listen:device/midi")), "{warned:?}");
+    }
+
+    #[test]
+    fn warns_of_a_host_call_left_without_await_and_lets_one_handed_on_be() {
+        let source = r#"
+export function card() {
+  try {
+    host.files.download(`https://picsum.photos/800/600`, "live");
+  } catch (e) {}
+  const text = host.files.read("tmp/a.txt");
+  if (!text) host.bus.call("system/notify", "send", { text: "x" });
+  return { picture: { name: "live.jpg" } };
+}
+export async function fine() {
+  await host.files.download("https://picsum.photos/1", "a");
+  const [a, b] = await Promise.all([host.files.read("a"), host.files.read("b")]);
+  await Promise.all([
+    host.files.download("https://picsum.photos/2", "b"),
+  ]);
+  const answer = await host.http.fetch("https://example.com");
+  host.kv.set("k", 1);
+  // host.files.download(old) in a comment
+  return host.bus.call("app/x", "y", {});
+}
+"#;
+        assert_eq!(
+            unawaited_calls(source),
+            vec![("host.files.download".into(), 4), ("host.files.read".into(), 6), ("host.bus.call".into(), 7)]
+        );
+        let warning = code_warnings(source).into_iter().find(|warning| warning.contains("без await")).unwrap();
+        assert!(warning.contains("host.files.download (строка 4)"), "{warning}");
+        assert!(code_warnings("export async function a() { await host.files.download(u, \"a\"); }").is_empty());
     }
 }

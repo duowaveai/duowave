@@ -14,7 +14,6 @@
 //! - PLUGINS_SCHEDULES=off (and the panel's switch) stops them all, the jobs kept;
 //! - only the gateway that keeps the station's session runs them: a computer that only helps a station does not, or
 //!   they would run twice.
-
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
@@ -96,7 +95,7 @@ impl Days {
                 "daily" => Ok(Days::Daily),
                 "weekdays" => Ok(Days::Weekdays),
                 "weekends" => Ok(Days::Weekends),
-                other => Err(format!("days «{other}» — daily, weekdays, weekends или список дней")),
+                other => Err(crate::tr!("days «{other}» — daily, weekdays, weekends или список дней", other = other)),
             },
             Some(Value::Array(days)) => {
                 let mut on = Vec::new();
@@ -105,18 +104,18 @@ impl Days {
                     let index = WEEK
                         .iter()
                         .position(|known| *known == name)
-                        .ok_or_else(|| format!("день «{name}» — mon … sun"))?;
+                        .ok_or_else(|| crate::tr!("день «{name}» — mon … sun", name = name))?;
                     if !on.contains(&(index as u8)) {
                         on.push(index as u8);
                     }
                 }
                 if on.is_empty() {
-                    return Err("days — пустой список".into());
+                    return Err(crate::tr!("days — пустой список"));
                 }
                 on.sort_unstable();
                 Ok(Days::On(on))
             }
-            Some(_) => Err("days — строка или список дней".into()),
+            Some(_) => Err(crate::tr!("days — строка или список дней")),
         }
     }
 }
@@ -250,16 +249,16 @@ pub fn rhythm(item: &Value, at: &str, permissions: &[Permission], problems: &mut
     let before = problems.len();
     let id = item.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
     if !valid_id(&id) {
-        problems.push(format!("{at}: id — строчные латинские, цифры и «-»"));
+        problems.push(crate::tr!("{at}: id — строчные латинские, цифры и «-»", at = at));
     }
     let title = item.get("title").and_then(Value::as_str).map(str::trim).filter(|title| !title.is_empty());
     let title = title.unwrap_or(&id).to_string();
     if title.chars().count() > TITLE_MAX {
-        problems.push(format!("{at}: title — до {TITLE_MAX} знаков"));
+        problems.push(crate::tr!("{at}: title — до {TITLE_MAX} знаков", at = at, TITLE_MAX = TITLE_MAX));
     }
     let when = when_of(item, at, problems);
     if item.get("once").is_some() || item.get("after").is_some() {
-        problems.push(format!("{at}: once и after — у задач из кода, не у ритма манифеста"));
+        problems.push(crate::tr!("{at}: once и after — у задач из кода, не у ритма манифеста", at = at));
     }
     let then = then_of(item, at, permissions, problems);
     if problems.len() > before {
@@ -275,7 +274,11 @@ fn when_of(item: &Value, at: &str, problems: &mut Vec<String>) -> Option<When> {
             let time = time.as_str().unwrap_or_default().trim().to_string();
             let setting = time.strip_prefix('{').and_then(|rest| rest.strip_suffix('}'));
             if setting.is_none_or(|key| key.is_empty()) && clock(&time).is_none() {
-                problems.push(format!("{at}: at «{time}» — ЧЧ:ММ или {{ключ}} строковой настройки"));
+                problems.push(crate::tr!(
+                    "{at}: at «{time}» — ЧЧ:ММ или {key} строковой настройки",
+                    at = at,
+                    time = time
+                ));
             }
             match Days::parse(item.get("days")) {
                 Ok(days) => Some(When::At { at: time, days }),
@@ -289,21 +292,21 @@ fn when_of(item: &Value, at: &str, problems: &mut Vec<String>) -> Option<When> {
             let minutes =
                 every.as_str().and_then(minutes_of).filter(|minutes| (EVERY_MIN..=EVERY_MAX).contains(minutes));
             if minutes.is_none() {
-                problems.push(format!("{at}: every — от 5m до 1d: не чаще раза в 5 минут"));
+                problems.push(crate::tr!("{at}: every — от 5m до 1d: не чаще раза в 5 минут", at = at));
             }
             let from = item.get("from").and_then(Value::as_str).unwrap_or(WINDOW.0).trim().to_string();
             let to = item.get("to").and_then(Value::as_str).unwrap_or(WINDOW.1).trim().to_string();
             let start = clock(&from).map(|(hours, minutes)| hours * 60 + minutes);
             if !start.zip(day_end(&to)).is_some_and(|(start, end)| start < end) {
-                problems.push(format!("{at}: from и to — ЧЧ:ММ, from раньше to (24:00 — конец дня)"));
+                problems.push(crate::tr!("{at}: from и to — ЧЧ:ММ, from раньше to (24:00 — конец дня)", at = at));
             }
             if item.get("days").is_some() {
-                problems.push(format!("{at}: days — только у at"));
+                problems.push(crate::tr!("{at}: days — только у at", at = at));
             }
             minutes.map(|minutes| When::Every { minutes, from, to })
         }
         _ => {
-            problems.push(format!("{at}: ровно одно из at и every"));
+            problems.push(crate::tr!("{at}: ровно одно из at и every", at = at));
             None
         }
     }
@@ -317,7 +320,8 @@ fn default_zone() -> Tz {
 pub fn try_task(input: &Value, permissions: &[Permission]) -> Result<Value, String> {
     let (now, zone) = (now_ms() as i64, default_zone());
     let job = task_of(input, now, zone, permissions)?;
-    let next = next_after(&job.when, now, zone, &|_| None).ok_or("срок не наступит: нет такого времени")?;
+    let next = next_after(&job.when, now, zone, &|_| None)
+        .ok_or_else(|| crate::tr!("срок не наступит: нет такого времени"))?;
     Ok(json!({ "id": job.id, "next": iso(next, zone) }))
 }
 
@@ -338,18 +342,18 @@ fn task_of(input: &Value, now: i64, zone: Tz, permissions: &[Permission]) -> Res
     let text = |key: &str| input.get(key).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty());
     let id = text("id").map(str::to_string).unwrap_or_else(|| format!("task-{}", now % 1_000_000_000));
     if !valid_id(&id) {
-        problems.push("id — строчные латинские, цифры и «-»".into());
+        problems.push(crate::tr!("id — строчные латинские, цифры и «-»"));
     }
     let title = text("title").unwrap_or(&id).to_string();
     if title.chars().count() > TITLE_MAX {
-        problems.push(format!("title — до {TITLE_MAX} знаков"));
+        problems.push(crate::tr!("title — до {TITLE_MAX} знаков", TITLE_MAX = TITLE_MAX));
     }
     let once = |at_ms: i64| -> Result<When, String> {
         if at_ms < now + MINUTE_MS {
-            return Err("раньше чем через минуту — это таймер хода, он только в разговоре".into());
+            return Err(crate::tr!("раньше чем через минуту — это таймер хода, он только в разговоре"));
         }
         if at_ms > now + YEAR_MS {
-            return Err("не дальше года".into());
+            return Err(crate::tr!("не дальше года"));
         }
         Ok(When::Once { at_ms })
     };
@@ -357,7 +361,7 @@ fn task_of(input: &Value, now: i64, zone: Tz, permissions: &[Permission]) -> Res
         (Some(after), None, None) => match after.as_f64() {
             Some(seconds) => once(now + (seconds * 1000.0) as i64).map_err(|why| problems.push(why)).ok(),
             None => {
-                problems.push("after — секунды".into());
+                problems.push(crate::tr!("after — секунды"));
                 None
             }
         },
@@ -367,21 +371,21 @@ fn task_of(input: &Value, now: i64, zone: Tz, permissions: &[Permission]) -> Res
             match wall.and_then(|wall| moment(zone, wall)) {
                 Some(at_ms) => once(at_ms).map_err(|why| problems.push(why)).ok(),
                 None => {
-                    problems.push("once — дата и время дома: ГГГГ-ММ-ДДTЧЧ:ММ".into());
+                    problems.push(crate::tr!("once — дата и время дома: ГГГГ-ММ-ДДTЧЧ:ММ"));
                     None
                 }
             }
         }
         (None, None, Some(_)) => when_of(input, "повтор", &mut problems),
         _ => {
-            problems.push("ровно одно: after, once, at или every".into());
+            problems.push(crate::tr!("ровно одно: after, once, at или every"));
             None
         }
     };
     let then = then_of(input, "задача", permissions, &mut problems);
     let data = input.get("data").cloned().unwrap_or(Value::Null);
     if data.to_string().len() > DATA_MAX {
-        problems.push("data — до 4 КБ".into());
+        problems.push(crate::tr!("data — до 4 КБ"));
     }
     match (when, then) {
         (Some(when), Some(then)) if problems.is_empty() => Ok(Job {
@@ -460,26 +464,31 @@ pub fn then_of(item: &Value, at: &str, permissions: &[Permission], problems: &mu
             Some(Then { handler: Some(handler.into()), say: None, notify: None })
         }
         (Some(handler), false) => {
-            problems.push(format!("{at}: handler «{handler}» — имя функции, которую экспортирует backend.js"));
+            problems.push(crate::tr!(
+                "{at}: handler «{handler}» — имя функции, которую экспортирует backend.js",
+                at = at,
+                handler = handler
+            ));
             None
         }
         (None, true) => {
             if say.is_some() && !asks(permissions, "system/voice", Level::Call) {
-                problems.push(format!("{at}: say — речь без запроса, нужна связь call:system/voice"));
+                problems.push(crate::tr!("{at}: say — речь без запроса, нужна связь call:system/voice", at = at));
                 return None;
             }
             if notify.is_some() && !asks(permissions, "system/notify", Level::Call) {
-                problems.push(format!("{at}: notify — сообщение владельцу, нужна связь call:system/notify"));
+                problems
+                    .push(crate::tr!("{at}: notify — сообщение владельцу, нужна связь call:system/notify", at = at));
                 return None;
             }
             Some(Then { handler: None, say: say.map(short), notify: notify.map(short) })
         }
         (Some(_), true) => {
-            problems.push(format!("{at}: ровно одно — handler или готовый ответ (say, notify)"));
+            problems.push(crate::tr!("{at}: ровно одно — handler или готовый ответ (say, notify)", at = at));
             None
         }
         (None, false) => {
-            problems.push(format!("{at}: нужен handler или готовый ответ say (notify)"));
+            problems.push(crate::tr!("{at}: нужен handler или готовый ответ say (notify)", at = at));
             None
         }
     }
@@ -670,7 +679,7 @@ impl Scheduler {
         match self.host.upgrade() {
             Some(host) => host.may(plugin, to, handle),
             None if asks(permissions, to, Level::Call) => Ok(()),
-            None => Err(format!("нет связи call:{to} в манифесте")),
+            None => Err(crate::tr!("нет связи call:{to} в манифесте", to = to)),
         }
     }
 
@@ -681,17 +690,19 @@ impl Scheduler {
     /// A plugin's message to the owner (`host.notify`, `{notify}`, a ready `notify`): the plugin's name first, never
     /// anyone else, 20 an hour at most per plugin.
     pub async fn notify(&self, plugin: &str, text: &str) -> Result<(), String> {
-        let notice = self.notice.get().cloned().ok_or("Сообщение владельцу отсюда не отправить.")?;
+        let notice =
+            self.notice.get().cloned().ok_or_else(|| crate::tr!("Сообщение владельцу отсюда не отправить."))?;
         notice.ready()?;
         let text: String = text.trim().chars().take(1000).collect();
         if text.is_empty() {
-            return Err("пустое сообщение".into());
+            return Err(crate::tr!("пустое сообщение"));
         }
         if !within_an_hour(&self.notices, plugin, now_ms() as i64, NOTICES_AN_HOUR) {
-            return Err(format!("не больше {NOTICES_AN_HOUR} сообщений в час"));
+            return Err(crate::tr!("не больше {NOTICES_AN_HOUR} сообщений в час", NOTICES_AN_HOUR = NOTICES_AN_HOUR));
         }
-        let title =
-            self.host.upgrade().and_then(|host| host.package(plugin)).map(|package| package.manifest.title.clone());
+        let title = self.host.upgrade().and_then(|host| {
+            host.package(plugin).map(|package| package.manifest.title_in(&crate::locale::preferences(host.settings())))
+        });
         notice.tell(format!("{}: {text}", title.as_deref().unwrap_or(plugin))).await;
         Ok(())
     }
@@ -715,18 +726,39 @@ impl Scheduler {
     /// A plugin's schedule for the panel: its jobs, when each comes next where the station is.
     pub fn view(&self, plugin: &str) -> Value {
         let zone = self.zone_now();
-        let jobs: Vec<Value> = self.jobs.get(plugin).iter().map(|job| job_view(job, zone)).collect();
+        // The titles of the manifest's rhythms in the language of the request (docs/plans/i18n.md).
+        let host = self.host.upgrade();
+        let texts = host.as_ref().and_then(|host| {
+            host.package(plugin).map(|package| (package.manifest.clone(), crate::locale::preferences(host.settings())))
+        });
+        let jobs: Vec<Value> = self
+            .jobs
+            .get(plugin)
+            .iter()
+            .map(|job| {
+                let mut view = job_view(job, zone);
+                let title = texts
+                    .as_ref()
+                    .filter(|_| job.manifest)
+                    .and_then(|(manifest, preferences)| manifest.schedule_title_in(&job.id, preferences));
+                if let Some(title) = title {
+                    view["title"] = json!(title);
+                }
+                view
+            })
+            .collect();
         json!({ "on": self.is_on(), "jobs": jobs })
     }
 
     /// The panel's «Пауза»: a job pauses or goes on (a job paused for its failures starts them over).
     pub fn pause(&self, plugin: &str, id: &str, paused: bool) -> Result<(), String> {
-        let host = self.host.upgrade().ok_or("приложений нет")?;
+        let host = self.host.upgrade().ok_or_else(|| crate::tr!("приложений нет"))?;
         let (now, zone) = (now_ms() as i64, self.zone_now());
         {
             let _edit = locked(&self.edit);
             let mut jobs = self.jobs.get(plugin);
-            let job = jobs.iter_mut().find(|job| job.id == id).ok_or_else(|| format!("нет задачи «{id}»"))?;
+            let job =
+                jobs.iter_mut().find(|job| job.id == id).ok_or_else(|| crate::tr!("нет задачи «{id}»", id = id))?;
             job.paused = paused;
             if !paused {
                 (job.failures, job.problem) = (0, None);
@@ -751,11 +783,15 @@ impl Scheduler {
 
     /// The panel's «Запустить сейчас»: the job runs as if it came due now, by the same rules; what it did.
     pub async fn run_now(&self, plugin: &str, id: &str) -> Result<String, String> {
-        let host = self.host.upgrade().ok_or("приложений нет")?;
-        let package = host.package(plugin).ok_or("приложение выключено")?;
+        let host = self.host.upgrade().ok_or_else(|| crate::tr!("приложений нет"))?;
+        let package = host.package(plugin).ok_or_else(|| crate::tr!("приложение выключено"))?;
         let (now, zone) = (now_ms() as i64, self.zone_now());
-        let mut job =
-            self.jobs.get(plugin).into_iter().find(|job| job.id == id).ok_or_else(|| format!("нет задачи «{id}»"))?;
+        let mut job = self
+            .jobs
+            .get(plugin)
+            .into_iter()
+            .find(|job| job.id == id)
+            .ok_or_else(|| crate::tr!("нет задачи «{id}»", id = id))?;
         let next = job.next_ms;
         (job.next_ms, job.paused) = (Some(now), false);
         let mut late = 0;
@@ -805,7 +841,7 @@ impl Scheduler {
             .iter()
             .map(|job| serde_json::from_value(job.clone()))
             .collect::<Result<_, _>>()
-            .map_err(|error| format!("задачи не читаются: {error}"))?;
+            .map_err(|error| crate::tr!("задачи не читаются: {error}", error = error))?;
         let host = self.host.upgrade();
         let (now, zone) = (now_ms() as i64, self.zone_now());
         let jobs: Vec<Job> = jobs
@@ -959,34 +995,41 @@ impl Scheduler {
     /// The code's own schedule (`host.schedule.*` through `host.call`, right `schedule`): `set`, `list`, `cancel`,
     /// `parse`.
     pub fn code(&self, plugin: &str, action: &str, input: Value) -> Result<Value, String> {
-        let host = self.host.upgrade().ok_or("приложений нет")?;
-        let package = host.package(plugin).ok_or("приложение выключено")?;
+        let host = self.host.upgrade().ok_or_else(|| crate::tr!("приложений нет"))?;
+        let package = host.package(plugin).ok_or_else(|| crate::tr!("приложение выключено"))?;
         let (now, zone) = (now_ms() as i64, self.zone_now());
         let text = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_string);
         match action {
             "set" => {
                 if !within_an_hour(&self.sets, plugin, now, SETS_AN_HOUR) {
-                    return Err(format!("больше {SETS_AN_HOUR} в час"));
+                    return Err(crate::tr!("больше {SETS_AN_HOUR} в час", SETS_AN_HOUR = SETS_AN_HOUR));
                 }
                 let mut job = task_of(&input, now, zone, &package.manifest.permissions)?;
                 job.next_ms = next_after(&job.when, now, zone, &|key| Scheduler::setting(&host, plugin, key));
                 let Some(next) = job.next_ms else {
-                    return Err("срок не наступит: нет такого времени".into());
+                    return Err(crate::tr!("срок не наступит: нет такого времени"));
                 };
                 let _edit = locked(&self.edit);
                 let mut jobs = self.jobs.get(plugin);
                 if jobs.iter().any(|known| known.manifest && known.id == job.id) {
-                    return Err(format!("«{}» — ритм манифеста: его ставит на паузу человек в пульте", job.id));
+                    return Err(crate::tr!(
+                        "«{id}» — ритм манифеста: его ставит на паузу человек в пульте",
+                        id = job.id
+                    ));
                 }
                 jobs.retain(|known| known.id != job.id);
                 if jobs.iter().filter(|known| !known.manifest).count() >= MAX_TASKS {
-                    return Err(format!("больше {MAX_TASKS} задач"));
+                    return Err(crate::tr!("больше {MAX_TASKS} задач", MAX_TASKS = MAX_TASKS));
                 }
                 let answer = json!({ "id": job.id, "next": iso(next, zone) });
                 host.note_line(
                     plugin,
                     "info",
-                    &format!("{}: поставлено, срок — {}", job.id, iso(next, zone).unwrap_or_default()),
+                    &crate::tr!(
+                        "{id}: поставлено, срок — {zone}",
+                        id = job.id,
+                        zone = iso(next, zone).unwrap_or_default()
+                    ),
                 );
                 jobs.push(job);
                 self.jobs.set(plugin, jobs);
@@ -995,11 +1038,11 @@ impl Scheduler {
             }
             "list" => Ok(Value::Array(self.jobs.get(plugin).iter().map(|job| job_view(job, zone)).collect())),
             "cancel" => {
-                let id = text("id").ok_or("cancel(id): id задачи")?;
+                let id = text("id").ok_or_else(|| crate::tr!("cancel(id): id задачи"))?;
                 let _edit = locked(&self.edit);
                 let mut jobs = self.jobs.get(plugin);
                 if jobs.iter().any(|known| known.manifest && known.id == id) {
-                    return Err(format!("«{id}» — ритм манифеста: его ставит на паузу человек в пульте"));
+                    return Err(crate::tr!("«{id}» — ритм манифеста: его ставит на паузу человек в пульте", id = id));
                 }
                 let before = jobs.len();
                 jobs.retain(|known| known.id != id);
@@ -1010,7 +1053,7 @@ impl Scheduler {
                 Ok(Value::Bool(gone))
             }
             "parse" => Ok(parse(&text("text").unwrap_or_default(), now, zone).unwrap_or(Value::Null)),
-            other => Err(format!("нет функции schedule.{other}")),
+            other => Err(crate::tr!("нет функции schedule.{other}", other = other)),
         }
     }
 
@@ -1019,18 +1062,18 @@ impl Scheduler {
         let device = job.device.clone().unwrap_or_else(|| "*".into());
         let Some(station) = self.station.get().cloned() else {
             job.pending = Some((text, until));
-            return "ждёт колонку".into();
+            return crate::tr!("ждёт колонку");
         };
         if station.busy(&device) {
             job.pending = Some((text, until));
-            return "ждёт: колонка занята".into();
+            return crate::tr!("ждёт: колонка занята");
         }
         if station.say(&device, text.clone()).await {
             job.pending = None;
-            return format!("сказал «{text}»");
+            return crate::tr!("сказал «{text}»", text = text);
         }
         job.pending = Some((text, until));
-        "ждёт колонку".into()
+        crate::tr!("ждёт колонку")
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1048,11 +1091,19 @@ impl Scheduler {
         if let Some((text, until)) = job.pending.clone() {
             if now > until {
                 job.pending = None;
-                host.note_line(plugin, "warn", &format!("{} (по расписанию): не сказано — колонки не было", job.id));
+                host.note_line(
+                    plugin,
+                    "warn",
+                    &crate::tr!("{id} (по расписанию): не сказано — колонки не было", id = job.id),
+                );
             } else {
                 let outcome = self.speak(job, text, until).await;
                 if job.pending.is_none() {
-                    host.note_line(plugin, "info", &format!("{} (по расписанию): {outcome}", job.id));
+                    host.note_line(
+                        plugin,
+                        "info",
+                        &crate::tr!("{id} (по расписанию): {outcome}", id = job.id, outcome = outcome),
+                    );
                 }
             }
         }
@@ -1068,15 +1119,19 @@ impl Scheduler {
             None
         };
         let done = |job: &mut Job, outcome: String, level: &str| {
-            host.note_line(plugin, level, &format!("{} (по расписанию): {outcome}", job.id));
+            host.note_line(
+                plugin,
+                level,
+                &crate::tr!("{id} (по расписанию): {outcome}", id = job.id, outcome = outcome),
+            );
             job.last = Some(LastRun { at_ms: now, outcome });
         };
         if !job.repeats() && late > GIVE_UP_MS {
-            return done(job, format!("пропущено: опоздала на {} ч", late / 3_600_000), "warn");
+            return done(job, crate::tr!("пропущено: опоздала на {hours} ч", hours = late / 3_600_000), "warn");
         }
         if late > LATE_MS {
             if *late_said >= LATE_IN_A_ROW {
-                return done(job, "пропущено: после перерыва — не больше трёх подряд".into(), "warn");
+                return done(job, crate::tr!("пропущено: после перерыва — не больше трёх подряд"), "warn");
             }
             *late_said += 1;
         }
@@ -1097,9 +1152,13 @@ impl Scheduler {
                         job.failures += 1;
                         if job.failures >= FAILURES {
                             job.paused = true;
-                            job.problem = Some(format!("{FAILURES} ошибок подряд: {error}"));
+                            job.problem = Some(crate::tr!(
+                                "{FAILURES} ошибок подряд: {error}",
+                                FAILURES = FAILURES,
+                                error = error
+                            ));
                         }
-                        return done(job, format!("ошибка: {error}"), "error");
+                        return done(job, crate::tr!("ошибка: {error}", error = error), "error");
                     }
                 }
             }
@@ -1107,25 +1166,37 @@ impl Scheduler {
         };
         let ms = began.elapsed().as_millis();
         let (said, notice) = said;
-        let mut outcome = vec![format!("ответил за {ms} мс")];
+        let mut outcome = vec![crate::tr!("ответил за {ms} мс", ms = ms)];
+        let mut warn = false;
         // A message to the owner first: it goes now whatever the station does.
         if let Some(notice) = notice {
             outcome.push(match self.may(plugin, permissions, "system/notify", "send") {
-                Err(why) => format!("не прислано: {why}"),
+                Err(why) => {
+                    warn = true;
+                    crate::tr!("не прислано: {why}", why = why)
+                }
                 Ok(()) => match self.notify(plugin, &notice).await {
-                    Ok(()) => format!("прислал «{notice}»"),
-                    Err(why) => format!("не прислано: {why}"),
+                    Ok(()) => crate::tr!("прислал «{notice}»", notice = notice),
+                    Err(why) => {
+                        warn = true;
+                        crate::tr!("не прислано: {why}", why = why)
+                    }
                 },
             });
         }
         let speech = said.as_ref().map(|_| self.may(plugin, permissions, "system/voice", "say"));
         match said {
-            None if outcome.len() == 1 => outcome.push("молча".into()),
+            None if outcome.len() == 1 => outcome.push(crate::tr!("молча")),
             None => {}
             Some(_) if matches!(speech, Some(Err(_))) => {
-                outcome.push(format!("не сказано: {}", speech.and_then(Result::err).unwrap_or_default()))
+                warn = true;
+                outcome
+                    .push(crate::tr!("не сказано: {result}", result = speech.and_then(Result::err).unwrap_or_default()))
             }
-            Some(_) if !self.may_speak(plugin, now) => outcome.push("не сказано: слишком часто".into()),
+            Some(_) if !self.may_speak(plugin, now) => {
+                warn = true;
+                outcome.push(crate::tr!("не сказано: слишком часто"))
+            }
             Some(text) => {
                 // Waits for the station: a once up to 6 hours, a repeat until its next time.
                 let until = match job.next_ms {
@@ -1135,7 +1206,6 @@ impl Scheduler {
                 outcome.push(self.speak(job, text, until).await);
             }
         }
-        let warn = outcome.iter().any(|part| part.starts_with("не "));
         done(job, outcome.join(", "), if warn { "warn" } else { "info" });
     }
 }

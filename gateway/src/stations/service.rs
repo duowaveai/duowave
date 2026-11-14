@@ -4,7 +4,6 @@
 //! the panel, and the owner is told. A browser cannot set the station's device header, so a web page never passes
 //! as one. The station's own HTTP (its call client, its microphone bridge) is believed only from the address an
 //! approved station connects from.
-
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
@@ -346,12 +345,12 @@ impl StationsService {
         let empty = serde_json::Map::new();
         let input = input.as_object().unwrap_or(&empty);
         let writing = self.writing();
-        let known = self.find(device).ok_or_else(|| ApiError::not_found("Нет такой колонки."))?;
+        let known = self.find(device).ok_or_else(|| ApiError::not_found(crate::tr!("Нет такой колонки.")))?;
         let mut next = known.clone();
         if let Some(status) = input.get("status") {
             match status.as_str().and_then(StationStatus::parse) {
                 Some(status) => next.status = status,
-                None => return Err(ApiError::bad_request("status: approved, pending или blocked")),
+                None => return Err(ApiError::bad_request(crate::tr!("status: approved, pending или blocked"))),
             }
         }
         if let Some(name) = input.get("name") {
@@ -359,7 +358,7 @@ impl StationsService {
             // JavaScript's length, in UTF-16 units: an emoji counts two.
             let length = js_len(name);
             if !(1..=40).contains(&length) {
-                return Err(ApiError::bad_request("Имя колонки — до 40 символов."));
+                return Err(ApiError::bad_request(crate::tr!("Имя колонки — до 40 символов.")));
             }
             next.name = name.to_string();
         }
@@ -390,11 +389,11 @@ impl StationsService {
             let sticker = match sticker {
                 serde_json::Value::Null => None,
                 serde_json::Value::Bool(on) => Some(*on),
-                _ => return Err(ApiError::bad_request("sticker: true, false или null")),
+                _ => return Err(ApiError::bad_request(crate::tr!("sticker: true, false или null"))),
             };
             let offered = look_of(reported(&known), Chosen::default()).is_some_and(|look| look.sticker.is_some());
             if sticker.is_some() && !offered {
-                return Err(ApiError::bad_request("Наклейки бывают только у Лайт 2."));
+                return Err(ApiError::bad_request(crate::tr!("Наклейки бывают только у Лайт 2.")));
             }
             next.sticker = sticker;
         }
@@ -414,7 +413,7 @@ impl StationsService {
     pub fn remove(&self, device: &str, actor: Option<Actor>) -> Result<(), ApiError> {
         let writing = self.writing();
         if self.records().remove(device).is_none() {
-            return Err(ApiError::not_found("Нет такой колонки."));
+            return Err(ApiError::not_found(crate::tr!("Нет такой колонки.")));
         }
         self.db.with(|c| c.execute("DELETE FROM stations WHERE device = ?1", params![device]))?;
         drop(writing);
@@ -526,7 +525,7 @@ fn choice_of(value: Option<&serde_json::Value>, field: &str, kept: Option<String
         {
             Ok(Some(text.clone()))
         }
-        Some(_) => Err(ApiError::bad_request(format!("{field}: id варианта или null"))),
+        Some(_) => Err(ApiError::bad_request(crate::tr!("{field}: id варианта или null", field = field))),
     }
 }
 

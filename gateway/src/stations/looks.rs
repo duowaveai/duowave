@@ -8,10 +8,9 @@
 //! taken from the devices we hold (`yandex-station-extended/docs/devices`) and, for the models we do not, from the
 //! platform list the YandexStation integration reads out of the cloud device list. `bork` is a guess: the model is
 //! too new for its code to be public — the day one syncs, its real word lands in the journal and this table.
-
 use serde::Serialize;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LookVariant {
     pub id: &'static str,
     /// «Лайт 2 с часами».
@@ -21,6 +20,24 @@ pub struct LookVariant {
     pub clock: bool,
     /// The colours it is sold in, the default first (the panel's drawing knows them by these ids).
     pub colors: &'static [&'static str],
+}
+
+/// The names go out in the reader's language (the catalog by the Russian text, `locale::text`).
+fn named(text: &'static str) -> &'static str {
+    crate::locale::text::translated(text, crate::locale::text::language_now().as_deref())
+}
+
+impl Serialize for LookVariant {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut out = serializer.serialize_struct("LookVariant", 5)?;
+        out.serialize_field("id", self.id)?;
+        out.serialize_field("title", named(self.title))?;
+        out.serialize_field("label", named(self.label))?;
+        out.serialize_field("clock", &self.clock)?;
+        out.serialize_field("colors", self.colors)?;
+        out.end()
+    }
 }
 
 struct Family {
@@ -264,7 +281,7 @@ pub fn look_of(reported: Reported, chosen: Chosen) -> Option<StationLook> {
     };
     Some(StationLook {
         family: family.id,
-        title: family.title,
+        title: named(family.title),
         model: variant.id,
         color,
         clock: variant.clock,
@@ -283,25 +300,25 @@ pub fn look_of(reported: Reported, chosen: Chosen) -> Option<StationLook> {
 pub fn look_problem(reported: Reported, next: Chosen) -> Option<String> {
     let Some(look) = look_of(reported, Chosen::default()) else {
         return (given(next.model).is_some() || given(next.color).is_some())
-            .then(|| "Вид этой модели колонки пока не выбрать.".to_string());
+            .then(|| crate::tr!("Вид этой модели колонки пока не выбрать."));
     };
     if let Some(model) = given(next.model) {
         if look.variants.len() == 1 && model != look.model {
-            return Some("Модель колонка сообщила сама.".into());
+            return Some(crate::tr!("Модель колонка сообщила сама."));
         }
         if !look.variants.iter().any(|variant| variant.id == model) {
             let ids: Vec<&str> = look.variants.iter().map(|variant| variant.id).collect();
-            return Some(format!("Модель: {}.", ids.join(" или ")));
+            return Some(crate::tr!("Модель: {ids}.", ids = ids.join(&crate::tr!(" или "))));
         }
     }
     if let Some(color) = given(next.color) {
         let wanted = next.model.unwrap_or(look.model);
         let variant = look.variants.iter().find(|entry| entry.id == wanted).unwrap_or(&look.variants[0]);
         if look.color_from == LookSource::Station && color != look.color {
-            return Some("Цвет колонка сообщила сама.".into());
+            return Some(crate::tr!("Цвет колонка сообщила сама."));
         }
         if !variant.colors.contains(&color) {
-            return Some(format!("Цвет: {}.", variant.colors.join(", ")));
+            return Some(crate::tr!("Цвет: {colors}.", colors = variant.colors.join(", ")));
         }
     }
     None

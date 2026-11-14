@@ -10,7 +10,6 @@
 //! computer, a change of them is refused too: the next sending from here would overwrite it. A plugin's call is a
 //! reading here (its widgets read their data with it), and the station's plugins' panel parts and the workshop's
 //! previews pass without the session: `import()` and `<link>` carry no key, and the station serves them to anyone.
-
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -189,7 +188,7 @@ fn keep_newest(dir: &FsPath, kept: usize) {
 }
 
 fn away(name: &str) -> String {
-    format!("Колонка «{name}» не на связи: изменения можно сделать, когда она вернётся.")
+    crate::tr!("Колонка «{name}» не на связи: изменения можно сделать, когда она вернётся.", name = name)
 }
 
 async fn pass(
@@ -212,14 +211,14 @@ async fn pass(
     let principal = if reading && public_file(&rest) { None } else { Some(caller.permitted(STATION_VIEW)?.clone()) };
     let changing = !reading && !(method == Method::POST && plugin_call(&rest));
     if changing && principal.as_ref().and_then(|principal| principal.role) != Some(Role::Admin) {
-        return Err(ApiError::forbidden("Править настройки колонки отсюда может администратор."));
+        return Err(ApiError::forbidden(crate::tr!("Править настройки колонки отсюда может администратор.")));
     }
     if !plain_path(&rest) || !passable(&rest) {
         return Err(ApiError::not_found("Not Found"));
     }
     // Only a station with a placement here: an unknown key makes no watch.
     let Some(gateway) = app.placement.station().and_then(|stations| stations.find(&key)) else {
-        return Err(ApiError::not_found("Такой колонки у этого компьютера нет."));
+        return Err(ApiError::not_found(crate::tr!("Такой колонки у этого компьютера нет.")));
     };
     let record = gateway.record();
     // Its settings live here and go to it from here: a change of them made in its window would be overwritten by the
@@ -230,10 +229,10 @@ async fn pass(
         && super::routes::sent_over(&format!("/{rest}"))
         && record.as_ref().is_some_and(|record| record.settings_home == SettingsHome::Pc)
     {
-        return Err(ApiError::conflict(super::routes::SETTINGS_ON_PC));
+        return Err(ApiError::conflict(super::routes::settings_on_pc()));
     }
     let Some(peer) = gateway.client() else {
-        return Err(ApiError::conflict("Колонка не связана с этим компьютером: нет ключа пары."));
+        return Err(ApiError::conflict(crate::tr!("Колонка не связана с этим компьютером: нет ключа пары.")));
     };
     let name = record.and_then(|record| record.device).unwrap_or_else(|| key.clone());
     let path = format!("/{rest}{}", query.as_deref().map(|query| format!("?{query}")).unwrap_or_default());
@@ -278,8 +277,9 @@ async fn pass(
             }
             // It took the request and did not answer in time: it is there, but slow — not «away».
             if error.is_timeout() && !error.is_connect() {
-                return Err(ApiError::unavailable(format!(
-                    "Колонка «{name}» не ответила вовремя — попробуйте ещё раз."
+                return Err(ApiError::unavailable(crate::tr!(
+                    "Колонка «{name}» не ответила вовремя — попробуйте ещё раз.",
+                    name = name
                 )));
             }
             return Err(ApiError::unavailable(away(&name)));
@@ -307,7 +307,7 @@ async fn pass(
     let bytes = response
         .bytes()
         .await
-        .map_err(|error| ApiError::bad_gateway(format!("Шлюз колонки оборвал ответ: {error}")))?;
+        .map_err(|error| ApiError::bad_gateway(crate::tr!("Шлюз колонки оборвал ответ: {error}", error = error)))?;
     let worth = status.is_success() && content_type.starts_with("application/json") && bytes.len() < COPY_LIMIT;
     if let (Some(path), true) = (copy.as_ref(), worth) {
         write_copy(
@@ -603,14 +603,14 @@ mod tests {
         watch.set_record(Some(&kitchen(port, SettingsHome::Pc)), None).unwrap();
         let (status, _, body) = send(&app, home, "PUT", "/station/h:kitchen/api/v1/brain", &admin).await;
         assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(body["message"], crate::placement::routes::SETTINGS_ON_PC);
+        assert_eq!(body["message"], crate::placement::routes::settings_on_pc());
         assert!(body["message"].as_str().unwrap().contains("«Вернуть настройки на колонку»"));
         assert_eq!(asked.lock().unwrap().iter().filter(|asked| asked.starts_with("PUT")).count(), 1);
         assert_eq!(send(&app, home, "GET", journal, &member).await.0, StatusCode::OK, "reading goes on");
         // A plugin's settings travel too: refused. What does not travel goes on — a plugin's call (its widgets read
         // with it, a member's too: the station checks its right with the member's role), the player.
-        let (settings, on_pc) =
-            ("/station/h:kitchen/api/v1/packages/calendar/settings", Some(crate::placement::routes::SETTINGS_ON_PC));
+        let why = crate::placement::routes::settings_on_pc();
+        let (settings, on_pc) = ("/station/h:kitchen/api/v1/packages/calendar/settings", Some(why.as_str()));
         let (status, _, body) = send(&app, home, "PUT", settings, &admin).await;
         assert_eq!((status, body["message"].as_str()), (StatusCode::CONFLICT, on_pc));
         let call = "/station/h:kitchen/api/v1/packages/calendar/call/today";

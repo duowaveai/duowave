@@ -7,6 +7,7 @@
 import { useEffect, useState } from 'preact/hooks';
 
 import { can } from '../api';
+import { tr } from '../i18n';
 import { HelperWidget, Watch } from './desk-widgets';
 import { Updates } from './house';
 import { ModelsScreen } from './models';
@@ -43,29 +44,29 @@ function HelperComputer() {
     const [placement, setPlacement] = useState(false);
     return (
         <>
-            <Card id="help" title="Помогать колонке">
+            <Card id="help" title={tr.helperPc.helpTitle}>
                 <HelperWidget />
             </Card>
             {can('station.view') && (
-                <Card id="watch" title="Присматриваю за колонкой">
+                <Card id="watch" title={tr.helperPc.watchTitle}>
                     <Watch opened={placement} onOpen={() => setPlacement((open) => !open)} />
                 </Card>
             )}
             {placement && can('station.view') && <PlacementCard />}
             <Updates />
             {can('models.manage') && (
-                <section class="card glass card-list" aria-label="Модели на этом компьютере">
+                <section class="card glass card-list" aria-label={tr.helperPc.modelsLabel}>
                     <div class="w-rows">
                         <button class="w-row w-row-btn" aria-expanded={models === 'recognition'} onClick={() => setModels(models === 'recognition' ? null : 'recognition')}>
                             <span class="flex-1 min-w-0 flex flex-col">
-                                <span class="w-text">Слух на этом компьютере</span>
-                                <span class="w-cap">модели распознавания, что колонка берёт у компьютера</span>
+                                <span class="w-text">{tr.helperPc.hearingTitle}</span>
+                                <span class="w-cap">{tr.helperPc.hearingAbout}</span>
                             </span>
                         </button>
                         <button class="w-row w-row-btn" aria-expanded={models === 'voice'} onClick={() => setModels(models === 'voice' ? null : 'voice')}>
                             <span class="flex-1 min-w-0 flex flex-col">
-                                <span class="w-text">Голоса на этом компьютере</span>
-                                <span class="w-cap">готовые и свои, которыми колонка говорит через компьютер</span>
+                                <span class="w-text">{tr.helperPc.voicesTitle}</span>
+                                <span class="w-cap">{tr.helperPc.voicesAbout}</span>
                             </span>
                         </button>
                     </div>

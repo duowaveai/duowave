@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 
 import { Sheet } from './sheet';
+import { tr } from '../i18n';
 
 /**
  * Подтверждение в самом пульте вместо window.confirm: в окне приложения (WebKit внутри Tauri) системное окно не
@@ -74,7 +75,7 @@ export function ConfirmHost() {
             footer={
                 <div class="dash-actions">
                     <button class={`dash-done${current.danger ? ' danger' : ''}`} onClick={() => current.answer(true)}>
-                        {current.ok ?? 'Да'}
+                        {current.ok ?? tr.ui.yes}
                     </button>
                     {/* Удаление не случается по Enter: фокус сначала на «Отмена». */}
                     <button
@@ -82,7 +83,7 @@ export function ConfirmHost() {
                         data-autofocus={current.danger ? true : undefined}
                         onClick={() => current.answer(false)}
                     >
-                        {current.cancel ?? 'Отмена'}
+                        {current.cancel ?? tr.ui.cancel}
                     </button>
                 </div>
             }

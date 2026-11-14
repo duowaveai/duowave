@@ -67,11 +67,15 @@ fn acquire(pid: u32) -> Result<Hold, String> {
 fn acquire(pid: u32) -> Result<Hold, String> {
     use std::os::unix::process::CommandExt;
     // logind's inhibitor lock on idle and sleep, held while tail waits for the gateway's process to end.
+    let why = format!(
+        "--why={}",
+        crate::lang::t("Шлюз колонки работает", "The speaker's gateway is running")
+    );
     std::process::Command::new("systemd-inhibit")
         .args([
             "--what=idle:sleep",
             "--who=DuoWave",
-            "--why=Шлюз колонки работает",
+            &why,
             "--mode=block",
             "tail",
             &format!("--pid={pid}"),

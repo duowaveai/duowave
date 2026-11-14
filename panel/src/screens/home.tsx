@@ -3,26 +3,27 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { AccessCatalog, Health, ModeView, PanelMode, RequestView, UnsupportedEntry, api, can, plural, problemOf } from '../api';
+import { AccessCatalog, Health, ModeView, PanelMode, RequestView, UnsupportedEntry, api, can, problemOf } from '../api';
 import { FeatureId, available, useAvailability, whyNot } from '../availability';
 import { CAPABILITIES, CAPABILITY_TITLES } from '../capabilities';
 import { executorOf } from '../executor';
+import { locale, tr } from '../i18n';
 import { timeAgo } from '../time';
 import { RequestRow } from './journal';
 
-const MODES: Array<{ value: PanelMode; label: string; feature: FeatureId }> = [
-    { value: 'relay', label: 'Яндекс', feature: 'mode.relay' },
-    { value: 'gateway', label: 'Вместе', feature: 'mode.gateway' },
-    { value: 'own', label: 'Своё', feature: 'mode.own' },
-];
+const modeLabels = (): Record<PanelMode, string> => ({ relay: tr.home.modeRelay, gateway: tr.home.modeGateway, own: tr.home.modeOwn });
 
-const MODE_LABELS: Record<PanelMode, string> = { relay: 'Яндекс', gateway: 'Вместе', own: 'Своё' };
+const modes = (): Array<{ value: PanelMode; label: string; feature: FeatureId }> => [
+    { value: 'relay', label: modeLabels().relay, feature: 'mode.relay' },
+    { value: 'gateway', label: modeLabels().gateway, feature: 'mode.gateway' },
+    { value: 'own', label: modeLabels().own, feature: 'mode.own' },
+];
 
 /** «с 14:02»: время перехода сегодня, иначе с датой. */
 function since(at: string): string {
     const date = new Date(at);
-    const time = date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-    return date.toDateString() === new Date().toDateString() ? time : `${date.toLocaleDateString('ru-RU')} ${time}`;
+    const time = date.toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' });
+    return date.toDateString() === new Date().toDateString() ? time : `${date.toLocaleDateString(locale())} ${time}`;
 }
 
 /** Режим колонки: сегмент из макета. Переключение закрывает соединение — колонка переподключается в новый режим. */
@@ -81,8 +82,8 @@ export function ModeCard({
     const pick = async (next: PanelMode) => {
         if (!mayPick || busy || next === mode) return;
         // Режим, которого здесь сейчас нет («Свой» на колонке без компьютера): объясняем словами шлюза.
-        const feature = MODES.find((option) => option.value === next)?.feature;
-        if (feature && !available(feature)) return setUnavailable(whyNot(feature) ?? 'Этот режим здесь сейчас не включить.');
+        const feature = modes().find((option) => option.value === next)?.feature;
+        if (feature && !available(feature)) return setUnavailable(whyNot(feature) ?? tr.home.modeUnavailable);
         setUnavailable(null);
         // «Свой» без своего голоса — сначала предупреждение: ответы уйдут Яндексу.
         if (next === 'own' && voice === 'yandex') return setWarn(true);
@@ -129,11 +130,11 @@ export function ModeCard({
         <div>
             <div
                 role="radiogroup"
-                aria-label="Режим колонки"
+                aria-label={tr.home.modeGroup}
                 aria-busy={busy}
                 class="glass grid grid-cols-3 gap-4 p-4 r-pill"
             >
-                {MODES.map((option) => {
+                {modes().map((option) => {
                     const chosen = mode === option.value;
                     const allowed = available(option.feature);
                     return (
@@ -158,27 +159,26 @@ export function ModeCard({
                 {(busy || reconnecting) && <span class="spinner" aria-hidden="true" />}
                 <span>
                     {busy
-                        ? 'Переключаю — колонка переподключится за секунды…'
+                        ? tr.home.switching
                         : reconnecting
-                          ? 'Колонка переподключается в новый режим…'
+                          ? tr.home.reconnecting
                           : note}
                     {!busy && !reconnecting && (
                         <>
                             {' '}
                             <button class="truth-more" aria-expanded={detailsOpen} onClick={onToggleDetails}>
-                                {detailsOpen ? 'свернуть' : 'подробнее'}
+                                {detailsOpen ? tr.home.collapse : tr.home.more}
                             </button>
                         </>
                     )}
-                    {!mayPick && !busy && !reconnecting && ' Переключает администратор.'}
+                    {!mayPick && !busy && !reconnecting && tr.home.adminSwitches}
                     {!available('mode.own') && !auto && !busy && !reconnecting && ` ${whyNot('mode.own') ?? ''}`}
                 </span>
             </p>
             {auto && mode === auto.to && (
                 <div class="t-caption mx-6 mt-8 mb-0 flex gap-8 items-center flex-wrap" role="status">
                     <span>
-                        Сейчас «{MODE_LABELS[auto.to]}»: {auto.reason} с {since(auto.at)}. Вернусь в «{MODE_LABELS[auto.from]}», когда он
-                        появится.
+                        {tr.home.autoNow(modeLabels()[auto.to], auto.reason, since(auto.at), modeLabels()[auto.from])}
                     </span>
                     {mayPick && (
                         <button
@@ -190,7 +190,7 @@ export function ModeCard({
                                     .catch((e) => setError(problemOf(e)))
                             }
                         >
-                            Остаться в «{MODE_LABELS[auto.to]}»
+                            {tr.home.stayIn(modeLabels()[auto.to])}
                         </button>
                     )}
                 </div>
@@ -203,21 +203,20 @@ export function ModeCard({
             {warn && (
                 <div role="alert" class="mx-6 mt-10 mb-0 py-12 px-14 r-panel bg-pill-yandex-bg c-pill-yandex-fg">
                     <p class="m-0 fs-13 lh-18 fw-700">
-                        Выбран голос Алисы — без Яндекса он не звучит
+                        {tr.home.warnTitle}
                     </p>
                     <p class="m-0 mt-4 mb-10 fs-13 lh-18">
-                        В режиме «Своё» вместо него будет говорить наш голос (или колонка замолчит, если своего голосового
-                        сервера нет). Выберите свой голос — или продолжите так.
+                        {tr.home.warnText}
                     </p>
                     <div class="flex gap-8 flex-wrap">
                         <button class="pill pill-own pill-btn" onClick={onOpenSettings}>
-                            Выбрать свой голос
+                            {tr.home.pickOwnVoice}
                         </button>
                         <button class="pill pill-yandex pill-btn" onClick={() => void doSwitch('own')}>
-                            Продолжить
+                            {tr.home.proceed}
                         </button>
                         <button class="pill pill-off pill-btn" onClick={() => setWarn(false)}>
-                            Отмена
+                            {tr.home.cancel}
                         </button>
                     </div>
                 </div>
@@ -240,12 +239,12 @@ export function AllocPanel({ health, catalog }: { health: Health | null; catalog
         return (
             <section class="card glass flex flex-col gap-12" aria-labelledby="alloc-h">
                 <h2 id="alloc-h" class="t-title-xs m-0">
-                    Кто сколько ответил
+                    {tr.home.whoAnswered}
                 </h2>
                 <p class="t-meta m-0">
                     {mode === 'relay'
-                        ? 'Режим «Яндекс»: отвечает Яндекс, DuoWave только наблюдает.'
-                        : 'DuoWave прогревается — это появится через секунду.'}
+                        ? tr.home.relayObserves
+                        : tr.home.warmingUp}
                 </p>
             </section>
         );
@@ -259,19 +258,19 @@ export function AllocPanel({ health, catalog }: { health: Health | null; catalog
     }
     const total = counts.own + counts.yandex + counts.off;
     const legend: Array<{ key: 'own' | 'yandex' | 'off'; label: string }> = [
-        { key: 'own', label: 'свой' },
-        { key: 'yandex', label: 'Яндекс' },
-        { key: 'off', label: 'выкл' },
+        { key: 'own', label: tr.home.legendOwn },
+        { key: 'yandex', label: tr.home.legendYandex },
+        { key: 'off', label: tr.home.legendOff },
     ];
 
     return (
         <section class="card glass flex flex-col gap-12" aria-labelledby="alloc-h">
             <div class="flex items-baseline justify-between">
                 <h2 id="alloc-h" class="t-title-xs m-0">
-                    Кто сколько ответил
+                    {tr.home.whoAnswered}
                 </h2>
                 <span class="t-meta">
-                    {total} {plural(total, 'возможность', 'возможности', 'возможностей')}
+                    {tr.home.capabilities(total)}
                 </span>
             </div>
             <div class="alloc-bar" aria-hidden="true">
@@ -303,11 +302,11 @@ function ServedTotals({ health }: { health: Health | null }) {
     for (const counts of Object.values(served))
         for (const key of Object.keys(totals) as Array<keyof typeof totals>) totals[key] += counts[key] ?? 0;
     const total = totals.own + totals.yandex + totals.unsupported;
-    if (!total) return <p class="t-caption m-0">Скажите что-нибудь колонке — здесь появится, кто отвечал.</p>;
+    if (!total) return <p class="t-caption m-0">{tr.home.sayToStation}</p>;
     return (
         <p class="t-caption m-0">
-            обслужено с запуска: своими — {totals.own} · Яндексом — {totals.yandex}
-            {totals.unsupported ? ` · не смогли — ${totals.unsupported}` : ''}
+            {tr.home.servedSince(totals.own, totals.yandex)}
+            {totals.unsupported ? tr.home.couldNot(totals.unsupported) : ''}
         </p>
     );
 }
@@ -331,10 +330,10 @@ export function RecentRequests({
         <section class="card glass py-4 px-16" aria-labelledby="recent-h">
             <div class="card-head">
                 <h2 id="recent-h" class="t-title-xs m-0">
-                    Последние запросы
+                    {tr.home.recentRequests}
                 </h2>
                 <button class="fs-14 fw-700 c-accent-text min-h-44" onClick={onOpenJournal}>
-                    История разговоров
+                    {tr.home.conversationHistory}
                 </button>
             </div>
             <ol class="req-list">
@@ -358,16 +357,16 @@ export function UnsupportedTop({ list, onOpenJournal }: { list: UnsupportedEntry
         <section class="card glass card-list card-list-tight" aria-labelledby="unsupported-h">
             <div class="card-head">
                 <h2 id="unsupported-h" class="t-title-xs m-0">
-                    Пока не умеем
+                    {tr.home.notYet}
                 </h2>
                 <button class="fs-14 fw-700 c-accent-text min-h-44" onClick={onOpenJournal}>
-                    Все {list.length}
+                    {tr.home.allCount(list.length)}
                 </button>
             </div>
             {list.slice(0, 3).map((entry) => (
                 <div key={entry.at + entry.text} class="flex flex-col gap-2 py-8 px-0 bt-divider">
                     <span class="fw-700 overflow-hidden text-ellipsis nowrap">
-                        «{entry.text}»
+                        {tr.home.quoted(entry.text)}
                     </span>
                     <span class="t-caption">
                         {timeAgo(entry.at)} · {entry.reason}

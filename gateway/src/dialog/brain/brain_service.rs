@@ -319,7 +319,7 @@ impl BrainService {
                     .fast
                     .as_ref()
                     .map(|profile| profile.title.clone())
-                    .unwrap_or_else(|| "нет".into()),
+                    .unwrap_or_else(|| crate::tr!("нет")),
                 models: BrainModels { fast: self.config.models.fast.clone(), smart: self.config.models.smart.clone() },
                 usable: self.env.slot(ModelProfile::Fast).is_some(),
                 cloud: env_status.cloud,
@@ -332,7 +332,7 @@ impl BrainService {
             .get("preset")
             .and_then(Value::as_str)
             .and_then(preset_of)
-            .ok_or_else(|| ApiError::bad_request("Неизвестный провайдер."))?;
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("Неизвестный провайдер.")))?;
         let base_url = address(preset, input.get("baseUrl"))?;
         let title = Some(text(input.get("title"), 60)).filter(|title| !title.is_empty()).unwrap_or(preset.title.into());
         let options = fields(preset, input.get("options"));
@@ -417,10 +417,14 @@ impl BrainService {
             let choice = self.settings.peek(&BRAIN)?.unwrap_or_default();
             let answering = |pick: &Option<BrainPick>| pick.as_ref().is_some_and(|pick| pick.provider == id);
             if answering(&choice.fast) || answering(&choice.smart) {
-                return Err(ApiError::conflict("Этот провайдер сейчас отвечает. Сначала выберите другую модель."));
+                return Err(ApiError::conflict(crate::tr!(
+                    "Этот провайдер сейчас отвечает. Сначала выберите другую модель."
+                )));
             }
             if answering(&choice.backup) {
-                return Err(ApiError::conflict("Этот провайдер — запасная модель. Сначала выберите другую запасную."));
+                return Err(ApiError::conflict(crate::tr!(
+                    "Этот провайдер — запасная модель. Сначала выберите другую запасную."
+                )));
             }
             let flow = self.stored_row(id)?.and_then(|row| token_flow(&row.preset));
             if self.db.with(|c| c.execute("DELETE FROM llm_providers WHERE id = ?1", params![id]))? == 0 {
@@ -460,7 +464,7 @@ impl BrainService {
         };
         let sign_in = preset_of(&row.preset)
             .and_then(|preset| preset.sign_in.as_ref())
-            .ok_or_else(|| ApiError::bad_request("Этот провайдер подключается только ключом."))?;
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("Этот провайдер подключается только ключом.")))?;
         engine.start(sign_in, target_of(&row), here)
     }
 
@@ -527,11 +531,11 @@ impl BrainService {
                 let known =
                     |provider: &&str| rows.iter().any(|row| row.id == *provider) || (env && *provider == ENV_PROVIDER);
                 let Some(provider) = provider.filter(known) else {
-                    return Err(ApiError::bad_request("Такого провайдера нет."));
+                    return Err(ApiError::bad_request(crate::tr!("Такого провайдера нет.")));
                 };
                 let model = text(value.get("model"), 200);
                 if model.is_empty() {
-                    return Err(ApiError::bad_request("Выберите модель."));
+                    return Err(ApiError::bad_request(crate::tr!("Выберите модель.")));
                 }
                 Some(BrainPick { provider: provider.to_string(), model })
             };
@@ -544,7 +548,11 @@ impl BrainService {
         if let Some(effort) = input.get("effort") {
             match effort.as_str().filter(|effort| LLM_EFFORTS.contains(effort)) {
                 Some(effort) => next.effort = Some(effort.to_string()),
-                None => return Err(ApiError::bad_request("Глубина мышления: low, medium, high, xhigh или max.")),
+                None => {
+                    return Err(ApiError::bad_request(crate::tr!(
+                        "Глубина мышления: low, medium, high, xhigh или max."
+                    )))
+                }
             }
         }
         if next.fast.is_none() {
@@ -606,7 +614,7 @@ impl BrainService {
             .or_else(|| models.first().cloned().filter(|model| !model.is_empty()));
         let Some(target) = target else {
             let problem =
-                list_problem.unwrap_or_else(|| "Сервис не назвал ни одной модели: впишите её вручную.".into());
+                list_problem.unwrap_or_else(|| crate::tr!("Сервис не назвал ни одной модели: впишите её вручную."));
             return self.save_check(
                 &row,
                 &models,
@@ -996,29 +1004,29 @@ impl BrainService {
         }
         let message = self.secrets.redact(&error.to_string());
         if NO_KEY.is_match(&message) {
-            return "Нет ключа.".into();
+            return crate::tr!("Нет ключа.");
         }
         if KEY_REFUSED.is_match(&message) {
-            return "Ключ не принят.".into();
+            return crate::tr!("Ключ не принят.");
         }
         if NOT_FOUND.is_match(&message) {
-            return "Модель или адрес не найдены.".into();
+            return crate::tr!("Модель или адрес не найдены.");
         }
         if REFUSED.is_match(&message) {
-            return "Сервис отказал: лимит или пустой счёт.".into();
+            return crate::tr!("Сервис отказал: лимит или пустой счёт.");
         }
         if UNREACHABLE.is_match(&message) {
-            return "Адрес не отвечает.".into();
+            return crate::tr!("Адрес не отвечает.");
         }
         if TIMED_OUT.is_match(&message) {
-            return format!("Не ответил за {} секунд.", CHECK_TIMEOUT.as_secs());
+            return crate::tr!("Не ответил за {seconds} секунд.", seconds = CHECK_TIMEOUT.as_secs());
         }
-        format!("Ошибка: {}", head(&message, 200))
+        crate::tr!("Ошибка: {message}", message = head(&message, 200))
     }
 }
 
 fn missing() -> ApiError {
-    ApiError::not_found("Такого провайдера нет.")
+    ApiError::not_found(crate::tr!("Такого провайдера нет."))
 }
 
 /// A provider as the one a sign-in's key is for.
@@ -1064,11 +1072,11 @@ fn address(preset: &ProviderPreset, value: Option<&Value>) -> Result<Option<Stri
     let given = text(value, 300);
     let url = if given.is_empty() { preset.base_url.unwrap_or("").to_string() } else { given };
     if url.is_empty() {
-        return Err(ApiError::bad_request("Укажите адрес сервиса."));
+        return Err(ApiError::bad_request(crate::tr!("Укажите адрес сервиса.")));
     }
     match url::Url::parse(&url) {
         Ok(parsed) if matches!(parsed.scheme(), "http" | "https") => Ok(Some(url.trim_end_matches('/').to_string())),
-        _ => Err(ApiError::bad_request("Адрес должен начинаться с http:// или https://.")),
+        _ => Err(ApiError::bad_request(crate::tr!("Адрес должен начинаться с http:// или https://."))),
     }
 }
 

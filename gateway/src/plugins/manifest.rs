@@ -1,7 +1,6 @@
 //! A plugin's manifest (`manifest.json` beside its code): who it is, which Host API and placements it needs, its
 //! budget, its rights and what it gives the gateway. It is checked whole before any of the plugin's code runs, and
 //! every problem is told at once, in words the panel shows (docs/plugins/AUTHORING.md).
-
 use std::collections::BTreeSet;
 
 use serde::Serialize;
@@ -83,13 +82,13 @@ impl PackageKind {
 
     /// Why the plugin host does not switch a package of this kind on; none for a plugin and an app (its program runs
     /// under the apps' supervisor, its functions are called over HTTP — stage 9).
-    pub fn not_a_plugin(self) -> Option<&'static str> {
+    pub fn not_a_plugin(self) -> Option<String> {
         match self {
             PackageKind::Plugin | PackageKind::App => None,
             PackageKind::Character => {
-                Some("персонаж — не приложение: его выбирают среди персонажей, а не включают здесь")
+                Some(crate::tr!("персонаж — не приложение: его выбирают среди персонажей, а не включают здесь"))
             }
-            PackageKind::Theme => Some("тема — не приложение: её выбирают в пульте, а не включают здесь"),
+            PackageKind::Theme => Some(crate::tr!("тема — не приложение: её выбирают в пульте, а не включают здесь")),
         }
     }
 }
@@ -139,19 +138,19 @@ pub enum Permission {
 }
 
 /// What a right of Host API 1 became (docs/plans/bus.md, «Один способ»): for the message that refuses the old word.
-pub fn right_now(old: &str) -> Option<&'static str> {
+pub fn right_now(old: &str) -> Option<String> {
     Some(match old {
-        "voice.intents" | "llm.tools" | "media.source" | "events" => "не нужно — хватает contributes",
-        "kv" | "files" => "не нужно — своё хранилище и своя папка без права",
-        "voice.say" => "call:system/voice",
-        "llm.chat" => "call:system/brain",
-        "tools.call" => "call:app/<id> или call:app/*",
-        "smart_home" => "call:system/smart-home",
-        "content:music" | "content:tales" => "call:system/content",
-        "notify" => "call:system/notify",
-        "schedule" => "call:system/schedule",
-        "midi" => "listen:device/midi",
-        "lan.mdns" => "не нужно — своя программа",
+        "voice.intents" | "llm.tools" | "media.source" | "events" => crate::tr!("не нужно — хватает contributes"),
+        "kv" | "files" => crate::tr!("не нужно — своё хранилище и своя папка без права"),
+        "voice.say" => "call:system/voice".to_string(),
+        "llm.chat" => "call:system/brain".to_string(),
+        "tools.call" => crate::tr!("call:app/<id> или call:app/*"),
+        "smart_home" => "call:system/smart-home".to_string(),
+        "content:music" | "content:tales" => "call:system/content".to_string(),
+        "notify" => "call:system/notify".to_string(),
+        "schedule" => "call:system/schedule".to_string(),
+        "midi" => "listen:device/midi".to_string(),
+        "lan.mdns" => crate::tr!("не нужно — своя программа"),
         _ => return None,
     })
 }
@@ -215,6 +214,8 @@ pub struct Budget {
     /// Its own folder on the bus (`files/app/<id>`) at most this big on a computer; the station keeps all files within
     /// its 5 MB (src/bus/providers/files.rs).
     pub files_mb: u64,
+    /// Long tasks an app runs at once (src/tasks): one unless it asks for more, four at most.
+    pub tasks: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -400,9 +401,104 @@ pub struct Manifest {
     /// `dataVersion`: the kind of the data it keeps, raised by its author when that changes (docs/plans/
     /// package-history.md): a step back of the code alone across a change of it is marked risky.
     pub data_version: Option<u32>,
+    /// `languages` (docs/plans/i18n.md): the languages it speaks, the first the one its own texts are in. Not given —
+    /// `["ru"]`, the household's first language.
+    pub languages: Vec<String>,
+    /// `locales.<code>`: its texts in the other languages it speaks.
+    pub locales: std::collections::BTreeMap<String, LocaleTexts>,
+}
+
+/// A package's texts in one language (`locales.<code>` of its manifest). What is missing is said in the next language
+/// of the order (`Manifest::texts`), then in its own.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocaleTexts {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    /// By setting key: its title and description.
+    pub settings: std::collections::BTreeMap<String, (Option<String>, Option<String>)>,
+    /// By schedule id: its title.
+    pub schedules: std::collections::BTreeMap<String, String>,
+    /// By card id (`contributes.panel.cards`): its title.
+    pub cards: std::collections::BTreeMap<String, String>,
 }
 
 impl Manifest {
+    /// The language of its own texts: the first of `languages`.
+    pub fn source_language(&self) -> &str {
+        self.languages.first().map(String::as_str).unwrap_or(crate::locale::SOURCE)
+    }
+
+    /// Its texts in the first language of `preferences` it speaks; none — its own texts serve (its source language
+    /// came first, or it speaks none of them).
+    pub fn texts(&self, preferences: &[String]) -> Option<&LocaleTexts> {
+        for code in preferences {
+            if code == self.source_language() {
+                return None;
+            }
+            if let Some(texts) = self.locales.get(code) {
+                return Some(texts);
+            }
+        }
+        None
+    }
+
+    /// Its title in the first language of `preferences` it has one in.
+    pub fn title_in(&self, preferences: &[String]) -> String {
+        self.texts(preferences).and_then(|texts| texts.title.clone()).unwrap_or_else(|| self.title.clone())
+    }
+
+    pub fn description_in(&self, preferences: &[String]) -> Option<String> {
+        self.texts(preferences).and_then(|texts| texts.description.clone()).or_else(|| self.description.clone())
+    }
+
+    /// Its settings with their titles and descriptions in the language of `preferences`.
+    pub fn settings_in(&self, preferences: &[String]) -> Vec<SettingSpec> {
+        let texts = self.texts(preferences);
+        self.settings
+            .iter()
+            .map(|spec| {
+                let mut spec = spec.clone();
+                if let Some((title, description)) = texts.and_then(|texts| texts.settings.get(&spec.key)) {
+                    if let Some(title) = title {
+                        spec.title = title.clone();
+                    }
+                    if description.is_some() {
+                        spec.description = description.clone();
+                    }
+                }
+                spec
+            })
+            .collect()
+    }
+
+    /// Its cards (`contributes.panel.cards`) with their titles in the language of `preferences`.
+    pub fn cards_in(&self, preferences: &[String]) -> Vec<Value> {
+        let cards = self.contributes.panel.as_ref().and_then(|panel| panel.get("cards")).and_then(Value::as_array);
+        let texts = self.texts(preferences);
+        cards
+            .map(|cards| {
+                cards
+                    .iter()
+                    .map(|card| {
+                        let mut card = card.clone();
+                        let id = card.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+                        if let (Some(title), Some(card)) =
+                            (texts.and_then(|texts| texts.cards.get(&id)), card.as_object_mut())
+                        {
+                            card.insert("title".into(), Value::String(title.clone()));
+                        }
+                        card
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// A schedule's title in the language of `preferences`.
+    pub fn schedule_title_in(&self, id: &str, preferences: &[String]) -> Option<String> {
+        self.texts(preferences).and_then(|texts| texts.schedules.get(id).cloned())
+    }
+
     pub fn has(&self, permission: &Permission) -> bool {
         self.permissions.contains(permission)
     }
@@ -420,6 +516,19 @@ impl Manifest {
             .unwrap_or(crate::bus::Level::None)
     }
 
+    /// Whether it may reach the household's files — the home folder, projects, people's folders — at any step: what
+    /// it says after reading them is text from the house's private store (docs/plans/shared-folders.md).
+    pub fn reads_household(&self) -> bool {
+        self.permissions.iter().any(|permission| match permission {
+            Permission::Bus { pattern, .. } => {
+                let text = pattern.as_str();
+                let base = text.strip_suffix("/*").unwrap_or(text);
+                base == "*" || base == "files" || (base.starts_with("files/") && !base.starts_with("files/app/"))
+            }
+            _ => false,
+        })
+    }
+
     /// The hosts it may reach.
     pub fn hosts(&self) -> Vec<String> {
         self.permissions
@@ -435,11 +544,11 @@ impl Manifest {
     pub fn incompatible_with(&self, placement: Placement) -> Option<String> {
         (!self.runs.contains(&placement)).then(|| {
             let runs: Vec<&str> = self.runs.iter().map(|runs| runs.as_str()).collect();
-            format!(
-                "не работает здесь: размещение «{}» ({}), а приложение — для {}",
-                placement.title(),
-                placement.as_str(),
-                runs.join(", ")
+            crate::tr!(
+                "не работает здесь: размещение «{placement}» ({placement2}), а приложение — для {runs}",
+                placement = placement.title_text(),
+                placement2 = placement.as_str(),
+                runs = runs.join(", ")
             )
         })
     }
@@ -554,7 +663,7 @@ fn tool_name(name: &str) -> bool {
 /// Reads and checks a manifest's JSON.
 pub fn parse(text: &str) -> Result<Manifest, ManifestError> {
     let value: Value = serde_json::from_str(text).map_err(|error| ManifestError {
-        problems: vec![format!("manifest.json не читается как JSON: {error}")],
+        problems: vec![crate::tr!("manifest.json не читается как JSON: {error}", error = error)],
     })?;
     check(&value)
 }
@@ -563,42 +672,52 @@ pub fn parse(text: &str) -> Result<Manifest, ManifestError> {
 pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
     let mut problems = Vec::new();
     let Some(root) = value.as_object() else {
-        return Err(ManifestError { problems: vec!["manifest.json должен быть объектом".into()] });
+        return Err(ManifestError {
+            problems: vec![crate::tr!("manifest.json должен быть объектом")]
+        });
     };
     let text = |key: &str| root.get(key).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty());
 
     match root.get("schema").and_then(Value::as_u64) {
         Some(MANIFEST_SCHEMA) => {}
-        Some(other) => problems.push(format!("schema {other}: этот шлюз понимает манифесты версии {MANIFEST_SCHEMA}")),
-        None => problems.push(format!("нет schema (нужно {MANIFEST_SCHEMA})")),
+        Some(other) => problems.push(crate::tr!(
+            "schema {other}: этот шлюз понимает манифесты версии {MANIFEST_SCHEMA}",
+            other = other,
+            MANIFEST_SCHEMA = MANIFEST_SCHEMA
+        )),
+        None => problems.push(crate::tr!("нет schema (нужно {MANIFEST_SCHEMA})", MANIFEST_SCHEMA = MANIFEST_SCHEMA)),
     }
     let kind = match text("kind") {
         None => PackageKind::Plugin,
         Some(name) => PackageKind::parse(name).unwrap_or_else(|| {
             let kinds = PackageKind::ALL.map(PackageKind::as_str).join(", ");
-            problems.push(format!("kind «{name}»: такого вида пакетов нет; есть {kinds}"));
+            problems.push(crate::tr!(
+                "kind «{name}»: такого вида пакетов нет; есть {kinds}",
+                name = name,
+                kinds = kinds
+            ));
             PackageKind::Plugin
         }),
     };
     let id = text("id").unwrap_or_default().to_string();
     if !valid_id(&id) {
-        problems.push("id: строчные латинские буквы, цифры и «-», с буквы, до 32 знаков".into());
+        problems.push(crate::tr!("id: строчные латинские буквы, цифры и «-», с буквы, до 32 знаков"));
     }
     let version = match text("version").map(semver::Version::parse) {
         Some(Ok(version)) => version,
         Some(Err(_)) | None => {
-            problems.push("version: номер версии вида 1.2.0".into());
+            problems.push(crate::tr!("version: номер версии вида 1.2.0"));
             semver::Version::new(0, 0, 0)
         }
     };
     let title: String = text("title").map(|title| title.chars().take(80).collect()).unwrap_or_default();
     if title.is_empty() {
-        problems.push("нет title".into());
+        problems.push(crate::tr!("нет title"));
     }
     let description: Option<String> = text("description").map(|description| description.chars().take(500).collect());
     let license = text("license").map(str::to_string);
     if license.as_ref().is_some_and(|license| license.chars().count() > MAX_LICENSE) {
-        problems.push(format!("license: одна строка до {MAX_LICENSE} знаков"));
+        problems.push(crate::tr!("license: одна строка до {MAX_LICENSE} знаков", MAX_LICENSE = MAX_LICENSE));
     }
 
     let api = text("api").unwrap_or_default().to_string();
@@ -606,11 +725,9 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
     let coded = matches!(kind, PackageKind::Plugin | PackageKind::App);
     match semver::VersionReq::parse(&api) {
         Ok(requirement) if requirement.matches(&HOST_API) || !coded => {}
-        Ok(_) if api.starts_with("^1") || api.starts_with("1") || api.starts_with(">=1") => problems.push(format!(
-            "приложение для Host API 1 ({api}), а у шлюза {HOST_API}: переделайте его в мастерской («api»: «^2», права — связи шины) или удалите"
-        )),
-        Ok(_) => problems.push(format!("нужен Host API {api}, а у шлюза {}", HOST_API)),
-        Err(_) => problems.push("api: требование к версии Host API, например «^2»".into()),
+        Ok(_) if api.starts_with("^1") || api.starts_with("1") || api.starts_with(">=1") => problems.push(crate::tr!("приложение для Host API 1 ({api}), а у шлюза {HOST_API}: переделайте его в мастерской («api»: «^2», права — связи шины) или удалите", api = api, HOST_API = HOST_API)),
+        Ok(_) => problems.push(crate::tr!("нужен Host API {api}, а у шлюза {host_api}", api = api, host_api = HOST_API)),
+        Err(_) => problems.push(crate::tr!("api: требование к версии Host API, например «^2»")),
     }
     let runtime = match text("runtime") {
         None | Some("js") => Runtime::Js,
@@ -619,7 +736,10 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
         // An app's program is its own (stage 9): a process beside the gateway.
         Some("process") if kind == PackageKind::App => Runtime::Process,
         Some(other) => {
-            problems.push(format!("runtime «{other}» не подходит: у плагина js, wasm или mcp, у приложения — process"));
+            problems.push(crate::tr!(
+                "runtime «{other}» не подходит: у плагина js, wasm или mcp, у приложения — process",
+                other = other
+            ));
             Runtime::Js
         }
     };
@@ -631,19 +751,20 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
             let plain = !file.is_empty()
                 && file.split('/').all(|part| !part.is_empty() && !part.starts_with('.') && part.len() <= 80);
             if !plain {
-                problems.push(format!("targets.{key}.file: путь внутри пакета, например bin/app-{key}"));
+                problems.push(crate::tr!("targets.{key}.file: путь внутри пакета, например bin/app-{key}", key = key));
             } else if sha256.len() != 64 || !sha256.chars().all(|c| c.is_ascii_hexdigit()) {
-                problems.push(format!("targets.{key}.sha256: 64 шестнадцатеричных знака"));
+                problems.push(crate::tr!("targets.{key}.sha256: 64 шестнадцатеричных знака", key = key));
             } else {
                 targets.insert(key.clone(), Target { file, sha256 });
             }
         }
     }
     if kind == PackageKind::App && runtime == Runtime::Process && targets.is_empty() {
-        problems.push("targets: сборки приложения под платформы (linux-aarch64, darwin-arm64, linux-x86_64)".into());
+        problems
+            .push(crate::tr!("targets: сборки приложения под платформы (linux-aarch64, darwin-arm64, linux-x86_64)"));
     }
     if kind == PackageKind::App && runtime != Runtime::Process {
-        problems.push("приложение — это runtime «process»: своя программа рядом со шлюзом".into());
+        problems.push(crate::tr!("приложение — это runtime «process»: своя программа рядом со шлюзом"));
     }
     let health = HealthCheck {
         path: value
@@ -658,7 +779,7 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
     if runtime == Runtime::Mcp {
         match mcp_url.as_deref().map(url::Url::parse) {
             Some(Ok(url)) if url.scheme() == "https" || url.scheme() == "http" => {}
-            _ => problems.push("mcp.url: адрес MCP-сервера (https://…)".into()),
+            _ => problems.push(crate::tr!("mcp.url: адрес MCP-сервера (https://…)")),
         }
     }
 
@@ -669,15 +790,15 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
                 match name.as_str().and_then(Placement::parse) {
                     Some(placement) if !runs.contains(&placement) => runs.push(placement),
                     Some(_) => {}
-                    None => problems.push(format!(
-                        "runs: «{}» — нет такого размещения; есть {}",
-                        crate::skills::js::string_of(name),
-                        Placement::ALL.map(|placement| placement.as_str()).join(", ")
+                    None => problems.push(crate::tr!(
+                        "runs: «{name}» — нет такого размещения; есть {placement}",
+                        name = crate::skills::js::string_of(name),
+                        placement = Placement::ALL.map(|placement| placement.as_str()).join(", ")
                     )),
                 }
             }
         }
-        _ => problems.push("runs: список размещений, где плагин работает (pc, station, stationServer)".into()),
+        _ => problems.push(crate::tr!("runs: список размещений, где плагин работает (pc, station, stationServer)")),
     }
 
     let data_version = match root.get("dataVersion") {
@@ -685,7 +806,7 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
         Some(value) => match value.as_u64().filter(|n| *n <= u32::MAX as u64) {
             Some(n) => Some(n as u32),
             None => {
-                problems.push("dataVersion: целое число — вид данных, который хранит плагин".into());
+                problems.push(crate::tr!("dataVersion: целое число — вид данных, который хранит плагин"));
                 None
             }
         },
@@ -694,7 +815,7 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
         None | Some("here") => false,
         Some("home") => true,
         Some(other) => {
-            problems.push(format!("prefer «{other}»: home (тяжёлое — на компьютере) или here"));
+            problems.push(crate::tr!("prefer «{other}»: home (тяжёлое — на компьютере) или here", other = other));
             false
         }
     };
@@ -704,7 +825,7 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
         Some(value) => match value.as_u64().filter(|n| (1..=max).contains(n)) {
             Some(n) => n,
             None => {
-                problems.push(format!("budget.{key}: целое от 1 до {max}"));
+                problems.push(crate::tr!("budget.{key}: целое от 1 до {max}", key = key, max = max));
                 default
             }
         },
@@ -713,6 +834,12 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
         memory_mb: limit("memoryMb", DEFAULT_MEMORY_MB, MAX_MEMORY_MB, &mut problems),
         storage_mb: limit("storageMb", DEFAULT_STORAGE_MB, MAX_STORAGE_MB, &mut problems),
         files_mb: limit("filesMb", crate::bus::providers::files::APP_FOLDER_MB, 4096, &mut problems),
+        tasks: limit(
+            "tasks",
+            u64::from(crate::tasks::DEFAULT_AT_ONCE),
+            u64::from(crate::tasks::MAX_AT_ONCE),
+            &mut problems,
+        ) as u32,
     };
 
     let mut permissions = BTreeSet::new();
@@ -727,27 +854,31 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
                     None => {
                         let text = crate::skills::js::string_of(name);
                         problems.push(match right_now(&text) {
-                            Some(now) => format!("permissions: «{text}» — право Host API 1; теперь: {now}"),
-                            None => format!(
-                                "permissions: «{text}» — нет такого права: есть net:<хост> и связи see:/listen:/call:/edit:<адрес>"
-                            ),
+                            Some(now) => crate::tr!("permissions: «{text}» — право Host API 1; теперь: {now}", text = text, now = now),
+                            None => crate::tr!("permissions: «{text}» — нет такого права: есть net:<хост> и связи see:/listen:/call:/edit:<адрес>", text = text),
                         })
                     }
                 }
             }
         }
-        Some(_) => problems.push("permissions: список прав".into()),
+        Some(_) => problems.push(crate::tr!("permissions: список прав")),
     }
     let permissions: Vec<Permission> = permissions.into_iter().collect();
 
     let settings = settings(root.get("settings"), &mut problems);
-    let contributes = contributes(root.get("contributes"), &permissions, &mut problems);
+    let mut contributes = contributes(root.get("contributes"), &permissions, &mut problems);
+    let (languages, locales) = languages(root, &settings, &mut contributes, &mut problems);
     // `at: "{key}"` — the time a person sets in the plugin's settings: a string setting of it.
     for spec in &contributes.schedules {
         let super::schedule::When::At { at, .. } = &spec.when else { continue };
         let Some(key) = at.strip_prefix('{').and_then(|rest| rest.strip_suffix('}')) else { continue };
         if !settings.iter().any(|setting| setting.key == key && setting.r#type == SettingType::String) {
-            problems.push(format!("contributes.schedules «{}»: at «{at}» — нет строковой настройки «{key}»", spec.id));
+            problems.push(crate::tr!(
+                "contributes.schedules «{id}»: at «{at}» — нет строковой настройки «{key}»",
+                id = spec.id,
+                at = at,
+                key = key
+            ));
         }
     }
     // A keyboard is plugged into a computer (docs/plans/midi.md): an app that hears one must run there.
@@ -756,7 +887,7 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
             if *level >= crate::bus::Level::Listen && crate::bus::Address::parse("device/midi").is_ok_and(|midi| pattern.matches(&midi)))
     });
     if hears_midi && !runs.contains(&Placement::Pc) {
-        problems.push("midi: MIDI-клавиатура подключается к компьютеру — добавьте pc в runs".into());
+        problems.push(crate::tr!("midi: MIDI-клавиатура подключается к компьютеру — добавьте pc в runs"));
     }
     // A character and a theme are data: what needs code is a plugin's to give.
     if matches!(kind, PackageKind::Character | PackageKind::Theme) {
@@ -768,7 +899,11 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
             ("schedules", contributes.schedules.len()),
         ];
         for (what, _) in coded.into_iter().filter(|(_, count)| *count > 0) {
-            problems.push(format!("contributes.{what}: у пакета вида {} нет кода, это дело плагина", kind.as_str()));
+            problems.push(crate::tr!(
+                "contributes.{what}: у пакета вида {kind} нет кода, это дело плагина",
+                what = what,
+                kind = kind.as_str()
+            ));
         }
     }
 
@@ -794,28 +929,214 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
         settings,
         contributes,
         data_version,
+        languages,
+        locales,
     })
+}
+
+/// The most languages one package speaks.
+const MAX_LANGUAGES: usize = 40;
+
+/// `languages` and `locales` (docs/plans/i18n.md): the codes it speaks, its texts in each but the first, and its
+/// phrases in them — added to the phrases of their handler, so the voice hears a phrase in any of its languages.
+fn languages(
+    root: &Map<String, Value>,
+    settings: &[SettingSpec],
+    contributes: &mut Contributes,
+    problems: &mut Vec<String>,
+) -> (Vec<String>, std::collections::BTreeMap<String, LocaleTexts>) {
+    let mut codes: Vec<String> = Vec::new();
+    match root.get("languages") {
+        None | Some(Value::Null) => codes.push(crate::locale::SOURCE.to_string()),
+        Some(Value::Array(items)) if !items.is_empty() => {
+            for item in items.iter().take(MAX_LANGUAGES) {
+                match item.as_str().and_then(crate::locale::normalize) {
+                    Some(code) if item.as_str() == Some(code.as_str()) => {
+                        if codes.contains(&code) {
+                            problems.push(crate::tr!("languages: «{code}» дважды", code = code));
+                        } else {
+                            codes.push(code);
+                        }
+                    }
+                    _ => problems
+                        .push(crate::tr!("languages: {item} — код языка строчными буквами: ru, en, de", item = item)),
+                }
+            }
+            if items.len() > MAX_LANGUAGES {
+                problems.push(crate::tr!("languages: не больше {MAX_LANGUAGES}", MAX_LANGUAGES = MAX_LANGUAGES));
+            }
+        }
+        Some(_) => {
+            problems.push(crate::tr!("languages: непустой список кодов языков, первый — язык текстов манифеста"))
+        }
+    }
+    let mut locales = std::collections::BTreeMap::new();
+    let Some(given) = root.get("locales") else { return (codes, locales) };
+    let Some(given) = given.as_object() else {
+        problems.push(crate::tr!("locales: объект — переводы по коду языка"));
+        return (codes, locales);
+    };
+    let short = |value: Option<&Value>, limit: usize| {
+        value
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(|text| text.chars().take(limit).collect::<String>())
+    };
+    let mut phrases_seen: usize = contributes.intents.iter().map(|intent| intent.phrases.len()).sum();
+    for (code, texts) in given {
+        let at = format!("locales.{code}");
+        if !codes.contains(code) {
+            problems.push(crate::tr!("{at}: языка «{code}» нет в languages", at = at, code = code));
+            continue;
+        }
+        // The manifest's own language: its texts are the manifest's fields — nothing to look up.
+        if Some(code) == codes.first() {
+            continue;
+        }
+        let Some(texts) = texts.as_object() else {
+            problems.push(crate::tr!("{at}: объект с title, description, settings, schedules, intents", at = at));
+            continue;
+        };
+        let mut out = LocaleTexts {
+            title: short(texts.get("title"), 80),
+            description: short(texts.get("description"), 500),
+            ..LocaleTexts::default()
+        };
+        if let Some(given) = texts.get("settings") {
+            match given.as_object() {
+                Some(given) => {
+                    for (key, text) in given {
+                        if !settings.iter().any(|setting| &setting.key == key) {
+                            problems.push(crate::tr!(
+                                "{at}.settings: настройки «{key}» нет в settings",
+                                at = at,
+                                key = key
+                            ));
+                            continue;
+                        }
+                        out.settings
+                            .insert(key.clone(), (short(text.get("title"), 80), short(text.get("description"), 300)));
+                    }
+                }
+                None => problems
+                    .push(crate::tr!("{at}.settings: объект по ключу настройки — {title, description}", at = at)),
+            }
+        }
+        if let Some(given) = texts.get("schedules") {
+            match given.as_object() {
+                Some(given) => {
+                    for (id, text) in given {
+                        if !contributes.schedules.iter().any(|schedule| &schedule.id == id) {
+                            problems.push(crate::tr!(
+                                "{at}.schedules: расписания «{id}» нет в contributes.schedules",
+                                at = at,
+                                id = id
+                            ));
+                            continue;
+                        }
+                        let title = short(text.get("title"), 80).or_else(|| short(Some(text), 80));
+                        if let Some(title) = title {
+                            out.schedules.insert(id.clone(), title);
+                        }
+                    }
+                }
+                None => problems.push(crate::tr!("{at}.schedules: объект по id расписания — {title}", at = at)),
+            }
+        }
+        if let Some(given) = texts.get("cards") {
+            let ids: Vec<&str> = contributes
+                .panel
+                .as_ref()
+                .and_then(|panel| panel.get("cards"))
+                .and_then(Value::as_array)
+                .map(|cards| cards.iter().filter_map(|card| card.get("id").and_then(Value::as_str)).collect())
+                .unwrap_or_default();
+            match given.as_object() {
+                Some(given) => {
+                    for (id, text) in given {
+                        if !ids.contains(&id.as_str()) {
+                            problems.push(crate::tr!(
+                                "{at}.cards: карточки «{id}» нет в contributes.panel.cards",
+                                at = at,
+                                id = id
+                            ));
+                            continue;
+                        }
+                        if let Some(title) = short(text.get("title"), 80).or_else(|| short(Some(text), 80)) {
+                            out.cards.insert(id.clone(), title);
+                        }
+                    }
+                }
+                None => problems.push(crate::tr!("{at}.cards: объект по id карточки — {title}", at = at)),
+            }
+        }
+        if let Some(given) = texts.get("intents") {
+            match given.as_object() {
+                Some(given) => {
+                    for (handler, templates) in given {
+                        let Some(intent) = contributes.intents.iter_mut().find(|intent| &intent.handler == handler)
+                        else {
+                            problems.push(crate::tr!(
+                                "{at}.intents: обработчика «{handler}» нет в contributes.intents",
+                                at = at,
+                                handler = handler
+                            ));
+                            continue;
+                        };
+                        let Some(templates) = templates.as_array() else {
+                            problems.push(crate::tr!(
+                                "{at}.intents.{handler}: список фраз",
+                                at = at,
+                                handler = handler
+                            ));
+                            continue;
+                        };
+                        for template in templates {
+                            phrases_seen += 1;
+                            match template.as_str().map(Phrase::parse) {
+                                Some(Ok(phrase)) => intent.phrases.push(phrase),
+                                Some(Err(problem)) => problems.push(format!("{at}.intents.{handler}: {problem}")),
+                                None => problems.push(crate::tr!(
+                                    "{at}.intents.{handler}: фраза — строка",
+                                    at = at,
+                                    handler = handler
+                                )),
+                            }
+                        }
+                    }
+                }
+                None => problems
+                    .push(crate::tr!("{at}.intents: объект по обработчику — список фраз на этом языке", at = at)),
+            }
+        }
+        locales.insert(code.clone(), out);
+    }
+    if phrases_seen > MAX_PHRASES * codes.len().max(1) {
+        problems.push(crate::tr!("intents: не больше {MAX_PHRASES} фраз на язык", MAX_PHRASES = MAX_PHRASES));
+    }
+    (codes, locales)
 }
 
 fn settings(value: Option<&Value>, problems: &mut Vec<String>) -> Vec<SettingSpec> {
     let Some(value) = value else { return Vec::new() };
     let Some(items) = value.as_array() else {
-        problems.push("settings: список настроек".into());
+        problems.push(crate::tr!("settings: список настроек"));
         return Vec::new();
     };
     if items.len() > MAX_SETTINGS {
-        problems.push(format!("settings: не больше {MAX_SETTINGS}"));
+        problems.push(crate::tr!("settings: не больше {MAX_SETTINGS}", MAX_SETTINGS = MAX_SETTINGS));
     }
     let mut specs: Vec<SettingSpec> = Vec::new();
     for item in items.iter().take(MAX_SETTINGS) {
         let field = |key: &str| item.get(key).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty());
         let key = field("key").unwrap_or_default();
         if !identifier(key) || key.contains('$') {
-            problems.push(format!("settings: ключ «{key}» — латинские буквы, цифры и _"));
+            problems.push(crate::tr!("settings: ключ «{key}» — латинские буквы, цифры и _", key = key));
             continue;
         }
         if specs.iter().any(|spec| spec.key == key) {
-            problems.push(format!("settings: ключ «{key}» дважды"));
+            problems.push(crate::tr!("settings: ключ «{key}» дважды", key = key));
             continue;
         }
         let r#type = match field("type") {
@@ -823,7 +1144,7 @@ fn settings(value: Option<&Value>, problems: &mut Vec<String>) -> Vec<SettingSpe
             Some("number") => SettingType::Number,
             Some("boolean") => SettingType::Boolean,
             _ => {
-                problems.push(format!("settings.{key}: type — string, number или boolean"));
+                problems.push(crate::tr!("settings.{key}: type — string, number или boolean", key = key));
                 continue;
             }
         };
@@ -833,7 +1154,7 @@ fn settings(value: Option<&Value>, problems: &mut Vec<String>) -> Vec<SettingSpe
                 Some(options.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>())
             }
             Some(_) => {
-                problems.push(format!("settings.{key}: options — список строк, только у type string"));
+                problems.push(crate::tr!("settings.{key}: options — список строк, только у type string", key = key));
                 None
             }
         };
@@ -841,11 +1162,11 @@ fn settings(value: Option<&Value>, problems: &mut Vec<String>) -> Vec<SettingSpe
             None | Some(Value::Bool(false)) => false,
             Some(Value::Bool(true)) if r#type == SettingType::String => true,
             Some(Value::Bool(true)) => {
-                problems.push(format!("settings.{key}: secret — только у type string"));
+                problems.push(crate::tr!("settings.{key}: secret — только у type string", key = key));
                 continue;
             }
             Some(_) => {
-                problems.push(format!("settings.{key}: secret — true или false"));
+                problems.push(crate::tr!("settings.{key}: secret — true или false", key = key));
                 continue;
             }
         };
@@ -860,7 +1181,7 @@ fn settings(value: Option<&Value>, problems: &mut Vec<String>) -> Vec<SettingSpe
         };
         if let Some(default) = &spec.default {
             if !spec.accepts(default) {
-                problems.push(format!("settings.{key}: default не подходит к type"));
+                problems.push(crate::tr!("settings.{key}: default не подходит к type", key = key));
                 continue;
             }
         }
@@ -872,7 +1193,11 @@ fn settings(value: Option<&Value>, problems: &mut Vec<String>) -> Vec<SettingSpe
 fn handler_of(item: &Value, fallback: &str, at: &str, problems: &mut Vec<String>) -> String {
     let handler = item.get("handler").and_then(Value::as_str).unwrap_or(fallback).trim().to_string();
     if !identifier(&handler) {
-        problems.push(format!("{at}: handler «{handler}» — имя функции, которую экспортирует backend.js"));
+        problems.push(crate::tr!(
+            "{at}: handler «{handler}» — имя функции, которую экспортирует backend.js",
+            at = at,
+            handler = handler
+        ));
     }
     handler
 }
@@ -882,12 +1207,16 @@ fn capability_of(item: &Value, at: &str, problems: &mut Vec<String>) -> Capabili
         None => CapabilityName::Plugins,
         Some(name) => match is_capability(name) {
             Some(capability) if STATION_CONTROLS.contains(&capability) => {
-                problems.push(format!("{at}: «{name}» — управление колонкой, его ведут встроенные навыки"));
+                problems.push(crate::tr!(
+                    "{at}: «{name}» — управление колонкой, его ведут встроенные навыки",
+                    at = at,
+                    name = name
+                ));
                 CapabilityName::Plugins
             }
             Some(capability) => capability,
             None => {
-                problems.push(format!("{at}: нет возможности «{name}»"));
+                problems.push(crate::tr!("{at}: нет возможности «{name}»", at = at, name = name));
                 CapabilityName::Plugins
             }
         },
@@ -907,7 +1236,7 @@ fn list<'a>(contributes: &'a Map<String, Value>, key: &str, problems: &mut Vec<S
         None => &[],
         Some(Value::Array(items)) => items,
         Some(_) => {
-            problems.push(format!("contributes.{key}: список"));
+            problems.push(crate::tr!("contributes.{key}: список", key = key));
             &[]
         }
     }
@@ -916,7 +1245,7 @@ fn list<'a>(contributes: &'a Map<String, Value>, key: &str, problems: &mut Vec<S
 fn contributes(value: Option<&Value>, permissions: &[Permission], problems: &mut Vec<String>) -> Contributes {
     let Some(value) = value else { return Contributes::default() };
     let Some(contributes) = value.as_object() else {
-        problems.push("contributes: объект".into());
+        problems.push(crate::tr!("contributes: объект"));
         return Contributes::default();
     };
     let mut out = Contributes {
@@ -940,31 +1269,32 @@ fn contributes(value: Option<&Value>, permissions: &[Permission], problems: &mut
                     match template.as_str().map(Phrase::parse) {
                         Some(Ok(phrase)) => phrases.push(phrase),
                         Some(Err(problem)) => problems.push(format!("{at}: {problem}")),
-                        None => problems.push(format!("{at}: фраза — строка")),
+                        None => problems.push(crate::tr!("{at}: фраза — строка", at = at)),
                     }
                 }
             }
-            _ => problems.push(format!("{at}: phrases — непустой список фраз")),
+            _ => problems.push(crate::tr!("{at}: phrases — непустой список фраз", at = at)),
         }
         out.intents.push(IntentSpec { phrases, handler, capability });
     }
     if phrases_seen > MAX_PHRASES {
-        problems.push(format!("contributes.intents: не больше {MAX_PHRASES} фраз"));
+        problems.push(crate::tr!("contributes.intents: не больше {MAX_PHRASES} фраз", MAX_PHRASES = MAX_PHRASES));
     }
 
     let tools = list(contributes, "tools", problems);
     if tools.len() > MAX_TOOLS {
-        problems.push(format!("contributes.tools: не больше {MAX_TOOLS}"));
+        problems.push(crate::tr!("contributes.tools: не больше {MAX_TOOLS}", MAX_TOOLS = MAX_TOOLS));
     }
     for (index, item) in tools.iter().enumerate().take(MAX_TOOLS) {
         let name = item.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
         let at = format!("contributes.tools[{index}]");
         if !tool_name(&name) {
-            problems.push(format!("{at}: name — строчные латинские буквы, цифры и _, с буквы, до 48 знаков"));
+            problems
+                .push(crate::tr!("{at}: name — строчные латинские буквы, цифры и _, с буквы, до 48 знаков", at = at));
         } else if tool_spec(&name).is_some() || name.starts_with("mcp_") {
-            problems.push(format!("{at}: имя «{name}» занято встроенными инструментами"));
+            problems.push(crate::tr!("{at}: имя «{name}» занято встроенными инструментами", at = at, name = name));
         } else if out.tools.iter().any(|tool| tool.name == name) {
-            problems.push(format!("{at}: имя «{name}» дважды"));
+            problems.push(crate::tr!("{at}: имя «{name}» дважды", at = at, name = name));
         }
         let description: String = item
             .get("description")
@@ -975,13 +1305,13 @@ fn contributes(value: Option<&Value>, permissions: &[Permission], problems: &mut
             .take(1024)
             .collect();
         if description.is_empty() {
-            problems.push(format!("{at}: нужно description — по нему мозг выбирает инструмент"));
+            problems.push(crate::tr!("{at}: нужно description — по нему мозг выбирает инструмент", at = at));
         }
         let input = match item.get("input").or_else(|| item.get("inputSchema")) {
             None => json!({ "type": "object", "properties": {} }),
             Some(schema) if schema.get("type") == Some(&json!("object")) => normalize_schema(schema),
             Some(_) => {
-                problems.push(format!("{at}: input — JSON Schema объекта (\"type\": \"object\")"));
+                problems.push(crate::tr!("{at}: input — JSON Schema объекта (\"type\": \"object\")", at = at));
                 json!({ "type": "object", "properties": {} })
             }
         };
@@ -1004,12 +1334,12 @@ fn contributes(value: Option<&Value>, permissions: &[Permission], problems: &mut
         let at = format!("contributes.media[{index}]");
         let id = item.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
         if !valid_id(&id.replace('_', "-")) {
-            problems.push(format!("{at}: id — строчные латинские буквы, цифры, «-» и «_»"));
+            problems.push(crate::tr!("{at}: id — строчные латинские буквы, цифры, «-» и «_»", at = at));
         } else if out.media.iter().any(|spec| spec.id == id) {
-            problems.push(format!("{at}: id «{id}» дважды"));
+            problems.push(crate::tr!("{at}: id «{id}» дважды", at = at, id = id));
         }
         let Some(kind) = item.get("kind").and_then(Value::as_str).and_then(MediaKind::parse) else {
-            problems.push(format!("{at}: kind — radio, music или tales"));
+            problems.push(crate::tr!("{at}: kind — radio, music или tales", at = at));
             continue;
         };
         let handler = handler_of(item, &id, &at, problems);
@@ -1021,7 +1351,12 @@ fn contributes(value: Option<&Value>, permissions: &[Permission], problems: &mut
         let at = format!("contributes.events[{index}]");
         let name = item.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
         if !PLUGIN_EVENTS.contains(&name.as_str()) {
-            problems.push(format!("{at}: событие «{name}» плагинам не отдаётся; есть {}", PLUGIN_EVENTS.join(", ")));
+            problems.push(crate::tr!(
+                "{at}: событие «{name}» плагинам не отдаётся; есть {plugin_events}",
+                at = at,
+                name = name,
+                plugin_events = PLUGIN_EVENTS.join(", ")
+            ));
             continue;
         }
         let handler = handler_of(item, "", &at, problems);
@@ -1029,16 +1364,19 @@ fn contributes(value: Option<&Value>, permissions: &[Permission], problems: &mut
     }
     let schedules = list(contributes, "schedules", problems);
     if !schedules.is_empty() && !asks(permissions, "system/schedule", crate::bus::Level::Call) {
-        problems.push("contributes.schedules: нужна связь call:system/schedule".into());
+        problems.push(crate::tr!("contributes.schedules: нужна связь call:system/schedule"));
     }
     if schedules.len() > super::schedule::MAX_RHYTHMS {
-        problems.push(format!("contributes.schedules: до {} ритмов", super::schedule::MAX_RHYTHMS));
+        problems.push(crate::tr!(
+            "contributes.schedules: до {max_rhythms} ритмов",
+            max_rhythms = super::schedule::MAX_RHYTHMS
+        ));
     }
     for (index, item) in schedules.iter().enumerate().take(super::schedule::MAX_RHYTHMS) {
         let at = format!("contributes.schedules[{index}]");
         let Some(spec) = super::schedule::rhythm(item, &at, permissions, problems) else { continue };
         if out.schedules.iter().any(|known| known.id == spec.id) {
-            problems.push(format!("{at}: id «{}» уже есть", spec.id));
+            problems.push(crate::tr!("{at}: id «{id}» уже есть", at = at, id = spec.id));
             continue;
         }
         out.schedules.push(spec);
@@ -1051,7 +1389,7 @@ fn contributes(value: Option<&Value>, permissions: &[Permission], problems: &mut
 fn bus_spec(value: Option<&Value>, permissions: &[Permission], problems: &mut Vec<String>) -> BusSpec {
     let Some(value) = value else { return BusSpec::default() };
     let Some(bus) = value.as_object() else {
-        problems.push("contributes.bus: объект".into());
+        problems.push(crate::tr!("contributes.bus: объект"));
         return BusSpec::default();
     };
     let mut spec = BusSpec::default();
@@ -1063,14 +1401,17 @@ fn bus_spec(value: Option<&Value>, permissions: &[Permission], problems: &mut Ve
                 .filter_map(|item| match item.as_str() {
                     Some(name) if identifier(name) || news_name(name) => Some(name.to_string()),
                     _ => {
-                        problems
-                            .push(format!("contributes.bus.{key}: «{}» — не имя", crate::skills::js::string_of(item)));
+                        problems.push(crate::tr!(
+                            "contributes.bus.{key}: «{item}» — не имя",
+                            key = key,
+                            item = crate::skills::js::string_of(item)
+                        ));
                         None
                     }
                 })
                 .collect(),
             Some(_) => {
-                problems.push(format!("contributes.bus.{key}: список имён"));
+                problems.push(crate::tr!("contributes.bus.{key}: список имён", key = key));
                 Vec::new()
             }
         }
@@ -1085,19 +1426,20 @@ fn bus_spec(value: Option<&Value>, permissions: &[Permission], problems: &mut Ve
                         Some(danger) => {
                             spec.danger.insert(handle.clone(), danger);
                         }
-                        None => problems.push(format!(
-                            "contributes.bus.danger.{handle}: money, delete, outside, locks, camera или access"
+                        None => problems.push(crate::tr!(
+                            "contributes.bus.danger.{handle}: money, delete, outside, locks, camera или access",
+                            handle = handle
                         )),
                     }
                 }
             }
-            None => problems.push("contributes.bus.danger: объект «умение → опасность»".into()),
+            None => problems.push(crate::tr!("contributes.bus.danger: объект «умение → опасность»")),
         }
     }
     if let Some(ask) = bus.get("ask") {
         match ask.as_str().filter(|name| identifier(name)) {
             Some(name) => spec.ask = Some(name.to_string()),
-            None => problems.push("contributes.bus.ask: имя функции, что отвечает словами".into()),
+            None => problems.push(crate::tr!("contributes.bus.ask: имя функции, что отвечает словами")),
         }
     }
     let heard: Vec<&crate::bus::Pattern> = permissions
@@ -1111,16 +1453,16 @@ fn bus_spec(value: Option<&Value>, permissions: &[Permission], problems: &mut Ve
         let at = format!("contributes.bus.on[{index}]");
         let from = item.get("from").and_then(Value::as_str).map(crate::bus::Pattern::parse);
         let Some(Ok(from)) = from else {
-            problems.push(format!("{at}: from — чей адрес (app/shopping, files/home/Фото/*)"));
+            problems.push(crate::tr!("{at}: from — чей адрес (app/shopping, files/home/Фото/*)", at = at));
             continue;
         };
         let event = item.get("event").and_then(Value::as_str).unwrap_or_default().to_string();
         if !news_name(&event) {
-            problems.push(format!("{at}: event — имя новости"));
+            problems.push(crate::tr!("{at}: event — имя новости", at = at));
             continue;
         }
         if !heard.iter().any(|pattern| pattern.covers(&from)) {
-            problems.push(format!("{at}: слушать «{from}» — нужно право listen:{from}"));
+            problems.push(crate::tr!("{at}: слушать «{from}» — нужно право listen:{from}", at = at, from = from));
         }
         let handler = handler_of(item, "", &at, problems);
         spec.on.push(OnSpec { from, event, handler });
@@ -1168,13 +1510,65 @@ mod tests {
     }
 
     #[test]
+    fn languages_translate_the_texts_and_add_phrases_in_them() {
+        let mut manifest = radio();
+        manifest["languages"] = json!(["ru", "en"]);
+        manifest["locales"] = json!({
+            "en": {
+                "title": "Radio from all over the world",
+                "settings": { "country": { "title": "Country" } },
+                "intents": { "playStation": ["play radio {station}"] }
+            }
+        });
+        let manifest = check(&manifest).unwrap();
+        assert_eq!(manifest.source_language(), "ru");
+        let en = ["en".to_string()];
+        let de_then_ru = ["de".to_string(), "ru".to_string(), "en".to_string()];
+        assert_eq!(manifest.title_in(&en), "Radio from all over the world");
+        assert_eq!(manifest.title_in(&de_then_ru), "Радио со всего мира", "Russian comes before English in that order");
+        assert_eq!(manifest.title_in(&["de".to_string()]), "Радио со всего мира", "no German: its own texts");
+        assert_eq!(manifest.settings_in(&en)[0].title, "Country");
+        assert_eq!(manifest.settings_in(&en)[0].description, None);
+        let phrases: Vec<&str> =
+            manifest.contributes.intents[0].phrases.iter().map(|phrase| phrase.template.as_str()).collect();
+        assert_eq!(phrases, ["включи радио {station}", "play radio {station}"]);
+        // Without `languages`: Russian.
+        assert_eq!(check(&radio()).unwrap().languages, ["ru"]);
+    }
+
+    #[test]
+    fn languages_and_their_translations_are_checked() {
+        let found = problems(
+            with(radio(), "/settings", json!([]))
+                .as_object()
+                .cloned()
+                .map(|mut root| {
+                    root.insert("languages".into(), json!(["ru", "EN", "ru"]));
+                    root.insert("locales".into(), json!({ "de": {}, "ru": {} }));
+                    Value::Object(root)
+                })
+                .unwrap(),
+        );
+        assert!(found.iter().any(|problem| problem.contains("EN")), "{found:?}");
+        assert!(found.iter().any(|problem| problem.contains("«ru» дважды")), "{found:?}");
+        assert!(found.iter().any(|problem| problem.contains("locales.de")), "{found:?}");
+        let mut manifest = radio();
+        manifest["languages"] = json!(["ru", "en"]);
+        manifest["locales"] =
+            json!({ "en": { "settings": { "city": { "title": "City" } }, "intents": { "nope": ["x"] } } });
+        let found = problems(manifest);
+        assert!(found.iter().any(|problem| problem.contains("«city»")), "{found:?}");
+        assert!(found.iter().any(|problem| problem.contains("«nope»")), "{found:?}");
+    }
+
+    #[test]
     fn reads_the_plans_example() {
         let manifest = check(&radio()).unwrap();
         assert_eq!((manifest.id.as_str(), manifest.version.to_string()), ("radio", "1.2.0".into()));
         assert_eq!(manifest.runs, [Placement::Pc, Placement::Station, Placement::StationServer]);
         assert_eq!(
             manifest.budget,
-            Budget { memory_mb: 4, storage_mb: 2, files_mb: crate::bus::providers::files::APP_FOLDER_MB }
+            Budget { memory_mb: 4, storage_mb: 2, files_mb: crate::bus::providers::files::APP_FOLDER_MB, tasks: 1 }
         );
         assert_eq!(manifest.hosts(), ["*.api.radio-browser.info"]);
         let intent = &manifest.contributes.intents[0];
@@ -1249,6 +1643,16 @@ mod tests {
         assert_eq!(problems(mcp.clone())[0], "mcp.url: адрес MCP-сервера (https://…)");
         mcp["mcp"] = json!({ "url": "https://weather.example/mcp" });
         assert_eq!(check(&mcp).unwrap().mcp_url.as_deref(), Some("https://weather.example/mcp"));
+    }
+
+    #[test]
+    fn an_app_runs_one_long_task_at_once_unless_its_budget_asks_for_more() {
+        assert_eq!(check(&radio()).unwrap().budget.tasks, 1);
+        let mut feed = radio();
+        feed["budget"] = json!({ "tasks": 3 });
+        assert_eq!(check(&feed).unwrap().budget.tasks, 3);
+        feed["budget"] = json!({ "tasks": 9 });
+        assert_eq!(problems(feed)[0], "budget.tasks: целое от 1 до 4");
     }
 
     #[test]

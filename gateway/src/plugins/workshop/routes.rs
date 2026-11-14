@@ -1,7 +1,6 @@
 //! The workshop over HTTP: `/api/v1/workshop/…` for the panel's «Мастерская», and `/mcp/workshop` — the same tools as
 //! an MCP server (streamable HTTP, JSON answers) for Claude Code. All of it is the admin's at home: a draft is code that
 //! runs in the gateway once installed. The agent's chat streams as server-sent events, like «Спросить мозг».
-
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Instant;
@@ -400,10 +399,10 @@ async fn set_agent_model(State(app): State<Arc<App>>, caller: Caller, Body(body)
         Some(pick) => {
             let pick = BrainPick { provider: pick.provider.trim().to_string(), model: pick.model.trim().to_string() };
             if pick.model.is_empty() {
-                return Err(ApiError::field("model", "выберите модель"));
+                return Err(ApiError::field("model", crate::tr!("выберите модель")));
             }
             if !app.brain.view().providers.iter().any(|provider| provider.id == pick.provider) {
-                return Err(ApiError::field("provider", "такого провайдера нет в «Мозге»"));
+                return Err(ApiError::field("provider", crate::tr!("такого провайдера нет в «Мозге»")));
             }
             app.settings.set(&WORKSHOP_AGENT, &pick, actor)?;
         }
@@ -442,10 +441,10 @@ async fn chat(
     let principal = caller.principal().map(|principal| principal.id.clone()).unwrap_or_default();
     let message: String = body.message.trim().chars().take(4000).collect();
     if message.is_empty() {
-        return Err(ApiError::bad_request("Напишите, что сделать."));
+        return Err(ApiError::bad_request(crate::tr!("Напишите, что сделать.")));
     }
     if !app.dialog.enabled() {
-        return Err(ApiError::conflict("Модель не выбрана: добавьте провайдера в «Персонаж» → «Мозг»."));
+        return Err(ApiError::conflict(crate::tr!("Модель не выбрана: добавьте провайдера в «Персонаж» → «Мозг».")));
     }
     let key = format!("workshop:{principal}:{id}");
     if body.fresh {
@@ -556,7 +555,7 @@ async fn mcp(State(app): State<Arc<App>>, caller: Caller, Body(request): Body<Va
             let draft = arguments.get("draft").and_then(Value::as_str).unwrap_or_default().to_string();
             let (text, failed) = agent::run_tool(&app.workshop, &draft, name, &arguments).await;
             // Claude Code's saves are steps of the draft's history, as the panel's by hand.
-            if !failed && matches!(name, "write_file" | "edit_file" | "delete_file") {
+            if !failed && matches!(name, "write_file" | "append_file" | "edit_file" | "delete_file") {
                 app.workshop.hand_edited(&draft, Author { who: Who::Mcp, name: None, via: Some("mcp".into()) });
             }
             rpc_result(&id, json!({ "content": [{ "type": "text", "text": text }], "isError": failed }))

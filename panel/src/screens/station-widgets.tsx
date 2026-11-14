@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState } from 'preact/hooks';
 
 import { ApiError, NowPlaying, PlayerCommand, RequestView, StationAnswer, TimerView, api, can, problemOf, stationCall, stationRead } from '../api';
 import { IconHeart, IconMusic, IconNext, IconPause, IconPlay, IconPrev, IconSpeaker } from '../icons';
+import { locale, tr } from '../i18n';
 import { usePoll } from '../poll';
 import { usePanel } from '../shell/context';
 import { useMediaUrl } from '../ui/media';
@@ -71,8 +72,8 @@ function useTick(on: boolean): void {
 /** «копия от 14:05» (не сегодня — с датой): колонки нет на связи, это то, что компьютер помнит. */
 function copyLine(at: number): string {
     const date = new Date(at);
-    const time = date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-    return `копия от ${date.toDateString() === new Date().toDateString() ? time : `${date.toLocaleDateString('ru-RU')} ${time}`}`;
+    const time = date.toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' });
+    return tr.stationWidgets.copyFrom(date.toDateString() === new Date().toDateString() ? time : `${date.toLocaleDateString(locale())} ${time}`);
 }
 
 /** «03:12», «1:05:00». */
@@ -94,18 +95,18 @@ export function TimersWidget() {
     const [view, , copyAt] = useStationRead(readTimers, 15_000);
     const timers = view?.timers ?? [];
     useTick(timers.length > 0 && copyAt === null);
-    if (!view) return <p class="w-cap m-0">Читаю…</p>;
+    if (!view) return <p class="w-cap m-0">{tr.stationWidgets.reading}</p>;
     if (timers.length === 0)
         return (
             <p class="w-cap m-0">
-                {copyAt !== null ? `Таймеров не было (${copyLine(copyAt)}).` : 'Таймеров нет. Скажите колонке: «поставь таймер на чай на пять минут».'}
+                {copyAt !== null ? tr.stationWidgets.noTimersCopy(copyLine(copyAt)) : tr.stationWidgets.noTimers}
             </p>
         );
     // Часы шлюза: у копии — время копии, у живого ответа — сейчас, с поправкой на часы шлюза.
     const at = copyAt ?? Date.now() + panel.feed.skew;
     return (
         <div class="flex flex-col gap-12">
-            {copyAt !== null && <p class="w-cap m-0">{copyLine(copyAt)} — колонки нет на связи</p>}
+            {copyAt !== null && <p class="w-cap m-0">{tr.stationWidgets.copyOffline(copyLine(copyAt))}</p>}
             {timers.slice(0, 3).map((timer: TimerView) => {
                 const left = timer.paused || !Number.isFinite(timer.endsAt) ? timer.left : Math.max(0, (timer.endsAt - at) / 1000);
                 const done = timer.seconds > 0 ? Math.min(100, Math.max(0, ((timer.seconds - left) / timer.seconds) * 100)) : 0;
@@ -113,12 +114,12 @@ export function TimersWidget() {
                     <div key={timer.id}>
                         <div class="flex items-baseline justify-between gap-8">
                             <span class="w-text">
-                                {timer.name ? timer.name[0].toUpperCase() + timer.name.slice(1) : 'Таймер'}
-                                {timer.paused && <span class="w-cap"> · на паузе</span>}
+                                {timer.name ? timer.name[0].toUpperCase() + timer.name.slice(1) : tr.stationWidgets.timer}
+                                {timer.paused && <span class="w-cap">{tr.stationWidgets.paused}</span>}
                             </span>
                             <span class="w-num">{clockOf(left)}</span>
                         </div>
-                        <div class="w-bar mt-6" role="img" aria-label={`Прошло ${Math.round(done)} процентов`}>
+                        <div class="w-bar mt-6" role="img" aria-label={tr.stationWidgets.elapsed(Math.round(done))}>
                             <span style={{ width: `${done}%` }} />
                         </div>
                     </div>
@@ -156,9 +157,9 @@ function barsOf(title: string, count: number): number[] {
 
 function minutesSince(since: number, now: number): string {
     const minutes = Math.max(0, Math.round((now - since) / 60_000));
-    if (minutes < 1) return 'только что';
-    if (minutes < 60) return `${minutes} мин`;
-    return `${Math.floor(minutes / 60)} ч ${minutes % 60} мин`;
+    if (minutes < 1) return tr.stationWidgets.justNow;
+    if (minutes < 60) return tr.stationWidgets.minutes(minutes);
+    return tr.stationWidgets.hoursMinutes(Math.floor(minutes / 60), minutes % 60);
 }
 
 /**
@@ -218,17 +219,17 @@ export function MusicWidget() {
     const title = now?.title;
     if (!now || !title || now.source === 'none')
         return (
-            <section class="widget music" aria-label="Музыка">
+            <section class="widget music" aria-label={tr.stationWidgets.music}>
                 <div class="flex items-center gap-12">
                     <span class="music-cover music-cover-empty" aria-hidden="true">
                         <IconMusic size={22} />
                     </span>
                     <p class="w-cap m-0">
                         {!now
-                            ? 'Читаю…'
+                            ? tr.stationWidgets.reading
                             : copyAt !== null
-                              ? `Ничего не играло (${copyLine(copyAt)}).`
-                              : 'Сейчас ничего не играет. Скажите: «включи радио» или «включи музыку».'}
+                              ? tr.stationWidgets.nothingPlayedCopy(copyLine(copyAt))
+                              : tr.stationWidgets.nothingPlaying}
                     </p>
                 </div>
             </section>
@@ -255,9 +256,9 @@ export function MusicWidget() {
             .finally(() => setBusy(null));
     };
     const play = playing ? (onAir ? 'stop' : 'pause') : 'resume';
-    const playLabel = playing ? (onAir ? 'Остановить' : 'Пауза') : 'Играть';
+    const playLabel = playing ? (onAir ? tr.stationWidgets.stop : tr.stationWidgets.pause) : tr.stationWidgets.play;
     return (
-        <section class="widget music" aria-label={`Музыка: ${playing ? 'играет' : 'стоит'} «${title}»`} style={{ '--music-tone': TONES[hash % TONES.length] }}>
+        <section class="widget music" aria-label={tr.stationWidgets.musicLabel(playing, title)} style={{ '--music-tone': TONES[hash % TONES.length] }}>
             <div class="flex gap-12 items-center">
                 <span class="music-cover" aria-hidden="true" style={{ background: GRADIENTS[hash % GRADIENTS.length] }}>
                     {cover && broken !== cover ? <img src={cover} alt="" onError={() => setBroken(cover)} /> : <span class="music-cover-sun" />}
@@ -265,24 +266,24 @@ export function MusicWidget() {
                 <div class="flex-1 min-w-0">
                     <p class="music-where">
                         <IconSpeaker size={12} />
-                        {away ? copyLine(copyAt) : playing ? 'играет на колонке' : now.state === 'paused' ? 'на паузе' : 'остановлено'}
+                        {away ? copyLine(copyAt) : playing ? tr.stationWidgets.playingOnSpeaker : now.state === 'paused' ? tr.stationWidgets.onPause : tr.stationWidgets.stopped}
                     </p>
                     <p class="music-title">{title}</p>
                     {now.subtitle && <p class="w-cap m-0 w-text">{now.subtitle}</p>}
                 </div>
                 {now.source === 'own' && !radio && mayControl && (
-                    <button class="music-ctl self-start" aria-label="Нравится" disabled={busy !== null || away} onClick={() => command('like')}>
+                    <button class="music-ctl self-start" aria-label={tr.stationWidgets.like} disabled={busy !== null || away} onClick={() => command('like')}>
                         <IconHeart size={18} />
                     </button>
                 )}
             </div>
             {radio ? (
                 <p class="w-cap m-0">
-                    {now.since ? `в эфире ${minutesSince(now.since, copyAt ?? Date.now())}` : now.source === 'station' ? 'играет Яндекс' : 'в эфире'}
+                    {now.since ? tr.stationWidgets.onAir(minutesSince(now.since, copyAt ?? Date.now())) : now.source === 'station' ? tr.stationWidgets.yandexPlays : tr.stationWidgets.onAirNow}
                 </p>
             ) : (
                 <div>
-                    <div class="music-wave" role="img" aria-label={`Прослушано ${clockOf(position / 1000)} из ${clockOf(length / 1000)}`}>
+                    <div class="music-wave" role="img" aria-label={tr.stationWidgets.listened(clockOf(position / 1000), clockOf(length / 1000))}>
                         {bars.map((height, index) => (
                             <span key={index} class={index < played ? 'on' : ''} style={{ height: `${height}px` }} />
                         ))}
@@ -295,13 +296,13 @@ export function MusicWidget() {
             )}
             {mayControl && (
                 <div class="music-controls">
-                    <button class="music-ctl" aria-label="Назад" disabled={busy !== null || away} onClick={() => command('previous')}>
+                    <button class="music-ctl" aria-label={tr.stationWidgets.previous} disabled={busy !== null || away} onClick={() => command('previous')}>
                         <IconPrev size={18} />
                     </button>
                     <button class="music-play" aria-label={playLabel} title={playLabel} disabled={busy !== null || away} onClick={() => command(play)}>
                         {!playing ? <IconPlay size={16} /> : onAir ? <StopGlyph size={16} /> : <IconPause size={16} />}
                     </button>
-                    <button class="music-ctl" aria-label="Дальше" disabled={busy !== null || away} onClick={() => command('next')}>
+                    <button class="music-ctl" aria-label={tr.stationWidgets.next} disabled={busy !== null || away} onClick={() => command('next')}>
                         <IconNext size={18} />
                     </button>
                 </div>

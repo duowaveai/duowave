@@ -14,6 +14,7 @@ import type { FrameShape, FrameSlotEntry } from '../frame/protocol';
 import type { SlotContribution } from '../shell/slot';
 import type { DeskWidget } from '../shell/widgets';
 import { WidgetFrame } from '../ui/widget';
+import { tr } from '../i18n';
 import { gw } from '../via';
 
 /** Черновик сделан голосом у колонки (gateway/src/plugins/workshop/voice.rs: `golos-…`): попросить мог кто угодно. */
@@ -40,7 +41,7 @@ export async function mayRunDraft(id: string): Promise<string | null> {
 /** Функция черновика — в песочнице мастерской. */
 async function callDraft(id: string, fn: string, input: unknown, trying: Trying): Promise<unknown> {
     const report = await api.runDraft(id, fn, input, trying);
-    if (!report.ok) throw new Error(report.error ?? `${fn} не отработала`);
+    if (!report.ok) throw new Error(report.error ?? tr.drafts.callFailed(fn));
     return report.result;
 }
 
@@ -101,12 +102,12 @@ export function DraftWidgetPreview({
                 // Код сейчас — тот, что собирались показать? Агент мог переписать его, пока шлюз отвечал.
                 const now = await panelCode(id);
                 if (!alive) return;
-                if (now !== code) throw new Error('panel.js поменялся, пока шлюз отвечал, — нажмите «Показать заново».');
+                if (now !== code) throw new Error(tr.drafts.codeChanged);
                 const shape = await probeShape(id, gw(module), styles ? gw(styles) : null, { ...probeState(id, trying?.settings ?? {}), draft: true });
                 if (!alive) return;
                 onWindow?.(shape.sections.length > 0);
                 const widget = shape.slots['desk.widgets']?.[0];
-                if (!widget) throw new Error('В черновике нет виджета стола (слот desk.widgets).');
+                if (!widget) throw new Error(tr.drafts.noDeskWidget);
                 const next = { module: gw(module), styles: styles ? gw(styles) : null, shape, widget };
                 setFound(next);
                 onWidget?.(contributionOf(widget, () => <DraftFrame id={id} found={next} part={{ kind: 'slot', name: 'desk.widgets', id: widget.id }} trying={trying} />));
@@ -119,7 +120,7 @@ export function DraftWidgetPreview({
         };
     }, [id, nonce, code, settings, trying?.example]);
     if (error) return <p class="t-caption c-dot-offline m-0">{error}</p>;
-    if (!found || hidden) return found ? null : <p class="t-caption m-0">Загружаю виджет…</p>;
+    if (!found || hidden) return found ? null : <p class="t-caption m-0">{tr.drafts.loadingWidget}</p>;
     const section = found.shape.sections[0];
     if (asWindow && section) {
         return (

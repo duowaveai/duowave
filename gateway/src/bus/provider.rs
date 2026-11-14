@@ -3,7 +3,6 @@
 //! ladder each needs, whether it is dangerous or personal, which right of a person it needs), and carries out the
 //! letters the bus lets through. A new kind of participant — a new device, a project, an outside agent — is a new
 //! provider registered on the bus; the core and its one rule stay as they are.
-
 use futures::future::BoxFuture;
 use serde::Serialize;
 use serde_json::Value;
@@ -31,11 +30,32 @@ pub struct Handle {
     /// itself with its links.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub needs: Option<String>,
+    /// The people's roles it is open to (a folder's «Видят»): a chain a person of another role started does not see
+    /// it at all. None — every role.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roles: Option<Vec<crate::core::identity::roles::Role>>,
 }
 
 impl Handle {
     pub fn new(name: &str, level: Level) -> Handle {
-        Handle { name: name.to_string(), level, title: None, danger: None, private: false, needs: None }
+        Handle { name: name.to_string(), level, title: None, danger: None, private: false, needs: None, roles: None }
+    }
+
+    /// Open only to people of these roles.
+    pub fn for_roles(mut self, roles: Option<Vec<crate::core::identity::roles::Role>>) -> Handle {
+        self.roles = roles;
+        self
+    }
+
+    /// Whether a chain this principal started sees it: a person or the household by role; a key and the gateway
+    /// answer for themselves.
+    pub fn admits(&self, principal: Option<&crate::core::identity::principal::Principal>) -> bool {
+        use crate::core::identity::PrincipalKind;
+        let (Some(roles), Some(principal)) = (&self.roles, principal) else { return true };
+        match principal.kind {
+            PrincipalKind::User | PrincipalKind::Household => principal.role.is_some_and(|role| roles.contains(&role)),
+            _ => true,
+        }
     }
 
     pub fn titled(mut self, title: &str) -> Handle {
@@ -104,20 +124,30 @@ pub struct News {
 
 /// Why a letter did not go through or failed. Not found and not visible read the same: a name is not leaked by
 /// probing.
-#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BusError {
-    #[error("нет такого: {0}")]
     NotFound(String),
-    #[error("{0}")]
     Denied(String),
     /// Waits for a person's «да»: the id of the question.
-    #[error("ждёт вашего «да»: {why}")]
-    NeedsYes { id: String, why: String },
-    #[error("{0}")]
+    NeedsYes {
+        id: String,
+        why: String,
+    },
     Fuse(String),
-    #[error("{0}")]
     Failed(String),
 }
+
+impl std::fmt::Display for BusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BusError::NotFound(what) => f.write_str(&crate::tr!("нет такого: {what}", what = what)),
+            BusError::NeedsYes { why, .. } => f.write_str(&crate::tr!("ждёт вашего «да»: {why}", why = why)),
+            BusError::Denied(text) | BusError::Fuse(text) | BusError::Failed(text) => f.write_str(text),
+        }
+    }
+}
+
+impl std::error::Error for BusError {}
 
 impl BusError {
     /// The code a caller tells cases apart by.

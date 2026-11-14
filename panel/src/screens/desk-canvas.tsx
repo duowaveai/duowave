@@ -13,6 +13,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { IconGrid, IconLock, IconMinus, IconPlus, IconUnlock } from '../icons';
 import { DeskActions, DeskLayout, DeskWidget, WidgetPlace } from '../shell/widgets';
 import type { WidgetMenu } from '../ui/widget';
+import { tr } from '../i18n';
 
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 1.6;
@@ -395,23 +396,23 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
                 <div class="desk-zoom">
                     <button
                         class="desk-zoom-btn"
-                        aria-label="Закрепить стол"
+                        aria-label={tr.desk.lockDesk}
                         aria-pressed={locked}
-                        title={locked ? 'Открепить стол' : 'Закрепить стол'}
+                        title={locked ? tr.desk.unlockDesk : tr.desk.lockDesk}
                         onClick={() => actions.lock(!locked)}
                     >
                         {locked ? <IconLock size={14} /> : <IconUnlock size={14} />}
                     </button>
-                    <button class="desk-zoom-btn" aria-label="Расставить заново" title="Расставить заново" disabled={locked} onClick={() => actions.reset()}>
+                    <button class="desk-zoom-btn" aria-label={tr.desk.rearrange} title={tr.desk.rearrange} disabled={locked} onClick={() => actions.reset()}>
                         <IconGrid size={14} />
                     </button>
-                    <button class="desk-zoom-btn" aria-label="Мельче" disabled={locked} onClick={() => zoomAt(zoom - 0.1)}>
+                    <button class="desk-zoom-btn" aria-label={tr.desk.smaller} disabled={locked} onClick={() => zoomAt(zoom - 0.1)}>
                         <IconMinus size={14} />
                     </button>
-                    <button class="desk-zoom-level" aria-label="Масштаб 100 %" disabled={locked} onClick={() => zoomAt(1)}>
+                    <button class="desk-zoom-level" aria-label={tr.desk.zoomReset} disabled={locked} onClick={() => zoomAt(1)}>
                         {Math.round(zoom * 100)} %
                     </button>
-                    <button class="desk-zoom-btn" aria-label="Крупнее" disabled={locked} onClick={() => zoomAt(zoom + 0.1)}>
+                    <button class="desk-zoom-btn" aria-label={tr.desk.bigger} disabled={locked} onClick={() => zoomAt(zoom + 0.1)}>
                         <IconPlus size={14} />
                     </button>
                 </div>
@@ -460,7 +461,7 @@ function MiniMap({
         <button
             class="desk-map"
             disabled={locked}
-            aria-label={locked ? 'Карта стола: стол закреплён' : hidden ? 'Карта стола: виджеты есть и за краем. Нажмите, куда перейти' : 'Карта стола'}
+            aria-label={locked ? tr.desk.mapLocked : hidden ? tr.desk.mapHidden : tr.desk.map}
             onClick={(event) => {
                 if (locked) return;
                 const own = (event.currentTarget as HTMLElement).getBoundingClientRect();

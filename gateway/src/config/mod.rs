@@ -32,6 +32,8 @@ pub struct Config {
     pub plugins: PluginsConfig,
     /// A MIDI keyboard for apps (src/midi).
     pub midi: MidiConfig,
+    /// The home folder and what a person attaches to it (src/bus/providers/files, docs/plans/shared-folders.md).
+    pub files: FilesConfig,
     /// DATA_DIR, when set: the one folder for everything written.
     pub data_dir: Option<PathBuf>,
 }
@@ -84,6 +86,16 @@ pub struct MidiConfig {
     /// MIDI_REMOTE: `1` — a panel from outside home (through the tunnel) hears the keyboard too; the owner's decision 2
     /// (12.11.2026): no by default, the keyboard is heard only at home.
     pub remote: bool,
+}
+
+/// The home folder (docs/plans/shared-folders.md).
+#[derive(Debug, Clone)]
+pub struct FilesConfig {
+    /// HOME_FILES: the home folder — a person's own folder, `~/DuoWave` in the desktop app; DATA_DIR/files/home
+    /// without it, and always on the station.
+    pub home: Option<PathBuf>,
+    /// FOLDERS: `0` — nothing is attached and no drive is watched; the home folder itself stays.
+    pub attach: bool,
 }
 
 impl PluginsConfig {
@@ -413,6 +425,9 @@ pub struct DialogConfig {
     pub anthropic_key: Option<String>,
     pub anthropic_base_url: Option<String>,
     pub max_tokens: u32,
+    /// WORKSHOP_MAX_TOKENS: the output limit of the workshop agent's turns, which write files; LLM_MAX_TOKENS is for
+    /// spoken answers.
+    pub workshop_max_tokens: u32,
     /// Claude only: thinking depth (low, medium, high, xhigh, max).
     pub effort: String,
     /// Until the first phrase of the answer; the station gives up on a response after ~15 s.
@@ -913,6 +928,10 @@ fn build(env: &Env) -> Config {
             schedules: env.flag("PLUGINS_SCHEDULES", true),
         },
         midi: MidiConfig { enabled: env.flag("MIDI", true), remote: env.flag("MIDI_REMOTE", false) },
+        files: FilesConfig {
+            home: env.get("HOME_FILES").map(str::trim).filter(|home| !home.is_empty()).map(PathBuf::from),
+            attach: env.flag("FOLDERS", true),
+        },
         voice_lab: VoiceLabConfig {
             dir: env
                 .get("VOICE_LAB_DIR")
@@ -1041,6 +1060,7 @@ fn dialog(env: &Env) -> DialogConfig {
         anthropic_key: env.optional("ANTHROPIC_API_KEY").or_else(|| env.optional("ANTHROPIC_AUTH_TOKEN")),
         anthropic_base_url: env.optional("ANTHROPIC_BASE_URL"),
         max_tokens: env.integer("LLM_MAX_TOKENS", 4096) as u32,
+        workshop_max_tokens: env.integer("WORKSHOP_MAX_TOKENS", 16_000) as u32,
         effort: env.get("LLM_EFFORT").filter(|e| LLM_EFFORTS.contains(e)).unwrap_or("low").to_string(),
         timeout_ms: env.integer("LLM_TIMEOUT_MS", 10_000),
         system_prompt_file: env.get("DIALOG_SYSTEM_PROMPT_FILE").map(PathBuf::from),
@@ -1263,6 +1283,7 @@ fn validate(env: &Env) -> Vec<String> {
     number("ASR_UNCHANGED_END_MS", Some(0.0), None);
     number("ASR_STOP_END_MS", Some(0.0), None);
     number("LLM_MAX_TOKENS", Some(256.0), None);
+    number("WORKSHOP_MAX_TOKENS", Some(1024.0), None);
     number("LLM_TIMEOUT_MS", Some(1000.0), None);
     number("DIALOG_HISTORY_TURNS", Some(0.0), None);
     number("DIALOG_HISTORY_TTL_S", Some(0.0), None);

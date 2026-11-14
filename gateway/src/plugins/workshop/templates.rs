@@ -157,6 +157,9 @@ pub fn widget(id: &str, title: &str) -> Vec<(String, String)> {
         "runs": ["pc", "station", "stationServer"],
         "budget": { "memoryMb": 2, "storageMb": 1 },
         "permissions": [],
+        // Languages (docs/plans/i18n.md): the English title is the agent's to write — «Проверить» asks for it.
+        "languages": ["ru", "en"],
+        "locales": { "en": { "description": "A widget on the panel desk" } },
         "contributes": {
             "panel": {
                 "calls": ["panelData", "mark"],
@@ -167,19 +170,29 @@ pub fn widget(id: &str, title: &str) -> Vec<(String, String)> {
     let backend = format!(
         r#"// {title}: карточка на столе пульта (docs/plugins/cards.md). Функция карточки отдаёт её данные — детали,
 // которые рисует пульт: big (крупное), cap (подпись), rows (строки), line (линия), tiles (плитки), buttons
-// (кнопки)… Нажатие кнопки зовёт функцию из contributes.panel.calls и получает новую карточку. Нужен интернет —
-// право net:<хост> в манифесте и пример examples.json; память между вызовами — host.kv.
+// (кнопки)… и вид всего виджета — look: живая сцена пульта и цвета фона по смыслу (погода — небо за окном, музыка —
+// волны, покупки — пузырьки). Нажатие кнопки зовёт функцию из contributes.panel.calls и получает новую карточку.
+// Нужен интернет — право net:<хост> в манифесте и пример examples.json; память между вызовами — host.kv.
 //
 // panelData только читает: каждая запись в host.kv — весть пульту, и все виджеты читают данные заново; запись при
 // чтении крутила бы их раз в секунду. Кэш — только по сроку (пишется, когда устарел, как в weather); память, которую
 // меняет человек, пишет функция его действия — здесь mark, кнопка карточки.
+//
+// Тексты для людей — словарём по языкам (docs/plugins/AUTHORING.md, «Языки»): host.i18n.t берёт их на языке дома.
+
+const T = {{
+  ru: {{ marks: {{ one: "отметка", few: "отметки", many: "отметок" }}, mark: "Отметить", said: "Отметок: {{count}}." }},
+  en: {{ marks: {{ one: "mark", other: "marks" }}, mark: "Mark", said: "Marks: {{count}}." }},
+}};
+const t = (key, params) => host.i18n.t(T, key, params);
 
 function card(marks) {{
   return {{
     big: String(marks),
-    cap: "отметок",
-    buttons: [{{ text: "Отметить", tap: "mark" }}],
-    say: `Отметок: ${{marks}}.`,
+    cap: t("marks", {{ count: marks }}),
+    buttons: [{{ text: t("mark"), tap: "mark" }}],
+    look: {{ scene: "sparkles", colors: ['#5b2a91', '#c2477a', '#f39a5d'] }},
+    say: t("said", {{ count: marks }}),
   }};
 }}
 
@@ -247,6 +260,66 @@ pub fn midi(id: &str, title: &str) -> Vec<(String, String)> {
                 "# {title}\n\nУчит играть на MIDI-клавиатуре, подключённой к компьютеру с DuoWave: подсвечивает следующую \
 ноту, звучит и ждёт верную. Мелодии — народные и старая классика; свои — файлом .mid. Голосом: «Алиса, давай учить \
 ёлочку», «какие мелодии есть». В «Примерке» — клавиатура на экране, своя подключится после «да».\n"
+            ),
+        ),
+    ]
+}
+
+/// A photo album (docs/plans/shared-folders.md, «Заготовка «Фотоальбом»»): the photo of the day from the home folder's
+/// «Фото» as a large card, and a window with all of them in a grid. The link `call:files/home/Фото/*` — read «Фото»
+/// with all in it, one «да»; the pictures come made small from the gateway (`picture: {address}`, `useFolderFile`).
+/// Names aloud only with the folder's `speak`. A computer's: the home folder is there (`runs: ["pc"]`). In «Примерка»
+/// the folder is the example's (`examples.json`, «bus»).
+pub fn folders(id: &str, title: &str) -> Vec<(String, String)> {
+    let manifest = json!({
+        "schema": 1,
+        "kind": "plugin",
+        "id": id,
+        "version": "0.1.0",
+        "title": title,
+        "description": "Фото дня из папки «Фото» домашней папки DuoWave и окошко со всеми фотографиями",
+        "api": "^2",
+        "runs": ["pc"],
+        "budget": { "memoryMb": 4, "storageMb": 1 },
+        "permissions": ["call:files/home/Фото/*"],
+        "contributes": {
+            "intents": [{ "phrases": ["покажи фото дня", "какое сегодня фото дня"], "handler": "todaySay" }],
+            "panel": {
+                "calls": ["today", "next", "page"],
+                "cards": [{ "id": "today", "title": title, "function": "today", "size": "large", "initial": true, "icon": "sparkle" }]
+            }
+        }
+    });
+    let title_json = serde_json::to_string(title).unwrap_or_else(|_| "\"Фотоальбом\"".into());
+    let fill =
+        |text: &str| text.replace("\"__TITLE__\"", &title_json).replace("__TITLE__", title).replace("__ID__", id);
+    // «Примерка» has no home folder: the example answers for «Фото» — two photos and a trip with one more.
+    let photo = |address: &str, name: &str| json!({ "name": name, "address": address, "folder": false, "kind": "image", "size": 1 });
+    let examples = json!({
+        "fetch": [],
+        "bus": [
+            { "to": "files/home/Фото", "handle": "list", "result": { "items": [
+                { "name": "Отпуск", "address": "files/home/Фото/Отпуск", "folder": true, "kind": "folder", "size": 0 },
+                photo("files/home/Фото/Кот.jpg", "Кот.jpg"),
+                photo("files/home/Фото/Ёлка.jpg", "Ёлка.jpg")
+            ], "total": 3, "next": null } },
+            { "to": "files/home/Фото/Отпуск", "handle": "list", "result": { "items": [
+                photo("files/home/Фото/Отпуск/Море.jpg", "Море.jpg")
+            ], "total": 1, "next": null } },
+            { "to": "files/home/Фото", "handle": "stat", "result": { "name": "Фото", "folder": true, "speak": true, "model": false } }
+        ]
+    });
+    vec![
+        ("manifest.json".into(), pretty(&manifest)),
+        ("backend.js".into(), fill(include_str!("templates/folders/backend.js"))),
+        ("panel.js".into(), fill(include_str!("templates/folders/panel.js"))),
+        ("examples.json".into(), pretty(&examples)),
+        (
+            "README.md".into(),
+            format!(
+                "# {title}\n\nФото дня из папки «Фото» домашней папки DuoWave (`~/DuoWave/Фото`) — большая карточка на \
+столе, «Другое» — следующее; окошко со всеми фото сеткой. Голосом: «Алиса, покажи фото дня». Право — читать «Фото» \
+(`call:files/home/Фото/*`): «да» один раз. В «Примерке» — фото из примера.\n"
             ),
         ),
     ]

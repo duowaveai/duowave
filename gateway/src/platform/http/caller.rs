@@ -10,7 +10,6 @@
 //!
 //! A sign-in that cannot be checked (the database failed) is the server's error (500) where a sign-in is required —
 //! never a 401, which would make the panel drop its session — and nobody on a public route.
-
 use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
 
@@ -100,9 +99,9 @@ impl Caller {
             return Ok(());
         }
         Err(ApiError::forbidden(if required == Zone::Local {
-            "Только с этого компьютера."
+            crate::tr!("Только с этого компьютера.")
         } else {
-            "Только из домашней сети."
+            crate::tr!("Только из домашней сети.")
         }))
     }
 
@@ -133,11 +132,11 @@ impl Caller {
     /// that could not be checked is the server's error, not «sign in again».
     pub fn signed_in(&self) -> Result<&Principal, ApiError> {
         if self.zone == Zone::Remote && !self.app.config.gateway.panel_remote {
-            return Err(ApiError::forbidden("Пульт вне дома выключен (PANEL_REMOTE)."));
+            return Err(ApiError::forbidden(crate::tr!("Пульт вне дома выключен (PANEL_REMOTE).")));
         }
         match self.checked() {
             Ok(Some(principal)) => Ok(principal),
-            Ok(None) => Err(ApiError::unauthorized("Нужно войти.")),
+            Ok(None) => Err(ApiError::unauthorized(crate::tr!("Нужно войти."))),
             Err(error) => Err(error.clone()),
         }
     }
@@ -146,7 +145,10 @@ impl Caller {
     pub fn permitted(&self, permission: &str) -> Result<&Principal, ApiError> {
         let principal = self.signed_in()?;
         if !can(Some(principal), permission) {
-            return Err(ApiError::forbidden(format!("Нет права: {}.", title_of(permission).to_lowercase())));
+            return Err(ApiError::forbidden(crate::tr!(
+                "Нет права: {right}.",
+                right = title_of(permission).to_lowercase()
+            )));
         }
         Ok(principal)
     }

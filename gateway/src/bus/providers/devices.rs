@@ -4,7 +4,6 @@
 //!
 //! A new device is one `impl Device` added to the registry: a name, a title, its handles (a step of the ladder each,
 //! a danger when it has one) and what it does on a letter. The MIDI keyboard is the first one.
-
 use std::sync::{Arc, RwLock};
 
 use futures::future::BoxFuture;
@@ -119,13 +118,13 @@ impl Device for MidiKeyboard {
     }
 
     fn title(&self) -> String {
-        "MIDI-клавиатура".into()
+        crate::tr!("MIDI-клавиатура")
     }
 
     fn handles(&self) -> Vec<Handle> {
         vec![
-            Handle::new("keyboards", Level::See).titled("какие клавиатуры подключены"),
-            Handle::new("notes", Level::Listen).titled("слышать ноты на своей странице"),
+            Handle::new("keyboards", Level::See).titled(&crate::tr!("какие клавиатуры подключены")),
+            Handle::new("notes", Level::Listen).titled(&crate::tr!("слышать ноты на своей странице")),
         ]
     }
 

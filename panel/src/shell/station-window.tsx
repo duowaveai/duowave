@@ -21,6 +21,7 @@ import { ownName } from './role';
 import type { ShellProps } from './shell';
 import { ESCAPE_MESSAGE, WindowLift, escapeIsFree } from './window';
 import { copyShown, onCopyChange } from '../via';
+import { tr } from '../i18n';
 
 const hhmm = (at: number): string => {
     const date = new Date(at);
@@ -43,8 +44,7 @@ export function ViaNotice() {
     if (copy === null) return null;
     return (
         <div class="banner-offline" role="status">
-            Колонка не отвечает — показываю её копию от {hhmm(copy)}. Менять можно, когда она вернётся; «Компьютер-помощник» в
-            «Настройках» работает.
+            {tr.shell.viaNotice(hhmm(copy))}
         </div>
     );
 }
@@ -58,16 +58,16 @@ function StationStrip() {
     const away = copy !== null || panel.offline;
     return (
         <div class={`station-strip${away ? ' is-away' : ''}`} role="status">
-            <span class="station-strip-name">Колонка «{name}»</span>
-            <span class="w-cap">шлюз{version ? ` · DuoWave ${version}` : ''}</span>
+            <span class="station-strip-name">{tr.shell.stripName(name)}</span>
+            <span class="w-cap">{tr.shell.gateway}{version ? ` · DuoWave ${version}` : ''}</span>
             <span class={`role-chip${away ? ' is-off' : ''}`}>
                 <span class="role-chip-dot" aria-hidden="true" />
-                {away ? 'не на связи' : 'на связи'}
+                {away ? tr.shell.offline : tr.shell.online}
             </span>
             <span class="station-strip-note">
                 {away
-                    ? `Показываю копию${copy ? ` от ${hhmm(copy)}` : ''}. Менять можно, когда колонка вернётся — тогда изменения сразу уйдут на неё.`
-                    : 'Изменения сохраняются на колонке и сразу работают.'}
+                    ? tr.shell.copyShown(copy ? hhmm(copy) : null)
+                    : tr.shell.changesLive}
             </span>
         </div>
     );
@@ -112,24 +112,24 @@ export function WindowShell({ notice, desk, window: win }: ShellProps) {
     );
 }
 
-const REFUSALS = {
+const refusals = () => ({
     'signed-out': {
-        title: 'Вход в пульт компьютера закончился',
-        text: 'Войдите в пульт этого компьютера заново — окно колонки откроется с тем же входом.',
+        title: tr.shell.refusalSignedOutTitle,
+        text: tr.shell.refusalSignedOutText,
     },
     pair: {
-        title: 'Колонка не принимает ключ пары',
-        text: 'Похоже, колонку переустановили или сбросили, и ключ у неё теперь другой. Свяжите с ней компьютер заново — по паролю пульта колонки.',
+        title: tr.shell.refusalPairTitle,
+        text: tr.shell.refusalPairText,
     },
     setup: {
-        title: 'Шлюз колонки ещё не настроен',
-        text: 'Откройте пульт колонки по её адресу и задайте вход — потом её разделы откроются и здесь.',
+        title: tr.shell.refusalSetupTitle,
+        text: tr.shell.refusalSetupText,
     },
     other: {
-        title: 'Окно колонки не открылось',
-        text: 'Попробуйте ещё раз чуть позже.',
+        title: tr.shell.refusalOtherTitle,
+        text: tr.shell.refusalOtherText,
     },
-};
+});
 
 /**
  * Окно колонки, которое не пустили (docs/plans/desk.md, этап 4). Вход здесь не спрашивается: он у пульта компьютера, а
@@ -137,7 +137,7 @@ const REFUSALS = {
  */
 export function ViaRefused({ setup, top = false }: { setup: boolean; top?: boolean }) {
     useEscapeToHelper();
-    const [why, setWhy] = useState<{ kind: keyof typeof REFUSALS; message?: string } | null>(setup ? { kind: 'setup' } : null);
+    const [why, setWhy] = useState<{ kind: keyof ReturnType<typeof refusals>; message?: string } | null>(setup ? { kind: 'setup' } : null);
     useEffect(() => {
         if (setup) return;
         let alive = true;
@@ -146,7 +146,7 @@ export function ViaRefused({ setup, top = false }: { setup: boolean; top?: boole
             alive = false;
         };
     }, [setup]);
-    const said = why && REFUSALS[why.kind];
+    const said = why && refusals()[why.kind];
     return (
         <div class="station-window">
             <div class="station-window-body">
@@ -157,18 +157,18 @@ export function ViaRefused({ setup, top = false }: { setup: boolean; top?: boole
                             <p class="t-caption m-0">{why?.message ?? said.text}</p>
                             <div class="flex gap-8 flex-wrap">
                                 <button class="w-btn" onClick={() => location.reload()}>
-                                    Попробовать снова
+                                    {tr.shell.tryAgain}
                                 </button>
                                 {/* Во всё окно (этап 4) — путь в пульт самого компьютера: войти, связать заново. */}
                                 {top && (
                                     <button class="w-btn" onClick={() => location.replace(`${location.pathname}?local${location.hash}`)}>
-                                        Открыть пульт компьютера
+                                        {tr.shell.openComputerPanel}
                                     </button>
                                 )}
                             </div>
                         </>
                     ) : (
-                        <p class="t-caption m-0">Колонка не пустила — выясняю почему…</p>
+                        <p class="t-caption m-0">{tr.shell.refusedWhy}</p>
                     )}
                 </section>
             </div>
@@ -266,18 +266,16 @@ export function StationFrame({ station, section, tab, item }: { station: string;
                 ref={frame}
                 class={`station-frame desk-window-wide${sheet.open ? ' is-lifted' : ''}`}
                 src={src}
-                title={`Пульт колонки: ${section}`}
+                title={tr.shell.stationPanelTitle(section)}
             />
             {sheet.open &&
                 createPortal(
-                    <button class="frame-scrim" aria-label="Закрыть окно поверх" tabIndex={-1} onClick={sheet.dismiss} />,
+                    <button class="frame-scrim" aria-label={tr.shell.closeOverlayWindow} tabIndex={-1} onClick={sheet.dismiss} />,
                     document.body,
                 )}
         </>
     );
 }
-
-const MODE_NAMES: Record<string, string> = { relay: 'Яндекс', gateway: 'Вместе', own: 'Своё' };
 
 /**
  * «у колонки «Свой»» в верхней строке помощника: режим колонки — у её шлюза, через проход. Раз в полминуты и по
@@ -298,7 +296,7 @@ export function StationModeChip({ station, version }: { station: string; version
     return (
         <span class="role-chip">
             <span class={`role-chip-dot ${mode === 'own' ? 'own' : mode === 'relay' ? 'yandex' : 'gateway'}`} aria-hidden="true" />
-            у колонки «{MODE_NAMES[mode] ?? mode}»
+            {tr.shell.stationMode(tr.shell.modeNames[mode] ?? mode)}
         </span>
     );
 }

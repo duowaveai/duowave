@@ -12,7 +12,6 @@
 //! - **The kind of data.** A manifest may say `dataVersion`: a step back of the code alone across a change of it is
 //!   marked risky — the old code may not read today's data — and «Код и данные» is offered first.
 //! - Built-in apps go with the gateway's version: their code is not stepped back, their data is.
-
 use std::collections::BTreeSet;
 
 use serde::Serialize;
@@ -94,9 +93,10 @@ impl History {
 
     /// What a step back of the installed app to `record` would do.
     pub fn restore_plan(&self, app: &str, record: &str, what: What) -> Result<RestorePlan, ApiError> {
-        let host = self.host().ok_or_else(|| ApiError::conflict("Приложений здесь нет."))?;
-        let view =
-            self.record_view(app, record).ok_or_else(|| ApiError::not_found("Такой записи у приложения нет."))?;
+        let host = self.host().ok_or_else(|| ApiError::conflict(crate::tr!("Приложений здесь нет.")))?;
+        let view = self
+            .record_view(app, record)
+            .ok_or_else(|| ApiError::not_found(crate::tr!("Такой записи у приложения нет.")))?;
         let target = view.record.clone();
         let installed = host.installed(app);
         let origin = host.origin_of(app);
@@ -105,11 +105,12 @@ impl History {
         let can_code = origin.removable() && parsed.as_ref().is_some_and(|parsed| parsed.id == app);
         if what.code() && !can_code {
             return Err(ApiError::conflict(if origin.removable() {
-                "У этой записи нет целой версии приложения: вернуть можно только данные.".to_string()
+                crate::tr!("У этой записи нет целой версии приложения: вернуть можно только данные.")
             } else {
-                format!(
-                    "«{app}» — {} приложение: его версия — версия шлюза; вернуть можно только данные.",
-                    origin.title()
+                crate::tr!(
+                    "«{app}» — {origin} приложение: его версия — версия шлюза; вернуть можно только данные.",
+                    app = app,
+                    origin = origin.title()
                 )
             }));
         }
@@ -128,8 +129,12 @@ impl History {
             data_version_changed =
                 installed.as_ref().is_some_and(|package| package.manifest.data_version != parsed.data_version);
             lines.push(match &installed {
-                Some(package) => format!("Код: версия {} вместо {}.", parsed.version, package.version()),
-                None => format!("Код: версия {} снова поставлена.", parsed.version),
+                Some(package) => crate::tr!(
+                    "Код: версия {version} вместо {version2}.",
+                    version = parsed.version,
+                    version2 = package.version()
+                ),
+                None => crate::tr!("Код: версия {version} снова поставлена.", version = parsed.version),
             });
         }
         let data = if what.data() { self.data_for(app, record) } else { None };
@@ -141,21 +146,27 @@ impl History {
         if what.data() {
             match (&data_from, &data_summary) {
                 (Some(from), Some(summary)) => {
-                    lines.push(format!("Данные: как были {} ({summary}).", local_time(&from.record.at)));
-                    lines.push("Что есть сейчас, сохранится в истории: возврат можно отменить.".into());
+                    lines.push(crate::tr!(
+                        "Данные: как были {at} ({summary}).",
+                        at = local_time(&from.record.at),
+                        summary = summary
+                    ));
+                    lines.push(crate::tr!("Что есть сейчас, сохранится в истории: возврат можно отменить."));
                 }
                 _ if what == What::Data => {
-                    return Err(ApiError::conflict("Снимка данных той поры в истории нет: возвращать нечего."));
+                    return Err(ApiError::conflict(crate::tr!(
+                        "Снимка данных той поры в истории нет: возвращать нечего."
+                    )));
                 }
-                _ => lines.push("Данные: снимка той поры нет — данные останутся как есть.".into()),
+                _ => lines.push(crate::tr!("Данные: снимка той поры нет — данные останутся как есть.")),
             }
         } else if data_version_changed {
-            lines.push("Вид данных менялся: старая версия может не понять сегодняшние данные.".into());
+            lines.push(crate::tr!("Вид данных менялся: старая версия может не понять сегодняшние данные."));
         }
         if !rights_added.is_empty() || !hosts_added.is_empty() {
             let mut asks = rights_added.clone();
-            asks.extend(hosts_added.iter().map(|host| format!("адрес {host}")));
-            lines.push(format!("Старой версии нужно то, чего нет у работающей: {}.", asks.join(", ")));
+            asks.extend(hosts_added.iter().map(|host| crate::tr!("адрес {host}", host = host)));
+            lines.push(crate::tr!("Старой версии нужно то, чего нет у работающей: {asks}.", asks = asks.join(", ")));
         }
         Ok(RestorePlan {
             app: app.to_string(),
@@ -189,14 +200,15 @@ impl History {
         if plan.needs_approval && !approve {
             return Ok(RestoreReport {
                 restored: false,
-                message: "Старой версии нужны права, которых нет у работающей: их одобряет администратор в пульте."
-                    .into(),
+                message: crate::tr!(
+                    "Старой версии нужны права, которых нет у работающей: их одобряет администратор в пульте."
+                ),
                 needs_approval: Some(plan),
                 record: None,
                 package: None,
             });
         }
-        let host = self.host().ok_or_else(|| ApiError::conflict("Приложений здесь нет."))?;
+        let host = self.host().ok_or_else(|| ApiError::conflict(crate::tr!("Приложений здесь нет.")))?;
         let target = plan.record.record.clone();
         // What there is now, kept before anything changes: the step back can be undone.
         let data_before = self.capture(app);
@@ -210,19 +222,20 @@ impl History {
         }
         let mut message = Vec::new();
         if what.code() {
-            message.push(format!("Вернулась версия {}.", version.clone().unwrap_or_default()));
+            message.push(crate::tr!("Вернулась версия {version}.", version = version.clone().unwrap_or_default()));
         }
         let data = if what.data() { self.data_for(app, record).map(|(_, data)| data) } else { None };
         if what.data() && data.is_none() {
-            message.push("Снимка данных той поры нет: данные остались как были.".into());
+            message.push(crate::tr!("Снимка данных той поры нет: данные остались как были."));
         }
         if let Some(data) = data {
             host.unload_now(app).await;
-            let parts = self.data_parts().ok_or_else(|| ApiError::conflict("Данных приложений здесь нет."))?;
+            let parts =
+                self.data_parts().ok_or_else(|| ApiError::conflict(crate::tr!("Данных приложений здесь нет.")))?;
             match parts.apply(self.store(), app, Some(&data)) {
-                Ok(()) => message.push("Данные вернулись.".into()),
-                Err(why) if what.code() => message.push(format!("Данные не вернулись: {why}.")),
-                Err(why) => return Err(ApiError::conflict(format!("Данные не вернулись: {why}."))),
+                Ok(()) => message.push(crate::tr!("Данные вернулись.")),
+                Err(why) if what.code() => message.push(crate::tr!("Данные не вернулись: {why}.", why = why)),
+                Err(why) => return Err(ApiError::conflict(crate::tr!("Данные не вернулись: {why}.", why = why))),
             }
             if let Some(events) = self.events.get() {
                 events.emit(crate::core::events::GatewayEvent::PackageDataChanged { package: app.to_string() });
@@ -240,7 +253,7 @@ impl History {
         Ok(RestoreReport {
             restored: true,
             needs_approval: None,
-            message: format!("{} Вернуть обратно — в истории.", message.join(" ")),
+            message: crate::tr!("{message} Вернуть обратно — в истории.", message = message.join(" ")),
             record: id,
             package: host.view_one(app).await.ok(),
         })
@@ -308,12 +321,13 @@ impl History {
     ) -> Result<(String, String), ApiError> {
         // Everything on disk is in the history before a folder goes.
         self.adopt_installed(host, app);
-        let manifest = self.manifest_of(tree).ok_or_else(|| ApiError::conflict("У версии нет manifest.json."))?;
+        let manifest =
+            self.manifest_of(tree).ok_or_else(|| ApiError::conflict(crate::tr!("У версии нет manifest.json.")))?;
         let mut version = manifest
             .get("version")
             .and_then(Value::as_str)
             .and_then(|version| semver::Version::parse(version).ok())
-            .ok_or_else(|| ApiError::conflict("У версии нет номера."))?;
+            .ok_or_else(|| ApiError::conflict(crate::tr!("У версии нет номера.")))?;
         let root = host.packages_dir().join(app);
         let _writing = self.writing();
         let lock = self.lock(app);

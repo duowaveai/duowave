@@ -10,7 +10,6 @@
 //! - Like the rest of `/home/v1`: only from the home network and only with the home key — the way the station's speech
 //!   and its talks with the model already go.
 //! - What the computer has is noted in `synced`: the station's cleaning with «На компьютере» takes only that.
-
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -275,7 +274,7 @@ impl History {
     /// The station's lines and marks: its marks apart, its records into each app's line by their time.
     pub fn receive_lines(&self, peer: &str, apps: &Map<String, Value>) -> Result<usize, String> {
         if !valid_name(peer) {
-            return Err("имя колонки не то".into());
+            return Err(crate::tr!("имя колонки не то"));
         }
         let _writing = self.writing();
         let mut joined = 0;
@@ -334,11 +333,16 @@ async fn post(url: &str, key: &str, what: &str, body: Value) -> Result<Value, St
         .json(&body)
         .send()
         .await
-        .map_err(|error| format!("компьютер не ответил: {error}"))?;
+        .map_err(|error| crate::tr!("компьютер не ответил: {error}", error = error))?;
     let status = answer.status();
-    let body: Value = answer.json().await.map_err(|_| format!("компьютер ответил не JSON (HTTP {status})"))?;
+    let body: Value =
+        answer.json().await.map_err(|_| crate::tr!("компьютер ответил не JSON (HTTP {status})", status = status))?;
     if !status.is_success() {
-        return Err(body.get("message").and_then(Value::as_str).unwrap_or("отказ").to_string());
+        return Err(body
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::tr!("отказ")));
     }
     Ok(body.get("message").filter(|message| message.is_object()).cloned().unwrap_or(body))
 }

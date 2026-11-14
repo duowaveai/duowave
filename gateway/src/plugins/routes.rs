@@ -7,7 +7,6 @@
 //! package is by its kind: a character — who may change the character (`persona.edit`), a theme — who changes the
 //! gateway's settings (`settings.edit`), a plugin or an app — the admin at home (`plugins.manage`). Own sources of
 //! packages (`/api/v1/packages/sources`, docs/plans/custom-feeds.md) are added and removed by the admin at home alone.
-
 use std::sync::Arc;
 
 use axum::extract::{DefaultBodyLimit, Path, RawQuery, State};
@@ -72,7 +71,7 @@ pub(crate) fn admin(caller: &Caller) -> Result<Option<Actor>, ApiError> {
     caller.zone_at_least(Zone::Home)?;
     let principal = caller.permitted(PLUGINS_MANAGE)?;
     if principal.kind != PrincipalKind::User || principal.role != Some(Role::Admin) {
-        return Err(ApiError::forbidden("Приложениями управляет только администратор."));
+        return Err(ApiError::forbidden(crate::tr!("Приложениями управляет только администратор.")));
     }
     Ok(caller.actor())
 }
@@ -130,9 +129,9 @@ async fn add_source(
 ) -> ApiResult<CatalogView> {
     let actor = admin(&caller)?;
     if !body.understood {
-        return Err(ApiError::bad_request(
-            "Свой источник добавляется после предупреждения: его пакеты никто не проверял (understood: true).",
-        ));
+        return Err(ApiError::bad_request(crate::tr!(
+            "Свой источник добавляется после предупреждения: его пакеты никто не проверял (understood: true)."
+        )));
     }
     Ok(ok(app.catalog.add_source(&body.url, actor).await?))
 }
@@ -155,7 +154,7 @@ async fn preview(
 ) -> Result<Response, ApiError> {
     caller.permitted(STATION_VIEW)?;
     let (file, kind) = app.catalog.preview(&id, &which).await?;
-    let bytes = tokio::fs::read(&file).await.map_err(|_| ApiError::not_found("Нет такого превью."))?;
+    let bytes = tokio::fs::read(&file).await.map_err(|_| ApiError::not_found(crate::tr!("Нет такого превью.")))?;
     let mut response = bytes.into_response();
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
@@ -235,7 +234,9 @@ async fn panel_call(
 ) -> ApiResult<Value> {
     let principal = caller.permitted(&use_of(CapabilityName::Plugins))?.clone();
     let call = app.plugins.panel_call(&id, &function, input);
-    Ok(ok(json!({ "result": crate::bus::Trail::principal(&principal).scope(call).await? })))
+    // Outside the home the household's folders are closed unless ticked «и вне дома».
+    let trail = crate::bus::Trail::principal(&principal).from_afar(caller.zone == crate::platform::http::Zone::Remote);
+    Ok(ok(json!({ "result": trail.scope(call).await? })))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -332,8 +333,8 @@ async fn mcp_plugins(
                     };
                     Ok(json!({ "content": [{ "type": "text", "text": text }], "isError": failed }))
                 }
-                Some(_) => Err((-32001, format!("нет права на {name}"))),
-                None => Err((-32602, format!("нет инструмента {name}"))),
+                Some(_) => Err((-32001, crate::tr!("нет права на {name}", name = name))),
+                None => Err((-32602, crate::tr!("нет инструмента {name}", name = name))),
             }
         }
         other => Err((-32601, format!("method {other} is not here"))),
@@ -431,8 +432,10 @@ async fn file(
     Path((id, name)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
     caller.permitted(&use_of(CapabilityName::Plugins))?;
-    let (bytes, kind) =
-        app.files.read(&id, &name).ok_or_else(|| ApiError::not_found(format!("Нет картинки {name}.")))?;
+    let (bytes, kind) = app
+        .files
+        .read(&id, &name)
+        .ok_or_else(|| ApiError::not_found(crate::tr!("Нет картинки {name}.", name = name)))?;
     let mut response = bytes.into_response();
     response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
     response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=300"));

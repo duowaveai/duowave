@@ -5,6 +5,7 @@
 import { ComponentChildren } from 'preact';
 import { useRef } from 'preact/hooks';
 
+import { tr } from '../i18n';
 import { IconClose, IconPackage, IconPlus } from '../icons';
 import { usePanel } from '../shell/context';
 import { DeskWidget, onDesk, useDeskLayout, useWidgets } from '../shell/widgets';
@@ -24,23 +25,23 @@ export function AddWidgetPanel({ onClose, children }: { onClose: () => void; chi
     };
     return (
         <div class="add-layer">
-            <button class="add-scrim" aria-label="Закрыть" tabIndex={-1} onClick={onClose} />
+            <button class="add-scrim" aria-label={tr.drafts.close} tabIndex={-1} onClick={onClose} />
             <aside ref={box} class="add-panel" role="dialog" aria-modal="true" aria-labelledby="add-widget-h">
                 <header class="add-head">
                     <div class="flex-1 min-w-0 flex flex-col">
                         <h2 id="add-widget-h" class="add-title">
-                            Новый виджет
+                            {tr.drafts.addTitle}
                         </h2>
-                        <span class="w-cap">голосом или текстом — или готовый</span>
+                        <span class="w-cap">{tr.drafts.addCap}</span>
                     </div>
-                    <button class="desk-window-close" aria-label="Закрыть" onClick={onClose}>
+                    <button class="desk-window-close" aria-label={tr.drafts.close} onClick={onClose}>
                         <IconClose size={18} />
                     </button>
                 </header>
                 {children}
                 <section class="flex flex-col gap-8" aria-labelledby="add-ready-h">
                     <h3 id="add-ready-h" class="add-sub">
-                        {off.length > 0 ? 'Готовые' : 'Готовые — все уже на столе'}
+                        {off.length > 0 ? tr.drafts.readyHeading : tr.drafts.readyAllOnDesk}
                     </h3>
                     {off.length > 0 && (
                         <div class="add-list">
@@ -54,12 +55,12 @@ export function AddWidgetPanel({ onClose, children }: { onClose: () => void; chi
                                         <span class="flex-1 min-w-0 flex flex-col">
                                             <span class="w-strong">{widget.title ?? widget.id}</span>
                                             <span class="w-cap">
-                                                {[widget.plugin === 'core' ? 'встроенный' : 'приложение', widget.size === 'large' ? 'большой' : 'маленький']
+                                                {[widget.plugin === 'core' ? tr.drafts.builtIn : tr.drafts.app, widget.size === 'large' ? tr.drafts.sizeLarge : tr.drafts.sizeSmall]
                                                     .filter(Boolean)
                                                     .join(' · ')}
                                             </span>
                                         </span>
-                                        <span class="pill pill-off">Поставить</span>
+                                        <span class="pill pill-off">{tr.drafts.put}</span>
                                     </button>
                                 );
                             })}
@@ -76,12 +77,12 @@ export function AddWidgetPanel({ onClose, children }: { onClose: () => void; chi
                             <IconPackage size={18} />
                         </span>
                         <span class="flex-1 min-w-0 flex flex-col">
-                            <span class="w-strong">Каталог</span>
-                            <span class="w-cap">приложения с виджетами: погода, радио, курсы, список покупок…</span>
+                            <span class="w-strong">{tr.drafts.catalog}</span>
+                            <span class="w-cap">{tr.drafts.catalogCap}</span>
                         </span>
                     </button>
                 </section>
-                <p class="w-cap m-0">Виджет на столе можно двигать за его шапку и растягивать за угол.</p>
+                <p class="w-cap m-0">{tr.drafts.dragHint}</p>
             </aside>
         </div>
     );

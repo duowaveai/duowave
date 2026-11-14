@@ -1,6 +1,8 @@
 import type { FunctionComponent } from 'preact';
 
 import type { StationLook } from '../api';
+import { tr } from '../i18n';
+import { DIVI_HIT, DiviArt, DiviGlyph } from './divi';
 import { MODELS } from './models';
 import type { StationArtProps, StationGlyphProps } from './types';
 
@@ -18,21 +20,30 @@ interface Family {
  * Семейства по id шлюза — вся линейка Станций; рисунки — models.tsx (корпус на модель, свет и дисплей общие, kit.tsx).
  * Новая модель — её корпус там и её варианты в looks.rs шлюза; дашборд при этом не меняется.
  */
+/** Название семейства — из словаря при каждом обращении (язык меняется на лету). */
+const family = (model: Omit<Family, 'title'>, key: string): Family => ({
+    Art: model.Art,
+    Glyph: model.Glyph,
+    get title() {
+        return tr.stations.familyTitle[key as keyof typeof tr.stations.familyTitle];
+    },
+});
+
 const FAMILIES: Record<string, Family> = {
-    lite2: { ...MODELS.lite2, title: 'Лайт 2' },
-    lite1: { ...MODELS.lite1, title: 'Лайт' },
-    mini1: { ...MODELS.mini1, title: 'Мини' },
-    mini2: { ...MODELS.mini2, title: 'Мини 2' },
-    mini3: { ...MODELS.mini3, title: 'Мини 3' },
-    mini3pro: { ...MODELS.mini3pro, title: 'Мини 3 Про' },
-    station: { ...MODELS.station, title: 'Станция' },
-    max: { ...MODELS.max, title: 'Макс' },
-    station2: { ...MODELS.station2, title: 'Станция 2' },
-    midi: { ...MODELS.midi, title: 'Миди' },
-    duomax: { ...MODELS.duomax, title: 'Дуо Макс' },
-    station3: { ...MODELS.station3, title: 'Станция 3' },
-    street: { ...MODELS.street, title: 'Стрит' },
-    bork: { ...MODELS.bork, title: 'Станция BORK' },
+    lite2: family(MODELS.lite2, 'lite2'),
+    lite1: family(MODELS.lite1, 'lite1'),
+    mini1: family(MODELS.mini1, 'mini1'),
+    mini2: family(MODELS.mini2, 'mini2'),
+    mini3: family(MODELS.mini3, 'mini3'),
+    mini3pro: family(MODELS.mini3pro, 'mini3pro'),
+    station: family(MODELS.station, 'station'),
+    max: family(MODELS.max, 'max'),
+    station2: family(MODELS.station2, 'station2'),
+    midi: family(MODELS.midi, 'midi'),
+    duomax: family(MODELS.duomax, 'duomax'),
+    station3: family(MODELS.station3, 'station3'),
+    street: family(MODELS.street, 'street'),
+    bork: family(MODELS.bork, 'bork'),
 };
 
 /** Коды прошивки → семейство: для сессии, о которой шлюз постарше ещё не ведёт записи колонки. */
@@ -64,7 +75,26 @@ export interface StationDrawing {
     sticker: boolean;
     /** Есть ли у модели свой рисунок; у незнакомой — рисунок Лайт 2, пока для неё не нарисован свой. */
     drawn: boolean;
+    /** Где рисунок нажимается, в координатах его рамки 240×200; без него — корпус Лайт 2. */
+    hit?: { x: number; y: number; w: number; h: number; r: number };
 }
+
+/**
+ * Режим «Микрофон» (docs/plans/mic-mode.md): колонки нет — в центре орбиты ДиВи, знак DuoWave, в той же рамке. Имя —
+ * встроенного помощника этого режима.
+ */
+export const DIVI_DRAWING: StationDrawing = {
+    get title() {
+        return tr.stations.divi;
+    },
+    Art: DiviArt,
+    Glyph: DiviGlyph,
+    color: 'lime',
+    clock: false,
+    sticker: false,
+    drawn: true,
+    hit: DIVI_HIT,
+};
 
 /** Рисунок по виду, который решил шлюз; без вида — по коду прошивки, иначе — Лайт 2 с часами, синяя. */
 export function drawingOf(look: StationLook | null | undefined, deviceModel?: string | null): StationDrawing {
@@ -72,7 +102,7 @@ export function drawingOf(look: StationLook | null | undefined, deviceModel?: st
     const familyId = look?.family ?? CODES[raw.toLowerCase()];
     const family = familyId ? FAMILIES[familyId] : undefined;
     return {
-        title: look?.title ?? family?.title ?? (raw.replace(/^Yandex\s*/i, '') || 'Колонка'),
+        title: look?.title ?? family?.title ?? (raw.replace(/^Yandex\s*/i, '') || tr.stations.speaker),
         Art: family?.Art ?? MODELS.lite2.Art,
         Glyph: family?.Glyph ?? MODELS.lite2.Glyph,
         color: look?.color ?? 'azure',

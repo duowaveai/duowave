@@ -30,7 +30,6 @@
 //!   owner's open decision 3); one that holds nothing frees nothing and stays on. The built-in skills and the voice
 //!   path are never touched: a plugin's voice route that does not fit fails as any failed call does, and a built-in
 //!   skill takes the phrase when there is one.
-
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -216,33 +215,43 @@ pub fn count(memory: Option<MemoryNow>, reserve_mb: u64, plugins: &[PluginShare]
 /// What the panel says under the bar: what is in use now and how much more can be loaded.
 pub fn note(count: &Count, measured: bool, pressure: Pressure) -> String {
     if !measured {
-        return "Сколько памяти свободно, шлюз здесь сказать не может.".into();
+        return crate::tr!("Сколько памяти свободно, шлюз здесь сказать не может.");
     }
     let used = match count.loaded {
-        0 => "Сейчас ни одно приложение не загружено.".to_string(),
-        loaded => format!("Загружено приложений: {loaded}, под них занято {} МБ.", count.committed_mb),
+        0 => crate::tr!("Сейчас ни одно приложение не загружено."),
+        loaded => crate::tr!(
+            "Загружено приложений: {loaded}, под них занято {mb} МБ.",
+            loaded = loaded,
+            mb = count.committed_mb
+        ),
     };
     let more = if count.free_mb > 0 {
-        format!("Можно загрузить ещё {} МБ.", count.free_mb)
+        crate::tr!("Можно загрузить ещё {mb} МБ.", mb = count.free_mb)
     } else if count.budget_mb == 0 {
-        "Приложениям места нет: памяти меньше запаса для системы и Алисы.".to_string()
+        crate::tr!("Приложениям места нет: памяти меньше запаса для системы и Алисы.")
     } else if count.room_mb > 0 {
-        "Свободного места нет: следующее приложение сначала выгрузит простаивающие.".to_string()
+        crate::tr!("Свободного места нет: следующее приложение сначала выгрузит простаивающие.")
     } else {
-        "Больше не загрузить, пока работают загруженные.".to_string()
+        crate::tr!("Больше не загрузить, пока работают загруженные.")
     };
     let room = format!("{used} {more}");
     match pressure {
         Pressure::Normal => room,
-        Pressure::Warn => format!("{room} Памяти мало: простаивающие приложения выгружаются, фоновая работа ждёт."),
-        Pressure::Critical => format!("{room} Памяти очень мало: приложения выгружаются."),
+        Pressure::Warn => {
+            crate::tr!("{room} Памяти мало: простаивающие приложения выгружаются, фоновая работа ждёт.", room = room)
+        }
+        Pressure::Critical => crate::tr!("{room} Памяти очень мало: приложения выгружаются.", room = room),
     }
 }
 
 /// Why a plugin's context does not load, or nothing when it fits.
 pub fn does_not_fit(need_mb: u64, free_mb: u64) -> Option<String> {
     (need_mb > free_mb).then(|| {
-        format!("колонке не хватает памяти, чтобы загрузить приложение: нужно {need_mb} МБ, свободно {free_mb} МБ")
+        crate::tr!(
+            "колонке не хватает памяти, чтобы загрузить приложение: нужно {need_mb} МБ, свободно {free_mb} МБ",
+            need_mb = need_mb,
+            free_mb = free_mb
+        )
     })
 }
 
@@ -285,8 +294,11 @@ pub fn to_unload(need_mb: u64, free_mb: u64, idle: &[Idle]) -> Result<Vec<String
 pub fn no_room(need_mb: u64, free_mb: Option<u64>, reserve_mb: u64) -> Option<String> {
     let free = free_mb?;
     (need_mb + reserve_mb > free).then(|| {
-        format!(
-            "не хватит места: нужно {need_mb} МБ и ещё {reserve_mb} МБ про запас на обновление шлюза, свободно {free}"
+        crate::tr!(
+            "не хватит места: нужно {need_mb} МБ и ещё {reserve_mb} МБ про запас на обновление шлюза, свободно {free}",
+            need_mb = need_mb,
+            reserve_mb = reserve_mb,
+            free = free
         )
     })
 }

@@ -166,9 +166,9 @@ impl CharacterVoices {
     pub fn before_removal(&self, package: &str) -> Result<(), ApiError> {
         let prefix = format!("c-{package}-");
         match self.speaking() {
-            Some(id) if id.starts_with(&prefix) => {
-                Err(ApiError::conflict("Голос этого персонажа говорит сейчас — сначала выберите другой голос."))
-            }
+            Some(id) if id.starts_with(&prefix) => Err(ApiError::conflict(crate::tr!(
+                "Голос этого персонажа говорит сейчас — сначала выберите другой голос."
+            ))),
             _ => Ok(()),
         }
     }
@@ -233,7 +233,7 @@ impl CharacterVoices {
         let engines = self.own.engines().await;
         let Some((engine, _made)) = self.pick(character, &engines) else {
             let reason = engines.iter().find_map(|engine| engine.reason.clone()).unwrap_or_else(|| {
-                "Голос этого персонажа здесь не зазвучит: ни одна его модель тут не работает.".into()
+                crate::tr!("Голос этого персонажа здесь не зазвучит: ни одна его модель тут не работает.")
             });
             let state = if fallback.is_some() { VoiceState::Fallback } else { VoiceState::Unsupported };
             return VoiceView { state, fallback, reason: Some(reason), ..VoiceView::none() };

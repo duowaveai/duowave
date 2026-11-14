@@ -248,10 +248,10 @@ fn http_url(url: &str) -> bool {
 
 fn entry(name: &str, value: &Json) -> Result<ImportedServer, String> {
     if value.as_object().is_none() {
-        return Err(format!("«{name}»: это не описание сервера."));
+        return Err(crate::tr!("«{name}»: это не описание сервера.", name = name));
     }
     if value.get("disabled").and_then(Json::as_bool) == Some(true) {
-        return Err(format!("«{name}» выключен в файле — пропущен."));
+        return Err(crate::tr!("«{name}» выключен в файле — пропущен.", name = name));
     }
     let url = match value.get("url") {
         Some(Json::String(url)) => Some(url.as_str()),
@@ -259,18 +259,18 @@ fn entry(name: &str, value: &Json) -> Result<ImportedServer, String> {
     };
     if let Some(url) = url.filter(|url| !url.is_empty()) {
         if !http_url(url) {
-            return Err(format!("«{name}»: адрес {url} не http(s)."));
+            return Err(crate::tr!("«{name}»: адрес {url} не http(s).", name = name, url = url));
         }
         return Ok(ImportedServer::address(name, url, value.get("headers").and_then(Json::record)));
     }
     if let Some(command) = value.get("command").and_then(Json::as_str).map(str::trim).filter(|c| !c.is_empty()) {
         let args = match value.get("args") {
             None => Vec::new(),
-            Some(args) => args.strings().ok_or_else(|| format!("«{name}»: args — не список строк."))?,
+            Some(args) => args.strings().ok_or_else(|| crate::tr!("«{name}»: args — не список строк.", name = name))?,
         };
         let env = match value.get("env") {
             None => None,
-            Some(env) => Some(env.record().ok_or_else(|| format!("«{name}»: env — не набор строк."))?),
+            Some(env) => Some(env.record().ok_or_else(|| crate::tr!("«{name}»: env — не набор строк.", name = name))?),
         };
         return Ok(ImportedServer {
             name: name.to_string(),
@@ -283,16 +283,16 @@ fn entry(name: &str, value: &Json) -> Result<ImportedServer, String> {
             headers: None,
         });
     }
-    Err(format!("«{name}»: нет ни command, ни url."))
+    Err(crate::tr!("«{name}»: нет ни command, ни url.", name = name))
 }
 
 /// Servers from a pasted config; problems say what was skipped and why.
 pub fn parse_import(text: &str) -> ImportResult {
     let Ok(data) = serde_json::from_str::<Json>(text) else {
-        return ImportResult { servers: Vec::new(), problems: vec!["Это не JSON.".into()] };
+        return ImportResult { servers: Vec::new(), problems: vec![crate::tr!("Это не JSON.")] };
     };
     if data.as_object().is_none() {
-        return ImportResult { servers: Vec::new(), problems: vec!["Ожидался объект JSON.".into()] };
+        return ImportResult { servers: Vec::new(), problems: vec![crate::tr!("Ожидался объект JSON.")] };
     }
     let nested = data.get("mcp").and_then(|mcp| mcp.get("servers"));
     let map = Json::present(data.get("mcpServers")).or_else(|| Json::present(data.get("servers"))).or(nested);
@@ -307,7 +307,9 @@ pub fn parse_import(text: &str) -> ImportResult {
     if named.is_empty() {
         return ImportResult {
             servers: Vec::new(),
-            problems: vec!["Не нашли серверов: ждём mcpServers, servers или одно описание с command или url.".into()],
+            problems: vec![crate::tr!(
+                "Не нашли серверов: ждём mcpServers, servers или одно описание с command или url."
+            )],
         };
     }
     let mut result = ImportResult::default();

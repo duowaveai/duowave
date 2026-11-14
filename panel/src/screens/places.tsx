@@ -8,12 +8,14 @@ import { useState } from 'preact/hooks';
 
 import { api, can, problemOf, sessionStore } from '../api';
 import { ask } from '../ui/confirm';
+import { tr } from '../i18n';
 import {
     IconChevronLeft,
     IconChevronRight,
     IconJournal,
     IconKey,
     IconLaptop,
+    IconMic,
     IconPalette,
     IconShield,
     IconSpeaker,
@@ -35,6 +37,8 @@ import type { SettingsTab } from './mind';
 import { ModelsScreen } from './models';
 import { PlacementCard } from './placement';
 import { SettingsScreen } from './settings';
+import { MicCheck, Readiness, TalkChoice, useTalkChoiceHere } from './voice-input';
+import { onComputer, useOnComputer } from '../voice-input';
 
 type Icon = FunctionComponent<{ size?: number }>;
 
@@ -81,23 +85,49 @@ function Card({ id, title, children }: { id: string; title: string; children: Co
     );
 }
 
-/** «Колонка»: её имя и вид, какие колонки слушаем, режим, слух, где работает DuoWave и её память. */
+/**
+ * «Колонка»: как говорить с DuoWave, её имя и вид, какие колонки слушаем, режим, слух, где работает DuoWave и её
+ * память. В режиме «Микрофон» (docs/plans/mic-mode.md) страница — «Микрофон»: тот же выбор, готовность, «Слух» и
+ * проверка микрофона; о колонке на ней ничего.
+ */
 function StationPage() {
     const panel = usePanel();
     // Имя и вид — тот же лист, что при первой настройке: прежде его нельзя было открыть снова.
     const [naming, setNaming] = useState(false);
     const current = panel.current;
+    const computer = useOnComputer();
+    const choiceHere = useTalkChoiceHere() && can('station.view');
+    if (computer)
+        return (
+            <>
+                <Card id="talk" title={tr.places.talkTitle}>
+                    <TalkChoice />
+                </Card>
+                <Card id="ready" title={tr.places.readyTitle}>
+                    <Readiness />
+                </Card>
+                <ModelsScreen tab="recognition" onTab={() => undefined} bare />
+                <Card id="mic-check" title={tr.places.micTitle}>
+                    <MicCheck />
+                </Card>
+            </>
+        );
     return (
         <>
+            {choiceHere && (
+                <Card id="talk" title={tr.places.talkTitle}>
+                    <TalkChoice />
+                </Card>
+            )}
             {current && can('stations.manage') && (
-                <Card id="name" title="Имя и вид">
+                <Card id="name" title={tr.places.nameTitle}>
                     <div class="w-row">
                         <span class="flex-1 min-w-0 flex flex-col">
                             <span class="w-strong">«{current.name}»</span>
-                            <span class="w-cap">так колонку зовут в пульте и в строке наверху; вид — её модель и цвет</span>
+                            <span class="w-cap">{tr.places.nameAbout}</span>
                         </span>
                         <button class="w-btn" onClick={() => setNaming(true)}>
-                            Изменить
+                            {tr.places.change}
                         </button>
                     </div>
                     {naming && <SetupSheet station={current} onClose={() => setNaming(false)} onChanged={() => undefined} onLater={() => setNaming(false)} />}
@@ -105,7 +135,7 @@ function StationPage() {
             )}
             {can('station.view') && <Stations />}
             {panel.role.role !== 'helper' && can('station.view') && (
-                <Card id="mode" title="Режим">
+                <Card id="mode" title={tr.places.modeTitle}>
                     <ModeWidget />
                 </Card>
             )}
@@ -127,9 +157,9 @@ function BackToYandex() {
     const back = async () => {
         if (
             !(await ask({
-                title: 'Вернуть колонку Яндексу?',
-                text: 'Всё будет отвечать Яндекс, как до DuoWave: свои персонаж, голос и навыки замолчат. Вернуть — режимом «Вместе» или «Своё» здесь же.',
-                ok: 'Вернуть Яндексу',
+                title: tr.places.backAskTitle,
+                text: tr.places.backAskText,
+                ok: tr.places.backAskOk,
             }))
         )
             return;
@@ -137,7 +167,7 @@ function BackToYandex() {
         setNote(null);
         try {
             await api.setMode('relay');
-            setNote({ ok: true, text: 'Колонку ведёт Яндекс. Вернуть своё — режимом выше.' });
+            setNote({ ok: true, text: tr.places.backDone });
         } catch (e) {
             setNote({ ok: false, text: problemOf(e) });
         } finally {
@@ -145,11 +175,11 @@ function BackToYandex() {
         }
     };
     return (
-        <Card id="yandex" title="Вернуть колонку Яндексу">
-            <p class="w-cap m-0">Если что-то пошло не так или DuoWave больше не нужен: колонка снова целиком у Яндекса. DuoWave ничего не удаляет.</p>
+        <Card id="yandex" title={tr.places.backTitle}>
+            <p class="w-cap m-0">{tr.places.backAbout}</p>
             <div>
                 <button class="w-btn" disabled={busy} onClick={() => void back()}>
-                    {busy ? 'Возвращаю…' : 'Вернуть колонку Яндексу'}
+                    {busy ? tr.places.backBusy : tr.places.backTitle}
                 </button>
             </div>
             {note && (
@@ -165,20 +195,20 @@ function BackToYandex() {
 function HelperPage() {
     const panel = usePanel();
     // Окно приложения — пульт колонки (этап 4): своё у компьютера — его страница, напрямую, без прохода.
-    if (TOP_VIA) return <OwnFrame page="helper" title="Компьютер-помощник" />;
+    if (TOP_VIA) return <OwnFrame page="helper" title={tr.places.helperTitle} />;
     if (panel.role.role === 'helper')
         return (
             <>
-                <Card id="helper" title="Помогать колонке">
+                <Card id="helper" title={tr.places.helpTitle}>
                     <HelperWidget />
                 </Card>
-                <Card id="watch" title="Присматриваю за колонкой">
+                <Card id="watch" title={tr.places.watchTitle}>
                     <WatchWidget />
                 </Card>
             </>
         );
     return (
-        <Card id="helper-card" title="Компьютер-помощник">
+        <Card id="helper-card" title={tr.places.helperTitle}>
             <HelperCardWidget />
         </Card>
     );
@@ -195,7 +225,7 @@ function UpdatesPage() {
         <>
             <Updates />
             {panel.role.role === 'helper' && can('station.view') && (
-                <Card id="copies" title="Копии и страховка">
+                <Card id="copies" title={tr.places.copiesTitle}>
                     <WatchWidget />
                 </Card>
             )}
@@ -213,26 +243,26 @@ function DevPage() {
     const panel = usePanel();
     const dev = useDevMode();
     const places: Array<{ title: string; sub: string; go: () => void; shown: boolean }> = [
-        { title: 'Мастерская', sub: 'свои навыки и виджеты; в доке, пока слой включён', go: () => panel.go('skills', 'workshop'), shown: isAdmin() },
-        { title: 'Кто отвечает — таблицей', sub: 'маршруты: свой, Яндекс, по порядку', go: () => panel.go('skills', 'routes'), shown: true },
-        { title: 'Модели и провайдеры', sub: 'ключи, модели из .env, быстрая и умная', go: () => panel.go('character', 'brain'), shown: true },
-        { title: 'Программы (MCP)', sub: 'серверы инструментов для агента', go: () => panel.go('skills', 'connectors'), shown: can('connectors.view') },
-        { title: 'Журнал запросов', sub: 'шаги каждого вопроса, время, кто отвечал', go: () => panel.go('settings', 'history'), shown: can('journal.view') },
-        { title: 'Ключи API', sub: 'для своих программ и Home Assistant', go: () => panel.go('settings', 'access'), shown: can('users.manage') },
+        { title: tr.places.workshop, sub: tr.places.workshopSub, go: () => panel.go('skills', 'workshop'), shown: isAdmin() },
+        { title: tr.places.routesTitle, sub: tr.places.routesSub, go: () => panel.go('skills', 'routes'), shown: !onComputer() },
+        { title: tr.places.modelsTitle, sub: tr.places.modelsSub, go: () => panel.go('character', 'brain'), shown: true },
+        { title: tr.places.mcpTitle, sub: tr.places.mcpSub, go: () => panel.go('skills', 'connectors'), shown: can('connectors.view') },
+        { title: tr.places.journalTitle, sub: tr.places.journalSub, go: () => panel.go('settings', 'history'), shown: can('journal.view') },
+        { title: tr.places.keysTitle, sub: tr.places.keysSub, go: () => panel.go('settings', 'access'), shown: can('users.manage') },
     ];
     return (
         <>
-            <Card id="dev" title="Для разработчиков">
+            <Card id="dev" title={tr.places.devTitle}>
                 <label class="w-toggle">
                     <span class="flex-1 min-w-0 flex flex-col">
-                        <span class="w-strong">Показывать слой разработчика</span>
-                        <span class="w-cap">«Мастерская» в доке, журнал запросов, маршруты таблицей, провайдеры и ключи</span>
+                        <span class="w-strong">{tr.places.showDev}</span>
+                        <span class="w-cap">{tr.places.showDevAbout}</span>
                     </span>
-                    <Switch on={dev} label="Слой разработчика" onChange={setDevMode} />
+                    <Switch on={dev} label={tr.places.devLayer} onChange={setDevMode} />
                 </label>
             </Card>
             {dev && (
-                <section class="card glass card-list" aria-label="Места разработчика">
+                <section class="card glass card-list" aria-label={tr.places.devPlaces}>
                     <div class="w-rows">
                         {places
                             .filter((place) => place.shown)
@@ -254,17 +284,20 @@ function DevPage() {
 
 function settingsPages(role: string, onStation: boolean, offered: boolean): SettingsPage[] {
     return [
-        { id: 'station', title: 'Колонка', sub: 'имя, режим, слух, где работает', icon: IconSpeaker, Page: StationPage },
+        // Адрес страницы прежний (`#/settings/station`); в режиме «Микрофон» она — о микрофоне.
+        onComputer()
+            ? { id: 'station', title: tr.places.pageMic, sub: tr.places.pageMicSub, icon: IconMic, Page: StationPage }
+            : { id: 'station', title: tr.places.pageStation, sub: tr.places.pageStationSub, icon: IconSpeaker, Page: StationPage },
         ...(role === 'helper' || onStation
-            ? [{ id: 'helper', title: 'Компьютер-помощник', sub: 'что даёт колонке, не засыпать', icon: IconLaptop, Page: HelperPage }]
+            ? [{ id: 'helper', title: tr.places.helperTitle, sub: tr.places.pageHelperSub, icon: IconLaptop, Page: HelperPage }]
             : []),
-        { id: 'access', title: 'Люди и доступ', sub: 'кто входит, пароли, свой вход', icon: IconKey, Page: AccessPage },
-        { id: 'look', title: 'Оформление', sub: 'тема, светлая и тёмная, вид', icon: IconPalette, Page: ThemeCard },
+        { id: 'access', title: tr.places.pageAccess, sub: tr.places.pageAccessSub, icon: IconKey, Page: AccessPage },
+        { id: 'look', title: tr.places.pageLook, sub: tr.places.pageLookSub, icon: IconPalette, Page: ThemeCard },
         ...(can('station.view')
-            ? [{ id: 'updates', title: 'Обновления и копии', sub: 'версия DuoWave, копии настроек', icon: IconShield, dot: offered, Page: UpdatesPage }]
+            ? [{ id: 'updates', title: tr.places.pageUpdates, sub: tr.places.pageUpdatesSub, icon: IconShield, dot: offered, Page: UpdatesPage }]
             : []),
-        ...(can('journal.view') ? [{ id: 'history', title: 'История разговоров', sub: 'что спрашивали и кто ответил', icon: IconJournal, Page: HistoryPage }] : []),
-        { id: 'dev', title: 'Для разработчиков', sub: 'мастерская, маршруты, провайдеры', icon: IconTerminal, Page: DevPage },
+        ...(can('journal.view') ? [{ id: 'history', title: tr.places.pageHistory, sub: tr.places.pageHistorySub, icon: IconJournal, Page: HistoryPage }] : []),
+        { id: 'dev', title: tr.places.devTitle, sub: tr.places.pageDevSub, icon: IconTerminal, Page: DevPage },
     ];
 }
 
@@ -272,6 +305,8 @@ function settingsPages(role: string, onStation: boolean, offered: boolean): Sett
 export function SettingsSection() {
     const panel = usePanel();
     const offered = !!useOfferedVersion();
+    // Список перерисовывается, когда меняется «Как говорить»: страница колонки становится страницей микрофона.
+    useOnComputer();
     const [page, setPage] = useSectionTab<string>('settings', 'station');
     // Телефон: сначала список; ссылка на страницу (`#/settings/updates`, поиск) открывает её сразу. Док ведёт сюда без
     // вкладки в адресе — тогда список.
@@ -286,7 +321,7 @@ export function SettingsSection() {
     const { Page } = shown;
     return (
         <div class="set-split" data-view={listed ? 'list' : 'page'}>
-            <nav class="set-list" aria-label="Настройки">
+            <nav class="set-list" aria-label={tr.places.settings}>
                 {pages.map((entry) => {
                     const { icon: PageIcon } = entry;
                     return (
@@ -298,7 +333,7 @@ export function SettingsSection() {
                                 <b>{entry.title}</b>
                                 <span class="w-cap">{entry.sub}</span>
                             </span>
-                            {entry.dot && <span class="badge-dot" role="img" aria-label="новая версия" />}
+                            {entry.dot && <span class="badge-dot" role="img" aria-label={tr.places.newVersion} />}
                             <IconChevronRight size={16} />
                         </button>
                     );
@@ -307,7 +342,7 @@ export function SettingsSection() {
             <div class="set-page" aria-label={shown.title}>
                 <button class="set-back" onClick={() => setListed(true)}>
                     <IconChevronLeft size={16} />
-                    Настройки
+                    {tr.places.settings}
                 </button>
                 <h2 class="set-page-title">{shown.title}</h2>
                 <Page key={shown.id} />

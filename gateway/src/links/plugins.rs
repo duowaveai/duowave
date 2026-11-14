@@ -96,8 +96,8 @@ impl HostServices for PluginServices {
     fn smart_home_devices(&self) -> BoxFuture<'static, Result<Value, String>> {
         let provider = self.provider();
         Box::pin(async move {
-            let provider =
-                provider.ok_or_else(|| "умный дом не подключён («Приложения» → «Подключения»)".to_string())?;
+            let provider = provider
+                .ok_or_else(|| crate::tr!("умный дом не подключён («Приложения» → «Подключения»)").to_string())?;
             let devices = provider.devices(&CancellationToken::new()).await.map_err(|error| error.to_string())?;
             Ok(Value::Array(
                 devices
@@ -119,14 +119,17 @@ impl HostServices for PluginServices {
     ) -> BoxFuture<'static, Result<String, String>> {
         let provider = self.provider();
         Box::pin(async move {
-            let provider =
-                provider.ok_or_else(|| "умный дом не подключён («Приложения» → «Подключения»)".to_string())?;
-            let action = HomeAction::parse(&action)
-                .ok_or_else(|| format!("действие «{action}»: on, off, set_brightness, set_temperature, scene"))?;
+            let provider = provider
+                .ok_or_else(|| crate::tr!("умный дом не подключён («Приложения» → «Подключения»)").to_string())?;
+            let action = HomeAction::parse(&action).ok_or_else(|| {
+                crate::tr!("действие «{action}»: on, off, set_brightness, set_temperature, scene", action = action)
+            })?;
             let cancel = CancellationToken::new();
             let devices = provider.devices(&cancel).await.map_err(|error| error.to_string())?;
-            let found =
-                devices.iter().find(|known| known.id == device).ok_or_else(|| format!("нет устройства {device}"))?;
+            let found = devices
+                .iter()
+                .find(|known| known.id == device)
+                .ok_or_else(|| crate::tr!("нет устройства {device}", device = device))?;
             provider.act(found, action, value, &cancel).await.map_err(|error| error.to_string())?;
             Ok(format!("{}: {}", found.name, action.as_str()))
         })
@@ -148,7 +151,7 @@ impl HostServices for PluginServices {
         bytes: Option<Vec<u8>>,
     ) -> BoxFuture<'static, Result<Value, String>> {
         let answer = match (self.files.get(), action) {
-            (None, _) => Err("картинок здесь нет".to_string()),
+            (None, _) => Err(crate::tr!("картинок здесь нет").to_string()),
             (Some(files), "put") => {
                 let room = self
                     .plugins
@@ -163,7 +166,7 @@ impl HostServices for PluginServices {
             (Some(files), "delete") => {
                 Ok(Value::Bool(files.delete(caller, input.get("name").and_then(Value::as_str).unwrap_or_default())))
             }
-            (Some(_), other) => Err(format!("нет функции files.{other}")),
+            (Some(_), other) => Err(crate::tr!("нет функции files.{other}", other = other)),
         };
         Box::pin(async move { answer })
     }
@@ -174,7 +177,7 @@ impl HostServices for PluginServices {
         Box::pin(async move {
             let text: String = text.trim().chars().take(500).collect();
             if text.is_empty() {
-                return Err("нечего сказать".into());
+                return Err(crate::tr!("нечего сказать"));
             }
             // No station on the line, or no station link at all: nothing is said, and the plugin is told so.
             let Some(speaker) = speaker else { return Ok(false) };
@@ -187,7 +190,7 @@ impl HostServices for PluginServices {
     fn notify(&self, caller: &str, text: String) -> BoxFuture<'static, Result<Value, String>> {
         let (schedules, caller) = (self.schedules.get().and_then(Weak::upgrade), caller.to_string());
         Box::pin(async move {
-            let schedules = schedules.ok_or_else(|| "сообщений владельцу здесь нет".to_string())?;
+            let schedules = schedules.ok_or_else(|| crate::tr!("сообщений владельцу здесь нет").to_string())?;
             schedules.notify(&caller, &text).await.map(|()| Value::Bool(true))
         })
     }
@@ -195,7 +198,7 @@ impl HostServices for PluginServices {
     fn schedule(&self, caller: &str, action: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
         let answer = match self.schedules.get().and_then(Weak::upgrade) {
             Some(schedules) => schedules.code(caller, action, input),
-            None => Err("расписаний здесь нет".into()),
+            None => Err(crate::tr!("расписаний здесь нет")),
         };
         Box::pin(async move { answer })
     }
@@ -220,8 +223,9 @@ impl crate::plugins::schedule::OwnerNotice for OwnerAlerts {
         if self.0.can_tell() {
             Ok(())
         } else {
-            Err("некуда прислать: выберите чат «Оповещения» в подключении Telegram или задайте ALERT_WEBHOOK_URL"
-                .into())
+            Err(crate::tr!(
+                "некуда прислать: выберите чат «Оповещения» в подключении Telegram или задайте ALERT_WEBHOOK_URL"
+            ))
         }
     }
 

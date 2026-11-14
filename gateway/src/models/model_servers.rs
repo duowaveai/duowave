@@ -381,7 +381,7 @@ impl ModelServers {
                 None,
                 self.tts_api_key.as_deref(),
                 RESCAN_TIMEOUT,
-                "голосовой сервер не перечитал голоса",
+                &crate::tr!("голосовой сервер не перечитал голоса"),
             )
             .await?;
         Ok(Some(tts_loaded_of(body.get("loaded"))))
@@ -440,14 +440,13 @@ impl ModelServers {
         }
         if !self.mac_restart() {
             return Err(match which {
-                ServerName::Asr => "Сервер распознавания не отвечает или не умеет менять модель на ходу, а перезапуск отсюда есть только на macOS — перезапустите его сами.",
-                ServerName::Tts => "Голосовой сервер не отвечает или не умеет перечитывать голоса на ходу, а перезапуск отсюда есть только на macOS — перезапустите его сами.",
-            }
-            .into());
+                ServerName::Asr => crate::tr!("Сервер распознавания не отвечает или не умеет менять модель на ходу, а перезапуск отсюда есть только на macOS — перезапустите его сами."),
+                ServerName::Tts => crate::tr!("Голосовой сервер не отвечает или не умеет перечитывать голоса на ходу, а перезапуск отсюда есть только на macOS — перезапустите его сами."),
+            });
         }
         let script = self.mac_deploy.join(which.script());
         if !script.exists() {
-            return Err(format!("нет {} — этот сервер здесь не перезапустить", which.script()));
+            return Err(crate::tr!("нет {script} — этот сервер здесь не перезапустить", script = which.script()));
         }
         if let (ServerName::Asr, Some(model)) = (which, asr_model) {
             self.warmup_asr(model).await?;
@@ -467,7 +466,7 @@ impl ModelServers {
     /// The recognition server loads the model in the background (a download may take longer than an HTTP answer is
     /// waited for) and /health says when it is over: the model serves, or the error says why not.
     async fn load_asr(&self, model: &str) -> Result<(), String> {
-        let what = format!("модель {model} не загрузилась");
+        let what = crate::tr!("модель {model} не загрузилась", model = model);
         let root = self.asr_root.as_deref().unwrap_or_default();
         self.post(
             &format!("{root}/v1/models/load"),
@@ -484,7 +483,7 @@ impl ModelServers {
             if status.is_some() {
                 heard = Instant::now();
             } else if heard.elapsed() > LOAD_SILENCE {
-                return Err(format!("{what}: сервер распознавания перестал отвечать"));
+                return Err(crate::tr!("{what}: сервер распознавания перестал отвечать", what = what));
             }
             if let Some(status) = status.filter(|status| status.loading.as_deref() != Some(model)) {
                 if status.model.as_deref() == Some(model) {
@@ -493,13 +492,14 @@ impl ModelServers {
                 let why = status
                     .error
                     .map(|error| clip(&error, 300))
-                    .unwrap_or_else(|| "причина — в журнале сервера распознавания".into());
+                    .unwrap_or_else(|| crate::tr!("причина — в журнале сервера распознавания"));
                 return Err(format!("{what}: {why}"));
             }
             if Instant::now() > deadline {
-                return Err(format!(
-                    "{what} за {} минут — сервер ещё может её догрузить, загляните позже",
-                    LOAD_TIMEOUT.as_secs() / 60
+                return Err(crate::tr!(
+                    "{what} за {minutes} минут — сервер ещё может её догрузить, загляните позже",
+                    what = what,
+                    minutes = LOAD_TIMEOUT.as_secs() / 60
                 ));
             }
             tokio::time::sleep(self.load_poll).await;
@@ -526,9 +526,9 @@ impl ModelServers {
             Ok(Finished { code: Some(0), .. }) => Ok(()),
             Ok(Finished { stderr, .. }) => {
                 let last = stderr.trim().split('\n').next_back().unwrap_or("");
-                Err(format!("модель {model} не загрузилась: {}", clip(last, 160)))
+                Err(crate::tr!("модель {model} не загрузилась: {why}", model = model, why = clip(last, 160)))
             }
-            Err(RunError::Timeout) => Err("модель не загрузилась за 5 минут — склад моделей недоступен?".into()),
+            Err(RunError::Timeout) => Err(crate::tr!("модель не загрузилась за 5 минут — склад моделей недоступен?")),
             Err(RunError::Start(error)) => Err(error),
         }
     }
@@ -553,7 +553,11 @@ impl ModelServers {
     ) -> Result<Value, String> {
         let failed = |error: reqwest::Error| {
             if error.is_timeout() {
-                format!("{what}: нет ответа за {} с", (timeout.as_millis() as f64 / 1000.0).round())
+                crate::tr!(
+                    "{what}: нет ответа за {seconds} с",
+                    what = what,
+                    seconds = (timeout.as_millis() as f64 / 1000.0).round()
+                )
             } else {
                 format!("{what}: {error}")
             }
@@ -579,7 +583,7 @@ impl ModelServers {
             None => String::new(),
         };
         let detail = if status == reqwest::StatusCode::CONFLICT {
-            "сервер уже загружает другую модель — дождитесь её".to_string()
+            crate::tr!("сервер уже загружает другую модель — дождитесь её").to_string()
         } else if !message.is_empty() {
             clip(&message, 300)
         } else {

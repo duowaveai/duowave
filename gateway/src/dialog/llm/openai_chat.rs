@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use super::describe_http_error as describe;
 use super::llm_client::{
     bearer_of, describe_models, AssistantTurn, LlmClient, LlmEvent, LlmMessage, LlmRequest, LlmSettings, LlmStream,
-    TokensField, ToolCall, ToolChoice,
+    TokensField, ToolCall, ToolCallCut, ToolChoice,
 };
 use super::sse::Lines;
 use crate::dialog::generator::{generate, Yielder};
@@ -201,7 +201,10 @@ async fn run(
     let mut body = Map::new();
     body.insert("model".into(), json!(model));
     body.insert("stream".into(), json!(true));
-    body.insert(tokens_field_name(settings.tokens_field).into(), json!(settings.max_tokens));
+    body.insert(
+        tokens_field_name(settings.tokens_field).into(),
+        json!(request.max_tokens.unwrap_or(settings.max_tokens)),
+    );
     body.insert("messages".into(), Value::Array(messages));
     if !tools.is_empty() {
         body.insert("tools".into(), Value::Array(tools));
@@ -232,6 +235,7 @@ async fn run(
     let mut current: i64 = -1;
     let mut text = String::new();
     let mut reasoning = String::new();
+    let mut finish_reason = None;
     let mut finished = false;
     while !finished {
         let chunk = tokio::select! {
@@ -256,6 +260,9 @@ async fn run(
             }
             let chunk: Value =
                 serde_json::from_str(data).map_err(|error| anyhow!("a streamed chunk is not JSON: {error}"))?;
+            if let Some(reason) = chunk.pointer("/choices/0/finish_reason").and_then(Value::as_str) {
+                finish_reason = Some(reason.to_string());
+            }
             let delta = chunk.get("choices").and_then(|choices| choices.get(0)).and_then(|choice| choice.get("delta"));
             let Some(delta) = delta else { continue };
             if let Some(content) = delta.get("content").and_then(Value::as_str).filter(|content| !content.is_empty()) {
@@ -296,6 +303,14 @@ async fn run(
         }
     }
 
+    // The limit cut the last call short: its arguments do not parse, and nothing of the turn runs.
+    if finish_reason.as_deref() == Some("length") {
+        let cut =
+            |call: &&PendingCall| call.arguments.trim().is_empty() || parse_arguments(&call.arguments).1.is_some();
+        if let Some(last) = pending.values().next_back().filter(cut) {
+            return Err(anyhow::Error::new(ToolCallCut::new("the model", &last.name, &last.arguments)));
+        }
+    }
     let mut calls = Vec::new();
     let mut extras = Map::new();
     for (index, piece) in pending {
@@ -402,6 +417,46 @@ pub(crate) mod tests {
 
     fn input(value: Value) -> Map<String, Value> {
         value.as_object().cloned().unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_call_the_limit_cut_short_is_not_run_and_says_its_file_and_the_request_may_ask_for_more() {
+        let (server, url) = stub().await;
+        *server.chunks.lock().unwrap() = vec![
+            delta(json!({"content": "Пишу окошко."})),
+            delta(
+                json!({"tool_calls": [{"index": 0, "id": "w", "function": {"name": "write_file", "arguments": "{\"path\": \"panel.js\", \"content\": \"export"}}]}),
+            ),
+            json!({"choices": [{"delta": {}, "finish_reason": "length"}]}),
+        ];
+        let llm = OpenAiChatLlm::new(settings(&url));
+        let request = LlmRequest {
+            system: "s".into(),
+            messages: question(),
+            tools: vec![tool()],
+            max_tokens: Some(16_000),
+            ..LlmRequest::default()
+        };
+        let got: Vec<anyhow::Result<LlmEvent>> = llm.stream(request, CancellationToken::new()).collect().await;
+        assert_eq!(got[0].as_ref().unwrap(), &LlmEvent::Text("Пишу окошко.".into()));
+        let error = got.last().unwrap().as_ref().unwrap_err();
+        let cut = error.downcast_ref::<ToolCallCut>().expect("a typed cut");
+        assert_eq!((cut.tool.as_str(), cut.path.as_deref()), ("write_file", Some("panel.js")));
+        assert!(!got.iter().any(|event| matches!(event, Ok(LlmEvent::Tool(_)))), "no call comes out");
+        assert_eq!(server.requests.lock().unwrap()[0].0["max_tokens"], json!(16_000));
+
+        // A text cut by the limit, or a whole call before it, is what it was: the turn comes out.
+        *server.chunks.lock().unwrap() = vec![
+            delta(
+                json!({"tool_calls": [{"index": 0, "id": "s", "function": {"name": "search", "arguments": "{\"q\":\"кофе\"}"}}]}),
+            ),
+            json!({"choices": [{"delta": {}, "finish_reason": "length"}]}),
+        ];
+        let request =
+            LlmRequest { system: "s".into(), messages: question(), tools: vec![tool()], ..LlmRequest::default() };
+        let got = events(&llm, request).await;
+        assert!(got.iter().any(|event| matches!(event, LlmEvent::Tool(call) if call.name == "search")));
+        assert_eq!(server.requests.lock().unwrap()[1].0["max_tokens"], json!(300));
     }
 
     #[tokio::test]

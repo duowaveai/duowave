@@ -266,6 +266,10 @@ export const IconPackage = ({ size = 20 }: IconProps) =>
         <line x1="12" y1="13" x2="12" y2="21" />
     </>);
 
+/** Папки: домашняя папка DuoWave. */
+export const IconFolder = ({ size = 20 }: IconProps) =>
+    svg(size, <path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />);
+
 /** Разделы: открыть боковую панель на узком экране. */
 export const IconMenu = ({ size = 20 }: IconProps) =>
     svg(size, <>

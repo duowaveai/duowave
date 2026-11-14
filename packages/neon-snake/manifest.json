@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "kind": "plugin",
+  "id": "neon-snake",
+  "version": "1.0.1",
+  "title": "Неоновая змейка",
+  "description": "Мини-игра в 3D: светящаяся змейка на доске — стрелками, свайпами или кнопками на экране",
+  "api": "^2",
+  "runs": [
+    "pc",
+    "station",
+    "stationServer"
+  ],
+  "budget": {
+    "memoryMb": 2,
+    "storageMb": 1
+  },
+  "permissions": [],
+  "languages": [
+    "ru",
+    "en"
+  ],
+  "locales": {
+    "en": {
+      "title": "Neon Snake",
+      "description": "A 3D mini-game: a glowing snake on a board — arrow keys, swipes or on-screen buttons"
+    }
+  },
+  "contributes": {
+    "panel": {
+      "slots": [
+        "desk.widgets"
+      ],
+      "sections": [
+        {
+          "id": "neon-snake",
+          "title": "Неоновая змейка"
+        }
+      ],
+      "calls": [
+        "best",
+        "score"
+      ]
+    }
+  }
+}

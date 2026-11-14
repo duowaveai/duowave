@@ -54,14 +54,14 @@ async fn read_body_within(body: RawBody, limit: usize, idle: Duration) -> Result
     let mut bytes = Vec::new();
     loop {
         let Ok(next) = tokio::time::timeout(idle, stream.next()).await else {
-            return Err(ApiError::new(StatusCode::REQUEST_TIMEOUT, "Запись не дошла: связь прервалась."));
+            return Err(ApiError::new(StatusCode::REQUEST_TIMEOUT, crate::tr!("Запись не дошла: связь прервалась.")));
         };
         let Some(chunk) = next else { break };
         let chunk = chunk.map_err(|error| ApiError::bad_request(error.to_string()))?;
         if bytes.len() + chunk.len() > limit {
-            return Err(ApiError::bad_request(format!(
-                "Запись больше {} МБ.",
-                js::round_i64(limit as f64 / 1_048_576.0)
+            return Err(ApiError::bad_request(crate::tr!(
+                "Запись больше {size} МБ.",
+                size = js::round_i64(limit as f64 / 1_048_576.0)
             )));
         }
         bytes.extend_from_slice(&chunk);
@@ -82,7 +82,7 @@ pub(crate) fn passage(query: Option<&str>) -> Option<i64> {
 }
 
 /// A WAV from the store, never cached: a take re-recorded under the same number is a new one.
-async fn wav(path: PathBuf, missing: &str) -> Result<Response, ApiError> {
+async fn wav(path: PathBuf, missing: String) -> Result<Response, ApiError> {
     let bytes = tokio::fs::read(&path).await.map_err(|_| ApiError::not_found(missing))?;
     let mut response = RawBody::from(bytes).into_response();
     let headers = response.headers_mut();
@@ -122,7 +122,7 @@ async fn add_take(
 
 async fn take(State(app): State<Arc<App>>, caller: Caller, Path(n): Path<String>) -> Result<Response, ApiError> {
     caller.permitted(MODELS_MANAGE)?;
-    wav(app.voice_lab.take_path(js::integer(&n))?, "нет такого дубля").await
+    wav(app.voice_lab.take_path(js::integer(&n))?, crate::tr!("нет такого дубля")).await
 }
 
 async fn remove_take(State(app): State<Arc<App>>, caller: Caller, Path(n): Path<String>) -> ApiResult<Value> {
@@ -142,7 +142,7 @@ async fn clear_draft(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<V
 async fn imprint(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<JobState> {
     caller.permitted(MODELS_MANAGE)?;
     let Some(engine) = body.get("engine").and_then(Value::as_str) else {
-        return Err(ApiError::bad_request(r#"body: {"engine": "omnivoice", "name": "Мой голос"}"#));
+        return Err(ApiError::bad_request(crate::tr!("body: {\"engine\": \"omnivoice\", \"name\": \"Мой голос\"}")));
     };
     let anyway = body.get("anyway") == Some(&Value::Bool(true));
     Ok(created(app.voice_lab.imprint(engine, body.get("name"), caller.actor(), anyway).await?))
@@ -175,7 +175,7 @@ async fn sample(
     Path((id, n)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
     caller.permitted(MODELS_MANAGE)?;
-    wav(app.voice_lab.sample_path(&id, js::integer(&n))?, "нет такой пробы").await
+    wav(app.voice_lab.sample_path(&id, js::integer(&n))?, crate::tr!("нет такой пробы")).await
 }
 
 async fn rename(

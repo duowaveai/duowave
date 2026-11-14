@@ -184,7 +184,7 @@ impl ModelFiles {
         let _cleanup = Cleanup { parts: vec![part.clone()], folder };
         tokio::time::timeout(UPLOAD_DEADLINE, write_limited(body, &part, None, MAX_UPLOAD_BYTES, None))
             .await
-            .map_err(|_| format!("не пришёл целиком за {} с", UPLOAD_DEADLINE.as_secs()))??;
+            .map_err(|_| crate::tr!("не пришёл целиком за {seconds} с", seconds = UPLOAD_DEADLINE.as_secs()))??;
         std::fs::rename(&part, &target).map_err(|error| format!("{}: {error}", target.display()))?;
         Ok(())
     }
@@ -281,7 +281,7 @@ async fn pull(url: &str, file: &Path, progress: Option<&Progress>, cancel: &Canc
     // Redirects end on the hosts' CDNs: the first hop is what we check, the size is what we bound.
     let total = response.content_length().unwrap_or(0);
     if total > MAX_MODEL_BYTES {
-        return Err(format!("{}: {} МБ — больше предела", file_of(url), megabytes(total)));
+        return Err(crate::tr!("{file}: {size} МБ — больше предела", file = file_of(url), size = megabytes(total)));
     }
     if let Some(progress) = progress {
         progress.total.store(total, Ordering::Relaxed);
@@ -321,7 +321,7 @@ where
             progress.bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed);
         }
         if seen > max {
-            return Err(format!("больше {} МБ", megabytes(max)));
+            return Err(crate::tr!("больше {size} МБ", size = megabytes(max)));
         }
         out.write_all(&chunk).await.map_err(|error| format!("{}: {error}", file.display()))?;
     }

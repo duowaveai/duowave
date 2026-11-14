@@ -14,7 +14,6 @@ pub mod ports;
 pub mod routes;
 pub mod socket;
 pub mod wire;
-
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -360,11 +359,11 @@ impl MidiService {
             return Err(why.clone());
         }
         if zone == Zone::Remote && !self.remote {
-            return Err("Клавиатуру слышно только дома: пульт вне дома её не слышит (MIDI_REMOTE).".into());
+            return Err(crate::tr!("Клавиатуру слышно только дома: пульт вне дома её не слышит (MIDI_REMOTE)."));
         }
         match self.gate.get() {
             Some(gate) => gate(package),
-            None => Err("приложения здесь не запущены".into()),
+            None => Err(crate::tr!("приложения здесь не запущены")),
         }
     }
 
@@ -372,7 +371,7 @@ impl MidiService {
     pub fn attach(&self, package: &str, zone: Zone, outbox: mpsc::Sender<Value>) -> Result<(u64, String), String> {
         let mut state = self.lock();
         if state.owners.len() >= MAX_OWNERS {
-            return Err(format!("клавиатуру уже слушают {MAX_OWNERS} страниц — закройте лишние"));
+            return Err(crate::tr!("Клавиатуру уже слушают {max} страниц — закройте лишние.", max = MAX_OWNERS));
         }
         state.next_owner += 1;
         let id = state.next_owner;
@@ -430,7 +429,7 @@ impl MidiService {
             let state = self.lock();
             match state.owners.get(&owner) {
                 Some(owner) => owner.package.clone(),
-                None => return Err("канал перешёл на новую страницу".into()),
+                None => return Err(crate::tr!("канал перешёл на новую страницу")),
             }
         };
         match self.gate.get().map(|gate| gate(&package)) {
@@ -476,7 +475,7 @@ impl MidiService {
     fn listen_one(&self, owner: u64, port: &str) -> Result<(), String> {
         let mut state = self.lock();
         let Some(package) = state.owners.get(&owner).map(|owner| owner.package.clone()) else {
-            return Err("канала нет".into());
+            return Err(crate::tr!("канала нет"));
         };
         if state.owners.get(&owner).is_some_and(|owner| owner.listening.contains(port)) {
             return Ok(());
@@ -487,7 +486,7 @@ impl MidiService {
                 .iter()
                 .find(|info| info.input && info.id == port)
                 .map(|info| info.name.clone())
-                .ok_or_else(|| "Такой клавиатуры нет: её отключили?".to_string())?;
+                .ok_or_else(|| crate::tr!("Такой клавиатуры нет: её отключили?"))?;
             let link = self.ports.open_input(port, self.sink(port))?;
             tracing::info!(target: "midi", "keyboard «{name}» opened");
             state.inputs.insert(port.to_string(), InputHold { _link: link, name, users: 0, idle_since: None });
@@ -538,18 +537,18 @@ impl MidiService {
         let mut state = self.lock();
         let now = Instant::now();
         {
-            let Some(who) = state.owners.get_mut(&owner) else { return Err("канала нет".into()) };
+            let Some(who) = state.owners.get_mut(&owner) else { return Err(crate::tr!("канала нет")) };
             if now.duration_since(who.second.0) >= Duration::from_secs(1) {
                 who.second = (now, 0);
             }
             who.second.1 += 1;
             if who.second.1 > SEND_RATE {
-                return Err(format!("больше {SEND_RATE} сообщений в секунду — лишнее отброшено"));
+                return Err(crate::tr!("Больше {max} сообщений в секунду — лишнее отброшено.", max = SEND_RATE));
             }
         }
         if !state.outputs.contains_key(port) {
             if !state.ports.iter().any(|info| !info.input && info.id == port) {
-                return Err("Такой клавиатуры нет: её отключили?".into());
+                return Err(crate::tr!("Такой клавиатуры нет: её отключили?"));
             }
             let link = self.ports.open_output(port)?;
             state.outputs.insert(port.to_string(), OutputHold { link, last: now });
@@ -586,7 +585,7 @@ impl MidiService {
     pub fn play(self: &Arc<Self>, owner: u64, id: &str, port: &str, steps: Vec<Step>) -> Result<(), String> {
         self.stop_play(owner);
         if !self.lock().ports.iter().any(|info| !info.input && info.id == port) {
-            return Err("Такой клавиатуры нет: её отключили?".into());
+            return Err(crate::tr!("Такой клавиатуры нет: её отключили?"));
         }
         // Every note's start and end, in time order; at one moment the ends go first.
         let mut moments: Vec<(u64, bool, usize)> = Vec::with_capacity(steps.len() * 2);
@@ -666,7 +665,7 @@ impl MidiService {
     /// A message past the owners' counting: the service's own, to let go.
     fn raw(&self, port: &str, message: Message) -> Result<(), String> {
         let mut state = self.lock();
-        let hold = state.outputs.get_mut(port).ok_or_else(|| "выход закрыт".to_string())?;
+        let hold = state.outputs.get_mut(port).ok_or_else(|| crate::tr!("выход закрыт"))?;
         hold.last = Instant::now();
         hold.link.send(&message.bytes())
     }
@@ -774,7 +773,7 @@ mod tests {
         assert!(service.may_hear("teacher", Zone::Home).is_ok());
         assert!(service.may_hear("teacher", Zone::Remote).unwrap_err().contains("только дома"));
         assert!(service.may_hear("weather", Zone::Local).is_err());
-        let absent = MidiService::new(Arc::new(ports::Absent("нет MIDI".into())), None, true);
+        let absent = MidiService::new(Arc::new(ports::Absent(|| "нет MIDI".to_string())), None, true);
         assert_eq!(absent.may_hear("teacher", Zone::Local).unwrap_err(), "нет MIDI");
         let off = MidiService::new(Arc::new(Fake(FakePorts::new())), Some("MIDI=0".into()), true);
         assert!(!off.available());

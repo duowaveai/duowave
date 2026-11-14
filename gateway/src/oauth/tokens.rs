@@ -135,13 +135,14 @@ impl TokenRecord {
         let text = |name: &str| answer.get(name).and_then(Value::as_str).map(str::trim).unwrap_or_default();
         let access = text("access_token");
         if !plain_token(access, 16 * 1024) {
-            return Err(format!("Сервис {with} не выдал токен."));
+            return Err(crate::tr!("Сервис {with} не выдал токен.", with = with));
         }
         let scope = Some(text("scope")).filter(|scope| !scope.is_empty()).unwrap_or(flow.scope).to_string();
         if let Some(required) = flow.required_scope {
             if !scope.split_whitespace().any(|granted| granted == required) {
-                return Err(format!(
-                    "Вход в {with} выполнен, но без разрешения отвечать из подписки: при входе разрешите это DuoWave."
+                return Err(crate::tr!(
+                    "Вход в {with} выполнен, но без разрешения отвечать из подписки: при входе разрешите это DuoWave.",
+                    with = with
                 ));
             }
         }
@@ -159,10 +160,11 @@ impl TokenRecord {
         record.times(answer);
         let id_token = text("id_token");
         if !id_token.is_empty() {
-            let claims = claims(id_token).ok_or_else(|| format!("Сервис {with} выдал непонятный ID-токен."))?;
+            let claims =
+                claims(id_token).ok_or_else(|| crate::tr!("Сервис {with} выдал непонятный ID-токен.", with = with))?;
             let says = |name: &str| claims.get(name).and_then(Value::as_str);
             if says("nonce") != Some(nonce) || says("iss") != Some(flow.issuer) {
-                return Err(format!("Сервис {with} выдал чужой ID-токен."));
+                return Err(crate::tr!("Сервис {with} выдал чужой ID-токен.", with = with));
             }
             let audience = claims.get("aud");
             let ours = audience.and_then(Value::as_str) == Some(client_id)

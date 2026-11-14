@@ -3,7 +3,6 @@
 //! carries its signed archive (gateway/build.rs, DUOWAVE_STATION_PAYLOAD). A local build carries none: then the
 //! station's build of this very version comes from the release feed, or from STATION_PAYLOAD_FILE. Whatever its
 //! source, its signature is checked with the updates' key before anything goes to a station.
-
 use serde::Serialize;
 
 use crate::config::Config;
@@ -67,28 +66,26 @@ pub fn info(config: &Config) -> PayloadInfo {
         return PayloadInfo {
             source: PayloadSource::BuiltIn,
             version,
-            note: format!("Сборка для колонки {version} встроена в этот шлюз."),
+            note: crate::tr!("Сборка для колонки {version} встроена в этот шлюз.", version = version),
         };
     }
     if let Some(file) = &config.placement.station_payload_file {
         return PayloadInfo {
             source: PayloadSource::File,
             version,
-            note: format!("Сборка для колонки — из файла {}.", file.display()),
+            note: crate::tr!("Сборка для колонки — из файла {file}.", file = file.display()),
         };
     }
     match feed_url(config).and_then(|feed| crate::updates::feed::versioned(&feed, version)) {
         Some(_) => PayloadInfo {
             source: PayloadSource::Feed,
             version,
-            note: format!("Сборку для колонки {version} шлюз скачает из выпуска и проверит её подпись."),
+            note: crate::tr!("Сборку для колонки {version} шлюз скачает из выпуска и проверит её подпись.", version = version),
         },
         None => PayloadInfo {
             source: PayloadSource::None,
             version,
-            note: "В этой сборке шлюза нет сборки для колонки, и лента выпусков не задана: укажите файл \
-                   STATION_PAYLOAD_FILE или поставьте выпуск."
-                .into(),
+            note: crate::tr!("В этой сборке шлюза нет сборки для колонки, и лента выпусков не задана: укажите файл STATION_PAYLOAD_FILE или поставьте выпуск."),
         },
     }
 }
@@ -113,7 +110,7 @@ pub async fn load(config: &Config) -> Result<Payload, String> {
         let asset = release
             .platforms
             .get(STATION_PLATFORM)
-            .ok_or_else(|| format!("в выпуске {} нет сборки для колонки", crate::VERSION))?;
+            .ok_or_else(|| crate::tr!("В выпуске {version} нет сборки для колонки.", version = crate::VERSION))?;
         let archive = crate::updates::install::download(&asset.url).await?;
         (archive, asset.signature.clone(), PayloadSource::Feed)
     };
@@ -139,7 +136,7 @@ async fn release_of_this_version(plain: &str) -> Result<crate::updates::Feed, St
         }
     }
     let Some(other) = other else {
-        return Err(error.unwrap_or_else(|| "лента выпуска недоступна".to_string()));
+        return Err(error.unwrap_or_else(|| crate::tr!("лента выпуска недоступна")));
     };
     if let Some(frozen) = frozen_beside(&other, crate::VERSION) {
         if let Ok(feed) = fetch_feed(&frozen).await {
@@ -148,21 +145,21 @@ async fn release_of_this_version(plain: &str) -> Result<crate::updates::Feed, St
             }
         }
     }
-    Err(format!("в выпуске {} другая версия, нужна {}", other.version, crate::VERSION))
+    Err(crate::tr!("В выпуске {found} другая версия, нужна {needed}.", found = other.version, needed = crate::VERSION))
 }
 
 async fn fetch_feed(url: &str) -> Result<crate::updates::Feed, String> {
-    crate::updates::feed::secure(url).map_err(|error| format!("лента выпуска: {error}"))?;
+    crate::updates::feed::secure(url).map_err(|error| crate::tr!("Лента выпуска: {error}", error = error))?;
     let response = crate::updates::feed::client()
         .get(url)
         .timeout(std::time::Duration::from_secs(20))
         .send()
         .await
-        .map_err(|error| format!("лента выпуска: {error}"))?;
+        .map_err(|error| crate::tr!("Лента выпуска: {error}", error = error))?;
     if !response.status().is_success() {
-        return Err(format!("лента выпуска: HTTP {}", response.status()));
+        return Err(crate::tr!("Лента выпуска: HTTP {status}", status = response.status()));
     }
-    response.json().await.map_err(|error| format!("лента выпуска: {error}"))
+    response.json().await.map_err(|error| crate::tr!("Лента выпуска: {error}", error = error))
 }
 
 #[cfg(test)]

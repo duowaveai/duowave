@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "plugin",
   "id": "tales",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "title": "Сказки",
   "description": "Сказки и аудиокниги из папки дома (content/tales), а без готовой — сказка, которую сочинит модель шлюза. Встроенное приложение: если оно выключено, сказки рассказывает встроенный навык.",
   "api": "^2",
@@ -19,6 +19,16 @@
     "call:system/content",
     "call:system/brain"
   ],
+  "languages": [
+    "ru",
+    "en"
+  ],
+  "locales": {
+    "en": {
+      "title": "Fairy tales",
+      "description": "Fairy tales and audiobooks from the home folder (content/tales), and without a ready one — a tale the gateway’s model makes up. A built-in app: when it is off, the built-in skill tells the tales."
+    }
+  },
   "contributes": {
     "intents": [
       {

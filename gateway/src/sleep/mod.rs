@@ -116,7 +116,7 @@ pub trait SleepPart: Send + Sync {
     /// Its id in the reports: `reflection`.
     fn id(&self) -> &'static str;
     /// For people: «Рефлексия».
-    fn title(&self) -> &'static str;
+    fn title(&self) -> String;
     /// A part that is off never runs.
     fn enabled(&self) -> bool;
     /// Whether it has work tonight: Ok, or why not («за день не было разговоров»).
@@ -258,7 +258,7 @@ impl SleepService {
     pub fn set_time(&self, text: &str, actor: Option<Actor>) -> Result<(), ApiError> {
         let text = text.trim();
         if (SLEEP_TIME.parse)(&serde_json::Value::String(text.to_string())).is_none() {
-            return Err(ApiError::bad_request("Время — ЧЧ:ММ, например 04:00."));
+            return Err(ApiError::bad_request(crate::tr!("Время — ЧЧ:ММ, например 04:00.")));
         }
         self.settings.set(&SLEEP_TIME, &text.to_string(), actor)
     }
@@ -296,7 +296,8 @@ impl SleepService {
     }
 
     pub fn run(&self, id: &str) -> Result<RunDetail, ApiError> {
-        let run = self.db.with(|c| find_run(c, id))?.ok_or_else(|| ApiError::not_found("Такой ночи нет."))?;
+        let run =
+            self.db.with(|c| find_run(c, id))?.ok_or_else(|| ApiError::not_found(crate::tr!("Такой ночи нет.")))?;
         let details = self.parts().iter().map(|part| (part.id().to_string(), part.details(id))).collect();
         Ok(RunDetail { run, details })
     }
@@ -385,12 +386,13 @@ impl SleepService {
 
     /// «Откатить ночь»: every part undoes what it did that night.
     pub fn roll_back(&self, id: &str, actor: &Principal) -> Result<Run, ApiError> {
-        let run = self.db.with(|c| find_run(c, id))?.ok_or_else(|| ApiError::not_found("Такой ночи нет."))?;
+        let run =
+            self.db.with(|c| find_run(c, id))?.ok_or_else(|| ApiError::not_found(crate::tr!("Такой ночи нет.")))?;
         if self.running().as_deref() == Some(id) {
-            return Err(ApiError::conflict("Ночь ещё идёт: откатить её можно, когда она закончится."));
+            return Err(ApiError::conflict(crate::tr!("Ночь ещё идёт: откатить её можно, когда она закончится.")));
         }
         if run.rolled_back_at.is_some() {
-            return Err(ApiError::conflict("Эта ночь уже откачена."));
+            return Err(ApiError::conflict(crate::tr!("Эта ночь уже откачена.")));
         }
         for part in self.parts() {
             part.roll_back(id, actor).map_err(ApiError::internal)?;
@@ -415,7 +417,7 @@ impl SleepService {
             let can = if part.enabled() {
                 part.work().and_then(|()| part.ready())
             } else {
-                Err(format!("{} выключена.", part.title()))
+                Err(crate::tr!("{part} выключена.", part = part.title()))
             };
             match can {
                 Ok(()) => return Ok(()),
@@ -424,7 +426,7 @@ impl SleepService {
                 }
             }
         }
-        Err(why.unwrap_or_else(|| "У сна нет частей.".into()))
+        Err(why.unwrap_or_else(|| crate::tr!("У сна нет частей.")))
     }
 
     /// Takes away the nights that left nothing behind and that a later night has done the work of: a press of the
@@ -474,7 +476,7 @@ impl SleepService {
     fn begin(&self, trigger: &str, night: &str, actor: Option<Actor>) -> Result<String, ApiError> {
         let id = uuid();
         if !self.claim(&id) {
-            return Err(ApiError::conflict("Сон уже идёт."));
+            return Err(ApiError::conflict(crate::tr!("Сон уже идёт.")));
         }
         let written = self.db.with(|c| {
             c.execute(
@@ -524,7 +526,7 @@ impl SleepService {
     /// One part's go, within its time; a part that panics is a failed one.
     async fn one(&self, part: &dyn SleepPart, id: &str, zone: Tz) -> PartReport {
         if !part.enabled() {
-            return PartReport::new(part, PartState::Nothing, "Выключена.");
+            return PartReport::new(part, PartState::Nothing, crate::tr!("Выключена."));
         }
         if let Err(why) = part.work() {
             return PartReport::new(part, PartState::Nothing, why);
@@ -533,10 +535,10 @@ impl SleepService {
         let went = tokio::time::timeout(PART_BUDGET, AssertUnwindSafe(part.run(&night)).catch_unwind()).await;
         match went {
             Ok(Ok(report)) => report,
-            Ok(Err(_)) => PartReport::new(part, PartState::Failed, "Сломалась на ходу; попробую ещё раз."),
+            Ok(Err(_)) => PartReport::new(part, PartState::Failed, crate::tr!("Сломалась на ходу; попробую ещё раз.")),
             Err(_) => {
                 night.cancel.cancel();
-                PartReport::new(part, PartState::Failed, "Не успела за 20 минут; попробую ещё раз.")
+                PartReport::new(part, PartState::Failed, crate::tr!("Не успела за 20 минут; попробую ещё раз."))
             }
         }
     }
@@ -692,8 +694,8 @@ mod tests {
         fn id(&self) -> &'static str {
             "fake"
         }
-        fn title(&self) -> &'static str {
-            "Проба"
+        fn title(&self) -> String {
+            "Проба".into()
         }
         fn enabled(&self) -> bool {
             self.on

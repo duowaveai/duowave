@@ -232,7 +232,7 @@ impl Reflection {
         if let Some(model) = change.model {
             if let MemoryModel::Pick { provider, model } = &model {
                 if provider.trim().is_empty() || model.trim().is_empty() || self.model.pick(provider, model).is_none() {
-                    return Err(ApiError::bad_request("Такой модели нет в «Мозге»."));
+                    return Err(ApiError::bad_request(crate::tr!("Такой модели нет в «Мозге».")));
                 }
             }
             self.settings.set(&MEMORY_MODEL, &model, actor.clone())?;
@@ -253,13 +253,13 @@ impl Reflection {
     fn pick(&self) -> Result<ModelSlot, String> {
         match self.model_choice() {
             MemoryModel::Brain => {
-                self.model.brain().ok_or_else(|| "Ждёт модель: в «Мозге» ничего не выбрано.".to_string())
+                self.model.brain().ok_or_else(|| crate::tr!("Ждёт модель: в «Мозге» ничего не выбрано.").to_string())
             }
             MemoryModel::Pick { provider, model } => self.model.pick(&provider, &model).ok_or_else(|| {
-                format!("Ждёт модель: «{model}» больше нет в «Мозге». Выберите модель памяти в её настройках.")
+                crate::tr!("Ждёт модель: «{model}» больше нет в «Мозге». Выберите модель памяти в её настройках.", model = model)
             }),
             MemoryModel::Home => self.model.home().ok_or_else(|| {
-                "Ждёт свою модель: дома её нет. Выберите модель памяти, домашнюю или облачную, в настройках памяти."
+                crate::tr!("Ждёт свою модель: дома её нет. Выберите модель памяти, домашнюю или облачную, в настройках памяти.")
                     .to_string()
             }),
         }
@@ -284,7 +284,7 @@ impl Reflection {
                 Ok(Some(input)) => input,
                 Ok(None) => break,
                 Err(error) => {
-                    broke = Some(format!("Не прочитала память: {error}"));
+                    broke = Some(crate::tr!("Не прочитала память: {error}", error = error));
                     break;
                 }
             };
@@ -292,19 +292,23 @@ impl Reflection {
             let answer = match ask(&slot, system, user, night.cancel.clone()).await {
                 Ok(answer) => answer,
                 Err(error) => {
-                    broke = Some(format!("{} не ответила: {}", slot.title, short(&error.to_string(), 160)));
+                    broke = Some(crate::tr!(
+                        "{model} не ответила: {why}",
+                        model = slot.title,
+                        why = short(&error.to_string(), 160)
+                    ));
                     break;
                 }
             };
             let Some(plan) = parse_plan(&answer) else {
-                broke = Some(format!("{} ответила не списком действий; попробую ещё раз.", slot.title));
+                broke = Some(crate::tr!("{model} ответила не списком действий; попробую ещё раз.", model = slot.title));
                 break;
             };
             let checked = check(&plan, &input, &mut budget);
             match self.apply(&night.run_id, &input, &checked) {
                 Ok(applied) => tally.add(&input, applied, checked.skipped),
                 Err(error) => {
-                    broke = Some(format!("Не записала: {error}"));
+                    broke = Some(crate::tr!("Не записала: {error}", error = error));
                     break;
                 }
             }
@@ -566,8 +570,8 @@ impl SleepPart for Reflection {
         "reflection"
     }
 
-    fn title(&self) -> &'static str {
-        "Рефлексия"
+    fn title(&self) -> String {
+        crate::tr!("Рефлексия")
     }
 
     fn enabled(&self) -> bool {
@@ -576,13 +580,13 @@ impl SleepPart for Reflection {
 
     fn work(&self) -> Result<(), String> {
         if !self.memory.enabled() {
-            return Err("Память выключена.".into());
+            return Err(crate::tr!("Память выключена."));
         }
         if !self.order() && !self.day() {
-            return Err("Обе её части выключены: «Порядок» и «Итог дня».".into());
+            return Err(crate::tr!("Обе её части выключены: «Порядок» и «Итог дня»."));
         }
         if self.pending() == 0 {
-            return Err("Новых разговоров нет: обдумывать нечего.".into());
+            return Err(crate::tr!("Новых разговоров нет: обдумывать нечего."));
         }
         Ok(())
     }
@@ -708,31 +712,37 @@ impl Tally {
     fn summary(&self, slot: &ModelSlot) -> String {
         let a = &self.applied;
         if self.passes == 0 {
-            return "Обдумывать было нечего.".into();
+            return crate::tr!("Обдумывать было нечего.");
         }
         let mut parts = Vec::new();
         let changed = a.merged + a.closed + a.past + a.dated + a.aliases + a.importance;
         if changed > 0 {
-            parts.push(format!("{changed} {}", plural(changed, "перемена", "перемены", "перемен")));
+            parts.push(crate::tr!(
+                "{changed} {word}",
+                changed = changed,
+                word = crate::locale::text::translate(plural(changed, "перемена", "перемены", "перемен"), &[])
+            ));
         }
         if !a.days.is_empty() {
-            parts.push(format!(
-                "итог дня за {}",
-                a.days.iter().map(|day| short_day(day)).collect::<Vec<_>>().join(", ")
+            parts.push(crate::tr!(
+                "итог дня за {days}",
+                days = a.days.iter().map(|day| short_day(day)).collect::<Vec<_>>().join(", ")
             ));
         }
         let what = if parts.is_empty() {
-            "ничего менять не понадобилось".to_string()
+            crate::tr!("ничего менять не понадобилось").to_string()
         } else {
             parts.join(", ")
         };
-        let cloud = if slot.cloud { ", в облаке" } else { "" };
-        format!(
-            "Обдумала {} {}: {what}. Модель — {} ({}{cloud}).",
-            a.thought,
-            plural(a.thought, "разговор", "разговора", "разговоров"),
-            slot.title,
-            slot.model
+        let cloud = if slot.cloud { crate::tr!(", в облаке") } else { String::new() };
+        crate::tr!(
+            "Обдумала {count} {word}: {what}. Модель — {model} ({detail}{cloud}).",
+            count = a.thought,
+            word = crate::locale::text::translate(plural(a.thought, "разговор", "разговора", "разговоров"), &[]),
+            what = what,
+            model = slot.title,
+            detail = slot.model,
+            cloud = cloud
         )
     }
 
@@ -742,25 +752,29 @@ impl Tally {
         if let (Some(first), Some(last)) = (&self.first, &self.last) {
             let span =
                 if first == last { short_day(first) } else { format!("{}–{}", short_day(first), short_day(last)) };
-            lines.push(format!("Разговоры за {span}: {}.", a.thought));
+            lines.push(crate::tr!("Разговоры за {span}: {count}.", span = span, count = a.thought));
         }
         for (count, what) in [
-            (a.merged, "Склеено повторов"),
-            (a.closed, "Закрыто устаревших"),
-            (a.past, "Убрано в историю"),
-            (a.dated, "Даты вместо «завтра»"),
-            (a.aliases, "Новые имена"),
-            (a.importance, "Важность пересчитана"),
+            (a.merged, crate::tr!("Склеено повторов")),
+            (a.closed, crate::tr!("Закрыто устаревших")),
+            (a.past, crate::tr!("Убрано в историю")),
+            (a.dated, crate::tr!("Даты вместо «завтра»")),
+            (a.aliases, crate::tr!("Новые имена")),
+            (a.importance, crate::tr!("Важность пересчитана")),
         ] {
             if count > 0 {
-                lines.push(format!("{what}: {count}."));
+                lines.push(crate::tr!("{what}: {count}.", what = what, count = count));
             }
         }
         if !a.diaries.is_empty() {
-            lines.push(format!("Дневник: {}.", a.diaries.iter().map(|id| title(id)).collect::<Vec<_>>().join(", ")));
+            lines.push(crate::tr!(
+                "Дневник: {titles}.",
+                titles = a.diaries.iter().map(|id| title(id)).collect::<Vec<_>>().join(", ")
+            ));
         }
         if self.skipped > 0 {
-            lines.push(format!("Не прошли проверку: {} (не те записи, повторы, лишнее).", self.skipped));
+            lines
+                .push(crate::tr!("Не прошли проверку: {count} (не те записи, повторы, лишнее).", count = self.skipped));
         }
         lines
     }

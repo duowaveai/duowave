@@ -29,13 +29,13 @@ pub fn routes() -> Router<Arc<App>> {
 /// The row of the caller's desk for the role: a person's (or the household's, without people), never a key's.
 fn row_of(caller: &Caller, role: &str) -> Result<String, ApiError> {
     if role != "gateway" && role != "helper" {
-        return Err(ApiError::not_found("Стол бывает у шлюза (gateway) и у помощника (helper)."));
+        return Err(ApiError::not_found(crate::tr!("Стол бывает у шлюза (gateway) и у помощника (helper).")));
     }
     let principal = caller.signed_in()?;
     match principal.kind {
         PrincipalKind::User | PrincipalKind::Household => Ok(format!("{role}:{}", principal.id)),
         PrincipalKind::ApiKey | PrincipalKind::System => {
-            Err(ApiError::forbidden("Стол бывает у людей дома, у ключа его нет."))
+            Err(ApiError::forbidden(crate::tr!("Стол бывает у людей дома, у ключа его нет.")))
         }
     }
 }
@@ -69,12 +69,12 @@ async fn write(
 ) -> ApiResult<Value> {
     let row = row_of(&caller, &role)?;
     if !layout.is_object() {
-        return Err(ApiError::bad_request("Стол — объект JSON."));
+        return Err(ApiError::bad_request(crate::tr!("Стол — объект JSON.")));
     }
     // A list of one, as the table keeps its items.
     let items = serde_json::to_string(&[layout])?;
     if items.len() > MAX_BYTES {
-        return Err(ApiError::bad_request("Стол больше 64 КБ — так много виджетов не бывает."));
+        return Err(ApiError::bad_request(crate::tr!("Стол больше 64 КБ — так много виджетов не бывает.")));
     }
     let at = now_iso();
     app.db.with(|c| {

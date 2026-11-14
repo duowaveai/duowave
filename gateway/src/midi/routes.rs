@@ -1,6 +1,5 @@
 //! `/api/v1/midi` (docs/plans/midi.md, «API»): the keyboards and who listens, the channel of notes' ticket and socket,
 //! a `.mid` read into tracks. Whoever may use the apps (`use:plugins`), as the apps' own calls from the panel.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,8 +36,9 @@ fn may_use(caller: &Caller) -> Result<(), ApiError> {
 async fn view(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<MidiView> {
     may_use(&caller)?;
     let midi = app.midi.clone();
-    let view =
-        tokio::task::spawn_blocking(move || midi.view()).await.map_err(|_| ApiError::internal("MIDI не прочитался"))?;
+    let view = tokio::task::spawn_blocking(move || midi.view())
+        .await
+        .map_err(|_| ApiError::internal(crate::tr!("MIDI не прочитался")))?;
     Ok(ok(view))
 }
 
@@ -76,7 +76,7 @@ async fn socket(
         .ticket
         .as_deref()
         .and_then(|ticket| app.midi.tickets.take(ticket))
-        .ok_or_else(|| ApiError::unauthorized("Билет канала нот не подошёл: возьмите новый."))?;
+        .ok_or_else(|| ApiError::unauthorized(crate::tr!("Билет канала нот не подошёл: возьмите новый.")))?;
     app.midi.may_hear(&package, caller.zone).map_err(ApiError::forbidden)?;
     Ok(super::socket::upgrade(upgrade, app.midi.clone(), package, caller.zone))
 }
@@ -88,6 +88,6 @@ async fn read(State(_app): State<Arc<App>>, caller: Caller, bytes: Bytes) -> Api
     match tokio::time::timeout(Duration::from_secs(1), reading).await {
         Ok(Ok(Ok(song))) => Ok(ok(song)),
         Ok(Ok(Err(why))) => Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why)),
-        _ => Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "Файл не прочитался за секунду.")),
+        _ => Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, crate::tr!("Файл не прочитался за секунду."))),
     }
 }

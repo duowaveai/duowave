@@ -7,7 +7,10 @@ import { IconCheck } from '../icons';
 import { Action } from '../ui/cards';
 import { usePanel } from './context';
 import { View, useTheme } from './theme';
+import { MINIMAL } from './themes';
 import type { Mode, Theme } from './themes';
+import { byMode } from '../words';
+import { tr } from '../i18n';
 
 /** Схема вида цветами темы: стол с колонкой и доком снизу или боковая панель с содержимым справа. */
 function ViewGlyph({ theme, mode, view }: { theme: Theme; mode: Mode; view: View }) {
@@ -39,10 +42,18 @@ function ViewGlyph({ theme, mode, view }: { theme: Theme; mode: Mode; view: View
     );
 }
 
-const VIEWS: Array<{ id: View; title: string; about: string }> = [
-    { id: 'desk', title: 'Стол и док', about: 'Колонка посередине, виджеты вокруг, разделы — окнами; на телефоне — лентой' },
-    { id: 'sidebar', title: 'Боковая панель', about: 'Разделы списком слева, содержимое справа; на телефоне разделы — в меню' },
+// Читается при отрисовке: язык меняется, а в режиме «Микрофон» посередине не колонка.
+const views = (): Array<{ id: View; title: string; about: string }> => [
+    { id: 'desk', title: tr.shell.viewDeskTitle, about: byMode(tr.shell.viewDeskAbout, tr.shell.viewDeskAboutMic) },
+    { id: 'sidebar', title: tr.shell.viewSidebarTitle, about: tr.shell.viewSidebarAbout },
 ];
+
+// Встроенная тема лежит в themes.ts по-русски (файл читает и vite.config.ts): на язык пульта её подписи переводятся здесь,
+// по совпадению с исходными; темы пакетов и производные от неё со своими подписями остаются как есть.
+const themeTitle = (theme: Theme): string => (theme.title === MINIMAL.title ? tr.shell.themeMinimalTitle : theme.title);
+const themeAbout = (theme: Theme): string => (theme.about === MINIMAL.about ? tr.shell.themeMinimalAbout : theme.about);
+const modeName = (theme: Theme, mode: Mode): string =>
+    theme.modes[mode] === MINIMAL.modes[mode] ? (mode === 'dark' ? tr.shell.themeMinimalDark : tr.shell.themeMinimalLight) : theme.modes[mode];
 
 const isAdmin = (): boolean => can('plugins.manage') && sessionStore.get()?.role === 'admin';
 
@@ -68,12 +79,12 @@ export function ThemeCard() {
         <section class="card glass card-list" aria-labelledby="theme-h">
             <div class="section-head">
                 <h2 id="theme-h" class="t-title-xs">
-                    Вид пульта
+                    {tr.shell.viewTitle}
                 </h2>
-                <span class="t-meta">в этом браузере</span>
+                <span class="t-meta">{tr.shell.inThisBrowser}</span>
             </div>
-            <div role="radiogroup" aria-label="Вид пульта" class="flex flex-col">
-                {VIEWS.map((entry) => (
+            <div role="radiogroup" aria-label={tr.shell.viewTitle} class="flex flex-col">
+                {views().map((entry) => (
                     <Radio
                         key={entry.id}
                         on={view === entry.id}
@@ -84,27 +95,27 @@ export function ThemeCard() {
                     />
                 ))}
             </div>
-            <div role="radiogroup" aria-label="Режим" class="look-seg glass theme-modes">
+            <div role="radiogroup" aria-label={tr.shell.modeLabel} class="look-seg glass theme-modes">
                 {(['light', 'dark', 'auto'] as const).map((value) => (
                     <button key={value} role="radio" aria-checked={pick === value} onClick={() => setMode(value)}>
-                        {value === 'auto' ? 'Авто' : theme.modes[value]}
+                        {value === 'auto' ? tr.shell.modeAuto : modeName(theme, value)}
                     </button>
                 ))}
             </div>
-            {pick === 'auto' && <p class="t-caption m-0">Как в системе: днём светлый, вечером и в темноте — тёмный. Сейчас — {theme.modes[mode].toLowerCase()}.</p>}
+            {pick === 'auto' && <p class="t-caption m-0">{tr.shell.autoNote(modeName(theme, mode).toLowerCase())}</p>}
             {theme.modeNotes?.[mode] && <p class="t-caption m-0">{theme.modeNotes[mode]}</p>}
             {themes.length > 1 && (
                 <>
-                    <h3 class="t-meta m-0 mt-8">Тема</h3>
-                    <div role="radiogroup" aria-label="Тема пульта" class="flex flex-col">
+                    <h3 class="t-meta m-0 mt-8">{tr.shell.themeLabel}</h3>
+                    <div role="radiogroup" aria-label={tr.shell.themePanelLabel} class="flex flex-col">
                         {themes.map((entry) => (
                             <Radio
                                 key={entry.id}
                                 on={entry.id === theme.id}
                                 onPick={() => setTheme(entry.id)}
                                 glyph={<ViewGlyph theme={entry} mode={mode} view={view} />}
-                                title={entry.title}
-                                about={entry.about}
+                                title={themeTitle(entry)}
+                                about={themeAbout(entry)}
                             />
                         ))}
                     </div>
@@ -112,8 +123,8 @@ export function ThemeCard() {
             )}
             {isAdmin() && (
                 <div class="flex flex-wrap items-center gap-8 mt-8">
-                    <Action label="Сделать свою тему" onClick={() => panel.go('skills', 'workshop', undefined, { new: 'theme', base: theme.id })} />
-                    <span class="t-caption">Черновик в мастерской на основе «{theme.title}»: поменяйте цвета, примерьте, поставьте.</span>
+                    <Action label={tr.shell.makeOwnTheme} onClick={() => panel.go('skills', 'workshop', undefined, { new: 'theme', base: theme.id })} />
+                    <span class="t-caption">{tr.shell.makeOwnThemeAbout(themeTitle(theme))}</span>
                 </div>
             )}
         </section>

@@ -38,9 +38,9 @@ pub struct Checker {
 /// A request's failure in words, without its URL (a bot's token rides in it).
 fn failure(error: reqwest::Error) -> String {
     if error.is_timeout() {
-        format!("не ответил за {} с", WAIT.as_secs())
+        crate::tr!("не ответил за {seconds} с", seconds = WAIT.as_secs())
     } else if error.is_connect() {
-        "не отвечает".into()
+        crate::tr!("не отвечает")
     } else {
         format!("{}", error.without_url())
     }
@@ -65,23 +65,23 @@ impl Checker {
         let result = match id {
             _ if !id.available() => {
                 if cfg!(feature = "pc") {
-                    CheckResult::new(false, "пока недоступно — будет с обновлением")
+                    CheckResult::new(false, crate::tr!("пока недоступно — будет с обновлением"))
                 } else {
-                    CheckResult::new(false, "в сборке для колонки звонков нет")
+                    CheckResult::new(false, crate::tr!("в сборке для колонки звонков нет"))
                 }
             }
             ConnectorId::HomeAssistant => match settings.home_assistant() {
                 Some(home) => self.home_assistant(&home.url, &home.token).await,
-                None => CheckResult::new(false, "не настроено или выключено"),
+                None => CheckResult::new(false, crate::tr!("не настроено или выключено")),
             },
             ConnectorId::Telegram => match settings.telegram() {
                 Some(telegram) => self.telegram(&telegram.token).await,
-                None => CheckResult::new(false, "не настроено или выключено"),
+                None => CheckResult::new(false, crate::tr!("не настроено или выключено")),
             },
             ConnectorId::LiveKit => self.livekit(settings).await,
             ConnectorId::Sip => match settings.sip() {
                 Some(sip) => self.sip(&sip.url, &sip.user, &sip.password).await,
-                None => CheckResult::new(false, "не настроено или выключено"),
+                None => CheckResult::new(false, crate::tr!("не настроено или выключено")),
             },
             ConnectorId::Weather => self.weather(settings.weather_place().as_deref()).await,
             ConnectorId::News => self.news(settings).await,
@@ -109,9 +109,9 @@ impl Checker {
                     },
                 )
             }
-            401 | 403 => CheckResult::new(false, "токен не подходит"),
-            404 => CheckResult::new(false, "по этому адресу не Home Assistant"),
-            status => CheckResult::new(false, format!("ответил HTTP {status}")),
+            401 | 403 => CheckResult::new(false, crate::tr!("токен не подходит")),
+            404 => CheckResult::new(false, crate::tr!("по этому адресу не Home Assistant")),
+            status => CheckResult::new(false, crate::tr!("ответил HTTP {status}", status = status)),
         }
     }
 
@@ -124,16 +124,16 @@ impl Checker {
         let status = response.status().as_u16();
         let body: Value = response.json().await.unwrap_or_default();
         match (status, body.pointer("/result/username").and_then(Value::as_str)) {
-            (200, Some(name)) => CheckResult::new(true, format!("бот @{name}")),
-            (401 | 404, _) => CheckResult::new(false, "токен не подходит"),
-            (status, _) => CheckResult::new(false, format!("Telegram ответил HTTP {status}")),
+            (200, Some(name)) => CheckResult::new(true, crate::tr!("бот @{name}", name = name)),
+            (401 | 404, _) => CheckResult::new(false, crate::tr!("токен не подходит")),
+            (status, _) => CheckResult::new(false, crate::tr!("Telegram ответил HTTP {status}", status = status)),
         }
     }
 
     #[cfg(feature = "pc")]
     async fn livekit(&self, settings: &ConnectorSettings) -> CheckResult {
         let Some(livekit) = settings.livekit() else {
-            return CheckResult::new(false, "не настроено или выключено");
+            return CheckResult::new(false, crate::tr!("не настроено или выключено"));
         };
         // The server's API is HTTP on the same port as its socket.
         let base = match livekit.url.split_once("://") {
@@ -156,16 +156,16 @@ impl Checker {
             200 => {
                 let rooms: Value = response.json().await.unwrap_or_default();
                 let count = rooms.get("rooms").and_then(Value::as_array).map_or(0, Vec::len);
-                CheckResult::new(true, format!("сервер отвечает · комнат сейчас: {count}"))
+                CheckResult::new(true, crate::tr!("сервер отвечает · комнат сейчас: {count}", count = count))
             }
-            401 | 403 => CheckResult::new(false, "ключ или секрет не подходят"),
-            status => CheckResult::new(false, format!("ответил HTTP {status}")),
+            401 | 403 => CheckResult::new(false, crate::tr!("ключ или секрет не подходят")),
+            status => CheckResult::new(false, crate::tr!("ответил HTTP {status}", status = status)),
         }
     }
 
     #[cfg(not(feature = "pc"))]
     async fn livekit(&self, _settings: &ConnectorSettings) -> CheckResult {
-        CheckResult::new(false, "в сборке для колонки звонков нет")
+        CheckResult::new(false, crate::tr!("в сборке для колонки звонков нет"))
     }
 
     async fn sip(&self, url: &str, user: &str, password: &str) -> CheckResult {
@@ -183,12 +183,12 @@ impl Checker {
                 let info: Value = response.json().await.unwrap_or_default();
                 match info.pointer("/system/version").and_then(Value::as_str) {
                     Some(version) => CheckResult::new(true, format!("Asterisk {version}")),
-                    None => CheckResult::new(true, "Asterisk отвечает"),
+                    None => CheckResult::new(true, crate::tr!("Asterisk отвечает")),
                 }
             }
-            401 | 403 => CheckResult::new(false, "логин или пароль не подходят"),
-            404 => CheckResult::new(false, "по этому адресу нет ARI"),
-            status => CheckResult::new(false, format!("ответил HTTP {status}")),
+            401 | 403 => CheckResult::new(false, crate::tr!("логин или пароль не подходят")),
+            404 => CheckResult::new(false, crate::tr!("по этому адресу нет ARI")),
+            status => CheckResult::new(false, crate::tr!("ответил HTTP {status}", status = status)),
         }
     }
 
@@ -203,10 +203,15 @@ impl Checker {
         );
         let found = match crate::skills::lookups::http::get_json(self.get.as_ref(), &url, &cancel, Vec::new()).await {
             Ok(found) => found,
-            Err(error) => return CheckResult::new(false, format!("поиск города не ответил: {error:#}")),
+            Err(error) => {
+                return CheckResult::new(
+                    false,
+                    crate::tr!("поиск города не ответил: {error}", error = format!("{error:#}")),
+                )
+            }
         };
         let Some(first) = found.get("results").and_then(Value::as_array).and_then(|results| results.first()) else {
-            return CheckResult::new(false, format!("не нашла город «{asked}»"));
+            return CheckResult::new(false, crate::tr!("не нашла город «{asked}»", asked = asked));
         };
         let name = first.get("name").and_then(Value::as_str).unwrap_or(asked);
         let country = first.get("country").and_then(Value::as_str);
@@ -220,7 +225,9 @@ impl Checker {
         let forecast = match crate::skills::lookups::http::get_json(self.get.as_ref(), &url, &cancel, Vec::new()).await
         {
             Ok(forecast) => forecast,
-            Err(error) => return CheckResult::new(false, format!("прогноз не ответил: {error:#}")),
+            Err(error) => {
+                return CheckResult::new(false, crate::tr!("прогноз не ответил: {error}", error = format!("{error:#}")))
+            }
         };
         let now = forecast.pointer("/current/temperature_2m").and_then(Value::as_f64);
         let named = match country {
@@ -228,9 +235,11 @@ impl Checker {
             None => name.to_string(),
         };
         match (place, now) {
-            (Some(_), Some(now)) => CheckResult::new(true, format!("{named} · сейчас {}°", signed(now))),
+            (Some(_), Some(now)) => {
+                CheckResult::new(true, crate::tr!("{named} · сейчас {temp}°", named = named, temp = signed(now)))
+            }
             (Some(_), None) => CheckResult::new(true, named),
-            (None, _) => CheckResult::new(true, "прогноз отвечает; город — по часовому поясу колонки"),
+            (None, _) => CheckResult::new(true, crate::tr!("прогноз отвечает; город — по часовому поясу колонки")),
         }
     }
 
@@ -238,20 +247,20 @@ impl Checker {
     async fn news(&self, settings: &ConnectorSettings) -> CheckResult {
         let feeds = settings.all_news_feeds();
         if feeds.is_empty() {
-            return CheckResult::new(false, "лент нет");
+            return CheckResult::new(false, crate::tr!("лент нет"));
         }
         let looks = futures::future::join_all(feeds.iter().map(|feed| self.preview_of(&feed.url))).await;
         let items: Vec<CheckItem> = feeds
             .iter()
             .zip(looks)
             .map(|(feed, look)| match look {
-                Ok(preview) if preview.count > 0 => {
-                    CheckItem {
-                        key: feed.url.clone(), ok: true, text: format!("заголовков: {}", preview.count)
-                    }
-                }
+                Ok(preview) if preview.count > 0 => CheckItem {
+                    key: feed.url.clone(),
+                    ok: true,
+                    text: crate::tr!("заголовков: {count}", count = preview.count),
+                },
                 Ok(_) => {
-                    CheckItem { key: feed.url.clone(), ok: false, text: "не лента новостей".into() }
+                    CheckItem { key: feed.url.clone(), ok: false, text: crate::tr!("не лента новостей") }
                 }
                 Err(problem) => CheckItem { key: feed.url.clone(), ok: false, text: problem },
             })
@@ -260,18 +269,18 @@ impl Checker {
             items.iter().zip(&feeds).filter(|(_, feed)| feed.enabled).map(|(item, _)| item).collect();
         let working = on.iter().filter(|item| item.ok).count();
         let words = match (on.len() % 10, on.len() % 100) {
-            (_, 11..=14) => "лент",
-            (1, _) => "лента",
-            (2..=4, _) => "ленты",
-            _ => "лент",
+            (_, 11..=14) => crate::tr!("лент"),
+            (1, _) => crate::tr!("лента"),
+            (2..=4, _) => crate::tr!("ленты"),
+            _ => crate::tr!("лент"),
         };
         let mut result = CheckResult::new(
             working > 0,
             match (working, on.len()) {
-                (_, 0) => "все ленты выключены".to_string(),
-                (1, 1) => "лента отвечает".to_string(),
-                (working, all) if working == all => format!("отвечают все {all} {words}"),
-                (working, all) => format!("отвечают {working} из {all}"),
+                (_, 0) => crate::tr!("все ленты выключены").to_string(),
+                (1, 1) => crate::tr!("лента отвечает").to_string(),
+                (working, all) if working == all => crate::tr!("отвечают все {all} {words}", all = all, words = words),
+                (working, all) => crate::tr!("отвечают {working} из {all}", working = working, all = all),
             },
         );
         result.items = items;
@@ -282,11 +291,11 @@ impl Checker {
     pub async fn preview(&self, url: &str) -> Result<FeedPreview, ApiError> {
         let parsed = url::Url::parse(url.trim()).ok().filter(|parsed| matches!(parsed.scheme(), "http" | "https"));
         if parsed.is_none() {
-            return Err(ApiError::bad_request("Нужен адрес ленты вида https://…"));
+            return Err(ApiError::bad_request(crate::tr!("Нужен адрес ленты вида https://…")));
         }
         let preview = self.preview_of(url.trim()).await.map_err(ApiError::bad_request)?;
         if preview.count == 0 {
-            return Err(ApiError::bad_request("По этому адресу нет ленты новостей: ни одного заголовка."));
+            return Err(ApiError::bad_request(crate::tr!("По этому адресу нет ленты новостей: ни одного заголовка.")));
         }
         Ok(preview)
     }
@@ -295,10 +304,10 @@ impl Checker {
         let cancel = CancellationToken::new();
         let answer = tokio::time::timeout(WAIT, self.get.get(url.to_string(), Vec::new(), cancel)).await;
         let text = match answer {
-            Err(_) => return Err(format!("не ответила за {} с", WAIT.as_secs())),
-            Ok(Err(_)) => return Err("не отвечает".into()),
+            Err(_) => return Err(crate::tr!("не ответила за {seconds} с", seconds = WAIT.as_secs())),
+            Ok(Err(_)) => return Err(crate::tr!("не отвечает")),
             Ok(Ok(answer)) if !(200..300).contains(&answer.status) => {
-                return Err(format!("ответила HTTP {}", answer.status))
+                return Err(crate::tr!("ответила HTTP {status}", status = answer.status))
             }
             Ok(Ok(answer)) => answer.text,
         };

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 
 import { AccessCatalog, ApiError, Health, MovedGateway, SessionSnapshot, Station, UnsupportedEntry, api, can, sessionStore } from './api';
 import { noteAvailability } from './availability';
+import { language, tr } from './i18n';
 import { settingsPlace } from './builtin';
 import { IconChevronDown, IconCode, IconSearch } from './icons';
 import { useLive, useStationLive } from './live';
@@ -9,12 +10,13 @@ import { Reach, dotClass, isReachable, reachOf } from './presence';
 import { AuthScreen } from './screens/auth';
 import { SaySheet } from './screens/say';
 import { ConnectSheet } from './screens/connect';
+import { TalkChoiceSheet } from './screens/voice-input';
 import { SetupBanner, SetupSheet, StationButton, StationsPicker, displayName, needsSetup } from './screens/stations';
 import { DebugState, PanelContext, PanelState } from './shell/context';
 import { Place, hashOf, normalizePlace, parsePlace, writePlace } from './shell/links';
 import { AccountMenu } from './shell/account-menu';
 import { useDevMode } from './shell/dev';
-import { SearchPalette, SearchPlace, searchPlaces, useSearchKey } from './shell/search';
+import { SearchPalette, SearchPlace, searchPlaces, useSearchKey, useTalkKey } from './shell/search';
 import { timeAgo } from './time';
 import { SectionDef, useSections } from './shell/sections';
 import { Nav, NavEntry, OpenWindow, TopLine } from './shell/shell';
@@ -22,7 +24,7 @@ import { applyRole, ownName, roleOf, RoleInfo } from './shell/role';
 import { shellFor } from './shell/shells';
 import { Boundary, Slot } from './shell/slot';
 import { useTheme } from './shell/theme';
-import { drawingOf } from './stations';
+import { DIVI_DRAWING, drawingOf } from './stations';
 import { MovedBanner } from './ui/moved-banner';
 import { UpdateBanner } from './ui/update-banner';
 import { readUpdateStatus, useOfferedUpdate } from './updates';
@@ -30,6 +32,8 @@ import { syncPackages } from './plugins/loader';
 import { notePackageChange, runtimeOnly } from './plugins/versions';
 import { ConsentSheet } from './bus/consent-sheet';
 import { noteBusChange } from './bus/state';
+import { noteFoldersChange } from './folders/state';
+import { noteTasksChange } from './tasks/state';
 import { forgetStationPackages } from './sdk';
 import { AddWidgetPanel } from './screens/add-widget';
 import { WidgetAgent } from './screens/widget-agent';
@@ -41,6 +45,7 @@ import { deskActions } from './shell/widgets';
 import { StationFrame, StationModeChip, ViaRefused, WindowShell } from './shell/station-window';
 import { leaving, mayLeave } from './shell/leave';
 import { LOCAL, OWN_PAGE, TOP_VIA, VIA, WINDOW } from './via';
+import { noteVoiceInput, useOnComputer } from './voice-input';
 import { OwnPage } from './screens/helper-pc';
 import { ViaNotice } from './shell/station-window';
 
@@ -97,15 +102,15 @@ function remember(key: string, value: string): void {
 function reachWords(reach: Reach, lastSeen?: string): string {
     switch (reach) {
         case 'online':
-            return 'на связи';
+            return tr.core.reachWordsOnline;
         case 'waiting':
-            return 'на связи · ждёт «Алиса»';
+            return tr.core.reachWordsWaiting;
         case 'reconnecting':
-            return 'переподключается…';
+            return tr.core.reachReconnecting;
         case 'unknown':
-            return 'проверяю связь…';
+            return tr.core.reachUnknown;
         default:
-            return lastSeen ? `не на связи · была ${timeAgo(lastSeen)}` : 'не на связи';
+            return lastSeen ? tr.core.reachWordsOfflineSeen(timeAgo(lastSeen)) : tr.core.reachWordsOffline;
     }
 }
 
@@ -114,10 +119,10 @@ function reachWords(reach: Reach, lastSeen?: string): string {
  * «Колонки + ПК» (docs/plans/panel-rebuild.md, «Словарь»). Шлюз на компьютере без колонки со своим шлюзом — ничего.
  */
 function helpWords(role: RoleInfo): string | null {
-    if (role.role === 'helper') return role.helping ? 'компьютер помогает' : 'колонка работает сама';
+    if (role.role === 'helper') return role.helping ? tr.core.helperHelping : tr.core.helperStationAlone;
     const helper = role.helper;
     if (!helper || !helper.enabled) return null;
-    return helper.state === 'up' ? 'компьютер помогает' : 'компьютер не на связи';
+    return helper.state === 'up' ? tr.core.helperHelping : tr.core.helperOffline;
 }
 
 const isAdmin = (): boolean => can('plugins.manage') && sessionStore.get()?.role === 'admin';
@@ -137,7 +142,7 @@ function navOf(sections: SectionDef[], role: RoleInfo, dev: boolean): Nav {
     const core = new Set(['home', 'character', 'skills', 'settings']);
     // Раздел по ссылке («Примерка») ячейки в доке не берёт.
     const extra = sections.filter((section) => !core.has(section.id) && section.nav !== 'link').flatMap((section) => entry(section.id));
-    const workshop = dev && isAdmin() ? entry('skills', { key: 'skills/workshop', title: 'Мастерская', tab: 'workshop', icon: IconCode }) : [];
+    const workshop = dev && isAdmin() ? entry('skills', { key: 'skills/workshop', title: tr.core.workshop, tab: 'workshop', icon: IconCode }) : [];
     return {
         left: [...entry('home'), ...entry('character')],
         right: [...entry('skills'), ...workshop, ...extra, ...entry('settings', { tab: '' })],
@@ -187,6 +192,18 @@ export function App() {
     const [pickerOpen, setPickerOpen] = useState(false);
     /** Мастер «Подключить колонку» с главного экрана и сразу после первой настройки (из меню колонок — свой). */
     const [connectOpen, setConnectOpen] = useState(false);
+    /**
+     * Первый запуск: пароль задан, шаг 2 — «Как будете говорить с DuoWave?» (docs/plans/mic-mode.md). Ждёт /health:
+     * выбор есть только у шлюза на компьютере, у шлюза на самой колонке шаг 2 — её подключение, как прежде.
+     */
+    const [firstRun, setFirstRun] = useState(false);
+    const [talkChoiceOpen, setTalkChoiceOpen] = useState(false);
+    useEffect(() => {
+        if (!firstRun || !health) return;
+        setFirstRun(false);
+        if (health.placement?.role !== 'station' && can('station.mode')) setTalkChoiceOpen(true);
+        else if (can('stations.manage')) setConnectOpen(true);
+    }, [firstRun, health]);
     /** Колонки, которые ждут шлюз на прежнем порту этого компьютера, и та, что переподключают по «Переподключить». */
     const [moved, setMoved] = useState<MovedGateway[]>([]);
     const [reconnect, setReconnect] = useState<MovedGateway | null>(null);
@@ -198,13 +215,21 @@ export function App() {
     const [packagesVersion, setPackagesVersion] = useState(0);
     const pollNow = useRef<() => void>();
     const theme = useTheme();
+    /** Режим «Микрофон»: говорят микрофоном этого компьютера — колонки, Алисы и Яндекса в пульте нет. */
+    const computer = useOnComputer();
     /** Слой разработчика (shell/dev.ts): «Мастерская» в доке, технические места в поиске. */
     const dev = useDevMode();
     /** Поиск по пульту: ⌘K или Ctrl+K, лупа в верхней строке. */
     const [searchOpen, setSearchOpen] = useState(false);
     useSearchKey(() => setSearchOpen(true));
+    // ⌥Пробел — «Сказать»: только вошедшему и не во фрейме страницы компьютера.
+    useTalkKey(() => auth === 'ok' && !OWN_PAGE && toggleListening());
     // Живой канал: присутствие колонок и запросы на ходу; перемена где-то ещё — перечитать сейчас, не ждать опроса.
     const feed = useLive(auth === 'ok' && can('station.view'), (name, subject, change) => {
+        // Долгая задача приложения сдвинулась (tasks/state.ts): перечитывают только окна этого приложения. Ход идёт
+        // дважды в секунду — остальному пульту от него перечитывать нечего.
+        noteTasksChange(name, subject);
+        if (name === 'tasks.changed') return;
         // Новая версия или канал открылся заново (пока его не было, шлюз мог найти версию или поставить её).
         if (name === 'update.available' || name === 'hello') void readUpdateStatus();
         // Части плагинов меняются, когда пакеты включают, ставят, обновляют, — не когда их код загрузился или выгрузился.
@@ -213,6 +238,8 @@ export function App() {
         notePackageChange(name, subject, change);
         // Шина «Связи»: лист «да» и экраны связей перечитывают своё (bus/state.ts).
         noteBusChange(name);
+        // Домашняя папка: раздел «Папки» и плитка флешки на столе (folders/state.ts).
+        noteFoldersChange(name);
         // Черновики мастерской: плитка на столе, «Готово» на полосе, «Примерка» по просьбе колонки (voice/drafts.ts).
         if (name === 'workshop.changed' || name === 'hello') noteWorkshopChange(subject, change);
         setVersion((value) => value + 1);
@@ -223,6 +250,15 @@ export function App() {
     useEffect(() => {
         if (auth === 'ok' && can('station.view')) void syncPackages();
     }, [auth, packagesVersion]);
+    // Язык дома (docs/plans/i18n.md): шлюз, поставленный до языков, его не знает — без него приложения говорили бы
+    // по-английски. Тот, кто может менять настройки, задаёт его один раз языком своего пульта.
+    useEffect(() => {
+        if (auth !== 'ok' || !can('settings.edit')) return;
+        void api
+            .language()
+            .then((answer) => (answer.language ? undefined : api.setLanguage(language())))
+            .catch(() => undefined);
+    }, [auth]);
     /** Когда пульт последний раз читал, что где доступно: перечитывает при каждой перемене на шлюзе и раз в минуту. */
     const readAvailability = useRef(0);
 
@@ -304,6 +340,7 @@ export function App() {
                 try {
                     const h = await api.health();
                     if (alive) {
+                        noteVoiceInput(h.voiceInput);
                         setHealth(h);
                         setOffline(false);
                     }
@@ -378,22 +415,43 @@ export function App() {
     });
     // Ни одной колонки: ни подключённой, ни просящей подключиться. null — список не прочитан, тогда не знаем. У
     // помощника колонка есть всегда — та, с чьим шлюзом он связан.
-    const noStation = !helperStation && stations !== null && stations.every((entry) => entry.status === 'blocked');
-    const station = current ? (live(current.device) ?? debug.sessions?.find((s) => s.deviceTag === current.device)) : pickStation(debug);
-    const drawing = drawingOf(current?.look, station?.device?.deviceModel ?? current?.deviceModel);
+    // Режим «Микрофон» (docs/plans/mic-mode.md): колонки в пульте нет — стол не зовёт её подключать, в центре ДиВи.
+    const noStation = !computer && !helperStation && stations !== null && stations.every((entry) => entry.status === 'blocked');
+    const station = computer ? undefined : current ? (live(current.device) ?? debug.sessions?.find((s) => s.deviceTag === current.device)) : pickStation(debug);
+    const drawing = computer ? DIVI_DRAWING : drawingOf(current?.look, station?.device?.deviceModel ?? current?.deviceModel);
     // Как её слышно: по присутствию из живого канала, а без него — по голосовой сессии или по /health.
     const presence = current ? feed.presence[current.device] : undefined;
     const voiceSession = current && debug.sessions ? !!live(current.device) : health ? (health.station?.connected ?? false) : undefined;
     // У помощника колонку слышно по её шлюзу: голосовой сессии с компьютером у неё нет.
-    const reach: Reach = helperStation ? (helperStation.reachable ? 'online' : 'offline') : reachOf(presence, voiceSession);
+    // В режиме «Микрофон» «на связи» — когда отвечает шлюз: он и слушает, и говорит.
+    const reach: Reach = computer
+        ? offline
+            ? 'offline'
+            : health
+              ? 'online'
+              : 'unknown'
+        : helperStation
+          ? helperStation.reachable
+              ? 'online'
+              : 'offline'
+          : reachOf(presence, voiceSession);
     const online = isReachable(reach);
     const lastSeen = presence?.lastSeen ?? (current && approved.length > 1 ? current.lastSeen : health?.station?.lastSeenAt);
     // Строка состояния: «на связи · компьютер помогает». Режим — на главной («Кто отвечает») и в «Настройки» → «Колонка».
-    const status = noStation ? 'колонка не подключена' : [reachWords(reach, lastSeen), helpWords(role)].filter(Boolean).join(' · ');
-    // Путь вопроса на дашборде: идущий запрос этой колонки, иначе последний законченный.
-    const ofStation = feed.requests.filter((request) => !current || request.device === current.device);
+    const status = computer
+        ? reach === 'online'
+            ? tr.core.reachWordsOnline
+            : reach === 'unknown'
+              ? tr.core.reachUnknown
+              : tr.core.statusNoAnswer
+        : noStation
+          ? tr.core.statusNoStation
+          : [reachWords(reach, lastSeen), helpWords(role)].filter(Boolean).join(' · ');
+    // Путь вопроса на дашборде: идущий запрос этой колонки, иначе последний законченный. В режиме «Микрофон» — запросы
+    // разговора без колонки: их устройство — `computer`.
+    const ofStation = feed.requests.filter((request) => (computer ? request.device === 'computer' : !current || request.device === current.device));
     const trip = ofStation.find((request) => request.status === 'active') ?? ofStation.find((request) => request.status !== 'active');
-    const waiting = (stations ?? []).find((entry) => needsSetup(entry) && !dismissed.includes(entry.device));
+    const waiting = computer ? undefined : (stations ?? []).find((entry) => needsSetup(entry) && !dismissed.includes(entry.device));
     const setupStation = setupId ? (stations ?? []).find((entry) => entry.device === setupId) : undefined;
     const later = (device: string): void => {
         const next = [...dismissed.filter((entry) => entry !== device), device];
@@ -473,11 +531,11 @@ export function App() {
                 accounts={accounts}
                 needsCode={needsCode}
                 onDone={() => {
-                    // После первой настройки — сразу подключение колонки: без неё пульту нечего показать.
+                    // После первой настройки — шаг 2: как говорить с DuoWave (колонка — дальше её подключение).
                     const first = auth === 'setup';
                     void learnWhoIAm().then((ok) => {
                         setAuth(ok ? 'ok' : 'login');
-                        if (ok && first && can('stations.manage')) setConnectOpen(true);
+                        if (ok && first) setFirstRun(true);
                     });
                 }}
             />
@@ -559,9 +617,18 @@ export function App() {
     const nav = navOf(sections, role, dev);
     const activeNav = activeKey(link, role);
     const onNav = (entry: NavEntry): void => go(entry.section, entry.tab, undefined, entry.station ? { on: 'station' } : {});
-    const name = ownName(health, role) ?? displayName(current, drawing);
-    // Верхняя строка — колонка и её состояние; имя открывает выбор колонки.
-    const line = (
+    const name = computer ? 'DuoWave' : (ownName(health, role) ?? displayName(current, drawing));
+    // Верхняя строка — колонка и её состояние; имя открывает выбор колонки. В режиме «Микрофон» — «DuoWave» и связь со
+    // шлюзом: выбирать нечего.
+    const line = computer ? (
+        <>
+            <span class="desk-top-name">{name}</span>
+            <span class="desk-top-state">
+                <span aria-hidden="true" class={dotClass(reach)} />
+                {status}
+            </span>
+        </>
+    ) : (
         <>
             <button class="desk-top-pick desk-top-name" aria-haspopup="dialog" aria-expanded={pickerOpen} onClick={() => setPickerOpen(true)}>
                 {name}
@@ -574,12 +641,17 @@ export function App() {
         </>
     );
     // Телефон: строка короче — имя колонки с точкой связи.
-    const short = (
+    const short = computer ? (
+        <span class="desk-top-short" aria-label={`${name}, ${status}`}>
+            <span aria-hidden="true" class={dotClass(reach)} />
+            <span class="desk-top-short-name">{name}</span>
+        </span>
+    ) : (
         <button
             class="desk-top-pick desk-top-short"
             aria-haspopup="dialog"
             aria-expanded={pickerOpen}
-            aria-label={`Колонка «${name}», ${status}. Сменить колонку`}
+            aria-label={tr.core.stationAria(name, status)}
             onClick={() => setPickerOpen(true)}
         >
             <span aria-hidden="true" class={dotClass(reach)} />
@@ -610,7 +682,7 @@ export function App() {
                   badge: stationWindow ? (
                       <span class={`role-chip${stationWindow.reachable ? '' : ' is-off'}`}>
                           <span class="role-chip-dot" aria-hidden="true" />
-                          колонка «{name}»
+                          {tr.core.stationChip(name)}
                       </span>
                   ) : undefined,
                   content: stationWindow ? (
@@ -648,18 +720,26 @@ export function App() {
                 }
                 window={openWindow}
                 station={
-                    <StationButton
-                        name={name}
-                        drawing={drawing}
-                        status={status}
-                        reach={reach}
-                        open={pickerOpen}
-                        onOpen={() => setPickerOpen(true)}
-                    />
+                    computer ? (
+                        // Боковой вид: вместо кнопки колонки — DuoWave и связь со шлюзом.
+                        <span class="desk-top-state">
+                            <span aria-hidden="true" class={dotClass(reach)} />
+                            {name} · {status}
+                        </span>
+                    ) : (
+                        <StationButton
+                            name={name}
+                            drawing={drawing}
+                            status={status}
+                            reach={reach}
+                            open={pickerOpen}
+                            onOpen={() => setPickerOpen(true)}
+                        />
+                    )
                 }
                 actions={
                     <>
-                        <button class="icon-btn glass search-btn" aria-label="Найти в пульте (⌘K)" title="Найти (⌘K)" onClick={() => setSearchOpen(true)}>
+                        <button class="icon-btn glass search-btn" aria-label={tr.core.searchLabel} title={tr.core.searchTitle} onClick={() => setSearchOpen(true)}>
                             <IconSearch size={16} />
                         </button>
                         <Slot name="header.actions" />
@@ -671,7 +751,7 @@ export function App() {
                     <>
                         {offline && (
                             <div class="banner-offline" role="status">
-                                DuoWave не отвечает — пульт ждёт соединения…
+                                {tr.core.gatewayDown}
                             </div>
                         )}
                         {TOP_VIA && <ViaNotice />}
@@ -709,6 +789,15 @@ export function App() {
                         setPickerOpen(false);
                         void readStations();
                         go(...settingsPlace('brain'));
+                    }}
+                />
+            )}
+            {talkChoiceOpen && (
+                <TalkChoiceSheet
+                    onClose={() => setTalkChoiceOpen(false)}
+                    onStation={() => {
+                        setTalkChoiceOpen(false);
+                        if (can('stations.manage')) setConnectOpen(true);
                     }}
                 />
             )}
@@ -755,8 +844,7 @@ function SectionFailed({ title }: { title: string }) {
     return (
         <section class="card glass" role="alert">
             <p class="t-meta m-0">
-                Раздел «{title}» не открылся — ошибка в его коде (подробности в консоли браузера). Остальное работает; обновите
-                страницу, чтобы попробовать снова.
+                {tr.core.sectionFailed(title)}
             </p>
         </section>
     );

@@ -6,7 +6,6 @@
 //! on: midir has no such news, and without a run loop its list stays as it was at the start. So `watch`, called
 //! before any other client, makes the first one on a thread of its own that runs a `CFRunLoop` and passes the news
 //! on. Windows and Linux are asked again every few seconds instead (`MidiService`).
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -46,26 +45,27 @@ pub trait Ports: Send + Sync {
 }
 
 /// A gateway without MIDI: the station's build, the Linux program, or `MIDI=0`.
-pub struct Absent(pub String);
+pub struct Absent(pub fn() -> String);
 
 impl Ports for Absent {
     fn absent(&self) -> Option<String> {
-        Some(self.0.clone())
+        Some((self.0)())
     }
     fn list(&self) -> Result<Vec<PortInfo>, String> {
-        Err(self.0.clone())
+        Err((self.0)())
     }
     fn open_input(&self, _id: &str, _sink: Sink) -> Result<Box<dyn InputLink>, String> {
-        Err(self.0.clone())
+        Err((self.0)())
     }
     fn open_output(&self, _id: &str) -> Result<Box<dyn OutputLink>, String> {
-        Err(self.0.clone())
+        Err((self.0)())
     }
 }
 
 /// Why a build has no MIDI: said to people.
-pub const NOT_IN_BUILD: &str = "В этой сборке шлюза MIDI нет: клавиатуру слышит приложение DuoWave на компьютере \
-(Mac, Windows, Linux) и программа duowave для Mac и Windows.";
+pub fn not_in_build() -> String {
+    crate::tr!("В этой сборке шлюза MIDI нет: клавиатуру слышит приложение DuoWave на компьютере (Mac, Windows, Linux) и программа duowave для Mac и Windows.")
+}
 
 /// The ports this build has: midir's with the feature `midi`, none without it.
 pub fn system() -> Arc<dyn Ports> {
@@ -75,7 +75,7 @@ pub fn system() -> Arc<dyn Ports> {
     }
     #[cfg(not(feature = "midi"))]
     {
-        Arc::new(Absent(NOT_IN_BUILD.into()))
+        Arc::new(Absent(not_in_build))
     }
 }
 
@@ -101,12 +101,12 @@ mod real {
     struct Output(MidiOutputConnection);
     impl OutputLink for Output {
         fn send(&mut self, bytes: &[u8]) -> Result<(), String> {
-            self.0.send(bytes).map_err(|error| format!("клавиатура не приняла: {error}"))
+            self.0.send(bytes).map_err(|error| crate::tr!("Клавиатура не приняла: {error}", error = error))
         }
     }
 
     fn unopened(error: impl std::fmt::Display) -> String {
-        format!("MIDI не открылся: {error}")
+        crate::tr!("MIDI не открылся: {error}", error = error)
     }
 
     impl Ports for Midir {
@@ -131,7 +131,7 @@ mod real {
             let mut input = MidiInput::new(CLIENT).map_err(unopened)?;
             // SysEx, the clock and active sensing never reach us (docs/plans/midi.md, «Фильтр»).
             input.ignore(Ignore::All);
-            let port = input.find_port_by_id(id).ok_or_else(|| "Клавиатуры нет: её отключили?".to_string())?;
+            let port = input.find_port_by_id(id).ok_or_else(|| crate::tr!("Клавиатуры нет: её отключили?"))?;
             let connection = input
                 .connect(&port, "duowave-in", move |stamp, bytes, _| sink(stamp, bytes), ())
                 .map_err(|error| busy_or(error.kind().to_string()))?;
@@ -140,7 +140,7 @@ mod real {
 
         fn open_output(&self, id: &str) -> Result<Box<dyn OutputLink>, String> {
             let output = MidiOutput::new(CLIENT).map_err(unopened)?;
-            let port = output.find_port_by_id(id).ok_or_else(|| "Клавиатуры нет: её отключили?".to_string())?;
+            let port = output.find_port_by_id(id).ok_or_else(|| crate::tr!("Клавиатуры нет: её отключили?"))?;
             let connection = output.connect(&port, "duowave-out").map_err(|error| busy_or(error.kind().to_string()))?;
             Ok(Box::new(Output(connection)))
         }
@@ -153,9 +153,9 @@ mod real {
     /// On Windows a port is one program's: another one holding it is the usual reason it does not open.
     fn busy_or(error: String) -> String {
         if cfg!(windows) {
-            format!("Клавиатура занята другой программой или отключена ({error}).")
+            crate::tr!("Клавиатура занята другой программой или отключена ({error}).", error = error)
         } else {
-            format!("Клавиатуру не открыть: {error}")
+            crate::tr!("Клавиатуру не открыть: {error}", error = error)
         }
     }
 
@@ -307,10 +307,10 @@ impl Ports for Fake {
     fn open_input(&self, id: &str, sink: Sink) -> Result<Box<dyn InputLink>, String> {
         let mut state = self.0.lock();
         if state.busy.iter().any(|busy| busy == id) {
-            return Err("Клавиатура занята другой программой".into());
+            return Err(crate::tr!("Клавиатура занята другой программой"));
         }
         if !state.ports.iter().any(|port| port.id == id && port.input) {
-            return Err("Клавиатуры нет: её отключили?".into());
+            return Err(crate::tr!("Клавиатуры нет: её отключили?"));
         }
         state.opened.push(id.to_string());
         let slot = Arc::new(Mutex::new(Some(sink)));
@@ -321,7 +321,7 @@ impl Ports for Fake {
     fn open_output(&self, id: &str) -> Result<Box<dyn OutputLink>, String> {
         let mut state = self.0.lock();
         if !state.ports.iter().any(|port| port.id == id && !port.input) {
-            return Err("Клавиатуры нет: её отключили?".into());
+            return Err(crate::tr!("Клавиатуры нет: её отключили?"));
         }
         state.opened.push(id.to_string());
         Ok(Box::new(FakeOutput { id: id.to_string(), ports: self.0.clone() }))

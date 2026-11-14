@@ -26,6 +26,10 @@ ISC, Zlib, Unicode-3.0, а корни сертификатов webpki-roots — 
 - MIDI-клавиатура (возможность `midi`, приложение и программа для Mac и Windows): midir — MIT; coremidi — MIT; midly —
   Unlicense; на Linux — ALSA через alsa и alsa-sys (Apache-2.0 или MIT), сама libasound — системная (LGPL-2.1,
   подключается динамически).
+- Домашняя папка (`src/bus/providers/files`): image с zune-jpeg, png, image-webp и gif — картинки уменьшенными (MIT или
+  Apache-2.0; zune-jpeg ещё и Zlib); lopdf — текст PDF (MIT); zip — текст документа Word (MIT); unicode-normalization
+  — имена в NFC и NFD (MIT или Apache-2.0); encoding_rs — буквы RTF в Windows-1251 ((Apache-2.0 или MIT) и
+  BSD-3-Clause). В приложении — tauri-plugin-dialog (Apache-2.0 или MIT) с rfd (MIT): окно выбора папки.
 - Готовые библиотеки, которые скачиваются при сборке с возможностями для ПК: ONNX Runtime (`silero`, через ort) —
   MIT, © Microsoft; libwebrtc для LiveKit (`livekit`) — BSD-3-Clause, © The WebRTC project authors, со своими
   сторонними частями (их список — в архиве libwebrtc).

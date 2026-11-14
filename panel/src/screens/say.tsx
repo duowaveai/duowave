@@ -3,6 +3,7 @@ import { useRef, useState } from 'preact/hooks';
 import { ApiError, Health, SessionSnapshot, UnsupportedEntry, api, problemOf } from '../api';
 import { IconSend } from '../icons';
 import { Slot } from '../shell/slot';
+import { tr } from '../i18n';
 import { Overlay, useDialogFocus } from '../ui/sheet';
 
 interface Props {
@@ -30,7 +31,7 @@ export function SaySheet({ health, debug, onClose }: Props) {
         try {
             const { outcome: said } = await api.say(value);
             if (said === 'failed') {
-                setOutcome({ state: 'error', message: 'Колонка не ответила — возможно, она сейчас занята. Попробуйте ещё раз.' });
+                setOutcome({ state: 'error', message: tr.say.noAnswer });
                 return;
             }
             setOutcome({ state: 'done' });
@@ -41,23 +42,23 @@ export function SaySheet({ health, debug, onClose }: Props) {
                 state: 'error',
                 message:
                     status === 404
-                        ? 'Нет живой сессии с колонкой.'
+                        ? tr.say.noSession
                         : status === 403
                           ? problemOf(e)
-                          : 'Не получилось — попробуйте ещё раз.',
+                          : tr.say.failed,
             });
         }
     };
 
     return (
         <Overlay onDismiss={onClose}>
-            <div ref={box} class="sheet glass-strong" role="dialog" aria-modal="true" aria-label="Сказать через колонку">
+            <div ref={box} class="sheet glass-strong" role="dialog" aria-modal="true" aria-label={tr.say.title}>
                 <div class="flex items-center justify-between">
                     <h2 class="t-title-xs m-0">
-                        Сказать через колонку
+                        {tr.say.title}
                     </h2>
                     <span class="t-meta">
-                        {health?.station?.connected ? 'колонка в сети' : 'колонка не в сети'}
+                        {health?.station?.connected ? tr.say.stationOnline : tr.say.stationOffline}
                     </span>
                 </div>
 
@@ -73,25 +74,25 @@ export function SaySheet({ health, debug, onClose }: Props) {
                                 onKeyDown={(e) => {
                                     if (e.key === 'Enter') void send();
                                 }}
-                                placeholder="Что сказать?"
-                                aria-label="Текст для колонки"
+                                placeholder={tr.say.placeholder}
+                                aria-label={tr.say.inputLabel}
                                 autoFocus
                                 class="flex-1 min-w-0 py-12 px-16 r-pill border-glass bg-icon-bg outline-none"
                             />
-                            <button class="talk-btn w-48 h-48 flex-none" aria-label="Сказать" onClick={() => void send()} disabled={outcome.state === 'sending'}>
+                            <button class="talk-btn w-48 h-48 flex-none" aria-label={tr.say.sendLabel} onClick={() => void send()} disabled={outcome.state === 'sending'}>
                                 <IconSend size={20} />
                             </button>
                         </div>
-                        {outcome.state === 'done' && <p class="t-meta m-0">Колонка сказала.</p>}
+                        {outcome.state === 'done' && <p class="t-meta m-0">{tr.say.said}</p>}
                         {outcome.state === 'error' && <p class="t-meta m-0 c-dot-offline">{outcome.message}</p>}
                     </>
                 ) : live ? (
                     <p class="t-meta m-0">
-                        Колонка подключена, но шлюз не может говорить за неё (режим релея или нет прав голоса).
+                        {tr.say.cannotSpeak}
                     </p>
                 ) : (
                     <p class="t-meta m-0">
-                        Нужна живая сессия с колонкой: скажите «Алиса» и попробуйте снова.
+                        {tr.say.needSession}
                     </p>
                 )}
                 <Slot name="say.extras" props={{ speakable }} />

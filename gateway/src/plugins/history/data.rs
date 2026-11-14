@@ -5,7 +5,6 @@
 //! A snapshot leaves out what changes by itself — a row's time, a job's last run and the speech waiting for the
 //! station — so the same data is the same object, and a day without changes keeps nothing new. Pictures are files of
 //! the store: one that did not change takes no room.
-
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -51,16 +50,16 @@ impl Snapshot {
     pub fn summary(&self) -> String {
         let mut parts = Vec::new();
         if !self.kv.is_empty() {
-            parts.push(format!("записей: {}", self.kv.len()));
+            parts.push(crate::tr!("записей: {kv}", kv = self.kv.len()));
         }
         if !self.jobs.is_empty() {
-            parts.push(format!("задач: {}", self.jobs.len()));
+            parts.push(crate::tr!("задач: {jobs}", jobs = self.jobs.len()));
         }
         if !self.pictures.is_empty() {
-            parts.push(format!("картинок: {}", self.pictures.len()));
+            parts.push(crate::tr!("картинок: {pictures}", pictures = self.pictures.len()));
         }
         if parts.is_empty() {
-            "пусто".into()
+            crate::tr!("пусто")
         } else {
             parts.join(", ")
         }
@@ -78,7 +77,7 @@ impl DataParts {
     /// The plugin's data now.
     pub fn snapshot(&self, store: &Store, plugin: &str) -> Result<Snapshot, String> {
         let kv = crate::plugins::host_api::kv_rows(&self.db, plugin)
-            .map_err(|error| format!("хранилище не читается: {error}"))?
+            .map_err(|error| crate::tr!("хранилище не читается: {error}", error = error))?
             .into_iter()
             .map(|(key, value)| KvRow { key, value })
             .collect();
@@ -88,7 +87,9 @@ impl DataParts {
             for listed in files.list(plugin) {
                 let Some(name) = listed.get("name").and_then(Value::as_str) else { continue };
                 let Some((bytes, _)) = files.read(plugin, name) else { continue };
-                let file = store.put(Kind::File, &bytes).map_err(|error| format!("картинка {name}: {error}"))?;
+                let file = store
+                    .put(Kind::File, &bytes)
+                    .map_err(|error| crate::tr!("картинка {name}: {error}", name = name, error = error))?;
                 pictures.push(Picture { name: name.to_string(), file, size: bytes.len() as u64 });
             }
         }
@@ -112,7 +113,9 @@ impl DataParts {
     /// station; then the store; then the jobs, a once already past left out.
     pub fn apply(&self, store: &Store, plugin: &str, id: Option<&str>) -> Result<(), String> {
         let snapshot = match id {
-            Some(id) => DataParts::read(store, id).ok_or("этого снимка данных в истории уже нет")?,
+            Some(id) => {
+                DataParts::read(store, id).ok_or_else(|| crate::tr!("этого снимка данных в истории уже нет"))?
+            }
             None => Snapshot::default(),
         };
         if let Some(files) = &self.files {
@@ -120,14 +123,14 @@ impl DataParts {
             for picture in &snapshot.pictures {
                 let bytes = store
                     .get_kind(&picture.file, Kind::File)
-                    .ok_or_else(|| format!("картинки {} в истории уже нет", picture.name))?;
+                    .ok_or_else(|| crate::tr!("картинки {name} в истории уже нет", name = picture.name))?;
                 pictures.push((picture.name.clone(), bytes));
             }
             files.replace(plugin, &pictures)?;
         }
         let rows: Vec<(String, String)> = snapshot.kv.iter().map(|row| (row.key.clone(), row.value.clone())).collect();
         crate::plugins::host_api::kv_replace(&self.db, plugin, &rows)
-            .map_err(|error| format!("хранилище не записалось: {error}"))?;
+            .map_err(|error| crate::tr!("хранилище не записалось: {error}", error = error))?;
         if let Some(schedules) = &self.schedules {
             schedules.import(plugin, &snapshot.jobs)?;
         }

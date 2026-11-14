@@ -3,7 +3,6 @@
 //! feeds, the household's model. An app reaches them only by letters, each decided by the bus; each handle says the
 //! person's right a person's chain must hold: a guest's request cannot reach the smart home through an app
 //! (docs/plans/bus.md, «Зачем», дыра 1).
-
 use std::sync::{Arc, OnceLock, Weak};
 
 use futures::future::BoxFuture;
@@ -53,7 +52,7 @@ impl System {
 fn caller(letter: &Letter) -> Result<String, BusError> {
     match (letter.from.kind(), letter.from.name()) {
         (address::APP, Some(id)) => Ok(id.to_string()),
-        _ => Err(BusError::Denied("службы шлюза работают для приложений".into())),
+        _ => Err(BusError::Denied(crate::tr!("службы шлюза работают для приложений"))),
     }
 }
 
@@ -64,13 +63,13 @@ impl Provider for System {
 
     fn participants(&self) -> Vec<Participant> {
         [
-            (VOICE, "Голос колонки"),
-            (NOTIFY, "Сообщения владельцу"),
-            (SCHEDULE, "Расписание приложений"),
-            (SMART_HOME, "Умный дом"),
-            (CONTENT, "Музыка и сказки семьи"),
-            (HOME, "Место погоды и ленты новостей"),
-            (BRAIN, "Модель «Мозга»"),
+            (VOICE, crate::tr!("Голос колонки")),
+            (NOTIFY, crate::tr!("Сообщения владельцу")),
+            (SCHEDULE, crate::tr!("Расписание приложений")),
+            (SMART_HOME, crate::tr!("Умный дом")),
+            (CONTENT, crate::tr!("Музыка и сказки семьи")),
+            (HOME, crate::tr!("Место погоды и ленты новостей")),
+            (BRAIN, crate::tr!("Модель «Мозга»")),
         ]
         .iter()
         .filter_map(|(text, title)| Some(Participant::new(Address::parse(text).ok()?, title)))
@@ -79,25 +78,29 @@ impl Provider for System {
 
     fn handles(&self, address: &Address) -> Vec<Handle> {
         match address.as_str() {
-            VOICE => vec![Handle::new("say", Level::Call).titled("сказать вслух без запроса")],
-            NOTIFY => vec![Handle::new("send", Level::Call).titled("написать владельцу")],
+            VOICE => vec![Handle::new("say", Level::Call).titled(&crate::tr!("сказать вслух без запроса"))],
+            NOTIFY => vec![Handle::new("send", Level::Call).titled(&crate::tr!("написать владельцу"))],
             SCHEDULE => ["set", "list", "cancel", "parse"]
                 .iter()
-                .map(|name| Handle::new(name, Level::Call).titled("своё расписание"))
+                .map(|name| Handle::new(name, Level::Call).titled(&crate::tr!("своё расписание")))
                 .collect(),
             SMART_HOME => vec![
-                Handle::new("devices", Level::Call).titled("устройства дома").needs(Some("use:smart_home".into())),
-                Handle::new("act", Level::Call).titled("включить, выключить").needs(Some("use:smart_home".into())),
+                Handle::new("devices", Level::Call)
+                    .titled(&crate::tr!("устройства дома"))
+                    .needs(Some("use:smart_home".into())),
+                Handle::new("act", Level::Call)
+                    .titled(&crate::tr!("включить, выключить"))
+                    .needs(Some("use:smart_home".into())),
             ],
             CONTENT => vec![
-                Handle::new("music", Level::Call).titled("своя музыка").needs(Some("use:music".into())),
-                Handle::new("tales", Level::Call).titled("сказки семьи").needs(Some("use:tales".into())),
+                Handle::new("music", Level::Call).titled(&crate::tr!("своя музыка")).needs(Some("use:music".into())),
+                Handle::new("tales", Level::Call).titled(&crate::tr!("сказки семьи")).needs(Some("use:tales".into())),
             ],
             HOME => vec![
-                Handle::new("weather-place", Level::Call).titled("город погоды"),
-                Handle::new("news-feeds", Level::Call).titled("ленты новостей"),
+                Handle::new("weather-place", Level::Call).titled(&crate::tr!("город погоды")),
+                Handle::new("news-feeds", Level::Call).titled(&crate::tr!("ленты новостей")),
             ],
-            BRAIN => vec![Handle::new("speak", Level::Call).titled("ответить моделью словами приложения")],
+            BRAIN => vec![Handle::new("speak", Level::Call).titled(&crate::tr!("ответить моделью словами приложения"))],
             _ => Vec::new(),
         }
     }
@@ -109,7 +112,7 @@ impl Provider for System {
     fn call(&self, letter: Letter) -> BoxFuture<'static, Result<Value, BusError>> {
         let services = self.services();
         Box::pin(async move {
-            let services = services.ok_or_else(|| BusError::Failed("службы шлюза ещё не готовы".into()))?;
+            let services = services.ok_or_else(|| BusError::Failed(crate::tr!("службы шлюза ещё не готовы")))?;
             let id = caller(&letter)?;
             let input = letter.input;
             let text = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_string);
@@ -134,9 +137,9 @@ impl Provider for System {
                     .map_err(failed),
                 (HOME, "weather-place") => Ok(services.weather_place().map(Value::String).unwrap_or(Value::Null)),
                 (HOME, "news-feeds") => Ok(Value::Array(services.news_feeds())),
-                (BRAIN, _) => Err(BusError::Failed(
-                    "модель отвечает словами приложения полем model в ответе на фразу, не письмом".into(),
-                )),
+                (BRAIN, _) => Err(BusError::Failed(crate::tr!(
+                    "модель отвечает словами приложения полем model в ответе на фразу, не письмом"
+                ))),
                 (CONTENT, folder @ ("music" | "tales")) => {
                     let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(50).clamp(1, 200) as usize;
                     let query = text("query").filter(|query| !query.is_empty());

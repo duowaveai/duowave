@@ -1,15 +1,20 @@
-// Боковая панель — второй вид пульта (docs/plans/desk.md): слева панель — роль, колонка, капсула «Сказать через
-// колонку», разделы, кнопки шапки; справа — стол столбцом или открытый раздел страницей. Рамка по роли: у помощника
+// Боковая панель — второй вид пульта (docs/plans/desk.md): слева панель — роль, колонка, капсула «Сказать» (микрофон
+// пульта, как в доке), разделы, кнопки шапки; справа — стол столбцом или открытый раздел страницей. Рамка по роли: у помощника
 // панель тёмная. На узком экране панель уезжает: сверху полоса с меню, колонкой и кругом «Сказать», разделы выезжают
-// слева по кнопке меню. Плашка «Делаю виджет» — в панели под колонкой, на узком экране — над содержимым.
+// слева по кнопке меню. Плашка «Делаю виджет» — в панели под колонкой, на узком экране — над содержимым. Полоса голоса —
+// внизу содержимого: что услышано и что отвечают (docs/plans/mic-mode.md).
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { IconLaptop, IconMenu, IconMic } from '../icons';
+import { IconLaptop, IconMenu, IconMic, IconMicOff } from '../icons';
+import { micOn, onMic } from '../voice/mic';
+import { useMicHeld } from '../voice/phrases';
+import { VoiceStrip } from '../voice/strip';
 import { DuoWaveLogo, DuoWaveMark, PoweredBy } from '../ui/duowave';
 import { useDialogFocus } from '../ui/sheet';
 import { AgentPlaque } from './agent-plaque';
 import type { Nav, NavEntry, ShellProps } from './shell';
+import { tr } from '../i18n';
 
 /** С этой ширины панель стоит сбоку постоянно. */
 const WIDE = '(min-width: 900px)';
@@ -40,7 +45,7 @@ function NavList({ nav, active, onNav }: { nav: Nav; active: string; onNav: (ent
         );
     };
     return (
-        <nav class="side-nav" aria-label="Разделы">
+        <nav class="side-nav" aria-label={tr.shell.sections}>
             {nav.left.map(item)}
             {nav.right.map(item)}
         </nav>
@@ -53,8 +58,8 @@ function Drawer({ children, onClose }: { children: preact.ComponentChildren; onC
     useDialogFocus(panel, onClose);
     return (
         <div class="side-layer">
-            <button class="side-scrim" aria-label="Закрыть разделы" tabIndex={-1} onClick={onClose} />
-            <aside ref={panel} class="side-panel side-drawer glass-strong" role="dialog" aria-modal="true" aria-label="Разделы">
+            <button class="side-scrim" aria-label={tr.shell.closeSections} tabIndex={-1} onClick={onClose} />
+            <aside ref={panel} class="side-panel side-drawer glass-strong" role="dialog" aria-modal="true" aria-label={tr.shell.sections}>
                 {children}
             </aside>
         </div>
@@ -64,6 +69,11 @@ function Drawer({ children, onClose }: { children: preact.ComponentChildren; onC
 export function SidebarShell({ nav, active, onNav, top, station, actions, talk, notice, desk, window: win }: ShellProps) {
     const wide = useWide();
     const [open, setOpen] = useState(false);
+    // Слушает ли пульт сейчас и не выключен ли микрофон полем ключа — как у кнопки дока.
+    const [listening, setListening] = useState(micOn);
+    useEffect(() => onMic(setListening), []);
+    const held = useMicHeld();
+    const talkLabel = held ? tr.shell.micHeld : listening ? tr.shell.endPhrase : tr.shell.say;
     // Выбрали раздел — панель на телефоне больше не нужна.
     const go = (entry: NavEntry) => {
         setOpen(false);
@@ -74,7 +84,7 @@ export function SidebarShell({ nav, active, onNav, top, station, actions, talk, 
             {win.scope === 'own' && (
                 <span class="role-label self-start">
                     <IconLaptop size={13} />
-                    Этот компьютер
+                    {tr.shell.thisComputer}
                 </span>
             )}
             {win.content}
@@ -93,9 +103,9 @@ export function SidebarShell({ nav, active, onNav, top, station, actions, talk, 
                     {role}
                     <div class="side-station">{station}</div>
                     <AgentPlaque place="side" />
-                    <button class="side-talk" disabled={talk.disabled} onClick={talk.onTalk}>
-                        <IconMic size={18} />
-                        Сказать через колонку
+                    <button class={`side-talk${listening ? ' is-listening' : ''}`} aria-pressed={listening} disabled={talk.disabled || held} onClick={talk.onTalk}>
+                        {held ? <IconMicOff size={18} /> : <IconMic size={18} />}
+                        {listening ? tr.shell.listening : tr.shell.say}
                     </button>
                     <NavList nav={nav} active={active} onNav={go} />
                     <div class="side-foot">{actions}</div>
@@ -105,18 +115,25 @@ export function SidebarShell({ nav, active, onNav, top, station, actions, talk, 
                     {page}
                     <PoweredBy />
                 </main>
+                <VoiceStrip />
             </div>
         );
     return (
         <div class="side-shell">
             <header class="side-top glass-strong">
-                <button class="icon-btn glass" aria-label="Разделы" aria-expanded={open} onClick={() => setOpen(true)}>
+                <button class="icon-btn glass" aria-label={tr.shell.sections} aria-expanded={open} onClick={() => setOpen(true)}>
                     <IconMenu />
                 </button>
                 <DuoWaveMark size={26} title="DuoWave" live />
                 {station}
-                <button aria-label="Сказать через колонку" class="talk-btn side-talk-round" disabled={talk.disabled} onClick={talk.onTalk}>
-                    <IconMic size={20} />
+                <button
+                    aria-label={talkLabel}
+                    aria-pressed={listening}
+                    class={`talk-btn side-talk-round${listening ? ' is-listening' : ''}`}
+                    disabled={talk.disabled || held}
+                    onClick={talk.onTalk}
+                >
+                    {held ? <IconMicOff size={20} /> : <IconMic size={20} />}
                 </button>
             </header>
             <main class="side-main">
@@ -125,6 +142,7 @@ export function SidebarShell({ nav, active, onNav, top, station, actions, talk, 
                 {page}
                 <PoweredBy />
             </main>
+            <VoiceStrip />
             {open && (
                 <Drawer onClose={() => setOpen(false)}>
                     {role}

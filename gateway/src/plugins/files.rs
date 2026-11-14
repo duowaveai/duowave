@@ -7,7 +7,6 @@
 //! `budget.storageMb`. On the station room is short (`/data` some 45 MB free, measured 11.11.2026), so it has a limit
 //! of its own, the owner's decision 10 (12.11.2026): a picture up to 1 MB, all the plugins' pictures together up to
 //! 5 MB. A plugin with `prefer: home` keeps its pictures on the computer: its calls run there.
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -54,7 +53,11 @@ pub fn picture_name(name: &str, extension: &str) -> Result<String, String> {
     let stem = if stem.is_empty() { "picture" } else { stem };
     let safe = stem.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'));
     if !safe || stem.starts_with('-') || stem.len() + extension.len() + 1 > NAME_MAX {
-        return Err(format!("имя «{name}» — латиница, цифры, «-» и «_», до {NAME_MAX} знаков"));
+        return Err(crate::tr!(
+            "имя «{name}» — латиница, цифры, «-» и «_», до {max} знаков",
+            name = name,
+            max = NAME_MAX
+        ));
     }
     Ok(format!("{stem}.{extension}"))
 }
@@ -126,28 +129,30 @@ impl PluginFiles {
 
     /// A downloaded picture kept for the plugin: checked, within the limits, written whole or not at all.
     pub fn put(&self, plugin: &str, name: &str, bytes: &[u8], storage_mb: u64) -> Result<Value, String> {
-        let (extension, kind) = picture_kind(bytes).ok_or("это не картинка: годятся PNG, JPEG, WebP и GIF")?;
+        let (extension, kind) =
+            picture_kind(bytes).ok_or_else(|| crate::tr!("это не картинка: годятся PNG, JPEG, WebP и GIF"))?;
         let name = picture_name(name, extension)?;
         let size = bytes.len() as u64;
         let replaced = self.files(plugin).iter().find(|(known, _, _)| *known == name).map_or(0, |(_, size, _)| *size);
         if (self.on_station)() {
             if size > STATION_FILE_MAX {
-                return Err("на колонке нет места для картинки: до 1 МБ на картинку".into());
+                return Err(crate::tr!("на колонке нет места для картинки: до 1 МБ на картинку"));
             }
             if self.usage(None) - replaced + size > STATION_ALL_MAX {
-                return Err("на колонке нет места для картинок: все картинки приложений — до 5 МБ".into());
+                return Err(crate::tr!("на колонке нет места для картинок: все картинки приложений — до 5 МБ"));
             }
         } else if size > FILE_MAX {
-            return Err("картинка больше 10 МБ".into());
+            return Err(crate::tr!("картинка больше 10 МБ"));
         }
         if self.usage(Some(plugin)) - replaced + size > storage_mb * MB {
-            return Err(format!("места приложения ({storage_mb} МБ) не хватает: удалите старые картинки"));
+            return Err(crate::tr!("места приложения ({mb} МБ) не хватает: удалите старые картинки", mb = storage_mb));
         }
         let folder = self.folder(plugin);
-        std::fs::create_dir_all(&folder).map_err(|error| format!("папка картинок: {error}"))?;
+        std::fs::create_dir_all(&folder).map_err(|error| crate::tr!("папка картинок: {error}", error = error))?;
         let part = folder.join(format!(".{name}.part"));
-        std::fs::write(&part, bytes).map_err(|error| format!("картинка не записалась: {error}"))?;
-        std::fs::rename(&part, folder.join(&name)).map_err(|error| format!("картинка не записалась: {error}"))?;
+        std::fs::write(&part, bytes).map_err(|error| crate::tr!("картинка не записалась: {error}", error = error))?;
+        std::fs::rename(&part, folder.join(&name))
+            .map_err(|error| crate::tr!("картинка не записалась: {error}", error = error))?;
         Ok(json!({ "name": name, "size": size, "type": kind }))
     }
 
@@ -180,32 +185,33 @@ impl PluginFiles {
             !name.is_empty() && !name.starts_with('.') && name.len() <= NAME_MAX + 5 && !name.contains(['/', '\\'])
         };
         if let Some((name, _)) = pictures.iter().find(|(name, _)| !plain(name)) {
-            return Err(format!("имя картинки «{name}» не годится"));
+            return Err(crate::tr!("имя картинки «{name}» не годится", name = name));
         }
         let total: u64 = pictures.iter().map(|(_, bytes)| bytes.len() as u64).sum();
         if (self.on_station)() {
             if let Some((name, _)) = pictures.iter().find(|(_, bytes)| bytes.len() as u64 > STATION_FILE_MAX) {
-                return Err(format!("картинка {name} больше 1 МБ — на колонке такие не хранятся"));
+                return Err(crate::tr!("картинка {name} больше 1 МБ — на колонке такие не хранятся", name = name));
             }
             let others = self.usage(None).saturating_sub(self.usage(Some(plugin)));
             if others + total > STATION_ALL_MAX {
-                return Err(format!(
-                    "картинки не помещаются на колонке: у всех плагинов вместе до {} МБ",
-                    STATION_ALL_MAX / MB
+                return Err(crate::tr!(
+                    "картинки не помещаются на колонке: у всех плагинов вместе до {mb} МБ",
+                    mb = STATION_ALL_MAX / MB
                 ));
             }
         }
         let folder = self.folder(plugin);
         if !folder.starts_with(&self.root) || folder == self.root {
-            return Err("не та папка".into());
+            return Err(crate::tr!("не та папка"));
         }
         // The pictures only: the rest of the app's own folder — its `tmp/`, its other files — stays as it is.
-        std::fs::create_dir_all(&folder).map_err(|error| format!("картинки не записались: {error}"))?;
+        std::fs::create_dir_all(&folder)
+            .map_err(|error| crate::tr!("картинки не записались: {error}", error = error))?;
         for (name, bytes) in pictures {
             let part = folder.join(format!(".{name}.part"));
             std::fs::write(&part, bytes)
                 .and_then(|()| std::fs::rename(&part, folder.join(name)))
-                .map_err(|error| format!("картинка {name} не записалась: {error}"))?;
+                .map_err(|error| crate::tr!("картинка {name} не записалась: {error}", name = name, error = error))?;
         }
         for (name, _, _) in self.files(plugin) {
             if !pictures.iter().any(|(kept, _)| *kept == name) {

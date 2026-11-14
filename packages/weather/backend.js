@@ -423,15 +423,21 @@ const PANEL_TTL_MS = 10 * 60 * 1000;
 const WEEKDAYS = ["воскресенье", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота"];
 
 export async function panelWeather() {
+  const { _err, ...data } = await panelData();
+  return data;
+}
+
+// The same, with `_err` (a dictionary key and params) beside the Russian error text: the card words it itself.
+async function panelData() {
   const until = Date.now() + TIMEOUT;
   const name = await usualPlace({});
-  if (!name) return { place: null, error: "Место для погоды не задано: «Дом» → «Коннекторы» → «Погода»." };
-  const cached = host.kv.get("panel:weather");
+  if (!name) return { place: null, error: "Место для погоды не задано: «Дом» → «Коннекторы» → «Погода».", _err: { key: "noPlace" } };
+  const cached = host.kv.get("panel:weather:2");
   if (cached && cached.name === name && Date.now() - cached.at < PANEL_TTL_MS) return cached.data;
   const place = await locate(givenPlace(name), until);
-  if (!place) return { place: name, error: `Не нашла такое место: ${name}.` };
+  if (!place) return { place: name, error: `Не нашла такое место: ${name}.`, _err: { key: "notFound", params: { place: name } } };
   const url = `${FORECAST}?latitude=${place.latitude}&longitude=${place.longitude}` +
-    "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m" +
+    "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,is_day" +
     "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max" +
     "&timezone=auto&forecast_days=4&wind_speed_unit=ms";
   const forecast = await fetchForecast(url, until);
@@ -443,6 +449,7 @@ export async function panelWeather() {
     max: Math.round(daily.temperature_2m_max[index + 1]),
     min: Math.round(daily.temperature_2m_min[index + 1]),
     text: describeCode(daily.weather_code[index + 1]),
+    code: daily.weather_code[index + 1],
     rain: daily.precipitation_probability_max?.[index + 1] ?? null,
   }));
   const data = {
@@ -451,29 +458,103 @@ export async function panelWeather() {
       temperature: Math.round(now.temperature_2m),
       feels: now.apparent_temperature === undefined ? null : Math.round(now.apparent_temperature),
       text: describeCode(now.weather_code),
+      code: now.weather_code,
+      isDay: now.is_day === undefined ? null : now.is_day === 1,
       wind: now.wind_speed_10m === undefined ? null : Math.round(now.wind_speed_10m),
     },
     days,
   };
-  host.kv.set("panel:weather", { at: Date.now(), name, data });
+  host.kv.set("panel:weather:2", { at: Date.now(), name, data });
   return data;
 }
 
-// Карточка на столе пульта (docs/plugins/cards.md): сейчас крупно, три дня плитками. Рисует пульт.
+const STORM = [95, 96, 99];
+const SNOW = [71, 73, 75, 77, 85, 86];
+const RAIN = [51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82];
+const FOG = [45, 48];
+
+// Значок дня в плитке.
+function iconOf(code) {
+  if (STORM.includes(code)) return "⛈";
+  if (SNOW.includes(code)) return "❄";
+  if (RAIN.includes(code)) return "🌧";
+  if (FOG.includes(code)) return "🌫";
+  if (code === 0) return "☀";
+  if (code === 1 || code === 2) return "⛅";
+  return "☁";
+}
+
+// Вид карточки по небу (docs/plugins/cards.md, «Вид»): сцена — что за окном, цвета — день или ночь, жара или мороз.
+function skyLook(now) {
+  const code = now.code ?? 3;
+  const day = now.isDay !== false;
+  if (STORM.includes(code)) return { scene: "storm", colors: ["#141a26", "#2c3748", "#46546a"] };
+  if (SNOW.includes(code)) return { scene: "snow", colors: day ? ["#5a86c9", "#93bde9", "#cfe4fa"] : ["#16233f", "#2f4a73"] };
+  if (RAIN.includes(code)) return { scene: "rain", colors: day ? ["#2d3e55", "#4b6987", "#6a8aa9"] : ["#101827", "#24344b"] };
+  if (FOG.includes(code)) return { scene: "fog", colors: day ? ["#66727f", "#9ea9b6"] : ["#272e38", "#46505d"] };
+  if (!day) return code <= 1 ? { scene: "stars", colors: ["#060a26", "#1c1950", "#3a2a73"] } : { scene: "clouds", colors: ["#0d152e", "#27314e"] };
+  if (code <= 1) {
+    if (now.temperature >= 28) return { scene: "sun", colors: ["#f08a4b", "#f4b860", "#8cc8f0"] };
+    if (now.temperature <= -10) return { scene: "sun", colors: ["#3f6fbf", "#8dbbea", "#e3f0fd"] };
+    return { scene: "sun", colors: ["#1f6fd6", "#58aef5", "#a6d8ff"] };
+  }
+  return { scene: "clouds", colors: code === 2 ? ["#3a74c4", "#7aaee4"] : ["#56687d", "#8c9fb4"] };
+}
+
+// Карточка на столе пульта (docs/plugins/cards.md): сейчас крупно, три дня плитками со значками, фон — живое небо
+// за окном. Рисует пульт.
+const T = {
+  ru: {
+    noPlace: "Место для погоды не задано: «Дом» → «Коннекторы» → «Погода».",
+    notFound: "Не нашла такое место: {place}.",
+    wind: "ветер {n} м/с",
+    tomorrow: "завтра",
+    d0: "воскресенье", d1: "понедельник", d2: "вторник", d3: "среда", d4: "четверг", d5: "пятница", d6: "суббота",
+    c0: "ясно", c1: "преимущественно ясно", c2: "переменная облачность", c3: "пасмурно", c45: "туман", c51: "морось",
+    c56: "ледяная морось", c61: "небольшой дождь", c63: "дождь", c65: "сильный дождь", c66: "ледяной дождь",
+    c71: "небольшой снег", c73: "снег", c75: "сильный снег", c77: "снежная крупа", c80: "ливень", c82: "сильный ливень",
+    c85: "снегопад", c95: "гроза", c96: "гроза с градом", cNone: "погода без описания",
+  },
+  en: {
+    noPlace: "No place set for weather: Home → Connectors → Weather.",
+    notFound: "Couldn't find that place: {place}.",
+    wind: "wind {n} m/s",
+    tomorrow: "tomorrow",
+    d0: "Sunday", d1: "Monday", d2: "Tuesday", d3: "Wednesday", d4: "Thursday", d5: "Friday", d6: "Saturday",
+    c0: "clear", c1: "mostly clear", c2: "partly cloudy", c3: "overcast", c45: "fog", c51: "drizzle",
+    c56: "freezing drizzle", c61: "light rain", c63: "rain", c65: "heavy rain", c66: "freezing rain",
+    c71: "light snow", c73: "snow", c75: "heavy snow", c77: "snow grains", c80: "showers", c82: "heavy showers",
+    c85: "snow showers", c95: "thunderstorm", c96: "thunderstorm with hail", cNone: "no description",
+  },
+};
+const CODE_KEYS = [
+  [[0], "c0"], [[1], "c1"], [[2], "c2"], [[3], "c3"], [[45, 48], "c45"], [[51, 53, 55], "c51"], [[56, 57], "c56"],
+  [[61], "c61"], [[63], "c63"], [[65], "c65"], [[66, 67], "c66"], [[71], "c71"], [[73], "c73"], [[75], "c75"],
+  [[77], "c77"], [[80, 81], "c80"], [[82], "c82"], [[85, 86], "c85"], [[95], "c95"], [[96, 99], "c96"],
+];
+// A weather code in the home's language.
+function codeText(code) {
+  const found = CODE_KEYS.find(([codes]) => codes.includes(code));
+  return host.i18n.t(T, found ? found[1] : "cNone");
+}
+
 export async function weatherCard() {
+  // Без прогноза — спокойное облачное небо.
+  const quiet = { scene: "clouds", colors: ["#3a74c4", "#7aaee4"] };
   let data;
   try {
-    data = await panelWeather();
+    data = await panelData();
   } catch (error) {
-    return { empty: String(error?.message ?? error) };
+    return { empty: String(error?.message ?? error), look: quiet };
   }
-  if (data.error) return { empty: data.error };
+  if (data.error) return { empty: data._err ? host.i18n.t(T, data._err.key, data._err.params) : data.error, look: quiet };
   const now = data.now;
-  const line = [now.text, now.wind !== null ? `ветер ${now.wind} м/с` : null, data.place].filter(Boolean).join(" · ");
+  const line = [codeText(now.code), now.wind !== null ? host.i18n.t(T, "wind", { n: now.wind }) : null, data.place].filter(Boolean).join(" · ");
   return {
     big: `${signed(now.temperature)}°`,
     cap: line,
-    tiles: data.days.map((day) => ({ label: day.label, value: `${signed(day.max)}°` })),
+    tiles: data.days.map((day, index) => ({ label: index === 0 ? host.i18n.t(T, "tomorrow") : host.i18n.t(T, `d${new Date(`${day.date}T12:00:00`).getDay()}`), value: `${iconOf(day.code)} ${signed(day.max)}°` })),
+    look: skyLook(now),
     say: `${data.place}: ${signed(now.temperature)}°, ${now.text}.`,
   };
 }

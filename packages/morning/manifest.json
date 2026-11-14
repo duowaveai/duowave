@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "plugin",
   "id": "morning",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "title": "Утреннее шоу",
   "description": "Утреннее шоу из приложений: погода, пара главных новостей и музыка — своя из папки, а без неё радио. «Алиса, доброе утро» или «включи утреннее шоу».",
   "api": "^2",
@@ -39,6 +39,24 @@
       "default": "своя музыка"
     }
   ],
+  "languages": [
+    "ru",
+    "en"
+  ],
+  "locales": {
+    "en": {
+      "title": "Morning show",
+      "description": "A morning show made of apps: the weather, a couple of top news stories and music — your own from the folder, or the radio without it. “Alice, good morning” or “start the morning show”.",
+      "settings": {
+        "news": {
+          "title": "News in the show"
+        },
+        "music": {
+          "title": "What to play afterwards"
+        }
+      }
+    }
+  },
   "contributes": {
     "intents": [
       {

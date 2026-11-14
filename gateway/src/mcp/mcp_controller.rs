@@ -39,7 +39,7 @@ pub fn routes() -> Router<Arc<App>> {
 /// Servers are added by people, never by a script's key: a program on this computer is someone's decision.
 fn person(principal: &Principal) -> Result<(), ApiError> {
     if principal.kind != PrincipalKind::User {
-        return Err(ApiError::forbidden("Это для людей, не для ключей."));
+        return Err(ApiError::forbidden(crate::tr!("Это для людей, не для ключей.")));
     }
     Ok(())
 }
@@ -145,7 +145,10 @@ async fn callback(
     let (status, text) = match app.mcp.complete_login(&query, None).await {
         Ok(done) => (
             StatusCode::OK,
-            format!("Вход в «{}» выполнен. Это окно можно закрыть: сервер уже подключается.", done.title),
+            crate::tr!(
+                "Вход в «{title}» выполнен. Это окно можно закрыть: сервер уже подключается.",
+                title = done.title
+            ),
         ),
         Err(error) => (StatusCode::BAD_REQUEST, error.message),
     };
@@ -162,7 +165,8 @@ pub struct CompleteBody {
 async fn complete(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<CompleteBody>) -> ApiResult<LoginDone> {
     person(caller.permitted(CONNECTORS_MANAGE)?)?;
     let text = body.url.as_ref().and_then(Json::as_str).map(str::trim).unwrap_or_default();
-    let url = url::Url::parse(text).map_err(|_| ApiError::bad_request("Это не адрес страницы после входа."))?;
+    let url =
+        url::Url::parse(text).map_err(|_| ApiError::bad_request(crate::tr!("Это не адрес страницы после входа.")))?;
     let query: Vec<(String, String)> = url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
     Ok(ok(app.mcp.complete_login(&query, caller.actor()).await?))
 }

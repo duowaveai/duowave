@@ -420,7 +420,11 @@ impl LocalAsr {
         if state.failures.len() >= FAILURE_LIMIT {
             state.paused = true;
             state.phase = Some(Phase::Failed);
-            state.error = Some(format!("распознавание падало {} раза за 5 минут: {why}", state.failures.len()));
+            state.error = Some(crate::tr!(
+                "распознавание падало {count} раза за 5 минут: {why}",
+                count = state.failures.len(),
+                why = why
+            ));
         }
     }
 
@@ -443,14 +447,17 @@ impl LocalAsr {
             return;
         }
         let Some(entry) = catalog::find(&model) else {
-            self.fail(format!("Модели «{model}» нет для распознавания на этом компьютере — выберите другую."));
+            self.fail(crate::tr!(
+                "Модели «{model}» нет для распознавания на этом компьютере — выберите другую.",
+                model = model
+            ));
             return;
         };
         let path = self.file_of(entry);
         if !download::present(&path, entry.size) {
             if let Err(error) = self.fetch(entry, &path).await {
                 if error != DownloadError::Cancelled {
-                    self.fail(format!("Модель не скачалась: {error}"));
+                    self.fail(crate::tr!("Модель не скачалась: {error}", error = error));
                 }
                 return;
             }
@@ -700,11 +707,15 @@ impl LocalAsr {
         let state = self.lock();
         match (state.phase, &state.error) {
             (Some(Phase::Downloading), _) => {
-                format!("модель распознавания ещё скачивается ({} из {} МБ)", state.bytes / MB, state.total / MB)
+                crate::tr!(
+                    "модель распознавания ещё скачивается ({done} из {total} МБ)",
+                    done = state.bytes / MB,
+                    total = state.total / MB
+                )
             }
             (_, Some(error)) => error.clone(),
-            (Some(Phase::Idle), _) | (None, _) => "модель распознавания не выбрана".into(),
-            _ => "модель распознавания загружается".into(),
+            (Some(Phase::Idle), _) | (None, _) => crate::tr!("модель распознавания не выбрана"),
+            _ => crate::tr!("модель распознавания загружается"),
         }
     }
 }

@@ -82,6 +82,56 @@ pub const MODE: SettingDefinition<ModeSetting> = SettingDefinition {
     },
 };
 
+/// How the household talks to DuoWave (docs/plans/mic-mode.md): through the station with Alice, or by this computer's
+/// microphone — a place is left for other devices.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TalkInput {
+    #[default]
+    Station,
+    Computer,
+}
+
+impl TalkInput {
+    pub fn parse(value: &str) -> Option<TalkInput> {
+        match value {
+            "station" => Some(TalkInput::Station),
+            "computer" => Some(TalkInput::Computer),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TalkInput::Station => "station",
+            TalkInput::Computer => "computer",
+        }
+    }
+}
+
+/// «Как говорить с DuoWave», stored as `{input, before}`: `before` is the mode in force when the microphone was
+/// chosen — the way back to the station returns it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VoiceInput {
+    pub input: TalkInput,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<PanelMode>,
+}
+
+/// Each gateway keeps its own (placement/transfer.rs, `LOCAL_SETTINGS`): the choice is the computer's, the station's
+/// gateway never gets it.
+pub const VOICE_INPUT: SettingDefinition<VoiceInput> = SettingDefinition {
+    key: "voice_input",
+    scope: SettingScope::Global,
+    description: "Как говорить с DuoWave",
+    sensitive: false,
+    parse: |value| {
+        let input = value.get("input").and_then(Value::as_str).and_then(TalkInput::parse)?;
+        let before = value.get("before").and_then(Value::as_str).and_then(PanelMode::parse);
+        Some(VoiceInput { input, before })
+    },
+};
+
 /// Whose voice speaks our answers: Alice's (yandex), ours (`mixed`: ours for ours, Yandex's for its own), own, none.
 pub const VOICE_PROVIDER: SettingDefinition<String> = SettingDefinition {
     key: "tts_provider",
@@ -134,7 +184,7 @@ impl Persona {
 pub const PERSONA: SettingDefinition<Persona> = SettingDefinition {
     key: "dialog_persona",
     scope: SettingScope::User,
-    description: "Характер Алисы",
+    description: "Характер",
     sensitive: false,
     parse: |value| {
         let text = value.get("text").and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty())?;
@@ -403,6 +453,16 @@ pub const STATION_LINKS: SettingDefinition<BTreeMap<String, StationLink>> = Sett
                 .collect(),
         )
     },
+};
+
+/// The household's language (docs/plans/i18n.md): a BCP 47 primary tag, `ru`, `en`… What runs with nobody at a
+/// screen speaks it — the apps' code (`host.i18n.locale`), schedules, notices; a panel without its own pick shows it.
+pub const LANGUAGE: SettingDefinition<String> = SettingDefinition {
+    key: "language",
+    scope: SettingScope::Global,
+    description: "Язык дома",
+    sensitive: false,
+    parse: |value| value.as_str().and_then(crate::locale::normalize),
 };
 
 /// The journal of requests, in days: 0 keeps none (the dashboard still shows them live).
@@ -917,6 +977,16 @@ mod tests {
     fn parses_what_it_stored_and_nothing_else() {
         assert_eq!((MODE.parse)(&json!({"mode": "own"})), Some(ModeSetting { mode: PanelMode::Own }));
         assert_eq!((MODE.parse)(&json!({"mode": "fly"})), None);
+        assert_eq!(
+            (VOICE_INPUT.parse)(&json!({"input": "computer", "before": "relay"})),
+            Some(VoiceInput { input: TalkInput::Computer, before: Some(PanelMode::Relay) })
+        );
+        assert_eq!((VOICE_INPUT.parse)(&json!({"input": "station"})), Some(VoiceInput::default()));
+        assert_eq!((VOICE_INPUT.parse)(&json!({"input": "phone"})), None);
+        assert_eq!(
+            serde_json::to_value(VoiceInput { input: TalkInput::Computer, before: Some(PanelMode::Gateway) }).unwrap(),
+            json!({"input": "computer", "before": "gateway"})
+        );
         assert_eq!((PERSONA.parse)(&json!({"presetId": null, "text": "  Ты — Алиса  "})).unwrap().text, "Ты — Алиса");
         assert_eq!((PERSONA.parse)(&json!({"text": " "})), None);
         assert_eq!((AUTH_SECRET.parse)(&json!("short")), None);

@@ -6,6 +6,8 @@
  * Не загрузился ворклет — пишет старый ScriptProcessor: звук тот же. Файл с диктофона браузер раскодирует сам.
  */
 
+import { tr } from './i18n';
+
 /** Модуль ворклета записи: лежит в panel/public, отдаётся с адреса пульта. */
 const WORKLET_URL = '/panel/take-tap.js';
 
@@ -18,10 +20,10 @@ export function recordingSupport(): { ok: boolean; reason?: string } {
     if (!window.isSecureContext)
         return {
             ok: false,
-            reason: 'Микрофон браузер даёт только на самом компьютере со шлюзом (localhost) или по HTTPS. Здесь можно добавить файл: запишите отрывок диктофоном и загрузите.',
+            reason: tr.core.micNeedsSecure,
         };
     if (!navigator.mediaDevices?.getUserMedia || typeof AudioContext === 'undefined')
-        return { ok: false, reason: 'Этот браузер не умеет записывать звук. Добавьте файл с диктофона.' };
+        return { ok: false, reason: tr.core.micUnsupported };
     return { ok: true };
 }
 
@@ -30,7 +32,7 @@ export async function microphones(): Promise<Array<{ id: string; label: string }
     const devices = await navigator.mediaDevices.enumerateDevices();
     return devices
         .filter((device) => device.kind === 'audioinput')
-        .map((device, index) => ({ id: device.deviceId, label: device.label || `Микрофон ${index + 1}` }));
+        .map((device, index) => ({ id: device.deviceId, label: device.label || tr.core.micNumbered(index + 1) }));
 }
 
 /** 16-битный моно WAV. */
@@ -82,7 +84,7 @@ export async function fileToWav(file: File): Promise<{ wav: Blob; seconds: numbe
     try {
         decoded = await context.decodeAudioData(await file.arrayBuffer());
     } catch {
-        throw new Error('Не получилось прочитать файл: нужен звук — m4a, mp3, wav.');
+        throw new Error(tr.core.fileUnreadable);
     }
     const samples = await toTakeRate(decoded);
     return { wav: encodeWav(samples, TAKE_RATE), seconds: samples.length / TAKE_RATE };
@@ -131,10 +133,10 @@ export class Recorder {
             const name = (error as DOMException).name;
             throw new Error(
                 name === 'NotAllowedError'
-                    ? 'Браузер не дал микрофон — разрешите доступ к нему в настройках сайта.'
+                    ? tr.core.micDenied
                     : name === 'NotFoundError'
-                      ? 'Микрофон не найден — подключите его и попробуйте снова.'
-                      : `Микрофон не открылся: ${(error as Error).message}`,
+                      ? tr.core.micNotFound
+                      : tr.core.micOpenFailed((error as Error).message),
             );
         }
         const recorder = new Recorder(context, stream, rate);

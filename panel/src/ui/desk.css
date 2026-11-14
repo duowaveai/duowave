@@ -716,6 +716,20 @@ html[data-theme='dark'] .desk-map-item { background: #3a3734; }
 .first-run-option { display: flex; flex-direction: column; gap: 8px; padding: 14px; border-radius: 16px; border: 1px solid var(--glass-border); background: var(--strong-bg); align-items: flex-start; }
 .first-run-option.is-helper { background: var(--helper-bg); border-color: var(--helper-line); color: var(--helper-text); --sub: var(--helper-sub); --chip-bg: var(--helper-chip); }
 .first-run-option.is-helper .w-btn-ink { background: #f5f3f1; color: #11100f; }
+/* «Как говорить с DuoWave» (screens/voice-input.tsx): два варианта кнопками, выбранный — с рамкой и отметкой. */
+.talk-option { text-align: left; color: inherit; cursor: pointer; font: inherit; }
+.talk-option:hover:not(:disabled) { background: var(--hover-bg); }
+.talk-option:disabled { cursor: default; }
+.talk-option.is-on { border-color: var(--text); }
+.talk-option-icon { width: 36px; height: 36px; border-radius: 50%; background: var(--chip-bg); display: grid; place-items: center; }
+.talk-option-on { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; line-height: 16px; font-weight: 500; }
+/* Список готовности: отметка — кружок, готово — залит и с галочкой. */
+.ready-list { list-style: none; margin: 0; padding: 0; }
+.ready-mark { width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid var(--glass-border); display: grid; place-items: center; flex: none; }
+.ready-mark.is-ok { background: var(--bar-own); border-color: var(--bar-own); color: #11100f; }
+/* Проверка микрофона: полоска уровня. */
+.mic-check { height: 6px; border-radius: 3px; background: var(--track, var(--chip-bg)); overflow: hidden; }
+.mic-check > span { display: block; height: 100%; border-radius: 3px; background: var(--bar-own); transition: width 0.08s linear; }
 /* Под колонкой у помощника — этот компьютер (макет SpaceHelper). */
 .desk-helper-pc { display: flex; align-items: center; gap: 10px; margin: 8px auto 0; width: max-content; max-width: 100%; padding: 8px 14px 8px 8px; border-radius: 999px; background: var(--helper-bg); color: var(--helper-text); --sub: var(--helper-sub); font-size: 13px; line-height: 18px; }
 .desk-helper-pc b { font-weight: 500; }
@@ -1040,6 +1054,12 @@ html[data-look] .fitting button.pill.pill-ink:hover:not(:disabled) { background:
     animation: strip-in 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 html[data-theme='dark'] .voice-strip { box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4); }
+/* Боковой вид: дока нет — полоса стоит у нижнего края содержимого. */
+.side-shell .voice-strip { bottom: calc(16px + env(safe-area-inset-bottom)); }
+/* Ответ «Мозга» (режим «Микрофон»): вопрос — тише, ответ — главным, и он растёт по фразам. */
+.voice-strip.is-answer .voice-strip-caps { font-size: 17px; line-height: 24px; font-weight: 400; letter-spacing: 0; color: var(--sub); animation: none; }
+.voice-strip.is-answer .voice-strip-text { font-size: 19px; line-height: 27px; max-height: 40vh; overflow-y: auto; }
+.side-talk.is-listening { box-shadow: 0 0 0 2px var(--bar-own); }
 .voice-strip-head { display: flex; align-items: center; gap: 10px; min-height: 36px; }
 .voice-strip-who { font-size: 13px; line-height: 18px; font-weight: 500; }
 .voice-strip-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }

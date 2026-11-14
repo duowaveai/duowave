@@ -8,28 +8,31 @@ import { Action, Card, CardNote } from '../ui/cards';
 import { Progress, useNeedsFlow, voicePill } from '../ui/needs';
 import { Sheet } from '../ui/sheet';
 import { ask } from '../ui/confirm';
+import { formatNumber, tr } from '../i18n';
+import { byMode } from '../words';
 
 // «Свой голос»: отпечаток голоса владельца (zero-shot, без обучения) — мастер из трёх шагов и блок своих голосов
 // на экране «Голос». Модель ставится кнопкой, дубли пишутся микрофоном или добавляются файлом. За памятью следит шлюз:
 // впритык — предупреждает (можно «всё равно»), расчёт, который теснит колонку, останавливает. Своего лимита нет.
 // Выбор голоса — как у любого: activateTts с id `own:<голос>`.
 
-const gb = (mb: number): string => (mb / 1024).toFixed(1).replace('.', ',');
+const fixed1 = (value: number): string => formatNumber(value, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const gb = (mb: number): string => fixed1(mb / 1024);
 const clock = (seconds: number): string => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
 
-const DEVICE: Record<string, string> = {
-    mps: 'на видеокарте Мака',
-    cuda: 'на видеокарте NVIDIA',
-    cpu: 'на процессоре — медленнее',
-};
+const devices = (): Record<string, string> => ({
+    mps: tr.voiceLab.deviceMps,
+    cuda: tr.voiceLab.deviceCuda,
+    cpu: tr.voiceLab.deviceCpu,
+});
 
-const VERDICT: Record<VoiceLabTake['verdict'], { text: string; tone: 'pill-own' | 'pill-off' | 'pill-yandex'; hint?: string }> = {
-    good: { text: 'хорошо', tone: 'pill-own' },
-    short: { text: 'коротко', tone: 'pill-off', hint: 'Прочитайте отрывок целиком — около 40 секунд.' },
-    quiet: { text: 'тихо', tone: 'pill-yandex', hint: 'Говорите ближе к микрофону или чуть громче.' },
-    noisy: { text: 'шумно', tone: 'pill-yandex', hint: 'Слышен фон: закройте окно, выключите вентилятор и музыку.' },
-    clipped: { text: 'перегруз', tone: 'pill-yandex', hint: 'Слишком громко: отодвиньтесь от микрофона на ладонь.' },
-};
+const verdicts = (): Record<VoiceLabTake['verdict'], { text: string; tone: 'pill-own' | 'pill-off' | 'pill-yandex'; hint?: string }> => ({
+    good: { text: tr.voiceLab.verdictGood, tone: 'pill-own' },
+    short: { text: tr.voiceLab.verdictShort, tone: 'pill-off', hint: tr.voiceLab.hintShort },
+    quiet: { text: tr.voiceLab.verdictQuiet, tone: 'pill-yandex', hint: tr.voiceLab.hintQuiet },
+    noisy: { text: tr.voiceLab.verdictNoisy, tone: 'pill-yandex', hint: tr.voiceLab.hintNoisy },
+    clipped: { text: tr.voiceLab.verdictClipped, tone: 'pill-yandex', hint: tr.voiceLab.hintClipped },
+});
 
 /** Полоса прогресса задачи: этап, процент, память. */
 function JobBar({ label, percent, memoryMb }: { label: string; percent: number; memoryMb?: number }) {
@@ -45,7 +48,7 @@ function JobBar({ label, percent, memoryMb }: { label: string; percent: number; 
             </div>
             <span class="t-caption">
                 {label}
-                {memoryMb !== undefined ? ` · память ${gb(memoryMb)} ГБ` : ''}
+                {memoryMb !== undefined ? tr.voiceLab.jobMemory(gb(memoryMb)) : ''}
             </span>
         </div>
     );
@@ -77,19 +80,19 @@ export function OwnVoicesHeader({ isAdmin, hasOwn, onAdd }: { isAdmin: boolean; 
             <div class="flex items-center justify-between min-h-44 gap-8">
                 <h2 class="t-title-xs m-0 inline-flex items-center gap-8">
                     <IconVoice size={18} />
-                    Свой голос
+                    {tr.voiceLab.ownVoice}
                 </h2>
                 {isAdmin && (
                     <button class="pill pill-own cursor-pointer py-8 px-14 min-h-36 inline-flex items-center gap-6" onClick={onAdd}>
                         <IconPlus size={14} />
-                        Создать
+                        {tr.voiceLab.create}
                     </button>
                 )}
             </div>
             <p class="t-caption m-0 mb-6">
                 {hasOwn
-                    ? 'Отпечатки вашего голоса, снятые здесь. Можно снять ещё один — другим тоном или для другого человека в доме.'
-                    : 'Снимите отпечаток своего голоса — и колонка будет отвечать им. Прочитать вслух минуту-две текста; обучения нет, голос готов за минуту.'}
+                    ? tr.voiceLab.hasOwnAbout
+                    : byMode(tr.voiceLab.noOwnAboutSpeaker, tr.voiceLab.noOwnAboutVoice)}
             </p>
         </>
     );
@@ -130,7 +133,7 @@ export function OwnVoiceRows({
     };
     const remove = async (card: TtsCard) => {
         if (!card.own) return;
-        const yes = await ask({ title: `Удалить «${card.title}»?`, text: 'Вместе с его записями. Вернуть будет нельзя.', ok: 'Удалить', danger: true });
+        const yes = await ask({ title: tr.voiceLab.removeTitle(card.title), text: tr.voiceLab.removeText, ok: tr.voiceLab.removeOk, danger: true });
         if (!yes) return;
         try {
             await api.deleteVoice(card.own.id);
@@ -154,25 +157,25 @@ export function OwnVoiceRows({
                         title={card.title}
                         badge={card.badge}
                         description={card.description}
-                        meta={own?.refSeconds ? `образец ${own.refSeconds.toFixed(1).replace('.', ',')} с` : undefined}
+                        meta={own?.refSeconds ? tr.voiceLab.sampleSeconds(fixed1(own.refSeconds)) : undefined}
                         note={problems[card.id] ? { error: problems[card.id] } : notes[card.id]}
                         pills={state ? [state] : undefined}
                         action={
                             <div class="flex items-center gap-6 flex-wrap justify-end">
                                 {own && own.samples > 0 && (
                                     <Action
-                                        label={playing ? '■ стоп' : '▶ проба'}
+                                        label={playing ? tr.voiceLab.stop : tr.voiceLab.play}
                                         onClick={() => void audio.toggle(`sample:${card.id}`, () => api.sampleAudio(own.id, 1))}
                                     />
                                 )}
                                 {card.active ? (
-                                    <span class="pill pill-own">говорит сейчас</span>
+                                    <span class="pill pill-own">{tr.voiceLab.speaksNow}</span>
                                 ) : (
                                     isAdmin &&
                                     card.state !== 'unsupported' && (
                                         <Action
                                             tone="on"
-                                            label={tightFor === card.id ? 'включить всё равно' : 'выбрать'}
+                                            label={tightFor === card.id ? tr.voiceLab.activateAnyway : tr.voiceLab.choose}
                                             busy={busy[card.id]}
                                             onClick={() => onActivate(card.id)}
                                         />
@@ -181,16 +184,16 @@ export function OwnVoiceRows({
                             </div>
                         }
                     >
-                        {card.state === 'installing' && card.progress !== undefined && <Progress percent={card.progress} label={`Установка: ${card.title}`} />}
+                        {card.state === 'installing' && card.progress !== undefined && <Progress percent={card.progress} label={tr.voiceLab.installing(card.title)} />}
                         {card.reason && card.state !== 'ready' && <span class="t-caption">{card.reason}</span>}
                         {isAdmin && own && !editing && (
                             <div class="flex gap-12">
                                 <button class="t-caption cursor-pointer underline" onClick={() => setRenaming({ id: own.id, name: card.title })}>
-                                    переименовать
+                                    {tr.voiceLab.rename}
                                 </button>
                                 {!card.active && (
                                     <button class="t-caption cursor-pointer underline" onClick={() => void remove(card)}>
-                                        удалить
+                                        {tr.voiceLab.remove}
                                     </button>
                                 )}
                             </div>
@@ -199,7 +202,7 @@ export function OwnVoiceRows({
                             <div class="flex gap-8 items-center">
                                 <input
                                     class="field flex-1 min-w-0"
-                                    aria-label="Имя голоса"
+                                    aria-label={tr.voiceLab.voiceNameLabel}
                                     maxLength={60}
                                     value={renaming.name}
                                     onInput={(event) => setRenaming({ id: own.id, name: (event.target as HTMLInputElement).value })}
@@ -212,8 +215,8 @@ export function OwnVoiceRows({
                                         }
                                     }}
                                 />
-                                <Action tone="on" label="сохранить" onClick={() => void rename(card)} />
-                                <Action label="отмена" onClick={() => setRenaming(null)} />
+                                <Action tone="on" label={tr.voiceLab.save} onClick={() => void rename(card)} />
+                                <Action label={tr.voiceLab.cancel} onClick={() => setRenaming(null)} />
                             </div>
                         )}
                     </Card>
@@ -290,7 +293,7 @@ export function VoiceWizard({ onClose }: { onClose: () => void }) {
     const chosen = lab?.engines.find((entry) => entry.id === engine);
     const job = lab?.job;
     const imprintRunning = job?.kind === 'imprint' && job.state === 'running';
-    const titles: Record<Step, string> = { 1: 'Модель', 2: 'Запись', 3: 'Отпечаток' };
+    const titles: Record<Step, string> = { 1: tr.voiceLab.stepModel, 2: tr.voiceLab.stepRecord, 3: tr.voiceLab.stepImprint };
     const step1Blocked = chosen?.status !== 'ready';
     const step2Blocked = !lab || lab.draft.seconds < 15;
 
@@ -298,26 +301,26 @@ export function VoiceWizard({ onClose }: { onClose: () => void }) {
         <div class="flex gap-8 justify-between items-center">
             {step === 1 ? (
                 <button class="pill pill-off cursor-pointer py-10 px-18" onClick={onClose}>
-                    Закрыть
+                    {tr.voiceLab.close}
                 </button>
             ) : (
                 <button class={`pill pill-off ${imprintRunning ? DIM : GO}`} disabled={imprintRunning} onClick={() => setStep((step - 1) as Step)}>
-                    ← Назад
+                    {tr.voiceLab.back}
                 </button>
             )}
             {step === 1 && (
                 <button class={`pill pill-own ${step1Blocked ? DIM : GO}`} disabled={step1Blocked} onClick={() => setStep(2)}>
-                    Дальше →
+                    {tr.voiceLab.next}
                 </button>
             )}
             {step === 2 && (
                 <button class={`pill pill-own ${step2Blocked ? DIM : GO}`} disabled={step2Blocked} onClick={() => setStep(3)}>
-                    Дальше →
+                    {tr.voiceLab.next}
                 </button>
             )}
             {step === 3 && (
                 <button class="pill pill-own cursor-pointer py-10 px-18" onClick={onClose}>
-                    Готово
+                    {tr.voiceLab.done}
                 </button>
             )}
         </div>
@@ -325,8 +328,8 @@ export function VoiceWizard({ onClose }: { onClose: () => void }) {
 
     return (
         <Sheet
-            title="Свой голос"
-            about={`Шаг ${step} из 3 · ${titles[step]}`}
+            title={tr.voiceLab.ownVoice}
+            about={tr.voiceLab.stepAbout(step, titles[step])}
             icon={
                 <span class="dash-sheet-icon dash-circle inline-flex items-center justify-center">
                     <IconMic size={22} />
@@ -338,7 +341,7 @@ export function VoiceWizard({ onClose }: { onClose: () => void }) {
         >
             {!lab ? (
                 <p class="t-meta m-0" role={loadError ? 'alert' : undefined}>
-                    {loadError ?? 'Смотрю, что может этот компьютер…'}
+                    {loadError ?? tr.voiceLab.checkingComputer}
                 </p>
             ) : !lab.available ? (
                 <p class="t-caption m-0 c-dot-offline" role="alert">
@@ -361,7 +364,7 @@ type Act = (what: string, run: () => Promise<unknown>) => Promise<void>;
 /** Чего ждёт кнопка, пока идёт другая задача: одна тяжёлая задача за раз. */
 function waitFor(lab: VoiceLabView, job: NonNullable<VoiceLabView['job']>): string {
     const title = lab.engines.find((entry) => entry.id === job.engine)?.title ?? job.engine;
-    return job.kind === 'install' ? `Сначала дождитесь установки ${title}.` : 'Сначала дождитесь, пока снимается отпечаток.'
+    return job.kind === 'install' ? tr.voiceLab.waitInstall(title) : tr.voiceLab.waitImprint
 }
 
 function EngineStep({
@@ -380,19 +383,19 @@ function EngineStep({
     const job = lab.job;
     const status = (entry: VoiceLabEngine) => {
         if (entry.status === 'unsupported') return entry.reason;
-        if (entry.status === 'ready') return `готова · голос ${DEVICE[entry.device ?? 'cpu']}`;
+        if (entry.status === 'ready') return tr.voiceLab.engineReady(devices()[entry.device ?? 'cpu']);
         if (entry.status === 'installing') return undefined;
-        return `не установлена · около ${entry.diskGb} ГБ на диске${entry.device ? ` · голос ${DEVICE[entry.device]}` : ''}`;
+        return entry.device ? tr.voiceLab.engineMissingDevice(entry.diskGb, devices()[entry.device]) : tr.voiceLab.engineMissing(entry.diskGb);
     };
     return (
         <>
             <p class="t-caption m-0">
                 {lab.platform?.summary}.{' '}
                 <button class="t-caption cursor-pointer underline" onClick={() => void act('recheck', () => api.voiceLabRecheck())}>
-                    Проверить снова
+                    {tr.voiceLab.recheck}
                 </button>
             </p>
-            <div role="radiogroup" aria-label="Модель для отпечатка" class="flex flex-col gap-8">
+            <div role="radiogroup" aria-label={tr.voiceLab.engineGroupLabel} class="flex flex-col gap-8">
                 {lab.engines.map((entry) => {
                     const selected = engine === entry.id;
                     const installing = job?.kind === 'install' && job.engine === entry.id && job.state === 'running';
@@ -410,7 +413,7 @@ function EngineStep({
                         >
                             <div class="flex items-center gap-8 flex-wrap">
                                 <span class="fw-800">{entry.title}</span>
-                                {entry.recommended && <span class="pill pill-agent">рекомендуем</span>}
+                                {entry.recommended && <span class="pill pill-agent">{tr.voiceLab.recommended}</span>}
                                 <span class="t-caption">{entry.license}</span>
                             </div>
                             <span class="t-caption">{entry.about}</span>
@@ -426,7 +429,7 @@ function EngineStep({
                                 <div class="flex items-center gap-10 flex-wrap">
                                     <Action
                                         tone="on"
-                                        label={working === `install:${entry.id}` ? 'запускаю…' : 'Установить'}
+                                        label={working === `install:${entry.id}` ? tr.voiceLab.starting : tr.voiceLab.install}
                                         busy={working === `install:${entry.id}`}
                                         disabled={job?.state === 'running'}
                                         onClick={() => void act(`install:${entry.id}`, () => api.installEngine(entry.id))}
@@ -436,7 +439,7 @@ function EngineStep({
                             )}
                             {installing && (
                                 <div>
-                                    <Action label="Остановить" onClick={() => void act('stop', () => api.stopVoiceJob())} />
+                                    <Action label={tr.voiceLab.stopJob} onClick={() => void act('stop', () => api.stopVoiceJob())} />
                                 </div>
                             )}
                         </div>
@@ -445,8 +448,7 @@ function EngineStep({
             </div>
             {!lab.platform?.uv && lab.engines.some((entry) => entry.status === 'missing') && (
                 <p class="t-caption m-0">
-                    Для установки нужен uv — менеджер Python. Если кнопка скажет, что его нет, поставьте его командой из подсказки и
-                    нажмите ещё раз.
+                    {tr.voiceLab.needUv}
                 </p>
             )}
         </>
@@ -517,7 +519,7 @@ function RecordStep({ lab, refresh }: { lab: VoiceLabView; refresh: () => Promis
         setProblem(null);
         try {
             const { wav, seconds: length } = await fileToWav(file);
-            if (length > 120) throw new Error('Файл длиннее двух минут — разрежьте его на отрывки.');
+            if (length > 120) throw new Error(tr.voiceLab.fileTooLong);
             await upload(wav);
         } catch (error) {
             setProblem(error instanceof Error && !('status' in error) ? error.message : problemOf(error));
@@ -529,18 +531,16 @@ function RecordStep({ lab, refresh }: { lab: VoiceLabView; refresh: () => Promis
     return (
         <>
             <div class="card glass py-12 px-14 flex flex-col gap-6">
-                <span class="fw-800">Как записывать</span>
+                <span class="fw-800">{tr.voiceLab.howToRecord}</span>
                 <span class="t-caption">
-                    Тихая комната без эха: закройте окно, выключите музыку и вентилятор. Микрофон — в 20–30 сантиметрах. Читайте
-                    спокойно, как говорите дома, не громче. Каждый отрывок — около 40 секунд; оговорились — повторите фразу и
-                    читайте дальше. Хватит одного дубля, лучше — три.
+                    {tr.voiceLab.howToRecordText}
                 </span>
             </div>
 
             <div class="card glass py-12 px-14 flex flex-col gap-8">
                 <div class="flex items-center justify-between">
                     <span class="t-meta">
-                        Отрывок {passage + 1} из {lab.passages.length}
+                        {tr.voiceLab.passageOf(passage + 1, lab.passages.length)}
                     </span>
                     <span class="flex gap-6">
                         <Action label="←" onClick={() => setPassage((current) => Math.max(0, current - 1))} />
@@ -555,8 +555,8 @@ function RecordStep({ lab, refresh }: { lab: VoiceLabView; refresh: () => Promis
             {support.ok ? (
                 <div class="flex flex-col gap-8">
                     {mics.length > 1 && !recorder && (
-                        <select class="field" aria-label="Микрофон" value={mic} onChange={(event) => setMic((event.target as HTMLSelectElement).value)}>
-                            <option value="">Микрофон по умолчанию</option>
+                        <select class="field" aria-label={tr.voiceLab.micLabel} value={mic} onChange={(event) => setMic((event.target as HTMLSelectElement).value)}>
+                            <option value="">{tr.voiceLab.micDefault}</option>
                             {mics.map((entry) => (
                                 <option key={entry.id} value={entry.id}>
                                     {entry.label}
@@ -571,15 +571,15 @@ function RecordStep({ lab, refresh }: { lab: VoiceLabView; refresh: () => Promis
                             onClick={() => void (recorder ? stop() : start())}
                         >
                             {uploading ? <span class="spinner spinner-sm" aria-hidden="true" /> : <IconMic size={16} />}
-                            {recorder ? `Стоп · ${clock(seconds)}` : uploading ? 'Сохраняю…' : 'Записать'}
+                            {recorder ? tr.voiceLab.stopRecording(clock(seconds)) : uploading ? tr.voiceLab.saving : tr.voiceLab.record}
                         </button>
                         {recorder && (
-                            <div aria-label="Громкость" class="flex-1 h-8 r-pill bg-track overflow-hidden">
+                            <div aria-label={tr.voiceLab.levelLabel} class="flex-1 h-8 r-pill bg-track overflow-hidden">
                                 <div style={{ height: 8, width: `${loud}%`, background: level > -6 ? 'var(--dot-offline)' : 'var(--accent)', transition: 'width .1s' }} />
                             </div>
                         )}
                     </div>
-                    {recorder && seconds > 0 && seconds < 3 && <span class="t-caption">Говорите — индикатор должен двигаться.</span>}
+                    {recorder && seconds > 0 && seconds < 3 && <span class="t-caption">{tr.voiceLab.speakMeter}</span>}
                 </div>
             ) : (
                 <p class="t-caption m-0">
@@ -589,27 +589,27 @@ function RecordStep({ lab, refresh }: { lab: VoiceLabView; refresh: () => Promis
 
             <div>
                 <input ref={fileInput} type="file" accept="audio/*" hidden onChange={(event) => void addFile((event.target as HTMLInputElement).files?.[0])} />
-                <Action label="Добавить файл" busy={uploading} onClick={() => fileInput.current?.click()} />
+                <Action label={tr.voiceLab.addFile} busy={uploading} onClick={() => fileInput.current?.click()} />
             </div>
             <Problem text={problem} />
 
             {takes.length > 0 && (
                 <div class="flex flex-col">
                     <span class="t-meta py-4 px-0">
-                        Дубли · {clock(lab.draft.seconds)}
+                        {tr.voiceLab.takes(clock(lab.draft.seconds))}
                     </span>
                     {takes.map((take) => {
-                        const verdict = VERDICT[take.verdict];
+                        const verdict = verdicts()[take.verdict];
                         const key = `take:${take.n}`;
                         return (
                             <div key={take.n} class="flex flex-col gap-4 bt-divider py-8 px-0">
                                 <div class="flex items-center gap-8">
                                     <span class="fw-700 flex-1">
-                                        Дубль {take.n}
+                                        {tr.voiceLab.take(take.n)}
                                         <span class="t-caption">
                                             {' '}
                                             · {clock(take.seconds)}
-                                            {take.passage ? ` · отрывок ${take.passage}` : ''}
+                                            {take.passage ? tr.voiceLab.takePassage(take.passage) : ''}
                                         </span>
                                     </span>
                                     <span class={`pill ${verdict.tone}`}>{verdict.text}</span>
@@ -636,7 +636,7 @@ function RecordStep({ lab, refresh }: { lab: VoiceLabView; refresh: () => Promis
 
 function ImprintStep({ lab, engine, working, act }: { lab: VoiceLabView; engine: CloneEngineId; working: string | null; act: Act }) {
     const audio = useAudio();
-    const [name, setName] = useState('Мой голос');
+    const [name, setName] = useState(tr.voiceLab.defaultName);
     const memory = lab.memory;
     const card = lab.engines.find((entry) => entry.id === engine);
     const title = card?.title ?? engine;
@@ -666,15 +666,15 @@ function ImprintStep({ lab, engine, working, act }: { lab: VoiceLabView; engine:
     const tight = !!card && memory.poolMb - memory.reserveMb < need;
     const anyway = short || tight || warned !== null;
     const tightText = short
-        ? 'Компьютеру сейчас не хватает памяти — лучше подождать минуту или закрыть тяжёлые программы.'
+        ? tr.voiceLab.tightShort
         : memory.poolMb >= need
-            ? `Памяти впритык: свободно ${gb(memory.poolMb)} ГБ, отпечатку нужно около ${gb(need)} ГБ, а ${gb(memory.reserveMb)} ГБ держу для колонки — она может подтормаживать.`
-            : `Памяти мало: свободно ${gb(memory.poolMb)} ГБ, а отпечатку нужно около ${gb(need)} ГБ — Мак начнёт подкачивать память с диска.`;
+            ? byMode(tr.voiceLab.tightSpeaker, tr.voiceLab.tightVoice)(gb(memory.poolMb), gb(need), gb(memory.reserveMb))
+            : tr.voiceLab.tightLow(gb(memory.poolMb), gb(need));
 
     const start = () =>
         act('imprint', async () => {
             try {
-                await api.imprint(engine, name.trim() || 'Мой голос', anyway);
+                await api.imprint(engine, name.trim() || tr.voiceLab.defaultName, anyway);
                 setWarned(null);
             } catch (error) {
                 if (!isTight(error)) throw error;
@@ -709,10 +709,9 @@ function ImprintStep({ lab, engine, working, act }: { lab: VoiceLabView; engine:
     if (voice)
         return (
             <>
-                <p class="m-0 fw-800">Готово: «{voice.name}»</p>
+                <p class="m-0 fw-800">{tr.voiceLab.readyVoice(voice.name)}</p>
                 <span class="t-caption">
-                    Голос снят с лучших {voice.refSeconds ? `${voice.refSeconds.toFixed(1).replace('.', ',')} секунд` : 'секунд'} ваших
-                    записей. Послушайте, как он звучит:
+                    {voice.refSeconds ? tr.voiceLab.voiceTakenFrom(fixed1(voice.refSeconds)) : tr.voiceLab.voiceTakenFromUnknown}
                 </span>
                 {voice.samples.map((sample) => {
                     const key = `sample:${voice.id}:${sample.n}`;
@@ -725,7 +724,8 @@ function ImprintStep({ lab, engine, working, act }: { lab: VoiceLabView; engine:
                 })}
                 {enabling === 'done' ? (
                     <p class="t-caption m-0 c-accent-text">
-                        {pendingNote ?? 'Колонка говорит вашим голосом.'} Вернуть прежний — выберите его в «Персонаж» → «Голос».
+                        {pendingNote ?? byMode(tr.voiceLab.speaksYourVoiceSpeaker, tr.voiceLab.speaksYourVoiceVoice)}
+                        {tr.voiceLab.restoreOld}
                     </p>
                 ) : needs.body ? (
                     <div class="flex flex-col gap-8">{needs.body}</div>
@@ -733,18 +733,18 @@ function ImprintStep({ lab, engine, working, act }: { lab: VoiceLabView; engine:
                     <div>
                         <Action
                             tone="on"
-                            label={enabling === 'busy' ? 'загружаю модель голоса…' : voiceTight ? 'Включить всё равно' : 'Включить этот голос'}
+                            label={enabling === 'busy' ? tr.voiceLab.loadingModel : voiceTight ? tr.voiceLab.enableAnyway : tr.voiceLab.enableVoice}
                             busy={enabling === 'busy'}
                             onClick={() => void enable()}
                         />
                     </div>
                 )}
-                {enabling === 'busy' && <span class="t-caption">Модель голоса загружается в память — до минуты.</span>}
-                <Warning text={voiceTight && enabling !== 'busy' ? `Голос не включён. ${voiceTight}` : null} />
+                {enabling === 'busy' && <span class="t-caption">{tr.voiceLab.modelLoading}</span>}
+                <Warning text={voiceTight && enabling !== 'busy' ? tr.voiceLab.voiceNotEnabled(voiceTight) : null} />
                 <Problem text={problem} />
                 <div>
                     <Action
-                        label="Снять ещё один"
+                        label={tr.voiceLab.another}
                         onClick={() => {
                             setPutAside(lab.job?.id ?? null);
                             setEnabling(null);
@@ -760,20 +760,19 @@ function ImprintStep({ lab, engine, working, act }: { lab: VoiceLabView; engine:
     return (
         <>
             <label class="flex flex-col gap-6">
-                <span class="t-meta">Имя голоса</span>
+                <span class="t-meta">{tr.voiceLab.nameLabel}</span>
                 <input class="field" maxLength={60} value={name} disabled={job?.state === 'running'} onInput={(event) => setName((event.target as HTMLInputElement).value)} />
             </label>
 
             <div class="card glass py-12 px-14 flex flex-col gap-4">
                 <div class="flex items-center justify-between gap-8">
-                    <span class="fw-800">Память</span>
+                    <span class="fw-800">{tr.voiceLab.memory}</span>
                     <span class="t-caption">
-                        свободно {gb(memory.poolMb)} из {gb(memory.totalMb)} ГБ
+                        {tr.voiceLab.memoryFree(gb(memory.poolMb), gb(memory.totalMb))}
                     </span>
                 </div>
                 <span class="t-caption">
-                    Отпечатку нужно около {gb(need)} ГБ, ещё {gb(memory.reserveMb)} ГБ шлюз держит для колонки. Если Мак начнёт
-                    подкачивать память с диска, расчёт остановится сам — колонка важнее.
+                    {byMode(tr.voiceLab.memoryNoteSpeaker, tr.voiceLab.memoryNoteVoice)(gb(need), gb(memory.reserveMb))}
                 </span>
             </div>
 
@@ -781,24 +780,23 @@ function ImprintStep({ lab, engine, working, act }: { lab: VoiceLabView; engine:
                 <>
                     <JobBar label={job.label} percent={job.percent} memoryMb={job.memoryMb} />
                     <div>
-                        <Action label="Остановить" onClick={() => void act('stop', () => api.stopVoiceJob())} />
+                        <Action label={tr.voiceLab.stopJob} onClick={() => void act('stop', () => api.stopVoiceJob())} />
                     </div>
                 </>
             ) : (
                 <>
                     {job && job.state !== 'done' && <Problem text={job.error} />}
                     {card && anyway && (
-                        <Warning text={`${warned ?? tightText} Снять всё равно?`} />
+                        <Warning text={tr.voiceLab.askAnyway(warned ?? tightText)} />
                     )}
                     <span class="t-caption">
-                        Модель {title} найдёт в ваших записях лучшие 5–8 секунд речи и снимет с них отпечаток — около минуты. Потом
-                        скажет три пробные фразы вашим голосом.
+                        {tr.voiceLab.imprintAbout(title)}
                     </span>
                     {lab.job?.state === 'running' && <span class="t-caption">{waitFor(lab, lab.job)}</span>}
                     <div>
                         <Action
                             tone="on"
-                            label={working === 'imprint' ? 'запускаю…' : anyway ? 'Снять всё равно' : 'Снять отпечаток'}
+                            label={working === 'imprint' ? tr.voiceLab.starting : anyway ? tr.voiceLab.imprintAnyway : tr.voiceLab.imprint}
                             busy={working === 'imprint'}
                             disabled={lab.job?.state === 'running'}
                             onClick={() => void start()}

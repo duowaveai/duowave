@@ -2,7 +2,9 @@ import type { Ref } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 
 import { PersonaInfo, api, problemOf } from '../api';
+import { tr } from '../i18n';
 import { Action, Card, CardNote } from '../ui/cards';
+import { assistant, byMode } from '../words';
 
 /**
  * Редактор текста характера: поле, подсказка про правила речи и «сохранить». Его же открывает «Тонкая настройка»
@@ -15,9 +17,9 @@ export function PersonaEditor({
     busy = false,
     basis,
     editorRef,
-    label = 'Свой характер',
-    placeholder = 'Например: «Ты — Алиса, но отвечаешь как старый морской волк…»',
-    saveLabel = 'сохранить',
+    label = tr.characters.ownCharacter,
+    placeholder = tr.characters.editorPlaceholder(assistant()),
+    saveLabel = tr.characters.save,
     readOnly = false,
 }: {
     draft: string;
@@ -46,7 +48,7 @@ export function PersonaEditor({
             />
             <div class="flex items-center gap-10">
                 <span class="t-caption flex-1">
-                    {basis ? `Основа — «${basis}». ` : ''}Правила речи (коротко, без списков и эмодзи) шлюз добавит сам.
+                    {basis ? tr.characters.basisLine(basis) : ''}{tr.characters.speechRules}
                 </span>
                 {!readOnly && <Action label={saveLabel} tone="on" busy={busy} onClick={onSave} />}
             </div>
@@ -102,7 +104,7 @@ export function PersonaTab({ isAdmin }: { isAdmin: boolean }) {
         try {
             const fresh = await api.setPreset(preset.id);
             accepted(fresh);
-            say(preset.id, { notice: preset.id === 'standard' ? 'Вернулись к стандартной.' : 'Говорит этим характером.' });
+            say(preset.id, { notice: preset.id === 'standard' ? tr.characters.returnedToStandard : tr.characters.spokenThis });
         } catch (e) {
             say(preset.id, { error: problemOf(e) });
         } finally {
@@ -126,7 +128,7 @@ export function PersonaTab({ isAdmin }: { isAdmin: boolean }) {
         try {
             const fresh = await api.setPersonaText(draft.trim());
             accepted(fresh);
-            say('custom', { notice: draft.trim() ? 'Говорит вашим характером.' : 'Вернулись к стандартной.' });
+            say('custom', { notice: draft.trim() ? tr.characters.spokenYours : tr.characters.returnedToStandard });
         } catch (e) {
             say('custom', { error: problemOf(e) });
         } finally {
@@ -137,16 +139,16 @@ export function PersonaTab({ isAdmin }: { isAdmin: boolean }) {
     if (!info) {
         return (
             <section class="card glass">
-                <p class="t-meta m-0">Читаем характер…</p>
+                <p class="t-meta m-0">{tr.characters.readingPersona}</p>
             </section>
         );
     }
 
     return (
-        <section class="card glass card-list" aria-label="Манера">
+        <section class="card glass card-list" aria-label={tr.characters.manner}>
             <div class="card-head">
-                <h2 class="t-title-xs m-0">Манера</h2>
-                <span class="t-meta">применяется со следующего вопроса</span>
+                <h2 class="t-title-xs m-0">{tr.characters.manner}</h2>
+                <span class="t-meta">{tr.characters.appliesNext}</span>
             </div>
             {info.presets.map((preset) => {
                 const active = info.activePreset === preset.id;
@@ -159,11 +161,11 @@ export function PersonaTab({ isAdmin }: { isAdmin: boolean }) {
                         note={notes[preset.id]}
                         action={
                             active ? (
-                                <span class="pill pill-own">говорит</span>
+                                <span class="pill pill-own">{tr.characters.speaks}</span>
                             ) : isAdmin ? (
                                 <div class="flex items-center gap-6">
-                                    <Action label="применить" tone="on" busy={busy[preset.id]} onClick={() => void apply(preset)} />
-                                    <Action label="изменить" busy={busy[preset.id]} onClick={() => toEditor(preset.title, preset.text)} />
+                                    <Action label={tr.characters.apply} tone="on" busy={busy[preset.id]} onClick={() => void apply(preset)} />
+                                    <Action label={tr.characters.edit} busy={busy[preset.id]} onClick={() => toEditor(preset.title, preset.text)} />
                                 </div>
                             ) : null
                         }
@@ -172,10 +174,10 @@ export function PersonaTab({ isAdmin }: { isAdmin: boolean }) {
             })}
             {isAdmin && (
                 <Card
-                    title="Свой характер"
-                    description="Кем Алиса вам отвечает: кто она, как говорит, о себе — в женском или мужском роде."
+                    title={tr.characters.ownCharacter}
+                    description={byMode(tr.characters.ownDescriptionStation, tr.characters.ownDescriptionDevice)}
                     note={notes['custom']}
-                    action={info.activePreset === null ? <span class="pill pill-own">говорит</span> : null}
+                    action={info.activePreset === null ? <span class="pill pill-own">{tr.characters.speaks}</span> : null}
                 >
                     <PersonaEditor
                         editorRef={editor}
@@ -191,7 +193,7 @@ export function PersonaTab({ isAdmin }: { isAdmin: boolean }) {
                     />
                 </Card>
             )}
-            {!isAdmin && <p class="t-caption mx-6 mt-8 mb-0">Менять характер может администратор.</p>}
+            {!isAdmin && <p class="t-caption mx-6 mt-8 mb-0">{tr.characters.adminChangesCharacter}</p>}
         </section>
     );
 }

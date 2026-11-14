@@ -38,6 +38,8 @@ const SAID = {
   CAD: "канадский доллар", AUD: "австралийский доллар", SGD: "сингапурский доллар", HKD: "гонконгский доллар",
 };
 
+const CBR_DOWN = "ЦБ сейчас не отвечает — курс не узнать. Попробуйте чуть позже.";
+
 function words(text) {
   return String(text ?? "")
     .toLowerCase()
@@ -101,7 +103,7 @@ async function daily(timeoutMs) {
   } catch (error) {
     if (cached && Date.now() - cached.at < STALE_MS) return cached.data;
     console.warn(`ЦБ: ${error.message}`);
-    throw new Error("ЦБ сейчас не отвечает — курс не узнать. Попробуйте чуть позже.");
+    throw new Error(CBR_DOWN);
   }
   // В кэш — только нужное: значение kv не больше 64 КБ.
   const valute = {};
@@ -186,24 +188,49 @@ export async function panelRates() {
 const money = (value) => Number(value).toFixed(2).replace(".", ",");
 
 // Карточка на столе пульта (docs/plugins/cards.md): курс ЦБ и изменение к прошлому дню. Рисует пульт.
+const MONEY_LOOK = { scene: "sparkles", colors: ["#0b5345", "#138a6b", "#35b98c"] };
+
+const T = {
+  ru: {
+    down: CBR_DOWN,
+    none: "ЦБ России не дал курсов.",
+    cbr: "ЦБ России",
+    cbrOn: "ЦБ России на {day}",
+    rub: "руб.",
+  },
+  en: {
+    down: "The Central Bank isn't responding, so no rates right now. Try again a little later.",
+    none: "The Bank of Russia returned no rates.",
+    cbr: "Bank of Russia",
+    cbrOn: "Bank of Russia, {day}",
+    rub: "RUB",
+  },
+};
+// The bank names its currencies in Russian: the main ones are worded here, any other keeps the bank's name.
+const NAMES_EN = { USD: "US dollar", EUR: "Euro", CNY: "Chinese yuan" };
+const nameOf = (rate) => (host.i18n.locale === "ru" ? rate.name : NAMES_EN[rate.code] ?? rate.name);
+
 export async function ratesCard() {
   let data;
   try {
     data = await panelRates();
   } catch (error) {
-    return { empty: String(error?.message ?? error) };
+    return { empty: error?.message === CBR_DOWN ? host.i18n.t(T, "down") : String(error?.message ?? error), look: MONEY_LOOK };
   }
   const day = String(data.date ?? "").slice(0, 10).split("-").reverse().slice(0, 2).join(".");
+  const change = (rate) => ({
+    text: rate.change === 0 ? "0" : `${rate.change > 0 ? "+" : "−"}${money(Math.abs(rate.change))}`,
+    tone: rate.change > 0 ? "up" : rate.change < 0 ? "down" : "flat",
+  });
+  const [first, ...rest] = data.rates;
+  if (!first) return { empty: host.i18n.t(T, "none"), look: MONEY_LOOK };
+  // Первая валюта крупно, остальные строками; вид — изумрудный с искрами (docs/plugins/cards.md, «Вид»).
   return {
-    rows: data.rates.map((rate) => ({
-      text: `${rate.code} · ${rate.name}`,
-      value: `${money(rate.value)} ₽`,
-      delta: {
-        text: rate.change === 0 ? "0" : `${rate.change > 0 ? "+" : "−"}${money(Math.abs(rate.change))}`,
-        tone: rate.change > 0 ? "up" : rate.change < 0 ? "down" : "flat",
-      },
-    })),
-    cap: day ? `ЦБ России на ${day}` : "ЦБ России",
+    big: `${money(first.value)} ₽`,
+    delta: change(first),
+    cap: `${nameOf(first)} · ${day ? host.i18n.t(T, "cbrOn", { day }) : host.i18n.t(T, "cbr")}`,
+    rows: rest.map((rate) => ({ text: `${rate.code} · ${nameOf(rate)}`, value: `${money(rate.value)} ₽`, delta: change(rate) })),
+    look: MONEY_LOOK,
     say: data.rates.map((rate) => `${rate.name}: ${money(rate.value)} руб.`).join("; "),
   };
 }

@@ -3,6 +3,7 @@ import type { JSX } from 'preact';
 
 import { ApiError, SignInStart, api, problemOf } from '../api';
 import { Action } from './cards';
+import { tr } from '../i18n';
 
 /** Как часто пульт спрашивает шлюз, вошёл ли человек. */
 const POLL_MS = 2000;
@@ -129,13 +130,13 @@ export function useSignIn(onDone: (target: string, title: string) => void): Sign
     const mode = started?.mode;
     const code = mode === 'code';
     const say = {
-        here: `Войдите на странице ${service} — шлюз получит доступ сам, пульт это увидит.`,
-        code: `Войдите на странице ${service}: она покажет код — скопируйте его и вставьте сюда.`,
-        address: `Войдите на странице ${service}. После входа браузер покажет ошибку адреса 127.0.0.1 — так и должно быть: скопируйте адрес той страницы и вставьте сюда.`,
+        here: tr.ui.signInSayHere(service),
+        code: tr.ui.signInSayCode(service),
+        address: tr.ui.signInSayAddress(service),
     };
     const placeholder = {
-        here: 'Не вернулось само? Адрес страницы после входа',
-        code: `Код со страницы ${service}`,
+        here: tr.ui.signInPlaceholderHere,
+        code: tr.ui.signInCodeFrom(service),
         address: 'http://127.0.0.1:…/auth/callback?code=…',
     };
     const steps = (
@@ -144,7 +145,7 @@ export function useSignIn(onDone: (target: string, title: string) => void): Sign
                 <>
                     <span class="t-caption">{say[mode]}</span>
                     <a class="t-caption c-accent-text self-start" href={started.url} target="_blank" rel="noopener noreferrer">
-                        {opened ? `Открыть страницу ${service} ещё раз` : `Открыть страницу ${service}`}
+                        {opened ? tr.ui.signInOpenAgain(service) : tr.ui.signInOpen(service)}
                     </a>
                     <form
                         class="flex gap-8 flex-wrap"
@@ -156,13 +157,13 @@ export function useSignIn(onDone: (target: string, title: string) => void): Sign
                         <input
                             class="field flex-1-1-220 min-w-0"
                             autocomplete="off"
-                            aria-label={code ? `Код со страницы ${service}` : 'Адрес страницы после входа'}
+                            aria-label={code ? tr.ui.signInCodeFrom(service) : tr.ui.signInAddressAfter}
                             placeholder={placeholder[mode]}
                             value={text}
                             onInput={(e) => setText((e.target as HTMLInputElement).value)}
                         />
-                        <Action label="завершить вход" tone="on" disabled={!text.trim()} busy={finishing} onClick={() => void finish()} />
-                        <Action label="отменить" disabled={finishing} onClick={close} />
+                        <Action label={tr.ui.signInFinish} tone="on" disabled={!text.trim()} busy={finishing} onClick={() => void finish()} />
+                        <Action label={tr.ui.cancelLower} disabled={finishing} onClick={close} />
                     </form>
                 </>
             )}
@@ -171,7 +172,7 @@ export function useSignIn(onDone: (target: string, title: string) => void): Sign
                     <p class="t-caption m-0 c-dot-offline" role="alert">
                         {error}
                     </p>
-                    {!started && <Action label="закрыть" onClick={close} />}
+                    {!started && <Action label={tr.ui.closeLower} onClick={close} />}
                 </div>
             )}
         </div>

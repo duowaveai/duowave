@@ -7,12 +7,14 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
-import { CardSpec, fetchPluginFile, problemOf } from '../api';
+import { CardSpec, fetchBusPreview, fetchPluginFile, problemOf } from '../api';
 import { usePluginVersion } from '../plugins/versions';
 import { useApi } from '../sdk';
 import { Action } from '../ui/cards';
 import { Switch } from '../ui/switch';
+import { LookLayers, lookOf, usePaint } from './look';
 import './cards.css';
+import { locale, tr } from '../i18n';
 
 type Tone = 'up' | 'down' | 'flat';
 
@@ -23,7 +25,8 @@ export interface CardData {
     line?: { points: number[]; area?: boolean };
     bars?: { points: number[]; labels?: string[] };
     tiles?: Array<{ label: string; value: string; tap?: string; with?: unknown }>;
-    picture?: { name: string; caption?: string };
+    /** Из своей папки (`name`) или из папки дома по связи приложения (`address: files/…`). */
+    picture?: { name?: string; address?: string; caption?: string };
     clocks?: Array<{ label: string; offset: number }>;
     rings?: Array<{ label: string; endsAt: string; total?: number }>;
     shares?: { parts: Array<{ label: string; value: number }> };
@@ -35,9 +38,11 @@ export interface CardData {
     toggle?: { text: string; on: boolean; tap: string };
     empty?: string;
     say?: string;
+    /** Вид всего виджета (look.tsx): сцена, цвета, фото фоном, цвет текста. */
+    look?: unknown;
 }
 
-const PARTS = ['big', 'delta', 'cap', 'line', 'bars', 'tiles', 'picture', 'clocks', 'rings', 'shares', 'rows', 'progress', 'input', 'buttons', 'choice', 'toggle', 'empty', 'say'];
+const PARTS = ['big', 'delta', 'cap', 'line', 'bars', 'tiles', 'picture', 'clocks', 'rings', 'shares', 'rows', 'progress', 'input', 'buttons', 'choice', 'toggle', 'empty', 'say', 'look'];
 
 /** Ответ функции — карточка: сама или в поле `card`. Не карточка — null. */
 export function cardOf(answer: unknown): CardData | null {
@@ -53,7 +58,7 @@ type Tap = (fn: string, input?: unknown) => void;
 const numbers = (points: unknown): number[] => (Array.isArray(points) ? points.filter((point): point is number => typeof point === 'number' && Number.isFinite(point)) : []);
 
 /** Число для подсказки: «1 234,5». */
-const shown = (value: number): string => value.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+const shown = (value: number): string => value.toLocaleString(locale(), { maximumFractionDigits: 2 });
 
 function Line({ points, area }: { points: number[]; area?: boolean }) {
     const box = useRef<HTMLDivElement>(null);
@@ -73,7 +78,7 @@ function Line({ points, area }: { points: number[]; area?: boolean }) {
     };
     return (
         <div ref={box} class="app-card-chart" onPointerMove={(event) => move(event as PointerEvent)} onPointerDown={(event) => move(event as PointerEvent)} onPointerLeave={() => setAt(null)}>
-            <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label={`Линия: от ${shown(points[0])} до ${shown(points[points.length - 1])}, наименьшее ${shown(min)}, наибольшее ${shown(max)}`}>
+            <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label={tr.cards.lineLabel(shown(points[0]), shown(points[points.length - 1]), shown(min), shown(max))}>
                 {area && <path d={`${path} L100,100 L0,100 Z`} fill="var(--card-area)" stroke="none" />}
                 <path d={path} fill="none" stroke="var(--card-line)" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round" />
                 {at != null && <line x1={x(at)} x2={x(at)} y1="0" y2="100" stroke="var(--sub)" stroke-width="1" vector-effect="non-scaling-stroke" stroke-dasharray="3 3" />}
@@ -93,7 +98,7 @@ function Bars({ points, labels }: { points: number[]; labels?: string[] }) {
     const max = Math.max(...points.map(Math.abs)) || 1;
     return (
         <div class="flex flex-col gap-4">
-            <div class="app-card-chart" style={{ display: 'flex', alignItems: 'flex-end', gap: '2px' }} onPointerLeave={() => setAt(null)} role="img" aria-label={`Столбики: ${points.map(shown).join(', ')}`}>
+            <div class="app-card-chart" style={{ display: 'flex', alignItems: 'flex-end', gap: '2px' }} onPointerLeave={() => setAt(null)} role="img" aria-label={tr.cards.barsLabel(points.map(shown).join(', '))}>
                 {points.map((value, index) => (
                     <span
                         key={index}
@@ -151,7 +156,7 @@ function Clocks({ clocks }: { clocks: NonNullable<CardData['clocks']> }) {
 }
 
 const left = (ms: number): string => {
-    if (ms <= 0) return 'готово';
+    if (ms <= 0) return tr.cards.ready;
     const total = Math.ceil(ms / 1000);
     const hours = Math.floor(total / 3600);
     const minutes = Math.floor((total % 3600) / 60);
@@ -215,26 +220,39 @@ function Shares({ parts }: { parts: Array<{ label: string; value: number }> }) {
     );
 }
 
-function Picture({ app, name, caption }: { app: string; name: string; caption?: string }) {
+function Picture({ app, name, address, caption }: { app: string; name?: string; address?: string; caption?: string }) {
     const [url, setUrl] = useState<string | null>(null);
+    // Not there (an app that named a file it never downloaded) or not given: said, not an empty space.
+    const [missing, setMissing] = useState(false);
     useEffect(() => {
         let made: string | null = null;
         let alive = true;
-        fetchPluginFile(app, name)
+        setMissing(false);
+        // A picture of the home folder comes made small, read as the app for whoever looks (its link holds).
+        (address ? fetchBusPreview(app, address, 960) : fetchPluginFile(app, name ?? ''))
             .then((blob) => {
                 if (!alive) return;
                 made = URL.createObjectURL(blob);
                 setUrl(made);
             })
-            .catch(() => alive && setUrl(null));
+            .catch(() => {
+                if (!alive) return;
+                setUrl(null);
+                setMissing(true);
+            });
         return () => {
             alive = false;
             if (made) URL.revokeObjectURL(made);
         };
-    }, [app, name]);
+    }, [app, name, address]);
     return (
         <figure class="app-card-picture m-0">
             {url && <img src={url} alt={caption ?? ''} />}
+            {missing && (
+                <p class="app-card-picture-missing t-caption m-0" role="status">
+                    {tr.cards.pictureMissing(name)}
+                </p>
+            )}
             {caption && <figcaption class="t-caption">{caption}</figcaption>}
         </figure>
     );
@@ -247,8 +265,8 @@ function timeWord(time: string): string {
     const date = new Date(at);
     const today = new Date();
     return date.toDateString() === today.toDateString()
-        ? date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
-        : date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
+        ? date.toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' })
+        : date.toLocaleDateString(locale(), { day: 'numeric', month: 'short' });
 }
 
 function Delta({ delta }: { delta: { text: string; tone?: Tone } }) {
@@ -312,22 +330,26 @@ function Field({ input, tap, busy }: { input: NonNullable<CardData['input']>; ta
                 value={text}
                 placeholder={input.placeholder ?? ''}
                 maxLength={Math.min(input.max ?? 500, 2000)}
-                aria-label={input.placeholder ?? 'Поле карточки'}
+                aria-label={input.placeholder ?? tr.cards.fieldLabel}
                 disabled={busy}
                 onInput={(event) => setText((event.target as HTMLInputElement).value)}
             />
-            <Action tone="on" label="Отправить" disabled={busy || !text.trim()} onClick={send} />
+            <Action tone="on" label={tr.cards.send} disabled={busy || !text.trim()} onClick={send} />
         </form>
     );
 }
 
 /** Карточка по её данным; `tap` — нажатие кнопки, строки, поля, выбора, переключателя. */
 export function CardView({ app, card, tap, busy = false }: { app: string; card: CardData; tap: Tap; busy?: boolean }) {
+    const lookKey = JSON.stringify(card.look ?? null);
+    const look = useMemo(() => lookOf(card.look), [lookKey]);
+    // В рамке стола вид красит весь виджет; без рамки (черновик, чат) — свою коробку.
+    const framed = usePaint(app, look);
     const line = numbers(card.line?.points).slice(0, 200);
     const bars = numbers(card.bars?.points).slice(0, 60);
     const drawn =
         card.big || card.cap || line.length > 1 || bars.length > 0 || card.tiles?.length || card.picture || card.clocks?.length || card.rings?.length || card.shares || card.rows?.length || card.progress || card.input || card.buttons?.length || card.choice || card.toggle;
-    return (
+    const content = (
         <div class="app-card">
             {(card.big || card.delta) && (
                 <div class="app-card-head">
@@ -348,7 +370,7 @@ export function CardView({ app, card, tap, busy = false }: { app: string; card: 
                     ))}
                 </div>
             )}
-            {card.picture?.name && <Picture app={app} name={card.picture.name} caption={card.picture.caption} />}
+            {(card.picture?.name || card.picture?.address) && <Picture app={app} name={card.picture.name} address={card.picture.address} caption={card.picture.caption} />}
             {card.clocks && card.clocks.length > 0 && <Clocks clocks={card.clocks.slice(0, 6)} />}
             {card.rings && card.rings.length > 0 && <Rings rings={card.rings.slice(0, 6)} />}
             {card.shares && <Shares parts={card.shares.parts ?? []} />}
@@ -382,7 +404,14 @@ export function CardView({ app, card, tap, busy = false }: { app: string; card: 
                     ))}
                 </div>
             )}
-            {!drawn && <p class="t-caption m-0">{card.empty ?? 'Пока показывать нечего.'}</p>}
+            {!drawn && <p class="t-caption m-0">{card.empty ?? tr.cards.nothingYet}</p>}
+        </div>
+    );
+    if (!look || framed) return content;
+    return (
+        <div class={`app-card-painted look-ink-${look.ink ?? 'light'}`}>
+            <LookLayers app={app} look={look} />
+            <div class="app-card-painted-body">{content}</div>
         </div>
     );
 }
@@ -405,7 +434,7 @@ export function AppCard({ app, spec }: { app: string; spec: CardSpec }) {
                 if (!alive) return;
                 const next = cardOf(answer);
                 setCard(next);
-                setError(next ? null : `Функция ${spec.function} вернула не карточку.`);
+                setError(next ? null : tr.cards.notACard(spec.function));
             })
             .catch((e) => alive && setError(problemOf(e)));
         return () => {
@@ -435,7 +464,7 @@ export function AppCard({ app, spec }: { app: string; spec: CardSpec }) {
         },
         [call],
     );
-    if (!card && !error) return <p class="t-caption m-0">Загружаю…</p>;
+    if (!card && !error) return <p class="t-caption m-0">{tr.cards.loading}</p>;
     return (
         <div class="flex flex-col gap-8">
             {card && <CardView app={app} card={card} tap={tap} busy={busy} />}

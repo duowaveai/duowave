@@ -423,7 +423,7 @@ pub fn routes() -> axum::Router<Arc<crate::app::App>> {
         caller.zone_at_least(Zone::Home)?;
         caller.permitted(STATION_VIEW)?;
         if !app.skills.later.remove(&id) {
-            return Err(ApiError::not_found(format!("Нет отложенной команды {id}.")));
+            return Err(ApiError::not_found(crate::tr!("Нет отложенной команды {id}.", id = id)));
         }
         Ok(ok(Value::Bool(true)))
     }

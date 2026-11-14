@@ -14,6 +14,7 @@ import { DuoWaveMark } from '../ui/duowave';
 import { AgentPlaque } from './agent-plaque';
 import type { NavEntry, ShellProps } from './shell';
 import { DeskWindow } from './window';
+import { tr } from '../i18n';
 
 /** Часы верхней строки: «07:42», раз в полминуты. */
 export function useClock(): string {
@@ -30,7 +31,7 @@ function Cell({ entry, active, onNav }: { entry: NavEntry; active: boolean; onNa
     const { icon: Icon, Badge } = entry;
     // Кнопки дока называют свои фразы: «Навыки», «открой настройки».
     const title = entry.title.toLowerCase();
-    useVoiceAction([title, `открой ${title}`], () => onNav(entry), false);
+    useVoiceAction([title, tr.shell.openPhrase(title)], () => onNav(entry), false);
     return (
         <button class="dock-cell" aria-current={active ? 'page' : undefined} onClick={() => onNav(entry)}>
             <span class="tab-icon">
@@ -68,7 +69,7 @@ export function DeskShell({ nav, active, onNav, top, actions, talk, notice, desk
                 <div class="desk-top-end">
                     <AgentPlaque place="top" />
                     {actions}
-                    <span class="desk-top-clock" aria-label={`Время: ${clock}`}>
+                    <span class="desk-top-clock" aria-label={tr.shell.timeLabel(clock)}>
                         {clock}
                     </span>
                 </div>
@@ -84,12 +85,12 @@ export function DeskShell({ nav, active, onNav, top, actions, talk, notice, desk
             <VoiceStrip />
 
             <div class="dock-wrap">
-                <nav ref={dock} class="dock" aria-label="Док" data-dock="bottom">
+                <nav ref={dock} class="dock" aria-label={tr.shell.dock} data-dock="bottom">
                     {nav.left.map((entry) => (
                         <Cell key={entry.key} entry={entry} active={active === entry.key} onNav={onNav} />
                     ))}
                     <button
-                        aria-label={held ? 'Микрофон выключен: открыто поле ключа' : listening ? 'Закончить фразу' : 'Сказать'}
+                        aria-label={held ? tr.shell.micHeld : listening ? tr.shell.endPhrase : tr.shell.say}
                         aria-pressed={listening}
                         class={`talk-btn dock-talk${listening ? ' is-listening' : ''}${held ? ' is-held' : ''}`}
                         disabled={talk.disabled || held}

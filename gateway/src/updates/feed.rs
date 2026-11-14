@@ -1,7 +1,6 @@
 //! The release feed: `latest.json` in each release, in the Tauri updater's format, so one file serves the desktop app
 //! and the gateway alone. The app reads its keys (`darwin-aarch64`, `linux-x86_64`, …); the gateway reads its own,
 //! `duowave-<os>-<arch>` for a PC or a server and `duowave-station-<arch>` for the build that runs on the station.
-
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
@@ -114,7 +113,7 @@ pub fn is_critical(feed: &Feed, current: &str) -> bool {
 /// localhost). The signature guards the bytes; https guards what the network in between could swap or hold back —
 /// the feed it reads, which release it is offered. A feed or a file over plain http elsewhere is refused.
 pub fn secure(url: &str) -> Result<(), String> {
-    let parsed = url::Url::parse(url).map_err(|_| format!("адрес обновлений не читается: {url}"))?;
+    let parsed = url::Url::parse(url).map_err(|_| crate::tr!("Адрес обновлений не читается: {url}", url = url))?;
     let loopback = match parsed.host() {
         Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
         Some(url::Host::Ipv4(address)) => address.is_loopback(),
@@ -124,7 +123,7 @@ pub fn secure(url: &str) -> Result<(), String> {
     match parsed.scheme() {
         "https" => Ok(()),
         "http" if loopback => Ok(()),
-        _ => Err(format!("обновления берутся только по https, а этот адрес — нет: {url}")),
+        _ => Err(crate::tr!("Обновления берутся только по https, а этот адрес — нет: {url}", url = url)),
     }
 }
 

@@ -67,7 +67,7 @@ export interface ShellProps {
     station: ComponentChildren;
     /** Кнопки шапки: вклады слота header.actions и смена светлой и тёмной. */
     actions: ComponentChildren;
-    /** «Сказать через колонку» — одна лаймовая кнопка на экран (DESIGN.md). */
+    /** «Сказать» — микрофон пульта: одна лаймовая кнопка на экран (DESIGN.md). */
     talk: { disabled: boolean; onTalk: () => void };
     /** Плашка над содержимым: шлюз недоступен. */
     notice: ComponentChildren;

@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'preact/hooks';
 
 import { FoundStation, api, can } from '../api';
+import { tr } from '../i18n';
 import { usePanel } from '../shell/context';
 import { LinkSheet } from './placement';
 
@@ -51,18 +52,15 @@ export function FirstRun() {
     return (
         <section class="card glass first-run" aria-labelledby="first-run-h">
             <h2 id="first-run-h" class="t-title m-0">
-                На колонке «{name}» уже работает DuoWave
+                {tr.firstRun.title(name)}
             </h2>
-            <p class="t-caption m-0">
-                Колонка отвечает сама, даже когда компьютер спит. Этот компьютер станет её помощником: слух, голос, модель, копии
-                настроек и мастерская навыков. Перенести DuoWave на компьютер можно позже: «Настройки» → «Колонка».
-            </p>
+            <p class="t-caption m-0">{tr.firstRun.about}</p>
             <div>
                 <button class="w-btn w-btn-ink" onClick={() => setLinking(first.station.address)}>
-                    Помогать колонке
+                    {tr.firstRun.help}
                 </button>
             </div>
-            {found.length > 1 && <p class="t-caption m-0">Ещё колонки со шлюзом: {found.slice(1).map((entry) => entry.station.name ?? entry.station.address).join(', ')}.</p>}
+            {found.length > 1 && <p class="t-caption m-0">{tr.firstRun.moreStations(found.slice(1).map((entry) => entry.station.name ?? entry.station.address).join(', '))}</p>}
             {linking && (
                 <LinkSheet
                     initialAddress={linking}

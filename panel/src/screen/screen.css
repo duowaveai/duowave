@@ -1,0 +1,95 @@
+/* Окно на экране компьютера (screen/page.tsx): фото, видео или звук во всё окно, полоса сверху. Только токены темы. */
+
+.screen-page {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    color: var(--text);
+}
+
+.screen-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--glass-border);
+    background: var(--glass-bg);
+}
+
+.screen-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+.screen-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 32px;
+    padding: 4px 10px;
+    border: 1px solid var(--glass-border);
+    border-radius: 999px;
+    background: var(--chip-bg);
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.screen-button:hover {
+    background: var(--hover-bg);
+}
+
+.screen-button:focus-visible {
+    outline: 2px solid var(--text);
+    outline-offset: 2px;
+}
+
+.screen-kept {
+    background: var(--strong-bg);
+}
+
+.screen-content {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.screen-content img,
+.screen-content video {
+    max-width: 100%;
+    max-height: 100%;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+}
+
+.screen-audio {
+    width: 100%;
+    padding: 16px;
+}
+
+.screen-audio audio {
+    width: 100%;
+}
+
+.screen-note {
+    margin: auto;
+    padding: 16px;
+    color: var(--sub);
+    text-align: center;
+}
+
+.screen-error {
+    margin: 0;
+    padding: 6px 12px;
+}

@@ -2,7 +2,6 @@
 //! folder, its signature checked, and the program inside it replaces the running one by a rename. The program before
 //! stays beside it as `duowave.previous` — the way back — and the gateway starts again as the new program, in the same
 //! process where the system allows it (exec), so a service manager sees no exit.
-
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -17,17 +16,18 @@ pub async fn download(url: &str) -> Result<Vec<u8>, String> {
     let client = super::feed::client_builder()
         .timeout(Duration::from_secs(600))
         .build()
-        .map_err(|error| format!("загрузка: {error}"))?;
-    let response = client.get(url).send().await.map_err(|error| format!("загрузка: {error}"))?;
+        .map_err(|error| crate::tr!("Загрузка: {error}", error = error))?;
+    let response = client.get(url).send().await.map_err(|error| crate::tr!("Загрузка: {error}", error = error))?;
     if !response.status().is_success() {
-        return Err(format!("загрузка: HTTP {}", response.status()));
+        return Err(crate::tr!("Загрузка: HTTP {status}", status = response.status()));
     }
     if response.content_length().is_some_and(|length| length as usize > MAX_DOWNLOAD) {
         return Err("download: the file is too large for an update".into());
     }
     let mut bytes = Vec::new();
     let mut response = response;
-    while let Some(chunk) = response.chunk().await.map_err(|error| format!("загрузка: {error}"))? {
+    while let Some(chunk) = response.chunk().await.map_err(|error| crate::tr!("Загрузка: {error}", error = error))?
+    {
         bytes.extend_from_slice(&chunk);
         if bytes.len() > MAX_DOWNLOAD {
             return Err("download: the file is too large for an update".into());
@@ -52,7 +52,7 @@ pub fn unpack(archive: &[u8]) -> Result<Vec<u8>, String> {
 
 /// The program named `name` inside a `.tar.gz`: the station's build is `duowave` whatever the computer's system.
 pub fn unpack_named(archive: &[u8], name: &str) -> Result<Vec<u8>, String> {
-    let program = find(archive, name, u64::MAX)?.ok_or_else(|| format!("в архиве нет {name}"))?;
+    let program = find(archive, name, u64::MAX)?.ok_or_else(|| crate::tr!("В архиве нет {name}.", name = name))?;
     if program.len() < 1024 {
         return Err("archive: the program in it is empty".into());
     }
@@ -64,10 +64,10 @@ pub fn unpack_named(archive: &[u8], name: &str) -> Result<Vec<u8>, String> {
 fn find(archive: &[u8], name: &str, limit: u64) -> Result<Option<Vec<u8>>, String> {
     with_file(archive, name, |entry| {
         if entry.size() > limit {
-            return Err(format!("архив: {name} слишком велик"));
+            return Err(crate::tr!("Архив: {name} слишком велик.", name = name));
         }
         let mut bytes = Vec::new();
-        entry.read_to_end(&mut bytes).map_err(|error| format!("архив: {error}"))?;
+        entry.read_to_end(&mut bytes).map_err(|error| crate::tr!("Архив: {error}", error = error))?;
         Ok(bytes)
     })
 }
@@ -80,10 +80,10 @@ fn with_file<T>(
     take: impl FnOnce(&mut tar::Entry<'_, flate2::read::GzDecoder<&[u8]>>) -> Result<T, String>,
 ) -> Result<Option<T>, String> {
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
-    let entries = tar.entries().map_err(|error| format!("архив: {error}"))?;
+    let entries = tar.entries().map_err(|error| crate::tr!("Архив: {error}", error = error))?;
     for entry in entries {
-        let mut entry = entry.map_err(|error| format!("архив: {error}"))?;
-        let path = entry.path().map_err(|error| format!("архив: {error}"))?.into_owned();
+        let mut entry = entry.map_err(|error| crate::tr!("Архив: {error}", error = error))?;
+        let path = entry.path().map_err(|error| crate::tr!("Архив: {error}", error = error))?.into_owned();
         let file = path.file_name().and_then(|file| file.to_str()).unwrap_or("");
         if file == name && path.components().count() <= 2 && entry.header().entry_type().is_file() {
             return take(&mut entry).map(Some);
@@ -111,21 +111,37 @@ pub const RELEASE_FILE: &str = "release.json";
 pub fn check_release(archive: &[u8], platform: &str, offered: &str, current: &str) -> Result<Release, String> {
     use super::feed::{is_newer, parse_version};
     let text = find(archive, RELEASE_FILE, 64 * 1024)?.ok_or_else(|| {
-        format!("в архиве нет {RELEASE_FILE}: это выпуск до 0.2.1 или собранный не конвейером выпуска")
+        crate::tr!("В архиве нет {file}: это выпуск до 0.2.1 или собранный не конвейером выпуска.", file = RELEASE_FILE)
     })?;
-    let release: Release =
-        serde_json::from_slice(&text).map_err(|error| format!("{RELEASE_FILE} не читается: {error}"))?;
+    let release: Release = serde_json::from_slice(&text)
+        .map_err(|error| crate::tr!("{file} не читается: {error}", file = RELEASE_FILE, error = error))?;
     if release.platform != platform {
-        return Err(format!("архив собран для {}, а здесь {platform}", release.platform));
+        return Err(crate::tr!(
+            "Архив собран для {built}, а здесь {platform}.",
+            built = release.platform,
+            platform = platform
+        ));
     }
     let (Some(signed), Some(wanted)) = (parse_version(&release.version), parse_version(offered)) else {
-        return Err(format!("версия не читается: в архиве «{}», предложена «{offered}»", release.version));
+        return Err(crate::tr!(
+            "Версия не читается: в архиве «{inside}», предложена «{offered}».",
+            inside = release.version,
+            offered = offered
+        ));
     };
     if signed != wanted {
-        return Err(format!("архив подписан как версия {signed}, а предложен как {wanted}"));
+        return Err(crate::tr!(
+            "Архив подписан как версия {signed}, а предложен как {wanted}.",
+            signed = signed,
+            wanted = wanted
+        ));
     }
     if !is_newer(&release.version, current) {
-        return Err(format!("версия {signed} не новее стоящей {current}: откат на прежнюю версию не ставится"));
+        return Err(crate::tr!(
+            "Версия {signed} не новее стоящей {current}: откат на прежнюю версию не ставится.",
+            signed = signed,
+            current = current
+        ));
     }
     Ok(release)
 }
@@ -155,7 +171,7 @@ pub fn replace_from_archive(current: &Path, archive: &[u8], name: &str) -> Resul
     let on_disk = |error: std::io::Error| format!("{}: {error}", incoming.display());
     let written = with_file(archive, name, |entry| {
         let mut file = std::fs::File::create(&incoming).map_err(on_disk)?;
-        let written = std::io::copy(entry, &mut file).map_err(|error| format!("архив: {error}"))?;
+        let written = std::io::copy(entry, &mut file).map_err(|error| crate::tr!("Архив: {error}", error = error))?;
         file.sync_all().map_err(on_disk)?;
         Ok(written)
     });
@@ -164,7 +180,7 @@ pub fn replace_from_archive(current: &Path, archive: &[u8], name: &str) -> Resul
             swap_in(current, &incoming).map_err(|error| format!("{}: {error}", current.display()))
         }
         Ok(Some(_)) => Err("archive: the program in it is empty".to_string()),
-        Ok(None) => Err(format!("в архиве нет {name}")),
+        Ok(None) => Err(crate::tr!("В архиве нет {name}.", name = name)),
         Err(error) => Err(error),
     };
     if outcome.is_err() {

@@ -41,6 +41,7 @@ import { deskActions } from '../shell/widgets';
 import { timeAgo } from '../time';
 import { Action } from '../ui/cards';
 import { Sheet } from '../ui/sheet';
+import { locale, tr } from '../i18n';
 import { VIA } from '../via';
 import { RightsLines } from '../ui/rights-lines';
 import { ask as confirmAsk } from '../ui/confirm';
@@ -49,6 +50,7 @@ import { DraftWidgetPreview, mayRunDraft } from './widget-agent';
 import { DraftCardPreview } from '../cards/draft-card';
 import { HistoryCard, HistoryRoomLine } from './history';
 import { CodeEditor } from '../ui/code-editor';
+import { byMode, device, examplePhrase } from '../words';
 
 const PREVIEW = 'workshop.preview';
 const isAdmin = (): boolean => can('plugins.manage') && sessionStore.get()?.role === 'admin';
@@ -69,7 +71,7 @@ function themeData(id: string, title: string, base: Theme) {
     return {
         id,
         title,
-        about: `Своя тема на основе «${base.title}»`,
+        about: tr.workshop.themeAbout(base.title),
         modes: base.modes,
         modeNotes: base.modeNotes,
         defaultMode: base.defaultMode,
@@ -102,7 +104,7 @@ function DraftList({ drafts, onOpen, onMade }: { drafts: DraftView[]; onOpen: (i
     const teach = linked.query.new === 'plugin' ? linked.query.teach?.trim() || null : null;
     const [making, setMaking] = useState<'plugin' | 'quiz' | 'theme' | 'openapi' | null>(base ? 'theme' : teach ? 'plugin' : null);
     const [id, setId] = useState(base ? idOf(`my-${base.id}`) : teach ? `skill-${Date.now().toString(36).slice(-5)}` : '');
-    const [title, setTitle] = useState(base ? `Моя тема (${base.title})` : teach ? `«${teach}»` : '');
+    const [title, setTitle] = useState(base ? tr.workshop.myTheme(base.title) : teach ? tr.workshop.teachTitle(teach) : '');
     const [openapi, setOpenapi] = useState('');
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -121,7 +123,7 @@ function DraftList({ drafts, onOpen, onMade }: { drafts: DraftView[]; onOpen: (i
             if (teach && making === 'plugin')
                 teaching.set(
                     draft.id,
-                    `Научи колонку отвечать на «${teach}»: какой фразой её спрашивают, что ей нужно узнать и что сказать в ответ. Если нужны данные из интернета — скажи, откуда.`,
+                    byMode(tr.workshop.teachTaskSpeaker, tr.workshop.teachTaskVoice)(teach),
                 );
             onMade(draft);
             setMaking(null);
@@ -138,24 +140,24 @@ function DraftList({ drafts, onOpen, onMade }: { drafts: DraftView[]; onOpen: (i
         <section class="card glass card-list" aria-labelledby="drafts-h">
             <div class="card-head">
                 <h2 id="drafts-h" class="t-title-xs m-0">
-                    Черновики
+                    {tr.workshop.drafts}
                 </h2>
                 <span class="t-meta">{drafts.length}</span>
             </div>
-            <p class="t-caption m-0 mb-6">Плагин или тема пишется здесь — агентом в чате или руками, проверяется в песочнице и ставится новой версией рядом с прежней.</p>
-            {drafts.length === 0 && <p class="t-caption m-0 mb-6">Пока пусто.</p>}
+            <p class="t-caption m-0 mb-6">{tr.workshop.draftsAbout}</p>
+            {drafts.length === 0 && <p class="t-caption m-0 mb-6">{tr.workshop.draftsEmpty}</p>}
             {drafts.map((draft) => (
                 <div key={draft.id} class="pkg-row">
                     <div class="pkg-main">
                         <button class="pkg-text text-left cursor-pointer" onClick={() => onOpen(draft.id)}>
                             <span class="pkg-title">
                                 {draft.title ?? draft.id}
-                                <span class="pill pill-off">{draft.kind === 'theme' ? 'тема' : 'плагин'}</span>
-                                {draft.trial && <span class="pill pill-agent">проба</span>}
-                                {draft.problems.length > 0 && <span class="pill pill-error">манифест с ошибкой</span>}
+                                <span class="pill pill-off">{draft.kind === 'theme' ? tr.workshop.kindTheme : tr.workshop.kindPlugin}</span>
+                                {draft.trial && <span class="pill pill-agent">{tr.workshop.pillTrial}</span>}
+                                {draft.problems.length > 0 && <span class="pill pill-error">{tr.workshop.manifestBroken}</span>}
                             </span>
                             <span class="t-caption">
-                                {[draft.id, draft.version && `черновик ${draft.version}`, draft.installed ? `стоит ${draft.installed}` : 'не поставлен'].filter(Boolean).join(' · ')}
+                                {[draft.id, draft.version && tr.workshop.draftVersion(draft.version), draft.installed ? tr.workshop.installedVersion(draft.installed) : tr.workshop.notInstalledShort].filter(Boolean).join(' · ')}
                             </span>
                         </button>
                     </div>
@@ -166,39 +168,39 @@ function DraftList({ drafts, onOpen, onMade }: { drafts: DraftView[]; onOpen: (i
                     <h3 class="t-title-xs m-0">
                         {making === 'theme'
                             ? base
-                                ? `Своя тема на основе «${base.title}»`
-                                : 'Новая тема'
+                                ? tr.workshop.newThemeBased(base.title)
+                                : tr.workshop.newTheme
                             : making === 'openapi'
-                              ? 'Плагин из описания API'
+                              ? tr.workshop.fromApiTitle
                               : making === 'quiz'
-                                ? 'Викторина на время: 10 секунд на ответ, «Время вышло!»'
-                                : 'Новый плагин'}
+                                ? tr.workshop.quizTitle
+                                : tr.workshop.newPlugin}
                     </h3>
                     <label class="ws-label">
-                        <span class="t-caption">id — латиница, цифры, «-»</span>
+                        <span class="t-caption">{tr.workshop.idLabel}</span>
                         <input class="field" value={id} onInput={(e) => setId((e.target as HTMLInputElement).value)} />
                     </label>
                     <label class="ws-label">
-                        <span class="t-caption">Название</span>
+                        <span class="t-caption">{tr.workshop.nameLabel}</span>
                         <input class="field" value={title} onInput={(e) => setTitle((e.target as HTMLInputElement).value)} />
                     </label>
                     {making === 'openapi' && (
                         <label class="ws-label">
-                            <span class="t-caption">Описание API (OpenAPI) в JSON</span>
+                            <span class="t-caption">{tr.workshop.openapiLabel}</span>
                             <textarea class="field font-mono ws-code" rows={8} spellcheck={false} value={openapi} onInput={(e) => setOpenapi((e.target as HTMLTextAreaElement).value)} />
                         </label>
                     )}
                     <div class="flex flex-wrap gap-8">
-                        <Action tone="on" label="Создать" busy={busy} disabled={!id.trim()} onClick={() => void make()} />
-                        <Action label="Отмена" disabled={busy} onClick={() => (setMaking(null), base && linked.close())} />
+                        <Action tone="on" label={tr.workshop.create} busy={busy} disabled={!id.trim()} onClick={() => void make()} />
+                        <Action label={tr.workshop.cancel} disabled={busy} onClick={() => (setMaking(null), base && linked.close())} />
                     </div>
                 </div>
             ) : (
                 <div class="flex flex-wrap gap-8 mt-8">
-                    <Action tone="on" label="Новый плагин" onClick={() => setMaking('plugin')} />
-                    <Action label="Викторина на время" onClick={() => setMaking('quiz')} />
-                    <Action label="Новая тема" onClick={() => setMaking('theme')} />
-                    <Action label="Из описания API" onClick={() => setMaking('openapi')} />
+                    <Action tone="on" label={tr.workshop.newPlugin} onClick={() => setMaking('plugin')} />
+                    <Action label={tr.workshop.quizButton} onClick={() => setMaking('quiz')} />
+                    <Action label={tr.workshop.newThemeButton} onClick={() => setMaking('theme')} />
+                    <Action label={tr.workshop.fromApiButton} onClick={() => setMaking('openapi')} />
                 </div>
             )}
             {error && (
@@ -215,18 +217,23 @@ function CheckLines({ report }: { report: CheckReport }) {
     return (
         <div class="flex flex-col gap-4">
             <span class={`t-caption ${report.ok ? 'c-accent-text' : 'c-dot-offline'}`}>
-                {report.ok ? `Проверка прошла за ${report.ms} мс${report.exports.length ? `: функции ${report.exports.join(', ')}` : ''}.` : 'Проверка не прошла.'}
+                {report.ok ? tr.workshop.checkOk(report.ms, report.exports.join(', ')) : tr.workshop.checkFailed}
             </span>
             {report.manifest.map((problem) => (
                 <span key={problem} class="t-caption c-dot-offline">
-                    Манифест: {problem}
+                    {tr.workshop.manifestProblem(problem)}
                 </span>
             ))}
-            {report.code && <span class="t-caption c-dot-offline">Код: {report.code}</span>}
-            {report.missing.length > 0 && <span class="t-caption c-dot-offline">Нет функций: {report.missing.join(', ')}</span>}
+            {report.code && <span class="t-caption c-dot-offline">{tr.workshop.codeProblem(report.code)}</span>}
+            {report.missing.length > 0 && <span class="t-caption c-dot-offline">{tr.workshop.missingFunctions(report.missing.join(', '))}</span>}
             {report.warnings.map((warning) => (
                 <span key={warning} class="t-caption c-pill-yandex-fg">
                     {warning}
+                </span>
+            ))}
+            {(report.languages ?? []).map((hint) => (
+                <span key={hint} class="t-caption">
+                    {hint}
                 </span>
             ))}
         </div>
@@ -270,22 +277,22 @@ function InstallSheet({
     const [minutes, setMinutes] = useState(10);
     const plugin = plan.kind === 'plugin';
     const asks = plan.first || plan.added.length > 0 || plan.hostsAdded.length > 0;
-    const title = trial ? `Проба версии ${plan.to}` : plan.first ? `Поставить «${plan.title}» ${plan.to}?` : `Поставить версию ${plan.to}?`;
-    const about = plan.first ? (plugin ? 'Первая установка: код будет работать в шлюзе с этими правами' : 'Первая установка: тема появится в «Виде пульта»') : `Сейчас стоит ${plan.from} → станет ${plan.to}`;
+    const title = trial ? tr.workshop.trialTitle(plan.to) : plan.first ? tr.workshop.installFirstTitle(plan.title, plan.to) : tr.workshop.installTitle(plan.to);
+    const about = plan.first ? (plugin ? tr.workshop.aboutFirstPlugin : tr.workshop.aboutFirstTheme) : tr.workshop.aboutFromTo(plan.from ?? '', plan.to);
     const buttons = (
             <div class="flex flex-wrap gap-8">
                 {trial ? (
                     <>
-                        <Action tone="on" label={asks ? `Одобрить и пробовать ${minutes} мин` : `Пробовать ${minutes} мин`} busy={busy === 'trial'} disabled={!!busy} onClick={() => onTrial(minutes)} />
-                        <Action label={`Поставить ${plan.to} насовсем`} busy={busy === 'install'} disabled={!!busy} onClick={onInstall} />
+                        <Action tone="on" label={asks ? tr.workshop.approveTrial(minutes) : tr.workshop.tryMinutes(minutes)} busy={busy === 'trial'} disabled={!!busy} onClick={() => onTrial(minutes)} />
+                        <Action label={tr.workshop.installForever(plan.to)} busy={busy === 'install'} disabled={!!busy} onClick={onInstall} />
                     </>
                 ) : (
                     <>
-                        <Action tone="on" label={asks ? `Одобрить и поставить ${plan.to}` : `Поставить ${plan.to}`} busy={busy === 'install'} disabled={!!busy} onClick={onInstall} />
-                        {plugin && <Action label={`Проба ${minutes} мин`} busy={busy === 'trial'} disabled={!!busy} onClick={() => onTrial(minutes)} />}
+                        <Action tone="on" label={asks ? tr.workshop.approveInstall(plan.to) : tr.workshop.installTo(plan.to)} busy={busy === 'install'} disabled={!!busy} onClick={onInstall} />
+                        {plugin && <Action label={tr.workshop.trialMinutes(minutes)} busy={busy === 'trial'} disabled={!!busy} onClick={() => onTrial(minutes)} />}
                     </>
                 )}
-                <Action label="Отмена" disabled={!!busy} onClick={onClose} />
+                <Action label={tr.workshop.cancel} disabled={!!busy} onClick={onClose} />
             </div>
     );
     return (
@@ -293,42 +300,41 @@ function InstallSheet({
             {trial && (
                 <p class="t-body-sm m-0">
                     {plan.from
-                        ? `Черновик поработает на шлюзе вместо ${plan.from}, потом ${plan.from} вернётся сама. Говорите колонке как обычно.`
-                        : 'Плагин поработает на шлюзе, потом уйдёт сам. Говорите колонке как обычно.'}
+                        ? tr.workshop.trialBodyFrom(plan.from, byMode(tr.workshop.speakAsUsualSpeaker, tr.workshop.speakAsUsual))
+                        : tr.workshop.trialBodyNew(byMode(tr.workshop.speakAsUsualSpeaker, tr.workshop.speakAsUsual))}
                 </p>
             )}
             <RightsLines plan={plan} />
             {(plan.phrases.length > 0 || plan.tools.length > 0) && (
                 <div class="flex flex-col gap-4">
-                    <h3 class="t-title-xs m-0">Что даёт</h3>
+                    <h3 class="t-title-xs m-0">{tr.workshop.gives}</h3>
                     {plan.phrases.length > 0 && (
                         <span class="t-caption">
-                            Фразы: {plan.phrases.slice(0, 6).map((phrase) => `«${phrase}»`).join(', ')}
-                            {plan.phrases.length > 6 ? ` и ещё ${plan.phrases.length - 6}` : ''}
+                            {tr.workshop.phrasesLine(plan.phrases.slice(0, 6).map((phrase) => `«${phrase}»`).join(', '), plan.phrases.length > 6 ? tr.workshop.andMore(plan.phrases.length - 6) : '')}
                         </span>
                     )}
-                    {plan.tools.length > 0 && <span class="t-caption">Инструменты «Мозга»: {plan.tools.join(', ')}</span>}
+                    {plan.tools.length > 0 && <span class="t-caption">{tr.workshop.toolsLine(plan.tools.join(', '))}</span>}
                 </div>
             )}
             {plugin && (
                 <p class="t-caption m-0">
-                    Бюджет: память {plan.budget.memoryMb} МБ, хранилище {plan.budget.storageMb} МБ. Не поднимется — работает прежняя версия.
+                    {tr.workshop.budget(plan.budget.memoryMb, plan.budget.storageMb)}
                 </p>
             )}
             {!trial && plan.from && (
                 <p class="t-caption m-0">
-                    Прежняя {plan.from} останется на шлюзе — вернуть её можно здесь же, в «Версиях» (хранятся последние {plan.keptVersions}).
-                    {plugin && !plan.enabled ? ' Плагин выключен — новая версия тоже будет выключена.' : ''}
+                    {tr.workshop.previousStays(plan.from, plan.keptVersions)}
+                    {plugin && !plan.enabled ? tr.workshop.pluginDisabledNote : ''}
                 </p>
             )}
             {plugin && (
                 <div class="flex flex-col gap-6">
-                    {!trial && <h3 class="t-title-xs m-0">Или сначала попробовать</h3>}
-                    <div class="ws-chips" role="radiogroup" aria-label="Сколько длится проба">
-                        <span class="t-caption">Проба на колонке:</span>
+                    {!trial && <h3 class="t-title-xs m-0">{tr.workshop.orTryFirst}</h3>}
+                    <div class="ws-chips" role="radiogroup" aria-label={tr.workshop.trialLengthLabel}>
+                        <span class="t-caption">{byMode(tr.workshop.trialColonSpeaker, tr.workshop.trialColonVoice)}</span>
                         {TRIAL_MINUTES.map((value) => (
                             <button key={value} role="radio" aria-checked={minutes === value} class={`pill ${minutes === value ? 'pill-own' : 'pill-off'} cursor-pointer min-h-36`} onClick={() => setMinutes(value)}>
-                                {value} мин
+                                {tr.workshop.minShort(value)}
                             </button>
                         ))}
                     </div>
@@ -341,7 +347,7 @@ function InstallSheet({
 /** Сколько осталось до `until`, словами. */
 function left(until: string, now: number): string {
     const minutes = Math.max(0, Math.ceil((Date.parse(until) - now) / 60000));
-    return minutes <= 1 ? 'меньше минуты' : `${minutes} мин`;
+    return minutes <= 1 ? tr.workshop.lessThanMinute : tr.workshop.minShort(minutes);
 }
 
 /** Плашка пробы: какая версия работает, сколько осталось, «оставить» или «вернуть сейчас». */
@@ -355,12 +361,12 @@ function TrialBanner({ draft, busy, onEnd }: { draft: DraftView; busy: string | 
     return (
         <div class="ws-trial" role="status">
             <span class="t-body-sm">
-                <b>Проба на колонке:</b> работает {trial.version}
-                {trial.previous ? ` вместо ${trial.previous}` : ''} — ещё {left(trial.until, now)}. Потом {trial.previous ? `сама вернётся ${trial.previous}` : 'плагин сам уйдёт'}.
+                <b>{byMode(tr.workshop.trialColonSpeaker, tr.workshop.trialColonVoice)}</b>
+                {tr.workshop.trialRunning(trial.version, trial.previous ?? undefined, left(trial.until, now))}
             </span>
             <div class="flex flex-wrap gap-8">
-                <Action tone="on" label="Оставить эту версию" busy={busy === 'keep'} disabled={!!busy} onClick={() => onEnd(true)} />
-                <Action label={trial.previous ? `Вернуть ${trial.previous} сейчас` : 'Убрать сейчас'} busy={busy === 'end'} disabled={!!busy} onClick={() => onEnd(false)} />
+                <Action tone="on" label={tr.workshop.keepVersion} busy={busy === 'keep'} disabled={!!busy} onClick={() => onEnd(true)} />
+                <Action label={trial.previous ? tr.workshop.returnNow(trial.previous) : tr.workshop.removeNow} busy={busy === 'end'} disabled={!!busy} onClick={() => onEnd(false)} />
             </div>
         </div>
     );
@@ -374,7 +380,7 @@ function VersionsCard({ entry, busy, trial, onRollback }: { entry: PackageView; 
         <section class="card glass card-list" aria-labelledby="versions-h">
             <div class="card-head">
                 <h2 id="versions-h" class="t-title-xs m-0">
-                    Версии на шлюзе
+                    {tr.workshop.versionsTitle}
                 </h2>
                 <span class="t-meta">{entry.versions.length}</span>
             </div>
@@ -382,19 +388,19 @@ function VersionsCard({ entry, busy, trial, onRollback }: { entry: PackageView; 
                 {entry.versions.map((version, index) => (
                     <li key={version.version} class="ws-version">
                         <span class="font-mono">{version.version}</span>
-                        {version.version === entry.version && <span class={`pill ${entry.enabled ? 'pill-own' : 'pill-off'}`}>{entry.enabled ? 'работает' : 'выбрана, плагин выключен'}</span>}
-                        {index === 0 && version.version !== entry.version && <span class="pill pill-off">новейшая</span>}
+                        {version.version === entry.version && <span class={`pill ${entry.enabled ? 'pill-own' : 'pill-off'}`}>{entry.enabled ? tr.workshop.versionWorking : tr.workshop.versionChosenDisabled}</span>}
+                        {index === 0 && version.version !== entry.version && <span class="pill pill-off">{tr.workshop.versionNewest}</span>}
                         {version.problems.length > 0 && <span class="t-caption c-dot-offline">{version.problems.join('; ')}</span>}
                     </li>
                 ))}
             </ol>
             {canRollback && (
                 <div class="mt-8">
-                    <Action label={`Откатить к ${ready[1].version}`} busy={busy === 'rollback'} disabled={!!busy} onClick={onRollback} />
+                    <Action label={tr.workshop.rollbackTo(ready[1].version)} busy={busy === 'rollback'} disabled={!!busy} onClick={onRollback} />
                 </div>
             )}
-            {trial && <p class="t-caption m-0 mt-8">Пока идёт проба, откат — кнопкой на плашке пробы.</p>}
-            {!trial && ready.length <= 1 && <p class="t-caption m-0 mt-8">Откатываться пока не на что: на шлюзе одна рабочая версия.</p>}
+            {trial && <p class="t-caption m-0 mt-8">{tr.workshop.rollbackDuringTrial}</p>}
+            {!trial && ready.length <= 1 && <p class="t-caption m-0 mt-8">{tr.workshop.nothingToRollback}</p>}
         </section>
     );
 }
@@ -429,15 +435,19 @@ function PhraseLines({ report }: { report: PhraseReport }) {
     return (
         <div class="flex flex-col gap-4">
             <span class="t-caption">
-                {report.matched ? `Подошла фраза «${report.matched}» → ${report.handler}` : `Плагин этих слов не слышит («${report.normalized}»): ответит встроенное.`}
+                {report.matched ? tr.workshop.matchedLine(report.matched, report.handler ?? '') : tr.workshop.notHeardLine(report.normalized)}
             </span>
-            {report.speech && <span class="t-caption">Колонка скажет: «{report.speech}»</span>}
+            {report.speech && (
+                <span class="t-caption">
+                    {tr.workshop.deviceSays(device('nom', true), report.speech)}
+                </span>
+            )}
             {report.play.map((item) => (
                 <span key={item.url} class="t-caption">
-                    Включит: {item.title} — {item.url} ({item.format})
+                    {tr.workshop.willPlay(item.title, item.url, item.format)}
                 </span>
             ))}
-            {report.letGo && report.matched && <span class="t-caption">Плагин отпустил фразу: ответит встроенный навык той же возможности.</span>}
+            {report.letGo && report.matched && <span class="t-caption">{tr.workshop.letGo}</span>}
             {report.error && <span class="t-caption c-dot-offline">{report.error}</span>}
             {report.warnings.map((warning) => (
                 <span key={warning} class="t-caption c-pill-yandex-fg">
@@ -512,7 +522,7 @@ function Sandbox({ id, manifest, exports }: { id: string; manifest: string; expo
         try {
             await action();
         } catch (e) {
-            setError(e instanceof SyntaxError ? 'Вход — не JSON.' : problemOf(e));
+            setError(e instanceof SyntaxError ? tr.workshop.notJson : problemOf(e));
         } finally {
             setBusy(null);
         }
@@ -532,11 +542,11 @@ function Sandbox({ id, manifest, exports }: { id: string; manifest: string; expo
             if (!silences) return;
             const { timeout, missed, lines } = silences;
             if (missed >= 2) {
-                setSilences({ ...silences, lines: [...lines, 'Третья тишина подряд: шлюз скажет «Похоже, никого нет — заканчиваю» и закончит разговор.'], done: true });
+                setSilences({ ...silences, lines: [...lines, tr.workshop.thirdSilence], done: true });
                 return;
             }
             if (!timeout.handler) {
-                setSilences({ ...silences, lines: [...lines, `Время вышло: колонка скажет «${timeout.say ?? ''}», и разговор закончится.`], done: true });
+                setSilences({ ...silences, lines: [...lines, tr.workshop.timeoutEnds(device(), timeout.say ?? '')], done: true });
                 return;
             }
             const report = await api.runDraft(id, timeout.handler, {
@@ -546,8 +556,8 @@ function Sandbox({ id, manifest, exports }: { id: string; manifest: string; expo
             const next = report.ok ? timeoutOf(report.result) : null;
             const said = report.ok ? sayOf(report.result) : null;
             const line = report.ok
-                ? `${missed + 1}-я тишина → ${timeout.handler}: ${said ? `«${said}»` : 'без слов'}${next ? ` · новый таймер ${next.seconds} с` : ' · разговор кончится'}`
-                : `${missed + 1}-я тишина → ${timeout.handler}: ошибка — ${report.error ?? 'нет ответа'}`;
+                ? tr.workshop.silenceOk(missed + 1, timeout.handler, said ? tr.workshop.silenceWords(said) : tr.workshop.silenceNoWords, next ? tr.workshop.silenceNewTimer(next.seconds) : tr.workshop.silenceEnds)
+                : tr.workshop.silenceError(missed + 1, timeout.handler, report.error ?? tr.workshop.noAnswer);
             setSilences({ timeout: next ?? timeout, missed: missed + 1, lines: [...lines, line], done: !next });
         });
     const tryAll = () =>
@@ -567,13 +577,13 @@ function Sandbox({ id, manifest, exports }: { id: string; manifest: string; expo
         <section class="card glass card-list" aria-labelledby="try-h">
             <div class="card-head">
                 <h2 id="try-h" class="t-title-xs m-0">
-                    Песочница
+                    {tr.workshop.sandbox}
                 </h2>
-                <span class="t-meta">без колонки, ничего не ставит</span>
+                <span class="t-meta">{byMode(tr.workshop.sandboxMetaSpeaker, tr.workshop.sandboxMetaVoice)}</span>
             </div>
 
             <div class="ws-block">
-                <h3 class="t-title-xs m-0">Фраза</h3>
+                <h3 class="t-title-xs m-0">{tr.workshop.phraseHeading}</h3>
                 {phrases.length > 0 && (
                     <div class="ws-chips">
                         {phrases.map((template) => (
@@ -581,25 +591,25 @@ function Sandbox({ id, manifest, exports }: { id: string; manifest: string; expo
                                 {template}
                             </button>
                         ))}
-                        {phrases.length > 1 && <Action tone="on" label="Прогнать все" busy={busy === 'all'} disabled={!!busy} onClick={() => void tryAll()} />}
+                        {phrases.length > 1 && <Action tone="on" label={tr.workshop.runAll} busy={busy === 'all'} disabled={!!busy} onClick={() => void tryAll()} />}
                     </div>
                 )}
                 <div class="ws-row">
                     <input
                         class="field ws-grow"
-                        placeholder="Своя фраза: «Алиса, включи радио джаз»"
-                        aria-label="Фраза"
+                        placeholder={tr.workshop.ownPhrase(examplePhrase())}
+                        aria-label={tr.workshop.phraseLabel}
                         value={phraseText}
                         onInput={(e) => setPhraseText((e.target as HTMLInputElement).value)}
                         onKeyDown={(e) => e.key === 'Enter' && phraseText.trim() && !busy && void tryPhrase(phraseText)}
                     />
-                    <Action label="Прогнать" busy={busy === 'phrase'} disabled={!!busy || !phraseText.trim()} onClick={() => void tryPhrase(phraseText)} />
+                    <Action label={tr.workshop.runPhrase} busy={busy === 'phrase'} disabled={!!busy || !phraseText.trim()} onClick={() => void tryPhrase(phraseText)} />
                 </div>
                 {phrase && <PhraseLines report={phrase} />}
                 {silences && (
                     <div class="flex flex-col gap-4">
                         <span class="t-caption">
-                            Таймер хода: {silences.timeout.seconds} с → {silences.timeout.handler ?? `готовая фраза «${silences.timeout.say ?? ''}»`}
+                            {tr.workshop.timerLine(silences.timeout.seconds, silences.timeout.handler ?? tr.workshop.readyPhrase(silences.timeout.say ?? ''))}
                         </span>
                         {silences.lines.map((line) => (
                             <span key={line} class="t-caption">
@@ -608,7 +618,7 @@ function Sandbox({ id, manifest, exports }: { id: string; manifest: string; expo
                         ))}
                         {!silences.done && (
                             <div class="ws-row">
-                                <Action label={`Промолчать ${silences.timeout.seconds} с`} busy={busy === 'silence'} disabled={!!busy} onClick={() => void silence()} />
+                                <Action label={tr.workshop.stayQuiet(silences.timeout.seconds)} busy={busy === 'silence'} disabled={!!busy} onClick={() => void silence()} />
                             </div>
                         )}
                     </div>
@@ -627,8 +637,8 @@ function Sandbox({ id, manifest, exports }: { id: string; manifest: string; expo
                                             (row.report?.error
                                                 ? row.report.error
                                                 : row.report?.matched
-                                                  ? [row.report.handler && `→ ${row.report.handler}`, row.report.speech && `скажет «${row.report.speech}»`, row.report.play[0] && `включит ${row.report.play[0].title}`].filter(Boolean).join(' · ') || 'ответил без слов'
-                                                  : 'не услышал — ответит встроенное')}
+                                                  ? [row.report.handler && `→ ${row.report.handler}`, row.report.speech && tr.workshop.resultSays(row.report.speech), row.report.play[0] && tr.workshop.resultPlays(row.report.play[0].title)].filter(Boolean).join(' · ') || tr.workshop.resultNoWords
+                                                  : tr.workshop.resultNotHeard)}
                                     </span>
                                 </span>
                             </li>
@@ -639,16 +649,16 @@ function Sandbox({ id, manifest, exports }: { id: string; manifest: string; expo
 
             {rhythms.length > 0 && (
                 <div class="ws-block">
-                    <h3 class="t-title-xs m-0">Расписание</h3>
+                    <h3 class="t-title-xs m-0">{tr.workshop.scheduleHeading}</h3>
                     {rhythms.map((rhythm) => (
                         <div key={rhythm.id} class="ws-row">
                             <span class="t-caption ws-grow">
-                                {rhythm.title ?? rhythm.id} · {rhythm.at ? `в ${rhythm.at}` : `каждые ${rhythm.every ?? '?'}`}
-                                {rhythm.say ? ` · скажет готовое «${rhythm.say}» — плагин не нужен` : rhythm.handler ? ` → ${rhythm.handler}` : ''}
+                                {rhythm.title ?? rhythm.id} · {rhythm.at ? tr.workshop.atTime(rhythm.at) : tr.workshop.everyInterval(rhythm.every ?? '?')}
+                                {rhythm.say ? tr.workshop.saysReady(rhythm.say) : rhythm.handler ? ` → ${rhythm.handler}` : ''}
                             </span>
                             {rhythm.handler && (
                                 <Action
-                                    label="Запустить"
+                                    label={tr.workshop.launch}
                                     busy={busy === `rhythm:${rhythm.id}`}
                                     disabled={!!busy}
                                     onClick={() =>
@@ -664,10 +674,10 @@ function Sandbox({ id, manifest, exports }: { id: string; manifest: string; expo
             )}
 
             <div class="ws-block">
-                <h3 class="t-title-xs m-0">Функция</h3>
+                <h3 class="t-title-xs m-0">{tr.workshop.functionHeading}</h3>
                 <div class="ws-row">
                     {functions.length > 0 ? (
-                        <select class="field ws-grow" aria-label="Функция" value={fn} onChange={(e) => pick((e.target as HTMLSelectElement).value)}>
+                        <select class="field ws-grow" aria-label={tr.workshop.functionLabel} value={fn} onChange={(e) => pick((e.target as HTMLSelectElement).value)}>
                             {functions.map((name) => (
                                 <option key={name} value={name}>
                                     {name}
@@ -675,21 +685,21 @@ function Sandbox({ id, manifest, exports }: { id: string; manifest: string; expo
                             ))}
                         </select>
                     ) : (
-                        <input class="field ws-grow" placeholder="Имя функции из backend.js" aria-label="Функция" value={fn} onInput={(e) => setFn((e.target as HTMLInputElement).value)} />
+                        <input class="field ws-grow" placeholder={tr.workshop.functionPlaceholder} aria-label={tr.workshop.functionLabel} value={fn} onInput={(e) => setFn((e.target as HTMLInputElement).value)} />
                     )}
-                    <Action label="Запустить" busy={busy === 'run'} disabled={!!busy || !fn.trim()} onClick={() => void act('run', async () => setRun(await api.runDraft(id, fn.trim(), JSON.parse(input || '{}'))))} />
+                    <Action label={tr.workshop.launch} busy={busy === 'run'} disabled={!!busy || !fn.trim()} onClick={() => void act('run', async () => setRun(await api.runDraft(id, fn.trim(), JSON.parse(input || '{}'))))} />
                 </div>
                 <label class="ws-label">
-                    <span class="t-caption">Вход (JSON)</span>
+                    <span class="t-caption">{tr.workshop.inputJson}</span>
                     <textarea class="field font-mono ws-code" rows={Math.min(10, Math.max(3, input.split('\n').length))} spellcheck={false} value={input} onInput={(e) => setInput((e.target as HTMLTextAreaElement).value)} />
                 </label>
                 {run && (
                     <div class="flex flex-col gap-4">
-                        <span class={`t-caption ${run.ok ? '' : 'c-dot-offline'}`}>{run.ok ? `Ответила за ${run.ms} мс:` : `Ошибка: ${run.error}`}</span>
+                        <span class={`t-caption ${run.ok ? '' : 'c-dot-offline'}`}>{run.ok ? tr.workshop.answeredIn(run.ms) : tr.workshop.errorLine(run.error ?? '')}</span>
                         {run.ok && <pre class="ws-pre">{JSON.stringify(run.result, null, 2)}</pre>}
                         {run.said.map((said) => (
                             <span key={said} class="t-caption">
-                                Сказала бы: «{said}»
+                                {tr.workshop.wouldSay(said)}
                             </span>
                         ))}
                         <LogLines lines={run.log} />
@@ -740,18 +750,18 @@ function AgentModelSheet({ current, onSaved, onClose }: { current: WorkshopAgent
     const smart = current.smart;
     const buttons = (
             <div class="flex flex-wrap gap-8">
-                <Action tone="on" label="Сохранить" busy={busy} disabled={own && (!provider || !model.trim())} onClick={() => void save()} />
-                <Action label="Отмена" disabled={busy} onClick={onClose} />
+                <Action tone="on" label={tr.workshop.save} busy={busy} disabled={own && (!provider || !model.trim())} onClick={() => void save()} />
+                <Action label={tr.workshop.cancel} disabled={busy} onClick={onClose} />
             </div>
     );
     return (
-        <Sheet title="Модель агента" about="Только для агента мастерской — мозг персонажа не меняется" onClose={onClose} footer={buttons}>
-            <p class="t-caption m-0 ws-hint">Код лучше пишут сильные модели: быстрые и маленькие чаще ошибаются в коде и в манифесте. Проверка и песочница поймают ошибку, но чинить её придётся дольше.</p>
-            <div role="radiogroup" aria-label="Модель агента" class="flex flex-col">
+        <Sheet title={tr.workshop.modelSheetTitle} about={tr.workshop.modelSheetAbout} onClose={onClose} footer={buttons}>
+            <p class="t-caption m-0 ws-hint">{tr.workshop.modelHint}</p>
+            <div role="radiogroup" aria-label={tr.workshop.modelGroupLabel} class="flex flex-col">
                 <button role="radio" aria-checked={!own} class="dash-option" onClick={() => setOwn(false)}>
                     <span class="dash-option-text">
-                        <b>Как в «Мозге»</b>
-                        <span class="t-caption">{smart ? `Умный профиль: ${smart.model} · ${smart.title}` : 'Умный профиль «Мозга»'}</span>
+                        <b>{tr.workshop.likeBrain}</b>
+                        <span class="t-caption">{smart ? tr.workshop.smartProfileWith(smart.model, smart.title) : tr.workshop.smartProfile}</span>
                     </span>
                     <span class={`dash-radio${!own ? ' on' : ''}`} aria-hidden="true">
                         {!own && <IconCheck />}
@@ -759,8 +769,8 @@ function AgentModelSheet({ current, onSaved, onClose }: { current: WorkshopAgent
                 </button>
                 <button role="radio" aria-checked={own} class="dash-option" disabled={!brain?.providers.length} onClick={() => setOwn(true)}>
                     <span class="dash-option-text">
-                        <b>Своя модель</b>
-                        <span class="t-caption">{brain && !brain.providers.length ? 'Сначала добавьте провайдера в «Мозге».' : 'Провайдер из «Мозга» и его модель'}</span>
+                        <b>{tr.workshop.ownModel}</b>
+                        <span class="t-caption">{brain && !brain.providers.length ? tr.workshop.addProviderFirst : tr.workshop.providerAndModel}</span>
                     </span>
                     <span class={`dash-radio${own ? ' on' : ''}`} aria-hidden="true">
                         {own && <IconCheck />}
@@ -770,7 +780,7 @@ function AgentModelSheet({ current, onSaved, onClose }: { current: WorkshopAgent
             {own && brain && brain.providers.length > 0 && (
                 <div class="ws-form">
                     <label class="ws-label">
-                        <span class="t-caption">Провайдер</span>
+                        <span class="t-caption">{tr.workshop.provider}</span>
                         <select
                             class="field"
                             value={provider}
@@ -788,7 +798,7 @@ function AgentModelSheet({ current, onSaved, onClose }: { current: WorkshopAgent
                         </select>
                     </label>
                     <label class="ws-label">
-                        <span class="t-caption">Модель</span>
+                        <span class="t-caption">{tr.workshop.model}</span>
                         {chosen && chosen.models.length > 0 ? (
                             <select class="field" value={model} onChange={(e) => setModel((e.target as HTMLSelectElement).value)}>
                                 {!chosen.models.includes(model) && model && <option value={model}>{model}</option>}
@@ -799,7 +809,7 @@ function AgentModelSheet({ current, onSaved, onClose }: { current: WorkshopAgent
                                 ))}
                             </select>
                         ) : (
-                            <input class="field" placeholder="id модели" value={model} onInput={(e) => setModel((e.target as HTMLInputElement).value)} />
+                            <input class="field" placeholder={tr.workshop.modelIdPlaceholder} value={model} onInput={(e) => setModel((e.target as HTMLInputElement).value)} />
                         )}
                     </label>
                 </div>
@@ -817,9 +827,17 @@ function AgentModelSheet({ current, onSaved, onClose }: { current: WorkshopAgent
 const KEPT_STEPS = 200;
 
 /** Кто попросил агента. */
-const ASKED_BY: Record<AgentJob['by'], string> = { voice: 'Голосом у колонки', panel: 'В пульте' };
+const ASKED_BY: Record<AgentJob['by'], string> = {
+    // Читается при отрисовке: в режиме «Микрофон» колонки нет, а язык пульта может смениться.
+    get voice() {
+        return byMode(tr.workshop.askedByVoice, tr.workshop.askedByVoiceMic);
+    },
+    get panel() {
+        return tr.workshop.askedByPanel;
+    },
+};
 
-const clock = (at: number): string => new Date(at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const clock = (at: number): string => new Date(at).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
 interface LogRow {
     key: number;
@@ -852,7 +870,7 @@ function logRows(steps: AgentStep[], askedBy: Map<number, AgentJob['by']>): LogR
         const last = rows[rows.length - 1];
         if (step.kind === 'asked') {
             const by = askedBy.get(step.seq);
-            rows.push({ key: step.seq, at: step.at, kind: 'asked', who: by ? ASKED_BY[by] : 'Попросили', text: `«${shortText(step.text, 400)}»` });
+            rows.push({ key: step.seq, at: step.at, kind: 'asked', who: by ? ASKED_BY[by] : tr.workshop.askedUnknown, text: `«${shortText(step.text, 400)}»` });
         } else if (step.kind === 'tool') {
             const row: LogRow = { key: step.seq, at: step.at, kind: 'tool', tool: step.tool, text: toolWords(step.tool, step.text) };
             rows.push(row);
@@ -860,17 +878,17 @@ function logRows(steps: AgentStep[], askedBy: Map<number, AgentJob['by']>): LogR
         } else if (step.kind === 'result') {
             const call = typeof step.call === 'number' ? calls.get(step.call) : openCall(rows, step.tool);
             if (call && call.mark === undefined) {
-                call.mark = step.failed ? `не вышло: ${shortText(step.text, 200)}` : '✓';
+                call.mark = step.failed ? tr.workshop.markFailed(shortText(step.text, 200)) : '✓';
                 call.seen = step.text.trim() || undefined;
                 call.failed = step.failed;
             } else if (step.failed) {
-                rows.push({ key: step.seq, at: step.at, kind: 'result', text: `${toolWords(step.tool)} — не вышло: ${shortText(step.text, 200)}`, failed: true });
+                rows.push({ key: step.seq, at: step.at, kind: 'result', text: tr.workshop.toolFailed(toolWords(step.tool), shortText(step.text, 200)), failed: true });
             }
         } else if (step.kind === 'said') {
             if (last?.kind === 'said') last.text = `${last.text} ${step.text}`;
-            else rows.push({ key: step.seq, at: step.at, kind: 'said', who: 'Агент', text: step.text });
+            else rows.push({ key: step.seq, at: step.at, kind: 'said', who: tr.workshop.whoAgent, text: step.text });
         } else {
-            const text = step.kind === 'failed' ? `Не вышло: ${step.text || 'ошибка'}` : step.kind === 'stopped' ? step.text || 'Остановлено' : 'Готово';
+            const text = step.kind === 'failed' ? tr.workshop.endFailed(step.text || tr.workshop.errorDefault) : step.kind === 'stopped' ? step.text || tr.workshop.stoppedDefault : tr.workshop.doneDefault;
             rows.push({ key: step.seq, at: step.at, kind: 'end', text, failed: step.kind === 'failed' });
         }
     }
@@ -982,17 +1000,17 @@ function AgentLog({ id, title }: { id: string; title: string }) {
         <section class="card glass card-list" aria-labelledby="agent-log-h">
             <div class="card-head">
                 <h2 id="agent-log-h" class="t-title-xs m-0">
-                    Ход работы
+                    {tr.workshop.logTitle}
                 </h2>
                 <span class="t-meta">
-                    {job?.busy ? `идёт ${elapsed(now - job.since)}` : job?.ended ? `закончено в ${clock(job.ended)}` : ''}
+                    {job?.busy ? tr.workshop.logRunning(elapsed(now - job.since)) : job?.ended ? tr.workshop.logEnded(clock(job.ended)) : ''}
                 </span>
             </div>
             <div
                 ref={box}
                 class="agent-log"
                 role="log"
-                aria-label="Шаги агента"
+                aria-label={tr.workshop.logStepsLabel}
                 tabIndex={0}
                 onScroll={() => {
                     const list = box.current;
@@ -1008,7 +1026,7 @@ function AgentLog({ id, title }: { id: string; title: string }) {
                             {row.mark && <span class="agent-log-mark">{row.mark}</span>}
                             {row.seen && (
                                 <details class="agent-log-seen">
-                                    <summary>что увидел</summary>
+                                    <summary>{tr.workshop.seenSummary}</summary>
                                     <pre>{row.seen}</pre>
                                 </details>
                             )}
@@ -1020,7 +1038,7 @@ function AgentLog({ id, title }: { id: string; title: string }) {
                 <div class="agent-log-now">
                     <span class="agent-spin" aria-hidden="true" />
                     <span class="flex-1 min-w-0">{doingWords(job.last, now)}</span>
-                    <Action label="Остановить" busy={stopping} onClick={() => void stop()} />
+                    <Action label={tr.workshop.stopAction} busy={stopping} onClick={() => void stop()} />
                 </div>
             )}
             {error && (
@@ -1114,7 +1132,7 @@ function AgentChat({ draft, onChanged }: { draft: string; onChanged: () => void 
     // Работа агента идёт и без этого разговора (закрыли окно — продолжается, activity.rs): «Остановить» кончает её на
     // шлюзе, а потом пульт перестаёт слушать.
     const stop = () => {
-        add({ who: 'tool', text: 'остановлено' });
+        add({ who: 'tool', text: tr.workshop.stoppedNote });
         void api
             .stopDraftAgent(draft)
             .catch(() => undefined)
@@ -1126,23 +1144,23 @@ function AgentChat({ draft, onChanged }: { draft: string; onChanged: () => void 
         <section class="card glass card-list" aria-labelledby="agent-h">
             <div class="card-head">
                 <h2 id="agent-h" class="t-title-xs m-0">
-                    Агент
+                    {tr.workshop.agentTitle}
                 </h2>
                 {entries.length > 0 && !busy && (
                     <button class="t-caption cursor-pointer underline min-h-44" onClick={() => (setEntries([]), setFresh(true))}>
-                        новый разговор
+                        {tr.workshop.newConversation}
                     </button>
                 )}
             </div>
-            <p class="t-caption m-0 mb-6">Скажите, что плагин должен уметь, — агент напишет, проверит в песочнице и предложит поставить. Ставить и давать права — вам.</p>
+            <p class="t-caption m-0 mb-6">{tr.workshop.agentIntro}</p>
             {model && (
                 <div class="ws-model">
                     <span class="t-caption">
-                        Модель: <b>{answers ? `${answers.model} · ${answers.title}` : 'не выбрана'}</b>
-                        {model.choice ? ' — своя для мастерской' : ' — как в «Мозге»'}
+                        {tr.workshop.modelPrefix}<b>{answers ? `${answers.model} · ${answers.title}` : tr.workshop.modelNotChosen}</b>
+                        {model.choice ? tr.workshop.modelOwn : tr.workshop.modelLikeBrain}
                     </span>
                     <button class="t-caption cursor-pointer underline min-h-44" disabled={busy} onClick={() => setPicking(true)}>
-                        сменить
+                        {tr.workshop.change}
                     </button>
                 </div>
             )}
@@ -1152,14 +1170,14 @@ function AgentChat({ draft, onChanged }: { draft: string; onChanged: () => void 
                         {entry.text}
                     </p>
                 ))}
-                {busy && <p class="ws-msg ws-tool m-0">работаю…</p>}
+                {busy && <p class="ws-msg ws-tool m-0">{tr.workshop.working}</p>}
             </div>
             <div class="ws-row mt-8">
                 <textarea
                     class="field ws-grow"
                     rows={2}
-                    aria-label="Сообщение агенту"
-                    placeholder="Например: сделай навык «какая погода на даче» по Open-Meteo"
+                    aria-label={tr.workshop.messageLabel}
+                    placeholder={tr.workshop.messagePlaceholder}
                     value={text}
                     disabled={busy}
                     onInput={(e) => setText((e.target as HTMLTextAreaElement).value)}
@@ -1167,7 +1185,7 @@ function AgentChat({ draft, onChanged }: { draft: string; onChanged: () => void 
                         if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void send();
                     }}
                 />
-                {busy ? <Action label="Остановить" onClick={stop} /> : <Action tone="on" label="Отправить" disabled={!text.trim()} onClick={() => void send()} />}
+                {busy ? <Action label={tr.workshop.stopAction} onClick={stop} /> : <Action tone="on" label={tr.workshop.send} disabled={!text.trim()} onClick={() => void send()} />}
             </div>
         </section>
         {picking && model && <AgentModelSheet current={model} onSaved={setModel} onClose={() => setPicking(false)} />}
@@ -1291,7 +1309,7 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
     }, [previewing]);
     // Несохранённое в файле: закрыть окно, уйти в другой раздел или к черновикам — сначала вопрос (shell/leave.ts).
     useLeaveGuard(content !== saved, () =>
-        confirmAsk({ title: 'Уйти без сохранения?', text: `В ${path} есть несохранённое.`, ok: 'Уйти', danger: true }),
+        confirmAsk({ title: tr.workshop.leaveTitle, text: tr.workshop.leaveText(path), ok: tr.workshop.leaveOk, danger: true }),
     );
 
     const act = async (what: string, action: () => Promise<void>) => {
@@ -1341,7 +1359,7 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
         const desk = deskActions(role);
         for (const widget of widgets) desk.add(`package.${id}.${widget.id}`);
         const names = widgets.map((widget) => `«${widget.title ?? draft?.title ?? id}»`).join(', ');
-        setNote({ ok: true, text: `${said} ${widgets.length > 1 ? `Виджеты ${names} на столе.` : `Виджет ${names} на столе.`}` });
+        setNote({ ok: true, text: widgets.length > 1 ? tr.workshop.onDeskMany(said, names) : tr.workshop.onDeskOne(said, names) });
     };
     const doInstall = () =>
         act('install', async () => {
@@ -1385,15 +1403,15 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
         const ready = installed?.versions.filter((version) => version.problems.length === 0) ?? [];
         if (!installed || ready.length < 2) return;
         const yes = await confirmAsk({
-            title: `Вернуть версию ${ready[1].version}?`,
-            text: `Версия ${ready[0].version} уйдёт со шлюза; черновик останется как есть.`,
-            ok: 'Вернуть',
+            title: tr.workshop.rollbackTitle(ready[1].version),
+            text: tr.workshop.rollbackText(ready[0].version),
+            ok: tr.workshop.rollbackOk,
         });
         if (!yes) return;
         void act('rollback', async () => {
             const view = await api.rollbackPackage(id);
             setInstalled(view);
-            setNote({ ok: true, text: `Работает ${view.version}.` });
+            setNote({ ok: true, text: tr.workshop.nowWorking(view.version ?? '') });
             await readDraft();
             void readJournal();
         });
@@ -1401,9 +1419,9 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
     const preview = () =>
         act('preview', async () => {
             const found = normalizeTheme(JSON.parse((await api.readDraftFile(id, 'manifest.json')).content)?.contributes?.themes?.[0]);
-            if (!found) throw new Error('В манифесте нет темы, которую можно примерить.');
+            if (!found) throw new Error(tr.workshop.noThemeInManifest);
             const previous = previewing ?? theme.theme.id;
-            registerPlugin({ id: PREVIEW, themes: [{ ...found, id: `preview-${found.id}`, title: `${found.title} (примерка)` }] });
+            registerPlugin({ id: PREVIEW, themes: [{ ...found, id: `preview-${found.id}`, title: tr.workshop.themeTryTitle(found.title) }] });
             setTheme(`preview-${found.id}`);
             setPreviewing(previous);
         });
@@ -1414,7 +1432,7 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
         setPreviewing(null);
     };
     const pickFile = async (file: string, create = false) => {
-        if (content !== saved && !(await confirmAsk({ title: `Уйти без сохранения?`, text: `В ${path} есть несохранённое.`, ok: 'Уйти', danger: true })))
+        if (content !== saved && !(await confirmAsk({ title: tr.workshop.leaveTitle, text: tr.workshop.leaveText(path), ok: tr.workshop.leaveOk, danger: true })))
             return;
         if (create) {
             setPath(file);
@@ -1440,28 +1458,28 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
                         {draft?.title ?? id}
                     </h2>
                     <button class="t-caption cursor-pointer underline min-h-44" onClick={() => void mayLeave().then((ok) => ok && onClose())}>
-                        к черновикам
+                        {tr.workshop.toDrafts}
                     </button>
                 </div>
                 <p class="t-caption m-0">
                     {[
-                        plugin ? 'плагин' : 'тема',
-                        draft?.version && `черновик ${draft.version}`,
+                        plugin ? tr.workshop.kindPlugin : tr.workshop.kindTheme,
+                        draft?.version && tr.workshop.draftVersion(draft.version),
                         helperStation
                             ? onStation === undefined
                                 ? null
                                 : onStation
-                                  ? `на колонке сейчас ${onStation} — останется рядом для отката`
-                                  : 'на колонке не стоит'
+                                  ? tr.workshop.statusOnSpeaker(onStation)
+                                  : tr.workshop.statusNotOnSpeaker
                             : draft?.installed
-                              ? `на шлюзе ${draft.installed}`
-                              : 'не поставлен',
-                        helperStation && draft?.installed ? `на этом компьютере ${draft.installed}` : null,
+                              ? tr.workshop.statusOnGateway(draft.installed)
+                              : tr.workshop.notInstalledShort,
+                        helperStation && draft?.installed ? tr.workshop.statusOnComputer(draft.installed) : null,
                     ]
                         .filter(Boolean)
                         .join(' · ')}
                 </p>
-                {helperStation && plugin && <p class="t-caption m-0">Пишется здесь — работает на колонке, и без компьютера.</p>}
+                {helperStation && plugin && <p class="t-caption m-0">{tr.workshop.writtenHere}</p>}
                 {draft?.problems.map((problem) => (
                     <span key={problem} class="t-caption c-dot-offline">
                         {problem}
@@ -1469,24 +1487,24 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
                 ))}
                 {draft?.trial && <TrialBanner draft={draft} busy={busy} onEnd={(keep) => void endTrial(keep)} />}
                 <div class="flex flex-wrap gap-8 mt-8">
-                    <Action label="Проверить" busy={busy === 'check'} disabled={!!busy} onClick={() => void act('check', async () => (await saveNow(), setCheck(await api.checkDraft(id))))} />
+                    <Action label={tr.workshop.check} busy={busy === 'check'} disabled={!!busy} onClick={() => void act('check', async () => (await saveNow(), setCheck(await api.checkDraft(id))))} />
                     {helperStation && plugin ? (
                         <>
-                            <Action tone="on" label="Поставить на колонку…" busy={busy === 'ask'} disabled={!!busy} onClick={() => void askStation(false)} />
-                            <Action label="Проба на колонке…" busy={busy === 'ask-trial'} disabled={!!busy} onClick={() => void askStation(true)} />
-                            <Action label="Поставить на этот компьютер…" disabled={!!busy} onClick={() => void ask(false)} />
+                            <Action tone="on" label={tr.workshop.installOnSpeaker} busy={busy === 'ask'} disabled={!!busy} onClick={() => void askStation(false)} />
+                            <Action label={tr.workshop.trialOnSpeaker} busy={busy === 'ask-trial'} disabled={!!busy} onClick={() => void askStation(true)} />
+                            <Action label={tr.workshop.installOnComputer} disabled={!!busy} onClick={() => void ask(false)} />
                         </>
                     ) : (
                         <>
-                            <Action tone="on" label="Поставить…" busy={busy === 'ask'} disabled={!!busy} onClick={() => void ask(false)} />
-                            {plugin && !draft?.trial && <Action label="Проба на колонке…" busy={busy === 'ask-trial'} disabled={!!busy} onClick={() => void ask(true)} />}
+                            <Action tone="on" label={tr.workshop.installEllipsis} busy={busy === 'ask'} disabled={!!busy} onClick={() => void ask(false)} />
+                            {plugin && !draft?.trial && <Action label={byMode(tr.workshop.trialEllipsisSpeaker, tr.workshop.trialEllipsisVoice)} busy={busy === 'ask-trial'} disabled={!!busy} onClick={() => void ask(true)} />}
                         </>
                     )}
                     {!plugin &&
-                        (previewing ? <Action label="Снять примерку" onClick={endPreview} /> : <Action label="Примерить тему" busy={busy === 'preview'} disabled={!!busy} onClick={() => void preview()} />)}
+                        (previewing ? <Action label={tr.workshop.untryTheme} onClick={endPreview} /> : <Action label={tr.workshop.tryTheme} busy={busy === 'preview'} disabled={!!busy} onClick={() => void preview()} />)}
                     {plugin && (
                         <Action
-                            label={widgetShown ? 'Показать заново' : 'Показать виджет'}
+                            label={widgetShown ? tr.workshop.showAgain : tr.workshop.showWidget}
                             disabled={!!busy}
                             onClick={() =>
                                 void act('widget', async () => {
@@ -1503,10 +1521,10 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
                         />
                     )}
                     <Action
-                        label="Удалить черновик"
+                        label={tr.workshop.deleteDraft}
                         disabled={!!busy}
                         onClick={async () =>
-                            (await confirmAsk({ title: 'Удалить черновик?', text: 'Поставленный пакет останется.', ok: 'Удалить', danger: true })) &&
+                            (await confirmAsk({ title: tr.workshop.deleteTitle, text: tr.workshop.deleteText, ok: tr.workshop.deleteOk, danger: true })) &&
                             void act('delete', async () => {
                                 await api.deleteDraft(id);
                                 onListChanged();
@@ -1519,7 +1537,7 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
                     (hasPanel ? (
                         <DraftWidgetPreview id={id} nonce={widgetShown} code={approved} />
                     ) : (
-                        <DraftCardPreview id={id} nonce={widgetShown} trying={{ example: false }} fallback={<p class="t-caption m-0">У черновика нет ни карточки, ни окошка — только фразы.</p>} />
+                        <DraftCardPreview id={id} nonce={widgetShown} trying={{ example: false }} fallback={<p class="t-caption m-0">{tr.workshop.noCardNoWindow}</p>} />
                     ))}
                 {check && <CheckLines report={check} />}
                 {note && (
@@ -1539,21 +1557,21 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
             <section class="card glass card-list" aria-labelledby="files-h">
                 <div class="card-head">
                     <h2 id="files-h" class="t-title-xs m-0">
-                        Файлы
+                        {tr.workshop.filesTitle}
                     </h2>
-                    <span class="t-meta">{dirty ? 'не сохранено · ⌘S' : 'сохранено'}</span>
+                    <span class="t-meta">{dirty ? tr.workshop.unsaved : tr.workshop.savedState}</span>
                 </div>
-                <div class="ws-tabs" role="tablist" aria-label="Файлы черновика">
+                <div class="ws-tabs" role="tablist" aria-label={tr.workshop.filesLabel}>
                     {files.map((file) => (
                         <button key={file.path} role="tab" aria-selected={file.path === path} class={`ws-tab${file.path === path ? ' on' : ''}`} onClick={() => file.path !== path && pickFile(file.path)}>
                             {file.path}
-                            {file.path === path && dirty && <span class="ws-dirty" aria-label="не сохранено" />}
+                            {file.path === path && dirty && <span class="ws-dirty" aria-label={tr.workshop.unsavedLabel} />}
                         </button>
                     ))}
                     {!files.some((file) => file.path === path) && (
                         <button role="tab" aria-selected={true} class="ws-tab on">
                             {path}
-                            {dirty && <span class="ws-dirty" aria-label="не сохранено" />}
+                            {dirty && <span class="ws-dirty" aria-label={tr.workshop.unsavedLabel} />}
                         </button>
                     )}
                     {plugin &&
@@ -1576,8 +1594,8 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
                     }}
                 />
                 <div class="flex flex-wrap items-center gap-8">
-                    <Action tone="on" label={`Сохранить ${path}`} busy={busy === 'save'} disabled={!!busy || !dirty} onClick={() => void save()} />
-                    {dirty && <Action label="Вернуть как было" disabled={!!busy} onClick={() => setContent(saved)} />}
+                    <Action tone="on" label={tr.workshop.savePath(path)} busy={busy === 'save'} disabled={!!busy || !dirty} onClick={() => void save()} />
+                    {dirty && <Action label={tr.workshop.revert} disabled={!!busy} onClick={() => setContent(saved)} />}
                 </div>
             </section>
 
@@ -1599,14 +1617,14 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
                 <section class="card glass card-list" aria-labelledby="journal-h">
                     <div class="card-head">
                         <h2 id="journal-h" class="t-title-xs m-0">
-                            Журнал плагина
+                            {tr.workshop.journalTitle}
                         </h2>
                         <button class="t-caption cursor-pointer underline min-h-44" onClick={() => void readJournal()}>
-                            обновить
+                            {tr.workshop.refresh}
                         </button>
                     </div>
-                    {journal.length === 0 ? <p class="t-caption m-0">Пока тихо: вызовов не было.</p> : <LogLines lines={journal} />}
-                    {journal.length > 0 && <span class="t-meta">последняя запись {timeAgo(journal[journal.length - 1].at)}</span>}
+                    {journal.length === 0 ? <p class="t-caption m-0">{tr.workshop.journalQuiet}</p> : <LogLines lines={journal} />}
+                    {journal.length > 0 && <span class="t-meta">{tr.workshop.journalLast(timeAgo(journal[journal.length - 1].at))}</span>}
                 </section>
             )}
 
@@ -1637,7 +1655,7 @@ export function WorkshopScreen() {
     if (!isAdmin()) {
         return (
             <section class="card glass">
-                <p class="t-caption m-0">Мастерская — для администратора: черновик становится кодом в шлюзе.</p>
+                <p class="t-caption m-0">{tr.workshop.adminOnly}</p>
             </section>
         );
     }
@@ -1656,10 +1674,10 @@ export function WorkshopScreen() {
                     <section class="card glass card-list" aria-labelledby="history-room-h">
                         <div class="card-head">
                             <h2 id="history-room-h" class="t-title-xs m-0">
-                                История приложений
+                                {tr.workshop.historyTitle}
                             </h2>
                         </div>
-                        <p class="t-caption m-0">Каждый шаг и каждая версия хранятся: черновик и поставленное можно вернуть к любой записи.</p>
+                        <p class="t-caption m-0">{tr.workshop.historyAbout}</p>
                         <HistoryRoomLine titled />
                     </section>
                 </>

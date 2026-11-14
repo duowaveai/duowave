@@ -34,6 +34,37 @@ export async function playAudio(key: string, load: () => Promise<Blob>): Promise
     }
 }
 
+/**
+ * Проиграть звук до конца: обещание кончается, когда он доиграл (true) или его остановили — другим звуком, `stopAudio`
+ * (false). Так пульт говорит ответ по фразам: следующая — по концу предыдущей (voice/speak.ts).
+ */
+export function playToEnd(key: string, blob: Blob): Promise<boolean> {
+    stopAudio();
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    const mine = { key, audio, url };
+    current = mine;
+    settle(key);
+    return new Promise((resolve) => {
+        let done = false;
+        const finish = (ended: boolean): void => {
+            if (done) return;
+            done = true;
+            listeners.delete(watch);
+            if (current === mine) stopAudio();
+            resolve(ended);
+        };
+        // Остановили: звучит уже другое или ничего.
+        const watch = (): void => {
+            if (current !== mine) finish(false);
+        };
+        listeners.add(watch);
+        audio.onended = () => finish(true);
+        audio.onerror = () => finish(false);
+        audio.play().catch(() => finish(false));
+    });
+}
+
 /** Что сейчас звучит (ключ) и переключатель «играть / стоп». */
 export function useAudio(): { playing: string | null; toggle: (key: string, load: () => Promise<Blob>) => Promise<void> } {
     const [playing, setPlaying] = useState<string | null>(current?.key ?? null);

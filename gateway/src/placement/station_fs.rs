@@ -4,7 +4,6 @@
 //! the panel (which runs these commands over SSH), for hands, and for the station's own gateway («Вернуть как было»
 //! without a computer). Every path is under a root: `/` on the station, a folder in the tests — never the station
 //! itself.
-
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -287,7 +286,9 @@ impl StationFs {
 
     /// Where the voice goes now: the config as the station reads it — our copy while it is mounted.
     pub fn voice(&self) -> Result<VoiceAddresses, String> {
-        let text = self.read(STATION_CONFIG).ok_or_else(|| format!("нет {STATION_CONFIG}: это не колонка"))?;
+        let text = self
+            .read(STATION_CONFIG)
+            .ok_or_else(|| crate::tr!("Нет {config}: это не колонка.", config = STATION_CONFIG))?;
         read_config(&text).map(|facts| facts.addresses).map_err(|error| error.to_string())
     }
 
@@ -373,7 +374,7 @@ impl StationFs {
             return Err(if said.is_empty() { format!("voice.sh ended with {}", output.status) } else { said });
         }
         if self.voice()? != to {
-            return Err("голос колонки не тот, что задумано: без перезагрузки".into());
+            return Err(crate::tr!("голос колонки не тот, что задумано: без перезагрузки"));
         }
         let copy = stdout.lines().find_map(|line| line.strip_prefix("copy: ")).map(str::to_string);
         // The station reads the same address as before: what changed is what the next boot mounts, no reboot needed.
@@ -407,14 +408,14 @@ impl StationFs {
         let port = if running_here && asked == self.port() {
             asked
         } else {
-            (asked..asked.saturating_add(10))
-                .find(|port| system.port_free(*port))
-                .ok_or_else(|| format!("порты {asked}–{} на колонке заняты", asked.saturating_add(9)))?
+            (asked..asked.saturating_add(10)).find(|port| system.port_free(*port)).ok_or_else(|| {
+                crate::tr!("Порты {asked}–{last} на колонке заняты.", asked = asked, last = asked.saturating_add(9))
+            })?
         };
         std::fs::create_dir_all(self.path(DATA)).map_err(|error| error.to_string())?;
         let source = match &options.program {
             Some(program) => program.clone(),
-            None => std::env::current_exe().map_err(|error| format!("программа: {error}"))?,
+            None => std::env::current_exe().map_err(|error| crate::tr!("Программа: {error}", error = error))?,
         };
         let program = if options.in_place {
             source.to_string_lossy().into_owned()
@@ -453,9 +454,9 @@ impl StationFs {
         while !system.healthy(port) {
             if std::time::Instant::now() >= deadline {
                 let _ = system.service(&service, "stop");
-                return Err(format!(
-                    "шлюз не ответил на /health за {} с: остановлен, автозапуск не записан (duowave station log)",
-                    wait.as_secs().max(1)
+                return Err(crate::tr!(
+                    "Шлюз не ответил на /health за {seconds} с: остановлен, автозапуск не записан (duowave station log).",
+                    seconds = wait.as_secs().max(1)
                 ));
             }
             std::thread::sleep(std::time::Duration::from_millis(250));
@@ -533,9 +534,9 @@ impl StationFs {
     /// script stays while our copy sends the voice elsewhere (a computer's gateway): it mounts that copy.
     pub fn remove(&self, keep_data: bool, system: &dyn System) -> Result<(), String> {
         if self.voice().is_ok_and(|voice| voice == self.local_addresses()) {
-            return Err(
-                "голос колонки идёт в этот шлюз: сначала верните его — duowave station point previous --reboot".into(),
-            );
+            return Err(crate::tr!(
+                "Голос колонки идёт в этот шлюз: сначала верните его — duowave station point previous --reboot."
+            ));
         }
         if self.exists(SERVICE) {
             let _ = system.service(&self.path(SERVICE), "stop");
@@ -602,7 +603,7 @@ impl StationFs {
 
     /// The settings the computer sends: kept for the gateway's next start (or read by the running one).
     pub fn receive_settings(&self, bundle: &[u8]) -> Result<(), String> {
-        serde_json::from_slice::<super::transfer::Bundle>(bundle).map_err(|_| "это не набор настроек".to_string())?;
+        serde_json::from_slice::<super::transfer::Bundle>(bundle).map_err(|_| crate::tr!("это не набор настроек"))?;
         std::fs::create_dir_all(self.path(&format!("{DATA}/state"))).map_err(|error| error.to_string())?;
         write_atomic(&self.path(INCOMING_SETTINGS), bundle)?;
         restrict(&self.path(INCOMING_SETTINGS));

@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "plugin",
   "id": "news",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "title": "Новости",
   "description": "Заголовки новостей голосом: главное или по теме — из лент, выбранных в «Дом» → «Коннекторы» → «Новости», а без выбора — из каталога лент. Встроенное приложение: если оно выключено или не ответило, новости говорит встроенный навык шлюза.",
   "api": "^2",
@@ -46,6 +46,16 @@
     "net:www.vedomosti.ru",
     "call:system/home"
   ],
+  "languages": [
+    "ru",
+    "en"
+  ],
+  "locales": {
+    "en": {
+      "title": "News",
+      "description": "News headlines by voice: the top stories or by topic — from the feeds chosen in “Home” → “Connections” → “News”, or from the feed catalog when none are chosen. A built-in app: when it is off or does not answer, the gateway’s built-in skill reads the news."
+    }
+  },
   "contributes": {
     "intents": [
       {

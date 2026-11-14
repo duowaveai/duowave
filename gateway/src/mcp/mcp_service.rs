@@ -546,17 +546,21 @@ impl McpService {
             _ => None,
         };
         if matches!(&input.preset, Some(value) if !matches!(value, Json::Null)) && preset.is_none() {
-            return Err(ApiError::bad_request("Неизвестный сервер."));
+            return Err(ApiError::bad_request(crate::tr!("Неизвестный сервер.")));
         }
         let transport = match preset {
             Some(preset) => preset.transport,
-            None => one_of(input.transport.as_ref(), TransportKind::parse, "Выберите: программа на Mac или адрес.")?,
+            None => one_of(
+                input.transport.as_ref(),
+                TransportKind::parse,
+                crate::tr!("Выберите: программа на Mac или адрес."),
+            )?,
         };
         #[cfg(not(feature = "pc"))]
         if transport == TransportKind::Stdio {
-            return Err(ApiError::bad_request(
-                "Программы MCP работают только на компьютере: здесь — серверы по адресу.",
-            ));
+            return Err(ApiError::bad_request(crate::tr!(
+                "Программы MCP работают только на компьютере: здесь — серверы по адресу."
+            )));
         }
         let config = self.config_of(transport, input, preset, None)?;
         let mut title = text(input.title.as_ref(), 60);
@@ -606,7 +610,7 @@ impl McpService {
     /// Servers from a pasted config (Claude Desktop, Cursor, VS Code): each a custom server, all its tools off.
     pub fn import_json(&self, json: Option<&Json>, actor: Option<Actor>) -> Result<ImportDone, ApiError> {
         let Some(text) = json.and_then(Json::as_str).filter(|text| !text.trim().is_empty()) else {
-            return Err(ApiError::bad_request("Вставьте JSON."));
+            return Err(ApiError::bad_request(crate::tr!("Вставьте JSON.")));
         };
         let parsed = parse_import(text);
         let mut problems = parsed.problems;
@@ -755,7 +759,7 @@ impl McpService {
         let mut next = row.tools.get(name).cloned().unwrap_or_default();
         if let Some(on) = change.on.as_ref().and_then(Json::as_bool) {
             if on && listed.is_none() {
-                return Err(ApiError::bad_request("Сервер сейчас не называет такой инструмент."));
+                return Err(ApiError::bad_request(crate::tr!("Сервер сейчас не называет такой инструмент.")));
             }
             next.on = on;
             next.fingerprint = if on { listed.as_ref().map(fingerprint) } else { None };
@@ -783,7 +787,7 @@ impl McpService {
             return Err(missing());
         }
         let Some(current) = inner.live.get(id).and_then(|live| live.instructions.clone()) else {
-            return Err(ApiError::bad_request("Сервер не дал инструкций."));
+            return Err(ApiError::bad_request(crate::tr!("Сервер не дал инструкций.")));
         };
         self.db.with(|c| {
             c.execute(
@@ -819,7 +823,7 @@ impl McpService {
             inner.live.get(id).filter(|live| live.state == ServerState::Ready).and_then(|live| live.connection.clone())
         };
         let Some(connection) = connection else {
-            return Err(ApiError::bad_request("Сервер не на связи."));
+            return Err(ApiError::bad_request(crate::tr!("Сервер не на связи.")));
         };
         let input: Map<String, Value> = arguments.and_then(Value::as_object).cloned().unwrap_or_default();
         let started = Instant::now();
@@ -842,7 +846,7 @@ impl McpService {
         let row = self.lock().row(id).cloned().ok_or_else(missing)?;
         let url = match (&row.config.auth, &row.config.url) {
             (Some(AuthKind::Oauth), Some(url)) if !url.is_empty() => url.clone(),
-            _ => return Err(ApiError::bad_request("Этот сервер входит без OAuth.")),
+            _ => return Err(ApiError::bad_request(crate::tr!("Этот сервер входит без OAuth."))),
         };
         let link = OAuthLink::new(id, self.secrets.clone());
         let known = signed_in(&self.secrets, id).then_some(&link);
@@ -853,13 +857,16 @@ impl McpService {
             }
             Ok(Probe::Challenge(challenge)) => challenge,
             Err(error) => {
-                return Err(ApiError::conflict(format!("Сервис не начал вход: {}", self.problem_of(&error, &row))));
+                return Err(ApiError::conflict(crate::tr!(
+                    "Сервис не начал вход: {why}",
+                    why = self.problem_of(&error, &row)
+                )));
             }
         };
         let pending =
             start_login(&url, id, &self.secrets, &self.callback, challenge.as_deref()).await.map_err(|error| {
                 let problem = ConnectError::Other(error.to_string());
-                ApiError::conflict(format!("Сервис не начал вход: {}", self.problem_of(&problem, &row)))
+                ApiError::conflict(crate::tr!("Сервис не начал вход: {why}", why = self.problem_of(&problem, &row)))
             })?;
         let page = pending.url.clone();
         let mut inner = self.lock();
@@ -880,7 +887,9 @@ impl McpService {
         let state = get("state").unwrap_or_default();
         let login = self.lock().logins.remove(state);
         let Some(login) = login.filter(|login| login.at.elapsed() <= LOGIN_WAIT) else {
-            return Err(ApiError::bad_request("Этот вход устарел или начат не здесь: нажмите «Войти» ещё раз."));
+            return Err(ApiError::bad_request(crate::tr!(
+                "Этот вход устарел или начат не здесь: нажмите «Войти» ещё раз."
+            )));
         };
         let code = get("code").filter(|code| !code.is_empty());
         let (None, Some(code)) = (get("error").filter(|error| !error.is_empty()), code) else {
@@ -1059,12 +1068,12 @@ impl McpService {
         // A build without programs (the station) says so on the card once, and does not try again.
         #[cfg(not(feature = "pc"))]
         if row.transport == TransportKind::Stdio {
-            let detail = "программы MCP работают только на компьютере".to_string();
+            let detail = crate::tr!("программы MCP работают только на компьютере").to_string();
             self.set_state(id, generation, ServerState::Error, Some(detail));
             return;
         }
         let Some(auth) = self.auth_of(&row) else {
-            self.set_state(id, generation, ServerState::Login, Some("нужно войти".into()));
+            self.set_state(id, generation, ServerState::Login, Some(crate::tr!("нужно войти")));
             return;
         };
         let spec = self.spec_of(&row, auth);
@@ -1119,7 +1128,7 @@ impl McpService {
                 }
             }
             Err(ConnectError::NeedsLogin) => {
-                self.set_state(id, generation, ServerState::Login, Some("нужно войти".into()));
+                self.set_state(id, generation, ServerState::Login, Some(crate::tr!("нужно войти")));
             }
             Err(error) => {
                 let detail = self.problem_of(&error, &row);
@@ -1174,7 +1183,7 @@ impl McpService {
                             match inner.live.get_mut(&id).filter(|live| live.generation == generation) {
                                 Some(live) => {
                                     live.state = ServerState::Error;
-                                    live.detail = Some("соединение закрылось".into());
+                                    live.detail = Some(crate::tr!("соединение закрылось"));
                                     live.connection = None;
                                     true
                                 }
@@ -1591,7 +1600,7 @@ impl McpService {
                 None => text(input.command.as_ref(), 300),
             };
             if command.is_empty() {
-                return Err(ApiError::bad_request("Укажите команду, например npx."));
+                return Err(ApiError::bad_request(crate::tr!("Укажите команду, например npx.")));
             }
             let args = match preset.and_then(|p| p.args) {
                 Some(args) => args.iter().map(|a| a.to_string()).collect(),
@@ -1616,13 +1625,13 @@ impl McpService {
         };
         if url.is_empty() {
             return Err(ApiError::bad_request(if preset.is_some() {
-                "Нужен адрес Home Assistant."
+                crate::tr!("Нужен адрес Home Assistant.")
             } else {
-                "Укажите адрес сервера."
+                crate::tr!("Укажите адрес сервера.")
             }));
         }
         if !url::Url::parse(&url).is_ok_and(|parsed| matches!(parsed.scheme(), "http" | "https")) {
-            return Err(ApiError::bad_request("Адрес должен начинаться с http:// или https://."));
+            return Err(ApiError::bad_request(crate::tr!("Адрес должен начинаться с http:// или https://.")));
         }
         let auth = match preset {
             Some(preset) => preset.auth,
@@ -1632,7 +1641,7 @@ impl McpService {
                     .cloned()
                     .or_else(|| previous.and_then(|p| p.auth).map(|a| Json::String(auth_name(a).into())));
                 let given = given.unwrap_or(Json::String("none".into()));
-                one_of(Some(&given), AuthKind::parse, "Вход: none, token или oauth.")?
+                one_of(Some(&given), AuthKind::parse, crate::tr!("Вход: none, token или oauth."))?
             }
         };
         Ok(McpServerConfig {
@@ -1668,14 +1677,26 @@ impl McpService {
     /// A failure as the owner reads it on the card.
     fn problem_of(&self, error: &ConnectError, row: &ServerRow) -> String {
         let program = row.transport == TransportKind::Stdio;
-        let closed = || format!("программа закрылась{}", if program { " — посмотрите её слова ниже" } else { "" });
+        let closed = || {
+            crate::tr!(
+                "программа закрылась{more}",
+                more = if program {
+                    crate::tr!(" — посмотрите её слова ниже")
+                } else {
+                    String::new()
+                }
+            )
+        };
         match error {
             ConnectError::NotFound(_) if program => {
-                return format!("команда не найдена: {}", row.config.command.clone().unwrap_or_default());
+                return crate::tr!(
+                    "команда не найдена: {command}",
+                    command = row.config.command.clone().unwrap_or_default()
+                );
             }
-            ConnectError::Refused | ConnectError::NeedsLogin => return "сервер не принял токен".into(),
-            ConnectError::Unreachable(_) => return "адрес не отвечает".into(),
-            ConnectError::Timeout => return "не ответил вовремя".into(),
+            ConnectError::Refused | ConnectError::NeedsLogin => return crate::tr!("сервер не принял токен"),
+            ConnectError::Unreachable(_) => return crate::tr!("адрес не отвечает"),
+            ConnectError::Timeout => return crate::tr!("не ответил вовремя"),
             ConnectError::Closed(_) => return closed(),
             _ => {}
         }
@@ -1683,16 +1704,19 @@ impl McpService {
         let lower = message.to_lowercase();
         let has = |words: &[&str]| words.iter().any(|word| lower.contains(word));
         if program && has(&["enoent", "not found", "command not found"]) {
-            return format!("команда не найдена: {}", row.config.command.clone().unwrap_or_default());
+            return crate::tr!(
+                "команда не найдена: {command}",
+                command = row.config.command.clone().unwrap_or_default()
+            );
         }
         if has(&["401", "refused the token", "unauthorized", "unauthorised"]) {
-            return "сервер не принял токен".into();
+            return crate::tr!("сервер не принял токен");
         }
         if has(&["econnrefused", "enotfound", "eai_again", "fetch failed", "connection refused", "dns error"]) {
-            return "адрес не отвечает".into();
+            return crate::tr!("адрес не отвечает");
         }
         if has(&["timed out", "time out", "timedout", "timeout"]) {
-            return "не ответил вовремя".into();
+            return crate::tr!("не ответил вовремя");
         }
         if has(&["closed", "exited", "epipe", "broken pipe"]) {
             return closed();
@@ -1711,12 +1735,12 @@ fn connect_error(error: CallError) -> ConnectError {
 }
 
 fn missing() -> ApiError {
-    ApiError::not_found("Такого сервера нет.")
+    ApiError::not_found(crate::tr!("Такого сервера нет."))
 }
 
 /// The return of a sign-in the service did not confirm (its own words are never shown).
 fn login_refused() -> ApiError {
-    ApiError::bad_request("Войти не получилось: сервис не подтвердил вход. Нажмите «Войти» ещё раз.")
+    ApiError::bad_request(crate::tr!("Войти не получилось: сервис не подтвердил вход. Нажмите «Войти» ещё раз."))
 }
 
 fn state_of(row: &ServerRow, live: Option<&Live>) -> ServerState {
@@ -1769,7 +1793,7 @@ fn text(value: Option<&Json>, max: usize) -> String {
     value.and_then(Json::as_str).map(|text| text.trim().chars().take(max).collect()).unwrap_or_default()
 }
 
-fn one_of<T>(value: Option<&Json>, parse: fn(&str) -> Option<T>, problem: &str) -> Result<T, ApiError> {
+fn one_of<T>(value: Option<&Json>, parse: fn(&str) -> Option<T>, problem: String) -> Result<T, ApiError> {
     value.and_then(Json::as_str).and_then(parse).ok_or_else(|| ApiError::bad_request(problem))
 }
 
@@ -1808,9 +1832,9 @@ fn capability_of(value: Option<&Json>, fallback: Option<CapabilityName>) -> Resu
         Some(Json::Null) => Ok(None),
         Some(Json::String(name)) if name.is_empty() => Ok(None),
         Some(Json::String(name)) => {
-            is_capability(name).map(Some).ok_or_else(|| ApiError::bad_request("Неизвестная возможность."))
+            is_capability(name).map(Some).ok_or_else(|| ApiError::bad_request(crate::tr!("Неизвестная возможность.")))
         }
-        Some(_) => Err(ApiError::bad_request("Неизвестная возможность.")),
+        Some(_) => Err(ApiError::bad_request(crate::tr!("Неизвестная возможность."))),
     }
 }
 

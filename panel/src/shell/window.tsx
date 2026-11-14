@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 
 import { IconClose, IconLaptop } from '../icons';
 import type { OpenWindow } from './shell';
+import { tr } from '../i18n';
 
 /** Слово пульта колонки из фрейма окна помощника: Esc нажали там (shell/station-window.tsx). */
 export const ESCAPE_MESSAGE = 'duowave:escape';
@@ -85,17 +86,17 @@ export function DeskWindow({ win, strip }: { win: OpenWindow; strip?: ComponentC
                     {win.scope === 'own' && (
                         <span class="role-label">
                             <IconLaptop size={13} />
-                            Этот компьютер
+                            {tr.shell.thisComputer}
                         </span>
                     )}
                     <h1 class="desk-window-title">{win.title}</h1>
                     {win.badge}
-                    <button class="desk-window-close" aria-label="Закрыть окно" onClick={win.onClose}>
+                    <button class="desk-window-close" aria-label={tr.shell.closeWindow} onClick={win.onClose}>
                         <IconClose size={18} />
                     </button>
                 </header>
                 <div class="desk-window-body">{win.content}</div>
-                {veil && <button class="desk-window-veil" aria-label="Закрыть окно поверх" tabIndex={-1} onClick={veil.dismiss} />}
+                {veil && <button class="desk-window-veil" aria-label={tr.shell.closeOverlayWindow} tabIndex={-1} onClick={veil.dismiss} />}
             </section>
         </WindowLift.Provider>
     );

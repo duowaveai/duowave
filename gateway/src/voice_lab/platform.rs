@@ -528,27 +528,35 @@ async fn taskpolicy_takes(probe: &dyn Probe, os: OsName) -> Taskpolicy {
 /// «Мак, Apple M4 Max, 36 ГБ» — the panel's line about this computer.
 pub fn describe_platform(platform: &PlatformInfo) -> String {
     let os = match platform.os {
-        OsName::Darwin => "Мак",
-        OsName::Linux => "Linux",
-        OsName::Win32 => "Windows",
-        OsName::Other => "other",
+        OsName::Darwin => crate::tr!("Мак"),
+        OsName::Linux => "Linux".to_string(),
+        OsName::Win32 => "Windows".to_string(),
+        OsName::Other => "other".to_string(),
     };
     let gpu = match platform.gpu.kind {
         GpuKind::Apple => platform.gpu.name.clone().unwrap_or_else(|| "Apple Silicon".into()),
         GpuKind::Nvidia => {
             let name = platform.gpu.name.clone().unwrap_or_default();
             match platform.gpu.vram_mb.filter(|mb| *mb > 0) {
-                Some(mb) => format!("{name}, {} ГБ видеопамяти", js::round_i64(mb as f64 / 1024.0)),
+                Some(mb) => {
+                    crate::tr!("{name}, {size} ГБ видеопамяти", name = name, size = js::round_i64(mb as f64 / 1024.0))
+                }
                 None => name,
             }
         }
         GpuKind::None => match &platform.cpu_name {
-            Some(cpu) => format!("{cpu}, без видеокарты NVIDIA"),
-            None => "без видеокарты NVIDIA".into(),
+            Some(cpu) => crate::tr!("{cpu}, без видеокарты NVIDIA", cpu = cpu),
+            None => crate::tr!("без видеокарты NVIDIA"),
         },
     };
     let docker = if platform.docker { " (Docker)" } else { "" };
-    format!("{os}{docker}, {gpu}, {} ГБ памяти", js::round_i64(platform.ram_mb as f64 / 1024.0))
+    crate::tr!(
+        "{os}{docker}, {gpu}, {size} ГБ памяти",
+        os = os,
+        docker = docker,
+        gpu = gpu,
+        size = js::round_i64(platform.ram_mb as f64 / 1024.0)
+    )
 }
 
 #[cfg(test)]

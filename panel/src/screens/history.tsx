@@ -7,6 +7,7 @@
 import { useEffect, useState } from 'preact/hooks';
 
 import { HistoryComparison, HistoryFeed, HistoryPlace, HistoryRecord, HistoryRoom, MergeState, RestorePlan, RestoreWhat, api, problemOf } from '../api';
+import { formatNumber, locale, tr } from '../i18n';
 import { usePanel } from '../shell/context';
 import { timeAgo } from '../time';
 import { Action } from '../ui/cards';
@@ -15,50 +16,50 @@ import { ask } from '../ui/confirm';
 type Mode = 'draft' | 'installed';
 type Open = { id: string; panel: 'compare' | 'restore' | 'take' } | null;
 
-const WHO: Record<string, string> = {
-    agent: 'агент',
-    hand: 'руками',
-    voice: 'голосом',
-    mcp: 'Claude Code',
-    catalog: 'каталог',
-    system: 'шлюз',
-};
+const who = (): Record<string, string> => ({
+    agent: tr.history.whoAgent,
+    hand: tr.history.whoHand,
+    voice: tr.history.whoVoice,
+    mcp: tr.history.whoMcp,
+    catalog: tr.history.whoCatalog,
+    system: tr.history.whoSystem,
+});
 
 /** Когда: «12.11 15:02». */
 export function when(at: string): string {
-    return new Date(at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    return new Date(at).toLocaleString(locale(), { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
 /** Кто: агент (голосом), человек по имени, каталог. */
 function whoOf(record: HistoryRecord): string {
-    const { who, name, via } = record.by;
-    if (who === 'hand' && name) return name;
-    if (who === 'agent' && via === 'voice') return 'агент, по просьбе голосом';
-    return WHO[who] ?? who;
+    const { who: by, name, via } = record.by;
+    if (by === 'hand' && name) return name;
+    if (by === 'agent' && via === 'voice') return tr.history.whoAgentVoice;
+    return who()[by] ?? by;
 }
 
 /** Что за запись — словами. */
 export function kindOf(record: HistoryRecord): string {
     switch (record.kind) {
         case 'step':
-            return 'шаг';
+            return tr.history.kindStep;
         case 'install':
-            return record.trial ? `проба ${record.version ?? ''}` : `поставлена ${record.version ?? ''}`;
+            return record.trial ? tr.history.kindTrial(record.version ?? '') : tr.history.kindInstalled(record.version ?? '');
         case 'restore':
-            if (!record.what) return 'черновик возвращён';
-            return record.what === 'data' ? 'возврат данных' : record.what === 'code' ? `возврат к ${record.version ?? ''}` : `возврат к ${record.version ?? ''} с данными`;
+            if (!record.what) return tr.history.kindDraftReturned;
+            return record.what === 'data' ? tr.history.kindRestoreData : record.what === 'code' ? tr.history.kindRestoreCode(record.version ?? '') : tr.history.kindRestoreBoth(record.version ?? '');
         case 'merge':
-            return 'объединение';
+            return tr.history.kindMerge;
         case 'catalog':
-            return `из каталога ${record.version ?? ''}`;
+            return tr.history.kindCatalog(record.version ?? '');
         case 'copy':
-            return `своя копия ${record.version ?? ''}`;
+            return tr.history.kindCopy(record.version ?? '');
         case 'found':
-            return record.version ? `найдено на диске ${record.version}` : 'найдено на диске';
+            return record.version ? tr.history.kindFoundVersion(record.version) : tr.history.kindFound;
         case 'data':
-            return 'снимок данных';
+            return tr.history.kindData;
         case 'removed':
-            return 'удалено';
+            return tr.history.kindRemoved;
     }
 }
 
@@ -77,8 +78,8 @@ function Comparison({ id, from, to }: { id: string; from: string; to?: string })
             .catch((e) => setError(problemOf(e)));
     }, [id, from, to]);
     if (error) return <p class="t-caption m-0 c-dot-offline">{error}</p>;
-    if (!result) return <p class="t-caption m-0">Сравниваю…</p>;
-    if (result.files.length === 0) return <p class="t-caption m-0">Файлы те же.</p>;
+    if (!result) return <p class="t-caption m-0">{tr.history.comparing}</p>;
+    if (result.files.length === 0) return <p class="t-caption m-0">{tr.history.sameFiles}</p>;
     return (
         <div class="flex flex-col gap-8">
             {result.manifest.length > 0 && (
@@ -93,15 +94,15 @@ function Comparison({ id, from, to }: { id: string; from: string; to?: string })
             {result.files.map((file) => (
                 <div key={file.path} class="flex flex-col gap-4">
                     <span class="t-body-sm">
-                        <span class="font-mono">{file.path}</span> — {file.change === 'added' ? 'новый' : file.change === 'removed' ? 'убран' : 'изменён'}
-                        {file.binary ? ', не текст' : ''}
+                        <span class="font-mono">{file.path}</span> — {file.change === 'added' ? tr.history.fileAdded : file.change === 'removed' ? tr.history.fileRemoved : tr.history.fileChanged}
+                        {file.binary ? tr.history.notText : ''}
                     </span>
                     {file.lines.length > 0 && (
                         <pre class="hist-diff">
                             {file.lines.map((line, index) =>
                                 line.op === '…' ? (
                                     <span key={index} class="hist-fold">
-                                        {`… ${line.text} строк без изменений\n`}
+                                        {tr.history.foldedLines(line.text)}
                                     </span>
                                 ) : (
                                     <span key={index} class={line.op === '+' ? 'hist-add' : line.op === '-' ? 'hist-del' : undefined}>
@@ -117,17 +118,17 @@ function Comparison({ id, from, to }: { id: string; from: string; to?: string })
     );
 }
 
-const WHAT_TITLES: Record<RestoreWhat, string> = {
-    code: 'Только код',
-    'code+data': 'Код и данные',
-    data: 'Только данные',
-};
+const whatTitles = (): Record<RestoreWhat, string> => ({
+    code: tr.history.whatCode,
+    'code+data': tr.history.whatBoth,
+    data: tr.history.whatData,
+});
 
-const WHAT_ABOUT: Record<RestoreWhat, string> = {
-    code: 'Вернётся старая версия, сегодняшние данные останутся.',
-    'code+data': 'Вернётся старая версия и её данные той поры; что появилось потом, сохранится в истории.',
-    data: 'Код останется этим, данные вернутся к той поре.',
-};
+const whatAbout = (): Record<RestoreWhat, string> => ({
+    code: tr.history.aboutCode,
+    'code+data': tr.history.aboutBoth,
+    data: tr.history.aboutData,
+});
 
 /** Окно возврата: что вернуть, что будет, кнопка. */
 function Restore({ id, record, onDone }: { id: string; record: HistoryRecord; onDone: (message: string) => void }) {
@@ -167,13 +168,13 @@ function Restore({ id, record, onDone }: { id: string; record: HistoryRecord; on
     };
     return (
         <div class="hist-panel">
-            <div class="hist-choice" role="radiogroup" aria-label="Что вернуть">
+            <div class="hist-choice" role="radiogroup" aria-label={tr.history.whatToRestore}>
                 {choices.map((choice) => (
                     <label key={choice}>
                         <input type="radio" name={`what-${record.id}`} checked={what === choice} disabled={busy || (choice !== 'data' && plan?.canCode === false)} onChange={() => setWhat(choice)} />
                         <span class="flex flex-col">
-                            <span class="t-body-sm fw-700">{WHAT_TITLES[choice]}</span>
-                            <span class="t-caption">{WHAT_ABOUT[choice]}</span>
+                            <span class="t-body-sm fw-700">{whatTitles()[choice]}</span>
+                            <span class="t-caption">{whatAbout()[choice]}</span>
                         </span>
                     </label>
                 ))}
@@ -187,7 +188,7 @@ function Restore({ id, record, onDone }: { id: string; record: HistoryRecord; on
                     ))}
                 </ul>
             )}
-            {plan?.risky && <p class="t-caption m-0 ws-hint">Вид данных с тех пор менялся: старая версия может не понять сегодняшние данные.</p>}
+            {plan?.risky && <p class="t-caption m-0 ws-hint">{tr.history.risky}</p>}
             {error && (
                 <p class="t-caption m-0 c-dot-offline" role="alert">
                     {error}
@@ -195,9 +196,9 @@ function Restore({ id, record, onDone }: { id: string; record: HistoryRecord; on
             )}
             <div class="flex flex-wrap gap-8">
                 {plan?.needsApproval ? (
-                    <Action tone="on" label="Одобрить права и вернуть" busy={busy} disabled={busy || !plan} onClick={() => void go(true)} />
+                    <Action tone="on" label={tr.history.approveAndRestore} busy={busy} disabled={busy || !plan} onClick={() => void go(true)} />
                 ) : (
-                    <Action tone="on" label="Вернуть" busy={busy} disabled={busy || !plan} onClick={() => void go(false)} />
+                    <Action tone="on" label={tr.history.restore} busy={busy} disabled={busy || !plan} onClick={() => void go(false)} />
                 )}
             </div>
         </div>
@@ -224,12 +225,12 @@ function Take({ id, record, onDone }: { id: string; record: HistoryRecord; onDon
     return (
         <div class="hist-panel">
             <label class="flex flex-col gap-4">
-                <span class="t-caption">Что взять из версии от {when(record.at)}? Агент возьмёт это в черновик, а если будет непонятно — спросит.</span>
-                <textarea class="field" rows={2} value={asked} placeholder="Например: прогноз на завтра, как там было" onInput={(e) => setAsked((e.target as HTMLTextAreaElement).value)} />
+                <span class="t-caption">{tr.history.takeAsk(when(record.at))}</span>
+                <textarea class="field" rows={2} value={asked} placeholder={tr.history.takePlaceholder} onInput={(e) => setAsked((e.target as HTMLTextAreaElement).value)} />
             </label>
             {error && <p class="t-caption m-0 c-dot-offline">{error}</p>}
             <div>
-                <Action tone="on" label="Взять" busy={busy} disabled={busy || !asked.trim()} onClick={() => void go()} />
+                <Action tone="on" label={tr.history.take} busy={busy} disabled={busy || !asked.trim()} onClick={() => void go()} />
             </div>
         </div>
     );
@@ -243,7 +244,7 @@ function MergeBanner({ id, merge, onChanged }: { id: string; merge: MergeState; 
         setBusy(choice);
         try {
             await api.answerMerge(id, choice);
-            onChanged('Ответ ушёл агенту — он продолжает объединение.');
+            onChanged(tr.history.mergeAnswered);
         } catch (e) {
             onChanged(problemOf(e));
         } finally {
@@ -251,12 +252,12 @@ function MergeBanner({ id, merge, onChanged }: { id: string; merge: MergeState; 
         }
     };
     const cancel = async () => {
-        const yes = await ask({ title: 'Отменить объединение?', text: 'Черновик вернётся к шагу до объединения.', ok: 'Отменить' });
+        const yes = await ask({ title: tr.history.cancelMergeTitle, text: tr.history.cancelMergeText, ok: tr.history.cancelMergeOk });
         if (!yes) return;
         setBusy('cancel');
         try {
             await api.cancelMerge(id);
-            onChanged('Объединение отменено.');
+            onChanged(tr.history.mergeCancelled);
         } catch (e) {
             onChanged(problemOf(e));
         } finally {
@@ -266,13 +267,13 @@ function MergeBanner({ id, merge, onChanged }: { id: string; merge: MergeState; 
     return (
         <div class="hist-merge" role="status">
             <span class="t-body-sm">
-                <b>Объединение:</b> {merge.reason}.
+                <b>{tr.history.merging}</b> {merge.reason}.
             </span>
-            {merge.conflicts.length > 0 && <span class="t-caption">Спорные файлы: {merge.conflicts.map((conflict) => `${conflict.path} (${conflict.why})`).join('; ')}</span>}
+            {merge.conflicts.length > 0 && <span class="t-caption">{tr.history.conflicts(merge.conflicts.map((conflict) => `${conflict.path} (${conflict.why})`).join('; '))}</span>}
             {merge.question ? (
                 <div class="flex flex-col gap-8">
                     <span class="t-body-sm">
-                        <span class="pill pill-agent">агент спрашивает</span> {merge.question.text}
+                        <span class="pill pill-agent">{tr.history.agentAsks}</span> {merge.question.text}
                     </span>
                     <div class="flex flex-wrap gap-8">
                         {merge.question.options.map((option) => (
@@ -280,15 +281,15 @@ function MergeBanner({ id, merge, onChanged }: { id: string; merge: MergeState; 
                         ))}
                     </div>
                     <div class="flex flex-wrap items-center gap-8">
-                        <input class="field flex-1 min-w-0" value={other} placeholder="Или своими словами" onInput={(e) => setOther((e.target as HTMLInputElement).value)} />
-                        <Action label="Ответить" busy={busy === other} disabled={!!busy || !other.trim()} onClick={() => void answer(other.trim())} />
+                        <input class="field flex-1 min-w-0" value={other} placeholder={tr.history.ownWords} onInput={(e) => setOther((e.target as HTMLInputElement).value)} />
+                        <Action label={tr.history.reply} busy={busy === other} disabled={!!busy || !other.trim()} onClick={() => void answer(other.trim())} />
                     </div>
                 </div>
             ) : (
-                <span class="t-caption">Агент объединяет: что объединилось само, уже в черновике. Если будет непонятно, что оставить, — спросит здесь.</span>
+                <span class="t-caption">{tr.history.mergingNow}</span>
             )}
             <div>
-                <Action label="Отменить объединение" busy={busy === 'cancel'} disabled={!!busy} onClick={() => void cancel()} />
+                <Action label={tr.history.cancelMerge} busy={busy === 'cancel'} disabled={!!busy} onClick={() => void cancel()} />
             </div>
         </div>
     );
@@ -349,31 +350,31 @@ export function HistoryCard({ id, mode, onChanged }: { id: string; mode: Mode; o
         <section class="card glass card-list" aria-labelledby={`history-${mode}-h`}>
             <div class="card-head">
                 <h2 id={`history-${mode}-h`} class="t-title-xs m-0">
-                    История
+                    {tr.history.title}
                 </h2>
                 <span class="t-meta">{records.length}{more ? '+' : ''}</span>
             </div>
-            {mode === 'draft' && merge && <MergeBanner id={id} merge={merge} onChanged={(text) => done(text ?? 'Готово.')} />}
+            {mode === 'draft' && merge && <MergeBanner id={id} merge={merge} onChanged={(text) => done(text ?? tr.history.done)} />}
             {mode === 'draft' && !merge && feed.upstream && (
                 <div class="hist-merge">
                     <span class="t-body-sm">
-                        В «{feed.upstream.title ?? feed.upstream.app}» вышла версия {feed.upstream.version ?? 'новее'}. В вашей копии свои правки — объединить?
+                        {tr.history.upstream(feed.upstream.title ?? feed.upstream.app, feed.upstream.version ?? tr.history.upstreamNewer)}
                     </span>
                     <div class="flex flex-wrap gap-8">
-                        <Action tone="on" label="Объединить" busy={busy === 'upstream'} disabled={!!busy} onClick={() => void run('upstream', async () => (await api.mergeDraft(id, 'upstream')).message)} />
-                        <Action label="Через агента" busy={busy === 'upstream-agent'} disabled={!!busy} onClick={() => void run('upstream-agent', async () => (await api.mergeDraft(id, 'upstream', true)).message)} />
+                        <Action tone="on" label={tr.history.mergeAction} busy={busy === 'upstream'} disabled={!!busy} onClick={() => void run('upstream', async () => (await api.mergeDraft(id, 'upstream')).message)} />
+                        <Action label={tr.history.viaAgent} busy={busy === 'upstream-agent'} disabled={!!busy} onClick={() => void run('upstream-agent', async () => (await api.mergeDraft(id, 'upstream', true)).message)} />
                     </div>
                 </div>
             )}
-            {mode === 'installed' && feed.upstream && <p class="t-caption m-0">Вышла новая версия «{feed.upstream.title ?? feed.upstream.app}»: объединить её с этой копией можно в мастерской.</p>}
-            {records.length === 0 && <p class="t-caption m-0">Истории пока нет: она начнётся с первого шага или установки.</p>}
+            {mode === 'installed' && feed.upstream && <p class="t-caption m-0">{tr.history.upstreamInstalled(feed.upstream.title ?? feed.upstream.app)}</p>}
+            {records.length === 0 && <p class="t-caption m-0">{tr.history.empty}</p>}
             <ol class="hist-list">
                 {records.map((record) => {
                     const isOpen = open?.id === record.id ? open.panel : null;
                     const canRestoreDraft = mode === 'draft' && !record.marks.includes('draft') && record.kind !== 'data' && record.kind !== 'removed';
                     // Поставленное приложение — и из мастерской: та же лента знает его версии.
                     const canRestore = !!installed && !record.marks.includes('installed') && (isVersion(record) || !!record.data);
-                    const restoreLabel = isVersion(record) ? (mode === 'draft' ? 'вернуть поставленную…' : 'вернуть…') : 'вернуть данные…';
+                    const restoreLabel = isVersion(record) ? (mode === 'draft' ? tr.history.restoreInstalledDraft : tr.history.restoreShort) : tr.history.restoreData;
                     const undo = record.marks.includes('installed') && record.kind === 'restore' && !!record.what && (record.parents?.length ?? 0) > 0;
                     return (
                         <li key={record.id} class="hist-row">
@@ -383,18 +384,18 @@ export function HistoryCard({ id, mode, onChanged }: { id: string; mode: Mode; o
                                 </span>
                                 <span class="t-caption">{kindOf(record).trim()}</span>
                                 <span class={`pill ${record.by.who === 'agent' ? 'pill-agent' : 'pill-off'}`}>{whoOf(record)}</span>
-                                {record.marks.includes('installed') && <span class="pill pill-own">работает</span>}
-                                {mode === 'draft' && record.marks.includes('draft') && <span class="pill pill-off">черновик</span>}
-                                {record.on === 'station' && <span class="t-meta">на колонке</span>}
-                                {record.data && <span class="t-meta">+ данные</span>}
-                                {record.check === 'failed' && <span class="t-caption c-dot-offline">проверка не прошла</span>}
+                                {record.marks.includes('installed') && <span class="pill pill-own">{tr.history.working}</span>}
+                                {mode === 'draft' && record.marks.includes('draft') && <span class="pill pill-off">{tr.history.draft}</span>}
+                                {record.on === 'station' && <span class="t-meta">{tr.history.onStation}</span>}
+                                {record.data && <span class="t-meta">{tr.history.plusData}</span>}
+                                {record.check === 'failed' && <span class="t-caption c-dot-offline">{tr.history.checkFailed}</span>}
                             </div>
-                            {record.asked && <span class="t-caption">Просили: «{record.asked}»</span>}
+                            {record.asked && <span class="t-caption">{tr.history.asked(record.asked)}</span>}
                             {record.note && <span class="t-caption">{record.note}</span>}
                             <div class="hist-actions">
                                 {record.kind !== 'data' && (
                                     <button class="t-caption cursor-pointer underline min-h-44" onClick={() => toggle(record, 'compare')}>
-                                        {isOpen === 'compare' ? 'скрыть' : mode === 'draft' ? 'сравнить с черновиком' : 'сравнить с работающей'}
+                                        {isOpen === 'compare' ? tr.history.hide : mode === 'draft' ? tr.history.compareDraft : tr.history.compareInstalled}
                                     </button>
                                 )}
                                 {canRestoreDraft && (
@@ -402,26 +403,26 @@ export function HistoryCard({ id, mode, onChanged }: { id: string; mode: Mode; o
                                         class="t-caption cursor-pointer underline min-h-44"
                                         disabled={!!busy}
                                         onClick={async () => {
-                                            const yes = await ask({ title: `Вернуть черновик к ${when(record.at)}?`, text: 'Это будет новый шаг: сегодняшнее останется в истории, к нему можно вернуться.', ok: 'Вернуть' });
-                                            if (yes) void run(record.id, async () => (await api.restoreDraft(id, record.id), 'Черновик возвращён. Вернуться обратно — тем же способом.'));
+                                            const yes = await ask({ title: tr.history.restoreDraftTitle(when(record.at)), text: tr.history.restoreDraftText, ok: tr.history.restoreDraftOk });
+                                            if (yes) void run(record.id, async () => (await api.restoreDraft(id, record.id), tr.history.draftRestored));
                                         }}
                                     >
-                                        вернуть черновик сюда
+                                        {tr.history.restoreDraftHere}
                                     </button>
                                 )}
                                 {mode === 'draft' && !record.inDraft && record.kind !== 'data' && (
                                     <button class="t-caption cursor-pointer underline min-h-44" disabled={!!busy} onClick={() => void run(record.id, async () => (await api.mergeDraft(id, record.id)).message)}>
-                                        объединить с черновиком
+                                        {tr.history.mergeIntoDraft}
                                     </button>
                                 )}
                                 {mode === 'draft' && record.inDraft && !record.marks.includes('draft') && record.kind !== 'data' && (
                                     <button class="t-caption cursor-pointer underline min-h-44" onClick={() => toggle(record, 'take')}>
-                                        {isOpen === 'take' ? 'скрыть' : 'взять из неё…'}
+                                        {isOpen === 'take' ? tr.history.hide : tr.history.takeFrom}
                                     </button>
                                 )}
                                 {canRestore && (
                                     <button class="t-caption cursor-pointer underline min-h-44" onClick={() => toggle(record, 'restore')}>
-                                        {isOpen === 'restore' ? 'скрыть' : restoreLabel}
+                                        {isOpen === 'restore' ? tr.history.hide : restoreLabel}
                                     </button>
                                 )}
                                 {undo && (
@@ -430,7 +431,7 @@ export function HistoryCard({ id, mode, onChanged }: { id: string; mode: Mode; o
                                         disabled={!!busy}
                                         onClick={() => void run(record.id, async () => (await api.restorePackage(id, record.parents![0], record.what ?? 'code')).message)}
                                     >
-                                        отменить этот возврат
+                                        {tr.history.undoRestore}
                                     </button>
                                 )}
                             </div>
@@ -447,10 +448,10 @@ export function HistoryCard({ id, mode, onChanged }: { id: string; mode: Mode; o
             </ol>
             {more && (
                 <div>
-                    <Action label="Показать раньше" disabled={!!busy} onClick={() => void loadOlder()} />
+                    <Action label={tr.history.showEarlier} disabled={!!busy} onClick={() => void loadOlder()} />
                 </div>
             )}
-            {feed.earlierGone && !more && <p class="t-caption m-0">Раньше — удалено по сроку.</p>}
+            {feed.earlierGone && !more && <p class="t-caption m-0">{tr.history.earlierGone}</p>}
             {note && (
                 <p class={`t-caption m-0${note.ok ? '' : ' c-dot-offline'}`} role="status">
                     {note.text}
@@ -460,13 +461,16 @@ export function HistoryCard({ id, mode, onChanged }: { id: string; mode: Mode; o
     );
 }
 
-const PLACES: Record<HistoryPlace, string> = {
-    both: 'И на колонке, и на компьютере',
-    home: 'На компьютере',
-    here: 'Здесь',
-};
+const places = (): Record<HistoryPlace, string> => ({
+    both: tr.history.placeBoth,
+    home: tr.history.placeHome,
+    here: tr.history.placeHere,
+});
 
-const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(bytes < 1024 * 1024 ? 2 : 1);
+const mb = (bytes: number) => {
+    const digits = bytes < 1024 * 1024 ? 2 : 1;
+    return formatNumber(bytes / 1024 / 1024, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+};
 
 /** «Память»: сколько места у истории приложений, где её хранить. Администратору. */
 export function HistoryRoomLine({ titled = false }: { titled?: boolean }) {
@@ -494,24 +498,24 @@ export function HistoryRoomLine({ titled = false }: { titled?: boolean }) {
     return (
         <div class="flex flex-col gap-8">
             <span class="t-caption">
-                {titled ? 'Занято' : 'История приложений:'} {mb(room.bytes)} МБ из {room.policy.budgetMb} МБ · шаги хранятся {room.policy.days} дн., до {room.policy.steps} на приложение
+                {tr.history.roomLine(titled ? tr.history.roomTaken : tr.history.roomHistory, mb(room.bytes), room.policy.budgetMb, room.policy.days, room.policy.steps)}
             </span>
             {room.places.length > 1 && (
                 <label class="flex flex-wrap items-center gap-8">
-                    <span class="t-caption">Где хранить историю:</span>
+                    <span class="t-caption">{tr.history.whereToKeep}</span>
                     <select class="field" value={room.policy.place} disabled={busy} onChange={(e) => void change(() => api.setHistorySettings({ place: (e.target as HTMLSelectElement).value as HistoryPlace }))}>
                         {room.places.map((place) => (
                             <option key={place} value={place}>
-                                {place === 'here' ? 'Только на колонке' : PLACES[place]}
+                                {place === 'here' ? tr.history.placeStationOnly : places()[place]}
                             </option>
                         ))}
                     </select>
-                    {room.policy.place !== 'here' && !room.home && <span class="t-caption">компьютер сейчас не на связи — история подождёт</span>}
+                    {room.policy.place !== 'here' && !room.home && <span class="t-caption">{tr.history.computerOffline}</span>}
                 </label>
             )}
             <div class="flex flex-wrap items-center gap-8">
                 <label class="flex items-center gap-8">
-                    <span class="t-caption">Сколько места, МБ:</span>
+                    <span class="t-caption">{tr.history.howMuchRoom}</span>
                     <input
                         class="field hist-number"
                         type="number"
@@ -525,13 +529,13 @@ export function HistoryRoomLine({ titled = false }: { titled?: boolean }) {
                     />
                 </label>
                 <Action
-                    label="Почистить сейчас"
+                    label={tr.history.cleanNow}
                     busy={busy}
                     disabled={busy}
                     onClick={() =>
                         void change(async () => {
                             const cleaned = await api.cleanHistory();
-                            setNote(`Убрано записей: ${cleaned.records}, файлов: ${cleaned.objects}.`);
+                            setNote(tr.history.cleaned(cleaned.records, cleaned.objects));
                             return api.historyRoom();
                         })
                     }

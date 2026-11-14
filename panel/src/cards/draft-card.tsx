@@ -8,10 +8,11 @@ import { useEffect, useMemo, useState } from 'preact/hooks';
 import { CardSpec, DraftTrying, api, problemOf } from '../api';
 import type { SlotContribution } from '../shell/slot';
 import { CardData, CardView, cardOf } from './card';
+import { tr } from '../i18n';
 
 async function callDraft(id: string, fn: string, input: unknown, trying: DraftTrying): Promise<unknown> {
     const report = await api.runDraft(id, fn, input, trying);
-    if (!report.ok) throw new Error(report.error ?? `${fn} не отработала`);
+    if (!report.ok) throw new Error(report.error ?? tr.cards.fnFailed(fn));
     return report.result;
 }
 
@@ -64,7 +65,7 @@ export function DraftCardPreview({
                 const next = cardOf(await callDraft(id, found.function, {}, how));
                 if (!alive) return;
                 if (next) setCard(next);
-                else setError(`Функция ${found.function} вернула не карточку.`);
+                else setError(tr.cards.notACard(found.function));
             } catch (e) {
                 if (alive) setError(e instanceof Error && !('status' in e) ? e.message : problemOf(e));
             }
@@ -84,11 +85,11 @@ export function DraftCardPreview({
             .catch((e) => setError(e instanceof Error ? e.message : problemOf(e)))
             .finally(() => setBusy(false));
     };
-    if (spec === undefined) return <p class="t-caption m-0">Загружаю карточку…</p>;
+    if (spec === undefined) return <p class="t-caption m-0">{tr.cards.loadingCard}</p>;
     if (spec === null) return <>{fallback ?? null}</>;
     return (
         <div class="flex flex-col gap-8">
-            {card ? <CardView app={id} card={card} tap={tap} busy={busy} /> : !error && <p class="t-caption m-0">Загружаю…</p>}
+            {card ? <CardView app={id} card={card} tap={tap} busy={busy} /> : !error && <p class="t-caption m-0">{tr.cards.loading}</p>}
             {error && (
                 <p class="t-caption m-0 c-dot-offline" role="alert">
                     {error}

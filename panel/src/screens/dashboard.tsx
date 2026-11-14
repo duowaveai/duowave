@@ -35,6 +35,10 @@ import {
     IconVoice,
 } from '../icons';
 import { StationDrawing, StationStage } from '../stations';
+import { usePanel } from '../shell/context';
+import { useOnComputer } from '../voice-input';
+import { micOn, onMic } from '../voice/mic';
+import { answering, onAnswering } from '../voice/speak';
 import { shade, useReducedMotion } from '../stations/kit';
 import { safeColor } from '../ui/media';
 import { useAvailability } from '../availability';
@@ -75,6 +79,8 @@ import type { SettingsTab } from './mind';
 import { DONE_MS, liveTripOf } from './trip';
 import { MODE_TITLES, Solved, Who } from '../truth';
 import { WhoThree } from './placement-map';
+import { tr } from '../i18n';
+import { byMode } from '../words';
 
 /** How far the stage's glow reaches past its core («Минимал»): what the blur(60px) spread was. */
 const GLOW_REACH = 110;
@@ -106,6 +112,9 @@ const TRIP: Array<[number, TripStage]> = [
     [5560, 'done'],
     [9560, 'idle'],
 ];
+
+/** Где нажимается рисунок, который сам этого не говорит: корпус Лайт 2 в рамке 240×200. */
+const LITE2_HIT = { x: 17, y: 17, w: 206, h: 176, r: 48 };
 
 /** Сколько ждать между перечитываниями моделей, характера и подключений: они меняются редко. */
 const REFRESH_MS = 15_000;
@@ -203,8 +212,22 @@ function useScene(fixed?: number): [preact.RefObject<HTMLDivElement>, Scene] {
     return [box, useMemo(() => sceneOf(size.width, size.room), [size.width, size.room])];
 }
 
+/**
+ * Что пульт делает сам в режиме «Микрофон»: слушает (микрофон открыт) или говорит ответ. Запрос шлюза начинается, когда
+ * фраза уже распознана, и кончается, когда «Мозг» дописал, — а пульт ещё говорит: эти шаги орбите показывает он.
+ */
+function useTalkStage(): 'listen' | 'speak' | null {
+    const [listening, setListening] = useState(micOn);
+    const [speaking, setSpeaking] = useState(answering);
+    useEffect(() => onMic(setListening), []);
+    useEffect(() => onAnswering(setSpeaking), []);
+    return listening ? 'listen' : speaking ? 'speak' : null;
+}
+
 export function Dashboard({ health, session, drawing, online, trip, skew = 0, version = 0, onOpenSettings, onOpenHouse, whoOpen, onToggleWho, room }: Props) {
     const mode: PanelMode = health?.panelMode ?? (health?.mode === 'relay' ? 'relay' : 'gateway');
+    const computer = useOnComputer();
+    const talkStage = useTalkStage();
     const [models, setModels] = useState<ModelsView | null>(null);
     // На колонке слух и голос — по списку шлюза: у компьютера, в облаке, у Яндекса.
     const availability = useAvailability();
@@ -310,14 +333,19 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
         persona,
         connectors,
         availability,
+        computer,
     };
     const truth = truthOf(data);
     const nodes = nodesOf(data, truth);
     const sats = satellitesOf(data);
-    const live = liveTripOf(trip, Date.now() + skew, nodes);
-    const shown = live?.stage ?? stage;
-    const lit = live?.lit ?? LIT[stage];
-    const [caption, captionSub] = live?.caption ?? captionOf(stage, nodes, mode);
+    const tripNow = liveTripOf(trip, Date.now() + skew, nodes);
+    // Режим «Микрофон»: пока пульт слушает или ещё говорит ответ, орбита показывает это, а не итог запроса.
+    const own: TripStage | null =
+        !computer || !talkStage ? null : talkStage === 'listen' ? 'listen' : !tripNow || tripNow.stage === 'done' ? 'speak' : null;
+    const live = own ? undefined : tripNow;
+    const shown = own ?? live?.stage ?? stage;
+    const lit = own ? LIT[own] : (live?.lit ?? LIT[stage]);
+    const [caption, captionSub] = live?.caption ?? captionOf(own ?? stage, nodes, mode, computer);
     // Кто работает на шаге настоящего запроса — тот и цвет; в примере — цвет узла.
     const brainTone = live?.tone ?? nodes.brain.tone;
     const voiceTone = live?.tone ?? nodes.voice.tone;
@@ -348,12 +376,12 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
     const linked = sats.flatMap((sat) => sat.on);
     const mayLinks = can('connectors.view');
     const linksCaption = sleeping
-        ? 'Подключения спят'
+        ? tr.dashboard.linksSleeping
         : !mayLinks
-          ? 'Подключения'
+          ? tr.dashboard.links
           : connectors
-            ? `Подключено · ${linked.length}`
-            : 'Подключения…';
+            ? tr.dashboard.linksCount(linked.length)
+            : tr.dashboard.linksReading;
 
     /** Один вопрос по орбите: слух слышит, мозг думает, голос отвечает — и в конце видно, что ушло из дома. */
     const play = (): void => {
@@ -364,8 +392,9 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
 
     const context: SpecContext = { data, nodes, health, openSettings: onOpenSettings, openSheet: setSheet };
     const { art } = scene;
-    /** Рисунок колонки — 240×200 точек; нажимается её корпус. */
+    /** Рисунок колонки — 240×200 точек; нажимается её корпус — где он, говорит рисунок (у ДиВи — его тело). */
     const k = art.size / 240;
+    const hit = drawing.hit ?? LITE2_HIT;
     const artStage = (shown === 'done' ? 'idle' : shown) as StationStage;
 
     // Смена колонки: прежняя уходит вправо, новая выезжает слева из глубины (только «Минимал» и без «меньше движения»).
@@ -457,13 +486,13 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
                     <button
                         class="dash-speaker"
                         style={{
-                            left: `${art.left + 17 * k}px`,
-                            top: `${art.top + 17 * k}px`,
-                            width: `${206 * k}px`,
-                            height: `${176 * k}px`,
-                            borderRadius: `${48 * k}px`,
+                            left: `${art.left + hit.x * k}px`,
+                            top: `${art.top + hit.y * k}px`,
+                            width: `${hit.w * k}px`,
+                            height: `${hit.h * k}px`,
+                            borderRadius: `${hit.r * k}px`,
                         }}
-                        aria-label={live ? `${live.label}. Показать путь вопроса на примере` : 'Показать путь вопроса'}
+                        aria-label={live ? tr.dashboard.showTripExample(live.label) : tr.dashboard.showTrip}
                         onClick={play}
                     />
                     {/* Карточка ответа во всех темах: точка — кто работает, что делает и что услышал или ответил; пока
@@ -493,11 +522,11 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
                         style={{ left: `${scene.width / 2}px`, top: `${scene.linksTop}px` }}
                         aria-label={`${
                             sleeping
-                                ? 'Подключения спят в режиме «Яндекс»'
+                                ? tr.dashboard.linksSleepingRelay
                                 : connectors
-                                  ? `Подключено ${linked.length}${linked.length ? `: ${linked.map((entry) => entry.manifest.title).join(', ')}` : ''}`
-                                  : 'Подключения'
-                        }. Открыть`}
+                                  ? tr.dashboard.linksLinked(linked.length, linked.map((entry) => entry.manifest.title).join(', '))
+                                  : tr.dashboard.links
+                        }. ${tr.dashboard.open}`}
                         onClick={() => setSheet('links')}
                     >
                         <span class="dash-sats" aria-hidden="true">
@@ -604,7 +633,7 @@ function OrbitNode({ spot, node, at, lit, onOpen }: { spot: OrbitKey; node: Node
                 width: `${width}px`,
                 transform: below ? undefined : 'translateY(-100%)',
             }}
-            aria-label={`${NODE_LABELS[spot]}: ${node.value}${where}. Изменить`}
+            aria-label={tr.dashboard.nodeAria(NODE_LABELS[spot], node.value, where)}
             onClick={onOpen}
         >
             {below ? (
@@ -673,8 +702,8 @@ interface SpecContext {
 }
 
 const pillClass = (tone: Tone): string => `pill pill-${tone === 'cloud' ? 'yandex' : tone}`;
-const RELAY_ABOUT = 'В режиме «Яндекс» всё решает Яндекс.';
-const ADMIN_ONLY = 'Менять может администратор.';
+const relayAbout = (): string => tr.dashboard.relayAbout;
+const adminOnly = (): string => tr.dashboard.adminOnly;
 
 /** Мышление и характер не на орбите: строка в шите мозга или голоса, когда там есть что выбрать (не Алиса, не «нет»). */
 function sheetLink(key: 'think' | 'persona', { nodes, openSheet }: SpecContext): Spec['links'] {
@@ -684,8 +713,16 @@ function sheetLink(key: 'think' | 'persona', { nodes, openSheet }: SpecContext):
     return [{ label: `${NODE_LABELS[key]}: ${value}`, open: () => openSheet(key) }];
 }
 
-/** Что показать в шите узла: варианты с тем, что можно здесь и сейчас, и честное «где это меняется» для остального. */
+/**
+ * Что показать в шите узла: варианты с тем, что можно здесь и сейчас, и честное «где это меняется» для остального. В
+ * режиме «Микрофон» вариантов Яндекса нет: ни Алисы мозгом, ни слуха Яндекса, ни голоса Алисы.
+ */
 function specFor(key: NodeKey, context: SpecContext): Spec {
+    const spec = stationSpec(key, context);
+    return context.data.computer ? { ...spec, choices: spec.choices.filter((choice) => choice.id !== 'yandex') } : spec;
+}
+
+function stationSpec(key: NodeKey, context: SpecContext): Spec {
     switch (key) {
         case 'brain':
             return brainSpec(context);
@@ -717,15 +754,15 @@ function brainSpec(context: SpecContext): Spec {
     const view = data.brainView;
     const alice: Choice = {
         id: 'yandex',
-        name: 'Алиса',
-        sub: data.mode === 'own' ? 'нельзя в режиме «Своё»' : 'отвечает Яндекс',
+        name: tr.dashboard.alice,
+        sub: data.mode === 'own' ? tr.dashboard.notAllowedInOwn : tr.dashboard.yandexAnswers,
         pill: { text: WHERE.yandex, tone: 'yandex' },
         on: executor === 'yandex',
         disabled: relay || data.mode === 'own' || !mayRoute,
-        confirm: `Станет «Алиса» вместо «${nodes.brain.value}»: разговор уйдёт Яндексу`,
+        confirm: tr.dashboard.becomesAliceInstead(nodes.brain.value),
         apply: async () => {
             await setFirst('yandex');
-            return 'Применено — со следующего вопроса.';
+            return tr.dashboard.appliedNext;
         },
     };
     if (!view) {
@@ -734,7 +771,7 @@ function brainSpec(context: SpecContext): Spec {
             key: 'brain',
             tone: nodes.brain.tone,
             title: NODE_LABELS.brain,
-            about: relay ? RELAY_ABOUT : 'Кто думает над ответом — первый шаг маршрута «Разговор».',
+            about: relay ? relayAbout() : tr.dashboard.brainAbout,
             choices: [
                 {
                     id: 'own',
@@ -743,15 +780,15 @@ function brainSpec(context: SpecContext): Spec {
                     pill: ours.usable ? { text: WHERE[ours.tone], tone: ours.tone } : undefined,
                     on: executor === 'own',
                     disabled: relay || !mayRoute || !ours.usable,
-                    confirm: `Станет «${ours.name}» вместо «${nodes.brain.value}»`,
+                    confirm: tr.dashboard.becomesInstead(ours.name, nodes.brain.value),
                     apply: async () => {
                         await setFirst('own');
-                        return 'Применено — со следующего вопроса.';
+                        return tr.dashboard.appliedNext;
                     },
                 },
                 alice,
             ],
-            notes: [!mayRoute && !relay ? ADMIN_ONLY : '', health?.dialog ? `Шлюз: ${health.dialog}` : ''].filter(Boolean),
+            notes: [!mayRoute && !relay ? adminOnly() : '', health?.dialog ? tr.dashboard.gatewayNote(health.dialog) : ''].filter(Boolean),
             links: sheetLink('think', context),
         };
     }
@@ -770,16 +807,16 @@ function brainSpec(context: SpecContext): Spec {
             return {
                 id: `${provider.id}:${model}`,
                 name,
-                sub: `${provider.title}${provider.check && !provider.check.ok ? ' · не прошёл проверку' : ''}`,
+                sub: `${provider.title}${provider.check && !provider.check.ok ? tr.dashboard.failedCheck : ''}`,
                 brand: provider.brand,
                 pill: { text: WHERE[tone], tone },
                 on,
                 disabled: relay || !mayChoose || (executor !== 'own' && !mayRoute),
-                confirm: `Станет «${name}» вместо «${nodes.brain.value}»`,
+                confirm: tr.dashboard.becomesInstead(name, nodes.brain.value),
                 apply: async () => {
                     await setFirst('own');
                     await api.chooseBrain({ fast: { provider: provider.id, model } });
-                    return 'Применено — со следующего вопроса.';
+                    return tr.dashboard.appliedNext;
                 },
             };
         });
@@ -789,15 +826,15 @@ function brainSpec(context: SpecContext): Spec {
               {
                   id: 'env',
                   name: `${view.env.provider === 'anthropic' ? claudeName(view.env.models.fast) : view.env.models.fast}`,
-                  sub: `${view.env.title} · из .env`,
+                  sub: tr.dashboard.fromEnv(view.env.title),
                   pill: { text: WHERE[view.env.cloud ? 'cloud' : 'own'], tone: view.env.cloud ? 'cloud' : 'own' },
                   on: executor === 'own' && !fast,
                   disabled: relay || !mayChoose || (executor !== 'own' && !mayRoute),
-                  confirm: `Станет модель из .env вместо «${nodes.brain.value}»`,
+                  confirm: tr.dashboard.becomesEnv(nodes.brain.value),
                   apply: async () => {
                       await setFirst('own');
                       await api.chooseBrain({ fast: null });
-                      return 'Применено — со следующего вопроса.';
+                      return tr.dashboard.appliedNext;
                   },
               },
           ]
@@ -806,24 +843,24 @@ function brainSpec(context: SpecContext): Spec {
         key: 'brain',
         tone: nodes.brain.tone,
         title: NODE_LABELS.brain,
-        about: relay ? RELAY_ABOUT : 'Кто думает над ответом — первый шаг маршрута «Разговор».',
+        about: relay ? relayAbout() : tr.dashboard.brainAbout,
         choices: [...models, ...envChoice, alice],
         notes: [
-            !mayChoose && !relay ? ADMIN_ONLY : '',
-            models.length ? '' : 'Провайдеров пока нет: добавьте свой ключ в «Персонаж» → «Мозг».',
-            health?.dialog ? `Шлюз: ${health.dialog}` : '',
+            !mayChoose && !relay ? adminOnly() : '',
+            models.length ? '' : tr.dashboard.noProviders,
+            health?.dialog ? tr.dashboard.gatewayNote(health.dialog) : '',
         ].filter(Boolean),
-        links: [...sheetLink('think', context), { label: 'Открыть персонажа', open: () => openSettings('character') }, { label: 'Провайдеры и все модели', open: () => openSettings('brain') }],
+        links: [...sheetLink('think', context), { label: tr.dashboard.openCharacter, open: () => openSettings('character') }, { label: tr.dashboard.providersAndModels, open: () => openSettings('brain') }],
     };
 }
 
 /** Глубина Claude по ступеням мышления: быстро, с умом, глубоко. */
 const EFFORT_OF: Record<Thinking, LlmEffort> = { fast: 'low', smart: 'medium', deep: 'high' };
-const EFFORT_SUB: Record<Thinking, string> = {
-    fast: 'думает меньше всех, первое слово за секунду',
-    smart: 'думает чуть дольше, точнее',
-    deep: 'думает дольше всех над сложным',
-};
+const effortSub = (): Record<Thinking, string> => ({
+    fast: tr.dashboard.effortFast,
+    smart: tr.dashboard.effortSmart,
+    deep: tr.dashboard.effortDeep,
+});
 
 /** Мышление: у Claude глубина выбирается здесь; у других моделей — только показываем, что есть. */
 function thinkSpec({ data, nodes, openSettings }: SpecContext): Spec {
@@ -838,28 +875,28 @@ function thinkSpec({ data, nodes, openSettings }: SpecContext): Spec {
         title: NODE_LABELS.think,
         about:
             nodes.brain.tone === 'yandex'
-                ? 'Думает Алиса — её глубину не выбрать.'
+                ? tr.dashboard.thinkAlice
                 : level
-                  ? 'Сколько думать перед ответом.'
-                  : 'Мозг не выбран.',
+                  ? tr.dashboard.thinkHowLong
+                  : tr.dashboard.brainNotChosenDot,
         choices: (Object.keys(THINKING) as Thinking[]).map((id) => ({
             id,
             name: THINKING[id].name,
-            sub: claude ? EFFORT_SUB[id] : THINKING[id].sub,
+            sub: claude ? effortSub()[id] : THINKING[id].sub,
             pill: { text: THINKING[id].pill, tone: 'off' as Tone },
             on: claude ? data.brain?.effort === EFFORT_OF[id] || (id === 'fast' && !data.brain?.effort) : level === id,
             disabled: !mayChoose,
             apply: async () => {
                 await api.chooseBrain({ effort: EFFORT_OF[id] });
-                return 'Применено — со следующего вопроса.';
+                return tr.dashboard.appliedNext;
             },
         })),
         notes: [
-            level ? `Сейчас: ${nodes.think.detail}.` : '',
-            claude && !fromPanel ? 'Глубину модели из .env задаёт LLM_EFFORT; выберите Claude в «Персонаж» → «Мозг», и она станет меняться здесь.' : '',
-            thinks && !claude ? 'Глубина выбирается только у Claude. Умную модель для сложного выбирают в «Персонаж» → «Мозг».' : '',
+            level ? tr.dashboard.thinkNow(nodes.think.detail) : '',
+            claude && !fromPanel ? tr.dashboard.effortFromEnv : '',
+            thinks && !claude ? tr.dashboard.effortClaudeOnly : '',
         ].filter(Boolean),
-        links: [{ label: 'Быстрая и умная модели', open: () => openSettings('brain') }],
+        links: [{ label: tr.dashboard.fastAndSmartModels, open: () => openSettings('brain') }],
     };
 }
 
@@ -876,14 +913,14 @@ function personaSpec({ data, nodes, openSettings }: SpecContext): Spec {
         disabled: blocked || !mayEdit,
         apply: async () => {
             await api.setPreset(preset.id);
-            return 'Со следующего вопроса.';
+            return tr.dashboard.fromNextQuestion;
         },
     }));
     if (info && info.activePreset === null)
         choices.unshift({
             id: 'custom',
-            name: nodes.persona.value === 'нет' ? 'Свой' : nodes.persona.value,
-            sub: info.source === 'file' ? 'из файла DIALOG_SYSTEM_PROMPT_FILE' : 'свой текст — правится в «Персонаж» → «Персонажи»',
+            name: nodes.persona.tone === 'off' ? tr.dashboard.custom : nodes.persona.value,
+            sub: info.source === 'file' ? tr.dashboard.personaFromFile : tr.dashboard.personaOwnText,
             on: true,
             disabled: true,
         });
@@ -893,14 +930,14 @@ function personaSpec({ data, nodes, openSettings }: SpecContext): Spec {
         title: NODE_LABELS.persona,
         about:
             data.mode === 'relay'
-                ? RELAY_ABOUT
+                ? relayAbout()
                 : nodes.brain.tone === 'yandex'
-                  ? 'Отвечает Алиса — со своим характером.'
-                  : 'Кем колонка отвечает, со следующего вопроса.',
+                  ? tr.dashboard.personaAliceOwn
+                  : byMode(tr.dashboard.personaAboutStation, tr.dashboard.personaAboutDevice),
         choices,
-        empty: info ? undefined : 'Читаем характер…',
-        notes: [!mayEdit && !blocked ? ADMIN_ONLY : ''].filter(Boolean),
-        links: mayEdit ? [{ label: 'Персонажи и свой характер', open: () => openSettings('characters') }] : [],
+        empty: info ? undefined : tr.dashboard.readingPersona,
+        notes: [!mayEdit && !blocked ? adminOnly() : ''].filter(Boolean),
+        links: mayEdit ? [{ label: tr.dashboard.charactersAndOwn, open: () => openSettings('characters') }] : [],
     };
 }
 
@@ -927,7 +964,7 @@ function earSpec({ data, nodes, health, openSettings }: SpecContext): Spec {
             choices.push({
                 id: 'loaded',
                 name: view.asrLoaded,
-                sub: 'модель не из каталога',
+                sub: tr.dashboard.modelNotInCatalog,
                 pill: { text: WHERE[tone], tone },
                 on: !relay,
                 disabled: relay,
@@ -937,8 +974,8 @@ function earSpec({ data, nodes, health, openSettings }: SpecContext): Spec {
             choices.push({
                 id: waiting.id,
                 name: shortTitle(waiting.title),
-                sub: view.localAsr.phase === 'failed' ? (view.localAsr.error ?? 'не встала') : `выбрана — ${localAsrLine(view.localAsr)}`,
-                pill: { text: view.localAsr.phase === 'failed' ? 'сбой' : 'готовится', tone: 'off' },
+                sub: view.localAsr.phase === 'failed' ? (view.localAsr.error ?? tr.dashboard.didNotStart) : tr.dashboard.chosenLocal(localAsrLine(view.localAsr)),
+                pill: { text: view.localAsr.phase === 'failed' ? tr.dashboard.failedPill : tr.dashboard.preparingPill, tone: 'off' },
                 on: false,
                 disabled: true,
             });
@@ -946,27 +983,27 @@ function earSpec({ data, nodes, health, openSettings }: SpecContext): Spec {
             choices.push({
                 id: waiting.id,
                 name: shortTitle(waiting.title),
-                sub: view.canRestart ? 'выбрана — заработает после перезапуска' : 'выбрана — заработает, когда сервер перезапустят',
-                pill: { text: 'ждёт', tone: 'off' },
+                sub: view.canRestart ? tr.dashboard.waitingRestartStation : tr.dashboard.waitingRestartServer,
+                pill: { text: tr.dashboard.waitsPill, tone: 'off' },
                 on: false,
                 disabled: relay || !mayModels || !view.canRestart,
-                confirm: `Перезапустить распознавание с «${shortTitle(waiting.title)}»? Новая модель может скачиваться минуты.`,
+                confirm: tr.dashboard.restartRecognition(shortTitle(waiting.title)),
                 apply: async () => {
                     await api.restartServer('asr');
-                    return 'Слух перезапущен.';
+                    return tr.dashboard.earRestarted;
                 },
             });
         choices.push({
             id: 'yandex',
-            name: 'Яндекс',
-            sub: data.mode === 'own' ? 'нельзя в режиме «Своё»' : 'колонка уходит к Яндексу целиком',
+            name: tr.dashboard.yandexWord,
+            sub: data.mode === 'own' ? tr.dashboard.notAllowedInOwn : tr.dashboard.stationGoesToYandex,
             pill: { text: WHERE.yandex, tone: 'yandex' },
             on: relay,
             disabled: relay || data.mode === 'own' || !can('station.mode'),
-            confirm: `Станет «Яндекс» вместо «${nodes.ear.value}»: колонка уйдёт к Яндексу целиком — режим «Яндекс»`,
+            confirm: tr.dashboard.becomesYandexEar(nodes.ear.value),
             apply: async () => {
                 await api.setMode('relay');
-                return 'Колонка переподключается к Яндексу…';
+                return tr.dashboard.stationReconnecting;
             },
         });
     }
@@ -974,11 +1011,11 @@ function earSpec({ data, nodes, health, openSettings }: SpecContext): Spec {
         key: 'ear',
         tone: nodes.ear.tone,
         title: NODE_LABELS.ear,
-        about: relay ? 'Сейчас слушает Яндекс; свой слух вернут «Вместе» и «Своё».' : 'Кто превращает речь в текст.',
+        about: relay ? tr.dashboard.earAboutRelay : tr.dashboard.earAbout,
         choices,
-        empty: view ? undefined : 'Читаем модели…',
-        notes: [view && !mayModels && !relay ? ADMIN_ONLY : '', health?.speech?.asr ? `Шлюз: ${health.speech.asr}` : ''].filter(Boolean),
-        links: [{ label: 'Все модели распознавания', open: () => openSettings('recognition') }],
+        empty: view ? undefined : tr.dashboard.readingModels,
+        notes: [view && !mayModels && !relay ? adminOnly() : '', health?.speech?.asr ? tr.dashboard.gatewayNote(health.speech.asr) : ''].filter(Boolean),
+        links: [{ label: tr.dashboard.allRecognitionModels, open: () => openSettings('recognition') }],
     };
 }
 
@@ -993,16 +1030,16 @@ function voiceSpec(context: SpecContext): Spec {
         const { needsRestart } = await api.activateTts(modelId, voiceId, anyway);
         if (needsRestart && view?.canRestart) {
             await api.restartServer('tts');
-            return 'Голосовой сервер перезапущен — голос звучит.';
+            return tr.dashboard.voiceServerRestarted;
         }
-        return modelId === 'yandex' ? 'Говорит Алиса.' : 'Говорит со следующего ответа.';
+        return modelId === 'yandex' ? tr.dashboard.aliceSpeaks : tr.dashboard.speaksNextAnswer;
     };
     const choices: Choice[] = [];
     if (view) {
         choices.push({
             id: 'yandex',
-            name: 'Алиса',
-            sub: data.mode === 'own' ? 'в «Своём» вместо неё говорит наш' : 'голос Яндекса',
+            name: tr.dashboard.alice,
+            sub: data.mode === 'own' ? tr.dashboard.voiceAliceInOwn : tr.dashboard.yandexVoice,
             pill: { text: WHERE.yandex, tone: 'yandex' },
             on: view.voice === 'yandex',
             disabled: relay || !mayModels,
@@ -1017,7 +1054,7 @@ function voiceSpec(context: SpecContext): Spec {
                     name: voiceName(card, voiceId),
                     sub:
                         card.group === 'own'
-                            ? `свой · ${card.own?.engineTitle ?? card.engine}`
+                            ? tr.dashboard.ownEngine(card.own?.engineTitle ?? card.engine)
                             : card.engine === 'silero'
                               ? `${shortTitle(card.title)} · ${voiceId?.split('/').pop() ?? ''}`
                               : `Piper${card.quality ? ` · ${card.quality}` : ''}`,
@@ -1033,16 +1070,16 @@ function voiceSpec(context: SpecContext): Spec {
         key: 'voice',
         tone: nodes.voice.tone,
         title: NODE_LABELS.voice,
-        about: relay ? 'В режиме «Яндекс» говорит Алиса.' : 'Чем колонка произносит ответ.',
+        about: relay ? tr.dashboard.voiceAboutRelay : byMode(tr.dashboard.voiceAboutStation, tr.dashboard.voiceAboutDevice),
         choices,
-        empty: view ? undefined : 'Читаем голоса…',
+        empty: view ? undefined : tr.dashboard.readingVoices,
         notes: [
-            view && !view.ownVoiceServer ? 'Свой голосовой сервер не задан (TTS_OWN_URL): можно только голос Алисы.' : '',
-            view?.ownVoiceServer && !own ? 'Своих голосов на сервере пока нет — скачайте в «Персонаж» → «Голос».' : '',
-            view && !mayModels && !relay ? ADMIN_ONLY : '',
-            health?.tts ? `Шлюз: ${health.tts}` : '',
+            view && !view.ownVoiceServer ? byMode(tr.dashboard.noOwnVoiceServerStation, tr.dashboard.noOwnVoiceServerDevice) : '',
+            view?.ownVoiceServer && !own ? tr.dashboard.noOwnVoices : '',
+            view && !mayModels && !relay ? adminOnly() : '',
+            health?.tts ? tr.dashboard.gatewayNote(health.tts) : '',
         ].filter(Boolean),
-        links: [...sheetLink('persona', context), { label: 'Открыть персонажа', open: () => openSettings('character') }, { label: 'Скачать другие голоса', open: () => openSettings('voice') }],
+        links: [...sheetLink('persona', context), { label: tr.dashboard.openCharacter, open: () => openSettings('character') }, { label: tr.dashboard.downloadMoreVoices, open: () => openSettings('voice') }],
     };
 }
 
@@ -1126,23 +1163,23 @@ function ChoiceSheet({ spec, onClose, onApplied }: { spec: Spec; onClose: () => 
                     <p>{pending.confirm}</p>
                     <div class="flex gap-8">
                         <button class="pill pill-own dash-confirm-btn" onClick={() => void run(pending)}>
-                            Применить
+                            {tr.dashboard.apply}
                         </button>
                         <button class="pill pill-off dash-confirm-btn" onClick={() => setPending(null)}>
-                            Отменить
+                            {tr.dashboard.cancel}
                         </button>
                     </div>
                 </div>
             )}
             {tight && (
                 <div role="status" class="dash-confirm">
-                    <p>Голос не включён. {tight.text}</p>
+                    <p>{tr.dashboard.voiceNotEnabled(tight.text)}</p>
                     <div class="flex gap-8">
                         <button class="pill pill-own dash-confirm-btn" onClick={() => void run(tight.choice, true)}>
-                            Включить всё равно
+                            {tr.dashboard.enableAnyway}
                         </button>
                         <button class="pill pill-off dash-confirm-btn" onClick={() => setTight(null)}>
-                            Отменить
+                            {tr.dashboard.cancel}
                         </button>
                     </div>
                 </div>
@@ -1203,18 +1240,18 @@ function LinksSheet({
     }
     return (
         <Sheet
-            title="Подключено"
-            about={sleeping ? 'В режиме «Яндекс» подключения спят.' : 'Кого колонка может позвать на помощь.'}
+            title={tr.dashboard.linksTitle}
+            about={sleeping ? tr.dashboard.linksAboutRelay : byMode(tr.dashboard.linksAboutStation, tr.dashboard.linksAboutDevice)}
             icon={<SheetIcon icon={IconLinks} tone={sleeping ? 'off' : 'own'} />}
             onClose={onClose}
         >
             {!allowed ? (
                 <p class="t-meta m-0">
-                    Подключения видят администратор и домашние.
+                    {tr.dashboard.linksAdminOnly}
                 </p>
             ) : !loaded ? (
                 <p class="t-meta m-0">
-                    Читаем подключения…
+                    {tr.dashboard.linksLoading}
                 </p>
             ) : (
                 <div class="flex flex-col">
@@ -1242,7 +1279,7 @@ function LinksSheet({
             )}
             {allowed && (
                 <button class="dash-sheet-link" onClick={() => onOpenHouse()}>
-                    Все подключения
+                    {tr.dashboard.allLinks}
                 </button>
             )}
         </Sheet>
@@ -1251,10 +1288,10 @@ function LinksSheet({
 
 /** Плашка подключения: не настроено и выключено — сланец, нет связи — коралл, скоро — нет в этой сборке, иначе где оно: дома, облако, помощник. */
 function connectorPill(entry: ConnectorView): { pill: string; cls: string } {
-    if (entry.status.state === 'soon') return { pill: 'скоро', cls: 'pill pill-off' };
-    if (entry.status.state === 'unset') return { pill: 'не настроено', cls: 'pill pill-off' };
-    if (entry.status.state === 'off') return { pill: 'выкл', cls: 'pill pill-off' };
-    if (entry.status.state === 'error') return { pill: 'нет связи', cls: 'pill pill-error' };
+    if (entry.status.state === 'soon') return { pill: tr.dashboard.pillSoon, cls: 'pill pill-off' };
+    if (entry.status.state === 'unset') return { pill: tr.dashboard.pillUnset, cls: 'pill pill-off' };
+    if (entry.status.state === 'off') return { pill: tr.dashboard.pillOff, cls: 'pill pill-off' };
+    if (entry.status.state === 'error') return { pill: tr.dashboard.pillNoLink, cls: 'pill pill-error' };
     if (entry.manifest.kind === 'agent') return { pill: WHERE.agent, cls: 'pill pill-agent' };
     return entry.manifest.cloud ? { pill: WHERE.cloud, cls: 'pill pill-yandex' } : { pill: WHERE.own, cls: 'pill pill-own' };
 }
@@ -1266,18 +1303,27 @@ function connectorPill(entry: ConnectorView): { pill: string; cls: string } {
  */
 function TruthStrip({ nodes, truth, mode, open, onToggle }: { nodes: Record<NodeKey, NodeView>; truth: Solved; mode: PanelMode; open: boolean; onToggle: () => void }) {
     const who = (node: NodeView): Who => ({ host: null, value: node.value, sub: node.detail, tone: node.tone === 'agent' ? 'own' : node.tone });
-    const changed = truth.mode !== mode ? ` · сейчас «${MODE_TITLES[truth.mode]}» вместо «${MODE_TITLES[mode]}»` : '';
+    const changed = truth.mode !== mode ? tr.dashboard.nowInstead(MODE_TITLES[truth.mode], MODE_TITLES[mode]) : '';
     const note = (truth.notes.join(' ') + changed).trim();
+    const panel = usePanel();
     // Скрыта и сказать нечего — строки нет совсем; открыть можно словом в подписи режима над дашбордом.
     if (!open && !note) return null;
     return (
-        <section class="truth-strip" aria-label="Кто отвечает сейчас">
+        <section class="truth-strip" aria-label={tr.dashboard.whoAnswersNow}>
             {open && <WhoThree ear={who(nodes.ear)} brain={who(nodes.brain)} voice={who(nodes.voice)} />}
             {note && (
                 <p class="truth-note">
                     {note}{' '}
+                    {/* Режим «Микрофон»: чего не хватает — сразу туда, где это ставят. */}
+                    {truth.fixes?.map((fix) => (
+                        <span key={fix.label}>
+                            <button class="truth-more" onClick={() => panel.go(...fix.place)}>
+                                {fix.label}
+                            </button>{' '}
+                        </span>
+                    ))}
                     <button class="truth-more" aria-expanded={open} onClick={onToggle}>
-                        {open ? 'свернуть' : 'подробнее'}
+                        {open ? tr.dashboard.collapse : tr.dashboard.more}
                     </button>
                 </p>
             )}

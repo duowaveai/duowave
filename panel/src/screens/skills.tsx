@@ -5,6 +5,7 @@
 import { useState } from 'preact/hooks';
 
 import { can, sessionStore } from '../api';
+import { tr } from '../i18n';
 import { IconChevronLeft, IconChevronRight } from '../icons';
 import { usePanel, useSectionTab } from '../shell/context';
 import { Contribution, useSlot } from '../shell/slot';
@@ -19,6 +20,7 @@ import { WorkshopScreen } from './workshop';
 import { MemoryScreen } from './recall';
 import { OwnFrame } from './helper-pc';
 import { TOP_VIA } from '../via';
+import { onComputer } from '../voice-input';
 
 const isAdmin = (): boolean => can('plugins.manage') && sessionStore.get()?.role === 'admin';
 
@@ -35,21 +37,20 @@ export function SkillsSection() {
             <>
                 <button class="deeper-back" onClick={() => setTab('list')}>
                     <IconChevronLeft size={16} />
-                    Приложения
+                    {tr.skills.back}
                 </button>
                 {tab === 'memory' && can('memory.view') && <MemoryScreen />}
                 {tab === 'installed' && <PackagesTab part="installed" />}
                 {tab === 'catalog' && <PackagesTab part="catalog" />}
                 {/* Мастерская — у компьютера: черновики пишутся там, ставятся на колонку (этап 4). */}
-                {tab === 'workshop' && (TOP_VIA ? <OwnFrame page="workshop" title="Мастерская" /> : <WorkshopScreen />)}
+                {tab === 'workshop' && (TOP_VIA ? <OwnFrame page="workshop" title={tr.skills.workshop} /> : <WorkshopScreen />)}
                 {contributed && (
                     <Contribution
                         entry={contributed}
                         fallback={
                             <section class="card glass" role="alert">
                                 <p class="t-meta m-0">
-                                    «{contributed.title ?? contributed.id}» не открылось — ошибка в приложении «{contributed.plugin}» (подробности в консоли
-                                    браузера). Остальные приложения работают.
+                                    {tr.skills.contributedFailed(contributed.title ?? contributed.id, contributed.plugin)}
                                 </p>
                             </section>
                         }
@@ -64,15 +65,15 @@ function SkillsList({ onOpen, extra }: { onOpen: (tab: string) => void; extra: A
     const panel = usePanel();
     const [asking, setAsking] = useState(false);
     const places: Array<{ key: string; title: string; sub: string; shown: boolean }> = [
-        { key: 'memory', title: 'Память', sub: 'что персонажи помнят о доме: люди, связи, пауза', shown: can('memory.view') },
-        { key: 'installed', title: 'Установленные приложения', sub: 'включить, выключить, настроить, обновить', shown: can('station.view') },
-        { key: 'catalog', title: 'Добавить из каталога', sub: 'приложения, персонажи и темы от DuoWave и сообщества', shown: can('station.view') },
-        { key: 'workshop', title: 'Сделать своё приложение', sub: 'агент мастерской напишет его по вашему описанию', shown: isAdmin() },
-        ...extra.map((entry) => ({ key: entry.key, title: entry.title, sub: 'от приложения', shown: true })),
+        { key: 'memory', title: tr.skills.placeMemory, sub: tr.skills.placeMemorySub, shown: can('memory.view') },
+        { key: 'installed', title: tr.skills.placeInstalled, sub: tr.skills.placeInstalledSub, shown: can('station.view') },
+        { key: 'catalog', title: tr.skills.placeCatalog, sub: tr.skills.placeCatalogSub, shown: can('station.view') },
+        { key: 'workshop', title: tr.skills.placeWorkshop, sub: tr.skills.placeWorkshopSub, shown: isAdmin() },
+        ...extra.map((entry) => ({ key: entry.key, title: entry.title, sub: tr.skills.placeFromApp, shown: true })),
     ];
     return (
         <div class="skills-page">
-            <section class="card glass card-list" aria-label="Память, установленное и новое">
+            <section class="card glass card-list" aria-label={tr.skills.listLabel}>
                 <div class="w-rows">
                     {places
                         .filter((place) => place.shown)
@@ -87,8 +88,9 @@ function SkillsList({ onOpen, extra }: { onOpen: (tab: string) => void; extra: A
                         ))}
                 </div>
             </section>
-            <RoutesScreen health={panel.health} catalog={panel.catalog} title="Что умеет колонка" />
-            <Unsupported />
+            {/* Таблица «Что умеет колонка» и её «Пока не умеем» — о колонке: в режиме «Микрофон» их нет. */}
+            {!onComputer() && <RoutesScreen health={panel.health} catalog={panel.catalog} title={tr.skills.speakerCan} />}
+            {!onComputer() && <Unsupported />}
             {can('connectors.view') && (
                 <>
                     <Connectors onOpenSettings={(place) => panel.go(...settingsPlace(place))} openId={panel.openConnector} onOpened={panel.connectorOpened} />
@@ -110,12 +112,12 @@ function Unsupported() {
         <section class="card glass card-list" aria-labelledby="unsupported-h">
             <div class="card-head">
                 <h2 id="unsupported-h" class="t-title-xs m-0">
-                    Пока не умеем
+                    {tr.skills.unsupportedTitle}
                 </h2>
                 <span class="t-meta">{list.length || ''}</span>
             </div>
             {list.length === 0 ? (
-                <p class="w-cap m-0 pb-8">Всё, о чём спрашивали, колонка умеет.</p>
+                <p class="w-cap m-0 pb-8">{tr.skills.unsupportedNone}</p>
             ) : (
                 <div class="w-rows">
                     {list.slice(0, 5).map((entry) => (
@@ -128,7 +130,7 @@ function Unsupported() {
                             </span>
                             {teach && (
                                 <button class="w-btn" onClick={() => panel.go('skills', 'workshop', undefined, { new: 'plugin', teach: entry.text })}>
-                                    Научить
+                                    {tr.skills.teach}
                                 </button>
                             )}
                         </div>

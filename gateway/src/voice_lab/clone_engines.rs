@@ -206,8 +206,8 @@ pub struct Verdict {
     pub reason: Option<String>,
 }
 
-fn no(reason: &str) -> Verdict {
-    Verdict { supported: false, reason: Some(reason.to_string()), ..Verdict::default() }
+fn no(reason: impl Into<String>) -> Verdict {
+    Verdict { supported: false, reason: Some(reason.into()), ..Verdict::default() }
 }
 
 fn yes(device: Device, imprint_device: Device, slow: bool) -> Verdict {
@@ -217,16 +217,20 @@ fn yes(device: Device, imprint_device: Device, slow: bool) -> Verdict {
 /// Whether an engine runs on this computer, and on what (the table in clone-server/README.md).
 pub fn verdict(engine: &EngineSpec, platform: &PlatformInfo) -> Verdict {
     if platform.docker {
-        return no("Шлюз запущен в Docker: модели голоса нужно ставить рядом с ним — пока не поддерживается.");
+        return no(crate::tr!(
+            "Шлюз запущен в Docker: модели голоса нужно ставить рядом с ним — пока не поддерживается."
+        ));
     }
     if platform.ram_mb < 8_000 {
-        return no("Мало памяти: нужно от 8 ГБ.");
+        return no(crate::tr!("Мало памяти: нужно от 8 ГБ."));
     }
     let nvidia = platform.gpu.kind == GpuKind::Nvidia;
     match platform.os {
         OsName::Darwin => {
             if platform.arch != "arm64" {
-                return no("Мак на Intel: PyTorch новее 2.2 для него не выходит, а модели нужен 2.4 и выше.");
+                return no(crate::tr!(
+                    "Мак на Intel: PyTorch новее 2.2 для него не выходит, а модели нужен 2.4 и выше."
+                ));
             }
             if engine.id == EngineId::Cosyvoice3 {
                 yes(Device::Cpu, Device::Cpu, true)
@@ -245,14 +249,16 @@ pub fn verdict(engine: &EngineSpec, platform: &PlatformInfo) -> Verdict {
         }
         OsName::Win32 => {
             if !nvidia {
-                return no("На Windows нужна видеокарта NVIDIA.");
+                return no(crate::tr!("На Windows нужна видеокарта NVIDIA."));
             }
             if engine.id == EngineId::Cosyvoice3 {
-                return no("CosyVoice на Windows ставится ненадёжно — возьмите OmniVoice.");
+                return no(crate::tr!("CosyVoice на Windows ставится ненадёжно — возьмите OmniVoice."));
             }
             yes(Device::Cuda, Device::Cuda, false)
         }
-        OsName::Other => no("Эта система не поддерживается: нужен Мак на Apple Silicon, Linux или Windows с NVIDIA."),
+        OsName::Other => {
+            no(crate::tr!("Эта система не поддерживается: нужен Мак на Apple Silicon, Linux или Windows с NVIDIA."))
+        }
     }
 }
 

@@ -9,6 +9,9 @@ import { SectionTabs, TabEntry } from '../ui/tabs';
 import { OwnVoiceRows, OwnVoicesHeader, VoiceWizard } from './voice-lab';
 import { localAsrLine, localAsrPercent } from './local-asr';
 import { ask } from '../ui/confirm';
+import { onComputer } from '../voice-input';
+import { byMode } from '../words';
+import { tr } from '../i18n';
 
 export type ModelsTab = 'voice' | 'recognition';
 type Tab = ModelsTab;
@@ -59,11 +62,11 @@ const LANGUAGES: Record<string, string> = {
 };
 
 /** Качество пайпера: код реестра → подпись на пилюле, от лёгкого к тяжёлому. */
-const QUALITIES: Array<{ id: string; label: string }> = [
-    { id: 'x_low', label: 'совсем лёгкое' },
-    { id: 'low', label: 'лёгкое' },
-    { id: 'medium', label: 'среднее' },
-    { id: 'high', label: 'высокое' },
+const qualities = (): Array<{ id: string; label: string }> => [
+    { id: 'x_low', label: tr.models.qualityXLow },
+    { id: 'low', label: tr.models.qualityLow },
+    { id: 'medium', label: tr.models.qualityMedium },
+    { id: 'high', label: tr.models.qualityHigh },
 ];
 
 const langOf = (locale?: string): string => (locale ? locale.split('_')[0] : '');
@@ -80,7 +83,7 @@ function DownloadBar({ download }: { download: DownloadState }) {
     if (download.state === 'done' || download.state === 'canceled') return null;
     return (
         <div class="flex items-center gap-10">
-            <div role="progressbar" aria-label="Скачивание" aria-valuenow={percent} class="flex-1 h-8 r-4 bg-track overflow-hidden">
+            <div role="progressbar" aria-label={tr.models.downloadLabel} aria-valuenow={percent} class="flex-1 h-8 r-4 bg-track overflow-hidden">
                 <div class="progress-fill" style={{ width: `${percent}%`, transition: 'width .3s' }} />
             </div>
             <span class="t-caption fw-700 flex-none">
@@ -112,33 +115,34 @@ function PendingVoice({ pending, title, isAdmin, onChanged }: { pending: TtsPend
     const voiceId = pending.voiceId ?? undefined;
     // Чего ждём: шлюз говорит это в waitFor; needs — запасной путь для старого ответа.
     const kind = pending.waitFor?.kind ?? pending.needs?.kind ?? 'engine';
-    const what = pending.needs ? needsWhat(pending.needs) : kind === 'file' ? 'голос' : kind === 'imprint' ? 'снимок голоса' : 'модель';
+    const what = pending.needs ? needsWhat(pending.needs) : kind === 'file' ? tr.models.whatVoice : kind === 'imprint' ? tr.models.whatImprint : tr.models.whatModel;
     return (
         <section class="card glass card-list" aria-labelledby="pending-h">
             <div class="card-head">
                 <h2 id="pending-h" class="t-title-xs m-0">
-                    Голос ждёт
+                    {tr.models.pendingTitle}
                 </h2>
-                <span class="t-meta">«{title}»</span>
+                <span class="t-meta">{tr.models.quoted(title)}</span>
             </div>
             <div class="pending-row">
                 {pending.state === 'tight' ? (
                     <span class="t-body-sm c-pill-yandex-fg" role="status">
-                        Всё встало, но памяти впритык{pending.reason ? `: ${pending.reason}` : '.'} Включить «{title}» всё равно?
+                        {tr.models.pendingTight(title, pending.reason ?? '')}
                     </span>
                 ) : pending.state === 'failed' ? (
                     <span class="t-body-sm c-dot-offline" role="alert">
-                        Не вышло {kind === 'file' ? 'скачать' : kind === 'imprint' ? 'снять' : 'поставить'} {what}
-                        {pending.reason ? `: ${pending.reason}` : '.'}
+                        {tr.models.pendingFailed(
+                            kind === 'file' ? tr.models.verbDownload : kind === 'imprint' ? tr.models.verbImprint : tr.models.verbInstall,
+                            what,
+                            pending.reason ?? '',
+                        )}
                     </span>
                 ) : (
                     <>
                         <span class="t-body-sm">
-                            {kind === 'file'
-                                ? `Скачиваю ${what} — «${title}» включится сам, когда файл скачается.`
-                                : `Ставлю ${what} — «${title}» включится сам, когда она встанет.`}
+                            {kind === 'file' ? tr.models.pendingDownloading(what, title) : tr.models.pendingInstalling(what, title)}
                         </span>
-                        {pending.progress !== undefined && <Progress percent={pending.progress} label={`Установка: ${title}`} />}
+                        {pending.progress !== undefined && <Progress percent={pending.progress} label={tr.models.installProgress(title)} />}
                     </>
                 )}
                 {error && (
@@ -151,7 +155,7 @@ function PendingVoice({ pending, title, isAdmin, onChanged }: { pending: TtsPend
                         {pending.state === 'tight' && (
                             <Action
                                 tone="on"
-                                label="Включить всё равно"
+                                label={tr.models.enableAnyway}
                                 busy={busy === 'anyway'}
                                 disabled={!!busy}
                                 onClick={() => void run('anyway', () => api.activateTts(pending.modelId, voiceId, true))}
@@ -160,13 +164,13 @@ function PendingVoice({ pending, title, isAdmin, onChanged }: { pending: TtsPend
                         {pending.state === 'failed' && (
                             <Action
                                 tone="on"
-                                label="Попробовать снова"
+                                label={tr.models.tryAgain}
                                 busy={busy === 'retry'}
                                 disabled={!!busy}
                                 onClick={() => void run('retry', () => api.activateTts(pending.modelId, voiceId, false, true))}
                             />
                         )}
-                        <Action label="Отменить" busy={busy === 'cancel'} disabled={!!busy} onClick={() => void run('cancel', () => api.cancelTtsPending())} />
+                        <Action label={tr.models.cancelUpper} busy={busy === 'cancel'} disabled={!!busy} onClick={() => void run('cancel', () => api.cancelTtsPending())} />
                     </div>
                 )}
             </div>
@@ -175,9 +179,9 @@ function PendingVoice({ pending, title, isAdmin, onChanged }: { pending: TtsPend
 }
 
 /** Голос и распознавание — вкладки сверху; мозг и характер живут в разделе «Мозг». */
-const MODELS_TABS: Array<TabEntry<ModelsTab>> = [
-    { id: 'voice', label: 'Голос', icon: <IconVoice size={16} /> },
-    { id: 'recognition', label: 'Слух', icon: <IconTimer size={16} /> },
+const modelsTabs = (): Array<TabEntry<ModelsTab>> => [
+    { id: 'voice', label: tr.models.tabVoice, icon: <IconVoice size={16} /> },
+    { id: 'recognition', label: tr.models.tabHearing, icon: <IconTimer size={16} /> },
 ];
 
 /**
@@ -219,18 +223,18 @@ function HomeVoiceChoice() {
             setBusy(null);
         }
     };
-    const computer = state.voice ? `Голос компьютера (${state.voice})` : 'Голос компьютера';
+    const computer = state.voice ? tr.models.computerVoiceWith(state.voice) : tr.models.computerVoice;
     return (
-        <section class="card glass py-12 px-16 mb-10" aria-label="Чей голос отвечает">
-            <h2 class="t-title-xs m-0 mb-6">Чей голос отвечает</h2>
+        <section class="card glass py-12 px-16 mb-10" aria-label={tr.models.whoseVoice}>
+            <h2 class="t-title-xs m-0 mb-6">{tr.models.whoseVoice}</h2>
             <p class="t-body m-0 mb-10">
                 {state.chosen === 'computer'
                     ? !state.up
-                        ? 'Компьютер не на связи — пока он не вернётся, отвечает голос Алисы.'
+                        ? tr.models.computerDown
                         : state.provider === 'own'
-                          ? 'Все ответы — голосом компьютера.'
-                          : 'Наши ответы — голосом компьютера, ответы Яндекса — голосом Алисы.'
-                    : 'Отвечает голос Алисы.'}
+                          ? tr.models.allByComputer
+                          : tr.models.ourByComputer
+                    : tr.models.aliceAnswers}
             </p>
             <div class="flex flex-wrap gap-8">
                 <Action
@@ -242,7 +246,7 @@ function HomeVoiceChoice() {
                 />
                 <Action
                     tone={state.chosen === 'alice' ? 'yandex' : 'off'}
-                    label="Алиса"
+                    label={tr.models.alice}
                     busy={busy === 'alice'}
                     disabled={!isAdmin || (!!busy && busy !== 'alice')}
                     onClick={() => void pick('alice')}
@@ -266,17 +270,17 @@ function LocalModelsAbsent({ kind, message }: { kind: Tab; message: string }) {
     return (
         <>
             {kind === 'voice' && <HomeVoiceChoice />}
-            <section class="card glass py-12 px-16" aria-label={kind === 'voice' ? 'Голос' : 'Слух'}>
+            <section class="card glass py-12 px-16" aria-label={kind === 'voice' ? tr.models.tabVoice : tr.models.tabHearing}>
                 <h2 class="t-title-xs m-0 mb-6">
-                    {kind === 'voice' ? 'Свои голоса — на компьютере' : 'Своё распознавание — на компьютере'}
+                    {kind === 'voice' ? tr.models.ownVoicesHere : tr.models.ownRecognitionHere}
                 </h2>
                 <p class="t-body m-0 mb-6">
                     {message}
                 </p>
                 <p class="t-caption m-0">
                     {kind === 'voice'
-                        ? 'Без голоса компьютера здесь отвечает голос Алисы. Свой голос — облачный синтез с OpenAI-совместимым /audio/speech: TTS_PROVIDER и TTS_OWN_URL в .env шлюза.'
-                        : 'Своё распознавание здесь — облачное, с OpenAI-совместимым /audio/transcriptions: ASR_BASE_URL и ASR_API_KEY в .env шлюза.'}
+                        ? tr.models.absentVoiceNote
+                        : tr.models.absentAsrNote}
                 </p>
             </section>
         </>
@@ -380,8 +384,8 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
         say(id, {
             notice:
                 what === 'voice'
-                    ? 'У вас «Своё» — без Яндекса. Голос Яндекса вернёт его: ваши ответы будет озвучивать Яндекс. Нажмите ещё раз, чтобы согласиться.'
-                    : 'У вас «Своё». Слух Яндекса уводит колонку целиком к нему (режим «Яндекс»). Нажмите ещё раз, чтобы согласиться.',
+                    ? tr.models.guardVoice
+                    : tr.models.guardRecognition,
         });
     };
 
@@ -391,15 +395,15 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
         const known = view?.tts.find((entry) => entry.id === id);
         if (known?.state === 'needs' && known.needs) return askModel(id, modelId, voiceId, known.needs);
         // Свой голос сначала поднимает сервер своей модели: это до минуты.
-        say(id, modelId.startsWith('own:') ? { notice: 'Загружаю модель голоса — до минуты…' } : {});
+        say(id, modelId.startsWith('own:') ? { notice: tr.models.loadingVoiceModel } : {});
         mark(id, true);
         try {
             const { needsRestart, pending } = await api.activateTts(modelId, voiceId, tightFor === id);
             setTightFor(null);
-            if (pending) say(id, { notice: 'Голос включится сам, когда встанет его модель.' });
+            if (pending) say(id, { notice: tr.models.voiceWillEnable });
             else if (needsRestart) {
                 // Голос скачан, но сервер ещё не знает его: без перезапуска молчит или говорит не он.
-                say(id, { notice: 'Перезапускаю голосовой сервер — голос зазвучит через несколько секунд.' });
+                say(id, { notice: tr.models.restartingVoiceServer });
                 mark('tts-server', true);
                 try {
                     await api.restartServer('tts');
@@ -408,7 +412,7 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                 }
             } else {
                 const title = view?.tts.find((entry) => entry.id === id)?.title;
-                say(id, { notice: `Говорит ${modelId === 'yandex' ? 'Алиса (Яндекс)' : `«${title ?? modelId}»`}.` });
+                say(id, { notice: tr.models.speaks(modelId === 'yandex' ? tr.models.speaksAlice : tr.models.quoted(title ?? modelId)) });
             }
             setView(await api.models());
         } catch (e) {
@@ -416,7 +420,7 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
             const wanted = needsOf(e);
             if (isTight(e)) {
                 setTightFor(id);
-                say(id, { warning: `Голос не включён. ${problemOf(e)}` });
+                say(id, { warning: tr.models.voiceNotEnabled(problemOf(e)) });
             } else if (wanted) askModel(id, modelId, voiceId, wanted);
             else say(id, { error: problemOf(e) });
         } finally {
@@ -430,9 +434,9 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
         if (
             cardId === 'yandex' &&
             !(await ask({
-                title: 'Отдать слух Яндексу?',
-                text: 'Тогда колонку целиком ведёт Яндекс: режим станет «Яндекс», свой мозг, голос и навыки замолчат. Вернуть — режимом «Вместе» или «Своё» в «Настройки» → «Колонка».',
-                ok: 'Отдать Яндексу',
+                title: tr.models.giveYandexTitle,
+                text: tr.models.giveYandexText,
+                ok: tr.models.giveYandexOk,
             }))
         )
             return;
@@ -441,10 +445,10 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
         try {
             if (cardId === 'yandex') {
                 await api.setMode('relay');
-                say(id, { notice: 'Колонка уходит к Яндексу — переподключается.' });
+                say(id, { notice: tr.models.speakerGoingToYandex });
             } else {
                 const { needsRestart } = await api.activateAsr(cardId);
-                say(id, { notice: needsRestart ? 'Запомнено — перезапустите распознавание.' : 'Работает.' });
+                say(id, { notice: needsRestart ? tr.models.rememberedRestart : tr.models.working });
             }
             setView(await api.models());
         } catch (e) {
@@ -477,7 +481,7 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
     /** Удаление скачанного голоса — не говорящего сейчас; сначала спрашиваем: его потом качать заново. */
     const uninstall = async (id: string) => {
         if (!isAdmin) return;
-        const yes = await ask({ title: 'Удалить скачанный голос?', text: 'Чтобы вернуть, его придётся скачать заново.', ok: 'Удалить', danger: true });
+        const yes = await ask({ title: tr.models.uninstallTitle, text: tr.models.uninstallText, ok: tr.models.uninstallOk, danger: true });
         if (!yes) return;
         mark(id, true);
         try {
@@ -485,7 +489,7 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
             const next = await api.models();
             // Сервер, который перечитывает голоса сам, уже забыл этот; старый забудет после перезапуска.
             const still = next.tts.find((card) => card.id === id)?.loaded;
-            say(id, { notice: still ? 'Удалён — голосовой сервер забудет его после перезапуска.' : 'Удалён.' });
+            say(id, { notice: still ? tr.models.removedRestart : tr.models.removed });
             setView(next);
         } catch (e) {
             say(id, { error: problemOf(e) });
@@ -503,7 +507,7 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
             const next = await api.models();
             // Сервер, который перечитывает голоса сам, уже говорит ими; старому нужен перезапуск.
             const loaded = next.tts.find((card) => card.id === id)?.loaded;
-            say(id, { notice: loaded ? 'Файл на месте — голоса работают.' : 'Файл на месте — перезапустите голосовой сервер, голоса появятся.' });
+            say(id, { notice: loaded ? tr.models.fileInPlaceWorks : tr.models.fileInPlaceRestart });
             setView(next);
         } catch (e) {
             say(id, { error: problemOf(e) });
@@ -519,8 +523,8 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
         say(id, {
             notice:
                 which === 'asr'
-                    ? 'Перезапускаю распознавание: сначала модель пробно загружается (новая может скачиваться минуты)…'
-                    : 'Перезапускаю голосовой сервер…',
+                    ? tr.models.restartingAsr
+                    : tr.models.restartingTts,
         });
         try {
             await api.restartServer(which);
@@ -537,8 +541,8 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
             <>
                 {!bare && (
                     <SectionTabs
-                        label="Голос и распознавание"
-                        tabs={MODELS_TABS}
+                        label={tr.models.tabsLabel}
+                        tabs={modelsTabs()}
                         tab={tab}
                         onPick={(id) => {
                             onTab(id);
@@ -555,7 +559,7 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
         return (
             <section class="card glass">
                 <p class="t-meta m-0" role={loadError ? 'alert' : undefined}>
-                    {loadError ?? 'Читаем каталог…'}
+                    {loadError ?? tr.models.readingCatalog}
                 </p>
             </section>
         );
@@ -573,7 +577,7 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
     };
     // «Голос» тремя панелями: голос Алисы; «Свой голос» — снятые здесь отпечатки; готовые голоса (Silero, Piper):
     // рекомендованные и уже скачанные, а весь открытый реестр — по «Посмотреть ещё голоса», с фильтрами и прокруткой.
-    const yandexCard = view.tts.find((card) => card.engine === 'yandex');
+    const yandexCard = onComputer() ? undefined : view.tts.find((card) => card.engine === 'yandex');
     const ownCards = view.tts.filter((card) => card.group === 'own');
     const recommendedCards = view.tts.filter((card) => card.source === 'builtin');
     const downloadedCards = view.tts.filter((card) => card.source === 'registry' && card.installed);
@@ -593,39 +597,39 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
             description={card.description}
             meta={
                 card.local?.runsHere && !card.local.installed
-                    ? [card.license, `скачается ${Math.round(card.local.size / 1_000_000)} МБ`].filter(Boolean).join(' · ')
+                    ? [card.license, tr.models.downloadsSize(Math.round(card.local.size / 1_000_000))].filter(Boolean).join(' · ')
                     : card.license
             }
             note={notes[card.id]}
             action={
                 card.active ? (
-                    <span class="pill pill-own">работает</span>
+                    <span class="pill pill-own">{tr.models.pillWorking}</span>
                 ) : card.local && !card.local.runsHere && card.id !== 'yandex' ? (
-                    <span class="pill pill-off" title="У этой модели нет файла для распознавания на компьютере — её запускает отдельный сервер распознавания.">
-                        только на сервере
+                    <span class="pill pill-off" title={tr.models.onlyOnServerHint}>
+                        {tr.models.onlyOnServer}
                     </span>
                 ) : card.pending && local ? (
                     <span class="pill pill-off">
                         {local.phase === 'downloading'
                             ? `${Math.round(localAsrPercent(local))}%`
                             : local.phase === 'failed'
-                              ? 'не встала'
-                              : 'загружается'}
+                              ? tr.models.didNotStart
+                              : tr.models.loadingPill}
                     </span>
                 ) : card.pending ? (
                     view.canRestart ? (
                         <Action
                             tone="on"
-                            label="перезапустить"
+                            label={tr.models.restart}
                             busy={busy['asr-server'] || view.restarting === 'asr'}
                             onClick={() => void restart(card.id, 'asr')}
                         />
                     ) : (
-                        <span class="pill pill-off">после перезапуска сервера</span>
+                        <span class="pill pill-off">{tr.models.afterServerRestart}</span>
                     )
                 ) : (
                     <Action
-                        label="включить"
+                        label={tr.models.enable}
                         onClick={() => (view.mode === 'own' && card.id === 'yandex' && !notes[card.id]?.notice ? guardOwn('recognition', card.id, () => void activateAsr(card.id, card.id)) : void activateAsr(card.id, card.id))}
                     />
                 )
@@ -649,11 +653,11 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                 action={
                     card.state === 'unsupported' && !card.active ? null : card.engine === 'yandex' ? (
                         card.active ? (
-                            <span class="pill pill-own">голос Алисы</span>
+                            <span class="pill pill-own">{tr.models.pillAliceVoice}</span>
                         ) : (
                             <Action
                                 tone="yandex"
-                                label="голос Яндекса"
+                                label={tr.models.yandexVoice}
                                 busy={busy[card.id]}
                                 onClick={() =>
                                     view.mode === 'own' && !notes[card.id]?.notice
@@ -669,51 +673,51 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                                     download?.state === 'downloading'
                                         ? `${Math.round((download.bytes / Math.max(download.total, 1)) * 100)}%`
                                         : card.downloadable
-                                          ? 'скачать'
-                                          : 'файл вручную'
+                                          ? tr.models.download
+                                          : tr.models.manualFile
                                 }
                                 tone="yandex"
                                 busy={download?.state === 'downloading'}
                                 onClick={() => void install(card.id)}
                             />
                             {download?.state === 'downloading' && (
-                                <Action label="отмена" onClick={() => void cancel(card.id)} />
+                                <Action label={tr.models.cancel} onClick={() => void cancel(card.id)} />
                             )}
                             {/* Голос сам знает, чего ему не хватает: «выбрать» — окно «скачать и включить». */}
                             {card.state === 'needs' && card.needs && card.downloadable && download?.state !== 'downloading' && isAdmin && (
-                                <Action tone="on" label="выбрать" busy={busy[card.id]} onClick={() => void activateTts(card.id, card.id)} />
+                                <Action tone="on" label={tr.models.choose} busy={busy[card.id]} onClick={() => void activateTts(card.id, card.id)} />
                             )}
                         </div>
                     ) : !card.loaded ? (
                         // Файл есть, а сервер его ещё не загрузил (скачан после его старта):
                         // без перезапуска он молчал бы или говорил бы не он.
                         <div class="flex items-center gap-6">
-                            <Action label="удалить" busy={busy[card.id]} onClick={() => void uninstall(card.id)} />
+                            <Action label={tr.models.delete} busy={busy[card.id]} onClick={() => void uninstall(card.id)} />
                             {view.canRestart ? (
                                 <Action
                                     tone="on"
-                                    label="перезапустить"
+                                    label={tr.models.restart}
                                     busy={busy['tts-server'] || view.restarting === 'tts'}
                                     onClick={() => void restart(card.id, 'tts')}
                                 />
                             ) : (
-                                <span class="pill pill-off">после перезапуска сервера</span>
+                                <span class="pill pill-off">{tr.models.afterServerRestart}</span>
                             )}
                         </div>
                     ) : card.engine === 'silero' ? (
                         card.active ? (
-                            <span class="pill pill-own">говорит сейчас</span>
+                            <span class="pill pill-own">{tr.models.speakingNow}</span>
                         ) : (
-                            <Action label="удалить" busy={busy[card.id]} onClick={() => void uninstall(card.id)} />
+                            <Action label={tr.models.delete} busy={busy[card.id]} onClick={() => void uninstall(card.id)} />
                         )
                     ) : card.active ? (
-                        <span class="pill pill-own">говорит сейчас</span>
+                        <span class="pill pill-own">{tr.models.speakingNow}</span>
                     ) : (
                         <div class="flex items-center gap-6">
-                            <Action label="удалить" busy={busy[card.id]} onClick={() => void uninstall(card.id)} />
+                            <Action label={tr.models.delete} busy={busy[card.id]} onClick={() => void uninstall(card.id)} />
                             <Action
                                 tone="on"
-                                label="выбрать"
+                                label={tr.models.choose}
                                 busy={busy[card.id]}
                                 onClick={() => void activateTts(card.id, card.id)}
                             />
@@ -738,7 +742,7 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                     </div>
                 )}
                 {download && download.state !== 'done' && <DownloadBar download={download} />}
-                {!download && card.state === 'installing' && card.progress !== undefined && <Progress percent={card.progress} label={`Установка: ${card.title}`} />}
+                {!download && card.state === 'installing' && card.progress !== undefined && <Progress percent={card.progress} label={tr.models.installProgress(card.title)} />}
                 {card.reason && card.state !== 'ready' && <span class="t-caption">{card.reason}</span>}
             </Card>
         );
@@ -749,9 +753,11 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
     // остальные модели — по «Посмотреть ещё модели».
     // Шлюз без признака «советуем» (до его перезапуска) — хотя бы карточка с плашкой «рекомендуем».
     const advised = (card: AsrCard): boolean => card.recommended ?? card.badge === 'рекомендуем';
-    const currentAsr = view.asr.filter((card) => card.active || card.pending);
-    const advisedAsr = view.asr.filter((card) => advised(card) && !currentAsr.includes(card));
-    const otherAsr = view.asr.filter((card) => !advised(card) && !currentAsr.includes(card));
+    // Режим «Микрофон»: слух Яндекса — это колонка у Яндекса, его здесь нет (база постарше могла хранить карточку).
+    const asrCards = onComputer() ? view.asr.filter((card) => card.id !== 'yandex') : view.asr;
+    const currentAsr = asrCards.filter((card) => card.active || card.pending);
+    const advisedAsr = asrCards.filter((card) => advised(card) && !currentAsr.includes(card));
+    const otherAsr = asrCards.filter((card) => !advised(card) && !currentAsr.includes(card));
 
     // Языки, какие есть в каталоге: русский и английский первыми, дальше по количеству голосов.
     const languageCounts = new Map<string, number>();
@@ -762,14 +768,14 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
     const weight = (code: string): number => (code === 'ru' ? 0 : code === 'en' ? 1 : 2);
     const languages = [...languageCounts.entries()].sort((a, b) => weight(a[0]) - weight(b[0]) || b[1] - a[1] || a[0].localeCompare(b[0]));
     // Качества — какие есть при выбранном языке.
-    const qualities = QUALITIES.filter((entry) => view.tts.some((card) => card.quality === entry.id && (!language || langOf(card.locale) === language)));
+    const qualityOptions = qualities().filter((entry) => view.tts.some((card) => card.quality === entry.id && (!language || langOf(card.locale) === language)));
 
     return (
         <>
             {!bare && (
                 <SectionTabs
-                    label="Голос и распознавание"
-                    tabs={MODELS_TABS}
+                    label={tr.models.tabsLabel}
+                    tabs={modelsTabs()}
                     tab={tab}
                     onPick={(id) => {
                         onTab(id);
@@ -780,33 +786,33 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
 
             {tab === 'recognition' ? (
                 <>
-                    <section class="card glass card-list" aria-label="Слух">
+                    <section class="card glass card-list" aria-label={tr.models.hearingTitle}>
                         <div class="card-head">
                             <h2 class="t-title-xs m-0">
-                                Слух
+                                {tr.models.hearingTitle}
                             </h2>
                             <span class="t-meta">
                                 {view.mode === 'relay'
-                                    ? 'в режиме «Яндекс» распознаёт Яндекс'
+                                    ? tr.models.hearingRelay
                                     : local
                                       ? localAsrLine(local)
                                       : view.asrLoaded
-                                        ? `работает: ${view.asrLoaded}`
-                                        : 'сервер молчит'}
+                                        ? tr.models.hearingWorking(view.asrLoaded)
+                                        : tr.models.serverSilent}
                             </span>
                         </div>
-                        {local?.phase === 'downloading' && <Progress percent={localAsrPercent(local)} label="Модель распознавания" />}
+                        {local?.phase === 'downloading' && <Progress percent={localAsrPercent(local)} label={tr.models.recognitionModel} />}
                         {local && (local.phase === 'failed' || local.gpuFailed) && (
                             <div class="flex items-center gap-12 py-8">
                                 <span class={`t-caption flex-1 ${local.phase === 'failed' ? 'c-dot-offline' : ''}`} role={local.phase === 'failed' ? 'alert' : 'status'}>
                                     {local.phase === 'failed'
-                                        ? (local.error ?? 'Распознавание не запустилось.')
-                                        : 'Видеокарта отказала — распознаёт процессор. «Повторить» попробует видеокарту снова.'}
+                                        ? (local.error ?? tr.models.recognitionNotStarted)
+                                        : tr.models.gpuFailedCpu}
                                 </span>
                                 {isAdmin && (
                                     <Action
                                         tone="on"
-                                        label="повторить"
+                                        label={tr.models.retry}
                                         busy={busy['asr-server'] || view.restarting === 'asr'}
                                         onClick={() => void restart('local-asr', 'asr')}
                                     />
@@ -815,12 +821,12 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                         )}
                         {currentAsr.map(asrCard)}
                     </section>
-                    <section class="card glass card-list" aria-label="Советуем">
+                    <section class="card glass card-list" aria-label={tr.models.advisedTitle}>
                         <div class="card-head">
                             <h2 class="t-title-xs m-0">
-                                Советуем
+                                {tr.models.advisedTitle}
                             </h2>
-                            <span class="t-meta">GigaAM от Сбера — для русской речи</span>
+                            <span class="t-meta">{tr.models.advisedAbout}</span>
                         </div>
                         {advisedAsr.map(asrCard)}
                         {!browseAsr ? (
@@ -828,14 +834,14 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                                 class="pill pill-off flex w-full justify-center cursor-pointer py-12 px-16 mt-12"
                                 onClick={() => setBrowseAsr(true)}
                             >
-                                Посмотреть ещё модели · {otherAsr.length}
+                                {tr.models.moreModels(otherAsr.length)}
                             </button>
                         ) : (
                             <>
                                 <div class="flex items-center justify-between p-0 pt-14 pb-6">
-                                    <span class="t-meta">Ещё модели · {otherAsr.length}</span>
+                                    <span class="t-meta">{tr.models.moreModelsHeader(otherAsr.length)}</span>
                                     <button class="t-caption cursor-pointer underline" onClick={() => setBrowseAsr(false)}>
-                                        Свернуть
+                                        {tr.models.collapse}
                                     </button>
                                 </div>
                                 {otherAsr.map(asrCard)}
@@ -848,29 +854,29 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                     {pending && <PendingVoice pending={pending} title={pendingTitle} isAdmin={isAdmin} onChanged={refreshView} />}
                     {view.ttsManaged && ['installing', 'starting', 'failed'].includes(view.ttsManaged.phase) && (
                         // Сервер своего голоса, который держит приложение: ставится, запускается или упал.
-                        <section class="card glass card-list" aria-label="Сервер своего голоса">
+                        <section class="card glass card-list" aria-label={tr.models.ownVoiceServerLabel}>
                             <div class="card-head">
-                                <h2 class="t-title-xs m-0">Свой голос</h2>
+                                <h2 class="t-title-xs m-0">{tr.models.ownVoiceTitle}</h2>
                                 <span class="t-meta">
                                     {view.ttsManaged.phase === 'installing'
-                                        ? (view.ttsManaged.stage ?? 'ставлю')
+                                        ? (view.ttsManaged.stage ?? tr.models.installing)
                                         : view.ttsManaged.phase === 'starting'
-                                          ? 'запускаю сервер голоса…'
-                                          : 'сервер голоса не работает'}
+                                          ? tr.models.startingServer
+                                          : tr.models.serverNotWorking}
                                 </span>
                             </div>
                             {view.ttsManaged.phase === 'installing' && (
-                                <Progress percent={view.ttsManaged.percent} label="Установка своего голоса" />
+                                <Progress percent={view.ttsManaged.percent} label={tr.models.ownVoiceInstall} />
                             )}
                             {view.ttsManaged.phase === 'failed' && (
                                 <div class="flex items-center gap-12 py-8">
                                     <span class="t-caption flex-1 c-dot-offline" role="alert">
-                                        {view.ttsManaged.error ?? 'Сервер голоса не запустился.'}
+                                        {view.ttsManaged.error ?? tr.models.serverNotStarted}
                                     </span>
                                     {isAdmin && (
                                         <Action
                                             tone="on"
-                                            label="повторить"
+                                            label={tr.models.retry}
                                             busy={busy['tts-server'] || view.restarting === 'tts'}
                                             onClick={() => void restart('tts-managed', 'tts')}
                                         />
@@ -879,21 +885,21 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                             )}
                         </section>
                     )}
-                    <section class="card glass card-list" aria-label="Голос Алисы">
+                    <section class="card glass card-list" aria-label={byMode(tr.models.voiceAriaSpeaker, tr.models.voiceAriaComputer)}>
                         <div class="card-head">
                             <h2 class="t-title-xs m-0">
-                                Голос
+                                {tr.models.voiceTitle}
                             </h2>
                             <span class="t-meta">
                                 {view.mode === 'relay'
-                                    ? 'в режиме «Яндекс» говорит Алиса'
+                                    ? tr.models.voiceRelay
                                     : view.speaking === 'own' && !view.ttsUp
-                                      ? 'голосовой сервер молчит'
-                                      : 'говорит: '}
+                                      ? tr.models.voiceServerSilent
+                                      : tr.models.speakingPrefix}
                                 {view.mode === 'relay' || (view.speaking === 'own' && !view.ttsUp)
                                     ? ''
                                     : view.ttsActive.modelId === 'yandex'
-                                      ? 'Алиса (Яндекс)'
+                                      ? tr.models.speaksAlice
                                       : view.tts.find((card) => card.active && card.engine !== 'yandex')?.title ?? (view.ttsActive.modelId || '—')}
                             </span>
                         </div>
@@ -903,12 +909,11 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                                 role="note"
                                 class="m-0 mt-10 mb-2 py-8 px-12 r-pill bg-pill-yandex-bg c-pill-yandex-fg fs-13 lh-18"
                             >
-                                Сейчас режим «Яндекс» — говорит голос Алисы. Свой голос можно выбрать заранее: он зазвучит,
-                                когда вернётесь в «Вместе» или «Своё».
+                                {tr.models.relayNote}
                             </p>
                         )}
                     </section>
-                    <section class="card glass card-list" aria-label="Свой голос">
+                    <section class="card glass card-list" aria-label={tr.models.ownVoiceTitle}>
                         <OwnVoicesHeader isAdmin={isAdmin} hasOwn={ownCards.length > 0} onAdd={() => setWizard(true)} />
                         <OwnVoiceRows
                             cards={ownCards}
@@ -920,15 +925,15 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                             onChanged={refreshView}
                         />
                     </section>
-                    <section class="card glass card-list" aria-label="Готовые голоса">
+                    <section class="card glass card-list" aria-label={tr.models.readyVoices}>
                         <div class="card-head">
                             <h2 class="t-title-xs m-0">
-                                Готовые голоса
+                                {tr.models.readyVoices}
                             </h2>
-                            <span class="t-meta">Silero и Piper</span>
+                            <span class="t-meta">{tr.models.readyVoicesAbout}</span>
                         </div>
                         <p class="t-caption m-0 mb-6">
-                            Рекомендованные и уже скачанные. Остальные — в каталоге ниже.
+                            {tr.models.readyVoicesNote}
                         </p>
                         {recommendedCards.map(voiceCard)}
                         {downloadedCards.map(voiceCard)}
@@ -940,21 +945,21 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                                     setLimit(8);
                                 }}
                             >
-                                Посмотреть ещё голоса · {moreCount}
+                                {tr.models.moreVoices(moreCount)}
                             </button>
                         ) : (
                             <>
                                 <div class="flex items-center justify-between p-0 pt-14 pb-6">
-                                    <span class="t-meta">Ещё голоса · {moreCount}</span>
+                                    <span class="t-meta">{tr.models.moreVoicesHeader(moreCount)}</span>
                                     <button class="t-caption cursor-pointer underline" onClick={() => setBrowse(false)}>
-                                        Свернуть
+                                        {tr.models.collapse}
                                     </button>
                                 </div>
                                 <div class="flex items-center gap-8 p-0 pt-2 pb-8 flex-wrap">
                                     {languages.length > 1 && (
                                         <Dropdown
-                                            label="Язык"
-                                            anyLabel="Все языки"
+                                            label={tr.models.language}
+                                            anyLabel={tr.models.allLanguages}
                                             value={language}
                                             options={languages.map(([code, count]) => ({
                                                 id: code,
@@ -967,12 +972,12 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                                             }}
                                         />
                                     )}
-                                    {qualities.length > 1 && (
+                                    {qualityOptions.length > 1 && (
                                         <Dropdown
-                                            label="Качество"
-                                            anyLabel="Любое"
+                                            label={tr.models.quality}
+                                            anyLabel={tr.models.anyQuality}
                                             value={quality}
-                                            options={qualities.map((entry) => ({ id: entry.id, label: entry.label }))}
+                                            options={qualityOptions.map((entry) => ({ id: entry.id, label: entry.label }))}
                                             onPick={(id) => {
                                                 setQuality(id);
                                                 setLimit(8);
@@ -986,8 +991,8 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                                                 setFilter((e.target as HTMLInputElement).value);
                                                 setLimit(8);
                                             }}
-                                            placeholder="Поиск: язык, имя"
-                                            aria-label="Поиск голоса"
+                                            placeholder={tr.models.searchPlaceholder}
+                                            aria-label={tr.models.searchLabel}
                                             class="flex-1-1-160 min-w-0 py-8 px-14 r-pill border-glass bg-icon-bg outline-none"
                                         />
                                     }
@@ -995,12 +1000,12 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                                 {more.map(voiceCard)}
                                 {more.length < moreAll.length && (
                                     <p ref={observeTail} class="t-caption m-0 mt-8 text-center">
-                                        Ещё {moreAll.length - more.length} — прокрутите
+                                        {tr.models.scrollMore(moreAll.length - more.length)}
                                     </p>
                                 )}
                                 {moreAll.length === 0 && (
                                     <p class="t-caption my-8 mx-0 text-center">
-                                        Ничего не нашлось — сбросьте фильтры или поиск.
+                                        {tr.models.nothingFound}
                                     </p>
                                 )}
                             </>
@@ -1010,10 +1015,12 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
             )}
 
             {!isAdmin && (
-                <p class="t-caption my-0 mx-6">Скачивать и переключать модели может администратор.</p>
+                <p class="t-caption my-0 mx-6">{tr.models.adminOnly}</p>
             )}
             {!view.ownVoiceServer && tab === 'voice' && (
-                <p class="t-caption my-0 mx-6">Свой голосовой сервер не настроен (TTS_OWN_URL): выбрать можно только голос Алисы.</p>
+                <p class="t-caption my-0 mx-6">
+                    {byMode(tr.models.noOwnServerSpeaker, tr.models.noOwnServerComputer)}
+                </p>
             )}
             {wizard && (
                 <VoiceWizard

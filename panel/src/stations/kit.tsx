@@ -2,6 +2,7 @@ import { useEffect, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 
 import type { WallTime } from './clock';
+import { tr } from '../i18n';
 import { COLORS } from './colors';
 import { sevenSegment } from './digits';
 import type { StationStage } from './types';
@@ -12,7 +13,8 @@ import type { StationStage } from './types';
 
 export const round = (n: number): number => Math.round(n * 10) / 10;
 
-export const WORDS: Record<StationStage, string> = { idle: 'ждёт', listen: 'слушает', think: 'думает', speak: 'говорит' };
+/** Что колонка делает сейчас — словами (для подписи рисунка). */
+export const stageWord = (stage: StationStage): string => tr.stations.stage[stage];
 
 /** Смешать цвет с белым (k > 0) или чёрным (k < 0). */
 export function shade(hex: string, k: number): string {

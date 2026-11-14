@@ -10,7 +10,6 @@
 //! The socket lives like the stream: a ping every 20 s (a WebSocket ping, and a `{"type":"ping"}` the panel's watchdog
 //! sees), the end after 15 minutes (close 1000; the panel opens it again, signed anew). A panel that answers no ping
 //! for a minute, or cannot take a message in 10 s, is gone. It sends nothing but pongs: its frames are kept small.
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -118,13 +117,13 @@ pub(super) async fn socket(
     upgrade: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
     if caller.zone == Zone::Remote && !app.config.gateway.panel_remote {
-        return Err(ApiError::forbidden("Пульт вне дома выключен (PANEL_REMOTE)."));
+        return Err(ApiError::forbidden(crate::tr!("Пульт вне дома выключен (PANEL_REMOTE).")));
     }
     let principal = query
         .ticket
         .as_deref()
         .and_then(|ticket| app.live.tickets.take(ticket))
-        .ok_or_else(|| ApiError::unauthorized("Билет живого канала не подошёл: возьмите новый."))?;
+        .ok_or_else(|| ApiError::unauthorized(crate::tr!("Билет живого канала не подошёл: возьмите новый.")))?;
     let stations = matches!(caller.zone, Zone::Local | Zone::Home);
     let hub = app.live.clone();
     Ok(upgrade

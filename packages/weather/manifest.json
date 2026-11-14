@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "plugin",
   "id": "weather",
-  "version": "2.0.0",
+  "version": "2.1.1",
   "title": "Погода",
   "description": "Погода голосом: сейчас, на завтра и на неделю — для обычного места дома или для названного города. Открытый API Open-Meteo, без ключа. Встроенное приложение: если оно выключено или не ответило, погоду говорит встроенный навык шлюза.",
   "api": "^2",
@@ -27,6 +27,25 @@
       "description": "Город или «широта, долгота». Пусто — место из «Дом» → «Коннекторы» → «Погода», а без него — город часового пояса колонки"
     }
   ],
+  "languages": [
+    "ru",
+    "en"
+  ],
+  "locales": {
+    "en": {
+      "title": "Weather",
+      "description": "Weather by voice: now, tomorrow and for the week — for the usual place at home or for a named city. Open-Meteo’s open API, no key. A built-in app: when it is off or does not answer, the gateway’s built-in skill tells the weather.",
+      "settings": {
+        "place": {
+          "title": "Where to get the weather for",
+          "description": "A city or “latitude, longitude”. Empty — the place from “Home” → “Connections” → “Weather”, or else the city of the speaker’s time zone"
+        }
+      },
+      "cards": {
+        "now": "Weather"
+      }
+    }
+  },
   "contributes": {
     "intents": [
       {
