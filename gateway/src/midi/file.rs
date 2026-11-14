@@ -153,7 +153,7 @@ fn parse(bytes: &[u8]) -> Result<SongView, String> {
         tracks.push(TrackView { index, name, drums, notes: notes.len(), melody });
     }
     if tracks.is_empty() {
-        return Err(crate::tr!("В файле нет нот.").into());
+        return Err(crate::tr!("В файле нет нот."));
     }
     Ok(SongView { tempo: (tempo * 10.0).round() / 10.0, meter: meter.unwrap_or([4, 4]), tracks })
 }
