@@ -183,6 +183,48 @@ pub struct Question {
     pub until: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<super::asked::Kind>,
+    /// When it was last asked aloud on a device (docs/plans/audio-interface-2.md, «К3»).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_at: Option<u64>,
+    /// How its asking ended: none — not asked yet, or still awaited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<Outcome>,
+    /// It was asked once more after it ended silent: never a second time.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reminded: bool,
+}
+
+impl Question {
+    /// A question of a finished work, not asked aloud yet.
+    pub fn new(text: String, until: u64, kind: super::asked::Kind) -> Question {
+        Question { text, until, kind: Some(kind), asked_at: None, outcome: None, reminded: false }
+    }
+
+    /// The question still waits for the person: nobody answered it nor said «not now».
+    pub fn waits(&self) -> bool {
+        self.outcome != Some(Outcome::Declined)
+    }
+}
+
+/// How the asking of a question ended (docs/plans/audio-interface-2.md, «К3»): answered — the answer goes where it
+/// was meant; declined — «нет», «потом», «хватит»: what was named for it beforehand, nothing more; silent — nobody
+/// answered in its time: nothing is done, it waits, and is asked once more after the device's next talk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Outcome {
+    Answered,
+    Declined,
+    Silent,
+}
+
+impl Outcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Outcome::Answered => "answered",
+            Outcome::Declined => "declined",
+            Outcome::Silent => "silent",
+        }
+    }
 }
 
 /// The model's spending on a work.

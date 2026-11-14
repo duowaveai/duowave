@@ -744,7 +744,12 @@ export type TalkEvent =
     | { type: 'start'; request: string; by: 'home' | 'cloud' }
     | { type: 'phrase'; text: string }
     | { type: 'tool'; name: string }
-    | { type: 'done'; said: string; by: 'home' | 'cloud'; ms: number; work?: string }
+    /**
+     * Ответ кончился: `work` — работа, которую фраза начала или дополнила; `asks` — ответ спрашивает (вопрос устройства
+     * открыт, микрофон слушает ответ); `remind` — вопрос работы, на который не ответили, спрошенный ещё раз; `dropped` —
+     * фраза окна, которую шлюз не принял (docs/plans/audio-interface-2.md, «К2», «К3»).
+     */
+    | { type: 'done'; said: string; by: 'home' | 'cloud'; ms: number; work?: string; asks?: boolean; remind?: string; dropped?: boolean }
     | { type: 'error'; message: string };
 
 /**
@@ -801,7 +806,15 @@ export interface WorkView {
     notes: WorkNote[];
     /** Строка итога шлюза и что стало с вещью. */
     result?: { line: string; end?: 'desk' | 'fitting' | 'parked' | 'declined' };
-    question?: { text: string; until: number; kind?: 'ready' | 'unfinished' | 'apply' | 'delete' };
+    /** Вопрос работы: когда спрошен вслух и чем кончился — ответили, отказались, промолчали; напомнили ли. */
+    question?: {
+        text: string;
+        until: number;
+        kind?: 'ready' | 'unfinished' | 'apply' | 'delete';
+        askedAt?: number;
+        outcome?: 'answered' | 'declined' | 'silent';
+        reminded?: boolean;
+    };
     origin: TalkOrigin;
     /** Когда итог прозвучал до конца; нет — ещё не сказан. */
     saidAt?: number;
@@ -811,10 +824,28 @@ export interface WorkView {
     endedAt?: number;
 }
 
+/**
+ * Как кусок фразы кончает мысль (docs/plans/audio-interface-2.md, «К1. Мысль»): short — сразу («да», «стоп»), plain —
+ * обычная пауза, hanging — оборвана на «и…», «чтобы…», wait — «подожди». `waitMs` — сколько ждать тишины после речи;
+ * `text` — что добавить к мысли (без «подожди»); `maxMs` — потолок мысли; `parkMs` — сколько ждёт недосказанное.
+ */
+export interface Thought {
+    end: 'short' | 'plain' | 'hanging' | 'wait';
+    waitMs: number;
+    text: string;
+    maxMs: number;
+    parkMs: number;
+}
+
+/** Почему микрофон открылся сам: спросил «Мозг», строка работы («Делаю…»), «Готово…» с вопросом. */
+export type WindowWhy = 'question' | 'work' | 'ready';
+
 /** Фраза в разговор: чем она открыта, где её распознали, скажет ли компьютер ответ вслух. */
 export interface TalkTurn {
     text: string;
     via?: 'button' | 'answer' | 'text';
+    /** Для `answer` — почему микрофон слушал сам: фраза закрытого окна. */
+    why?: WindowWhy;
     heard?: { by: 'home' | 'cloud'; ms?: number };
     voice?: boolean;
     fresh?: boolean;
@@ -3074,15 +3105,19 @@ export const api = {
     voiceLab: () => get<VoiceLabView>('/api/v1/voice-lab'),
     voiceLabRecheck: () => post<VoiceLabView>('/api/v1/voice-lab/platform/recheck'),
     installEngine: (id: CloneEngineId) => post<VoiceLabJob>(`/api/v1/voice-lab/engines/${id}/install`),
-    /** Голос пульта: WAV 16 кГц моно до 15 с → «Слух» шлюза (тот же, что у колонки). `heard` — где слышали: дома или в облаке. */
-    listen: (wav: Blob) =>
-        fetch(gw('/api/v1/listen'), {
+    /**
+     * Голос пульта: WAV 16 кГц моно до 15 с → «Слух» шлюза (тот же, что у колонки). `heard` — где слышали: дома или в
+     * облаке. `piece` — какой это кусок мысли (с 1): шлюз отвечает, кончилась ли мысль и сколько ждать продолжения
+     * (`thought`; шлюз постарше его не присылает).
+     */
+    listen: (wav: Blob, piece = 1) =>
+        fetch(gw(`/api/v1/listen?piece=${piece}`), {
             method: 'POST',
             headers: { ...authHeaders(), 'Content-Type': 'audio/wav' },
             body: wav,
         }).then(async (response) => {
             if (!response.ok) throw new ApiError(response.status, await response.text().catch(() => ''));
-            return ((await response.json()) as { message: { text: string; heard: 'home' | 'cloud' } }).message;
+            return ((await response.json()) as { message: { text: string; heard: 'home' | 'cloud'; thought?: Thought } }).message;
         }),
     addTake: (wav: Blob, passage?: number) =>
         fetch(gw(`/api/v1/voice-lab/draft/takes${passage ? `?passage=${passage}` : ''}`), {
@@ -3232,6 +3267,8 @@ export const api = {
     /** Работы разговора (docs/plans/audio-interface.md): устройства (`computer` — этот компьютер), новые первыми. */
     works: (device?: string) => get<WorkView[]>(`/api/v1/works${device ? `?device=${encodeURIComponent(device)}` : ''}`),
     work: (id: string) => get<WorkView>(`/api/v1/works/${encodeURIComponent(id)}`),
+    /** «Ждёт вас»: работы, чей вопрос ждёт человека. */
+    waitingWorks: () => get<WorkView[]>('/api/v1/works?waiting=1'),
     /** Компьютер договорил строку итога работы: открывается её вопрос — пульт слушает ответ. */
     workSaid: (id: string) => post<WorkView>(`/api/v1/works/${encodeURIComponent(id)}/said`),
     /** Слова работе вдогонку (или новая версия готовой вещи): что сказать в ответ. */

@@ -1,0 +1,27 @@
+{
+  "fold": { "’": "'" },
+  "thought": {
+    "short": [
+      "yes", "no", "yeah", "yep", "nope", "sure", "ok", "okay", "later", "not now",
+      "stop", "cancel", "enough", "never mind", "thanks", "thank you",
+      "try it on", "on the desk", "details", "the first", "the second", "the last", "a new one", "fix it"
+    ],
+    "hanging": [
+      "and", "or", "but", "so that", "and also", "also", "plus", "as well as",
+      "that", "which", "who", "whose", "where", "when", "while", "because", "since", "if", "unless",
+      "with", "for", "to", "of", "in", "on", "at", "about", "from", "by", "into", "onto", "without", "instead of",
+      "the", "a", "an", "my", "your", "some", "such as", "for example",
+      "um", "uh", "er", "erm", "hmm"
+    ],
+    "wait": [
+      "wait", "hold on", "hang on", "one sec", "one second", "just a sec", "just a second", "a moment",
+      "just a moment", "give me a second", "give me a moment", "let me think", "let me see"
+    ]
+  },
+  "window": {
+    "close": [
+      "no", "nope", "not now", "stop", "cancel", "enough", "never mind", "nevermind", "no thanks", "thanks", "thank you", "that's all",
+      "that's it", "forget it", "nothing"
+    ]
+  }
+}

@@ -22,7 +22,10 @@ pub mod ready;
 pub mod routes;
 pub mod rules;
 pub mod store;
+pub mod thought;
 mod tools;
+pub mod window;
+pub mod words;
 pub mod work_tools;
 pub mod works;
 pub mod workshop;
@@ -36,7 +39,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 pub use layer::TalkLayer;
-pub use origin::{Activator, Origin, Via, COMPUTER};
+pub use origin::{Activator, Origin, Via, Why, COMPUTER};
 pub use routes::routes;
 
 use crate::app::App;
@@ -96,10 +99,42 @@ pub enum TalkEvent {
         /// The work the phrase began or added to, when it did (docs/plans/audio-interface.md, «Пульт»).
         #[serde(skip_serializing_if = "Option::is_none")]
         work: Option<String>,
+        /// The answer asks: the device's question is open, the panel listens for the answer
+        /// (docs/plans/audio-interface-2.md, «К3»).
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        asks: bool,
+        /// A work's question nobody answered, asked once more after this answer: the panel says it and listens.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        remind: Option<String>,
+        /// Said in the closed window and not taken (window.rs): nobody answers it, nothing kept it.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        dropped: bool,
     },
     Error {
         message: String,
     },
+}
+
+/// Whether an answer ends with a question: the microphone listens after it.
+pub fn ends_with_question(text: &str) -> bool {
+    text.trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '»' | '"' | ')' | ']' | '”' | '\''))
+        .ends_with(['?', '？'])
+}
+
+/// The end of a spoken answer on a device: whether it asks, and the reminder of a work's question nobody answered — once,
+/// and never on top of a new question. `brain` — the brain answered: its question is the device's now.
+fn closing(app: &App, device: &str, said: &str, voice: bool, brain: bool) -> (bool, Option<String>) {
+    let asks = ends_with_question(said);
+    if !voice {
+        return (asks, None);
+    }
+    if asks {
+        if brain {
+            app.talk.asked.ask(device, "", asked::Kind::Talk, false);
+        }
+        return (true, None);
+    }
+    (false, app.talk.remind(device))
 }
 
 /// The brain of a talk: where its question goes and which model answers.
@@ -138,6 +173,16 @@ pub struct Talk {
 /// the computer's question, the open door, the works' words — what they take never reaches the model. The rest goes
 /// to the brain; the answer comes as events. Refused in words when no model is chosen.
 pub fn begin(app: &Arc<App>, principal: &Principal, turn: Turn) -> Result<Talk, ApiError> {
+    // A phrase the microphone heard by itself goes through the closed window first: what it does not take, nothing
+    // keeps (docs/plans/audio-interface-2.md, «К2»).
+    if let Some(talk) = window::begin(app, principal, &turn) {
+        return Ok(talk);
+    }
+    // The brain's question is answered now — or the person went on with the button: it is not awaited any more.
+    let device = &turn.origin.device;
+    if app.talk.asked.open_any(device).is_some_and(|question| question.kind == asked::Kind::Talk) {
+        app.talk.asked.take(device);
+    }
     if let Some(talk) = by_rules(app, principal, &turn) {
         return Ok(talk);
     }
@@ -213,7 +258,16 @@ pub fn begin(app: &Arc<App>, principal: &Principal, turn: Turn) -> Result<Talk, 
                 let _ = events.send(TalkEvent::Phrase { text: read.said.clone() });
                 let ms = started.elapsed().as_millis() as u64;
                 let work = app.talk.touched_since(&turn.origin.device, since);
-                let _ = events.send(TalkEvent::Done { said: read.said, by: brain.place(), ms, work });
+                let (asks, remind) = closing(&app, &turn.origin.device, &read.said, turn.voice, false);
+                let _ = events.send(TalkEvent::Done {
+                    said: read.said,
+                    by: brain.place(),
+                    ms,
+                    work,
+                    asks,
+                    remind,
+                    dropped: false,
+                });
                 return;
             }
         }
@@ -252,7 +306,18 @@ pub fn begin(app: &Arc<App>, principal: &Principal, turn: Turn) -> Result<Talk, 
                     trip.finish(status, None, None);
                     let ms = started.elapsed().as_millis() as u64;
                     let work = app.talk.touched_since(&turn.origin.device, since);
-                    let _ = events.send(TalkEvent::Done { said: said.join(" "), by: brain.place(), ms, work });
+                    let said = said.join(" ");
+                    // A work's line («Делаю: … Что-то ещё добавить?») is the layer's question, not the brain's.
+                    let (asks, remind) = closing(&app, &turn.origin.device, &said, turn.voice, work.is_none());
+                    let _ = events.send(TalkEvent::Done {
+                        said,
+                        by: brain.place(),
+                        ms,
+                        work,
+                        asks,
+                        remind,
+                        dropped: false,
+                    });
                     return;
                 }
             }
@@ -270,18 +335,20 @@ fn by_rules(app: &Arc<App>, principal: &Principal, turn: &Turn) -> Option<Talk> 
     let answer = (turn.origin.activator == Activator::Answer).then(|| rules.answer_on(&normalized, &device)).flatten();
     let heard =
         answer.or_else(|| rules.through_door(&normalized, &device)).or_else(|| rules.hear(&normalized, &device))?;
-    let kind = if turn.origin.via == Via::Voice { RequestKind::Voice } else { RequestKind::Text };
-    let trip = app.requests.begin_in(
-        RequestStart { device: device.clone(), session: None, kind, text: Some(turn.text.clone()), parent: None },
-        "own",
-    );
-    if let Some(heard) = &turn.heard {
-        trip.heard_before(heard.by, heard.what.as_deref(), heard.ms.unwrap_or(0));
-    }
+    Some(by_heard(app, principal, turn, rules, heard))
+}
+
+/// What the layer's rules heard in a phrase, done and said: a request of the journal, the work's line in the history.
+pub(crate) fn by_heard(
+    app: &Arc<App>,
+    principal: &Principal,
+    turn: &Turn,
+    rules: Arc<rules::TalkRules>,
+    heard: rules::Heard,
+) -> Talk {
+    let device = turn.origin.device.clone();
     let origin = turn.origin.clone().by(Some(principal.name.clone()));
-    trip.set_origin(origin.clone());
-    trip.routed(Some("plugins"), "own");
-    trip.step(RequestPhase::Think, Some(Place::Own), Some("talk:works"));
+    let trip = journal(app, turn, &origin, "plugins", "talk:works");
     let (events, receiver) = mpsc::unbounded_channel();
     let _ = events.send(TalkEvent::Start { request: trip.id(), by: "home" });
     let cancel = CancellationToken::new();
@@ -296,17 +363,51 @@ fn by_rules(app: &Arc<App>, principal: &Principal, turn: &Turn) -> Option<Talk> 
             let kept = app.talk.fact_since(&device, since);
             let remembered = kept.as_deref().unwrap_or(&said);
             app.dialog.remember(&key, &text, remembered, crate::dialog::AnsweredBy::Skill, None);
-            if voice {
-                let voice = app.voice.own_choice().map(|choice| choice.voice);
-                trip.step(RequestPhase::Speak, Some(Place::Own), voice.as_deref());
-            }
-            trip.answered(&said);
-            trip.finish(RequestStatus::Answered, None, None);
+            spoken(&app, &trip, voice, &said);
             let _ = events.send(TalkEvent::Phrase { text: said.clone() });
         }
         let work = app.talk.touched_since(&device, since);
         let ms = started.elapsed().as_millis() as u64;
-        let _ = events.send(TalkEvent::Done { said, by: "home", ms, work });
+        let (asks, remind) = if said.is_empty() { (false, None) } else { closing(&app, &device, &said, voice, false) };
+        let _ = events.send(TalkEvent::Done { said, by: "home", ms, work, asks, remind, dropped: false });
     });
-    Some(Talk { events: receiver, cancel })
+    Talk { events: receiver, cancel }
+}
+
+/// A request of the journal for a phrase the layer takes: where it was heard, where it came from, which rule.
+pub(crate) fn journal(
+    app: &App,
+    turn: &Turn,
+    origin: &Origin,
+    route: &str,
+    rule: &str,
+) -> Arc<crate::core::requests::RequestHandle> {
+    let kind = if turn.origin.via == Via::Voice { RequestKind::Voice } else { RequestKind::Text };
+    let trip = app.requests.begin_in(
+        RequestStart {
+            device: turn.origin.device.clone(),
+            session: None,
+            kind,
+            text: Some(turn.text.clone()),
+            parent: None,
+        },
+        "own",
+    );
+    if let Some(heard) = &turn.heard {
+        trip.heard_before(heard.by, heard.what.as_deref(), heard.ms.unwrap_or(0));
+    }
+    trip.set_origin(origin.clone());
+    trip.routed(Some(route), "own");
+    trip.step(RequestPhase::Think, Some(Place::Own), Some(rule));
+    trip
+}
+
+/// The layer's phrase is said: the voice's step when the computer says it, the answer in the journal.
+pub(crate) fn spoken(app: &App, trip: &crate::core::requests::RequestHandle, voice: bool, said: &str) {
+    if voice {
+        let voice = app.voice.own_choice().map(|choice| choice.voice);
+        trip.step(RequestPhase::Speak, Some(Place::Own), voice.as_deref());
+    }
+    trip.answered(said);
+    trip.finish(RequestStatus::Answered, None, None);
 }

@@ -681,7 +681,10 @@ mod gateway {
         assert_eq!(capability, CapabilityName::Volume);
         let (rule, _, said) = say(&app, "Алиса, часы с секундами").await;
         assert_eq!(rule, Some("talk:works"));
-        assert_eq!(speech(&said), "Делаю: часы с секундами. Около минуты. Можно добавлять детали по ходу: просто скажите, что ещё улучшить или добавить.");
+        assert_eq!(
+            speech(&said),
+            "Делаю: часы с секундами. Около минуты. Можно добавлять детали по ходу. Что-то ещё добавить?"
+        );
         let work = app.talk.works().all(Some("kitchen"), None).remove(0);
         assert_eq!((work.brief.as_str(), work.device()), ("часы с секундами", "kitchen"));
 

@@ -910,8 +910,9 @@ pub struct HomeServerSetting {
     /// колонке»); on — «Колонка + ПК». A move always brings both; the switch only says whether to lean on it.
     #[serde(default = "yes")]
     pub enabled: bool,
-    /// What the station does not take from the computer while it helps: "asr" (hearing), "tts" (voice), "llm" (the
-    /// model) — the helper's «Что даю колонке» (docs/plans/desk.md, stage 4). Empty — all three.
+    /// What the station does not take from the computer while it helps (`home_server::SERVES`): "asr" (hearing),
+    /// "tts" (voice), "llm" (the model), "messages" (the computer's Telegram bot) — the helper's «Что даю колонке»
+    /// (docs/plans/desk.md, stage 4). Empty — it takes all of them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub without: Vec<String>,
 }

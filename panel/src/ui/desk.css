@@ -1135,6 +1135,24 @@ html[data-theme='dark'] .voice-strip { box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4
 
 /* «Сказать» в доке: слушает — кольцо; поле ключа открыто — серая и перечёркнута. */
 .dock-talk { position: relative; }
+
+/* «Ждёт вас» (voice/waiting.tsx): вопросы работ без ответа — пилюля рядом со «Сказать». */
+.waiting-pill {
+    flex: none;
+    min-height: 32px;
+    padding: 0 14px;
+    border-radius: 999px;
+    border: 1px solid var(--glass-border);
+    background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg);
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.waiting-pill:hover { border-color: var(--bar-own); }
+.waiting-pill-side { align-self: flex-start; margin-top: 6px; }
 .dock-talk.is-listening::after { content: ''; position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--bar-own); animation: talk-ping 1.3s ease-out infinite; pointer-events: none; }
 html[data-look='minimal'] .talk-btn.is-held:disabled { background: var(--chip-bg); color: var(--sub); box-shadow: none; opacity: 1; }
 

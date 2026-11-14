@@ -10,6 +10,7 @@ import { IconMic, IconMicOff } from '../icons';
 import { onMic, micOn } from '../voice/mic';
 import { useMicHeld, useVoiceAction } from '../voice/phrases';
 import { VoiceStrip } from '../voice/strip';
+import { WaitingPill } from '../voice/waiting';
 import { DuoWaveMark } from '../ui/duowave';
 import { AgentPlaque } from './agent-plaque';
 import type { NavEntry, ShellProps } from './shell';
@@ -102,6 +103,7 @@ export function DeskShell({ nav, active, onNav, top, actions, talk, notice, desk
                         <Cell key={entry.key} entry={entry} active={active === entry.key} onNav={onNav} />
                     ))}
                 </nav>
+                <WaitingPill place="dock" />
             </div>
         </div>
     );

@@ -13,13 +13,18 @@
 //!   that is not up yet. A phrase of up to 600 characters; the same right.
 //! - `GET /api/v1/talk/now?device=` → `{device, text}`: what the brain knows now on a device (the computer without
 //!   one) — the block «Сейчас» as the model gets it; empty when nothing goes on. The right to talk (`use:chat`).
-//! - `GET /api/v1/works?device=&state=` → the works, the newest first; `GET /api/v1/works/{id}` → one. The right to
-//!   use the apps (`use:plugins`).
+//! - `GET /api/v1/works?device=&state=` → the works, the newest first; `GET /api/v1/works/{id}` → one;
+//!   `GET /api/v1/works?waiting=1` → «Ждёт вас»: the works whose question waits for the person
+//!   (docs/plans/audio-interface-2.md, «К3»). The right to use the apps (`use:plugins`).
 //! - `POST /api/v1/works/{id}/said` — the computer said the work's line to its end (the panel's voice): its question
 //!   opens for the answer the panel listens for. `POST /api/v1/works/{id}/notes {text}` — words added to it («вдогонку»,
 //!   or its new version); `POST /api/v1/works/{id}/do {action}` — `status`, `details`, `show`, `desk`, `park`, `stop`.
 //!   Each answers `{said}`, the phrase to say or show. The same right.
-//! - `POST /api/v1/talk` answers `{said, by, work?}`: the work the phrase began or added to.
+//! - `POST /api/v1/talk {…, why?}`: a phrase with `via: answer` is the closed window's — `why` the microphone opened
+//!   by itself (`question`, `work`, `ready`; docs/plans/audio-interface-2.md, «К2»); what the window does not take
+//!   answers `dropped`, and nothing keeps it.
+//! - `POST /api/v1/talk` answers `{said, by, work?, asks?, remind?, dropped?}`: the work the phrase began or added to; whether
+//!   the answer asks (the device's question is open); a work's question nobody answered, asked once more.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -37,7 +42,7 @@ use serde_json::Value;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use super::works::{Work, WorkState};
-use super::{input, Activator, Heard, Origin, TalkEvent, Turn, COMPUTER, MAX_TEXT};
+use super::{input, Activator, Heard, Origin, TalkEvent, Turn, Why, COMPUTER, MAX_TEXT};
 use crate::app::App;
 use crate::core::identity::permissions::{use_of, STATION_MODE, STATION_VIEW};
 use crate::core::requests::Place;
@@ -132,6 +137,9 @@ async fn works(
     Query(query): Query<HashMap<String, String>>,
 ) -> ApiResult<Vec<Work>> {
     caller.permitted(&use_of(CapabilityName::Plugins))?;
+    if query.get("waiting").is_some_and(|waiting| waiting == "1" || waiting == "true") {
+        return Ok(ok(app.talk.waiting()));
+    }
     let device = query.get("device").map(String::as_str).filter(|device| !device.is_empty());
     let state = match query.get("state").map(String::as_str).filter(|state| !state.is_empty()) {
         Some(state) => Some(
@@ -204,6 +212,12 @@ struct Said {
     by: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     work: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    asks: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remind: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    dropped: bool,
 }
 
 /// The phrase as the body gave it: what cannot be read is left out, never guessed.
@@ -233,9 +247,14 @@ fn turn_of(body: &Value) -> Result<Turn, ApiError> {
     // A phrase somebody heard was said: after the button unless the body says it answers a question.
     let fallback = if heard.is_some() { Activator::Button } else { Activator::Text };
     let activator = body.get("via").and_then(Value::as_str).and_then(Activator::parse).unwrap_or(fallback);
+    let mut origin = Origin::computer(activator);
+    // Why the microphone opened by itself: the closed window's reason (an old panel says none — its question's).
+    if activator == Activator::Answer {
+        origin.why = Some(body.get("why").and_then(Value::as_str).and_then(Why::parse).unwrap_or(Why::Question));
+    }
     Ok(Turn {
         text,
-        origin: Origin::computer(activator),
+        origin,
         heard,
         voice: body.get("voice").and_then(Value::as_bool) == Some(true),
         fresh: body.get("fresh").and_then(Value::as_bool) == Some(true),
@@ -260,7 +279,9 @@ async fn talk(
         let _guard = talk.cancel.clone().drop_guard();
         while let Some(event) = talk.events.recv().await {
             match event {
-                TalkEvent::Done { said, by, work, .. } => return Ok(ok(Said { said, by, work }).into_response()),
+                TalkEvent::Done { said, by, work, asks, remind, dropped, .. } => {
+                    return Ok(ok(Said { said, by, work, asks, remind, dropped }).into_response())
+                }
                 TalkEvent::Error { message } => return Err(ApiError::bad_gateway(message)),
                 _ => {}
             }

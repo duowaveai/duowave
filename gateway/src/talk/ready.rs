@@ -24,7 +24,7 @@ use super::layer::TalkLayer;
 use super::origin::{Origin, COMPUTER};
 use super::pack::{self, fill, Pack};
 use super::work_tools::{in_sentence, Refusal};
-use super::works::{End, Question, Work, WorkResult, WorkState};
+use super::works::{End, Outcome, Question, Work, WorkResult, WorkState};
 use crate::core::events::GatewayEvent;
 use crate::core::requests::{RequestKind, RequestStatus};
 use crate::utils::time::now_ms;
@@ -181,7 +181,7 @@ impl TalkLayer {
             }
         };
         let until = now_ms() + ANSWER_FOR.as_millis() as u64;
-        let question = kind.map(|kind| Question { text: line.clone(), until, kind: Some(kind) });
+        let question = kind.map(|kind| Question::new(line.clone(), until, kind));
         let state = work.state;
         let Some(work) = self.works.update(&work.id, |work| {
             work.result = Some(WorkResult { line: line.clone(), end });
@@ -281,9 +281,7 @@ impl TalkLayer {
     pub(super) fn ready_said(&self, id: &str, device: &str) -> Option<String> {
         let work = self.works.get(id)?;
         let line = work.result.as_ref().map(|result| result.line.clone()).filter(|line| !line.is_empty())?;
-        if let Some(kind) = work.question.as_ref().and_then(|question| question.kind) {
-            self.asked.ask(device, id, kind, false);
-        }
+        self.ask_aloud(&work, device, false);
         Some(line)
     }
 
@@ -307,6 +305,8 @@ impl TalkLayer {
         let pack = pack::of(self.lang(&device));
         let say = &pack.work.say;
         let pending = self.asked.take(&device).and_then(|question| question.pending);
+        // «Нет» is the person's «not now»: what was named for it, nothing more; any other answer goes where it was meant.
+        self.ended_asking(id, if answer == Answer::No { Outcome::Declined } else { Outcome::Answered });
         let refused = |refusal: Refusal| refusal.for_person(pack);
         // A wish or a change that waited for this answer: it is done now.
         match (kind, answer.clone()) {
@@ -397,8 +397,8 @@ impl TalkLayer {
                     .unwrap_or_else(|| say.no_details.to_string());
                 // The question once more, once.
                 match work.question.as_ref().and_then(|question| question.kind) {
-                    Some(kind) if !again => {
-                        self.asked.ask(&device, id, kind, true);
+                    Some(_) if !again => {
+                        self.ask_aloud(&work, &device, true);
                         let question = work.result.as_ref().map(|result| result.line.clone()).unwrap_or_default();
                         let ask = question.rsplit_once(". ").map(|(_, ask)| ask.to_string()).unwrap_or(question);
                         format!("{details} {ask}")
@@ -594,7 +594,10 @@ mod gateway {
         let (rule, _, said) = phrase(&app, "Алиса, сделай виджет часы с секундами", true).await;
         assert_eq!(
             (rule, said.as_str()),
-            (Some("talk:works"), "Делаю: часы с секундами. Около минуты. Можно добавлять детали по ходу: просто скажите, что ещё улучшить или добавить.")
+            (
+                Some("talk:works"),
+                "Делаю: часы с секундами. Около минуты. Можно добавлять детали по ходу. Что-то ещё добавить?"
+            )
         );
         let ready = heard(&station, 1).await;
         assert_eq!(

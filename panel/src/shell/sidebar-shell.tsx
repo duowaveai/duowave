@@ -10,6 +10,7 @@ import { IconLaptop, IconMenu, IconMic, IconMicOff } from '../icons';
 import { micOn, onMic } from '../voice/mic';
 import { useMicHeld } from '../voice/phrases';
 import { VoiceStrip } from '../voice/strip';
+import { WaitingPill } from '../voice/waiting';
 import { DuoWaveLogo, DuoWaveMark, PoweredBy } from '../ui/duowave';
 import { useDialogFocus } from '../ui/sheet';
 import { AgentPlaque } from './agent-plaque';
@@ -107,6 +108,7 @@ export function SidebarShell({ nav, active, onNav, top, station, actions, talk, 
                         {held ? <IconMicOff size={18} /> : <IconMic size={18} />}
                         {listening ? tr.shell.listening : tr.shell.say}
                     </button>
+                    <WaitingPill place="side" />
                     <NavList nav={nav} active={active} onNav={go} />
                     <div class="side-foot">{actions}</div>
                 </aside>

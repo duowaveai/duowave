@@ -2322,7 +2322,10 @@ async fn a_wish_in_ones_own_words_to_the_station_is_one_work_and_its_yes_puts_it
     station.text_input("works-1", "req-works-1", json!({ "type": "text_input", "text": wish }));
     station.wait_for(response_to("req-works-1"), 8000).await;
     let trip = finished_trip(&env, wish).await;
-    assert_eq!(trip["answer"], "Делаю: испанский. Около минуты. Можно добавлять детали по ходу: просто скажите, что ещё улучшить или добавить.", "{trip}");
+    assert_eq!(
+        trip["answer"], "Делаю: испанский. Около минуты. Можно добавлять детали по ходу. Что-то ещё добавить?",
+        "{trip}"
+    );
     let brain = env.llm.requests().into_iter().filter(|request| !agent(request)).count();
     assert_eq!(brain, 1, "the ready phrase is said as it is: the model is asked once");
 

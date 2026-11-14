@@ -45,6 +45,27 @@ impl Activator {
     }
 }
 
+/// Why the microphone opened by itself (docs/plans/audio-interface-2.md, «К2»): the brain asked, a work's line
+/// («Делаю…», «Добавлю…») invites more, a work's «Готово…» asks. A phrase said then is the closed window's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Why {
+    Question,
+    Work,
+    Ready,
+}
+
+impl Why {
+    pub fn parse(value: &str) -> Option<Why> {
+        match value {
+            "question" => Some(Why::Question),
+            "work" => Some(Why::Work),
+            "ready" => Some(Why::Ready),
+            _ => None,
+        }
+    }
+}
+
 /// By voice or in text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -67,13 +88,16 @@ pub struct Origin {
     pub who: Option<String>,
     pub device: String,
     pub via: Via,
+    /// Why the microphone opened by itself, for an answer: the window's reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<Why>,
 }
 
 impl Origin {
     /// A phrase of this computer: said after the button or after a question, or typed.
     pub fn computer(activator: Activator) -> Origin {
         let via = if activator == Activator::Text { Via::Text } else { Via::Voice };
-        Origin { activator, name: None, character: None, who: None, device: COMPUTER.into(), via }
+        Origin { activator, name: None, character: None, who: None, device: COMPUTER.into(), via, why: None }
     }
 
     /// A station's phrase: with its wake word (which one: today's only, `STATION_WORD`), or without it — the answer
@@ -81,7 +105,7 @@ impl Origin {
     pub fn station(device: &str, wake_word: bool) -> Origin {
         let (activator, name) =
             if wake_word { (Activator::Word, Some(STATION_WORD.to_string())) } else { (Activator::Answer, None) };
-        Origin { activator, name, character: None, who: None, device: device.to_string(), via: Via::Voice }
+        Origin { activator, name, character: None, who: None, device: device.to_string(), via: Via::Voice, why: None }
     }
 
     /// Who said it.

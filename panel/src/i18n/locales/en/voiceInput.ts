@@ -41,6 +41,13 @@ const en: Translation<typeof ru> = {
     whenReady: 'When everything is checked, press “Say” and ask something.',
 
     micUnavailable: 'The microphone is unavailable.',
+    inputTitle: 'Microphone',
+    outputTitle: 'Sound',
+    deviceAuto: 'Automatic (as in the system)',
+    namesAfterCheck: 'Device names appear after “Check” — once you allow the microphone.',
+    outputBySystem: 'Here the system decides where sound goes: System Settings → Sound → Output.',
+    micSoundsTitle: 'Microphone sounds',
+    micSoundsText: 'Two short sounds: “listening” — the microphone opened, “heard” — the phrase ended.',
     micCheckTitle: 'Microphone check',
     micCheckOn: 'Say something: the bar shows how well you are heard.',
     micHeard: 'The microphone hears you.',

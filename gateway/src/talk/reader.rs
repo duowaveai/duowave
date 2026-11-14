@@ -158,6 +158,20 @@ impl Reader {
         context: DialogContext,
         cancel: CancellationToken,
     ) -> Option<Read> {
+        self.read_only(key, origin, text, context, cancel, None).await
+    }
+
+    /// The same, taking only the acts `only` names (the closed window, docs/plans/audio-interface-2.md, «К2»): a
+    /// phrase read as another act — a new thing, conversation, the door — is not acted on and not remembered: None.
+    pub async fn read_only(
+        &self,
+        key: &str,
+        origin: Origin,
+        text: &str,
+        context: DialogContext,
+        cancel: CancellationToken,
+        only: Option<&[Act]>,
+    ) -> Option<Read> {
         let (layer, dialog) = (self.layer.upgrade()?, self.dialog.upgrade()?);
         let device = origin.device.clone();
         let instructions = layer.reading_instructions(&device);
@@ -173,6 +187,10 @@ impl Reader {
             return None;
         };
         tracing::info!(target: "talk", "read on {device}: {:?}", reading.act);
+        if only.is_some_and(|only| !only.contains(&reading.act)) {
+            tracing::info!(target: "talk", "the window on {device} does not take {:?}", reading.act);
+            return None;
+        }
         let heard = layer.heard_of(&device, text, reading)?;
         let since = now_ms();
         let said = self.rules.act(heard, origin).await?;

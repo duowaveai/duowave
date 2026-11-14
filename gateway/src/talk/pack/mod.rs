@@ -383,6 +383,9 @@ pub struct SayWords {
     pub dangerous_tile: &'static str,
     /// «нет» after the question: it stays to be tried on.
     pub kept: &'static str,
+    /// `{title} {ask}`: the question of a work nobody answered, asked once more after the device's next talk
+    /// (docs/plans/audio-interface-2.md, «К3»).
+    pub remind: &'static str,
     /// «удали»: asked first; deleted; kept.
     pub delete_q: &'static str,
     pub deleted: &'static str,
@@ -534,6 +537,7 @@ mod tests {
                 ("say.on_desk_needs_tile", work.say.on_desk_needs_tile, &["needs"]),
                 ("say.working", work.say.working, &["doing", "since"]),
                 ("say.ready", work.say.ready, &["title"]),
+                ("say.remind", work.say.remind, &["ask", "title"]),
                 ("say.stopped", work.say.stopped, &["title"]),
                 ("say.not_going", work.say.not_going, &["title"]),
             ];

@@ -12,13 +12,39 @@ import { usePanel } from '../shell/context';
 import { ask } from '../ui/confirm';
 import { announceReady, failed } from './creation';
 import { onWorkshopChange } from './drafts';
-import { listenFor } from './mic';
-import { sayAloud } from './speak';
+import { listenFor, micOn, onMic } from './mic';
+import { answering, onAnswering, sayAloud } from './speak';
 import { showStrip } from './strip';
+import { setWorkShower } from './waiting';
 import { SAID_ON, askedHere, onWorkChange, readWork, speaksHere, workHead } from './works';
 
 /** Сколько пульт слушает ответ на «Готово», если работа — его. */
 export const ANSWER_SECONDS = 6;
+/** «Готово» ждёт паузы не дольше: потом остаётся на полосе и в «Ждёт вас». */
+const IDLE_WAIT_MS = 120_000;
+
+/**
+ * Пульт не слушает и не говорит (docs/plans/audio-interface-2.md, «К4»: не перебивать): true — пауза настала, false —
+ * не дождались за `ms`.
+ */
+function idle(ms: number): Promise<boolean> {
+    const quiet = () => !micOn() && !answering();
+    if (quiet()) return Promise.resolve(true);
+    return new Promise((resolve) => {
+        const stops: Array<() => void> = [];
+        const done = (value: boolean) => {
+            stops.forEach((stop) => stop());
+            window.clearTimeout(timer);
+            resolve(value);
+        };
+        const check = () => quiet() && done(true);
+        const timer = window.setTimeout(() => done(false), ms);
+        stops.push(onMic(check), onAnswering(check));
+    });
+}
+
+/** Строки «Готово» звучат по одной: вторая ждёт, пока договорится первая. */
+let saying: Promise<void> = Promise.resolve();
 
 export function CreationFlow() {
     const panel = usePanel();
@@ -42,8 +68,16 @@ export function CreationFlow() {
             void readWork(id).then((work) => work && announce(work));
         });
     }, []);
-    /** Строка итога работы на полосе — и голосом, когда это работа этого компьютера в режиме «Микрофон». */
-    const announce = async (work: WorkView): Promise<void> => {
+    // «Ждёт вас»: работа показывается на полосе с кнопками ответа, без голоса.
+    useEffect(() => {
+        setWorkShower((work) => void announce(work, true));
+        return () => setWorkShower(null);
+    }, []);
+    /**
+     * Строка итога работы на полосе — и голосом, когда это работа этого компьютера в режиме «Микрофон». `quiet` — только
+     * полоса («Ждёт вас»).
+     */
+    const announce = async (work: WorkView, quiet = false): Promise<void> => {
         const line = work.result?.line;
         if (!line) return;
         const go = latest.current.go;
@@ -53,7 +87,7 @@ export function CreationFlow() {
         } else {
             const view = await api.workshopDraft(draft).catch(() => null);
             if (!view) return;
-            const voice = speaksHere(work) && askedHere(work) && !!work.question;
+            const voice = !quiet && speaksHere(work) && askedHere(work) && !!work.question;
             announceReady(
                 view,
                 {
@@ -71,11 +105,19 @@ export function CreationFlow() {
                 workHead(work),
             );
         }
-        if (!speaksHere(work) || !askedHere(work)) return;
-        // Компьютер говорит «Готово…» сам: договорил — шлюз открывает вопрос, пульт слушает ответ.
-        if (!(await sayAloud(line))) return;
-        const said = await api.workSaid(work.id).catch(() => null);
-        if (said?.question) listenFor(ANSWER_SECONDS * 1000, true);
+        if (quiet || !speaksHere(work) || !askedHere(work)) return;
+        // Компьютер говорит «Готово…» сам, но не перебивает: ждёт, пока пульт не слушает и не говорит. Договорил —
+        // шлюз открывает вопрос, пульт слушает ответ.
+        const turn = saying.then(async () => {
+            if (!(await idle(IDLE_WAIT_MS))) return;
+            if (!(await sayAloud(line))) return;
+            const said = await api.workSaid(work.id).catch(() => null);
+            if (said?.question) listenFor(ANSWER_SECONDS * 1000, 'ready');
+            // Микрофон слушает ответ: следующее «Готово» подождёт и его.
+            await idle(IDLE_WAIT_MS);
+        });
+        saying = turn.catch(() => undefined);
+        await turn;
     };
     return null;
 }

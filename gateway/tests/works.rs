@@ -153,7 +153,10 @@ async fn a_wish_in_ones_own_words_starts_one_work_and_nothing_is_dictated() {
 
     let said =
         talk(&gateway, &admin, "Я учу испанский. Хочу каждый день новые слова, и чтобы знакомые подсвечивались.").await;
-    assert_eq!(said, "Делаю: испанский: слова дня. Около минуты. Можно добавлять детали по ходу: просто скажите, что ещё улучшить или добавить.", "the first today: how to add on the way");
+    assert_eq!(
+        said, "Делаю: испанский: слова дня. Около минуты. Можно добавлять детали по ходу. Что-то ещё добавить?",
+        "the first today: how to add on the way"
+    );
     let brain: Vec<Value> = llm.requests().into_iter().filter(|request| !by_agent(request)).collect();
     assert_eq!(brain.len(), 1, "the ready phrase is said as it is: no second round");
     let system = system_of(&brain[0]);
@@ -401,7 +404,7 @@ async fn the_panels_phrase_begins_a_work_and_its_yes_puts_it_on_the_desk() {
     .await;
     assert_eq!(
         (said["said"].clone(), said["work"].clone()),
-        (json!("Делаю: курс доллара. Около минуты. Можно добавлять детали по ходу: просто скажите, что ещё улучшить или добавить."), json!("1"))
+        (json!("Делаю: курс доллара. Около минуты. Можно добавлять детали по ходу. Что-то ещё добавить?"), json!("1"))
     );
     llm.set_reply("Сейчас полдень.");
     let said =
@@ -434,7 +437,7 @@ async fn the_panels_phrase_begins_a_work_and_its_yes_puts_it_on_the_desk() {
     .await;
     assert_eq!(
         (said["said"].clone(), said["work"].clone()),
-        (json!("Делаю: часы с секундами. Около минуты. Можно добавлять."), json!("2"))
+        (json!("Делаю: часы с секундами. Около минуты. Что-то ещё добавить?"), json!("2"))
     );
     let model_heard =
         |words: &str| llm.requests().iter().any(|request| !by_agent(request) && last_said(request).contains(words));
@@ -579,9 +582,12 @@ async fn the_hand_check_of_14_november_again() {
     let again = gateway.app.talk.works().get("2").expect("the new version's work");
     assert!(again.again && again.target == gateway.app.talk.works().get("1").unwrap().target, "{again:?}");
 
-    // 7: the workshop's door — a scrap of speech is asked again, the exit in other words is the exit.
+    // 7: the workshop's door — a scrap of speech is asked again, the exit in other words is the exit. The scrap came
+    // that evening in the window after an answer, without the button: since stage 2 the closed window does not take
+    // it at all (docs/plans/audio-interface-2.md, «К2») — no answer, no work; after the button it is asked again.
     heard.push(spoken(&gateway, &admin, "Мастерская.", "button").await);
-    let said = spoken(&gateway, &admin, "Ос.", "answer").await;
+    assert_eq!(spoken(&gateway, &admin, "Ос.", "answer").await, "", "the window does not take a scrap");
+    let said = spoken(&gateway, &admin, "Ос.", "button").await;
     assert_eq!(said, "Не разобрать. Что сделать?");
     heard.push(said);
     let said = spoken(&gateway, &admin, "Выйди из режима мастерской.", "button").await;
@@ -659,5 +665,108 @@ async fn a_thing_removed_in_the_panel_is_gone_for_the_talk_by_its_id() {
 
     assert_eq!(talk(&gateway, &admin, "Как там часы?").await, "«Часы» больше нет — его убрали. Сделать заново?");
     assert!(spoken(&gateway, &admin, "Да", "answer").await.starts_with("Делаю: часы."));
+    gateway.stop().await;
+}
+
+/// A phrase the panel's microphone heard by itself, after `why` it opened: the closed window's.
+async fn in_window(gateway: &Gateway, admin: &str, text: &str, why: &str) -> Value {
+    let body = json!({ "text": text, "via": "answer", "why": why, "heard": "home", "voice": true });
+    message(gateway.post("/api/v1/talk").signed(admin).json(&body), StatusCode::OK).await
+}
+
+/// Stage 2 (docs/plans/audio-interface-2.md, «Как это будет», «К2», «К3»), with a brain that behaves badly: asked in
+/// words, it says «Готово: сделала.» without a single call, and its reader reads a wish into a new thing whenever it
+/// can. The closed window takes «и ещё…» to the work going on and the answers to the questions — the layer's and the
+/// brain's own — and nothing else: talk in the room, a new wish, a question to the brain without the button never
+/// reach the journal, the history or a work. «Хватит» declines the question; nobody's answer leaves it waiting.
+#[tokio::test]
+async fn the_closed_window_takes_an_answer_and_more_and_lets_go_of_the_rest() {
+    const LIE: &str = "Готово: сделала.";
+    let llm = ChatStub::start().await;
+    llm.set_responder(|request| {
+        if by_agent(request) {
+            return Some(agent_made_after(request, "Сделано.", 1500));
+        }
+        let said = last_said(request);
+        if reads(request) {
+            let reading = if said.contains("курсом валют") {
+                json!({ "act": "new", "text": "виджет с курсом валют", "title": "Курс валют" })
+            } else if said.contains("с погодой") {
+                json!({ "act": "new", "text": "виджет с погодой", "title": "Погода" })
+            } else if said.contains("юань") {
+                json!({ "act": "add", "text": "пусть показывает юань" })
+            } else {
+                json!({ "act": "talk" })
+            };
+            return Some(read_as(reading));
+        }
+        Some(Scripted::reply(if said.contains("Покажи погоду") {
+            "Какой город?"
+        } else if said.contains("Казань") {
+            "В Казани солнечно."
+        } else {
+            LIE
+        }))
+    });
+    let (gateway, admin) = with_brain(&llm).await;
+    let journal = |gateway: &Gateway| gateway.app.requests.recent_views(100).len();
+    let brain_heard = |words: &str| {
+        llm.requests().iter().any(|request| !by_agent(request) && !reads(request) && last_said(request).contains(words))
+    };
+
+    // The wish — after the button: a work.
+    assert_eq!(
+        spoken(&gateway, &admin, "Я хочу виджет с курсом валют", "button").await,
+        "Делаю: курс валют. Около минуты. Можно добавлять детали по ходу. Что-то ещё добавить?"
+    );
+    // «И ещё…» in the window after «Делаю…»: the work's, said by the layer; the brain is not asked.
+    let added = in_window(&gateway, &admin, "И ещё пусть показывает юань", "work").await;
+    assert_eq!(added["said"], "Добавлю: пусть показывает юань.");
+    assert!(!brain_heard("юань"));
+    let work = gateway.app.talk.works().get("1").unwrap();
+    assert_eq!(work.notes.len(), 1, "{work:?}");
+
+    // Talk in the room and a new wish, said in the window: not taken — no request, no work, no word of the brain.
+    let before = journal(&gateway);
+    for text in ["А что на ужин?", "Сделай ещё виджет с погодой"] {
+        let dropped = in_window(&gateway, &admin, text, "work").await;
+        assert_eq!((dropped["said"].clone(), dropped["dropped"].clone()), (json!(""), json!(true)), "{text}");
+        assert!(!brain_heard(text), "{text}");
+    }
+    assert_eq!(journal(&gateway), before, "nothing the window did not take is in the journal");
+    // «Нет» to «Что-то ещё добавить?»: the window closes, nothing is said, nothing is dropped.
+    let no = in_window(&gateway, &admin, "Нет", "question").await;
+    assert_eq!((no["said"].clone(), no.get("dropped").cloned()), (json!(""), None), "{no}");
+    assert_eq!(gateway.app.talk.works().all(None, None).len(), 1, "no new work without the button");
+
+    // «Готово…»: the panel said it; in the window «какая погода» is no answer — not taken, the lie never heard.
+    assert!(until(10_000, || gateway.app.talk.works().get("1").is_some_and(|work| work.result.is_some())).await);
+    message(gateway.post("/api/v1/works/1/said").signed(&admin), StatusCode::OK).await;
+    let weather = in_window(&gateway, &admin, "Какая погода?", "ready").await;
+    assert_eq!(weather["dropped"], true, "{weather}");
+    assert!(!brain_heard("Какая погода"));
+    // «Хватит» closes the window: the question is declined, nothing said; it does not wait for the person.
+    let enough = in_window(&gateway, &admin, "Хватит", "ready").await;
+    assert_eq!((enough["said"].clone(), enough.get("dropped").cloned()), (json!(""), None), "{enough}");
+    let question = gateway.app.talk.works().get("1").unwrap().question.expect("the question stays in the record");
+    assert_eq!(question.outcome, Some(duowave::talk::works::Outcome::Declined));
+    assert!(works(&gateway, &admin, "?waiting=1").await.is_empty(), "declined: nothing waits");
+
+    // The brain's own question: the answer said in the window is the brain's.
+    let asked = message(
+        gateway
+            .post("/api/v1/talk")
+            .signed(&admin)
+            .json(&json!({ "text": "Покажи погоду", "via": "button", "heard": "home", "voice": true })),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!((asked["said"].clone(), asked["asks"].clone()), (json!("Какой город?"), json!(true)));
+    let answer = in_window(&gateway, &admin, "Казань", "question").await;
+    assert_eq!(answer["said"], "В Казани солнечно.");
+    assert!(brain_heard("Казань"));
+    // Answered: the next phrase without the button is not the brain's any more.
+    let after = in_window(&gateway, &admin, "А завтра?", "question").await;
+    assert_eq!(after["dropped"], true, "{after}");
     gateway.stop().await;
 }

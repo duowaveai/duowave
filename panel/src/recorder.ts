@@ -100,6 +100,8 @@ export interface RecordAs {
 export class Recorder {
     private readonly chunks: Float32Array[] = [];
     private length = 0;
+    /** Сколько отсчётов уже отдал take(). */
+    private taken = 0;
     private detach: () => void = () => undefined;
 
     private constructor(
@@ -179,14 +181,42 @@ export class Recorder {
 
     async stop(): Promise<{ wav: Blob; seconds: number }> {
         const rate = this.context.sampleRate;
-        const wanted = this.rate;
         this.release();
-        const samples = new Float32Array(this.length);
+        return this.encode(this.slice(0, this.length), rate);
+    }
+
+    /**
+     * Звук с прошлого take() (с начала — в первый раз), а запись идёт дальше: голос пульта отдаёт мысль «Слуху»
+     * кусками, отрезанными на паузах. Отрезано сразу, до первого await: куски идут по порядку.
+     */
+    take(): Promise<{ wav: Blob; seconds: number }> {
+        const from = this.taken;
+        this.taken = this.length;
+        return this.encode(this.slice(from, this.length), this.context.sampleRate);
+    }
+
+    /** Отсчёты записи с `from` до `to`. */
+    private slice(from: number, to: number): Float32Array<ArrayBuffer> {
+        const samples = new Float32Array(Math.max(0, to - from));
+        let at = 0;
         let offset = 0;
         for (const chunk of this.chunks) {
-            samples.set(chunk, offset);
-            offset += chunk.length;
+            const end = at + chunk.length;
+            if (end > from && at < to) {
+                const start = Math.max(0, from - at);
+                const stop = Math.min(chunk.length, to - at);
+                samples.set(chunk.subarray(start, stop), offset);
+                offset += stop - start;
+            }
+            at = end;
+            if (at >= to) break;
         }
+        return samples;
+    }
+
+    /** WAV в нужной частоте: браузер не всегда даёт её сам. */
+    private async encode(samples: Float32Array<ArrayBuffer>, rate: number): Promise<{ wav: Blob; seconds: number }> {
+        const wanted = this.rate;
         if (rate === wanted) return { wav: encodeWav(samples, wanted), seconds: samples.length / wanted };
         const buffer = new AudioBuffer({ length: Math.max(1, samples.length), numberOfChannels: 1, sampleRate: rate });
         buffer.copyToChannel(samples, 0);

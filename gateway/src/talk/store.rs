@@ -17,7 +17,6 @@ use std::time::Instant;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use super::asked::ANSWER_FOR;
 use super::pack::{self, Pack, StoreWords};
 use super::ready::Answer;
 use crate::core::events::{Actor, EventBus, GatewayEvent};
@@ -175,7 +174,7 @@ impl Store {
         {
             let mut questions = self.questions();
             match questions.get(device) {
-                Some((_, at)) if at.elapsed() < ANSWER_FOR => {}
+                Some((_, at)) if at.elapsed() < super::asked::answer_for(device) => {}
                 Some(_) => {
                     questions.remove(device);
                     return None;
@@ -702,9 +701,10 @@ mod tests {
         assert_eq!(store.answer_of("kitchen", ru, "да"), Some(StoreHeard::Answer { yes: true }));
         assert_eq!(store.answer_of("kitchen", ru, "нет"), Some(StoreHeard::Answer { yes: false }));
         assert_eq!(store.answer_of("kitchen", ru, "который час"), None, "not an answer: the phrase goes on");
-        store
-            .questions()
-            .insert("kitchen".into(), (Waiting::Update { packages: Vec::new() }, Instant::now() - ANSWER_FOR));
+        store.questions().insert(
+            "kitchen".into(),
+            (Waiting::Update { packages: Vec::new() }, Instant::now() - crate::talk::asked::ANSWER_FOR),
+        );
         assert_eq!(store.answer_of("kitchen", ru, "да"), None, "too late");
     }
 }

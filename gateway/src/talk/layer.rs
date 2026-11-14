@@ -7,7 +7,7 @@ use std::sync::{Arc, OnceLock, RwLock, Weak};
 use super::executor::{Began, Executor, Presence, Report};
 use super::now::{self, Sources};
 use super::pack;
-use super::works::{End, NewWork, Work, WorkResult, WorkState, Works, APP};
+use super::works::{End, NewWork, Outcome, Work, WorkResult, WorkState, Works, APP};
 use crate::core::events::{EventBus, GatewayEvent};
 use crate::memory::text::Lang;
 use crate::storage::Db;
@@ -65,7 +65,7 @@ pub const REMEMBERED_MS: u64 = 30 * 60_000;
 impl TalkLayer {
     /// The layer over the works the table keeps: what went on when the gateway stopped is interrupted.
     pub fn new(db: Option<Arc<Db>>, events: EventBus) -> Arc<TalkLayer> {
-        Arc::new_cyclic(|me| TalkLayer {
+        let layer = Arc::new_cyclic(|me| TalkLayer {
             me: me.clone(),
             works: Works::open(db),
             door: super::door::Door::default(),
@@ -85,7 +85,15 @@ impl TalkLayer {
             reader: OnceLock::new(),
             planned: std::sync::Mutex::new(std::collections::HashSet::new()),
             hinted: std::sync::Mutex::new(std::collections::HashMap::new()),
-        })
+        });
+        // A question nobody answered in its time ends silent: the work's question says so, and waits.
+        let me = Arc::downgrade(&layer);
+        layer.asked.on_silence(Arc::new(move |device: &str, question: &super::asked::Question| {
+            if let Some(layer) = me.upgrade() {
+                layer.silent(device, question);
+            }
+        }));
+        layer
     }
 
     pub fn works(&self) -> &Works {
@@ -355,11 +363,84 @@ impl TalkLayer {
     /// the answer the panel listens for.
     pub fn said_on(&self, id: &str, device: &str) -> Option<Work> {
         let work = self.works.update(id, |work| work.said_at = Some(now_ms()))?;
-        if let Some(kind) = work.question.as_ref().and_then(|question| question.kind) {
-            self.asked.ask(device, id, kind, false);
-        }
+        self.ask_aloud(&work, device, false);
         self.told(&work, "said");
-        Some(work)
+        self.works.get(id)
+    }
+
+    /// A work's question was said aloud on a device: it waits for its answer there, and its record says when.
+    pub(super) fn ask_aloud(&self, work: &Work, device: &str, again: bool) {
+        let Some(kind) = work.question.as_ref().and_then(|question| question.kind) else { return };
+        self.asked.ask(device, &work.id, kind, again);
+        self.works.update(&work.id, |work| {
+            if let Some(question) = work.question.as_mut() {
+                question.asked_at = Some(now_ms());
+                question.outcome = None;
+            }
+        });
+    }
+
+    /// How the asking of a work's question ended: the record keeps it, the panel hears it.
+    pub(super) fn ended_asking(&self, id: &str, outcome: Outcome) {
+        if id.is_empty() {
+            return;
+        }
+        let Some(work) = self.works.update(id, |work| {
+            if let Some(question) = work.question.as_mut() {
+                question.outcome = Some(outcome);
+            }
+        }) else {
+            return;
+        };
+        if work.question.is_some() {
+            self.told(&work, outcome.as_str());
+        }
+    }
+
+    /// A device's question ended without an answer: nothing is done — a work's question waits, to be asked once more.
+    fn silent(&self, device: &str, question: &super::asked::Question) {
+        tracing::info!(target: "talk", "the question on {device} ended silent: {:?} {}", question.kind, question.work);
+        if question.kind != super::asked::Kind::Talk {
+            self.ended_asking(&question.work, Outcome::Silent);
+        }
+    }
+
+    /// The works whose question waits for the person: ready or not finished, asked, neither answered nor declined —
+    /// «Ждёт вас».
+    pub fn waiting(&self) -> Vec<Work> {
+        self.works
+            .all(None, None)
+            .into_iter()
+            .filter(|work| work.awaiting() && work.question.as_ref().is_some_and(|question| question.waits()))
+            .collect()
+    }
+
+    /// After a device's talk: the question of its work that ended silent, asked once more — once ever. Its words, and
+    /// it waits for the answer again.
+    pub fn remind(&self, device: &str) -> Option<String> {
+        let work = self.works.all(Some(device), None).into_iter().find(|work| {
+            work.awaiting()
+                && work
+                    .question
+                    .as_ref()
+                    .is_some_and(|question| question.outcome == Some(Outcome::Silent) && !question.reminded)
+        })?;
+        let line = work.question.as_ref().map(|question| question.text.clone()).unwrap_or_default();
+        let ask = line.rsplit_once(". ").map(|(_, ask)| ask.trim().to_string()).unwrap_or_default();
+        if ask.is_empty() {
+            return None;
+        }
+        let mut chars = ask.chars();
+        let ask: String = chars.next().map(|first| first.to_lowercase().chain(chars).collect()).unwrap_or_default();
+        let work = self.works.update(&work.id, |work| {
+            if let Some(question) = work.question.as_mut() {
+                question.reminded = true;
+            }
+        })?;
+        self.ask_aloud(&work, device, false);
+        self.told(&work, "reminded");
+        let say = &pack::of(self.lang(device)).work.say;
+        Some(pack::fill(say.remind, &[("title", &work.title), ("ask", &ask)]))
     }
 
     /// Who keeps a device's conversation past its pause: the dialog's history.
@@ -568,5 +649,56 @@ mod tests {
         assert_eq!(app.workshop.card("golos-vidzhet-1").stage, Stage::Interrupted);
         let now = app.talk.now("kitchen", crate::memory::text::Lang::Ru);
         assert!(now.contains("- Прервано [р1]: виджет «Испанский»"), "{now}");
+    }
+
+    /// «На стол или примерить?» said and nobody answered in its time: nothing is done, the work waits («Ждёт вас»), and
+    /// the question is asked once more after the device's next talk — once, never twice. «Нет» is a «not now».
+    #[tokio::test(start_paused = true)]
+    async fn a_question_nobody_answered_waits_and_is_asked_once_more_once() {
+        use crate::talk::asked::{Kind, ANSWER_FOR};
+        use crate::talk::works::{NewWork, Outcome, Question, WorkResult};
+        let layer = super::TalkLayer::new(None, crate::core::events::EventBus::new());
+        let ready = |title: &str| {
+            let work = layer.works.create(NewWork {
+                kind: super::APP,
+                face: None,
+                executor: "workshop".into(),
+                target: Some(title.to_lowercase()),
+                title: title.into(),
+                brief: "часы".into(),
+                origin: crate::talk::Origin::station("kitchen", true),
+                again: false,
+            });
+            let line = format!("{title}: готово. На стол или примерить?");
+            layer
+                .works
+                .update(&work.id, |work| {
+                    work.state = WorkState::Ready;
+                    work.result = Some(WorkResult { line: line.clone(), end: None });
+                    work.question = Some(Question::new(line, 0, Kind::Ready));
+                })
+                .unwrap()
+        };
+        let clock = ready("Часы");
+        assert!(layer.waiting().iter().any(|work| work.id == clock.id), "ready with a question: it waits");
+        assert_eq!(layer.remind("kitchen"), None, "not asked yet — nothing to remind of");
+        layer.said_on(&clock.id, "kitchen");
+        assert!(layer.asked.open("kitchen").is_some());
+        tokio::time::sleep(ANSWER_FOR + std::time::Duration::from_millis(10)).await;
+        tokio::task::yield_now().await;
+        let question = layer.works.get(&clock.id).unwrap().question.unwrap();
+        assert_eq!(question.outcome, Some(Outcome::Silent));
+        assert!(layer.waiting().iter().any(|work| work.id == clock.id), "silent: it still waits");
+        assert_eq!(layer.remind("hall").as_deref(), None, "another device was not asked");
+        assert_eq!(layer.remind("kitchen").as_deref(), Some("Часы ещё ждёт: на стол или примерить?"));
+        assert!(layer.asked.open("kitchen").is_some(), "the reminder asks again: the answer is taken");
+        tokio::time::sleep(ANSWER_FOR + std::time::Duration::from_millis(10)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(layer.remind("kitchen"), None, "never a second time");
+
+        let weather = ready("Погода");
+        layer.said_on(&weather.id, "kitchen");
+        layer.ended_asking(&weather.id, Outcome::Declined);
+        assert!(!layer.waiting().iter().any(|work| work.id == weather.id), "declined: it does not wait for the person");
     }
 }

@@ -6,7 +6,7 @@
 // говорит по одной. Звучат они по порядку, следующая — по концу предыдущей. Новое «Сказать», «×» на полосе или
 // ошибка обрывают всё: и ответ «Мозга», и голос. Кончился ответ вопросом — зовётся `after`: микрофон слушает сам.
 
-import { TalkTurn, problemOf, talk, talkSpeech } from '../api';
+import { TalkEvent, TalkTurn, WindowWhy, problemOf, talk, talkSpeech } from '../api';
 import { startedHere } from './works';
 import { playToEnd, stopAudio } from '../audio';
 import { tr } from '../i18n';
@@ -35,7 +35,10 @@ interface Answer {
     /** Голоса нет (не выбран, не запустился) или его остановили: ответ остаётся текстом. */
     mute: boolean;
     speaking: boolean;
-    after?: () => void;
+    /** Микрофон открывается сам после ответа — и почему (docs/plans/audio-interface-2.md, «К2»). */
+    after?: (why: WindowWhy) => void;
+    /** Чем кончился ответ: спрашивает ли, напоминание, не принят ли. */
+    done?: Extract<TalkEvent, { type: 'done' }>;
 }
 
 let current: Answer | null = null;
@@ -108,16 +111,34 @@ async function speak(answer: Answer): Promise<void> {
     if (current === answer && answer.written) finish(answer);
 }
 
-/** Всё сказано: полоса постоит и уйдёт; после вопроса слушает микрофон. */
+/**
+ * Всё сказано: полоса постоит и уйдёт. Микрофон открывается сам, когда шлюз сказал, что ответ спрашивает (или ответ
+ * кончился «?» у шлюза постарше), после напоминания о вопросе работы и после строки работы («Делаю…», «Добавлю…»): так
+ * «и ещё…» говорится без кнопки. Фразу окна, которую шлюз не принял, пульт не показывает: только подсказку.
+ */
 function finish(answer: Answer): void {
     current = null;
     tell();
+    const done = answer.done;
+    if (done?.dropped) {
+        showStrip({ kind: 'note', head: tr.voice.notAnswerHead, text: tr.voice.notAnswerText }, 3000);
+        return;
+    }
     const said = answer.phrases.map((phrase) => phrase.text).join(' ');
     if (!said) return hideStrip();
-    if (answer.after && endsWithQuestion(said)) {
-        // Вопрос остаётся на полосе с отсчётом, пока микрофон ждёт ответа.
-        updateStrip('answer', { head: tr.voice.waitingAnswer, wait: ANSWER_WAIT_MS / 1000 }, KEEP_MS);
-        return answer.after();
+    const why: WindowWhy | undefined = !answer.after
+        ? undefined
+        : done?.remind
+          ? 'ready'
+          : (done?.asks ?? endsWithQuestion(said))
+            ? 'question'
+            : done?.work
+              ? 'work'
+              : undefined;
+    if (why && answer.after) {
+        // Вопрос (или строка работы) остаётся на полосе с отсчётом, пока микрофон слушает.
+        updateStrip('answer', { head: why === 'work' ? tr.voice.addMore : tr.voice.waitingAnswer, wait: ANSWER_WAIT_MS / 1000 }, KEEP_MS);
+        return answer.after(why);
     }
     updateStrip('answer', { head: tr.voice.answer }, KEEP_MS);
 }
@@ -134,16 +155,16 @@ export async function sayAloud(text: string): Promise<boolean> {
 }
 
 /**
- * Фраза уходит в разговор, ответ — на полосу и, с `voice`, голосом компьютера. `after` зовётся, когда ответ кончился
- * вопросом и договорён: пульт открывает микрофон на несколько секунд. Ответ назвал работу, которую фраза начала или
- * дополнила, — её «Готово» пульт скажет сам.
+ * Фраза уходит в разговор, ответ — на полосу и, с `voice`, голосом компьютера. `after` зовётся, когда ответ договорён и
+ * микрофону пора открыться самому (вопрос, напоминание, строка работы) — с причиной. Ответ назвал работу, которую фраза
+ * начала или дополнила, — её «Готово» пульт скажет сам. Фраза окна (`why`) не показывается, пока шлюз её не принял.
  */
-export function answerTo(turn: TalkTurn, after?: () => void, voice = true): void {
+export function answerTo(turn: TalkTurn, after?: (why: WindowWhy) => void, voice = true): void {
     stopAnswer();
     const answer: Answer = { abort: new AbortController(), phrases: [], spoken: 0, written: false, mute: !voice, speaking: false, after };
     current = answer;
     tell();
-    showStrip({ kind: 'answer', head: tr.voice.thinking, caps: turn.text });
+    showStrip({ kind: 'answer', head: tr.voice.thinking, caps: turn.why ? undefined : turn.text });
     const fail = (message: string): void => {
         if (current !== answer) return;
         stopAnswer();
@@ -151,7 +172,8 @@ export function answerTo(turn: TalkTurn, after?: () => void, voice = true): void
     };
     talk({ ...turn, voice }, (event) => {
         if (current !== answer) return;
-        if (event.type === 'start') updateStrip('answer', { chip: chipOf(event.by) });
+        // Начало ответа — шлюз принял фразу: теперь её можно показать.
+        if (event.type === 'start') updateStrip('answer', { chip: chipOf(event.by), caps: turn.text });
         if (event.type === 'tool') updateStrip('answer', { head: tr.voice.looking(event.name) });
         if (event.type === 'phrase') {
             answer.phrases.push({ text: event.text });
@@ -162,6 +184,14 @@ export function answerTo(turn: TalkTurn, after?: () => void, voice = true): void
         if (event.type === 'error') fail(event.message);
         if (event.type === 'done') {
             if (event.work) startedHere(event.work);
+            answer.done = event;
+            // Вопрос работы, на который не ответили, — ещё раз, после этого ответа.
+            if (event.remind) {
+                answer.phrases.push({ text: event.remind });
+                updateStrip('answer', { head: tr.voice.answering, text: answer.phrases.map((phrase) => phrase.text).join(' ') });
+                ask(answer);
+                void speak(answer);
+            }
             answer.written = true;
             if (!answer.speaking) finish(answer);
         }

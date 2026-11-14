@@ -3,12 +3,15 @@
 //! stations use, and never to the browser's (Chrome sends it to Google). The answer says where it was heard: at home,
 //! or in a cloud (the panel's strip writes that in amber). The right is the one «Сказать» needed (`station.say`).
 //!
-//! - `POST /api/v1/listen` — body `audio/wav` → `{text, heard: "home" | "cloud"}`.
+//! - `POST /api/v1/listen?piece=N` — body `audio/wav` → `{text, heard: "home" | "cloud", thought}`. The panel records a
+//!   thought in pieces cut at pauses (docs/plans/audio-interface-2.md, «К1. Мысль»): `piece` is the piece's number in
+//!   its thought, from 1; `thought` says how the piece ends it and how long to wait for more (`talk::thought`), by the
+//!   words of the household's language.
 
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{DefaultBodyLimit, Query, State};
 use axum::http::StatusCode;
 use axum::routing::post;
 use axum::Router;
@@ -36,6 +39,14 @@ pub struct Heard {
     pub text: String,
     /// `home` — the gateway's or the computer's own server; `cloud` — a recognizer in the network.
     pub heard: &'static str,
+    /// How the piece ends its thought.
+    pub thought: crate::talk::thought::Thought,
+}
+
+/// Which piece of its thought the audio is.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct Piece {
+    piece: Option<u32>,
 }
 
 /// The samples of a WAV: PCM, 16-bit, mono, 16 kHz — what the panel's recorder writes (panel/src/voice/mic.ts).
@@ -80,7 +91,12 @@ pub fn wav_pcm(bytes: &[u8]) -> Result<Vec<i16>, String> {
 }
 
 /// The phrase recognized by «Слух», as the station's would be.
-async fn listen(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> ApiResult<Heard> {
+async fn listen(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Query(piece): Query<Piece>,
+    body: Bytes,
+) -> ApiResult<Heard> {
     caller.permitted(STATION_SAY)?;
     if body.len() > MAX_BYTES {
         return Err(ApiError::bad_request(crate::tr!("Фраза больше 1 МБ.")));
@@ -106,7 +122,9 @@ async fn listen(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Api
     let recognition = app.speech.recognize(&audio, &[], &CancellationToken::new()).await.map_err(|error| {
         ApiError::bad_gateway(crate::tr!("«Слух» не ответил: {error}", error = format!("{error:#}")))
     })?;
-    Ok(ok(Heard { text: recognition.text, heard: if app.speech.at_home() { "home" } else { "cloud" } }))
+    let first = piece.piece.unwrap_or(1) <= 1;
+    let thought = crate::talk::thought::judge(&recognition.text, crate::talk::words::household(), first);
+    Ok(ok(Heard { text: recognition.text, heard: if app.speech.at_home() { "home" } else { "cloud" }, thought }))
 }
 
 #[cfg(test)]
@@ -155,14 +173,24 @@ mod tests {
         let guest = || Caller::local(app.clone(), Some(user_principal("u3", "Гость", Role::Guest, None)));
         let phrase = Bytes::from(wav(16_000, 1, &vec![0; 16_000]));
         let status = |result: ApiResult<Heard>| result.err().map(|error| error.status);
-        assert_eq!(status(listen(State(app.clone()), guest(), phrase.clone()).await), Some(StatusCode::FORBIDDEN));
         assert_eq!(
-            status(listen(State(app.clone()), admin(), Bytes::from_static(b"RIFF")).await),
+            status(listen(State(app.clone()), guest(), Query(Piece::default()), phrase.clone()).await),
+            Some(StatusCode::FORBIDDEN)
+        );
+        assert_eq!(
+            status(listen(State(app.clone()), admin(), Query(Piece::default()), Bytes::from_static(b"RIFF")).await),
             Some(StatusCode::BAD_REQUEST)
         );
         let long = Bytes::from(wav(16_000, 1, &vec![0; 16_000 * 16]));
-        assert_eq!(status(listen(State(app.clone()), admin(), long).await), Some(StatusCode::BAD_REQUEST));
-        assert_eq!(status(listen(State(app.clone()), admin(), phrase).await), Some(StatusCode::CONFLICT), "«Слух» off");
+        assert_eq!(
+            status(listen(State(app.clone()), admin(), Query(Piece::default()), long).await),
+            Some(StatusCode::BAD_REQUEST)
+        );
+        assert_eq!(
+            status(listen(State(app.clone()), admin(), Query(Piece::default()), phrase).await),
+            Some(StatusCode::CONFLICT),
+            "«Слух» off"
+        );
     }
 
     #[test]

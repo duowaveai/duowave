@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 
+import { routeOutput } from './voice/devices';
+
 /**
  * Проигрывание звука пульта — дублей и проб голоса: звучит одно за раз, новое останавливает прежнее. Звук приходит
  * blob'ом (его отдают с ключом входа), ссылка на него освобождается, когда он доиграл или его остановили.
@@ -28,6 +30,7 @@ export async function playAudio(key: string, load: () => Promise<Blob>): Promise
     audio.onended = () => current?.key === key && stopAudio();
     settle(key);
     try {
+        await routeOutput(audio);
         await audio.play();
     } catch {
         stopAudio();
@@ -61,7 +64,8 @@ export function playToEnd(key: string, blob: Blob): Promise<boolean> {
         listeners.add(watch);
         audio.onended = () => finish(true);
         audio.onerror = () => finish(false);
-        audio.play().catch(() => finish(false));
+        // В выбранный выход звука (voice/devices.ts), потом играть.
+        void routeOutput(audio).then(() => audio.play().catch(() => finish(false)));
     });
 }
 

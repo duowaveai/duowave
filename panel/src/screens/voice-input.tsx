@@ -12,8 +12,11 @@ import { Recorder, recordingSupport } from '../recorder';
 import { usePanel } from '../shell/context';
 import { ask } from '../ui/confirm';
 import { Sheet } from '../ui/sheet';
+import { Switch } from '../ui/switch';
 import { noteVoiceInput, useOnComputer } from '../voice-input';
-import { LISTEN_RATE } from '../voice/mic';
+import { startRecorder } from '../voice/mic';
+import { AudioDevice, audioDevices, chosenInput, chosenOutput, outputChoosable, setChosenInput, setChosenOutput } from '../voice/devices';
+import { micSounds, playTone, rerouteTones, setMicSounds } from '../voice/tones';
 import { DEFAULT_TALK_KEY, keyLabel, keyOf, same, setChoosingTalkKey, setTalkKey, useTalkKeyChoice } from '../voice/talk-key';
 import { tr } from '../i18n';
 import { languageName, localAsrNeedsCard, useLocalAsr } from './local-asr';
@@ -220,6 +223,9 @@ export function Readiness({ onGo }: { onGo?: () => void }) {
     );
 }
 
+/** Проверка микрофона разрешила его: выбор устройств перечитывает их названия. */
+const MIC_ALLOWED = 'duowave:mic-allowed';
+
 /** Проверка микрофона: пять секунд показывает уровень звука — слышит ли пульт. Ничего не пишет и никуда не шлёт. */
 export function MicCheck() {
     const [level, setLevel] = useState<number | null>(null);
@@ -241,16 +247,15 @@ export function MicCheck() {
         setHeard(false);
         setLevel(0);
         try {
-            recorder.current = await Recorder.start(
-                undefined,
-                (db) => {
-                    const value = Math.max(0, Math.min(1, (db + 55) / 45));
-                    setLevel(value);
-                    if (value > 0.35) setHeard(true);
-                },
-                { rate: LISTEN_RATE, processed: true },
-            );
+            // Тот микрофон, что выбран ниже: проверяют его.
+            recorder.current = await startRecorder((db) => {
+                const value = Math.max(0, Math.min(1, (db + 55) / 45));
+                setLevel(value);
+                if (value > 0.35) setHeard(true);
+            });
             timer.current = window.setTimeout(stop, 5000);
+            // Микрофон разрешён: теперь у устройств есть названия.
+            window.dispatchEvent(new Event(MIC_ALLOWED));
         } catch (error) {
             setLevel(null);
             setProblem(error instanceof Error ? error.message : String(error));
@@ -278,6 +283,98 @@ export function MicCheck() {
                     {problem}
                 </p>
             )}
+            <AudioDeviceChoice />
+            <MicSoundsChoice />
+        </div>
+    );
+}
+
+/**
+ * Откуда слушать и куда говорить (voice/devices.ts): «Автоматически» — что даёт система, или выбранное устройство.
+ * Названия устройств браузер показывает после первого разрешения микрофона; выход — там, где браузер даёт его выбрать.
+ */
+function AudioDeviceChoice() {
+    const [devices, setDevices] = useState<{ inputs: AudioDevice[]; outputs: AudioDevice[] }>({ inputs: [], outputs: [] });
+    const [input, setInput] = useState(chosenInput());
+    const [output, setOutput] = useState(chosenOutput());
+    useEffect(() => {
+        if (!recordingSupport().ok) return;
+        const load = () => void audioDevices().then(setDevices).catch(() => undefined);
+        load();
+        navigator.mediaDevices.addEventListener?.('devicechange', load);
+        window.addEventListener(MIC_ALLOWED, load);
+        return () => {
+            navigator.mediaDevices.removeEventListener?.('devicechange', load);
+            window.removeEventListener(MIC_ALLOWED, load);
+        };
+    }, []);
+    const named = devices.inputs.some((device) => !device.label.startsWith('🎙'));
+    return (
+        <div class="flex flex-col gap-10">
+            <label class="flex flex-col gap-4">
+                <span class="w-strong">{tr.voiceInput.inputTitle}</span>
+                <select
+                    class="field"
+                    value={input}
+                    onChange={(e) => {
+                        const id = (e.target as HTMLSelectElement).value;
+                        setChosenInput(id);
+                        setInput(id);
+                    }}
+                >
+                    <option value="">{tr.voiceInput.deviceAuto}</option>
+                    {devices.inputs.map((device) => (
+                        <option key={device.id} value={device.id}>
+                            {device.label}
+                        </option>
+                    ))}
+                </select>
+                {!named && devices.inputs.length > 0 && <span class="w-cap">{tr.voiceInput.namesAfterCheck}</span>}
+            </label>
+            {outputChoosable() && devices.outputs.length > 0 ? (
+                <label class="flex flex-col gap-4">
+                    <span class="w-strong">{tr.voiceInput.outputTitle}</span>
+                    <select
+                        class="field"
+                        value={output}
+                        onChange={(e) => {
+                            const id = (e.target as HTMLSelectElement).value;
+                            setChosenOutput(id);
+                            setOutput(id);
+                            rerouteTones();
+                            playTone('heard');
+                        }}
+                    >
+                        <option value="">{tr.voiceInput.deviceAuto}</option>
+                        {devices.outputs.map((device) => (
+                            <option key={device.id} value={device.id}>
+                                {device.label}
+                            </option>
+                        ))}
+                    </select>
+                </label>
+            ) : (
+                <span class="w-cap">{tr.voiceInput.outputBySystem}</span>
+            )}
+        </div>
+    );
+}
+
+/** Звуки микрофона (voice/tones.ts): «слушаю» и «услышала». Хранятся в этом браузере. */
+function MicSoundsChoice() {
+    const [on, setOn] = useState(micSounds());
+    const change = (value: boolean) => {
+        setMicSounds(value);
+        setOn(value);
+        if (value) playTone('listen');
+    };
+    return (
+        <div class="w-row">
+            <span class="flex-1 min-w-0 flex flex-col">
+                <span class="w-strong">{tr.voiceInput.micSoundsTitle}</span>
+                <span class="w-cap">{tr.voiceInput.micSoundsText}</span>
+            </span>
+            <Switch on={on} label={tr.voiceInput.micSoundsTitle} onChange={change} />
         </div>
     );
 }
