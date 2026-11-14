@@ -38,6 +38,7 @@ import { forgetStationPackages } from './sdk';
 import { AddWidgetPanel } from './screens/add-widget';
 import { WidgetAgent } from './screens/widget-agent';
 import { noteWorkshopChange } from './voice/drafts';
+import { noteWorkChange } from './voice/works';
 import { CreationFlow } from './voice/flow';
 import { toggleListening } from './voice/mic';
 import { onTextToStation } from './voice/strip';
@@ -242,6 +243,8 @@ export function App() {
         noteFoldersChange(name);
         // Черновики мастерской: плитка на столе, «Готово» на полосе, «Примерка» по просьбе колонки (voice/drafts.ts).
         if (name === 'workshop.changed' || name === 'hello') noteWorkshopChange(subject, change);
+        // Работы разговора: «Готово…» на полосе и голосом компьютера, заметки на плитке (voice/works.ts).
+        if (name === 'work.changed') noteWorkChange(subject, change);
         setVersion((value) => value + 1);
         readAvailability.current = 0;
         pollNow.current?.();

@@ -227,3 +227,476 @@ async fn an_app_runs_a_long_task_the_panel_follows_and_cancels() {
     assert_eq!(no_app.status(), StatusCode::UNAUTHORIZED, "the Host API is the app's alone, by its token");
     gateway.stop().await;
 }
+
+/// A Node on this machine for the test: the gateway's own is downloaded at the first need, here one is given instead
+/// (`DUOWAVE_NODE`, as the Docker image does). Without one the test says so and passes.
+fn some_node() -> Option<String> {
+    // As PATH names it, not where the link leads: npm lies beside that name (Homebrew keeps it out of Node's cellar).
+    let output = std::process::Command::new("sh").args(["-c", "command -v node"]).output();
+    let path = output.ok().filter(|output| output.status.success())?;
+    Some(String::from_utf8_lossy(&path.stdout).trim().to_string()).filter(|path| !path.is_empty())
+}
+
+/// An app of `runtime: node` (docs/plans/feed.md, stage 2): the example «Привет на Node» from docs/plugins/apps — put
+/// in place, its dependencies put from its lock (npm ci), started on the gateway's Node under the same supervisor,
+/// called, reaching the Host API with its token, started again after a fall, and removed with its dependencies.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn runs_an_app_on_node_calls_it_starts_it_again_after_a_fall_and_removes_it_whole() {
+    let Some(node) = some_node() else {
+        eprintln!("no node on this machine: the test of runtime node is skipped");
+        return;
+    };
+    let gateway = Gateway::start(&[("DUOWAVE_NODE", &node)]).await;
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/plugins/apps/hello-node");
+    let dir = gateway.dir.path().join("packages/hello-node/1.0.0");
+    std::fs::create_dir_all(&dir).unwrap();
+    for file in ["manifest.json", "server.mjs", "package.json", "package-lock.json"] {
+        std::fs::copy(example.join(file), dir.join(file)).unwrap();
+    }
+    let setup = message(
+        gateway.post("/api/v1/auth/setup").json(&json!({"password": "node-admin-password"})),
+        StatusCode::CREATED,
+    );
+    let admin = setup.await["token"].as_str().unwrap().to_string();
+    let (name, value) = bearer(&admin);
+    let (code, enabled) =
+        send(gateway.post("/api/v1/packages/hello-node/enable").header(name.clone(), value.clone())).await;
+    assert_eq!(code, StatusCode::OK, "{enabled}");
+    assert_eq!((&enabled["message"]["kind"], &enabled["message"]["state"]), (&json!("app"), &json!("loaded")));
+    assert!(dir.join("node_modules/.duowave-dependencies").is_file(), "npm ci ran from the lock");
+
+    let hello = |word: &'static str| {
+        let (name, value) = (name.clone(), value.clone());
+        let gateway = &gateway;
+        async move {
+            send(
+                gateway
+                    .post("/api/v1/packages/hello-node/tools/hello_node/try")
+                    .header(name, value)
+                    .json(&json!({ "arguments": { "name": word } })),
+            )
+            .await
+        }
+    };
+    let (code, answer) = hello("Аня").await;
+    assert_eq!(code, StatusCode::OK, "{answer}");
+    let content: Value = serde_json::from_str(answer["message"]["content"].as_str().unwrap()).unwrap();
+    assert!(content["text"].as_str().unwrap().starts_with("Привет, Аня! Это Node v"), "{content}");
+    assert_eq!(content["stored"], json!(true), "its token reaches the Host API: {content}");
+    let files = content["files"].as_str().unwrap_or_default();
+    assert!(files.ends_with("plugin-files/hello-node"), "its own folder on the bus: {content}");
+    let first_pid = content["pid"].as_u64().unwrap();
+
+    // A fall: started again.
+    let _ = send(
+        gateway
+            .post("/api/v1/packages/hello-node/tools/hello_crash/try")
+            .header(name.clone(), value.clone())
+            .json(&json!({ "arguments": {} })),
+    )
+    .await;
+    let mut again = None;
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let (code, answer) = hello("снова").await;
+        if code == StatusCode::OK {
+            again = Some(answer);
+            break;
+        }
+    }
+    let again = again.expect("started again after its fall");
+    let content: Value = serde_json::from_str(again["message"]["content"].as_str().unwrap()).unwrap();
+    assert_ne!(content["pid"].as_u64().unwrap(), first_pid, "a new process");
+
+    // The app as an MCP server for one's own Claude Code: its tools and its folder's files.
+    let rpc = |body: Value| {
+        let (name, value) = (name.clone(), value.clone());
+        let gateway = &gateway;
+        async move {
+            let answer = gateway.post("/mcp/apps/hello-node").header(name, value).json(&body).send().await.unwrap();
+            assert_eq!(answer.status(), StatusCode::OK);
+            answer.json::<Value>().await.unwrap()
+        }
+    };
+    let listed = rpc(json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" })).await;
+    let tools: Vec<&str> =
+        listed["result"]["tools"].as_array().unwrap().iter().map(|tool| tool["name"].as_str().unwrap()).collect();
+    assert!(
+        tools.contains(&"hello_node") && tools.contains(&"write_file") && tools.contains(&"list_files"),
+        "{tools:?}"
+    );
+    let call = |name: &str, arguments: Value| json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": name, "arguments": arguments } });
+    let wrote = rpc(call("write_file", json!({ "path": "notes/plan.md", "text": "план серии" }))).await;
+    assert_eq!(wrote["result"]["isError"], json!(false), "{wrote}");
+    let read = rpc(call("read_file", json!({ "path": "notes/plan.md" }))).await;
+    assert_eq!(read["result"]["content"][0]["text"], json!("план серии"));
+    let outside = rpc(call("read_file", json!({ "path": "../hello-node/../x" }))).await;
+    assert_eq!(outside["result"]["isError"], json!(true), "nothing outside its folder");
+    let greeted = rpc(call("hello_node", json!({ "name": "Код" }))).await;
+    assert!(greeted["result"]["content"][0]["text"].as_str().unwrap().contains("Привет, Код!"), "{greeted}");
+
+    // Removed: its folder goes with the dependencies npm put.
+    let (code, removed) = send(gateway.delete("/api/v1/packages/hello-node").header(name, value)).await;
+    assert_eq!(code, StatusCode::OK, "{removed}");
+    assert!(!gateway.dir.path().join("packages/hello-node").exists(), "no folder, no node_modules");
+    gateway.stop().await;
+}
+
+/// Media of an app's folder to its window (docs/plans/feed.md, «Один движок показа»): the panel asks the media engine
+/// for a key as the app, for the person looking (`POST /api/v1/media/links`), and the window plays `/media/v/<key>`
+/// with seeking. A key opens that one file; a page, a dot file or a made-up key get nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gives_an_apps_window_its_folders_video_with_seeking_by_a_key() {
+    let gateway = Gateway::start(&[]).await;
+    install_app(gateway.dir.path(), "1.0.0", None);
+    let folder = gateway.dir.path().join("plugin-files/echo-app/episodes");
+    std::fs::create_dir_all(&folder).unwrap();
+    // An MP4 by its bytes: the `ftyp` box first, then anything.
+    let mut video = b"\0\0\0\x18ftypmp42\0\0\0\0mp42isom".to_vec();
+    video.extend((0..3976u32).map(|n| (n % 251) as u8));
+    std::fs::write(folder.join("01.mp4"), &video).unwrap();
+    std::fs::write(folder.join("page.html"), "<script>alert(1)</script>").unwrap();
+    std::fs::write(gateway.dir.path().join("plugin-files/echo-app/.secret"), "x").unwrap();
+    let setup = message(
+        gateway.post("/api/v1/auth/setup").json(&json!({"password": "media-admin-password"})),
+        StatusCode::CREATED,
+    );
+    let admin = setup.await["token"].as_str().unwrap().to_string();
+    let (name, value) = bearer(&admin);
+    let (code, enabled) =
+        send(gateway.post("/api/v1/packages/echo-app/enable").header(name.clone(), value.clone())).await;
+    assert_eq!(code, StatusCode::OK, "{enabled}");
+    let asked = json!({
+        "app": "echo-app",
+        "addresses": [
+            "files/app/echo-app/episodes/01.mp4",
+            "files/app/echo-app/episodes/page.html",
+            "files/app/echo-app/.secret",
+        ],
+    });
+    assert_eq!(
+        gateway.post("/api/v1/media/links").json(&asked).send().await.unwrap().status(),
+        StatusCode::UNAUTHORIZED,
+        "keys only with the panel's key"
+    );
+    let answer =
+        message(gateway.post("/api/v1/media/links").header(name.clone(), value.clone()).json(&asked), StatusCode::OK)
+            .await;
+    let links = answer["links"].as_array().unwrap();
+    let path = links[0]["url"].as_str().unwrap().to_string();
+    assert!(path.starts_with("/media/v/"), "{answer}");
+    assert!(
+        links[1]["error"].is_string() && links[2]["error"].is_string(),
+        "no key for a page or a dot file: {answer}"
+    );
+
+    // The whole file and a piece of it: seeking.
+    let whole = gateway.get(&path).send().await.unwrap();
+    assert_eq!(whole.status(), StatusCode::OK);
+    assert_eq!(whole.headers()["content-type"], "video/mp4");
+    assert_eq!(whole.headers()["accept-ranges"], "bytes");
+    assert_eq!(whole.bytes().await.unwrap().len(), video.len());
+    let piece = gateway.get(&path).header("range", "bytes=1000-1099").send().await.unwrap();
+    assert_eq!(piece.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(piece.headers()["content-range"], format!("bytes 1000-1099/{}", video.len()));
+    assert_eq!(piece.bytes().await.unwrap().as_ref(), &video[1000..1100]);
+
+    // Nothing else: a made-up key, the old pass of stage 3.
+    for refused in ["/media/v/0123456789abcdef0123456789abcdef", "/app-media/0123456789abcdef/episodes/01.mp4"] {
+        assert_eq!(gateway.get(refused).send().await.unwrap().status(), StatusCode::NOT_FOUND, "{refused}");
+    }
+    gateway.stop().await;
+}
+
+/// A voice server on this machine, as the computer's own (tts-server): one model «piper» with «denis» and «ruslan»;
+/// every line comes back as a second of quiet WAV.
+async fn voice_server() -> String {
+    use axum::routing::{get, post};
+    let wav = duowave::speech::audio::pcm::encode_wav(&vec![0i16; 22050], 22050);
+    let app = axum::Router::new()
+        .route(
+            "/v1/models",
+            get(|| async { axum::Json(json!({ "data": [{ "id": "piper", "voices": ["denis", "ruslan"] }] })) }),
+        )
+        .route(
+            "/v1/audio/speech",
+            post(move |axum::Json(body): axum::Json<Value>| {
+                let wav = wav.clone();
+                async move {
+                    assert_eq!((&body["model"], &body["response_format"]), (&json!("piper"), &json!("wav")), "{body}");
+                    ([("content-type", "audio/wav")], wav)
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{address}/v1")
+}
+
+/// The model and the voice for apps (docs/plans/feed.md, stage 4): «Привет на Node» writes a paragraph with the
+/// household's model (`system/brain` → `write`; here the echo model) and voices it with a voice of the computer into
+/// its own folder (`system/voice` → `synth`); the journal keeps which model wrote it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_app_writes_a_paragraph_with_the_model_and_voices_it_into_its_folder() {
+    let Some(node) = some_node() else {
+        eprintln!("no node on this machine: the test of runtime node is skipped");
+        return;
+    };
+    let voices = voice_server().await;
+    let gateway =
+        Gateway::start(&[("DUOWAVE_NODE", &node), ("DIALOG_PROVIDER", "echo"), ("TTS_OWN_URL", &voices)]).await;
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/plugins/apps/hello-node");
+    let dir = gateway.dir.path().join("packages/hello-node/1.0.0");
+    std::fs::create_dir_all(&dir).unwrap();
+    for file in ["manifest.json", "server.mjs", "package.json", "package-lock.json"] {
+        std::fs::copy(example.join(file), dir.join(file)).unwrap();
+    }
+    let setup = message(
+        gateway.post("/api/v1/auth/setup").json(&json!({"password": "story-admin-password"})),
+        StatusCode::CREATED,
+    );
+    let admin = setup.await["token"].as_str().unwrap().to_string();
+    let (name, value) = bearer(&admin);
+    let (code, enabled) =
+        send(gateway.post("/api/v1/packages/hello-node/enable").header(name.clone(), value.clone())).await;
+    assert_eq!(code, StatusCode::OK, "{enabled}");
+    // The owner's «да» to the links its manifest asks for: the model and the voice (the panel's question, in advance).
+    for to in ["system/brain", "system/voice"] {
+        let (code, linked) = send(
+            gateway
+                .put("/api/v1/bus/links")
+                .header(name.clone(), value.clone())
+                .json(&json!({ "from": "app/hello-node", "to": to, "level": "call" })),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK, "{linked}");
+    }
+    let (code, answer) = send(
+        gateway
+            .post("/api/v1/packages/hello-node/tools/hello_story/try")
+            .header(name.clone(), value.clone())
+            .json(&json!({ "arguments": { "about": "ветер" } })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{answer}");
+    let content: Value = serde_json::from_str(answer["message"]["content"].as_str().unwrap()).unwrap();
+    assert!(content["text"].as_str().unwrap().contains("что такое ветер"), "the echo model wrote it: {content}");
+    assert_eq!(content["model"]["cloud"], json!(false), "{content}");
+    assert_eq!(
+        (&content["file"], &content["voice"], &content["publish"]),
+        (&json!("voice/story.wav"), &json!("piper/denis"), &json!(true))
+    );
+    assert!((content["seconds"].as_f64().unwrap() - 1.0).abs() < 0.01, "{content}");
+    let wav = std::fs::read(gateway.dir.path().join("plugin-files/hello-node/voice/story.wav")).unwrap();
+    assert!(wav.starts_with(b"RIFF"), "a WAV in its own folder");
+    let journal = message(
+        gateway.get("/api/v1/workshop/drafts/hello-node/journal").header(name.clone(), value.clone()),
+        StatusCode::OK,
+    )
+    .await;
+    let lines: Vec<String> =
+        journal["lines"].as_array().unwrap().iter().map(|line| line["message"].as_str().unwrap().to_string()).collect();
+    assert!(lines.iter().any(|line| line.contains("модель") && line.contains("дома")), "{lines:?}");
+    gateway.stop().await;
+}
+
+/// «Поделиться» and the window's own recording (docs/plans/feed.md, stage 5): what the person sent and where goes to
+/// the app's journal; «В Видео» is a copy into the household's folder, never over a file there; a recording from the
+/// window lands in the app's folder as WAV.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_apps_window_shares_a_file_into_videos_and_records_a_voice_into_its_folder() {
+    let gateway = Gateway::start(&[]).await;
+    install_app(gateway.dir.path(), "1.0.0", None);
+    let folder = gateway.dir.path().join("plugin-files/echo-app/episodes");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("01.mp4"), b"not really a video").unwrap();
+    let setup = message(
+        gateway.post("/api/v1/auth/setup").json(&json!({"password": "share-admin-password"})),
+        StatusCode::CREATED,
+    );
+    let admin = setup.await["token"].as_str().unwrap().to_string();
+    let (name, value) = bearer(&admin);
+    let (code, _) = send(gateway.post("/api/v1/packages/echo-app/enable").header(name.clone(), value.clone())).await;
+    assert_eq!(code, StatusCode::OK);
+    let share = |body: Value| {
+        let (name, value) = (name.clone(), value.clone());
+        let gateway = &gateway;
+        async move { send(gateway.post("/api/v1/packages/echo-app/share").header(name, value).json(&body)).await }
+    };
+    let (code, first) = share(json!({ "file": "episodes/01.mp4", "where": "videos" })).await;
+    assert_eq!(code, StatusCode::OK, "{first}");
+    assert_eq!(
+        first["message"]["saved"],
+        json!("files/home/Videos/01.mp4"),
+        "the house's «Видео» — Videos on the disk"
+    );
+    let (_, second) = share(json!({ "file": "episodes/01.mp4", "where": "videos" })).await;
+    assert_eq!(second["message"]["saved"], json!("files/home/Videos/01-2.mp4"), "never over a file there");
+    let videos = gateway.dir.path().join("files/home/Videos");
+    assert_eq!(std::fs::read(videos.join("01-2.mp4")).unwrap(), b"not really a video");
+    let (code, _) = share(json!({ "where": "telegram-web" })).await;
+    assert_eq!(code, StatusCode::OK, "a text to a platform's page, by its id in the publishers' list");
+    for refused in [
+        json!({ "file": "../../secret", "where": "videos" }),
+        json!({ "file": "episodes/02.mp4", "where": "videos" }),
+        json!({ "file": "episodes/01.mp4", "where": "evil.example" }),
+    ] {
+        let (code, _) = share(refused.clone()).await;
+        assert!(code == StatusCode::BAD_REQUEST || code == StatusCode::NOT_FOUND, "{refused}: {code}");
+    }
+
+    // The window's recording: WAV only, into its folder.
+    let wav = duowave::speech::audio::pcm::encode_wav(&vec![0i16; 48_000], 24_000);
+    let recorded = message(
+        gateway.post("/api/v1/packages/echo-app/recordings").header(name.clone(), value.clone()).body(wav),
+        StatusCode::CREATED,
+    )
+    .await;
+    let file = recorded["file"].as_str().unwrap();
+    assert!(file.starts_with("recordings/") && file.ends_with(".wav"), "{recorded}");
+    assert_eq!(recorded["seconds"], json!(2.0));
+    assert!(gateway.dir.path().join("plugin-files/echo-app").join(file).is_file());
+    let (code, _) = send(
+        gateway.post("/api/v1/packages/echo-app/recordings").header(name.clone(), value.clone()).body("not a wav"),
+    )
+    .await;
+    assert_eq!(code, StatusCode::BAD_REQUEST);
+
+    let journal =
+        message(gateway.get("/api/v1/workshop/drafts/echo-app/journal").header(name, value), StatusCode::OK).await;
+    let lines: Vec<String> =
+        journal["lines"].as_array().unwrap().iter().map(|line| line["message"].as_str().unwrap().to_string()).collect();
+    assert!(lines.iter().any(|line| line.contains("отправлено: episodes/01.mp4 → в «Видео»")), "{lines:?}");
+    assert!(lines.iter().any(|line| line.contains("отправлено: текст → Telegram")), "{lines:?}");
+    assert!(lines.iter().any(|line| line.contains("запись своим голосом")), "{lines:?}");
+    gateway.stop().await;
+}
+
+/// «Поделиться» from any screen of the panel (capabilities/routes.rs): a person shares a file of the house by its
+/// address — the list of where it can go is the gateway's, what went where is in the bus journal under the person's
+/// name, a file the person may not see is not there; the watch page is for an app's clip only. And «Записать своим
+/// голосом» into a folder of the house, written as the person.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_person_shares_a_house_file_from_any_screen_and_records_a_voice_into_a_folder() {
+    let gateway = Gateway::start(&[]).await;
+    let videos = gateway.dir.path().join("files/home/Videos");
+    std::fs::create_dir_all(&videos).unwrap();
+    std::fs::write(videos.join("Море.mp4"), b"not really a video").unwrap();
+    let setup = message(
+        gateway.post("/api/v1/auth/setup").json(&json!({"password": "share-person-password"})),
+        StatusCode::CREATED,
+    );
+    let admin = setup.await["token"].as_str().unwrap().to_string();
+    let (name, value) = bearer(&admin);
+    let listed = message(gateway.get("/api/v1/publishers").header(name.clone(), value.clone()), StatusCode::OK).await;
+    let ids: Vec<&str> =
+        listed["publishers"].as_array().unwrap().iter().filter_map(|card| card["id"].as_str()).collect();
+    assert!(ids.contains(&"watch") && ids.contains(&"tiktok") && ids.contains(&"telegram-web"), "{listed}");
+    let post = |path: &'static str, body: Value| {
+        let (name, value) = (name.clone(), value.clone());
+        let gateway = &gateway;
+        async move { send(gateway.post(path).header(name, value).json(&body)).await }
+    };
+    let video = "files/home/Videos/Море.mp4";
+    let (code, noted) = post("/api/v1/publishers/shared", json!({ "where": "tiktok", "file": video })).await;
+    assert_eq!(code, StatusCode::OK, "{noted}");
+    let (code, refused) = post("/api/v1/publishers/watch/send", json!({ "file": video })).await;
+    assert_eq!(code, StatusCode::BAD_REQUEST, "{refused}");
+    assert!(refused.to_string().contains("для роликов приложений"), "{refused}");
+    for (path, body) in [
+        ("/api/v1/publishers/shared", json!({ "where": "download", "file": "files/home/Videos/../../secret" })),
+        ("/api/v1/publishers/shared", json!({ "where": "download", "file": "files/home/Videos/Нет.mp4" })),
+        ("/api/v1/publishers/shared", json!({ "where": "videos", "file": video })),
+        ("/api/v1/publishers/shared", json!({ "where": "download", "file": "/etc/passwd" })),
+        ("/api/v1/publishers/tiktok/send", json!({ "file": video })),
+    ] {
+        let (code, answer) = post(path, body.clone()).await;
+        assert!(
+            [StatusCode::BAD_REQUEST, StatusCode::FORBIDDEN, StatusCode::NOT_FOUND].contains(&code),
+            "{body}: {code} {answer}"
+        );
+    }
+    let journal =
+        message(gateway.get("/api/v1/bus/journal?limit=50").header(name.clone(), value.clone()), StatusCode::OK).await;
+    let shared = journal["lines"].as_array().unwrap().iter().any(|line| {
+        line["kind"] == "share"
+            && line["from"].as_str().is_some_and(|from| from.starts_with("person/"))
+            && line["note"].as_str().is_some_and(|note| note.contains("Море.mp4 → ТикТок"))
+    });
+    assert!(shared, "the journal under the person's name: {journal}");
+
+    let wav = duowave::speech::audio::pcm::encode_wav(&vec![0i16; 16_000], 16_000);
+    let recorded = message(
+        gateway
+            .post("/api/v1/recordings?folder=files/home/%D0%94%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82%D1%8B")
+            .header(name.clone(), value.clone())
+            .body(wav),
+        StatusCode::CREATED,
+    )
+    .await;
+    let file = recorded["file"].as_str().unwrap();
+    assert!(file.starts_with("files/home/Документы/voice-") && file.ends_with(".wav"), "{recorded}");
+    assert_eq!(recorded["seconds"], json!(1.0));
+    assert!(gateway.dir.path().join(file).is_file(), "{file}");
+    let (code, _) =
+        send(gateway.post("/api/v1/recordings?folder=files/app/echo-app").header(name, value).body("not a wav")).await;
+    assert_eq!(code, StatusCode::BAD_REQUEST);
+    gateway.stop().await;
+}
+
+/// «Смотри и выбирай» (docs/plans/feed.md, stage 10): an app's video with its fork on a page of the gateway — anyone
+/// with the link watches with seeking and votes once; the page runs nothing; the app's other files are not there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_watch_page_plays_an_apps_video_and_counts_one_vote_per_browser() {
+    let gateway = Gateway::start(&[]).await;
+    let folder = gateway.dir.path().join("plugin-files/echo-app/share");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("ep.mp4"), vec![7u8; 3000]).unwrap();
+    let token = gateway
+        .app
+        .watch
+        .create(duowave::plugins::watch::WatchPage {
+            app: "echo-app".into(),
+            file: "share/ep.mp4".into(),
+            title: "Компас <серия 1>".into(),
+            id: Some("kompas-01".into()),
+            q: Some("ПЛЫВЁМ?".into()),
+            a: Some("К ОСТРОВУ".into()),
+            b: Some("НАЗАД".into()),
+            votes: [0, 0],
+            created_ms: chrono::Utc::now().timestamp_millis(),
+        })
+        .unwrap();
+    let page = gateway.get(&format!("/watch/{token}")).send().await.unwrap();
+    assert_eq!(page.status(), StatusCode::OK);
+    assert!(page.headers()["content-security-policy"].to_str().unwrap().contains("default-src 'none'"));
+    let html = page.text().await.unwrap();
+    assert!(html.contains("Компас &lt;серия 1&gt;") && html.contains("① К ОСТРОВУ"), "escaped, with the fork");
+    let piece = gateway.get(&format!("/watch/{token}/video")).header("range", "bytes=10-19").send().await.unwrap();
+    assert_eq!(piece.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(piece.bytes().await.unwrap().len(), 10);
+
+    // A vote: the page remembers this browser's choice; a second vote changes nothing.
+    let client =
+        duowave::utils::http::client_builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let voted =
+        client.post(format!("{}/watch/{token}/vote", gateway.base)).form(&[("choice", "b")]).send().await.unwrap();
+    assert_eq!(voted.status(), StatusCode::SEE_OTHER);
+    let cookie = voted.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_string();
+    let again = client
+        .post(format!("{}/watch/{token}/vote", gateway.base))
+        .header("cookie", &cookie)
+        .form(&[("choice", "a")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(again.status(), StatusCode::SEE_OTHER);
+    assert_eq!(gateway.app.watch.get(&token).unwrap().votes, [0, 1], "one vote per browser");
+    let after = client.get(format!("{}/watch/{token}", gateway.base)).header("cookie", &cookie).send().await.unwrap();
+    assert!(after.text().await.unwrap().contains("Ваш выбор — ②. Пока так: ① 0% · ② 100% (1)"));
+    for wrong in ["/watch/0123/video", "/watch/00000000000000000000000000000000"] {
+        assert_eq!(gateway.get(wrong).send().await.unwrap().status(), StatusCode::NOT_FOUND, "{wrong}");
+    }
+    gateway.stop().await;
+}

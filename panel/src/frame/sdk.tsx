@@ -133,6 +133,76 @@ function useFile(name: string): string | null {
     return url;
 }
 
+/**
+ * Видео или звук своей папки (`files/app/<id>/…`) — адрес для `<video src>` / `<audio src>`: шлюз отдаёт файл с диска с
+ * перемоткой. Пока адреса нет (или файла нет) — null.
+ */
+function useMedia(name: string | null | undefined): string | null {
+    const [url, setUrl] = hooks.useState<string | null>(null);
+    hooks.useEffect(() => {
+        if (!name) {
+            setUrl(null);
+            return;
+        }
+        let alive = true;
+        mediaUrl(name)
+            .then((made) => alive && setUrl(made))
+            .catch(() => alive && setUrl(null));
+        return () => {
+            alive = false;
+        };
+    }, [name]);
+    return url;
+}
+
+/** То же без хука — для списка серий и смены ролика в плеере. */
+function mediaUrl(name: string): Promise<string> {
+    return request<string>((id) => ({ type: 'duowave:media', seq: id, name }));
+}
+
+type MediaWhat = string | { path: string; title?: string };
+
+/**
+ * Свой файл (или несколько) — в просмотрщике пульта, во всё окно пульта: фото листать, видео с перемоткой и во весь
+ * экран, звук. Пути — своей папки (`episodes/01.mp4`) или папок дома по связи приложения (`files/home/Photos/…`);
+ * `{ path, title }` — со своим названием в шапке. Ответ — когда человек закрыл: на какой вещи и на какой секунде
+ * (продолжить свой плеер оттуда).
+ */
+function openMedia(what: MediaWhat | MediaWhat[], options: { start?: number; at?: number } = {}): Promise<{ index: number; at: number | null }> {
+    const items = (Array.isArray(what) ? what : [what]).map((item) =>
+        typeof item === 'string' ? { name: item } : { name: String(item?.path ?? ''), title: item?.title ? String(item.title) : undefined },
+    );
+    return request((id) => ({ type: 'duowave:open-media', seq: id, items, options }));
+}
+
+/**
+ * «Поделиться» файлом своей папки и текстом к посту: пульт показывает своё окно — системное меню телефона, «Сохранить в
+ * «Видео»», «Скачать», «Скопировать текст», страницы площадок. Ответ — куда ушло (null — человек закрыл окно).
+ */
+function share(what: { file?: string; text?: string; title?: string }): Promise<{ where: string | null; saved?: string | null }> {
+    return request<{ where: string | null; saved?: string | null }>((id) => ({ type: 'duowave:share', seq: id, request: what }));
+}
+
+/** Связи, что приложение просит в манифесте, и разрешены ли они: `{ asked: [{ right, words, allowed }], pending }`. */
+function rights(): Promise<{ asked: Array<{ right: string; words: string; allowed: boolean }>; pending: number }> {
+    return request((id) => ({ type: 'duowave:rights', seq: id, op: 'state' }));
+}
+
+/** Все «да» одним листом пульта: что приложение просит, словами, и «Разрешить всё». Ответ — связи после этого. */
+function askRights(): Promise<{ asked: Array<{ right: string; words: string; allowed: boolean }>; pending: number }> {
+    return request((id) => ({ type: 'duowave:rights', seq: id, op: 'ask' }));
+}
+
+/** Свои настройки из окна (ключ сервиса, канал): пульт пишет их, как окно настроек приложения; меняет администратор. */
+function saveSettings(values: Record<string, unknown>): Promise<boolean> {
+    return request((id) => ({ type: 'duowave:settings-save', seq: id, values }));
+}
+
+/** Запись своим голосом: пульт открывает микрофон и окно записи; ответ — файл записи в своей папке и его длина. */
+function record(options: { title?: string; text?: string; maxSeconds?: number } = {}): Promise<{ file: string; seconds: number }> {
+    return request<{ file: string; seconds: number }>((id) => ({ type: 'duowave:record', seq: id, options }));
+}
+
 function usePanelState(): { version: number; go: (section: string, tab?: string, item?: string) => void } {
     const now = useFrameState();
     return { version: now?.version ?? 0, go: (section, tab, item) => send({ type: 'duowave:go', section, tab, item }) };
@@ -319,6 +389,14 @@ export const sdk = {
     useApi,
     useSettings,
     useFile,
+    useMedia,
+    mediaUrl,
+    openMedia,
+    share,
+    record,
+    rights,
+    askRights,
+    saveSettings,
     useFolderFile,
     usePanelState,
     useLive,

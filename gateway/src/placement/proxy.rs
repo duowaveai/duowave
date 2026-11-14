@@ -71,11 +71,12 @@ fn passable(rest: &str) -> bool {
         || ["api/v1/", "panel-plugins/", "panel-preview/", "media/"].iter().any(|prefix| rest.starts_with(prefix))
 }
 
-/// What the station serves without a key: its plugins' panel parts and the workshop's previews by their token. The
-/// panel's `import()` and `<link>` send no key, so these pass without the session check — from home only, on the same
-/// whitelist.
+/// What the station serves without a key: its plugins' panel parts, the workshop's previews by their token, and a
+/// photo, a video or a sound by the media engine's key (`media/v/<key>`, gateway/media — the key is the pass). The
+/// panel's `import()`, `<link>`, `<img>` and `<video>` send no key, so these pass without the session check — from
+/// home only, on the same whitelist.
 fn public_file(rest: &str) -> bool {
-    ["panel-plugins/", "panel-preview/"].iter().any(|prefix| rest.starts_with(prefix))
+    ["panel-plugins/", "panel-preview/", "media/v/", "media/folder/"].iter().any(|prefix| rest.starts_with(prefix))
 }
 
 /// A plugin's call (`api/v1/packages/<id>/call/<function>`): the plugin's widgets read their data with it, so here it
@@ -293,8 +294,19 @@ async fn pass(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("")
         .to_string();
-    // The live feed and anything else that streams goes through as it comes.
-    if live_feed || content_type.starts_with("text/event-stream") || content_type.starts_with("audio/") {
+    // The live feed and anything else that streams goes through as it comes; a sound or a video with what seeking
+    // needs (its range and length), never whole in this computer's memory.
+    let media = content_type.starts_with("audio/") || content_type.starts_with("video/");
+    if live_feed || content_type.starts_with("text/event-stream") || media {
+        let ranges: Vec<(header::HeaderName, HeaderValue)> =
+            [header::CONTENT_RANGE, header::ACCEPT_RANGES, header::CONTENT_LENGTH]
+                .into_iter()
+                .filter(|_| media)
+                .filter_map(|name| {
+                    let value = response.headers().get(name.as_str())?.to_str().ok()?;
+                    Some((name, HeaderValue::from_str(value).ok()?))
+                })
+                .collect();
         let stream = response.bytes_stream().map(|chunk| chunk.map_err(std::io::Error::other));
         let mut out = Response::new(Body::from_stream(stream));
         *out.status_mut() = status;
@@ -302,6 +314,7 @@ async fn pass(
             out.headers_mut().insert(header::CONTENT_TYPE, value);
         }
         out.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        out.headers_mut().extend(ranges);
         return Ok(out);
     }
     let bytes = response
@@ -379,6 +392,7 @@ mod tests {
         // Without the session: the station's public files only.
         assert!(public_file("panel-plugins/radio/1.2.0/panel.css") && public_file("panel-preview/t0k3n/panel.js"));
         assert!(!public_file("api/v1/packages/panel") && !public_file("media/radio/cover.png"));
+        assert!(public_file("media/v/0123abcd"), "the media engine's key is the pass");
         // A plugin's call is a reading; its settings, its other routes are not.
         assert!(plugin_call("api/v1/packages/shopping/call/list"));
         for rest in [

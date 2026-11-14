@@ -717,10 +717,30 @@ impl LocalAsr {
         sample_rate: u32,
         cancel: &CancellationToken,
     ) -> Result<String> {
+        Ok(self.recognize_run(pcm, sample_rate, false, cancel).await?.text)
+    }
+
+    /// The whole of an audio with each word's time and the language (the hearing for apps, `system/hearing`).
+    pub async fn recognize_heard(
+        self: &Arc<Self>,
+        pcm: &[i16],
+        sample_rate: u32,
+        cancel: &CancellationToken,
+    ) -> Result<crate::speech::asr::Heard> {
+        self.recognize_run(pcm, sample_rate, true, cancel).await
+    }
+
+    async fn recognize_run(
+        self: &Arc<Self>,
+        pcm: &[i16],
+        sample_rate: u32,
+        words: bool,
+        cancel: &CancellationToken,
+    ) -> Result<crate::speech::asr::Heard> {
         self.wait_loading(cancel).await;
         let audio = to_f32_16k(pcm, sample_rate);
         let me = self.clone();
-        let task = tokio::spawn(async move { me.recognize_now(audio).await });
+        let task = tokio::spawn(async move { me.recognize_now(audio, words).await });
         tokio::select! {
             result = task => result.map_err(|error| anyhow!("recognition task: {error}"))?,
             _ = cancel.cancelled() => bail!("recognition cancelled"),
@@ -740,7 +760,7 @@ impl LocalAsr {
         }
     }
 
-    async fn recognize_now(&self, audio: Vec<f32>) -> Result<String> {
+    async fn recognize_now(&self, audio: Vec<f32>, words: bool) -> Result<crate::speech::asr::Heard> {
         if self.stop.is_cancelled() {
             bail!("распознавание остановлено вместе со шлюзом");
         }
@@ -752,12 +772,26 @@ impl LocalAsr {
                 bail!(self.not_ready());
             };
             let Some(entry) = catalog::find(&worker.model) else { bail!("unknown model {}", worker.model) };
-            let request = Request::Run { language: self.language_for(entry) };
+            let language = self.language_for(entry);
+            let request = Request::Run { language: language.clone(), words };
             let seconds = audio.len() as u32 / SAMPLE_RATE;
             let deadline = self.options.run_floor.max(RUN_PER_AUDIO_SECOND * seconds);
             let gpu = !worker.cpu_only;
             let why = match worker.conn.call(&request, &audio, deadline).await {
-                Ok(Response::Text { text }) => return Ok(text),
+                Ok(Response::Text { text, words, language: heard }) => {
+                    return Ok(crate::speech::asr::Heard {
+                        text,
+                        language: heard.or(language),
+                        words: words
+                            .into_iter()
+                            .map(|word| crate::speech::asr::HeardWord {
+                                word: word.text,
+                                start: word.t0_ms as f64 / 1000.0,
+                                end: word.t1_ms as f64 / 1000.0,
+                            })
+                            .collect(),
+                    })
+                }
                 Ok(Response::Error { message, backend: false }) => bail!(message),
                 Ok(Response::Error { message, backend: true }) => message,
                 Ok(other) => format!("исполнитель ответил не то: {other:?}"),
@@ -956,13 +990,13 @@ mod tests {
                                 backend: if cpu_only { "cpu".into() } else { "metal".into() },
                                 device: String::new(),
                             },
-                            Request::Run { language } => match act {
+                            Request::Run { language, .. } => match act {
                                 Some(Act::Crash) => return,
                                 Some(Act::Hang) => std::future::pending().await,
                                 Some(Act::GpuFault) => Response::Error { message: "device lost".into(), backend: true },
                                 Some(Act::Hear) | None => {
                                     told.lock().unwrap().push(language);
-                                    Response::Text { text: "привет".into() }
+                                    Response::Text { text: "привет".into(), words: Vec::new(), language: None }
                                 }
                             },
                         };

@@ -1,4 +1,6 @@
-//! The recent exchange per device, for follow-up questions. A long pause starts the dialog over.
+//! The recent exchange per device, for follow-up questions. A long pause starts the dialog over — unless the device
+//! is held: a work started from it goes on, and half an hour after it last changed (docs/plans/audio-interface.md,
+//! «Разговор помнится»).
 
 use std::collections::HashMap;
 
@@ -11,6 +13,17 @@ pub struct DialogHistory {
     ttl_ms: u64,
     now: Box<dyn Fn() -> u64 + Send + Sync>,
     dialogs: HashMap<String, Dialog>,
+    /// A device's dialog kept past the pause until then (ms since the epoch).
+    holds: HashMap<String, u64>,
+}
+
+/// The device a conversation's history key is of: the station's tag, or the computer for the panel's talk
+/// (`panel:<person>`). None for a history of its own (the workshop's agent, a game's host).
+pub fn device_of(key: &str) -> Option<&str> {
+    if key.starts_with("panel:") {
+        return Some(crate::talk::COMPUTER);
+    }
+    (!key.contains(':')).then_some(key)
 }
 
 struct Dialog {
@@ -25,13 +38,20 @@ impl DialogHistory {
 
     /// With its own clock: tests.
     pub fn with_clock(max_turns: usize, ttl_ms: u64, now: impl Fn() -> u64 + Send + Sync + 'static) -> DialogHistory {
-        DialogHistory { max_turns, ttl_ms, now: Box::new(now), dialogs: HashMap::new() }
+        DialogHistory { max_turns, ttl_ms, now: Box::new(now), dialogs: HashMap::new(), holds: HashMap::new() }
+    }
+
+    /// The device's dialogs kept past the pause until `until` (ms since the epoch); a later hold replaces an earlier.
+    pub fn hold(&mut self, device: &str, until: u64) {
+        self.holds.insert(device.to_string(), until);
     }
 
     /// The questions and answers so far: user and assistant turns in order.
     pub fn turns(&mut self, key: &str) -> Vec<LlmMessage> {
         let Some(dialog) = self.dialogs.get(key) else { return Vec::new() };
-        if (self.now)().saturating_sub(dialog.at) > self.ttl_ms {
+        let now = (self.now)();
+        let held = device_of(key).and_then(|device| self.holds.get(device)).is_some_and(|until| *until > now);
+        if now.saturating_sub(dialog.at) > self.ttl_ms && !held {
             self.dialogs.remove(key);
             return Vec::new();
         }
@@ -105,6 +125,17 @@ mod tests {
         history.remember("a", "снова", "да", None);
         history.forget("a");
         assert!(history.turns("a").is_empty());
+        // A device held (a work goes on): its dialog stays past the pause until the hold ends.
+        history.remember("a", "сделай виджет", "делаю", None);
+        history.hold("a", 61_001 + 600_000);
+        clock.store(61_001 + 300_000, Ordering::SeqCst);
+        assert_eq!(history.turns("a").len(), 2, "ten minutes on, the talk is remembered");
+        clock.store(61_001 + 600_001, Ordering::SeqCst);
+        assert!(history.turns("a").is_empty(), "the hold ended: the pause counts again");
+        history.remember("panel:u1", "сделай виджет", "делаю", None);
+        history.hold(crate::talk::COMPUTER, 61_001 + 1_200_000);
+        clock.store(61_001 + 900_000, Ordering::SeqCst);
+        assert_eq!(history.turns("panel:u1").len(), 2, "the panel's talk is the computer's");
         let mut none = DialogHistory::new(0, 60_000);
         none.remember("a", "q", "a", None);
         assert!(none.turns("a").is_empty(), "DIALOG_HISTORY_TURNS=0 keeps nothing");

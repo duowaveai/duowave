@@ -9,6 +9,7 @@ pub mod apps;
 pub mod bus;
 #[cfg(feature = "pc")]
 pub mod calls;
+pub mod capabilities;
 pub mod characters;
 pub mod config;
 pub mod connectors;

@@ -343,6 +343,10 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         ),
         // «передай маме, что я задержусь»: the contact, and the message without «что» («Я задержусь»).
         rule("message", r"^(передай|отправь сообщение|напиши) (\p{L}+) (что )?(.+)$", |m, _| {
+            // «напиши навык…», «напиши мне виджет…»: a thing to make (src/talk/rules.rs), not a message.
+            if crate::talk::rules::names_a_thing(group(m, 2).unwrap_or(""), group(m, 4).unwrap_or("")) {
+                return None;
+            }
             let text = group(m, 4).unwrap_or("");
             let mut chars = text.chars();
             let capital: String = chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default();

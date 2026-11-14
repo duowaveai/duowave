@@ -43,6 +43,17 @@ impl SpeechRecognizer for LocalRecognizer {
         async move { self.asr.recognize(pcm, sample_rate, cancel).await }.boxed()
     }
 
+    fn recognize_heard<'a>(
+        &'a self,
+        pcm: &'a [i16],
+        sample_rate: u32,
+        _language: Option<&'a str>,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<crate::speech::asr::Heard>> {
+        // The model's own language (a hint is its, not the caller's: a Russian-only model hears Russian).
+        async move { self.asr.recognize_heard(pcm, sample_rate, cancel).await }.boxed()
+    }
+
     fn probe(&self) -> BoxFuture<'_, String> {
         let status = self.asr.status();
         let answer = if self.asr.ready() {

@@ -239,12 +239,60 @@ struct Chosen {
 pub struct OwnSpeech {
     env_route: Arc<SpeechRoute>,
     chosen: Mutex<Chosen>,
+    /// Ready phrases kept on disk (phrase_cache.rs): said at once, the rest synthesized after them.
+    cache: std::sync::OnceLock<Arc<super::phrase_cache::PhraseCache>>,
 }
 
 impl OwnSpeech {
     pub fn new(config: OwnSpeechConfig) -> OwnSpeech {
         let env_route = Arc::new(SpeechRoute::new(&config.base_url, config.timeout_ms));
-        OwnSpeech { chosen: Mutex::new(Chosen { config, route: env_route.clone() }), env_route }
+        OwnSpeech {
+            chosen: Mutex::new(Chosen { config, route: env_route.clone() }),
+            env_route,
+            cache: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The store of ready phrases, once the gateway knows where it lives.
+    pub fn set_cache(&self, cache: Arc<super::phrase_cache::PhraseCache>) {
+        let _ = self.cache.set(cache);
+    }
+
+    /// The voice as the store keys its phrases: the pair and the server that speaks it.
+    fn voice_key(&self) -> String {
+        let chosen = self.lock();
+        format!("{}/{}@{}", chosen.config.model, chosen.config.voice, chosen.route.base_url())
+    }
+
+    /// A phrase that begins with a ready one: its Ogg/Opus, and what is left to synthesize after it.
+    pub fn head(&self, text: &str) -> Option<(Bytes, String)> {
+        let cache = self.cache.get()?;
+        cache.head(&self.voice_key(), super::phrase_cache::Sound::Opus, text)
+    }
+
+    /// Ready phrases kept ahead in this voice, both kinds of sound: what is kept already only noted, the rest
+    /// synthesized one after another. A phrase that fails is left out.
+    pub async fn warm(&self, texts: &[String], cancel: &CancellationToken) {
+        let Some(cache) = self.cache.get().cloned() else { return };
+        for text in texts {
+            if cancel.is_cancelled() {
+                return;
+            }
+            let voice = self.voice_key();
+            if cache.has(&voice, text) {
+                cache.note(&voice, text);
+                continue;
+            }
+            match (self.synthesize_fresh(text, cancel).await, self.synthesize_wav_fresh(text, cancel).await) {
+                (Ok(opus), Ok(wav)) => {
+                    cache.put(&voice, super::phrase_cache::Sound::Opus, text, &opus.audio);
+                    cache.put(&voice, super::phrase_cache::Sound::Wav, text, &wav);
+                }
+                (Err(error), _) | (_, Err(error)) => {
+                    tracing::debug!(target: "tts", "a ready phrase is not kept: {error:#}");
+                }
+            }
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Chosen> {
@@ -272,6 +320,16 @@ impl OwnSpeech {
     }
 
     pub async fn synthesize(&self, text: &str, cancel: &CancellationToken) -> Result<Synthesis> {
+        if let Some(audio) =
+            self.cache.get().and_then(|cache| cache.get(&self.voice_key(), super::phrase_cache::Sound::Opus, text))
+        {
+            return Ok(Synthesis { format: "audio/opus".into(), audio });
+        }
+        self.synthesize_fresh(text, cancel).await
+    }
+
+    /// The phrase from the voice server, never the store.
+    async fn synthesize_fresh(&self, text: &str, cancel: &CancellationToken) -> Result<Synthesis> {
         let (format, bytes) = self.ask(text, cancel).await?;
         if format == "opus" {
             return Ok(Synthesis { format: "audio/opus".into(), audio: bytes });
@@ -291,6 +349,15 @@ impl OwnSpeech {
     /// server's WAV keeps its rate — only its header is written anew, whole; a server that answers in Ogg/Opus is
     /// decoded, which gives 16 kHz.
     pub async fn synthesize_wav(&self, text: &str, cancel: &CancellationToken) -> Result<Bytes> {
+        if let Some(wav) =
+            self.cache.get().and_then(|cache| cache.get(&self.voice_key(), super::phrase_cache::Sound::Wav, text))
+        {
+            return Ok(wav);
+        }
+        self.synthesize_wav_fresh(text, cancel).await
+    }
+
+    async fn synthesize_wav_fresh(&self, text: &str, cancel: &CancellationToken) -> Result<Bytes> {
         let (format, bytes) = self.ask(text, cancel).await?;
         let wav = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
             if format == "opus" {
@@ -352,6 +419,72 @@ impl OwnSpeech {
             bail!("own speech: HTTP {} {text}", status.as_u16());
         }
         Ok((format, bytes))
+    }
+
+    /// A voice of the computer's own server (Silero, Piper), chosen by the asker, apart from the household's: WAV as
+    /// the server gives it (`system/voice` → `synth`, docs/plans/feed.md, stage 4). An app voices its lines into its
+    /// folder with it.
+    pub async fn synthesize_wav_as(
+        &self,
+        model: &str,
+        voice: &str,
+        text: &str,
+        cancel: &CancellationToken,
+    ) -> Result<Bytes> {
+        let api_key = self.lock().config.api_key.clone();
+        let route = self.env_route.clone();
+        let body = serde_json::json!({
+            "model": model,
+            "voice": voice,
+            "input": say_numbers(&say_latin(&without_markup(text))),
+            "response_format": "wav",
+        });
+        let place = route.acquire(cancel).await?;
+        let mut request = client()
+            .post(format!("{}/audio/speech", route.base_url()))
+            .json(&body)
+            .timeout(Duration::from_millis(route.timeout_ms().max(30_000)));
+        if let Some(key) = api_key {
+            request = request.bearer_auth(key);
+        }
+        let answered = tokio::select! {
+            answered = async {
+                let response = request.send().await?;
+                let status = response.status();
+                Ok::<_, reqwest::Error>((status, response.bytes().await?))
+            } => answered,
+            _ = cancel.cancelled() => {
+                drop(place);
+                bail!("own speech cancelled");
+            }
+        };
+        drop(place);
+        let (status, bytes) = answered?;
+        if !status.is_success() {
+            let text: String = String::from_utf8_lossy(&bytes).chars().take(200).collect();
+            bail!("сервер голоса: HTTP {} {text}", status.as_u16());
+        }
+        decode_wav(&bytes).map_err(|error| anyhow!("сервер голоса ответил не WAV: {error}"))?;
+        Ok(bytes)
+    }
+
+    /// The computer server's voices: `[(model, [voice…])]` as it lists them (`GET /models`).
+    pub async fn computer_voices(&self) -> Result<Vec<(String, Vec<String>)>> {
+        let api_key = self.lock().config.api_key.clone();
+        let mut request = client().get(format!("{}/models", self.env_route.base_url())).timeout(Duration::from_secs(5));
+        if let Some(key) = api_key {
+            request = request.bearer_auth(key);
+        }
+        let answer: serde_json::Value = request.send().await?.error_for_status()?.json().await?;
+        let models = answer["data"].as_array().cloned().unwrap_or_default();
+        Ok(models
+            .iter()
+            .filter_map(|model| {
+                let id = model["id"].as_str()?.to_string();
+                let voices = model["voices"].as_array()?.iter().filter_map(|voice| voice.as_str().map(str::to_string));
+                Some((id, voices.collect()))
+            })
+            .collect())
     }
 }
 

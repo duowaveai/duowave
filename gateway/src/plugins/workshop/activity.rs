@@ -29,6 +29,8 @@ const TEXT: usize = 400;
 pub enum StepKind {
     /// What the person asked: a run starts with it.
     Asked,
+    /// What the person added on the way («и ещё кнопку…»): the agent takes it in between its steps.
+    Added,
     /// What the agent said.
     Said,
     /// A call of the agent's: its tool, and what it is about (a file, a phrase).
@@ -67,6 +69,17 @@ pub enum By {
     Panel,
 }
 
+/// Something said to a run on the way (docs/plans/audio-interface.md, «Вдогонку вместо отмены»): its words, when, and
+/// when the agent took it in — the tile's tick.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Note {
+    pub text: String,
+    pub at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read: Option<u64>,
+}
+
 /// A draft's work as the plaque shows it: what was asked, since when, whether it goes on, its last step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -80,6 +93,9 @@ pub struct Job {
     pub ended: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last: Option<Step>,
+    /// What was added on the way to this run, and whether the agent took it in.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<Note>,
 }
 
 struct Entry {
@@ -90,6 +106,7 @@ struct Entry {
     ended: Option<u64>,
     cancel: CancellationToken,
     log: VecDeque<Step>,
+    notes: Vec<Note>,
 }
 
 impl Entry {
@@ -102,6 +119,7 @@ impl Entry {
             busy: self.ended.is_none(),
             ended: self.ended,
             last: self.log.back().cloned(),
+            notes: self.notes.clone(),
         }
     }
 }
@@ -114,6 +132,11 @@ pub struct Run {
     id: u64,
     /// Cancelled by «Остановить», by a newer run, and by whatever cancels the token it was made from.
     pub cancel: CancellationToken,
+    /// Set when the run's last round was forced by its limits — rounds or time: it may have stopped half-way.
+    pub limited: Arc<std::sync::atomic::AtomicBool>,
+    /// Set when the agent changed the draft's files (written, edited, deleted, restored): a run without a change is
+    /// no «готово» (docs/plans/audio-interface.md, «Доводка после проверки руками 14.11», 4).
+    pub changed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// How a draft's work moved: a run began, or it ended — how, and the agent's last words (what it did on its own, its
@@ -121,7 +144,18 @@ pub struct Run {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Moment {
     Began,
-    Ended { kind: StepKind, said: Option<String> },
+    /// The agent took in what was added on the way: so many notes.
+    NotesRead {
+        count: usize,
+    },
+    /// `limited`: its last round was forced by the run's limits (docs/plans/audio-interface.md, «Честное «Готово»»);
+    /// `changed`: the agent changed the draft's files.
+    Ended {
+        kind: StepKind,
+        said: Option<String>,
+        limited: bool,
+        changed: bool,
+    },
 }
 
 /// Who follows the work's moves: the workshop keeps each draft's card by them.
@@ -200,8 +234,12 @@ impl Activity {
     }
 
     fn tell(&self, draft: &str) {
+        self.tell_as(draft, "agent");
+    }
+
+    fn tell_as(&self, draft: &str, change: &str) {
         if let Some(events) = self.events.get() {
-            events.emit(GatewayEvent::WorkshopChanged { draft: draft.to_string(), change: "agent".into() });
+            events.emit(GatewayEvent::WorkshopChanged { draft: draft.to_string(), change: change.into() });
         }
     }
 
@@ -235,8 +273,16 @@ impl Activity {
             };
             log.push_back(self.step(StepKind::Asked, asked, None, false));
             trim(&mut log);
-            let entry =
-                Entry { run: id, by, asked: short(asked), since: now_ms(), ended: None, cancel: cancel.clone(), log };
+            let entry = Entry {
+                run: id,
+                by,
+                asked: short(asked),
+                since: now_ms(),
+                ended: None,
+                cancel: cancel.clone(),
+                log,
+                notes: Vec::new(),
+            };
             entries.insert(draft.to_string(), entry);
         }
         self.ended(draft, replaced);
@@ -245,7 +291,7 @@ impl Activity {
         }
         self.tell(draft);
         self.moved(draft, Moment::Began);
-        Run { draft: draft.to_string(), id, cancel }
+        Run { draft: draft.to_string(), id, cancel, limited: Arc::default(), changed: Arc::default() }
     }
 
     /// A step of a run that still goes on; a replaced or ended run's steps are dropped.
@@ -269,7 +315,9 @@ impl Activity {
         self.ended(&run.draft, summary);
         self.tell(&run.draft);
         if let Some(said) = said {
-            self.moved(&run.draft, Moment::Ended { kind, said });
+            let limited = run.limited.load(std::sync::atomic::Ordering::Relaxed);
+            let changed = run.changed.load(std::sync::atomic::Ordering::Relaxed);
+            self.moved(&run.draft, Moment::Ended { kind, said, limited, changed });
         }
         true
     }
@@ -300,6 +348,50 @@ impl Activity {
         self.push(run, self.step(kind, text, None, kind == StepKind::Failed), true);
     }
 
+    /// Words added to the run going on (docs/plans/audio-interface.md, «Вдогонку вместо отмены»): the agent takes
+    /// them in between its steps, the run is not replaced. False when nothing goes on there.
+    pub fn note(&self, draft: &str, text: &str) -> bool {
+        let text = text.trim();
+        if text.is_empty() {
+            return false;
+        }
+        {
+            let mut entries = self.entries();
+            let Some(entry) = entries.get_mut(draft).filter(|entry| entry.ended.is_none()) else { return false };
+            entry.notes.push(Note { text: short(text), at: now_ms(), read: None });
+            entry.log.push_back(self.step(StepKind::Added, text, None, false));
+            trim(&mut entry.log);
+        }
+        self.tell_as(draft, "note");
+        true
+    }
+
+    /// What was added to the run and the agent has not read yet, oldest first: read now. Its words, for the agent's
+    /// next round; empty when there is nothing new or the run is not the draft's one any more.
+    pub fn take_notes(&self, run: &Run) -> Vec<String> {
+        let taken: Vec<String> = {
+            let mut entries = self.entries();
+            let Some(entry) = entries.get_mut(&run.draft).filter(|entry| entry.run == run.id) else {
+                return Vec::new();
+            };
+            let now = now_ms();
+            entry
+                .notes
+                .iter_mut()
+                .filter(|note| note.read.is_none())
+                .map(|note| {
+                    note.read = Some(now);
+                    note.text.clone()
+                })
+                .collect()
+        };
+        if !taken.is_empty() {
+            self.tell_as(&run.draft, "note-read");
+            self.moved(&run.draft, Moment::NotesRead { count: taken.len() });
+        }
+        taken
+    }
+
     /// «Остановить»: the draft's run ends now. False when nothing goes on there.
     pub fn stop(&self, draft: &str) -> bool {
         let stopped = {
@@ -324,7 +416,7 @@ impl Activity {
         if was {
             self.ended(draft, stopped);
             self.tell(draft);
-            self.moved(draft, Moment::Ended { kind: StepKind::Stopped, said: None });
+            self.moved(draft, Moment::Ended { kind: StepKind::Stopped, said: None, limited: false, changed: false });
         }
         was
     }
@@ -542,6 +634,34 @@ mod tests {
         let (job, steps) = activity.log("golos-1", 0).unwrap();
         assert!(!job.busy);
         assert_eq!(steps.last().map(|step| step.kind), Some(StepKind::Stopped));
+    }
+
+    /// docs/plans/audio-interface.md, «Вдогонку вместо отмены»: words added to the run going on wait for the agent,
+    /// are read once — the tile's tick — and a run that ended takes none.
+    #[tokio::test]
+    async fn keeps_the_words_added_on_the_way_for_the_agent_and_marks_them_read() {
+        let activity = Arc::new(Activity::default());
+        assert!(!activity.note("widget-5", "и ещё кнопку"), "nothing goes on there");
+        let run = activity.begin("widget-5", By::Voice, "Сделай виджет", &CancellationToken::new());
+        assert!(activity.note("widget-5", "и ещё кнопку произношения"));
+        assert!(!activity.note("widget-5", "  "), "blank words are not a note");
+        let (job, steps) = activity.log("widget-5", 0).unwrap();
+        assert_eq!(job.notes.len(), 1);
+        assert_eq!((job.notes[0].text.as_str(), job.notes[0].read), ("и ещё кнопку произношения", None));
+        assert_eq!(steps.last().map(|step| step.kind), Some(StepKind::Added));
+        assert!(job.busy, "the run goes on: nothing replaced it");
+
+        assert_eq!(activity.take_notes(&run), vec!["и ещё кнопку произношения".to_string()]);
+        assert!(activity.take_notes(&run).is_empty(), "read once");
+        assert!(activity.log("widget-5", 0).unwrap().0.notes[0].read.is_some(), "the tick");
+
+        // A newer run on the draft does not take the older run's words.
+        let newer = activity.begin("widget-5", By::Voice, "Переделай", &CancellationToken::new());
+        assert!(activity.take_notes(&run).is_empty());
+        assert!(activity.note("widget-5", "покрупнее"));
+        assert_eq!(activity.take_notes(&newer), vec!["покрупнее".to_string()]);
+        activity.end(&newer, StepKind::Done, "");
+        assert!(!activity.note("widget-5", "ещё"), "an ended run takes no words");
     }
 
     #[tokio::test]

@@ -302,7 +302,9 @@ fn walk(root: &Path, at: &Path, files: &mut Vec<(String, PathBuf)>) -> std::io::
     let mut entries: Vec<_> = std::fs::read_dir(at)?.flatten().collect();
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
-        if entry.file_name().to_string_lossy().starts_with('.') {
+        // A dot file is not the app's; `node_modules` is what npm put from its lock (src/apps/node.rs), not its own.
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with('.') || name == "node_modules" {
             continue;
         }
         let kind = entry.file_type()?;

@@ -91,7 +91,12 @@ function cardWidgets(part: PanelPart): SlotContribution[] {
             size: spec.size === 'large' ? 'large' : 'small',
             initial: spec.initial ?? false,
             // Чья карточка — подписью справа; совпадает с её заголовком — просто «приложение», как у прежних виджетов.
-            source: (spec.title ?? part.title) === part.title ? tr.core.sourceApp : part.title,
+            // Не вписан ключ — «ждёт ключ» (docs/plans/audio-interface.md, «На стол голосом»).
+            source: part.waits?.length
+                ? tr.core.waitsKey
+                : (spec.title ?? part.title) === part.title
+                  ? tr.core.sourceApp
+                  : part.title,
             Component: (() => h(AppCard, { app: part.id, spec })) as SlotContribution['Component'],
         }));
 }

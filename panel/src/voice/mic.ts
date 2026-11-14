@@ -1,22 +1,20 @@
-// Микрофон пульта (docs/plans/voice-creation.md, «Голос пульта»; решения 1–4). «Сказать» в доке открывает микрофон:
+// Микрофон пульта (docs/plans/voice-creation.md, «Голос пульта»; решения 1–3). «Сказать» в доке открывает микрофон:
 // пульт пишет фразу (16 кГц, конец — после 0,8 с тишины, не дольше 15 с) и отдаёт её «Слуху» шлюза — тому же
 // распознаванию, что у колонки (`POST /api/v1/listen`): звук не уходит в Google. Слова встают на полосу после фразы
-// (решение 3). Услышанное — сначала к фразам на экране (phrases.ts); не нашлось — просьба «сделай…» (та же дорога, что у
-// колонки); не просьба — «Не понятно» и подсказки (решение 4). Микрофон открыт только по нажатию и ещё 6 с после
-// вопроса, который пульт задал на голосовую просьбу, — сам по себе никогда. Пока открыто поле личного, он выключен.
-//
-// В режиме «Микрофон» (docs/plans/mic-mode.md) колонки нет, и неузнанная фраза уходит «Мозгу»: ответ — на полосу и
-// голосом компьютера (speak.ts). Кончился ответ вопросом — микрофон те же 6 с слушает сам, и ответ уходит с пометкой
-// «ответ». Новое «Сказать» обрывает то, что пульт говорит.
+// (решение 3). Услышанное — сначала к фразам на экране (phrases.ts); остальное уходит в разговор
+// (docs/plans/audio-interface.md, решение 6): правила слоя — «сделай виджет…», «как там виджет», дверь мастерской —
+// без модели, прочее — «Мозгу»; своего шаблона «сделай…» у пульта больше нет. Ответ — на полосу; в режиме «Микрофон»
+// (docs/plans/mic-mode.md) ещё и голосом компьютера (speak.ts), с колонкой отвечает колонка. Микрофон открыт только по
+// нажатию и ещё 6 с после вопроса — ответа «Мозга» или «Готово…» работы (works.ts), — сам по себе никогда; ответ уходит
+// с пометкой «ответ». Пока открыто поле личного, он выключен. Новое «Сказать» обрывает то, что пульт говорит.
 
-import { api, can, problemOf } from '../api';
+import { api, problemOf } from '../api';
 import { tr } from '../i18n';
 import { Recorder, recordingSupport } from '../recorder';
 import { devMode } from '../shell/dev';
-import { accusative, agentChip, askToMake } from './creation';
-import { matchAction, micHeld, visiblePhrases } from './phrases';
+import { matchAction, micHeld } from './phrases';
 import { ANSWER_WAIT_MS, answerTo, stopAnswer } from './speak';
-import { hideStrip, requestTextToStation, showStrip, updateStrip } from './strip';
+import { hideStrip, showStrip, updateStrip } from './strip';
 import { onComputer } from '../voice-input';
 
 /** «Слух» шлюза ждёт 16 кГц моно. */
@@ -43,13 +41,11 @@ interface Session {
     ended: boolean;
     /** Пульт сам открыл микрофон (ответ на свой вопрос): без речи — закрыть молча. */
     answer: boolean;
+    /** Слушаем ответ на вопрос работы («На стол или примерить?»): он идёт слою, мимо кнопок на экране. */
+    work: boolean;
 }
 
 let session: Session | null = null;
-/** Черновики, о которых просили голосом в этом пульте: им «Готово» пульт слушает 6 с. */
-const voiceDrafts = new Set<string>();
-/** Где агент: облако или дома — для полосы. */
-let agentCloud: boolean | null = null;
 const listeners = new Set<(on: boolean) => void>();
 
 function tell(): void {
@@ -67,16 +63,6 @@ export function onMic(listener: (on: boolean) => void): () => void {
     return () => listeners.delete(listener);
 }
 
-/** Черновик сделан по голосовой просьбе в этом пульте. */
-export function askedByVoice(draft: string): boolean {
-    return voiceDrafts.has(draft);
-}
-
-/** Где работает агент мастерской — знает плашка; полоса пишет его. */
-export function noteAgentPlace(cloud: boolean | null): void {
-    agentCloud = cloud;
-}
-
 /** Микрофон выключен, пока открыто поле личного: показать это вместо слушания. */
 function held(): boolean {
     if (!micHeld()) return false;
@@ -90,10 +76,10 @@ export function toggleListening(): void {
     void listen(false, START_WAIT_MS);
 }
 
-/** Пульт задал вопрос на голосовую просьбу: слушать ответ `ms` без нажатия. */
-export function listenFor(ms: number): void {
+/** Пульт задал вопрос на голосовую просьбу: слушать ответ `ms` без нажатия. `work` — вопрос работы: ответ идёт слою. */
+export function listenFor(ms: number, work = false): void {
     if (session) return;
-    void listen(true, ms);
+    void listen(true, ms, work);
 }
 
 /** Закрыть микрофон без распознавания (поле ключа открылось, человек нажал «×»). */
@@ -106,7 +92,7 @@ export function cancelListening(): void {
     tell();
 }
 
-async function listen(answer: boolean, wait: number): Promise<void> {
+async function listen(answer: boolean, wait: number, work = false): Promise<void> {
     if (held()) return;
     // Новое «Сказать» обрывает ответ: пока пульт говорит, он себя не слушает.
     if (!answer) stopAnswer();
@@ -116,7 +102,7 @@ async function listen(answer: boolean, wait: number): Promise<void> {
         return;
     }
     const now = Date.now();
-    const current: Session = { recorder: null, began: now, startBy: now + wait, speechAt: null, lastSpeech: now, noise: [], ended: false, answer };
+    const current: Session = { recorder: null, began: now, startBy: now + wait, speechAt: null, lastSpeech: now, noise: [], ended: false, answer, work };
     session = current;
     tell();
     if (!answer) showStrip({ kind: 'listen', head: tr.voice.listening, chip: { text: tr.voice.heardHere, tone: 'own' }, level: 0 });
@@ -187,60 +173,31 @@ async function finish(): Promise<void> {
             return;
         }
         showStrip({ kind: 'listen', head: tr.voice.heard, chip, caps: text }, 4000);
-        act(text, chip, { by: heard.heard, ms }, current.answer);
+        act(text, { by: heard.heard, ms }, current.answer, current.work);
     } catch (error) {
         showStrip({ kind: 'note', head: tr.voice.notRecognized, text: problemOf(error) }, 6000);
     }
 }
 
 /**
- * Что сказано: фраза кнопки на экране, просьба «сделай…», а остальное — «Мозгу» в режиме «Микрофон» и «Не понятно» в
- * режиме «Колонка» (там отвечает колонка). `answered` — фраза сказана в ответ на вопрос, без нажатия.
+ * Что сказано: фраза кнопки на экране, а остальное — в разговор (решение 6 аудиоинтерфейса): правила слоя и «Мозг»
+ * отвечают на полосе, в режиме «Микрофон» — ещё и голосом. `answered` — фраза сказана в ответ на вопрос, без нажатия;
+ * `work` — на вопрос работы: она идёт слою как есть, кнопки на экране её не перехватывают.
  */
-function act(text: string, chip: { text: string; tone: 'own' | 'out' }, heard?: { by: 'home' | 'cloud'; ms?: number }, answered = false): void {
-    const action = matchAction(text);
-    if (action) return action.run();
-    if (/^((алиса|alice)[\s,]+)?(сделай|создай|нарисуй|напиши|давай сделаем|давай создадим|добавь|make|create|draw|write|add|build)\s/i.test(text.trim()) && can('plugins.manage')) {
-        void askToMake(text, agentCloud)
-            .then((made) => {
-                voiceDrafts.add(made.draft);
-                showStrip(
-                    {
-                        kind: 'agent',
-                        head: tr.voice.agent,
-                        chip: agentChip(agentCloud),
-                        caps: text,
-                        text: tr.voice.makingNew(accusative(made.kind)),
-                    },
-                    6000,
-                );
-            })
-            .catch((error) => showStrip({ kind: 'note', head: tr.voice.failedTry, caps: text, text: problemOf(error) }, 8000));
-        return;
+function act(text: string, heard?: { by: 'home' | 'cloud'; ms?: number }, answered = false, work = false): void {
+    if (!work) {
+        const action = matchAction(text);
+        if (action) return action.run();
     }
-    if (onComputer()) {
-        // Может ли этот вход говорить (`use:chat`), знает шлюз: откажет — его слова встанут на полосу.
-        answerTo({ text, via: answered ? 'answer' : 'button', heard }, () => listenFor(ANSWER_WAIT_MS));
-        return;
-    }
-    const hints = visiblePhrases().slice(0, 6);
-    showStrip(
-        {
-            kind: 'note',
-            head: tr.voice.notUnderstood,
-            chip,
-            caps: text,
-            text: tr.voice.notUnderstoodText,
-            chips: [...hints.map((label) => ({ label })), { label: tr.voice.textToSpeaker, act: requestTextToStation }],
-        },
-        8000,
-    );
+    // Может ли этот вход говорить (`use:chat`), знает шлюз: откажет — его слова встанут на полосу.
+    const voice = onComputer();
+    answerTo({ text, via: answered ? 'answer' : 'button', heard }, voice ? () => listenFor(ANSWER_WAIT_MS) : undefined, voice);
 }
 
 /** Услышанные слова, как их сделает пульт (без микрофона): проверить путь голосом, не говоря вслух. */
 export function hearWords(text: string): void {
     showStrip({ kind: 'listen', head: tr.voice.heard, chip: { text: tr.voice.heardHere, tone: 'own' }, caps: text }, 4000);
-    act(text, { text: tr.voice.heardHere, tone: 'own' }, { by: 'home' });
+    act(text, { by: 'home' });
 }
 
 // Слой разработчика («Настройки» → «Для разработчиков»): `__hear('примерить')` в консоли — как сказать это пульту.

@@ -5,8 +5,9 @@
 import { tr } from '../i18n';
 import { byMode } from '../words';
 
-/** Участники, которых люди знают по имени. Читаются при обращении: язык меняется без перезагрузки. */
-const KNOWN: Record<string, { title: string; note: string }> = {
+/** Участники, которых люди знают по имени. Читаются при обращении: язык меняется без перезагрузки. `out` — что-то
+ *  уходит из дома (облачный голос): строка янтарём. */
+const KNOWN: Record<string, { title: string; note: string; out?: boolean }> = {
     'system/voice': {
         // Читается при отрисовке: в режиме «Микрофон» колонки нет.
         get title() {
@@ -80,6 +81,39 @@ const KNOWN: Record<string, { title: string; note: string }> = {
             return tr.bus.knownAppsNote;
         },
     },
+    'system/voice/cloud': {
+        get title() {
+            return tr.bus.knownVoiceCloud;
+        },
+        get note() {
+            return tr.bus.knownVoiceCloudNote;
+        },
+        out: true,
+    },
+    'system/hearing': {
+        get title() {
+            return tr.bus.knownHearing;
+        },
+        get note() {
+            return tr.bus.knownHearingNote;
+        },
+    },
+    'system/publish': {
+        get title() {
+            return tr.bus.knownPublish;
+        },
+        get note() {
+            return tr.bus.knownPublishNote;
+        },
+    },
+    'system/memory': {
+        get title() {
+            return tr.bus.knownMemory;
+        },
+        get note() {
+            return tr.bus.knownMemoryNote;
+        },
+    },
 };
 
 const verbs = (): Record<string, string> => ({ see: tr.bus.verbSee, listen: tr.bus.verbListen, call: tr.bus.verbCall, edit: tr.bus.verbEdit });
@@ -97,7 +131,7 @@ export function rightWords(name: string): { title: string; note: string; out: bo
     if (!bus) return { title: name, note: '', out: false };
     const [, level, pattern] = bus;
     const known = KNOWN[pattern];
-    if (known) return { title: known.title, note: known.note, out: false };
+    if (known) return { title: known.title, note: known.note, out: known.out ?? false };
     if (pattern.startsWith('files/')) {
         const folder = pattern.replace(/\/\*$/, '').split('/').pop() ?? pattern;
         return { title: tr.bus.folderRight(fileVerbs()[level] ?? level, folder), note: '', out: false };

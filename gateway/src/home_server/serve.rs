@@ -170,6 +170,7 @@ async fn plugin_call(
     let kind = match request.get("kind").and_then(Value::as_str) {
         Some("voice") => crate::plugins::runtime::CallKind::Voice,
         Some("background") => crate::plugins::runtime::CallKind::Background,
+        Some("agent") => crate::plugins::runtime::CallKind::Agent,
         _ => crate::plugins::runtime::CallKind::Tool,
     };
     if !app.plugins.is_active(&id) {

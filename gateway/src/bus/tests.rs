@@ -335,3 +335,15 @@ async fn a_folder_is_closed_to_roles_not_ticked_to_a_model_in_the_cloud_and_outs
     let stat = bus.call(member().entering("a").unwrap(), a(), folder, "stat", json!({}), vec![]).await.unwrap();
     assert_eq!((&stat["speak"], &stat["model"]), (&json!(false), &json!(true)));
 }
+
+/// docs/plans/audio-interface.md, «На стол голосом»: a right that reaches a handle marked dangerous is the panel's to
+/// approve, never a voice's; hosts and harmless rights are not.
+#[test]
+fn a_right_that_reaches_a_dangerous_handle_is_for_the_panel() {
+    let (bus, _) = bus();
+    assert!(bus.any_dangerous(&["call:app/a".into()]), "app/a has `wipe`, dangerous, at the call level");
+    assert!(bus.any_dangerous(&["edit:app/*".into()]), "a wider pattern and a higher level reach it too");
+    assert!(!bus.any_dangerous(&["see:app/a".into()]), "seeing it does not reach a call");
+    assert!(!bus.any_dangerous(&["net:api.todoist.com".into(), "call:system/voice".into()]));
+    assert!(!bus.any_dangerous(&[]));
+}

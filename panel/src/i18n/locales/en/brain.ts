@@ -113,6 +113,11 @@ const en: Translation<typeof ru> = {
     keyStored: 'The key is stored encrypted in the gateway; the panel will show only its last characters.',
     savedOk: (text: string) => `Saved. Check: ${text}.`,
     savedFailed: (text: string) => `Saved, but the check failed: ${text}`,
+    nowTitle: 'What the Brain knows now',
+    nowRefresh: 'Refresh',
+    nowReading: 'Reading…',
+    nowEmpty: 'Nothing is going on now: the block is empty and goes into no request.',
+    nowAbout: 'The model gets this text in every request on this computer: what is being made, what waits for an answer, what is on the desk. With a cloud model it goes to the cloud.',
 };
 
 export default en;

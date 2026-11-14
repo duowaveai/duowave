@@ -129,6 +129,9 @@ export const KIND_TITLES: Record<string, string> = {
     get deliver() {
         return tr.bus.kindDeliver;
     },
+    get share() {
+        return tr.bus.kindShare;
+    },
 };
 
 /** Опасности словами (gateway/src/bus/danger.rs). */

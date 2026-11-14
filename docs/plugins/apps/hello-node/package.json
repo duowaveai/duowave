@@ -1,0 +1,7 @@
+{
+  "name": "hello-node",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Пример приложения DuoWave на Node: без зависимостей, но с package-lock.json — шлюз ставит по нему npm ci."
+}

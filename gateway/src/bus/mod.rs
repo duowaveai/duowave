@@ -182,12 +182,46 @@ impl Bus {
         }
     }
 
+    /// What a person sent past the letters («Поделиться» of the panel, capabilities/routes.rs), in the journal under
+    /// their name: `how` — where it went, `note` — what.
+    pub fn note_share(&self, trail: &Trail, from: &Address, to: &Address, how: &str, note: &str) {
+        self.journal(trail, "share", from, to, how, "ok", 0, Some(note));
+    }
+
     pub fn provider(&self, kind: &str) -> Option<Arc<dyn Provider>> {
         self.providers.read().unwrap_or_else(|poisoned| poisoned.into_inner()).get(kind).cloned()
     }
 
     fn providers(&self) -> Vec<Arc<dyn Provider>> {
         self.providers.read().unwrap_or_else(|poisoned| poisoned.into_inner()).values().cloned().collect()
+    }
+
+    /// Whether any of these rights of an app (`call:system/smart-home`, `edit:files/*`, hosts apart) reaches a handle
+    /// marked dangerous — money, deletion, outside, locks, camera, access: such rights are approved in the panel, never
+    /// by voice (docs/plans/audio-interface.md, «На стол голосом»).
+    pub fn any_dangerous(&self, rights: &[String]) -> bool {
+        let wanted: Vec<(Level, Pattern)> = rights
+            .iter()
+            .filter_map(|right| {
+                let (level, pattern) = right.split_once(':')?;
+                let level = Level::parse(level).filter(|level| *level != Level::None)?;
+                Some((level, Pattern::parse(pattern).ok()?))
+            })
+            .collect();
+        if wanted.is_empty() {
+            return false;
+        }
+        self.providers().iter().any(|provider| {
+            provider.participants().iter().any(|participant| {
+                wanted.iter().any(|(level, pattern)| {
+                    pattern.matches(&participant.address)
+                        && provider
+                            .handles(&participant.address)
+                            .iter()
+                            .any(|handle| handle.danger.is_some() && handle.level <= *level)
+                })
+            })
+        })
     }
 
     /// The title of a participant, for people; its address when no provider knows it.

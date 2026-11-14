@@ -20,11 +20,10 @@ pub mod preview;
 pub mod routes;
 pub mod rules;
 pub mod text;
-use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, OnceLock, Weak};
+use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
@@ -37,6 +36,7 @@ use crate::bus::provider::{BusError, Handle, Letter, Participant, Provider};
 use crate::bus::trail::Authority;
 use crate::bus::{Bus, Level};
 use crate::core::identity::roles::Role;
+use crate::gateway::media::{self, kind::Kind as MediaKind, Grant, MediaEngine};
 use drives::Drives;
 use rules::{Folders, Rule};
 
@@ -56,8 +56,8 @@ pub const FOLDERS_APP: &str = "folders";
 /// A folder's list: a page of this many entries, and at most.
 pub const PAGE: usize = 200;
 pub const PAGE_MOST: usize = 500;
-/// How long a link for the station's player to one file of a folder holds.
-pub const PLAY_FOR: Duration = Duration::from_secs(6 * 3600);
+/// How long a link for the station's player to one file of a folder holds: the engine's key.
+pub const PLAY_FOR: Duration = media::engine::KEY_LIFE;
 
 /// Names in the order people expect: «2» before «10», case aside.
 pub fn natural(a: &str, b: &str) -> std::cmp::Ordering {
@@ -130,6 +130,11 @@ fn item(address: &Address, path: &Path) -> Option<Item> {
     })
 }
 
+/// Where the pictures made small and the videos' covers are kept: DATA_DIR/folder-previews.
+fn previews_of(places: &Places) -> PathBuf {
+    places.files.parent().map(|data| data.join("folder-previews")).unwrap_or_else(|| PathBuf::from("folder-previews"))
+}
+
 /// The folders' provider.
 pub struct Files {
     places: Places,
@@ -146,12 +151,15 @@ pub struct Files {
     cloud_model: OnceLock<Arc<dyn Fn() -> bool + Send + Sync>>,
     /// The folders' walks for «найди».
     finder: find::Finder,
-    /// Links for the station's player to one file each: a token, the file, until when.
-    plays: Mutex<HashMap<String, (PathBuf, Instant)>>,
+    /// The one engine that shows and plays (gateway/media): the keys to one file each — for the station's player, the
+    /// computer's screen, the panel's viewer, an app's window — and the pictures made of them.
+    media: MediaEngine,
 }
 
 impl Files {
     pub fn new(places: Places, quota: Arc<dyn Fn(&str) -> u64 + Send + Sync>) -> Files {
+        let previews = previews_of(&places);
+        let media = MediaEngine::new(previews, places.station);
         Files {
             places,
             bus: OnceLock::new(),
@@ -161,38 +169,47 @@ impl Files {
             own_voice: OnceLock::new(),
             cloud_model: OnceLock::new(),
             finder: find::Finder::default(),
-            plays: Mutex::new(HashMap::new()),
+            media,
         }
     }
 
-    /// The file a player's link names, while it holds (`/media/folder/<token>`).
-    pub fn played(&self, token: &str) -> Option<PathBuf> {
-        let mut plays = self.plays.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        plays.retain(|_, (_, until)| *until > Instant::now());
-        plays.get(token).map(|(path, _)| path.clone())
+    /// The engine that shows and plays: its keys and pictures.
+    pub fn media(&self) -> &MediaEngine {
+        &self.media
     }
 
-    /// A link for the station's player to one file: an unguessable token, for six hours.
-    fn mint(&self, path: PathBuf) -> String {
-        let token = crate::utils::ids::random_hex(24);
-        let mut plays = self.plays.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        plays.retain(|_, (_, until)| *until > Instant::now());
-        plays.insert(token.clone(), (path, Instant::now() + PLAY_FOR));
-        token
+    /// The file an engine's key opens, while it holds (`/media/v/<key>`, older `/media/folder/<key>`).
+    pub fn played(&self, token: &str) -> Option<PathBuf> {
+        self.media.ticket(token).map(|ticket| ticket.path)
     }
 
     /// Where the pictures made small are kept.
     pub fn previews(&self) -> PathBuf {
-        self.places
-            .files
-            .parent()
-            .map(|data| data.join("folder-previews"))
-            .unwrap_or_else(|| PathBuf::from("folder-previews"))
+        previews_of(&self.places)
     }
 
-    /// A picture of a folder made small, for the panel (its own route) and the apps (`preview`).
+    /// A picture of a folder's file, for the apps (`preview`) and the panel's older route: a photo made small, a
+    /// video's cover frame — the engine's.
     pub fn preview_of(&self, path: &Path, side: u32) -> Result<Vec<u8>, BusError> {
-        preview::preview(path, side, &self.previews()).map_err(BusError::Failed)
+        let name = path.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default();
+        let sniffed = media::engine::sniff_file(path)
+            .ok_or_else(|| BusError::Failed(crate::tr!("«{name}» — не фото, не видео и не звук", name = name)))?;
+        media::engine::picture_now(path, sniffed, side, self.media.previews()).map_err(BusError::Failed)
+    }
+
+    /// A key of the engine to one file of a folder, for whoever the letter is from: an app's — its; a folder the
+    /// household keeps at home (no «и вне дома») opens on the home network only, an app's or a person's own anywhere.
+    fn link(&self, spot: &Spot, letter: &Letter, file: &Path, probe: bool) -> Result<Value, String> {
+        let app = (letter.from.kind() == address::APP).then(|| letter.from.name().unwrap_or_default().to_string());
+        let home_only = !matches!(spot.kind, Kind::App | Kind::Person) && !self.rule(&spot.folder).remote;
+        let mut link = self.media.give(file, Grant { app, home_only })?;
+        if probe && link.kind != MediaKind::Image {
+            link.duration = media::probe::duration(file, link.sniffed());
+        }
+        let mut answer = json!(link);
+        // The key is the file a station's player and the computer's screen keep, as before.
+        answer["file"] = json!(link.key);
+        Ok(answer)
     }
 
     /// What leaves the house is the gateway's to know: the station's voice and the model's place.
@@ -500,33 +517,61 @@ impl Files {
                 let (piece, parts) = text::part(&text, part);
                 Ok(json!({ "text": piece, "part": part, "parts": parts }))
             }
+            // A picture of a file: a photo made small, a video's cover frame (the engine's), as base64 JPEG.
             "preview" => {
                 let (_, found) = path::open(&spot.root, &spot.rest).map_err(refused)?;
                 let side = input.get("size").and_then(Value::as_u64).unwrap_or(preview::SIDE as u64) as u32;
                 let bytes = self.preview_of(&found, side)?;
                 Ok(json!({ "base64": B64.encode(&bytes), "type": "image/jpeg", "size": bytes.len() }))
             }
+            // A sound for the station's player: the engine's key, on the home network only.
             "play" => {
                 let (_, found) = path::open(&spot.root, &spot.rest).map_err(refused)?;
-                let name = found.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default();
-                if kind_of(&name, false) != "audio" {
+                let audio = media::engine::sniff_file(&found).is_some_and(|sniffed| sniffed.kind == MediaKind::Audio);
+                if !audio {
                     return Err(BusError::Failed(crate::tr!("это не звук: колонка играет mp3, ogg, m4a, flac, wav")));
                 }
-                let title = name.rsplit_once('.').map(|(stem, _)| stem.to_string()).unwrap_or_else(|| name.clone());
-                let token = self.mint(found);
-                Ok(json!({ "id": format!("folder-{}", &token[..12]), "title": title, "file": token }))
+                let app =
+                    (letter.from.kind() == address::APP).then(|| letter.from.name().unwrap_or_default().to_string());
+                let link = self.media.give(&found, Grant { app, home_only: true }).map_err(BusError::Failed)?;
+                Ok(json!({ "id": format!("folder-{}", &link.key[..12]), "title": link.title, "file": link.key }))
             }
-            // A link for the computer's screen (src/screen): a photo, a video or a sound in a window of its own.
+            // A link to show or play (the engine's, gateway/media): the panel's viewer and «Папки», an app's window
+            // and cards, the computer's screen (src/screen). A file — its link; a folder with `names` — a link for
+            // each of them, in one letter. `probe` — how long each plays too.
             "media" => {
-                let (_, found) = path::open(&spot.root, &spot.rest).map_err(refused)?;
-                let name = found.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default();
-                let kind = kind_of(&name, false);
-                if !matches!(kind, "image" | "video" | "audio") {
-                    return Err(BusError::Failed(crate::tr!("на экране показываются фото, видео и звук")));
+                let probe = input.get("probe").and_then(Value::as_bool).unwrap_or(false);
+                if let Some(names) = input.get("names").and_then(Value::as_array) {
+                    let dir = path::existing(&spot.root, &spot.rest).map_err(refused)?;
+                    if !dir.is_dir() {
+                        return Err(BusError::Failed(crate::tr!("names: это не папка")));
+                    }
+                    let links: Vec<Value> = names
+                        .iter()
+                        .take(PAGE_MOST)
+                        .map(|name| {
+                            let name = name.as_str().unwrap_or_default();
+                            let plain = !name.is_empty() && !name.contains(['/', '\\']) && !path::hidden(name);
+                            let mut rest = spot.rest.clone();
+                            rest.push(name.to_string());
+                            let found = plain
+                                .then(|| path::open(&spot.root, &rest).ok())
+                                .flatten()
+                                .map(|(_, found)| found)
+                                .ok_or_else(|| crate::tr!("файла нет"));
+                            match found.and_then(|found| self.link(&spot, letter, &found, probe)) {
+                                Ok(mut link) => {
+                                    link["name"] = json!(name);
+                                    link
+                                }
+                                Err(error) => json!({ "name": name, "error": error }),
+                            }
+                        })
+                        .collect();
+                    return Ok(json!({ "links": links }));
                 }
-                let title = name.rsplit_once('.').map(|(stem, _)| stem.to_string()).unwrap_or_else(|| name.clone());
-                let token = self.mint(found);
-                Ok(json!({ "kind": kind, "title": title, "file": token }))
+                let (_, found) = path::open(&spot.root, &spot.rest).map_err(refused)?;
+                self.link(&spot, letter, &found, probe).map_err(BusError::Failed)
             }
             "stat" => {
                 let found = path::existing(&spot.root, &spot.rest).map_err(refused)?;
@@ -808,7 +853,9 @@ fn handles_of(spot: &Spot) -> Vec<Handle> {
     handles.push(Handle::new("text", Level::Call).titled(&crate::tr!("читать текст документа")));
     handles.push(Handle::new("preview", Level::Call).titled(&crate::tr!("показать картинку")));
     handles.push(Handle::new("play", Level::Call).titled(&crate::tr!("сыграть на колонке")));
-    handles.push(Handle::new("media", Level::Call).titled(&crate::tr!("показать на экране компьютера")));
+    handles.push(
+        Handle::new("media", Level::Call).titled(&crate::tr!("показать и сыграть: пульт, окно, экран компьютера")),
+    );
     handles.push(Handle::new("copy", Level::Call).titled(&crate::tr!("копировать в папку дома")));
     if !spot.read_only {
         handles.push(Handle::new("write", Level::Edit).titled(&crate::tr!("класть и менять")));
@@ -1015,9 +1062,48 @@ mod tests {
         assert!(files.played("0".repeat(48).as_str()).is_none());
         let kind = crate::plugins::media::kind_for(crate::skills::capabilities::CapabilityName::Music);
         let item = crate::plugins::media::media_item("folders", kind, &played, Some("http://gw:80/media")).unwrap();
-        assert_eq!(item.url, format!("http://gw:80/media/folder/{token}"));
+        assert_eq!(item.url, format!("http://gw:80/media/v/{token}"));
         assert_eq!(item.title, "песня");
         assert!(run(&files, "files/home/Documents/1.txt", "play", json!({})).await.is_err(), "not a sound");
+    }
+
+    #[tokio::test]
+    async fn gives_the_engines_keys_to_show_and_play() {
+        let (files, _dir) = made(false);
+        let places = files.places.clone();
+        std::fs::create_dir_all(places.home.join("Photos")).unwrap();
+        image::RgbImage::from_pixel(64, 48, image::Rgb([1, 2, 3])).save(places.home.join("Photos/кот.png")).unwrap();
+        // 16 kHz mono 16 bit: 32 000 bytes a second, 48 000 of them.
+        let mut wav = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\x3e\0\0\0\x7d\0\0\x02\0\x10\0data".to_vec();
+        wav.extend_from_slice(&48_000u32.to_le_bytes());
+        wav.resize(wav.len() + 48_000, 0);
+        std::fs::write(places.home.join("Photos/голос.wav"), &wav).unwrap();
+        std::fs::write(places.home.join("Photos/список.txt"), "молоко").unwrap();
+        // One file: a key for the app that asked; a folder kept at home (no «и вне дома») opens at home only.
+        let one = run(&files, "files/home/Photos/кот.png", "media", json!({})).await.unwrap();
+        assert_eq!((one["kind"].as_str(), one["mime"].as_str()), (Some("image"), Some("image/png")));
+        let key = one["file"].as_str().unwrap();
+        assert_eq!(one["url"], format!("/media/v/{key}"));
+        let ticket = files.media().ticket(key).unwrap();
+        assert_eq!((ticket.app.as_deref(), ticket.home_only), (Some("paint"), true));
+        assert!(files.played(key).unwrap().ends_with("кот.png"));
+        // A page of a folder in one letter, with how long each plays; the same file for the same asker — the same key.
+        let names = json!(["кот.png", "голос.wav", "список.txt", "../кот.png", ".hidden"]);
+        let page = run(&files, "files/home/Photos", "media", json!({"names": names, "probe": true})).await.unwrap();
+        let links = page["links"].as_array().unwrap();
+        assert_eq!(links[0]["file"], one["file"]);
+        assert_eq!((links[1]["kind"].as_str(), links[1]["duration"].as_f64()), (Some("audio"), Some(1.5)));
+        assert!(links[2]["error"].as_str().unwrap().contains("не фото"), "{page}");
+        assert!(links[3]["error"].is_string() && links[4]["error"].is_string(), "only names in that folder");
+        // An app's own folder opens wherever the panel works.
+        std::fs::create_dir_all(places.apps.join("paint")).unwrap();
+        std::fs::write(places.apps.join("paint/серия.wav"), &wav).unwrap();
+        let own = run(&files, "files/app/paint/серия.wav", "media", json!({})).await.unwrap();
+        assert!(!files.media().ticket(own["file"].as_str().unwrap()).unwrap().home_only);
+        // A sound has no picture; a sound for the station's player opens at home only.
+        assert!(run(&files, "files/home/Photos/голос.wav", "preview", json!({})).await.is_err());
+        let played = run(&files, "files/app/paint/серия.wav", "play", json!({})).await.unwrap();
+        assert!(files.media().ticket(played["file"].as_str().unwrap()).unwrap().home_only);
     }
 
     #[tokio::test]

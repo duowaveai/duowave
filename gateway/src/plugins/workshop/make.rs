@@ -109,13 +109,16 @@ pub const FOLDERS_ELSEWHERE: &str =
 pub const MIDI_ELSEWHERE: &str =
     "Учителю нужен компьютер с DuoWave: клавиатура подключается к нему. Попросите в пульте на компьютере.";
 
-/// What `make` started: the draft, its face and its title for now (the agent may rename it).
+/// What `make` started: the draft, its face and its title for now (the agent may rename it). `noted`: the agent
+/// already worked on the draft — the words went to that work («вдогонку»), nothing new began.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Made {
     pub draft: String,
     pub kind: Face,
     pub title: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub noted: bool,
 }
 
 /// A draft's id starts so: the panel's by its face, the station's as the voice workshop's always were.
@@ -156,13 +159,16 @@ fn title_of(face: Face, ask: &str) -> String {
 }
 
 /// What the agent is told besides the skill when it works in the background (docs/plugins/skill/SKILL.md, «Работа в
-/// фоне»): its last words go with «Готово» — said by the station, written on the panel.
+/// фоне»): its last words go on the tile and to «подробнее»; «Готово» itself is the gateway's line
+/// (docs/plans/audio-interface.md, «Честное «Готово»»).
 pub const BACKGROUND_RULES: &str = "## Работа в фоне
 
 Ты работаешь в фоне: человек попросил и занят своим, по ходу он не отвечает. Не задавай вопросов по ходу: чего не \
 хватает — реши разумно сам. Когда закончишь, скажи одной-двумя короткими фразами, что сделал и что решил сам; вопрос, \
-если без него никак, — один и в самом конце. Без списков, кода, разметки и ссылок: последние слова скажет колонка \
-вместе с «Готово». Ставить сам не пытайся: на стол ставит человек, нажатием. Ходит в сеть — сразу напиши пример \
+если без него никак, — один и в самом конце. Без списков, кода, разметки и ссылок: последние слова покажет плитка и \
+скажет колонка по слову «подробнее»; «Готово» шлюз скажет сам, после своей проверки. По ходу могут прийти слова \
+человека «Вдогонку: …» — это дополнение к этой же работе: учти их в ней, заново не начинай. Ставить сам не пытайся: на \
+стол ставит человек — нажатием или своим «да». Ходит в сеть — сразу напиши пример \
 (examples.json) и проверь run_function с example: true: до «да» плитка показывает пример. Виджет стола — карточка \
 (contributes.panel.cards): данные из деталей пульта отдаёт её функция в backend.js, рисует пульт (docs: cards). \
 Своё окошко (panel.js) — только когда карточки мало: своё рисование, игра, клавиши на экране, MIDI, звук, движение.";
@@ -196,14 +202,27 @@ impl Workshop {
     }
 
     /// «Сделай…»: a new draft of the request's face — or, with `draft`, new work on that one — its card written, the
-    /// agent at work in the background. The station's work has no `install`: a voice can be faked. Refused when the
-    /// words are not a request (422) or no model is chosen (409).
+    /// agent at work in the background. Words for a draft the agent works on now are added to that work («вдогонку»):
+    /// nothing is cancelled. The station's work has no `install`: a voice can be faked. Refused when the words are not
+    /// a request (422) or no model is chosen (409).
     pub fn make(
         self: &Arc<Self>,
         words: &str,
         draft: Option<&str>,
         by: By,
         who: Option<String>,
+    ) -> Result<Made, ApiError> {
+        self.make_for(words, draft, by, who, None)
+    }
+
+    /// `make` for the talk's work `work` (src/talk): the card names it.
+    pub fn make_for(
+        self: &Arc<Self>,
+        words: &str,
+        draft: Option<&str>,
+        by: By,
+        who: Option<String>,
+        work: Option<&str>,
     ) -> Result<Made, ApiError> {
         let words: String = words.trim().chars().take(4000).collect();
         let dialog = self.dialog.get().cloned().filter(|dialog| dialog.enabled()).ok_or_else(|| {
@@ -215,7 +234,12 @@ impl Workshop {
         let (id, kind, title) = match draft.map(str::trim).filter(|draft| !draft.is_empty()) {
             Some(id) => {
                 let view = self.draft(id)?;
-                (id.to_string(), view.meta.kind, view.title.unwrap_or_else(|| id.to_string()))
+                let title = view.title.unwrap_or_else(|| id.to_string());
+                if self.note(id, &words) {
+                    tracing::info!(target: "plugins", "workshop: words added to the work on {id}");
+                    return Ok(Made { draft: id.to_string(), kind: view.meta.kind, title, noted: true });
+                }
+                (id.to_string(), view.meta.kind, title)
             }
             None => {
                 let request = request_of(&words).ok_or_else(|| {
@@ -246,6 +270,54 @@ impl Workshop {
                 (id, request.face, title)
             }
         };
+        let install = by == By::Panel;
+        let work = work.map(str::to_string);
+        self.launch(&dialog, Launch { id, words, by, who, kind, title, work, install })
+    }
+
+    /// A new thing asked for in a conversation (src/talk, `work_start`): its face, its title (none — from the wish),
+    /// the whole wish in the person's words — no words of a template needed. The card names the talk's work the run
+    /// belongs to. Never installs by itself: the thing goes on the desk after a «да». Refused as `make` is.
+    pub fn begin(
+        self: &Arc<Self>,
+        face: Face,
+        title: Option<&str>,
+        brief: &str,
+        by: By,
+        who: Option<String>,
+        work: Option<&str>,
+    ) -> Result<Made, ApiError> {
+        let brief: String = brief.trim().chars().take(4000).collect();
+        let dialog = self.dialog.get().cloned().filter(|dialog| dialog.enabled()).ok_or_else(|| {
+            ApiError::conflict(crate::tr!("Модель не выбрана: добавьте провайдера в «Персонаж» → «Мозг»."))
+        })?;
+        if brief.is_empty() {
+            return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "Скажите, что сделать."));
+        }
+        let request = Request { face, ask: brief.clone() };
+        let template = template_of(&request, &brief);
+        if template == "midi" && !self.midi.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, MIDI_ELSEWHERE));
+        }
+        if template == "folders" && !self.folders_here() {
+            return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, FOLDERS_ELSEWHERE));
+        }
+        let id = self.free_id(prefix(by, face));
+        let title = match title.map(str::trim).filter(|title| !title.is_empty()) {
+            _ if template == "midi" => "Учитель на MIDI-клавиатуре".to_string(),
+            Some(title) => title.chars().take(60).collect(),
+            None => title_of(face, &brief),
+        };
+        self.create(&id, Some(template), Some(&title), None)?;
+        let work = work.map(str::to_string);
+        self.launch(&dialog, Launch { id, words: brief, by, who, kind: face, title, work, install: false })
+    }
+
+    /// The card written and the agent at work on the draft in the background: the panel's limits, the conversation
+    /// the draft's own, so «переделай» goes on from what it did. Nothing waits for the phrases: the card hears the
+    /// work end.
+    fn launch(self: &Arc<Self>, dialog: &Arc<crate::dialog::DialogService>, launch: Launch) -> Result<Made, ApiError> {
+        let Launch { id, words, by, who, kind, title, work, install } = launch;
         let card = DraftMeta {
             by,
             who,
@@ -255,19 +327,19 @@ impl Workshop {
             updated: 0,
             note: None,
             kept: true,
+            work,
+            unchanged: false,
         };
         self.keep_card(&id, card, Some("made"))?;
         tracing::info!(target: "plugins", "workshop: {} asked to make {id} ({})", match by { By::Voice => "a station", By::Panel => "the panel" }, kind.word());
-        // The agent in the background, the panel's limits; the conversation is the draft's, so «переделай» goes on
-        // from what it did. Nothing waits for the phrases: the card hears the work end.
         let key = format!("workshop:make:{id}");
         let mut phrases = agent::work(
-            &dialog,
+            dialog,
             self.clone(),
             &key,
             &id,
             &words,
-            agent::Work { by, rules: Some(BACKGROUND_RULES), install: by == By::Panel, told: None },
+            agent::Work { by, rules: Some(BACKGROUND_RULES), install, told: None },
             CancellationToken::new(),
         );
         tokio::spawn(async move {
@@ -277,8 +349,21 @@ impl Workshop {
                 }
             }
         });
-        Ok(Made { draft: id, kind, title })
+        Ok(Made { draft: id, kind, title, noted: false })
     }
+}
+
+/// What a run of the agent on a draft starts with: the draft, the words it gets, who asked, the face, the title, the
+/// talk's work, whether the agent may install.
+struct Launch {
+    id: String,
+    words: String,
+    by: By,
+    who: Option<String>,
+    kind: Face,
+    title: String,
+    work: Option<String>,
+    install: bool,
 }
 
 #[cfg(test)]

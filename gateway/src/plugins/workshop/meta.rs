@@ -95,7 +95,8 @@ impl Face {
 }
 
 /// Where a draft is: the agent works on it, it waits «на примерке», it went on the desk (installed), it waits in the
-/// workshop («в черновиках»), the agent failed or was stopped.
+/// workshop («в черновиках»), the agent failed or was stopped, or the gateway restarted while the agent worked
+/// (`interrupted`: nothing restarts by itself).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Stage {
@@ -105,6 +106,9 @@ pub enum Stage {
     Parked,
     Failed,
     Stopped,
+    Interrupted,
+    /// The run ended without a passing check, or its limits cut it: «не доделано. Продолжить?».
+    Unfinished,
 }
 
 impl Stage {
@@ -116,6 +120,8 @@ impl Stage {
             Stage::Parked => "parked",
             Stage::Failed => "failed",
             Stage::Stopped => "stopped",
+            Stage::Interrupted => "interrupted",
+            Stage::Unfinished => "unfinished",
         }
     }
 
@@ -150,6 +156,13 @@ pub struct DraftMeta {
     /// Kept by the gateway: false for a card read from what is known (a draft made before cards).
     #[serde(default = "kept")]
     pub kept: bool,
+    /// The talk's work this run belongs to (src/talk/works.rs), when a conversation started it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<String>,
+    /// The last run ended without changing the draft (`unfinished`): «ничего не поменялось», not «готово» — on 14.11
+    /// a template no agent touched went on the desk as «готово».
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unchanged: bool,
 }
 
 fn kept() -> bool {
@@ -175,6 +188,8 @@ impl DraftMeta {
             updated: job.map(|job| job.ended.unwrap_or(job.since)).unwrap_or(updated),
             note: None,
             kept: false,
+            work: None,
+            unchanged: false,
         }
     }
 }
@@ -336,6 +351,7 @@ mod tests {
             busy: true,
             ended: None,
             last: None,
+            notes: Vec::new(),
         };
         let card = DraftMeta::known("radio", None, Some(&job), 7);
         assert_eq!(

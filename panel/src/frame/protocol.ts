@@ -45,6 +45,7 @@ export interface FrameSlotEntry {
     initial?: boolean;
     roles?: Array<'gateway' | 'helper'>;
     bare?: boolean;
+    under?: boolean;
 }
 
 export interface FrameShape {
@@ -72,6 +73,12 @@ export type FromFrame =
     | { type: 'duowave:size'; height: number }
     | { type: 'duowave:call'; seq: number; fn: string; input: unknown }
     | { type: 'duowave:file'; seq: number; name: string; address?: string; size?: number }
+    | { type: 'duowave:media'; seq: number; name: string }
+    | { type: 'duowave:open-media'; seq: number; items: Array<{ name: string; title?: string }>; options?: { start?: number; at?: number } }
+    | { type: 'duowave:rights'; seq: number; op: 'state' | 'ask' }
+    | { type: 'duowave:settings-save'; seq: number; values: Record<string, unknown> }
+    | { type: 'duowave:share'; seq: number; request: { file?: string; text?: string; title?: string } }
+    | { type: 'duowave:record'; seq: number; options: { title?: string; text?: string; maxSeconds?: number } }
     | { type: 'duowave:midi-file'; seq: number; file: Blob }
     | { type: 'duowave:ask'; seq: number; options: { title: string; text?: string; ok?: string; danger?: boolean } }
     | { type: 'duowave:go'; section: string; tab?: string; item?: string }

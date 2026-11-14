@@ -98,6 +98,12 @@ pub struct App {
     pub schedules: Arc<crate::plugins::schedule::Scheduler>,
     /// The plugins' pictures (plugins/files.rs).
     pub files: Arc<crate::plugins::files::PluginFiles>,
+    /// «Смотри и выбирай»: an app's video with its fork on a page of this gateway (plugins/watch.rs).
+    pub watch: Arc<crate::plugins::watch::WatchPages>,
+    /// Publishers (capabilities/publish.rs): where a file can go — the gateway's own and the platforms' upload pages.
+    pub publishers: Arc<crate::capabilities::publish::Publishers>,
+    /// Voices' providers (capabilities/voices.rs): the computer's and the cloud's behind `system/voice`.
+    pub voices: Arc<crate::capabilities::voices::Voices>,
     /// A MIDI keyboard for apps (src/midi): the keyboards plugged into this computer, heard while an app listens.
     pub midi: Arc<crate::midi::MidiService>,
     /// «Связи» (src/bus, docs/plans/bus.md): the bus between everything with an address — apps, the gateway's
@@ -112,6 +118,8 @@ pub struct App {
     pub streams: Arc<crate::gateway::media::stream::StreamRelays>,
     /// The workshop (src/plugins/workshop): drafts, the sandbox, the agent, the install.
     pub workshop: Arc<crate::plugins::workshop::Workshop>,
+    /// The talk layer (src/talk): the records of works, what the brain knows now.
+    pub talk: Arc<crate::talk::TalkLayer>,
     /// The apps' history (src/plugins/history): every step and version kept by hash; None when its folder cannot be
     /// made — the gateway goes on without it.
     pub history: Option<Arc<crate::plugins::history::History>>,
@@ -219,6 +227,18 @@ impl App {
         self.sleep.start();
         // The packages' characters in the table, their voices in the voice lab; followed as packages come and go.
         self.characters.start();
+        // The talk layer's constant phrases in our own voice, kept ahead: now and whenever the voice changes.
+        self.warm_phrases();
+        {
+            let me = Arc::downgrade(self);
+            self.events.on("talk.phrases", move |event| {
+                if let (Some(app), crate::core::events::GatewayEvent::VoiceChanged { .. }) =
+                    (me.upgrade(), event.as_ref())
+                {
+                    app.warm_phrases();
+                }
+            });
+        }
         // The station link: the skills speak through the live stations; a mode switch reconnects them.
         self.sessions.start();
         #[cfg(feature = "pc")]
@@ -238,6 +258,19 @@ impl App {
             tts.start();
         }
         Ok(())
+    }
+
+    /// The language pack's constant phrases synthesized ahead in our own voice, in the background (only while our
+    /// voice speaks: Alice's needs none).
+    fn warm_phrases(&self) {
+        let Some(own) = self.voice.own_speech().cloned() else { return };
+        if self.voice.for_computer().is_none() {
+            return;
+        }
+        let prompt = self.personas.system_prompt_for(None, crate::dialog::Channel::Station).text;
+        let pack = crate::talk::pack::of(crate::memory::text::lang_of(&prompt));
+        let texts: Vec<String> = pack.work.say.kept_ahead.iter().map(|text| text.to_string()).collect();
+        tokio::spawn(async move { own.warm(&texts, &tokio_util::sync::CancellationToken::new()).await });
     }
 
     /// Every service, in order. The database is migrated here. Runs inside a tokio runtime: services start their
@@ -289,6 +322,10 @@ impl App {
         // The station's mode (src/gateway/mode), read by the requests, /health and the connectors. Its view says whose
         // voice speaks, so the voice is built here, before them.
         let voice = Arc::new(VoiceService::new(&config.gateway, events.clone()));
+        // Ready phrases in the household's own voice, kept on disk (src/speech/tts/phrase_cache.rs).
+        if let (Some(dir), Some(own)) = (config.data_dir.as_ref(), voice.own_speech()) {
+            own.set_cache(Arc::new(crate::speech::tts::phrase_cache::PhraseCache::new(dir.join("phrases"))));
+        }
         // Where the gateway runs and what works there (src/placement): the mode switch asks the registry.
         let profile = crate::core::build::Profile::for_role(config.placement.role.as_deref());
         let placement = Arc::new(PlacementService::new(
@@ -579,6 +616,16 @@ impl App {
             &skills,
             Arc::new(links::connectors::SkillSettings(connector_settings.clone())),
         );
+        plugin_services.set_model(&dialog);
+        // The voices' providers (capabilities/voices.rs): the computer's, ElevenLabs by the owner's key.
+        let voices = Arc::new(crate::capabilities::voices::Voices::new());
+        voices.register(Arc::new(crate::capabilities::voices::Computer::new(&voice)));
+        #[cfg(feature = "pc")]
+        voices.register(Arc::new(crate::capabilities::voices::ElevenLabs::new(&secrets)));
+        plugin_services.set_voices(&voices);
+        plugin_services.set_memory(&memory);
+        plugin_services.set_speech(&speech);
+        plugin_services.set_brain(&brain);
         let plugins = {
             // The plugins' free memory, kept by the host's watch and read by the availability registry.
             let gauge = Arc::new(crate::plugins::budget::MemoryGauge::default());
@@ -698,6 +745,8 @@ impl App {
         // The plugins' pictures, in DATA_DIR/plugin-files; the station's limits where the gateway runs there.
         let files = {
             let root = crate::plugins::files::root_of(&config.data_dir);
+            // An app's program writes its own folder itself (DUOWAVE_APP_FILES): what its window plays.
+            plugins.set_app_files_root(root.clone());
             let plugins = Arc::downgrade(&plugins);
             Arc::new(crate::plugins::files::PluginFiles::new(
                 root,
@@ -764,8 +813,89 @@ impl App {
         workshop.set_folders(placement.role() != crate::placement::service::Role::Station);
         // The agent's steps reach the panel as `workshop.changed` (the plaque «Делаю виджет», the workshop's log).
         workshop.attach_events(events.clone());
-        // A trial left running before a restart is still taken back on its time.
+        // A trial left running before a restart is still taken back on its time; a run the restart cut is interrupted.
         workshop.resume_trials();
+        workshop.after_restart();
+        // The talk layer (docs/plans/audio-interface.md): the works the workshop does, what the brain knows now.
+        let talk = crate::talk::TalkLayer::new(Some(db.clone()), events.clone());
+        let workshop_executor = crate::talk::workshop::WorkshopExecutor::new(workshop.clone());
+        {
+            let live = live.clone();
+            workshop_executor.set_panels(Arc::new(move || live.size() > 0));
+        }
+        {
+            // Which rights only the panel approves: a handle the bus marks dangerous under one of them.
+            let bus = Arc::downgrade(&bus);
+            workshop_executor.set_dangers(Arc::new(move |rights: &[String]| {
+                bus.upgrade().is_some_and(|bus| bus.any_dangerous(rights))
+            }));
+        }
+        talk.add_executor(workshop_executor);
+        {
+            // «…: готово.» of a work synthesized ahead, while it is made: its title is known from the start.
+            let voice = voice.clone();
+            talk.set_warm(Arc::new(move |texts: Vec<String>| {
+                let (Some(own), true) = (voice.own_speech().cloned(), voice.for_computer().is_some()) else { return };
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(async move { own.warm(&texts, &tokio_util::sync::CancellationToken::new()).await });
+                }
+            }));
+        }
+        {
+            // The language of a device's character: its pack's words for the works' phrases and the block.
+            let personas = personas.clone();
+            talk.set_langs(Arc::new(move |device: &str| {
+                let channel = if device == crate::talk::COMPUTER {
+                    crate::dialog::Channel::Computer
+                } else {
+                    crate::dialog::Channel::Station
+                };
+                crate::memory::text::lang_of(&personas.system_prompt_for(None, channel).text)
+            }));
+        }
+        {
+            let host = Arc::downgrade(&plugins);
+            talk.set_desk(Arc::new(move || {
+                let Some(host) = host.upgrade() else { return Vec::new() };
+                host.visible_all()
+                    .iter()
+                    .filter(|package| host.is_active(&package.manifest.id))
+                    .map(|package| (package.manifest.id.clone(), package.manifest.title.clone()))
+                    .collect()
+            }));
+            let layer = Arc::downgrade(&talk);
+            dialog.attach_now(Arc::new(move |device: &str, lang| {
+                layer.upgrade().map(|layer| layer.now(device, lang)).unwrap_or_default()
+            }));
+            // A phrase about the works is read by the brain's model before the talk (src/talk/reader.rs).
+            talk.set_reader(crate::talk::reader::Reader::new(&talk, &dialog));
+            // A device's conversation is remembered while its work goes on, and half an hour after.
+            let dialog_hold = Arc::downgrade(&dialog);
+            talk.set_hold(Arc::new(move |device: &str, until: u64| {
+                if let Some(dialog) = dialog_hold.upgrade() {
+                    dialog.hold(device, until);
+                }
+            }));
+            // What the model spent, round by round: the workshop's agent on its work, a conversation on the device's
+            // request in the journal (docs/plans/audio-interface.md, «Счёт токенов»).
+            let (layer, journal) = (Arc::downgrade(&talk), Arc::downgrade(&requests));
+            dialog.attach_usage(Arc::new(move |key: &str, model: &str, usage: &crate::dialog::llm::LlmUsage| {
+                if let Some(draft) = key.strip_prefix("workshop:make:") {
+                    if let Some(layer) = layer.upgrade() {
+                        layer.spent(crate::talk::workshop::WORKSHOP, draft, usage);
+                    }
+                    return;
+                }
+                let device = if key.starts_with("panel:") {
+                    Some(crate::talk::COMPUTER)
+                } else {
+                    (!key.contains(':')).then_some(key)
+                };
+                if let (Some(device), Some(journal)) = (device, journal.upgrade()) {
+                    journal.spent(device, model, usage);
+                }
+            }));
+        }
         // The apps' history (src/plugins/history), in DATA_DIR/package-history: the workshop's steps, the versions
         // the workshop, the catalog and copies put in, the plugins' data before each change.
         let history = {
@@ -789,21 +919,26 @@ impl App {
             plugins.set_history(history.clone());
             workshop.set_history(history.clone());
         }
-        // One road for «сделай…» (docs/plans/voice-creation.md): the station's request goes the panel's way, the
-        // agent works in the background, the station that asked says «Готово» and listens for the answer.
-        let voice_workshop = crate::plugins::workshop::voice::VoiceWorkshop::new(workshop.clone(), dialog.clone());
-        skills.router.add_rules(voice_workshop.clone());
+        // The agent works with «Мозг»; the talk layer says «Готово» where the work was asked and hears the answer.
+        workshop.set_dialog(dialog.clone());
+        // The talk layer's rules (docs/plans/audio-interface.md): the works and the workshop's door, first among the
+        // extra rules.
+        let talk_rules = crate::talk::rules::TalkRules::new(&talk);
+        skills.router.add_rules_first(talk_rules.clone());
+        plugin_skill.set_talk(talk_rules);
         // The memory's voice commands («запомни», «забудь», «что ты помнишь»): ours, at once, without the model.
         skills.register(Arc::new(crate::skills::own::memory_skill::MemorySkill::new(memory.clone())));
         skills.router.add_rules(Arc::new(crate::skills::own::memory_skill::MemoryRules));
-        plugin_skill.set_voice(voice_workshop.clone());
-        {
-            let live = live.clone();
-            voice_workshop.set_panels(Arc::new(move || live.size() > 0));
-        }
-        // «Верни погоду как было вчера»: the history by voice, beside the plugins' phrases.
+        // «Верни погоду как было вчера»: the history by voice, beside the plugins' phrases; «верни как было» also undoes
+        // a new version a device's voice put on the desk lately (src/talk/ready.rs).
         if let Some(history) = &history {
             let voice_history = crate::plugins::history::voice::VoiceHistory::new(history.clone());
+            {
+                let layer = Arc::downgrade(&talk);
+                voice_history.set_recent_edit(Arc::new(move |device: &str| {
+                    layer.upgrade().and_then(|layer| layer.recent_edit(device))
+                }));
+            }
             skills.router.add_rules(voice_history.clone());
             plugin_skill.set_history_voice(voice_history);
         }
@@ -866,6 +1001,10 @@ impl App {
         if let Err(error) = connectors.register(Arc::new(crate::memory::tools::MemoryConnector::new(&memory))) {
             tracing::error!("{error}");
         }
+        // The works' tools for the brain: begin a thing from the whole wish, how it goes, the desk (src/talk).
+        if let Err(error) = connectors.register(Arc::new(crate::talk::work_tools::TalkConnector::new(&talk))) {
+            tracing::error!("{error}");
+        }
         // The screen's windows for the model: which are open, keep, close, pause (src/screen/tools.rs).
         if let Err(error) = connectors.register(Arc::new(crate::screen::tools::ScreenConnector::new(&screen))) {
             tracing::error!("{error}");
@@ -901,10 +1040,17 @@ impl App {
             mcp: Some(mcp.clone()),
             tools: Some(connectors.clone()),
             rescue,
+            talk: Some(talk.clone()),
         });
         // The plugins' turn timer says «время вышло» on the device's live station; their schedules speak there too.
         plugin_skill.set_turns(station_sessions.turns());
-        voice_workshop.set_turns(station_sessions.turns());
+        // «Готово» of a work said on the station that asked; once more after its next talk when it was cut.
+        talk.set_turns(station_sessions.turns());
+        talk.follow_requests();
+        // A thing removed — an app off the desk, a draft deleted — reaches its works by its id; what went while the
+        // gateway was off is checked now.
+        talk.follow_removals();
+        talk.reconcile();
         // A drive plugged in: the station asks about it when it is free, by the app «Папки» (its function
         // `driveFound`); the tile on the desk asks in any case (docs/plans/shared-folders.md, the owner's decision 3).
         if let Some(drives) = bus.files().and_then(|files| files.drives()) {
@@ -1029,6 +1175,17 @@ impl App {
 
         // ── The links end here. ──
 
+        let watch = Arc::new(crate::plugins::watch::WatchPages::new(
+            config.data_dir.clone().unwrap_or_else(|| std::path::PathBuf::from("data")).join("watch"),
+        ));
+        // Publishers (capabilities/publish.rs): the gateway's own first, then the platforms' upload pages.
+        let publishers = Arc::new(crate::capabilities::publish::Publishers::new());
+        publishers.register(Arc::new(crate::capabilities::publish::Watch { pages: watch.clone() }));
+        #[cfg(feature = "pc")]
+        publishers.register(Arc::new(crate::capabilities::publish::Telegram { bot: calls.telegram.clone() }));
+        publishers.register_upload_pages();
+        plugin_services.set_publishers(&publishers);
+
         Ok(Arc::new(App {
             config,
             db,
@@ -1057,11 +1214,15 @@ impl App {
             mcp,
             skills,
             workshop,
+            talk,
             history,
             plugins,
             tasks,
             schedules,
             files,
+            watch,
+            publishers,
+            voices,
             midi,
             bus,
             screen,
@@ -1167,6 +1328,8 @@ pub fn router(app: Arc<App>) -> Router {
         .merge(crate::talk::routes())
         .merge(crate::locale::routes())
         .merge(crate::apps::host_http::routes())
+        .merge(crate::plugins::watch::router())
+        .merge(crate::capabilities::routes::routes())
         .merge(crate::tasks::routes::routes())
         .merge(crate::characters::routes())
         .merge(crate::stations::router())

@@ -81,6 +81,9 @@ pub struct Outcome {
     /// For the model's history: what was really done behind a short `speech` («Передала.»), so the model stands
     /// by it (live 02.11: it told the user its «Передала» were wrong and nothing was sent).
     pub done: Option<String>,
+    /// For the model's history: what it keeps in place of `speech` (the talk's works: the work's line, not «Делаю: …»
+    /// — a phrase of ours in the history is a pattern the model would say next time without doing anything).
+    pub kept: Option<String>,
     /// The answer's speech has ended on the station: called with when. An answer not spoken to its end (superseded,
     /// cancelled, deferred) never calls it.
     pub on_spoken: Option<SpokenHook>,

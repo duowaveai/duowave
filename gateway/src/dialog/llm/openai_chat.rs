@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use super::describe_http_error as describe;
 use super::llm_client::{
     bearer_of, describe_models, interrupted, AssistantTurn, LlmClient, LlmEvent, LlmMessage, LlmRequest, LlmSettings,
-    LlmStream, TokensField, ToolCall, ToolCallCut, ToolChoice,
+    LlmStream, LlmUsage, TokensField, ToolCall, ToolCallCut, ToolChoice,
 };
 use super::sse::Lines;
 use crate::dialog::generator::{generate, Yielder};
@@ -206,6 +206,11 @@ async fn run(
         json!(request.max_tokens.unwrap_or(settings.max_tokens)),
     );
     body.insert("messages".into(), Value::Array(messages));
+    // OpenAI's own API tells what a streamed answer spent only when asked; the compatible servers that tell it do so
+    // anyway, and a strict one might refuse the field.
+    if settings.tokens_field == TokensField::MaxCompletionTokens {
+        body.insert("stream_options".into(), json!({ "include_usage": true }));
+    }
     if !tools.is_empty() {
         body.insert("tools".into(), Value::Array(tools));
         if request.tool_choice == ToolChoice::None {
@@ -236,6 +241,7 @@ async fn run(
     let mut text = String::new();
     let mut reasoning = String::new();
     let mut finish_reason = None;
+    let mut usage = None;
     let mut finished = false;
     while !finished {
         let chunk = tokio::select! {
@@ -262,6 +268,14 @@ async fn run(
                 serde_json::from_str(data).map_err(|error| anyhow!("a streamed chunk is not JSON: {error}"))?;
             if let Some(reason) = chunk.pointer("/choices/0/finish_reason").and_then(Value::as_str) {
                 finish_reason = Some(reason.to_string());
+            }
+            // What the answer spent: in the last chunk, when the server tells it.
+            if let Some(found) = chunk.get("usage").filter(|found| found.is_object()) {
+                let count = |path: &str| found.pointer(path).and_then(Value::as_u64);
+                if let (Some(input), Some(output)) = (count("/prompt_tokens"), count("/completion_tokens")) {
+                    let cache_read = count("/prompt_tokens_details/cached_tokens").filter(|cached| *cached > 0);
+                    usage = Some(LlmUsage { input, output, cache_read, cache_write: None });
+                }
             }
             let delta = chunk.get("choices").and_then(|choices| choices.get(0)).and_then(|choice| choice.get("delta"));
             let Some(delta) = delta else { continue };
@@ -335,7 +349,7 @@ async fn run(
         content: text,
         tool_calls: calls,
         native: (!native.is_empty()).then_some(Value::Object(native)),
-        usage: None,
+        usage,
     };
     y.send(Ok(LlmEvent::Turn(turn))).await;
     Ok(())

@@ -391,6 +391,50 @@ pub trait HostServices: Send + Sync {
         let _ = (caller, action, input, bytes);
         Box::pin(async { Err(crate::tr!("картинок здесь нет")) })
     }
+    /// A text by the household's model for the app `caller` (`system/brain` → `write`): `{prompt, system?, model?:
+    /// "fast"|"smart", json?}` → `{text, json?, model, tokens}`.
+    fn write(&self, caller: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
+        let _ = (caller, input);
+        Box::pin(async { Err("модели для приложений здесь нет".to_string()) })
+    }
+    /// The models an app may choose for itself (`system/brain` → `models`): each provider's models added in the panel,
+    /// whether the question leaves the house, which the profiles «Быстрая» and «Умная» are now.
+    fn models(&self) -> BoxFuture<'static, Result<Value, String>> {
+        Box::pin(async { Err("моделей здесь нет".to_string()) })
+    }
+    /// The household's model as the app's own agent (`system/brain` → `agent`): a task, the app's instructions, tools
+    /// over its own folder and those of its tools it names, within its caps of steps and time → `{text, steps}`.
+    fn agent(&self, caller: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
+        let _ = (caller, input);
+        Box::pin(async { Err("агента для приложений здесь нет".to_string()) })
+    }
+    /// A line voiced into the app's own folder by whichever provider the voice is of (`system/voice` → `synth`,
+    /// capabilities/voices.rs): `{text, voice?, to, lang?, words?}` → `{file, bytes, seconds, id, provider, cloud, paid,
+    /// words?, alignment?, timing}`; `voices` — every ready provider's voices with whether one may publish them;
+    /// `providers` — who voices, ready or not, and with `{balance: true}` what is left on a paid plan.
+    fn synth(&self, caller: &str, action: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
+        let _ = (caller, action, input);
+        Box::pin(async { Err("голосов компьютера здесь нет".to_string()) })
+    }
+    /// What the household's memory knows of its interests (`system/memory` → `interests`, docs/plans/feed.md, stage 10):
+    /// only likes and pastimes, never the rest of what it remembers; empty while the memory is off.
+    fn interests(&self, caller: &str) -> BoxFuture<'static, Result<Value, String>> {
+        let _ = caller;
+        Box::pin(async { Err("памяти здесь нет".to_string()) })
+    }
+    /// Publishing an app's work without leaving DuoWave (`system/publish`, docs/plans/feed.md, stage 10): `telegram` —
+    /// a video of its folder to a chat or channel by the gateway's bot; `watch` — a page «смотри и выбирай» on this
+    /// gateway with the video and the fork, whose votes come back to the app.
+    fn publish(&self, caller: &str, action: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
+        let _ = (caller, action, input);
+        Box::pin(async { Err("публикации здесь нет".to_string()) })
+    }
+    /// Hearing (`system/hearing` → `recognize`, capabilities/hearing.rs): a file of the app's folder → `{text,
+    /// language, words: [{word, start, end}]}` by the household's recognition.
+    fn recognize(&self, caller: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
+        let _ = (caller, input);
+        Box::pin(async { Err("слуха здесь нет".to_string()) })
+    }
     /// The plugin's own schedule (`system/schedule`, plugins/schedule.rs): `set`, `list`, `cancel`, `parse`.
     fn schedule(&self, caller: &str, action: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
         let _ = (caller, action, input);

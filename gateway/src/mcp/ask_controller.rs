@@ -353,8 +353,9 @@ mod tests {
         let events = events(response.unwrap()).await;
         let types: Vec<&str> = events.iter().map(|event| event["type"].as_str().unwrap()).collect();
         assert_eq!(types, ["start", "text", "done"]);
-        // No connectors here: the tools are the memory's own — remember, forget, recall (src/memory/tools.rs).
-        assert_eq!(events[0], json!({ "type": "start", "model": "home-small", "provider": "Дома", "tools": 3 }));
+        // No connectors here: the tools are the memory's own — remember, forget, recall (src/memory/tools.rs) — and
+        // the works' — work_start, work_add, work_do (src/talk/work_tools.rs).
+        assert_eq!(events[0], json!({ "type": "start", "model": "home-small", "provider": "Дома", "tools": 6 }));
         assert_eq!(events[1]["text"], json!("Да."));
         assert_eq!(model.forgotten.lock().unwrap().as_slice(), ["panel:u2"], "its own history per person");
     }
@@ -389,7 +390,7 @@ mod tests {
         .await;
         let types: Vec<&str> = events.iter().map(|event| event["type"].as_str().unwrap()).collect();
         assert_eq!(types, ["start", "tool", "result", "text", "text", "done"]);
-        assert_eq!(events[0]["tools"], json!(4), "the fixture's echo and the memory's three");
+        assert_eq!(events[0]["tools"], json!(7), "the fixture's echo, the memory's three and the works' three");
         assert_eq!(
             events[1],
             json!({ "type": "tool", "name": "mcp_fixture__echo", "server": "Fixture", "input": { "text": "да" } })

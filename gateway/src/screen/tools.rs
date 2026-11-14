@@ -150,6 +150,8 @@ impl Connector for ScreenConnector {
                 run: run(&self.screen, handle),
                 read_only,
                 outside: false,
+                spoken: false,
+                kept: None,
             })
             .collect()
     }
@@ -176,6 +178,7 @@ mod tests {
             principal: household_principal(Role::Member, None),
             cancel: tokio_util::sync::CancellationToken::new(),
             station: None,
+            origin: None,
         };
         let keep = tools.iter().find(|tool| tool.tool.name == "screen_keep").unwrap();
         let input = json!({ "window": "море" }).as_object().cloned().unwrap();

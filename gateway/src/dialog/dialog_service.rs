@@ -87,15 +87,26 @@ pub struct ToolOutcome {
     /// Text from the internet (a web page, a search result): after it the answer is offered only the tools that
     /// change nothing, so a page cannot talk the model into acting.
     pub tainted: bool,
+    /// A ready phrase (the talk's works: «Делаю: …»): said as it is, and the answer ends — the model does not retell
+    /// it in a second round.
+    pub spoken: bool,
+    /// What the history keeps instead of a ready phrase: the work's line («(В работе [р6]: …)»), not «Делаю: …» — a
+    /// phrase of ours in the history is a pattern the model would say next time without doing anything
+    /// (docs/plans/audio-interface.md, «Доводка после проверки руками 14.11»).
+    pub kept: Option<String>,
 }
 
 impl ToolOutcome {
     pub fn error(content: impl Into<String>) -> ToolOutcome {
-        ToolOutcome { content: content.into(), is_error: true, tainted: false }
+        ToolOutcome { content: content.into(), is_error: true, ..ToolOutcome::default() }
     }
 
     pub fn tainted(content: impl Into<String>) -> ToolOutcome {
-        ToolOutcome { content: content.into(), is_error: false, tainted: true }
+        ToolOutcome { content: content.into(), tainted: true, ..ToolOutcome::default() }
+    }
+
+    pub fn spoken(content: impl Into<String>) -> ToolOutcome {
+        ToolOutcome { content: content.into(), spoken: true, ..ToolOutcome::default() }
     }
 }
 
@@ -117,6 +128,13 @@ pub type ToolRun =
 
 /// The tools still offered after a tainted result.
 pub type ToolFilter = Arc<dyn Fn(&[LlmTool]) -> Vec<LlmTool> + Send + Sync>;
+
+/// What was added to the work on the way, as the model's next message («Вдогонку: …»); None when nothing came.
+pub type Inbox = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
+/// Rounds and time each batch of words added on the way gives an answer, up to twice its own limits.
+const INBOX_ROUNDS: usize = 4;
+const INBOX_MS: u64 = 90_000;
 
 /// Tools on our side for the model, and how to run a call; the text goes back to the model.
 #[derive(Clone)]
@@ -147,6 +165,17 @@ pub struct ToolBox {
     /// broken turn's calls never ran, so nothing is done twice. 0 by default: part of a spoken answer was heard, and
     /// the person would wait in silence. The workshop's agent works long enough for the network to drop on the way.
     pub retries: usize,
+    /// Words added to the work on the way (docs/plans/audio-interface.md, «Вдогонку вместо отмены»): asked at every
+    /// round's border — after the tools' answers, and before the answer would end without calls. What came goes to
+    /// the model as the person's message and the rounds go on, `INBOX_ROUNDS` and `INBOX_MS` more each time, up to
+    /// twice the toolbox's limits.
+    pub inbox: Option<Inbox>,
+    /// Set when the answer's last round was forced by its limits — rounds or time — rather than chosen by the model:
+    /// the work may have stopped half-way (the workshop's «не доделано»).
+    pub limited: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// The history of the answer is cached too, not only the stable instructions (`LlmRequest.cache_history`): every
+    /// round of a long run pays in full only for what is new (the workshop's agent, on Claude).
+    pub cache_history: bool,
 }
 
 impl ToolBox {
@@ -167,6 +196,9 @@ impl ToolBox {
             cut_note: None,
             in_order: false,
             retries: 0,
+            inbox: None,
+            limited: None,
+            cache_history: false,
         }
     }
 }
@@ -188,8 +220,9 @@ pub struct DialogContext {
     /// Where the answer is said: through a station (by default), or by a computer — a talk without a station, whose
     /// prompt has no word of one (src/talk).
     pub channel: crate::dialog::system_prompt::Channel,
-    /// A longer output limit for every turn of this answer than LLM_MAX_TOKENS: the workshop's agent writes files
-    /// (WORKSHOP_MAX_TOKENS). A model that refuses it as too long answers with LLM_MAX_TOKENS.
+    /// An output limit of its own for every turn of this answer instead of LLM_MAX_TOKENS: longer for the workshop's
+    /// agent, which writes files (WORKSHOP_MAX_TOKENS), shorter for a spoken answer (`SPEECH_MAX_TOKENS`). A model that
+    /// refuses it as too long answers with LLM_MAX_TOKENS.
     pub max_tokens: Option<u32>,
 }
 
@@ -219,22 +252,33 @@ enum Until {
     Event,
 }
 
-/// A call's result and whether its text came from outside the house.
+/// A call's result, whether its text came from outside the house, whether it is a ready phrase and what the history
+/// keeps of it.
 struct Ran {
     result: ToolResult,
     tainted: bool,
+    spoken: bool,
+    kept: Option<String>,
 }
 
-/// Phrases of an answer: cut as the text comes, said through the stream, kept for the history.
+/// Phrases of an answer: cut as the text comes, said through the stream, kept for the history — a ready phrase as
+/// the fact behind it (`keep_instead`).
 struct Speaker<'a> {
     yielder: &'a Yielder<anyhow::Result<String>>,
     splitter: PhraseSplitter,
     said: Vec<String>,
+    kept: Vec<String>,
 }
 
 impl<'a> Speaker<'a> {
     fn new(yielder: &'a Yielder<anyhow::Result<String>>) -> Speaker<'a> {
-        Speaker { yielder, splitter: PhraseSplitter::new(), said: Vec::new() }
+        Speaker { yielder, splitter: PhraseSplitter::new(), said: Vec::new(), kept: Vec::new() }
+    }
+
+    /// The history keeps `fact` in place of what was said since `from` (a length of `kept`).
+    fn keep_instead(&mut self, from: usize, fact: &str) {
+        self.kept.truncate(from);
+        self.kept.push(fact.to_string());
     }
 
     async fn push(&mut self, text: &str) {
@@ -251,11 +295,13 @@ impl<'a> Speaker<'a> {
 
     async fn say(&mut self, phrase: String) {
         self.said.push(phrase.clone());
+        self.kept.push(phrase.clone());
         self.yielder.send(Ok(phrase)).await;
     }
 
+    /// The answer as the history keeps it.
     fn answer(&self) -> String {
-        self.said.join(" ")
+        self.kept.join(" ")
     }
 }
 
@@ -322,22 +368,34 @@ fn run_tool(
     let run = toolbox.run.clone();
     async move {
         let id = call.id.clone();
+        let failed = |id: String, content: String| Ran {
+            result: ToolResult { id, content, is_error: true },
+            tainted: false,
+            spoken: false,
+            kept: None,
+        };
         if let Some(content) = refused {
-            return Ran { result: ToolResult { id, content, is_error: true }, tainted: false };
+            return failed(id, content);
         }
         match tokio::spawn(run(call, cancel)).await {
             Ok(Ok(outcome)) => Ran {
                 result: ToolResult { id, content: outcome.content, is_error: outcome.is_error },
                 tainted: outcome.tainted,
+                spoken: outcome.spoken && !outcome.is_error,
+                kept: outcome.kept,
             },
-            Ok(Err(error)) => {
-                Ran { result: ToolResult { id, content: format!("error: {error}"), is_error: true }, tainted: false }
-            }
-            Err(error) => {
-                Ran { result: ToolResult { id, content: format!("error: {error}"), is_error: true }, tainted: false }
-            }
+            Ok(Err(error)) => failed(id, format!("error: {error}")),
+            Err(error) => failed(id, format!("error: {error}")),
         }
     }
+}
+
+/// What the model wrote for an app: the text, the tokens, which model.
+#[derive(Debug, Clone)]
+pub struct Written {
+    pub text: String,
+    pub usage: Option<crate::dialog::llm::LlmUsage>,
+    pub profile: crate::dialog::llm::brain::BrainProfile,
 }
 
 pub struct DialogService {
@@ -348,7 +406,33 @@ pub struct DialogService {
     prompt_problem: Mutex<Option<String>>,
     /// The characters' memory (src/memory): its wake-up in the prompt, and every exchange as an episode.
     memory: std::sync::OnceLock<Arc<crate::memory::MemoryService>>,
+    /// What goes on now (src/talk, the block «Сейчас»): for a device, in a language.
+    now: std::sync::OnceLock<NowSource>,
+    /// Where each round's spending goes (the journal's requests, the works).
+    usage: std::sync::OnceLock<UsageSink>,
 }
+
+/// The block «Сейчас» of a device (src/talk/now.rs), in the character's language; empty when nothing goes on.
+pub type NowSource = Arc<dyn Fn(&str, crate::memory::text::Lang) -> String + Send + Sync>;
+
+/// Where the model's spending goes, round by round: the conversation's history key, the model, the round's usage.
+pub type UsageSink = Arc<dyn Fn(&str, &str, &super::llm::LlmUsage) + Send + Sync>;
+
+/// A spoken answer's output limit (docs/plans/audio-interface.md, the owner's decision 14): a few sentences fit
+/// easily, a runaway does not.
+pub const SPEECH_MAX_TOKENS: u32 = 600;
+
+/// What a conversation's model hears when its turn ran out of the spoken answer's limit in a tool call (a long wish
+/// in `work_start`): the call did not run, the model tries again shorter.
+pub fn speech_cut_note(cut: &ToolCallCut) -> String {
+    format!(
+        "The gateway: your last turn was cut off by the output limit in the middle of the call {} — it did not run. \
+         Call it again, shorter.",
+        cut.tool
+    )
+}
+
+use super::dialog_history::device_of;
 
 impl DialogService {
     /// The dialog with the panel's brain; without one it reads .env.
@@ -366,6 +450,8 @@ impl DialogService {
             history,
             prompt_problem: Mutex::new(None),
             memory: std::sync::OnceLock::new(),
+            now: std::sync::OnceLock::new(),
+            usage: std::sync::OnceLock::new(),
         };
         service.announce();
         service
@@ -403,6 +489,69 @@ impl DialogService {
         self.brain.slot(ModelProfile::Fast).is_some()
     }
 
+    /// A text for an app (`system/brain` → `write`, docs/plans/feed.md, stage 4): the profile's model with the app's
+    /// own instructions — no persona, no history, no tools — and what it wrote, whole, with the tokens it took.
+    pub async fn write(
+        &self,
+        profile: ModelProfile,
+        pick: Option<&crate::settings::definitions::BrainPick>,
+        system: String,
+        prompt: String,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<Written> {
+        // The app's own model when it chose one and its provider is still there, else the profile's.
+        let slot = pick
+            .and_then(|pick| self.brain.slot_of(&pick.provider, &pick.model))
+            .or_else(|| self.brain.slot(profile))
+            .or_else(|| self.brain.slot(ModelProfile::Fast))
+            .ok_or_else(|| anyhow!("модель «Мозга» не выбрана"))?;
+        // An app writes texts, not spoken answers (a series' script as JSON): the workshop's longer limit
+        // (WORKSHOP_MAX_TOKENS), not LLM_MAX_TOKENS — a reasoning model spends part of it on thinking, and a cut JSON is
+        // no JSON. A model that refuses the longer limit as too long is asked again with its own.
+        let mut longer = Some(self.config.workshop_max_tokens);
+        loop {
+            let request = LlmRequest {
+                system: system.clone(),
+                messages: vec![LlmMessage::User(prompt.clone())],
+                model: Some(slot.model.clone()),
+                tool_choice: ToolChoice::None,
+                max_tokens: longer,
+                ..LlmRequest::default()
+            };
+            let mut events = slot.client.stream(request, cancel.clone());
+            let (mut text, mut usage, mut failed) = (String::new(), None, None);
+            while let Some(event) = events.next().await {
+                match event {
+                    Ok(LlmEvent::Text(piece)) => text.push_str(&piece),
+                    Ok(LlmEvent::Turn(turn)) => {
+                        if !turn.content.trim().is_empty() {
+                            text = turn.content;
+                        }
+                        usage = turn.usage;
+                    }
+                    Ok(LlmEvent::Tool(_)) => {}
+                    Err(error) => {
+                        failed = Some(error);
+                        break;
+                    }
+                }
+            }
+            match failed {
+                Some(error) if longer.is_some() && text.is_empty() && refused_length(&error) => {
+                    tracing::warn!(
+                        target: "dialog",
+                        "{} refused the longer limit for an app's text ({}): asked again with LLM_MAX_TOKENS",
+                        slot.model,
+                        head_of(&error.to_string(), 200)
+                    );
+                    longer = None;
+                }
+                Some(error) => return Err(error),
+                None => return Ok(Written { text, usage, profile: slot.profile() }),
+            }
+        }
+    }
+
     pub fn description(&self) -> String {
         self.brain.description()
     }
@@ -410,6 +559,11 @@ impl DialogService {
     /// The model for people: the panel's «мозг» and «мышление» read it instead of parsing the description.
     pub fn brain(&self) -> BrainStatus {
         self.brain.status()
+    }
+
+    /// Whether the model a context asks for can be offered tools (echo cannot).
+    pub fn tools_for(&self, context: &DialogContext) -> bool {
+        self.slot_for(context).is_some_and(|slot| slot.client.tools())
     }
 
     /// Whether the model can be offered tools (echo cannot).
@@ -482,6 +636,7 @@ impl DialogService {
             while let Some(event) = events.next().await {
                 match event {
                     Ok(LlmEvent::Text(delta)) => speaker.push(&delta).await,
+                    Ok(LlmEvent::Turn(done)) => service.spent(&key, &slot.model, &done),
                     Ok(_) => {}
                     Err(error) => return y.send(Err(error)).await,
                 }
@@ -497,12 +652,36 @@ impl DialogService {
         let _ = self.memory.set(memory);
     }
 
+    /// What goes on now (the talk layer's block «Сейчас»): from now on it goes into the part of the prompt that
+    /// changes, beside the time — the household character's answers only, not an instruction of its own.
+    pub fn attach_now(&self, now: NowSource) {
+        let _ = self.now.set(now);
+    }
+
+    /// Where the model's spending goes from now on: every round, with its conversation's key.
+    pub fn attach_usage(&self, usage: UsageSink) {
+        let _ = self.usage.set(usage);
+    }
+
+    /// A round's spending, told to the sink.
+    fn spent(&self, key: &str, model: &str, turn: &AssistantTurn) {
+        if let (Some(sink), Some(usage)) = (self.usage.get(), turn.usage.as_ref()) {
+            sink(key, model, usage);
+        }
+    }
+
     /// An exchange into the short history, and into the memory's episodes when it keeps them.
     fn remember_turn(&self, key: &str, question: &str, answer: &str, source: Option<&str>) {
         self.history().remember(key, question, answer, source);
         if let Some(memory) = self.memory.get() {
             memory.episode(key, question, answer);
         }
+    }
+
+    /// Keeps a device's conversation past the pause until `until` (ms since the epoch): a work started from it goes on
+    /// (docs/plans/audio-interface.md, «Разговор помнится»).
+    pub fn hold(&self, device: &str, until: u64) {
+        self.history().hold(device, until);
     }
 
     /// Starts a dialog over: the panel's test chat on «Новый разговор».
@@ -565,9 +744,22 @@ impl DialogService {
     ) -> anyhow::Result<()> {
         let mut speaker = Speaker::new(y);
         let toolbox = toolbox.filter(|toolbox| slot.client.tools() && !toolbox.tools.is_empty());
-        let rounds = toolbox.as_ref().and_then(|toolbox| toolbox.rounds).unwrap_or(DEFAULT_TOOL_ROUNDS);
+        let base_rounds = toolbox.as_ref().and_then(|toolbox| toolbox.rounds).unwrap_or(DEFAULT_TOOL_ROUNDS);
         let budget = toolbox.as_ref().and_then(|toolbox| toolbox.budget_ms).unwrap_or(DEFAULT_TOOL_BUDGET_MS);
-        let deadline = Instant::now() + Duration::from_millis(budget);
+        let began = Instant::now();
+        let mut rounds = base_rounds;
+        let mut deadline = began + Duration::from_millis(budget);
+        // Words added on the way: the person's message, and the rounds go on a little longer.
+        let take_inbox = |messages: &mut Vec<LlmMessage>, rounds: &mut usize, deadline: &mut Instant| -> bool {
+            let Some(note) = toolbox.as_ref().and_then(|toolbox| toolbox.inbox.as_ref()).and_then(|inbox| inbox())
+            else {
+                return false;
+            };
+            messages.push(LlmMessage::User(note));
+            *rounds = (*rounds + INBOX_ROUNDS).min(base_rounds * 2);
+            *deadline = (*deadline + Duration::from_millis(INBOX_MS)).min(began + Duration::from_millis(budget * 2));
+            true
+        };
         let mut offered = toolbox.as_ref().map(|toolbox| toolbox.tools.clone()).unwrap_or_default();
         let mut filler_said = false;
         let mut cuts = 0;
@@ -577,6 +769,11 @@ impl DialogService {
             let short =
                 deadline.saturating_duration_since(Instant::now()) < Duration::from_millis(LAST_ROUND_RESERVE_MS);
             let last = given.is_none() && (round >= rounds || short);
+            if last {
+                if let Some(limited) = toolbox.as_ref().and_then(|toolbox| toolbox.limited.as_ref()) {
+                    limited.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
             // What the model is told when this round's turn ran out of tokens in a call: the next round hears it.
             let mut cut_off = None;
             // Why the connection failed this round, when it is asked again.
@@ -592,7 +789,8 @@ impl DialogService {
                         choice: if last { ToolChoice::None } else { ToolChoice::Auto },
                         instructions: toolbox.instructions.clone(),
                     });
-                    let request = self.request(slot, &messages, context, offer.as_ref());
+                    let mut request = self.request(slot, key, &messages, context, offer.as_ref());
+                    request.cache_history = toolbox.as_ref().is_some_and(|toolbox| toolbox.cache_history);
                     let timeout_ms =
                         toolbox.as_ref().and_then(|toolbox| toolbox.round_ms).unwrap_or(self.config.timeout_ms);
                     let mut events = self.round_within(slot, request, cancel.clone(), Until::Phrase, timeout_ms);
@@ -626,7 +824,10 @@ impl DialogService {
                                 thinking = None;
                                 speaker.push(&text).await
                             }
-                            Ok(LlmEvent::Turn(done)) => turn = Some(done),
+                            Ok(LlmEvent::Turn(done)) => {
+                                self.spent(key, &slot.model, &done);
+                                turn = Some(done)
+                            }
                             Ok(LlmEvent::Tool(_)) => {}
                             Err(error) => {
                                 let retries = toolbox.as_ref().map_or(0, |toolbox| toolbox.retries);
@@ -685,7 +886,24 @@ impl DialogService {
                 continue;
             }
             let Some(toolbox) = toolbox.as_ref() else { break };
-            let Some(turn) = turn.filter(|turn| !last && !turn.tool_calls.is_empty()) else { break };
+            let turn = match turn {
+                Some(turn) if !last && !turn.tool_calls.is_empty() => turn,
+                ended => {
+                    // About to end: words added on the way go on in this same answer. The turn's calls, if any, did
+                    // not run: only its words stay.
+                    speaker.flush().await;
+                    let content = ended.map(|turn| turn.content).unwrap_or_default();
+                    let mut next = messages.clone();
+                    if !content.trim().is_empty() {
+                        next.push(LlmMessage::Assistant(AssistantTurn { content, ..AssistantTurn::default() }));
+                    }
+                    if take_inbox(&mut next, &mut rounds, &mut deadline) {
+                        messages = next;
+                        continue;
+                    }
+                    break;
+                }
+            };
             speaker.flush().await;
             let names: HashSet<String> = offered.iter().map(|tool| tool.name.clone()).collect();
             let mut running: BoxFuture<'_, Vec<Ran>> = if toolbox.in_order {
@@ -716,12 +934,25 @@ impl DialogService {
                 }
                 _ => running.await,
             };
+            // Ready phrases (the works' «Делаю: …») are the answer: said as they are, no round to retell them.
+            if !outcomes.is_empty() && outcomes.iter().all(|outcome| outcome.spoken) {
+                for outcome in &outcomes {
+                    let from = speaker.kept.len();
+                    speaker.push(&outcome.result.content).await;
+                    speaker.flush().await;
+                    if let Some(kept) = &outcome.kept {
+                        speaker.keep_instead(from, kept);
+                    }
+                }
+                break;
+            }
             let tainted = outcomes.iter().any(|outcome| outcome.tainted);
             messages.push(LlmMessage::Assistant(turn));
             messages.push(LlmMessage::Tool(outcomes.into_iter().map(|outcome| outcome.result).collect()));
             if let (Some(filter), true) = (&toolbox.safe_after_taint, tainted) {
                 offered = filter(&offered);
             }
+            take_inbox(&mut messages, &mut rounds, &mut deadline);
         }
         speaker.flush().await;
         let source = context.facts.as_deref().filter(|facts| !facts.is_empty()).map(facts_source);
@@ -750,12 +981,15 @@ impl DialogService {
         let offer = (!offered.is_empty()).then_some(Offer { tools: offered, choice: ToolChoice::Auto, instructions });
         let mut text = String::new();
         let mut turn = None;
-        let request = self.request(&slot, &messages, &context, offer.as_ref());
+        let request = self.request(&slot, key, &messages, &context, offer.as_ref());
         let mut events = self.round(&slot, request, cancel, Until::Event);
         while let Some(event) = events.next().await {
             match event? {
                 LlmEvent::Text(delta) => text.push_str(&delta),
-                LlmEvent::Turn(done) => turn = Some(done),
+                LlmEvent::Turn(done) => {
+                    self.spent(key, &slot.model, &done);
+                    turn = Some(done)
+                }
                 LlmEvent::Tool(_) => {}
             }
         }
@@ -791,12 +1025,13 @@ impl DialogService {
     ) -> PhraseStream {
         let service = self.clone();
         generate(move |y| async move {
-            let request = service.request(&slot, &messages, &context, offer.as_ref());
+            let request = service.request(&slot, &key, &messages, &context, offer.as_ref());
             let mut speaker = Speaker::new(&y);
             let mut events = service.round(&slot, request, cancel, Until::Phrase);
             while let Some(event) = events.next().await {
                 match event {
                     Ok(LlmEvent::Text(text)) => speaker.push(&text).await,
+                    Ok(LlmEvent::Turn(done)) => service.spent(&key, &slot.model, &done),
                     Ok(_) => {}
                     Err(error) => return y.send(Err(error)).await,
                 }
@@ -811,6 +1046,7 @@ impl DialogService {
     fn request(
         &self,
         slot: &ModelSlot,
+        key: &str,
         messages: &[LlmMessage],
         context: &DialogContext,
         offer: Option<&Offer>,
@@ -830,9 +1066,16 @@ impl DialogService {
             .as_deref()
             .filter(|facts| !facts.is_empty())
             .map(|facts| format!("Данные для ответа (перескажи их коротко и по-человечески):\n{facts}"));
-        let tail: Vec<String> =
-            [Some(time_context(Utc::now(), context.timezone.as_deref())), facts].into_iter().flatten().collect();
         let own_system = context.system.as_deref().is_some_and(|system| !system.is_empty());
+        // What goes on now, for the device of this conversation: not for an instruction of its own (the workshop's).
+        let now = match (self.now.get(), device_of(key)) {
+            (Some(now), Some(device)) if !own_system => {
+                Some(now(device, crate::memory::text::lang_of(&prompt.text))).filter(|block| !block.is_empty())
+            }
+            _ => None,
+        };
+        let tail: Vec<String> =
+            [Some(time_context(Utc::now(), context.timezone.as_deref())), now, facts].into_iter().flatten().collect();
         let base = context.system.clone().filter(|system| !system.is_empty()).unwrap_or(prompt.text);
         let system = match offer.and_then(|offer| offer.instructions.as_deref()).filter(|text| !text.is_empty()) {
             Some(instructions) => format!("{base}\n\n{instructions}"),
@@ -865,6 +1108,7 @@ impl DialogService {
             tools,
             tool_choice,
             max_tokens: context.max_tokens,
+            cache_history: false,
         }
     }
 
@@ -1790,6 +2034,8 @@ mod tests {
             history: Mutex::new(DialogHistory::new(2, 60_000)),
             prompt_problem: Mutex::new(None),
             memory: std::sync::OnceLock::new(),
+            now: std::sync::OnceLock::new(),
+            usage: std::sync::OnceLock::new(),
         });
         (llm, primary, service)
     }
@@ -1851,6 +2097,8 @@ mod tests {
             history: Mutex::new(DialogHistory::new(2, 60_000)),
             prompt_problem: Mutex::new(None),
             memory: std::sync::OnceLock::new(),
+            now: std::sync::OnceLock::new(),
+            usage: std::sync::OnceLock::new(),
         });
         llm.calls(&[("get_news", json!({}))]);
         llm.reply("Ответ.");
@@ -1959,6 +2207,8 @@ mod tests {
             history: Mutex::new(DialogHistory::new(2, 60_000)),
             prompt_problem: Mutex::new(None),
             memory: std::sync::OnceLock::new(),
+            now: std::sync::OnceLock::new(),
+            usage: std::sync::OnceLock::new(),
         });
         (llm, service)
     }
@@ -1991,6 +2241,113 @@ mod tests {
             Some(LlmMessage::User(text)) => Some(text.as_str()),
             _ => None,
         }
+    }
+
+    /// docs/plans/audio-interface.md, «Вдогонку вместо отмены»: words added on the way reach the model at the next
+    /// round's border — after the tools' answers, and when the answer would end — and the rounds go on a little
+    /// longer, never past twice the toolbox's limits.
+    #[tokio::test]
+    async fn words_added_on_the_way_reach_the_model_between_its_rounds_and_keep_the_answer_going() {
+        let queue: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let script_queue = queue.clone();
+        let (llm, service) = scripted(Box::new(move |n, _| match n {
+            0 => vec![Ok(LlmEvent::Turn(AssistantTurn {
+                tool_calls: vec![ToolCall {
+                    id: "c1".into(),
+                    name: "write_file".into(),
+                    input: Map::new(),
+                    error: None,
+                }],
+                ..AssistantTurn::default()
+            }))],
+            1 => {
+                // The person adds more while the model says it is done.
+                script_queue.lock().unwrap().push("и цвет потемнее".into());
+                words("Готово.")
+            }
+            _ => words("Всё учла."),
+        }));
+        let tool_queue = queue.clone();
+        let mut toolbox = ToolBox::new(vec![tool("write_file")], move |_, _| {
+            tool_queue.lock().unwrap().push("и ещё кнопку".into());
+            async { Ok(ToolOutcome::from("Записано.")) }
+        });
+        toolbox.rounds = Some(1);
+        let inbox_queue = queue.clone();
+        toolbox.inbox = Some(Arc::new(move || {
+            let notes: Vec<String> = inbox_queue.lock().unwrap().drain(..).collect();
+            (!notes.is_empty()).then(|| format!("Вдогонку: {}", notes.join("; ")))
+        }));
+        let said = collect(service.answer(
+            "device-40",
+            "Сделай виджет",
+            DialogContext::default(),
+            CancellationToken::new(),
+            Some(toolbox),
+        ))
+        .await;
+        assert_eq!(said, vec!["Готово.", "Всё учла."]);
+        let requests = llm.requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 3, "one round more than the toolbox's one, for the words that came");
+        assert_eq!(last_user(&requests[1]), Some("Вдогонку: и ещё кнопку"), "after the tool's answer");
+        let messages = &requests[2].messages;
+        assert_eq!(messages[messages.len() - 1], LlmMessage::User("Вдогонку: и цвет потемнее".into()));
+        assert!(
+            matches!(&messages[messages.len() - 2], LlmMessage::Assistant(turn) if turn.content == "Готово."),
+            "the words it ended with stay before the new ones"
+        );
+        assert_eq!(requests[1].tool_choice, ToolChoice::Auto, "the extra round may still call the tools");
+    }
+
+    /// A tool's ready phrase (the talk's works) is the answer: said as it is, no second round to retell it. The
+    /// history keeps the fact behind it, not the phrase: a phrase of ours there is a pattern the model said without
+    /// doing anything (live 14.11, «Делаю новый виджет: курс доллара…» with no call).
+    #[tokio::test]
+    async fn a_ready_phrase_of_a_tool_is_said_as_it_is_ends_the_answer_and_the_history_keeps_its_fact() {
+        let (llm, service) = scripted(Box::new(|n, _| match n {
+            0 => vec![Ok(LlmEvent::Turn(AssistantTurn {
+                tool_calls: vec![ToolCall {
+                    id: "c1".into(),
+                    name: "work_start".into(),
+                    input: Map::new(),
+                    error: None,
+                }],
+                ..AssistantTurn::default()
+            }))],
+            _ => words("Делается."),
+        }));
+        let fact = "(В работе [р1]: виджет «Испанские слова дня» — 1 с, думаю.)";
+        let toolbox = ToolBox::new(vec![tool("work_start")], move |_, _| async move {
+            Ok(ToolOutcome {
+                kept: Some(fact.to_string()),
+                ..ToolOutcome::spoken("Делаю: испанские слова дня. Около минуты. Можно добавлять.")
+            })
+        });
+        let said = collect(service.answer(
+            "device-41",
+            "Хочу виджет",
+            DialogContext::default(),
+            CancellationToken::new(),
+            Some(toolbox),
+        ))
+        .await;
+        assert_eq!(said, vec!["Делаю: испанские слова дня.", "Около минуты. Можно добавлять."]);
+        assert_eq!(llm.requests.lock().unwrap().len(), 1);
+
+        collect(service.answer("device-41", "Как там?", DialogContext::default(), CancellationToken::new(), None))
+            .await;
+        let requests = llm.requests.lock().unwrap();
+        let messages = &requests[1].messages;
+        assert!(
+            messages.iter().any(|message| matches!(message, LlmMessage::Assistant(turn) if turn.content == fact)),
+            "the history keeps the fact: {messages:?}"
+        );
+        assert!(
+            !messages
+                .iter()
+                .any(|message| matches!(message, LlmMessage::Assistant(turn) if turn.content.contains("Около минуты"))),
+            "and not the phrase"
+        );
     }
 
     #[tokio::test]

@@ -76,7 +76,15 @@ impl Connector for MemoryConnector {
 }
 
 fn contribution(tool: LlmTool, read_only: bool, run: ToolRun) -> ToolContribution {
-    ToolContribution { tool, permission: use_of(CapabilityName::Memory), run, read_only, outside: false }
+    ToolContribution {
+        tool,
+        permission: use_of(CapabilityName::Memory),
+        run,
+        read_only,
+        outside: false,
+        spoken: false,
+        kept: None,
+    }
 }
 
 fn object(properties: Value, required: &[&str]) -> Value {
@@ -232,6 +240,7 @@ mod tests {
             principal: household_principal(Role::Member, None),
             cancel: CancellationToken::new(),
             station: None,
+            origin: None,
         }
     }
 

@@ -65,6 +65,8 @@ pub const RELAYED: &[&str] = &[
     "workshop.changed",
     // An app's long task moved (src/tasks): its window and the panel read its tasks again.
     "tasks.changed",
+    // A work of the talk changed (src/talk): the panel reads the works again, the computer says «Готово».
+    "work.changed",
     "connector.changed",
     "station.updated",
     "station.pending",
@@ -159,6 +161,8 @@ fn subject_of(event: &GatewayEvent) -> (Option<String>, Option<String>) {
         GatewayEvent::PackageDataChanged { package } => (Some(package.clone()), None),
         // A draft and what happened to it (docs/plans/voice-creation.md): `made`, `ready`, `parked`, `open:fitting`…
         GatewayEvent::WorkshopChanged { draft, change } => (Some(draft.clone()), Some(change.clone())),
+        // Which work changed and how (src/talk): `started`, `ready`, `decided`…
+        GatewayEvent::WorkChanged { work, change, .. } => (Some(work.clone()), Some(change.clone())),
         // Whose task moved and how (src/tasks): `started`, `progress`, `done`…
         GatewayEvent::TasksChanged { app, change, .. } => (Some(app.clone()), Some(change.clone())),
         // Whose links changed and how; who asks; who told which news (src/bus).
@@ -377,7 +381,7 @@ impl LiveHub {
             GatewayEvent::RequestUpdated { request } => {
                 let bare = without_words(request);
                 deliver(&mut listeners, &|listener| LiveMessage::Request {
-                    request: Box::new(if listener.words { request.clone() } else { bare.clone() }),
+                    request: if listener.words { request.clone() } else { Box::new(bare.clone()) },
                 });
             }
             GatewayEvent::StationPresenceChanged { presence } => {
@@ -589,7 +593,7 @@ mod tests {
         assert_eq!(active[0].steps, request.steps);
 
         let answered = RequestView { answer: Some("Звоню маме.".into()), ..request.clone() };
-        events.emit(GatewayEvent::RequestUpdated { request: answered.clone() });
+        events.emit(GatewayEvent::RequestUpdated { request: Box::new(answered.clone()) });
         events.emit(GatewayEvent::ModeChanged { from: "gateway".into(), to: "relay".into(), actor: None, auto: None });
         events.emit(GatewayEvent::AuthLogin { user_id: "u1".into(), name: "Мама".into(), source: "panel".into() });
         tick().await;

@@ -12,6 +12,50 @@ import { ask } from '../ui/confirm';
 import { byMode } from '../words';
 import { formatNumber, tr } from '../i18n';
 
+/**
+ * «Что сейчас знает Мозг» (docs/plans/audio-interface.md, «Блок «Сейчас»»): тот же текст, что модель получает в каждом
+ * запросе на этом компьютере, — работы, что ждёт ответа, что недавно, что на столе. Пусто — ничего не происходит.
+ */
+function NowKnown() {
+    const [text, setText] = useState<string | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const read = () =>
+        api
+            .talkNow()
+            .then((now) => {
+                setText(now.text);
+                setError(null);
+            })
+            .catch((e) => setError(problemOf(e)));
+    useEffect(() => {
+        void read();
+        const timer = window.setInterval(() => void read(), 15_000);
+        return () => window.clearInterval(timer);
+    }, []);
+    return (
+        <section class="card glass card-list" aria-label={tr.brain.nowTitle}>
+            <div class="section-head flex items-center justify-between min-h-44 gap-8 flex-wrap">
+                <h2 class="t-title-xs m-0">{tr.brain.nowTitle}</h2>
+                <Action label={tr.brain.nowRefresh} onClick={() => void read()} />
+            </div>
+            {error ? (
+                <p class="t-caption m-0 c-dot-offline" role="alert">
+                    {error}
+                </p>
+            ) : text === null ? (
+                <p class="t-caption m-0">{tr.brain.nowReading}</p>
+            ) : text ? (
+                <pre class="t-caption m-0" style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>
+                    {text}
+                </pre>
+            ) : (
+                <p class="t-caption m-0">{tr.brain.nowEmpty}</p>
+            )}
+            <p class="t-caption m-0 mt-8">{tr.brain.nowAbout}</p>
+        </section>
+    );
+}
+
 /** Глубина мышления Claude: три понятных ступени из пяти уровней effort. */
 const efforts = (): Array<{ id: LlmEffort; name: string; sub: string }> => [
     { id: 'low', name: tr.brain.effortLowName, sub: tr.brain.effortLowSub },
@@ -321,6 +365,8 @@ export function BrainTab() {
                 )}
                 {!mayChoose && <p class="t-caption m-0 mt-8">{tr.brain.adminChooses}</p>}
             </section>
+
+            {can('station.view') && <NowKnown />}
 
             <section class="card glass card-list" aria-label={tr.brain.providersLabel}>
                 <div class="flex items-center justify-between min-h-44 gap-8">

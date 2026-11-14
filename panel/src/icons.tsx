@@ -440,3 +440,23 @@ export const IconDoor = ({ size = 20 }: IconProps) =>
         <path d="M3.5 20.5h17" />
         <path d="M14.5 12h.01" />
     </>);
+
+/** Во весь экран (просмотрщик пульта). */
+export const IconExpand = ({ size = 20 }: IconProps) =>
+    svg(size, <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />);
+
+/** Скачать. */
+export const IconDownload = ({ size = 20 }: IconProps) =>
+    svg(size, <>
+        <path d="M12 4v11" />
+        <path d="m7 10 5 5 5-5" />
+        <path d="M5 20h14" />
+    </>);
+
+/** Поделиться (просмотрщик пульта). */
+export const IconShare = ({ size = 20 }: IconProps) =>
+    svg(size, <>
+        <path d="M12 15V3" />
+        <path d="m7 8 5-5 5 5" />
+        <path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7" />
+    </>);

@@ -189,15 +189,31 @@ export function liveHeaders(): Record<string, string> {
     return { Accept: 'application/json', ...authHeaders() };
 }
 
+/** Запись своим голосом из окна приложения — в его папку (этап 5 плана «Ленты»): имя файла и длина. */
+export async function uploadAppRecording(id: string, wav: Blob): Promise<{ file: string; seconds: number }> {
+    const response = await fetch(gw(`/api/v1/packages/${encodeURIComponent(id)}/recordings`), {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'audio/wav', ...authHeaders() },
+        body: wav,
+    });
+    if (!response.ok) throw new ApiError(response.status, await response.text().catch(() => ''));
+    return ((await response.json()) as { message: { file: string; seconds: number } }).message;
+}
+
+/** Запись своим голосом с любого экрана пульта — в папку дома (`files/…`), от лица вошедшего: где он может класть. */
+export async function uploadFolderRecording(folder: string, wav: Blob): Promise<{ file: string; seconds: number }> {
+    const response = await fetch(gw(`/api/v1/recordings?${new URLSearchParams({ folder })}`), {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'audio/wav', ...authHeaders() },
+        body: wav,
+    });
+    if (!response.ok) throw new ApiError(response.status, await response.text().catch(() => ''));
+    return ((await response.json()) as { message: { file: string; seconds: number } }).message;
+}
+
 /** Картинка плагина (plugins/files.rs) с ключом входа — для `useFile` в SDK пульта: `<img src>` ключа не передаёт. */
 export async function fetchPluginFile(id: string, name: string): Promise<Blob> {
     return fetchAudio(`/api/v1/packages/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`);
-}
-
-/** Картинка из папки дома, уменьшенная (docs/plans/shared-folders.md): для самого пульта — от лица вошедшего. */
-export async function fetchFolderPreview(address: string, size = 640): Promise<Blob> {
-    const query = new URLSearchParams({ address, size: String(size) });
-    return fetchAudio(`/api/v1/folders/preview?${query}`);
 }
 
 /** Картинка из папки дома для карточки или окошка приложения: от его лица и за того, кто смотрит. */
@@ -728,8 +744,72 @@ export type TalkEvent =
     | { type: 'start'; request: string; by: 'home' | 'cloud' }
     | { type: 'phrase'; text: string }
     | { type: 'tool'; name: string }
-    | { type: 'done'; said: string; by: 'home' | 'cloud'; ms: number }
+    | { type: 'done'; said: string; by: 'home' | 'cloud'; ms: number; work?: string }
     | { type: 'error'; message: string };
+
+/**
+ * Откуда фраза (gateway/src/talk/origin.rs): чем открыта — слово-активатор, кнопка, ответ на вопрос, набранный текст —
+ * какое слово, кому сказана, кто сказал, где, голосом или текстом.
+ */
+export interface TalkOrigin {
+    activator: 'word' | 'button' | 'answer' | 'text';
+    name?: string;
+    character?: string;
+    who?: string;
+    device: string;
+    via: 'voice' | 'text';
+}
+
+/** Что модель потратила на запрос: все круги ответа вместе. */
+export interface RequestTokens {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    rounds: number;
+    model: string;
+}
+
+/** Состояние работы (gateway/src/talk/works.rs). */
+/** `queued` — ждёт очереди (лимит: две сразу, новая голосом раз в две минуты) и начнётся сама. */
+export type WorkState = 'queued' | 'working' | 'ready' | 'unfinished' | 'failed' | 'stopped' | 'interrupted' | 'done';
+
+/** Сказанное работе по ходу («вдогонку»): когда агент его прочёл — галочка на плитке. */
+export interface WorkNote {
+    text: string;
+    at: number;
+    origin: TalkOrigin;
+    readAt?: number;
+}
+
+/**
+ * Работа разговора (docs/plans/audio-interface.md, «Запись работы»): от заявки до результата — всё желание, что добавили
+ * по ходу, чем кончилось, вопрос, которого ждёт, где просили.
+ */
+export interface WorkView {
+    id: string;
+    kind: string;
+    face?: DraftFace;
+    executor: string;
+    /** Своё имя вещи у исполнителя: черновик мастерской. */
+    target?: string;
+    title: string;
+    state: WorkState;
+    brief: string;
+    /** Новая версия вещи, а не новая вещь. */
+    again: boolean;
+    notes: WorkNote[];
+    /** Строка итога шлюза и что стало с вещью. */
+    result?: { line: string; end?: 'desk' | 'fitting' | 'parked' | 'declined' };
+    question?: { text: string; until: number; kind?: 'ready' | 'unfinished' | 'apply' | 'delete' };
+    origin: TalkOrigin;
+    /** Когда итог прозвучал до конца; нет — ещё не сказан. */
+    saidAt?: number;
+    tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; rounds: number };
+    startedAt: number;
+    updatedAt: number;
+    endedAt?: number;
+}
 
 /** Фраза в разговор: чем она открыта, где её распознали, скажет ли компьютер ответ вслух. */
 export interface TalkTurn {
@@ -849,6 +929,10 @@ export interface RequestView {
     steps: RequestStep[];
     error?: string;
     parent?: string;
+    /** Что потратила модель (шлюз постарше не присылает). */
+    tokens?: RequestTokens;
+    /** Откуда фраза: чем открыта, кто, где. */
+    origin?: TalkOrigin;
 }
 
 /** Как колонку слышно: голосовой канал, её собственные клиенты (микрофон, звонки) или никак. */
@@ -1195,7 +1279,7 @@ export type PackageKind = 'plugin' | 'app' | 'character' | 'theme';
 /** Пакет, который стоит на шлюзе (GET /api/v1/packages), любого вида. */
 export interface PackageView {
     /** Движок: людям пульт пишет не вид, а где работает — в шлюзе (js, wasm), на компьютере (process), в сети (mcp). */
-    runtime?: 'js' | 'wasm' | 'mcp' | 'process' | null;
+    runtime?: 'js' | 'wasm' | 'mcp' | 'process' | 'node' | null;
     kind?: PackageKind | null;
     id: string;
     title: string;
@@ -1251,6 +1335,8 @@ export interface PackageView {
     memory?: { allocated: number; used: number; limit: number } | null;
     /** Его хранилище kv, байты. */
     storageUsed?: number;
+    /** Обязательные личные настройки, которые ещё не вписаны (ключ): плитка — «ждёт ключ». */
+    waits?: string[];
 }
 
 /** Вид пакета по тому, откуда он: системный, встроенный (в сборке шлюза), свой, из каталога. Ставит шлюз. */
@@ -1266,6 +1352,8 @@ export interface PanelPart {
     settings?: Record<string, unknown>;
     /** Карточки приложения (`contributes.panel.cards`): данные от его функции, рисует пульт (src/cards). */
     cards?: CardSpec[];
+    /** Не вписанный обязательный ключ: плитки приложения — «ждёт ключ». */
+    waits?: string[];
 }
 
 /** Карточка приложения в манифесте: какую функцию звать за данными, как называется, какого размера. */
@@ -1326,12 +1414,45 @@ export interface FolderOffer {
     at: string;
 }
 
+/**
+ * Ключ движка показа к одному файлу (gateway/media, «Один движок показа» в docs/plans/feed.md): адрес для `<img>`,
+ * `<video>`, `<audio>` без ключа входа, что это за файл и сколько длится. Нет ключа — `error` словами.
+ */
+export interface MediaLink {
+    /** Адрес шины: `files/home/Photos/кот.jpg`. */
+    address: string;
+    /** Имя в папке, когда спрашивали страницу папки. */
+    name?: string;
+    /** `/media/v/<ключ>` на шлюзе: `?size=<px>` — фото меньше или кадр видео. */
+    url?: string;
+    key?: string;
+    kind?: 'image' | 'video' | 'audio';
+    mime?: string;
+    /** Браузеры показывают его как есть; HEIC и TIFF — только уменьшенными. */
+    shown?: boolean;
+    title?: string;
+    size?: number;
+    /** Секунды — когда спрашивали `probe` и заголовок файла их знает. */
+    duration?: number;
+    expiresInS?: number;
+    error?: string;
+}
+
+/** Что спросить у движка показа: файлы по адресам — или страницу одной папки по именам, одним письмом шины. */
+export interface MediaLinksAsk {
+    app?: string;
+    addresses?: string[];
+    folder?: string;
+    names?: string[];
+    probe?: boolean;
+}
+
 /** Окно на экране компьютера (gateway/src/screen): фото, видео или звук, временное или оставленное. */
 export interface ScreenWindow {
     id: string;
     title: string;
     kind: 'image' | 'video' | 'audio';
-    /** Ссылка шлюза: /media/folder/<token>. */
+    /** Ссылка шлюза: /media/v/<ключ> (один движок показа). */
     url: string;
     from?: string;
     kept: boolean;
@@ -1483,14 +1604,14 @@ export interface BusJournalLine {
 
 /** Черновик мастерской (DATA_DIR/packages-dev/<id>). */
 /** Шаг работы агента мастерской (gateway/src/plugins/workshop/activity.rs; docs/plans/desk.md, «Делаю виджет»). */
-export type AgentStepKind = 'asked' | 'said' | 'tool' | 'result' | 'done' | 'failed' | 'stopped';
+export type AgentStepKind = 'asked' | 'added' | 'said' | 'tool' | 'result' | 'done' | 'failed' | 'stopped';
 
 export interface AgentStep {
     /** Растёт по всем черновикам: `after` в чтении отдаёт только новее. */
     seq: number;
     /** Мс от эпохи. */
     at: number;
-    /** asked — что попросили (с него начинается работа), said — что сказал агент, tool — вызов (о чём он: файл, фраза), result — его ответ; done/failed/stopped — конец. */
+    /** asked — что попросили (с него начинается работа), added — что добавили по ходу («вдогонку»), said — что сказал агент, tool — вызов (о чём он: файл, фраза), result — его ответ; done/failed/stopped — конец. */
     kind: AgentStepKind;
     text: string;
     /** У tool и result — имя инструмента: write_file, read_file, check, try_phrase… */
@@ -1498,6 +1619,47 @@ export interface AgentStep {
     /** У result — seq его вызова (шага tool): вызовы одного хода идут разом, и ответ находит свой вызов по нему. */
     call?: number;
     failed?: boolean;
+}
+
+/** Куда можно отправить файл (capabilities/publish.rs): шлюз отправит сам (`direct`) или откроется страница площадки (`manual`). */
+export interface PublisherCard {
+    id: string;
+    title: string;
+    kind: 'direct' | 'manual';
+    /** `video`, `image`, `text`. */
+    accepts: string[];
+    ready: boolean;
+    needs?: string;
+    /** `any` — везде, `pc` — только шлюз на компьютере. */
+    runs: string;
+    /** Чьи файлы берёт: `any` или `apps` — только ролики приложений (страница «смотри и выбирай»). */
+    from: 'any' | 'apps';
+    url?: string;
+    about: string;
+}
+
+/** Поставщик голосов (capabilities/voices.rs): компьютер или облако. Ключа в ответе нет — только «задан · …a1b2». */
+export interface VoiceProviderCard {
+    id: string;
+    title: string;
+    ready: boolean;
+    needs?: string;
+    /** Текст уходит из дома к поставщику. */
+    cloud: boolean;
+    /** Тратит тариф владельца. */
+    paid: boolean;
+    /** Сам даёт время слов. */
+    words: boolean;
+    key?: { set: boolean; hint?: string };
+    about: string;
+    problem?: string;
+}
+
+/** Проверка поставщика голосов: сколько голосов даёт ключ и что осталось на тарифе. */
+export interface VoiceProviderCheck {
+    voices: number;
+    balance?: { used?: number; limit?: number; tier?: string; unit?: string } | null;
+    problem?: string | null;
 }
 
 /**
@@ -1554,6 +1716,8 @@ export interface AgentJob {
     busy: boolean;
     ended?: number;
     last?: AgentStep;
+    /** Сказанное по ходу этого запуска и когда агент его прочёл. */
+    notes?: Array<{ text: string; at: number; read?: number }>;
 }
 
 /** Стол человека, как его хранит шлюз. */
@@ -1587,8 +1751,11 @@ export interface DraftView {
 /** Лицо черновика для людей: виджет на столе, навык (фразы колонке), игра, тема. */
 export type DraftFace = 'widget' | 'skill' | 'game' | 'theme';
 
-/** Где черновик: агент работает → на примерке → на столе | в черновиках; или не вышло, или остановлен. */
-export type DraftStage = 'working' | 'ready' | 'installed' | 'parked' | 'failed' | 'stopped';
+/**
+ * Где черновик: агент работает → на примерке → на столе | в черновиках; или не вышло, или остановлен; не доделано (проверка
+ * шлюза не прошла или запуск упёрся в предел); прервано (шлюз перезапустился, пока агент работал).
+ */
+export type DraftStage = 'working' | 'ready' | 'installed' | 'parked' | 'failed' | 'stopped' | 'unfinished' | 'interrupted';
 
 /** Карточка черновика: её держит шлюз (packages-dev/.meta/<id>.json); у старых черновиков — прочитанная из того, что известно. */
 export interface DraftMeta {
@@ -1605,6 +1772,10 @@ export interface DraftMeta {
     note?: string | null;
     /** false — карточку прочли из того, что известно (черновик старше карточек). */
     kept: boolean;
+    /** Работа разговора, которой этот запуск принадлежит. */
+    work?: string | null;
+    /** Последний запуск ничего не поменял (`unfinished`): «ничего не поменялось», а не «готово». */
+    unchanged?: boolean;
 }
 
 /** Что начал `make`: черновик, его лицо и название на сейчас (агент может переименовать). */
@@ -1612,6 +1783,8 @@ export interface MadeDraft {
     draft: string;
     kind: DraftFace;
     title: string;
+    /** Агент уже работал над черновиком: слова ушли в эту работу («вдогонку»), нового запуска нет. */
+    noted?: boolean;
 }
 
 /** Как запустить черновик в песочнице: на примере (без сети) и с обычными настройками поверх значений по умолчанию. */
@@ -2022,6 +2195,11 @@ export interface CatalogEntry {
     source?: string | null;
     /** Пакет из своего источника, который добавили здесь по ссылке (шлюз 0.6 и новее). */
     own?: boolean;
+    /** Движок кода (js, wasm, mcp, process, node) и права пакета — из ленты, до установки. */
+    runtime?: string | null;
+    permissions?: string[];
+    /** Код из главной ленты, подписанной ключом каталога: «Подписано DuoWave». */
+    signed?: boolean;
 }
 
 /** Дополнительная лента каталога — её называет главная: чья, как называется, на связи ли. */
@@ -2947,8 +3125,27 @@ export const api = {
         post<{ result: T }>(`/api/v1/packages/${encodeURIComponent(id)}/call/${encodeURIComponent(fn)}`, input).then((answer) => answer.result),
     // Долгие задачи приложений (gateway/src/tasks): ход и отмена — тому, кто пользуется приложениями.
     tasks: (app?: string) => get<{ tasks: AppTask[] }>(`/api/v1/tasks${app ? `?app=${encodeURIComponent(app)}` : ''}`),
+    /** Куда можно отправить файл (capabilities/publish.rs): отправители шлюза и страницы загрузки площадок. */
+    publishers: () => get<{ publishers: PublisherCard[] }>('/api/v1/publishers'),
+    /** Поставщики голосов приложений (capabilities/voices.rs); ключ вставляет человек с правом подключений. */
+    voiceProviders: () => get<{ providers: VoiceProviderCard[] }>('/api/v1/voice/providers'),
+    setVoiceKey: (id: string, key: string) =>
+        put<{ provider: VoiceProviderCard }>(`/api/v1/voice/providers/${encodeURIComponent(id)}/key`, { key }),
+    removeVoiceKey: (id: string) => del<void>(`/api/v1/voice/providers/${encodeURIComponent(id)}/key`),
+    checkVoiceProvider: (id: string) => post<VoiceProviderCheck>(`/api/v1/voice/providers/${encodeURIComponent(id)}/check`),
     task: (id: string) => get<AppTaskLog>(`/api/v1/tasks/${encodeURIComponent(id)}`),
     cancelTask: (id: string) => post<AppTask>(`/api/v1/tasks/${encodeURIComponent(id)}/cancel`),
+    /**
+     * Что человек отправил сам и куда (меню телефона, скачал, страница площадки) — в журнал отправителя: приложения
+     * или шины от его имени. «Видео» — копия файла приложения в папку дома.
+     */
+    shared: (note: { app?: string; where: string; file?: string }) =>
+        post<{ where: string; saved: string | null }>('/api/v1/publishers/shared', note),
+    /** Отправить отправителем шлюза (Telegram ботом): файл приложения или папки дома (`files/…`); нажатие человека — его «да». */
+    publishSend: (id: string, what: { app?: string; file: string; input?: Record<string, unknown> }) =>
+        post<Record<string, unknown>>(`/api/v1/publishers/${encodeURIComponent(id)}/send`, what),
+    /** Ключи движка показа к файлам (gateway/media): для себя или за приложение (`app`) — его окно, его карточка. */
+    mediaLinks: (ask: MediaLinksAsk) => post<{ links: MediaLink[] }>('/api/v1/media/links', ask),
     // Шина «Связи»: связи, режимы, вопросы «да», журнал (docs/plans/bus.md). Менять — администратору дома.
     bus: () => get<BusOverview>('/api/v1/bus'),
     busQuestions: () => get<{ questions: BusQuestion[] }>('/api/v1/bus/questions'),
@@ -3003,6 +3200,18 @@ export const api = {
     stopDraftAgent: (id: string) => post<{ stopped: boolean }>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/stop`),
     /** «Сделай…» — одна дорога с колонкой: черновик своего лица, карточка, агент в фоне. Не просьба «сделай…» — 422; `draft` — переделать его. */
     makeDraft: (words: string, draft?: string) => post<MadeDraft>('/api/v1/workshop/make', { words, draft }),
+    /** Работы разговора (docs/plans/audio-interface.md): устройства (`computer` — этот компьютер), новые первыми. */
+    works: (device?: string) => get<WorkView[]>(`/api/v1/works${device ? `?device=${encodeURIComponent(device)}` : ''}`),
+    work: (id: string) => get<WorkView>(`/api/v1/works/${encodeURIComponent(id)}`),
+    /** Компьютер договорил строку итога работы: открывается её вопрос — пульт слушает ответ. */
+    workSaid: (id: string) => post<WorkView>(`/api/v1/works/${encodeURIComponent(id)}/said`),
+    /** Слова работе вдогонку (или новая версия готовой вещи): что сказать в ответ. */
+    workNotes: (id: string, text: string) => post<{ said: string }>(`/api/v1/works/${encodeURIComponent(id)}/notes`, { text }),
+    /** Действие с работой: как идёт, подробнее, примерить, на стол, в черновики, остановить. */
+    workDo: (id: string, action: 'status' | 'details' | 'show' | 'desk' | 'park' | 'stop') =>
+        post<{ said: string }>(`/api/v1/works/${encodeURIComponent(id)}/do`, { action }),
+    /** Что сейчас знает «Мозг» на устройстве (блок «Сейчас»): пусто, когда ничего не происходит. */
+    talkNow: (device?: string) => get<{ device: string; text: string }>(`/api/v1/talk/now${device ? `?device=${encodeURIComponent(device)}` : ''}`),
     /** «В черновики»: черновик уходит со стола и ждёт в мастерской. */
     parkDraft: (id: string) => post<DraftView>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/park`),
     /** Стол человека на шлюзе для роли пульта (gateway/src/panel/desk.rs); `layout: null` — пульт раскладывает стартовый. */

@@ -129,6 +129,8 @@ pub struct SessionDeps {
     /// What gives the station back to Yandex for the emergency words (rescue.rs): the station's own gateway changes
     /// its files, a computer's goes over SSH. None: the words are answered with where to do it instead.
     pub rescue: Option<Arc<dyn super::rescue::StationRescue>>,
+    /// The talk's layer (src/talk): its reader reads a phrase about the works before the model answers it.
+    pub talk: Option<Arc<crate::talk::TalkLayer>>,
 }
 
 /// The station's model and firmware, as the debug API shows them.
@@ -2078,6 +2080,11 @@ impl StationSession {
         }
         let router = self.deps.skills.router.clone();
         let input = self.route_input(inner, text, request);
+        // Where the phrase came from: this station, by its wake word or as the answer to its question.
+        if let Some(trip) = inner.trip(r#ref) {
+            let who = input.principal.as_ref().map(|principal| principal.name.clone());
+            trip.set_origin(crate::talk::Origin::station(&self.device_tag, input.wake_word).by(who));
+        }
         // Right after connecting a request can come before our session with Yandex is up (live 02.11: «Кто сейчас
         // играет?» 80 ms early got «Этого я пока не умею»): what Yandex would take waits for the opening session.
         if let (false, Some(yandex), false) = (waited, inner.yandex.clone(), input.yandex_available) {
@@ -2136,6 +2143,10 @@ impl StationSession {
                 );
                 if let Some(trip) = inner.trip(r#ref) {
                     trip.routed(if command { None } else { Some("chat") }, "model");
+                }
+                // A phrase about the works is read first: the layer does and says it (src/talk/reader.rs).
+                if let Some(reader) = self.reader_for(text) {
+                    return self.read_first(inner, r#ref, request, text, profile, command, reader);
                 }
                 if command {
                     return self.command_by_model(inner, r#ref, request, text, profile);
@@ -2363,7 +2374,7 @@ impl StationSession {
         outcome: Outcome,
         on_data: Option<Box<dyn FnOnce(String) -> PhraseStream + Send>>,
     ) -> PhraseStream {
-        let Outcome { speech, phrases, directives, listen, data, continuation, record_audio, done, on_spoken } =
+        let Outcome { speech, phrases, directives, listen, data, continuation, record_audio, done, kept, on_spoken } =
             outcome;
         if let Some(on_spoken) = on_spoken {
             answer.after_spoken(on_spoken);
@@ -2409,16 +2420,85 @@ impl StationSession {
                 facts: Some(data.clone()),
                 system: None,
                 model: None,
-                max_tokens: None,
+                // A spoken answer: a few sentences (docs/plans/audio-interface.md, decision 14).
+                max_tokens: Some(crate::dialog::SPEECH_MAX_TOKENS),
                 ..DialogContext::default()
             };
             return self.deps.dialog.answer(&self.device_tag, text, context, answer.token(), None);
         }
         if let Some(speech) = speech {
-            self.deps.dialog.remember(&self.device_tag, text, &speech, AnsweredBy::Skill, done.as_deref());
+            let remembered = kept.as_deref().unwrap_or(&speech);
+            self.deps.dialog.remember(&self.device_tag, text, remembered, AnsweredBy::Skill, done.as_deref());
             return phrase_stream(split_phrases(&speech));
         }
         futures::stream::empty().boxed()
+    }
+
+    /// The talk's reader, when this phrase is about the works (src/talk/reader.rs).
+    fn reader_for(&self, text: &str) -> Option<Arc<crate::talk::reader::Reader>> {
+        let reader = self.deps.talk.as_ref()?.reader()?;
+        reader.wants(&self.device_tag, text).then_some(reader)
+    }
+
+    /// A phrase about the works: the reader reads it and the layer does and says it; read as conversation, it goes on
+    /// as it would have — a command's choice or the conversation, in the same answer (the jingle already playing).
+    #[allow(clippy::too_many_arguments)]
+    fn read_first(
+        self: &Arc<Self>,
+        inner: &mut Inner,
+        r#ref: &str,
+        request: &AliceRequest,
+        text: &str,
+        profile: ModelProfile,
+        command: bool,
+        reader: Arc<crate::talk::reader::Reader>,
+    ) {
+        let brain = self.brain_of(Some(profile));
+        if let Some(trip) = inner.trip(r#ref) {
+            trip.step(RequestPhase::Think, Some(brain.by), Some(&brain.what));
+        }
+        let mut options = self.answer_options(inner, r#ref, request);
+        options.early = self.deps.dialog.config.early_response;
+        let answer = self.start_answer(inner, options);
+        let context = DialogContext {
+            timezone: self.timezone(inner, request),
+            profile: Some(profile),
+            // A spoken answer: a few sentences (docs/plans/audio-interface.md, decision 14).
+            max_tokens: Some(crate::dialog::SPEECH_MAX_TOKENS),
+            ..DialogContext::default()
+        };
+        let origin =
+            crate::talk::Origin::station(&self.device_tag, request.activation_type.as_deref() == Some("spotter"))
+                .by(Some(self.speaker(text).name.clone()));
+        let session = self.clone();
+        let reading = answer.clone();
+        let question = text.to_string();
+        let (r#ref, request, text) = (r#ref.to_string(), request.clone(), text.to_string());
+        let phrases = generate(move |y| async move {
+            let read = reader.read(&session.device_tag, origin, &text, context.clone(), reading.token()).await;
+            if let Some(read) = read {
+                if read.listen {
+                    let _ = reading.set_listen(ListenMode::Always);
+                }
+                for phrase in split_phrases(&read.said) {
+                    y.send(Ok(phrase)).await;
+                }
+                return;
+            }
+            let mut phrases = if command {
+                let inner = session.lock();
+                session.model_command(&inner, &reading, &r#ref, &request, &text, profile)
+            } else {
+                session.deps.skills.stats.count(CapabilityName::Chat, Executor::Own);
+                let toolbox = session.lookup_toolbox(&r#ref, &request, &text, &reading, profile, None);
+                session.deps.dialog.answer(&session.device_tag, &text, context, reading.token(), toolbox)
+            };
+            while let Some(phrase) = phrases.next().await {
+                y.send(phrase).await;
+            }
+        });
+        let parts = self.with_errors(&answer, phrases);
+        self.spawn_answer(answer, parts, question);
     }
 
     /// A command the quick rules do not know: the model picks a tool before anything is said.
@@ -2456,7 +2536,8 @@ impl StationSession {
             facts: None,
             system: None,
             model: None,
-            max_tokens: None,
+            // A spoken answer: a few sentences (docs/plans/audio-interface.md, decision 14).
+            max_tokens: Some(crate::dialog::SPEECH_MAX_TOKENS),
             ..DialogContext::default()
         };
         let session = self.clone();
@@ -2601,7 +2682,8 @@ impl StationSession {
             facts: None,
             system: None,
             model: None,
-            max_tokens: None,
+            // A spoken answer: a few sentences (docs/plans/audio-interface.md, decision 14).
+            max_tokens: Some(crate::dialog::SPEECH_MAX_TOKENS),
             ..DialogContext::default()
         };
         let toolbox = self.lookup_toolbox(r#ref, request, text, &answer, profile, None);
@@ -2639,6 +2721,10 @@ impl StationSession {
         if let Some(contributed) = &contributed {
             tools.extend(contributed.tools.iter().cloned());
         }
+        // Where the phrase came from: this station, by its wake word or as the answer to its question.
+        let origin =
+            crate::talk::Origin::station(&self.device_tag, request.activation_type.as_deref() == Some("spotter"))
+                .by(Some(principal.name.clone()));
         let session = self.clone();
         let (r#ref, request, text) = (r#ref.to_string(), request.clone(), text.to_string());
         let (tool_answer, tool_mcp, tool_contributed) = (answer.clone(), mcp.clone(), contributed.clone());
@@ -2646,17 +2732,19 @@ impl StationSession {
             let session = session.clone();
             let (r#ref, request, text) = (r#ref.clone(), request.clone(), text.clone());
             let (answer, mcp, principal) = (tool_answer.clone(), tool_mcp.clone(), principal.clone());
-            let contributed = tool_contributed.clone();
+            let (contributed, origin) = (tool_contributed.clone(), origin.clone());
             async move {
                 if let Some(offer) = contributed.filter(|offer| offer.owns(&call.name)) {
                     return Ok(session
-                        .run_contributed(&r#ref, &answer, profile, &offer, &principal, &call, cancel)
+                        .run_contributed(&r#ref, &answer, profile, &offer, &principal, &call, cancel, origin)
                         .await);
                 }
                 session.run_tool(&r#ref, &request, &text, &answer, profile, mcp, &principal, call, cancel).await
             }
         });
         toolbox.filler = Some(LOOKUP_FILLER);
+        // A call cut by the spoken answer's limit (a long wish): the model tries again, shorter.
+        toolbox.cut_note = Some(crate::dialog::speech_cut_note);
         if let Some(mcp) = &mcp {
             toolbox.rounds = Some(3);
             toolbox.instructions = Some(mcp.instructions.clone());
@@ -2818,6 +2906,7 @@ impl StationSession {
         principal: &Principal,
         call: &ToolCall,
         cancel: CancellationToken,
+        origin: crate::talk::Origin,
     ) -> ToolOutcome {
         let trip = self.lock().trip(r#ref);
         if let Some(trip) = &trip {
@@ -2832,7 +2921,7 @@ impl StationSession {
                 add: Arc::new(move |directives| answer.add_directives(directives).is_ok()),
             }
         };
-        let outcome = offer.run_for(call, principal, cancel, Some(station)).await;
+        let outcome = offer.run_for(call, principal, cancel, Some(station), Some(origin)).await;
         let failed = if outcome.is_error { " failed" } else { "" };
         self.note("tool", &format!("{}{failed}", call.name), None);
         let brain = self.brain_of(Some(profile));
@@ -4069,6 +4158,18 @@ impl StationSession {
                 Some(own) => Arc::new(move |text: String, cancel: CancellationToken| {
                     let own = own.clone();
                     async move {
+                        // A phrase that begins with a ready one (src/speech/tts/phrase_cache.rs): its sound at once,
+                        // the rest synthesized after it, on the same stream.
+                        if let Some((head, rest)) = own.head(&text) {
+                            let first = futures::stream::once(async move { Ok::<Bytes, anyhow::Error>(head) });
+                            if rest.trim().is_empty() {
+                                return Ok(Synthesis { format: "audio/opus".into(), audio: first.boxed() });
+                            }
+                            let tail = futures::stream::once(async move {
+                                own.synthesize(&rest, &cancel).await.map(|spoken| spoken.audio)
+                            });
+                            return Ok(Synthesis { format: "audio/opus".into(), audio: first.chain(tail).boxed() });
+                        }
                         let spoken = own.synthesize(&text, &cancel).await?;
                         let audio = futures::stream::once(async move { Ok::<Bytes, anyhow::Error>(spoken.audio) });
                         Ok(Synthesis { format: spoken.format, audio: audio.boxed() })
@@ -4609,6 +4710,7 @@ mod tests {
             mcp: None,
             tools: None,
             rescue: None,
+            talk: None,
         });
         let handshake = Handshake { headers: HeaderMap::new(), remote_address: "192.168.1.50".into() };
         StationSession::new(&handshake, deps)

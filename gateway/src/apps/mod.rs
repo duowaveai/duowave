@@ -2,9 +2,11 @@
 //! `runtime: process` — a program of their own beside the gateway, for native code and other protocols (Spotify, AirPlay,
 //! DLNA). The plugin host switches one on as a plugin; its engine is the supervisor here (supervisor.rs), and its way to
 //! the Host API is HTTP on this machine with its own token (host_http.rs). In the station's build too: an app may run on
-//! the station when it fits its memory, or on the computer (`prefer: home`).
+//! the station when it fits its memory, or on the computer (`prefer: home`). An app of `runtime: node` is a script on
+//! the gateway's own Node (node.rs; docs/plans/feed.md, stage 2) — on the computer only.
 
 pub mod host_http;
+pub mod node;
 pub mod supervisor;
 
 pub use supervisor::{AppTokens, ProcessRuntime};

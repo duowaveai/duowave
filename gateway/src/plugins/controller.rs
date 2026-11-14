@@ -87,6 +87,7 @@ async fn call_home(
         CallKind::Voice => "voice",
         CallKind::Tool => "tool",
         CallKind::Background => "background",
+        CallKind::Agent => "agent",
     };
     let response = crate::utils::http::client()
         .post(format!("{}/home/v1/plugins/{id}/call", url.trim_end_matches('/')))
@@ -398,6 +399,11 @@ impl PluginHost {
         let give_up_to = std::sync::Arc::new(std::sync::OnceLock::<Weak<PluginHost>>::new());
         let apps_engine = {
             let give_up_to = give_up_to.clone();
+            let node = crate::apps::node::NodeHome::new(
+                config.node_dir.clone(),
+                config.own_node.clone(),
+                config.node_mirror.clone(),
+            );
             Arc::new(crate::apps::ProcessRuntime::new(
                 gateway_url,
                 app_tokens.clone(),
@@ -406,6 +412,7 @@ impl PluginHost {
                         host.give_up(id, why);
                     }
                 }),
+                Arc::new(node),
             ))
         };
         bundled::lay_out(&config.packages_dir, &db, &bundled);
@@ -793,6 +800,16 @@ impl PluginHost {
                 let module = part("panel.js");
                 let styles = part("panel.css");
                 let cards = package.manifest.cards_in(&languages);
+                let settings = package
+                    .manifest
+                    .settings_shown(Some(&package.manifest.stored_with_secrets(stored.get(&plugin.id), &self.secrets)));
+                let waits = package
+                    .manifest
+                    .settings_in(&languages)
+                    .into_iter()
+                    .filter(|spec| spec.secret && spec.default.is_none() && !settings.contains_key(&spec.key))
+                    .map(|spec| spec.title)
+                    .collect();
                 (module.is_some() || styles.is_some() || !cards.is_empty()).then(|| PanelPart {
                     id: plugin.id.clone(),
                     title: package.manifest.title_in(&languages),
@@ -800,10 +817,9 @@ impl PluginHost {
                     version: package.version(),
                     module,
                     styles,
-                    settings: package.manifest.settings_shown(Some(
-                        &package.manifest.stored_with_secrets(stored.get(&plugin.id), &self.secrets),
-                    )),
+                    settings,
                     cards,
+                    waits,
                 })
             })
             .collect()
@@ -941,6 +957,11 @@ impl PluginHost {
     /// The installer's news on the bus: installed, updated, removed.
     pub fn announce(&self, id: &str, change: &str, version: Option<String>, actor: Option<Actor>) {
         self.changed(id, change, version, None, actor);
+    }
+
+    /// Where the apps' own folders are (`files/app/<id>`, plugins/files.rs): a starting app is told its own.
+    pub fn set_app_files_root(&self, root: std::path::PathBuf) {
+        self.apps_engine.set_files_root(root);
     }
 
     /// The address the gateway's server listens on: what a starting app is told (src/apps).
@@ -1154,6 +1175,7 @@ impl PluginHost {
             CallKind::Voice => crate::tr!("фраза"),
             CallKind::Tool => crate::tr!("инструмент"),
             CallKind::Background => crate::tr!("в фоне"),
+            CallKind::Agent => crate::tr!("агентом"),
         };
         match &result {
             Ok(_) => self.note_line(
@@ -2186,6 +2208,8 @@ impl PluginHost {
                     }),
                     read_only: offered.spec.read_only,
                     outside: offered.outside,
+                    spoken: false,
+                    kept: None,
                 }
             })
             .collect()
@@ -2385,6 +2409,17 @@ impl PluginHost {
                         .is_some_and(|themes| themes.as_array().is_some_and(|all| !all.is_empty())),
                 })
                 .unwrap_or_default(),
+            waits: manifest
+                .as_ref()
+                .map(|manifest| {
+                    manifest
+                        .settings_in(&languages)
+                        .into_iter()
+                        .filter(|spec| spec.secret && spec.default.is_none() && !values.contains_key(&spec.key))
+                        .map(|spec| spec.title)
+                        .collect()
+                })
+                .unwrap_or_default(),
             settings: manifest
                 .as_ref()
                 .map(|manifest| {
@@ -2542,6 +2577,9 @@ pub struct PanelPart {
     /// data comes from the app's function (src/bus/cards.rs).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub cards: Vec<Value>,
+    /// The settings it needs that nobody filled in yet (a key): its tiles say «ждёт ключ».
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub waits: Vec<String>,
 }
 
 /// A theme of a package, for the panel's choice.
@@ -2669,6 +2707,10 @@ pub struct PackageView {
     pub last_call_at: Option<String>,
     pub contributes: ContributesView,
     pub settings: Vec<SettingView>,
+    /// The settings it needs that nobody filled in yet — a private one without a default (a key): their titles. It
+    /// works without them only in part: the panel marks it «ждёт ключ» (docs/plans/audio-interface.md).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub waits: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2748,6 +2790,9 @@ mod tests {
                 pressure_action: crate::plugins::budget::PressureAction::Disable,
                 bundled: false,
                 schedules: true,
+                node_dir: std::path::PathBuf::from("node"),
+                own_node: None,
+                node_mirror: None,
             },
             db,
             settings,
@@ -2838,7 +2883,8 @@ mod tests {
         assert_eq!(tool.tool.description, "[Эхо] Повторяет слово");
         assert!(tool.outside && !tool.read_only, "a plugin with net: rights brings text from outside");
         let input = json!({"word": "б"}).as_object().cloned().unwrap();
-        let context = ToolContext { principal: system(), cancel: CancellationToken::new(), station: None };
+        let context =
+            ToolContext { principal: system(), cancel: CancellationToken::new(), station: None, origin: None };
         assert_eq!((tool.run)(input, context).await.unwrap(), "б (2)");
 
         let sources = fixture.media.of(MediaKind::Music);
@@ -3424,12 +3470,13 @@ mod tests {
         };
         let tool = host.tool_contributions().into_iter().find(|tool| tool.tool.name == "tuner_play").unwrap();
         assert_eq!(tool.permission, "use:radio");
-        let context = ToolContext { principal: system(), cancel: CancellationToken::new(), station: Some(station) };
+        let context =
+            ToolContext { principal: system(), cancel: CancellationToken::new(), station: Some(station), origin: None };
         let said = (tool.run)(Map::new(), context).await.unwrap();
         assert!(said.contains("Playing «Станция А» now") && said.contains("Включаю станцию А"), "{said}");
         assert_eq!(added.lock().unwrap()[0].name, "audio_play");
         // Without a station (the panel's check) nothing plays.
-        let check = ToolContext { principal: system(), cancel: CancellationToken::new(), station: None };
+        let check = ToolContext { principal: system(), cancel: CancellationToken::new(), station: None, origin: None };
         assert!((tool.run)(Map::new(), check).await.unwrap().contains("nothing played"));
         // The tool knows where the words came from (`request.station`); `player` pauses the station's player.
         let pause = host.tool_contributions().into_iter().find(|tool| tool.tool.name == "tuner_pause").unwrap();
@@ -3442,11 +3489,12 @@ mod tests {
                 true
             }),
         };
-        let context = ToolContext { principal: system(), cancel: CancellationToken::new(), station: Some(station) };
+        let context =
+            ToolContext { principal: system(), cancel: CancellationToken::new(), station: Some(station), origin: None };
         let said = (pause.run)(Map::new(), context).await.unwrap();
         assert!(said.contains("player — pause") && said.contains("Пауза"), "{said}");
         assert_eq!(added.lock().unwrap().last().unwrap().name, "player_pause");
-        let check = ToolContext { principal: system(), cancel: CancellationToken::new(), station: None };
+        let check = ToolContext { principal: system(), cancel: CancellationToken::new(), station: None, origin: None };
         assert!((pause.run)(Map::new(), check).await.unwrap().contains("\"station\":false"));
 
         // The station kept silent on it, through the gateway too: the plugin answers with the next station.

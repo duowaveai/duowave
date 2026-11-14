@@ -603,6 +603,8 @@ html[data-theme='dark'] .widget.music { background: color-mix(in srgb, var(--mus
 .desk-plane { position: absolute; left: 50%; top: 50%; width: 0; height: 0; transform-origin: 0 0; cursor: default; }
 .desk-scene-spot { position: absolute; }
 .desk-columns { position: absolute; display: flex; flex-direction: column; gap: 16px; }
+/* Под сценой — виджеты, что просят встать там (`under`, «Лента»): во всю ширину сцены. */
+.desk-under { position: absolute; display: flex; flex-direction: column; gap: 16px; will-change: opacity; }
 .desk-slot { position: relative; }
 .desk-placed { position: absolute; }
 /* Столбцы и поставленные виджеты — всегда своим слоем. В окне приложения (WebKit) столбцы у колонки прыгали вниз на
@@ -952,6 +954,10 @@ html[data-theme='dark'] .draft-outline-line { stroke: #3a3734; }
 .draft-row + .draft-row { border-top: 1px solid var(--row-line); }
 .draft-row.is-new { animation: draft-reveal 0.6s cubic-bezier(0.16, 1, 0.3, 1) both; }
 .draft-row-box { width: 16px; height: 16px; flex: none; border-radius: 50%; border: 1.5px solid #d6d1cb; display: flex; align-items: center; justify-content: center; color: var(--sub); }
+/* Сказанное вдогонку (docs/plans/audio-interface.md): ждёт агента — плюс в фиолетовом кольце агента, прочёл — галочка. */
+.draft-note { color: var(--text); font-style: italic; }
+.draft-note .draft-row-box { border-color: var(--bar-agent); color: var(--bar-agent); }
+.draft-note.is-read { font-style: normal; color: var(--sub); }
 .draft-skeleton { display: block; height: 8px; width: 60%; margin: 13px 0 13px 26px; border-radius: 999px; background: var(--track); }
 .draft-example { min-width: 0; }
 .draft-ask { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
@@ -1304,4 +1310,17 @@ html[data-theme='dark'] .draft-slot { border-color: #3a3734; }
     .fitting-tile,
     .fitting-approve,
     .fitting-answer { animation: none; }
+}
+
+/* Уровень микрофона в окне записи своим голосом (frame/share.tsx). */
+.record-level {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--line, rgba(127, 127, 127, 0.25));
+    overflow: hidden;
+}
+.record-level > div {
+    height: 100%;
+    background: var(--accent, currentColor);
+    transition: width 80ms linear;
 }

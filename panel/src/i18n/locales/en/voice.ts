@@ -16,6 +16,7 @@ const en: Translation<typeof ru> = {
     makingAgain: (what: string) => `Redoing the ${what}. I’ll tell you when it’s ready — you can keep using the desk.`,
     readyLine: (title: string) => `Ready: “${title}”.`,
     readyHead: 'Agent · ready',
+    unfinishedHead: 'Agent · not finished',
     listenMore: (seconds: number) => `listening ${seconds} s more`,
     chipFit: 'try it on',
     chipDesk: 'to the desk',

@@ -1,47 +1,50 @@
-//! Our content for the station's player: files under CONTENT_DIR at /media/<path>, a stream the gateway relays at
-//! /media/stream/<token> (stream.rs: the fallback for a stream the station keeps silent on), an app's own sound at
-//! /media/apps/<id>/<path> (its `/stream/<path>` on localhost, while it runs here), and a package's own files at
-//! /media/packages/<id>/<path> (its assets/: a plugin's while it is on, a character's or a theme's while it is
-//! installed — the panel shows their avatars and plays their samples), with Range (the player seeks and resumes).
-//! Only files inside the folder, no listings and no dot files; of a package nothing a browser would run (SVG, HTML,
-//! scripts): it is served on the panel's own origin. Unsigned — the station's player cannot sign — so it answers the home network only: the folder
-//! holds the family's voice messages too. The answer is the file itself, without the API's envelope.
+//! `/media`: photos, videos and sounds to whoever shows or plays them — all through one engine (engine.rs, «Один
+//! движок показа» in docs/plans/feed.md):
+//!
+//! - `/media/v/<key>` — a file the engine gave a key to (the panel's viewer and «Папки», an app's window and cards,
+//!   the computer's screen, the station's player): the key is the pass, from wherever the panel works — unless it was
+//!   given for home only. `?size=<px>` — its picture: a photo made small, a video's cover frame.
+//!   `/media/folder/<key>` is the same key by its older address.
+//! - `/media/<path>` — the household's music and tales under CONTENT_DIR, for the station's player; unsigned (the
+//!   player cannot sign), so the home network only. Not the family's voice messages: they are played inline.
+//! - `/media/packages/<id>/<path>` — a package's own files (its `assets/`: a plugin's while it is on, a character's or
+//!   a theme's while it is installed — avatars, samples, sounds); anything but what a browser runs.
+//! - `/media/stream/<token>` — a stream the gateway relays for the station (stream.rs), and `/media/apps/<id>/<path>`
+//!   an app's own sound from its `/stream/<path>` on localhost while it runs here: these are no files.
+//!
+//! Only files inside their folder, no listings, no dot files; the answer is the file itself, without the API's
+//! envelope, with Range (the player seeks and resumes).
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use axum::extract::{Path as UrlPath, Request, State};
-use axum::http::{header, HeaderValue};
-use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
-use tower::ServiceExt;
-use tower_http::services::ServeFile;
 
 use crate::app::App;
 use crate::platform::http::{ApiError, Caller, Zone};
 
+pub mod engine;
+pub mod kind;
+pub mod probe;
+pub mod routes;
 pub mod stream;
 
+pub use engine::{Allow, Grant, Link, MediaEngine};
+
 pub fn router() -> Router<Arc<App>> {
-    Router::new().route("/media/{*path}", get(media))
+    Router::new().route("/media/{*path}", get(media)).route("/api/v1/media/links", post(routes::links))
 }
 
-/// What a package's file may not be: anything a browser runs or renders as a page on the panel's origin.
-const RUNNABLE: &[&str] = &["svg", "svgz", "html", "htm", "xhtml", "xml", "js", "mjs"];
-
-/// A package's file at `path` under its assets, when it may be served.
-/// `size=<px>` of a query: the longer side of a photo asked for, within reason.
+/// `size=<px>` of a query: the longer side of a picture asked for, within reason.
 fn size_asked(query: Option<&str>) -> Option<u32> {
     let value = query?.split('&').find_map(|pair| pair.strip_prefix("size="))?;
     value.parse::<u32>().ok().map(|side| side.clamp(64, crate::bus::providers::files::preview::SIDE_MOST))
 }
 
+/// A package's file at `path` under its assets, when it may be served (the engine refuses what a browser runs).
 pub fn package_file(assets: &Path, path: &str) -> Option<PathBuf> {
-    let extension = path.rsplit_once('.').map(|(_, extension)| extension.to_ascii_lowercase()).unwrap_or_default();
-    if RUNNABLE.contains(&extension.as_str()) {
-        return None;
-    }
     media_file(assets, path)
 }
 
@@ -66,38 +69,15 @@ async fn media(
     caller: Caller,
     UrlPath(relative): UrlPath<String>,
     request: Request,
-) -> Result<Response, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
+    // A key the engine gave: the key is the pass.
+    if let Some(key) = relative.strip_prefix("v/").or_else(|| relative.strip_prefix("folder/")) {
+        return keyed(&app, &caller, key, request).await;
+    }
     caller.zone_at_least(Zone::Home)?;
     // A stream the gateway relays for the station (stream.rs): one the station kept silent on.
     if let Some(token) = relative.strip_prefix("stream/") {
         return app.streams.serve(token).await;
-    }
-    // One file of the home folder an app played: the link `play` made (src/bus/providers/files), for six hours.
-    if let Some(token) = relative.strip_prefix("folder/") {
-        let files = app.bus.files().ok_or_else(|| ApiError::not_found("Not Found"))?;
-        let file = files.played(token).ok_or_else(|| ApiError::not_found("Not Found"))?;
-        // A photo for a window of the computer's screen (src/screen): `?size=` — made smaller, turned by its EXIF,
-        // HEIC as JPEG, from the previews' cache.
-        if let Some(side) = size_asked(request.uri().query()) {
-            let name = file.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default();
-            if crate::bus::providers::files::kind_of(&name, false) == "image" {
-                let made = tokio::task::spawn_blocking(move || files.preview_of(&file, side))
-                    .await
-                    .map_err(|error| ApiError::internal(format!("media: {error}")))?
-                    .map_err(|error| ApiError::internal(format!("media: {error}")))?;
-                let mut response = made.into_response();
-                let headers = response.headers_mut();
-                headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
-                headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-                return Ok(response);
-            }
-        }
-        let mut response = match ServeFile::new(file).oneshot(request).await {
-            Ok(response) => response.into_response(),
-            Err(error) => return Err(ApiError::internal(format!("media: {error}"))),
-        };
-        response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        return Ok(response);
     }
     // An app's own sound, while it runs here: its /stream/<path> on localhost, nothing else of its server.
     if let Some(rest) = relative.strip_prefix("apps/") {
@@ -105,19 +85,37 @@ async fn media(
         let url = app.plugins.app_stream(id, path).await.ok_or_else(|| ApiError::not_found("Not Found"))?;
         return stream::app_sound(&url).await;
     }
-    let file = match relative.strip_prefix("packages/") {
-        // A package's own files (its assets/): of a plugin that is on, of a character or a theme installed; only
-        // inside that folder.
-        Some(rest) => rest.split_once('/').and_then(|(id, path)| package_file(&app.plugins.media_assets(id)?, path)),
-        None => media_file(&app.config.skills.content_dir, &relative),
-    };
-    let file = file.ok_or_else(|| ApiError::not_found("Not Found"))?;
-    let mut response = match ServeFile::new(file).oneshot(request).await {
-        Ok(response) => response.into_response(),
-        Err(error) => return Err(ApiError::internal(format!("media: {error}"))),
-    };
-    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    Ok(response)
+    // A package's own files (its assets/): of a plugin that is on, of a character or a theme installed.
+    if let Some(rest) = relative.strip_prefix("packages/") {
+        let file = rest.split_once('/').and_then(|(id, path)| package_file(&app.plugins.media_assets(id)?, path));
+        let file = file.ok_or_else(|| ApiError::not_found("Not Found"))?;
+        return engine::serve(file, Allow::Assets, request, "no-store").await;
+    }
+    let file = media_file(&app.config.skills.content_dir, &relative).ok_or_else(|| ApiError::not_found("Not Found"))?;
+    engine::serve(file, Allow::Media, request, "no-store").await
+}
+
+/// A file by the engine's key: on the home network only when given so. An app's keys close when the app is removed
+/// (plugins/routes.rs) — a workshop's draft has its keys too, so no «installed» check here.
+async fn keyed(
+    app: &Arc<App>,
+    caller: &Caller,
+    key: &str,
+    request: Request,
+) -> Result<axum::response::Response, ApiError> {
+    let files = app.bus.files().ok_or_else(|| ApiError::not_found("Not Found"))?;
+    let ticket = files.media().ticket(key).ok_or_else(|| ApiError::not_found("Not Found"))?;
+    if ticket.home_only && !matches!(caller.zone, Zone::Local | Zone::Home) {
+        return Err(ApiError::not_found("Not Found"));
+    }
+    // Its picture: a photo made small, a video's cover frame.
+    if let Some(side) = size_asked(request.uri().query()) {
+        if ticket.sniffed.kind != kind::Kind::Audio {
+            let made = files.media().picture(ticket.path.clone(), ticket.sniffed, side).await;
+            return made.map(|bytes| engine::jpeg(bytes, "private, max-age=3600")).map_err(ApiError::not_found);
+        }
+    }
+    engine::serve(ticket.path, Allow::Media, request, "private, max-age=3600").await
 }
 
 #[cfg(test)]
@@ -140,9 +138,14 @@ mod tests {
         assert!(media_file(root, "music").is_none(), "no listings");
         assert!(media_file(root, "").is_none());
         assert!(media_file(root, "nothing.mp3").is_none());
-        std::fs::write(root.join("music/avatar.webp"), b"webp").unwrap();
-        std::fs::write(root.join("music/page.SVG"), b"<svg/>").unwrap();
-        assert!(package_file(root, "music/avatar.webp").is_some());
-        assert!(package_file(root, "music/page.SVG").is_none(), "nothing a browser runs on the panel's origin");
+    }
+
+    #[test]
+    fn asks_a_picture_within_reason() {
+        assert_eq!(size_asked(Some("size=256")), Some(256));
+        assert_eq!(size_asked(Some("a=1&size=99999")), Some(crate::bus::providers::files::preview::SIDE_MOST));
+        assert_eq!(size_asked(Some("size=1")), Some(64));
+        assert_eq!(size_asked(Some("size=big")), None);
+        assert_eq!(size_asked(None), None);
     }
 }

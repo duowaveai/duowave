@@ -128,6 +128,7 @@ export default {
 
     // plugins/loader.ts
     sourceApp: 'приложение',
+    waitsKey: 'ждёт ключ',
 
     // screen/page.tsx
     screenClosed: 'Окно закрыто.',

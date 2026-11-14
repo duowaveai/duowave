@@ -84,6 +84,7 @@ function shapeOf(plugin: PanelPlugin): FrameShape {
             initial: entry.initial,
             roles: entry.roles,
             bare: entry.bare,
+            under: entry.under,
         }));
     }
     return { sections, slots };
@@ -91,17 +92,24 @@ function shapeOf(plugin: PanelPlugin): FrameShape {
 
 let started = false;
 
-/** Высота содержимого — пульту, чтобы окошко было по нему. */
+/**
+ * Высота содержимого — пульту, чтобы окошко было по нему. Меряется само содержимое (#root), а не документ: высота
+ * документа не бывает меньше самого окошка, и окошко бы только росло — виджет, что сменил высокий вид на низкий
+ * (настройки → лента) или был сначала узким, оставался бы с пустым низом.
+ */
 function reportSize(): void {
     let last = 0;
+    const root = document.getElementById('root') ?? document.body;
     const tell = (): void => {
-        const height = Math.ceil(document.documentElement.scrollHeight);
+        const height = Math.ceil(Math.max(root.scrollHeight, root.getBoundingClientRect().height));
         if (height !== last) {
             last = height;
             send({ type: 'duowave:size', height });
         }
     };
-    new ResizeObserver(tell).observe(document.body);
+    const watch = new ResizeObserver(tell);
+    watch.observe(root);
+    watch.observe(document.body);
     tell();
 }
 

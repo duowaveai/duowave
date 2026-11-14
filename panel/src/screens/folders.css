@@ -70,6 +70,42 @@
     color: var(--pill-off-fg);
 }
 
+/* Плитка фото, видео, звука: кадр и длительность поверх (media/viewer.tsx открывает их). */
+.folders-tile {
+    position: relative;
+    display: block;
+    width: 96px;
+}
+
+.folders-play,
+.folders-length {
+    position: absolute;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    background: rgb(0 0 0 / 0.58);
+    color: #fff;
+    pointer-events: none;
+}
+
+.folders-play {
+    top: 50%;
+    left: 50%;
+    width: 28px;
+    height: 28px;
+    transform: translate(-50%, -50%);
+}
+
+.folders-length {
+    right: 6px;
+    bottom: 6px;
+    padding: 1px 6px;
+    font-size: 11px;
+    line-height: 16px;
+    font-variant-numeric: tabular-nums;
+}
+
 .folders-name {
     font-size: 12.5px;
     line-height: 16px;
@@ -95,6 +131,7 @@
     .folders-grid {
         grid-template-columns: repeat(3, minmax(0, 1fr));
     }
+    .folders-tile,
     .folders-thumb,
     .folders-kind {
         width: 100%;

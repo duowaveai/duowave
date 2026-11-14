@@ -14,6 +14,12 @@
 //!   (`/media/apps/<id>/<path>`), and nothing else of its server does.
 //!
 //! Apps stop before plugins under pressure: they are heavier and easier to start again.
+//!
+//! Besides its own data (`DUOWAVE_APP_DATA`, beside its versions) it is told its own folder on the bus,
+//! `DUOWAVE_APP_FILES` (`files/app/<id>`): what it puts there its window plays (docs/plans/feed.md, stage 3).
+//!
+//! An app of `runtime: node` is the same under the supervisor, only its program is the gateway's own Node with its
+//! script (`node.entry`) — Node downloaded at the first need, the app's dependencies put from its lock (node.rs).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -26,7 +32,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use crate::plugins::manifest::{platform, Manifest};
+use super::node::NodeHome;
+use crate::plugins::manifest::{platform, Manifest, Runtime};
 use crate::plugins::runtime::{CallKind, HostApi, MemoryStats, PluginCode, PluginError, PluginInstance, PluginRuntime};
 
 /// How long an app has to say it is well after a start.
@@ -79,11 +86,27 @@ pub struct ProcessRuntime {
     give_up: GiveUp,
     /// Set once the long tasks stand.
     gone: Arc<OnceLock<Gone>>,
+    /// The Node the apps of `runtime: node` run on.
+    node: Arc<NodeHome>,
+    /// Where the apps' own folders are (`files/app/<id>`): each is told its own, `DUOWAVE_APP_FILES`.
+    files_root: Mutex<Option<PathBuf>>,
 }
 
 impl ProcessRuntime {
-    pub fn new(gateway_url: String, tokens: Arc<AppTokens>, give_up: GiveUp) -> ProcessRuntime {
-        ProcessRuntime { gateway_url: Mutex::new(gateway_url), tokens, give_up, gone: Arc::default() }
+    pub fn new(gateway_url: String, tokens: Arc<AppTokens>, give_up: GiveUp, node: Arc<NodeHome>) -> ProcessRuntime {
+        ProcessRuntime {
+            gateway_url: Mutex::new(gateway_url),
+            tokens,
+            give_up,
+            gone: Arc::default(),
+            node,
+            files_root: Mutex::new(None),
+        }
+    }
+
+    /// Where the apps' own folders are: what its window plays is what it writes there.
+    pub fn set_files_root(&self, root: PathBuf) {
+        *self.files_root.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(root);
     }
 
     /// Who hears that an app's program is gone.
@@ -132,7 +155,13 @@ fn free_port() -> Result<u16, String> {
 struct Launch {
     id: String,
     program: PathBuf,
+    /// What the program is started with: a Node app's script.
+    args: Vec<std::ffi::OsString>,
+    /// PATH, when not the gateway's own: a Node app's has our Node first.
+    path: Option<std::ffi::OsString>,
     data: PathBuf,
+    /// Its own folder on the bus (`files/app/<id>`), when the gateway has one: its window sees it.
+    files: Option<PathBuf>,
     port: u16,
     token: String,
     gateway_url: String,
@@ -142,10 +171,14 @@ struct Launch {
 
 fn spawn(launch: &Launch, host: &Arc<dyn HostApi>) -> Result<tokio::process::Child, String> {
     std::fs::create_dir_all(&launch.data).map_err(|error| format!("{}: {error}", launch.data.display()))?;
+    if let Some(files) = &launch.files {
+        std::fs::create_dir_all(files).map_err(|error| format!("{}: {error}", files.display()))?;
+    }
     let mut command = tokio::process::Command::new(&launch.program);
     command
+        .args(&launch.args)
         .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("PATH", launch.path.clone().or_else(|| std::env::var_os("PATH")).unwrap_or_default())
         .env("PORT", launch.port.to_string())
         .env("DUOWAVE_URL", &launch.gateway_url)
         .env("DUOWAVE_APP_TOKEN", &launch.token)
@@ -156,6 +189,13 @@ fn spawn(launch: &Launch, host: &Arc<dyn HostApi>) -> Result<tokio::process::Chi
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    super::node::keep_system_env(&mut command);
+    if launch.path.is_some() {
+        command.env("NODE_ENV", "production");
+    }
+    if let Some(files) = &launch.files {
+        command.env("DUOWAVE_APP_FILES", files);
+    }
     #[cfg(target_os = "linux")]
     {
         let limit = (launch.memory_mb.max(32) * 8 * 1024 * 1024) as libc::rlim_t;
@@ -437,22 +477,41 @@ impl PluginRuntime for ProcessRuntime {
     ) -> BoxFuture<'static, Result<Arc<dyn PluginInstance>, PluginError>> {
         let gateway_url = self.gateway_url.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         let (tokens, give_up, gone) = (self.tokens.clone(), self.give_up.clone(), self.gone.clone());
+        let node_home = self.node.clone();
+        let files_root = self.files_root.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         Box::pin(async move {
             let manifest =
                 code.manifest.clone().ok_or_else(|| PluginError::Load(crate::tr!("нет манифеста приложения")))?;
             let dir = code.dir.clone().ok_or_else(|| PluginError::Load(crate::tr!("нет папки приложения")))?;
-            let program = {
+            let (program, args, path) = if manifest.runtime == Runtime::Node {
+                let entry = manifest.node_entry.clone().unwrap_or_else(|| "index.js".into());
+                let script = dir.join(&entry);
+                if !script.is_file() {
+                    return Err(PluginError::Load(format!("нет файла {entry} (node.entry)")));
+                }
+                let tell = |line: &str| host.log("info", line);
+                let node = node_home.node(&tell).await.map_err(PluginError::Load)?;
+                node_home.dependencies(&node, &dir, &tell).await.map_err(PluginError::Load)?;
+                // Its heap within its budget: Node says it is out of memory before the supervisor has to.
+                let heap = format!("--max-old-space-size={}", manifest.budget.memory_mb.max(64));
+                let args = vec![heap.into(), script.into_os_string()];
+                (node.program.clone(), args, Some(super::node::path_with(&node.bin_dir)))
+            } else {
                 let (dir, manifest) = (dir.clone(), manifest.clone());
-                tokio::task::spawn_blocking(move || checked_build(&dir, &manifest))
+                let program = tokio::task::spawn_blocking(move || checked_build(&dir, &manifest))
                     .await
                     .map_err(|error| PluginError::Load(error.to_string()))?
-                    .map_err(PluginError::Load)?
+                    .map_err(PluginError::Load)?;
+                (program, Vec::new(), None)
             };
             // Its own data outlives a version: `<id>/.data` beside the versions (a dot folder is no version).
             let data = dir.parent().map(|parent| parent.join(".data")).unwrap_or_else(|| dir.join(".data"));
             let launch = Launch {
                 id: code.id.clone(),
                 program,
+                args,
+                path,
+                files: files_root.map(|root| root.join(&code.id)),
                 data,
                 port: free_port().map_err(PluginError::Load)?,
                 token: uuid::Uuid::new_v4().simple().to_string(),

@@ -230,6 +230,12 @@ impl SpeechService {
         Some(recognizer.model())
     }
 
+    /// The household's recognizer as it stands (local, the configured server, the station's chain), for the hearing
+    /// for apps (capabilities/hearing.rs); None when recognition is off.
+    pub fn recognizer(&self) -> Option<Arc<dyn SpeechRecognizer>> {
+        self.recognizer.clone()
+    }
+
     pub fn status(&self) -> SpeechStatus {
         if let Some(recognizer) = &self.recognizer {
             drop(recognizer.refresh());

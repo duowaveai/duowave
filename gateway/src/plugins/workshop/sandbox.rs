@@ -816,7 +816,9 @@ fn engine(
             Err(crate::tr!("в этой сборке шлюза нет WebAssembly"))
         }
         Runtime::Mcp => Ok((Arc::new(crate::plugins::mcp_runtime::McpRuntime), code)),
-        Runtime::Process => Err(crate::tr!("приложение проверяется своим запуском, не в песочнице плагинов")),
+        Runtime::Process | Runtime::Node => {
+            Err(crate::tr!("приложение проверяется своим запуском, не в песочнице плагинов"))
+        }
     }
 }
 
@@ -853,6 +855,17 @@ async fn start(
 
 fn taken<T: Clone>(list: &Mutex<Vec<T>>) -> Vec<T> {
     list.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+}
+
+/// An app's program in its folder: its build for this platform with its hash, or its Node script.
+fn app_files(folder: &Path, manifest: &Manifest) -> Result<(), String> {
+    match manifest.runtime {
+        Runtime::Node => {
+            let entry = manifest.node_entry.as_deref().unwrap_or("index.js");
+            folder.join(entry).is_file().then_some(()).ok_or_else(|| format!("нет файла {entry} (node.entry)"))
+        }
+        _ => crate::apps::supervisor::checked_build(folder, manifest).map(|_| ()),
+    }
 }
 
 pub async fn check(folder: &Path, id: &str, handle: Option<tokio::runtime::Handle>) -> CheckReport {
@@ -894,6 +907,12 @@ pub async fn check(folder: &Path, id: &str, handle: Option<tokio::runtime::Handl
             report.code = Some(crate::tr!("нужен backend.js: его функции обслуживают то, что плагин даёт"))
         }
         (false, true) => {}
+        // An app is checked by its own start under the supervisor, not in the plugins' sandbox: here only that its
+        // program is in the folder.
+        (true, _) if manifest.kind == PackageKind::App => {
+            report.code = app_files(folder, &manifest).err();
+            report.exports = wanted;
+        }
         (true, _) => {
             if let Some(source) = &source {
                 report.warnings = code_warnings(source);

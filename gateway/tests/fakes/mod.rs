@@ -600,9 +600,71 @@ impl AsrStub {
 
 pub const DEFAULT_ANSWER: &str = "Здравствуйте.";
 
+/// Whether a request is the talk's reader's (src/talk/reader.rs): it offers the one tool `read`.
+pub fn reads(request: &Value) -> bool {
+    request["tools"].as_array().is_some_and(|tools| {
+        tools.len() == 1 && tools[0]["function"]["name"].as_str().or(tools[0]["name"].as_str()) == Some("read")
+    })
+}
+
+/// The workshop's agent as a test plays it: it writes a file, then says what it made — a run that writes nothing is
+/// «ничего не поменялось», not «готово» (src/plugins/workshop/mod.rs, `checked_after_run`). Once the file's answer is
+/// in the run (words added on the way may come after it), the next round is the words; the history keeps no tool's
+/// answers of earlier runs.
+pub fn agent_made(request: &Value, said: &str) -> Scripted {
+    let wrote = request["messages"].as_array().is_some_and(|messages| messages.iter().any(|m| m["role"] == "tool"));
+    if wrote {
+        return Scripted::reply(said);
+    }
+    Scripted::call("write_file", serde_json::json!({ "path": "README.md", "content": format!("# {said}\n") }))
+}
+
+/// The same agent taking its time over the file: the run goes on that long before its words.
+pub fn agent_made_after(request: &Value, said: &str, ms: u64) -> Scripted {
+    let made = agent_made(request, said);
+    if made.call.is_some() {
+        made.after(ms)
+    } else {
+        made
+    }
+}
+
+/// The reader's answer: the phrase read as `act` with its fields.
+pub fn read_as(reading: Value) -> Scripted {
+    Scripted::call("read", reading)
+}
+
+/// One answer of the chat stub as a test scripts it: after `delay_ms`, a call of a tool or a reply.
+#[derive(Debug, Clone, Default)]
+pub struct Scripted {
+    pub delay_ms: u64,
+    pub call: Option<(String, Value)>,
+    pub reply: Option<String>,
+}
+
+impl Scripted {
+    pub fn reply(text: &str) -> Scripted {
+        Scripted { reply: Some(text.to_string()), ..Scripted::default() }
+    }
+
+    pub fn call(name: &str, arguments: Value) -> Scripted {
+        Scripted { call: Some((name.to_string(), arguments)), ..Scripted::default() }
+    }
+
+    pub fn after(mut self, ms: u64) -> Scripted {
+        self.delay_ms = ms;
+        self
+    }
+}
+
+/// Who answers a request of the chat stub, by what it asks: None — the stub's own reply or call.
+pub type Responder = Arc<dyn Fn(&Value) -> Option<Scripted> + Send + Sync>;
+
 #[derive(Clone, Default)]
 pub struct ChatState {
     pub reply: Arc<Mutex<String>>,
+    /// Answers by what a request asks (the workshop's agent apart from the brain), before `reply` and `tool_call`.
+    pub responder: Arc<Mutex<Option<Responder>>>,
     /// When set, a request that offers tools gets this call instead of text (the next one, with its result, the
     /// reply).
     pub tool_call: Arc<Mutex<Option<(String, Value)>>>,
@@ -617,9 +679,44 @@ pub struct ChatStub {
     pub state: ChatState,
 }
 
+/// What every answer of the chat stub spent, in its last chunk, as an OpenAI-compatible server tells it.
+fn usage_chunk() -> String {
+    format!(
+        "data: {}\n\n",
+        json!({ "choices": [], "usage": { "prompt_tokens": 100, "completion_tokens": 20, "prompt_tokens_details": { "cached_tokens": 80 } } })
+    )
+}
+
 async fn chat(State(state): State<ChatState>, body: AxumBytes) -> Response {
     let request: Value = serde_json::from_slice(&body).unwrap_or(json!({}));
     lock(&state.requests).push(request.clone());
+    let responder = lock(&state.responder).clone();
+    if let Some(scripted) = responder.and_then(|responder| responder(&request)) {
+        if scripted.delay_ms > 0 {
+            sleep(scripted.delay_ms).await;
+        }
+        let mut events = String::new();
+        match (scripted.call, scripted.reply) {
+            (Some((name, arguments)), _) => {
+                let call = json!({ "index": 0, "id": format!("call_{}", lock(&state.requests).len()), "function": { "name": name, "arguments": arguments.to_string() } });
+                events
+                    .push_str(&format!("data: {}\n\n", json!({ "choices": [{ "delta": { "tool_calls": [call] } }] })));
+            }
+            (None, reply) => {
+                let reply: Vec<char> = reply.unwrap_or_default().chars().collect();
+                for chunk in reply.chunks(6) {
+                    let content: String = chunk.iter().collect();
+                    events.push_str(&format!(
+                        "data: {}\n\n",
+                        json!({ "choices": [{ "delta": { "content": content } }] })
+                    ));
+                }
+            }
+        }
+        events.push_str(&usage_chunk());
+        events.push_str("data: [DONE]\n\n");
+        return ([("content-type", "text/event-stream")], events).into_response();
+    }
     let delay = *lock(&state.delay_ms);
     if delay > 0 {
         sleep(delay).await;
@@ -642,6 +739,7 @@ async fn chat(State(state): State<ChatState>, body: AxumBytes) -> Response {
             }
         }
     }
+    events.push_str(&usage_chunk());
     events.push_str("data: [DONE]\n\n");
     ([("content-type", "text/event-stream")], events).into_response()
 }
@@ -668,6 +766,11 @@ impl ChatStub {
 
     pub fn requests(&self) -> Vec<Value> {
         lock(&self.state.requests).clone()
+    }
+
+    /// Answers by what a request asks, before the reply and the call set above.
+    pub fn set_responder(&self, responder: impl Fn(&Value) -> Option<Scripted> + Send + Sync + 'static) {
+        *lock(&self.state.responder) = Some(Arc::new(responder));
     }
 }
 

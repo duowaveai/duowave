@@ -5,7 +5,7 @@
 import { createContext } from 'preact';
 import { useContext, useEffect, useRef, useState } from 'preact/hooks';
 
-import { fetchBusPreview, fetchPluginFile } from '../api';
+import { useMediaSrc } from '../media/links';
 import { runScene, SCENE_COLORS, SCENES, SceneName } from './scenes';
 
 export interface CardLook {
@@ -87,23 +87,11 @@ function SceneCanvas({ scene, seed }: { scene: SceneName; seed: number }) {
 }
 
 function Backdrop({ app, picture }: { app: string; picture: NonNullable<CardLook['picture']> }) {
-    const [url, setUrl] = useState<string | null>(null);
-    useEffect(() => {
-        let made: string | null = null;
-        let alive = true;
-        (picture.address ? fetchBusPreview(app, picture.address, 960) : fetchPluginFile(app, picture.name ?? ''))
-            .then((blob) => {
-                if (!alive) return;
-                made = URL.createObjectURL(blob);
-                setUrl(made);
-            })
-            .catch(() => alive && setUrl(null));
-        return () => {
-            alive = false;
-            if (made) URL.revokeObjectURL(made);
-        };
-    }, [app, picture.name, picture.address]);
-    return url ? <img class="look-picture" src={url} alt="" /> : null;
+    // The media engine's key (gateway/media), as the app for whoever looks: a home folder's photo made small, the app's
+    // own picture as it is.
+    const target = picture.address ?? (picture.name ? `files/app/${app}/${picture.name}` : null);
+    const { src, retry } = useMediaSrc(target, { app, size: picture.address ? 960 : undefined });
+    return src ? <img class="look-picture" src={src} alt="" onError={retry} /> : null;
 }
 
 /** Слои вида за содержимым: градиент, фото, сцена, тень для текста. */

@@ -15,6 +15,9 @@ pub enum CallKind {
     Voice,
     Tool,
     Background,
+    /// An agent's or one's own Claude Code's call of an app's tool (`system/brain` → `agent`, `/mcp/apps/<id>`):
+    /// a director's check renders frames — minutes, not seconds (docs/plans/feed.md, stage 7).
+    Agent,
 }
 
 impl CallKind {
@@ -22,6 +25,7 @@ impl CallKind {
         match self {
             CallKind::Voice | CallKind::Tool => Duration::from_secs(2),
             CallKind::Background => Duration::from_secs(30),
+            CallKind::Agent => Duration::from_secs(300),
         }
     }
 }
@@ -186,7 +190,7 @@ pub fn engine_for(
         Runtime::Wasm => Err(PluginError::Load(crate::tr!("в этой сборке шлюза нет WebAssembly (фича wasm)"))),
         Runtime::Mcp => Ok((Arc::new(super::mcp_runtime::McpRuntime), code)),
         // An app: its program under the supervisor (src/apps).
-        Runtime::Process => Ok((process.clone(), code)),
+        Runtime::Process | Runtime::Node => Ok((process.clone(), code)),
     }
 }
 

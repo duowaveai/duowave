@@ -23,7 +23,6 @@ pub mod openapi;
 pub mod routes;
 pub mod sandbox;
 pub mod templates;
-pub mod voice;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -42,8 +41,16 @@ pub use make::{request_of, Made, Request};
 pub use meta::{DraftMeta, Face, Need, Stage};
 pub use sandbox::{CheckReport, PhraseReport, RunReport, Trying};
 
+/// The fence of the apps with a program of their own (docs/plans/feed.md, stage 2): there is no sandbox for their
+/// processes, so they come only from the signed catalog or from the terminal; a draft by voice stays a plugin on JS.
+const APP_NOT_A_DRAFT: &str = "Приложение со своей программой (process, node) из мастерской не ставится: только из \
+     подписанного каталога или из терминала (duowave plugin install). Черновик — плагин на JS.";
+
 /// Who hears a draft's card change (its stage): the station that asked says «Готово» (voice.rs).
 pub type CardFollower = Arc<dyn Fn(&str, &DraftMeta) + Send + Sync>;
+
+/// Who hears the agent's work on a draft move: a run began, it took in the notes, it ended.
+pub type WorkFollower = Arc<dyn Fn(&str, &activity::Moment) + Send + Sync>;
 
 /// A file of a draft at most this big; the whole draft at most this.
 const MAX_FILE: u64 = 1024 * 1024;
@@ -213,6 +220,10 @@ pub struct Workshop {
     events: OnceLock<EventBus>,
     /// Who hears a card change besides the panel.
     card_followers: Mutex<Vec<CardFollower>>,
+    /// Who hears the agent's work move besides the cards.
+    work_followers: Mutex<Vec<WorkFollower>>,
+    /// Itself, for the check after a run (it runs on its own task).
+    me: OnceLock<std::sync::Weak<Workshop>>,
     /// «Мозг», for the agent's work in the background (make.rs).
     dialog: OnceLock<Arc<crate::dialog::DialogService>>,
     /// This gateway hears MIDI keyboards (src/midi): a teacher for one is made only where it can work (make.rs).
@@ -271,10 +282,13 @@ impl Workshop {
             history: std::sync::OnceLock::new(),
             events: OnceLock::new(),
             card_followers: Mutex::new(Vec::new()),
+            work_followers: Mutex::new(Vec::new()),
+            me: OnceLock::new(),
             dialog: OnceLock::new(),
             midi: std::sync::atomic::AtomicBool::new(false),
             folders: std::sync::atomic::AtomicBool::new(true),
         });
+        let _ = workshop.me.set(Arc::downgrade(&workshop));
         // A draft's card follows the agent's work on it: working while it goes on, then ready, failed or stopped.
         let me = Arc::downgrade(&workshop);
         workshop.activity.follow(Arc::new(move |draft: &str, moment: &activity::Moment| {
@@ -345,6 +359,17 @@ impl Workshop {
         self.card_followers.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(follower);
     }
 
+    /// Who hears every move of the agent's work besides the cards: the talk's works (the notes the agent read).
+    pub fn follow_work(&self, follower: WorkFollower) {
+        self.work_followers.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(follower);
+    }
+
+    /// Words added to the agent's work going on on a draft («и ещё кнопку…»): it takes them in between its steps,
+    /// nothing is cancelled. False when the agent does not work on it now.
+    pub fn note(&self, id: &str, words: &str) -> bool {
+        self.activity.note(id, words)
+    }
+
     /// A draft changed: the panel hears which one and how (`made`, `ready`, `parked`, `open:fitting`…).
     pub fn tell(&self, id: &str, change: &str) {
         if let Some(events) = self.events.get() {
@@ -405,24 +430,80 @@ impl Workshop {
     /// The agent's work moved on a draft with a card: it works, then it is ready (with the agent's last words),
     /// failed or stopped. A draft without a card keeps none: its stage is read from the work.
     fn work_moved(&self, id: &str, moment: &activity::Moment) {
+        let followers: Vec<WorkFollower> =
+            self.work_followers.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        for follower in followers {
+            follower(id, moment);
+        }
         let Some(mut card) = self.kept_card(id) else { return };
         let change = match moment {
+            // The card stays as it is: the tile reads the notes from the activity.
+            activity::Moment::NotesRead { .. } => return,
             activity::Moment::Began => {
                 if card.stage == Stage::Working {
                     return;
                 }
                 card.stage = Stage::Working;
                 card.note = None;
+                card.unchanged = false;
                 // The activity told the panel already (change `agent`).
                 None
             }
-            activity::Moment::Ended { kind, said } => {
-                card.stage = Stage::after(*kind);
+            activity::Moment::Ended { kind, said, limited, changed } => {
                 card.note = said.clone();
+                card.unchanged = false;
+                let stage = Stage::after(*kind);
+                if stage == Stage::Ready {
+                    // The gateway checks what the agent made before it says «готово» (docs/plans/audio-interface.md,
+                    // «Честное «Готово»»): a check that fails, or a run its limits cut, is «не доделано»; a run that
+                    // changed nothing is «ничего не поменялось».
+                    if let Some(handle) = self.handle.clone().or_else(|| tokio::runtime::Handle::try_current().ok()) {
+                        if let Some(me) = self.me.get().and_then(std::sync::Weak::upgrade) {
+                            let (id, limited, changed) = (id.to_string(), *limited, *changed);
+                            handle.spawn(async move { me.checked_after_run(&id, card, limited, changed).await });
+                            return;
+                        }
+                    }
+                }
+                card.stage = stage;
                 Some(card.stage.as_str())
             }
         };
         if let Err(error) = self.keep_card(id, card, change) {
+            tracing::warn!(target: "plugins", "workshop: the card of {id} is not kept: {}", error.message);
+        }
+    }
+
+    /// At the gateway's start: a card that says the agent works says so of a run the restart cut (the activity is in
+    /// memory only). It becomes `interrupted` — nothing restarts by itself; «продолжай» is new work on the draft.
+    pub fn after_restart(&self) {
+        let Ok(entries) = std::fs::read_dir(self.cards_dir()) else { return };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(id) = name.strip_suffix(".json") else { continue };
+            let Some(card) = self.kept_card(id).filter(|card| card.stage == Stage::Working) else { continue };
+            tracing::info!(target: "plugins", "workshop: the agent worked on {id} when the gateway stopped: interrupted");
+            if let Err(error) = self.keep_card(id, DraftMeta { stage: Stage::Interrupted, ..card }, None) {
+                tracing::warn!(target: "plugins", "workshop: the card of {id} is not kept: {}", error.message);
+            }
+        }
+    }
+
+    /// After a run that ended well: the check decides between ready and «не доделано» (the run's limits cut it, or
+    /// what it made does not pass); a run that changed nothing is not ready either, whatever the check says of the
+    /// draft as it was. The card is kept with the stage, as a run's end is.
+    async fn checked_after_run(&self, id: &str, mut card: DraftMeta, limited: bool, changed: bool) {
+        let passed = match self.check(id).await {
+            Ok(report) => report.ok,
+            Err(_) => false,
+        };
+        card.stage = if passed && !limited && changed { Stage::Ready } else { Stage::Unfinished };
+        card.unchanged = !changed;
+        if !passed || limited || !changed {
+            tracing::info!(target: "plugins", "workshop: {id} is not finished (check passed: {passed}, cut by its limits: {limited}, changed: {changed})");
+        }
+        let change = card.stage.as_str();
+        if let Err(error) = self.keep_card(id, card, Some(change)) {
             tracing::warn!(target: "plugins", "workshop: the card of {id} is not kept: {}", error.message);
         }
     }
@@ -801,6 +882,9 @@ impl Workshop {
                 report = problems_of(&report).join("; ")
             )));
         }
+        if report.kind == Some(crate::plugins::manifest::PackageKind::App) {
+            return Err(ApiError::bad_request(APP_NOT_A_DRAFT));
+        }
         let text = std::fs::read_to_string(folder.join("manifest.json")).map_err(ApiError::internal)?;
         let draft = manifest::parse(&text).map_err(|error| ApiError::bad_request(error.to_string()))?;
         let installed = self.host.installed(id);
@@ -999,6 +1083,9 @@ impl Workshop {
                 "Черновик не ставится: {report}.",
                 report = problems_of(&report).join("; ")
             )));
+        }
+        if report.kind == Some(crate::plugins::manifest::PackageKind::App) {
+            return Err(ApiError::bad_request(APP_NOT_A_DRAFT));
         }
         let text = std::fs::read_to_string(folder.join("manifest.json")).map_err(ApiError::internal)?;
         let draft = manifest::parse(&text).map_err(|error| ApiError::bad_request(error.to_string()))?;

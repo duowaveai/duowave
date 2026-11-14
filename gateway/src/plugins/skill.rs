@@ -257,10 +257,10 @@ pub struct PluginSkill {
     host: Weak<PluginHost>,
     router: Weak<Router>,
     player: Arc<MediaPlayer>,
-    /// The workshop by voice (workshop/voice.rs): «давай сделаем навык» and the conversation after it.
-    voice: OnceLock<Arc<super::workshop::voice::VoiceWorkshop>>,
     /// The apps' history by voice (history/voice.rs): «верни погоду как было вчера» and its «да».
     history_voice: OnceLock<Arc<super::history::voice::VoiceHistory>>,
+    /// The talk layer's rules (src/talk/rules.rs): the works and the workshop's door, by voice.
+    talk: OnceLock<Arc<crate::talk::rules::TalkRules>>,
     /// The gateway's model, for `model` answers.
     model: OnceLock<ModelHost>,
     /// Devices whose conversation goes on with a plugin.
@@ -277,8 +277,8 @@ impl PluginSkill {
             host,
             router,
             player,
-            voice: OnceLock::new(),
             history_voice: OnceLock::new(),
+            talk: OnceLock::new(),
             model: OnceLock::new(),
             going: Arc::default(),
             turns: OnceLock::new(),
@@ -304,14 +304,14 @@ impl PluginSkill {
         Some(Timers { going: self.going.clone(), station: self.turns.get()?.clone(), host: self.host.clone() })
     }
 
-    /// The workshop by voice joins once it stands.
-    pub fn set_voice(&self, voice: Arc<super::workshop::voice::VoiceWorkshop>) {
-        let _ = self.voice.set(voice);
-    }
-
     /// The history by voice joins once it stands.
     pub fn set_history_voice(&self, voice: Arc<super::history::voice::VoiceHistory>) {
         let _ = self.history_voice.set(voice);
+    }
+
+    /// The talk layer's rules join once they stand.
+    pub fn set_talk(&self, talk: Arc<crate::talk::rules::TalkRules>) {
+        let _ = self.talk.set(talk);
     }
 
     /// The request as a plugin's function gets it, under `request`.
@@ -596,7 +596,7 @@ impl OwnSkill for PluginSkill {
     }
 
     fn available(&self) -> bool {
-        self.voice.get().is_some() || self.host.upgrade().is_some_and(|host| host.has_phrases())
+        self.talk.get().is_some() || self.host.upgrade().is_some_and(|host| host.has_phrases())
     }
 
     fn execute<'a>(
@@ -604,8 +604,8 @@ impl OwnSkill for PluginSkill {
         intent: &'a Intent,
         context: &'a ExecutionContext,
     ) -> BoxFuture<'a, anyhow::Result<Outcome>> {
-        if let Some(voice) = self.voice.get().filter(|voice| voice.handles(intent, &context.device_tag)) {
-            return voice.execute(intent, context);
+        if let Some(talk) = self.talk.get().filter(|talk| talk.handles(intent)) {
+            return talk.execute(intent, context);
         }
         if let Some(voice) = self.history_voice.get().filter(|voice| voice.handles(intent, &context.device_tag)) {
             return voice.execute(intent, context);
@@ -681,6 +681,9 @@ mod tests {
                 pressure_action: crate::plugins::budget::PressureAction::Disable,
                 bundled: false,
                 schedules: true,
+                node_dir: std::path::PathBuf::from("node"),
+                own_node: None,
+                node_mirror: None,
             },
             db: db.clone(),
             settings: Arc::new(SettingsService::new(db, events.clone())),
@@ -838,6 +841,9 @@ mod tests {
                 pressure_action: crate::plugins::budget::PressureAction::Disable,
                 bundled: false,
                 schedules: true,
+                node_dir: std::path::PathBuf::from("node"),
+                own_node: None,
+                node_mirror: None,
             },
             db: db.clone(),
             settings: Arc::new(SettingsService::new(db, events.clone())),
@@ -1147,6 +1153,9 @@ mod tests {
                 pressure_action: crate::plugins::budget::PressureAction::Disable,
                 bundled: false,
                 schedules: true,
+                node_dir: std::path::PathBuf::from("node"),
+                own_node: None,
+                node_mirror: None,
             },
             db: db.clone(),
             settings: Arc::new(SettingsService::new(db, events.clone())),

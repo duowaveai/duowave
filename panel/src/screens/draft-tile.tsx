@@ -4,7 +4,8 @@
 // внутри по настоящим шагам агента проявляются строки. Готово — пунктир остаётся (это черновик), метка «на примерке»,
 // внутри пример данных, под плиткой «Примерить» и «На стол». Настоящим листом плитка станет только на столе, после
 // «да». Код черновика работает в своём окошке (docs/plans/bus.md, «Окошки»), поэтому показывается сразу — и черновик,
-// попрошенный у колонки, тоже.
+// попрошенный у колонки, тоже. Сказанное по ходу («вдогонку», docs/plans/audio-interface.md) — строками с галочкой,
+// когда агент его прочёл; не доделано или прервано — «Продолжить».
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
@@ -42,11 +43,15 @@ export function faceWord(draft: DraftView): string {
     }
 }
 
-/** Ход работы агента над черновиком, пока он работает: шаги — строками. */
-function useWork(draft: DraftView): { steps: AgentStep[]; since: number } {
+/** Сказанное по ходу запуска и прочёл ли его агент. */
+type Note = { text: string; at: number; read?: number };
+
+/** Ход работы агента над черновиком, пока он работает: шаги — строками, сказанное вдогонку — с галочкой. */
+function useWork(draft: DraftView): { steps: AgentStep[]; since: number; notes: Note[] } {
     const working = draft.meta.stage === 'working';
     const [steps, setSteps] = useState<AgentStep[]>([]);
     const [since, setSince] = useState(draft.meta.updated);
+    const [notes, setNotes] = useState<Note[]>([]);
     useEffect(() => {
         if (!working) return;
         let alive = true;
@@ -57,6 +62,7 @@ function useWork(draft: DraftView): { steps: AgentStep[]; since: number } {
                     if (!alive) return;
                     setSteps(log.steps);
                     if (log.job) setSince(log.job.since);
+                    setNotes(log.job?.notes ?? []);
                 })
                 .catch(() => undefined);
         read();
@@ -66,7 +72,7 @@ function useWork(draft: DraftView): { steps: AgentStep[]; since: number } {
             window.clearInterval(timer);
         };
     }, [draft.id, working]);
-    return { steps, since };
+    return { steps, since, notes };
 }
 
 /** Пунктирный контур плитки: агент рисует его, пока работает (бегущий штрих), готовое — тихий пунктир. */
@@ -141,7 +147,7 @@ export function DraftTile({ draft, more }: { draft: DraftView; more: number }) {
     const cloud = useAgentPlace();
     const stage = draft.meta.stage;
     const working = stage === 'working';
-    const { steps, since } = useWork(draft);
+    const { steps, since, notes } = useWork(draft);
     const now = useSecondTick(working);
     const [drawing, setDrawing] = useState(() => !flown.has(draft.id) && working && Date.now() - draft.meta.updated < FRESH_MS);
     const [redo, setRedo] = useState(false);
@@ -180,6 +186,9 @@ export function DraftTile({ draft, more }: { draft: DraftView; more: number }) {
         });
     };
     const ready = stage === 'ready';
+    /** Конец, после которого можно переделать или продолжить: не вышло, остановлен, не доделано, прервано. */
+    const ended = stage === 'failed' || stage === 'stopped' || stage === 'unfinished' || stage === 'interrupted';
+    const halfway = stage === 'unfinished' || stage === 'interrupted';
     // Что на кнопках — то и говорите.
     useVoiceAction(ready ? ['примерить', 'покажи', 'примерь'] : [], fit);
     useVoiceAction(ready ? ['на стол', 'поставь', 'включить'] : [], put);
@@ -215,6 +224,8 @@ export function DraftTile({ draft, more }: { draft: DraftView; more: number }) {
                 </header>
                 {working && (
                     <div class="draft-rows">
+                        {/* Правка вещи со стола: видно, что меняется она и по какой просьбе. */}
+                        {draft.installed && draft.meta.asked && <div class="draft-row draft-edit">{tr.drafts.editing(draft.meta.asked)}</div>}
                         {rows.length === 0 && <span class="draft-skeleton" aria-hidden="true" />}
                         {rows.map((step) => (
                             <div key={step.seq} class="draft-row is-new">
@@ -224,6 +235,14 @@ export function DraftTile({ draft, more }: { draft: DraftView; more: number }) {
                                 {toolWords(step.tool, step.text)}
                             </div>
                         ))}
+                        {notes.map((note) => (
+                            <div key={note.at} class={`draft-row draft-note${note.read ? ' is-read' : ''}`} title={note.read ? tr.drafts.noteRead : tr.drafts.noteWaiting}>
+                                <span class="draft-row-box" aria-hidden="true">
+                                    {note.read ? <IconCheck size={10} /> : <IconPlus size={10} />}
+                                </span>
+                                {tr.drafts.noteLine(note.text)}
+                            </div>
+                        ))}
                     </div>
                 )}
                 {ready && (
@@ -231,8 +250,18 @@ export function DraftTile({ draft, more }: { draft: DraftView; more: number }) {
                         <Example draft={draft} />
                     </div>
                 )}
-                {(stage === 'failed' || stage === 'stopped') && (
-                    <p class="draft-end">{stage === 'failed' ? tr.drafts.failedWithNote(draft.meta.note ?? tr.drafts.failedNoteDefault) : tr.drafts.stoppedNote}</p>
+                {ended && (
+                    <p class="draft-end">
+                        {stage === 'failed'
+                            ? tr.drafts.failedWithNote(draft.meta.note ?? tr.drafts.failedNoteDefault)
+                            : stage === 'unfinished'
+                              ? draft.meta.unchanged
+                                  ? tr.drafts.unchangedNote
+                                  : tr.drafts.unfinishedNote
+                              : stage === 'interrupted'
+                                ? tr.drafts.interruptedNote
+                                : tr.drafts.stoppedNote}
+                    </p>
                 )}
                 <footer class="draft-foot">
                     {working ? (
@@ -247,7 +276,17 @@ export function DraftTile({ draft, more }: { draft: DraftView; more: number }) {
                             {tr.drafts.sampleData}
                         </>
                     ) : (
-                        <span>{stage === 'failed' ? tr.drafts.failedShort : tr.drafts.stoppedShort}</span>
+                        <span>
+                            {stage === 'failed'
+                                ? tr.drafts.failedShort
+                                : stage === 'unfinished'
+                                  ? draft.meta.unchanged
+                                      ? tr.drafts.unchangedShort
+                                      : tr.drafts.unfinishedShort
+                                  : stage === 'interrupted'
+                                    ? tr.drafts.interruptedShort
+                                    : tr.drafts.stoppedShort}
+                        </span>
                     )}
                     {more > 0 && <span class="draft-more">{tr.drafts.andMore(more)}</span>}
                 </footer>
@@ -263,8 +302,13 @@ export function DraftTile({ draft, more }: { draft: DraftView; more: number }) {
                     <span class="w-cap">{tr.drafts.orSayIt}</span>
                 </div>
             )}
-            {(stage === 'failed' || stage === 'stopped') && (
+            {ended && (
                 <div class="draft-acts">
+                    {halfway && (
+                        <button class="pill pill-own" disabled={busy !== null} onClick={() => again(tr.drafts.goOnWords)}>
+                            {busy === 'redo' ? tr.drafts.handing : tr.drafts.goOn}
+                        </button>
+                    )}
                     <button class="pill" disabled={busy !== null} onClick={() => setRedo(!redo)}>
                         {tr.drafts.redoEllipsis}
                     </button>

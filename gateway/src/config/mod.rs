@@ -76,6 +76,12 @@ pub struct PluginsConfig {
     /// PLUGINS_SCHEDULES: plugins act by themselves in time (plugins/schedule.rs); `0` stops every rhythm and task,
     /// the jobs kept — the panel's switch «Расписания плагинов» does the same at runtime.
     pub schedules: bool,
+    /// The gateway's own Node for the apps of `runtime: node` (src/apps/node.rs): NODE_DIR, where ours is kept
+    /// ($DATA_DIR/node; data/node without it); DUOWAVE_NODE, a `node` of one's own that serves instead (the Docker
+    /// image on Alpine carries its own); DUOWAVE_NODE_MIRROR, where Node's builds come from (nodejs.org).
+    pub node_dir: PathBuf,
+    pub own_node: Option<PathBuf>,
+    pub node_mirror: Option<String>,
 }
 
 /// A MIDI keyboard for apps (docs/plans/midi.md).
@@ -928,6 +934,9 @@ fn build(env: &Env) -> Config {
                 .unwrap_or(crate::plugins::budget::PressureAction::Disable),
             bundled: env.flag("PLUGINS_BUNDLED", true),
             schedules: env.flag("PLUGINS_SCHEDULES", true),
+            node_dir: env.get("NODE_DIR").map(PathBuf::from).unwrap_or_else(|| data_path(env, "node", "data/node")),
+            own_node: env.optional("DUOWAVE_NODE").filter(|path| !path.trim().is_empty()).map(PathBuf::from),
+            node_mirror: env.optional("DUOWAVE_NODE_MIRROR").filter(|url| !url.trim().is_empty()),
         },
         midi: MidiConfig { enabled: env.flag("MIDI", true), remote: env.flag("MIDI_REMOTE", false) },
         files: FilesConfig {

@@ -24,8 +24,8 @@ export function onWorkshopChange(listener: Listener): () => void {
     return () => listeners.delete(listener);
 }
 
-/** Стадии, в которых черновик стоит на столе плиткой: агент работает, «на примерке», не вышло, остановлен. */
-export const ON_DESK: DraftStage[] = ['working', 'ready', 'failed', 'stopped'];
+/** Стадии, в которых черновик стоит на столе плиткой: агент работает, «на примерке», не вышло, остановлен, не доделано, прервано. */
+export const ON_DESK: DraftStage[] = ['working', 'ready', 'failed', 'stopped', 'unfinished', 'interrupted'];
 
 /** Черновик плиткой на столе — самый свежий из тех, что на столе; остальные считаются. */
 export function deskDrafts(drafts: DraftView[]): { tile: DraftView | null; more: number } {

@@ -14,6 +14,7 @@ export default {
     makingAgain: (what: string) => `Переделываю ${what}. Скажу, когда будет готово — столом можно пользоваться.`,
     readyLine: (title: string) => `Готово: «${title}».`,
     readyHead: 'Агент · готово',
+    unfinishedHead: 'Агент · не доделано',
     listenMore: (seconds: number) => `слушаю ещё ${seconds} с`,
     chipFit: 'примерить',
     chipDesk: 'на стол',

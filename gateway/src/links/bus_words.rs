@@ -92,7 +92,7 @@ impl Words for BrainWords {
                         }
                         let input = Value::Object(call.input);
                         Ok(match bus.call(trail, asker, app, &call.name, input, Vec::new()).await {
-                            Ok(answer) => ToolOutcome { content: text_of(answer), is_error: false, tainted: false },
+                            Ok(answer) => ToolOutcome::from(text_of(answer)),
                             Err(error) => ToolOutcome::error(error.to_string()),
                         })
                     }

@@ -150,6 +150,8 @@ pub struct ToolContext {
     pub principal: Principal,
     pub cancel: CancellationToken,
     pub station: Option<StationAct>,
+    /// Where the phrase came from (src/talk): what opened it, on which device. None where nobody said one (a check).
+    pub origin: Option<crate::talk::Origin>,
 }
 
 /// The station a tool's call answers for: a tool that acts (plays, speaks — docs/plans/plugins.md, «Инструмент
@@ -182,7 +184,30 @@ pub struct ToolContribution {
     pub read_only: bool,
     /// Its answer comes from outside the house (a service on the internet): what follows it is tainted.
     pub outside: bool,
+    /// Its answer is a ready phrase (the talk's works: «Делаю: …», and their refusals too): said as it is, and the
+    /// answer ends there — no second round of the model to retell it. What the model should put into words itself
+    /// the tool returns as `ModelWords`.
+    pub spoken: bool,
+    /// What the history keeps of a spoken answer instead of the phrase (the talk's works: the work's line), asked after
+    /// the run with when it began; None keeps the phrase.
+    pub kept: Option<ToolKept>,
 }
+
+/// What the history keeps of a spoken tool's answer: asked with the call's context and when it began (ms).
+pub type ToolKept = Arc<dyn Fn(&ToolContext, u64) -> Option<String> + Send + Sync>;
+
+/// The answer of a spoken tool the model puts into words itself (a question which of two things, a refusal): not a
+/// failure, not a ready phrase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelWords(pub String);
+
+impl std::fmt::Display for ModelWords {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ModelWords {}
 
 /// The tools the connectors give, as the dialog asks for them per speaker (the station's conversations, the
 /// panel's check chat).
@@ -230,16 +255,18 @@ impl ContributedOffer {
 
     /// Runs the model's call; a failure is an answer the model reads.
     pub async fn run(&self, call: &ToolCall, principal: &Principal, cancel: CancellationToken) -> ToolOutcome {
-        self.run_for(call, principal, cancel, None).await
+        self.run_for(call, principal, cancel, None, None).await
     }
 
-    /// The same inside a station's answer: a tool that acts adds its commands to it.
+    /// The same inside a station's answer: a tool that acts adds its commands to it. `origin`: where the phrase came
+    /// from, for the tools that keep it (the talk's works).
     pub async fn run_for(
         &self,
         call: &ToolCall,
         principal: &Principal,
         cancel: CancellationToken,
         station: Option<StationAct>,
+        origin: Option<crate::talk::Origin>,
     ) -> ToolOutcome {
         let Some(contribution) = self.index.get(&call.name) else {
             return ToolOutcome::error(format!("error: {} is not available now", call.name));
@@ -247,11 +274,20 @@ impl ContributedOffer {
         if let Some(error) = &call.error {
             return ToolOutcome::error(format!("error: {error}"));
         }
-        let context = ToolContext { principal: principal.clone(), cancel, station };
+        let context = ToolContext { principal: principal.clone(), cancel, station, origin };
+        let since = crate::utils::time::now_ms();
+        let kept_of = context.clone();
         match (contribution.run)(call.input.clone(), context).await {
             Ok(text) if contribution.outside => ToolOutcome::tainted(text),
+            Ok(text) if contribution.spoken => ToolOutcome {
+                kept: contribution.kept.as_ref().and_then(|kept| kept(&kept_of, since)),
+                ..ToolOutcome::spoken(text)
+            },
             Ok(text) => ToolOutcome::from(text),
-            Err(error) => ToolOutcome::error(format!("error: {error}")),
+            Err(error) => match error.downcast_ref::<ModelWords>() {
+                Some(words) => ToolOutcome::from(words.0.clone()),
+                None => ToolOutcome::error(format!("error: {error}")),
+            },
         }
     }
 }
@@ -386,6 +422,8 @@ mod tests {
                     run: Arc::new(|_, _| async { Ok(String::new()) }.boxed()),
                     read_only: false,
                     outside: false,
+                    spoken: false,
+                    kept: None,
                 })
                 .into_iter()
                 .collect()
@@ -455,6 +493,8 @@ mod tests {
             }),
             read_only,
             outside,
+            spoken: false,
+            kept: None,
         }
     }
 

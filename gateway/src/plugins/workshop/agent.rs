@@ -84,6 +84,10 @@ fn round_ms(max_tokens: u32) -> u64 {
     (u64::from(max_tokens) * MS_PER_TOKEN).max(ROUND_MS)
 }
 
+/// Words of the person added to the work on the way, as the agent reads them (the background's rules say what they
+/// are: make.rs, `BACKGROUND_RULES`).
+pub const AFTER: &str = "Вдогонку: ";
+
 /// What the agent hears when its turn ran out of tokens in a call (a whole file did not fit in one answer): the call
 /// did not run, and the rounds go on.
 fn cut_note(cut: &ToolCallCut) -> String {
@@ -494,8 +498,8 @@ pub fn instructions(workshop: &Workshop, draft: &str) -> String {
     };
     let placement = workshop.host().placement_now();
     format!(
-        "{}\n\n## Сейчас\n\n{now} Шлюз работает: {} ({}). Отвечай по-русски, коротко и по делу: что сделал, что проверил, что \
-дальше. Код показывай только если об этом просят — он в черновике.",
+        "{}\n\n## Сейчас\n\n{now} Шлюз работает: {} ({}). Отвечай на языке просьбы, коротко и по делу: что сделал, что проверил, \
+что дальше. Код показывай только если об этом просят — он в черновике.",
         skill_text(),
         placement.title(),
         placement.as_str()
@@ -560,6 +564,11 @@ pub fn work(
         context.system = context.system.map(|system| format!("{system}\n\n{rules}"));
     }
     let run = workshop.activity().begin(draft, how.by, message, &cancel);
+    // A model without tools writes no file a run could be judged by (echo, in tests): its check alone decides, as
+    // before. With tools, a run that changed nothing is no «готово».
+    if !dialog.tools_for(&context) {
+        run.changed.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     let draft_id = draft.to_string();
     let (tools_workshop, told_run, told) = (workshop.clone(), run.clone(), how.told);
     let offered: Vec<LlmTool> = tools(false).into_iter().filter(|tool| how.install || tool.name != "install").collect();
@@ -575,6 +584,15 @@ pub fn work(
             workshop.activity().answer(&run, asked, &call.name, &content, failed);
             if matches!(call.name.as_str(), "write_file" | "append_file" | "edit_file" | "delete_file") {
                 workshop.tell(&draft, "edited");
+            }
+            // The run changed the draft: its end may be «готово» (a run that changed nothing is not).
+            if !failed
+                && matches!(
+                    call.name.as_str(),
+                    "write_file" | "append_file" | "edit_file" | "delete_file" | "restore_step" | "finish_merge"
+                )
+            {
+                run.changed.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             if let Some(told) = &told {
                 told(ChatStep::Result {
@@ -595,6 +613,16 @@ pub fn work(
     // Long work outlives a network that blinks: a step the connection broke (14.11, «Anthropic stream broke … Operation
     // timed out» in the middle of a game) is asked again instead of failing the whole run.
     toolbox.retries = RETRIES;
+    // Forty rounds over one growing history: each pays in full only for what is new (Claude's cache).
+    toolbox.cache_history = true;
+    // A last round forced by the limits: the run may have stopped half-way (the card's «не доделано»).
+    toolbox.limited = Some(run.limited.clone());
+    // Words added on the way go to the agent between its steps (docs/plans/audio-interface.md, «Вдогонку»).
+    let (inbox_workshop, inbox_run) = (workshop.clone(), run.clone());
+    toolbox.inbox = Some(Arc::new(move || {
+        let notes = inbox_workshop.activity().take_notes(&inbox_run);
+        (!notes.is_empty()).then(|| format!("{AFTER}{}", notes.join("\n")))
+    }));
     let answer = dialog.answer(key, message, context, run.cancel.clone(), Some(toolbox));
     workshop.activity().watch(run, answer)
 }

@@ -82,9 +82,9 @@ pub fn run() -> i32 {
                     },
                 }
             }
-            (None, Request::Run { language }) => match held.as_mut() {
+            (None, Request::Run { language, words }) => match held.as_mut() {
                 None => Response::Error { message: "модель не загружена".into(), backend: false },
-                Some(held) => recognize(&mut held.session, &pcm, language),
+                Some(held) => recognize(&mut held.session, &pcm, language, words),
             },
         };
         if let Err(error) = write_message(&mut out, &response, &[]) {
@@ -120,12 +120,32 @@ fn load(path: &Path, cpu_only: bool) -> transcribe_cpp::Result<(Held, String, St
     Ok((Held { session, _model: model }, backend, device))
 }
 
-fn recognize(session: &mut Session, pcm: &[f32], language: Option<String>) -> Response {
+fn recognize(session: &mut Session, pcm: &[f32], language: Option<String>, words: bool) -> Response {
     let options = RunOptions { language, ..Default::default() };
     match session.run(pcm, &options) {
-        Ok(transcript) => Response::Text { text: transcript.text.trim().to_string() },
+        Ok(transcript) => Response::Text {
+            text: transcript.text.trim().to_string(),
+            // The words' times the engine has anyway: only for the hearing for apps, a command needs none.
+            words: if words {
+                transcript
+                    .words
+                    .iter()
+                    .filter(|word| !word.text.trim().is_empty())
+                    .map(|word| super::protocol::TimedWord {
+                        text: word.text.trim().to_string(),
+                        t0_ms: word.t0_ms,
+                        t1_ms: word.t1_ms,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            language: if words { transcript.language.clone() } else { None },
+        },
         // Too short to hear anything (the keep-warm's half second of silence on some models): nothing heard.
-        Err(error) if error.kind() == ErrorKind::InputTooShort => Response::Text { text: String::new() },
+        Err(error) if error.kind() == ErrorKind::InputTooShort => {
+            Response::Text { text: String::new(), words: Vec::new(), language: None }
+        }
         Err(error) => Response::Error { message: error.to_string(), backend: error.kind() == ErrorKind::Backend },
     }
 }

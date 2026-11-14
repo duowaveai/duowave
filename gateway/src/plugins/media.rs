@@ -123,7 +123,7 @@ pub fn media_item_with(
         // A file of the home folder: the link `host.files.play` made for it, one file for a while.
         (None, None, None, None) => match text("file") {
             Some(token) if token.len() == 48 && token.chars().all(|c| c.is_ascii_hexdigit()) => {
-                format!("{}/folder/{token}", base()?)
+                format!("{}/v/{token}", base()?)
             }
             _ => return None,
         },

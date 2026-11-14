@@ -7,7 +7,8 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
-import { CardSpec, fetchBusPreview, fetchPluginFile, problemOf } from '../api';
+import { CardSpec, problemOf } from '../api';
+import { useMediaSrc } from '../media/links';
 import { usePluginVersion } from '../plugins/versions';
 import { useApi } from '../sdk';
 import { Action } from '../ui/cards';
@@ -239,33 +240,14 @@ function Shares({ parts }: { parts: Array<{ label: string; value: number }> }) {
 }
 
 function Picture({ app, name, address, caption }: { app: string; name?: string; address?: string; caption?: string }) {
-    const [url, setUrl] = useState<string | null>(null);
-    // Not there (an app that named a file it never downloaded) or not given: said, not an empty space.
-    const [missing, setMissing] = useState(false);
-    useEffect(() => {
-        let made: string | null = null;
-        let alive = true;
-        setMissing(false);
-        // A picture of the home folder comes made small, read as the app for whoever looks (its link holds).
-        (address ? fetchBusPreview(app, address, 960) : fetchPluginFile(app, name ?? ''))
-            .then((blob) => {
-                if (!alive) return;
-                made = URL.createObjectURL(blob);
-                setUrl(made);
-            })
-            .catch(() => {
-                if (!alive) return;
-                setUrl(null);
-                setMissing(true);
-            });
-        return () => {
-            alive = false;
-            if (made) URL.revokeObjectURL(made);
-        };
-    }, [app, name, address]);
+    // The media engine's key (gateway/media), as the app for whoever looks: a picture of the home folder made small (its
+    // link holds), the app's own picture as it is. Not there (an app that named a file it never downloaded) or not
+    // given: said, not an empty space.
+    const target = address ?? (name ? `files/app/${app}/${name}` : null);
+    const { src: url, failed: missing, retry } = useMediaSrc(target, { app, size: address ? 960 : undefined });
     return (
         <figure class="app-card-picture m-0">
-            {url && <img src={url} alt={caption ?? ''} />}
+            {url && <img src={url} alt={caption ?? ''} onError={retry} />}
             {missing && (
                 <p class="app-card-picture-missing t-caption m-0" role="status">
                     {tr.cards.pictureMissing(name)}

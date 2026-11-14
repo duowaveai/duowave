@@ -36,6 +36,16 @@ const START: Point = { x: 0, y: -40 };
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
+/**
+ * Сдвиг поля, пока его не трогали, когда под колонкой стоит виджет (`under`, «Лента»): колонка поднимается, насколько
+ * позволяет место над ней (до 24 точек от верха поля, не выше 240), — чтобы виджет под ней было видно сразу, а не одну
+ * его шапку. `height` — высота поля.
+ */
+function startOf(withUnder: boolean, height: number): Point {
+    if (!withUnder) return START;
+    return { x: 0, y: Math.round(clamp(SCENE_H / 2 + 24 - height / 2, -240, START.y)) };
+}
+
 /** Мерило открытого свободного стола: где элемент на нём (точка поля и ширина). Нет стола — null. */
 let measure: ((element: Element) => WidgetPlace) | null = null;
 
@@ -97,7 +107,10 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
     const box = useRef<HTMLDivElement>(null);
     const plane = useRef<HTMLDivElement>(null);
     const [zoom, setZoom] = useState(layout.zoom ?? 1);
-    const [pan, setPan] = useState<Point>(layout.pan ?? START);
+    const withUnder = widgets.some((widget) => widget.under && !layout.places[widget.key]);
+    /** С чего стол начинается, пока его не двигали: от него же «вид как сначала» не сохраняется. */
+    const startPan = useRef<Point>(startOf(withUnder, window.innerHeight - 64));
+    const [pan, setPan] = useState<Point>(layout.pan ?? startPan.current);
     /** Виджет, который тащат или растягивают сейчас: его место — здесь, пока не отпустили. */
     const [live, setLive] = useState<{ key: string; place: WidgetPlace } | null>(null);
     const [map, setMap] = useState<{ items: Array<{ key: string; rect: DOMRect; scene?: boolean }>; view: DOMRect } | null>(null);
@@ -146,18 +159,20 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
     // Масштаб и сдвиг — в раскладку, когда человек остановился. Вид как сначала там не нужен: стартовый стол шлюз не хранит.
     useEffect(() => {
         const id = window.setTimeout(() => {
-            const saved = layout.pan ?? START;
+            const saved = layout.pan ?? startPan.current;
             if (zoom !== (layout.zoom ?? 1) || pan.x !== saved.x || pan.y !== saved.y) actions.view(zoom, pan);
         }, 400);
         return () => window.clearTimeout(id);
     }, [zoom, pan.x, pan.y]);
     // Вид из раскладки: «Расставить заново» вернуло его к началу или стол пришёл со шлюза (его двигали в другом браузере).
+    // Виджет под колонкой пришёл позже стола (окошко приложения грузится само) — начало стола пересчитывается.
     useEffect(() => {
         const zoomTo = layout.zoom ?? 1;
-        const panTo = layout.pan ?? START;
+        if (!layout.pan) startPan.current = startOf(withUnder, box.current?.clientHeight ?? window.innerHeight - 64);
+        const panTo = layout.pan ?? startPan.current;
         if (zoomTo !== view.current.zoom) setZoom(zoomTo);
         if (panTo.x !== view.current.pan.x || panTo.y !== view.current.pan.y) setPan(panTo);
-    }, [layout.zoom, layout.pan?.x, layout.pan?.y]);
+    }, [layout.zoom, layout.pan?.x, layout.pan?.y, withUnder]);
 
     /** Точка экрана → точка стола. */
     const toPlane = (clientX: number, clientY: number): Point => {
@@ -299,7 +314,9 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
     };
 
     const placed = widgets.filter((widget) => layout.places[widget.key] || live?.key === widget.key);
-    const flowing = widgets.filter((widget) => !layout.places[widget.key] && live?.key !== widget.key);
+    // Под сценой — во всю её ширину — виджеты, что просят встать там (`under`), пока их не передвинули руками.
+    const under = widgets.filter((widget) => widget.under && !layout.places[widget.key] && live?.key !== widget.key);
+    const flowing = widgets.filter((widget) => !widget.under && !layout.places[widget.key] && live?.key !== widget.key);
     // Столбцы по сторонам от колонки: по очереди слева и справа, при многих — второй справа.
     const columns: DeskWidget[][] = [[], [], []];
     flowing.forEach((widget, index) => {
@@ -359,6 +376,15 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
                 <div class="desk-scene-spot" style={{ left: `${-half}px`, top: `${top}px`, width: `${SCENE_W}px` }}>
                     {scene}
                 </div>
+                {under.length > 0 && (
+                    <div class="desk-under" style={{ left: `${-half}px`, top: `${SCENE_H / 2 + 24}px`, width: `${SCENE_W}px` }}>
+                        {under.map((widget) => (
+                            <div key={widget.key} data-widget={widget.key} class="desk-slot">
+                                {render(widget, widgetMenu(widget), gripOf(widget.key))}
+                            </div>
+                        ))}
+                    </div>
+                )}
                 {columns.map(
                     (list, index) =>
                         (list.length > 0 || index === 0) && (

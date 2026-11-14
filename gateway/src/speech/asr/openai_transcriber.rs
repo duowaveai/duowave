@@ -134,6 +134,48 @@ impl OpenAiTranscriber {
             .to_string())
     }
 
+    /// The whole of an audio with each word's time and the language (`verbose_json`, word timestamps). A server
+    /// that gives no words answers the text alone; a long audio gets its own timeout, not a spoken phrase's.
+    pub async fn recognize_heard(
+        &self,
+        pcm: &[i16],
+        sample_rate: u32,
+        language: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<super::Heard> {
+        let config = &self.inner.config;
+        let file = Part::bytes(encode_wav(pcm, sample_rate)).file_name("speech.wav").mime_str("audio/wav")?;
+        let mut form = Form::new()
+            .part("file", file)
+            .text("model", config.model.clone())
+            .text("response_format", "verbose_json")
+            .text("timestamp_granularities[]", "word");
+        if let Some(language) = language.or(config.language.as_deref()).filter(|language| !language.is_empty()) {
+            form = form.text("language", language.to_string());
+        }
+        let seconds = pcm.len() as u64 / u64::from(sample_rate.max(1));
+        let timeout = Duration::from_millis(config.timeout_ms.max(30_000).max(seconds * 4_000));
+        let request = self
+            .inner
+            .authorized(client().post(format!("{}/audio/transcriptions", self.inner.base_url)))
+            .multipart(form)
+            .timeout(timeout);
+        let exchange = async {
+            let response = request.send().await?;
+            let status = response.status();
+            Ok::<_, reqwest::Error>((status, response.bytes().await?))
+        };
+        let (status, body) = tokio::select! {
+            result = exchange => result?,
+            _ = cancel.cancelled() => bail!("recognition cancelled"),
+        };
+        let body = utf8_text(&body);
+        if !status.is_success() {
+            bail!("HTTP {}: {}", status.as_u16(), body.chars().take(300).collect::<String>());
+        }
+        Ok(heard_of(&serde_json::from_str(&body)?, language))
+    }
+
     pub async fn probe(&self) -> String {
         match self.inner.list_models(3000).await {
             Ok(answer) => {
@@ -236,6 +278,40 @@ impl Inner {
     }
 }
 
+/// `verbose_json` as servers answer it: `text`, `language` (a code or OpenAI's English name), `words[{word, start,
+/// end}]`; a server without words answers the text.
+fn heard_of(parsed: &Value, asked: Option<&str>) -> super::Heard {
+    let text =
+        parsed.get("text").and_then(Value::as_str).map(|text| text.trim_matches(is_js_space)).unwrap_or("").to_string();
+    let language = parsed
+        .get("language")
+        .and_then(Value::as_str)
+        .map(|language| match language.to_ascii_lowercase().as_str() {
+            "russian" => "ru".to_string(),
+            "english" => "en".to_string(),
+            other => other.to_string(),
+        })
+        .or_else(|| asked.map(str::to_string));
+    let words = parsed
+        .get("words")
+        .and_then(Value::as_array)
+        .map(|words| {
+            words
+                .iter()
+                .filter_map(|word| {
+                    Some(super::HeardWord {
+                        word: word.get("word").and_then(Value::as_str)?.trim().to_string(),
+                        start: word.get("start").and_then(Value::as_f64)?,
+                        end: word.get("end").and_then(Value::as_f64)?,
+                    })
+                })
+                .filter(|word| !word.word.is_empty() && word.end >= word.start)
+                .collect()
+        })
+        .unwrap_or_default();
+    super::Heard { text, language, words }
+}
+
 impl SpeechRecognizer for OpenAiTranscriber {
     fn description(&self) -> String {
         OpenAiTranscriber::description(self)
@@ -252,6 +328,16 @@ impl SpeechRecognizer for OpenAiTranscriber {
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<String>> {
         OpenAiTranscriber::recognize(self, pcm, sample_rate, cancel).boxed()
+    }
+
+    fn recognize_heard<'a>(
+        &'a self,
+        pcm: &'a [i16],
+        sample_rate: u32,
+        language: Option<&'a str>,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<super::Heard>> {
+        OpenAiTranscriber::recognize_heard(self, pcm, sample_rate, language, cancel).boxed()
     }
 
     fn probe(&self) -> BoxFuture<'_, String> {

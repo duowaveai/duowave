@@ -5,7 +5,7 @@ import { CAPABILITY_TITLES } from '../capabilities';
 import { tr } from '../i18n';
 import { clock, timeAgo } from '../time';
 import { toneClass } from './dash-model';
-import { KIND_WORDS, PLACE_WORDS, STEP_TITLES, answeredBy, seconds, statusOf } from './trip';
+import { KIND_WORDS, PLACE_WORDS, STEP_TITLES, answeredBy, feltMs, seconds, statusOf } from './trip';
 import { byMode } from '../words';
 import { onComputer } from '../voice-input';
 
@@ -109,7 +109,17 @@ export function RequestRow({
 }) {
     const status = statusOf(request);
     const by = answeredBy(request);
-    const meta = [KIND_WORDS[request.kind], station, request.capability ? (titles[request.capability] ?? request.capability) : undefined]
+    // Чем открыта фраза, через сколько первое слово, что потратила модель (docs/plans/audio-interface.md, «Пульт»).
+    const felt = feltMs(request);
+    const tokens = request.tokens;
+    const meta = [
+        KIND_WORDS[request.kind],
+        station,
+        request.capability ? (titles[request.capability] ?? request.capability) : undefined,
+        request.origin ? tr.journal.opened(request.origin.activator, request.origin.name) : undefined,
+        felt !== undefined && request.steps.some((step) => step.phase === 'speak') ? tr.journal.firstWord(seconds(felt)) : undefined,
+        tokens ? tr.journal.tokens(tokens.input, tokens.output, tokens.cacheRead, tokens.rounds) : undefined,
+    ]
         .filter(Boolean)
         .join(' · ');
     return (

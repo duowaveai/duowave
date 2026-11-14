@@ -44,6 +44,11 @@ const en: Translation<typeof ru> = {
     noRightComputer: 'What was said to DuoWave is visible to anyone the administrator gave journal rights.',
     unsupported: 'Not supported yet',
     unsupportedEmpty: 'Empty: everything that was asked for was handled by someone.',
+    opened: (activator: 'word' | 'button' | 'answer' | 'text', name?: string) =>
+        activator === 'word' ? `by the word “${name ?? '…'}”` : activator === 'button' ? 'by the button' : activator === 'answer' ? 'an answer to a question' : 'typed',
+    firstWord: (time: string) => `first word in ${time}`,
+    tokens: (input: number, output: number, cached: number, rounds: number) =>
+        `tokens ${input} → ${output}${cached ? `, ${cached} from the cache` : ''}${rounds > 1 ? `, ${rounds} rounds` : ''}`,
 };
 
 export default en;

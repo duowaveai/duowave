@@ -179,7 +179,11 @@ fn body_of(settings: &LlmSettings, request: &LlmRequest, model: &str, haiku: boo
     body.insert("model".into(), json!(model));
     body.insert("max_tokens".into(), json!(request.max_tokens.unwrap_or(settings.max_tokens)));
     body.insert("system".into(), Value::Array(system));
-    body.insert("messages".into(), Value::Array(request.messages.iter().map(to_param).collect()));
+    let mut messages = merged(request.messages.iter().map(to_param).collect());
+    if request.cache_history {
+        mark_last(&mut messages);
+    }
+    body.insert("messages".into(), Value::Array(messages));
     body.insert("output_config".into(), json!({"effort": settings.effort}));
     if !tools.is_empty() {
         body.insert("tools".into(), Value::Array(tools));
@@ -192,6 +196,42 @@ fn body_of(settings: &LlmSettings, request: &LlmRequest, model: &str, haiku: boo
     }
     body.insert("stream".into(), json!(true));
     Value::Object(body)
+}
+
+/// The cache's mark on the last block of the last message: everything up to it is read from the cache next time
+/// (docs/plans/audio-interface.md, «кэш истории»). A plain text message becomes one text block for it.
+fn mark_last(messages: &mut [Value]) {
+    let Some(last) = messages.last_mut() else { return };
+    if let Value::String(text) = &last["content"] {
+        last["content"] = json!([{ "type": "text", "text": text }]);
+    }
+    if let Some(block) = last["content"].as_array_mut().and_then(|blocks| blocks.last_mut()) {
+        block["cache_control"] = json!({ "type": "ephemeral" });
+    }
+}
+
+/// Neighbouring messages of the person's side as one: the tools' results and the words that came after them (the
+/// workshop's «Вдогонку: …») go as one turn of blocks, so the turns alternate as Claude reads them.
+fn merged(messages: Vec<Value>) -> Vec<Value> {
+    let blocks = |content: &Value| -> Vec<Value> {
+        match content {
+            Value::Array(blocks) => blocks.clone(),
+            Value::String(text) => vec![json!({"type": "text", "text": text})],
+            other => vec![other.clone()],
+        }
+    };
+    let mut out: Vec<Value> = Vec::with_capacity(messages.len());
+    for message in messages {
+        match out.last_mut() {
+            Some(last) if last["role"] == "user" && message["role"] == "user" => {
+                let mut content = blocks(&last["content"]);
+                content.extend(blocks(&message["content"]));
+                last["content"] = Value::Array(content);
+            }
+            _ => out.push(message),
+        }
+    }
+    out
 }
 
 /// Whether JavaScript took a value for true: the Node gateway sent `native` back when it was.
@@ -869,6 +909,55 @@ mod tests {
             body["messages"][2],
             json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "нет", "is_error": true}]})
         );
+    }
+
+    /// The history of a long run is cached too: the last message carries the cache's mark (and only with
+    /// `cache_history`).
+    #[test]
+    fn marks_the_last_message_for_the_cache_when_the_history_is_cached() {
+        let mut messages = vec![
+            json!({"role": "user", "content": "Сделай виджет"}),
+            json!({"role": "assistant", "content": "Пишу."}),
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}),
+        ];
+        mark_last(&mut messages);
+        assert_eq!(messages[2]["content"][0]["cache_control"], json!({"type": "ephemeral"}));
+        assert!(messages[0]["content"].is_string(), "only the last one");
+        let mut plain = vec![json!({"role": "user", "content": "Привет"})];
+        mark_last(&mut plain);
+        assert_eq!(
+            plain[0]["content"],
+            json!([{"type": "text", "text": "Привет", "cache_control": {"type": "ephemeral"}}])
+        );
+        let settings = settings("http://127.0.0.1:9", true, Some("key"));
+        let request = LlmRequest { messages: vec![LlmMessage::User("Привет".into())], ..LlmRequest::default() };
+        let body = body_of(&settings, &request, "claude", false);
+        assert!(body["messages"][0]["content"].is_string(), "not without cache_history");
+        let request = LlmRequest { cache_history: true, ..request };
+        let body = body_of(&settings, &request, "claude", false);
+        assert_eq!(body["messages"][0]["content"][0]["cache_control"], json!({"type": "ephemeral"}));
+    }
+
+    /// The workshop's «Вдогонку: …» after the tools' results goes in the same turn of the person's side: the turns
+    /// alternate.
+    #[test]
+    fn the_words_after_the_tools_results_join_their_turn() {
+        let messages = vec![
+            json!({"role": "user", "content": "Сделай виджет"}),
+            json!({"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "check", "input": {}}]}),
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}),
+            json!({"role": "user", "content": "Вдогонку: и ещё кнопку."}),
+        ];
+        let merged = merged(messages);
+        assert_eq!(merged.len(), 3);
+        assert_eq!(
+            merged[2],
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+                {"type": "text", "text": "Вдогонку: и ещё кнопку."}
+            ]})
+        );
+        assert_eq!(merged[0], json!({"role": "user", "content": "Сделай виджет"}), "a lone turn stays as it was");
     }
 
     #[tokio::test]

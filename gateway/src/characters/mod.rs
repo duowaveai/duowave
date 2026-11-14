@@ -627,7 +627,7 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::config::{Config, Env};
-    use crate::dialog::system_prompt::WAKE_WORD_LINE;
+    use crate::dialog::system_prompt::wake_word_line;
     use serde_json::json;
 
     /// A gateway with its packages in a folder of the test's own.
@@ -676,7 +676,7 @@ mod tests {
 
         // The choice by id of the old screen takes it too.
         app.personas.set(json!({"presetId": "arthur:arthur"}).as_object().unwrap(), None).unwrap();
-        assert!(app.personas.system_prompt(None).text.contains(WAKE_WORD_LINE));
+        assert!(app.personas.system_prompt(None).text.contains(&wake_word_line()));
 
         std::fs::remove_dir_all(dir.path().join("packages/arthur")).unwrap();
         app.characters.sync();
@@ -781,7 +781,7 @@ mod tests {
             prompt.starts_with("Ты — Артур, дворецкий умной колонки.\nШутишь при каждом удобном случае.\n"),
             "{prompt}"
         );
-        assert!(prompt.contains(WAKE_WORD_LINE) && prompt.contains("Каждый ответ будет озвучен"));
+        assert!(prompt.contains(&wake_word_line()) && prompt.contains("Каждый ответ будет озвучен"));
         let active = app.characters.view().await.unwrap().active;
         assert_eq!(
             (active.id.as_deref(), active.edited, &active.update),
@@ -818,7 +818,7 @@ mod tests {
         assert_eq!((answer.character.builtin, answer.voice.state), (true, VoiceState::None));
         assert_eq!(answer.character.tones.len(), 3);
         let prompt = app.personas.system_prompt(None).text;
-        assert!(!prompt.contains(WAKE_WORD_LINE), "Alisa needs no such line");
+        assert!(!prompt.contains(&wake_word_line()), "Alisa needs no such line");
         assert!(prompt.contains("без шуток") && prompt.contains("близкая подруга"));
         let active = app.characters.view().await.unwrap().active;
         assert_eq!(active.id.as_deref(), Some("alice"));

@@ -50,6 +50,9 @@ import voice from './voice';
 import core from './core';
 import sdk from './sdk';
 import frame from './frame';
+import media from './media';
+import share from './share';
+import cloudVoices from './cloudVoices';
 
 const ru = {
     common,
@@ -101,6 +104,9 @@ const ru = {
     core,
     sdk,
     frame,
+    media,
+    share,
+    cloudVoices,
 };
 
 export type Messages = typeof ru;

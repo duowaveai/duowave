@@ -16,6 +16,7 @@ import { PlayButton, useMediaUrl } from '../ui/media';
 import { needsSize } from '../ui/needs';
 import { pluginMemoryLine } from './memory';
 import { InstalledPackageSheet, LaterLine, ORIGIN_TITLES, SchedulesSwitchLine } from './plugins';
+import { rightWords } from '../plugins/rights';
 import { panelSafeMode } from '../plugins/loader';
 import { Sheet } from '../ui/sheet';
 import { Switch } from '../ui/switch';
@@ -135,6 +136,7 @@ export function entryPills(entry: CatalogEntry, engines: Record<string, VoiceLab
     // Свой источник — заметно: его пакеты никто не проверял.
     if (entry.own) pills.push({ text: `${tr.catalog.pillOwnSource} · ${entry.source ?? ''}`.trim(), cls: 'pill-yandex' });
     else if (entry.source) pills.push({ text: entry.source, cls: 'pill-off' });
+    if (entry.signed) pills.push({ text: tr.catalog.pillSigned, cls: 'pill-own' });
     if (entry.state === 'update') pills.push({ text: tr.catalog.pillNewVersion, cls: 'pill-agent' });
     else if (isInstalled(entry)) pills.push({ text: tr.catalog.pillInstalled, cls: 'pill-off' });
     if (entry.state === 'incompatible') pills.push({ text: tr.catalog.pillIncompatible, cls: 'pill-off' });
@@ -146,6 +148,10 @@ export function entryPills(entry: CatalogEntry, engines: Record<string, VoiceLab
         pills.push({ text: size ? tr.catalog.pillNeedsModelSize(size) : tr.catalog.pillNeedsModel, cls: 'pill-yandex' });
     }
     return pills;
+}
+
+export function rightsLines(entry: CatalogEntry): string[] {
+    return (entry.permissions ?? []).map(rightWords);
 }
 
 /** «Нужна модель OmniVoice — на диске ~4 ГБ (можно и без неё)». */
@@ -300,6 +306,10 @@ export function CatalogEntrySheet({
                 </p>
             ))}
             {entry.license && <p class="t-caption m-0">{tr.catalog.license(entry.license)}</p>}
+            {(entry.runtime === 'node' || entry.runtime === 'process') && (
+                <p class="t-caption m-0">{tr.catalog.builtByComputer(entry.runtime === 'node', !!entry.signed)}</p>
+            )}
+            {rightsLines(entry).length > 0 && <p class="t-caption m-0">{tr.catalog.rightsLine(rightsLines(entry).join(' · '))}</p>}
             {!canManage(entry.kind) && (
                 <p class="t-caption m-0">
                     {entry.kind === 'character' ? tr.catalog.onlyCharacterEditor : tr.catalog.onlyAdmin}
@@ -649,6 +659,11 @@ export function PackagesTab({ part }: { part: 'installed' | 'catalog' }) {
                                             {from !== 'catalog' && <span class={`pill ${from === 'user' ? 'pill-own' : 'pill-off'}`}>{ORIGIN_TITLES[from]}</span>}
                                             {state && <span class={`pill ${state.cls}`}>{state.text}</span>}
                                             {fromCatalog?.state === 'update' && <span class="pill pill-agent">{tr.catalog.pillNewVersion}</span>}
+                                            {(entry.waits?.length ?? 0) > 0 && (
+                                                <span class="pill pill-agent" title={entry.waits?.join(', ')}>
+                                                    {tr.core.waitsKey}
+                                                </span>
+                                            )}
                                         </span>
                                         <span class="t-caption">
                                             {[entry.version && tr.catalog.versionOf(entry.version), entry.license, entry.description].filter(Boolean).join(' · ')}

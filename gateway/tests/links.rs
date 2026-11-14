@@ -104,8 +104,9 @@ async fn the_check_chat_asks_the_gateways_own_dialog() {
         .collect();
     let kinds: Vec<&str> = events.iter().map(|event| event["type"].as_str().unwrap()).collect();
     assert_eq!(kinds, ["start", "text", "done"], "{text}");
-    // The memory's remember, forget and recall: the check chat may remember too, as the person signed in.
-    assert_eq!(events[0]["tools"], 3);
+    // The memory's remember, forget and recall: the check chat may remember too, as the person signed in; and the
+    // works' work_start, work_add and work_do (src/talk/work_tools.rs).
+    assert_eq!(events[0]["tools"], 6);
     assert_eq!(events[0]["provider"], "Эхо");
     assert_eq!(events[1]["text"], "Вы сказали: Ты здесь?");
     gateway.stop().await;

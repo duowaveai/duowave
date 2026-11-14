@@ -139,7 +139,9 @@ export function DeskScreen() {
                 <FolderOffers offers={offers} />
             </>
         ) : null;
-    // Без колонки столу нечего показать: режимы и орбита были бы о колонке, которой нет.
+    const ordered = orderedOnDesk(widgets, layout);
+    // Без колонки столу нечего показать: режимы и орбита были бы о колонке, которой нет. Виджеты «под сценой» —
+    // приложения этого компьютера («Лента») — стоят и здесь, под первыми шагами: им колонка не нужна.
     if (panel.noStation)
         return (
             <div class="desk-solo">
@@ -147,9 +149,18 @@ export function DeskScreen() {
                 <FirstRun />
                 <ConnectFirstCard onConnect={panel.openConnect} />
                 <MicFirstCard />
+                {ordered
+                    .filter((widget) => widget.under)
+                    .map((widget) => (
+                        <WidgetOnDesk key={widget.key} widget={widget} menu={{ hide: () => actions.hide(widget.key) }} fresh={isFresh(layout, widget.key)} />
+                    ))}
             </div>
         );
-    const shown = orderedOnDesk(widgets, layout);
+    // Виджеты «под сценой» (`under`) — сразу под колонкой или ДиВи: в ленте телефона первыми после сцены, в столбце —
+    // первыми; на свободном столе их ставит DeskCanvas.
+    const shown = [...ordered.filter((widget) => widget.under), ...ordered.filter((widget) => !widget.under)];
+    const unders = shown.filter((widget) => widget.under);
+    const others = shown.filter((widget) => !widget.under);
     const keys = shown.map((widget) => widget.key);
     const menuOf = (widget: DeskWidget, feed: boolean): WidgetMenu => ({
         hide: () => actions.hide(widget.key),
@@ -173,8 +184,8 @@ export function DeskScreen() {
     // Телефон и узкое окно: лента — колонка посередине, по виджету-два выше, остальные ниже. Плитка-черновик — первой в
     // ленте (решение 9), над колонкой.
     if (!wide) {
-        const above = shown.slice(0, Math.min(2, Math.floor(shown.length / 3)));
-        const below = shown.slice(above.length);
+        const above = others.slice(0, Math.min(2, Math.floor(others.length / 3)));
+        const below = [...unders, ...others.slice(above.length)];
         return (
             <div class="desk-feed">
                 {banner}

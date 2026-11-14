@@ -90,8 +90,8 @@ fn heic(source: &Path, side: u32) -> Result<Vec<u8>, String> {
     bytes
 }
 
-/// The kept pictures within their room, the oldest going first.
-fn trim(kept: &Path) {
+/// The kept pictures within their room, the oldest going first (the videos' covers among them: gateway/media).
+pub fn trim(kept: &Path) {
     let Ok(entries) = std::fs::read_dir(kept) else { return };
     let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = entries
         .flatten()

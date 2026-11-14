@@ -8,6 +8,7 @@
 //! - `POST /api/v1/apps/host/say` `{text, device?}` → `{said}`
 //! - `POST /api/v1/apps/host/fetch` `{url, method, headers, body, timeoutMs}` → the answer, by its `net:` rights
 //! - `GET /api/v1/apps/host/settings`
+//! - `GET /api/v1/apps/host/locale` → `{locale, languages}`: the household's language now, the app's own languages
 //!
 //! Long tasks (src/tasks; docs/plugins/AUTHORING.md, «Долгие задачи»): work that takes longer than a call may.
 //!
@@ -42,6 +43,7 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/api/v1/apps/host/say", post(say))
         .route("/api/v1/apps/host/fetch", post(fetch))
         .route("/api/v1/apps/host/settings", get(settings))
+        .route("/api/v1/apps/host/locale", get(locale))
         .route("/api/v1/apps/host/call/{name}", post(call))
         .route("/api/v1/apps/host/tasks", get(tasks).post(task_start))
         .route("/api/v1/apps/host/tasks/{id}", get(task))
@@ -219,6 +221,15 @@ async fn call(
 async fn settings(State(app): State<Arc<App>>, ConnectInfo(peer): Peer, headers: HeaderMap) -> Response {
     match app_of(&app, peer, &headers) {
         Ok((_, host)) => Json(Value::Object(host.settings())).into_response(),
+        Err(response) => *response,
+    }
+}
+
+/// The household's language now and the app's own (its manifest's `languages`), as `host.i18n` gives a QuickJS
+/// backend: the program reads it at each call — it changes in the panel's «Настройки».
+async fn locale(State(app): State<Arc<App>>, ConnectInfo(peer): Peer, headers: HeaderMap) -> Response {
+    match app_of(&app, peer, &headers) {
+        Ok((_, host)) => Json(json!({ "locale": host.locale(), "languages": host.languages() })).into_response(),
         Err(response) => *response,
     }
 }

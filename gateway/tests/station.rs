@@ -2286,3 +2286,71 @@ async fn takes_a_station_whose_socket_a_mode_switch_closed_for_one_on_its_way_ba
     until(2000, "the station reconnecting", || presence_state(&env, &tag) == Some(PresenceState::Reconnecting)).await;
     assert_eq!(summaries(&env, "disconnected").await, vec!["code=1000 reason=mode switch".to_string()]);
 }
+
+/// docs/plans/audio-interface.md, episodes A and C by the station: a wish in one's own words — no «сделай виджет» —
+/// is read by the brain's model (the talk's reader: it names a widget) and starts one work; the station hears the
+/// gateway's ready phrase; when the agent is done the station says «Готово» by itself, and «да» said without the wake
+/// word puts the thing on the desk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wish_in_ones_own_words_to_the_station_is_one_work_and_its_yes_puts_it_on_the_desk() {
+    let env = env().await;
+    let agent =
+        |request: &Value| request["messages"][0]["content"].as_str().unwrap_or_default().starts_with("# Мастерская");
+    env.llm.set_responder(move |request| {
+        if agent(request) {
+            return Some(fakes::agent_made(request, "Сделано: слова дня."));
+        }
+        if fakes::reads(request) {
+            let wish = request["messages"].to_string().contains("испанский");
+            return Some(fakes::read_as(if wish {
+                json!({ "act": "new", "text": "я учу испанский; слова дня", "title": "Испанский" })
+            } else {
+                json!({ "act": "talk" })
+            }));
+        }
+        let asked = request["messages"].to_string();
+        let tools = request["tools"].to_string();
+        let answered =
+            request["messages"].as_array().is_some_and(|messages| messages.iter().any(|m| m["role"] == "tool"));
+        (asked.contains("испанский") && tools.contains("work_start") && !answered).then(|| {
+            fakes::Scripted::call("work_start", json!({ "brief": "я учу испанский; слова дня", "title": "Испанский" }))
+        })
+    });
+    let station = env.station(STATION_HEADERS).await;
+    station.synchronize("sync-works").await;
+    let wish = "Я учу испанский. Дай мне виджет со словами дня";
+    station.text_input("works-1", "req-works-1", json!({ "type": "text_input", "text": wish }));
+    station.wait_for(response_to("req-works-1"), 8000).await;
+    let trip = finished_trip(&env, wish).await;
+    assert_eq!(trip["answer"], "Делаю: испанский. Около минуты. Можно добавлять детали по ходу: просто скажите, что ещё улучшить или добавить.", "{trip}");
+    let brain = env.llm.requests().into_iter().filter(|request| !agent(request)).count();
+    assert_eq!(brain, 1, "the ready phrase is said as it is: the model is asked once");
+
+    let works = env.get("/api/v1/works").await;
+    let works = works.as_array().unwrap();
+    assert_eq!(works.len(), 1, "{works:?}");
+    assert_ne!(works[0]["origin"]["device"], "computer", "the station's work");
+    let draft = works[0]["target"].as_str().unwrap().to_string();
+
+    // The station says «Готово» by itself, as the answer to our push.
+    until(10_000, "our push", || !lock(&station.pushes).is_empty()).await;
+    let push = lock(&station.pushes)[0].clone();
+    let callback = format!("callback-{}", push["id"].as_str().unwrap());
+    let ready = station
+        .wait_for(
+            |m| at(m, "event.header.refMessageId") == callback.as_str() && !at(m, "event.aliceResponse").is_null(),
+            6000,
+        )
+        .await;
+    assert_eq!(
+        at(&ready, "event.aliceResponse.voiceResponse.outputSpeech.text"),
+        "Испанский: готово. На стол или примерить?"
+    );
+
+    // «да» without the wake word: on the desk.
+    station.text_input("works-2", "req-works-2", json!({ "type": "text_input", "text": "да" }));
+    let yes = station.wait_for(response_to("req-works-2"), 8000).await;
+    assert_eq!(at(&yes, "event.aliceResponse.voiceResponse.outputSpeech.text"), "На столе.");
+    assert!(env.gateway.app.workshop.host().installed(&draft).is_some(), "installed by voice");
+    station.close();
+}

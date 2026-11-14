@@ -12,6 +12,7 @@ const en: Translation<typeof ru> = {
     filterApps: 'Apps',
     filterThemes: 'Themes',
     pillOwnSource: 'own source',
+    pillSigned: 'Signed by DuoWave',
     pillNewVersion: 'new version',
     pillInstalled: 'installed',
     pillIncompatible: 'will not work here',
@@ -38,6 +39,9 @@ const en: Translation<typeof ru> = {
     phraseLabel: (title: string, n: number) => `${title}, phrase ${n}`,
     phrase: (n: number) => `phrase ${n}`,
     license: (name: string) => `License: ${name}`,
+    builtByComputer: (node: boolean, signed: boolean) =>
+        `Built by the computer: its own program${node ? ' on Node' : ''} runs on the computer with the user’s rights${signed ? ' — the code is checked and signed by DuoWave' : ''}.`,
+    rightsLine: (list: string) => `Rights: ${list}`,
     onlyCharacterEditor: 'Characters can be installed by whoever is allowed to change the personality.',
     onlyAdmin: 'Only an administrator can install such apps.',
     statusAbsent: 'This gateway has no catalog yet: showing what is installed.',

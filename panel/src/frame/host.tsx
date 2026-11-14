@@ -12,6 +12,9 @@ import { usePluginVersion } from '../plugins/versions';
 import { useApi, useLive, useSettings, useStation } from '../sdk';
 import { channelOf } from '../sdk/midi';
 import { cancelTask, tasksOf, watchTasks } from '../tasks/state';
+import { appAddress, mediaUrl } from './media';
+import { MediaClosed, openMedia } from '../media/viewer';
+import { askRightsForApp, recordForApp, rightsOfApp, shareFromApp } from './share';
 import type { PanelPlugin } from '../shell/registry';
 import type { SectionDef } from '../shell/sections';
 import type { SlotContribution } from '../shell/slot';
@@ -207,6 +210,37 @@ export function AppFrame({
                             : fetchPluginFile(id, String(message.name)),
                     );
                     break;
+                case 'duowave:share':
+                    // «Поделиться»: окно пульта с тем, что уходит и куда; черновику отдавать нечего.
+                    answer(message.seq, draft ? Promise.reject(new Error(tr.share.draftNoShare)) : shareFromApp(id, message.request ?? {}));
+                    break;
+                case 'duowave:record':
+                    // Микрофон открывает пульт, не окошко; запись ложится в папку приложения.
+                    answer(message.seq, draft ? Promise.reject(new Error(tr.share.draftNoFolder)) : recordForApp(id, message.options ?? {}));
+                    break;
+                case 'duowave:rights':
+                    // Связи, что приложение просит в манифесте: что уже разрешено; «ask» — один лист «Разрешить всё».
+                    answer(message.seq, draft ? Promise.resolve({ asked: [], pending: 0 }) : message.op === 'ask' ? askRightsForApp(id) : rightsOfApp(id));
+                    break;
+                case 'duowave:settings-save':
+                    // Свои настройки из окна (ключ сервиса, канал): пишет пульт, как в окне настроек приложения.
+                    answer(
+                        message.seq,
+                        draft
+                            ? Promise.reject(new Error(tr.share.draftSettings))
+                            : can('plugins.manage')
+                              ? api.setPackageSettings(id, (message.values ?? {}) as Record<string, unknown>).then(() => true)
+                              : Promise.reject(new Error(tr.share.settingsAdminOnly)),
+                    );
+                    break;
+                case 'duowave:media':
+                    // Видео и звук своей папки: ключ движка показа за это приложение, шлюз отдаёт с перемоткой.
+                    answer(message.seq, draft ? Promise.reject(new Error(tr.media.draftNoFolder)) : mediaUrl(id, String(message.name)));
+                    break;
+                case 'duowave:open-media':
+                    // Своё — в просмотрщике пульта, поверх всего пульта; ключи — за это приложение (его связи).
+                    answer(message.seq, draft ? Promise.reject(new Error(tr.media.draftNoFolder)) : openForApp(id, message.items, message.options));
+                    break;
                 case 'duowave:midi-file':
                     answer(message.seq, message.file instanceof Blob ? api.midiRead(message.file) : Promise.reject(new Error(tr.frame.notAFile)));
                     break;
@@ -295,6 +329,21 @@ export function AppFrame({
     );
 }
 
+/** Окно приложения просит показать своё в просмотрщике пульта: пути своей папки или адреса `files/…` (их проверит
+ *  шина — по связям приложения, за того, кто смотрит). Ответ — где человек закрыл. */
+function openForApp(app: string, items: unknown, options?: { start?: number; at?: number }): Promise<MediaClosed> {
+    return Promise.resolve().then(() => {
+        const asked = (Array.isArray(items) ? items : [items]).slice(0, 200) as Array<{ name?: unknown; title?: unknown } | string>;
+        const list = asked.map((item) => {
+            const name = typeof item === 'string' ? item : String(item?.name ?? '');
+            const title = typeof item === 'object' && item?.title ? String(item.title).slice(0, 200) : undefined;
+            return { address: appAddress(app, name), title };
+        });
+        const at = Number(options?.at);
+        return openMedia(list, { app, start: Math.max(0, Number(options?.start) || 0), at: Number.isFinite(at) && at > 0 ? at : undefined });
+    });
+}
+
 /** Значок по имени, которым его назвало окошко. */
 function iconOf(name?: string) {
     return (name && (icons as Record<string, unknown>)[name]) || IconPackage;
@@ -332,6 +381,7 @@ export function framedPlugin(key: string, id: string, module: string, styles: st
                 initial: entry.initial,
                 roles: entry.roles,
                 bare: entry.bare,
+                under: entry.under,
                 Component: Component as SlotContribution['Component'],
             };
         });

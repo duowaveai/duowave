@@ -5,7 +5,7 @@
 //! A window is temporary: the windows of the next request take the place of the temporary ones, and a video or a sound
 //! that played to the end closes. «Оставь» keeps a window until it is closed by its name, its number or its cross.
 //! Several open at once («открой эти две фотки и видео»). What a window shows is a link the gateway made itself
-//! (Files' `media`, `/media/folder/<token>`): the screen shows nothing else, no page of the internet.
+//! (the engine's key by the folders' `media`, `/media/v/<key>`): the screen shows nothing else, no page of the internet.
 
 pub mod device;
 pub mod routes;
@@ -87,7 +87,7 @@ pub struct Window {
     pub id: String,
     pub title: String,
     pub kind: Kind,
-    /// The gateway's own link: `/media/folder/<token>`.
+    /// The gateway's own link: `/media/v/<key>` (gateway/media).
     pub url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
@@ -208,7 +208,7 @@ impl Screen {
                     id: self.next.fetch_add(1, Ordering::SeqCst).to_string(),
                     title: title_of(&content.title),
                     kind: content.kind,
-                    url: format!("/media/folder/{}", content.file),
+                    url: format!("/media/v/{}", content.file),
                     from: content.from,
                     kept: false,
                     paused: false,
@@ -406,7 +406,7 @@ mod tests {
     fn the_next_request_takes_the_place_of_the_temporary_windows_not_of_the_kept_ones() {
         let screen = screen();
         let cat = screen.open(vec![content(Kind::Image, "кот", CAT)], false).unwrap();
-        assert_eq!(cat[0].url, format!("/media/folder/{CAT}"));
+        assert_eq!(cat[0].url, format!("/media/v/{CAT}"));
         screen.open(vec![content(Kind::Image, "собака", DOG)], false).unwrap();
         assert_eq!(screen.windows().iter().map(|w| w.title.as_str()).collect::<Vec<_>>(), ["собака"]);
         screen.keep("собака", true).unwrap();

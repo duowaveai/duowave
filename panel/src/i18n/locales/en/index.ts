@@ -51,6 +51,9 @@ import voice from './voice';
 import core from './core';
 import sdk from './sdk';
 import frame from './frame';
+import media from './media';
+import share from './share';
+import cloudVoices from './cloudVoices';
 
 const en: Translation<Messages> = {
     common,
@@ -102,6 +105,9 @@ const en: Translation<Messages> = {
     core,
     sdk,
     frame,
+    media,
+    share,
+    cloudVoices,
 };
 
 export default en;

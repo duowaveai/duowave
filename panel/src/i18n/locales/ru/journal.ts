@@ -42,4 +42,9 @@ export default {
     noRightComputer: 'Что говорили DuoWave, видит тот, кому администратор дал право на журнал.',
     unsupported: 'Пока не умеем',
     unsupportedEmpty: 'Пусто: всё, что просили, кто-то обслужил.',
+    opened: (activator: 'word' | 'button' | 'answer' | 'text', name?: string) =>
+        activator === 'word' ? `словом «${name ?? '…'}»` : activator === 'button' ? 'по кнопке' : activator === 'answer' ? 'ответ на вопрос' : 'текстом',
+    firstWord: (time: string) => `первое слово через ${time}`,
+    tokens: (input: number, output: number, cached: number, rounds: number) =>
+        `токены ${input} → ${output}${cached ? `, из кэша ${cached}` : ''}${rounds > 1 ? `, кругов ${rounds}` : ''}`,
 };

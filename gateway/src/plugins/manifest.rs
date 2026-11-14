@@ -27,6 +27,8 @@ pub const HOST_API: semver::Version = semver::Version::new(2, 0, 0);
 
 /// What a plugin may ask for. The budget is a limit the runtime keeps, not a hint.
 pub const MAX_MEMORY_MB: u64 = 64;
+/// An app on Node runs only on the computer: Node itself holds 40–60 MB, an engine like «Лента»'s more.
+pub const MAX_NODE_MEMORY_MB: u64 = 1024;
 pub const MAX_STORAGE_MB: u64 = 64;
 const DEFAULT_MEMORY_MB: u64 = 4;
 const DEFAULT_STORAGE_MB: u64 = 1;
@@ -94,7 +96,8 @@ impl PackageKind {
 }
 
 /// The engine a package's code runs in (`runtime`): JavaScript in QuickJS, WebAssembly in wasmi, an MCP server over
-/// the network, or — an app's — a program of its own.
+/// the network, or — an app's — a program of its own: a build per platform (`process`) or a script the gateway's own
+/// Node runs (`node`, src/apps/node.rs; docs/plans/feed.md, stage 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Runtime {
@@ -102,6 +105,7 @@ pub enum Runtime {
     Wasm,
     Mcp,
     Process,
+    Node,
 }
 
 impl Runtime {
@@ -111,6 +115,7 @@ impl Runtime {
             Runtime::Wasm => "wasm",
             Runtime::Mcp => "mcp",
             Runtime::Process => "process",
+            Runtime::Node => "node",
         }
     }
 
@@ -119,7 +124,7 @@ impl Runtime {
         match self {
             Runtime::Js => Some("backend.js"),
             Runtime::Wasm => Some("backend.wasm"),
-            Runtime::Mcp | Runtime::Process => None,
+            Runtime::Mcp | Runtime::Process | Runtime::Node => None,
         }
     }
 }
@@ -387,6 +392,8 @@ pub struct Manifest {
     pub runtime: Runtime,
     /// `runtime: mcp`: the MCP server's address (`mcp.url`), on a host of its `net:` rights.
     pub mcp_url: Option<String>,
+    /// `runtime: node`: the script Node starts (`node.entry`, a path in the package; `index.js` when not said).
+    pub node_entry: Option<String>,
     /// An app's programs by platform (`targets`), and how it is asked whether it is well (`health`).
     pub targets: std::collections::BTreeMap<String, Target>,
     pub health: HealthCheck,
@@ -624,6 +631,11 @@ pub fn platform() -> String {
     format!("{os}-{arch}")
 }
 
+/// A path inside a package: parts without dots in front, none empty, none too long.
+fn package_path(path: &str) -> bool {
+    !path.is_empty() && path.split('/').all(|part| !part.is_empty() && !part.starts_with('.') && part.len() <= 80)
+}
+
 /// Every problem of a manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManifestError {
@@ -733,11 +745,12 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
         None | Some("js") => Runtime::Js,
         Some("wasm") if kind == PackageKind::Plugin => Runtime::Wasm,
         Some("mcp") if kind == PackageKind::Plugin => Runtime::Mcp,
-        // An app's program is its own (stage 9): a process beside the gateway.
+        // An app's program is its own (stage 9): a process beside the gateway — its build, or a script on our Node.
         Some("process") if kind == PackageKind::App => Runtime::Process,
+        Some("node") if kind == PackageKind::App => Runtime::Node,
         Some(other) => {
             problems.push(crate::tr!(
-                "runtime «{other}» не подходит: у плагина js, wasm или mcp, у приложения — process",
+                "runtime «{other}» не подходит: у плагина js, wasm или mcp, у приложения — process или node",
                 other = other
             ));
             Runtime::Js
@@ -748,9 +761,7 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
         for (key, target) in given {
             let file = target.get("file").and_then(Value::as_str).unwrap_or_default().trim().to_string();
             let sha256 = target.get("sha256").and_then(Value::as_str).unwrap_or_default().trim().to_ascii_lowercase();
-            let plain = !file.is_empty()
-                && file.split('/').all(|part| !part.is_empty() && !part.starts_with('.') && part.len() <= 80);
-            if !plain {
+            if !package_path(&file) {
                 problems.push(crate::tr!("targets.{key}.file: путь внутри пакета, например bin/app-{key}", key = key));
             } else if sha256.len() != 64 || !sha256.chars().all(|c| c.is_ascii_hexdigit()) {
                 problems.push(crate::tr!("targets.{key}.sha256: 64 шестнадцатеричных знака", key = key));
@@ -763,9 +774,18 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
         problems
             .push(crate::tr!("targets: сборки приложения под платформы (linux-aarch64, darwin-arm64, linux-x86_64)"));
     }
-    if kind == PackageKind::App && runtime != Runtime::Process {
-        problems.push(crate::tr!("приложение — это runtime «process»: своя программа рядом со шлюзом"));
+    if kind == PackageKind::App && !matches!(runtime, Runtime::Process | Runtime::Node) {
+        problems.push(crate::tr!(
+            "приложение — это runtime «process» (своя сборка под каждую систему) или «node» (скрипт на Node шлюза)"
+        ));
     }
+    let node_entry = (runtime == Runtime::Node).then(|| {
+        let entry = value.pointer("/node/entry").and_then(Value::as_str).map(str::trim).unwrap_or("index.js");
+        if !package_path(entry) || !(entry.ends_with(".js") || entry.ends_with(".mjs") || entry.ends_with(".cjs")) {
+            problems.push("node.entry: скрипт в пакете, например server.mjs".into());
+        }
+        entry.to_string()
+    });
     let health = HealthCheck {
         path: value
             .pointer("/health/path")
@@ -800,6 +820,9 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
         }
         _ => problems.push(crate::tr!("runs: список размещений, где плагин работает (pc, station, stationServer)")),
     }
+    if runtime == Runtime::Node && runs.iter().any(|placement| *placement != Placement::Pc) {
+        problems.push("runs: Node есть только у шлюза на компьютере — у приложения на Node только pc".into());
+    }
 
     let data_version = match root.get("dataVersion") {
         None | Some(Value::Null) => None,
@@ -831,7 +854,12 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
         },
     };
     let budget = Budget {
-        memory_mb: limit("memoryMb", DEFAULT_MEMORY_MB, MAX_MEMORY_MB, &mut problems),
+        memory_mb: limit(
+            "memoryMb",
+            DEFAULT_MEMORY_MB,
+            if runtime == Runtime::Node { MAX_NODE_MEMORY_MB } else { MAX_MEMORY_MB },
+            &mut problems,
+        ),
         storage_mb: limit("storageMb", DEFAULT_STORAGE_MB, MAX_STORAGE_MB, &mut problems),
         files_mb: limit("filesMb", crate::bus::providers::files::APP_FOLDER_MB, 4096, &mut problems),
         tasks: limit(
@@ -920,6 +948,7 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
         api,
         runtime,
         mcp_url,
+        node_entry,
         targets,
         health,
         runs,
@@ -1735,6 +1764,35 @@ mod tests {
         let mut process = radio();
         process["runtime"] = json!("process");
         assert!(problems(process)[0].starts_with("runtime «process» не подходит"), "a plugin's code is not a program");
+    }
+
+    #[test]
+    fn an_app_on_node_names_its_script_and_runs_on_the_computer_only() {
+        let mut app = radio();
+        app["kind"] = json!("app");
+        app["runtime"] = json!("node");
+        app["runs"] = json!(["pc"]);
+        app["budget"] = json!({ "memoryMb": 512 });
+        let parsed = check(&app).unwrap();
+        assert_eq!((parsed.kind, parsed.runtime), (PackageKind::App, Runtime::Node));
+        assert_eq!(parsed.node_entry.as_deref(), Some("index.js"), "index.js when not said");
+        assert!(parsed.targets.is_empty(), "no builds: the script is the same everywhere");
+        assert_eq!(parsed.budget.memory_mb, 512, "Node holds more than a script in the gateway");
+        app["node"] = json!({ "entry": "engine/server.mjs" });
+        assert_eq!(check(&app).unwrap().node_entry.as_deref(), Some("engine/server.mjs"));
+        app["node"] = json!({ "entry": "../server.mjs" });
+        assert_eq!(problems(app.clone()), ["node.entry: скрипт в пакете, например server.mjs"]);
+        app["node"] = json!({ "entry": "server.sh" });
+        assert_eq!(problems(app.clone()), ["node.entry: скрипт в пакете, например server.mjs"]);
+        app["node"] = json!({ "entry": "server.mjs" });
+        app["runs"] = json!(["pc", "station"]);
+        assert_eq!(
+            problems(app.clone()),
+            ["runs: Node есть только у шлюза на компьютере — у приложения на Node только pc"]
+        );
+        let mut plugin = radio();
+        plugin["runtime"] = json!("node");
+        assert!(problems(plugin)[0].starts_with("runtime «node» не подходит"), "a plugin's code is JS in the gateway");
     }
 
     #[test]

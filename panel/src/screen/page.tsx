@@ -1,18 +1,17 @@
 // Окно на экране компьютера (gateway/src/screen, desktop/src-tauri/src/screen.rs): приложение DuoWave открывает его своим
 // окном поверх всех по просьбе голоса, агента или приложения — фото, видео, звук. Временное закрывается, когда
 // следующая просьба открыла свои окна или видео доиграло; «Оставить» держит его, пока не закроют. Нажатия идут в шлюз,
-// он же говорит окну, что его поставили на паузу или закрыли голосом.
+// он же говорит окну, что его поставили на паузу или закрыли голосом. Саму вещь показывает сцена движка показа
+// (media/stage.tsx) — та же, что у просмотрщика пульта.
 
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 
-import { ScreenAction, ScreenWindow, api, problemOf } from '../api';
+import { MediaLink, ScreenAction, ScreenWindow, api, problemOf } from '../api';
 import { tr } from '../i18n';
 import { IconClose, IconPause, IconPin, IconPlay } from '../icons';
 import { useLive } from '../live';
+import { MediaStage } from '../media/stage';
 import './screen.css';
-
-/** Сторона фото, какую просить у шлюза: окно бывает и во весь экран; больше шлюз не делает (preview.rs, SIDE_MOST). */
-const PHOTO_SIDE = 2048;
 
 export function ScreenPage({ id }: { id: string }) {
     // undefined — ещё не прочитано, null — окна уже нет.
@@ -91,40 +90,22 @@ export function ScreenPage({ id }: { id: string }) {
                 </button>
             </header>
             <main class="screen-content">
-                {shown.kind === 'image' ? <img src={`${shown.url}?size=${PHOTO_SIDE}`} alt={shown.title} /> : <Player shown={shown} onAct={act} />}
+                <MediaStage
+                    key={shown.url}
+                    link={screenLink(shown)}
+                    autoPlay
+                    paused={shown.kind === 'image' ? undefined : shown.paused}
+                    onPause={() => !shown.paused && act('pause')}
+                    onPlay={() => shown.paused && act('resume')}
+                    onEnded={() => act('ended')}
+                />
             </main>
             {error && <p class="screen-note screen-error">{error}</p>}
         </div>
     );
 }
 
-/** Видео или звук: пауза голосом и агентом приходит списком шлюза — элемент идёт за ним; свои нажатия — в шлюз. */
-function Player({ shown, onAct }: { shown: ScreenWindow; onAct: (action: ScreenAction) => void }) {
-    const media = useRef<HTMLVideoElement & HTMLAudioElement>(null);
-    useEffect(() => {
-        const element = media.current;
-        if (!element) return;
-        if (shown.paused && !element.paused) element.pause();
-        if (!shown.paused && element.paused && !element.ended) void element.play().catch(() => {});
-    }, [shown.paused]);
-    const own = {
-        ref: media,
-        src: shown.url,
-        autoPlay: !shown.paused,
-        controls: true,
-        onPause: () => {
-            const element = media.current;
-            if (element && !element.ended && !shown.paused) onAct('pause');
-        },
-        onPlay: () => {
-            if (shown.paused) onAct('resume');
-        },
-        onEnded: () => onAct('ended'),
-    };
-    if (shown.kind === 'video') return <video {...own} playsInline />;
-    return (
-        <div class="screen-audio">
-            <audio {...own} />
-        </div>
-    );
+/** Окно — ссылка движка показа: фото на весь экран идёт уменьшенным до 2048 (сцена так просит большие снимки). */
+function screenLink(shown: ScreenWindow): MediaLink {
+    return { address: shown.url, url: shown.url, kind: shown.kind, title: shown.title, shown: shown.kind !== 'image' };
 }

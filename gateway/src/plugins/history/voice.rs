@@ -5,7 +5,8 @@
 //! - «отмени последнее изменение в погоде» — to the version before the newest.
 //! - «верни список покупок на вчера» — the data alone; the station asks first: what came after goes (and the step back
 //!   can be undone — decision 21: a spoken «да» is enough).
-//! - «верни как было» right after a step back — that step back undone.
+//! - «верни как было» right after a step back — that step back undone; right after a new version a device's voice put
+//!   on the desk at once (src/talk/ready.rs, the last fifteen minutes) — that version undone, on that device only.
 //! - «что поменялось в погоде?» — the last records in a few words.
 //!
 //! Rights the running version does not have are never voice's: the admin's «ок» in the panel (decision 10).
@@ -71,7 +72,12 @@ struct Pending {
 pub struct VoiceHistory {
     history: Arc<History>,
     pending: Mutex<HashMap<String, Pending>>,
+    /// The app whose new version a device's voice put on the desk lately (the talk layer's), for «верни как было».
+    recent_edit: std::sync::OnceLock<RecentEdit>,
 }
+
+/// The app a device's voice changed on the desk in the last minutes.
+pub type RecentEdit = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 /// Two words alike enough for Russian endings: «погоду» and «погода».
 fn alike(a: &str, b: &str) -> bool {
@@ -129,7 +135,39 @@ fn is_version(record: &Record) -> bool {
 
 impl VoiceHistory {
     pub fn new(history: Arc<History>) -> Arc<VoiceHistory> {
-        Arc::new(VoiceHistory { history, pending: Mutex::new(HashMap::new()) })
+        Arc::new(VoiceHistory { history, pending: Mutex::new(HashMap::new()), recent_edit: std::sync::OnceLock::new() })
+    }
+
+    /// Who knows the device's last new version put on the desk by voice (src/talk/ready.rs).
+    pub fn set_recent_edit(&self, recent_edit: RecentEdit) {
+        let _ = self.recent_edit.set(recent_edit);
+    }
+
+    fn recent_edit(&self, device: &str) -> Option<String> {
+        self.recent_edit.get().and_then(|recent| recent(device))
+    }
+
+    /// «Верни как было» after a new version a device's voice put on the desk: the version before it comes back.
+    async fn rollback(&self, device: &str, app: &str) -> Outcome {
+        let title = self
+            .history
+            .host()
+            .and_then(|host| host.installed(app))
+            .map(|package| package.manifest.title.clone())
+            .unwrap_or_else(|| app.to_string());
+        let Some((record, _)) = self.version_before(app, "до последнего изменения") else {
+            return Outcome::speech(format!("В истории «{title}» нет версии раньше этой."));
+        };
+        match self.history.restore_plan(app, &record, What::Code) {
+            Ok(plan) if plan.needs_approval => Outcome::speech(format!(
+                "Той версии «{title}» нужны права, которых нет у этой. Подтвердите в пульте, в истории приложения."
+            )),
+            Ok(_) => {
+                let _ = device;
+                self.run(app, &title, &record, What::Code).await
+            }
+            Err(error) => Outcome::speech(error.message),
+        }
     }
 
     fn pending(&self) -> std::sync::MutexGuard<'_, HashMap<String, Pending>> {
@@ -158,6 +196,7 @@ impl VoiceHistory {
                 "data" => self.restore_data(&device, param("app"), param("when")),
                 "changed" => self.changed(param("app")),
                 "undo" => self.undo().await,
+                "rollback" => self.rollback(&device, param("app")).await,
                 _ => Outcome::speech("Не поняла, что вернуть."),
             })
         })
@@ -338,6 +377,19 @@ fn asking(text: String) -> Outcome {
 
 /// The history's phrases for the router.
 impl ExtraRules for VoiceHistory {
+    fn matched_with(&self, normalized: &str, input: &crate::skills::router::RouteInput) -> Option<QuickMatch> {
+        // «Верни как было» right after a new version this device's voice put on the desk.
+        if UNDO.is_match(normalized) && self.recent_restore().is_none() {
+            let app = self.recent_edit(&input.device_tag)?;
+            let mut intent = Intent::new(CapabilityName::Plugins, "history");
+            intent.params.insert(EXECUTOR.into(), json!(CapabilityName::Plugins.as_str()));
+            intent.params.insert("kind".into(), json!("rollback"));
+            intent.params.insert("app".into(), json!(app));
+            return Some(QuickMatch { intent, rule: RULE });
+        }
+        self.matched(normalized)
+    }
+
     fn matched(&self, normalized: &str) -> Option<QuickMatch> {
         let mut intent = Intent::new(CapabilityName::Plugins, "history");
         intent.params.insert(EXECUTOR.into(), json!(CapabilityName::Plugins.as_str()));

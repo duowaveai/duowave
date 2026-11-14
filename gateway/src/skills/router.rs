@@ -82,10 +82,19 @@ pub const EXECUTOR: &str = "executor";
 /// them go (it has nothing, or it failed), the built-in implementation serves them.
 pub const FALLBACK: &str = "fallback";
 
-/// Quick rules that come and go while the gateway runs: the plugins' phrases.
+/// Quick rules that come and go while the gateway runs: the plugins' phrases, the talk layer's.
 pub trait ExtraRules: Send + Sync {
     /// The rule that takes the whole of this command (normalized), if one does.
     fn matched(&self, normalized: &str) -> Option<QuickMatch>;
+    /// The same, knowing the request: its device and what came with it (the talk layer's rules read the device's
+    /// state).
+    fn matched_with(&self, normalized: &str, _input: &RouteInput) -> Option<QuickMatch> {
+        self.matched(normalized)
+    }
+    /// A rule that comes before the built-in ones, the station's controls apart: the workshop's open door.
+    fn first(&self, _normalized: &str, _input: &RouteInput) -> Option<QuickMatch> {
+        None
+    }
 }
 
 /// Where a capability's request goes, after the route table and what is available now.
@@ -222,6 +231,11 @@ impl Router {
         self.extra.write().unwrap().push(rules);
     }
 
+    /// Rules asked before every other extra rule (the talk layer's).
+    pub fn add_rules_first(&self, rules: Arc<dyn ExtraRules>) {
+        self.extra.write().unwrap().insert(0, rules);
+    }
+
     /// Our implementation of its capability, in place of any before it.
     pub fn register(&self, skill: Arc<dyn OwnSkill>) {
         self.skills.write().unwrap().insert(skill.capability(), skill);
@@ -265,8 +279,11 @@ impl Router {
         let built_in = match_quick_command(&input.text)
             .or_else(|| playing.then(|| match_while_playing(&input.text)).flatten())
             .or_else(|| (playing || input.ringing).then(|| match_while_busy(&input.text)).flatten());
-        let quick = self
-            .with_extra_rules(built_in, &input.text)
+        // The open door of the workshop takes the phrase before the built-in rules, the station's controls apart.
+        let controls = built_in.as_ref().is_some_and(|rule| STATION_CONTROLS.contains(&rule.intent.capability));
+        let first = (!controls).then(|| self.first_rules(input)).flatten();
+        let quick = first
+            .or_else(|| self.with_extra_rules(built_in, input))
             .or_else(|| self.yandex_plays_first(input).then(|| match_play_anything(&input.text)).flatten());
         if let Some(quick) = quick {
             let intent = self.rewrite(&quick.intent, input);
@@ -291,14 +308,14 @@ impl Router {
     /// The plugins' phrases beside the built-in rules. A plugin's phrase takes words no built-in rule takes, and the
     /// words of a built-in rule of the very capability it serves — that rule's intent goes along as its fallback. The
     /// other built-in rules come first, the station's controls always.
-    fn with_extra_rules(&self, built_in: Option<QuickMatch>, text: &str) -> Option<QuickMatch> {
+    fn with_extra_rules(&self, built_in: Option<QuickMatch>, input: &RouteInput) -> Option<QuickMatch> {
         let extra: Vec<Arc<dyn ExtraRules>> = self.extra.read().unwrap().clone();
         if extra.is_empty() || built_in.as_ref().is_some_and(|rule| STATION_CONTROLS.contains(&rule.intent.capability))
         {
             return built_in;
         }
-        let Some(mut found) = match_heard(text, |normalized| extra.iter().find_map(|rules| rules.matched(normalized)))
-        else {
+        let matched = |normalized: &str| extra.iter().find_map(|rules| rules.matched_with(normalized, input));
+        let Some(mut found) = match_heard(&input.text, matched) else {
             return built_in;
         };
         match built_in {
@@ -311,6 +328,12 @@ impl Router {
             }
             Some(rule) => Some(rule),
         }
+    }
+
+    /// The extra rules that come before the built-in ones (the workshop's open door).
+    fn first_rules(&self, input: &RouteInput) -> Option<QuickMatch> {
+        let extra: Vec<Arc<dyn ExtraRules>> = self.extra.read().unwrap().clone();
+        match_heard(&input.text, |normalized| extra.iter().find_map(|rules| rules.first(normalized, input)))
     }
 
     /// Yandex serves music first and is up: «включи <что угодно>» is its to sort out.

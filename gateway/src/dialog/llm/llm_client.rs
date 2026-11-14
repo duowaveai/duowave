@@ -155,9 +155,13 @@ pub struct LlmRequest {
     pub model: Option<String>,
     pub tools: Vec<LlmTool>,
     pub tool_choice: ToolChoice,
-    /// A longer output limit than the client's own (LLM_MAX_TOKENS), for this request only: the workshop's agent
-    /// writes files, not spoken answers (WORKSHOP_MAX_TOKENS). The ChatGPT plan sends no limit at all.
+    /// An output limit of its own instead of the client's (LLM_MAX_TOKENS), for this request only: the workshop's
+    /// agent writes files (WORKSHOP_MAX_TOKENS), a spoken answer is short (SPEECH_MAX_TOKENS). The ChatGPT plan sends
+    /// no limit at all.
     pub max_tokens: Option<u32>,
+    /// Cache the history as well as the stable instructions: Claude marks the last message too, so the next round of
+    /// a long run reads all before it from the cache. The other clients do not read it.
+    pub cache_history: bool,
 }
 
 /// A turn cut off by its output limit in the middle of a tool call. The call is not run: its input is cut short.

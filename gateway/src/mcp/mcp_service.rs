@@ -399,7 +399,7 @@ impl McpOffer {
             return Ok(ToolOutcome {
                 content: format!("error: {} is not available now", call.name),
                 is_error: true,
-                tainted: false,
+                ..ToolOutcome::default()
             });
         };
         match entry.connection.call(&entry.tool.name, call.input.clone(), cancel, CALL_TIMEOUT).await {
@@ -409,6 +409,7 @@ impl McpOffer {
                     content: text.content,
                     is_error: text.is_error,
                     tainted: !text.is_error && entry.outside,
+                    ..ToolOutcome::default()
                 })
             }
             Err(_) if cancel.is_cancelled() => Err(Cancelled),
@@ -418,7 +419,7 @@ impl McpOffer {
                 Ok(ToolOutcome {
                     content: format!("error: the server did not answer ({reason})"),
                     is_error: true,
-                    tainted: false,
+                    ..ToolOutcome::default()
                 })
             }
         }
@@ -1978,7 +1979,10 @@ pub(crate) mod tests {
         let outcome =
             offer.run(&call("mcp_fixture__echo", json!({ "text": "привет" })), &CancellationToken::new()).await;
         // A server of one's own counts as outside until the owner says otherwise.
-        assert_eq!(outcome, Ok(ToolOutcome { content: "echo: привет".into(), is_error: false, tainted: true }));
+        assert_eq!(
+            outcome,
+            Ok(ToolOutcome { content: "echo: привет".into(), tainted: true, ..ToolOutcome::default() })
+        );
 
         mcp.approve_instructions(id, None).unwrap();
         assert!(mcp.offer(&admin(), by_voice()).unwrap().instructions.contains("Fixture: use echo to repeat."));
@@ -2114,7 +2118,7 @@ pub(crate) mod tests {
         let never = CancellationToken::new();
         assert_eq!(
             offer.run(&call("mcp_fixture__fail", json!({})), &never).await,
-            Ok(ToolOutcome { content: "boom".into(), is_error: true, tainted: false })
+            Ok(ToolOutcome { content: "boom".into(), is_error: true, ..ToolOutcome::default() })
         );
         let crashed = offer.run(&call("mcp_fixture__crash", json!({})), &never).await.unwrap();
         assert!(crashed.is_error);

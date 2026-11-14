@@ -127,6 +127,7 @@ const en: Translation<typeof ru> = {
 
     // plugins/loader.ts
     sourceApp: 'app',
+    waitsKey: 'waits for a key',
 
     // screen/page.tsx
     screenClosed: 'The window is closed.',

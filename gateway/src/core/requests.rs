@@ -130,6 +130,28 @@ pub struct RequestView {
     /// A chain: the scenario or the request this one follows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
+    /// What the model spent on it (docs/plans/audio-interface.md, «Счёт токенов»): every round of its answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<RequestTokens>,
+    /// Where the phrase came from (docs/plans/audio-interface.md, «Поля реплики»): what opened it — the wake word, the
+    /// button, the answer to a question, a typed text — the character, who, the device, by voice or in text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<crate::talk::Origin>,
+}
+
+/// The model's spending on one request, every round of its answer summed: in, out, read from the cache, written to
+/// it, the rounds, the model.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestTokens {
+    pub input: u64,
+    pub output: u64,
+    #[serde(default)]
+    pub cache_read: u64,
+    #[serde(default)]
+    pub cache_write: u64,
+    pub rounds: u32,
+    pub model: String,
 }
 
 /// What a session gives to start following a request; the service adds the id, the mode and the time.
@@ -318,6 +340,33 @@ impl RequestHandle {
         });
     }
 
+    /// Where the phrase came from, once it is known (the station's wake word or not; the panel's button or text).
+    pub fn set_origin(&self, origin: crate::talk::Origin) {
+        self.change(|state, _| {
+            if state.view.origin.as_ref() == Some(&origin) {
+                return false;
+            }
+            state.view.origin = Some(origin);
+            true
+        });
+    }
+
+    /// One round of the model's answer: what it spent, summed into the request's tokens.
+    pub fn spent(&self, model: &str, usage: &crate::dialog::llm::LlmUsage) {
+        self.change(|state, _| {
+            let tokens = state.view.tokens.get_or_insert_with(RequestTokens::default);
+            tokens.input += usage.input;
+            tokens.output += usage.output;
+            tokens.cache_read += usage.cache_read.unwrap_or(0);
+            tokens.cache_write += usage.cache_write.unwrap_or(0);
+            tokens.rounds += 1;
+            if tokens.model.is_empty() {
+                tokens.model = model.to_string();
+            }
+            true
+        });
+    }
+
     /// The answer's text as far as it is said.
     pub fn answered(&self, text: &str) {
         let trimmed = text.trim();
@@ -454,6 +503,8 @@ mod tests {
             steps: vec![],
             error: None,
             parent: None,
+            tokens: None,
+            origin: None,
         };
         let handle = RequestHandle::new(view, hooks.clone(), Arc::new(move || *clock_now.lock().unwrap()));
         Trip { handle, hooks, now }

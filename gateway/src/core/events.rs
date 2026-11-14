@@ -172,6 +172,14 @@ events! {
         draft: String,
         change: String,
     }
+    /// A work of the talk changed (src/talk/works.rs): the panel reads the device's works again, the computer says
+    /// «Готово» when it is its own. The change: `started`, `working`, how a run ended — `ready`, `unfinished`,
+    /// `failed`, `stopped`, `interrupted` — and `decided` (on the desk, in the drafts). Never what was asked.
+    WorkChanged = "work.changed" {
+        work: String,
+        device: String,
+        change: String,
+    }
     /// A long task of an app moved (src/tasks): the panel reads the app's tasks again. The change: `started`,
     /// `progress` (at most twice a second per task), `cancelling` (a person asked to cancel it), how it ended —
     /// `done`, `failed`, `cancelled`, `interrupted` — and `forgotten` (old tasks went; `task` is empty). Never what
@@ -326,7 +334,7 @@ events! {
     }
     /// A request as it goes, whole each time: started, each step, the words heard and said, the end.
     RequestUpdated = "request.updated" {
-        request: RequestView,
+        request: Box<RequestView>,
     }
     /// A new version is offered (src/updates): the panel shows it, the app's tray too.
     UpdateAvailable = "update.available" {

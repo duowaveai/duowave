@@ -18,6 +18,20 @@ pub trait SpeechRecognizer: Send + Sync {
         sample_rate: u32,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<String>>;
+    /// Recognizes with each word's time and the language, where the engine can tell them (the hearing for apps,
+    /// `system/hearing` → `recognize`); one that cannot answers the text alone, without words.
+    fn recognize_heard<'a>(
+        &'a self,
+        pcm: &'a [i16],
+        sample_rate: u32,
+        language: Option<&'a str>,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<super::Heard>> {
+        Box::pin(async move {
+            let text = self.recognize(pcm, sample_rate, cancel).await?;
+            Ok(super::Heard { text, language: language.map(str::to_string), words: Vec::new() })
+        })
+    }
     /// Quick reachability check for the startup log, which also learns the model that serves; never fails.
     fn probe(&self) -> BoxFuture<'_, String>;
     /// Asks the server again which model it serves, when that is due; never fails. The asking goes on when the

@@ -7,6 +7,7 @@ import { Dropdown } from '../ui/dropdown';
 import { Progress, needsWhat, useNeedsFlow, voicePill } from '../ui/needs';
 import { SectionTabs, TabEntry } from '../ui/tabs';
 import { OwnVoiceRows, OwnVoicesHeader, VoiceWizard } from './voice-lab';
+import { VoiceProviders } from './voice-providers';
 import { languageName, localAsrLine, localAsrPercent } from './local-asr';
 import { ask } from '../ui/confirm';
 import { onComputer } from '../voice-input';
@@ -1034,6 +1035,7 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                             </>
                         )}
                     </section>
+                    <VoiceProviders />
                 </>
             )}
 

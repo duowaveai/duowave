@@ -474,6 +474,7 @@ mod tests {
             tools: vec![tool()],
             tool_choice: ToolChoice::Auto,
             max_tokens: None,
+            cache_history: false,
         };
         let got = events(&llm, request).await.unwrap();
         assert_eq!(got[0], LlmEvent::Text("Сейчас ".into()));

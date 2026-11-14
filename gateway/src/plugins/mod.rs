@@ -29,6 +29,7 @@ pub mod schedule;
 pub mod skill;
 #[cfg(feature = "wasm")]
 pub mod wasm;
+pub mod watch;
 pub mod workshop;
 
 pub use catalog::{CatalogDeps, PackageCatalog};

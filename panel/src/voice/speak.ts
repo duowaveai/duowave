@@ -1,10 +1,13 @@
-// Пульт говорит (docs/plans/mic-mode.md, «Пульт говорит»): в режиме «Микрофон» фраза, которая не кнопка на экране и
-// не «сделай…», уходит «Мозгу» (`POST /api/v1/talk`), а ответ приходит по фразам — на полосу и голосом компьютера.
+// Пульт говорит (docs/plans/mic-mode.md, «Пульт говорит»): фраза, которая не кнопка на экране, уходит в разговор
+// (`POST /api/v1/talk`; docs/plans/audio-interface.md, решение 6) — сначала к правилам слоя (работы, дверь, ответ на
+// вопрос), потом «Мозгу». Ответ приходит по фразам — на полосу, а в режиме «Микрофон» и голосом компьютера (с колонкой
+// отвечает колонка, пульт пишет текстом).
 // Голос каждой фразы просится у шлюза, как только фраза пришла, но не дальше одной вперёд: сервер своего голоса
 // говорит по одной. Звучат они по порядку, следующая — по концу предыдущей. Новое «Сказать», «×» на полосе или
 // ошибка обрывают всё: и ответ «Мозга», и голос. Кончился ответ вопросом — зовётся `after`: микрофон слушает сам.
 
 import { TalkTurn, problemOf, talk, talkSpeech } from '../api';
+import { startedHere } from './works';
 import { playToEnd, stopAudio } from '../audio';
 import { tr } from '../i18n';
 import { hideStrip, onStripClosed, showStrip, updateStrip } from './strip';
@@ -119,13 +122,25 @@ function finish(answer: Answer): void {
     updateStrip('answer', { head: tr.voice.answer }, KEEP_MS);
 }
 
-/**
- * Фраза уходит «Мозгу», ответ — на полосу и голосом компьютера. `after` зовётся, когда ответ кончился вопросом и
- * договорён: пульт открывает микрофон на несколько секунд.
- */
-export function answerTo(turn: TalkTurn, after?: () => void): void {
+/** Одна фраза своим голосом компьютера, до конца: «Готово…» работы (works.ts). false — голоса нет или оборвали. */
+export async function sayAloud(text: string): Promise<boolean> {
     stopAnswer();
-    const answer: Answer = { abort: new AbortController(), phrases: [], spoken: 0, written: false, mute: false, speaking: false, after };
+    try {
+        const blob = await talkSpeech(text);
+        return await playToEnd(AUDIO_KEY, blob);
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Фраза уходит в разговор, ответ — на полосу и, с `voice`, голосом компьютера. `after` зовётся, когда ответ кончился
+ * вопросом и договорён: пульт открывает микрофон на несколько секунд. Ответ назвал работу, которую фраза начала или
+ * дополнила, — её «Готово» пульт скажет сам.
+ */
+export function answerTo(turn: TalkTurn, after?: () => void, voice = true): void {
+    stopAnswer();
+    const answer: Answer = { abort: new AbortController(), phrases: [], spoken: 0, written: false, mute: !voice, speaking: false, after };
     current = answer;
     tell();
     showStrip({ kind: 'answer', head: tr.voice.thinking, caps: turn.text });
@@ -134,7 +149,7 @@ export function answerTo(turn: TalkTurn, after?: () => void): void {
         stopAnswer();
         showStrip({ kind: 'note', head: tr.voice.failedTry, caps: turn.text, text: message }, 8000);
     };
-    talk({ ...turn, voice: true }, (event) => {
+    talk({ ...turn, voice }, (event) => {
         if (current !== answer) return;
         if (event.type === 'start') updateStrip('answer', { chip: chipOf(event.by) });
         if (event.type === 'tool') updateStrip('answer', { head: tr.voice.looking(event.name) });
@@ -146,6 +161,7 @@ export function answerTo(turn: TalkTurn, after?: () => void): void {
         }
         if (event.type === 'error') fail(event.message);
         if (event.type === 'done') {
+            if (event.work) startedHere(event.work);
             answer.written = true;
             if (!answer.speaking) finish(answer);
         }

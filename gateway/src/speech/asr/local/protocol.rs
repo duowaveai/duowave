@@ -18,26 +18,37 @@ const MAX_SECTION: usize = 1 << 30;
 pub enum Request {
     /// Load this model file, dropping the one held.
     Load { path: PathBuf },
-    /// Recognise the audio that comes with it; `language` — a hint, or the model's own guess.
-    Run { language: Option<String> },
+    /// Recognise the audio that comes with it; `language` — a hint, or the model's own guess. `words`: answer each
+    /// word's time and the language too (the hearing for apps), not only the text (a spoken command).
+    Run {
+        language: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        words: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Response {
     /// The model is in: on which backend (Metal, CPU…) and device.
-    Loaded {
-        backend: String,
-        device: String,
-    },
+    Loaded { backend: String, device: String },
     Text {
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        words: Vec<TimedWord>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        language: Option<String>,
     },
     /// The request failed. `backend`: the compute backend failed (a lost GPU), the worker may be unusable.
-    Error {
-        message: String,
-        backend: bool,
-    },
+    Error { message: String, backend: bool },
+}
+
+/// A word with its time in the audio, ms.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TimedWord {
+    pub text: String,
+    pub t0_ms: i64,
+    pub t1_ms: i64,
 }
 
 fn pcm_bytes(pcm: &[f32]) -> Vec<u8> {
@@ -120,7 +131,7 @@ mod tests {
     #[test]
     fn a_message_and_its_audio_come_through_and_a_clean_end_is_none() {
         let mut stream = Vec::new();
-        let run = Request::Run { language: Some("ru".into()) };
+        let run = Request::Run { language: Some("ru".into()), words: false };
         write_message(&mut stream, &run, &[0.5, -0.25, 1.0]).unwrap();
         write_message(&mut stream, &Request::Load { path: "/m/model.gguf".into() }, &[]).unwrap();
         let mut reader = stream.as_slice();
@@ -149,9 +160,10 @@ mod tests {
     #[tokio::test]
     async fn the_async_side_reads_what_the_worker_side_writes() {
         let mut stream = Vec::new();
-        write_message(&mut stream, &Response::Text { text: "привет".into() }, &[]).unwrap();
+        write_message(&mut stream, &Response::Text { text: "привет".into(), words: Vec::new(), language: None }, &[])
+            .unwrap();
         let (message, _) = receive::<Response>(&mut stream.as_slice()).await.unwrap();
-        assert_eq!(message, Response::Text { text: "привет".into() });
+        assert_eq!(message, Response::Text { text: "привет".into(), words: Vec::new(), language: None });
         assert!(receive::<Response>(&mut [].as_slice()).await.is_err());
     }
 }

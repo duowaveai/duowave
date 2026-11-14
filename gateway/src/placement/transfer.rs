@@ -107,11 +107,12 @@ pub const MOVE_SETS: &[&str] = &["tts_provider", "station_self"];
 /// station of an earlier build: the station's own mode goes in it (`for_earlier`).
 pub const MOVE_ONLY: &[&str] = &["gateway_mode"];
 
-/// The secrets that travel: the model providers', the connectors', the MCP servers', the plugins' private settings
+/// The secrets that travel: the model providers', the connectors', the MCP servers', the voices' (ElevenLabs,
+/// `voice:<provider>:key`), the plugins' private settings
 /// (`plugin:<package>:<key>`, their settings travel too). Like every secret of the package they go sealed with the
 /// pair's key, and so do the copies kept on the computer. Everything else (the pair's key, the home server's, the
 /// panel's sessions, a sign-in's tokens under `oauth:`) is each side's own.
-pub const TRAVELLING_SECRETS: &[&str] = &["llm:", "connector:", "mcp:", crate::secrets::PLUGIN_SECRETS];
+pub const TRAVELLING_SECRETS: &[&str] = &["llm:", "connector:", "mcp:", "voice:", crate::secrets::PLUGIN_SECRETS];
 
 /// The settings package.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

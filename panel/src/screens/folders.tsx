@@ -2,15 +2,20 @@
 // Голос, агент и приложения видят только её: Photos, Documents, Videos, Downloads, Pictures; музыку и сказки дома
 // (Music, Stories); проекты (Projects); и Connected — флешку или папку с диска, подключённые по желанию человека (ссылкой: всё остаётся на месте). Здесь
 // видно, что в каждой папке, кто её видит и что из неё уходит из дома; администратор меняет галочки, подключает и
-// отключает. Голосом по папкам ходит приложение «Папки».
+// отключает. Голосом по папкам ходит приложение «Папки». Фото, видео и звук открываются в просмотрщике пульта — тем же
+// движком показа, что у окон приложений и карточек (gateway/media, media/viewer.tsx): миниатюры фото и кадры видео
+// шлюз делает сам, длительность читает из заголовка файла.
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { FolderItem, FolderPage, FolderRole, FolderRule, FolderView, FoldersView, api, can, fetchFolderPreview, problemOf } from '../api';
+import { FolderItem, FolderPage, FolderRole, FolderRule, FolderView, FoldersView, MediaLink, api, can, problemOf } from '../api';
 import { formatList, formatNumber, tr } from '../i18n';
 import { foldersChanged, useFoldersVersion } from '../folders/state';
 import { folderTitle } from '../folders/title';
-import { IconChevronLeft, IconChevronRight, IconFolder } from '../icons';
+import { IconChevronLeft, IconChevronRight, IconFolder, IconMusic, IconPlay } from '../icons';
+import { clock, folderLinks, mediaSrc } from '../media/links';
+import { openMedia } from '../media/viewer';
+import { shareFrom } from '../frame/share';
 import { usePanel, useSectionTab } from '../shell/context';
 import { Action } from '../ui/cards';
 import { ask } from '../ui/confirm';
@@ -329,13 +334,46 @@ function Tick({ label, on, disabled, amber, hint, onChange }: { label: string; o
     );
 }
 
-/** Что в папке: страницами, папки первыми; картинки — уменьшенными. */
+/** Фото, видео и звук — то, что открывает просмотрщик пульта. */
+const MEDIA = new Set(['image', 'video', 'audio']);
+
+/** Что в папке: страницами, папки первыми; фото и кадры видео — уменьшенными, у видео и звука — длительность. */
 function Browser({ root }: { root: string }) {
     const version = useFoldersVersion();
     const [at, setAt] = useState(root);
     const [page, setPage] = useState<FolderPage | null>(null);
     const [items, setItems] = useState<FolderItem[]>([]);
     const [error, setError] = useState<string | null>(null);
+    // Ключи движка показа к фото, видео и звуку страницы: одним письмом шины на папку.
+    const [links, setLinks] = useState<Record<string, MediaLink>>({});
+    useEffect(() => {
+        const wanted = items.filter((item) => !item.folder && MEDIA.has(item.kind) && !links[item.address]);
+        if (!wanted.length) return;
+        const folder = wanted[0].address.slice(0, wanted[0].address.length - wanted[0].name.length - 1);
+        let alive = true;
+        folderLinks(
+            folder,
+            wanted.filter((item) => item.address === `${folder}/${item.name}`).map((item) => item.name),
+            { probe: true },
+        )
+            .then((got) => alive && setLinks((now) => ({ ...now, ...Object.fromEntries(got.map((link) => [link.address, link])) })))
+            .catch(() => {});
+        return () => {
+            alive = false;
+        };
+    }, [items]);
+    const shown = items.filter((item) => links[item.address]?.url);
+    const open = (item: FolderItem): void => {
+        void openMedia(
+            shown.map((one) => ({ address: one.address, link: links[one.address] })),
+            // «Поделиться» — общее окно пульта (frame/share.tsx): файл папки дома от лица вошедшего; адрес движка показа —
+            // чтобы браузер сам взял файл для меню «Поделиться» телефона и «Скачать».
+            {
+                start: Math.max(0, shown.indexOf(item)),
+                onShare: (link) => shareFrom({ address: link.address, url: mediaSrc(link), title: link.title }),
+            },
+        ).catch((e) => setError(problemOf(e)));
+    };
     useEffect(() => setAt(root), [root]);
     useEffect(() => {
         let alive = true;
@@ -384,36 +422,57 @@ function Browser({ root }: { root: string }) {
             )}
             {page && page.total === 0 && <p class="t-caption m-0">{tr.folders.empty}</p>}
             <div class="folders-grid">
-                {items.map((item) => (
-                    <button key={item.address} class="folders-item" onClick={() => item.folder && setAt(item.address)} disabled={!item.folder} title={item.name}>
-                        {item.kind === 'image' ? <Thumb address={item.address} /> : <span class={`folders-kind folders-kind-${item.kind}`}>{item.folder ? <IconFolder size={28} /> : item.kind}</span>}
-                        <span class="folders-name">{item.name}</span>
-                    </button>
-                ))}
+                {items.map((item) => {
+                    const link = links[item.address];
+                    const playable = !item.folder && !!link?.url;
+                    return (
+                        <button
+                            key={item.address}
+                            class="folders-item"
+                            onClick={() => (item.folder ? setAt(item.address) : playable && open(item))}
+                            disabled={!item.folder && !playable}
+                            title={item.name}
+                        >
+                            <Tile item={item} link={link} />
+                            <span class="folders-name">{item.name}</span>
+                        </button>
+                    );
+                })}
             </div>
             {page?.next != null && <Action label={tr.folders.more} onClick={more} />}
         </section>
     );
 }
 
-function Thumb({ address }: { address: string }) {
-    const [url, setUrl] = useState<string | null>(null);
-    useEffect(() => {
-        let made: string | null = null;
-        let alive = true;
-        fetchFolderPreview(address, 256)
-            .then((blob) => {
-                if (!alive) return;
-                made = URL.createObjectURL(blob);
-                setUrl(made);
-            })
-            .catch(() => {});
-        return () => {
-            alive = false;
-            if (made) URL.revokeObjectURL(made);
-        };
-    }, [address]);
-    return url ? <img class="folders-thumb" src={url} alt="" loading="lazy" /> : <span class="folders-kind folders-kind-image">{tr.folders.photo}</span>;
+/** Плитка файла: папка; фото и кадр видео — уменьшенные движком показа; у видео и звука — длительность. */
+function Tile({ item, link }: { item: FolderItem; link?: MediaLink }) {
+    const [broken, setBroken] = useState(false);
+    useEffect(() => setBroken(false), [link?.url]);
+    if (item.folder)
+        return (
+            <span class="folders-kind folders-kind-folder">
+                <IconFolder size={28} />
+            </span>
+        );
+    const length = link?.duration != null && link.kind !== 'image' ? clock(link.duration) : '';
+    const pictured = link?.url && (link.kind === 'image' || link.kind === 'video') && !broken;
+    return (
+        <span class="folders-tile">
+            {pictured ? (
+                <img class="folders-thumb" src={mediaSrc(link!, 256)} alt="" loading="lazy" onError={() => setBroken(true)} />
+            ) : (
+                <span class={`folders-kind folders-kind-${item.kind}`}>
+                    {item.kind === 'audio' ? <IconMusic size={26} /> : item.kind === 'video' ? <IconPlay size={22} /> : item.kind === 'image' ? tr.folders.photo : item.kind}
+                </span>
+            )}
+            {link?.kind === 'video' && pictured && (
+                <span class="folders-play" aria-hidden="true">
+                    <IconPlay size={14} />
+                </span>
+            )}
+            {length && <span class="folders-length">{length}</span>}
+        </span>
+    );
 }
 
 /** Открыть папку в разделе «Папки» из другого места пульта (плитка флешки на столе). */

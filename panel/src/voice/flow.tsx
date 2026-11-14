@@ -1,19 +1,23 @@
-// Что пульт делает по вестям мастерской (docs/plans/voice-creation.md): агент закончил — полоса «Готово…» с
-// подсказками (просили голосом в этом пульте — он 6 секунд слушает ответ без нажатия); колонка попросила открыть
-// «Примерку» или «да» — окно открывается. Рисовать нечего: только слушает вести.
+// Что пульт делает по вестям мастерской и работ (docs/plans/voice-creation.md; docs/plans/audio-interface.md,
+// «Пульт»): работа кончилась — полоса со строкой итога шлюза и подсказками; работу этого компьютера в режиме «Микрофон»
+// пульт ещё и говорит своим голосом, договорил — сообщает шлюзу и 6 секунд слушает ответ без нажатия (ответ идёт слою:
+// «да» ставит на стол). Колонка попросила открыть «Примерку» или «да» — окно открывается; приложению на столе не хватает
+// ключа (`open:needs`) — открывается его окно с полями. Рисовать нечего: только слушает вести.
 
 import { useEffect, useRef } from 'preact/hooks';
 
-import { api, can } from '../api';
+import { WorkView, api, can } from '../api';
 import { tr } from '../i18n';
 import { usePanel } from '../shell/context';
 import { ask } from '../ui/confirm';
 import { announceReady, failed } from './creation';
 import { onWorkshopChange } from './drafts';
-import { askedByVoice, listenFor } from './mic';
+import { listenFor } from './mic';
+import { sayAloud } from './speak';
 import { showStrip } from './strip';
+import { SAID_ON, askedHere, onWorkChange, readWork, speaksHere, workHead } from './works';
 
-/** Сколько пульт слушает ответ на «Готово», если просили голосом в нём. */
+/** Сколько пульт слушает ответ на «Готово», если работа — его. */
 export const ANSWER_SECONDS = 6;
 
 export function CreationFlow() {
@@ -27,34 +31,51 @@ export function CreationFlow() {
             const go = latest.current.go;
             if (change === 'open:fitting') return go('fitting', draft);
             if (change === 'open:consent') return go('fitting', draft, undefined, { yes: '' });
-            if (change !== 'ready' && change !== 'failed') return;
-            void api
-                .workshopDraft(draft)
-                .then((view) => {
-                    if (view.meta.stage === 'failed') {
-                        showStrip({ kind: 'note', head: tr.voice.failedHead, text: view.meta.note ?? tr.voice.failedNote(view.title ?? draft) }, 10_000);
-                        return;
-                    }
-                    if (view.meta.stage !== 'ready') return;
-                    const voice = askedByVoice(draft);
-                    announceReady(
-                        view,
-                        {
-                            fit: () => go('fitting', draft),
-                            desk: () => go('fitting', draft, undefined, { yes: '' }),
-                            redo: () => go('fitting', draft, undefined, { redo: '' }),
-                            park: () => void api.parkDraft(draft).catch((e) => showStrip({ kind: 'note', head: tr.voice.failedHead, text: failed(e) }, 6000)),
-                            drop: () =>
-                                void ask({ title: tr.voice.deleteDraftTitle, text: tr.voice.deleteDraftText(view.title ?? draft), ok: tr.voice.delete, danger: true }).then(
-                                    (yes) => yes && api.deleteDraft(draft),
-                                ),
-                        },
-                        voice ? ANSWER_SECONDS : 0,
-                    );
-                    if (voice) listenFor(ANSWER_SECONDS * 1000);
-                })
-                .catch(() => undefined);
+            // На столе, но не хватает ключа: окно приложения с его полями.
+            if (change === 'open:needs') return go('skills', 'installed', draft);
         });
     }, []);
+    useEffect(() => {
+        if (!can('plugins.manage')) return;
+        return onWorkChange((id, change) => {
+            if (!id || !SAID_ON.includes(change)) return;
+            void readWork(id).then((work) => work && announce(work));
+        });
+    }, []);
+    /** Строка итога работы на полосе — и голосом, когда это работа этого компьютера в режиме «Микрофон». */
+    const announce = async (work: WorkView): Promise<void> => {
+        const line = work.result?.line;
+        if (!line) return;
+        const go = latest.current.go;
+        const draft = work.target;
+        if (work.state === 'failed' || work.state === 'done' || !draft) {
+            showStrip({ kind: work.state === 'done' ? 'done' : 'note', head: workHead(work), text: line }, 10_000);
+        } else {
+            const view = await api.workshopDraft(draft).catch(() => null);
+            if (!view) return;
+            const voice = speaksHere(work) && askedHere(work) && !!work.question;
+            announceReady(
+                view,
+                {
+                    fit: () => go('fitting', draft),
+                    desk: () => go('fitting', draft, undefined, { yes: '' }),
+                    redo: () => go('fitting', draft, undefined, { redo: '' }),
+                    park: () => void api.parkDraft(draft).catch((e) => showStrip({ kind: 'note', head: tr.voice.failedHead, text: failed(e) }, 6000)),
+                    drop: () =>
+                        void ask({ title: tr.voice.deleteDraftTitle, text: tr.voice.deleteDraftText(view.title ?? draft), ok: tr.voice.delete, danger: true }).then(
+                            (yes) => yes && api.deleteDraft(draft),
+                        ),
+                },
+                voice ? ANSWER_SECONDS : 0,
+                line,
+                workHead(work),
+            );
+        }
+        if (!speaksHere(work) || !askedHere(work)) return;
+        // Компьютер говорит «Готово…» сам: договорил — шлюз открывает вопрос, пульт слушает ответ.
+        if (!(await sayAloud(line))) return;
+        const said = await api.workSaid(work.id).catch(() => null);
+        if (said?.question) listenFor(ANSWER_SECONDS * 1000, true);
+    };
     return null;
 }

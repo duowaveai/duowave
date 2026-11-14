@@ -7,6 +7,12 @@
 //! `budget.storageMb`. On the station room is short (`/data` some 45 MB free, measured 11.11.2026), so it has a limit
 //! of its own, the owner's decision 10 (12.11.2026): a picture up to 1 MB, all the plugins' pictures together up to
 //! 5 MB. A plugin with `prefer: home` keeps its pictures on the computer: its calls run there.
+//!
+//! **Media to its window** (docs/plans/feed.md, «Один движок показа»): the app's window plays video and sound of the
+//! app's own folder — a 70 MB episode with seeking — by the one engine of the gateway (gateway/media): the panel asks
+//! it for a key to the file as that app (`POST /api/v1/media/links`, `files/app/<id>/<path>`) and the window gets
+//! `/media/v/<key>`, with Range, never whole into memory, nothing a browser would run.
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -84,6 +90,26 @@ impl PluginFiles {
 
     fn folder(&self, plugin: &str) -> PathBuf {
         self.root.join(plugin)
+    }
+
+    /// A path inside an app's own folder: parts without a dot in front, none `..`. Nothing is made.
+    pub fn inside(&self, plugin: &str, path: &str) -> Result<PathBuf, String> {
+        let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+        let plain = !parts.is_empty()
+            && parts.iter().all(|part| !part.starts_with('.') && !part.contains('\\') && part.len() <= 120);
+        if !plain {
+            return Err(format!("«{path}»: путь внутри своей папки, например voice/01.wav"));
+        }
+        Ok(parts.iter().fold(self.folder(plugin), |path, part| path.join(part)))
+    }
+
+    /// A path inside an app's own folder for a file it writes; the folders on the way are made.
+    pub fn place(&self, plugin: &str, path: &str) -> Result<PathBuf, String> {
+        let file = self.inside(plugin, path)?;
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+        }
+        Ok(file)
     }
 
     /// A plugin's pictures — the pictures at the top of its own folder (`files/app/<id>`, src/bus/providers/files.rs);
@@ -172,10 +198,12 @@ impl PluginFiles {
 
     /// A picture for the panel: its bytes and media type.
     pub fn read(&self, plugin: &str, name: &str) -> Option<(Vec<u8>, &'static str)> {
-        if !self.files(plugin).iter().any(|(known, _, _)| known == name) {
-            return None;
-        }
-        std::fs::read(self.folder(plugin).join(name)).ok().map(|bytes| (bytes, media_type(name)))
+        std::fs::read(self.picture(plugin, name)?).ok().map(|bytes| (bytes, media_type(name)))
+    }
+
+    /// Where one of a plugin's pictures is: only a picture at the top of its folder, by its listed name.
+    pub fn picture(&self, plugin: &str, name: &str) -> Option<PathBuf> {
+        self.files(plugin).iter().any(|(known, _, _)| known == name).then(|| self.folder(plugin).join(name))
     }
 
     /// The plugin's pictures replaced whole by those the history kept (history/data.rs): within the station's limits,

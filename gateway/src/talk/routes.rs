@@ -11,11 +11,22 @@
 //! - `POST /api/v1/talk/speech {text}` → `audio/wav`, 16-bit mono: one phrase of the answer in the household's own
 //!   voice, for the computer's speakers. Alice's voice cannot speak here — 409 in words; so does a voice server
 //!   that is not up yet. A phrase of up to 600 characters; the same right.
+//! - `GET /api/v1/talk/now?device=` → `{device, text}`: what the brain knows now on a device (the computer without
+//!   one) — the block «Сейчас» as the model gets it; empty when nothing goes on. The right to talk (`use:chat`).
+//! - `GET /api/v1/works?device=&state=` → the works, the newest first; `GET /api/v1/works/{id}` → one. The right to
+//!   use the apps (`use:plugins`).
+//! - `POST /api/v1/works/{id}/said` — the computer said the work's line to its end (the panel's voice): its question
+//!   opens for the answer the panel listens for. `POST /api/v1/works/{id}/notes {text}` — words added to it («вдогонку»,
+//!   or its new version); `POST /api/v1/works/{id}/do {action}` — `status`, `details`, `show`, `desk`, `park`, `stop`.
+//!   Each answers `{said}`, the phrase to say or show. The same right.
+//! - `POST /api/v1/talk` answers `{said, by, work?}`: the work the phrase began or added to.
 
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use axum::extract::State;
+use std::collections::HashMap;
+
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -25,10 +36,12 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use super::{input, Activator, Heard, Origin, TalkEvent, Turn, MAX_TEXT};
+use super::works::{Work, WorkState};
+use super::{input, Activator, Heard, Origin, TalkEvent, Turn, COMPUTER, MAX_TEXT};
 use crate::app::App;
 use crate::core::identity::permissions::{use_of, STATION_MODE, STATION_VIEW};
 use crate::core::requests::Place;
+use crate::dialog::Channel;
 use crate::placement::service::Role;
 use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller};
 use crate::settings::definitions::VoiceInput;
@@ -39,6 +52,100 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/api/v1/talk/input", get(voice_input).put(set_voice_input))
         .route("/api/v1/talk", post(talk))
         .route("/api/v1/talk/speech", post(speech))
+        .route("/api/v1/talk/now", get(now))
+        .route("/api/v1/works", get(works))
+        .route("/api/v1/works/{id}", get(work))
+        .route("/api/v1/works/{id}/said", post(work_said))
+        .route("/api/v1/works/{id}/notes", post(work_notes))
+        .route("/api/v1/works/{id}/do", post(work_do))
+}
+
+/// What a work's action says.
+#[derive(Debug, Serialize)]
+struct WorkSaid {
+    said: String,
+}
+
+async fn work_said(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Work> {
+    caller.permitted(&use_of(CapabilityName::Plugins))?;
+    app.talk.said_on(&id, COMPUTER).map(ok).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))
+}
+
+/// The panel's person on the computer, typing.
+fn typed(caller: &Caller) -> Origin {
+    Origin::computer(Activator::Text).by(caller.principal().map(|principal| principal.name.clone()))
+}
+
+async fn work_notes(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path(id): Path<String>,
+    Body(body): Body<Value>,
+) -> ApiResult<WorkSaid> {
+    caller.permitted(&use_of(CapabilityName::Plugins))?;
+    app.talk.works().get(&id).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))?;
+    let text = body.get("text").and_then(Value::as_str).unwrap_or_default();
+    let pack = super::pack::of(app.talk.lang(COMPUTER));
+    let said =
+        app.talk.add(typed(&caller), text, Some(&id), false).await.unwrap_or_else(|refusal| refusal.for_person(pack));
+    Ok(ok(WorkSaid { said }))
+}
+
+async fn work_do(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path(id): Path<String>,
+    Body(body): Body<Value>,
+) -> ApiResult<WorkSaid> {
+    caller.permitted(&use_of(CapabilityName::Plugins))?;
+    app.talk.works().get(&id).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))?;
+    let action = body.get("action").and_then(Value::as_str).unwrap_or_default();
+    let pack = super::pack::of(app.talk.lang(COMPUTER));
+    let said =
+        app.talk.act(&typed(&caller), action, Some(&id)).await.unwrap_or_else(|refusal| refusal.for_person(pack));
+    Ok(ok(WorkSaid { said }))
+}
+
+/// The block «Сейчас» as a device's brain gets it.
+#[derive(Debug, Serialize)]
+struct Now {
+    device: String,
+    text: String,
+}
+
+async fn now(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Query(query): Query<HashMap<String, String>>,
+) -> ApiResult<Now> {
+    caller.permitted(&use_of(CapabilityName::Chat))?;
+    let device =
+        query.get("device").map(|device| device.trim()).filter(|device| !device.is_empty()).unwrap_or(COMPUTER);
+    let channel = if device == COMPUTER { Channel::Computer } else { Channel::Station };
+    let lang = crate::memory::text::lang_of(&app.personas.system_prompt_for(None, channel).text);
+    Ok(ok(Now { device: device.to_string(), text: app.talk.now(device, lang) }))
+}
+
+async fn works(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Query(query): Query<HashMap<String, String>>,
+) -> ApiResult<Vec<Work>> {
+    caller.permitted(&use_of(CapabilityName::Plugins))?;
+    let device = query.get("device").map(String::as_str).filter(|device| !device.is_empty());
+    let state = match query.get("state").map(String::as_str).filter(|state| !state.is_empty()) {
+        Some(state) => Some(
+            WorkState::parse(state)
+                .ok_or_else(|| ApiError::field("state", crate::tr!("нет такого состояния работы")))?,
+        ),
+        None => None,
+    };
+    Ok(ok(app.talk.works().all(device, state)))
+}
+
+async fn work(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Work> {
+    caller.permitted(&use_of(CapabilityName::Plugins))?;
+    app.talk.works().get(&id).map(ok).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))
 }
 
 /// One phrase at most this long: the panel asks for an answer phrase by phrase.
@@ -95,6 +202,8 @@ async fn set_voice_input(
 struct Said {
     said: String,
     by: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    work: Option<String>,
 }
 
 /// The phrase as the body gave it: what cannot be read is left out, never guessed.
@@ -151,7 +260,7 @@ async fn talk(
         let _guard = talk.cancel.clone().drop_guard();
         while let Some(event) = talk.events.recv().await {
             match event {
-                TalkEvent::Done { said, by, .. } => return Ok(ok(Said { said, by }).into_response()),
+                TalkEvent::Done { said, by, work, .. } => return Ok(ok(Said { said, by, work }).into_response()),
                 TalkEvent::Error { message } => return Err(ApiError::bad_gateway(message)),
                 _ => {}
             }

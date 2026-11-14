@@ -298,6 +298,8 @@ mod tests {
                 steps: Vec::new(),
                 error: None,
                 parent: None,
+                tokens: None,
+                origin: None,
             };
             views.push(view.clone());
             Arc::new(RequestHandle::new(view, Arc::new(Keep { views: self.views.clone(), index }), monotonic_clock()))

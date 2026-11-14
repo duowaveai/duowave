@@ -72,17 +72,22 @@ export function failed(error: unknown): string {
     return error instanceof Error && !('status' in error) ? error.message : problemOf(error);
 }
 
-/** Полоса «Готово…» с подсказками; `fit`, `desk` и прочее — что делают её кнопки. */
+/**
+ * Полоса «Готово…» с подсказками; `fit`, `desk` и прочее — что делают её кнопки. `line` — строка итога работы, которую
+ * собрал шлюз (docs/plans/audio-interface.md, «Честное «Готово»»): с ней слова агента на полосу не идут.
+ */
 export function announceReady(
     draft: DraftView,
     acts: { fit: () => void; desk: () => void; redo: () => void; park: () => void; drop: () => void },
     seconds = 0,
+    line?: string,
+    head?: string,
 ): void {
     const face = draft.meta.kind;
     showStrip({
         kind: 'ready',
-        head: tr.voice.readyHead,
-        text: readyWithNote(draft),
+        head: head ?? tr.voice.readyHead,
+        text: line ?? readyWithNote(draft),
         chip: seconds ? { text: tr.voice.listenMore(seconds), tone: 'own' } : undefined,
         wait: seconds || undefined,
         chips: [

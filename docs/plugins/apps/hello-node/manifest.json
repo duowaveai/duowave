@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "kind": "app",
+  "runtime": "node",
+  "node": { "entry": "server.mjs" },
+  "id": "hello-node",
+  "version": "1.0.0",
+  "title": "Привет на Node",
+  "license": "Apache-2.0",
+  "description": "Самое маленькое приложение на Node: здоровается, помнит, с кем, пишет абзац моделью и озвучивает его. Пример для авторов.",
+  "api": "^2",
+  "runs": ["pc"],
+  "budget": { "memoryMb": 96 },
+  "permissions": ["call:system/brain", "call:system/voice"],
+  "health": { "path": "/health", "intervalS": 5 },
+  "contributes": {
+    "tools": [
+      { "name": "hello_node", "description": "Здоровается по имени и говорит версию Node", "handler": "hello" },
+      { "name": "hello_story", "description": "Пишет абзац моделью и озвучивает его голосом компьютера в свою папку", "handler": "story" },
+      { "name": "hello_crash", "description": "Падает — проверка надзора", "handler": "crash" }
+    ]
+  }
+}

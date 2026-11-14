@@ -132,6 +132,10 @@ pub struct Entry {
     pub verified: bool,
     /// Its `budget.memoryMb`, as the feed tells it: on the station, what does not fit is shown as not going here.
     pub memory_mb: Option<u64>,
+    /// Code's engine as the feed says (`runtime`: js, wasm, mcp, process, node) and its rights (`permissions`): the
+    /// catalog's card shows them before the install (docs/plans/feed.md, stage 9).
+    pub runtime: Option<String>,
+    pub permissions: Vec<String>,
     /// An app's archives by platform (`platforms`): the station takes `linux-aarch64`'s, a Mac `darwin-arm64`'s.
     pub platforms: BTreeMap<String, Archive>,
     /// Who puts it out: its own `publisher`; an extra feed's package — the one the main feed names for that feed,
@@ -415,6 +419,14 @@ fn entry(value: &Value, base: &url::Url) -> Result<Entry, String> {
     let publisher = text("publisher").filter(|publisher| valid_id(publisher)).map(str::to_string);
     let verified = value.get("verified").and_then(Value::as_bool).unwrap_or(false);
     let memory_mb = value.pointer("/budget/memoryMb").and_then(Value::as_u64);
+    let runtime = text("runtime").filter(|runtime| runtime.len() <= 16).map(str::to_string);
+    let permissions = value
+        .get("permissions")
+        .and_then(Value::as_array)
+        .map(|rights| {
+            rights.iter().filter_map(Value::as_str).take(40).map(|right| right.chars().take(120).collect()).collect()
+        })
+        .unwrap_or_default();
     let mut platforms = BTreeMap::new();
     for (key, archive) in value.get("platforms").and_then(Value::as_object).into_iter().flatten() {
         let url = archive.get("url").and_then(Value::as_str).and_then(|url| same_origin(base, url));
@@ -448,6 +460,8 @@ fn entry(value: &Value, base: &url::Url) -> Result<Entry, String> {
         license,
         verified,
         memory_mb,
+        runtime,
+        permissions,
         platforms,
         publisher,
         extra: None,
@@ -752,6 +766,11 @@ pub struct CatalogEntryView {
     pub source: Option<String>,
     /// It comes from an own source the admin added here.
     pub own: bool,
+    /// Code's engine (js, wasm, mcp, process, node) and its rights, from the feed.
+    pub runtime: Option<String>,
+    pub permissions: Vec<String>,
+    /// Code from the main feed that the catalog's key signed: «Подписано DuoWave».
+    pub signed: bool,
 }
 
 /// An extra feed for the panel: whose it is, what it is called, how its last read went.
@@ -1591,6 +1610,11 @@ impl PackageCatalog {
                             publisher: entry.publisher.clone(),
                             source: entry.extra.as_ref().map(|extra| extra.title.clone()),
                             own: entry.extra.as_ref().is_some_and(|extra| extra.own),
+                            runtime: entry.runtime.clone(),
+                            permissions: entry.permissions.clone(),
+                            signed: signed
+                                && entry.extra.is_none()
+                                && matches!(entry.kind, PackageKind::Plugin | PackageKind::App),
                         }
                     })
                     .collect()
@@ -2138,6 +2162,9 @@ pub mod tests {
             pressure_action: crate::plugins::budget::PressureAction::Disable,
             bundled: false,
             schedules: true,
+            node_dir: std::path::PathBuf::from("node"),
+            own_node: None,
+            node_mirror: None,
         };
         let host = PluginHost::new(PluginsDeps {
             config: config.clone(),
@@ -2397,6 +2424,25 @@ pub mod tests {
             fixture.catalog.install("nobody", None, false, None).await.unwrap_err().status,
             StatusCode::NOT_FOUND
         );
+    }
+
+    #[test]
+    fn reads_an_apps_engine_and_rights_from_the_feed_for_its_card() {
+        let base = url::Url::parse("https://packages.example.org/catalog.json").unwrap();
+        let value = json!({
+            "id": "feed", "kind": "app", "version": "0.1.0", "title": "Лента", "api": "^2", "runs": ["pc"],
+            "url": "https://packages.example.org/packages/feed-0.1.0.vgp", "sha256": "a".repeat(64), "size": 1000,
+            "runtime": "node", "permissions": ["call:system/brain", "net:api.elevenlabs.io"],
+            "budget": { "memoryMb": 768 }
+        });
+        let parsed = entry(&value, &base).unwrap();
+        assert_eq!(parsed.runtime.as_deref(), Some("node"));
+        assert_eq!(parsed.permissions, ["call:system/brain", "net:api.elevenlabs.io"]);
+        assert_eq!(parsed.memory_mb, Some(768));
+        let bare = json!({ "id": "arthur", "kind": "character", "version": "1.0.0", "title": "Артур", "api": "^1",
+            "runs": ["pc"], "url": "https://packages.example.org/packages/arthur.vgp", "sha256": "b".repeat(64), "size": 10 });
+        let parsed = entry(&bare, &base).unwrap();
+        assert!(parsed.runtime.is_none() && parsed.permissions.is_empty(), "a character has neither");
     }
 
     /// A plugin's `.vgp`: its manifest and its code.

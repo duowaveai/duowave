@@ -691,12 +691,23 @@ mod tests {
             updated: 0,
             note: None,
             kept: true,
+            work: None,
+            unchanged: false,
         };
         app.workshop.keep_card("widget-1", card, Some("made")).unwrap();
         let run = app.workshop.activity().begin("widget-1", By::Panel, "мои дела", &CancellationToken::new());
         app.workshop.activity().said(&run, "Сделал виджет: дела на сегодня из Todoist.");
         app.workshop.activity().said(&run, "Ключ впишите в «Примерке».");
+        // The agent wrote what it made: a run that changed nothing would be no «готово».
+        run.changed.store(true, std::sync::atomic::Ordering::Relaxed);
         app.workshop.activity().end(&run, StepKind::Done, "");
+        // The gateway checks what the agent made before the card says «готово» (docs/plans/audio-interface.md).
+        for _ in 0..200 {
+            if app.workshop.card("widget-1").stage != Stage::Working {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
 
         let view = one(State(app.clone()), admin(), Path("widget-1".into())).await.unwrap().1;
         assert_eq!((view.meta.stage, view.meta.who.as_deref()), (Stage::Ready, Some("Админ")));

@@ -206,6 +206,21 @@ impl RequestsService {
         }
     }
 
+    /// One round of the model on a device's request going now (its newest, not a push of ours): what it spent.
+    pub fn spent(&self, device: &str, model: &str, usage: &crate::dialog::llm::LlmUsage) {
+        let going = guard(&self.active)
+            .iter()
+            .rev()
+            .find(|handle| {
+                let view = handle.snapshot();
+                view.device == device && view.kind != RequestKind::Say
+            })
+            .cloned();
+        if let Some(handle) = going {
+            handle.spent(model, usage);
+        }
+    }
+
     /// A request starts in the given mode: the RequestStarter (`begin`) fills in the mode now.
     pub fn begin_in(&self, start: RequestStart, mode: &str) -> Arc<RequestHandle> {
         let some = |value: Option<String>| value.filter(|value| !value.is_empty());
@@ -227,6 +242,8 @@ impl RequestsService {
             steps: Vec::new(),
             error: None,
             parent: some(start.parent),
+            tokens: None,
+            origin: None,
         };
         let handle = Arc::new(RequestHandle::new(view, self.hooks.clone(), monotonic_clock()));
         guard(&self.active).push(handle.clone());
@@ -264,7 +281,7 @@ impl RequestsService {
                 tracing::warn!("journal: a note on {} not written: {error}", view.id);
             }
         }
-        self.events.emit(GatewayEvent::RequestUpdated { request: view });
+        self.events.emit(GatewayEvent::RequestUpdated { request: Box::new(view) });
     }
 
     /// The requests going now, oldest first.
@@ -297,7 +314,7 @@ impl RequestsService {
         let rows = self.db.with(|c| {
             let mut statement = c.prepare(
                 "SELECT id, device, session, kind, mode, status, started_at, ms, text, answer, capability, executor,
-                        steps, error, parent
+                        steps, error, parent, tokens, origin
                  FROM requests WHERE (?1 IS NULL OR started_at < ?1) AND (?2 IS NULL OR device = ?2)
                  ORDER BY started_at DESC LIMIT ?3",
             )?;
@@ -410,7 +427,7 @@ impl RequestsService {
             std::mem::take(&mut pending.handles)
         };
         for handle in handles {
-            self.events.emit(GatewayEvent::RequestUpdated { request: handle.snapshot() });
+            self.events.emit(GatewayEvent::RequestUpdated { request: Box::new(handle.snapshot()) });
         }
     }
 
@@ -440,8 +457,9 @@ impl RequestsService {
         let saved = self.db.with(|c| {
             c.execute(
                 "INSERT INTO requests (id, device, session, kind, mode, status, started_at, ms, text, answer, capability,
-                                       executor, steps, error, parent)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) ON CONFLICT (id) DO NOTHING",
+                                       executor, steps, error, parent, tokens, origin)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                 ON CONFLICT (id) DO NOTHING",
                 params![
                     view.id,
                     view.device,
@@ -458,6 +476,8 @@ impl RequestsService {
                     steps,
                     view.error,
                     view.parent,
+                    view.tokens.as_ref().and_then(|tokens| serde_json::to_string(tokens).ok()),
+                    view.origin.as_ref().and_then(|origin| serde_json::to_string(origin).ok()),
                 ],
             )
         });
@@ -542,6 +562,8 @@ fn view_of(row: &Row<'_>) -> rusqlite::Result<Option<RequestView>> {
         steps: serde_json::from_str::<Vec<RequestStep>>(&steps).unwrap_or_default(),
         error: text(13)?,
         parent: text(14)?,
+        tokens: text(15)?.and_then(|tokens| serde_json::from_str(&tokens).ok()),
+        origin: text(16)?.and_then(|origin| serde_json::from_str(&origin).ok()),
     }))
 }
 
@@ -628,7 +650,7 @@ mod tests {
             let mut views = Vec::new();
             while let Ok(event) = self.updates.try_recv() {
                 if let GatewayEvent::RequestUpdated { request } = &*event {
-                    views.push(request.clone());
+                    views.push(request.as_ref().clone());
                 }
             }
             views

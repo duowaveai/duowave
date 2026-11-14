@@ -7,6 +7,8 @@ pub mod openai_transcriber;
 pub mod speech_recognizer;
 pub mod transcript;
 
+use serde::{Deserialize, Serialize};
+
 /// The language to recognise in: ASR_LANGUAGE when the .env sets it (blank — none: the model hears which for itself),
 /// else the household's language (`crate::locale`), else none.
 pub fn wanted_language(configured: Option<&str>, household: Option<String>) -> Option<String> {
@@ -15,6 +17,22 @@ pub fn wanted_language(configured: Option<&str>, household: Option<String>) -> O
         Some(code) => Some(crate::locale::normalize(code).unwrap_or_else(|| code.to_string())),
         None => household,
     }
+}
+
+/// What a recognizer heard, with times: the text, the language when it tells one, and each word's start and end in
+/// seconds from the audio's start (empty when the engine gives no times).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Heard {
+    pub text: String,
+    pub language: Option<String>,
+    pub words: Vec<HeardWord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HeardWord {
+    pub word: String,
+    pub start: f64,
+    pub end: f64,
 }
 
 #[cfg(test)]

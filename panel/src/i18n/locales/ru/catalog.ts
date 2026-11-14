@@ -10,6 +10,7 @@ export default {
     filterApps: 'Приложения',
     filterThemes: 'Темы',
     pillOwnSource: 'свой источник',
+    pillSigned: 'Подписано DuoWave',
     pillNewVersion: 'новая версия',
     pillInstalled: 'установлен',
     pillIncompatible: 'не пойдёт здесь',
@@ -36,6 +37,9 @@ export default {
     phraseLabel: (title: string, n: number) => `${title}, фраза ${n}`,
     phrase: (n: number) => `фраза ${n}`,
     license: (name: string) => `Лицензия: ${name}`,
+    builtByComputer: (node: boolean, signed: boolean) =>
+        `Собирает компьютер: своя программа${node ? ' на Node' : ''} работает на компьютере с правами пользователя${signed ? ' — код проверен и подписан DuoWave' : ''}.`,
+    rightsLine: (list: string) => `Права: ${list}`,
     onlyCharacterEditor: 'Ставить персонажей может тот, кому можно менять характер.',
     onlyAdmin: 'Ставить такие приложения может администратор.',
     statusAbsent: 'Этот шлюз пока без каталога — показаны установленные.',

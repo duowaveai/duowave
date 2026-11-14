@@ -60,11 +60,22 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/api/v1/packages/files", get(files_summary))
         .route("/api/v1/packages/{id}/files", get(files_view))
         .route("/api/v1/packages/{id}/files/{name}", get(file))
+        .route("/api/v1/packages/{id}/share", post(share))
+        .route("/mcp/apps/{id}", post(app_mcp).get(app_mcp_get))
         .route("/api/v1/packages/{id}/schedule", get(schedule))
         .route("/api/v1/packages/{id}/schedule/{job}", put(schedule_pause).delete(schedule_remove))
         .route("/api/v1/packages/{id}/schedule/{job}/run", post(schedule_run))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
+        // A recording from the app's window comes as WAV: a minute and more of voice is megabytes.
+        .merge(
+            Router::new()
+                .route("/api/v1/packages/{id}/recordings", post(recording))
+                .layer(DefaultBodyLimit::max(RECORDING_MAX)),
+        )
 }
+
+/// A recording from an app's window at most: five minutes of 24 kHz voice.
+const RECORDING_MAX: usize = 16 * 1024 * 1024;
 
 /// The admin, a person, at home — and not one whose right to plugins was taken away.
 pub(crate) fn admin(caller: &Caller) -> Result<Option<Actor>, ApiError> {
@@ -202,8 +213,13 @@ async fn remove(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<Stri
     }
     app.catalog.remove(&id, actor).await?;
     app.characters.sync();
-    // Its pictures go with it (plugins/files.rs).
+    // Its pictures go with it (plugins/files.rs), and its pages «смотри и выбирай»; the keys to its files that the
+    // media engine gave it close (gateway/media).
     app.files.forget(&id);
+    app.watch.forget(&id);
+    if let Some(files) = app.bus.files() {
+        files.media().forget_app(&id);
+    }
     Ok(ok(json!({ "deleted": true })))
 }
 
@@ -326,6 +342,7 @@ async fn mcp_plugins(
                         principal: principal.clone(),
                         cancel: tokio_util::sync::CancellationToken::new(),
                         station: None,
+                        origin: None,
                     };
                     let (text, failed) = match (tool.run)(arguments, context).await {
                         Ok(text) => (text, false),
@@ -425,20 +442,154 @@ async fn files_view(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<
     Ok(ok(app.files.view(&id, room)))
 }
 
-/// A plugin's picture for its part of the panel (`useFile`): with the panel's key, never an open link.
+/// A plugin's picture for its part of the panel (`useFile`): with the panel's key, never an open link; it goes out
+/// through the media engine (gateway/media) — its type by its bytes, nothing a browser runs.
 async fn file(
     State(app): State<Arc<App>>,
     caller: Caller,
     Path((id, name)): Path<(String, String)>,
+    request: axum::extract::Request,
 ) -> Result<Response, ApiError> {
     caller.permitted(&use_of(CapabilityName::Plugins))?;
-    let (bytes, kind) = app
+    let picture = app
         .files
-        .read(&id, &name)
+        .picture(&id, &name)
         .ok_or_else(|| ApiError::not_found(crate::tr!("Нет картинки {name}.", name = name)))?;
-    let mut response = bytes.into_response();
-    response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
-    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=300"));
+    let engine = crate::gateway::media::Allow::Media;
+    crate::gateway::media::engine::serve(picture, engine, request, "private, max-age=300").await
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ShareBody {
+    /// A file of the app's folder, if a file goes out.
+    #[serde(default)]
+    file: Option<String>,
+    /// Where it went: `videos` (saved into the household's «Видео»), `download`, `system` (the phone's menu), `copy`
+    /// (the text), or a platform's upload page (`tiktok`, `reels`, `shorts`, `telegram`, `vk`).
+    #[serde(rename = "where")]
+    to: String,
+}
+
+/// What a person sent out of an app's window («Поделиться», docs/plans/feed.md, stage 5): the journal keeps what and
+/// where; «В Видео» is the gateway's own copy into the household's folder. The person started it — no «да» is asked.
+async fn share(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path(id): Path<String>,
+    Body(body): Body<ShareBody>,
+) -> ApiResult<Value> {
+    let shared = crate::capabilities::routes::SharedBody { app: Some(id), to: body.to, file: body.file };
+    Ok(ok(crate::capabilities::routes::noted(&app, &caller, shared).await?))
+}
+
+/// A recording from an app's window (SDK `record()`, «Записать своим голосом»): the panel opened the microphone, the
+/// window never did; the WAV goes into the app's folder, `recordings/<время>.wav`, and the window gets its name.
+async fn recording(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path(id): Path<String>,
+    body: axum::body::Bytes,
+) -> ApiResult<Value> {
+    caller.permitted(&use_of(CapabilityName::Plugins))?;
+    if app.plugins.installed(&id).is_none() {
+        return Err(ApiError::not_found(format!("Нет приложения «{id}».")));
+    }
+    let wav = crate::speech::audio::pcm::decode_wav(&body).map_err(|_| ApiError::bad_request("Запись — не WAV."))?;
+    let seconds = wav.pcm.len() as f64 / f64::from(wav.sample_rate.max(1));
+    let name = format!("recordings/{}.wav", chrono::Utc::now().format("%Y%m%d-%H%M%S-%3f"));
+    let file = app.files.place(&id, &name).map_err(ApiError::bad_request)?;
+    std::fs::write(&file, &body).map_err(ApiError::internal)?;
+    app.plugins.note_line(&id, "info", &format!("запись своим голосом: {name}, {seconds:.1} с"));
+    Ok(created(json!({ "file": name, "seconds": (seconds * 10.0).round() / 10.0 })))
+}
+
+async fn app_mcp_get() -> Response {
+    (axum::http::StatusCode::METHOD_NOT_ALLOWED, "MCP приложения: только POST (JSON-RPC)").into_response()
+}
+
+/// An app as an MCP server for one's own Claude Code (docs/plans/feed.md, stage 7: the «Лента» director with one's own
+/// subscription): its own tools (`contributes.tools`, each called as an agent's call — up to five minutes) and the
+/// gateway's file tools over its own folder (`list_files`, `read_file`, `write_file`). The admin's panel key goes in
+/// `Authorization: Bearer`; the app must be on.
+async fn app_mcp(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path(id): Path<String>,
+    Body(request): Body<Value>,
+) -> Result<Response, ApiError> {
+    admin(&caller)?;
+    let package = app.plugins.package(&id).ok_or_else(|| ApiError::not_found(format!("«{id}» не включено.")))?;
+    let rpc = request.get("id").cloned().unwrap_or(Value::Null);
+    if request.get("id").is_none() {
+        return Ok(axum::http::StatusCode::ACCEPTED.into_response());
+    }
+    let method = request.get("method").and_then(Value::as_str).unwrap_or_default();
+    let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+    let result = |value: Value| json!({ "jsonrpc": "2.0", "id": rpc, "result": value });
+    let own = &package.manifest.contributes.tools;
+    let answer = match method {
+        "initialize" => result(json!({
+            "protocolVersion": params.get("protocolVersion").and_then(Value::as_str).unwrap_or("2025-06-18"),
+            "capabilities": { "tools": { "listChanged": false } },
+            "serverInfo": { "name": format!("duowave-app-{id}"), "version": crate::VERSION },
+            "instructions": format!(
+                "Инструменты приложения «{}» шлюза DuoWave и файлы его папки (list_files, read_file, write_file — пути от \
+                 её корня). Начните с инструмента приложения, который объясняет работу, если он есть.",
+                package.manifest.title
+            ),
+        })),
+        "ping" => result(json!({})),
+        "tools/list" => {
+            let mut tools: Vec<Value> = own
+                .iter()
+                .map(|tool| json!({ "name": tool.name, "description": tool.description, "inputSchema": tool.input }))
+                .collect();
+            tools.extend(crate::links::plugins::agent_file_tools().into_iter().map(
+                |tool| json!({ "name": tool.name, "description": tool.description, "inputSchema": tool.parameters }),
+            ));
+            result(json!({ "tools": tools }))
+        }
+        "tools/call" => {
+            let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
+            let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            let path = arguments.get("path").and_then(Value::as_str).unwrap_or_default();
+            let outcome = match name {
+                "list_files" => crate::links::plugins::agent_list(&app.files, &id, path),
+                "read_file" => crate::links::plugins::agent_read(&app.files, &id, path),
+                "write_file" => crate::links::plugins::agent_write(
+                    &app.files,
+                    &id,
+                    path,
+                    arguments.get("text").and_then(Value::as_str).unwrap_or_default(),
+                ),
+                tool => match own.iter().find(|known| known.name == tool) {
+                    Some(known) => app
+                        .plugins
+                        .call(&id, &known.handler, arguments.clone(), crate::plugins::runtime::CallKind::Agent)
+                        .await
+                        .map(|answer| match answer {
+                            Value::String(text) => text,
+                            other => other.to_string(),
+                        })
+                        .map_err(|error| error.to_string()),
+                    None => Err(format!("нет инструмента {tool}")),
+                },
+            };
+            if name == "write_file" && outcome.is_ok() {
+                app.plugins.note_line(&id, "info", &format!("Claude Code: write_file {path}"));
+            }
+            let (text, failed) = match outcome {
+                Ok(text) => (text, false),
+                Err(error) => (error, true),
+            };
+            result(json!({ "content": [{ "type": "text", "text": text }], "isError": failed }))
+        }
+        other => {
+            json!({ "jsonrpc": "2.0", "id": rpc, "error": { "code": -32601, "message": format!("method {other} is not here") } })
+        }
+    };
+    let mut response = axum::Json(answer).into_response();
+    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(response)
 }
 

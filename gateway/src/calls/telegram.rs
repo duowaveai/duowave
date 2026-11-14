@@ -274,6 +274,35 @@ impl TelegramMessenger {
         Ok(())
     }
 
+    /// A video with its caption (an app's episode published to a channel the bot is an admin of): up to 50 MB, the Bot
+    /// API's limit for a file sent by a bot.
+    pub async fn send_video(&self, chat_id: &str, mp4: Vec<u8>, name: &str, caption: Option<&str>) -> Result<()> {
+        let config = self.config()?;
+        if mp4.len() > 50 * 1024 * 1024 {
+            bail!("ролик больше 50 МБ — бот Telegram такой не отправит");
+        }
+        let video = reqwest::multipart::Part::bytes(mp4).file_name(name.to_string()).mime_str("video/mp4")?;
+        let mut form =
+            reqwest::multipart::Form::new().text("chat_id", chat_id.to_string()).text("supports_streaming", "true");
+        if let Some(caption) = caption.filter(|caption| !caption.is_empty()) {
+            form = form.text("caption", caption.chars().take(1024).collect::<String>());
+        }
+        let response = self
+            .client
+            .post(self.method(&config.token, "sendVideo"))
+            .multipart(form.part("video", video))
+            .timeout(Duration::from_secs(300))
+            .send()
+            .await
+            .map_err(reason)?;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let said: String = response.text().await.unwrap_or_default().chars().take(200).collect();
+            bail!("Telegram sendVideo: HTTP {status} {said}");
+        }
+        Ok(())
+    }
+
     async fn poll(self: Arc<Self>, stop: CancellationToken) {
         while self.running.load(Ordering::SeqCst) {
             let updates = tokio::select! {
@@ -448,6 +477,14 @@ mod tests {
                 }),
             )
             .route(
+                "/botT/sendVideo",
+                post(|State(fake): State<Arc<Fake>>, headers: axum::http::HeaderMap, body: axum::body::Bytes| async move {
+                    let kind = headers.get("content-type").and_then(|value| value.to_str().ok()).unwrap_or_default();
+                    lock(&fake.voices).push((format!("video {kind}"), body.to_vec()));
+                    Json(json!({"ok": true}))
+                }),
+            )
+            .route(
                 "/botT/getUpdates",
                 get(|State(fake): State<Arc<Fake>>, Query(query): Query<BTreeMap<String, String>>| async move {
                     let offset: i64 = query.get("offset").and_then(|offset| offset.parse().ok()).unwrap_or(0);
@@ -529,6 +566,24 @@ mod tests {
         ] {
             assert!(body.contains(part), "{part:?} in {body:?}");
         }
+
+        // An app's episode to a channel (system/publish → telegram).
+        telegram
+            .send_video("@feed_channel", b"mp4 bytes".to_vec(), "kompas-01.mp4", Some("Компас, серия 1"))
+            .await
+            .unwrap();
+        let (kind, body) = lock(&fake.voices)[1].clone();
+        assert!(kind.starts_with("video multipart/form-data"), "{kind}");
+        let body = String::from_utf8_lossy(&body).to_string();
+        for part in [
+            "name=\"chat_id\"\r\n\r\n@feed_channel\r\n",
+            "name=\"caption\"\r\n\r\nКомпас, серия 1\r\n",
+            "name=\"video\"; filename=\"kompas-01.mp4\"\r\nContent-Type: video/mp4\r\n\r\nmp4 bytes\r\n",
+        ] {
+            assert!(body.contains(part), "{part:?} in {body:?}");
+        }
+        let too_big = telegram.send_video("@feed_channel", vec![0; 51 * 1024 * 1024], "big.mp4", None).await;
+        assert!(too_big.unwrap_err().to_string().contains("50 МБ"));
 
         let missing = TelegramMessenger::with_api(None, &api);
         assert!(!missing.enabled());

@@ -22,7 +22,7 @@
 //
 // Окошко (Host API 2, docs/plans/bus.md, «Окошки»): panel.js любого приложения работает
 // в изолированном фрейме (/panel/frame.html: sandbox allow-scripts, connect-src 'none') — тот же SDK, но всё, что
-// выходит за окошко, идёт мостом пульта: useApi, useFile, ask, usePanelState().go, useMidi, readMidiFile, useTask. Ни входа
+// выходит за окошко, идёт мостом пульта: useApi, useFile, useMedia, ask, usePanelState().go, useMidi, readMidiFile, useTask. Ни входа
 // человека, ни localStorage пульта, ни fetch у окошка нет; useLive() не видит запросов людей. Разделы и вклады в
 // desk.widgets, home.cards, house.tabs пульт рисует окошками; другие слоты окошку недоступны. Виджет, который только
 // показывает строки и кнопки, лучше сделать карточкой (docs/plugins/cards.md): её рисует сам пульт, без кода.
@@ -76,6 +76,11 @@ declare module "@duowave/panel-sdk" {
         roles?: Array<"gateway" | "helper">;
         /** desk.widgets: виджет рисует свою рамку сам (класс `widget` на корне). */
         bare?: boolean;
+        /**
+         * desk.widgets: стоит прямо под колонкой (сценой стола), во всю её ширину, пока человек его не передвинет; на
+         * телефоне — первым после сцены, без колонки — под первыми шагами. Для главного виджета приложения («Лента»).
+         */
+        under?: boolean;
     }
 
     /** Тема — данные (docs/design/glass/THEMES.md): чего нет, берётся у «Минимала». */
@@ -113,6 +118,86 @@ declare module "@duowave/panel-sdk" {
      *   return src ? h("img", { src, alt: "Картинка дня", class: "w-big" }) : h(Note, null, "…");
      */
     export function useFile(name: string): string | null;
+
+    /**
+     * Видео, звук или фото своей папки (`files/app/<id>/…`; программа приложения пишет её сама — `DUOWAVE_APP_FILES`)
+     * для `<video src>` / `<audio src>` / `<img src>` окошка — адрес движка показа шлюза `/media/v/<ключ>`: файл с
+     * диска с перемоткой, целиком в память не грузится, тип — по содержимому, ничего, что браузер запустит. Ключ — за
+     * это приложение (проверяет шина), на шесть часов, на один файл; папку чужого приложения он не открывает. Пока
+     * адреса нет — null. Только в окошке поставленного приложения: у черновика своей папки нет. `?size=<точек>` к
+     * адресу — фото меньше или кадр-обложка видео.
+     *
+     *   const src = useMedia("episodes/kompas-01.mp4");
+     *   return src ? h("video", { src, controls: true, playsInline: true }) : h(Note, null, "…");
+     */
+    export function useMedia(name: string | null | undefined): string | null;
+
+    /** То же без хука: адрес файла своей папки — для смены ролика в плеере, списка серий. */
+    export function mediaUrl(name: string): Promise<string>;
+
+    /**
+     * Свой файл — в просмотрщике пульта, поверх всего пульта: фото во весь экран и листать, видео с перемоткой и во
+     * весь экран, звук. Пути своей папки (`episodes/01.mp4`) или адреса папок дома по связи приложения
+     * (`files/home/Photos/кот.jpg` — за того, кто смотрит); `{ path, title }` — со своим названием в шапке вместо имени
+     * файла. Несколько — листаются, `start` — с какого; `at` — с какой секунды играть. Ответ — когда человек закрыл:
+     * на какой вещи (`index`) и на какой секунде (`at`, null — не играло), чтобы свой плеер продолжил оттуда. Свой
+     * плеер окна остаётся своим — это его «во весь экран».
+     *
+     *   const closed = await openMedia({ path: episode.file, title: "«Компас», серия 7" }, { at: video.currentTime });
+     *   if (closed.at != null) video.currentTime = closed.at;
+     */
+    export function openMedia(
+        what: MediaWhat | MediaWhat[],
+        options?: { start?: number; at?: number },
+    ): Promise<{ index: number; at: number | null }>;
+
+    /** Что открыть в просмотрщике: путь своей папки или адрес `files/…`, или он же со своим названием. */
+    export type MediaWhat = string | { path: string; title?: string };
+
+    /**
+     * «Поделиться» файлом своей папки и текстом к посту. Окошко наружу не ходит: пульт показывает своё окно — системное
+     * меню «Поделиться» телефона, «Сохранить в «Видео»» (копия в папку дома), «Скачать», «Скопировать текст» и
+     * страницы загрузки площадок (ТикТок, Reels, Shorts, Telegram, ВКонтакте — адреса из списка пульта). Отправку
+     * начинает человек — отдельного «да» нет; журнал приложения помнит, что и куда ушло. Ответ — куда ушло; null —
+     * человек закрыл окно. Только у поставленного приложения.
+     *
+     *   await share({ file: "share/kompas-01.mp4", text: "Компас, серия 1. Пиши в комментариях: ① или ②" });
+     */
+    export function share(what: { file?: string; text?: string; title?: string }): Promise<{ where: string | null; saved?: string | null }>;
+
+    /**
+     * Запись своим голосом: пульт открывает микрофон и своё окно записи (с текстом, который читать), окошко микрофона
+     * не получает. Запись — WAV в своей папке (`recordings/<время>.wav`); ответ — её путь и длина. Человек закрыл
+     * окно — ошибка «запись отменена». Микрофон браузер даёт только на localhost и по HTTPS.
+     */
+    export function record(options?: { title?: string; text?: string; maxSeconds?: number }): Promise<{ file: string; seconds: number }>;
+
+    /** Связь шины, которую приложение просит в манифесте: `words` — словами для человека. */
+    export interface AppRight {
+        right: string;
+        words: string;
+        allowed: boolean;
+    }
+
+    /** Какие связи приложение просит и сколько ещё ждут «да» (`pending`). */
+    export function rights(): Promise<{ asked: AppRight[]; pending: number }>;
+
+    /**
+     * Все неразрешённые связи — одним листом пульта: «„Лента“ просит: модель, голос, сообщения…», «Разрешить всё» /
+     * «Не сейчас». Ответ — что стало; разрешает администратор пульта (у другого — ошибка словами).
+     *
+     *   const { pending } = await rights();
+     *   if (pending) await askRights();
+     */
+    export function askRights(): Promise<{ asked: AppRight[]; pending: number }>;
+
+    /**
+     * Записать свои настройки из окна — как в окне настроек приложения: только ключи из `settings` манифеста, тайные — в
+     * сейф шлюза, остальные настройки не трогаются. Администратор пульта; у другого — ошибка.
+     *
+     *   await saveSettings({ elevenlabsKey: key });
+     */
+    export function saveSettings(values: Record<string, unknown>): Promise<boolean>;
 
     /**
      * Картинка из домашней папки DuoWave по адресу (`files/home/Photos/лето.jpg`) для `<img src>` — уменьшенной (`size` —

@@ -34,6 +34,8 @@ pub(super) struct Deps {
     pub app: Arc<App>,
     pub principal: Principal,
     pub text: String,
+    /// Where the phrase came from: the tools that keep it (the works) record it.
+    pub origin: super::Origin,
     pub trip: Arc<RequestHandle>,
     pub events: mpsc::UnboundedSender<TalkEvent>,
     pub brain: Brain,
@@ -80,6 +82,8 @@ pub(super) fn toolbox(deps: Deps) -> Option<ToolBox> {
         async move { run(&deps, mcp, contributed, call, cancel).await }
     });
     toolbox.filler = Some(LOOKUP_FILLER);
+    // A call cut by the spoken answer's limit (a long wish): the model tries again, shorter.
+    toolbox.cut_note = Some(crate::dialog::speech_cut_note);
     if let Some(mcp) = &mcp {
         toolbox.rounds = Some(3);
         toolbox.instructions = Some(mcp.instructions.clone());
@@ -117,7 +121,8 @@ async fn run(
     if let Some(offer) = contributed.filter(|offer| offer.owns(&call.name)) {
         working(Place::Own, &call.name);
         // No station answers here: a tool that plays or speaks through one has nowhere to send its commands.
-        let outcome = offer.run(&call, &deps.principal, cancel).await;
+        let origin = Some(deps.origin.clone());
+        let outcome = offer.run_for(&call, &deps.principal, cancel, None, origin).await;
         thinking();
         return Ok(outcome);
     }

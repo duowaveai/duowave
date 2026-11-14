@@ -25,6 +25,8 @@ import { applyTheme } from './shell/theme';
 import core from './builtin';
 import { ConfirmHost } from './ui/confirm';
 import { ScreenPage } from './screen/page';
+import { AppShareHost } from './frame/share';
+import { MediaViewerHost } from './media/viewer';
 import { initLanguage, useLanguage } from './i18n';
 
 // Встроенное — тем же путём, что плагины: разделы, слоты и темы приходят в реестр, тема применяется до первой отрисовки.
@@ -46,6 +48,8 @@ function Root() {
         <Fragment key={language}>
             <App />
             <ConfirmHost />
+            <AppShareHost />
+            <MediaViewerHost />
         </Fragment>
     );
 }
