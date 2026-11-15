@@ -127,6 +127,7 @@ html[data-look='minimal'] button.pill-error { color: var(--dot-offline); }
 html[data-look='minimal'] .dash-done { min-height: 44px; font-weight: 500; background: var(--ink-bg); color: var(--ink-fg); }
 html[data-look='minimal'] .dash-done:hover:not(:disabled) { background: var(--ink-hi); }
 html[data-look='minimal'] .dash-done.danger { background: var(--dot-offline); color: #FFFFFF; }
+html[data-look='minimal'] .dash-done.danger:hover:not(:disabled) { background: var(--dot-offline); filter: brightness(1.08); }
 html[data-look='minimal'] .dash-done.ghost { background: var(--strong-bg); color: var(--text); box-shadow: 0 0 0 1px var(--glass-border); }
 html[data-look='minimal'] .dash-done.soft-yandex { background: var(--pill-yandex-bg); color: var(--pill-yandex-fg); }
 

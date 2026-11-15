@@ -172,7 +172,9 @@ duowave station log [строк]               # конец журнала шл�
 - **Компьютер и шлюз на колонке, поставленный руками**: «Где работает шлюз» → «Шлюз уже на колонке…» в пульте
   компьютера — адрес колонки и `PEER_KEY` из её `.env`. Компьютер видит его, держит копии его настроек и обновляет его
   без SSH.
-- **Откат целиком**: `duowave station point previous --reboot`, затем `duowave station remove`.
+- **Откат целиком**: `sh /data/opt/duowave/uninstall.sh` — голос к Яндексу, шлюз и клиент звонков остановлены и
+  убраны, `/data/opt/duowave` удалена, перезагрузка (`--keep-data` — данные шлюза остаются). Только шлюз, без
+  остального: `duowave station point previous --reboot`, затем `duowave station remove`.
 
 ## Пакет YAM: шлюз на самой колонке
 
@@ -201,7 +203,8 @@ duowave gateway remove              # выключить: служба убра�
 duowave gateway install [порт]      # включить снова
 duowave station …                   # все команды программы шлюза (duowave station help)
 duowave connect 192.0.2.10          # или голос — шлюзу на компьютере: копия quasar.cfg поверх файла прошивки, перезагрузка
-duowave restore                     # как было до шлюза
+duowave restore                     # голос к Яндексу; DuoWave остаётся на колонке
+duowave uninstall [--keep-data]     # DuoWave с колонки совсем, перезагрузка; потом yam remove duowave/gateway
 duowave client install 192.0.2.10   # клиент звонков с автозапуском; duowave client remove — убрать
 yam install duowave/gateway@<версия>   # новая версия (команды upgrade у YAM 0.2 нет); шлюз перезапускается сам
 ```
@@ -216,8 +219,9 @@ yam install duowave/gateway@<версия>   # новая версия (кома
 его место) и если шлюз выключен `duowave gateway remove`. Обновляет такой шлюз только YAM (`yam install
 duowave/gateway@<версия>`): пульт так и пишет.
 
-**Перед `yam remove duowave/gateway`** лучше вернуть голос (`duowave station point previous --reboot`) и выключить
-шлюз (`duowave gateway remove`). Если забыли — колонка не замолчит: у YAM нет шага при удалении, но при загрузке копия,
+**Перед `yam remove duowave/gateway`** лучше выполнить `duowave uninstall`: голос вернётся Яндексу, шлюз и клиент
+звонков остановятся, наши файлы с колонки уйдут; останется только отметка `yam-off`, чтобы обновления пакета не включили
+шлюз снова. Если забыли — колонка не замолчит: у YAM нет шага при удалении, но при загрузке копия,
 ведущая голос к шлюзу без программы, не подключается.
 
 Сборка — на компьютере, после сборки программы для колонки (выше) и `yam-publish` из

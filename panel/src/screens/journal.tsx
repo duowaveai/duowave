@@ -8,6 +8,7 @@ import { toneClass } from './dash-model';
 import { KIND_WORDS, PLACE_WORDS, STEP_TITLES, answeredBy, feltMs, seconds, statusOf } from './trip';
 import { byMode } from '../words';
 import { onComputer } from '../voice-input';
+import { moneyOf, seatWord } from './spend';
 
 interface Props {
     debug: { sessions: SessionSnapshot[] | null; unsupported: UnsupportedEntry[]; error: ApiError | null };
@@ -93,6 +94,12 @@ function TripBar({ request }: { request: RequestView }) {
     );
 }
 
+/** Деньги сделки запроса одной строкой: «$0,0072», «дома», «≈ $0,0070 по подписке», «без цены». */
+function dealMoney(usdMicro: number | undefined, billing: string | undefined): string {
+    const money = moneyOf(usdMicro, billing);
+    return billing === 'plan' && money.sub ? `${money.main} ${money.sub}` : money.main;
+}
+
 /** Запрос строкой: время, слова, итог, полоска пути; по нажатию — шаги. И в журнале, и на главной. */
 export function RequestRow({
     request,
@@ -119,6 +126,8 @@ export function RequestRow({
         request.origin ? tr.journal.opened(request.origin.activator, request.origin.name) : undefined,
         felt !== undefined && request.steps.some((step) => step.phase === 'speak') ? tr.journal.firstWord(seconds(felt)) : undefined,
         tokens ? tr.journal.tokens(tokens.input, tokens.output, tokens.cacheRead, tokens.rounds) : undefined,
+        // Сделка ответа: место, модель и доллары (docs/plans/router-and-works.md, этап 6б); у старых запросов — модель.
+        tokens?.model ? tr.journal.deal(tokens.seat ? seatWord(tokens.seat) : '', tokens.model, tokens.seat ? dealMoney(tokens.usdMicro, tokens.billing) : '') : undefined,
     ]
         .filter(Boolean)
         .join(' · ');

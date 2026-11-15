@@ -23,11 +23,16 @@ pub fn tls_config() -> Arc<ClientConfig> {
 }
 
 /// A reqwest builder with our TLS and a connect timeout; add the request timeouts a caller needs.
+///
+/// Every client goes out by «Выход в интернет» (src/egress): each new connection asks `egress::proxy_for` where its
+/// host goes — directly (the system's proxy, as before), through a connection's entry of the app «VPN», or to the
+/// gateway's refusal when that connection does not answer. A shared client needs no rebuild when the routes change.
 pub fn client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .tls_backend_preconfigured((*tls_config()).clone())
         .connect_timeout(Duration::from_secs(10))
         .user_agent(concat!("duowave/", env!("CARGO_PKG_VERSION")))
+        .proxy(reqwest::Proxy::custom(crate::egress::proxy_for))
 }
 
 /// The shared client: one connection pool for the whole gateway.

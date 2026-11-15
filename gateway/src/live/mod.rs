@@ -69,6 +69,8 @@ pub const RELAYED: &[&str] = &[
     "tasks.changed",
     // A work of the talk changed (src/talk): the panel reads the works again, the computer says «Готово».
     "work.changed",
+    // A deal closed (src/router): «Расход» reads the deals again.
+    "router.deal",
     "connector.changed",
     "station.updated",
     "station.pending",

@@ -118,6 +118,109 @@ async fn runs_an_app_under_the_supervisor_calls_it_and_starts_it_again_after_a_f
     gateway.stop().await;
 }
 
+/// The reference app as a receiver would be: it runs the whole time it is on (`resident`), says when it plays by itself
+/// and hears the player's commands.
+fn install_player_app(data: &Path) {
+    install_app(data, "1.0.0", None);
+    let path = data.join("packages/echo-app/1.0.0/manifest.json");
+    let mut manifest: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    manifest["resident"] = json!(true);
+    manifest["permissions"] = json!(["call:system/player", "listen:system/player"]);
+    manifest["contributes"] = json!({
+        "tools": [
+            { "name": "echo_app", "description": "Повторяет вход", "handler": "echo" },
+            { "name": "echo_playing", "description": "Играет само", "handler": "playing" },
+            { "name": "echo_controls", "description": "Что услышало", "handler": "controls" }
+        ],
+        "bus": { "on": [{ "from": "system/player", "event": "control", "handler": "control" }] }
+    });
+    std::fs::write(&path, manifest.to_string()).unwrap();
+}
+
+/// What a tool of the app answered, its content as JSON.
+async fn tool_content(gateway: &Gateway, admin: &str, tool: &str, arguments: Value) -> Value {
+    let (code, answer) = try_tool(gateway, admin, tool, arguments).await;
+    assert_eq!(code, StatusCode::OK, "{answer}");
+    serde_json::from_str(answer["message"]["content"].as_str().unwrap()).unwrap()
+}
+
+/// AirPlay's way (docs/plans/media-apps.md, stage 2): the app runs the whole time it is on — not unloaded for idling,
+/// started again by itself; it says it plays (the owner's «да» for «Плеер колонки» asked once), the station's player
+/// starting takes it back and pauses it, and switched off it plays nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resident_app_keeps_running_says_it_plays_and_hears_the_players_commands() {
+    let gateway = Gateway::start(&[("PLUGINS_IDLE_UNLOAD_S", "10")]).await;
+    install_player_app(gateway.dir.path());
+    let setup = message(
+        gateway.post("/api/v1/auth/setup").json(&json!({"password": "apps-admin-password"})),
+        StatusCode::CREATED,
+    );
+    let admin = setup.await["token"].as_str().unwrap().to_string();
+    let (name, value) = bearer(&admin);
+    let (code, enabled) =
+        send(gateway.post("/api/v1/packages/echo-app/enable").header(name.clone(), value.clone())).await;
+    assert_eq!(code, StatusCode::OK, "{enabled}");
+    let pid = tool_content(&gateway, &admin, "echo_app", json!({})).await["pid"].as_u64().unwrap();
+
+    // Idle far past PLUGINS_IDLE_UNLOAD_S: still the same program.
+    tokio::time::sleep(Duration::from_secs(13)).await;
+    let view =
+        message(gateway.get("/api/v1/packages/echo-app").header(name.clone(), value.clone()), StatusCode::OK).await;
+    assert_eq!(view["state"], json!("loaded"), "{view}");
+    // Unloaded anyway (a reload, the memory): it is started again by itself.
+    gateway.app.plugins.unload_now("echo-app").await;
+    let mut back = false;
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let view =
+            message(gateway.get("/api/v1/packages/echo-app").header(name.clone(), value.clone()), StatusCode::OK).await;
+        if view["state"] == json!("loaded") {
+            back = true;
+            break;
+        }
+    }
+    assert!(back, "a resident app is started again without a call");
+    let again = tool_content(&gateway, &admin, "echo_app", json!({})).await["pid"].as_u64().unwrap();
+    assert_ne!(again, pid, "a new program");
+
+    // It plays: the bus asks the owner once; until the «да» the letter is refused.
+    let refused = tool_content(&gateway, &admin, "echo_playing", json!({ "state": "playing" })).await;
+    assert_eq!(refused["code"], json!(403), "{refused}");
+    let questions = message(gateway.get("/api/v1/bus/questions").header(name.clone(), value.clone()), StatusCode::OK);
+    let questions = questions.await["questions"].as_array().unwrap().clone();
+    let id = questions.iter().find(|question| question["to"] == json!("system/player")).expect("asked")["id"].clone();
+    let answered = gateway
+        .post(&format!("/api/v1/bus/questions/{}", id.as_str().unwrap()))
+        .header(name.clone(), value.clone())
+        .json(&json!({ "yes": true }));
+    message(answered, StatusCode::OK).await;
+    let said = tool_content(&gateway, &admin, "echo_playing", json!({ "state": "playing" })).await;
+    assert_eq!(said["code"], json!(200), "{said}");
+    let owner = gateway.app.skills.app_playback.owner("kitchen").expect("the station's player is the app's");
+    assert_eq!(owner.app, "echo-app");
+
+    // Alice starts playing on the station: the app hears «pause», the voice is the station's again.
+    gateway.app.skills.station_player_started("kitchen");
+    let mut heard = json!([]);
+    for _ in 0..40 {
+        heard = tool_content(&gateway, &admin, "echo_controls", json!({})).await;
+        if heard != json!([]) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(heard, json!(["pause"]));
+    assert_eq!(gateway.app.skills.app_playback.owner("kitchen"), None);
+
+    // Switched off: it plays nothing.
+    let said = tool_content(&gateway, &admin, "echo_playing", json!({ "state": "paused" })).await;
+    assert_eq!(said["code"], json!(200), "{said}");
+    let (code, _) = send(gateway.post("/api/v1/packages/echo-app/disable").header(name, value)).await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(gateway.app.skills.app_playback.owner("kitchen"), None);
+    gateway.stop().await;
+}
+
 /// The app's tasks as the panel's API gives them.
 async fn tasks_of(gateway: &Gateway, admin: &str) -> Vec<Value> {
     let (name, value) = bearer(admin);
@@ -498,6 +601,11 @@ async fn an_app_writes_a_paragraph_with_the_model_and_voices_it_into_its_folder(
     let lines: Vec<String> =
         journal["lines"].as_array().unwrap().iter().map(|line| line["message"].as_str().unwrap().to_string()).collect();
     assert!(lines.iter().any(|line| line.contains("модель") && line.contains("дома")), "{lines:?}");
+    // The app's text is a deal of the router on the apps' seat: the model at home costs nothing (src/router).
+    let listed = message(gateway.get("/api/v1/router/deals").header(name.clone(), value.clone()), StatusCode::OK).await;
+    let deal = &listed["deals"][0];
+    assert_eq!((deal["seat"].as_str(), deal["reason"].as_str()), (Some("app"), Some("seat")), "{listed}");
+    assert_eq!((deal["billing"].as_str(), deal["usdMicro"].as_u64()), (Some("local"), Some(0)), "{listed}");
     gateway.stop().await;
 }
 

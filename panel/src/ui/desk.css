@@ -344,7 +344,7 @@ html[data-theme='dark'] .desk-add-tile { border-color: #3a3734; }
     align-items: center;
     justify-content: center;
     gap: 3px;
-    width: 72px;
+    width: 92px;
     height: 58px;
     border-radius: 14px;
     color: var(--sub);
@@ -355,7 +355,8 @@ html[data-theme='dark'] .desk-add-tile { border-color: #3a3734; }
 }
 .dock-cell:hover { color: var(--text); background: var(--hover-bg); }
 .dock-cell[aria-current='page'] { color: var(--text); }
-.dock-cell-label { max-width: 68px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* В доке четыре ячейки (docs/plans/menu-scheme.md) — подписи целиком: «Приложения», «Настройки». */
+.dock-cell-label { max-width: 88px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dock-pip { position: absolute; bottom: 1px; width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
 .dock-talk { width: 52px; height: 52px; margin: 0 10px; flex: none; }
 .dock-sep { width: 1px; height: 36px; margin: 0 6px; background: var(--glass-border); flex: none; }
@@ -390,16 +391,22 @@ html[data-theme='dark'] .desk-add-tile { border-color: #3a3734; }
     flex-direction: column;
 }
 @media (max-width: 560px) {
-    .dock { padding: 0 4px; gap: 0; }
-    .dock-cell { width: 58px; }
-    .dock-cell-label { max-width: 56px; }
+    /* Рядом с доком больше ничего нет (кнопки «+» и «Ещё» ушли) — он берёт почти всю ширину. */
+    .dock { padding: 0 4px; gap: 0; max-width: calc(100vw - 24px); }
+    .dock-cell { width: 72px; }
+    .dock-cell-label { max-width: 72px; }
     .dock-talk { margin: 0 4px; }
     .dock-sep { display: none; }
     .dock-add { width: 44px; height: 44px; }
     .dock-wrap { gap: 8px; }
 }
 @media (max-width: 400px) {
-    .dock-cell { width: 50px; }
+    .dock-cell { width: 70px; font-size: 10.5px; }
+    .dock-cell-label { max-width: 70px; }
+}
+@media (max-width: 360px) {
+    .dock-cell { width: 66px; font-size: 10px; }
+    .dock-cell-label { max-width: 66px; }
 }
 
 /* ─── Окно поверх стола ────────────────────────────────────────── */
@@ -525,6 +532,7 @@ html[data-theme='dark'] .desk-window { box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5
 }
 .add-item:hover { background: var(--hover-bg); }
 .add-item-icon { width: 36px; height: 36px; border-radius: 50%; background: var(--strong-bg); border: 1px solid var(--glass-border); display: flex; align-items: center; justify-content: center; flex: none; }
+.add-item-icon.is-mark { background: none; border: 0; }
 
 /* ─── Боковая панель: роль, группы, «Новый виджет» ─────────────── */
 .side-role { display: flex; flex-direction: column; gap: 2px; padding: 0 4px; }
@@ -868,6 +876,14 @@ html[data-look] .code-editor:focus-within { border-color: var(--text); }
 .set-row-text b { font-size: 14px; line-height: 20px; font-weight: 500; }
 .set-row-text .w-cap { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .set-page { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+/* Группы списка (docs/plans/menu-scheme.md): «Устройство», «Доступ и вид», «Система». На широком экране — только
+   значок и имя: подписи резались («как говорить, слух, про…»); на телефоне список во всю ширину — с подписями. */
+.set-group { padding: 14px 10px 4px; font-size: 11px; line-height: 16px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sub); }
+.set-group:first-child { padding-top: 2px; }
+@media (min-width: 761px) {
+    .set-row-text .w-cap,
+    .set-row > svg:last-child { display: none; }
+}
 .set-page-title { margin: 2px 0 0; font-size: 20px; line-height: 26px; font-weight: 500; }
 .set-back { display: none; align-self: flex-start; align-items: center; gap: 4px; font-size: 13px; color: var(--sub); }
 @media (max-width: 760px) {
@@ -903,8 +919,151 @@ html[data-look] .code-editor:focus-within { border-color: var(--text); }
     .char-hero-actions { grid-column: 1 / -1; }
 }
 
-/* «Навыки» одним списком (screens/skills.tsx): что добавить, что умеет, чего пока нет, подключения и программы. */
+/* «Приложения» (screens/skills.tsx, docs/plans/menu-scheme.md): шапка с вкладками, «Мои» плитками, подключения. */
 .skills-page { display: flex; flex-direction: column; gap: 12px; }
+
+/* Шапка окна «Приложения» (screens/apps-tabs.tsx): вкладки капсулой и «Сделать своё»; у MagicPlace — цветной знак. */
+.apps-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.apps-tabs { display: flex; gap: 4px; padding: 4px; border-radius: 999px; background: var(--chip-bg); max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.apps-tabs::-webkit-scrollbar { display: none; }
+.apps-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 34px;
+    padding: 0 14px;
+    border-radius: 999px;
+    font-size: 14px;
+    font-weight: 500;
+    white-space: nowrap;
+    color: var(--text);
+    transition: background 0.15s, color 0.15s;
+}
+.apps-tab:hover:not(.is-on) { background: var(--hover-bg); }
+.apps-tab.is-on { background: var(--seg-on-bg); color: var(--seg-on-fg); box-shadow: var(--seg-shadow); }
+/* Число обновлений MagicPlace — капсулой после названия, не поверх знака. */
+.apps-tab .mp-badge { position: static; }
+.apps-make {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 36px;
+    margin-left: auto;
+    padding: 0 16px;
+    border-radius: 999px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text);
+    box-shadow: inset 0 0 0 1px var(--glass-border);
+}
+.apps-make:hover { background: var(--hover-bg); }
+
+/* «Мои» плитками: значок, имя, одна строка состояния. */
+.app-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
+.app-tile {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    padding: 12px;
+    border-radius: 16px;
+    text-align: left;
+    color: var(--text);
+    box-shadow: inset 0 0 0 1px var(--glass-border);
+    transition: background 0.15s, box-shadow 0.15s;
+}
+.app-tile:hover { background: var(--hover-bg); }
+.app-tile-text { display: flex; flex-direction: column; min-width: 0; }
+.app-tile-title { font-size: 15px; line-height: 22px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-tile-state { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; line-height: 18px; color: var(--sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-tile-state::before { content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--bar-own); }
+.app-tile-state.is-off::before { background: var(--sub); opacity: 0.6; }
+.app-tile-state.is-bad { color: var(--dot-offline); }
+.app-tile-state.is-bad::before { background: var(--dot-offline); }
+.app-tile-state.is-new::before { background: var(--accent); }
+.app-tile-state.is-wait::before { background: var(--pill-agent-fg, #8b7cff); }
+@media (max-width: 560px) {
+    .app-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .app-tile { flex-direction: column; align-items: flex-start; }
+    .apps-make { margin-left: 0; }
+}
+
+/* Ярлыки стола (screens/shortcuts.tsx, docs/plans/menu-scheme.md): значок и имя, «+ Ярлык» с меню. На широком столе —
+   столбиком у левого края поверх поля (стол двигают — ярлыки на месте), в ленте и в боковой панели — рядом сверху. */
+.desk-shortcuts { display: flex; gap: 6px; }
+.desk-shortcuts.is-column {
+    position: fixed;
+    top: calc(var(--top-h) + env(safe-area-inset-top) + 16px);
+    left: 12px;
+    z-index: 7;
+    flex-direction: column;
+    max-height: calc(100dvh - var(--top-h) - var(--dock-h) - var(--dock-gap) - 64px);
+    overflow-y: auto;
+    scrollbar-width: none;
+}
+.desk-shortcuts.is-column::-webkit-scrollbar { display: none; }
+/* Поле свободного стола — правее столбика ярлыков: виджет, поставленный у края, их не закрывает. */
+.desk-main:has(> .desk-shortcuts.is-column) .desk-canvas { left: 104px; }
+.desk-shortcuts.is-row { flex-wrap: wrap; justify-content: flex-start; }
+.desk-shortcut {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    width: 84px;
+    padding: 6px 2px;
+    border-radius: 14px;
+    color: var(--text);
+}
+.desk-shortcut:hover { background: var(--hover-bg); }
+.desk-shortcut-icon { position: relative; display: inline-flex; }
+.desk-shortcut-icon .mp-badge { top: -4px; right: -6px; box-shadow: 0 0 0 2px var(--bg); }
+.desk-shortcut-name { max-width: 100%; font-size: 12px; line-height: 16px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desk-shortcut.is-add { color: var(--sub); }
+.desk-shortcut-plus {
+    width: 52px;
+    height: 52px;
+    border-radius: 28%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text);
+    border: 1.5px dashed var(--glass-border);
+    box-sizing: border-box;
+}
+.desk-shortcut-add-wrap { position: relative; }
+.desk-shortcut-scrim { position: fixed; inset: 0; z-index: 8; cursor: default; background: transparent; }
+.desk-shortcut-menu {
+    position: absolute;
+    z-index: 9;
+    top: 0;
+    left: calc(100% + 8px);
+    width: 260px;
+    max-height: min(420px, 70dvh);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    padding: 8px;
+    border-radius: 16px;
+}
+.desk-shortcuts.is-row .desk-shortcut-menu { top: calc(100% + 6px); left: 0; }
+.desk-shortcut-menu-title { padding: 6px 10px; font-size: 14px; line-height: 20px; font-weight: 500; }
+.desk-shortcut-option { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 10px; border-radius: 10px; font-size: 14px; cursor: pointer; }
+.desk-shortcut-option:hover { background: var(--hover-bg); }
+.desk-shortcut-option input { width: 18px; height: 18px; margin: 0; accent-color: var(--bar-own); }
+.desk-shortcut-menu-hint { margin-top: 4px; padding: 8px 10px 4px; border-top: 1px solid var(--row-line); font-size: 12px; line-height: 18px; color: var(--sub); }
+@media (max-width: 560px) {
+    .desk-shortcuts.is-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .desk-shortcut { width: auto; }
+}
+
+/* Значок приложения (ui/app-icon.tsx): картинка или цветная плитка бренда со значком — плитка «Моих» и ярлык стола. */
+.app-icon { flex: none; display: inline-flex; align-items: center; justify-content: center; border-radius: 28%; color: #FFFFFF; }
+.app-icon.is-image { object-fit: cover; }
+.app-icon.is-warm { background: linear-gradient(150deg, #f6d6c4, #f07a4a 55%, #b4232c); }
+.app-icon.is-cool { background: linear-gradient(150deg, #9fb0c2, #5c6f8c 50%, #2b3448); }
+.app-icon.is-violet { background: linear-gradient(150deg, #b9a6ff, #8b7cff 50%, #5b47d6); }
+.app-icon-letter { font-family: 'Inter Tight', Inter, sans-serif; font-weight: 400; font-size: 1.1em; line-height: 1; }
 
 /* Страница компьютера в пульте колонки (screens/helper-pc.tsx, этап 4): фрейм без рамки, а внутри — прозрачно. */
 .own-frame { display: block; width: 100%; height: min(72dvh, 760px); min-height: 420px; border: 0; background: transparent; color-scheme: normal; }
@@ -1152,6 +1311,11 @@ html[data-theme='dark'] .voice-strip { box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4
     white-space: nowrap;
 }
 .waiting-pill:hover { border-color: var(--bar-own); }
+/* Телефон: в одном ряду с доком пилюля отнимала у него место — «Настройки» уезжали за край. Она встаёт над доком. */
+@media (max-width: 640px) {
+    .dock-wrap { flex-direction: column; gap: 6px; }
+    .waiting-pill-dock { order: -1; min-height: 28px; padding: 0 12px; font-size: 12px; }
+}
 .waiting-pill-side { align-self: flex-start; margin-top: 6px; }
 .dock-talk.is-listening::after { content: ''; position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--bar-own); animation: talk-ping 1.3s ease-out infinite; pointer-events: none; }
 html[data-look='minimal'] .talk-btn.is-held:disabled { background: var(--chip-bg); color: var(--sub); box-shadow: none; opacity: 1; }

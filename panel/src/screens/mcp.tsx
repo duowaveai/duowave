@@ -632,6 +632,8 @@ function ServerSheet({ server, onClose, onChanged }: { server: McpServer; onClos
                                         {tool.title}
                                         {tool.readOnly ? badge(tr.mcp.readOnly, 'pill-off') : badge(tr.mcp.changesData, 'pill-yandex')}
                                         {tool.openWorld && badge(tr.mcp.goesOnline, 'pill-yandex')}
+                                        {tool.background && badge(tr.mcp.inBackground, 'pill-own')}
+                                        {tool.paid && badge(tr.mcp.paidRun, 'pill-yandex')}
                                     </b>
                                     <span class="t-caption line-clamp-2 overflow-hidden">
                                         {tool.description || tool.name}
@@ -650,7 +652,25 @@ function ServerSheet({ server, onClose, onChanged }: { server: McpServer; onClos
                                 />
                             </div>
                             {mayManage && server.state === 'ready' && (
-                                <div class="flex gap-6 flex-wrap items-center">
+                                <div class="flex gap-6 flex-wrap items-center" title={tr.mcp.backgroundHint}>
+                                    <Action
+                                        on={tool.background}
+                                        label={tr.mcp.backgroundToggle(tool.background)}
+                                        busy={busy === `bg:${tool.name}`}
+                                        onClick={() =>
+                                            void act(`bg:${tool.name}`, () =>
+                                                api.setMcpTool(server.id, tool.name, { background: !tool.background }),
+                                            )
+                                        }
+                                    />
+                                    <Action
+                                        on={tool.paid}
+                                        label={tr.mcp.paidToggle(tool.paid)}
+                                        busy={busy === `paid:${tool.name}`}
+                                        onClick={() =>
+                                            void act(`paid:${tool.name}`, () => api.setMcpTool(server.id, tool.name, { paid: !tool.paid }))
+                                        }
+                                    />
                                     <Action
                                         label={trying === tool.name ? tr.mcp.hide : tr.mcp.tryIt}
                                         onClick={() => {

@@ -21,6 +21,8 @@ pub struct PluginServices {
     /// The panel's connectors as the skills read them: the weather's place, the news feeds, Home Assistant.
     connectors: Arc<dyn SkillConnectors>,
     plugins: OnceLock<Weak<PluginHost>>,
+    /// The apps' long tasks, once they stand: `host.tasks.*`.
+    tasks: OnceLock<Weak<crate::tasks::Tasks>>,
     /// The plugins' schedules, once they stand: `host.schedule.*`.
     schedules: OnceLock<Weak<crate::plugins::schedule::Scheduler>>,
     /// The plugins' pictures: `host.files.*`.
@@ -39,6 +41,8 @@ pub struct PluginServices {
     brain: OnceLock<Weak<crate::dialog::brain::brain_service::BrainService>>,
     /// The publishers (`system/publish`, capabilities/publish.rs): the gateway's own and the platforms' upload pages.
     publishers: OnceLock<Arc<crate::capabilities::publish::Publishers>>,
+    /// «Выход в интернет»: the connections an app gives (`system/network` → `connections`).
+    egress: OnceLock<Weak<crate::egress::Egress>>,
 }
 
 /// The words an interest is found by in the memory: likes, pastimes, what one watches and reads.
@@ -98,6 +102,7 @@ impl PluginServices {
             skills: Arc::downgrade(skills),
             connectors,
             plugins: OnceLock::new(),
+            tasks: OnceLock::new(),
             schedules: OnceLock::new(),
             files: OnceLock::new(),
             bus: OnceLock::new(),
@@ -107,6 +112,7 @@ impl PluginServices {
             speech: OnceLock::new(),
             brain: OnceLock::new(),
             publishers: OnceLock::new(),
+            egress: OnceLock::new(),
         })
     }
 
@@ -117,6 +123,11 @@ impl PluginServices {
     /// The publishers (capabilities/publish.rs): `system/publish` sends by them.
     pub fn set_publishers(&self, publishers: &Arc<crate::capabilities::publish::Publishers>) {
         let _ = self.publishers.set(publishers.clone());
+    }
+
+    /// «Выход в интернет», for the connections an app gives.
+    pub fn set_egress(&self, egress: &Arc<crate::egress::Egress>) {
+        let _ = self.egress.set(Arc::downgrade(egress));
     }
 
     /// The household's recognition, for the apps' hearing.
@@ -142,6 +153,11 @@ impl PluginServices {
     /// The plugin host, once it stands (it is built with these services).
     pub fn set_plugins(&self, plugins: &Arc<PluginHost>) {
         let _ = self.plugins.set(Arc::downgrade(plugins));
+    }
+
+    /// The apps' long tasks, once they stand.
+    pub fn set_tasks(&self, tasks: &Arc<crate::tasks::Tasks>) {
+        let _ = self.tasks.set(Arc::downgrade(tasks));
     }
 
     /// The bus, once it stands.
@@ -235,6 +251,16 @@ impl HostServices for PluginServices {
 
     fn weather_place(&self) -> Option<String> {
         self.connectors.weather_place()
+    }
+
+    fn home_country(&self) -> Option<String> {
+        self.connectors.home_country()
+    }
+
+    fn network_connections(&self, caller: &str, input: Value) -> Result<Value, String> {
+        let egress =
+            self.egress.get().and_then(Weak::upgrade).ok_or_else(|| crate::tr!("выход в интернет ещё не готов"))?;
+        egress.report(caller, &input)
     }
 
     fn news_feeds(&self) -> Vec<Value> {
@@ -437,6 +463,8 @@ impl HostServices for PluginServices {
             let context = crate::dialog::DialogContext {
                 profile: Some(profile),
                 model: pick,
+                // Its deals are the apps' (src/router).
+                seat: Some(crate::router::Seat::App),
                 // The agent writes files (a series in code), not spoken answers: the workshop's longer limit.
                 max_tokens: Some(dialog.config.workshop_max_tokens),
                 system: Some(format!(
@@ -756,11 +784,77 @@ impl HostServices for PluginServices {
         })
     }
 
+    fn playing(
+        &self,
+        caller: &str,
+        state: String,
+        device: Option<String>,
+    ) -> BoxFuture<'static, Result<String, String>> {
+        let answer = match self.skills.upgrade() {
+            Some(skills) => skills.app_playing(caller, state.trim(), device.as_deref()),
+            None => Err(crate::tr!("плеера колонки здесь нет")),
+        };
+        Box::pin(async move { answer })
+    }
+
     fn notify(&self, caller: &str, text: String) -> BoxFuture<'static, Result<Value, String>> {
         let (schedules, caller) = (self.schedules.get().and_then(Weak::upgrade), caller.to_string());
         Box::pin(async move {
             let schedules = schedules.ok_or_else(|| crate::tr!("сообщений владельцу здесь нет").to_string())?;
             schedules.notify(&caller, &text).await.map(|()| Value::Bool(true))
+        })
+    }
+
+    fn tasks(&self, caller: &str, action: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
+        let tasks = self.tasks.get().and_then(Weak::upgrade);
+        let host = self.plugins.get().and_then(Weak::upgrade);
+        let (app, action) = (caller.to_string(), action.to_string());
+        Box::pin(async move {
+            let (Some(tasks), Some(host)) = (tasks, host) else {
+                return Err(crate::tr!("долгих задач здесь нет"));
+            };
+            let text = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_string);
+            let id = text("id").unwrap_or_default();
+            let failed = |error: crate::tasks::TaskError| error.to_string();
+            match action.as_str() {
+                "start" => {
+                    let step = match text("step") {
+                        Some(step) => Some(crate::plugins::task_pump::step_name(&step).ok_or_else(|| {
+                            crate::tr!("host.tasks.start: step — имя экспортированной функции приложения")
+                        })?),
+                        None => None,
+                    };
+                    let title = text("title").unwrap_or_default();
+                    let percent = input.get("percent").and_then(Value::as_f64);
+                    let at_once = host.tasks_at_once(&app);
+                    let task = tasks.start(&app, &title, text("text").as_deref(), percent, at_once).map_err(failed)?;
+                    if let Some(step) = step {
+                        let state = input.get("state").cloned().unwrap_or(Value::Null);
+                        crate::plugins::task_pump::pump(host, tasks.clone(), app, task.id.clone(), step, state);
+                    }
+                    Ok(serde_json::json!({ "id": task.id, "title": task.title }))
+                }
+                "progress" => {
+                    let percent = input.get("percent").and_then(Value::as_f64);
+                    let cancel = tasks.progress(&app, &id, percent, text("text").as_deref()).map_err(failed)?;
+                    Ok(serde_json::json!({ "cancel": cancel }))
+                }
+                "done" => {
+                    let result = input.get("result").cloned().filter(|result| !result.is_null());
+                    let task = tasks.finish(&app, &id, crate::tasks::Outcome::Done(result)).map_err(failed)?;
+                    Ok(serde_json::to_value(task).unwrap_or_default())
+                }
+                "fail" => {
+                    let why = text("error").unwrap_or_default();
+                    let task = tasks.finish(&app, &id, crate::tasks::Outcome::Failed(why)).map_err(failed)?;
+                    Ok(serde_json::to_value(task).unwrap_or_default())
+                }
+                "get" => match tasks.get(&id).filter(|log| log.task.app == app) {
+                    Some(log) => Ok(serde_json::to_value(log.task).unwrap_or_default()),
+                    None => Err(failed(crate::tasks::TaskError::NotFound)),
+                },
+                other => Err(crate::tr!("host.tasks: нет действия {action}", action = other)),
+            }
         })
     }
 

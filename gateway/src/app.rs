@@ -73,6 +73,9 @@ pub struct App {
     pub oauth: Arc<OAuthService>,
     /// Answers with the model: phrases for speech, the history per device.
     pub dialog: Arc<DialogService>,
+    /// The router (src/router): the journal of deals — every answer of a model with its seat, tokens and dollars —
+    /// and the models' prices.
+    pub router: Arc<crate::router::Router>,
     /// The characters' memory (src/memory): the household graph, the wake-up in the prompt, the «Память» window.
     pub memory: Arc<crate::memory::MemoryService>,
     /// The memory's reflection, the sleep's first part: it thinks the day over at night (src/memory/reflect.rs).
@@ -92,6 +95,8 @@ pub struct App {
     pub skills: Arc<SkillsService>,
     /// The plugins (src/plugins): their packages, the admin's choices, the code of those that are on.
     pub plugins: Arc<PluginHost>,
+    /// «Выход в интернет» (src/egress): who goes to the internet directly and who through the person's own server.
+    pub egress: Arc<crate::egress::Egress>,
     /// The apps' long tasks (src/tasks): what an app started and reports on, for the panel to follow and cancel.
     pub tasks: Arc<crate::tasks::Tasks>,
     /// The plugins' schedules (plugins/schedule.rs): rhythms of their manifests and tasks of their code.
@@ -169,6 +174,8 @@ impl App {
     /// did: the update checks, the model catalog seeded and the stored choices restored. The program and the
     /// desktop app both call it after `build`.
     pub async fn start(self: &Arc<Self>) -> anyhow::Result<()> {
+        // «Выход в интернет» first: its routes stand and its entry for the apps' programs runs before any app starts.
+        self.egress.start().await;
         // Background work the stations need: the records' sync listener, the presence tracker, the offline watch,
         // the journal retention.
         self.stations.start();
@@ -183,6 +190,8 @@ impl App {
         crate::placement::relay::StationRelay::start(self.station_gateway.clone(), &self.live, &self.events);
         self.station_watch.start();
         self.retention.start();
+        // The old deals and their days cleaned: now and daily.
+        self.router.start();
         self.updates.spawn_checks();
         // The reminders' scheduler and the routes' listener.
         self.skills.start();
@@ -296,6 +305,9 @@ impl App {
         let settings = Arc::new(SettingsService::new(db.clone(), events.clone()));
         // The household's language for the gateway's own words (src/locale/text.rs).
         crate::locale::text::remember_household(crate::locale::household(&settings));
+        // «Выход в интернет» (src/egress): its routes are read by every HTTP client; decided before anything goes out.
+        let egress =
+            crate::egress::Egress::new(config.clone(), db.clone(), settings.clone(), secrets.clone(), events.clone());
         // «Связи» (src/bus): made before what registers on it; each kind of participant joins as it stands.
         let bus = crate::bus::Bus::new(crate::bus::BusDeps {
             db: db.clone(),
@@ -400,6 +412,13 @@ impl App {
         let source: Arc<dyn BrainSource> = brain.clone();
         let dialog = Arc::new(DialogService::new(config.dialog.clone(), personas.clone(), Some(source)));
         dialog.attach_memory(memory.clone());
+        // The journal of deals and the prices (src/router): what each answer of a model cost; the model of .env is
+        // priced by its kind and address.
+        let router = crate::router::Router::new(
+            db.clone(),
+            events.clone(),
+            crate::router::pool::EnvModel { kind: config.dialog.provider, base_url: config.dialog.base_url.clone() },
+        );
         // The sleep and its first part, the reflection: off until the owner turns it on.
         let reflection =
             Arc::new(crate::memory::reflect::Reflection::new(memory.clone(), settings.clone(), brain.clone()));
@@ -660,10 +679,13 @@ impl App {
         };
         let (plugins, plugin_skill) = plugins;
         plugin_services.set_plugins(&plugins);
+        egress.set_plugins(&plugins);
+        plugin_services.set_egress(&egress);
         // The apps' long tasks (src/tasks): what ran when the gateway stopped is marked interrupted here. The plugin
         // host tells them when an app's program is gone and when an app is removed.
         let tasks = crate::tasks::Tasks::new(db.clone(), events.clone());
         plugins.set_tasks(tasks.clone());
+        plugin_services.set_tasks(&tasks);
         {
             let dialog = dialog.clone();
             plugins.set_cloud_model(Arc::new(move || dialog.brain().cloud));
@@ -742,6 +764,13 @@ impl App {
             ))
         };
         plugin_services.set_schedules(&schedules);
+        // A receiver on the station shows itself to phones by the station's name in DuoWave (DUOWAVE_STATION_NAME).
+        if placement.role() == crate::placement::service::Role::Station {
+            let placement = Arc::downgrade(&placement);
+            plugins.set_station_name(Arc::new(move || {
+                placement.upgrade().and_then(|placement| placement.station_self().1)
+            }));
+        }
         // The plugins' pictures, in DATA_DIR/plugin-files; the station's limits where the gateway runs there.
         let files = {
             let root = crate::plugins::files::root_of(&config.data_dir);
@@ -831,6 +860,11 @@ impl App {
             }));
         }
         talk.add_executor(workshop_executor);
+        // MCP tools marked «В фоне» run as works (docs/plans/long-tools.md): the executor joins the layer and takes
+        // the servers' background calls.
+        crate::talk::tool_work::ToolExecutor::new(&talk, &mcp, Some(&dialog));
+        // An app's long task begun in a conversation is a work too: «как там…?», «стоп», its «Готово» said there.
+        crate::talk::task_work::TaskExecutor::new(&talk, &tasks, &events, Some(&dialog));
         {
             // «…: готово.» of a work synthesized ahead, while it is made: its title is known from the start.
             let voice = voice.clone();
@@ -877,24 +911,70 @@ impl App {
                 }
             }));
             // What the model spent, round by round: the workshop's agent on its work, a conversation on the device's
-            // request in the journal (docs/plans/audio-interface.md, «Счёт токенов»).
-            let (layer, journal) = (Arc::downgrade(&talk), Arc::downgrade(&requests));
-            dialog.attach_usage(Arc::new(move |key: &str, model: &str, usage: &crate::dialog::llm::LlmUsage| {
-                if let Some(draft) = key.strip_prefix("workshop:make:") {
-                    if let Some(layer) = layer.upgrade() {
-                        layer.spent(crate::talk::workshop::WORKSHOP, draft, usage);
-                    }
-                    return;
-                }
+            // request in the journal (docs/plans/audio-interface.md, «Счёт токенов»). Each answer once it is over: a
+            // deal of the router, with the request or the work it belongs to (src/router).
+            let (layer, journal, deals) = (Arc::downgrade(&talk), Arc::downgrade(&requests), Arc::downgrade(&router));
+            let usage: crate::router::UsageSink = Arc::new(move |heard: crate::router::Usage<'_>| {
+                let key = match heard {
+                    crate::router::Usage::Round { key, .. } => key,
+                    crate::router::Usage::Answer(spent) => spent.key.as_str(),
+                };
+                let draft = key.strip_prefix("workshop:make:");
                 let device = if key.starts_with("panel:") {
                     Some(crate::talk::COMPUTER)
                 } else {
-                    (!key.contains(':')).then_some(key)
+                    (!key.is_empty() && !key.contains(':')).then_some(key)
                 };
-                if let (Some(device), Some(journal)) = (device, journal.upgrade()) {
-                    journal.spent(device, model, usage);
+                // The work a round or an answer belongs to: the workshop's agent on its draft, a background work's
+                // round (talk/tool_work.rs, task_work.rs) by `work:<executor>:<target>`.
+                let work = || match draft {
+                    Some(draft) => {
+                        layer.upgrade().and_then(|layer| layer.work_of(crate::talk::workshop::WORKSHOP, draft))
+                    }
+                    None => key
+                        .strip_prefix("work:")
+                        .and_then(|rest| rest.split_once(':'))
+                        .and_then(|(executor, target)| layer.upgrade()?.work_of(executor, target)),
+                };
+                match heard {
+                    crate::router::Usage::Round { provider, model, seat, usage, .. } => {
+                        match (draft, device) {
+                            (Some(draft), _) => {
+                                if let Some(layer) = layer.upgrade() {
+                                    layer.spent(crate::talk::workshop::WORKSHOP, draft, usage);
+                                }
+                            }
+                            (None, Some(device)) => {
+                                if let Some(journal) = journal.upgrade() {
+                                    journal.spent(device, model, usage);
+                                }
+                            }
+                            (None, None) => {}
+                        }
+                        // Who answers a work going on, before its deal is written (the page «Работы»).
+                        if let (Some(work), Some(router)) = (work(), deals.upgrade()) {
+                            router.heard(&work, provider, model, seat);
+                        }
+                    }
+                    crate::router::Usage::Answer(spent) => {
+                        let Some(deals) = deals.upgrade() else { return };
+                        let journal = journal.upgrade();
+                        let links = crate::router::Links {
+                            request: device.and_then(|device| journal.as_ref()?.going(device)),
+                            work: work(),
+                            part: None,
+                        };
+                        // The journal's request shows its deal: seat, model, dollars.
+                        if let (Some(deal), Some(journal)) = (deals.close(spent, links), journal) {
+                            if let Some(request) = &deal.request {
+                                journal.dealt(request, &deal);
+                            }
+                        }
+                    }
                 }
-            }));
+            });
+            dialog.attach_usage(usage.clone());
+            reflection.attach_usage(usage);
         }
         // The apps' history (src/plugins/history), in DATA_DIR/package-history: the workshop's steps, the versions
         // the workshop, the catalog and copies put in, the plugins' data before each change.
@@ -949,6 +1029,8 @@ impl App {
                 dialog.roleplay(&key, &system, &text, cancel, fresh)
             }));
         }
+        // What an app plays by itself (AirPlay): the player's voice commands reach it through the plugin host.
+        skills.app_playback.set_control(Arc::new(links::app_player::AppPlayerLink(Arc::downgrade(&plugins))));
         skills.player_watch.set_sink(Arc::new(links::playback::PlaybackLinks {
             requests: requests.clone(),
             plugins: Arc::downgrade(&plugins),
@@ -1198,6 +1280,7 @@ impl App {
             events,
             secrets,
             settings,
+            egress,
             access,
             requests,
             live,
@@ -1210,6 +1293,7 @@ impl App {
             brain,
             oauth,
             dialog,
+            router,
             memory,
             reflection,
             sleep,
@@ -1279,6 +1363,7 @@ impl App {
         self.presence.stop();
         self.station_watch.stop();
         self.retention.stop();
+        self.router.stop();
         // Recognition's worker and the own voice's server end with the gateway: the desktop app restarts the gateway
         // inside its process, and an old gateway's processes must not stay behind with their models.
         #[cfg(feature = "pc")]
@@ -1317,6 +1402,7 @@ pub fn router(app: Arc<App>) -> Router {
         // The station link: the station's API (/api/v1/station, /debug). Its voice socket comes before the routes.
         .merge(crate::gateway::debug::router())
         .merge(crate::dialog::routes())
+        .merge(crate::router::routes::routes())
         .merge(crate::memory::routes())
         .merge(crate::sleep::routes())
         .merge(crate::models::router())
@@ -1333,6 +1419,7 @@ pub fn router(app: Arc<App>) -> Router {
         .merge(crate::speech::listen::routes())
         .merge(crate::talk::routes())
         .merge(crate::locale::routes())
+        .merge(crate::egress::routes::routes())
         .merge(crate::apps::host_http::routes())
         .merge(crate::plugins::watch::router())
         .merge(crate::capabilities::routes::routes())

@@ -6,6 +6,7 @@ const en: Translation<typeof ru> = {
     kindCharacter: 'character',
     kindPlugin: 'in the gateway',
     kindApp: 'on the computer',
+    kindAppStation: 'on the speaker',
     kindTheme: 'theme',
     placeNetwork: 'online',
     filterCharacters: 'Characters',

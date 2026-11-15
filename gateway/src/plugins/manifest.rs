@@ -410,6 +410,10 @@ pub struct Manifest {
     /// `"prefer": "home"`: on the station with a home server, its calls go to the computer while it is up (stage 7);
     /// the station runs it only when the computer is away and it fits there.
     pub prefer_home: bool,
+    /// `"resident": true` (an app only): its program runs the whole time it is switched on — started when switched on
+    /// and when the gateway starts, never unloaded for idling or to make room. A receiver (AirPlay) that a phone finds
+    /// by itself is no use started at the first call.
+    pub resident: bool,
     pub budget: Budget,
     pub permissions: Vec<Permission>,
     pub settings: Vec<SettingSpec>,
@@ -851,6 +855,18 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
             false
         }
     };
+    let resident = match root.get("resident") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => false,
+        Some(Value::Bool(true)) if kind == PackageKind::App => true,
+        Some(Value::Bool(true)) => {
+            problems.push(crate::tr!("resident: держать запущенным можно только приложение (kind: app)"));
+            false
+        }
+        Some(_) => {
+            problems.push(crate::tr!("resident: true или false — держать ли программу запущенной всё время"));
+            false
+        }
+    };
     let budget = root.get("budget").and_then(Value::as_object);
     let limit = |key: &str, default: u64, max: u64, problems: &mut Vec<String>| match budget.and_then(|b| b.get(key)) {
         None => default,
@@ -962,6 +978,7 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
         health,
         runs,
         prefer_home,
+        resident,
         budget,
         permissions,
         settings,
@@ -1796,9 +1813,18 @@ mod tests {
         assert_eq!((parsed.kind, parsed.runtime), (PackageKind::App, Runtime::Process));
         assert_eq!(parsed.targets["linux-aarch64"].file, "bin/app-aarch64");
         assert_eq!(parsed.health, HealthCheck { path: "/ok".into(), interval_s: 30 });
+        assert!(!parsed.resident, "started at its first call unless it says");
+        app["resident"] = json!(true);
+        assert!(check(&app).unwrap().resident);
+        app["resident"] = json!("yes");
+        assert_eq!(problems(app.clone()), ["resident: true или false — держать ли программу запущенной всё время"]);
+        app["resident"] = json!(true);
         app["targets"]["linux-aarch64"]["file"] = json!("../../etc/passwd");
         assert!(problems(app)[0].starts_with("targets.linux-aarch64.file"));
         assert!(platform().contains('-'), "{}", platform());
+        let mut resident = radio();
+        resident["resident"] = json!(true);
+        assert_eq!(problems(resident), ["resident: держать запущенным можно только приложение (kind: app)"]);
         let mut process = radio();
         process["runtime"] = json!("process");
         assert!(problems(process)[0].starts_with("runtime «process» не подходит"), "a plugin's code is not a program");

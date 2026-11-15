@@ -1,6 +1,6 @@
 //! The stations' HTTP: the panel's list and edits (`/api/v1/stations`), the wizard that connects a station over SSH
 //! (`/api/v1/stations/connect/...`, PC builds only), and the scripts the station fetches to connect itself
-//! (`/station/connect.sh`, `/station/restore.sh`), served as plain text without the envelope by every build.
+//! (`/station/connect.sh`, `/station/restore.sh`, `/station/uninstall.sh`), served as plain text without the envelope by every build.
 use std::sync::Arc;
 
 use axum::body::Body as AxumBody;
@@ -15,7 +15,7 @@ use crate::app::App;
 use crate::core::identity::permissions::{STATIONS_MANAGE, STATION_VIEW};
 use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller};
 use crate::stations::connect::quasar_config::{gateway_addresses, parse_gateway_host};
-use crate::stations::connect::station_scripts::{connect_script, restore_script};
+use crate::stations::connect::station_scripts::{connect_script, restore_script, uninstall_script};
 use crate::stations::service::StationEntry;
 
 pub fn router() -> Router<Arc<App>> {
@@ -23,7 +23,8 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/v1/stations", get(list))
         .route("/api/v1/stations/{device}", patch(update).delete(remove))
         .route("/station/connect.sh", get(connect_sh))
-        .route("/station/restore.sh", get(restore_sh));
+        .route("/station/restore.sh", get(restore_sh))
+        .route("/station/uninstall.sh", get(uninstall_sh));
     #[cfg(feature = "pc")]
     let router = router
         .route("/api/v1/stations/connect/discover", get(connect::discover))
@@ -31,6 +32,7 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/v1/stations/connect/check", axum::routing::post(connect::check))
         .route("/api/v1/stations/connect", axum::routing::post(connect::start))
         .route("/api/v1/stations/connect/restore", axum::routing::post(connect::restore))
+        .route("/api/v1/stations/connect/uninstall", axum::routing::post(connect::uninstall))
         .route("/api/v1/stations/connect/jobs/{id}", get(connect::job));
     router
 }
@@ -78,6 +80,12 @@ async fn connect_sh(State(app): State<Arc<App>>, headers: HeaderMap) -> Result<R
 /// unmounted.
 async fn restore_sh() -> Result<Response, ApiError> {
     Ok(plain_text(restore_script()))
+}
+
+/// DuoWave off a station whose /data/opt/duowave/uninstall.sh is gone (or was never there: connected by an older
+/// build): `ssh -p 2222 root@<station> 'wget -qO- http://<gateway>/station/uninstall.sh | sh'`.
+async fn uninstall_sh() -> Result<Response, ApiError> {
+    Ok(plain_text(uninstall_script()))
 }
 
 /// A plain-text body the station reads as it is, never cached.
@@ -167,6 +175,18 @@ mod connect {
         Ok(Api(StatusCode::ACCEPTED, job))
     }
 
+    /// «Удалить DuoWave с колонки»: uninstall.sh over SSH, a check that nothing of ours is left, a reboot.
+    pub(super) async fn uninstall(
+        State(app): State<Arc<App>>,
+        caller: Caller,
+        Body(body): Body<Value>,
+    ) -> Result<Api<ConnectJob>, ApiError> {
+        caller.permitted(STATIONS_MANAGE)?;
+        let address = station_address(&body)?;
+        let job = app.station_connect.uninstall(&address, caller.actor())?;
+        Ok(Api(StatusCode::ACCEPTED, job))
+    }
+
     pub(super) async fn job(
         State(app): State<Arc<App>>,
         caller: Caller,
@@ -243,6 +263,9 @@ mod tests {
         let (status, _headers, body) = call("GET", "/station/restore.sh", None).await;
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("voice.sh drop") && body.contains("reboot"), "{body}");
+        let (status, _headers, body) = call("GET", "/station/uninstall.sh", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("voice.sh\" drop") && body.contains("rm -rf \"$DIR\""), "{body}");
     }
 
     #[tokio::test]

@@ -11,15 +11,14 @@ import { IconPackage } from '../icons';
 import { tr } from '../i18n';
 import { useLinkedItem, usePanel } from '../shell/context';
 import { timeAgo } from '../time';
+import { AppIcon } from '../ui/app-icon';
 import { Action, CardNote } from '../ui/cards';
 import { PlayButton, useMediaUrl } from '../ui/media';
 import { needsSize } from '../ui/needs';
-import { pluginMemoryLine } from './memory';
-import { InstalledPackageSheet, LaterLine, ORIGIN_TITLES, SchedulesSwitchLine } from './plugins';
+import { InstalledPackageSheet, LaterLine, SchedulesSwitchLine } from './plugins';
 import { rightWords } from '../plugins/rights';
 import { panelSafeMode } from '../plugins/loader';
 import { Sheet } from '../ui/sheet';
-import { Switch } from '../ui/switch';
 import { ask } from '../ui/confirm';
 
 /**
@@ -41,9 +40,18 @@ export const KIND_TITLES: Record<PackageKind, string> = {
     },
 };
 
-/** Где работает приложение — словами для людей: «в шлюзе», «на компьютере», «в сети» (MCP); персонаж и тема — как есть. */
-export function placeOf(kind: PackageKind | null | undefined, runtime?: string | null): string {
+/** Работает только на колонке: в `runs` нет компьютера (AirPlay). Без `runs` — не знаем, считаем как раньше. */
+export function onStationOnly(runs?: string[] | null): boolean {
+    return !!runs && runs.length > 0 && !runs.includes('pc');
+}
+
+/**
+ * Где работает приложение — словами для людей: «в шлюзе», «на компьютере», «на колонке» (приложение только для
+ * колонки, AirPlay), «в сети» (MCP); персонаж и тема — как есть.
+ */
+export function placeOf(kind: PackageKind | null | undefined, runtime?: string | null, runs?: string[] | null): string {
     if (runtime === 'mcp') return tr.catalog.placeNetwork;
+    if ((runtime === 'process' || kind === 'app') && onStationOnly(runs)) return tr.catalog.kindAppStation;
     if (runtime === 'process' || kind === 'app') return tr.catalog.kindApp;
     return KIND_TITLES[kind ?? 'plugin'] ?? tr.catalog.kindPlugin;
 }
@@ -308,7 +316,7 @@ export function CatalogEntrySheet({
                 </p>
             ))}
             {entry.license && <p class="t-caption m-0">{tr.catalog.license(entry.license)}</p>}
-            {(entry.runtime === 'node' || entry.runtime === 'process') && (
+            {(entry.runtime === 'node' || entry.runtime === 'process') && !onStationOnly(entry.runs) && (
                 <p class="t-caption m-0">{tr.catalog.builtByComputer(entry.runtime === 'node', !!entry.signed)}</p>
             )}
             {rightsLines(entry).length > 0 && <p class="t-caption m-0">{tr.catalog.rightsLine(rightsLines(entry).join(' · '))}</p>}
@@ -520,6 +528,19 @@ const ORIGIN_ORDER: Record<OriginFilter, number> = { user: 0, catalog: 1, bundle
  * каталога»). Окно пакета — по ссылке `#/skills/installed/<id>`; ссылка на ещё не поставленный открывает его окно
  * каталога. Сам каталог — MagicPlace.
  */
+/** Одна строка состояния плитки «Моих»: ошибка, новая версия, ждёт ключ — или как работает. */
+function tileStatus(entry: PackageView, fromCatalog: CatalogEntry | undefined): { text: string; tone: 'ok' | 'off' | 'bad' | 'new' | 'wait' } {
+    const kindOf = entry.kind ?? 'plugin';
+    const runs = kindOf === 'plugin' || kindOf === 'app';
+    if (entry.problem) return { text: tr.skills.stateProblem, tone: 'bad' };
+    if (fromCatalog?.state === 'update') return { text: tr.catalog.pillNewVersion, tone: 'new' };
+    if ((entry.waits?.length ?? 0) > 0) return { text: tr.core.waitsKey, tone: 'wait' };
+    if (!runs) return { text: KIND_TITLES[kindOf] ?? kindOf, tone: 'ok' };
+    if (!entry.enabled) return { text: tr.catalog.stateOff, tone: 'off' };
+    if (entry.state === 'error') return { text: tr.catalog.stateError, tone: 'bad' };
+    return { text: pluginStates()[entry.state]?.text ?? tr.catalog.stateReady, tone: entry.state === 'off' || entry.state === 'safeMode' ? 'off' : 'ok' };
+}
+
 export function PackagesTab() {
     const panel = usePanel();
     const catalog = useCatalog();
@@ -528,7 +549,6 @@ export function PackagesTab() {
     const [installed, setInstalled] = useState<PackagesView | null>(null);
     const [installedError, setInstalledError] = useState<string | null>(null);
     const [origin, setOrigin] = useState<OriginFilter>('all');
-    const [switching, setSwitching] = useState<string | null>(null);
     /** Открытое окно установленного пакета — по ссылке вкладки. */
     const opened = linked.item;
     const isAdmin = can('plugins.manage') && sessionStore.get()?.role === 'admin';
@@ -551,25 +571,14 @@ export function PackagesTab() {
     };
     const actions = usePackageActions(changed);
 
-    const toggle = async (entry: PackageView, on: boolean) => {
-        setSwitching(entry.id);
-        actions.say(entry.id, {});
-        try {
-            await (on ? api.enablePackage(entry.id) : api.disablePackage(entry.id));
-            await readInstalled();
-        } catch (e) {
-            actions.say(entry.id, { error: problemOf(e) });
-        } finally {
-            setSwitching(null);
-        }
-    };
 
     const view = catalog.view;
     const entries = view?.packages ?? [];
     const byId = new Map(entries.map((entry) => [entry.id, entry]));
     // Ссылка вела на ещё не поставленный пакет: его окно каталога.
     const linkedEntry = linked.item && !installed?.packages.some((entry) => entry.id === linked.item) ? byId.get(linked.item) : undefined;
-    const all = installed?.packages ?? [];
+    // Персонажи и темы — не приложения: их выбирают в «Персонаже» и в «Оформлении» (docs/plans/menu-scheme.md).
+    const all = (installed?.packages ?? []).filter((entry) => entry.kind !== 'character' && entry.kind !== 'theme');
     const counts = Object.fromEntries(originFilters().map((filter) => [filter.id, filter.id === 'all' ? all.length : all.filter((entry) => filterOf(entry) === filter.id).length]));
     const listed = all
         .map((entry, index) => ({ entry, index }))
@@ -581,12 +590,10 @@ export function PackagesTab() {
         <>
             {can('connectors.view') && (
                 <section class="card glass card-list" aria-labelledby="packages-h">
-                    <div class="card-head">
-                        <h2 id="packages-h" class="t-title-xs m-0">
-                            {tr.catalog.installedTitle}
-                        </h2>
-                        <span class="t-meta">{installed?.safeMode ? tr.catalog.safeModeApps : installed ? `${installed.packages.length}` : ''}</span>
-                    </div>
+                    <h2 id="packages-h" class="sr-only">
+                        {tr.catalog.installedTitle}
+                    </h2>
+                    {installed?.safeMode && <p class="t-caption m-0 mb-6">{tr.catalog.safeModeApps}</p>}
                     {installedError && (
                         <p class="t-caption m-0 c-dot-offline" role="alert">
                             {installedError}
@@ -599,7 +606,7 @@ export function PackagesTab() {
                     )}
                     {installed && installed.packages.some((entry) => entry.permissions.includes('schedule')) && <SchedulesSwitchLine />}
                     <LaterLine />
-                    {installed && installed.packages.length === 0 && (
+                    {installed && all.length === 0 && (
                         <p class="t-caption m-0 mb-6">
                             {tr.catalog.nothingInstalledBefore}{' '}
                             <button class="underline cursor-pointer" onClick={() => panel.go('magicplace')}>
@@ -622,70 +629,26 @@ export function PackagesTab() {
                             ))}
                         </div>
                     )}
-                    {listed.map((entry) => {
-                        const kindOf = entry.kind ?? 'plugin';
-                        const fromCatalog = byId.get(entry.id);
-                        // Плагин и приложение включаются и работают; персонаж и тема — данные.
-                        const runs = kindOf === 'plugin' || kindOf === 'app';
-                        const state = runs ? pluginStates()[entry.state] : undefined;
-                        const from = originOf(entry);
-                        const editable = isAdmin && (entry.editable ?? from === 'user') && (kindOf === 'plugin' || kindOf === 'theme');
-                        const busy = actions.busy[entry.id];
-                        return (
-                            <div key={entry.id} class="pkg-row">
-                                <div class="pkg-main">
-                                    <PackageThumb url={fromCatalog?.preview?.image} />
-                                    <button class="pkg-text text-left cursor-pointer" onClick={() => linked.open(entry.id)}>
-                                        <span class="pkg-title">
-                                            {entry.title}
-                                            <span class="pill pill-off">{KIND_TITLES[kindOf] ?? kindOf}</span>
-                                            {from !== 'catalog' && <span class={`pill ${from === 'user' ? 'pill-own' : 'pill-off'}`}>{ORIGIN_TITLES[from]}</span>}
-                                            {state && <span class={`pill ${state.cls}`}>{state.text}</span>}
-                                            {fromCatalog?.state === 'update' && <span class="pill pill-agent">{tr.catalog.pillNewVersion}</span>}
-                                            {(entry.waits?.length ?? 0) > 0 && (
-                                                <span class="pill pill-agent" title={entry.waits?.join(', ')}>
-                                                    {tr.core.waitsKey}
-                                                </span>
-                                            )}
-                                        </span>
-                                        <span class="t-caption">
-                                            {[entry.version && tr.catalog.versionOf(entry.version), entry.license, entry.description].filter(Boolean).join(' · ')}
-                                        </span>
-                                    </button>
-                                    <div class="pkg-actions">
-                                        {kindOf === 'character' && (
-                                            <Action label={tr.catalog.open} onClick={() => panel.go('character', 'characters', entry.id)} />
-                                        )}
-                                        {editable && <Action label={tr.catalog.inWorkshop} onClick={() => panel.go('skills', 'workshop', entry.id)} />}
-                                        {fromCatalog?.state === 'update' && canManage(kindOf) && (
-                                            <Action tone="on" label={tr.catalog.update} busy={busy === 'update'} disabled={!!busy} onClick={() => void actions.update(entry.id, entry.title)} />
-                                        )}
-                                        {canManage(kindOf) && (entry.removable ?? true) && (
-                                            <Action label={tr.catalog.removeShort} busy={busy === 'remove'} disabled={!!busy} onClick={() => void actions.remove(entry.id, entry.title, kindOf)} />
-                                        )}
-                                        {runs && isAdmin && (
-                                            <Switch
-                                                on={entry.enabled}
-                                                label={tr.catalog.switchLabel(entry.title, entry.enabled)}
-                                                disabled={switching === entry.id || !!installed?.safeMode || (entry.enabled && entry.canDisable === false)}
-                                                onChange={(on) => void toggle(entry, on)}
-                                            />
-                                        )}
-                                    </div>
-                                </div>
-                                {pluginMemoryLine(entry) && <span class="t-caption">{pluginMemoryLine(entry)}</span>}
-                                {entry.problem && (
-                                    <span class="t-caption c-dot-offline" role="alert">
-                                        {entry.problem}
+                    <div class="app-tiles">
+                        {listed.map((entry) => {
+                            const kindOf = entry.kind ?? 'plugin';
+                            const fromCatalog = byId.get(entry.id);
+                            const status = tileStatus(entry, fromCatalog);
+                            return (
+                                <button key={entry.id} class="app-tile" onClick={() => linked.open(entry.id)}>
+                                    <AppIcon id={entry.id} title={entry.title} image={fromCatalog?.preview?.image} />
+                                    <span class="app-tile-text">
+                                        <span class="app-tile-title">{entry.title}</span>
+                                        <span class={`app-tile-state is-${status.tone}`}>{status.text}</span>
                                     </span>
-                                )}
-                                {entry.lastError && entry.lastError.message !== entry.problem && (
-                                    <span class="t-caption c-dot-offline">{tr.catalog.lastError(timeAgo(entry.lastError.at), entry.lastError.message)}</span>
-                                )}
-                                <NoteLine note={actions.notes[entry.id]} />
-                            </div>
-                        );
-                    })}
+                                    <span class="sr-only">{KIND_TITLES[kindOf] ?? kindOf}</span>
+                                </button>
+                            );
+                        })}
+                    </div>
+                    {listed.map((entry) => (
+                        <NoteLine key={entry.id} note={actions.notes[entry.id]} />
+                    ))}
                     {!isAdmin && installed?.packages.some((entry) => (entry.kind ?? 'plugin') === 'plugin') && (
                         <p class="t-caption m-0 mt-8">{tr.catalog.adminTurnsOn}</p>
                     )}
@@ -697,6 +660,11 @@ export function PackagesTab() {
                     entry={installed.packages.find((entry) => entry.id === opened)!}
                     onClose={linked.close}
                     onChanged={changed}
+                    update={
+                        byId.get(opened)?.state === 'update' && canManage(byId.get(opened)?.kind)
+                            ? { busy: actions.busy[opened] === 'update', run: () => void actions.update(opened, byId.get(opened)?.title ?? opened) }
+                            : undefined
+                    }
                     onRemove={(entry) =>
                         void actions.remove(entry.id, entry.title, entry.kind).then((removed) => {
                             if (removed) linked.close();

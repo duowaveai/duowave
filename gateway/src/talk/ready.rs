@@ -130,6 +130,9 @@ impl TalkLayer {
         let say = &pack.work.say;
         let title = work.title.clone();
         let Some(executor) = self.executor(&work.executor) else { return };
+        if matches!(work.kind.as_str(), super::works::TOOL | super::works::TASK) {
+            return self.finish_background(work, executor);
+        }
         let planned = self.planned.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&work.id);
         let (line, kind, end) = match work.state {
             WorkState::Failed => (fill(say.failed_line, &[("title", &title)]), None, None),
@@ -184,7 +187,7 @@ impl TalkLayer {
         let question = kind.map(|kind| Question::new(line.clone(), until, kind));
         let state = work.state;
         let Some(work) = self.works.update(&work.id, |work| {
-            work.result = Some(WorkResult { line: line.clone(), end });
+            work.result = Some(WorkResult { line: line.clone(), end, ..WorkResult::default() });
             work.question = question;
             work.said_at = None;
             if end == Some(End::Desk) {
@@ -194,6 +197,51 @@ impl TalkLayer {
             return;
         };
         self.told(&work, if end.is_some() { "done" } else { state.as_str() });
+        if work.device() != COMPUTER {
+            self.say_on_station(work.id.clone(), true);
+        }
+    }
+
+    /// A background work's «Готово» (docs/plans/long-tools.md, point 3): the frame is the pack's — the title, «готово»
+    /// or «не получилось», «подробности в пульте» — and the result in it is the model's retelling. A retelling that was
+    /// cut asks «Рассказать подробнее?». Nothing to put anywhere: the work is done once it is said.
+    fn finish_background(self: &Arc<Self>, work: Work, executor: Arc<dyn super::executor::Executor>) {
+        let words = &pack::of(self.lang(work.device())).work.background;
+        let told = executor.told(&work).unwrap_or_default();
+        let title = work.title.clone();
+        let (line, kind) = match (work.state, told.summary.as_deref()) {
+            (WorkState::Failed, _) => {
+                let why =
+                    told.error.clone().unwrap_or_else(|| words.waiting_answer.trim_end_matches('.').to_lowercase());
+                (fill(words.failed, &[("title", &title), ("why", &why)]), None)
+            }
+            (_, Some(summary)) if told.more.is_some() => {
+                let ready = fill(words.ready, &[("title", &title), ("summary", summary)]);
+                (format!("{ready} {}", words.more_q), Some(Kind::More))
+            }
+            (_, Some(summary)) => (fill(words.ready, &[("title", &title), ("summary", summary)]), None),
+            (_, None) => (fill(words.ready_bare, &[("title", &title)]), None),
+        };
+        let until = now_ms() + ANSWER_FOR.as_millis() as u64;
+        let question = kind.map(|kind| Question::new(line.clone(), until, kind));
+        let failed = work.state == WorkState::Failed;
+        let Some(work) = self.works.update(&work.id, |work| {
+            work.result = Some(WorkResult {
+                line: line.clone(),
+                end: None,
+                summary: told.summary.clone(),
+                data: told.data.clone(),
+            });
+            work.question = question;
+            work.said_at = None;
+            if !failed {
+                work.state = WorkState::Done;
+            }
+            work.ended_at.get_or_insert(now_ms());
+        }) else {
+            return;
+        };
+        self.told(&work, if failed { "failed" } else { "ready" });
         if work.device() != COMPUTER {
             self.say_on_station(work.id.clone(), true);
         }
@@ -304,12 +352,29 @@ impl TalkLayer {
         let device = origin.device.clone();
         let pack = pack::of(self.lang(&device));
         let say = &pack.work.say;
-        let pending = self.asked.take(&device).and_then(|question| question.pending);
+        // The device's question is the one answered when it is about this work — by voice it always is (rules.rs
+        // answers the question open); a button on the page «Работы» answers its own work and leaves another be.
+        let pending = self.asked.take_of(&device, id).and_then(|question| question.pending);
         // «Нет» is the person's «not now»: what was named for it, nothing more; any other answer goes where it was meant.
         self.ended_asking(id, if answer == Answer::No { Outcome::Declined } else { Outcome::Answered });
         let refused = |refusal: Refusal| refusal.for_person(pack);
         // A wish or a change that waited for this answer: it is done now.
         match (kind, answer.clone()) {
+            // «Запуск платный: … Запускать?» — `id` is the run's key.
+            (Kind::Run, answer) => {
+                let yes = matches!(answer, Answer::Yes | Answer::Fit | Answer::Edit | Answer::New);
+                return match self.background() {
+                    Some(executor) => executor.answer_paid(origin, id, yes),
+                    None => say.what.to_string(),
+                };
+            }
+            (Kind::More, Answer::Yes | Answer::Details | Answer::Fit) => {
+                let words = &pack.work.background;
+                let more =
+                    self.works.get(id).and_then(|work| self.background().and_then(|executor| executor.more(&work)));
+                return more.unwrap_or_else(|| words.no_more.to_string());
+            }
+            (Kind::More, _) => return pack.work.background.fine.to_string(),
             (Kind::Similar, Answer::New | Answer::No) => {
                 let Some(wish) = pending else { return say.what.to_string() };
                 return self.start(origin, &wish.text, wish.face, wish.title.as_deref(), true).unwrap_or_else(refused);
@@ -359,7 +424,7 @@ impl TalkLayer {
         let decided = |end: End| {
             self.works.update(id, |work| {
                 let line = work.result.take().map(|result| result.line).unwrap_or_default();
-                work.result = Some(WorkResult { line, end: Some(end) });
+                work.result = Some(WorkResult { line, end: Some(end), ..WorkResult::default() });
                 work.question = None;
             })
         };
@@ -414,6 +479,20 @@ impl TalkLayer {
             // «Новую», «поправь», «первая» without saying what, to a question about a ready thing.
             (_, Answer::New | Answer::Edit | Answer::Choice(_)) => say.what.to_string(),
         }
+    }
+
+    /// A work's question answered by a button on the page «Работы» (docs/plans/router-and-works.md, decision 17): the
+    /// same answer as one said aloud — «да», «примерить», «в черновики», «подробнее», «нет» — to the question its
+    /// record waits on. None — the work asks nothing a button answers: the questions that wait for words (which one,
+    /// a new one or this one) are answered aloud.
+    pub(super) async fn answer_work(&self, origin: Origin, id: &str, answer: Answer) -> Option<String> {
+        let work = self.works.get(id)?;
+        let question = work.question.as_ref().filter(|question| question.waits() && work.awaiting())?;
+        let kind = question
+            .kind
+            .filter(|kind| matches!(kind, Kind::Ready | Kind::Unfinished | Kind::Apply | Kind::Delete | Kind::More))?;
+        self.acted_on(&origin.device, id);
+        Some(self.answer(origin, id, kind, false, answer).await)
     }
 
     /// Puts a work's thing where the person said, by the device's voice.

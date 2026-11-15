@@ -297,6 +297,7 @@ await host.bus.call("system/smart-home", "devices")                 // call:syst
 await host.bus.call("system/smart-home", "act", { device, action, value })  // on, off, set_brightness, set_temperature, scene
 await host.bus.call("system/content", "music" | "tales", { query, limit })  // call:system/content → готовые элементы для play
 await host.bus.call("system/home", "weather-place" | "news-feeds")  // call:system/home → что выбрано в пульте
+await host.bus.call("system/home", "country")                       // call:system/home → {country}: «RU», «DE»…; null — не сказали
 await host.bus.call("app/weather", "weather_now", { place })        // call:app/weather → инструмент другого приложения
 ```
 
@@ -979,9 +980,15 @@ API: `GET /api/v1/packages/<id>/history`, `…/history/compare?from=&to=`, `GET|
 
 - **Запуск**: сборка своей платформы, SHA-256 сверяется перед каждым запуском; в окружении — `PORT` (слушать на
   `127.0.0.1`), `DUOWAVE_URL`, `DUOWAVE_APP_TOKEN`, `DUOWAVE_APP_ID`, `DUOWAVE_APP_DATA` (свои данные, переживают
-  версии), `DUOWAVE_APP_FILES` (своя папка на шине — её видит окно, `useMedia`) и `PATH` — больше ничего от шлюза.
+  версии), `DUOWAVE_APP_FILES` (своя папка на шине — её видит окно, `useMedia`), `PATH`, `GOMEMLIMIT` (бюджет памяти
+  — для программы на Go) и на колонке `DUOWAVE_STATION_NAME` (имя колонки в DuoWave: приёмник показывается под ним;
+  переименовали — выключите и включите приложение) — больше ничего от шлюза.
+- **`"resident": true`** — программа работает всё время, пока приложение включено: шлюз запускает её при включении и
+  при своём старте, не выгружает за простой (`PLUGINS_IDLE_UNLOAD_S`) и под давлением памяти. Для приёмника, которого
+  телефон находит сам (AirPlay). Без него программа стартует при первом вызове и выгружается без вызовов.
 - **Шлюз зовёт приложение**: `POST /call/<функция>` с `Authorization: Bearer <токен>` и JSON входа; ответ — JSON,
-  как у функции плагина; 404 — нет такой функции. `GET <health.path>` — жив ли.
+  как у функции плагина; 404 — нет такой функции; 400 с `{ "error": "…" }` — слова для людей на языке дома, шлюз
+  передаёт их как есть. `GET <health.path>` — жив ли.
 - **Приложение зовёт шлюз** — Host API по HTTP, только с `127.0.0.1` и со своим токеном:
   `POST /api/v1/apps/host/log`, `GET /api/v1/apps/host/kv`, `GET|PUT|DELETE /api/v1/apps/host/kv/<ключ>`,
   `POST /api/v1/apps/host/say`, `POST /api/v1/apps/host/fetch`, `GET /api/v1/apps/host/settings`,
@@ -994,12 +1001,34 @@ API: `GET /api/v1/packages/<id>/history`, `…/history/compare?from=&to=`, `GET|
   HLS; Ogg/Opus и WAV через плеер колонки ещё не проверены.
 - **Надзор**: упало, не отвечает на `health` три раза подряд или трижды подряд вышло за бюджет памяти (RSS) —
   перезапуск через 1, 2, 4, 8, 16 с; пять падений подряд — приложение выключается с причиной в пульте; 10 минут
-  без падений — счёт сначала. На Linux `RLIMIT_AS` — восемь бюджетов. Вывод программы — в журнал шлюза и журнал
+  без падений — счёт сначала. На Linux `RLIMIT_AS` — восемь бюджетов, но не меньше 4 ГБ: Go на старте резервирует
+  около 1,1 ГБ адресов. Остановка — SIGTERM и 3 с на выход, потом SIGKILL. Вывод программы — в журнал шлюза и журнал
   пакета.
+- **Своя музыка мимо плеера колонки** (приёмник, который сам пишет звук в колонку). Приложение говорит, что играет:
+  письмо шины `system/player` → `playing` `{ state: "playing" | "paused" | "stopped" }` (право `call:system/player`;
+  с HTTP — `POST /api/v1/apps/host/call/bus.call` `{ "to": "system/player", "handle": "playing", "input": {…} }`).
+  Заиграло — плеер Алисы на колонке встаёт на паузу. Пока приложение играет или стоит на паузе, «пауза», «стоп»,
+  «продолжай», «дальше», «назад» приходят ему новостью `control` от `system/player`: право `listen:system/player`,
+  `"contributes": { "bus": { "on": [{ "from": "system/player", "event": "control", "handler": "control" }] } }`, вход
+  `{ "payload": { "action": "pause" | "resume" | "next" | "previous" } }` («стоп» — тоже `pause`), ответ за 2 с.
+  Алиса сама заиграла на колонке — приложению `pause`, голос снова у неё. Пример — AirPlay ([`apps/airplay.md`](apps/airplay.md)).
+- **Свой выход в интернет** («Выход в интернет», план): в окружении программы —
+  `HTTPS_PROXY` / `HTTP_PROXY` (и строчными) на вход шлюза `http://<id>:<токен>@127.0.0.1:<порт>`,
+  `NO_PROXY=127.0.0.1,localhost,::1`, у Node — `NODE_USE_ENV_PROXY=1`. Go и Rust (reqwest) читают их сами. Шлюз знает,
+  чьи это запросы, и пускает их напрямую или через сервер человека по строке приложения в «Выходе в интернет»;
+  сервер не отвечает — запрос получает 503 «VPN не отвечает», напрямую он не уходит. Своё соединение мимо прокси
+  программа делать может, но тогда «Выход в интернет» её не видит.
+- **Подключения для шлюза** (приложение «VPN»): письмо `system/network` → `connections`
+  `{ items: [{ id, name, country, url, state: "up" | "down", current }] }` — все подключения разом; `url` — свой вход
+  HTTP на `127.0.0.1` с портом (пользователь и пароль можно в адресе). Право `call:system/network`, владелец один раз
+  отвечает «да» в «Связях»; пока его нет, всё идёт напрямую. Слать при старте, при каждой перемене и раз в 30 с:
+  подключение без письма 90 с считается неотвечающим. Такая программа `HTTPS_PROXY` не получает.
 - **Пример** — `duowave-echo-app` (`gateway/src/bin/echo_app.rs`): только стандартная библиотека, всё перечисленное
   выше. Набросок Spotify — [`apps/spotify.md`](apps/spotify.md).
 
-В каталоге у приложения архив под каждую платформу (`platforms`); нет нашей — приложение серое с причиной.
+В каталоге у приложения архив под каждую платформу (`platforms`); нет нашей — приложение серое с причиной. Значок —
+`"icon": "avatar.webp"` (квадратная WebP или PNG в `assets/`): каталог делает из него превью, его показывают
+MagicPlace и ярлык на столе; шлюз само поле не читает.
 
 ### Приложение на Node
 
@@ -1143,6 +1172,14 @@ curl -X POST -H "Authorization: Bearer $TOKEN" http://<шлюз>/api/v1/packages
 
 `PLUGINS_BUNDLED=0` — не раскладывать их, отвечают только встроенные навыки.
 
+### Откуда приложение работает — `reach`
+
+Каталог знает, из каких стран до сервиса не достучаться: `reach.json` рядом с лентой (поставщики «Мозга», слуха и
+голоса, MCP-инструменты, Алиса) и поле `reach` записи приложения — `{ "blocked": ["RU", "CN"] }` или
+`{ "only": ["RU"] }`, коды стран ISO. «Выход в интернет» в режиме «Где не работает» пускает через сервер человека то,
+что не работает из страны дома. Пишет их команда каталога (`reach.json` в `duowave-packages`, раздел `apps` — по id
+пакета); в манифест поле не пишется. Не путать с `regions` — где приложение имеет смысл.
+
 ## Каталог и пакеты других видов
 
 Из каталога пакет приходит архивом `.vgp` — tar.gz с `manifest.json` и файлами в корне; шлюз сверяет его размер и
@@ -1170,3 +1207,31 @@ SHA-256 с лентой и кладёт в `PACKAGES_DIR/<id>/<версия>/`. 
 Персонаж описывается в `contributes.characters` — промт, тоны, аватар, фразы, снимки голоса по моделям, запасной голос
 (`docs/plans/characters.md`, раздел 1; примеры — репозиторий каталога `duowave-packages`).
 Поле `license` (до 200 знаков) — у пакета любого вида.
+
+## Долгие задачи: `host.tasks`
+
+Вызов приложения живёт секунды: фраза, инструмент и карточка — 2 с, фон — 30 с. Дело на минуты — задача: много
+коротких шагов, которые шлюз вызывает сам (docs/plans/long-tools.md, пункт 4).
+
+```js
+export async function tool_reviews({ place }) {
+  await host.tasks.start({ title: `Отзывы: ${place}`, step: "collect", state: { place, page: 0 } });
+  return { say: "Начала собирать отзывы. Скажу, когда будет готово." };
+}
+
+export async function collect({ task }) {            // шлюз зовёт снова и снова, каждый раз до 30 с
+  const { place, page } = task.state;
+  const items = await fetchPage(place, page);         // один короткий кусок работы
+  if (items.length) return { state: { place, page: page + 1 }, percent: Math.min(90, page * 10), text: `страница ${page + 1}`, waitMs: 2000 };
+  return { done: { say: `Собрала отзывы о «${place}».`, page } };
+}
+```
+
+- Шаг отвечает `{ state, percent, text, waitMs }` — следующий шаг через `waitMs` (по умолчанию 1 с, до 60 с) с этим
+  `state`; `{ done: результат }` — готово; `{ fail: "почему" }` — не вышло. Ошибка шага — задача не вышла.
+- Задача, начатая во время вызова из разговора, — его работа: «как там отзывы?» скажет проценты и `text`, «отмени»
+  остановит перед следующим шагом, а `done.say` колонка скажет там, где просили. Без `say` шлюз попросит модель
+  пересказать результат.
+- Сразу у приложения — одна задача (`budget.tasks`, до 4); всё задание — до 30 мин, на колонке до 10.
+- Ещё: `host.tasks.progress(id, percent, text)` → `{ cancel }`, `host.tasks.done(id, result)`, `host.tasks.fail(id,
+  error)`, `host.tasks.get(id)` — для задачи без `step`, которую ведёт сам код (программа на Node — через HTTP).

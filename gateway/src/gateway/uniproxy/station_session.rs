@@ -2144,6 +2144,19 @@ impl StationSession {
                 if let Some(trip) = inner.trip(r#ref) {
                     trip.routed(if command { None } else { Some("chat") }, "model");
                 }
+                // «Выход в интернет» (src/egress): the model goes through the person's server and that server does not
+                // answer — Alice answers instead, while Yandex is here («Вместе»); without her the model's call says
+                // «VPN не отвечает» at once (dialog/llm/llm_client.rs). Nothing goes out directly with the key.
+                if self.yandex_available(inner) && self.brain_refused(profile) {
+                    self.record(
+                        EventDirection::Note,
+                        "route",
+                        Some(format!("the model's server does not answer (VPN): \"{text}\" → Yandex")),
+                        Some(&json!({ "executor": "yandex", "why": "egress", "text": text })),
+                        false,
+                    );
+                    return self.ask_yandex(inner, r#ref, request, text, CapabilityName::Chat, false);
+                }
                 // A phrase about the works is read first: the layer does and says it (src/talk/reader.rs).
                 if let Some(reader) = self.reader_for(text) {
                     return self.read_first(inner, r#ref, request, text, profile, command, reader);
@@ -2465,6 +2478,8 @@ impl StationSession {
             profile: Some(profile),
             // A spoken answer: a few sentences (docs/plans/audio-interface.md, decision 14).
             max_tokens: Some(crate::dialog::SPEECH_MAX_TOKENS),
+            // Why the rule gave this model, for the deal (src/router).
+            reason: Some(crate::skills::quick_commands::profile_reason(text, profile)),
             ..DialogContext::default()
         };
         let origin =
@@ -2538,6 +2553,8 @@ impl StationSession {
             model: None,
             // A spoken answer: a few sentences (docs/plans/audio-interface.md, decision 14).
             max_tokens: Some(crate::dialog::SPEECH_MAX_TOKENS),
+            // Why the rule gave this model, for the deal (src/router).
+            reason: Some(crate::skills::quick_commands::profile_reason(text, profile)),
             ..DialogContext::default()
         };
         let session = self.clone();
@@ -2684,6 +2701,8 @@ impl StationSession {
             model: None,
             // A spoken answer: a few sentences (docs/plans/audio-interface.md, decision 14).
             max_tokens: Some(crate::dialog::SPEECH_MAX_TOKENS),
+            // Why the rule gave this model, for the deal (src/router).
+            reason: Some(crate::skills::quick_commands::profile_reason(text, profile)),
             ..DialogContext::default()
         };
         let toolbox = self.lookup_toolbox(r#ref, request, text, &answer, profile, None);
@@ -2739,7 +2758,7 @@ impl StationSession {
                         .run_contributed(&r#ref, &answer, profile, &offer, &principal, &call, cancel, origin)
                         .await);
                 }
-                session.run_tool(&r#ref, &request, &text, &answer, profile, mcp, &principal, call, cancel).await
+                session.run_tool(&r#ref, &request, &text, &answer, profile, mcp, &principal, call, cancel, origin).await
             }
         });
         toolbox.filler = Some(LOOKUP_FILLER);
@@ -2782,9 +2801,10 @@ impl StationSession {
         principal: &Principal,
         call: ToolCall,
         cancel: CancellationToken,
+        origin: crate::talk::Origin,
     ) -> anyhow::Result<ToolOutcome> {
         if let Some(mcp) = mcp.filter(|mcp| mcp.owns(&call.name)) {
-            return self.run_mcp(r#ref, profile, &mcp, &call, &cancel).await;
+            return self.run_mcp(r#ref, profile, &mcp, &call, &cancel, origin).await;
         }
         let intent = match self.deps.skills.intent_of(&call) {
             Ok(intent) => intent,
@@ -2939,6 +2959,7 @@ impl StationSession {
         mcp: &McpOffer,
         call: &ToolCall,
         cancel: &CancellationToken,
+        origin: crate::talk::Origin,
     ) -> anyhow::Result<ToolOutcome> {
         let server = mcp.server_of(&call.name);
         let trip = self.lock().trip(r#ref);
@@ -2946,7 +2967,7 @@ impl StationSession {
             let by = if server.as_ref().is_some_and(|server| server.cloud) { Place::Cloud } else { Place::Own };
             trip.step(RequestPhase::Tool, Some(by), server.as_ref().map(|server| server.title.as_str()));
         }
-        let outcome = mcp.run(call, cancel).await.map_err(|cancelled| anyhow::anyhow!("{cancelled}"))?;
+        let outcome = mcp.run(call, cancel, Some(origin)).await.map_err(|cancelled| anyhow::anyhow!("{cancelled}"))?;
         let title = server.as_ref().map_or(call.name.as_str(), |server| server.title.as_str());
         let failed = if outcome.is_error { " failed" } else { "" };
         self.note("mcp", &format!("{title}: {}{failed}", call.name), None);
@@ -3467,6 +3488,16 @@ impl StationSession {
     /// here) or as the station's voice: for capabilities in YANDEX_VOICE, and for a whisper, which Yandex answers in
     /// a whisper only when it hears one (live, 02.11: «Включаю Miyagi» whispered back to a whispered request).
     /// Yandex's answer is relayed.
+    /// Whether the model of this profile goes through a server of «Выход в интернет» that does not answer now.
+    fn brain_refused(&self, profile: ModelProfile) -> bool {
+        let profiles = self.deps.dialog.brain().profiles;
+        let slot = match profile {
+            ModelProfile::Fast => profiles.fast,
+            ModelProfile::Smart => profiles.smart,
+        };
+        slot.is_some_and(|slot| crate::egress::refused_row(&format!("provider:{}", slot.provider)))
+    }
+
     fn ask_yandex(
         self: &Arc<Self>,
         inner: &mut Inner,
@@ -4348,6 +4379,10 @@ impl StationSession {
         }
         if !waited {
             self.deps.skills.player_memory.note_callback(&self.device_tag, &name, chrono::Utc::now());
+            // The station's player started (Yandex's music, our radio): an app that played by itself gives way.
+            if name.ends_with("_on_started") {
+                self.deps.skills.station_player_started(&self.device_tag);
+            }
         }
         if name == *SAY_CALLBACK {
             return self.on_say_callback(inner, &message_id, &request);

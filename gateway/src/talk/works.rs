@@ -41,8 +41,25 @@ const BRIEF: usize = 4000;
 const NOTE: usize = 1000;
 const TITLE: usize = 80;
 
-/// What a work is about: an app, on this stage the only kind.
+/// What a work is about: an app the workshop makes.
 pub const APP: &str = "app";
+/// A background tool's call (docs/plans/long-tools.md, point 2): its own count, no day's limit — the service counts
+/// the money itself.
+pub const TOOL: &str = "tool";
+/// An app's long task begun in a conversation (docs/plans/long-tools.md, point 4): limited by the app's own budget.
+pub const TASK: &str = "task";
+/// Background tools' works at once; the next one waits in the queue (the owner's default 2).
+pub const TOOLS_AT_ONCE: usize = 3;
+
+/// Which works count together against the limits: the things made (apps, and later the folders' works), the
+/// background tools, the apps' tasks.
+fn pool(kind: &str) -> u8 {
+    match kind {
+        TOOL => 1,
+        TASK => 2,
+        _ => 0,
+    }
+}
 
 /// Where a work is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,12 +183,18 @@ pub enum End {
 }
 
 /// What came of a work: its line, and what became of the thing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkResult {
     pub line: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end: Option<End>,
+    /// A tool's or a task's result retold by the model in a sentence or two (signed «пересказ» in the panel).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// The result as it came, for the panel (up to 64 KB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
 }
 
 /// The question a work waits on: its words, what it asks, and until when an answer is taken without the wake word.
@@ -400,7 +423,19 @@ impl Works {
     /// Whether a new work may start now from this origin: how many go on, and for a new one by voice how often and how
     /// many today.
     pub fn may_start(&self, origin: &Origin, again: bool, now: u64) -> Result<(), Refused> {
-        let list = self.list();
+        self.may_start_kind(APP, origin, again, now)
+    }
+
+    /// The same for a work of a kind: the works of its pool only — a background tool never holds an app back.
+    pub fn may_start_kind(&self, kind: &str, origin: &Origin, again: bool, now: u64) -> Result<(), Refused> {
+        let pool = pool(kind);
+        let list: Vec<Work> = self.list().iter().filter(|work| self::pool(&work.kind) == pool).cloned().collect();
+        match pool {
+            2 => return Ok(()),
+            1 if list.iter().filter(|work| work.going()).count() >= TOOLS_AT_ONCE => return Err(Refused::Busy),
+            1 => return Ok(()),
+            _ => {}
+        }
         if list.iter().filter(|work| work.going()).count() >= self.at_once() {
             return Err(Refused::Busy);
         }
@@ -701,7 +736,10 @@ mod tests {
         });
         works.update(&done.id, |work| {
             work.state = WorkState::Done;
-            work.result = Some(WorkResult { line: "Полив: готово.".into(), end: Some(End::Desk) });
+            work.result =
+                Some(WorkResult {
+                    line: "Полив: готово.".into(), end: Some(End::Desk), ..WorkResult::default()
+                });
         });
         assert_eq!(works.going(), 1);
         assert!(works.get("2").unwrap().ended_at.is_some(), "an ended work knows when");

@@ -9,6 +9,7 @@ use axum::Router;
 use crate::app::App;
 
 pub mod ask_controller;
+pub mod mcp_background;
 pub mod mcp_connection;
 pub mod mcp_controller;
 pub mod mcp_import;
@@ -20,7 +21,7 @@ pub mod mcp_service;
 pub mod mcp_tools;
 
 #[cfg(test)]
-mod fixtures;
+pub(crate) mod fixtures;
 
 pub use ask_controller::{AskDialog, AskEvent, AskModel, AskToolbox};
 pub use mcp_service::{Cancelled, McpOffer, McpService, OfferOptions, OfferServer, ToolOutcome};

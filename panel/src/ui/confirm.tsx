@@ -88,7 +88,7 @@ export function ConfirmHost() {
                 </div>
             }
         >
-            {current.text && <p class="t-body m-0 pre-line">{current.text}</p>}
+            {current.text && <p class="t-body m-0 pre-line max-h-52vh overflow-auto">{current.text}</p>}
         </Sheet>
     );
 }

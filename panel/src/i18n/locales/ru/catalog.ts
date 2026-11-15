@@ -4,6 +4,7 @@ export default {
     kindCharacter: 'персонаж',
     kindPlugin: 'в шлюзе',
     kindApp: 'на компьютере',
+    kindAppStation: 'на колонке',
     kindTheme: 'тема',
     placeNetwork: 'в сети',
     filterCharacters: 'Персонажи',

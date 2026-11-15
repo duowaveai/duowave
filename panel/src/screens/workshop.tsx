@@ -914,7 +914,7 @@ function openCall(rows: LogRow[], tool: string | undefined): LogRow | undefined 
  * отмотали вверх. Пока агент работает — чем он занят и «Остановить». Черновик, сделанный голосом, показывает так весь
  * разговор у колонки. Работы не было — ничего.
  */
-function AgentLog({ id, title }: { id: string; title: string }) {
+export function AgentLog({ id, title }: { id: string; title: string }) {
     const panel = usePanel();
     const version = useSettledVersion();
     const [job, setJob] = useState<AgentJob | null>(null);

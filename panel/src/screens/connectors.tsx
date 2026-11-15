@@ -130,7 +130,9 @@ export function Connectors({
                     </p>
                 )}
                 {list
-                    ?.filter(({ manifest }) => manifest.kind !== 'mcp' && !(onComputer() && WITH_STATION.has(manifest.id)))
+                    // Модель, слух и голос живут у себя — «Персонаж → Мозг», «Настройки → Колонка → Слух», «Персонаж → Голос»
+                    // (docs/plans/menu-scheme.md): у места один дом. Здесь — внешние сервисы.
+                    ?.filter(({ manifest }) => manifest.kind !== 'mcp' && manifest.setup !== 'brain' && manifest.setup !== 'voice' && !(onComputer() && WITH_STATION.has(manifest.id)))
                     .map((view) => {
                         const { manifest, status } = view;
                         const action = go(view);

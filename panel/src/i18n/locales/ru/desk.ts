@@ -2,6 +2,15 @@
 import { plural } from '../../format';
 
 export default {
+    shortcuts: 'Ярлыки',
+    shortcutAdd: 'Ярлык',
+    shortcutsMenu: 'Ярлыки на столе',
+    shortcutsVoice: 'Или голосом: «добавь ярлык календаря»',
+    shortcutAddPhrase: 'добавь ярлык',
+    shortcutRemovePhrase: 'убери ярлык',
+    shortcutsClose: 'Закрыть',
+    shortcutOnDesk: 'Ярлык на столе',
+    shortcutOnDeskAbout: 'открывать в одно нажатие с главной',
     quoted: (text: string) => `«${text}»`,
     helperPcTitle: 'Этот компьютер помогает колонке',
     helperPcLine: (name: string) => `даёт колонке «${name}» слух, голос и модель`,

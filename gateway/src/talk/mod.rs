@@ -22,7 +22,9 @@ pub mod ready;
 pub mod routes;
 pub mod rules;
 pub mod store;
+pub mod task_work;
 pub mod thought;
+pub mod tool_work;
 mod tools;
 pub mod window;
 pub mod words;
@@ -129,7 +131,9 @@ fn closing(app: &App, device: &str, said: &str, voice: bool, brain: bool) -> (bo
         return (asks, None);
     }
     if asks {
-        if brain {
+        // A background tool's «Запускать?» asked in this answer stays the device's question: «да» runs it.
+        let run = app.talk.asked.open(device).is_some_and(|question| question.kind == asked::Kind::Run);
+        if brain && !run {
             app.talk.asked.ask(device, "", asked::Kind::Talk, false);
         }
         return (true, None);

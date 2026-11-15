@@ -6,7 +6,8 @@ import { ComponentChildren } from 'preact';
 import { useRef } from 'preact/hooks';
 
 import { tr } from '../i18n';
-import { IconClose, IconPackage, IconPlus } from '../icons';
+import { MagicPlaceMark } from '../magicplace/icon';
+import { IconClose, IconPlus } from '../icons';
 import { usePanel } from '../shell/context';
 import { DeskWidget, onDesk, useDeskLayout, useWidgets } from '../shell/widgets';
 import { useDialogFocus } from '../ui/sheet';
@@ -74,8 +75,9 @@ export function AddWidgetPanel({ onClose, children }: { onClose: () => void; chi
                             panel.go('magicplace', 'store', undefined, { face: 'widget' });
                         }}
                     >
-                        <span class="add-item-icon" aria-hidden="true">
-                            <IconPackage size={18} />
+                        {/* Магазин узнают по его розовому знаку — везде одинаково (владелец, 15.11). */}
+                        <span class="add-item-icon is-mark" aria-hidden="true">
+                            <MagicPlaceMark size={28} />
                         </span>
                         <span class="flex-1 min-w-0 flex flex-col">
                             <span class="w-strong">{tr.drafts.catalog}</span>

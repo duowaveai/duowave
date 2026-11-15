@@ -8,8 +8,11 @@
 //!   it reaches the Host API the same way (`/api/v1/apps/host/…` with its token): the same rights as a plugin's;
 //! - it is asked whether it is well (`health`), restarted after a fall with a growing pause, and switched off after
 //!   five falls in a row; its memory is counted for real (RSS) against its budget — three looks over it is a fall;
-//!   on Linux `RLIMIT_AS` keeps a built program from more than eight times its budget (not Node: V8 reserves far more
-//!   address space than it uses, its heap is held by `--max-old-space-size`);
+//!   on Linux `RLIMIT_AS` keeps a built program from more than eight times its budget, never under 4 GiB (a Go program
+//!   reserves about 1.1 GiB of addresses at its start and dies without them), and `GOMEMLIMIT` tells Go's collector the
+//!   budget (not Node: V8 reserves far more address space than it uses, its heap is held by `--max-old-space-size`);
+//! - it is asked to stop (SIGTERM) and given three seconds before it is killed: a receiver lets go of the sound card's
+//!   mixer and its ports itself;
 //! - its output goes to the gateway's log and the plugin's journal under its name;
 //! - its own sound — `/stream/<path>` of its server — reaches the station through our /media
 //!   (`/media/apps/<id>/<path>`), and nothing else of its server does.
@@ -43,6 +46,13 @@ const START_LIMIT: Duration = Duration::from_secs(15);
 const MAX_FALLS: u32 = 5;
 /// Well this long, its falls are forgiven.
 const FORGIVEN_AFTER: Duration = Duration::from_secs(600);
+/// The least address space a built program gets on Linux: Go reserves its page summaries (~600 MiB) and its scavenger's
+/// index (512 MiB) at its start (`runtime/mpagealloc_64bit.go`) and throws without them — eight budgets of 32 MB are
+/// 256 MiB. What it really holds is counted by RSS against its budget anyway.
+#[cfg(target_os = "linux")]
+const ADDRESS_SPACE_FLOOR: u64 = 4 << 30;
+/// How long a program asked to stop (SIGTERM) has before it is killed.
+const STOP_GRACE: Duration = Duration::from_secs(3);
 /// Looks over its memory budget in a row that make a fall.
 const OVER_BUDGET_LOOKS: u32 = 3;
 const MEMORY_EVERY: Duration = Duration::from_secs(10);
@@ -53,6 +63,10 @@ pub type GiveUp = Arc<dyn Fn(&str, &str) + Send + Sync>;
 /// Who is told an app's program is gone — it fell, was stopped or unloaded — with the reason in words: the long tasks
 /// it ran are interrupted (src/tasks).
 pub type Gone = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
+/// What the household calls the station this gateway runs on, asked at each start of an app (`DUOWAVE_STATION_NAME`);
+/// None off a station.
+pub type StationName = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 /// An app that runs: its id and its Host API, with its rights.
 pub type AppHost = (String, Arc<dyn HostApi>);
@@ -91,6 +105,8 @@ pub struct ProcessRuntime {
     node: Arc<NodeHome>,
     /// Where the apps' own folders are (`files/app/<id>`): each is told its own, `DUOWAVE_APP_FILES`.
     files_root: Mutex<Option<PathBuf>>,
+    /// The station's name, once the placement stands.
+    station_name: OnceLock<StationName>,
 }
 
 impl ProcessRuntime {
@@ -102,7 +118,13 @@ impl ProcessRuntime {
             gone: Arc::default(),
             node,
             files_root: Mutex::new(None),
+            station_name: OnceLock::new(),
         }
+    }
+
+    /// Where the station's name comes from: a receiver shows itself to phones by it.
+    pub fn set_station_name(&self, name: StationName) {
+        let _ = self.station_name.set(name);
     }
 
     /// Where the apps' own folders are: what its window plays is what it writes there.
@@ -168,6 +190,12 @@ struct Launch {
     gateway_url: String,
     memory_mb: u64,
     health: String,
+    /// The station's name, on a station.
+    station_name: Option<String>,
+    /// The gateway's entry for the program's own requests (`HTTPS_PROXY`, src/egress/app_entry.rs): its id and token
+    /// in it, so the gateway goes by this app's row of «Выход в интернет». None — the entry does not run, or the app
+    /// gives the connections itself.
+    proxy: Option<String>,
 }
 
 fn spawn(launch: &Launch, host: &Arc<dyn HostApi>) -> Result<tokio::process::Child, String> {
@@ -197,12 +225,31 @@ fn spawn(launch: &Launch, host: &Arc<dyn HostApi>) -> Result<tokio::process::Chi
     if let Some(files) = &launch.files {
         command.env("DUOWAVE_APP_FILES", files);
     }
+    if let Some(name) = launch.station_name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
+        command.env("DUOWAVE_STATION_NAME", name);
+    }
+    if let Some(proxy) = &launch.proxy {
+        // Go and Rust (reqwest) read these themselves; Node's fetch with NODE_USE_ENV_PROXY.
+        for name in ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"] {
+            command.env(name, proxy);
+        }
+        for name in ["NO_PROXY", "no_proxy"] {
+            command.env(name, "127.0.0.1,localhost,::1");
+        }
+        if launch.path.is_some() {
+            command.env("NODE_USE_ENV_PROXY", "1");
+        }
+    }
+    if launch.path.is_none() {
+        // Go's collector keeps the heap within the budget itself; any other program ignores it.
+        command.env("GOMEMLIMIT", format!("{}MiB", launch.memory_mb.max(4)));
+    }
     // Not for Node (`launch.path` is set only for it): V8 reserves gigabytes of address space at start, far over eight
     // budgets, and under RLIMIT_AS it never says it is healthy (CI on Linux, 14.11). Its heap is held by
     // --max-old-space-size and its real memory (RSS) is counted against its budget like any app's.
     #[cfg(target_os = "linux")]
     if launch.path.is_none() {
-        let limit = (launch.memory_mb.max(32) * 8 * 1024 * 1024) as libc::rlim_t;
+        let limit = (launch.memory_mb.max(32) * 8 * 1024 * 1024).max(ADDRESS_SPACE_FLOOR) as libc::rlim_t;
         // SAFETY: setrlimit is async-signal-safe and only touches the child before exec.
         unsafe {
             command.pre_exec(move || {
@@ -275,6 +322,16 @@ impl Shared {
 
     async fn kill(&self) {
         if let Some(mut child) = self.child.lock().await.take() {
+            // Asked first: it lets go of what it holds (a receiver — the sound card's mixer, its ports).
+            #[cfg(unix)]
+            if let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok()) {
+                // SAFETY: a signal to our own child, whose pid is held (not reaped) while `child` lives.
+                unsafe { libc::kill(pid, libc::SIGTERM) };
+                if tokio::time::timeout(STOP_GRACE, child.wait()).await.is_ok() {
+                    *self.pid.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+                    return;
+                }
+            }
             let _ = child.start_kill();
             let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
         }
@@ -418,11 +475,20 @@ impl PluginInstance for Instance {
                 404 => Err(PluginError::Missing(function)),
                 code if !(200..300).contains(&code) => {
                     let text = answer.text().await.unwrap_or_default();
-                    Err(PluginError::Script(crate::tr!(
-                        "приложение: HTTP {code} {text}",
-                        code = code,
-                        text = text.chars().take(300).collect::<String>()
-                    )))
+                    // The app's own words for people (`{"error": "…"}` with 400) go as they are: they are already in
+                    // the household's language (docs/plugins/AUTHORING.md, «Приложения»).
+                    let words = serde_json::from_str::<Value>(&text)
+                        .ok()
+                        .and_then(|value| value.get("error").and_then(Value::as_str).map(str::to_string))
+                        .filter(|words| code == 400 && !words.trim().is_empty());
+                    Err(PluginError::Script(match words {
+                        Some(words) => words.chars().take(300).collect(),
+                        None => crate::tr!(
+                            "приложение: HTTP {code} {text}",
+                            code = code,
+                            text = text.chars().take(300).collect::<String>()
+                        ),
+                    }))
                 }
                 _ => {
                     let bytes = answer.bytes().await.map_err(|error| PluginError::Script(error.to_string()))?;
@@ -483,6 +549,7 @@ impl PluginRuntime for ProcessRuntime {
         let (tokens, give_up, gone) = (self.tokens.clone(), self.give_up.clone(), self.gone.clone());
         let node_home = self.node.clone();
         let files_root = self.files_root.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        let station_name = self.station_name.get().and_then(|name| name());
         Box::pin(async move {
             let manifest =
                 code.manifest.clone().ok_or_else(|| PluginError::Load(crate::tr!("нет манифеста приложения")))?;
@@ -510,6 +577,8 @@ impl PluginRuntime for ProcessRuntime {
             };
             // Its own data outlives a version: `<id>/.data` beside the versions (a dot folder is no version).
             let data = dir.parent().map(|parent| parent.join(".data")).unwrap_or_else(|| dir.join(".data"));
+            let token = uuid::Uuid::new_v4().simple().to_string();
+            let proxy = crate::egress::entry_for(&code.id, &token, &manifest);
             let launch = Launch {
                 id: code.id.clone(),
                 program,
@@ -518,10 +587,12 @@ impl PluginRuntime for ProcessRuntime {
                 files: files_root.map(|root| root.join(&code.id)),
                 data,
                 port: free_port().map_err(PluginError::Load)?,
-                token: uuid::Uuid::new_v4().simple().to_string(),
+                token,
                 gateway_url,
                 memory_mb: manifest.budget.memory_mb,
                 health: manifest.health.path.clone(),
+                station_name,
+                proxy,
             };
             let contributes = &manifest.contributes;
             let mut handlers: Vec<String> = contributes
@@ -531,6 +602,7 @@ impl PluginRuntime for ProcessRuntime {
                 .chain(contributes.tools.iter().map(|tool| tool.handler.clone()))
                 .chain(contributes.media.iter().map(|media| media.handler.clone()))
                 .chain(contributes.events.iter().map(|event| event.handler.clone()))
+                .chain(contributes.bus.on.iter().map(|on| on.handler.clone()))
                 .collect();
             handlers.sort();
             handlers.dedup();

@@ -35,11 +35,11 @@ mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
 sed "s/^version: .*/version: $VERSION/" "$HERE/yam.yaml" > "$STAGE/yam.yaml"
 cp "$HERE/duowave" "$HERE/duowave-postinstall" "$ROOT/station-client/voice.sh" "$ROOT/station-client/S95duowave" \
-    "$ROOT/station-client/call-client.sh" "$ROOT/station-client/S99zduowave" "$STAGE/"
+    "$ROOT/station-client/call-client.sh" "$ROOT/station-client/S99zduowave" "$ROOT/station-client/uninstall.sh" "$STAGE/"
 cp "$GATEWAY_BIN" "$STAGE/gateway"
 # tar keeps the modes, and YAM installs a file with an executable bit as 0755.
 chmod 755 "$STAGE/duowave" "$STAGE/duowave-postinstall" "$STAGE/voice.sh" "$STAGE/S95duowave" "$STAGE/call-client.sh" \
-    "$STAGE/S99zduowave" "$STAGE/gateway"
+    "$STAGE/S99zduowave" "$STAGE/uninstall.sh" "$STAGE/gateway"
 
 for target in $TARGETS; do
     package=$OUT/duowave-gateway-$VERSION-$target.yampkg

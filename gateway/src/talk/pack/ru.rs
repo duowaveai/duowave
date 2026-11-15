@@ -1,7 +1,8 @@
 //! Русский пакет.
 
 use super::{
-    AnswerWords, DoingWords, EndWords, Pack, RuleWords, SayWords, SpokenUnits, StoreSay, StoreWords, Words, WorkWords,
+    AnswerWords, BackgroundWords, DoingWords, EndWords, Pack, RuleWords, SayWords, SpokenUnits, StoreSay, StoreWords,
+    Words, WorkWords,
 };
 
 pub(super) const PACK: Pack = Pack {
@@ -125,6 +126,25 @@ const WORK: WorkWords = WorkWords {
         phrase: "пробую фразу",
         docs: "читаю справку",
         journal: "читаю журнал",
+    },
+    background: BackgroundWords {
+        face: "фоновое дело",
+        fine: "Хорошо.",
+        started: "Запущено: {title}. Скажу, когда будет готово.",
+        queued: "{title}: в очереди, сейчас идут другие дела. Скажу, когда будет готово.",
+        paid: "Запуск платный: {title}. Запускать?",
+        not_run: "Хорошо, не запускаю.",
+        task_started: "Начато: {title}. Скажу, когда будет готово.",
+        working: "{title}: идёт {since}. {step}",
+        waiting_answer: "Жду ответа сервиса.",
+        ready: "{title}: готово. {summary} Подробности в пульте.",
+        ready_bare: "{title}: готово. Подробности в пульте.",
+        failed: "{title}: не получилось — {why}. Подробности в пульте.",
+        more_q: "Рассказать подробнее?",
+        no_more: "Больше рассказать нечего: всё в пульте.",
+        no_add: "Это уже запущено, дописать нельзя. Скажите заново, если нужно по-другому.",
+        summary_prompt: "Перескажи результат дела «{title}» для человека: сначала главное, две фразы, не больше тридцати слов, только то, что есть в данных, без ссылок и адресов. Если дело не закончено или данных нет — так и скажи одной фразой. Язык: {lang}.",
+        follow_prompt: "Ты доводишь фоновое дело «{title}». Ниже — что вернул первый вызов. Если сервис ещё работает, проверяй ход инструментами чтения и жди инструментом wait, потом забери данные. Ничего не запускай заново. Когда данные есть или ждать бессмысленно — ответь словами без инструментов.",
     },
     say: SayWords {
         started: "Делаю: {title}. Около минуты. Что-то ещё добавить?",

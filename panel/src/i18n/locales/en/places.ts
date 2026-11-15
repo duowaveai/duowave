@@ -3,6 +3,9 @@ import type { Translation } from '../../types';
 import type ru from '../ru/places';
 
 const en: Translation<typeof ru> = {
+    groupDevice: 'Device',
+    groupAccess: 'Access and look',
+    groupSystem: 'System',
     talkTitle: 'How to talk to DuoWave',
     readyTitle: 'Readiness',
     micTitle: 'Microphone',
@@ -38,7 +41,7 @@ const en: Translation<typeof ru> = {
     keysTitle: 'API keys',
     keysSub: 'for your own programs and Home Assistant',
     showDev: 'Show the developer layer',
-    showDevAbout: '“Workshop” in the dock, request journal, routes as a table, providers and keys',
+    showDevAbout: 'technical rows in their places: request journal, routes as a table, providers and keys',
     devLayer: 'Developer layer',
     devPlaces: 'Developer places',
     hiddenTapsLeft: (n: number) => `${n} more taps to the hidden options`,
@@ -63,7 +66,7 @@ const en: Translation<typeof ru> = {
     pageUpdatesSub: 'DuoWave version, settings backups',
     pageHistory: 'Conversation history',
     pageHistorySub: 'what was asked and who answered',
-    pageDevSub: 'workshop, routes, providers',
+    pageDevSub: 'developer layer, hidden options',
     settings: 'Settings',
     newVersion: 'new version',
 };

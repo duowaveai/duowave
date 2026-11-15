@@ -1,0 +1,71 @@
+/* «Расход» (screens/spend.tsx; docs/plans/router-and-works.md, этап 6б). Карточки и строки — те же, что у «Работ»
+   (ui/works.css): `card glass card-list`, строки через `row-line`, 13/18, подпись 12/16. Деньги справа, токены под
+   ними; слова вместо долларов («дома», «по подписке», «без цены») — обычным весом. Итог — ступень `headline`
+   DESIGN.md. Полоски дней — одним цветом (своё), капсулой; легенды нет — ряд один, значения подписаны текстом. */
+
+.sp-head { flex-wrap: wrap; gap: 8px 12px; }
+.sp-periods { grid-template-columns: repeat(3, minmax(0, 1fr)); min-width: 240px; }
+.sp-periods button { min-height: 30px; }
+
+.sp-total { display: flex; flex-direction: column; gap: 4px; padding: 4px 0 2px; }
+.sp-total-main { display: flex; align-items: baseline; gap: 8px; }
+.sp-usd {
+    font-family: 'Inter Tight', Inter, system-ui, sans-serif;
+    font-size: 28px;
+    line-height: 32px;
+    font-weight: 300;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+}
+.sp-total-line { font-size: 13px; line-height: 18px; color: var(--text); }
+.sp-shares { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+
+/* Деньги в строке: сумма и под ней, что она значит. */
+.sp-money { flex: none; display: flex; flex-direction: column; align-items: flex-end; text-align: right; max-width: 45%; }
+.sp-money.is-word .wk-usd { font-weight: 400; color: var(--sub); }
+.sp-row { min-height: 48px; }
+.sp-row[aria-pressed='true'] .wk-row-title b { text-decoration: underline; text-decoration-color: var(--text); text-underline-offset: 3px; }
+
+/* По дням: имя дня · полоска · деньги и токены. */
+.sp-day { display: grid; grid-template-columns: minmax(84px, 112px) minmax(0, 1fr) 104px; align-items: center; gap: 12px; padding: 8px 0; }
+.sp-day-name { white-space: nowrap; }
+.sp-bar { display: block; height: 8px; border-radius: 999px; background: var(--track, var(--divider)); overflow: hidden; }
+.sp-bar > span { display: block; height: 100%; border-radius: 999px; background: var(--bar-own); }
+.sp-day-value { display: flex; flex-direction: column; align-items: flex-end; text-align: right; min-width: 0; }
+
+/* Сделки: выбор места капсулами. */
+.sp-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0 8px; }
+.sp-chip {
+    min-height: 30px;
+    padding: 0 12px;
+    border-radius: 999px;
+    background: var(--strong-bg);
+    box-shadow: 0 0 0 1px var(--glass-border);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 18px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+.sp-chip:hover { background: var(--hover-bg, var(--strong-bg)); }
+.sp-chip[aria-pressed='true'] { background: var(--ink-bg, var(--text)); color: var(--ink-fg, var(--bg)); box-shadow: none; }
+.sp-time-day { min-width: 92px; }
+.sp-link { display: inline; padding: 0; color: inherit; text-decoration: underline; text-decoration-color: var(--glass-border); text-underline-offset: 2px; }
+.sp-link:hover { color: var(--text); }
+
+/* Цена модели. */
+.sp-price { display: flex; flex-direction: column; gap: 12px; }
+.sp-price-now { display: flex; flex-direction: column; gap: 2px; padding: 10px 14px; border-radius: 14px; background: var(--strong-bg); box-shadow: 0 0 0 1px var(--glass-border); }
+.sp-price-now b { font-size: 14px; line-height: 20px; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.sp-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
+.sp-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sp-field .field { width: 100%; min-width: 0; font-variant-numeric: tabular-nums; }
+
+@media (max-width: 560px) {
+    .sp-periods { min-width: 0; width: 100%; }
+    .sp-day { grid-template-columns: minmax(72px, 88px) minmax(0, 1fr) 96px; gap: 8px; }
+    .sp-time-day { min-width: 0; flex-basis: 100%; }
+    /* Сделка на телефоне: модель и деньги в одну строку (works.css переносит деньги вниз — здесь они справа). */
+    .wk-rows .wk-deal .wk-row-main { flex: 1 1 0; }
+    .sp-money { max-width: 50%; }
+}

@@ -6,12 +6,13 @@
 import { ComponentChildren, FunctionComponent } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 
-import { api, can, problemOf, sessionStore, type CatalogView } from '../api';
+import { api, can, problemOf, type CatalogView } from '../api';
 import { ask } from '../ui/confirm';
 import { tr } from '../i18n';
 import {
     IconChevronLeft,
     IconChevronRight,
+    IconGlobe,
     IconJournal,
     IconKey,
     IconLaptop,
@@ -35,6 +36,7 @@ import { JournalScreen } from './journal';
 import { StationMemoryCard } from './memory';
 import type { SettingsTab } from './mind';
 import { ModelsScreen } from './models';
+import { EgressScreen } from './egress';
 import { PlacementCard } from './placement';
 import { SettingsScreen } from './settings';
 import { MicCheck, Readiness, TalkChoice, TalkKeyChoice, useTalkChoiceHere } from './voice-input';
@@ -56,8 +58,6 @@ export const settingsPlace = (place: SettingsTab): [string, string] => {
     }
 };
 
-const isAdmin = (): boolean => can('plugins.manage') && sessionStore.get()?.role === 'admin';
-
 // ─── Настройки ───────────────────────────────────────────────────────────────
 
 interface SettingsPage {
@@ -68,6 +68,8 @@ interface SettingsPage {
     icon: Icon;
     /** Точка в списке: там что-то ждёт (новая версия). */
     dot?: boolean;
+    /** Группа списка (docs/plans/menu-scheme.md): устройство, доступ и вид, система. */
+    group: 'device' | 'access' | 'system';
     Page: FunctionComponent;
 }
 
@@ -241,19 +243,14 @@ function HistoryPage() {
     return <JournalScreen debug={panel.debug} catalog={panel.catalog} live={panel.feed.requests} stations={panel.stations} />;
 }
 
-/** «Для разработчиков»: переключатель третьего слоя и куда он ведёт. */
+/**
+ * «Для разработчиков»: переключатель третьего слоя. Он не добавляет ни кнопок в док, ни списка ярлыков: технические
+ * строки появляются на своих местах (docs/plans/menu-scheme.md) — таблица «Кто отвечает» в «Моих», ключи API в «Людях
+ * и доступе», модели в «Мозге», места разработчика в поиске ⌘K.
+ */
 function DevPage() {
-    const panel = usePanel();
     const dev = useDevMode();
     const hidden = useHiddenDevOptions();
-    const places: Array<{ title: string; sub: string; go: () => void; shown: boolean }> = [
-        { title: tr.places.workshop, sub: tr.places.workshopSub, go: () => panel.go('skills', 'workshop'), shown: isAdmin() },
-        { title: tr.places.routesTitle, sub: tr.places.routesSub, go: () => panel.go('skills', 'routes'), shown: !onComputer() },
-        { title: tr.places.modelsTitle, sub: tr.places.modelsSub, go: () => panel.go('character', 'brain'), shown: true },
-        { title: tr.places.mcpTitle, sub: tr.places.mcpSub, go: () => panel.go('skills', 'connectors'), shown: can('connectors.view') },
-        { title: tr.places.journalTitle, sub: tr.places.journalSub, go: () => panel.go('settings', 'history'), shown: can('journal.view') },
-        { title: tr.places.keysTitle, sub: tr.places.keysSub, go: () => panel.go('settings', 'access'), shown: can('users.manage') },
-    ];
     return (
         <>
             <Card id="dev" title={tr.places.devTitle}>
@@ -266,23 +263,6 @@ function DevPage() {
                 </label>
             </Card>
             {hidden && <HiddenDevOptions />}
-            {dev && (
-                <section class="card glass card-list" aria-label={tr.places.devPlaces}>
-                    <div class="w-rows">
-                        {places
-                            .filter((place) => place.shown)
-                            .map((place) => (
-                                <button key={place.title} class="w-row w-row-btn" onClick={place.go}>
-                                    <span class="flex-1 min-w-0 flex flex-col">
-                                        <span class="w-text">{place.title}</span>
-                                        <span class="w-cap">{place.sub}</span>
-                                    </span>
-                                    <IconChevronRight size={16} />
-                                </button>
-                            ))}
-                    </div>
-                </section>
-            )}
         </>
     );
 }
@@ -346,22 +326,30 @@ function HiddenDevOptions() {
     );
 }
 
+const GROUP_TITLES = (): Record<SettingsPage['group'], string> => ({
+    device: tr.places.groupDevice,
+    access: tr.places.groupAccess,
+    system: tr.places.groupSystem,
+});
+
 function settingsPages(role: string, onStation: boolean, offered: boolean): SettingsPage[] {
     return [
         // Адрес страницы прежний (`#/settings/station`); в режиме «Микрофон» она — о микрофоне.
         onComputer()
-            ? { id: 'station', title: tr.places.pageMic, sub: tr.places.pageMicSub, icon: IconMic, Page: StationPage }
-            : { id: 'station', title: tr.places.pageStation, sub: tr.places.pageStationSub, icon: IconSpeaker, Page: StationPage },
+            ? { id: 'station', title: tr.places.pageMic, sub: tr.places.pageMicSub, icon: IconMic, group: 'device' as const, Page: StationPage }
+            : { id: 'station', title: tr.places.pageStation, sub: tr.places.pageStationSub, icon: IconSpeaker, group: 'device' as const, Page: StationPage },
         ...(role === 'helper' || onStation
-            ? [{ id: 'helper', title: tr.places.helperTitle, sub: tr.places.pageHelperSub, icon: IconLaptop, Page: HelperPage }]
+            ? [{ id: 'helper', title: tr.places.helperTitle, sub: tr.places.pageHelperSub, icon: IconLaptop, group: 'device' as const, Page: HelperPage }]
             : []),
-        { id: 'access', title: tr.places.pageAccess, sub: tr.places.pageAccessSub, icon: IconKey, Page: AccessPage },
-        { id: 'look', title: tr.places.pageLook, sub: tr.places.pageLookSub, icon: IconPalette, Page: ThemeCard },
+        { id: 'access', title: tr.places.pageAccess, sub: tr.places.pageAccessSub, icon: IconKey, group: 'access', Page: AccessPage },
+        { id: 'look', title: tr.places.pageLook, sub: tr.places.pageLookSub, icon: IconPalette, group: 'access', Page: ThemeCard },
         ...(can('station.view')
-            ? [{ id: 'updates', title: tr.places.pageUpdates, sub: tr.places.pageUpdatesSub, icon: IconShield, dot: offered, Page: UpdatesPage }]
+            ? [{ id: 'updates', title: tr.places.pageUpdates, sub: tr.places.pageUpdatesSub, icon: IconShield, dot: offered, group: 'system' as const, Page: UpdatesPage }]
             : []),
-        ...(can('journal.view') ? [{ id: 'history', title: tr.places.pageHistory, sub: tr.places.pageHistorySub, icon: IconJournal, Page: HistoryPage }] : []),
-        { id: 'dev', title: tr.places.devTitle, sub: tr.places.pageDevSub, icon: IconTerminal, Page: DevPage },
+        // «Выход в интернет» (docs/plans/own-server.md): через какой свой сервер что идёт; туда же ведёт окно «VPN».
+        ...(can('connectors.view') ? [{ id: 'egress', title: tr.egress.title, sub: tr.egress.sub, icon: IconGlobe, group: 'system' as const, Page: EgressScreen }] : []),
+        ...(can('journal.view') ? [{ id: 'history', title: tr.places.pageHistory, sub: tr.places.pageHistorySub, icon: IconJournal, group: 'system' as const, Page: HistoryPage }] : []),
+        { id: 'dev', title: tr.places.devTitle, sub: tr.places.pageDevSub, icon: IconTerminal, group: 'system', Page: DevPage },
     ];
 }
 
@@ -395,9 +383,16 @@ export function SettingsSection() {
     return (
         <div class="set-split" data-view={listed ? 'list' : 'page'}>
             <nav class="set-list" aria-label={tr.places.settings}>
-                {pages.map((entry) => {
+                {pages.map((entry, at) => {
                     const { icon: PageIcon } = entry;
-                    return (
+                    // Подпись группы — над её первой страницей: «Устройство», «Доступ и вид», «Система».
+                    const head = at === 0 || pages[at - 1].group !== entry.group ? GROUP_TITLES()[entry.group] : null;
+                    return [
+                        head && (
+                            <span key={`group-${entry.group}`} class="set-group">
+                                {head}
+                            </span>
+                        ),
                         <button key={entry.id} class="set-row" aria-current={entry.id === shown.id ? 'page' : undefined} onClick={() => open(entry.id)}>
                             <span class="set-row-icon" aria-hidden="true">
                                 <PageIcon size={18} />
@@ -408,8 +403,8 @@ export function SettingsSection() {
                             </span>
                             {entry.dot && <span class="badge-dot" role="img" aria-label={tr.places.newVersion} />}
                             <IconChevronRight size={16} />
-                        </button>
-                    );
+                        </button>,
+                    ];
                 })}
             </nav>
             <div class="set-page" aria-label={shown.title}>

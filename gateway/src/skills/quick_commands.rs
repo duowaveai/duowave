@@ -547,11 +547,28 @@ pub fn choose_profile(text: &str, command: bool) -> ModelProfile {
     if command {
         return ModelProfile::Smart;
     }
-    let normalized = normalize(text);
-    if HARD_QUESTION.is_match(&normalized) || normalized.split(' ').count() >= 14 {
+    if hard(text) {
         return ModelProfile::Smart;
     }
     ModelProfile::Fast
+}
+
+/// A hard question: one of its words, or a phrase of 14 words and more.
+fn hard(text: &str) -> bool {
+    let normalized = normalize(text);
+    HARD_QUESTION.is_match(&normalized) || normalized.split(' ').count() >= 14
+}
+
+/// Why `choose_profile` gave this profile for the phrase, for the deal (src/router): «Быстрая» only for a short one;
+/// «Умная» for a command or a hard question. A phrase that is both is the command's: the rule asks that first.
+pub fn profile_reason(text: &str, profile: ModelProfile) -> crate::router::Reason {
+    use crate::router::Reason;
+    match profile {
+        ModelProfile::Fast => Reason::RuleShort,
+        ModelProfile::Smart if looks_like_command(text) => Reason::RuleCommand,
+        ModelProfile::Smart if hard(text) => Reason::RuleHard,
+        ModelProfile::Smart => Reason::RuleCommand,
+    }
 }
 
 #[cfg(test)]
@@ -820,6 +837,20 @@ mod tests {
         assert_eq!(choose_profile("как дела", false), ModelProfile::Fast);
         assert_eq!(choose_profile("почему небо голубое", false), ModelProfile::Smart);
         assert_eq!(choose_profile("включи свет", true), ModelProfile::Smart);
+    }
+
+    #[test]
+    fn says_why_the_rule_gave_its_profile() {
+        use crate::router::Reason;
+        let reason = |text: &str, command: bool| profile_reason(text, choose_profile(text, command));
+        assert_eq!(reason("как дела", false), Reason::RuleShort);
+        assert_eq!(reason("почему небо голубое", false), Reason::RuleHard);
+        let long = "как ты думаешь сколько лет может прожить обычная домашняя кошка если её хорошо кормить и лечить";
+        assert!(!looks_like_command(long));
+        assert_eq!(reason(long, false), Reason::RuleHard);
+        assert_eq!(reason("включи свет на кухне", true), Reason::RuleCommand);
+        // An answer to the command's question («На сколько?» — «На две минуты»): the short rule gave the model.
+        assert_eq!(reason("на две минуты", false), Reason::RuleShort);
     }
 
     #[test]

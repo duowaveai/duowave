@@ -1,7 +1,8 @@
 //! The English pack.
 
 use super::{
-    AnswerWords, DoingWords, EndWords, Pack, RuleWords, SayWords, SpokenUnits, StoreSay, StoreWords, Words, WorkWords,
+    AnswerWords, BackgroundWords, DoingWords, EndWords, Pack, RuleWords, SayWords, SpokenUnits, StoreSay, StoreWords,
+    Words, WorkWords,
 };
 
 pub(super) const PACK: Pack = Pack {
@@ -125,6 +126,25 @@ const WORK: WorkWords = WorkWords {
         phrase: "trying a phrase",
         docs: "reading the docs",
         journal: "reading the journal",
+    },
+    background: BackgroundWords {
+        face: "background job",
+        fine: "All right.",
+        started: "Started: {title}. I'll say when it's ready.",
+        queued: "{title}: in the queue, other jobs are running. I'll say when it's ready.",
+        paid: "This run is paid: {title}. Run it?",
+        not_run: "All right, not running it.",
+        task_started: "Begun: {title}. I'll say when it's ready.",
+        working: "{title}: running for {since}. {step}",
+        waiting_answer: "Waiting for the service to answer.",
+        ready: "{title}: ready. {summary} The details are in the panel.",
+        ready_bare: "{title}: ready. The details are in the panel.",
+        failed: "{title}: it did not work out — {why}. The details are in the panel.",
+        more_q: "Shall I tell you more?",
+        no_more: "Nothing more to tell: it's all in the panel.",
+        no_add: "This one is running already and can't be changed. Say it again if you need it different.",
+        summary_prompt: "Retell the result of the job \"{title}\" for a person: the main point first, two sentences, no more than thirty words, only what is in the data, no links or addresses. If the job is not finished or there is no data, say so in one sentence. Language: {lang}.",
+        follow_prompt: "You are finishing the background job \"{title}\". Below is what its first call returned. If the service is still working, check its progress with the reading tools and wait with the wait tool, then fetch the data. Never start anything again. When the data is there or waiting is pointless, answer in words without tools.",
     },
     say: SayWords {
         started: "Making it: {title}. About a minute. Anything else to add?",

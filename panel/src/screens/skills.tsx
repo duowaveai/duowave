@@ -1,6 +1,7 @@
-// «Навыки» — один список (docs/plans/panel-rebuild.md, этап 3): что колонка умеет и кто на что отвечает — свой или
-// Яндекс, — чего она пока не умеет (и «Научить»), подключения и программы. Глубже — память персонажей
-// (screens/recall.tsx), установленное, каталог и мастерская вторым слоем, с «‹ Навыки» назад. Персонажи и темы из каталога живут у себя: в «Персонаже» и в «Оформлении».
+// «Приложения» (docs/plans/menu-scheme.md): вкладки «Мои · MagicPlace · Подключения» (screens/apps-tabs.tsx) и «Сделать
+// своё». «Мои» — установленные плитками, внизу «Пока не умеем», что умеет колонка и вклады приложений; «Подключения» —
+// внешние сервисы и программы (MCP). Глубже — мастерская и вклады приложений, с «‹ Приложения» назад. Персонажи и темы
+// живут у себя: в «Персонаже» и в «Оформлении»; память — в «Персонаже».
 
 import { useEffect, useState } from 'preact/hooks';
 
@@ -10,6 +11,7 @@ import { IconChevronLeft, IconChevronRight } from '../icons';
 import { usePanel, useSectionTab } from '../shell/context';
 import { Contribution, useSlot } from '../shell/slot';
 import { timeAgo } from '../time';
+import { AppsTabs } from './apps-tabs';
 import { AskSheet } from './ask';
 import { PackagesTab } from './catalog';
 import { Connectors } from './connectors';
@@ -17,40 +19,39 @@ import { McpSection } from './mcp';
 import { settingsPlace } from './places';
 import { RoutesScreen } from './routes';
 import { WorkshopScreen } from './workshop';
-import { MemoryScreen } from './recall';
 import { OwnFrame } from './helper-pc';
 import { TOP_VIA } from '../via';
 import { onComputer } from '../voice-input';
 
 const isAdmin = (): boolean => can('plugins.manage') && sessionStore.get()?.role === 'admin';
 
-/**
- * Вкладки второго слоя: свой экран целиком и «‹ Навыки» назад. Остальное (список, подключения) — главная страница.
- * Каталог стал магазином MagicPlace (docs/plans/magicplace.md) — своим разделом.
- */
-const DEEPER = new Set(['memory', 'installed', 'workshop']);
+/** Вкладки второго слоя: свой экран целиком и «‹ Приложения» назад. */
+const DEEPER = new Set(['workshop']);
 
 export function SkillsSection() {
     const panel = usePanel();
-    const [tab, setTab] = useSectionTab<string>('skills', 'list');
-    // Раздел помнил вкладку «Каталог»: она теперь MagicPlace.
+    const [tab, setTab] = useSectionTab<string>('skills', 'installed');
+    // Прежние вкладки: «Каталог» стал MagicPlace, общий список — вкладкой «Мои».
     useEffect(() => {
-        if (tab !== 'catalog') return;
-        setTab('list');
-        panel.go('magicplace');
+        if (tab === 'catalog') {
+            setTab('installed');
+            panel.go('magicplace');
+        } else if (tab === 'memory') {
+            // Память переехала в «Персонаж» (docs/plans/menu-scheme.md).
+            setTab('installed');
+            panel.go('character', 'memory');
+        } else if (tab === 'list') setTab('installed');
     }, [tab]);
-    // Вкладки плагинов из слота house.tabs («Дом» был их местом) — тоже второй слой.
+    // Вкладки приложений из слота house.tabs («Дом» был их местом) — второй слой, их строки внизу «Моих».
     const extra = useSlot('house.tabs');
     const contributed = extra.find((entry) => entry.key === tab);
     if (DEEPER.has(tab) || contributed)
         return (
             <>
-                <button class="deeper-back" onClick={() => setTab('list')}>
+                <button class="deeper-back" onClick={() => setTab('installed')}>
                     <IconChevronLeft size={16} />
                     {tr.skills.back}
                 </button>
-                {tab === 'memory' && can('memory.view') && <MemoryScreen />}
-                {tab === 'installed' && <PackagesTab />}
                 {/* Мастерская — у компьютера: черновики пишутся там, ставятся на колонку (этап 4). */}
                 {tab === 'workshop' && (TOP_VIA ? <OwnFrame page="workshop" title={tr.skills.workshop} /> : <WorkshopScreen />)}
                 {contributed && (
@@ -67,47 +68,56 @@ export function SkillsSection() {
                 )}
             </>
         );
-    return <SkillsList onOpen={setTab} extra={extra.map((entry) => ({ key: entry.key, title: entry.title ?? entry.id }))} />;
-}
-
-function SkillsList({ onOpen, extra }: { onOpen: (tab: string) => void; extra: Array<{ key: string; title: string }> }) {
-    const panel = usePanel();
-    const [asking, setAsking] = useState(false);
-    const places: Array<{ key: string; title: string; sub: string; shown: boolean }> = [
-        { key: 'memory', title: tr.skills.placeMemory, sub: tr.skills.placeMemorySub, shown: can('memory.view') },
-        { key: 'installed', title: tr.skills.placeInstalled, sub: tr.skills.placeInstalledSub, shown: can('station.view') },
-        { key: 'magicplace', title: tr.skills.placeCatalog, sub: tr.skills.placeCatalogSub, shown: can('station.view') },
-        { key: 'workshop', title: tr.skills.placeWorkshop, sub: tr.skills.placeWorkshopSub, shown: isAdmin() },
-        ...extra.map((entry) => ({ key: entry.key, title: entry.title, sub: tr.skills.placeFromApp, shown: true })),
-    ];
+    const connections = tab === 'connectors' && can('connectors.view');
     return (
         <div class="skills-page">
-            <section class="card glass card-list" aria-label={tr.skills.listLabel}>
-                <div class="w-rows">
-                    {places
-                        .filter((place) => place.shown)
-                        .map((place) => (
-                            <button key={place.key} class="w-row w-row-btn" onClick={() => (place.key === 'magicplace' ? panel.go('magicplace') : onOpen(place.key))}>
+            <AppsTabs active={connections ? 'connectors' : 'mine'} />
+            {connections ? <ConnectionsTab /> : <MineTab onOpen={setTab} extra={extra.map((entry) => ({ key: entry.key, title: entry.title ?? entry.id }))} />}
+        </div>
+    );
+}
+
+/** «Мои»: установленные плитками; ниже — что колонка умеет и чего пока нет, и вклады приложений. */
+function MineTab({ onOpen, extra }: { onOpen: (tab: string) => void; extra: Array<{ key: string; title: string }> }) {
+    const panel = usePanel();
+    return (
+        <>
+            <PackagesTab />
+            {!onComputer() && <Unsupported />}
+            {/* Таблица «Что умеет колонка» — о колонке: в режиме «Микрофон» её нет. */}
+            {!onComputer() && <RoutesScreen health={panel.health} catalog={panel.catalog} title={tr.skills.speakerCan} />}
+            {extra.length > 0 && (
+                <section class="card glass card-list" aria-label={tr.skills.fromApps}>
+                    <div class="card-head">
+                        <h2 class="t-title-xs m-0">{tr.skills.fromApps}</h2>
+                    </div>
+                    <div class="w-rows">
+                        {extra.map((entry) => (
+                            <button key={entry.key} class="w-row w-row-btn" onClick={() => onOpen(entry.key)}>
                                 <span class="flex-1 min-w-0 flex flex-col">
-                                    <span class="w-text">{place.title}</span>
-                                    <span class="w-cap">{place.sub}</span>
+                                    <span class="w-text">{entry.title}</span>
+                                    <span class="w-cap">{tr.skills.placeFromApp}</span>
                                 </span>
                                 <IconChevronRight size={16} />
                             </button>
                         ))}
-                </div>
-            </section>
-            {/* Таблица «Что умеет колонка» и её «Пока не умеем» — о колонке: в режиме «Микрофон» их нет. */}
-            {!onComputer() && <RoutesScreen health={panel.health} catalog={panel.catalog} title={tr.skills.speakerCan} />}
-            {!onComputer() && <Unsupported />}
-            {can('connectors.view') && (
-                <>
-                    <Connectors onOpenSettings={(place) => panel.go(...settingsPlace(place))} openId={panel.openConnector} onOpened={panel.connectorOpened} />
-                    <McpSection onAsk={() => setAsking(true)} />
-                    {asking && <AskSheet onClose={() => setAsking(false)} />}
-                </>
+                    </div>
+                </section>
             )}
-        </div>
+        </>
+    );
+}
+
+/** «Подключения»: внешние сервисы (Home Assistant, Telegram…) и программы для агента (MCP). */
+function ConnectionsTab() {
+    const panel = usePanel();
+    const [asking, setAsking] = useState(false);
+    return (
+        <>
+            <Connectors onOpenSettings={(place) => panel.go(...settingsPlace(place))} openId={panel.openConnector} onOpened={panel.connectorOpened} />
+            <McpSection onAsk={() => setAsking(true)} />
+            {asking && <AskSheet onClose={() => setAsking(false)} />}
+        </>
     );
 }
 

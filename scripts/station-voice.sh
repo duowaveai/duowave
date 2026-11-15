@@ -9,9 +9,9 @@
 #
 # Over ssh (STATION_SSH: an ssh alias or root@<station>, `station` by default; STATION_SSH_PORT when the port is not in
 # ~/.ssh/config — the wiki's dropbear listens on 2222) it does what the panel's «Подключить колонку» does: puts
-# station-client/voice.sh, the boot script's source and restore.sh into /data/opt/duowave, then voice.sh points the
-# voice through our copy of quasar.cfg mounted over the firmware's own — that file is never changed (a reset of the
-# station or an update of its firmware leaves the usual Alice) — and only then the station reboots.
+# station-client/voice.sh, the boot script's source, restore.sh and uninstall.sh into /data/opt/duowave, then voice.sh
+# points the voice through our copy of quasar.cfg mounted over the firmware's own — that file is never changed (a reset
+# of the station or an update of its firmware leaves the usual Alice) — and only then the station reboots.
 #
 # Before 08.11.2026 the gateway rewrote the firmware's own file. `legacy-yandex` puts Yandex's addresses back into it
 # (a dated copy first, the result checked, the copy back otherwise), the one time our tools still write that file.
@@ -49,10 +49,11 @@ ask() {
     fi
 }
 
-# voice.sh, the boot script's source and restore.sh, from this repository (station-client/restore.sh is the gateway's
-# own restore_script(), checked by its tests): the same files the panel writes, whatever gateway runs now.
+# voice.sh, the boot script's source, restore.sh and uninstall.sh, from this repository (station-client/restore.sh
+# and uninstall.sh are the gateway's own restore_script() and uninstall_script(), checked by its tests): the same files
+# the panel writes, whatever gateway runs now.
 deliver() {
-    for name in voice.sh S95duowave restore.sh; do
+    for name in voice.sh S95duowave restore.sh uninstall.sh; do
         on_station "mkdir -p $DIR && cat > $DIR/$name.new && chmod 755 $DIR/$name.new && mv -f $DIR/$name.new $DIR/$name" \
             <"$HERE/station-client/$name"
     done

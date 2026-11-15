@@ -55,6 +55,9 @@ import frame from './frame';
 import media from './media';
 import share from './share';
 import cloudVoices from './cloudVoices';
+import router from './router';
+import country from './country';
+import egress from './egress';
 
 const en: Translation<Messages> = {
     common,
@@ -110,6 +113,9 @@ const en: Translation<Messages> = {
     media,
     share,
     cloudVoices,
+    router,
+    country,
+    egress,
 };
 
 export default en;

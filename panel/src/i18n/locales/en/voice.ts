@@ -34,6 +34,10 @@ const en: Translation<typeof ru> = {
     chipAgain: 'make another…',
 
     // flow.tsx
+    resultChip: 'Result',
+    resultRetold: 'Retold',
+    resultData: 'What came',
+    resultClose: 'Close',
     failedHead: 'Failed',
     failedNote: (title: string) => `“${title}”: see what happened in the workshop.`,
     deleteDraftTitle: 'Delete the draft?',

@@ -369,11 +369,33 @@ pub trait HostServices: Send + Sync {
     fn weather_place(&self) -> Option<String>;
     /// The news feeds switched on in the panel: `[{url, topic}]`.
     fn news_feeds(&self) -> Vec<Value>;
+    /// The household's country (`system/home` → `country`): an ISO code, None when the household did not say.
+    fn home_country(&self) -> Option<String> {
+        None
+    }
+    /// An app's connections to the internet through its own servers (`system/network` → `connections`, src/egress):
+    /// all of them now, `{items: [{id, name, country, url, state, current}]}`.
+    fn network_connections(&self, caller: &str, input: Value) -> Result<Value, String> {
+        let _ = (caller, input);
+        Err(crate::tr!("выхода в интернет через свои серверы здесь нет"))
+    }
     /// Said aloud by a station without a request, for the plugin `caller` (`system/voice`): whether it was said —
     /// no station on the line, nothing is.
     fn say(&self, caller: &str, text: String, device: Option<String>) -> BoxFuture<'static, Result<bool, String>> {
         let _ = (caller, text, device);
         Box::pin(async { Ok(false) })
+    }
+    /// The app `caller` plays by itself on a station, stands paused or stopped (`system/player` → `playing`): the
+    /// device it is kept for. Its start pauses the station's own player; while it plays, the player's voice commands
+    /// go to it.
+    fn playing(
+        &self,
+        caller: &str,
+        state: String,
+        device: Option<String>,
+    ) -> BoxFuture<'static, Result<String, String>> {
+        let _ = (caller, state, device);
+        Box::pin(async { Err(crate::tr!("плеера колонки здесь нет")) })
     }
     /// A message to the owner from the plugin `caller` (`system/notify`, plugins/schedule.rs).
     fn notify(&self, caller: &str, text: String) -> BoxFuture<'static, Result<Value, String>> {
@@ -434,6 +456,12 @@ pub trait HostServices: Send + Sync {
     fn recognize(&self, caller: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
         let _ = (caller, input);
         Box::pin(async { Err("слуха здесь нет".to_string()) })
+    }
+    /// The plugin's long tasks (`host.tasks.*`, plugins/task_pump.rs): `start` (with a `step` the gateway calls
+    /// until it says `done`), `progress`, `done`, `fail`, `get`.
+    fn tasks(&self, caller: &str, action: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
+        let _ = (caller, action, input);
+        Box::pin(async { Err(crate::tr!("долгих задач здесь нет")) })
     }
     /// The plugin's own schedule (`system/schedule`, plugins/schedule.rs): `set`, `list`, `cancel`, `parse`.
     fn schedule(&self, caller: &str, action: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
@@ -579,7 +607,27 @@ pub fn storage_used(db: &Db, plugin: &str) -> u64 {
 
 impl HostApi for PluginHostApi {
     fn fetch(&self, request: Value) -> BoxFuture<'static, Result<Value, String>> {
-        fetch_checked(self.manifest.hosts(), &request, self.handle.clone())
+        let call = fetch_checked(self.manifest.hosts(), &request, self.handle.clone());
+        let id = self.id.clone();
+        let host = request.get("url").and_then(Value::as_str).and_then(crate::egress::registry::host_of);
+        Box::pin(async move {
+            let result = call.await;
+            // «Выход в интернет» learns what does not open directly from here (src/egress, `note_failure`).
+            let why = match &result {
+                Ok(answer) => answer
+                    .get("status")
+                    .and_then(Value::as_u64)
+                    .filter(|status| *status == 403 || *status == 451)
+                    .map(|status| status.to_string()),
+                Err(error) if error.contains("timed out") || error.contains("timeout") => Some("timeout".to_string()),
+                Err(error) if error.contains("reset") => Some("reset".to_string()),
+                Err(_) => None,
+            };
+            if let (Some(why), Some(host), Some(egress)) = (why, host, crate::egress::service()) {
+                let _ = tokio::task::spawn_blocking(move || egress.note_failure(&id, &host, &why)).await;
+            }
+            result
+        })
     }
 
     fn kv_get(&self, key: &str) -> Result<Option<Value>, String> {
@@ -722,6 +770,9 @@ impl HostApi for PluginHostApi {
                 let max = crate::plugins::files::FILE_MAX as usize;
                 let bytes = download_checked(manifest.hosts(), &url, max, handle).await?;
                 return services.files(&id, "put", input, Some(bytes)).await;
+            }
+            if let Some(action) = name.strip_prefix("tasks.") {
+                return services.tasks(&id, action, input).await;
             }
             if name.starts_with("bus.") || name.starts_with("folders.") {
                 let letter = services.bus(&id, &name, input, trail).ok_or_else(|| crate::tr!("шины здесь нет"))?;

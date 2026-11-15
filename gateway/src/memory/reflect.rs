@@ -35,6 +35,7 @@ use crate::dialog::brain::BrainService;
 use crate::dialog::llm::{LlmEvent, LlmMessage, LlmRequest};
 use crate::dialog::{BrainSource, ModelSlot};
 use crate::platform::http::ApiError;
+use crate::router::{Answerer, Outcome, Reason, Seat, Tally as Spending};
 use crate::settings::definitions::{
     MemoryModel, MEMORY_MODEL, MEMORY_REFLECTION, MEMORY_REFLECTION_DAY, MEMORY_REFLECTION_ORDER,
 };
@@ -185,11 +186,18 @@ pub struct Reflection {
     memory: Arc<MemoryService>,
     settings: Arc<SettingsService>,
     model: Arc<dyn NightModel>,
+    /// Where the night's spending goes: each answer of the model is a deal on the memory's seat (src/router).
+    usage: std::sync::OnceLock<crate::router::UsageSink>,
 }
 
 impl Reflection {
     pub fn new(memory: Arc<MemoryService>, settings: Arc<SettingsService>, model: Arc<dyn NightModel>) -> Reflection {
-        Reflection { memory, settings, model }
+        Reflection { memory, settings, model, usage: std::sync::OnceLock::new() }
+    }
+
+    /// Where the model's spending goes from now on (the gateway's deals).
+    pub fn attach_usage(&self, usage: crate::router::UsageSink) {
+        let _ = self.usage.set(usage);
     }
 
     pub fn enabled(&self) -> bool {
@@ -289,7 +297,10 @@ impl Reflection {
                 }
             };
             let (system, user) = prompt(&input);
-            let answer = match ask(&slot, system, user, night.cancel.clone()).await {
+            // Each answer of the model is a deal on the memory's seat, by what stands there for it.
+            let asked = Answerer::of(&slot, Seat::Memory, Reason::Seat);
+            let spending = Spending::new(self.usage.get().cloned(), "", asked);
+            let answer = match ask(&slot, &spending, system, user, night.cancel.clone()).await {
                 Ok(answer) => answer,
                 Err(error) => {
                     broke = Some(crate::tr!(
@@ -1047,23 +1058,41 @@ fn check(plan: &Value, input: &Input, budget: &mut usize) -> Checked {
     checked
 }
 
-/// Asks the model once and takes its whole answer.
-async fn ask(slot: &ModelSlot, system: String, user: String, cancel: CancellationToken) -> anyhow::Result<String> {
+/// Asks the model once and takes its whole answer; what it spent goes to the tally.
+async fn ask(
+    slot: &ModelSlot,
+    spending: &Spending,
+    system: String,
+    user: String,
+    cancel: CancellationToken,
+) -> anyhow::Result<String> {
     let request = LlmRequest {
         system,
         messages: vec![LlmMessage::User(user)],
         model: Some(slot.model.clone()),
         ..LlmRequest::default()
     };
-    let mut stream = slot.client.stream(request, cancel);
+    spending.asking();
+    let mut stream = slot.client.stream(request, cancel.clone());
     let (mut text, mut whole) = (String::new(), None);
     while let Some(event) = stream.next().await {
-        match event? {
+        let event = match event {
+            Ok(event) => event,
+            Err(error) => {
+                spending.failed(&error, Some(&cancel));
+                return Err(error);
+            }
+        };
+        match event {
             LlmEvent::Text(piece) => text.push_str(&piece),
-            LlmEvent::Turn(turn) => whole = Some(turn.content),
+            LlmEvent::Turn(turn) => {
+                spending.round(spending.asked(), turn.usage.as_ref());
+                whole = Some(turn.content)
+            }
             LlmEvent::Tool(_) => {}
         }
     }
+    spending.end(Outcome::Ok);
     Ok(whole.filter(|whole| !whole.trim().is_empty()).unwrap_or(text))
 }
 
@@ -1288,9 +1317,25 @@ mod tests {
         );
         assert_eq!(SleepPart::work(&reflection), Ok(()));
         assert!(!SleepPart::enabled(&reflection), "off until the owner turns it on");
+        // Each answer of the model is a deal on the memory's seat (src/router).
+        let deals = Arc::new(Mutex::new(Vec::new()));
+        let heard = deals.clone();
+        reflection.attach_usage(Arc::new(move |usage: crate::router::Usage<'_>| {
+            if let crate::router::Usage::Answer(spent) = usage {
+                heard.lock().unwrap().push(spent.clone());
+            }
+        }));
 
         let report = reflection.run(&night("r1")).await;
         assert_eq!(report.state, PartState::Done, "{report:?}");
+        {
+            let deals = deals.lock().unwrap();
+            assert_eq!(deals.len(), model.asked.lock().unwrap().len(), "one deal per answer: {deals:?}");
+            let first = &deals[0];
+            assert_eq!((first.by.seat, first.by.reason), (crate::router::Seat::Memory, crate::router::Reason::Seat));
+            assert_eq!((first.by.model.as_str(), first.by.cloud, first.rounds), ("test-model", false, 1));
+            assert_eq!(first.outcome, crate::router::Outcome::Ok);
+        }
         assert!(report.summary.starts_with("Обдумала 2 разговора: 6 перемен, итог дня за"), "{}", report.summary);
         assert!(report.lines.contains(&"Склеено повторов: 1.".to_string()), "{:?}", report.lines);
         assert!(report.lines.contains(&"Дневник: Алиса.".to_string()), "{:?}", report.lines);

@@ -235,6 +235,13 @@ impl History {
                 if gone {
                     cleaned.records += line.len();
                     self.store().forget_app(&app);
+                    // Its data went for good: so do its own settings, kept after the removal so that an app
+                    // installed again found its rules (app_settings; docs/plans/own-server.md, decision 14).
+                    if let Some(settings) = self.settings() {
+                        if let Err(error) = settings.forget_app(&app) {
+                            tracing::warn!(target: "plugins", "history: {app}: its settings stay: {}", error.message);
+                        }
+                    }
                     cleaned.apps_gone.push(app.clone());
                     continue;
                 }

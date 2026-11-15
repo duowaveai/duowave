@@ -19,6 +19,7 @@ const WIKI_SSH = 'https://hackalice.me/start/ssh/';
 
 const stepLabels = (): Record<ConnectStepId, string> => ({
     copy: tr.connect.stepCopy,
+    remove: tr.connect.uninstallRemove,
     write: tr.connect.stepWrite,
     verify: tr.connect.stepVerify,
     reboot: tr.connect.stepReboot,
@@ -29,6 +30,12 @@ const restoreLabels = (): Partial<Record<ConnectStepId, string>> => ({
     write: tr.connect.restoreWrite,
     verify: tr.connect.restoreVerify,
     reboot: tr.connect.restoreReboot,
+});
+
+const uninstallLabels = (): Partial<Record<ConnectStepId, string>> => ({
+    remove: tr.connect.uninstallRemove,
+    verify: tr.connect.uninstallVerify,
+    reboot: tr.connect.uninstallReboot,
 });
 
 /** Адрес шлюза, каким его видит колонка: адрес страницы, если он домашний; иначе его вводят. */
@@ -639,8 +646,28 @@ export function ConnectSheet({
     );
 }
 
-/** «Вернуть к Яндексу»: прежние адреса голосового сервера и перезагрузка — по подтверждению. */
-export function RestoreSheet({ address, name, onClose }: { address: string; name: string; onClose: () => void }) {
+/** «Вернуть к Яндексу»: прежние адреса голосового сервера и перезагрузка — по подтверждению. DuoWave остаётся. */
+export function RestoreSheet(props: { address: string; name: string; onClose: () => void }) {
+    return <WayBackSheet {...props} mode="restore" />;
+}
+
+/** «Удалить DuoWave с колонки»: uninstall.sh по SSH, проверка, что ничего нашего не осталось, перезагрузка. */
+export function UninstallSheet(props: { address: string; name: string; onClose: () => void }) {
+    return <WayBackSheet {...props} mode="uninstall" />;
+}
+
+function WayBackSheet({
+    address,
+    name,
+    onClose,
+    mode,
+}: {
+    address: string;
+    name: string;
+    onClose: () => void;
+    mode: 'restore' | 'uninstall';
+}) {
+    const removing = mode === 'uninstall';
     const [job, setJob] = useState<ConnectJob | null>(null);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -659,7 +686,7 @@ export function RestoreSheet({ address, name, onClose }: { address: string; name
         setBusy(true);
         setError(null);
         try {
-            setJob(await api.restoreStation(address));
+            setJob(await (removing ? api.uninstallStation(address) : api.restoreStation(address)));
         } catch (e) {
             setError(problemOf(e));
         } finally {
@@ -669,15 +696,15 @@ export function RestoreSheet({ address, name, onClose }: { address: string; name
 
     return (
         <Sheet
-            title={tr.connect.restoreTitle}
+            title={removing ? tr.connect.uninstallTitle : tr.connect.restoreTitle}
             about={`${name} · ${address}`}
             onClose={onClose}
             dismissable={job?.status !== 'running'}
             footer={
                 !job ? (
                     <div class="dash-actions">
-                        <button class="dash-done" disabled={busy} onClick={() => void start()}>
-                            {busy ? tr.connect.starting : tr.connect.restore}
+                        <button class={removing ? 'dash-done danger' : 'dash-done'} disabled={busy} onClick={() => void start()}>
+                            {busy ? tr.connect.starting : removing ? tr.connect.uninstall : tr.connect.restore}
                         </button>
                         <button class="pill pill-off dash-wide" disabled={busy} onClick={onClose}>
                             {tr.connect.cancel}
@@ -692,19 +719,22 @@ export function RestoreSheet({ address, name, onClose }: { address: string; name
         >
             {!job ? (
                 <p class="t-meta m-0 c-text">
-                    {tr.connect.restoreText}
+                    {removing ? tr.connect.uninstallText : tr.connect.restoreText}
                 </p>
             ) : (
-                <Steps job={job} labels={restoreLabels()} />
+                <Steps job={job} labels={removing ? uninstallLabels() : restoreLabels()} />
             )}
             {job?.status === 'failed' && (
                 <p role="alert" class="t-meta m-0 c-text">
-                    {problemText(job.error)} {tr.connect.withoutGateway} <code>ssh -p 2222 root@{address} sh /data/opt/duowave/restore.sh</code>
+                    {problemText(job.error)} {tr.connect.withoutGateway}{' '}
+                    <code>
+                        ssh -p 2222 root@{address} sh /data/opt/duowave/{removing ? 'uninstall.sh' : 'restore.sh'}
+                    </code>
                 </p>
             )}
             {job?.status === 'done' && (
                 <p class="t-meta m-0 c-text">
-                    {tr.connect.restoreDone}
+                    {removing ? tr.connect.uninstallDone : tr.connect.restoreDone}
                 </p>
             )}
             {error && (

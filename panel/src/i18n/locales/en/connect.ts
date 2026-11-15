@@ -11,6 +11,9 @@ const en: Translation<typeof ru> = {
     restoreWrite: 'The previous voice server addresses',
     restoreVerify: 'Check: the speaker reads what is intended',
     restoreReboot: 'Rebooting the speaker',
+    uninstallRemove: 'Voice back to Yandex, the gateway and call client on the speaker stopped, our files removed',
+    uninstallVerify: 'Check: nothing of DuoWave is left on the speaker',
+    uninstallReboot: 'Rebooting the speaker',
     problemNoSsh: 'SSH on the speaker does not respond (port 2222). First get root and SSH from the hackalice wiki, step 2.',
     problemNoConfig: 'The speaker has no quasar.cfg where the gateway expects it: it does not know this model yet.',
     problemHostKeyChanged: 'The speaker’s SSH key is not the one seen before: it is another speaker at the same address, or it was reflashed. The gateway stopped without changing anything.',
@@ -118,9 +121,14 @@ const en: Translation<typeof ru> = {
     restoreTitle: 'Return to Yandex',
     starting: 'Starting…',
     restore: 'Return',
-    restoreText: 'The gateway will sign in to the speaker over SSH, put the previous addresses back on the voice server, the ones from before the gateway, and reboot it. The speaker will work with Yandex directly, without the gateway.',
+    restoreText: 'The gateway will sign in to the speaker over SSH, put the previous addresses back on the voice server, the ones from before the gateway, and reboot it. The speaker will work with Yandex directly, without the gateway. DuoWave stays on the speaker: you can connect it again with one button, or take it off completely with “Remove DuoWave from the speaker”.',
     withoutGateway: 'Without the gateway:',
     restoreDone: 'Done: the speaker is rebooting and will return to Yandex.',
+    uninstallTitle: 'Remove DuoWave from the speaker',
+    uninstall: 'Remove',
+    uninstallText:
+        'The gateway will sign in to the speaker over SSH and remove everything DuoWave put there: it returns the voice to Yandex, stops the gateway and the call client on the speaker, deletes their files and the speaker gateway’s data, then reboots it. The speaker becomes the usual Alice, as before DuoWave. You can connect it again with “Connect a speaker”.',
+    uninstallDone: 'Done: DuoWave is removed, the speaker is rebooting and will come back as the usual Alice.',
 };
 
 export default en;

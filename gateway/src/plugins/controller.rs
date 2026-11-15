@@ -13,6 +13,8 @@
 //!   does not start gives way to the one that last did (kept in the database).
 //! - What the plugins that are on give is rebuilt on every change: their phrases (the router asks `matched`), their
 //!   tools (`tool_contributions`), their media sources.
+//! - An app that says `resident` runs the whole time it is switched on: started at once and on every tick it is not,
+//!   never unloaded for idling (a receiver a phone finds by itself, AirPlay).
 //! - The safe mode (PLUGINS_DISABLED=1) runs none of it, whatever is switched on.
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -477,6 +479,7 @@ impl PluginHost {
                 ticks.tick().await;
                 let Some(host) = me.upgrade() else { return };
                 host.unload_idle();
+                host.keep_residents();
             }
         }));
         let me = Arc::downgrade(self);
@@ -969,6 +972,11 @@ impl PluginHost {
         self.apps_engine.set_files_root(root);
     }
 
+    /// Where a starting app learns the station's name (`DUOWAVE_STATION_NAME`): a receiver shows itself by it.
+    pub fn set_station_name(&self, name: crate::apps::supervisor::StationName) {
+        self.apps_engine.set_station_name(name);
+    }
+
     /// The address the gateway's server listens on: what a starting app is told (src/apps).
     pub fn set_gateway_url(&self, url: String) {
         self.apps_engine.set_gateway_url(url);
@@ -1325,6 +1333,34 @@ impl PluginHost {
         }
     }
 
+    /// The apps that say `resident`, switched on and made for this placement, whose program is not loaded: started in
+    /// the background — at the gateway's start (the first tick), after a reload or an unload. One the supervisor gave
+    /// up on is switched off and stays so.
+    fn keep_residents(&self) {
+        if self.config.disabled {
+            return;
+        }
+        let here = self.placement_now();
+        for plugin in self.list() {
+            let Some(package) = plugin.active() else { continue };
+            if !package.manifest.resident || !package.manifest.runs.contains(&here) {
+                continue;
+            }
+            // Loaded, or loading now (its slot is held).
+            match plugin.slot.try_lock() {
+                Ok(slot) if slot.is_none() => {}
+                _ => continue,
+            }
+            let me = self.me.clone();
+            tokio::spawn(async move {
+                let Some(host) = me.upgrade() else { return };
+                if let Err(error) = host.instance(&plugin).await {
+                    tracing::warn!(target: "plugins", "{}: not started — {error}", plugin.id);
+                }
+            });
+        }
+    }
+
     /// Unloads the code of plugins idle longer than PLUGINS_IDLE_UNLOAD_S; one in a call is not idle.
     fn unload_idle(&self) {
         self.unload_idle_for(self.config.idle_unload_s * 1000);
@@ -1336,6 +1372,10 @@ impl PluginHost {
         for plugin in self.list() {
             let idle_for = now.saturating_sub(plugin.used.load(Ordering::Relaxed));
             if idle_for < idle || plugin.busy.load(Ordering::Relaxed) > 0 {
+                continue;
+            }
+            // An app that runs the whole time it is on: no call is its usual life.
+            if plugin.active().is_some_and(|package| package.manifest.resident) {
                 continue;
             }
             // An app at a long task is at work, though nobody calls it (src/tasks).
@@ -2206,6 +2246,12 @@ impl PluginHost {
                             // through the model, which may be in the cloud.
                             let trail =
                                 crate::bus::Trail::principal(&context.principal).through_model(host.model_in_cloud());
+                            // A long task the app begins while it answers is this conversation's: its «Готово» is
+                            // said where the phrase was (docs/plans/long-tools.md, point 4).
+                            let _calling = context
+                                .origin
+                                .clone()
+                                .and_then(|origin| host.long_tasks.get().map(|tasks| tasks.calling(&plugin, origin)));
                             let answer =
                                 trail.scope(host.call(&plugin, &handler, Value::Object(input), CallKind::Tool)).await?;
                             Ok(host.act(&plugin, capability, answer, context.station.as_ref()))

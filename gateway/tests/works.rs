@@ -351,7 +351,10 @@ async fn the_journal_and_the_work_tell_what_the_model_spent_and_a_spoken_answer_
     let request = &journal["requests"][0];
     assert_eq!(
         request["tokens"],
-        json!({ "input": 100, "output": 20, "cacheRead": 80, "cacheWrite": 0, "rounds": 1, "model": "test-llm" }),
+        json!({
+            "input": 100, "output": 20, "cacheRead": 80, "cacheWrite": 0, "rounds": 1, "model": "test-llm",
+            "seat": "fast", "billing": "local", "usdMicro": 0
+        }),
         "{request}"
     );
     // Step 6: where the phrase came from — typed on the computer, by the person signed in.
@@ -370,6 +373,15 @@ async fn the_journal_and_the_work_tell_what_the_model_spent_and_a_spoken_answer_
         json!({ "input": 200, "output": 40, "cacheRead": 160, "cacheWrite": 0, "rounds": 2 }),
         "{work}"
     );
+    // The router's deals (src/router): the agent's run is one deal on the workshop's seat, with its work and its
+    // rounds summed (the input without the cache); the conversation's answers are on «Быстрая», with their requests.
+    let listed = message(gateway.get("/api/v1/router/deals").signed(&admin), StatusCode::OK).await;
+    let deals = listed["deals"].as_array().unwrap();
+    let agent: Vec<&Value> = deals.iter().filter(|deal| deal["seat"] == "workshop").collect();
+    assert_eq!(agent.len(), 1, "{listed}");
+    assert_eq!((agent[0]["work"].as_str(), agent[0]["rounds"].as_u64()), (Some("1"), Some(2)), "{listed}");
+    assert_eq!(agent[0]["tokens"], json!({ "input": 40, "output": 40, "cacheRead": 160, "cacheWrite": 0 }));
+    assert!(deals.iter().filter(|deal| deal["seat"] == "fast").all(|deal| deal["request"].is_string()), "{listed}");
     gateway.stop().await;
 }
 
@@ -768,5 +780,77 @@ async fn the_closed_window_takes_an_answer_and_more_and_lets_go_of_the_rest() {
     // Answered: the next phrase without the button is not the brain's any more.
     let after = in_window(&gateway, &admin, "А завтра?", "question").await;
     assert_eq!(after["dropped"], true, "{after}");
+    gateway.stop().await;
+}
+
+/// The page «Работы» (docs/plans/router-and-works.md, decision 17, stage 6а): the list says where each work stands —
+/// going, waiting in the queue and why, asking, recent — a question is answered by a button as by voice, and a work
+/// has its deals and the model that answered it.
+#[tokio::test]
+async fn the_page_of_works_groups_them_says_why_one_waits_and_answers_a_question_by_a_button() {
+    let llm = ChatStub::start().await;
+    llm.set_responder(|request| by_agent(request).then(|| agent_made_after(request, "Сделано.", 1200)));
+    let (gateway, admin) = with_brain(&llm).await;
+    gateway.app.talk.works().set_at_once(1);
+
+    assert!(talk(&gateway, &admin, "Сделай виджет: часы").await.starts_with("Делаю: часы."));
+    assert_eq!(talk(&gateway, &admin, "Сделай виджет: погода").await, "Сейчас делается другое — начну следом: погода.");
+    let going = works(&gateway, &admin, "?group=going").await;
+    assert_eq!(going.len(), 1, "{going:?}");
+    assert_eq!((going[0]["id"].clone(), going[0]["group"].clone()), (json!("1"), json!("going")));
+    let queued = works(&gateway, &admin, "?group=queued").await;
+    assert_eq!(queued.len(), 1, "{queued:?}");
+    assert_eq!(queued[0]["id"], "2");
+    assert_eq!(queued[0]["wait"], json!({ "why": "busy", "ahead": 0 }), "one goes on at once: it waits for its place");
+    assert_eq!(works(&gateway, &admin, "?group=going,queued").await.len(), 2);
+    assert_eq!(works(&gateway, &admin, "").await.len(), 2, "no group — all, as before");
+    let (status, _) = support::send(gateway.get("/api/v1/works?group=soon").signed(&admin)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // The clock is ready and asks; the weather left the queue by itself.
+    assert!(until(10_000, || gateway.app.talk.works().get("1").is_some_and(|work| work.result.is_some())).await);
+    let asking = works(&gateway, &admin, "?group=asking").await;
+    assert_eq!(asking.iter().map(|work| work["id"].clone()).collect::<Vec<_>>(), [json!("1")], "{asking:?}");
+    assert_eq!(asking[0]["result"]["line"], "Часы: готово. На стол или примерить?");
+    let (status, _) = support::send(
+        gateway.post("/api/v1/works/2/do").signed(&admin).json(&json!({ "action": "answer", "answer": "yes" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "a work going on asks nothing");
+    let (status, _) = support::send(
+        gateway.post("/api/v1/works/1/do").signed(&admin).json(&json!({ "action": "answer", "answer": "maybe" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // «На стол» on the page: the same as «да» said aloud, without the model.
+    let asked = llm.requests().len();
+    let yes = message(
+        gateway.post("/api/v1/works/1/do").signed(&admin).json(&json!({ "action": "answer", "answer": "yes" })),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(yes["said"], "На столе.");
+    let draft = gateway.app.talk.works().get("1").unwrap().target.unwrap();
+    assert!(gateway.app.workshop.host().installed(&draft).is_some(), "the thing is on the desk");
+    assert!(
+        llm.requests()[asked..].iter().all(by_agent),
+        "the answer was the layer's: only the second work's agent asked the model"
+    );
+    let clock = message(gateway.get("/api/v1/works/1").signed(&admin), StatusCode::OK).await;
+    assert_eq!(clock["group"], "recent", "{clock}");
+    assert!(works(&gateway, &admin, "?group=asking").await.is_empty());
+
+    // The clock's deals: the agent's answer on the workshop's seat, by the stub's model; the work says the same.
+    let deals = message(gateway.get("/api/v1/works/1/deals").signed(&admin), StatusCode::OK).await;
+    let deals = deals["deals"].as_array().cloned().unwrap_or_default();
+    assert!(!deals.is_empty(), "the agent's answer is a deal of the work");
+    assert!(deals.iter().all(|deal| deal["work"] == "1" && deal["seat"] == "workshop"), "{deals:?}");
+    assert_eq!(clock["model"]["model"], "test-llm", "{clock}");
+    assert_eq!(clock["spent"]["deals"], json!(deals.len()), "{clock}");
+    let recent = works(&gateway, &admin, "?group=recent").await;
+    assert_eq!(recent[0]["id"], "1");
+    let (status, _) = support::send(gateway.get("/api/v1/works/99/deals").signed(&admin)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
     gateway.stop().await;
 }

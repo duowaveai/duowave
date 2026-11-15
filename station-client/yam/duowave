@@ -2,7 +2,9 @@
 # duowave — this station and the voice gateway, from the station's own shell (the YAM package duowave/gateway).
 #   duowave connect <gateway>[:port]    the station's voice to the gateway: our copy of quasar.cfg mounted over the
 #                                       firmware's own (which stays as it is), restore.sh, a reboot
-#   duowave restore                     back to how it was before the gateway (the firmware's own config), a reboot
+#   duowave restore                     the voice back to Yandex (the firmware's own config), a reboot; DuoWave stays
+#   duowave uninstall [--keep-data]     DuoWave off the station: the voice back, the gateway and the call client
+#                                       stopped and gone, /data/opt/duowave gone, a reboot; then yam remove duowave/gateway
 #   duowave status                      where the station's voice goes now, our copy, and the way back
 #   duowave client install <gateway>    the call client, started with the station
 #   duowave client remove               the call client gone
@@ -31,7 +33,7 @@ CFG=/system/vendor/quasar/quasar.cfg
 STATE=/data/opt/duowave
 
 usage() {
-    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
 }
 
@@ -65,9 +67,16 @@ case "${1:-}" in
         echo "back to the firmware's own voice server; rebooting"
         exec reboot
         ;;
+    uninstall)
+        shift
+        # The station's own uninstall.sh, else the package's copy (the same text). The station's goes with
+        # /data/opt/duowave as it runs: sh has it open already, so it runs to the end.
+        if [ -f "$STATE/uninstall.sh" ]; then exec sh "$STATE/uninstall.sh" "$@"; fi
+        exec sh "$HERE/uninstall.sh" "$@"
+        ;;
     status)
         sh "$HERE/voice.sh" status
-        echo "the way back: duowave restore"
+        echo "the way back: duowave restore (the voice only), duowave uninstall (DuoWave off the station)"
         if [ -f "$STATE/gateway.sh" ]; then sh "$STATE/gateway.sh" status; else echo "gateway: not installed (duowave gateway install)"; fi
         if [ -f /etc/init.d/S99zduowave ]; then echo "call client: installed, gateway $(cat "$STATE/gateway" 2>/dev/null || echo '?')"; else echo "call client: not installed"; fi
         ;;

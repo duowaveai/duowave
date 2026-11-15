@@ -17,7 +17,7 @@ use super::quasar_config::{
     gateway_addresses, parse_gateway_host, points_to, read_config, with_addresses, yandex, GatewayHost, PointsTo,
     StationFacts, VoiceAddresses,
 };
-use super::station_scripts::{copy_state, deliveries, switch_to, CopyState, STEPS};
+use super::station_scripts::{copy_state, deliveries, switch_to, uninstall_script, CopyState, STEPS};
 use super::station_shell::{HostKeyChanged, ShellError, ShellOpener, ShellOptions, StationShell};
 use crate::core::events::{Actor, EventBus, GatewayEvent};
 use crate::operations::networks::in_networks;
@@ -105,6 +105,8 @@ pub struct StationCheck {
 #[serde(rename_all = "lowercase")]
 pub enum StepId {
     Copy,
+    /// uninstall.sh: DuoWave off the station.
+    Remove,
     Write,
     Verify,
     Reboot,
@@ -126,6 +128,8 @@ pub enum StepState {
 pub enum JobKind {
     Connect,
     Restore,
+    /// «Удалить DuoWave с колонки».
+    Uninstall,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -430,6 +434,16 @@ impl StationConnectService {
         Ok(job)
     }
 
+    /// «Удалить DuoWave с колонки»: uninstall.sh over SSH — the voice back to Yandex, the station's gateway and call
+    /// client stopped and gone, our files off it — then a check that nothing of ours is left, then a reboot.
+    pub fn uninstall(self: &Arc<Self>, address: &str, actor: Option<Actor>) -> Result<ConnectJob, ApiError> {
+        let job = self.begin(JobKind::Uninstall, address)?;
+        let me = self.clone();
+        let id = job.id.clone();
+        tokio::spawn(async move { me.run_uninstall(id, actor).await });
+        Ok(job)
+    }
+
     pub fn job(&self, id: &str) -> Result<ConnectJob, ApiError> {
         self.jobs().get(id).cloned().ok_or_else(|| ApiError::not_found(crate::tr!("Нет такого подключения.")))
     }
@@ -446,6 +460,7 @@ impl StationConnectService {
         let ids: &[StepId] = match kind {
             JobKind::Connect => &[StepId::Copy, StepId::Write, StepId::Verify, StepId::Reboot, StepId::Arrive],
             JobKind::Restore => &[StepId::Write, StepId::Verify, StepId::Reboot],
+            JobKind::Uninstall => &[StepId::Remove, StepId::Verify, StepId::Reboot],
         };
         let job = ConnectJob {
             id: crate::utils::ids::uuid(),
@@ -679,6 +694,61 @@ impl StationConnectService {
             tracing::warn!("station {address}: {error:#}");
         }
         self.audit(id, where_to, "done", &original.url, actor);
+        Ok(())
+    }
+
+    async fn run_uninstall(self: Arc<Self>, id: String, actor: Option<Actor>) {
+        let address = self.job_address(&id);
+        let mut shell: Option<Box<dyn StationShell>> = None;
+        let outcome = self.uninstall_steps(&id, &address, actor.clone(), &mut shell).await;
+        if let Some(shell) = shell.take() {
+            shell.close().await;
+        }
+        if let Err(error) = outcome {
+            self.fail(&id, &error);
+            tracing::warn!(
+                "station {address}: DuoWave not removed: {}",
+                self.job(&id).ok().and_then(|j| j.error).unwrap_or_default()
+            );
+            self.audit(&id, "removed", "failed", "", actor);
+        }
+    }
+
+    async fn uninstall_steps(
+        &self,
+        id: &str,
+        address: &str,
+        actor: Option<Actor>,
+        shell: &mut Option<Box<dyn StationShell>>,
+    ) -> anyhow::Result<()> {
+        // The station's key as it was learned: a station that answers with another one is not opened.
+        let link = self.link(address)?;
+        *shell = Some(self.opener.open(address, self.options(link.map(|l| l.fingerprint))).await?);
+        let shell = shell.as_deref().unwrap();
+        self.step(id, StepId::Remove, StepState::Running);
+        // The script as this gateway has it, whatever the station kept (or did not: connected by an older build).
+        let removed = shell.run(STEPS.uninstall, Some(&uninstall_script())).await?;
+        if removed.code != 0 {
+            anyhow::bail!("{}", first_nonempty(&removed.stderr, &format!("uninstall.sh ended with {}", removed.code)));
+        }
+        self.step(id, StepId::Remove, StepState::Done);
+        self.step(id, StepId::Verify, StepState::Running);
+        let left = shell.run(&STEPS.leftovers, None).await?.stdout;
+        let left: Vec<&str> = left.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+        if !left.is_empty() {
+            anyhow::bail!("left on the station: {}", left.join(", "));
+        }
+        self.step(id, StepId::Verify, StepState::Done);
+        self.step(id, StepId::Reboot, StepState::Running);
+        let _ = shell.run(STEPS.reboot, None).await;
+        self.step(id, StepId::Reboot, StepState::Done);
+        self.with_job(id, |job| job.status = JobStatus::Done);
+        // The key and the addresses it had stay: «Подключить» finds the station as it knew it.
+        let gone = LinkChange { connected_at: Field::Clear, gateway: Field::Clear, ..Default::default() };
+        if let Err(error) = self.remember(address, gone) {
+            tracing::warn!("station {address}: {error:#}");
+        }
+        self.audit(id, "removed", "done", &yandex().url, actor);
         Ok(())
     }
 
@@ -958,6 +1028,8 @@ mod tests {
         /// How putting the old addresses back goes.
         undo: Undo,
         key: String,
+        /// What the check after uninstall.sh finds still there, a line each.
+        left: String,
     }
 
     #[derive(Clone, Copy, PartialEq, Eq)]
@@ -986,6 +1058,7 @@ mod tests {
                     corrupt: false,
                     undo: Undo::Works,
                     key: "SHA256:fake-key".into(),
+                    left: String::new(),
                 })),
             }
         }
@@ -1055,6 +1128,13 @@ mod tests {
             } else if command == STEPS.reboot {
                 state.reboots += 1;
                 done("")
+            } else if command == STEPS.uninstall && input == Some(uninstall_script().as_str()) {
+                state.copy = None;
+                state.files.clear();
+                done("DuoWave is off this station; the reboot is next\n")
+            } else if command == STEPS.leftovers {
+                let left = state.left.clone();
+                done(&left)
             } else if let Some(point) = POINT.captures(command) {
                 let (url, quic, forced) = (point[1].to_string(), point[2].to_string(), point.get(3).is_some());
                 // After a write that landed wrong, the forced one is the undo.
@@ -1390,6 +1470,44 @@ mod tests {
         until(|| setup.switched.list().len() == 2).await;
         let results: Vec<String> = setup.switched.list().iter().map(|entry| entry.2.clone()).collect();
         assert_eq!(results, vec!["timeout".to_string(), "done".into()]);
+    }
+
+    #[tokio::test]
+    async fn uninstall_takes_duowave_off_checks_and_reboots() {
+        let setup = Setup::new(fast());
+        let job = setup.service.connect(ADDRESS, &gateway(), None).unwrap();
+        setup.ended(&job).await;
+        assert!(setup.station.state().copy.is_some() && setup.station.state().restore().is_some());
+        let reboots = setup.station.state().reboots;
+
+        let gone = setup.service.uninstall(ADDRESS, None).unwrap();
+        assert_eq!(gone.kind, JobKind::Uninstall);
+        let gone = setup.ended(&gone).await;
+        assert_eq!(gone.status, JobStatus::Done, "{:?}", gone.error);
+        assert!(gone.steps.iter().all(|step| step.state == StepState::Done), "{:?}", gone.steps);
+        {
+            let state = setup.station.state();
+            assert_eq!(state.config(), config_text(), "the voice back with the firmware's own config");
+            assert!(state.files.is_empty(), "our files gone");
+            assert_eq!(state.reboots, reboots + 1);
+        }
+        // The key stays for «Подключить»; the gateway it went to does not.
+        let link = setup.link();
+        assert_eq!((link.fingerprint.as_str(), link.gateway, link.connected_at), ("SHA256:fake-key", None, None));
+        until(|| setup.switched.list().iter().any(|entry| entry.1 == "removed")).await;
+    }
+
+    #[tokio::test]
+    async fn uninstall_says_what_is_left_and_does_not_reboot() {
+        let setup = Setup::new(fast());
+        setup.station.state().left = "/etc/init.d/S95duowave\n".into();
+        let gone = setup.service.uninstall(ADDRESS, None).unwrap();
+        let gone = setup.ended(&gone).await;
+        assert_eq!(gone.status, JobStatus::Failed);
+        assert!(gone.error.as_deref().unwrap_or_default().contains("S95duowave"), "{:?}", gone.error);
+        assert_eq!(setup.station.state().reboots, 0);
+        let states: Vec<StepState> = gone.steps.iter().map(|step| step.state).collect();
+        assert_eq!(states, vec![StepState::Done, StepState::Failed, StepState::Pending]);
     }
 
     #[tokio::test]

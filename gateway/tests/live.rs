@@ -102,7 +102,8 @@ impl Socket {
         self.messages.lock().unwrap().iter().filter(|message| message["type"] == kind).cloned().collect()
     }
 
-    /// What a station said, relayed: `None` — its channel lost.
+    /// What a station said, relayed: `None` — its channel lost. Only the computer relays it (the test below is `pc`).
+    #[cfg(feature = "pc")]
     fn station(&self, key: &str) -> Vec<Option<Value>> {
         self.of_type("station")
             .into_iter()

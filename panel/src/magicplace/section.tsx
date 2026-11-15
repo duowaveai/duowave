@@ -58,6 +58,7 @@ import {
     stateTitle,
 } from './filters';
 import { MagicPlaceMark } from './icon';
+import { AppsTabs } from '../screens/apps-tabs';
 import { matchesQuery } from './search';
 import { StoreSettings } from './settings';
 import { noteStoreChange } from './state';
@@ -111,7 +112,7 @@ export function PrimaryButton({ entry, actions, open }: { entry: CatalogEntry; a
 function Pills({ entry, engines }: { entry: CatalogEntry; engines: Engines }) {
     return (
         <>
-            <span class="pill pill-off">{placeOf(entry.kind, entry.runtime)}</span>
+            <span class="pill pill-off">{placeOf(entry.kind, entry.runtime, entry.runs)}</span>
             {entry.recommended && !isInstalled(entry) && <span class="pill pill-own">{tr.magicplace.recommendedPill}</span>}
             {isNew(entry) && !isInstalled(entry) && <span class="pill pill-agent">{tr.magicplace.newPill}</span>}
             {entry.unlisted && <span class="pill pill-off">{tr.magicplace.hiddenPill}</span>}
@@ -165,7 +166,7 @@ function Shelf({ id, title, entries, actions, onOpen }: { id: string; title: str
                             <PackageThumb url={entry.preview?.image} />
                             <span class="mp-tile-title">{entry.title}</span>
                             {entry.description && <span class="mp-tile-line">{entry.description}</span>}
-                            <span class="t-caption">{placeOf(entry.kind, entry.runtime)}</span>
+                            <span class="t-caption">{placeOf(entry.kind, entry.runtime, entry.runs)}</span>
                         </button>
                         <div class="mp-tile-actions">
                             <PrimaryButton entry={entry} actions={actions} open={openTarget(entry, panel.go)} />
@@ -297,6 +298,8 @@ export function MagicPlaceSection() {
 
     return (
         <div class="mp">
+            {/* Магазин — вкладка окна «Приложения» (docs/plans/menu-scheme.md): та же шапка, что у «Моих». */}
+            <AppsTabs active="magicplace" />
             <div class="mp-top">
                 <MagicPlaceMark size={36} />
                 <label class="mp-search">

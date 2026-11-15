@@ -177,6 +177,7 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/panel/", get(|| async { index(&BuiltIn) }))
         .route("/panel/{*path}", get(|Path(path): Path<String>| async move { asset(&BuiltIn, &path) }))
         .merge(super::desk::routes())
+        .merge(super::state::routes())
 }
 
 #[cfg(test)]

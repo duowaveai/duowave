@@ -12,6 +12,9 @@ pub enum SettingScope {
     Global,
     /// A global value with a per-person override on top (a person's own voice or Alisa).
     User,
+    /// A global value with an app's own value on top (`app_settings`): a rule of «Выход в интернет» for one app. The
+    /// app is a package's id or a reserved id of who is not one (`system:alice`, `provider:openai`, `mcp:exa`).
+    App,
 }
 
 pub struct SettingDefinition<T> {

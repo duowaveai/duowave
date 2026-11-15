@@ -21,6 +21,7 @@ files:
   share/duowave.gateway/S95duowave: S95duowave
   share/duowave.gateway/call-client.sh: call-client.sh
   share/duowave.gateway/S99zduowave: S99zduowave
+  share/duowave.gateway/uninstall.sh: uninstall.sh
 # Declared for a host that starts YAM services; YAM 0.2 itself only keeps it, so the postinstall hook starts the gateway.
 services:
   gateway:

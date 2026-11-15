@@ -260,11 +260,13 @@ impl Entry {
     }
 
     /// Where it works, in MagicPlace's words: `gateway` (a plugin: QuickJS, WASM), `computer` (an app, its own
-    /// program beside the gateway), `network` (a plugin on MCP: a service out there). None for data.
+    /// program beside the gateway on a computer), `station` (an app that runs on the station only: AirPlay),
+    /// `network` (a plugin on MCP: a service out there). None for data.
     pub fn place(&self) -> Option<&'static str> {
         match (self.kind, self.runtime.as_deref()) {
             (PackageKind::Plugin, Some("mcp")) => Some("network"),
             (PackageKind::Plugin, _) => Some("gateway"),
+            (PackageKind::App, _) if !self.runs.is_empty() && !self.runs.contains(&Placement::Pc) => Some("station"),
             (PackageKind::App, _) => Some("computer"),
             _ => None,
         }
@@ -334,6 +336,10 @@ fn pin(value: &Value) -> Option<Pin> {
 
 /// The catalog's signature: the feed's own address and `.minisig`, from the same origin.
 pub const SIGNATURE_SUFFIX: &str = ".minisig";
+
+/// «Где что работает» beside the feed (src/egress/reach.rs) and its largest size.
+const REACH: &str = "reach.json";
+const MAX_REACH: u64 = 256 * 1024;
 const MAX_SIGNATURE: u64 = 8 * 1024;
 
 /// The keys the catalog is signed with, built into the program the way the updates' are, apart from them (a leaked
@@ -1333,11 +1339,41 @@ impl PackageCatalog {
                 // Another reader may have read it while this one waited.
                 if due() {
                     let read = self.read(&url).await;
+                    if read == Read::New || !self.dir.join(REACH).exists() {
+                        self.read_reach(&url).await;
+                    }
                     self.read_extras(&url, read).await;
                 }
             }
         }
         self.copy(&url)
+    }
+
+    /// «Где что работает» (docs/plans/own-server.md; src/egress/reach.rs): `reach.json` beside the feed, signed as the
+    /// feed is when the gateway has the catalog's keys, kept beside the copy. None there, or its signature does not
+    /// match — the copy before stays (and the gateway's built-in one under it).
+    async fn read_reach(&self, url: &url::Url) {
+        let Ok(address) = url.join(REACH) else { return };
+        let Ok(text) = install::download(address.as_str(), MAX_REACH, FEED_TIMEOUT).await else { return };
+        if serde_json::from_slice::<Value>(&text).is_err() {
+            tracing::warn!(target: "plugins", "packages catalog: {REACH} is not JSON; the copy before stays");
+            return;
+        }
+        if !self.keys.is_empty() {
+            let signature = install::download(&format!("{address}{SIGNATURE_SUFFIX}"), MAX_SIGNATURE, FEED_TIMEOUT)
+                .await
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok());
+            let signed = signature
+                .is_some_and(|signature| crate::updates::verify::verify_any(&self.keys, &text, &signature).is_ok());
+            if !signed {
+                tracing::warn!(target: "plugins", "packages catalog: {REACH} unsigned or its signature does not match");
+                return;
+            }
+        }
+        if let Err(error) = write_whole(&self.dir.join(REACH), &text) {
+            tracing::warn!(target: "plugins", "packages catalog: {REACH} not kept: {error}");
+        }
     }
 
     /// Reads the main feed: a new copy with its previews, or the copy before and why.
@@ -2926,6 +2962,8 @@ pub mod tests {
         assert_eq!(feed.download_title(&feed.downloads[0], &["en".into()]), "Remotion and a browser");
         assert_eq!(feed.download_title(&feed.downloads[0], &["ru".into(), "en".into()]), "Remotion и браузер");
         assert_eq!(feed.place(), Some("computer"));
+        let station = Entry { runs: vec![Placement::Station, Placement::StationServer], ..feed.clone() };
+        assert_eq!(station.place(), Some("station"), "an app for the station only works there, not on a computer");
         let texts: Vec<(String, String)> = feed.all_texts().into_iter().map(|(lang, title, _)| (lang, title)).collect();
         assert_eq!(texts, [("ru".to_string(), "Лента".to_string()), ("en".to_string(), "Feed".to_string())]);
 

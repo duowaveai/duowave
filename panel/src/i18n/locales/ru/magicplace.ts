@@ -30,6 +30,7 @@ export default {
     placeAny: 'Где угодно',
     placeGateway: 'В шлюзе',
     placeComputer: 'На компьютере',
+    placeStation: 'На колонке',
     placeNetwork: 'В сети',
     stateLabel: 'Состояние',
     stateAny: 'Любое',

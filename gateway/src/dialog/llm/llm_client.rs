@@ -66,6 +66,20 @@ impl fmt::Display for SpokenFailure {
 
 impl std::error::Error for SpokenFailure {}
 
+/// «Выход в интернет» (src/egress): the provider goes through the person's server and that server does not answer —
+/// the call is refused at once, in words the owner can act on, rather than wait out a timeout. Nothing goes out
+/// directly: a key from a country the service refuses would risk the account.
+pub fn egress_refusal(url: &str) -> Option<anyhow::Error> {
+    let host = url::Url::parse(url).ok()?.host_str()?.to_string();
+    crate::egress::refused_host(&host).then(|| {
+        anyhow::Error::new(SpokenFailure {
+            phrase: crate::tr!("VPN не отвечает: модель сейчас недоступна. Проверьте подключение в приложении «VPN».")
+                .to_string(),
+            detail: format!("{host}: the VPN connection does not answer («Выход в интернет»)"),
+        })
+    })
+}
+
 /// The bearer of the next request: the access's when a sign-in gives it, else the key; None without either.
 pub async fn bearer_of(settings: &LlmSettings) -> anyhow::Result<Option<String>> {
     if let Some(access) = &settings.access {

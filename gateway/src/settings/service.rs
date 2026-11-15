@@ -1,8 +1,9 @@
-//! The gateway's stored settings, typed by their definitions (definitions.rs): a global value, and for `user`
-//! settings a person's own value on top. Every write publishes `settings.changed` (without the value: some are
+//! The gateway's stored settings, typed by their definitions (definitions.rs): a global value, for `user` settings a
+//! person's own value on top, for `app` settings an app's own value on top (`app_settings`). Every write publishes `settings.changed` (without the value: some are
 //! sensitive). Reads go to the database each time — it is local and small, and nothing goes stale between modules
 //! that read the same key.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rusqlite::{params, OptionalExtension};
@@ -185,6 +186,113 @@ impl SettingsService {
     }
 }
 
+impl SettingsService {
+    /// An app's own value of a setting; None when it has none or it does not parse.
+    pub fn get_app<T>(&self, definition: &SettingDefinition<T>, app_id: &str) -> Option<T> {
+        let text: Option<String> = self
+            .db
+            .with(|c| {
+                c.query_row(
+                    "SELECT value FROM app_settings WHERE app_id = ?1 AND key = ?2",
+                    params![app_id, definition.key],
+                    |row| row.get(0),
+                )
+                .optional()
+            })
+            .ok()
+            .flatten();
+        let value: Value = serde_json::from_str(&text?).ok()?;
+        (definition.parse)(&value)
+    }
+
+    /// The value for an app: its own, then the global one.
+    pub fn get_for_app<T>(&self, definition: &SettingDefinition<T>, app_id: &str) -> Option<T> {
+        if definition.scope == SettingScope::App {
+            if let Some(own) = self.get_app(definition, app_id) {
+                return Some(own);
+            }
+        }
+        self.entry(definition).map(|entry| entry.value)
+    }
+
+    /// An app's own value; None removes it, and the global one applies again.
+    pub fn set_for_app<T: Serialize>(
+        &self,
+        definition: &SettingDefinition<T>,
+        app_id: &str,
+        value: Option<&T>,
+        actor: Option<Actor>,
+    ) -> Result<(), ApiError> {
+        if definition.scope != SettingScope::App {
+            return Err(ApiError::internal(format!("{} is not a per-app setting", definition.key)));
+        }
+        match value {
+            None => {
+                self.db.with(|c| {
+                    c.execute(
+                        "DELETE FROM app_settings WHERE app_id = ?1 AND key = ?2",
+                        params![app_id, definition.key],
+                    )
+                })?;
+            }
+            Some(value) => {
+                let json = serde_json::to_string(value)?;
+                self.db.with(|c| {
+                    c.execute(
+                        "INSERT INTO app_settings (app_id, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)
+                         ON CONFLICT (app_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                        params![app_id, definition.key, json, now_iso()],
+                    )
+                })?;
+            }
+        }
+        self.events.emit(GatewayEvent::SettingsChanged { key: definition.key.to_string(), user_id: None, actor });
+        Ok(())
+    }
+
+    /// Every app's own value of one setting, by app id: whoever decides for many apps at once reads them in one go.
+    /// Values that do not parse are left out.
+    pub fn all_for_apps<T>(&self, definition: &SettingDefinition<T>) -> BTreeMap<String, T> {
+        let rows: Vec<(String, String)> = self
+            .db
+            .with(|c| {
+                let mut statement =
+                    c.prepare("SELECT app_id, value FROM app_settings WHERE key = ?1 ORDER BY app_id")?;
+                let rows = statement.query_map(params![definition.key], |row| Ok((row.get(0)?, row.get(1)?)))?;
+                rows.collect()
+            })
+            .unwrap_or_else(|error| {
+                tracing::warn!("setting {}: the apps' values not read: {error}", definition.key);
+                Vec::new()
+            });
+        rows.into_iter()
+            .filter_map(|(app, text)| {
+                let value: Value = serde_json::from_str(&text).ok()?;
+                Some((app, (definition.parse)(&value)?))
+            })
+            .collect()
+    }
+
+    /// An app's own values, unparsed, by key.
+    pub fn list_for_app(&self, app_id: &str) -> BTreeMap<String, Value> {
+        let rows: Vec<(String, String)> = self
+            .db
+            .with(|c| {
+                let mut statement = c.prepare("SELECT key, value FROM app_settings WHERE app_id = ?1 ORDER BY key")?;
+                let rows = statement.query_map(params![app_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+                rows.collect()
+            })
+            .unwrap_or_default();
+        rows.into_iter().filter_map(|(key, text)| Some((key, serde_json::from_str(&text).ok()?))).collect()
+    }
+
+    /// An app's own values all gone: its data went for good. How many there were.
+    pub fn forget_app(&self, app_id: &str) -> Result<usize, ApiError> {
+        let removed = self.db.with(|c| c.execute("DELETE FROM app_settings WHERE app_id = ?1", params![app_id]))?;
+        Ok(removed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +330,34 @@ mod tests {
         settings.set_user::<String>(&VOICE_PROVIDER, "u1", None, None).unwrap();
         assert_eq!(settings.get(&VOICE_PROVIDER, Some("u1")).as_deref(), Some("yandex"));
         assert!(settings.set_user(&ROUTES, "u1", Some(&Default::default()), None).is_err(), "routes are global");
+    }
+
+    #[test]
+    fn an_apps_value_over_the_global_one() {
+        use crate::core::settings::{as_string, SettingDefinition, SettingScope};
+        const RULE: SettingDefinition<String> = SettingDefinition {
+            key: "test.rule",
+            scope: SettingScope::App,
+            description: "",
+            sensitive: false,
+            parse: as_string,
+        };
+        let settings = service();
+        settings.set(&RULE, &"auto".to_string(), None).unwrap();
+        settings.set_for_app(&RULE, "maps", Some(&"direct".to_string()), None).unwrap();
+        settings.set_for_app(&RULE, "system:alice", Some(&"c1".to_string()), None).unwrap();
+        assert_eq!(settings.get_for_app(&RULE, "maps").as_deref(), Some("direct"));
+        assert_eq!(settings.get_for_app(&RULE, "radio").as_deref(), Some("auto"));
+        assert_eq!(settings.get_app(&RULE, "radio"), None);
+        let all = settings.all_for_apps(&RULE);
+        assert_eq!(all.len(), 2);
+        assert_eq!(all.get("system:alice").map(String::as_str), Some("c1"));
+        assert_eq!(settings.list_for_app("maps").get("test.rule"), Some(&serde_json::json!("direct")));
+        settings.set_for_app::<String>(&RULE, "maps", None, None).unwrap();
+        assert_eq!(settings.get_for_app(&RULE, "maps").as_deref(), Some("auto"));
+        assert_eq!(settings.forget_app("system:alice").unwrap(), 1);
+        assert!(settings.all_for_apps(&RULE).is_empty());
+        assert!(settings.set_for_app(&KEEP_REQUESTS, "maps", Some(&3), None).is_err(), "a global setting");
     }
 
     #[test]

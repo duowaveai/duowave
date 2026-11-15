@@ -168,6 +168,11 @@ impl PlaybackWatch {
         let _ = self.relay.set(relay);
     }
 
+    /// A command to the device's station on the line now (`*`: the newest): whether one took it.
+    pub fn push(&self, device: &str, directive: Directive) -> bool {
+        self.pusher.get().is_some_and(|pusher| pusher.push(device, directive))
+    }
+
     /// An item started: the station has `silent_after` to say so.
     fn started(&self, device: &str, play_id: &str) {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };

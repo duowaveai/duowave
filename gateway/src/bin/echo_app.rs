@@ -14,11 +14,20 @@
 //!   telling the gateway how far it got twice a second; a person's «Отменить» reaches it with the answer to its next
 //!   report, and it stops. `fail: true` — it loses count halfway, to see a task fail. The gateway's refusal (a task
 //!   already runs) comes back as `{refused}`;
+//! - `POST /call/playing` `{state}` — says it plays by itself on the station (`system/player` → `playing`, a letter of
+//!   the bus: `call:system/player`), as a receiver does when a phone starts playing; the gateway's answer back as
+//!   `{code, answer}`;
+//! - `POST /call/control` — the player's command it hears (the news `control` of `system/player`: «Алиса, пауза»), kept;
+//!   `POST /call/controls` — the commands it heard;
 //! - `GET /stream/<name>` — its own sound (a few bytes of MP3 here), which the gateway gives on to the station at
 //!   `/media/apps/<id>/<name>`: an item `{ id, title, stream: "<name>" }` plays it.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::Mutex;
+
+/// The player's commands it heard («pause», «resume»…).
+static CONTROLS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// An MP3 frame header and silence: enough to tell the sound came through.
 const SOUND: &[u8] = &[0xFF, 0xFB, 0x90, 0x64, 0, 0, 0, 0];
@@ -167,6 +176,25 @@ fn serve(mut stream: TcpStream) {
                 }
                 _ => respond(&mut stream, "200 OK", "{\"refused\":{\"error\":\"the gateway did not answer\"}}"),
             }
+        }
+        ("POST", "/call/playing") => {
+            let state = string(&body, "state").unwrap_or_else(|| "playing".into());
+            let letter =
+                format!("{{\"to\":\"system/player\",\"handle\":\"playing\",\"input\":{{\"state\":\"{state}\"}}}}");
+            let (code, answer) =
+                host_answer("POST", "/api/v1/apps/host/call/bus.call", &letter).unwrap_or((0, String::new()));
+            let answer = if answer.trim().is_empty() { "null".to_string() } else { answer.trim().to_string() };
+            respond(&mut stream, "200 OK", &format!("{{\"code\":{code},\"answer\":{answer}}}"));
+        }
+        ("POST", "/call/control") => {
+            let action = string(&body, "action").unwrap_or_default();
+            CONTROLS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(action);
+            respond(&mut stream, "200 OK", "null");
+        }
+        ("POST", "/call/controls") => {
+            let heard = CONTROLS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+            let list: Vec<String> = heard.iter().map(|action| format!("\"{action}\"")).collect();
+            respond(&mut stream, "200 OK", &format!("[{}]", list.join(",")));
         }
         ("POST", "/call/crash") => {
             respond(&mut stream, "200 OK", "null");

@@ -1,67 +1,53 @@
 // «Для разработчиков» (docs/plans/panel-rebuild.md, «Три слоя»): один переключатель в «Настройках» открывает третий
-// слой — «Мастерскую» в доке, журнал запросов, таблицу «Кто отвечает», провайдеров и ключи. Помнится в этом браузере:
-// это вид пульта, а не права — права по-прежнему у шлюза.
+// слой — технические строки на своих местах: журнал запросов, таблицу «Кто отвечает» подробно, провайдеров и ключи
+// (docs/plans/menu-scheme.md: ни кнопок в доке, ни списка ярлыков). Это вид пульта, а не права — права по-прежнему у
+// шлюза. Помнится у человека на шлюзе (shell/memory.ts): включил на компьютере — включено и на телефоне.
 
 import { useEffect, useState } from 'preact/hooks';
 
-const KEY = 'panel-dev';
+import { onPanelMemory, recalled, remember } from './memory';
 
-let on = (() => {
+/** Ключи памяти пульта. */
+const DEV = 'dev';
+const HIDDEN = 'devHidden';
+
+// До памяти на шлюзе оба помнились только в этом браузере: переносим один раз.
+for (const [legacy, key] of [
+    ['panel-dev', DEV],
+    ['panel-dev-hidden', HIDDEN],
+] as const) {
     try {
-        return localStorage.getItem(KEY) === '1';
+        if (localStorage.getItem(legacy) === '1' && recalled(key) === undefined) remember(key, true);
+        localStorage.removeItem(legacy);
     } catch {
-        return false;
+        // приватное окно: переносить нечего
     }
-})();
-
-const listeners = new Set<() => void>();
+}
 
 export function devMode(): boolean {
-    return on;
+    return recalled<boolean>(DEV) === true;
 }
 
 export function setDevMode(next: boolean): void {
-    on = next;
-    try {
-        if (next) localStorage.setItem(KEY, '1');
-        else localStorage.removeItem(KEY);
-    } catch {
-        // приватное окно: помним до перезагрузки
-    }
-    for (const listener of [...listeners]) listener();
+    remember(DEV, next ? true : undefined);
 }
 
 // Скрытые возможности разработчика: восемь нажатий подряд на «Для разработчиков» в списке «Настроек» открывают их
-// на странице этого раздела (первая — «Показывать скрытые пакеты»). Помнится в этом браузере, как и слой; сами
+// на странице этого раздела (первая — «Показывать скрытые пакеты»). Помнятся у человека, как и слой; сами
 // возможности — настройки шлюза, их меняет администратор.
-const HIDDEN_KEY = 'panel-dev-hidden';
 /** Сколько нажатий открывают скрытые возможности и сколько ждать между ними. */
 export const HIDDEN_TAPS = 8;
 const TAP_GAP_MS = 1500;
 
-let hidden = (() => {
-    try {
-        return localStorage.getItem(HIDDEN_KEY) === '1';
-    } catch {
-        return false;
-    }
-})();
 let taps = 0;
 let lastTap = 0;
 
 export function hiddenDevOptions(): boolean {
-    return hidden;
+    return recalled<boolean>(HIDDEN) === true;
 }
 
 export function setHiddenDevOptions(next: boolean): void {
-    hidden = next;
-    try {
-        if (next) localStorage.setItem(HIDDEN_KEY, '1');
-        else localStorage.removeItem(HIDDEN_KEY);
-    } catch {
-        // приватное окно: помним до перезагрузки
-    }
-    for (const listener of [...listeners]) listener();
+    remember(HIDDEN, next ? true : undefined);
 }
 
 /**
@@ -69,7 +55,7 @@ export function setHiddenDevOptions(next: boolean): void {
  * возможности. Ответ — сколько ещё осталось (0 — открылись сейчас), или null, когда они уже открыты.
  */
 export function tapDev(now = Date.now()): number | null {
-    if (hidden) return null;
+    if (hiddenDevOptions()) return null;
     taps = now - lastTap <= TAP_GAP_MS ? taps + 1 : 1;
     lastTap = now;
     if (taps < HIDDEN_TAPS) return HIDDEN_TAPS - taps;
@@ -78,28 +64,20 @@ export function tapDev(now = Date.now()): number | null {
     return 0;
 }
 
+/** Перерисовка, когда память пульта поменялась (здесь, после входа или с другого устройства). */
+function useMemoryTick(): void {
+    const [, rerender] = useState(0);
+    useEffect(() => onPanelMemory(() => rerender((n) => n + 1)), []);
+}
+
 /** Открыты ли скрытые возможности; перерисовка, когда их открыли или закрыли. */
 export function useHiddenDevOptions(): boolean {
-    const [, rerender] = useState(0);
-    useEffect(() => {
-        const listener = () => rerender((n) => n + 1);
-        listeners.add(listener);
-        return () => {
-            listeners.delete(listener);
-        };
-    }, []);
-    return hidden;
+    useMemoryTick();
+    return hiddenDevOptions();
 }
 
 /** Включён ли слой разработчика; перерисовка, когда его переключили. */
 export function useDevMode(): boolean {
-    const [, rerender] = useState(0);
-    useEffect(() => {
-        const listener = () => rerender((n) => n + 1);
-        listeners.add(listener);
-        return () => {
-            listeners.delete(listener);
-        };
-    }, []);
-    return on;
+    useMemoryTick();
+    return devMode();
 }

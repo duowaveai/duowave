@@ -1,5 +1,6 @@
 import { useId, useRef, useState } from 'preact/hooks';
 
+import { useEgressLine } from './egress';
 import { LookSource, LookVariant, SessionSnapshot, Station, StationLook, StationPresence, api, can, problemOf } from '../api';
 import { here } from '../availability';
 import { IconCheck, IconChevronDown, IconPlus } from '../icons';
@@ -8,7 +9,7 @@ import { StationDrawing, colorInfo, drawingOf } from '../stations';
 import { timeAgo } from '../time';
 import { tr } from '../i18n';
 import { Sheet, useDialogFocus } from '../ui/sheet';
-import { ConnectSheet, RestoreSheet } from './connect';
+import { ConnectSheet, RestoreSheet, UninstallSheet } from './connect';
 import { Switch } from '../ui/switch';
 
 // Колонки дома: переключатель в шапке, окно «Колонки» со списком и видом выбранной, мастер первой настройки и
@@ -255,10 +256,13 @@ interface PickerProps {
 
 /** Окно «Колонки» из макета: какие есть и какая в сети, «Добавить колонку» и вид выбранной. */
 export function StationsPicker({ stations, current, sessions, presence, onPick, onSetup, onChanged, onClose, onOpenBrain }: PickerProps) {
+    // «Выход в интернет»: через какой сервер идут модели и Алиса (egress.tsx); без подключений — ничего.
+    const vpnLine = useEgressLine();
     const panel = useRef<HTMLElement>(null);
     const labelId = useId();
     const [connecting, setConnecting] = useState(false);
     const [restoring, setRestoring] = useState(false);
+    const [removing, setRemoving] = useState(false);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     useDialogFocus(panel, onClose);
@@ -301,6 +305,8 @@ export function StationsPicker({ stations, current, sessions, presence, onPick, 
         );
     if (restoring && current?.lastAddress)
         return <RestoreSheet address={current.lastAddress} name={displayName(current, drawingOf(current.look, current.deviceModel))} onClose={() => setRestoring(false)} />;
+    if (removing && current?.lastAddress)
+        return <UninstallSheet address={current.lastAddress} name={displayName(current, drawingOf(current.look, current.deviceModel))} onClose={() => setRemoving(false)} />;
 
     return (
         <div class="picker-layer">
@@ -395,6 +401,7 @@ export function StationsPicker({ stations, current, sessions, presence, onPick, 
                                 {tr.stationsScreen.onlyAdminLook}
                             </p>
                         )}
+                        {vpnLine && <p class="t-caption m-0">{vpnLine}</p>}
                         {current.firmware && (
                             <p class="t-caption m-0">
                                 {tr.stationsScreen.firmware(current.firmware)}
@@ -406,6 +413,11 @@ export function StationsPicker({ stations, current, sessions, presence, onPick, 
                         {mayManage && here('stations.connect') && current.status === 'approved' && current.lastAddress && (
                             <button class="pill pill-off dash-wide" onClick={() => setRestoring(true)}>
                                 {tr.stationsScreen.restoreYandex}
+                            </button>
+                        )}
+                        {mayManage && here('stations.connect') && current.lastAddress && (
+                            <button class="danger-link" onClick={() => setRemoving(true)}>
+                                {tr.stationsScreen.removeDuowave}
                             </button>
                         )}
                     </>

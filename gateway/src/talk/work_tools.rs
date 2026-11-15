@@ -411,6 +411,12 @@ impl TalkLayer {
         self.acted_on(device, &work.id);
         let by = super::executor::ByVoice { device: device.to_string(), who: origin.who.clone() };
         Ok(match action {
+            "status" if work.going() && matches!(work.kind.as_str(), super::works::TOOL | super::works::TASK) => {
+                let words = &pack::of(self.lang(device)).work.background;
+                let since = say.duration(now_ms().saturating_sub(work.started_at));
+                let step = executor.details(&work).unwrap_or_else(|| words.waiting_answer.to_string());
+                fill(words.working, &[("title", &work.title), ("since", &since), ("step", &step)])
+            }
             "status" if work.going() => {
                 let since = say.duration(now_ms().saturating_sub(work.started_at));
                 let doing = executor.status(&work).unwrap_or(Doing::Thinking);
@@ -738,7 +744,7 @@ mod tests {
         });
         layer.works.update(&work.id, |work| {
             work.state = WorkState::Done;
-            work.result = Some(WorkResult { line: String::new(), end: Some(End::Desk) });
+            work.result = Some(WorkResult { line: String::new(), end: Some(End::Desk), ..WorkResult::default() });
         });
         let end =
             |layer: &TalkLayer| layer.works.get(&work.id).and_then(|work| work.result).and_then(|result| result.end);

@@ -4,7 +4,7 @@
 
 import type { CatalogEntry, CatalogFace, CatalogPlace } from '../api';
 import { tr } from '../i18n';
-import { isBlocked, isInstalled } from '../screens/catalog';
+import { isBlocked, isInstalled, onStationOnly } from '../screens/catalog';
 
 export type KindFilter = 'character' | 'app' | 'theme';
 export type StateFilter = 'installed' | 'available' | 'update';
@@ -23,7 +23,7 @@ export const NEW_DAYS = 30;
 
 const KINDS: KindFilter[] = ['character', 'app', 'theme'];
 const FACES: CatalogFace[] = ['widget', 'skill', 'window'];
-const PLACES: CatalogPlace[] = ['gateway', 'computer', 'network'];
+const PLACES: CatalogPlace[] = ['gateway', 'computer', 'station', 'network'];
 const STATES: StateFilter[] = ['installed', 'available', 'update'];
 
 /** Вид пакета для людей: плагин и приложение — оба «приложение». */
@@ -41,7 +41,7 @@ export function stateOf(entry: CatalogEntry): StateFilter {
 export function placeOfEntry(entry: CatalogEntry): CatalogPlace | null {
     if (entry.place) return entry.place;
     if (entry.kind === 'plugin') return entry.runtime === 'mcp' ? 'network' : 'gateway';
-    if (entry.kind === 'app') return 'computer';
+    if (entry.kind === 'app') return onStationOnly(entry.runs) ? 'station' : 'computer';
     return null;
 }
 
@@ -110,8 +110,12 @@ export function faceTitle(face: CatalogFace): string {
 }
 
 export function placeTitle(place: CatalogPlace): string {
-    return place === 'gateway' ? tr.magicplace.placeGateway : place === 'network' ? tr.magicplace.placeNetwork : tr.magicplace.placeComputer;
+    if (place === 'gateway') return tr.magicplace.placeGateway;
+    if (place === 'network') return tr.magicplace.placeNetwork;
+    if (place === 'station') return tr.magicplace.placeStation;
+    return tr.magicplace.placeComputer;
 }
+
 
 export function stateTitle(state: StateFilter): string {
     return state === 'installed' ? tr.magicplace.stateInstalled : state === 'update' ? tr.magicplace.stateUpdate : tr.magicplace.stateNotInstalled;

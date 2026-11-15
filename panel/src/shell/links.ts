@@ -35,7 +35,8 @@ const TAB_ALIASES: Record<string, Record<string, string>> = {
 function moved(section: string, tab: string | undefined, item: string | undefined, query: Record<string, string>): [string, string | undefined, string | undefined] {
     switch (section) {
         case 'mind':
-            if (tab === 'routes') return ['skills', 'routes', item];
+            // «Кто отвечает» — таблица «Что умеет колонка» во вкладке «Мои» (docs/plans/menu-scheme.md).
+            if (tab === 'routes') return ['skills', 'installed', undefined];
             // «Установить в свой шлюз» сайта каталога (`#/mind/characters/<id>?install`) — в MagicPlace, на этого персонажа.
             if (tab === 'characters' && item && 'install' in query) return ['magicplace', 'store', item];
             return ['character', tab === 'characters' || tab === 'brain' ? tab : undefined, tab ? item : undefined];
@@ -57,6 +58,9 @@ function moved(section: string, tab: string | undefined, item: string | undefine
         case 'skills':
             // «Приложения» → «Каталог» — теперь MagicPlace.
             if (tab === 'catalog') return ['magicplace', 'store', item];
+            // Меню пульта (docs/plans/menu-scheme.md): память — в «Персонаже», таблица «Кто отвечает» — во вкладке «Мои».
+            if (tab === 'memory') return ['character', 'memory', item];
+            if (tab === 'routes' || tab === 'list') return ['skills', 'installed', undefined];
             return [section, tab, item];
         case 'workshop': {
             // `#/workshop/drafts/<id>` — черновик; `#/workshop/<id>` тоже понимаем.

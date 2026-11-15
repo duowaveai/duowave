@@ -144,7 +144,22 @@ pub async fn connect_upstream(url: &str, headers: &[(String, String)]) -> Result
         };
         request.headers_mut().insert(name, value);
     }
-    match tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(ws_connector())).await {
+    // «Выход в интернет» (src/egress): Alice's row says directly, through a connection's entry, or not at all.
+    let connected = match crate::egress::alice() {
+        crate::egress::app_entry::Hop::Direct => {
+            tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(ws_connector())).await
+        }
+        crate::egress::app_entry::Hop::Refuse(words) => return Err(ConnectError::Failed(words)),
+        crate::egress::app_entry::Hop::Via(entry) => {
+            // tokio-tungstenite cannot go through a proxy by itself: the tunnel first, then TLS and the WebSocket on it.
+            let uri = request.uri();
+            let host = uri.host().unwrap_or_default().to_string();
+            let port = uri.port_u16().unwrap_or(if uri.scheme_str() == Some("ws") { 80 } else { 443 });
+            let stream = crate::egress::app_entry::tunnel(&entry, &host, port).await.map_err(ConnectError::Failed)?;
+            tokio_tungstenite::client_async_tls_with_config(request, stream, None, Some(ws_connector())).await
+        }
+    };
+    match connected {
         Ok((socket, _)) => Ok(socket),
         Err(WsError::Http(response)) => Err(ConnectError::Rejected(response.status().as_u16())),
         Err(error) => Err(ConnectError::Failed(error.to_string())),

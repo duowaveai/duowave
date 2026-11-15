@@ -486,6 +486,92 @@ pub const LANGUAGE: SettingDefinition<String> = SettingDefinition {
     parse: |value| value.as_str().and_then(crate::locale::normalize),
 };
 
+/// The household's country (docs/plans/catalog-regions.md, 3): an ISO 3166-1 alpha-2 code in upper case, or `none`
+/// («Не скажу»); not stored — never asked. Only on the gateway: the catalog is read the same for everyone. The panel
+/// guesses it from the computer's time zone and language, never from an address (src/locale/country.rs).
+pub const HOME_COUNTRY: SettingDefinition<String> = SettingDefinition {
+    key: "home_country",
+    scope: SettingScope::Global,
+    description: "Страна дома",
+    sensitive: false,
+    parse: |value| value.as_str().and_then(crate::locale::country::normalize),
+};
+
+/// «Выход в интернет» (src/egress, docs/plans/own-server.md): the simple mode — `off`, `blocked` («Где не работает», the
+/// default), `all`.
+pub const EGRESS_MODE: SettingDefinition<String> = SettingDefinition {
+    key: "egress.mode",
+    scope: SettingScope::Global,
+    description: "Выход в интернет: простой режим",
+    sensitive: false,
+    parse: |value| as_one_of(value, &["off", "blocked", "all"]),
+};
+
+/// The connection «Всё через сервер» and «Авто» go through first; none — the first that answers.
+pub const EGRESS_CONNECTION: SettingDefinition<String> = SettingDefinition {
+    key: "egress.connection",
+    scope: SettingScope::Global,
+    description: "Выход в интернет: подключение по умолчанию",
+    sensitive: false,
+    parse: as_string,
+};
+
+/// The addresses the person typed («Свои адреса»): host names, `*.example.com` for subdomains.
+pub const EGRESS_CUSTOM: SettingDefinition<Vec<String>> = SettingDefinition {
+    key: "egress.custom",
+    scope: SettingScope::Global,
+    description: "Выход в интернет: свои адреса",
+    sensitive: false,
+    parse: as_string_list,
+};
+
+/// The connections last reported, without their entries: after a restart the rows that wait for a server keep
+/// waiting until the app speaks again (src/egress/connections.rs).
+pub const EGRESS_CONNECTIONS: SettingDefinition<Vec<crate::egress::connections::Kept>> = SettingDefinition {
+    key: "egress.connections",
+    scope: SettingScope::Global,
+    description: "Выход в интернет: известные подключения",
+    sensitive: false,
+    parse: |value| serde_json::from_value(value.clone()).ok(),
+};
+
+/// The rows the person has seen in the table: the others are marked «новое».
+pub const EGRESS_SEEN: SettingDefinition<Vec<String>> = SettingDefinition {
+    key: "egress.seen",
+    scope: SettingScope::Global,
+    description: "Выход в интернет: просмотренные строки",
+    sensitive: false,
+    parse: as_string_list,
+};
+
+/// A row's own route (app_settings, by the row's id): `auto`, `direct` or a connection's id.
+pub const EGRESS_ROUTE: SettingDefinition<String> = SettingDefinition {
+    key: "egress.route",
+    scope: SettingScope::App,
+    description: "Выход в интернет: маршрут строки",
+    sensitive: false,
+    parse: |value| value.as_str().and_then(crate::egress::rules::Route::parse).map(|route| route.as_text().to_string()),
+};
+
+/// What a row does when its connection does not answer: `wait` or `direct`.
+pub const EGRESS_ON_DOWN: SettingDefinition<String> = SettingDefinition {
+    key: "egress.on_down",
+    scope: SettingScope::App,
+    description: "Выход в интернет: если сервер не отвечает",
+    sensitive: false,
+    parse: |value| as_one_of(value, &["wait", "direct"]),
+};
+
+/// What this home learned of a row by trying: directly it did not open. Each side keeps its own (it is about this
+/// home's network): it does not travel with the settings package (placement/transfer.rs, `LOCAL_APP_SETTINGS`).
+pub const EGRESS_LEARNED: SettingDefinition<crate::egress::rules::Learned> = SettingDefinition {
+    key: "egress.learned",
+    scope: SettingScope::App,
+    description: "Выход в интернет: что дом узнал сам",
+    sensitive: false,
+    parse: |value| serde_json::from_value(value.clone()).ok(),
+};
+
 /// The journal of requests, in days: 0 keeps none (the dashboard still shows them live).
 pub const KEEP_REQUESTS: SettingDefinition<u32> = SettingDefinition {
     key: "requests_keep_days",

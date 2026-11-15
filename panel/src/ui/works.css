@@ -1,0 +1,146 @@
+/* «Работы» и одна работа (screens/works.tsx, screens/work.tsx; docs/plans/router-and-works.md, решение 17).
+   Карточки — `card glass card-list` «Минимала»; строки — как в списках стола: через `row-line`, 13/18, подпись 12/16.
+   Цвет — только точками: агент работает — фиолет, ждёт ответа и готово — своё, не вышло — беда, остальное — камень;
+   модель дома — своё, в облаке — янтарь (метка-капсула `pill` с точкой). */
+
+.wk-page { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.wk-summary { font-size: 13px; line-height: 18px; color: var(--sub); }
+.wk-empty { padding: 4px 0 2px; }
+.wk-said {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px 6px 12px;
+    border-radius: 14px;
+    background: var(--strong-bg);
+    box-shadow: 0 0 0 1px var(--glass-border);
+    font-size: 13px;
+    line-height: 18px;
+    font-weight: 500;
+}
+.wk-said::before { content: ''; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--bar-own); }
+
+.wk-rows { list-style: none; margin: 0; padding: 0; }
+.wk-rows > li + li { border-top: 1px solid var(--row-line, var(--divider)); }
+.wk-row { display: flex; flex-direction: column; gap: 8px; padding: 2px 0; }
+.wk-row:has(.wk-answers) { padding-bottom: 12px; }
+.wk-row-open {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 52px;
+    padding: 8px 0;
+    text-align: left;
+    color: var(--text);
+    border-radius: 12px;
+}
+.wk-row-open > svg { flex: none; color: var(--sub); }
+.wk-row-open:hover .wk-row-title b { text-decoration: underline; text-decoration-color: var(--glass-border); text-underline-offset: 3px; }
+.wk-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.wk-row-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; min-width: 0; }
+.wk-row-title b {
+    min-width: 0;
+    max-width: 100%;
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.wk-kind { flex: none; font-size: 12px; line-height: 16px; color: var(--sub); white-space: nowrap; }
+.wk-lead { font-size: 13px; line-height: 18px; color: var(--text); overflow-wrap: anywhere; }
+.wk-meta { display: block; font-size: 12px; line-height: 16px; color: var(--sub); min-width: 0; overflow-wrap: anywhere; }
+
+.wk-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--bar-off); }
+.wk-dot.is-going { background: var(--bar-agent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--bar-agent) 18%, transparent); animation: wk-pulse 1.6s ease-in-out infinite; }
+.wk-dot.is-own { background: var(--bar-own); }
+.wk-dot.is-failed { background: var(--dot-offline); }
+@keyframes wk-pulse { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--bar-agent) 6%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .wk-dot.is-going { animation: none; } }
+
+.wk-model { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wk-model-place { margin-left: 6px; font-weight: 400; color: var(--sub); }
+
+.wk-answers { display: flex; flex-direction: column; gap: 6px; padding-left: 18px; }
+.wk-answer-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.wk-answer-row button.pill { min-height: 32px; padding: 0 14px; }
+.wk-more { align-self: flex-start; margin-top: 8px; }
+
+/* Одна работа */
+.wk-head { display: flex; flex-direction: column; gap: 12px; }
+.wk-head-top { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.wk-head-top > .wk-dot { margin-top: 11px; }
+.wk-head .wk-row-main { gap: 4px; }
+.wk-head .wk-model { align-self: flex-start; max-width: 100%; margin-top: 4px; }
+.wk-head-title {
+    min-width: 0;
+    font-family: 'Inter Tight', Inter, system-ui, sans-serif;
+    font-size: 24px;
+    line-height: 30px;
+    font-weight: 300;
+    letter-spacing: -0.02em;
+    overflow-wrap: anywhere;
+}
+.wk-question { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 14px; background: var(--strong-bg); box-shadow: 0 0 0 1px var(--glass-border); }
+.wk-question .wk-answers { padding-left: 0; }
+.wk-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.wk-actions button.pill { min-height: 32px; padding: 0 14px; }
+.wk-note-form { display: flex; flex-direction: column; gap: 8px; }
+.wk-note-field { width: 100%; min-height: 64px; resize: vertical; }
+
+.wk-brief { font-size: 14px; line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.wk-under { padding-top: 6px; }
+.wk-sub { padding-top: 12px; font-size: 13px; line-height: 18px; font-weight: 500; }
+.wk-time { flex: none; min-width: 40px; font-variant-numeric: tabular-nums; }
+.wk-notes,
+.wk-steps { list-style: none; margin: 0; padding: 0; }
+.wk-note,
+.wk-step { display: flex; align-items: baseline; gap: 10px; padding: 6px 0; font-size: 13px; line-height: 18px; }
+.wk-note + .wk-note,
+.wk-step + .wk-step { border-top: 1px solid var(--row-line, var(--divider)); }
+.wk-note-text,
+.wk-step-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.wk-note-text { font-style: italic; }
+.wk-data summary { cursor: pointer; padding-top: 12px; font-size: 13px; line-height: 18px; font-weight: 500; }
+.wk-data pre {
+    margin: 8px 0 0;
+    max-height: 320px;
+    overflow: auto;
+    padding: 10px 14px;
+    border-radius: 14px;
+    background: var(--field-bg);
+    box-shadow: 0 0 0 1px var(--glass-border);
+    font: 400 12px/1.5 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.wk-deal { display: flex; align-items: baseline; gap: 10px; padding: 10px 0; }
+.wk-usd { flex: none; font-size: 13px; line-height: 18px; font-weight: 500; font-variant-numeric: tabular-nums; }
+
+.wk-facts { margin: 0; display: flex; flex-direction: column; }
+.wk-fact { display: grid; grid-template-columns: minmax(120px, 200px) minmax(0, 1fr); gap: 12px; padding: 9px 0; font-size: 13px; line-height: 18px; }
+.wk-fact + .wk-fact { border-top: 1px solid var(--row-line, var(--divider)); }
+.wk-fact-value { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; min-width: 0; }
+.wk-code { font: 400 12px/1.5 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.wk-copy { min-height: 28px; }
+
+/* Виджет «Работы» на столе: строка в две линии — название и что с работой, чтобы и в 240px всё читалось. */
+.wk-widget-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+.wk-widget-row { align-items: flex-start; }
+.wk-widget-row > .wk-dot { margin-top: 5px; }
+.wk-widget-lines { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.wk-widget-lines .w-text,
+.wk-widget-lines .w-cap { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 560px) {
+    .wk-model { display: none; }
+    .wk-head .wk-model { display: inline-flex; }
+    .wk-fact { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+    .wk-answers { padding-left: 0; }
+    .wk-deal { flex-wrap: wrap; }
+    .wk-deal .wk-row-main { flex-basis: calc(100% - 60px); }
+}

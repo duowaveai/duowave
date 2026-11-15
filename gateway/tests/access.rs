@@ -100,6 +100,9 @@ async fn gives_a_station_the_scripts_for_sdelayu_sam_as_plain_sh_by_the_address_
     let restore = gateway.get("/station/restore.sh").send().await.unwrap();
     assert_eq!(restore.status(), StatusCode::OK);
     assert!(restore.text().await.unwrap().contains("voice.sh drop"));
+    let uninstall = gateway.get("/station/uninstall.sh").send().await.unwrap();
+    assert_eq!(uninstall.status(), StatusCode::OK);
+    assert!(uninstall.text().await.unwrap().contains("uninstall.sh [--keep-data]"));
 
     // Connecting one from the panel is a PC's (the station's own build has no SSH). Every request here stops at the
     // gate or at the check of what it asks: nothing reaches a station.

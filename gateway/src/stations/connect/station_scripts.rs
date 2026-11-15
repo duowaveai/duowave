@@ -4,8 +4,9 @@
 //! A reset of the station wipes /data and so the copy, an update of the firmware changes its file and so the copy is
 //! not mounted: either way the station is the usual Alice.
 //!
-//! The panel's button and the «Сделаю сам» command put the same three files into /data/opt/duowave — voice.sh, the
-//! boot script's source and restore.sh, the way back without the gateway — then point the voice, check it, reboot.
+//! The panel's button and the «Сделаю сам» command put the same four files into /data/opt/duowave — voice.sh, the
+//! boot script's source, and the two ways back without the gateway: restore.sh (the voice back to Yandex, DuoWave
+//! stays) and uninstall.sh (DuoWave off the station altogether) — then point the voice, check it, reboot.
 
 use std::sync::LazyLock;
 
@@ -13,6 +14,10 @@ use super::quasar_config::{safe_address, VoiceAddresses, STATION_CONFIG};
 
 pub const CLIENT_DIR: &str = "/data/opt/duowave";
 pub const RESTORE_SCRIPT: &str = "/data/opt/duowave/restore.sh";
+pub const UNINSTALL_SCRIPT: &str = "/data/opt/duowave/uninstall.sh";
+/// Ours in /etc/init.d besides the boot script: the call client's, and the station gateway's of old builds.
+pub const CLIENT_SERVICE: &str = "/etc/init.d/S99zduowave";
+pub const LEGACY_GATEWAY_SERVICE: &str = "/etc/init.d/S99zgateway";
 pub const VOICE_SCRIPT: &str = "/data/opt/duowave/voice.sh";
 /// The boot script's source, beside voice.sh: voice.sh puts it into /etc/init.d when it first points the voice.
 pub const BOOT_SOURCE: &str = "/data/opt/duowave/S95duowave";
@@ -40,12 +45,15 @@ fn quoted(value: &str) -> Result<String, UnsafeAddress> {
 }
 
 /// restore.sh, left on the station: the firmware's own config back — our copy unmounted and gone — then a reboot.
-/// The same whatever the station was pointed at: before DuoWave its voice went where its own file says.
+/// The same whatever the station was pointed at: before DuoWave its voice went where its own file says. Only the
+/// voice: DuoWave stays on the station, to be connected again by the button; uninstall.sh takes it off.
 pub fn restore_script() -> String {
     format!(
         r##"#!/bin/sh
-# Back to how this station was before the voice gateway: the firmware's own quasar.cfg (our copy over it unmounted and
-# gone), then a reboot. Left here by the gateway; runs without it: sh {RESTORE_SCRIPT}
+# The station's voice back to Yandex: the firmware's own quasar.cfg (our copy over it unmounted and gone), then a
+# reboot. Only the voice: DuoWave stays on the station (the gateway on it and the call client, if any, keep running)
+# and the panel connects it again. To take DuoWave off the station altogether: sh {UNINSTALL_SCRIPT}
+# Left here by the gateway; runs without it: sh {RESTORE_SCRIPT}
 set -eu
 CFG={STATION_CONFIG}
 if [ -f {VOICE_SCRIPT} ]; then
@@ -54,8 +62,95 @@ else
     while grep -q " $CFG " /proc/mounts; do umount "$CFG"; done
     rm -f {VOICE_COPY} {FIRMWARE_COPY}
 fi
-echo "back to the firmware's own voice server; rebooting"
+echo "back to the firmware's own voice server; DuoWave stays here (to take it off: sh {UNINSTALL_SCRIPT}); rebooting"
 reboot
+"##
+    )
+}
+
+/// uninstall.sh, left on the station: DuoWave off it, as if it had never been there. The voice back first (a station
+/// whose voice went to its own gateway would fall silent once that is gone; a failure here changes nothing else), then
+/// what runs stopped, our scripts out of /etc/init.d, /data/opt/duowave gone, a reboot. `--keep-data` keeps the station
+/// gateway's data for a later install; `--no-reboot` is the panel's (its steps check what is left, then reboot). A YAM package stays (a script cannot remove its own package): its `yam-off`
+/// mark stays with it, so its updates do not bring the gateway back, and the script names `yam remove`.
+pub fn uninstall_script() -> String {
+    format!(
+        r##"#!/bin/sh
+# Takes DuoWave off this station, as if it had never been here: the voice back to the firmware's own quasar.cfg, the
+# gateway on the station and the call client stopped, their scripts out of /etc/init.d, {CLIENT_DIR} gone, then a
+# reboot. --keep-data keeps the station gateway's data ({CLIENT_DIR}/gateway: its database, journal, .env).
+# Only the voice back to Yandex, DuoWave kept: sh {RESTORE_SCRIPT}
+# Left here by the gateway; runs without it: sh {UNINSTALL_SCRIPT} [--keep-data]
+# (--no-reboot: the panel's steps, which check what is left and then reboot the station themselves.)
+set -u
+DIR={CLIENT_DIR}
+CFG={STATION_CONFIG}
+KEEP=
+REBOOT=1
+for arg in "$@"; do
+    case "$arg" in
+        --keep-data) KEEP=1 ;;
+        --no-reboot) REBOOT= ;;
+        *) echo "usage: sh {UNINSTALL_SCRIPT} [--keep-data]" >&2; exit 2 ;;
+    esac
+done
+
+# The voice first: nothing else changes unless it is back with the firmware's own config.
+if [ -f "$DIR/voice.sh" ]; then
+    sh "$DIR/voice.sh" drop || {{ echo "the voice is not back with Yandex; nothing else changed" >&2; exit 1; }}
+else
+    while grep -q " $CFG " /proc/mounts; do
+        umount "$CFG" || {{ echo "$CFG stays mounted; nothing else changed" >&2; exit 1; }}
+    done
+fi
+
+# What runs: the gateway on the station, the call client, the gateway's service of old builds.
+[ -f "$DIR/gateway.sh" ] && sh "$DIR/gateway.sh" stop
+for service in {CLIENT_SERVICE} {LEGACY_GATEWAY_SERVICE}; do
+    [ -f "$service" ] && sh "$service" stop
+done
+
+# Ours on the firmware's partition, read-only but for the moment. A boot script left behind finds nothing to start.
+ours=
+for file in {BOOT_SCRIPT} {CLIENT_SERVICE} {LEGACY_GATEWAY_SERVICE}; do
+    [ -e "$file" ] && ours="$ours $file"
+done
+if [ -n "$ours" ]; then
+    mount -o remount,rw /
+    rm -f $ours
+    sync
+    mount -o remount,ro / 2>/dev/null || true
+    for file in $ours; do
+        [ -e "$file" ] && echo "$file stays (the partition did not open): with $DIR gone it starts nothing" >&2
+    done
+fi
+
+# A YAM package's gateway: the package stays until `yam remove`, and its updates would turn the gateway on again.
+yam=
+[ "$(cat "$DIR/managed-by" 2>/dev/null)" = yam ] && yam=1
+case "$(cat "$DIR/gateway-bin" 2>/dev/null)" in */duowave.gateway/*) yam=1 ;; esac
+[ -f "$DIR/yam-off" ] && yam=1
+
+if [ -n "$KEEP" ] && [ -d "$DIR/gateway" ]; then
+    for file in "$DIR"/* "$DIR"/.[!.]*; do
+        [ -e "$file" ] || continue
+        [ "$file" = "$DIR/gateway" ] && continue
+        rm -rf "$file"
+    done
+    echo "the gateway's data stays in $DIR/gateway"
+else
+    rm -rf "$DIR"
+fi
+if [ -n "$yam" ]; then
+    mkdir -p "$DIR" && : > "$DIR/yam-off"
+    echo "the YAM package duowave/gateway stays, its gateway off; to remove it: yam remove duowave/gateway"
+fi
+if [ -n "$REBOOT" ]; then
+    echo "DuoWave is off this station; rebooting"
+    reboot
+else
+    echo "DuoWave is off this station; the reboot is next"
+fi
 "##
     )
 }
@@ -65,12 +160,13 @@ fn deliver(path: &str) -> String {
     format!("mkdir -p {CLIENT_DIR} && cat > {path}.new && chmod 755 {path}.new && mv -f {path}.new {path}")
 }
 
-/// The three files the station needs before its voice is pointed: the commands, each with its stdin.
+/// The four files the station needs before its voice is pointed: the commands, each with its stdin.
 pub fn deliveries() -> Vec<(String, String)> {
     vec![
         (deliver(VOICE_SCRIPT), VOICE_SH.to_string()),
         (deliver(BOOT_SOURCE), BOOT_SH.to_string()),
         (deliver(RESTORE_SCRIPT), restore_script()),
+        (deliver(UNINSTALL_SCRIPT), uninstall_script()),
     ]
 }
 
@@ -88,7 +184,7 @@ fn heredoc(path: &str, text: &str, delimiter: &str) -> String {
 }
 
 /// connect.sh, served by the gateway for «Сделаю сам»: the station fetches it and runs it —
-/// `ssh -p 2222 root@<station> 'wget -qO- http://<gateway>/station/connect.sh | sh'`. It writes the three files, then
+/// `ssh -p 2222 root@<station> 'wget -qO- http://<gateway>/station/connect.sh | sh'`. It writes the four files, then
 /// points the voice, then reboots.
 pub fn connect_script(target: &VoiceAddresses) -> Result<String, UnsafeAddress> {
     let point = switch_to(target, false)?;
@@ -96,7 +192,8 @@ pub fn connect_script(target: &VoiceAddresses) -> Result<String, UnsafeAddress> 
         r##"#!/bin/sh
 # Connects this station to the voice gateway: its voice to {target_url}, through our copy of quasar.cfg mounted over
 # the firmware's own (which stays as it was), mounted again at every boot by {BOOT_SCRIPT}. A reset of the station or an
-# update of its firmware leaves the usual Alice; {RESTORE_SCRIPT} brings her back without the gateway.
+# update of its firmware leaves the usual Alice; {RESTORE_SCRIPT} brings her back without the gateway, and
+# {UNINSTALL_SCRIPT} takes DuoWave off the station altogether.
 set -eu
 CFG={STATION_CONFIG}
 [ -f "$CFG" ] || {{ echo "no $CFG: not a station this script knows; nothing changed" >&2; exit 1; }}
@@ -108,8 +205,9 @@ mkdir -p {CLIENT_DIR}
     script.push_str(&heredoc(VOICE_SCRIPT, VOICE_SH, "DUOWAVE_VOICE_SH"));
     script.push_str(&heredoc(BOOT_SOURCE, BOOT_SH, "DUOWAVE_BOOT_SH"));
     script.push_str(&heredoc(RESTORE_SCRIPT, &restore_script(), "DUOWAVE_RESTORE_SH"));
+    script.push_str(&heredoc(UNINSTALL_SCRIPT, &uninstall_script(), "DUOWAVE_UNINSTALL_SH"));
     script.push_str(&format!(
-        "{point}\necho \"connected to {url}; back to Yandex: sh {RESTORE_SCRIPT}\"\necho \"rebooting: the station comes back in about a minute\"\nreboot\n",
+        "{point}\necho \"connected to {url}; back to Yandex: sh {RESTORE_SCRIPT}; DuoWave off: sh {UNINSTALL_SCRIPT}\"\necho \"rebooting: the station comes back in about a minute\"\nreboot\n",
         url = target.url
     ));
     Ok(script)
@@ -127,6 +225,11 @@ pub struct Steps {
     /// root —, our copy (mounted, copy, none), and why the last boot left it unmounted («-» when it did not).
     pub facts: String,
     pub reboot: &'static str,
+    /// The panel's «Удалить DuoWave с колонки»: uninstall.sh on its stdin, without its own reboot.
+    pub uninstall: &'static str,
+    /// Reading only, a line each: what of ours is still on the station after it — nothing when it is all gone (a
+    /// YAM package's `yam-off` mark is not counted: it keeps the package's gateway off).
+    pub leftovers: String,
 }
 
 pub static STEPS: LazyLock<Steps> = LazyLock::new(|| {
@@ -145,6 +248,12 @@ pub static STEPS: LazyLock<Steps> = LazyLock::new(|| {
     ]
     .join("; "),
     reboot: "(sleep 1; reboot) >/dev/null 2>&1 &",
+    uninstall: "sh -s -- --no-reboot",
+    leftovers: format!(
+        "{mounted} && echo {STATION_CONFIG}; for file in {BOOT_SCRIPT} {CLIENT_SERVICE} {LEGACY_GATEWAY_SERVICE} \
+         {VOICE_SCRIPT} {CLIENT_DIR}/gateway.sh {CLIENT_DIR}/call-client.sh {CLIENT_DIR}/voice {CLIENT_DIR}/bin \
+         {CLIENT_DIR}/gateway; do [ -e $file ] && echo $file; done; true"
+    ),
 }
 });
 
@@ -381,10 +490,12 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
         for script in [
             connect_script(&target()).unwrap(),
             restore_script(),
+            uninstall_script(),
             switch_to(&target(), true).unwrap(),
             STEPS.read.clone(),
             STEPS.firmware.clone(),
             STEPS.facts.clone(),
+            STEPS.leftovers.clone(),
             VOICE_SH.to_string(),
             BOOT_SH.to_string(),
         ] {
@@ -549,6 +660,102 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
         assert_eq!(pretend.config(), config());
     }
 
+    /// A pretend station with everything DuoWave puts on one: the voice through our copy, the gateway on it (its
+    /// service notes what it is asked, its data a database), the call client's service.
+    fn station_with_everything() -> Pretend {
+        let pretend = Pretend::new();
+        pretend.deliver();
+        assert_eq!(pretend.run(&switch_to(&target(), false).unwrap(), None).status, Some(0));
+        let service = |path: &str, name: &str| {
+            std::fs::write(pretend.file(path), format!("echo \"{name} $1\" >> \"$PRETEND/calls\"\n")).unwrap();
+        };
+        service("/data/opt/duowave/gateway.sh", "gateway");
+        service(CLIENT_SERVICE, "client");
+        std::fs::create_dir_all(pretend.file("/data/opt/duowave/gateway/state")).unwrap();
+        std::fs::write(pretend.file("/data/opt/duowave/gateway/state/duowave.sqlite"), "db").unwrap();
+        std::fs::write(pretend.file("/data/opt/duowave/gateway-bin"), "/data/opt/duowave/bin/duowave\n").unwrap();
+        // A hidden file too: the folder goes whole.
+        std::fs::write(pretend.file("/data/opt/duowave/.client-seen"), "").unwrap();
+        pretend
+    }
+
+    #[test]
+    fn uninstall_sh_takes_duowave_off_the_station() {
+        let pretend = station_with_everything();
+        assert_eq!(pretend.read(UNINSTALL_SCRIPT), uninstall_script(), "uninstall.sh is on the station");
+        let gone = pretend.run(&uninstall_script(), None);
+        assert_eq!(gone.status, Some(0), "{}\n{}", gone.stdout, gone.stderr);
+        // The voice back with the firmware's own config, byte for byte.
+        assert!(!pretend.mounted());
+        assert_eq!(pretend.config(), config());
+        // What ran is stopped; nothing of ours left, in /data or on the firmware's partition.
+        let calls = pretend.read("calls");
+        assert!(calls.contains("gateway stop\n") && calls.contains("client stop\n"), "{calls}");
+        assert!(!pretend.file(CLIENT_DIR).exists(), "{CLIENT_DIR} gone");
+        for file in [BOOT_SCRIPT, CLIENT_SERVICE] {
+            assert!(!pretend.file(file).exists(), "{file} gone");
+        }
+        assert!(calls.contains("mount -o remount,rw /\nsync \nmount -o remount,ro /"), "{calls}");
+        assert!(calls.ends_with("reboot \n"), "{calls}");
+        assert!(!gone.stdout.contains("yam"), "no YAM package here: {}", gone.stdout);
+    }
+
+    #[test]
+    fn uninstall_sh_keeps_the_gateways_data_when_asked() {
+        let pretend = station_with_everything();
+        let gone = pretend.run(&format!("set -- --keep-data\n{}", uninstall_script()), None);
+        assert_eq!(gone.status, Some(0), "{}", gone.stderr);
+        assert_eq!(pretend.read("/data/opt/duowave/gateway/state/duowave.sqlite"), "db");
+        let left: Vec<_> =
+            std::fs::read_dir(pretend.file(CLIENT_DIR)).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left, vec![std::ffi::OsString::from("gateway")], "only the data");
+        assert!(!pretend.mounted() && !pretend.file(BOOT_SCRIPT).exists());
+        // Anything else is not a choice it knows: nothing changes.
+        let pretend = station_with_everything();
+        let wrong = pretend.run(&format!("set -- --all\n{}", uninstall_script()), None);
+        assert_eq!(wrong.status, Some(2));
+        assert!(pretend.mounted() && pretend.file(VOICE_SCRIPT).exists());
+    }
+
+    #[test]
+    fn uninstall_sh_leaves_a_yam_package_off_and_names_yam_remove() {
+        let pretend = station_with_everything();
+        std::fs::write(pretend.file("/data/opt/duowave/managed-by"), "yam\n").unwrap();
+        let gone = pretend.run(&uninstall_script(), None);
+        assert_eq!(gone.status, Some(0), "{}", gone.stderr);
+        assert!(gone.stdout.contains("yam remove duowave/gateway"), "{}", gone.stdout);
+        let left: Vec<_> =
+            std::fs::read_dir(pretend.file(CLIENT_DIR)).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left, vec![std::ffi::OsString::from("yam-off")], "the package's updates leave the gateway off");
+    }
+
+    #[test]
+    fn uninstall_sh_changes_nothing_while_the_voice_is_not_back() {
+        let pretend = station_with_everything();
+        std::fs::write(pretend.bin.join("umount"), "#!/bin/sh\necho \"umount $*\" >> \"$PRETEND/calls\"\nexit 1\n")
+            .unwrap();
+        let refused = pretend.run(&uninstall_script(), None);
+        assert_ne!(refused.status, Some(0));
+        assert!(refused.stderr.contains("nothing else changed"), "{}", refused.stderr);
+        let calls = pretend.read("calls");
+        assert!(!calls.contains("stop") && !calls.contains("reboot"), "{calls}");
+        assert!(pretend.file(BOOT_SCRIPT).exists() && pretend.file(UNINSTALL_SCRIPT).exists());
+    }
+
+    #[test]
+    fn the_panels_uninstall_leaves_the_reboot_to_its_steps_and_nothing_behind() {
+        let pretend = station_with_everything();
+        let before = pretend.run(&STEPS.leftovers, None);
+        assert!(before.stdout.contains("S95duowave") && before.stdout.contains("gateway.sh"), "{}", before.stdout);
+        // (Its stdin is the script: the station's paths moved into the pretend one by hand.)
+        let gone = pretend.run(STEPS.uninstall, Some(&pretend.localize(&uninstall_script())));
+        assert_eq!(gone.status, Some(0), "{}\n{}", gone.stdout, gone.stderr);
+        assert!(gone.stdout.contains("the reboot is next"), "{}", gone.stdout);
+        assert!(!pretend.read("calls").contains("reboot"), "the steps reboot it");
+        let after = pretend.run(&STEPS.leftovers, None);
+        assert_eq!((after.status, after.stdout.as_str()), (Some(0), ""), "nothing of ours left");
+    }
+
     #[test]
     fn connect_sh_writes_its_files_points_the_voice_and_reboots() {
         let pretend = Pretend::new();
@@ -559,6 +766,7 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
         assert_eq!(pretend.read(VOICE_SCRIPT), pretend.localize(VOICE_SH));
         assert_eq!(pretend.read(BOOT_SOURCE), pretend.localize(BOOT_SH));
         assert_eq!(pretend.read(RESTORE_SCRIPT), pretend.localize(&restore_script()));
+        assert_eq!(pretend.read(UNINSTALL_SCRIPT), pretend.localize(&uninstall_script()));
         assert!(pretend.read("calls").contains("reboot"));
     }
 
@@ -669,20 +877,23 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
         assert_eq!(pretend.read("calls").matches("reboot").count(), 1);
     }
 
-    /// station-client/restore.sh is kept in the tree for the tools that put it on a station without a gateway
-    /// (scripts/station-voice.sh): it must be this restore_script(). DUOWAVE_BLESS=1 writes it anew.
+    /// station-client/restore.sh and uninstall.sh are kept in the tree for the tools that put them on a station without
+    /// a gateway (scripts/station-voice.sh): they must be restore_script() and uninstall_script(). DUOWAVE_BLESS=1
+    /// writes them anew.
     #[test]
     fn the_kept_restore_sh_is_the_restore_script() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../station-client/restore.sh");
-        if std::env::var_os("DUOWAVE_BLESS").is_some() {
-            std::fs::write(&path, restore_script()).unwrap();
+        for (name, script) in [("restore.sh", restore_script()), ("uninstall.sh", uninstall_script())] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../station-client").join(name);
+            if std::env::var_os("DUOWAVE_BLESS").is_some() {
+                std::fs::write(&path, &script).unwrap();
+            }
+            let kept = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(
+                kept == script,
+                "{} is not the gateway's own script; DUOWAVE_BLESS=1 cargo test -p duowave kept_restore_sh writes it",
+                path.display()
+            );
         }
-        let kept = std::fs::read_to_string(&path).unwrap_or_default();
-        assert!(
-            kept == restore_script(),
-            "{} is not restore_script(); DUOWAVE_BLESS=1 cargo test -p duowave kept_restore_sh writes it",
-            path.display()
-        );
     }
 
     #[test]

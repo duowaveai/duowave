@@ -13,13 +13,20 @@
 //!   that is not up yet. A phrase of up to 600 characters; the same right.
 //! - `GET /api/v1/talk/now?device=` → `{device, text}`: what the brain knows now on a device (the computer without
 //!   one) — the block «Сейчас» as the model gets it; empty when nothing goes on. The right to talk (`use:chat`).
-//! - `GET /api/v1/works?device=&state=` → the works, the newest first; `GET /api/v1/works/{id}` → one;
+//! - `GET /api/v1/works?device=&state=&group=` → the works, the newest first; `GET /api/v1/works/{id}` → one;
 //!   `GET /api/v1/works?waiting=1` → «Ждёт вас»: the works whose question waits for the person
-//!   (docs/plans/audio-interface-2.md, «К3»). The right to use the apps (`use:plugins`).
+//!   (docs/plans/audio-interface-2.md, «К3»). The right to use the apps (`use:plugins`). For the page «Работы»
+//!   (docs/plans/router-and-works.md, decision 17) each work says its `group` — `going`, `queued`, `asking`, `recent`
+//!   (`?group=going,asking` picks groups; the recent ones go by their end, the newest first) — why it waits in the
+//!   queue (`wait`), what its executor is at (`doing`, `step`), and for the admin the model that answers it (`model`)
+//!   and what its deals spent (`spent`).
+//! - `GET /api/v1/works/{id}/deals` → `{deals}`: the router's deals of the work, the newest first. The admin's
+//!   (`settings.edit`), as the router's own list.
 //! - `POST /api/v1/works/{id}/said` — the computer said the work's line to its end (the panel's voice): its question
 //!   opens for the answer the panel listens for. `POST /api/v1/works/{id}/notes {text}` — words added to it («вдогонку»,
-//!   or its new version); `POST /api/v1/works/{id}/do {action}` — `status`, `details`, `show`, `desk`, `park`, `stop`.
-//!   Each answers `{said}`, the phrase to say or show. The same right.
+//!   or its new version); `POST /api/v1/works/{id}/do {action}` — `status`, `details`, `show`, `desk`, `park`, `stop`,
+//!   and `answer` with `{answer}` — `yes`, `fit`, `no`, `park`, `details`: the work's question answered by a button,
+//!   as if said aloud. Each answers `{said}`, the phrase to say or show. The same right.
 //! - `POST /api/v1/talk {…, why?}`: a phrase with `via: answer` is the closed window's — `why` the microphone opened
 //!   by itself (`question`, `work`, `ready`; docs/plans/audio-interface-2.md, «К2»); what the window does not take
 //!   answers `dropped`, and nothing keeps it.
@@ -41,16 +48,20 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use super::works::{Work, WorkState};
+use super::executor::Doing;
+use super::ready::Answer;
+use super::works::{Refused, Work, WorkState, APP};
 use super::{input, Activator, Heard, Origin, TalkEvent, Turn, Why, COMPUTER, MAX_TEXT};
 use crate::app::App;
-use crate::core::identity::permissions::{use_of, STATION_MODE, STATION_VIEW};
+use crate::core::identity::permissions::{use_of, SETTINGS_EDIT, STATION_MODE, STATION_VIEW};
 use crate::core::requests::Place;
 use crate::dialog::Channel;
 use crate::placement::service::Role;
 use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller};
+use crate::router::deals::DealsQuery;
 use crate::settings::definitions::VoiceInput;
 use crate::skills::capabilities::CapabilityName;
+use crate::utils::time::now_ms;
 
 pub fn routes() -> Router<Arc<App>> {
     Router::new()
@@ -63,6 +74,7 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/api/v1/works/{id}/said", post(work_said))
         .route("/api/v1/works/{id}/notes", post(work_notes))
         .route("/api/v1/works/{id}/do", post(work_do))
+        .route("/api/v1/works/{id}/deals", get(work_deals))
 }
 
 /// What a work's action says.
@@ -71,9 +83,10 @@ struct WorkSaid {
     said: String,
 }
 
-async fn work_said(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Work> {
+async fn work_said(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<WorkItem> {
     caller.permitted(&use_of(CapabilityName::Plugins))?;
-    app.talk.said_on(&id, COMPUTER).map(ok).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))
+    let work = app.talk.said_on(&id, COMPUTER).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))?;
+    Ok(ok(Shelf::new(&app, &caller).item(work)))
 }
 
 /// The panel's person on the computer, typing.
@@ -106,9 +119,43 @@ async fn work_do(
     app.talk.works().get(&id).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))?;
     let action = body.get("action").and_then(Value::as_str).unwrap_or_default();
     let pack = super::pack::of(app.talk.lang(COMPUTER));
+    if action == "answer" {
+        let answer = match body.get("answer").and_then(Value::as_str).unwrap_or_default() {
+            "yes" => Answer::Yes,
+            "fit" => Answer::Fit,
+            "no" => Answer::No,
+            "park" => Answer::Park,
+            "details" => Answer::Details,
+            _ => return Err(ApiError::field("answer", crate::tr!("ответ — yes, fit, no, park или details"))),
+        };
+        let said = app
+            .talk
+            .answer_work(typed(&caller), &id, answer)
+            .await
+            .ok_or_else(|| ApiError::conflict(crate::tr!("Работа ничего не спрашивает.")))?;
+        return Ok(ok(WorkSaid { said }));
+    }
     let said =
         app.talk.act(&typed(&caller), action, Some(&id)).await.unwrap_or_else(|refusal| refusal.for_person(pack));
     Ok(ok(WorkSaid { said }))
+}
+
+/// The router's deals of a work, the newest first: those since it began — an older work with the same id is not it.
+#[derive(Debug, Serialize)]
+struct WorkDealList {
+    deals: Vec<crate::router::Deal>,
+}
+
+async fn work_deals(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<WorkDealList> {
+    caller.permitted(SETTINGS_EDIT)?;
+    let work = app.talk.works().get(&id).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))?;
+    let asked = DealsQuery {
+        work: Some(work.id.clone()),
+        from: Some(work.started_at.saturating_sub(SINCE_SLACK_MS)),
+        limit: Some(crate::router::deals::LIST_MAX),
+        ..DealsQuery::default()
+    };
+    Ok(ok(WorkDealList { deals: app.router.deals.list(&asked)? }))
 }
 
 /// The block «Сейчас» as a device's brain gets it.
@@ -135,10 +182,11 @@ async fn works(
     State(app): State<Arc<App>>,
     caller: Caller,
     Query(query): Query<HashMap<String, String>>,
-) -> ApiResult<Vec<Work>> {
+) -> ApiResult<Vec<WorkItem>> {
     caller.permitted(&use_of(CapabilityName::Plugins))?;
+    let shelf = Shelf::new(&app, &caller);
     if query.get("waiting").is_some_and(|waiting| waiting == "1" || waiting == "true") {
-        return Ok(ok(app.talk.waiting()));
+        return Ok(ok(app.talk.waiting().into_iter().map(|work| shelf.item(work)).collect()));
     }
     let device = query.get("device").map(String::as_str).filter(|device| !device.is_empty());
     let state = match query.get("state").map(String::as_str).filter(|state| !state.is_empty()) {
@@ -148,12 +196,201 @@ async fn works(
         ),
         None => None,
     };
-    Ok(ok(app.talk.works().all(device, state)))
+    let mut groups = Vec::new();
+    for name in query.get("group").map(String::as_str).unwrap_or_default().split(',').map(str::trim) {
+        if name.is_empty() {
+            continue;
+        }
+        let group = Group::parse(name)
+            .ok_or_else(|| ApiError::field("group", crate::tr!("группы работ — going, queued, asking, recent")))?;
+        groups.push(group);
+    }
+    // The groups are picked before the rest is looked up: the deals are read only for the works shown.
+    let mut items: Vec<WorkItem> = app
+        .talk
+        .works()
+        .all(device, state)
+        .into_iter()
+        .filter(|work| groups.is_empty() || groups.contains(&shelf.group(work)))
+        .map(|work| shelf.item(work))
+        .collect();
+    // The recent ones by their end: a work begun long ago may have ended a minute ago.
+    if !groups.is_empty() && groups.iter().all(|group| *group == Group::Recent) {
+        items.sort_by_key(|item| std::cmp::Reverse(item.work.ended_at.unwrap_or(item.work.updated_at)));
+    }
+    Ok(ok(items))
 }
 
-async fn work(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Work> {
+async fn work(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<WorkItem> {
     caller.permitted(&use_of(CapabilityName::Plugins))?;
-    app.talk.works().get(&id).map(ok).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))
+    let work = app.talk.works().get(&id).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))?;
+    Ok(ok(Shelf::new(&app, &caller).item(work)))
+}
+
+/// A deal's `at` is when its answer ended: never before its work began. A second of slack for the clock's step.
+const SINCE_SLACK_MS: u64 = 1000;
+
+/// Where a work stands on the page «Работы» (docs/plans/router-and-works.md, decision 17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Group {
+    /// Its executor is at it.
+    Going,
+    /// It waits in the queue (`wait` says why); later also a plan's limit or a budget.
+    Queued,
+    /// Its question waits for the person: «Ждёт вас».
+    Asking,
+    /// Ended: ready and decided, done, failed, stopped, interrupted — kept a month.
+    Recent,
+}
+
+impl Group {
+    fn parse(text: &str) -> Option<Group> {
+        match text {
+            "going" => Some(Group::Going),
+            "queued" => Some(Group::Queued),
+            "asking" => Some(Group::Asking),
+            "recent" => Some(Group::Recent),
+            _ => None,
+        }
+    }
+}
+
+/// Why a work waits in the queue: `busy` — as many of its kind go on as may at once; `soon` — a new one by voice
+/// came from its device less than two minutes ago, `until` then; `day` — ten new ones by voice today; `next` — its
+/// turn is now. `ahead` — how many of its kind wait before it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Wait {
+    why: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    until: Option<u64>,
+    ahead: usize,
+}
+
+/// What a work's deals spent: their number, tokens and dollars (`usdMicro` of the priced ones; `unpriced` — how many
+/// had no price).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Spending {
+    deals: u64,
+    tokens: crate::router::Tokens,
+    usd_micro: u64,
+    unpriced: u64,
+}
+
+/// A work as the page «Работы» shows it: the record, and what goes with it now.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkItem {
+    #[serde(flatten)]
+    work: Work,
+    group: Group,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wait: Option<Wait>,
+    /// What an app's agent is at: `thinking`, `writing`, `reading`, `checking`, `trying`, `phrase`, `docs`, `journal`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    doing: Option<&'static str>,
+    /// The executor's own words of where a background work is: the tool's step, the task's percent and words.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    step: Option<String>,
+    /// Who answers it: the last round heard while it goes on, else its newest deal. The admin's only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<crate::router::Answered>,
+    /// What its deals spent. The admin's only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    spent: Option<Spending>,
+}
+
+/// What the works are matched with for the page: the questions waiting, the queue, the router for the admin.
+struct Shelf<'a> {
+    app: &'a App,
+    asking: std::collections::HashSet<String>,
+    queued: Vec<Work>,
+    admin: bool,
+}
+
+impl<'a> Shelf<'a> {
+    fn new(app: &'a App, caller: &Caller) -> Shelf<'a> {
+        let asking = app.talk.waiting().into_iter().map(|work| work.id).collect();
+        let mut queued = app.talk.works().all(None, Some(WorkState::Queued));
+        queued.sort_by_key(|work| (work.started_at, work.id.parse::<u64>().unwrap_or(0)));
+        Shelf { app, asking, queued, admin: caller.permitted(SETTINGS_EDIT).is_ok() }
+    }
+
+    /// Where a work stands: going, in the queue, asking — as «Ждёт вас» counts it — or recent.
+    fn group(&self, work: &Work) -> Group {
+        if work.going() {
+            Group::Going
+        } else if work.state.queued() {
+            Group::Queued
+        } else if self.asking.contains(&work.id) {
+            Group::Asking
+        } else {
+            Group::Recent
+        }
+    }
+
+    fn item(&self, work: Work) -> WorkItem {
+        let group = self.group(&work);
+        let wait = (group == Group::Queued).then(|| self.wait(&work));
+        let executor = self.app.talk.executor(&work.executor);
+        let (doing, step) = match (&executor, group) {
+            (Some(executor), Group::Going) if work.kind == APP => (executor.status(&work).map(doing_name), None),
+            (Some(executor), Group::Going) => (None, executor.details(&work)),
+            _ => (None, None),
+        };
+        let (model, spent) = if self.admin { self.spending(&work) } else { (None, None) };
+        WorkItem { work, group, wait, doing, step, model, spent }
+    }
+
+    /// Why a work waits: what the limits say of it now, as the queue asks them (layer.rs, `run_queue`).
+    fn wait(&self, work: &Work) -> Wait {
+        let ahead =
+            self.queued.iter().take_while(|other| other.id != work.id).filter(|other| other.kind == work.kind).count();
+        let (why, until) = match self.app.talk.works().may_start_kind(&work.kind, &work.origin, work.again, now_ms()) {
+            Ok(()) => ("next", None),
+            Err(Refused::Busy) => ("busy", None),
+            Err(Refused::TooSoon(ms)) => ("soon", Some(now_ms() + ms)),
+            Err(Refused::Enough) => ("day", None),
+        };
+        Wait { why, until, ahead }
+    }
+
+    /// Who answers a work and what its deals spent: the router's journal since the work began.
+    fn spending(&self, work: &Work) -> (Option<crate::router::Answered>, Option<Spending>) {
+        let deals = match self.app.router.deals.of_work(&work.id, work.started_at.saturating_sub(SINCE_SLACK_MS)) {
+            Ok(deals) => deals,
+            Err(error) => {
+                tracing::warn!(target: "talk", "the deals of work {} are not read: {error}", work.id);
+                return (None, None);
+            }
+        };
+        let heard = work.going().then(|| self.app.router.last_heard(&work.id)).flatten();
+        let model = heard.or(deals.last);
+        let sums = deals.sums;
+        let spent = (sums.deals > 0).then_some(Spending {
+            deals: sums.deals,
+            tokens: sums.tokens,
+            usd_micro: sums.usd_micro,
+            unpriced: sums.unpriced,
+        });
+        (model, spent)
+    }
+}
+
+/// What an app's agent is at, by name for the panel's words.
+fn doing_name(doing: Doing) -> &'static str {
+    match doing {
+        Doing::Thinking => "thinking",
+        Doing::Writing => "writing",
+        Doing::Reading => "reading",
+        Doing::Checking => "checking",
+        Doing::Trying => "trying",
+        Doing::Phrase => "phrase",
+        Doing::Docs => "docs",
+        Doing::Journal => "journal",
+    }
 }
 
 /// One phrase at most this long: the panel asks for an answer phrase by phrase.

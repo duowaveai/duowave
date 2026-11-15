@@ -196,10 +196,50 @@ pub struct WorkWords {
     pub doing: DoingWords,
     /// The ready phrases of the works: said as they are, without a round of the model.
     pub say: SayWords,
+    /// The background works' phrases (docs/plans/long-tools.md): a tool's call, an app's task.
+    pub background: BackgroundWords,
     /// The words the layer's rules catch (talk/rules.rs): regular expressions over the normalized phrase — lower
     /// case, «ё» as «е», no punctuation. Named groups: `thing` (what it is about), `text` (the words added), `what`
     /// (the face asked for), `ask` (the wish).
     pub rules: RuleWords,
+}
+
+/// The background works' phrases: the frame is the gateway's, the result in it is the model's retelling.
+pub struct BackgroundWords {
+    /// What a background work is in the block «Сейчас», in place of «виджет».
+    pub face: &'static str,
+    /// «Нет» to «Рассказать подробнее?».
+    pub fine: &'static str,
+    /// `{title}`: a background tool's call began.
+    pub started: &'static str,
+    /// `{title}`: it waits for a place (three go on).
+    pub queued: &'static str,
+    /// `{title}`: a paid run, asked first.
+    pub paid: &'static str,
+    /// «Нет» to the paid run.
+    pub not_run: &'static str,
+    /// `{title}`: an app's task began in a conversation.
+    pub task_started: &'static str,
+    /// `{title} {since} {step}`: how it goes.
+    pub working: &'static str,
+    /// What it is at when nothing more is known.
+    pub waiting_answer: &'static str,
+    /// `{title} {summary}`: done, with the retelling.
+    pub ready: &'static str,
+    /// `{title}`: done, nothing to retell.
+    pub ready_bare: &'static str,
+    /// `{title} {why}`: failed.
+    pub failed: &'static str,
+    /// After a cut retelling: the question.
+    pub more_q: &'static str,
+    /// No more to tell.
+    pub no_more: &'static str,
+    /// Words to a background call that runs already: a new call is the way.
+    pub no_add: &'static str,
+    /// What the model is asked for the retelling: `{title}`, `{lang}`.
+    pub summary_prompt: &'static str,
+    /// What the model is told when it goes on with a background call's result: `{title}`.
+    pub follow_prompt: &'static str,
 }
 
 /// The rules' words.

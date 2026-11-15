@@ -67,9 +67,20 @@ pub const NOT_FOR_THIS_GATEWAY: &str = "Набор настроек не для 
 /// needs more of its import than schema 1.
 pub const WHOLE: u32 = 1;
 
-/// The tables that travel whole, in the order they are written (people before their own settings).
+/// The tables that travel whole, in the order they are written (people before their own settings). `app_settings` —
+/// but for its keys each side keeps for itself (`LOCAL_APP_SETTINGS`). A build before it passes the table by.
 pub const TABLES: &[&str] =
-    &["users", "user_settings", "api_keys", "characters", "llm_providers", "mcp_servers", "stations"];
+    &["users", "user_settings", "api_keys", "characters", "llm_providers", "mcp_servers", "stations", "app_settings"];
+
+/// Of the apps' own settings (`app_settings`), the keys each side keeps for itself: what «Выход в интернет» learned
+/// of this home's network — a site that did not open directly from here (src/egress/rules.rs).
+pub const LOCAL_APP_SETTINGS: &[&str] = &["egress.learned"];
+
+/// A row each side keeps for itself.
+fn local_row(table: &str, row: &Map<String, Value>) -> bool {
+    table == "app_settings"
+        && row.get("key").and_then(Value::as_str).is_some_and(|key| LOCAL_APP_SETTINGS.contains(&key))
+}
 
 /// Settings each gateway keeps for itself.
 pub const LOCAL_SETTINGS: &[&str] = &[
@@ -304,7 +315,10 @@ pub fn export(db: &Db, secrets: &SecretsService, from: &str) -> rusqlite::Result
                     }
                     Ok(object)
                 })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
+                .collect::<rusqlite::Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|row| !local_row(table, row))
+                .collect();
             tables.insert(table.to_string(), rows);
         }
         let mut statement = connection.prepare("SELECT key, value FROM settings ORDER BY key")?;
@@ -607,6 +621,12 @@ pub fn import(db: &Db, secrets: &SecretsService, bundle: &Bundle, station: bool)
             .collect::<rusqlite::Result<_>>()?;
         // People last cleared first: their settings go with them.
         for table in TABLES.iter().rev() {
+            if *table == "app_settings" {
+                // What this side learned of its own network stays (`LOCAL_APP_SETTINGS`).
+                let local = LOCAL_APP_SETTINGS.iter().map(|key| format!("'{key}'")).collect::<Vec<_>>().join(", ");
+                transaction.execute(&format!("DELETE FROM app_settings WHERE key NOT IN ({local})"), [])?;
+                continue;
+            }
             transaction.execute(&format!("DELETE FROM {table}"), [])?;
         }
         for table in TABLES {
@@ -620,6 +640,10 @@ pub fn import(db: &Db, secrets: &SecretsService, bundle: &Bundle, station: bool)
                 if *table == "llm_providers"
                     && row.get("id").and_then(Value::as_str).is_some_and(|id| left_out.iter().any(|left| left == id))
                 {
+                    imported.skipped += 1;
+                    continue;
+                }
+                if local_row(table, row) {
                     imported.skipped += 1;
                     continue;
                 }
@@ -1054,6 +1078,48 @@ mod tests {
         let back = export(&station, &station_secrets, "station").unwrap();
         assert_eq!(fingerprint(&back), fingerprint(&export(&station, &station_secrets, "station").unwrap()));
         assert_eq!(back.tables["users"].len(), 1);
+    }
+
+    /// The apps' own settings travel as the rest (an app's route through a server), but what one side learned of its
+    /// own network stays there: a site that did not open directly from the computer's network says nothing of the
+    /// station's.
+    #[test]
+    fn the_apps_settings_travel_but_what_a_side_learned_stays() {
+        let row = |db: &Db, app: &str, key: &str, value: &str| {
+            db.with(|c| {
+                c.execute(
+                    "INSERT INTO app_settings (app_id, key, value, updated_at) VALUES (?1, ?2, ?3, 'now')",
+                    params![app, key, value],
+                )
+            })
+            .unwrap();
+        };
+        let rows = |db: &Db| -> Vec<(String, String, String)> {
+            db.with(|c| {
+                c.prepare("SELECT app_id, key, value FROM app_settings ORDER BY app_id, key")?
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                    .collect()
+            })
+            .unwrap()
+        };
+        let (pc, pc_secrets, _) = gateway();
+        row(&pc, "maps", "egress.route", r#""c1""#);
+        row(&pc, "maps", "egress.learned", r#"{"blocked":true}"#);
+        let bundle = export(&pc, &pc_secrets, "pc").unwrap();
+        assert_eq!(bundle.tables["app_settings"].len(), 1, "the learned row stays on the computer");
+
+        let (station, station_secrets, _) = gateway();
+        row(&station, "radio", "egress.route", r#""direct""#);
+        row(&station, "radio", "egress.learned", r#"{"blocked":false}"#);
+        import(&station, &station_secrets, &bundle, true).unwrap();
+        assert_eq!(
+            rows(&station),
+            vec![
+                ("maps".to_string(), "egress.route".to_string(), r#""c1""#.to_string()),
+                ("radio".to_string(), "egress.learned".to_string(), r#"{"blocked":false}"#.to_string()),
+            ],
+            "the computer's rules replace the station's; the station's own learning stays"
+        );
     }
 
     /// Review G1: the station's mode is switched there — by voice, from either panel, by its gateway itself — and the

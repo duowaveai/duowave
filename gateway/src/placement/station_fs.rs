@@ -13,8 +13,8 @@ use crate::stations::connect::quasar_config::{
     gateway_addresses, parse_gateway_host, read_config, yandex, GatewayHost, PointsTo, VoiceAddresses, STATION_CONFIG,
 };
 use crate::stations::connect::station_scripts::{
-    copy_state, restore_script, CopyState, BOOT_SCRIPT, BOOT_SH, BOOT_SOURCE, FIRMWARE_COPY, REFUSED, RESTORE_SCRIPT,
-    VOICE_COPY, VOICE_SCRIPT, VOICE_SH,
+    copy_state, restore_script, uninstall_script, CopyState, BOOT_SCRIPT, BOOT_SH, BOOT_SOURCE, FIRMWARE_COPY, REFUSED,
+    RESTORE_SCRIPT, UNINSTALL_SCRIPT, VOICE_COPY, VOICE_SCRIPT, VOICE_SH,
 };
 
 /// Everything of ours on the station.
@@ -315,13 +315,15 @@ impl StationFs {
         gateway_addresses(&GatewayHost { host: "127.0.0.1".into(), port: self.port() }, "/uni.ws")
     }
 
-    /// voice.sh, the boot script's source and restore.sh, this program's own copies, into /data/opt/duowave.
+    /// voice.sh, the boot script's source, restore.sh and uninstall.sh, this program's own copies, into
+    /// /data/opt/duowave.
     fn put_scripts(&self) -> Result<(), String> {
         std::fs::create_dir_all(self.path(DIR)).map_err(|error| error.to_string())?;
         for (path, text) in [
             (VOICE_SCRIPT, VOICE_SH.to_string()),
             (BOOT_SOURCE, BOOT_SH.to_string()),
             (RESTORE_SCRIPT, restore_script()),
+            (UNINSTALL_SCRIPT, uninstall_script()),
         ] {
             write_atomic(&self.path(path), text.as_bytes())?;
             make_executable(&self.path(path));
@@ -559,7 +561,7 @@ impl StationFs {
             let _ = std::fs::remove_file(self.path(&format!("{DIR}/{file}")));
         }
         if !copy_in_use {
-            for file in [VOICE_SCRIPT, BOOT_SOURCE, RESTORE_SCRIPT, LOCK] {
+            for file in [VOICE_SCRIPT, BOOT_SOURCE, RESTORE_SCRIPT, UNINSTALL_SCRIPT, LOCK] {
                 let _ = std::fs::remove_file(self.path(file));
             }
             let _ = std::fs::remove_dir_all(self.path("/data/opt/duowave/voice"));

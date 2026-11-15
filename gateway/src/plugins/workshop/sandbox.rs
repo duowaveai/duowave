@@ -663,7 +663,7 @@ fn slow_network_warning(manifest: &Manifest, source: &str) -> Option<String> {
     if lines.is_empty() {
         return None;
     }
-    Some(crate::tr!("Сеть ждёт дольше 2 с (timeoutMs, строка {lines}), а у фразы, инструмента и карточки всего 2 с вместе с сетью: вызов оборвётся, и kv не запишется — ошибка будет каждый раз. Медленный сервис — в фоне: ритм contributes.schedules (every, handler; связь call:system/schedule, 30 с) кладёт данные в host.kv, а фраза и карточка только читают kv.", lines = lines.join(", ")))
+    Some(crate::tr!("Сеть ждёт дольше 2 с (timeoutMs, строка {lines}), а у фразы, инструмента и карточки всего 2 с вместе с сетью: вызов оборвётся, и kv не запишется — ошибка будет каждый раз. Медленный сервис — в фоне: ритм contributes.schedules (every, handler; связь call:system/schedule, 30 с) кладёт данные в host.kv, а фраза и карточка только читают kv. Дело по просьбе на минуты — задача: host.tasks.start({ title, step }), шлюз зовёт шаг сам.", lines = lines.join(", ")))
 }
 
 /// Host calls that answer with a promise (`host.http.fetch`, `host.bus.*`, `host.files.*`) left as a statement or a

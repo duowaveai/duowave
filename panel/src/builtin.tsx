@@ -4,7 +4,7 @@
 // а их адреса ведут на новые места (shell/links.ts). Экраны берут данные из контекста пульта (usePanel).
 
 import { tr } from './i18n';
-import { IconCode, IconFolder, IconGear, IconHome, IconJournal, IconLaptop, IconMemory, IconMusic, IconPackage, IconShield, IconSmile, IconSparkle, IconTimer } from './icons';
+import { IconCode, IconFolder, IconGear, IconGlobe, IconHome, IconJournal, IconLaptop, IconList, IconMemory, IconMusic, IconPackage, IconShield, IconSmile, IconSparkle, IconTimer } from './icons';
 import { definePlugin } from './shell/registry';
 import { MINIMAL } from './shell/themes';
 import { NowAnsweringCard } from './screens/characters';
@@ -14,6 +14,8 @@ import { SkillsSection } from './screens/skills';
 import { MemoryWidget } from './screens/recall';
 import { DeskScreen } from './screens/desk';
 import { FittingSection } from './screens/fitting';
+import { WorksSection } from './screens/works';
+import { EgressScreen } from './screens/egress';
 import { FoldersSection } from './screens/folders';
 import {
     AllocWidget,
@@ -24,6 +26,7 @@ import {
     UnsupportedWidget,
     WatchWidget,
     WorkshopWidget,
+    WorksWidget,
 } from './screens/desk-widgets';
 import { MusicWidget, TimersWidget } from './screens/station-widgets';
 import { useOfferedVersion } from './updates';
@@ -54,16 +57,26 @@ export default definePlugin({
         { id: 'home', get title() { return tr.core.sectionHome; }, icon: IconHome, Screen: DeskScreen, order: 10 },
         { id: 'character', get title() { return tr.core.sectionCharacter; }, icon: IconSmile, Screen: CharacterSection, order: 20 },
         // «Навыки» стали «Приложениями» (docs/plans/voice-creation.md, решение 11): навык — лицо приложения.
-        { id: 'skills', get title() { return tr.core.sectionApps; }, icon: IconPackage, Screen: SkillsSection, order: 30 },
+        // Число обновлений MagicPlace — на «Приложениях»: магазин стал их вкладкой (docs/plans/menu-scheme.md).
+        { id: 'skills', get title() { return tr.core.sectionApps; }, icon: IconPackage, Screen: SkillsSection, order: 30, Badge: UpdatesBadge },
         // MagicPlace — встроенный магазин (docs/plans/magicplace.md): часть пульта и шлюза, не пакет — не выключить и не
         // удалить. В доке сразу после «Приложений», с числом обновлений; окно — `#/magicplace/store/<пакет>`.
-        { id: 'magicplace', get title() { return tr.magicplace.title; }, icon: IconMagicPlace, Screen: MagicPlaceSection, order: 32, permission: 'station.view', Badge: UpdatesBadge },
+        // В доке ячейки нет (docs/plans/menu-scheme.md): вкладка «Приложений», ярлык на столе; адреса прежние.
+        { id: 'magicplace', get title() { return tr.magicplace.title; }, icon: IconMagicPlace, Screen: MagicPlaceSection, order: 32, nav: 'link', permission: 'station.view', Badge: UpdatesBadge },
         // Домашняя папка DuoWave (docs/plans/shared-folders.md): что в ней, что подключено, кто что видит.
-        { id: 'folders', get title() { return tr.core.sectionFolders; }, icon: IconFolder, Screen: FoldersSection, order: 35, permission: 'station.view' },
+        // Ячейки в доке нет: «Папки» — приложение, открываются ярлыком со стола, плиткой и голосом.
+        { id: 'folders', get title() { return tr.core.sectionFolders; }, icon: IconFolder, Screen: FoldersSection, order: 35, nav: 'link', permission: 'station.view' },
         { id: 'settings', get title() { return tr.core.sectionSettings; }, icon: IconGear, Screen: SettingsSection, order: 40, Badge: UpdateDot },
         // «Примерка» черновика (docs/plans/voice-creation.md): только по ссылке `#/fitting/<черновик>` — её открывают
         // плитка, полоса голоса и колонка («примерить»); ячейки в доке нет.
         { id: 'fitting', get title() { return tr.core.sectionFitting; }, icon: IconSparkle, Screen: FittingSection, order: 90, nav: 'link', permission: 'plugins.manage' },
+        // «Работы» (docs/plans/router-and-works.md, решение 17): что идёт, что ждёт и почему, что спрашивает, недавние; по
+        // ссылке `#/works/<работа>` — сама работа. Ячейки в доке нет: туда ведут виджет «Работы» на столе и плашка «Делаю
+        // виджет». Администратору: в ней модели и деньги.
+        { id: 'works', get title() { return tr.router.title; }, icon: IconList, Screen: WorksSection, order: 92, nav: 'link', permission: 'settings.edit' },
+        // «Выход в интернет» (docs/plans/own-server.md): страница «Настроек», а по ссылке `#/egress` — сама; туда ведёт окно
+        // приложения «VPN» (`go("egress")`).
+        { id: 'egress', get title() { return tr.egress.title; }, icon: IconGlobe, Screen: EgressScreen, order: 94, nav: 'link', permission: 'connectors.view' },
     ],
     slots: {
         // Виджеты стола: у шлюза — о колонке и её ответах, у помощника — о том, что он ей даёт.
@@ -75,7 +88,10 @@ export default definePlugin({
             // Память: стартовый экран простой — на стол её ставят сами, через «Новый виджет» (владелец, 12.11).
             { id: 'memory', get title() { return tr.core.widgetMemory; }, icon: IconMemory, Component: MemoryWidget, order: 16, size: 'small', get source() { return tr.core.sourceHome; }, roles: ['gateway'], permission: 'memory.view', initial: false },
             // MagicPlace на столе: знак и одна строка — обновления, новое, рекомендуем; убрать можно, магазин остаётся в доке.
-            { id: 'magicplace', get title() { return tr.magicplace.title; }, icon: IconMagicPlace, Component: MagicPlaceWidget, order: 18, size: 'small', bare: true, permission: 'station.view' },
+            // Сразу на столе не стоит (владелец, 15.11): MagicPlace — ярлык; виджет со строкой новостей — по желанию.
+            { id: 'magicplace', get title() { return tr.magicplace.title; }, icon: IconMagicPlace, Component: MagicPlaceWidget, order: 18, size: 'small', bare: true, permission: 'station.view', initial: false },
+            // «Работы»: сколько идёт и сколько ждёт ответа, по строке на работу; нажатие — страница «Работы» (решение 17).
+            { id: 'works', get title() { return tr.router.widgetTitle; }, icon: IconList, Component: WorksWidget, order: 19, size: 'large', get source() { return tr.core.sourceHome; }, permission: 'settings.edit' },
             { id: 'recent', get title() { return tr.core.widgetRecent; }, icon: IconJournal, Component: RecentWidget, order: 20, size: 'large', get source() { return tr.core.sourceHistory; }, permission: 'journal.view' },
             { id: 'helper-card', get title() { return tr.core.widgetHelperCard; }, icon: IconLaptop, Component: HelperCardWidget, order: 25, size: 'small', get source() { return tr.core.sourceComputer; }, roles: ['gateway'], available: onStation },
             { id: 'alloc', get title() { return tr.core.widgetAlloc; }, Component: AllocWidget, order: 30, size: 'large', bare: true, roles: ['gateway'], available: withStation },

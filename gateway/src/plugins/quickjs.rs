@@ -131,6 +131,15 @@ const PRELUDE: &str = r#"
     stat: (at) => call("folders.stat", { at: String(at) }),
     download: (url, name) => call("folders.download", { url: String(url), name: String(name ?? "") }),
   });
+  // Long tasks (plugins/task_pump.rs): `start({ title, step, state })` — the gateway calls the export `step` until
+  // it answers `{ done }` or `{ fail }`; a conversation hears «Готово» where it asked.
+  const tasks = Object.freeze({
+    start: (spec = {}) => call("tasks.start", spec ?? {}),
+    progress: (id, percent, text) => call("tasks.progress", { id: String(id), percent, text }),
+    done: (id, result) => call("tasks.done", { id: String(id), result }),
+    fail: (id, error) => call("tasks.fail", { id: String(id), error: String(error ?? "") }),
+    get: (id) => call("tasks.get", { id: String(id) }),
+  });
   // Languages (docs/plans/i18n.md): the household's language now, the app's own languages, a text picked by them.
   // QuickJS has no Intl: the plural forms of the languages we know are here, the rest say «one» for 1, else «other».
   const languages = Object.freeze(JSON.parse(raw.languages));
@@ -188,7 +197,7 @@ const PRELUDE: &str = r#"
   globalThis.host = Object.freeze({
     api: 2,
     plugin: Object.freeze({ id: raw.id, version: raw.version }),
-    http, kv, settings, log, bus, files, i18n,
+    http, kv, settings, log, bus, files, i18n, tasks,
   });
   globalThis.console = Object.freeze({ log, info: log, debug: log, warn: say("warn"), error: say("error") });
 })();

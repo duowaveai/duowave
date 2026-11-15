@@ -3,6 +3,12 @@ import type { Translation } from '../../types';
 import type ru from '../ru/skills';
 
 const en: Translation<typeof ru> = {
+    tabsLabel: 'App sections',
+    tabMine: 'My apps',
+    tabConnections: 'Connections',
+    makeOwn: 'Make your own',
+    fromApps: 'From apps',
+    stateProblem: 'error',
     back: 'Apps',
     workshop: 'Workshop',
     contributedFailed: (title: string, plugin: string) =>

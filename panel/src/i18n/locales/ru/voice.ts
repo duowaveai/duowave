@@ -33,6 +33,10 @@ export default {
 
     // flow.tsx
     failedHead: 'Не вышло',
+    resultChip: 'Результат',
+    resultRetold: 'Пересказ',
+    resultData: 'Что пришло',
+    resultClose: 'Закрыть',
     failedNote: (title: string) => `«${title}»: что случилось — в мастерской.`,
     deleteDraftTitle: 'Удалить черновик?',
     deleteDraftText: (title: string) => `«${title}» уйдёт из мастерской.`,

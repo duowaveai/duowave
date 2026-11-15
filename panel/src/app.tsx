@@ -4,7 +4,7 @@ import { AccessCatalog, ApiError, CatalogEntry, Health, MovedGateway, SessionSna
 import { noteAvailability } from './availability';
 import { language, tr } from './i18n';
 import { settingsPlace } from './builtin';
-import { IconChevronDown, IconCode, IconSearch } from './icons';
+import { IconChevronDown, IconSearch } from './icons';
 import { useLive, useStationLive } from './live';
 import { Reach, dotClass, isReachable, reachOf } from './presence';
 import { AuthScreen } from './screens/auth';
@@ -15,7 +15,7 @@ import { SetupBanner, SetupSheet, StationButton, StationsPicker, displayName, ne
 import { DebugState, PanelContext, PanelState } from './shell/context';
 import { Place, hashOf, normalizePlace, parsePlace, writePlace } from './shell/links';
 import { AccountMenu } from './shell/account-menu';
-import { useDevMode } from './shell/dev';
+import { loadPanelMemory } from './shell/memory';
 import { SearchPalette, SearchPlace, searchPlaces, useSearchKey, useTalkKey } from './shell/search';
 import { timeAgo } from './time';
 import { SectionDef, useSections } from './shell/sections';
@@ -45,6 +45,7 @@ import { MagicPlaceFlow, noteMagicPlaceOpen } from './magicplace/open';
 import { STORE_TAB } from './magicplace/section';
 import { noteStoreChange } from './magicplace/state';
 import { toggleListening } from './voice/mic';
+import { useVoiceAction } from './voice/phrases';
 import { onTextToStation } from './voice/strip';
 import { deskActions } from './shell/widgets';
 import { StationFrame, StationModeChip, ViaRefused, WindowShell } from './shell/station-window';
@@ -133,25 +134,31 @@ function helpWords(role: RoleInfo): string | null {
 const isAdmin = (): boolean => can('plugins.manage') && sessionStore.get()?.role === 'admin';
 
 /**
- * Док (docs/plans/panel-rebuild.md): «Главная · Персонаж · [Сказать] · Навыки · Настройки» — у всех ролей; разделы
- * плагинов — перед «Настройками»; «Мастерская» — у разработчика. «Память» — страница «Навыков», не пункт дока: стартовый
- * экран простой (docs/plans/memory.md). Помощнику своего дока не нужно: его окно — пульт
- * колонки (этап 4).
+ * Док (docs/plans/menu-scheme.md): всегда пять — «Главная · Персонаж · [Сказать] · Приложения · Настройки». Ни разделы
+ * плагинов, ни MagicPlace с «Папками», ни слой разработчика ячеек не добавляют: MagicPlace — вкладка «Приложений»,
+ * «Папки» и разделы приложений открываются ярлыком со стола и со страницы приложения, «Мастерская» — кнопкой
+ * «Сделать своё». Число обновлений MagicPlace — на ячейке «Приложения».
  */
-function navOf(sections: SectionDef[], role: RoleInfo, dev: boolean): Nav {
+function navOf(sections: SectionDef[]): Nav {
     const byId = new Map(sections.map((section) => [section.id, section]));
     const entry = (id: string, over: Partial<NavEntry> = {}): NavEntry[] => {
         const section = byId.get(id);
         return section ? [{ key: id, title: section.title, icon: section.icon, Badge: section.Badge, section: id, ...over }] : [];
     };
-    const core = new Set(['home', 'character', 'skills', 'settings']);
-    // Раздел по ссылке («Примерка») ячейки в доке не берёт.
-    const extra = sections.filter((section) => !core.has(section.id) && section.nav !== 'link').flatMap((section) => entry(section.id));
-    const workshop = dev && isAdmin() ? entry('skills', { key: 'skills/workshop', title: tr.core.workshop, tab: 'workshop', icon: IconCode }) : [];
     return {
         left: [...entry('home'), ...entry('character')],
-        right: [...entry('skills'), ...workshop, ...extra, ...entry('settings', { tab: '' })],
+        right: [...entry('skills'), ...entry('settings', { tab: '' })],
     };
+}
+
+/** Разделы с ячейкой в доке; остальные голос открывает фразой «открой …» (OffDockPhrase). */
+const DOCK = new Set(['home', 'character', 'skills', 'settings']);
+
+/** Голос открывает и разделы без ячейки в доке: «папки», «открой MagicPlace», «открой мастерскую». */
+function OffDockPhrase({ title, open }: { title: string; open: () => void }) {
+    const word = title.toLowerCase();
+    useVoiceAction([word, tr.shell.openPhrase(word)], open, false);
+    return null;
 }
 
 /**
@@ -160,11 +167,14 @@ function navOf(sections: SectionDef[], role: RoleInfo, dev: boolean): Nav {
  */
 const tabKey = (section: string, query: Record<string, string>): string => (query.on === 'station' ? `station:${section}` : section);
 
-/** Какой пункт навигации открыт: стол, раздел колонки у помощника, мастерская или раздел. */
+/**
+ * Какой пункт навигации открыт: стол, раздел колонки у помощника или раздел. MagicPlace и «Мастерская» — части
+ * «Приложений»: в доке подсвечены «Приложения», и окно MagicPlace зовётся так же.
+ */
 function activeKey(place: Place, role: RoleInfo): string {
     if (place.section === 'home') return 'home';
-    if (place.section === 'skills' && place.tab === 'workshop' && place.query.on !== 'station') return 'skills/workshop';
     if (role.role === 'helper' && place.query.on === 'station') return `station:${place.section}`;
+    if (place.section === 'magicplace') return 'skills';
     return place.section;
 }
 
@@ -241,8 +251,6 @@ export function App() {
     const theme = useTheme();
     /** Режим «Микрофон»: говорят микрофоном этого компьютера — колонки, Алисы и Яндекса в пульте нет. */
     const computer = useOnComputer();
-    /** Слой разработчика (shell/dev.ts): «Мастерская» в доке, технические места в поиске. */
-    const dev = useDevMode();
     /** Поиск по пульту: ⌘K или Ctrl+K, лупа в верхней строке. */
     const [searchOpen, setSearchOpen] = useState(false);
     useSearchKey(() => setSearchOpen(true));
@@ -344,6 +352,16 @@ export function App() {
     }, [auth]);
     const offered = useOfferedUpdate();
     const [hiddenUpdate, setHiddenUpdate] = useState(() => remembered('glass-update-later'));
+
+    // Что пульт помнит о человеке — на шлюзе (shell/memory.ts): при входе и когда к вкладке вернулись, — вдруг на другом
+    // устройстве что-то поменяли (место в «Папках», слой разработчика).
+    useEffect(() => {
+        if (auth !== 'ok') return;
+        void loadPanelMemory();
+        const back = () => document.visibilityState === 'visible' && void loadPanelMemory();
+        document.addEventListener('visibilitychange', back);
+        return () => document.removeEventListener('visibilitychange', back);
+    }, [auth]);
 
     // Шлюз сменил порт (другой был занят), а колонка ходит на прежний: её голос никуда не доходит. Читается при входе
     // и после мастера подключения; без права подключать колонки — ничего.
@@ -643,7 +661,7 @@ export function App() {
         );
     // Во фрейме окна — пульт колонки без своего дока; во всё окно (этап 4) — обычный, с доком и строкой состояния.
     const { Shell } = VIA && !TOP_VIA ? { Shell: WindowShell } : shellFor(theme.view);
-    const nav = navOf(sections, role, dev);
+    const nav = navOf(sections);
     const activeNav = activeKey(link, role);
     const onNav = (entry: NavEntry): void => go(entry.section, entry.tab, undefined, entry.station ? { on: 'station' } : {});
     const name = computer ? 'DuoWave' : (ownName(health, role) ?? displayName(current, drawing));
@@ -734,6 +752,12 @@ export function App() {
 
     return (
         <PanelContext.Provider value={panel}>
+            {sections
+                .filter((entry) => !DOCK.has(entry.id) && entry.nav !== 'link')
+                .map((entry) => (
+                    <OffDockPhrase key={entry.id} title={entry.title} open={() => go(entry.id)} />
+                ))}
+            {isAdmin() && <OffDockPhrase title={tr.core.workshop} open={() => go('skills', 'workshop')} />}
             <Shell
                 sections={sections}
                 nav={nav}

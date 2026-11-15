@@ -208,17 +208,33 @@ impl RequestsService {
 
     /// One round of the model on a device's request going now (its newest, not a push of ours): what it spent.
     pub fn spent(&self, device: &str, model: &str, usage: &crate::dialog::llm::LlmUsage) {
-        let going = guard(&self.active)
+        if let Some(handle) = self.asked_now(device) {
+            handle.spent(model, usage);
+        }
+    }
+
+    /// The id of a device's request going now (its newest, not a push of ours): what a deal of the router belongs to.
+    pub fn going(&self, device: &str) -> Option<String> {
+        self.asked_now(device).map(|handle| handle.id())
+    }
+
+    /// A deal of the router closed for a request going now: the request shows its seat, model and dollars.
+    pub fn dealt(&self, request: &str, deal: &crate::router::Deal) {
+        let handle = guard(&self.active).iter().find(|handle| handle.id() == request).cloned();
+        if let Some(handle) = handle {
+            handle.dealt(&deal.seat, &deal.model, &deal.billing, deal.usd_micro);
+        }
+    }
+
+    fn asked_now(&self, device: &str) -> Option<Arc<RequestHandle>> {
+        guard(&self.active)
             .iter()
             .rev()
             .find(|handle| {
                 let view = handle.snapshot();
                 view.device == device && view.kind != RequestKind::Say
             })
-            .cloned();
-        if let Some(handle) = going {
-            handle.spent(model, usage);
-        }
+            .cloned()
     }
 
     /// A request starts in the given mode: the RequestStarter (`begin`) fills in the mode now.

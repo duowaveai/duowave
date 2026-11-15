@@ -8,6 +8,8 @@ import { useEffect, useState } from 'preact/hooks';
 import { LaterCommandView, PackageOrigin, PackageView, MidiView, PluginFilesView, ScheduleJob, ScheduleSpec, ScheduleView, api, problemOf, sessionStore, can } from '../api';
 import { formatNumber, locale, tr } from '../i18n';
 import { usePanel } from '../shell/context';
+import { registeredPlugins } from '../shell/registry';
+import { STARTING_SHORTCUTS, useDeskLayout } from '../shell/widgets';
 import { timeAgo } from '../time';
 import { Action } from '../ui/cards';
 import { Sheet } from '../ui/sheet';
@@ -359,12 +361,19 @@ export function LaterLine() {
     );
 }
 
+/** Раздел (окно) приложения в пульте — его открывают со страницы приложения и ярлыком; нет окна — null. */
+export function appSectionOf(id: string): string | null {
+    const plugin = registeredPlugins().find((entry) => entry.id === id || entry.id === `package.${id}`);
+    return (plugin?.sections?.find((section) => section.nav !== 'link') ?? plugin?.sections?.[0])?.id ?? null;
+}
+
 /** Окно установленного пакета: состояние, память, права, что даёт, настройки и кнопки по его виду. */
 export function InstalledPackageSheet({
     entry,
     onClose,
     onChanged,
     onRemove,
+    update,
 }: {
     entry: PackageView;
     onClose: () => void;
@@ -372,6 +381,8 @@ export function InstalledPackageSheet({
     onChanged: () => void;
     /** Удаление — общим путём экрана пакетов (спрашивает подтверждение). */
     onRemove: (entry: PackageView) => void;
+    /** В MagicPlace есть новая версия: «Обновить» — общим путём экрана пакетов. */
+    update?: { busy: boolean; run: () => void };
 }) {
     const panel = usePanel();
     const [view, setView] = useState<PackageView>(entry);
@@ -400,12 +411,17 @@ export function InstalledPackageSheet({
     };
     const memory = pluginMemoryLine(view);
     const contributes = view.contributes;
+    const section = appSectionOf(view.id);
+    // «Ярлык на столе» (docs/plans/menu-scheme.md): ярлыки — в раскладке стола, она на шлюзе.
+    const [desk, deskDo] = useDeskLayout(panel.role.role);
+    const shortcuts = desk.shortcuts ?? STARTING_SHORTCUTS;
+    const pinned = shortcuts.includes(view.id);
     const hosts = view.permissions.filter((permission) => permission.startsWith('net:'));
     const rights = view.permissions.filter((permission) => !permission.startsWith('net:'));
     const forkable = admin && (origin === 'bundled' || origin === 'catalog') && (kind === 'plugin' || kind === 'theme');
     const editable = admin && (view.editable ?? origin === 'user') && (kind === 'plugin' || kind === 'theme');
     return (
-        <Sheet title={view.title} about={`${ORIGIN_TITLES[origin]} · ${placeOf(kind, view.runtime)}${view.version ? tr.plugins.versionSuffix(view.version) : ''}`} onClose={onClose}>
+        <Sheet title={view.title} about={`${ORIGIN_TITLES[origin]} · ${placeOf(kind, view.runtime, view.runs)}${view.version ? tr.plugins.versionSuffix(view.version) : ''}`} onClose={onClose}>
             {view.description && <p class="t-body-sm m-0">{view.description}</p>}
             {/* Выключенное — первым делом «Включить»: без этого у приложения нет ни виджета, ни окна, а настройки ниже
                 можно заполнить и потом. */}
@@ -420,6 +436,34 @@ export function InstalledPackageSheet({
                         onClick={() => void run('toggle', () => api.enablePackage(view.id))}
                     />
                 </div>
+            )}
+            {/* Окно приложения (его раздел): в доке ячейки нет (docs/plans/menu-scheme.md) — открывается отсюда и ярлыком. */}
+            {(section || update) && (
+                <div class="flex flex-wrap items-center gap-8">
+                    {section && view.enabled && (
+                        <Action
+                            label={tr.magicplace.open}
+                            onClick={() => {
+                                onClose();
+                                panel.go(section);
+                            }}
+                        />
+                    )}
+                    {update && <Action tone="on" label={tr.catalog.update} busy={update.busy} disabled={update.busy} onClick={update.run} />}
+                </div>
+            )}
+            {runs && view.enabled && (
+                <label class="w-toggle">
+                    <span class="flex-1 min-w-0 flex flex-col">
+                        <span class="w-strong">{tr.desk.shortcutOnDesk}</span>
+                        <span class="w-cap">{tr.desk.shortcutOnDeskAbout}</span>
+                    </span>
+                    <Switch
+                        on={pinned}
+                        label={tr.desk.shortcutOnDesk}
+                        onChange={(on) => deskDo.shortcuts(on ? [...shortcuts.filter((id) => id !== view.id), view.id] : shortcuts.filter((id) => id !== view.id))}
+                    />
+                </label>
             )}
             <p class="t-caption m-0">{ORIGIN_RULES[origin]}</p>
             {runs && (

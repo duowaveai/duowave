@@ -57,6 +57,8 @@ pub struct TalkLayer {
     hinted: std::sync::Mutex<std::collections::HashMap<String, u64>>,
     /// MagicPlace by voice (store.rs): its rule, its questions.
     pub(super) store: super::store::Store,
+    /// The background tools' executor (tool_work.rs): a paid run's «да», «подробнее».
+    background: OnceLock<Weak<super::tool_work::ToolExecutor>>,
 }
 
 /// A device's conversation is remembered this long after its work last changed.
@@ -85,6 +87,7 @@ impl TalkLayer {
             reader: OnceLock::new(),
             planned: std::sync::Mutex::new(std::collections::HashSet::new()),
             hinted: std::sync::Mutex::new(std::collections::HashMap::new()),
+            background: OnceLock::new(),
         });
         // A question nobody answered in its time ends silent: the work's question says so, and waits.
         let me = Arc::downgrade(&layer);
@@ -98,6 +101,15 @@ impl TalkLayer {
 
     pub fn works(&self) -> &Works {
         &self.works
+    }
+
+    /// The background tools' executor joined (it added itself as an executor too).
+    pub fn set_background(&self, executor: &Arc<super::tool_work::ToolExecutor>) {
+        let _ = self.background.set(Arc::downgrade(executor));
+    }
+
+    pub(super) fn background(&self) -> Option<Arc<super::tool_work::ToolExecutor>> {
+        self.background.get().and_then(Weak::upgrade)
     }
 
     /// An executor joins: from now on it reports here.
@@ -238,7 +250,7 @@ impl TalkLayer {
         let mut waiting = self.works.all(None, Some(WorkState::Queued));
         waiting.sort_by_key(|work| (work.started_at, work.id.parse::<u64>().unwrap_or(0)));
         for work in waiting {
-            match self.works.may_start(&work.origin, work.again, now_ms()) {
+            match self.works.may_start_kind(&work.kind, &work.origin, work.again, now_ms()) {
                 Ok(()) => {
                     let id = work.id.clone();
                     if let Err(refusal) = self.launch(work) {
@@ -283,7 +295,7 @@ impl TalkLayer {
             let now = now_ms();
             let changed = self.works.update(&work.id, |work| {
                 let line = work.result.take().map(|result| result.line).unwrap_or_default();
-                work.result = Some(WorkResult { line, end: Some(end) });
+                work.result = Some(WorkResult { line, end: Some(end), ..WorkResult::default() });
                 work.question = None;
                 if work.going() || work.state.queued() {
                     work.state = WorkState::Stopped;
@@ -476,7 +488,7 @@ impl TalkLayer {
                 let changed = self.works.update(&work.id, |work| {
                     work.state = state;
                     if let Some(line) = line {
-                        work.result = Some(WorkResult { line, end: None });
+                        work.result = Some(WorkResult { line, end: None, ..WorkResult::default() });
                     }
                     // The thing is called what its maker named it.
                     if let Some(title) = title {
@@ -509,7 +521,7 @@ impl TalkLayer {
                 let Some(work) = self.works.of_target(executor, &target) else { return };
                 let changed = self.works.update(&work.id, |work| {
                     let line = work.result.take().map(|result| result.line).unwrap_or_default();
-                    work.result = Some(WorkResult { line, end: Some(end) });
+                    work.result = Some(WorkResult { line, end: Some(end), ..WorkResult::default() });
                     work.question = None;
                     if !work.going() {
                         work.state = WorkState::Done;
@@ -568,6 +580,12 @@ impl TalkLayer {
             work.tokens.cache_write += usage.cache_write.unwrap_or(0);
             work.tokens.rounds += 1;
         });
+    }
+
+    /// The work of an executor's thing (the workshop's agent on its draft), going or just ended: what a deal belongs
+    /// to — the run's answer may end after its work did.
+    pub fn work_of(&self, executor: &str, target: &str) -> Option<String> {
+        self.works.of_target(executor, target).map(|work| work.id)
     }
 
     /// The block «Сейчас» for a device, in the language given (the character's).
@@ -674,7 +692,7 @@ mod tests {
                 .works
                 .update(&work.id, |work| {
                     work.state = WorkState::Ready;
-                    work.result = Some(WorkResult { line: line.clone(), end: None });
+                    work.result = Some(WorkResult { line: line.clone(), end: None, ..WorkResult::default() });
                     work.question = Some(Question::new(line, 0, Kind::Ready));
                 })
                 .unwrap()

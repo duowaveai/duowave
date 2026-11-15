@@ -311,6 +311,9 @@ async fn open(
     body: String,
     cancel: &CancellationToken,
 ) -> anyhow::Result<reqwest::Response> {
+    if let Some(refused) = super::llm_client::egress_refusal(url) {
+        return Err(refused);
+    }
     let mut retries = MAX_RETRIES;
     loop {
         let send = client().post(url).headers(headers.clone()).body(body.clone()).send();

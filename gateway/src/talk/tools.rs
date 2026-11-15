@@ -130,7 +130,10 @@ async fn run(
         let server = mcp.server_of(&call.name);
         let by = if server.as_ref().is_some_and(|server| server.cloud) { Place::Cloud } else { Place::Own };
         working(by, server.as_ref().map_or(call.name.as_str(), |server| server.title.as_str()));
-        let outcome = mcp.run(&call, &cancel).await.map_err(|cancelled| anyhow::anyhow!("{cancelled}"))?;
+        let outcome = mcp
+            .run(&call, &cancel, Some(deps.origin.clone()))
+            .await
+            .map_err(|cancelled| anyhow::anyhow!("{cancelled}"))?;
         thinking();
         return Ok(outcome);
     }

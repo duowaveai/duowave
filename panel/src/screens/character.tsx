@@ -1,33 +1,49 @@
-// «Персонаж» — одна страница (docs/plans/panel-rebuild.md, этап 2): кто отвечает, его голос, манера и мозг. Глубже — по
-// «›»: все персонажи, все голоса и свой голос, модели и провайдеры — прежние экраны вторым слоем. Голос принадлежит
-// персонажу, поэтому «Голос» отдельным разделом больше не стоит в доке.
+// «Персонаж» — одна страница (docs/plans/panel-rebuild.md, этап 2): кто отвечает, его голос, манера, мозг и память. Глубже —
+// по «›»: все персонажи, все голоса и свой голос, модели и провайдеры, память — прежние экраны вторым слоем. Голос
+// принадлежит персонажу, поэтому «Голос» отдельным разделом в доке не стоит; память переехала сюда из «Приложений»
+// (docs/plans/menu-scheme.md): что персонаж помнит о доме — про него, а не про приложения.
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
 import { BrainView, CharactersView, ConnectorView, LlmEffort, ModelsView, PersonaInfo, api, can, problemOf } from '../api';
-import { IconChevronLeft, IconChevronRight, IconMic, IconSmile, IconSparkle, IconVoice } from '../icons';
-import { usePanel, useSectionTab } from '../shell/context';
+import { IconChevronLeft, IconChevronRight, IconMemory, IconSmile, IconSparkle, IconVoice } from '../icons';
+import { useLinkedItem, usePanel, useSectionTab } from '../shell/context';
 import { Avatar, PlayButton, markOf } from '../ui/media';
 import { BrainTab } from './brain';
 import { CharactersTab } from './characters';
 import { DashData, THINKING, Thinking, WHERE, nodesOf, thinkingOf, toneClass } from './dash-model';
 import { ModelsScreen } from './models';
+import { MemoryScreen } from './recall';
+import { SpendPage, SpendRow } from './spend';
 import { tr } from '../i18n';
-import { byMode } from '../words';
 
-export type CharacterTab = 'page' | 'characters' | 'voice' | 'brain';
+export type CharacterTab = 'page' | 'characters' | 'voice' | 'brain' | 'memory';
 
 /** Глубина Claude по ступеням: быстро, с умом, глубоко (как в листе мозга на главной). */
 const EFFORT_OF: Record<Thinking, LlmEffort> = { fast: 'low', smart: 'medium', deep: 'high' };
 
 export function CharacterSection() {
     const [tab, setTab] = useSectionTab<CharacterTab>('character', 'page');
-    if (tab === 'characters' || tab === 'voice' || tab === 'brain') return <Deeper tab={tab} onBack={() => setTab('page')} />;
+    if (tab === 'characters' || tab === 'voice' || tab === 'brain' || tab === 'memory') return <Deeper tab={tab} onBack={() => setTab('page')} />;
     return <CharacterPage onOpen={setTab} />;
 }
 
 /** Второй слой: прежний экран целиком и «‹ Персонаж» назад. */
-function Deeper({ tab, onBack }: { tab: 'characters' | 'voice' | 'brain'; onBack: () => void }) {
+function Deeper({ tab, onBack }: { tab: Exclude<CharacterTab, 'page'>; onBack: () => void }) {
+    // «Расход» — третий слой «Мозга» (`#/character/brain/spend`, docs/plans/router-and-works.md, этап 6б): назад — в «Мозг».
+    const brainItem = useLinkedItem('character', 'brain');
+    const spend = tab === 'brain' && brainItem.item === 'spend' && can('settings.edit');
+    if (spend) {
+        return (
+            <>
+                <button class="deeper-back" onClick={brainItem.close}>
+                    <IconChevronLeft size={16} />
+                    {tr.router.spendBack}
+                </button>
+                <SpendPage />
+            </>
+        );
+    }
     return (
         <>
             <button class="deeper-back" onClick={onBack}>
@@ -36,7 +52,8 @@ function Deeper({ tab, onBack }: { tab: 'characters' | 'voice' | 'brain'; onBack
             </button>
             {tab === 'characters' && <CharactersTab />}
             {tab === 'voice' && <ModelsScreen tab="voice" onTab={() => undefined} bare />}
-            {tab === 'brain' && <BrainTab />}
+            {tab === 'brain' && <BrainTab spend={can('settings.edit') && <SpendRow onOpen={() => brainItem.open('spend')} />} />}
+            {tab === 'memory' && can('memory.view') && <MemoryScreen />}
         </>
     );
 }
@@ -235,7 +252,8 @@ function CharacterPage({ onOpen }: { onOpen: (tab: CharacterTab) => void }) {
                         </div>
                     )}
                 </Row>
-                <Row icon={IconMic} title={tr.characters.ownVoice} sub={byMode(tr.characters.ownVoiceSubStation, tr.characters.ownVoiceSubDevice)} onOpen={() => onOpen('voice')} />
+                {/* «Свой голос» — внутри «Голоса»: у места один дом (docs/plans/menu-scheme.md). */}
+                {can('memory.view') && <Row icon={IconMemory} title={tr.characters.memory} sub={tr.characters.memorySub} onOpen={() => onOpen('memory')} />}
             </section>
             {note && (
                 <p role={note.ok ? 'status' : 'alert'} class={`t-meta m-0 ${note.ok ? 'c-text' : 'c-dot-offline'}`}>

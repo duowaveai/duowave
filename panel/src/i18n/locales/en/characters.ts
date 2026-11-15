@@ -7,6 +7,8 @@ const en: Translation<typeof ru> = {
     ownCharacter: 'Own personality',
     speaks: 'speaking',
     voice: 'Voice',
+    memory: 'Memory',
+    memorySub: 'what it remembers about the home: people, things, pause',
     manner: 'Manner',
     brain: 'Brain',
     whoAnswers: 'Who answers',

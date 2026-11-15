@@ -140,7 +140,8 @@ pub struct RequestView {
 }
 
 /// The model's spending on one request, every round of its answer summed: in, out, read from the cache, written to
-/// it, the rounds, the model.
+/// it, the rounds, the model. Once the answer's deal is closed (src/router) — its seat, how it is paid (`key`, `plan`,
+/// `local`) and its dollars at the day's price (docs/plans/router-and-works.md, «Устройство: пульт»).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestTokens {
@@ -152,6 +153,14 @@ pub struct RequestTokens {
     pub cache_write: u64,
     pub rounds: u32,
     pub model: String,
+    /// The seat that asked; none — no deal closed yet (or a request older than the router).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing: Option<String>,
+    /// Millionths of a dollar of its deals with a price; none — no price known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usd_micro: Option<u64>,
 }
 
 /// What a session gives to start following a request; the service adds the id, the mode and the time.
@@ -362,6 +371,25 @@ impl RequestHandle {
             tokens.rounds += 1;
             if tokens.model.is_empty() {
                 tokens.model = model.to_string();
+            }
+            true
+        });
+    }
+
+    /// The router's deal of the answer, once it is closed: its seat, how it is paid, its dollars. A second deal
+    /// («Запасная» took over midway) adds its dollars; the seat and the way it is paid stay the first one's.
+    pub fn dealt(&self, seat: &str, model: &str, billing: &str, usd_micro: Option<u64>) {
+        self.change(|state, _| {
+            let tokens = state.view.tokens.get_or_insert_with(RequestTokens::default);
+            if tokens.model.is_empty() {
+                tokens.model = model.to_string();
+            }
+            if tokens.seat.is_none() {
+                tokens.seat = Some(seat.to_string());
+                tokens.billing = Some(billing.to_string());
+            }
+            if let Some(usd) = usd_micro {
+                tokens.usd_micro = Some(tokens.usd_micro.unwrap_or(0) + usd);
             }
             true
         });
@@ -598,6 +626,45 @@ mod tests {
         assert_eq!(t.hooks.changes.lock().unwrap().len(), count);
         assert_eq!(t.handle.snapshot().status, RequestStatus::Silent);
         assert_eq!(t.hooks.ended.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn the_answers_deal_gives_the_seat_and_the_dollars() {
+        let t = trip(None);
+        let usage = crate::dialog::llm::LlmUsage { input: 20, output: 40, cache_read: Some(160), cache_write: None };
+        t.handle.spent("claude-haiku-5-5", &usage);
+        t.handle.spent("claude-haiku-5-5", &usage);
+        t.handle.dealt("fast", "claude-haiku-5-5", "key", Some(700));
+        // «Запасная» took over midway: its dollars add up, the seat stays the one that asked.
+        t.handle.dealt("backup", "deepseek-chat", "key", Some(8));
+        // A deal without a price adds nothing.
+        t.handle.dealt("backup", "own-model", "key", None);
+        let tokens = t.handle.snapshot().tokens.unwrap();
+        assert_eq!((tokens.input, tokens.output, tokens.cache_read, tokens.rounds), (40, 80, 320, 2));
+        assert_eq!(tokens.model, "claude-haiku-5-5");
+        assert_eq!(
+            (tokens.seat.as_deref(), tokens.billing.as_deref(), tokens.usd_micro),
+            (Some("fast"), Some("key"), Some(708))
+        );
+        let json = serde_json::to_value(&tokens).unwrap();
+        assert_eq!((json["seat"].as_str(), json["usdMicro"].as_u64()), (Some("fast"), Some(708)));
+
+        // No price known: no dollars, yet the seat; an old request's tokens read without them.
+        let t = trip(None);
+        t.handle.dealt("smart", "local-model", "local", None);
+        let tokens = t.handle.snapshot().tokens.unwrap();
+        assert_eq!(
+            (tokens.seat.as_deref(), tokens.usd_micro, tokens.model.as_str()),
+            (Some("smart"), None, "local-model")
+        );
+        let old: RequestTokens =
+            serde_json::from_value(serde_json::json!({"input": 1, "output": 2, "rounds": 1, "model": "m"})).unwrap();
+        assert_eq!((old.seat, old.usd_micro), (None, None));
+
+        // After the end nothing changes.
+        t.handle.finish(RequestStatus::Answered, None, None);
+        t.handle.dealt("smart", "local-model", "local", Some(5));
+        assert_eq!(t.handle.snapshot().tokens.unwrap().usd_micro, None);
     }
 
     #[test]

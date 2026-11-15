@@ -31,6 +31,10 @@ impl SkillConnectors for SkillSettings {
         self.0.weather_place()
     }
 
+    fn home_country(&self) -> Option<String> {
+        self.0.home_country()
+    }
+
     fn home_assistant(&self) -> Option<HomeAssistantConfig> {
         self.0.home_assistant()
     }

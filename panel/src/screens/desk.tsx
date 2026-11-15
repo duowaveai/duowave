@@ -7,6 +7,7 @@
 import { useEffect, useState } from 'preact/hooks';
 
 import type { PlacedStation } from '../api';
+import { can } from '../api';
 import { IconLaptop } from '../icons';
 import { usePanel } from '../shell/context';
 import { useTheme } from '../shell/theme';
@@ -15,6 +16,7 @@ import { WidgetFrame, WidgetMenu } from '../ui/widget';
 import { settingsPlace } from '../builtin';
 import { ConnectFirstCard } from './connect';
 import { FirstRun } from './first-run';
+import { CountryAsk, useHomeCountry } from './country';
 import { MicFirstCard } from './voice-input';
 import { LocalAsrSetup, localAsrNeedsCard, useLocalAsr } from './local-asr';
 import { Dashboard } from './dashboard';
@@ -27,6 +29,7 @@ import { useDeskDrafts } from '../voice/drafts';
 export { AddTile };
 import { RememberedLine } from './recall';
 import { tr } from '../i18n';
+import { Shortcuts } from './shortcuts';
 
 /** С этой ширины виджеты стоят по сторонам от колонки; уже — лентой. */
 const WIDE = '(min-width: 1100px)';
@@ -131,11 +134,15 @@ export function DeskScreen() {
     const setup = localAsrNeedsCard(localAsr) ? <LocalAsrSetup local={localAsr} onChange={setLocalAsr} /> : null;
     // Флешку воткнули или папку бросили на окно: плитка «Посмотреть?» — над столом, в любой раскладке.
     const offers = useFolderOffers();
+    // Страна дома не выбрана: вопрос над столом, пока тот, кто меняет настройки, не ответит (country.tsx).
+    const [country] = useHomeCountry();
+    const askCountry = country === null && can('settings.edit');
     const banner =
-        panel.banner || setup || offers.length > 0 ? (
+        panel.banner || setup || offers.length > 0 || askCountry ? (
             <>
                 {panel.banner}
                 {setup}
+                {askCountry && <CountryAsk />}
                 <FolderOffers offers={offers} />
             </>
         ) : null;
@@ -146,6 +153,7 @@ export function DeskScreen() {
         return (
             <div class="desk-solo">
                 {banner}
+                <Shortcuts layout={layout} actions={actions} place="row" />
                 <FirstRun />
                 <ConnectFirstCard onConnect={panel.openConnect} />
                 <MicFirstCard />
@@ -176,6 +184,7 @@ export function DeskScreen() {
         return (
             <>
                 {banner}
+                <Shortcuts layout={layout} actions={actions} place="row" />
                 <Scene />
                 <div class="desk-column">{shown.map((widget) => tile(widget, true))}</div>
             </>
@@ -189,6 +198,7 @@ export function DeskScreen() {
         return (
             <div class="desk-feed">
                 {banner}
+                <Shortcuts layout={layout} actions={actions} place="row" />
                 <FeedDraft />
                 {above.length > 0 && <div class="desk-feed-grid">{above.map((widget) => tile(widget, true))}</div>}
                 <Scene room={420} />
@@ -202,7 +212,10 @@ export function DeskScreen() {
 
     // Широкий экран: свободный стол — колонка в середине поля, виджеты там, где их поставили (этап 3).
     return (
-        <DeskCanvas
+        <>
+            {/* Ярлыки — у левого края, на месте, когда стол двигают и масштабируют. */}
+            <Shortcuts layout={layout} actions={actions} place="column" />
+            <DeskCanvas
             widgets={shown}
             layout={layout}
             actions={actions}
@@ -210,6 +223,7 @@ export function DeskScreen() {
             addTile={<Making onAdd={panel.openAdd} />}
             banner={banner}
             render={(widget, menu, grip) => <WidgetOnDesk widget={widget} menu={menu} grip={grip} fresh={isFresh(layout, widget.key)} />}
-        />
+            />
+        </>
     );
 }

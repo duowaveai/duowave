@@ -6,7 +6,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { useDevMode } from '../shell/dev';
 
-import { ApiError, DraftView, HelperPart, HelperServed, PlacementView, RequestView, api, can, problemOf } from '../api';
+import { ApiError, DraftView, HelperPart, HelperServed, PlacementView, RequestView, WorkView, api, can, problemOf } from '../api';
 import { CAPABILITY_TITLES } from '../capabilities';
 import { SETTLE_MS, usePoll } from '../poll';
 import { useSettledVersion } from '../shell/agent-plaque';
@@ -16,6 +16,7 @@ import { Switch } from '../ui/switch';
 import { AllocPanel, ModeCard } from './home';
 import { readStationRequests } from './station-widgets';
 import { feltMs, seconds } from './trip';
+import { dotOf, endWord, kindWord, progressLine, useWorks } from './works';
 import { locale, tr } from '../i18n';
 import { byMode } from '../words';
 
@@ -530,6 +531,77 @@ export function WorkshopWidget() {
                     {tr.desk.open}
                 </button>
             </div>
+        </div>
+    );
+}
+
+/**
+ * «Работы» на столе (docs/plans/router-and-works.md, решение 17): «Идёт 2, ждёт ответа 1» и по строке на работу — что
+ * идёт (чем занят агент, где фоновое дело), что ждёт в очереди и что спрашивает. Нажатие на строку — эта работа,
+ * «Все работы» — страница. Ничего не идёт — последняя законченная.
+ */
+export function WorksWidget() {
+    const panel = usePanel();
+    const { works, problem } = useWorks(['going', 'queued', 'asking']);
+    const [last, setLast] = useState<WorkView | null>(null);
+    const idle = !!works && works.length === 0;
+    usePoll({
+        on: idle,
+        version: panel.version,
+        read: (signal) =>
+            api
+                .worksIn(['recent'], signal)
+                .then((list) => !signal.aborted && setLast(list[0] ?? null))
+                .catch(() => undefined),
+    });
+    const all = () => panel.go('works', '');
+    const allButton = (
+        <div class="w-actions">
+            <button class="w-btn" onClick={all}>
+                {tr.router.allWorks}
+            </button>
+        </div>
+    );
+    if (!works) return <p class={`w-cap m-0${problem ? ' c-dot-offline' : ''}`}>{problem ?? tr.desk.reading}</p>;
+    if (works.length === 0)
+        return (
+            <div class="flex flex-col gap-8">
+                <p class="w-cap m-0">{tr.router.widgetNothing}</p>
+                {last && (
+                    <button class="w-row w-row-btn" onClick={() => panel.go('works', last.id)}>
+                        <span class={dotOf(last)} aria-hidden="true" />
+                        <span class="w-text">{tr.router.widgetLast(last.title, endWord(last))}</span>
+                    </button>
+                )}
+                {allButton}
+            </div>
+        );
+    const going = works.filter((work) => work.group === 'going');
+    const queued = works.filter((work) => work.group === 'queued');
+    const asking = works.filter((work) => work.group === 'asking');
+    const rows = [...going, ...asking, ...queued];
+    const shown = rows.slice(0, 4);
+    const note = (work: WorkView): string =>
+        work.group === 'going' ? progressLine(work) || kindWord(work.kind) : work.group === 'asking' ? tr.router.widgetAsking : tr.router.widgetQueuedRow;
+    return (
+        <div class="flex flex-col gap-8">
+            <div class="wk-widget-head">
+                <span class="w-strong">{tr.router.widgetSummary(going.length, asking.length)}</span>
+                {queued.length > 0 && <span class="w-cap">{tr.router.widgetQueued(queued.length)}</span>}
+            </div>
+            <div class="w-rows">
+                {shown.map((work) => (
+                    <button key={work.id} class="w-row w-row-btn wk-widget-row" onClick={() => panel.go('works', work.id)}>
+                        <span class={dotOf(work)} aria-hidden="true" />
+                        <span class="wk-widget-lines">
+                            <span class="w-text">{work.title}</span>
+                            <span class="w-cap">{note(work)}</span>
+                        </span>
+                    </button>
+                ))}
+            </div>
+            {rows.length > shown.length && <p class="w-cap m-0">{tr.router.widgetMore(rows.length - shown.length)}</p>}
+            {allButton}
         </div>
     );
 }

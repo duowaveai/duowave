@@ -11,6 +11,7 @@
 //! The order to look for a text in: the request's language (else the household's), English, the household's, then the
 //! package's own. No language or no translation — English.
 
+pub mod country;
 pub mod text;
 
 use std::sync::Arc;
@@ -107,7 +108,7 @@ pub struct LanguageView {
 }
 
 pub fn routes() -> Router<Arc<App>> {
-    Router::new().route("/api/v1/language", get(view).put(set))
+    Router::new().route("/api/v1/language", get(view).put(set)).merge(country::routes())
 }
 
 async fn view(State(app): State<Arc<App>>) -> ApiResult<LanguageView> {

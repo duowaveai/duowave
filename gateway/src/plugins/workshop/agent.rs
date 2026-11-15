@@ -517,6 +517,8 @@ pub fn context(workshop: &Workshop, draft: &str, model: Option<BrainPick>) -> Di
         profile: Some(ModelProfile::Smart),
         system: Some(instructions(workshop, draft)),
         model,
+        // Its deals are the workshop's (src/router).
+        seat: Some(crate::router::Seat::Workshop),
         ..DialogContext::default()
     }
 }

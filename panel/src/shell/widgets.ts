@@ -49,7 +49,26 @@ export interface DeskLayout {
      * у такого виджета метка «новый».
      */
     fresh?: Record<string, number>;
+    /**
+     * Ярлыки на столе (docs/plans/menu-scheme.md): приложения, что открываются в одно нажатие, по порядку. Нет поля —
+     * стартовые: MagicPlace и «Папки». Раскладка хранится на шлюзе — ярлыки одни на всех устройствах человека.
+     */
+    shortcuts?: string[];
+    /**
+     * Приложения, чей ярлык стол уже ставил сам, когда их поставили (`SHORTCUT_WHEN_INSTALLED`): второй раз не ставит —
+     * убранный человеком ярлык не возвращается.
+     */
+    offered?: string[];
 }
+
+/** Ярлыки чистого стола: магазин и «Папки» (владелец, 15.11). */
+export const STARTING_SHORTCUTS = ['magicplace', 'folders'];
+
+/**
+ * Приложения, у которых ярлык появляется на столе сам, как только они поставлены и включены, — один раз (владелец,
+ * 15.11): AirPlay — у него нет окна и виджета, а колонку в телефоне ищут, не открывая пульт.
+ */
+export const SHORTCUT_WHEN_INSTALLED = ['airplay'];
 
 /** Метка «новый» у севшего на стол виджета держится сутки. */
 export const FRESH_MS = 24 * 60 * 60 * 1000;
@@ -108,6 +127,8 @@ function parse(raw: unknown): DeskLayout | null {
         pan: pan && finite(pan.x) && finite(pan.y) ? { x: pan.x, y: pan.y } : undefined,
         locked: value.locked === true || undefined,
         fresh: Object.keys(fresh).length ? fresh : undefined,
+        shortcuts: Array.isArray(value.shortcuts) ? [...new Set(list(value.shortcuts))] : undefined,
+        offered: Array.isArray(value.offered) ? [...new Set(list(value.offered))] : undefined,
     };
 }
 
@@ -120,7 +141,9 @@ function starting(layout: DeskLayout): boolean {
         layout.order.length === 0 &&
         layout.zoom === undefined &&
         layout.pan === undefined &&
-        !layout.locked
+        !layout.locked &&
+        layout.shortcuts === undefined &&
+        layout.offered === undefined
     );
 }
 
@@ -455,6 +478,10 @@ export interface DeskActions {
     reset: () => void;
     /** Посадка из «Примерки»: на стол, на это место (на свободном столе), с меткой «новый» на сутки. На шлюз — сразу. */
     land: (id: string, place?: WidgetPlace) => void;
+    /** Ярлыки стола — весь список по порядку (docs/plans/menu-scheme.md). На шлюз — сразу. */
+    shortcuts: (list: string[]) => void;
+    /** Ярлык поставленного приложения из `SHORTCUT_WHEN_INSTALLED` — в конец списка, и отметка, что он уже был. На шлюз — сразу. */
+    offer: (id: string) => void;
 }
 
 export function deskActions(role: Role): DeskActions {
@@ -496,6 +523,23 @@ export function deskActions(role: Role): DeskActions {
                 }),
                 0,
             ),
+        // Стартовый набор — снова «нет поля»: шлюз хранит только то, что поменяли.
+        shortcuts: (list) =>
+            change((layout) => {
+                const unique = [...new Set(list)];
+                const same = unique.length === STARTING_SHORTCUTS.length && unique.every((id, at) => id === STARTING_SHORTCUTS[at]);
+                return { ...layout, shortcuts: same ? undefined : unique };
+            }, 0),
+        offer: (id) =>
+            change((layout) => {
+                if (layout.offered?.includes(id)) return layout;
+                const list = layout.shortcuts ?? STARTING_SHORTCUTS;
+                return {
+                    ...layout,
+                    shortcuts: list.includes(id) ? layout.shortcuts : [...list, id],
+                    offered: [...(layout.offered ?? []), id],
+                };
+            }, 0),
     };
 }
 

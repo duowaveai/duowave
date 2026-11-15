@@ -11,6 +11,7 @@ import { BusCard } from '../bus/settings-card';
 import { byMode } from '../words';
 import { tr } from '../i18n';
 import { LanguageCard } from '../i18n/picker';
+import { CountryCard } from './country';
 
 export type SettingsSectionTab = 'access' | 'look';
 
@@ -54,6 +55,7 @@ export function SettingsScreen({
             {shown === 'look' && (
                 <>
                     <LanguageCard />
+                    <CountryCard />
                     <ThemeCard />
                 </>
             )}

@@ -1,0 +1,36 @@
+/* «Выход в интернет» (egress.tsx): строки точной настройки — имя, адреса и решение слева, маршрут справа. */
+.egress-rows {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: calc(10px * var(--density, 1));
+}
+
+.egress-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: calc(12px * var(--density, 1));
+}
+
+.egress-row > .pill {
+    flex: none;
+    max-width: 45%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.egress-row .t-meta.truncate {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Три кнопки простого режима: подписи целиком в две строки, а не обрезанные, на узком экране. */
+.egress-modes > button {
+    white-space: normal;
+    text-overflow: clip;
+    line-height: 1.2;
+}

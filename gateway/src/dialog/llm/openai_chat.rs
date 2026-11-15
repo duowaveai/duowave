@@ -219,6 +219,9 @@ async fn run(
     }
 
     let headers = request_headers(settings).await?;
+    if let Some(refused) = super::llm_client::egress_refusal(url) {
+        return Err(refused);
+    }
     let send = client().post(url).headers(headers).body(Value::Object(body).to_string()).send();
     let response = tokio::select! {
         _ = cancel.cancelled() => return Err(aborted()),

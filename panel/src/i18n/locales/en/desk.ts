@@ -4,6 +4,15 @@ import type { Translation } from '../../types';
 import type ru from '../ru/desk';
 
 const en: Translation<typeof ru> = {
+    shortcuts: 'Shortcuts',
+    shortcutAdd: 'Shortcut',
+    shortcutsMenu: 'Shortcuts on the desk',
+    shortcutsVoice: 'Or by voice: “add shortcut calendar”',
+    shortcutAddPhrase: 'add shortcut',
+    shortcutRemovePhrase: 'remove shortcut',
+    shortcutsClose: 'Close',
+    shortcutOnDesk: 'Shortcut on the desk',
+    shortcutOnDeskAbout: 'open it in one tap from home',
     quoted: (text) => `“${text}”`,
     helperPcTitle: 'This computer is helping the speaker',
     helperPcLine: (name) => `gives the speaker “${name}” its ear, voice and model`,

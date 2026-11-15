@@ -54,6 +54,9 @@ import frame from './frame';
 import media from './media';
 import share from './share';
 import cloudVoices from './cloudVoices';
+import router from './router';
+import country from './country';
+import egress from './egress';
 
 const ru = {
     common,
@@ -109,6 +112,9 @@ const ru = {
     media,
     share,
     cloudVoices,
+    router,
+    country,
+    egress,
 };
 
 export type Messages = typeof ru;

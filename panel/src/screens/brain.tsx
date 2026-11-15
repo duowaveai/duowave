@@ -113,7 +113,7 @@ const parsePick = (value: string): BrainPick | null => {
  * «Мозг»: кто думает над ответами. Сверху — быстрая модель (разговор) и умная (сказки, игры, сложное) из любых
  * добавленных провайдеров, ниже — сами провайдеры со своими ключами. Ключи пульт видит только хвостом.
  */
-export function BrainTab() {
+export function BrainTab({ spend }: { spend?: preact.ComponentChildren } = {}) {
     const [view, setView] = useState<BrainView | null>(null);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [notes, setNotes] = useState<Record<string, CardNote>>({});
@@ -365,6 +365,9 @@ export function BrainTab() {
                 )}
                 {!mayChoose && <p class="t-caption m-0 mt-8">{tr.brain.adminChooses}</p>}
             </section>
+
+            {/* «Расход» (docs/plans/router-and-works.md, этап 6б): сколько стоили модели — рядом с тем, где их выбирают. */}
+            {spend}
 
             {can('station.view') && <NowKnown />}
 

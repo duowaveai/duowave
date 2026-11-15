@@ -1,6 +1,7 @@
 //! Stop, pause, continue, next, previous for whatever the station plays: its player and a phone over Bluetooth.
 //! Stop and pause are the commands Yandex sends (seen); the others are from the wiki. A like or a dislike is ours
-//! for our music (`ours`, from the router) and Yandex's for its own (`external`).
+//! for our music (`ours`, from the router) and Yandex's for its own (`external`). What an app plays by itself (AirPlay,
+//! `app` from the router) takes the commands through the app (skills/media/app_playback.rs).
 
 use std::sync::{Arc, RwLock};
 
@@ -9,6 +10,7 @@ use futures::future::BoxFuture;
 use crate::skills::capabilities::{CapabilityName, Intent};
 use crate::skills::directives as commands;
 use crate::skills::js;
+use crate::skills::media::app_playback::AppPlayback;
 use crate::skills::skill::{ExecutionContext, Outcome, OwnSkill};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +47,8 @@ pub trait PlayerControl: Send + Sync {
 #[derive(Default)]
 pub struct PlaybackSkill {
     player: RwLock<Option<Arc<dyn PlayerControl>>>,
+    /// The apps that play by themselves: a command marked `app` goes to its app.
+    apps: RwLock<Option<Arc<AppPlayback>>>,
 }
 
 impl PlaybackSkill {
@@ -59,6 +63,28 @@ impl PlaybackSkill {
 
     fn player(&self) -> Option<Arc<dyn PlayerControl>> {
         self.player.read().unwrap().clone()
+    }
+
+    /// The apps that play by themselves on a station.
+    pub fn attach_apps(&self, apps: Arc<AppPlayback>) {
+        *self.apps.write().unwrap() = Some(apps);
+    }
+
+    /// The command to the app that plays: silent when done, as the station's own pause; in words when not. «Стоп» and
+    /// «пауза» are one command of the station's (a pause and a cleared queue, «продолжи» brings ours back): the app
+    /// pauses too, so that «продолжай» has something to go on with.
+    async fn app_command(&self, app: &str, action: &str) -> Outcome {
+        let action = if action == "stop" { "pause" } else { action };
+        let Some(apps) = self.apps.read().unwrap().clone() else {
+            return Outcome::speech("Приложение сейчас недоступно.");
+        };
+        match apps.command(app, action).await {
+            Ok(()) => Outcome::default(),
+            Err(why) => {
+                tracing::warn!(target: "skills", "{app}: {action} — {why}");
+                Outcome::speech(format!("{} не ответил.", apps.title(app)))
+            }
+        }
     }
 
     fn play(&self, intent: &Intent, context: &ExecutionContext) -> anyhow::Result<Outcome> {
@@ -113,6 +139,11 @@ impl OwnSkill for PlaybackSkill {
         intent: &'a Intent,
         context: &'a ExecutionContext,
     ) -> BoxFuture<'a, anyhow::Result<Outcome>> {
-        Box::pin(async move { self.play(intent, context) })
+        Box::pin(async move {
+            if let Some(app) = intent.params.get("app").and_then(serde_json::Value::as_str) {
+                return Ok(self.app_command(app, &intent.action).await);
+            }
+            self.play(intent, context)
+        })
     }
 }

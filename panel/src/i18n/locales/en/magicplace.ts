@@ -32,6 +32,7 @@ const en: Translation<typeof ru> = {
     placeAny: 'Anywhere',
     placeGateway: 'In the gateway',
     placeComputer: 'On the computer',
+    placeStation: 'On the speaker',
     placeNetwork: 'Online',
     stateLabel: 'State',
     stateAny: 'Any',

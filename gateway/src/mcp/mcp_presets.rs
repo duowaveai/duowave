@@ -115,6 +115,12 @@ pub struct McpPreset {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub install: Option<Install>,
     pub enable: Enable,
+    /// Tools that run in the background as a work (docs/plans/long-tools.md, point 1): names, `prefix*`, `!name` out.
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    pub long: &'static [&'static str],
+    /// Tools whose run costs money: the gateway asks «Запуск платный. Запускать?» before it runs one.
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    pub paid: &'static [&'static str],
     /// Its answers bring text from the internet: after one, tools that change things are not offered in that answer.
     pub outside: bool,
     /// The capability it acts as: its route and its denials apply (Home Assistant is the smart home).
@@ -124,6 +130,30 @@ pub struct McpPreset {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<&'static str>,
     pub order: u32,
+}
+
+/// Apify's runs of its Actors: paid, and a run waits up to 45 s before it answers «RUNNING» — a work, not an answer.
+/// Its own web search and page reading are quick and free of the store's prices: not among them.
+const APIFY_RUNS: &[&str] = &[
+    "call-actor",
+    "call-actor-mcp-tool",
+    "send-server-actor-request",
+    "apify--*",
+    "!apify--web-search",
+    "!apify--web-fetch",
+    "!apify--rag-web-browser",
+];
+
+/// Whether a list of a preset's (`long`, `paid`) names this tool: by its name or a `prefix*`, unless a `!name` takes it
+/// out.
+pub fn names(list: &[&str], tool: &str) -> bool {
+    if list.iter().any(|entry| entry.strip_prefix('!') == Some(tool)) {
+        return false;
+    }
+    list.iter().any(|entry| match entry.strip_suffix('*') {
+        Some(prefix) => !entry.starts_with('!') && tool.starts_with(prefix),
+        None => *entry == tool,
+    })
 }
 
 const SEARCH_NOTE: &str = "Ищи, когда нужен свежий факт или новость. Называй источник словами, без ссылок.";
@@ -148,6 +178,8 @@ pub static MCP_PRESETS: &[McpPreset] = &[
         }],
         install: None,
         enable: Enable { all: true, read_only: false, names: &[] },
+        long: &[],
+        paid: &[],
         outside: false,
         capability: Some(CapabilityName::SmartHome),
         note: Some("Это наш дом. Устройство и комнату называй так, как их назвал человек."),
@@ -172,6 +204,8 @@ pub static MCP_PRESETS: &[McpPreset] = &[
         }],
         install: Some(Install { runner: "npx", package: "tavily-mcp@0.2.22" }),
         enable: Enable { all: false, read_only: false, names: &["tavily-search", "tavily-extract"] },
+        long: &[],
+        paid: &[],
         outside: true,
         capability: None,
         note: Some(SEARCH_NOTE),
@@ -200,6 +234,8 @@ pub static MCP_PRESETS: &[McpPreset] = &[
             read_only: false,
             names: &["brave_web_search", "brave_news_search", "brave_local_search"],
         },
+        long: &[],
+        paid: &[],
         outside: true,
         capability: None,
         note: Some(SEARCH_NOTE),
@@ -224,14 +260,16 @@ pub static MCP_PRESETS: &[McpPreset] = &[
         }],
         install: Some(Install { runner: "npx", package: "exa-mcp-server@3.4.2" }),
         enable: Enable { all: false, read_only: false, names: &["web_search_exa", "web_fetch_exa"] },
+        long: &[],
+        paid: &[],
         outside: true,
         capability: None,
         note: Some(SEARCH_NOTE),
         order: 4,
     },
     // Apify's own server by address (it changes several times a day, so no pinned package): the web search and page
-    // reading of its Actors on at first sight; its store of Actors (search-actors, call-actor…) is there to switch on —
-    // a run is paid and waits up to 45 s, longer than a call here may take (mcp_service.rs, CALL_TIMEOUT).
+    // reading of its Actors on at first sight; its store of Actors (search-actors, call-actor…) is there to switch on.
+    // A run is paid and waits up to 45 s: it runs in the background as a work, asked first (`long`, `paid`).
     McpPreset {
         id: "apify",
         title: "Apify",
@@ -251,6 +289,8 @@ pub static MCP_PRESETS: &[McpPreset] = &[
         }],
         install: None,
         enable: Enable { all: false, read_only: false, names: &["apify--web-search", "apify--web-fetch"] },
+        long: APIFY_RUNS,
+        paid: APIFY_RUNS,
         outside: true,
         capability: None,
         note: Some(
@@ -271,6 +311,8 @@ pub static MCP_PRESETS: &[McpPreset] = &[
         fields: &[],
         install: Some(Install { runner: "uvx", package: "mcp-server-fetch==2026.11.4" }),
         enable: Enable { all: false, read_only: false, names: &["fetch"] },
+        long: &[],
+        paid: &[],
         outside: true,
         capability: None,
         note: None,
@@ -289,6 +331,8 @@ pub static MCP_PRESETS: &[McpPreset] = &[
         fields: &[],
         install: None,
         enable: Enable { all: false, read_only: true, names: &[] },
+        long: &[],
+        paid: &[],
         outside: false,
         capability: None,
         note: Some("Это наш общий список дел."),
@@ -307,6 +351,8 @@ pub static MCP_PRESETS: &[McpPreset] = &[
         fields: &[],
         install: None,
         enable: Enable { all: false, read_only: true, names: &[] },
+        long: &[],
+        paid: &[],
         outside: true,
         capability: None,
         note: None,
@@ -397,6 +443,10 @@ mod tests {
         let mut orders: Vec<u32> = MCP_PRESETS.iter().map(|preset| preset.order).collect();
         orders.dedup();
         assert_eq!(orders, (1..=MCP_PRESETS.len() as u32).collect::<Vec<_>>(), "each preset its own place, in order");
+        assert!(names(APIFY_RUNS, "call-actor") && names(APIFY_RUNS, "apify--instagram-scraper"));
+        assert!(!names(APIFY_RUNS, "apify--web-search") && !names(APIFY_RUNS, "search-actors"));
+        assert_eq!(apify["long"][0], json!("call-actor"));
+        assert!(exa.get("long").is_none(), "a search answers at once");
         assert!(mcp_preset(Some("nope")).is_none());
         assert!(mcp_preset(None).is_none());
     }

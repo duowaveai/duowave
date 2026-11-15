@@ -121,6 +121,16 @@ pub struct Started {
     pub title: String,
 }
 
+/// What a background work came to (docs/plans/long-tools.md, point 3): the model's retelling in a sentence or two,
+/// the rest of it for «подробнее», the result as it came, or why it failed. Only the executors without a desk have it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Told {
+    pub summary: Option<String>,
+    pub more: Option<String>,
+    pub data: Option<String>,
+    pub error: Option<String>,
+}
+
 /// Whether an executor's thing is there, by its id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Presence {
@@ -163,6 +173,10 @@ pub trait Executor: Send + Sync {
     /// Whether its thing of this id is there — the layer checks by the id, never by a name (TalkLayer::recheck).
     fn presence(&self, _target: &str) -> Presence {
         Presence::Unknown
+    }
+    /// What a background work came to: its retelling and its result («Готово» with a summary, ready.rs).
+    fn told(&self, _work: &Work) -> Option<Told> {
+        None
     }
 }
 

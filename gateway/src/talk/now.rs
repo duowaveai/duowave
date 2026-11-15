@@ -97,7 +97,7 @@ fn end_words(pack: &Pack, work: &Work) -> &'static str {
 pub fn fact(pack: &Pack, work: &Work, now: u64, doing: Option<Doing>) -> String {
     let words = pack.work;
     let label = format!("{}{}", words.label, work.id);
-    let face = work.face.map(|face| words.faces[face.index()]).unwrap_or(words.faces[0]);
+    let face = face_of(work, words);
     let base = |template: &str, extra: &[(&str, &str)]| {
         let mut values = vec![("label", label.as_str()), ("face", face), ("title", work.title.as_str())];
         values.extend_from_slice(extra);
@@ -130,7 +130,7 @@ struct Line {
 /// The block for one device; empty when nothing goes on there.
 pub fn block(pack: &Pack, sources: &Sources) -> String {
     let words = pack.work;
-    let face = |work: &Work| work.face.map(|face| words.faces[face.index()]).unwrap_or(words.faces[0]);
+    let face = |work: &Work| face_of(work, words);
     let label = |work: &Work| format!("{}{}", words.label, work.id);
     let mut works: Vec<&Work> = sources.works.iter().collect();
     works.sort_by_key(|work| std::cmp::Reverse(work.updated_at));
@@ -236,6 +236,14 @@ fn desk_line(pack: &Pack, desk: &[String], room: usize) -> Option<String> {
     }
 }
 
+/// What a work is called in the block: its face, or «фоновое дело» for a tool's call and an app's task.
+fn face_of(work: &Work, words: &super::pack::WorkWords) -> &'static str {
+    if matches!(work.kind.as_str(), super::works::TOOL | super::works::TASK) {
+        return words.background.face;
+    }
+    work.face.map(|face| words.faces[face.index()]).unwrap_or(words.faces[0])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,7 +290,7 @@ mod tests {
             "(Ждёт ответа [р6]: виджет «Курс доллара» — готово 1 мин назад, ещё не сказано.)"
         );
         ready.state = WorkState::Done;
-        ready.result = Some(WorkResult { line: String::new(), end: Some(End::Desk) });
+        ready.result = Some(WorkResult { line: String::new(), end: Some(End::Desk), ..WorkResult::default() });
         assert_eq!(fact(pack, &ready, now, None), "(Недавно [р6]: виджет «Курс доллара» — на столе.)");
     }
 
@@ -296,7 +304,7 @@ mod tests {
         teacher.said_at = Some(now - 9 * MIN);
         teacher.face = Some(Face::Skill);
         let mut watering = work("1", "Полив", WorkState::Done, now - 60 * MIN, Some(now - 50 * MIN));
-        watering.result = Some(WorkResult { line: String::new(), end: Some(End::Desk) });
+        watering.result = Some(WorkResult { line: String::new(), end: Some(End::Desk), ..WorkResult::default() });
         let works = vec![spanish, teacher, watering];
         let doing = |_: &Work| Some(Doing::Writing);
         let desk = vec!["Погода".to_string(), "Дела".to_string(), "Курс валют".to_string()];

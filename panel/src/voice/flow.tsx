@@ -82,7 +82,17 @@ export function CreationFlow() {
         if (!line) return;
         const go = latest.current.go;
         const draft = work.target;
-        if (work.state === 'failed' || work.state === 'done' || !draft) {
+        if (work.kind === 'tool' || work.kind === 'task') {
+            // Фоновое дело (docs/plans/long-tools.md): строка «Готово» и кнопка с пересказом и тем, что пришло.
+            const { summary, data } = work.result ?? { line };
+            const shown = [summary && `${tr.voice.resultRetold}: ${summary}`, data && `${tr.voice.resultData}:\n${data.slice(0, 4000)}`]
+                .filter(Boolean)
+                .join('\n\n');
+            const chips = shown
+                ? [{ label: tr.voice.resultChip, act: () => void ask({ title: work.title, text: shown, ok: tr.voice.resultClose }) }]
+                : undefined;
+            showStrip({ kind: work.state === 'failed' ? 'note' : 'done', head: workHead(work), text: line, chips }, 20_000);
+        } else if (work.state === 'failed' || work.state === 'done' || !draft) {
             showStrip({ kind: work.state === 'done' ? 'done' : 'note', head: workHead(work), text: line }, 10_000);
         } else {
             const view = await api.workshopDraft(draft).catch(() => null);

@@ -17,6 +17,9 @@ const VOICE: &str = "system/voice";
 /// Cloud and paid voices: not a service of its own but the owner's «да» for them, asked when an app's line goes to
 /// such a voice (capabilities/voices.rs).
 const VOICE_CLOUD: &str = crate::capabilities::voices::CLOUD;
+/// The station's player: an app that plays by itself (AirPlay) says so, and hears the player's commands as the news
+/// `control` from here (docs/plans/media-apps.md, stage 2).
+pub const PLAYER: &str = "system/player";
 const NOTIFY: &str = "system/notify";
 const SCHEDULE: &str = "system/schedule";
 const SMART_HOME: &str = "system/smart-home";
@@ -29,6 +32,9 @@ pub const PUBLISH: &str = "system/publish";
 const HEARING: &str = "system/hearing";
 /// The household's memory, for an app: only its interests (docs/plans/feed.md, stage 10), each app by the owner's «да».
 const MEMORY: &str = "system/memory";
+/// The gateway's way to the internet (src/egress, «Выход в интернет»): an app with its own servers («VPN») gives the
+/// gateway its connections here; the owner's «да» to «VPN → Сеть шлюза» first, and until then everything goes directly.
+pub const NETWORK: &str = crate::egress::NETWORK;
 /// The household's model answering in an app's words (the answer's `model`, plugins/skill.rs): a participant for the
 /// bus's word on it, not a letter's target.
 pub const BRAIN: &str = "system/brain";
@@ -75,15 +81,17 @@ impl Provider for System {
         [
             (VOICE, crate::tr!("Голос колонки")),
             (VOICE_CLOUD, crate::tr!("Облачные голоса: текст реплик уходит поставщику, тратит его тариф")),
+            (PLAYER, crate::tr!("Плеер колонки")),
             (NOTIFY, crate::tr!("Сообщения владельцу")),
             (SCHEDULE, crate::tr!("Расписание приложений")),
             (SMART_HOME, crate::tr!("Умный дом")),
             (CONTENT, crate::tr!("Музыка и сказки семьи")),
-            (HOME, crate::tr!("Место погоды и ленты новостей")),
+            (HOME, crate::tr!("Дом: страна, место погоды, ленты новостей")),
             (BRAIN, crate::tr!("Модель «Мозга»")),
             (MEMORY, crate::tr!("Память: интересы дома")),
             (HEARING, crate::tr!("Слух: распознать речь в своём файле")),
             (PUBLISH, crate::tr!("Публикация: Telegram, страница «смотри и выбирай», страницы площадок")),
+            (NETWORK, crate::tr!("Сеть шлюза: выход в интернет через ваши серверы")),
         ]
         .iter()
         .filter_map(|(text, title)| Some(Participant::new(Address::parse(text).ok()?, title)))
@@ -103,6 +111,8 @@ impl Provider for System {
             VOICE_CLOUD => {
                 vec![Handle::new("synth", Level::Call).titled(&crate::tr!("озвучить облачным или платным голосом"))]
             }
+            PLAYER => vec![Handle::new("playing", Level::Call)
+                .titled(&crate::tr!("сказать, что играет сам: Алиса встаёт на паузу, голос управляет приложением"))],
             NOTIFY => vec![Handle::new("send", Level::Call).titled(&crate::tr!("написать владельцу"))],
             SCHEDULE => ["set", "list", "cancel", "parse"]
                 .iter()
@@ -123,12 +133,15 @@ impl Provider for System {
             HOME => vec![
                 Handle::new("weather-place", Level::Call).titled(&crate::tr!("город погоды")),
                 Handle::new("news-feeds", Level::Call).titled(&crate::tr!("ленты новостей")),
+                Handle::new("country", Level::Call).titled(&crate::tr!("страна дома")),
             ],
             MEMORY => {
                 vec![Handle::new("interests", Level::Call).titled(&crate::tr!("что дом любит смотреть и читать"))]
             }
             HEARING => vec![Handle::new("recognize", Level::Call)
                 .titled(&crate::tr!("распознать речь в своём файле: слова со временем"))],
+            NETWORK => vec![Handle::new("connections", Level::Call)
+                .titled(&crate::tr!("дать шлюзу свои подключения: через них он ходит в интернет по вашим правилам"))],
             PUBLISH => vec![
                 Handle::new("publishers", Level::Call)
                     .titled(&crate::tr!("кто может отправить: что берёт, нужно ли подключение")),
@@ -175,6 +188,11 @@ impl Provider for System {
                 (BRAIN, "write") => services.write(&id, input.clone()).await.map_err(failed),
                 (BRAIN, "models") => services.models().await.map_err(failed),
                 (BRAIN, "agent") => services.agent(&id, input.clone()).await.map_err(failed),
+                (PLAYER, "playing") => services
+                    .playing(&id, text("state").unwrap_or_default(), text("device"))
+                    .await
+                    .map(|device| serde_json::json!({ "device": device }))
+                    .map_err(failed),
                 (NOTIFY, "send") => services.notify(&id, text("text").unwrap_or_default()).await.map_err(failed),
                 (SCHEDULE, action) => services.schedule(&id, action, input.clone()).await.map_err(failed),
                 (SMART_HOME, "devices") => services.smart_home_devices().await.map_err(failed),
@@ -189,6 +207,8 @@ impl Provider for System {
                     .map_err(failed),
                 (HOME, "weather-place") => Ok(services.weather_place().map(Value::String).unwrap_or(Value::Null)),
                 (HOME, "news-feeds") => Ok(Value::Array(services.news_feeds())),
+                (HOME, "country") => Ok(serde_json::json!({ "country": services.home_country() })),
+                (NETWORK, "connections") => services.network_connections(&id, input.clone()).map_err(failed),
                 (BRAIN, _) => Err(BusError::Failed(crate::tr!(
                     "модель отвечает словами приложения полем model в ответе на фразу, не письмом"
                 ))),
@@ -221,6 +241,7 @@ mod tests {
             "system/brain",
             "system/memory",
             "system/publish",
+            "system/network",
         ] {
             assert!(addresses.iter().any(|known| known == address), "{address}");
         }

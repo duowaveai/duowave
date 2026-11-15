@@ -196,7 +196,7 @@ function useMemoryPlace(): {
     go: (tab: MemoryTab, entity?: string) => void;
     openNight: (id?: string) => void;
 } {
-    const linked = useLinkedItem('skills', 'memory');
+    const linked = useLinkedItem('character', 'memory');
     const tab: MemoryTab = linked.item === 'house' || linked.item === 'night' || linked.item === 'settings' ? linked.item : 'overview';
     return {
         tab,
@@ -410,7 +410,7 @@ function RecentCard({ overview, onChanged }: { overview: MemoryOverview; onChang
                 <h2 id="rc-new-h" class="t-title-xs m-0">
                     {tr.recall.newTitle}
                 </h2>
-                <button class="rc-link" onClick={() => panel.go('skills', 'memory', 'house')}>
+                <button class="rc-link" onClick={() => panel.go('character', 'memory', 'house')}>
                     {tr.recall.wholeHouse}
                 </button>
             </div>
@@ -1150,7 +1150,7 @@ export function MemoryWidget() {
     const latest = recent.find((item) => !item.validTo);
     return (
         <div class="w-rows">
-            <button class="w-row w-row-btn" onClick={() => panel.go('skills', 'memory', 'overview')}>
+            <button class="w-row w-row-btn" onClick={() => panel.go('character', 'memory', 'overview')}>
                 <span class={`w-dot ${state.enabled && !state.paused ? 'w-dot-own' : 'w-dot-off'}`} aria-hidden="true" />
                 <span class="w-text">
                     {!state.enabled ? tr.recall.widgetOff : state.paused ? (state.pausedUntil ? tr.recall.widgetPausedUntil(clock(state.pausedUntil)) : tr.recall.widgetPaused) : tr.recall.widgetOn}
@@ -1160,7 +1160,7 @@ export function MemoryWidget() {
                 </span>
             </button>
             {latest && (
-                <button class="w-row w-row-btn w-row-col" onClick={() => panel.go('skills', 'memory', 'overview')}>
+                <button class="w-row w-row-btn w-row-col" onClick={() => panel.go('character', 'memory', 'overview')}>
                     <span class="w-cap">{tr.recall.widgetNew(timeAgo(latest.createdAt))}</span>
                     <span class="w-text">{latest.text}</span>
                 </button>

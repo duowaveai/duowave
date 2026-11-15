@@ -285,6 +285,32 @@ pub struct Tasks {
     limits: Limits,
     entries: Mutex<HashMap<String, Entry>>,
     me: Weak<Tasks>,
+    /// The conversations whose calls an app is answering now: a task it starts meanwhile is that conversation's
+    /// (docs/plans/long-tools.md, point 4) — its «Готово» is said where the phrase was.
+    calling: Mutex<HashMap<String, Vec<(u64, crate::talk::Origin)>>>,
+    /// Where each task begun in a conversation was asked; in memory — a restart interrupts them anyway.
+    origins: Mutex<HashMap<String, crate::talk::Origin>>,
+    calls: std::sync::atomic::AtomicU64,
+}
+
+/// An app answers a conversation's call while this lives (`Tasks::calling`).
+pub struct Calling {
+    tasks: Weak<Tasks>,
+    app: String,
+    call: u64,
+}
+
+impl Drop for Calling {
+    fn drop(&mut self) {
+        let Some(tasks) = self.tasks.upgrade() else { return };
+        let mut calling = tasks.calling.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(calls) = calling.get_mut(&self.app) {
+            calls.retain(|(call, _)| *call != self.call);
+            if calls.is_empty() {
+                calling.remove(&self.app);
+            }
+        }
+    }
 }
 
 impl Tasks {
@@ -310,7 +336,16 @@ impl Tasks {
             }
             Err(error) => tracing::warn!(target: "tasks", "the tasks were not read: {error}"),
         }
-        let tasks = Arc::new_cyclic(|me| Tasks { db, events, limits, entries: Mutex::new(entries), me: me.clone() });
+        let tasks = Arc::new_cyclic(|me| Tasks {
+            db,
+            events,
+            limits,
+            entries: Mutex::new(entries),
+            me: me.clone(),
+            calling: Mutex::new(HashMap::new()),
+            origins: Mutex::new(HashMap::new()),
+            calls: std::sync::atomic::AtomicU64::new(1),
+        });
         tasks.sweep_at(now);
         tasks
     }
@@ -334,6 +369,20 @@ impl Tasks {
                 tasks.sweep_at(now_ms());
             }
         })
+    }
+
+    /// An app answers a conversation's call (a tool of its, the model's): a task it starts until the guard drops is
+    /// that conversation's.
+    pub fn calling(&self, app: &str, origin: crate::talk::Origin) -> Calling {
+        let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut calling = self.calling.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        calling.entry(app.to_string()).or_default().push((call, origin));
+        Calling { tasks: self.me.clone(), app: app.to_string(), call }
+    }
+
+    /// Where a task was asked for: the conversation whose call began it; None — begun by the app itself.
+    pub fn origin_of(&self, task: &str) -> Option<crate::talk::Origin> {
+        self.origins.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(task).cloned()
     }
 
     /// An app starts a task: `at_once` is how many it may run at the same time (its manifest's `budget.tasks`).
@@ -384,6 +433,16 @@ impl Tasks {
             entries.insert(task.id.clone(), entry);
             task
         };
+        // Begun while the app answers a conversation: that conversation's («Готово» there).
+        let asked = self
+            .calling
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(app)
+            .and_then(|calls| calls.last().map(|(_, origin)| origin.clone()));
+        if let Some(origin) = asked {
+            self.origins.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(task.id.clone(), origin);
+        }
         self.sweep_at(now);
         self.tell(app, &task.id, "started");
         Ok(task)

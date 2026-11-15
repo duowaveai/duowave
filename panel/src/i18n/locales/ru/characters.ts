@@ -6,6 +6,8 @@ export default {
     ownCharacter: 'Свой характер',
     speaks: 'говорит',
     voice: 'Голос',
+    memory: 'Память',
+    memorySub: 'что помнит о доме: люди, вещи, пауза',
     manner: 'Манера',
     brain: 'Мозг',
     whoAnswers: 'Кто отвечает',

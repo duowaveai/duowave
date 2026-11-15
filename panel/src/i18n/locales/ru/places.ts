@@ -1,6 +1,9 @@
 // Тексты: screens/places.tsx («Настройки»: список страниц и сами страницы).
 
 export default {
+    groupDevice: 'Устройство',
+    groupAccess: 'Доступ и вид',
+    groupSystem: 'Система',
     // Страница «Колонка» / «Микрофон»
     talkTitle: 'Как говорить с DuoWave',
     readyTitle: 'Готовность',
@@ -40,7 +43,7 @@ export default {
     keysTitle: 'Ключи API',
     keysSub: 'для своих программ и Home Assistant',
     showDev: 'Показывать слой разработчика',
-    showDevAbout: '«Мастерская» в доке, журнал запросов, маршруты таблицей, провайдеры и ключи',
+    showDevAbout: 'технические строки на своих местах: журнал запросов, маршруты таблицей, провайдеры и ключи',
     devLayer: 'Слой разработчика',
     devPlaces: 'Места разработчика',
     hiddenTapsLeft: (n: number) => `ещё нажатий до скрытых возможностей: ${n}`,
@@ -66,7 +69,7 @@ export default {
     pageUpdatesSub: 'версия DuoWave, копии настроек',
     pageHistory: 'История разговоров',
     pageHistorySub: 'что спрашивали и кто ответил',
-    pageDevSub: 'мастерская, маршруты, провайдеры',
+    pageDevSub: 'слой разработчика, скрытое',
     settings: 'Настройки',
     newVersion: 'новая версия',
 };

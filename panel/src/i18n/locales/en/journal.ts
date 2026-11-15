@@ -49,6 +49,7 @@ const en: Translation<typeof ru> = {
     firstWord: (time: string) => `first word in ${time}`,
     tokens: (input: number, output: number, cached: number, rounds: number) =>
         `tokens ${input} → ${output}${cached ? `, ${cached} from the cache` : ''}${rounds > 1 ? `, ${rounds} rounds` : ''}`,
+    deal: (seat: string, model: string, money: string) => [seat, model, money].filter(Boolean).join(' · '),
 };
 
 export default en;

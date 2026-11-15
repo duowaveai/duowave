@@ -29,6 +29,7 @@ use super::persona_service::PersonaService;
 use super::phrase_splitter::PhraseSplitter;
 use super::system_prompt::time_context;
 use crate::config::{DialogConfig, DialogProvider, ModelProfile};
+use crate::router::{Answerer, Outcome, Reason, Seat, Tally};
 
 /// Spoken when the model fails before saying anything.
 pub const ERROR_PHRASE: &str = "Не получилось получить ответ.";
@@ -224,6 +225,10 @@ pub struct DialogContext {
     /// agent, which writes files (WORKSHOP_MAX_TOKENS), shorter for a spoken answer (`SPEECH_MAX_TOKENS`). A model that
     /// refuses it as too long answers with LLM_MAX_TOKENS.
     pub max_tokens: Option<u32>,
+    /// The seat the answer is on, for its deal (src/router): the workshop's agent, an app's; none — the profile's.
+    pub seat: Option<Seat>,
+    /// Why this model, for its deal: the conversation's rule by the phrase; none — what stands on the seat.
+    pub reason: Option<Reason>,
 }
 
 /// Who answered an exchange that is remembered without the model's words.
@@ -415,8 +420,9 @@ pub struct DialogService {
 /// The block «Сейчас» of a device (src/talk/now.rs), in the character's language; empty when nothing goes on.
 pub type NowSource = Arc<dyn Fn(&str, crate::memory::text::Lang) -> String + Send + Sync>;
 
-/// Where the model's spending goes, round by round: the conversation's history key, the model, the round's usage.
-pub type UsageSink = Arc<dyn Fn(&str, &str, &super::llm::LlmUsage) + Send + Sync>;
+/// Where the model's spending goes: each round with its conversation's key, provider, model and seat; each answer,
+/// once it is over, as the deal to close (src/router).
+pub type UsageSink = crate::router::UsageSink;
 
 /// A spoken answer's output limit (docs/plans/audio-interface.md, the owner's decision 14): a few sentences fit
 /// easily, a runaway does not.
@@ -505,6 +511,8 @@ impl DialogService {
             .or_else(|| self.brain.slot(profile))
             .or_else(|| self.brain.slot(ModelProfile::Fast))
             .ok_or_else(|| anyhow!("модель «Мозга» не выбрана"))?;
+        // The app's deal: on the apps' seat, by what stands there for it.
+        let tally = Tally::new(self.usage.get().cloned(), "", Answerer::of(&slot, Seat::App, Reason::Seat));
         // An app writes texts, not spoken answers (a series' script as JSON): the workshop's longer limit
         // (WORKSHOP_MAX_TOKENS), not LLM_MAX_TOKENS — a reasoning model spends part of it on thinking, and a cut JSON is
         // no JSON. A model that refuses the longer limit as too long is asked again with its own.
@@ -518,12 +526,14 @@ impl DialogService {
                 max_tokens: longer,
                 ..LlmRequest::default()
             };
+            tally.asking();
             let mut events = slot.client.stream(request, cancel.clone());
             let (mut text, mut usage, mut failed) = (String::new(), None, None);
             while let Some(event) = events.next().await {
                 match event {
                     Ok(LlmEvent::Text(piece)) => text.push_str(&piece),
                     Ok(LlmEvent::Turn(turn)) => {
+                        tally.round(tally.asked(), turn.usage.as_ref());
                         if !turn.content.trim().is_empty() {
                             text = turn.content;
                         }
@@ -546,10 +556,66 @@ impl DialogService {
                     );
                     longer = None;
                 }
-                Some(error) => return Err(error),
-                None => return Ok(Written { text, usage, profile: slot.profile() }),
+                Some(error) => {
+                    tally.failed(&error, Some(&cancel));
+                    return Err(error);
+                }
+                None => {
+                    tally.end(Outcome::Ok);
+                    return Ok(Written { text, usage, profile: slot.profile() });
+                }
             }
         }
+    }
+
+    /// One round of the fast model for a background work (talk/tool_work.rs, docs/plans/long-tools.md): its own
+    /// instructions and messages, the tools given — no persona, no history. The whole turn: its words, its calls.
+    /// `key` — `work:<executor>:<target>`: the router's deal goes to that work.
+    pub async fn background_round(
+        &self,
+        key: &str,
+        system: String,
+        messages: Vec<LlmMessage>,
+        tools: Vec<LlmTool>,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<AssistantTurn> {
+        let slot = self.brain.slot(ModelProfile::Fast).ok_or_else(|| anyhow!("модель «Мозга» не выбрана"))?;
+        // A background round is a deal of its own, on the fast seat (the router's journal); its own seat comes with
+        // the router's door (docs/plans/router-and-works.md).
+        let tally = Tally::new(self.usage.get().cloned(), key, Answerer::of(&slot, Seat::Fast, Reason::Seat));
+        let tools = if slot.client.tools() { tools } else { Vec::new() };
+        let tool_choice = if tools.is_empty() { ToolChoice::None } else { ToolChoice::Auto };
+        let request = LlmRequest {
+            system,
+            messages,
+            model: Some(slot.model.clone()),
+            tools,
+            tool_choice,
+            ..LlmRequest::default()
+        };
+        tally.asking();
+        let mut events = slot.client.stream(request, cancel.clone());
+        let (mut text, mut turn) = (String::new(), None);
+        while let Some(event) = events.next().await {
+            match event {
+                Ok(LlmEvent::Text(piece)) => text.push_str(&piece),
+                Ok(LlmEvent::Turn(done)) => {
+                    tally.round(tally.asked(), done.usage.as_ref());
+                    turn = Some(done)
+                }
+                Ok(LlmEvent::Tool(_)) => {}
+                Err(error) => {
+                    tally.failed(&error, Some(&cancel));
+                    return Err(error);
+                }
+            }
+        }
+        tally.end(Outcome::Ok);
+        let mut turn = turn.unwrap_or_default();
+        if turn.content.trim().is_empty() {
+            turn.content = text;
+        }
+        Ok(turn)
     }
 
     pub fn description(&self) -> String {
@@ -586,6 +652,7 @@ impl DialogService {
         let instructions = instructions.to_string();
         generate(move |y| async move {
             let Some(slot) = service.brain.slot(ModelProfile::Smart) else { return };
+            let tally = service.tally("", &DialogContext::default(), &slot, Seat::Smart);
             let request = LlmRequest {
                 system: NARRATOR_PROMPT.into(),
                 messages: vec![LlmMessage::User(instructions)],
@@ -593,15 +660,21 @@ impl DialogService {
                 ..LlmRequest::default()
             };
             let mut speaker = Speaker::new(&y);
-            let mut events = service.round(&slot, request, cancel, Until::Phrase);
+            tally.asking();
+            let mut events = service.round(&slot, request, cancel.clone(), Until::Phrase);
             while let Some(event) = events.next().await {
                 match event {
                     Ok(LlmEvent::Text(text)) => speaker.push(&text).await,
+                    Ok(LlmEvent::Turn(done)) => spent(&tally, &slot, &done),
                     Ok(_) => {}
-                    Err(error) => return y.send(Err(error)).await,
+                    Err(error) => {
+                        tally.failed(&error, Some(&cancel));
+                        return y.send(Err(error)).await;
+                    }
                 }
             }
             speaker.flush().await;
+            tally.end(Outcome::Ok);
         })
     }
 
@@ -619,6 +692,7 @@ impl DialogService {
         let (key, system, text) = (key.to_string(), system.to_string(), text.to_string());
         generate(move |y| async move {
             let Some(slot) = service.brain.slot(ModelProfile::Smart) else { return };
+            let tally = service.tally(&key, &DialogContext::default(), &slot, Seat::Smart);
             if fresh {
                 service.forget(&key);
             }
@@ -632,16 +706,21 @@ impl DialogService {
                 ..LlmRequest::default()
             };
             let mut speaker = Speaker::new(&y);
-            let mut events = service.round(&slot, request, cancel, Until::Phrase);
+            tally.asking();
+            let mut events = service.round(&slot, request, cancel.clone(), Until::Phrase);
             while let Some(event) = events.next().await {
                 match event {
                     Ok(LlmEvent::Text(delta)) => speaker.push(&delta).await,
-                    Ok(LlmEvent::Turn(done)) => service.spent(&key, &slot.model, &done),
+                    Ok(LlmEvent::Turn(done)) => spent(&tally, &slot, &done),
                     Ok(_) => {}
-                    Err(error) => return y.send(Err(error)).await,
+                    Err(error) => {
+                        tally.failed(&error, Some(&cancel));
+                        return y.send(Err(error)).await;
+                    }
                 }
             }
             speaker.flush().await;
+            tally.end(Outcome::Ok);
             service.history().remember(&key, &text, &speaker.answer(), None);
         })
     }
@@ -658,16 +737,17 @@ impl DialogService {
         let _ = self.now.set(now);
     }
 
-    /// Where the model's spending goes from now on: every round, with its conversation's key.
+    /// Where the model's spending goes from now on: every round, with its conversation's key, provider and seat; every
+    /// answer once it is over, as its deal (src/router).
     pub fn attach_usage(&self, usage: UsageSink) {
         let _ = self.usage.set(usage);
     }
 
-    /// A round's spending, told to the sink.
-    fn spent(&self, key: &str, model: &str, turn: &AssistantTurn) {
-        if let (Some(sink), Some(usage)) = (self.usage.get(), turn.usage.as_ref()) {
-            sink(key, model, usage);
-        }
+    /// The tally of one answer on `slot`, which closes its deal: on the context's seat (else `seat`), by the context's
+    /// reason (else what stands on the seat).
+    fn tally(&self, key: &str, context: &DialogContext, slot: &ModelSlot, seat: Seat) -> Arc<Tally> {
+        let asked = Answerer::of(slot, context.seat.unwrap_or(seat), context.reason.unwrap_or(Reason::Seat));
+        Tally::new(self.usage.get().cloned(), key, asked)
     }
 
     /// An exchange into the short history, and into the memory's episodes when it keeps them.
@@ -716,13 +796,12 @@ impl DialogService {
         let (key, question) = (key.to_string(), question.to_string());
         generate(move |y| async move {
             let Some(slot) = service.slot_for(&context) else { return };
+            let tally = service.tally(&key, &context, &slot, profile_seat(&context));
             let mut messages = service.turns(&key);
             messages.push(LlmMessage::User(question.clone()));
-            if let Err(error) =
-                service.rounds(&slot, &key, &question, messages, &context, &cancel, toolbox, None, &y).await
-            {
-                y.send(Err(error)).await;
-            }
+            let answered =
+                service.rounds(&slot, &tally, &key, &question, messages, &context, &cancel, toolbox, None, &y).await;
+            ended(&tally, answered, &cancel, &y).await;
         })
     }
 
@@ -733,6 +812,7 @@ impl DialogService {
     async fn rounds(
         &self,
         slot: &ModelSlot,
+        tally: &Tally,
         key: &str,
         question: &str,
         mut messages: Vec<LlmMessage>,
@@ -773,6 +853,10 @@ impl DialogService {
                 if let Some(limited) = toolbox.as_ref().and_then(|toolbox| toolbox.limited.as_ref()) {
                     limited.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
+                // The rounds or the time ran out: the answer is cut to words.
+                if toolbox.is_some() {
+                    tally.cut();
+                }
             }
             // What the model is told when this round's turn ran out of tokens in a call: the next round hears it.
             let mut cut_off = None;
@@ -793,6 +877,7 @@ impl DialogService {
                     request.cache_history = toolbox.as_ref().is_some_and(|toolbox| toolbox.cache_history);
                     let timeout_ms =
                         toolbox.as_ref().and_then(|toolbox| toolbox.round_ms).unwrap_or(self.config.timeout_ms);
+                    tally.asking();
                     let mut events = self.round_within(slot, request, cancel.clone(), Until::Phrase, timeout_ms);
                     // A round that writes nothing for a while says the filler, once, while nothing has been said.
                     let mut thinking = toolbox
@@ -825,7 +910,7 @@ impl DialogService {
                                 speaker.push(&text).await
                             }
                             Ok(LlmEvent::Turn(done)) => {
-                                self.spent(key, &slot.model, &done);
+                                spent(tally, slot, &done);
                                 turn = Some(done)
                             }
                             Ok(LlmEvent::Tool(_)) => {}
@@ -975,6 +1060,8 @@ impl DialogService {
         let Some(slot) = self.slot_for(&context) else {
             return Ok(ModelChoice { text: String::new(), calls: Vec::new(), resume: None });
         };
+        // One deal for the choice and the words after it (`continue_with`, `proceed`): the last of them closes it.
+        let tally = self.tally(key, &context, &slot, profile_seat(&context));
         let mut messages = self.turns(key);
         messages.push(LlmMessage::User(question.to_string()));
         let offered = if slot.client.tools() { tools } else { Vec::new() };
@@ -982,12 +1069,20 @@ impl DialogService {
         let mut text = String::new();
         let mut turn = None;
         let request = self.request(&slot, key, &messages, &context, offer.as_ref());
-        let mut events = self.round(&slot, request, cancel, Until::Event);
+        tally.asking();
+        let mut events = self.round(&slot, request, cancel.clone(), Until::Event);
         while let Some(event) = events.next().await {
-            match event? {
+            let event = match event {
+                Ok(event) => event,
+                Err(error) => {
+                    tally.failed(&error, Some(&cancel));
+                    return Err(error);
+                }
+            };
+            match event {
                 LlmEvent::Text(delta) => text.push_str(&delta),
                 LlmEvent::Turn(done) => {
-                    self.spent(key, &slot.model, &done);
+                    spent(&tally, &slot, &done);
                     turn = Some(done)
                 }
                 LlmEvent::Tool(_) => {}
@@ -1000,6 +1095,7 @@ impl DialogService {
             resume: Some(Resume {
                 service: self.clone(),
                 slot,
+                tally,
                 key: key.to_string(),
                 question: question.to_string(),
                 messages,
@@ -1016,6 +1112,7 @@ impl DialogService {
     fn continue_with(
         self: &Arc<Self>,
         slot: ModelSlot,
+        tally: Arc<Tally>,
         key: String,
         question: String,
         messages: Vec<LlmMessage>,
@@ -1027,16 +1124,21 @@ impl DialogService {
         generate(move |y| async move {
             let request = service.request(&slot, &key, &messages, &context, offer.as_ref());
             let mut speaker = Speaker::new(&y);
-            let mut events = service.round(&slot, request, cancel, Until::Phrase);
+            tally.asking();
+            let mut events = service.round(&slot, request, cancel.clone(), Until::Phrase);
             while let Some(event) = events.next().await {
                 match event {
                     Ok(LlmEvent::Text(text)) => speaker.push(&text).await,
-                    Ok(LlmEvent::Turn(done)) => service.spent(&key, &slot.model, &done),
+                    Ok(LlmEvent::Turn(done)) => spent(&tally, &slot, &done),
                     Ok(_) => {}
-                    Err(error) => return y.send(Err(error)).await,
+                    Err(error) => {
+                        tally.failed(&error, Some(&cancel));
+                        return y.send(Err(error)).await;
+                    }
                 }
             }
             speaker.flush().await;
+            tally.end(Outcome::Ok);
             service.remember_turn(&key, &question, &speaker.answer(), None);
         })
     }
@@ -1286,6 +1388,8 @@ async fn attempt(
 struct Resume {
     service: Arc<DialogService>,
     slot: ModelSlot,
+    /// The answer's tally: closed once the choice and the words after it are over.
+    tally: Arc<Tally>,
     key: String,
     question: String,
     messages: Vec<LlmMessage>,
@@ -1315,6 +1419,7 @@ impl ModelChoice {
         let offer = resume.offer.clone().map(|offer| Offer { choice: ToolChoice::None, ..offer });
         resume.service.continue_with(
             resume.slot.clone(),
+            resume.tally.clone(),
             resume.key.clone(),
             resume.question.clone(),
             messages,
@@ -1329,23 +1434,48 @@ impl ModelChoice {
     pub fn proceed(&self, toolbox: ToolBox, cancel: CancellationToken) -> PhraseStream {
         let Some(resume) = &self.resume else { return futures::stream::empty().boxed() };
         let service = resume.service.clone();
-        let slot = resume.slot.clone();
+        let (slot, tally) = (resume.slot.clone(), resume.tally.clone());
         let (key, question) = (resume.key.clone(), resume.question.clone());
         let messages = resume.messages.clone();
         let context = resume.context.clone();
         let first = resume.turn.clone().map(|turn| (resume.written.clone(), turn));
         generate(move |y| async move {
-            if let Err(error) =
-                service.rounds(&slot, &key, &question, messages, &context, &cancel, Some(toolbox), first, &y).await
-            {
-                y.send(Err(error)).await;
-            }
+            let answered = service
+                .rounds(&slot, &tally, &key, &question, messages, &context, &cancel, Some(toolbox), first, &y)
+                .await;
+            ended(&tally, answered, &cancel, &y).await;
         })
     }
 }
 
+/// The conversation's seat of a context: its profile's («Быстрая» without one).
+fn profile_seat(context: &DialogContext) -> Seat {
+    Seat::of(context.profile.unwrap_or(ModelProfile::Fast))
+}
+
+/// A round's spending, to its answer's tally: on «Запасная» once it took over.
+fn spent(tally: &Tally, slot: &ModelSlot, turn: &AssistantTurn) {
+    tally.round(&Answerer::now(slot, tally.asked()), turn.usage.as_ref());
+}
+
+/// How an answer's rounds ended, told to its tally; a failure goes on to the answer's stream.
+async fn ended(
+    tally: &Tally,
+    answered: anyhow::Result<()>,
+    cancel: &CancellationToken,
+    y: &Yielder<anyhow::Result<String>>,
+) {
+    match answered {
+        Ok(()) => tally.end(Outcome::Ok),
+        Err(error) => {
+            tally.failed(&error, Some(cancel));
+            y.send(Err(error)).await;
+        }
+    }
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::config::{Config, Env, ModelPair};
     use crate::core::events::EventBus;
@@ -2060,6 +2190,91 @@ mod tests {
         assert_eq!(models, vec![json!("backup-model"), json!("backup-model")]);
     }
 
+    /// What the sink heard: each round's key, provider, model and seat; each answer's deal.
+    type Heard = (Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<crate::router::Spent>>>);
+
+    fn listen(service: &DialogService) -> Heard {
+        let (rounds, deals) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(Vec::new())));
+        let (r, d) = (rounds.clone(), deals.clone());
+        service.attach_usage(Arc::new(move |heard: crate::router::Usage<'_>| match heard {
+            crate::router::Usage::Round { key, provider, model, seat, .. } => {
+                r.lock().unwrap().push(format!("{key} {provider} {model} {}", seat.as_str()))
+            }
+            crate::router::Usage::Answer(spent) => d.lock().unwrap().push(spent.clone()),
+        }));
+        (rounds, deals)
+    }
+
+    #[tokio::test]
+    async fn an_answer_the_backup_took_over_is_the_backups_deal() {
+        let (llm, _, service) = backed_up(false).await;
+        let (_, deals) = listen(&service);
+        llm.reply("Запасной ответ.");
+        let context = DialogContext {
+            profile: Some(ModelProfile::Smart),
+            reason: Some(Reason::RuleHard),
+            ..DialogContext::default()
+        };
+        let said = collect(service.answer("device-24", "Почему?", context, CancellationToken::new(), None)).await;
+        assert_eq!(said, vec!["Запасной ответ."]);
+        let deals = deals.lock().unwrap();
+        assert_eq!(deals.len(), 1, "the chosen model answered no round: {deals:?}");
+        let deal = &deals[0];
+        assert_eq!(
+            (deal.key.as_str(), deal.by.provider.as_str(), deal.by.model.as_str()),
+            ("device-24", "spare", "backup-model")
+        );
+        assert_eq!(
+            (deal.by.seat, deal.by.reason, deal.outcome, deal.rounds),
+            (Seat::Backup, Reason::Backup, Outcome::Ok, 1)
+        );
+        assert!(!deal.by.cloud);
+    }
+
+    #[tokio::test]
+    async fn a_commands_choice_and_its_words_are_one_deal_on_the_rules_seat() {
+        let llm = chat().await;
+        let service = dialog(config(Some(&llm.url)));
+        let (_, deals) = listen(&service);
+        llm.calls(&[("set_timer", json!({"seconds": 60}))]);
+        let context = DialogContext {
+            profile: Some(ModelProfile::Smart),
+            reason: Some(Reason::RuleCommand),
+            ..DialogContext::default()
+        };
+        let choice = service
+            .decide("device-25", "Поставь таймер", context, CancellationToken::new(), vec![tool("set_timer")], None)
+            .await
+            .unwrap();
+        llm.calls(&[]);
+        llm.reply("Поставила.");
+        let done = vec![ToolResult { id: "call_1".into(), content: "done".into(), is_error: false }];
+        let said = collect(choice.continue_with(done, CancellationToken::new())).await;
+        assert_eq!(said, vec!["Поставила."]);
+        assert!(deals.lock().unwrap().is_empty(), "not closed while the choice is kept");
+        drop(choice);
+        {
+            let deals = deals.lock().unwrap();
+            assert_eq!(deals.len(), 1, "{deals:?}");
+            assert_eq!((deals[0].by.seat, deals[0].by.reason), (Seat::Smart, Reason::RuleCommand));
+            assert_eq!((deals[0].rounds, deals[0].outcome), (2, Outcome::Ok));
+        }
+
+        // A failed answer is a deal too, with how it ended.
+        let quiet = dialog(config(Some("http://127.0.0.1:9/v1")));
+        let (_, failed) = listen(&quiet);
+        let said: Vec<String> = with_error_phrase(
+            quiet.answer("device-26", "Вопрос", DialogContext::default(), CancellationToken::new(), None),
+            CancellationToken::new(),
+            |_| {},
+        )
+        .collect()
+        .await;
+        assert_eq!(said, vec![ERROR_PHRASE]);
+        let failed = failed.lock().unwrap();
+        assert_eq!((failed.len(), failed[0].outcome, failed[0].by.seat), (1, Outcome::Failed, Seat::Fast));
+    }
+
     #[tokio::test]
     async fn a_model_that_began_its_answer_is_not_replaced_nor_a_cancelled_one() {
         let (llm, primary, service) = backed_up(true).await;
@@ -2172,12 +2387,12 @@ mod tests {
         );
     }
 
-    type Script = Box<dyn Fn(usize, &LlmRequest) -> Vec<anyhow::Result<LlmEvent>> + Send + Sync>;
+    pub(crate) type Script = Box<dyn Fn(usize, &LlmRequest) -> Vec<anyhow::Result<LlmEvent>> + Send + Sync>;
 
     /// A model that answers its n-th request as `script` says, and keeps the requests.
-    struct Scripted {
+    pub(crate) struct Scripted {
         script: Script,
-        requests: Mutex<Vec<LlmRequest>>,
+        pub(crate) requests: Mutex<Vec<LlmRequest>>,
     }
 
     impl LlmClient for Scripted {
@@ -2197,7 +2412,7 @@ mod tests {
         }
     }
 
-    fn scripted(script: Script) -> (Arc<Scripted>, Arc<DialogService>) {
+    pub(crate) fn scripted(script: Script) -> (Arc<Scripted>, Arc<DialogService>) {
         let llm = Arc::new(Scripted { script, requests: Mutex::new(Vec::new()) });
         let brain = Arc::new(Switching { client: llm.clone(), model: Arc::new(Mutex::new("test-llm".into())) });
         let service = Arc::new(DialogService {
@@ -2213,7 +2428,7 @@ mod tests {
         (llm, service)
     }
 
-    fn words(text: &str) -> Vec<anyhow::Result<LlmEvent>> {
+    pub(crate) fn words(text: &str) -> Vec<anyhow::Result<LlmEvent>> {
         vec![
             Ok(LlmEvent::Text(text.into())),
             Ok(LlmEvent::Turn(AssistantTurn { content: text.into(), ..AssistantTurn::default() })),

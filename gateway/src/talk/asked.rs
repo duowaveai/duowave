@@ -57,6 +57,11 @@ pub enum Kind {
     Remake,
     /// The brain's own question: its answer ended with «?». The phrase said to it goes to the brain.
     Talk,
+    /// «Запуск платный: … Запускать?»: a background tool's paid run waits for «да» (docs/plans/long-tools.md). The
+    /// question's `work` is the run's key, not a work: there is no work until the answer.
+    Run,
+    /// «Рассказать подробнее?»: a background work's retelling was cut.
+    More,
 }
 
 /// What was asked for before the question, done once it is answered: the wish of «Поправить … или новую?», the change
@@ -146,6 +151,16 @@ impl Asked {
     /// The answer came: the question, with what waited for it, is not awaited any more.
     pub fn take(&self, device: &str) -> Option<Question> {
         self.questions().remove(device)
+    }
+
+    /// Takes the device's question only when it is about this work: an answer given by a button on the page
+    /// «Работы» leaves the device's question about another thing open.
+    pub fn take_of(&self, device: &str, work: &str) -> Option<Question> {
+        let mut questions = self.questions();
+        match questions.get(device) {
+            Some(question) if question.work == work => questions.remove(device),
+            _ => None,
+        }
     }
 
     /// The device's question while its answer is awaited, whoever asked it — the layer or the brain.

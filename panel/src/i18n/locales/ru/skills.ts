@@ -1,6 +1,12 @@
 // Тексты: screens/skills.tsx.
 
 export default {
+    tabsLabel: 'Разделы приложений',
+    tabMine: 'Мои',
+    tabConnections: 'Подключения',
+    makeOwn: 'Сделать своё',
+    fromApps: 'От приложений',
+    stateProblem: 'ошибка',
     back: 'Приложения',
     workshop: 'Мастерская',
     contributedFailed: (title: string, plugin: string) =>

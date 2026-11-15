@@ -47,4 +47,6 @@ export default {
     firstWord: (time: string) => `первое слово через ${time}`,
     tokens: (input: number, output: number, cached: number, rounds: number) =>
         `токены ${input} → ${output}${cached ? `, из кэша ${cached}` : ''}${rounds > 1 ? `, кругов ${rounds}` : ''}`,
+    /** Сделка ответа: место, модель и доллары (docs/plans/router-and-works.md, «Устройство: пульт»). */
+    deal: (seat: string, model: string, money: string) => [seat, model, money].filter(Boolean).join(' · '),
 };

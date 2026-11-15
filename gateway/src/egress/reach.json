@@ -1,0 +1,20 @@
+{
+  "format": 1,
+  "updatedAt": "2026-11-16",
+  "services": {
+    "system:alice": { "only": ["RU", "BY", "KZ"], "hosts": ["uniproxy.alice.yandex.net"] },
+    "provider:openai": {
+      "blocked": ["RU", "BY", "CN", "HK", "MO", "IR", "KP", "SY", "CU"],
+      "hosts": ["api.openai.com", "chatgpt.com", "auth.openai.com"]
+    },
+    "provider:claude": {
+      "blocked": ["RU", "BY", "CN", "HK", "MO", "IR", "KP", "SY", "CU"],
+      "hosts": ["api.anthropic.com"]
+    },
+    "provider:gemini": {
+      "blocked": ["RU", "BY", "CN", "HK", "MO", "IR", "KP", "SY", "CU"],
+      "hosts": ["generativelanguage.googleapis.com"]
+    },
+    "voice:elevenlabs": { "blocked": ["RU", "BY", "IR", "KP", "SY", "CU"], "hosts": ["api.elevenlabs.io"] }
+  }
+}

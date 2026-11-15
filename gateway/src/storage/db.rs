@@ -222,6 +222,7 @@ mod tests {
             .unwrap();
         for table in [
             "api_keys",
+            "app_settings",
             "asr_models",
             "audit_log",
             "characters",
@@ -234,6 +235,9 @@ mod tests {
             "memory_facts",
             "memory_notes",
             "memory_visible_to",
+            "model_deals",
+            "model_deals_days",
+            "model_prices",
             "packages",
             "plugin_kv",
             "requests",

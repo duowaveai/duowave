@@ -395,6 +395,10 @@ export interface McpTool {
     destructive: boolean;
     openWorld: boolean;
     hint?: string;
+    /** «В фоне»: вызов — фоновое дело, итог скажут позже (docs/plans/long-tools.md). */
+    background: boolean;
+    /** «Платный»: перед запуском спрашивают «Запускать?». */
+    paid: boolean;
 }
 
 export interface McpServer {
@@ -765,7 +769,10 @@ export interface TalkOrigin {
     via: 'voice' | 'text';
 }
 
-/** Что модель потратила на запрос: все круги ответа вместе. */
+/**
+ * Что модель потратила на запрос: все круги ответа вместе. Когда сделка ответа закрыта (gateway/src/router) — её место,
+ * чем платили (`key`, `plan`, `local`) и доллары по цене дня; у старых запросов этого нет.
+ */
 export interface RequestTokens {
     input: number;
     output: number;
@@ -773,6 +780,10 @@ export interface RequestTokens {
     cacheWrite: number;
     rounds: number;
     model: string;
+    seat?: string;
+    billing?: string;
+    /** Миллионные доли доллара; нет — цены нет (или сделки ещё нет). */
+    usdMicro?: number;
 }
 
 /** Состояние работы (gateway/src/talk/works.rs). */
@@ -805,12 +816,19 @@ export interface WorkView {
     again: boolean;
     notes: WorkNote[];
     /** Строка итога шлюза и что стало с вещью. */
-    result?: { line: string; end?: 'desk' | 'fitting' | 'parked' | 'declined' };
+    result?: {
+        line: string;
+        end?: 'desk' | 'fitting' | 'parked' | 'declined';
+        /** Пересказ результата фонового дела моделью (две фразы). */
+        summary?: string;
+        /** Результат фонового дела как пришёл (до 64 КБ). */
+        data?: string;
+    };
     /** Вопрос работы: когда спрошен вслух и чем кончился — ответили, отказались, промолчали; напомнили ли. */
     question?: {
         text: string;
         until: number;
-        kind?: 'ready' | 'unfinished' | 'apply' | 'delete';
+        kind?: 'ready' | 'unfinished' | 'apply' | 'delete' | 'more';
         askedAt?: number;
         outcome?: 'answered' | 'declined' | 'silent';
         reminded?: boolean;
@@ -822,6 +840,130 @@ export interface WorkView {
     startedAt: number;
     updatedAt: number;
     endedAt?: number;
+    /** Где работа на странице «Работы»: идёт, ждёт в очереди, спрашивает, недавняя. Шлюз до 6а — нет. */
+    group?: WorkGroup;
+    /** Почему ждёт в очереди. */
+    wait?: WorkWait;
+    /** Чем занят агент мастерской: thinking, writing, reading, checking, trying, phrase, docs, journal. */
+    doing?: string;
+    /** Где фоновое дело, словами его исполнителя: шаг инструмента, проценты и слова задачи приложения. */
+    step?: string;
+    /** Кто отвечает: последний круг идущей работы, иначе её последняя сделка. Только администратору. */
+    model?: WorkModel;
+    /** Что потратили её сделки. Только администратору. */
+    spent?: WorkSpent;
+}
+
+/** Группа работы на странице «Работы» (docs/plans/router-and-works.md, решение 17). */
+export type WorkGroup = 'going' | 'queued' | 'asking' | 'recent';
+
+/**
+ * Почему работа ждёт в очереди: busy — идёт столько, сколько можно сразу; soon — новая голосом с этого устройства была
+ * меньше двух минут назад, начнётся в `until`; day — десять новых голосом за день; next — её очередь сейчас.
+ * `ahead` — сколько работ того же вида ждут перед ней.
+ */
+export interface WorkWait {
+    why: 'busy' | 'soon' | 'day' | 'next' | string;
+    until?: number;
+    ahead: number;
+}
+
+/** Кто ответил работе: провайдер, модель, место; `place` — home, mine, cloud (нет — сделки ещё нет). */
+export interface WorkModel {
+    provider: string;
+    model: string;
+    seat: string;
+    place?: string;
+}
+
+/** Сколько потратили сделки работы: доллары — только у сделок с ценой (`unpriced` — сколько без неё). */
+export interface WorkSpent {
+    deals: number;
+    tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
+    usdMicro: number;
+    unpriced: number;
+}
+
+/** Ответ на вопрос работы кнопкой — тот же, что голосом: «да», «примерить», «нет», «в черновики», «подробнее». */
+export type WorkAnswer = 'yes' | 'fit' | 'no' | 'park' | 'details';
+
+/**
+ * Сделка роутера (gateway/src/router/deals.rs): какое место спросило, какая модель ответила и почему, токены, доллары
+ * по цене дня и сама цена. Текста фразы и ответа в ней нет.
+ */
+export interface ModelDeal {
+    id: number;
+    at: number;
+    seat: string;
+    via: string;
+    provider: string;
+    model: string;
+    place: string;
+    reason: string;
+    request?: string;
+    work?: string;
+    part?: string;
+    tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
+    rounds: number;
+    ms: number;
+    /** Миллионные доли доллара; null — цены нет. */
+    usdMicro: number | null;
+    price: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; from: string } | null;
+    billing: string;
+    outcome: string;
+    check?: string;
+}
+
+/**
+ * Итоги сделок роутера (gateway/src/router/deals.rs, `Sums`): `of` — по чему сложено (`day`, `seat`, `provider`,
+ * `model`, `via`, `billing`), дальше суммы. Доллары — только сделок с ценой; `unpriced` — сколько сделок без неё.
+ */
+export interface DealSums {
+    of?: Record<string, string>;
+    deals: number;
+    tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
+    rounds: number;
+    ms: number;
+    usdMicro: number;
+    unpriced: number;
+}
+
+/** Итоги по суточным строкам роутера: строки по `by` и общий итог. */
+export interface RouterStats {
+    by: string[];
+    rows: DealSums[];
+    total: DealSums;
+}
+
+/** Цена модели, доллары за миллион токенов, и откуда она: manual, provider, snapshot, local. */
+export interface ModelPrice {
+    input?: number | null;
+    output?: number | null;
+    cacheRead?: number | null;
+    cacheWrite?: number | null;
+    from: string;
+}
+
+/**
+ * Цена модели сейчас (`/api/v1/router/prices/{provider}/{model}`): по ней считается следующая сделка; `written` —
+ * вписана руками; `unwritten` — какая была бы без вписанной (провайдера или снимка); `plan` — вход по подписке.
+ */
+export interface PriceNow {
+    provider: string;
+    model: string;
+    price: ModelPrice | null;
+    context?: number;
+    written: boolean;
+    unwritten: ModelPrice | null;
+    plan: boolean;
+}
+
+/** Цена, которую вписывают руками: доллары за миллион токенов входа, выхода и кеша. */
+export interface PriceWrite {
+    input: number;
+    output: number;
+    cacheRead?: number;
+    cacheWrite?: number;
 }
 
 /**
@@ -2258,7 +2400,7 @@ export interface CatalogEntry {
 export type CatalogFace = 'widget' | 'skill' | 'window' | 'schedule';
 
 /** Где работает приложение каталога: в шлюзе, на компьютере, в сети. */
-export type CatalogPlace = 'gateway' | 'computer' | 'network';
+export type CatalogPlace = 'gateway' | 'computer' | 'station' | 'network';
 
 /** Что пакет скачает сам: что, около скольки МБ, когда (сразу или при первом использовании). */
 export interface CatalogDownload {
@@ -2621,12 +2763,12 @@ export interface StationCheck {
     problem?: string;
 }
 
-export type ConnectStepId = 'copy' | 'write' | 'verify' | 'reboot' | 'arrive';
+export type ConnectStepId = 'copy' | 'remove' | 'write' | 'verify' | 'reboot' | 'arrive';
 
 /** Подключение или откат колонки: шаги, которые пульт показывает галочками. */
 export interface ConnectJob {
     id: string;
-    kind: 'connect' | 'restore';
+    kind: 'connect' | 'restore' | 'uninstall';
     address: string;
     status: 'running' | 'done' | 'failed' | 'timeout';
     steps: Array<{ id: ConnectStepId; state: 'pending' | 'running' | 'done' | 'failed' | 'skipped' }>;
@@ -2933,6 +3075,17 @@ export const api = {
     /** Язык дома (docs/plans/i18n.md): его читает код приложений и пульт, где человек не выбрал свой. */
     language: () => get<HouseholdLanguage>('/api/v1/language'),
     setLanguage: (language: string) => put<HouseholdLanguage>('/api/v1/language', { language }),
+    /** Страна дома (docs/plans/catalog-regions.md, 3): код ISO, `none` — «Не скажу», null — не спрошено. */
+    homeCountry: () => get<HomeCountry>('/api/v1/home/country'),
+    setHomeCountry: (country: string) => put<HomeCountry>('/api/v1/home/country', { country }),
+    /** «Выход в интернет» (docs/plans/own-server.md): кто ходит напрямую, кто через свой сервер. */
+    egress: () => get<EgressView>('/api/v1/egress'),
+    setEgress: (change: { mode?: EgressMode; preferred?: string | null }) => put<EgressView>('/api/v1/egress', change),
+    setEgressRow: (id: string, change: { route?: string | null; onDown?: 'wait' | 'direct' | null }) =>
+        put<EgressView>(`/api/v1/egress/rows/${encodeURIComponent(id)}`, change),
+    resetEgressRows: () => del<EgressView>('/api/v1/egress/rows'),
+    setEgressCustom: (hosts: string[]) => put<EgressView>('/api/v1/egress/custom', { hosts }),
+    egressSeen: () => post<{ seen: boolean }>('/api/v1/egress/seen', {}),
     talkInput: () => get<VoiceInputSetting>('/api/v1/talk/input'),
     setTalkInput: (input: VoiceInput) => put<VoiceInputSetting>('/api/v1/talk/input', { input }),
     // Колонка
@@ -3037,6 +3190,7 @@ export const api = {
     connectStation: (address: string, gateway: string) => post<ConnectJob>('/api/v1/stations/connect', { address, gateway }),
     /** previous — «как было» перед последним подключением; yandex — без шлюза, как до любого. */
     restoreStation: (address: string, to: 'previous' | 'yandex' = 'yandex') => post<ConnectJob>('/api/v1/stations/connect/restore', { address, to }),
+    uninstallStation: (address: string) => post<ConnectJob>('/api/v1/stations/connect/uninstall', { address }),
     connectJob: (id: string) => get<ConnectJob>(`/api/v1/stations/connect/jobs/${encodeURIComponent(id)}`),
     // Вход
     panelState: () => get<{ configured: boolean; accounts: number; needsCode: boolean }>('/api/v1/auth/state'),
@@ -3167,7 +3321,7 @@ export const api = {
     importMcp: (json: string) => post<{ added: McpServer[]; problems: string[] }>('/api/v1/mcp/import', { json }),
     updateMcpServer: (id: string, input: McpServerInput) => patch<McpServer>(`/api/v1/mcp/servers/${encodeURIComponent(id)}`, input),
     removeMcpServer: (id: string) => del<void>(`/api/v1/mcp/servers/${encodeURIComponent(id)}`),
-    setMcpTool: (id: string, tool: string, change: { on?: boolean; hint?: string }) =>
+    setMcpTool: (id: string, tool: string, change: { on?: boolean; hint?: string; background?: boolean; paid?: boolean }) =>
         put<McpServer>(`/api/v1/mcp/servers/${encodeURIComponent(id)}/tools/${encodeURIComponent(tool)}`, change),
     approveMcpInstructions: (id: string) => post<McpServer>(`/api/v1/mcp/servers/${encodeURIComponent(id)}/instructions`),
     reconnectMcp: (id: string) => post<McpServer>(`/api/v1/mcp/servers/${encodeURIComponent(id)}/reconnect`),
@@ -3274,7 +3428,8 @@ export const api = {
     makeDraft: (words: string, draft?: string) => post<MadeDraft>('/api/v1/workshop/make', { words, draft }),
     /** Работы разговора (docs/plans/audio-interface.md): устройства (`computer` — этот компьютер), новые первыми. */
     works: (device?: string) => get<WorkView[]>(`/api/v1/works${device ? `?device=${encodeURIComponent(device)}` : ''}`),
-    work: (id: string) => get<WorkView>(`/api/v1/works/${encodeURIComponent(id)}`),
+    /** Одна работа со всем, что к ней сейчас: группа, ход, модель, расход. */
+    work: (id: string, signal?: AbortSignal) => get<WorkView>(`/api/v1/works/${encodeURIComponent(id)}`, signal),
     /** «Ждёт вас»: работы, чей вопрос ждёт человека. */
     waitingWorks: () => get<WorkView[]>('/api/v1/works?waiting=1'),
     /** Компьютер договорил строку итога работы: открывается её вопрос — пульт слушает ответ. */
@@ -3284,6 +3439,39 @@ export const api = {
     /** Действие с работой: как идёт, подробнее, примерить, на стол, в черновики, остановить. */
     workDo: (id: string, action: 'status' | 'details' | 'show' | 'desk' | 'park' | 'stop') =>
         post<{ said: string }>(`/api/v1/works/${encodeURIComponent(id)}/do`, { action }),
+    /** «Работы»: работы групп (через запятую: going, queued, asking, recent; без групп — все), с группой и причиной. */
+    worksIn: (groups: WorkGroup[], signal?: AbortSignal) =>
+        get<WorkView[]>(`/api/v1/works${groups.length ? `?group=${groups.join(',')}` : ''}`, signal),
+    /** Ответ на вопрос работы кнопкой — тот же, что голосом. Ничего не спрашивает — 409. */
+    workAnswer: (id: string, answer: WorkAnswer) =>
+        post<{ said: string }>(`/api/v1/works/${encodeURIComponent(id)}/do`, { action: 'answer', answer }),
+    /**
+     * «Расход» (docs/plans/router-and-works.md, этап 6б): итоги суточных строк по `by` за дни `from`–`to`
+     * (`ГГГГ-ММ-ДД`, по UTC, оба включены). Только администратору.
+     */
+    routerStats: (by: string[], from?: string, to?: string, signal?: AbortSignal) => {
+        const query = new URLSearchParams();
+        if (by.length) query.set('by', by.join(','));
+        if (from) query.set('from', from);
+        if (to) query.set('to', to);
+        return get<RouterStats>(`/api/v1/router/stats?${query}`, signal);
+    },
+    /** Сделки роутера, новые первыми: с `from` (мс шлюза или день), на месте `seat`; до 500. Только администратору. */
+    routerDeals: (query: { from?: string; seat?: string; limit?: number }, signal?: AbortSignal) => {
+        const params = new URLSearchParams();
+        if (query.from) params.set('from', query.from);
+        if (query.seat) params.set('seat', query.seat);
+        if (query.limit) params.set('limit', String(query.limit));
+        return get<{ deals: ModelDeal[] }>(`/api/v1/router/deals?${params}`, signal);
+    },
+    /** Цена модели сейчас: какая, вписана ли руками и что вернётся без вписанной. */
+    modelPrice: (provider: string, model: string) =>
+        get<PriceNow>(`/api/v1/router/prices/${encodeURIComponent(provider)}/${model.split('/').map(encodeURIComponent).join('/')}`),
+    /** Вписать цену модели руками; null — убрать вписанную (снова считается цена провайдера или снимка). */
+    writePrice: (provider: string, model: string, price: PriceWrite | null) =>
+        put<PriceNow>(`/api/v1/router/prices/${encodeURIComponent(provider)}/${model.split('/').map(encodeURIComponent).join('/')}`, price ?? {}),
+    /** Сделки роутера этой работы, новые первыми. Только администратору. */
+    workDeals: (id: string, signal?: AbortSignal) => get<{ deals: ModelDeal[] }>(`/api/v1/works/${encodeURIComponent(id)}/deals`, signal),
     /** Что сейчас знает «Мозг» на устройстве (блок «Сейчас»): пусто, когда ничего не происходит. */
     talkNow: (device?: string) => get<{ device: string; text: string }>(`/api/v1/talk/now${device ? `?device=${encodeURIComponent(device)}` : ''}`),
     /** «В черновики»: черновик уходит со стола и ждёт в мастерской. */
@@ -3294,6 +3482,10 @@ export const api = {
     saveDesk: (role: 'gateway' | 'helper', layout: unknown) => put<{ at: string }>(`/api/v1/desk/${role}`, layout),
     /** «Расставить заново» с нуля: хранимого стола больше нет. */
     resetDesk: (role: 'gateway' | 'helper') => del<void>(`/api/v1/desk/${role}`),
+    /** Что пульт помнит о человеке (docs/plans/menu-scheme.md): место в «Папках», слой разработчика. */
+    panelMemory: () => get<{ state: Record<string, unknown>; at: string | null }>('/api/v1/panel/state'),
+    /** Дописать ключи; `null` — забыть ключ. */
+    rememberPanel: (changes: Record<string, unknown>) => patch<{ state: Record<string, unknown>; at: string }>('/api/v1/panel/state', changes),
     createDraft: (body: { id: string; kind?: 'plugin' | 'quiz' | 'theme' | 'widget'; title?: string; openapi?: string }) => post<DraftView>('/api/v1/workshop/drafts', body),
     /** Адрес части пульта черновика — показать виджет до установки (docs/plans/desk.md, этап 5). */
     draftPreview: (id: string) => post<{ module: string; styles?: string | null }>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/preview`),
@@ -3419,6 +3611,65 @@ export const api = {
 /** Язык дома на шлюзе: `null` — не задан (пульт берёт язык системы). */
 export interface HouseholdLanguage {
     language: string | null;
+}
+
+export interface HomeCountry {
+    country: string | null;
+}
+
+export type EgressMode = 'off' | 'blocked' | 'all';
+export type EgressSection = 'alice' | 'brain' | 'voice' | 'mcp' | 'apps' | 'own' | 'other';
+
+export interface EgressConnection {
+    id: string;
+    name: string;
+    country: string | null;
+    current: string | null;
+    up: boolean;
+    app: string;
+}
+
+export type EgressDecision =
+    | { kind: 'direct' }
+    | { kind: 'via'; connection: string }
+    | { kind: 'down'; connection: string }
+    | { kind: 'need'; countries: string[]; wait: boolean };
+
+export type EgressWhy =
+    | { kind: 'noConnections' | 'off' | 'all' | 'own' | 'noCountry' | 'homeWorks' | 'noData' }
+    | { kind: 'catalog'; country: string }
+    | { kind: 'learned'; why: string };
+
+export interface EgressRow {
+    id: string;
+    name: string;
+    section: EgressSection;
+    hosts: string[];
+    keyed: boolean;
+    viaEntry: boolean;
+    /** `auto`, `direct` или id подключения. */
+    route: string;
+    onDown: 'wait' | 'direct';
+    onDownOwn: boolean;
+    decision: EgressDecision;
+    why: EgressWhy;
+    reach: { blocked?: string[]; only?: string[] } | null;
+    learned: { blocked: boolean; why: string; at: string } | null;
+    new: boolean;
+}
+
+export interface EgressView {
+    mode: EgressMode;
+    home: string | null;
+    preferred: string | null;
+    ownRules: boolean;
+    /** id приложения, что даёт подключения («VPN»); null — не поставлено. */
+    app: string | null;
+    anyReported: boolean;
+    connections: EgressConnection[];
+    rows: EgressRow[];
+    custom: string[];
+    reachUpdated: string | null;
 }
 
 /** Что сказать пользователю об ошибке запроса: текст шлюза, если он есть. */

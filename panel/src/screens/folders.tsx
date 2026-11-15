@@ -8,6 +8,8 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
+import { recalled, remember } from '../shell/memory';
+
 import { FolderItem, FolderPage, FolderRole, FolderRule, FolderView, FoldersView, MediaLink, api, can, problemOf } from '../api';
 import { formatList, formatNumber, tr } from '../i18n';
 import { foldersChanged, useFoldersVersion } from '../folders/state';
@@ -53,12 +55,25 @@ function rolesWords(roles: FolderRole[]): string {
     return formatList((['admin', 'member', 'guest'] as FolderRole[]).filter((role) => role === 'admin' || roles.includes(role)).map((role) => titles[role]));
 }
 
+/** Память пульта о «Папках»: открытая папка и путь внутри неё. */
+interface FoldersMemory {
+    opened?: string;
+    at?: string;
+}
+const MEMORY = 'folders';
+
 export function FoldersSection() {
     const version = useFoldersVersion();
     const [view, setView] = useState<FoldersView | null>(null);
     const [error, setError] = useState<string | null>(null);
     // The list is a tab of its own: an empty tab is never remembered (app.tsx settle), so «назад» to '' kept the card open.
-    const [opened, setOpened] = useSectionTab<string>('folders', LIST);
+    // Which folder was open is remembered for the person on the gateway (shell/memory.ts): the phone opens where the
+    // computer left off (docs/plans/menu-scheme.md).
+    const [opened, setOpened] = useSectionTab<string>('folders', recalled<FoldersMemory>(MEMORY)?.opened ?? LIST);
+    useEffect(() => {
+        const kept = recalled<FoldersMemory>(MEMORY);
+        if (kept?.opened !== opened) remember(MEMORY, opened === LIST ? undefined : { opened, at: opened });
+    }, [opened]);
     useEffect(() => {
         let alive = true;
         api.folders()
@@ -340,7 +355,18 @@ const MEDIA = new Set(['image', 'video', 'audio']);
 /** Что в папке: страницами, папки первыми; фото и кадры видео — уменьшенными, у видео и звука — длительность. */
 function Browser({ root }: { root: string }) {
     const version = useFoldersVersion();
-    const [at, setAt] = useState(root);
+    // Where inside the folder the person was — on any of their devices (shell/memory.ts).
+    const [at, setAt] = useState(() => {
+        const kept = recalled<FoldersMemory>(MEMORY);
+        return kept?.opened === root && kept.at?.startsWith(root) ? kept.at : root;
+    });
+    const shownRoot = useRef(root);
+    useEffect(() => {
+        if (shownRoot.current === root) return;
+        shownRoot.current = root;
+        setAt(root);
+    }, [root]);
+    useEffect(() => remember(MEMORY, { opened: root, at }), [at, root]);
     const [page, setPage] = useState<FolderPage | null>(null);
     const [items, setItems] = useState<FolderItem[]>([]);
     const [error, setError] = useState<string | null>(null);
@@ -374,7 +400,6 @@ function Browser({ root }: { root: string }) {
             },
         ).catch((e) => setError(problemOf(e)));
     };
-    useEffect(() => setAt(root), [root]);
     useEffect(() => {
         let alive = true;
         api.folderBrowse(at)

@@ -155,7 +155,12 @@ impl AskToolbox {
         let _ = self.events.send(AskEvent::Tool { name: call.name.clone(), server, input: call.input.clone() });
         let outcome = match (contributed, &self.offer) {
             (Some(contributed), _) => contributed.run(call, &self.principal, cancel.clone()).await,
-            (None, Some(offer)) => offer.run(call, cancel).await?,
+            // The check chat is the computer's: a background tool's «Готово» comes to the panel.
+            (None, Some(offer)) => {
+                let origin =
+                    crate::talk::Origin::computer(crate::talk::Activator::Button).by(Some(self.principal.name.clone()));
+                offer.run(call, cancel, Some(origin)).await?
+            }
             (None, None) => ToolOutcome::error(format!("error: {} is not available now", call.name)),
         };
         let _ = self.events.send(AskEvent::Result {

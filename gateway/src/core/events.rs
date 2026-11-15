@@ -189,6 +189,15 @@ events! {
         task: String,
         change: String,
     }
+    /// A deal closed (src/router): an answer of a model was written with its seat, its model, its tokens and dollars;
+    /// the panel's «Расход» reads the deals again. Never what was asked or answered.
+    RouterDeal = "router.deal" {
+        id: i64,
+        seat: String,
+        provider: String,
+        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")] usd_micro: Option<u64>,
+    }
     /// The plugins' memory changed enough to tell (src/plugins/budget.rs): what is free of their budget, the
     /// pressure. «Ресурсы колонки» reads the rest through the API.
     PluginsResources = "plugins.resources" {

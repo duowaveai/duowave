@@ -43,6 +43,7 @@ const en: Translation<typeof ru> = {
     firmwareTried: ' — the gateway is tested with it.',
     firmwareUntried: ' — the gateway has not been tested with it yet. If something goes wrong: “Алиса, аварийный возврат к Яндексу” (“Alice, emergency return to Yandex”).',
     restoreYandex: 'Return to Yandex',
+    removeDuowave: 'Remove DuoWave from the speaker',
     done: 'Done',
 
     places: ['Kitchen', 'Living room', 'Bedroom', 'Kids’ room', 'Study'],

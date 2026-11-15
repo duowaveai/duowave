@@ -35,6 +35,10 @@ export function searchPlaces(helper: boolean, onStation: boolean): SearchPlace[]
     const s = tr.shell.search;
     return [
         { title: s.home.title, path: s.home.path, words: s.home.words, place: { section: 'home' } },
+        { title: s.shortcuts.title, path: s.shortcuts.path, words: s.shortcuts.words, place: { section: 'home' } },
+        // «Работы» (docs/plans/router-and-works.md, решение 17): ячейки в доке нет — виджет на столе, плашка и поиск.
+        { title: s.works.title, path: s.works.path, words: s.works.words, place: { section: 'works', tab: '' }, when: () => can('settings.edit') },
+        { title: s.folders.title, path: s.folders.path, words: s.folders.words, place: { section: 'folders' }, when: () => can('station.view') },
         { title: s.newWidget.title, path: s.newWidget.path, words: s.newWidget.words, act: 'add' },
         // «Сказать» в доке — микрофон пульта (docs/plans/voice-creation.md, решение 1); текст, который колонка произнесёт, — здесь.
         { title: s.sayText.title, path: s.sayText.path, words: s.sayText.words, act: 'say', when: () => can('station.say') && !onComputer() },
@@ -45,12 +49,14 @@ export function searchPlaces(helper: boolean, onStation: boolean): SearchPlace[]
         { title: s.ownVoice.title, path: s.ownVoice.path, words: s.ownVoice.words, place: { section: 'character', tab: 'voice' } },
         { title: s.manner.title, path: s.manner.path, words: s.manner.words, place: { section: 'character', tab: 'page' } },
         { title: s.brain.title, path: s.brain.path, words: s.brain.words, place: { section: 'character', tab: 'brain' } },
+        // «Расход» (docs/plans/router-and-works.md, этап 6б) — внутри «Мозга».
+        { title: s.spend.title, path: s.spend.path, words: s.spend.words, place: { section: 'character', tab: 'brain', item: 'spend' }, when: () => can('settings.edit') },
 
-        { title: s.memory.title, path: s.memory.path, words: s.memory.words, place: { section: 'skills', tab: 'memory', item: 'overview' }, when: () => can('memory.view') },
-        { title: s.whatRemembers.title, path: s.whatRemembers.path, words: s.whatRemembers.words, place: { section: 'skills', tab: 'memory', item: 'overview' }, when: () => can('memory.view') },
-        { title: s.house.title, path: s.house.path, words: s.house.words, place: { section: 'skills', tab: 'memory', item: 'house' }, when: () => can('memory.view') },
-        { title: s.pause.title, path: s.pause.path, words: s.pause.words, place: { section: 'skills', tab: 'memory', item: 'overview' }, when: () => can('memory.view') },
-        { title: s.memorySettings.title, path: s.memorySettings.path, words: s.memorySettings.words, place: { section: 'skills', tab: 'memory', item: 'settings' }, when: () => can('memory.view') },
+        { title: s.memory.title, path: s.memory.path, words: s.memory.words, place: { section: 'character', tab: 'memory', item: 'overview' }, when: () => can('memory.view') },
+        { title: s.whatRemembers.title, path: s.whatRemembers.path, words: s.whatRemembers.words, place: { section: 'character', tab: 'memory', item: 'overview' }, when: () => can('memory.view') },
+        { title: s.house.title, path: s.house.path, words: s.house.words, place: { section: 'character', tab: 'memory', item: 'house' }, when: () => can('memory.view') },
+        { title: s.pause.title, path: s.pause.path, words: s.pause.words, place: { section: 'character', tab: 'memory', item: 'overview' }, when: () => can('memory.view') },
+        { title: s.memorySettings.title, path: s.memorySettings.path, words: s.memorySettings.words, place: { section: 'character', tab: 'memory', item: 'settings' }, when: () => can('memory.view') },
 
         { title: s.apps.title, path: s.apps.path, words: s.apps.words, place: { section: 'skills', tab: 'list' }, when: () => can('station.view') },
         { title: s.installed.title, path: s.installed.path, words: s.installed.words, place: { section: 'skills', tab: 'installed' }, when: () => can('station.view') },
@@ -65,7 +71,7 @@ export function searchPlaces(helper: boolean, onStation: boolean): SearchPlace[]
         // на экране и в поиске нет — они только голосом (docs/plans/magicplace.md).
         { title: s.catalog.title, path: s.catalog.path, words: s.catalog.words, place: { section: 'magicplace' }, when: () => can('station.view') },
         { title: s.workshop.title, path: s.workshop.path, words: s.workshop.words, place: { section: 'skills', tab: 'workshop' }, when: admin },
-        { title: s.routes.title, path: s.routes.path, words: s.routes.words, place: { section: 'skills', tab: 'routes' }, when: () => !onComputer() },
+        { title: s.routes.title, path: s.routes.path, words: s.routes.words, place: { section: 'skills', tab: 'installed' }, when: () => !onComputer() },
 
         // Страница колонки в режиме «Микрофон» — страница микрофона (docs/plans/mic-mode.md): адрес тот же.
         byMode<SearchPlace>(

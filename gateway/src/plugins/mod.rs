@@ -27,6 +27,7 @@ pub mod routes;
 pub mod runtime;
 pub mod schedule;
 pub mod skill;
+pub mod task_pump;
 #[cfg(feature = "wasm")]
 pub mod wasm;
 pub mod watch;

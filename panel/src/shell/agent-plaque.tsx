@@ -1,10 +1,11 @@
 // Плашка «Делаю виджет» (docs/plans/desk.md; просьба владельца 10.11.2026): пока агент мастерской работает над
 // черновиком — по просьбе голосом у колонки, в мастерской или из «+», — в верхней строке стола (в боковой панели — над
 // разделами) видно, что работа идёт и чем агент занят сейчас: «пишет panel.js», «проверяет», «думает 23 с». Нажатие
-// открывает мастерскую на этом черновике, там — весь ход работы. Закончил — «Готово», «Не вышло: …» или «Остановлено»
-// ещё полторы минуты. Работа идёт и без открытого пульта (gateway/src/plugins/workshop/activity.rs); плашка видна тому,
-// кто может мастерскую (plugins.manage). У помощника виджет, заказанный голосом у колонки, делает мастерская колонки:
-// плашка читает и её, через проход, а нажатие открывает черновик в окне колонки «Плагины».
+// открывает у администратора страницу «Работы» (screens/works.tsx), у остальных — мастерскую на этом черновике; там и
+// там — весь ход работы. Закончил — «Готово», «Не вышло: …» или «Остановлено» ещё полторы минуты. Работа идёт и без
+// открытого пульта (gateway/src/plugins/workshop/activity.rs); плашка видна тому, кто может мастерскую (plugins.manage).
+// У помощника виджет, заказанный голосом у колонки, делает мастерская колонки: плашка читает и её, через проход, а
+// нажатие открывает черновик в окне колонки «Плагины».
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
@@ -360,10 +361,17 @@ export function AgentPlaque({ place }: { place: 'top' | 'side' }) {
     const doing = trouble ?? words.doing;
     const end = job.last?.kind;
     const state = job.busy ? 'is-busy' : end === 'failed' ? 'is-failed' : end === 'stopped' ? 'is-stopped' : 'is-done';
-    // Черновик колонки — в её окне «Плагины», на вкладке мастерской (StationFrame кладёт его в адрес фрейма).
+    // Черновик колонки — в её окне «Плагины», на вкладке мастерской (StationFrame кладёт его в адрес фрейма). Своя работа
+    // у администратора — на странице «Работы» (docs/plans/router-and-works.md, решение 17): там что идёт, что ждёт и
+    // что спрашивает, а внутри работы — тот же ход агента; без права на «Работы» — мастерская, как прежде.
+    const works = whose === 'own' && can('settings.edit');
     const open = () =>
-        whose === 'station' ? panel.go('skills', 'workshop', job.draft, { on: 'station' }) : panel.go('skills', 'workshop', job.draft);
-    const title = whose === 'station' ? tr.shell.openStationWorkshop : tr.shell.openWorkshop;
+        whose === 'station'
+            ? panel.go('skills', 'workshop', job.draft, { on: 'station' })
+            : works
+              ? panel.go('works', '')
+              : panel.go('skills', 'workshop', job.draft);
+    const title = whose === 'station' ? tr.shell.openStationWorkshop : works ? tr.shell.openWorks : tr.shell.openWorkshop;
     const stop = async () => {
         const key = asked;
         if (whose === 'station' && !key) return;
