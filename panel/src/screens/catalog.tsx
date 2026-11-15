@@ -160,7 +160,10 @@ export interface PackageActions {
     busy: Record<string, string>;
     notes: Record<string, CardNote>;
     say: (id: string, note: CardNote) => void;
+    /** Поставить; приложение или плагин из магазина — сразу и включить. */
     install: (entry: CatalogEntry) => Promise<boolean>;
+    /** Включить поставленное, но выключенное приложение. */
+    switchOn: (entry: CatalogEntry) => Promise<boolean>;
     update: (id: string, title: string) => Promise<boolean>;
     remove: (id: string, title: string, kind?: PackageKind | null) => Promise<boolean>;
 }
@@ -170,16 +173,18 @@ export function usePackageActions(onChanged: () => void): PackageActions {
     const [busy, setBusy] = useState<Record<string, string>>({});
     const [notes, setNotes] = useState<Record<string, CardNote>>({});
     const say = (id: string, note: CardNote) => setNotes((all) => ({ ...all, [id]: note }));
-    const run = async (id: string, what: string, action: () => Promise<unknown>, done: string): Promise<boolean> => {
+    const run = async <T,>(id: string, what: string, action: () => Promise<T>, done: string | ((result: T) => string)): Promise<boolean> => {
         setBusy((all) => ({ ...all, [id]: what }));
         say(id, {});
         try {
-            await action();
-            say(id, { notice: done });
+            const result = await action();
+            say(id, { notice: typeof done === 'string' ? done : done(result) });
             onChanged();
             return true;
         } catch (e) {
             say(id, { error: problemOf(e) });
+            // Поставлено, но не включилось — экран всё равно перечитать: пакет уже стоит.
+            onChanged();
             return false;
         } finally {
             setBusy((all) => {
@@ -193,7 +198,11 @@ export function usePackageActions(onChanged: () => void): PackageActions {
         busy,
         notes,
         say,
-        install: (entry) => run(entry.id, 'install', () => api.installPackage(entry.id, entry.version), tr.catalog.installedNote),
+        install: (entry) =>
+            run(entry.id, 'install', () => api.installPackage(entry.id, entry.version, true), (view) =>
+                view.enabled ? tr.catalog.installedOnNote : tr.catalog.installedNote,
+            ),
+        switchOn: (entry) => run(entry.id, 'on', () => api.enablePackage(entry.id), tr.catalog.switchedOnNote),
         update: (id) => run(id, 'update', () => api.updatePackage(id), tr.catalog.updatedNote),
         remove: async (id, title, kind) => {
             const what = kind === 'character' ? tr.catalog.removeCharacterWhat : tr.catalog.removeWhat;

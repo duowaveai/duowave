@@ -1,7 +1,8 @@
 //! MagicPlace by voice (docs/plans/magicplace.md, «Голос»). The store opens by any name people know a store by — the
 //! names are the language pack's and never on the screen: they are other companies' marks. A package of the catalog
-//! installs after a spoken «да», the same way as the panel's button does and under the same switch as the desk by
-//! voice (`talk.desk_by_voice`): the install gives an app no rights — it asks for them in its window, in the panel.
+//! installs after a spoken «да», the same way as the panel's button does — in place and switched on — and under the
+//! same switch as the desk by voice (`talk.desk_by_voice`): the install gives an app no rights — it asks for them in
+//! its window, in the panel.
 //! «Что обновилось» names the new versions and updates them after «да»; «обнови всё» updates at once; «что нового в
 //! магазине» names what came into the catalog in a month.
 //!
@@ -378,7 +379,7 @@ impl Store {
         let Some(catalog) = self.catalog() else { return say.catalog_off.to_string() };
         match waiting {
             Waiting::Install { id, version, title } => {
-                match catalog.install(&id, Some(&version), false, Some(voice_actor(device))).await {
+                match catalog.install_and_switch_on(&id, Some(&version), Some(voice_actor(device))).await {
                     Ok(_) => pack::fill(say.installed, &[("title", &title)]),
                     Err(error) => {
                         pack::fill(
@@ -666,6 +667,7 @@ mod tests {
                 download("render", "Remotion и браузер для рендера серий", 250, "first-use"),
             ],
             waits: None,
+            on: None,
         };
         assert_eq!(
             question(pack::of(Lang::Ru), &entry),

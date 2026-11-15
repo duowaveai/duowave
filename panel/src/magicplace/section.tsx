@@ -98,6 +98,10 @@ export function PrimaryButton({ entry, actions, open }: { entry: CatalogEntry; a
     if (manage && entry.state === 'update') {
         return <Action tone="on" label={tr.magicplace.update} busy={busy === 'update'} disabled={!!busy} onClick={() => void actions.update(entry.id, entry.title)} />;
     }
+    // Поставлено, но выключено: окна и виджета у него ещё нет — сначала включить.
+    if (isInstalled(entry) && entry.on === false && manage) {
+        return <Action tone="on" label={tr.magicplace.switchOn} busy={busy === 'on'} disabled={!!busy} onClick={() => void actions.switchOn(entry)} />;
+    }
     if (isInstalled(entry)) return open ? <Action label={tr.magicplace.open} onClick={open} /> : null;
     if (!manage || isBlocked(entry)) return null;
     return <Action tone="on" label={tr.magicplace.install} busy={busy === 'install'} disabled={!!busy} onClick={() => void actions.install(entry)} />;

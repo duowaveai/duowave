@@ -177,9 +177,12 @@ async fn preview(
 pub struct InstallBody {
     #[serde(default)]
     version: Option<String>,
+    /// From the store (MagicPlace): a plugin or an app is switched on right after it is in place.
+    #[serde(default)]
+    on: bool,
 }
 
-/// From the catalog: `{version?}` — the newest without it.
+/// From the catalog: `{version?, on?}` — the newest without a version; `on` — switched on as well.
 async fn install(
     State(app): State<Arc<App>>,
     caller: Caller,
@@ -187,7 +190,11 @@ async fn install(
     Body(body): Body<InstallBody>,
 ) -> ApiResult<PackageView> {
     let actor = may_handle(&caller, app.catalog.kind_of(&id).await)?;
-    let view = app.catalog.install(&id, body.version.as_deref(), false, actor).await?;
+    let view = if body.on {
+        app.catalog.install_and_switch_on(&id, body.version.as_deref(), actor).await?
+    } else {
+        app.catalog.install(&id, body.version.as_deref(), false, actor).await?
+    };
     app.characters.sync();
     Ok(created(view))
 }

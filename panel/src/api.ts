@@ -1357,6 +1357,8 @@ export interface PackageView {
         options?: string[];
         value?: unknown;
         secret?: boolean;
+        /** Приложение работает и без неё: пульт пишет «можно не заполнять». */
+        optional?: boolean;
     }>;
     /** Что плагин даёт шлюзу. */
     contributes?: { phrases: string[]; tools: string[]; media: string[]; events: string[]; panel: boolean; themes: boolean };
@@ -2246,6 +2248,8 @@ export interface CatalogEntry {
     downloads?: CatalogDownload[];
     /** Новой версии поставленного нужен шлюз новее: его версия. */
     waits?: string | null;
+    /** Поставленное приложение или плагин: включено ли — выключенному «Включить», а не «Открыть». */
+    on?: boolean | null;
 }
 
 /** Лицо приложения в ленте каталога. */
@@ -3362,8 +3366,9 @@ export const api = {
     /** Свой источник пакетов по ссылке — после предупреждения (только администратор). */
     addPackageSource: (url: string) => post<CatalogView>('/api/v1/packages/sources', { url, understood: true }),
     removePackageSource: (url: string) => call<CatalogView>('DELETE', '/api/v1/packages/sources', { url }),
-    installPackage: (id: string, version?: string) =>
-        post<PackageView>(`/api/v1/packages/${encodeURIComponent(id)}/install`, version ? { version } : {}),
+    /** Из каталога; `on` — из магазина: приложение или плагин сразу и включается (шлюз постарше поле пропустит). */
+    installPackage: (id: string, version?: string, on = false) =>
+        post<PackageView>(`/api/v1/packages/${encodeURIComponent(id)}/install`, { ...(version ? { version } : {}), ...(on ? { on } : {}) }),
     updatePackage: (id: string) => post<PackageView>(`/api/v1/packages/${encodeURIComponent(id)}/update`),
     removePackage: (id: string) => del<unknown>(`/api/v1/packages/${encodeURIComponent(id)}`),
     // Память персонажей: окно «Память», виджет, строка «Запомнено» под ответом.

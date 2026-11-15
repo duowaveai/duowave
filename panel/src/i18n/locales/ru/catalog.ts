@@ -23,6 +23,8 @@ export default {
     needLine: (what: string, size: string | null, optional: boolean) =>
         `Понадобится ${what}${size ? ` — ~${size} на диске` : ''}${optional ? '; без неё говорит запасной голос' : ''}.`,
     installedNote: 'Поставлен.',
+    installedOnNote: 'Поставлен и включён.',
+    switchedOnNote: 'Включён.',
     updatedNote: 'Обновлён.',
     removedNote: 'Удалён.',
     removeCharacterWhat: 'Персонаж уйдёт вместе с его голосами.',

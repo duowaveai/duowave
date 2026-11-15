@@ -226,7 +226,7 @@ pub fn needs_of(manifest: &Manifest) -> Vec<Need> {
             options: setting.options.clone(),
             default: setting.default.clone().filter(|_| !setting.secret),
             secret: setting.secret,
-            required: setting.secret && setting.default.is_none(),
+            required: setting.waited(false),
         })
         .collect()
 }

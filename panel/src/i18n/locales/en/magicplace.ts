@@ -44,6 +44,7 @@ const en: Translation<typeof ru> = {
     blockedHide: 'Hide what will not work here',
     install: 'Install',
     open: 'Open',
+    switchOn: 'Turn on',
     update: 'Update',
     recommendedPill: 'recommended',
     newPill: 'new',

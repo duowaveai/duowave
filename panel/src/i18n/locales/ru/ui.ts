@@ -8,6 +8,7 @@ export default {
     secretUnset: 'не задан',
     secretNewValue: 'новое значение',
     pasteHere: 'вставьте сюда',
+    optionalField: 'можно не заполнять',
     secretKeep: 'оставить',
     secretRemove: 'убрать',
     contactsEmptySpeaker: 'Пока никого. Имя — как его скажут колонке: «передай маме…» найдёт «мама».',

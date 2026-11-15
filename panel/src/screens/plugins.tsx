@@ -407,6 +407,20 @@ export function InstalledPackageSheet({
     return (
         <Sheet title={view.title} about={`${ORIGIN_TITLES[origin]} · ${placeOf(kind, view.runtime)}${view.version ? tr.plugins.versionSuffix(view.version) : ''}`} onClose={onClose}>
             {view.description && <p class="t-body-sm m-0">{view.description}</p>}
+            {/* Выключенное — первым делом «Включить»: без этого у приложения нет ни виджета, ни окна, а настройки ниже
+                можно заполнить и потом. */}
+            {admin && runs && !view.enabled && (view.canDisable ?? true) && (
+                <div class="flex flex-wrap items-center gap-8">
+                    <span class="t-body-sm flex-1 min-w-0">{tr.plugins.offNote}</span>
+                    <Action
+                        tone="on"
+                        label={tr.plugins.turnOn}
+                        busy={busy === 'toggle'}
+                        disabled={!!busy}
+                        onClick={() => void run('toggle', () => api.enablePackage(view.id))}
+                    />
+                </div>
+            )}
             <p class="t-caption m-0">{ORIGIN_RULES[origin]}</p>
             {runs && (
                 <div class="flex flex-col gap-4">
@@ -462,13 +476,13 @@ export function InstalledPackageSheet({
             {admin && runs && <SettingsForm entry={view} onSaved={(next) => { setView(next); onChanged(); }} />}
             {admin && (
                 <div class="flex flex-wrap items-center gap-8">
-                    {runs && (view.canDisable ?? true) && (
+                    {runs && view.enabled && (view.canDisable ?? true) && (
                         <Action
-                            tone={view.enabled ? 'off' : 'on'}
-                            label={view.enabled ? tr.plugins.turnOff : tr.plugins.turnOn}
+                            tone="off"
+                            label={tr.plugins.turnOff}
                             busy={busy === 'toggle'}
                             disabled={!!busy}
-                            onClick={() => void run('toggle', () => (view.enabled ? api.disablePackage(view.id) : api.enablePackage(view.id)))}
+                            onClick={() => void run('toggle', () => api.disablePackage(view.id))}
                         />
                     )}
                     {runs && view.enabled && (

@@ -253,9 +253,18 @@ pub struct SettingSpec {
     /// package's view and the plugin's own part — sees only `SECRET_SHOWN`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub secret: bool,
+    /// `"optional": true`: the app works without it (a key for an extra, a channel to publish to) — the panel says it
+    /// may stay empty, and a secret one is not a key the app waits for.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional: bool,
 }
 
 impl SettingSpec {
+    /// A key the app waits for: a secret that is not optional, has no default and no value yet.
+    pub fn waited(&self, set: bool) -> bool {
+        self.secret && !self.optional && self.default.is_none() && !set
+    }
+
     /// Whether a value fits the setting.
     pub fn accepts(&self, value: &Value) -> bool {
         match (self.r#type, value) {
@@ -1199,6 +1208,14 @@ fn settings(value: Option<&Value>, problems: &mut Vec<String>) -> Vec<SettingSpe
                 continue;
             }
         };
+        let optional = match item.get("optional") {
+            None | Some(Value::Bool(false)) => false,
+            Some(Value::Bool(true)) => true,
+            Some(_) => {
+                problems.push(crate::tr!("settings.{key}: optional — true или false", key = key));
+                continue;
+            }
+        };
         let spec = SettingSpec {
             key: key.to_string(),
             r#type,
@@ -1207,6 +1224,7 @@ fn settings(value: Option<&Value>, problems: &mut Vec<String>) -> Vec<SettingSpe
             default: item.get("default").cloned(),
             options,
             secret,
+            optional,
         };
         if let Some(default) = &spec.default {
             if !spec.accepts(default) {
@@ -1640,6 +1658,26 @@ mod tests {
         assert_eq!(problems(with(radio(), "/settings", number)), ["settings.pin: secret — только у type string"]);
         let word = json!([{ "key": "ics", "type": "string", "title": "Ссылка", "secret": "yes" }]);
         assert_eq!(problems(with(radio(), "/settings", word)), ["settings.ics: secret — true или false"]);
+    }
+
+    #[test]
+    fn an_optional_setting_may_stay_empty_and_an_optional_key_is_not_waited_for() {
+        // «Лента»: a render server and its key are for an extra — without them this computer draws.
+        let settings = json!([
+            { "key": "ics", "type": "string", "title": "Ссылка iCal", "secret": true },
+            { "key": "renderKey", "type": "string", "title": "Ключ сервера рендера", "secret": true, "optional": true },
+            { "key": "channel", "type": "string", "title": "Канал", "optional": true }
+        ]);
+        let manifest = check(&with(radio(), "/settings", settings)).unwrap();
+        let waited: Vec<bool> = manifest.settings.iter().map(|setting| setting.waited(false)).collect();
+        assert_eq!(waited, [true, false, false], "only a key the app needs");
+        assert!(!manifest.settings[0].waited(true), "set: nothing to wait for");
+        // The panel learns which may stay empty; the others say nothing new.
+        assert_eq!(serde_json::to_value(&manifest.settings[2]).unwrap()["optional"], true);
+        assert!(serde_json::to_value(&manifest.settings[0]).unwrap().get("optional").is_none());
+
+        let word = json!([{ "key": "channel", "type": "string", "title": "Канал", "optional": "yes" }]);
+        assert_eq!(problems(with(radio(), "/settings", word)), ["settings.channel: optional — true или false"]);
     }
 
     #[test]

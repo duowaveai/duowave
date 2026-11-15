@@ -77,6 +77,7 @@ const en: Translation<typeof ru> = {
     runsStationServer: 'speaker + server',
     turnOff: 'Turn off',
     turnOn: 'Turn on',
+    offNote: 'The app is off — it does nothing until you turn it on.',
     reload: 'Reload',
     hideHistory: 'Hide history',
     history: 'History and versions',

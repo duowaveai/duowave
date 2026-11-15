@@ -42,6 +42,7 @@ export default {
     blockedHide: 'Скрыть то, что здесь не пойдёт',
     install: 'Установить',
     open: 'Открыть',
+    switchOn: 'Включить',
     update: 'Обновить',
     recommendedPill: 'рекомендуем',
     newPill: 'новое',

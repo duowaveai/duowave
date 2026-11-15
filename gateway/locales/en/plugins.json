@@ -569,7 +569,7 @@
  "нет format": "no format",
  "hidden: нет id": "hidden: no id",
  "feeds: список лент": "feeds: a list of feeds",
- "recommends: адрес ленты, id пакета и sha256 архива": "recommends: a feed's address, a package id and the archive's sha256",
+ "recommends: id пакета, sha256 архива и адрес ленты (если есть)": "recommends: a package id, the archive's sha256 and the feed's address (if any)",
  "Подпись каталога не сошлась: приложения из него не ставятся.": "The catalog signature did not match: apps from it are not installed.",
  "Каталог выключен в .env (PACKAGES_FEED_URL=off).": "The catalog is turned off in .env (PACKAGES_FEED_URL=off).",
  "Каталог не настроен: в этой сборке нет его адреса (PACKAGES_FEED_URL).": "The catalog is not configured: this build has no address for it (PACKAGES_FEED_URL).",
@@ -857,5 +857,8 @@
  "play есть, но ни один элемент не годится: нужны id, title и url по http(s) или path": "play exists, but no item fits: id, title and an http(s) url or path are needed",
  "без ответа": "no answer",
  "look.colors: на одном краю текст не прочтётся — возьмите цвета ближе по яркости; светлый фон — ink: dark": "look.colors: the text won't read on one edge — pick colors closer in brightness; on a light background, ink: dark",
- "Сеть ждёт дольше 2 с (timeoutMs, строка {lines}), а у фразы, инструмента и карточки всего 2 с вместе с сетью: вызов оборвётся, и kv не запишется — ошибка будет каждый раз. Медленный сервис — в фоне: ритм contributes.schedules (every, handler; связь call:system/schedule, 30 с) кладёт данные в host.kv, а фраза и карточка только читают kv.": "The network waits longer than 2 s (timeoutMs, line {lines}), but a phrase, a tool and a card have only 2 s, the network included: the call is cut and kv is never written — it fails every time. Put a slow service in the background: a contributes.schedules rhythm (every, handler; link call:system/schedule, 30 s) keeps the data in host.kv, and the phrase and the card only read kv."
+ "Сеть ждёт дольше 2 с (timeoutMs, строка {lines}), а у фразы, инструмента и карточки всего 2 с вместе с сетью: вызов оборвётся, и kv не запишется — ошибка будет каждый раз. Медленный сервис — в фоне: ритм contributes.schedules (every, handler; связь call:system/schedule, 30 с) кладёт данные в host.kv, а фраза и карточка только читают kv.": "The network waits longer than 2 s (timeoutMs, line {lines}), but a phrase, a tool and a card have only 2 s, the network included: the call is cut and kv is never written — it fails every time. Put a slow service in the background: a contributes.schedules rhythm (every, handler; link call:system/schedule, 30 s) keeps the data in host.kv, and the phrase and the card only read kv.",
+ "Не скачалось: файла «{entry}» нет на сайте каталога, хотя каталог только что перечитан ({error}). Попробуйте позже.": "Download failed: the catalog's site has no file for “{entry}”, though the catalog was just read again ({error}). Try again later.",
+ "Поставлено. {why}": "Installed. {why}",
+ "settings.{key}: optional — true или false": "settings.{key}: optional — true or false"
 }

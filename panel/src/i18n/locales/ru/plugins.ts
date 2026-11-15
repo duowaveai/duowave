@@ -75,6 +75,7 @@ export default {
     runsStationServer: 'колонка + сервер',
     turnOff: 'Выключить',
     turnOn: 'Включить',
+    offNote: 'Приложение выключено — пока его не включить, оно не работает.',
     reload: 'Перезагрузить',
     hideHistory: 'Скрыть историю',
     history: 'История и версии',

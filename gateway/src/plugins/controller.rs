@@ -707,6 +707,11 @@ impl PluginHost {
         !self.config.disabled && self.plugin(id).is_some_and(|plugin| plugin.active().is_some())
     }
 
+    /// Whether a plugin is switched on, running or not: MagicPlace offers «Включить» to one that is off.
+    pub fn is_switched_on(&self, id: &str) -> bool {
+        self.plugin(id).is_some_and(|plugin| plugin.state().enabled)
+    }
+
     /// Whether any plugin that is on takes phrases.
     pub fn has_phrases(&self) -> bool {
         !self.rules.read().unwrap_or_else(|poisoned| poisoned.into_inner()).is_empty()
@@ -807,7 +812,7 @@ impl PluginHost {
                     .manifest
                     .settings_in(&languages)
                     .into_iter()
-                    .filter(|spec| spec.secret && spec.default.is_none() && !settings.contains_key(&spec.key))
+                    .filter(|spec| spec.waited(settings.contains_key(&spec.key)))
                     .map(|spec| spec.title)
                     .collect();
                 (module.is_some() || styles.is_some() || !cards.is_empty()).then(|| PanelPart {
@@ -2415,7 +2420,7 @@ impl PluginHost {
                     manifest
                         .settings_in(&languages)
                         .into_iter()
-                        .filter(|spec| spec.secret && spec.default.is_none() && !values.contains_key(&spec.key))
+                        .filter(|spec| spec.waited(values.contains_key(&spec.key)))
                         .map(|spec| spec.title)
                         .collect()
                 })

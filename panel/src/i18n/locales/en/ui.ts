@@ -10,6 +10,7 @@ const en: Translation<typeof ru> = {
     secretUnset: 'not set',
     secretNewValue: 'new value',
     pasteHere: 'paste here',
+    optionalField: 'may stay empty',
     secretKeep: 'keep',
     secretRemove: 'remove',
     contactsEmptySpeaker: 'No one yet. The name is how you’ll say it to the speaker: “tell mom…” will find “mom”.',

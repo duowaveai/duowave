@@ -290,20 +290,35 @@ pub struct Feed {
 }
 
 /// A package of another feed the catalog looked at: that feed's address, the package's id, its archive's sha256.
+/// Without the address (`feed` left out) the pin is the archive alone, at whatever feed added here brings it: the
+/// catalog recommends a package of a feed whose address is kept from people — a demo shown to a few — without naming
+/// it. The archive is the same bytes we looked at wherever it comes from: the install checks its hash.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pin {
-    pub feed: url::Url,
+    pub feed: Option<url::Url>,
     pub id: String,
     pub sha256: String,
+}
+
+impl Pin {
+    /// This pin is this package of this feed: the very archive, at the feed it names — or at any, when it names none.
+    fn is(&self, feed: &url::Url, id: &str, sha256: &str) -> bool {
+        self.feed.as_ref().is_none_or(|pinned| pinned == feed)
+            && self.id == id
+            && self.sha256 == sha256.to_ascii_lowercase()
+    }
 }
 
 /// The packages of other feeds the main one may recommend, at most.
 const MAX_RECOMMENDS: usize = 32;
 
-/// A pin as the feed names it: the feed's address as a feed's (HTTPS), an id, 64 hex digits; else None.
+/// A pin as the feed names it: the feed's address as a feed's (HTTPS) or none at all, an id, 64 hex digits; else None.
 fn pin(value: &Value) -> Option<Pin> {
     let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty());
-    let feed = feed_url(text("feed")?).ok()?;
+    let feed = match value.get("feed") {
+        None => None,
+        Some(_) => Some(feed_url(text("feed")?).ok()?),
+    };
     let id = text("id").filter(|id| valid_id(id))?.to_string();
     let sha256 = text("sha256").filter(|sha| sha.len() == 64 && sha.chars().all(|c| c.is_ascii_hexdigit()))?;
     Some(Pin { feed, id, sha256: sha256.to_ascii_lowercase() })
@@ -377,9 +392,7 @@ impl Feed {
             entry.recommended &= extra.verified && !extra.own;
             // A package of it the main feed looked at and recommends — that very archive, by its hash: recommended and
             // checked. Another archive under the same id is not what we looked at.
-            let pinned = self.recommends.iter().any(|pin| {
-                pin.feed == extra.url && pin.id == entry.id && pin.sha256 == entry.sha256.to_ascii_lowercase()
-            });
+            let pinned = self.recommends.iter().any(|pin| pin.is(&extra.url, &entry.id, &entry.sha256));
             if pinned {
                 entry.recommended = true;
                 entry.verified = true;
@@ -701,7 +714,7 @@ pub fn parse_feed(text: &str, base: &url::Url) -> Result<Feed, String> {
     for item in value.get("recommends").and_then(Value::as_array).into_iter().flatten().take(MAX_RECOMMENDS) {
         match pin(item) {
             Some(pin) => feed.recommends.push(pin),
-            None => feed.skipped.push(crate::tr!("recommends: адрес ленты, id пакета и sha256 архива")),
+            None => feed.skipped.push(crate::tr!("recommends: id пакета, sha256 архива и адрес ленты (если есть)")),
         }
     }
     Ok(feed)
@@ -961,6 +974,8 @@ pub struct CatalogEntryView {
     pub downloads: Vec<DownloadView>,
     /// …and, when its newer version needs a newer gateway than this one, that version: «после обновления DuoWave».
     pub waits: Option<String>,
+    /// A plugin or an app installed here: whether it is switched on — one that is off gets «Включить», not «Открыть».
+    pub on: Option<bool>,
 }
 
 /// A package's title and description in one language.
@@ -1636,11 +1651,11 @@ impl PackageCatalog {
     }
 
     /// A file of the feed (an archive, a preview): straight, or through the home server when that fails.
-    async fn download(&self, url: &url::Url, max: u64, timeout: Duration) -> Result<Vec<u8>, String> {
-        match install::download(url.as_str(), max, timeout).await {
+    async fn download(&self, url: &url::Url, max: u64, timeout: Duration) -> Result<Vec<u8>, install::Failed> {
+        match install::fetch(url.as_str(), max, timeout).await {
             Ok(bytes) => Ok(bytes),
-            Err(error) => {
-                let Some((home, key)) = self.home.as_ref().and_then(|home| home.up()) else { return Err(error) };
+            Err(failed) => {
+                let Some((home, key)) = self.home.as_ref().and_then(|home| home.up()) else { return Err(failed) };
                 let answer = crate::utils::http::client()
                     .get(format!("{}/home/v1/catalog/file", home.trim_end_matches('/')))
                     .query(&[("url", url.as_str())])
@@ -1648,17 +1663,24 @@ impl PackageCatalog {
                     .timeout(timeout)
                     .send()
                     .await
-                    .map_err(|_| error.clone())?;
-                if !answer.status().is_success() {
-                    return Err(crate::tr!(
-                        "{error}; через компьютер — HTTP {status}",
-                        error = error,
-                        status = answer.status()
-                    ));
+                    .map_err(|_| failed.clone())?;
+                let status = answer.status();
+                if !status.is_success() {
+                    return Err(install::Failed {
+                        message: crate::tr!(
+                            "{error}; через компьютер — HTTP {status}",
+                            error = failed.message,
+                            status = status
+                        ),
+                        missing: failed.missing || matches!(status.as_u16(), 404 | 410),
+                    });
                 }
-                let bytes = answer.bytes().await.map_err(|_| error.clone())?;
+                let bytes = answer.bytes().await.map_err(|_| failed.clone())?;
                 if bytes.len() as u64 > max {
-                    return Err(crate::tr!("файл больше {max} КБ", max = max / 1024));
+                    return Err(install::Failed {
+                        message: crate::tr!("файл больше {max} КБ", max = max / 1024),
+                        missing: false,
+                    });
                 }
                 Ok(bytes.to_vec())
             }
@@ -1870,6 +1892,8 @@ impl PackageCatalog {
                                     .collect(),
                                 downloads,
                                 waits: waits_for(entry, mine, state),
+                                on: (mine.is_some() && matches!(entry.kind, PackageKind::Plugin | PackageKind::App))
+                                    .then(|| self.host.is_switched_on(&entry.id)),
                             }
                         })
                         .collect()
@@ -2010,52 +2034,77 @@ impl PackageCatalog {
             )));
         }
         self.host.rescan();
-        let feed = self.feed(false).await.ok_or_else(|| {
-            ApiError::unavailable(
-                lock(&self.status).problem.clone().unwrap_or_else(|| crate::tr!("Каталог недоступен.")),
-            )
-        })?;
-        let entry = feed.find(id, version).cloned().ok_or_else(|| match version {
-            Some(version) => {
-                ApiError::not_found(crate::tr!("В каталоге нет {id} {version}.", id = id, version = version))
-            }
-            None => ApiError::not_found(crate::tr!("В каталоге нет «{id}».", id = id)),
-        })?;
         let installed = self.host.installed(id).map(|package| package.manifest.version.clone());
         if update && installed.is_none() {
             return Err(ApiError::not_found(crate::tr!("«{id}» не установлено — обновлять нечего.", id = id)));
         }
-        let (state, reason) =
-            entry_state(&entry, installed.as_ref(), (self.placement)(), feed.signed, self.host.free_memory_mb());
-        match state {
-            EntryState::NeedsSignature | EntryState::Incompatible => {
-                return Err(ApiError::conflict(reason.unwrap_or_default()));
-            }
-            EntryState::Installed if installed.as_ref() == Some(&entry.version) => {
-                return Err(ApiError::conflict(crate::tr!(
-                    "{entry} {version} уже установлен.",
-                    entry = entry.title,
-                    version = entry.version
-                )));
-            }
-            EntryState::Installed if update => {
-                return Err(ApiError::conflict(crate::tr!(
-                    "Новее {version} в каталоге нет.",
-                    version = installed.unwrap_or(entry.version)
-                )));
-            }
-            _ => {}
-        }
-        // Room on the disk (on the station): the archive unpacked, roughly twice its size, and the reserve.
-        if let Err(why) = self.host.room_for(entry.archive().size.div_ceil(1_048_576) * 2) {
-            return Err(ApiError::conflict(crate::tr!("Не поставить: {why}.", why = why)));
-        }
         let _turn = self.installing.lock().await;
+        // By the copy of the feed; read again, once, when the file it names is not on the site.
+        let mut again = false;
+        let (feed, entry, bytes) = loop {
+            let feed = self.feed(again).await.ok_or_else(|| {
+                ApiError::unavailable(
+                    lock(&self.status).problem.clone().unwrap_or_else(|| crate::tr!("Каталог недоступен.")),
+                )
+            })?;
+            let not_found = || match version {
+                Some(version) => {
+                    ApiError::not_found(crate::tr!("В каталоге нет {id} {version}.", id = id, version = version))
+                }
+                None => ApiError::not_found(crate::tr!("В каталоге нет «{id}».", id = id)),
+            };
+            // Read again: the version asked for may have left the site with its file — the newest one then.
+            let entry = match feed.find(id, version) {
+                Some(entry) => entry.clone(),
+                None if again => feed.find(id, None).cloned().ok_or_else(not_found)?,
+                None => return Err(not_found()),
+            };
+            let (state, reason) =
+                entry_state(&entry, installed.as_ref(), (self.placement)(), feed.signed, self.host.free_memory_mb());
+            match state {
+                EntryState::NeedsSignature | EntryState::Incompatible => {
+                    return Err(ApiError::conflict(reason.unwrap_or_default()));
+                }
+                EntryState::Installed if installed.as_ref() == Some(&entry.version) => {
+                    return Err(ApiError::conflict(crate::tr!(
+                        "{entry} {version} уже установлен.",
+                        entry = entry.title,
+                        version = entry.version
+                    )));
+                }
+                EntryState::Installed if update => {
+                    return Err(ApiError::conflict(crate::tr!(
+                        "Новее {version} в каталоге нет.",
+                        version = installed.unwrap_or(entry.version)
+                    )));
+                }
+                _ => {}
+            }
+            // Room on the disk (on the station): the archive unpacked, roughly twice its size, and the reserve.
+            if let Err(why) = self.host.room_for(entry.archive().size.div_ceil(1_048_576) * 2) {
+                return Err(ApiError::conflict(crate::tr!("Не поставить: {why}.", why = why)));
+            }
+            match self.download(&entry.archive().url, MAX_ARCHIVE, ARCHIVE_TIMEOUT).await {
+                Ok(bytes) => break (feed, entry, bytes),
+                // The copy names a file the site no longer has: the catalog moved on (a newer version out, the old
+                // archive gone) while the copy was still fresh enough to keep.
+                Err(failed) if failed.missing && !again => {
+                    tracing::info!(target: "plugins", "{id}: {} — the catalog is read again", failed.message);
+                    again = true;
+                }
+                Err(failed) if failed.missing => {
+                    return Err(ApiError::bad_gateway(crate::tr!(
+                        "Не скачалось: файла «{entry}» нет на сайте каталога, хотя каталог только что перечитан ({error}). Попробуйте позже.",
+                        entry = entry.title,
+                        error = failed.message
+                    )));
+                }
+                Err(failed) => {
+                    return Err(ApiError::bad_gateway(crate::tr!("Не скачалось: {error}", error = failed.message)));
+                }
+            }
+        };
         let archive = entry.archive();
-        let bytes = self
-            .download(&archive.url, MAX_ARCHIVE, ARCHIVE_TIMEOUT)
-            .await
-            .map_err(|error| ApiError::bad_gateway(crate::tr!("Не скачалось: {error}", error = error)))?;
         let root = self.host.packages_dir().to_path_buf();
         let version = entry.version.to_string();
         let placed = {
@@ -2135,6 +2184,25 @@ impl PackageCatalog {
         tracing::info!(target: "plugins", "{id} {version}: {change} from the catalog");
         self.host.announce(id, change, Some(version), actor);
         self.host.view_one(id).await
+    }
+
+    /// From the store (MagicPlace: its button, its first run, a «да» to «поставь …»): installed and, a plugin or an
+    /// app, switched on at once — installing it there is wanting it to work, and its rights it asks for in its own
+    /// window. One that does not start stays installed and off, and the answer says why.
+    pub async fn install_and_switch_on(
+        &self,
+        id: &str,
+        version: Option<&str>,
+        actor: Option<Actor>,
+    ) -> Result<PackageView, ApiError> {
+        let view = self.install(id, version, false, actor.clone()).await?;
+        if view.enabled || !matches!(view.kind, Some(PackageKind::Plugin | PackageKind::App)) {
+            return Ok(view);
+        }
+        self.host.enable(id, actor).await.map_err(|error| {
+            tracing::warn!(target: "plugins", "{id}: installed, not switched on: {}", error.message);
+            ApiError::conflict(crate::tr!("Поставлено. {why}", why = error.message))
+        })
     }
 
     /// An own source added by its link (docs/plans/custom-feeds.md): it must read as a feed first; then it is kept,
@@ -2880,6 +2948,48 @@ pub mod tests {
         );
     }
 
+    /// A pin without the feed's address (no `feed`) is the archive alone: the catalog recommends a package of a feed
+    /// it does not name — a demo's, kept from people — at whatever feed added here brings that very archive; another
+    /// archive under the id is not it. An empty address is no address: that item is left out.
+    #[test]
+    fn a_pin_without_the_feeds_address_is_that_archive_at_any_feed() {
+        let base = url::Url::parse("https://packages.example.org/catalog.json").unwrap();
+        let demo = url::Url::parse("https://demo.example.net/d-0123456789/catalog.json").unwrap();
+        let package = |id: &str, sha: char| {
+            json!({ "id": id, "kind": "character", "version": "1.0.0", "title": id, "api": "^1", "runs": ["pc"],
+                "url": format!("{id}.vgp"), "sha256": sha.to_string().repeat(64), "size": 10 })
+        };
+        let main_text = json!({
+            "format": 1, "packages": [],
+            "recommends": [
+                { "id": "jarvis-demo", "sha256": "A".repeat(64) },
+                { "id": "rick-demo", "sha256": "c".repeat(64) },
+                { "feed": "", "id": "blank", "sha256": "a".repeat(64) },
+                { "id": "no-hash" }
+            ]
+        });
+        let mut main = parse_feed(&main_text.to_string(), &base).unwrap();
+        assert_eq!(
+            main.recommends.first(),
+            Some(&Pin { feed: None, id: "jarvis-demo".into(), sha256: "a".repeat(64) }),
+            "no address, the hash in lower case"
+        );
+        assert_eq!(main.recommends.len(), 2);
+        assert_eq!(main.skipped.len(), 2, "an empty address, no hash: {:?}", main.skipped);
+        let copy = json!({
+            "format": 1,
+            "packages": [package("jarvis-demo", 'a'), package("rick-demo", 'b'), package("glados-demo", 'c')]
+        });
+        main.take(&own_feed(&demo), parse_feed(&copy.to_string(), &demo).unwrap());
+        let marks: Vec<(&str, bool, bool)> =
+            main.packages.iter().map(|entry| (entry.id.as_str(), entry.recommended, entry.verified)).collect();
+        assert_eq!(
+            marks,
+            [("jarvis-demo", true, true), ("rick-demo", false, false), ("glados-demo", false, false)],
+            "the very archive under its id: another archive, or that hash under another id, is not pinned"
+        );
+    }
+
     /// A plugin's `.vgp`: its manifest and its code.
     fn plugin_vgp(manifest: &Value, code: &str) -> Vec<u8> {
         let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default()));
@@ -2934,6 +3044,57 @@ pub mod tests {
         let unkeyed = fixture(FeedSource::Url(site.url.clone()), Placement::Pc);
         let refused = unkeyed.catalog.install("clock", None, false, None).await.unwrap_err();
         assert_eq!(refused.message, NEEDS_SIGNATURE);
+    }
+
+    #[tokio::test]
+    async fn a_plugin_from_the_store_is_installed_switched_on_and_one_off_is_told_apart() {
+        let keys = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let site = site().await;
+        let manifest = json!({
+            "schema": 1, "kind": "plugin", "id": "clock", "version": "1.0.0", "title": "Часы", "api": "^2",
+            "runs": ["pc", "station", "stationServer"], "permissions": [],
+            "contributes": { "intents": [{ "phrases": ["который час на луне"], "handler": "moon" }] }
+        });
+        let mut entry = arthur("1.0.0");
+        entry["id"] = json!("clock");
+        entry["kind"] = json!("plugin");
+        entry["budget"] = json!({ "memoryMb": 4 });
+        site.publish(&[(entry, plugin_vgp(&manifest, "export function moon() { return 'Полночь'; }"))]);
+        let feed = lock(&site.feed).clone();
+        let signature = minisign::sign(Some(&keys.pk), &keys.sk, std::io::Cursor::new(feed.as_bytes()), None, None)
+            .unwrap()
+            .to_string();
+        lock(&site.files).insert("catalog.json.minisig".into(), signature.into_bytes());
+        let keyed = fixture_keyed(FeedSource::Url(site.url.clone()), Placement::Pc, Some(keys.pk.to_base64()));
+        assert_eq!(keyed.catalog.view(true).await.packages[0].on, None, "not installed: neither on nor off");
+
+        let view = keyed.catalog.install_and_switch_on("clock", None, None).await.unwrap();
+        assert!(view.enabled, "{view:?}");
+        assert_eq!(keyed.catalog.view(false).await.packages[0].on, Some(true));
+        keyed.host.disable("clock", None).await.unwrap();
+        assert_eq!(keyed.catalog.view(false).await.packages[0].on, Some(false), "off: «Включить» in the store");
+    }
+
+    #[tokio::test]
+    async fn an_archive_gone_from_the_site_reads_the_catalog_again_and_takes_what_it_names_now() {
+        let site = site().await;
+        site.publish(&[character("arthur", "1.0.0")]);
+        let fixture = fixture(FeedSource::Url(site.url.clone()), Placement::Pc);
+        assert_eq!(fixture.catalog.view(true).await.packages[0].version, "1.0.0");
+        // The catalog moved on — 1.1.0 out, the old archive gone — while the copy here, fresh enough, names 1.0.0.
+        site.publish(&[character("arthur", "1.1.0")]);
+        lock(&site.files).remove("packages/arthur-1.0.0.vgp");
+        let installed = fixture.catalog.install("arthur", Some("1.0.0"), false, None).await.unwrap();
+        assert_eq!(installed.version.as_deref(), Some("1.1.0"), "what the feed names now");
+
+        // Not on the site though the feed was just read again: said in words, and read again only once.
+        site.publish(&[character("arthur", "1.1.0"), character("bublik", "1.0.0")]);
+        fixture.catalog.view(true).await;
+        lock(&site.files).remove("packages/bublik-1.0.0.vgp");
+        let reads = site.reads.load(Ordering::SeqCst);
+        let refused = fixture.catalog.install("bublik", None, false, None).await.unwrap_err();
+        assert!(refused.message.contains("нет на сайте каталога"), "{}", refused.message);
+        assert_eq!(site.reads.load(Ordering::SeqCst), reads + 1);
     }
 
     #[test]

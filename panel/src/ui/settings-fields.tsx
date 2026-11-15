@@ -18,6 +18,8 @@ export interface SettingFieldSpec {
     options?: string[] | null;
     default?: unknown;
     secret?: boolean;
+    /** Приложение работает и без неё (`optional` манифеста): у названия — «можно не заполнять». */
+    optional?: boolean;
     /** Что задано сейчас (личное — маской). */
     value?: unknown;
 }
@@ -100,7 +102,10 @@ export function SettingsFields({
         <>
             {fields.map((field) => (
                 <label key={field.key} class="flex flex-col gap-4">
-                    <span class="fw-700">{field.title}</span>
+                    <span class="fw-700">
+                        {field.title}
+                        {field.optional && <span class="t-caption fw-400"> · {tr.ui.optionalField}</span>}
+                    </span>
                     {field.description && <span class="t-caption">{field.description}</span>}
                     <SettingInput field={field} value={values[field.key]} busy={busy} onChange={(value) => onChange({ ...values, [field.key]: value })} onPrivate={onPrivate} />
                 </label>

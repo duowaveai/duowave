@@ -25,6 +25,8 @@ const en: Translation<typeof ru> = {
     needLine: (what: string, size: string | null, optional: boolean) =>
         `It will need ${what}${size ? ` — ~${size} on disk` : ''}${optional ? '; without it, a fallback voice speaks' : ''}.`,
     installedNote: 'Installed.',
+    installedOnNote: 'Installed and turned on.',
+    switchedOnNote: 'Turned on.',
     updatedNote: 'Updated.',
     removedNote: 'Removed.',
     removeCharacterWhat: 'The character will go together with its voices.',
