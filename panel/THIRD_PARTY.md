@@ -17,7 +17,8 @@
 
 ### LobeHub Icons
 
-- Что взято: знаки OpenAI, Groq и Tavily (`icons/<name>.svg`) и цвет бренда Tavily (`icons/tavily-color.svg`).
+- Что взято: знаки OpenAI, Groq, Tavily и Exa (`icons/<name>.svg`) и цвета брендов Tavily и Exa
+  (`icons/tavily-color.svg`, `icons/exa-color.svg`).
 - Версия: 1.102.0, npm-пакет `@lobehub/icons-static-svg@1.102.0`.
 - Лицензия: MIT — <https://github.com/lobehub/lobe-icons>.
 

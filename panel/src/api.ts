@@ -2250,6 +2250,8 @@ export interface CatalogEntry {
     waits?: string | null;
     /** Поставленное приложение или плагин: включено ли — выключенному «Включить», а не «Открыть». */
     on?: boolean | null;
+    /** Лента держит его скрытым (`unlisted`): в списке — только с «Показывать скрытые пакеты» или поставленный здесь. */
+    unlisted?: boolean;
 }
 
 /** Лицо приложения в ленте каталога. */
@@ -2293,6 +2295,8 @@ export interface CatalogView {
     configured: boolean;
     /** Выключатель «Не загружать каталог» не стоит. */
     enabled: boolean;
+    /** Скрытая возможность разработчика «Показывать скрытые пакеты» (настройка packages.show_hidden). */
+    showHidden?: boolean;
     url?: string | null;
     fetchedAt?: string | null;
     /** Сети нет — показана последняя копия (или ничего). */
@@ -3363,6 +3367,8 @@ export const api = {
     packagesCatalog: (refresh = false) => get<CatalogView>(`/api/v1/packages/catalog${refresh ? '?refresh=1' : ''}`),
     /** Выключатель «Не загружать каталог» (настройка packages_catalog). */
     setPackagesCatalog: (enabled: boolean) => put<CatalogView>('/api/v1/packages/catalog', { enabled }),
+    /** Скрытая возможность разработчика «Показывать скрытые пакеты» (настройка packages.show_hidden). */
+    setShowHiddenPackages: (showHidden: boolean) => put<CatalogView>('/api/v1/packages/catalog', { showHidden }),
     /** Свой источник пакетов по ссылке — после предупреждения (только администратор). */
     addPackageSource: (url: string) => post<CatalogView>('/api/v1/packages/sources', { url, understood: true }),
     removePackageSource: (url: string) => call<CatalogView>('DELETE', '/api/v1/packages/sources', { url }),

@@ -109,18 +109,29 @@ async fn catalog(State(app): State<Arc<App>>, caller: Caller, RawQuery(query): R
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CatalogSwitch {
-    enabled: bool,
+    enabled: Option<bool>,
+    show_hidden: Option<bool>,
 }
 
-/// The owner's switch: `{enabled}`. Off, the gateway does not ask the network for the catalog.
+/// The owner's switches: `{enabled}` — off, the gateway does not ask the network for the catalog; `{showHidden}` —
+/// the hidden developer option «Показывать скрытые пакеты». Either or both.
 async fn catalog_switch(
     State(app): State<Arc<App>>,
     caller: Caller,
     Body(body): Body<CatalogSwitch>,
 ) -> ApiResult<CatalogView> {
     caller.permitted(SETTINGS_EDIT)?;
-    app.catalog.set_enabled(body.enabled, caller.actor())?;
+    if body.enabled.is_none() && body.show_hidden.is_none() {
+        return Err(ApiError::bad_request(crate::tr!("Нечего менять: enabled или showHidden.")));
+    }
+    if let Some(enabled) = body.enabled {
+        app.catalog.set_enabled(enabled, caller.actor())?;
+    }
+    if let Some(show) = body.show_hidden {
+        app.catalog.set_show_hidden(show, caller.actor())?;
+    }
     Ok(ok(app.catalog.view(false).await))
 }
 
@@ -763,10 +774,21 @@ mod tests {
         assert_eq!(status(remove(State(app.clone()), admin(), Path("radio".into())).await), StatusCode::CONFLICT);
 
         // The owner's switch: off, nothing installs.
-        let off = catalog_switch(State(app.clone()), admin(), Body(CatalogSwitch { enabled: false })).await.unwrap();
+        let off = catalog_switch(
+            State(app.clone()),
+            admin(),
+            Body(CatalogSwitch { enabled: Some(false), show_hidden: None }),
+        )
+        .await
+        .unwrap();
         assert!(!off.1.enabled);
         assert_eq!(status(update(State(app.clone()), admin(), Path("arthur".into())).await), StatusCode::CONFLICT);
-        let switched = catalog_switch(State(app.clone()), member(), Body(CatalogSwitch { enabled: true })).await;
+        let switched = catalog_switch(
+            State(app.clone()),
+            member(),
+            Body(CatalogSwitch { enabled: Some(true), show_hidden: None }),
+        )
+        .await;
         assert_eq!(status(switched), StatusCode::FORBIDDEN);
 
         assert_eq!(status(remove(State(app.clone()), member(), Path("arthur".into())).await), StatusCode::FORBIDDEN);

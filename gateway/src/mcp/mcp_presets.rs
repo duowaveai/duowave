@@ -206,6 +206,59 @@ pub static MCP_PRESETS: &[McpPreset] = &[
         order: 3,
     },
     McpPreset {
+        id: "exa",
+        title: "Поиск Exa",
+        description: "Поиск в интернете по смыслу: сразу отдаёт текст найденных страниц и читает страницу по адресу. Нужен ключ Exa.",
+        brand: Some("exa"),
+        transport: TransportKind::Stdio,
+        command: Some("npx"),
+        args: Some(&["-y", "exa-mcp-server@3.4.2"]),
+        url: None,
+        auth: AuthKind::None,
+        fields: &[PresetField {
+            name: "EXA_API_KEY",
+            title: "Ключ Exa",
+            secret: true,
+            placeholder: None,
+            url: Some("https://dashboard.exa.ai/api-keys"),
+        }],
+        install: Some(Install { runner: "npx", package: "exa-mcp-server@3.4.2" }),
+        enable: Enable { all: false, read_only: false, names: &["web_search_exa", "web_fetch_exa"] },
+        outside: true,
+        capability: None,
+        note: Some(SEARCH_NOTE),
+        order: 4,
+    },
+    // Apify's own server by address (it changes several times a day, so no pinned package): the web search and page
+    // reading of its Actors on at first sight; its store of Actors (search-actors, call-actor…) is there to switch on —
+    // a run is paid and waits up to 45 s, longer than a call here may take (mcp_service.rs, CALL_TIMEOUT).
+    McpPreset {
+        id: "apify",
+        title: "Apify",
+        description: "Поиск и чтение страниц через Apify, а по желанию — роботы из магазина Apify: собрать отзывы, цены, посты с сайтов. Нужен токен Apify; запуск робота платный.",
+        brand: None,
+        transport: TransportKind::Http,
+        command: None,
+        args: None,
+        url: Some("https://mcp.apify.com/?tools=actors,apify/web-search,apify/web-fetch"),
+        auth: AuthKind::Token,
+        fields: &[PresetField {
+            name: "token",
+            title: "Токен Apify API",
+            secret: true,
+            placeholder: Some("apify_api_…"),
+            url: Some("https://console.apify.com/settings/integrations"),
+        }],
+        install: None,
+        enable: Enable { all: false, read_only: false, names: &["apify--web-search", "apify--web-fetch"] },
+        outside: true,
+        capability: None,
+        note: Some(
+            "Ищи, когда нужен свежий факт или новость. Называй источник словами, без ссылок. Робота из магазина Apify запускай, только когда человек просит собрать данные с сайта, и сначала скажи, что запуск платный.",
+        ),
+        order: 5,
+    },
+    McpPreset {
         id: "fetch",
         title: "Чтение страниц",
         description: "Открывает страницу по адресу и отдаёт её текст: к поиску, чтобы прочитать найденное.",
@@ -221,7 +274,7 @@ pub static MCP_PRESETS: &[McpPreset] = &[
         outside: true,
         capability: None,
         note: None,
-        order: 4,
+        order: 6,
     },
     McpPreset {
         id: "todoist",
@@ -239,7 +292,7 @@ pub static MCP_PRESETS: &[McpPreset] = &[
         outside: false,
         capability: None,
         note: Some("Это наш общий список дел."),
-        order: 5,
+        order: 7,
     },
     McpPreset {
         id: "notion",
@@ -257,7 +310,7 @@ pub static MCP_PRESETS: &[McpPreset] = &[
         outside: true,
         capability: None,
         note: None,
-        order: 6,
+        order: 8,
     },
 ];
 
@@ -330,6 +383,20 @@ mod tests {
         assert_eq!(tavily["ready"], json!(true));
         assert_eq!(tavily["install"], json!({ "runner": "npx", "package": "tavily-mcp@0.2.22" }));
         assert!(tavily.get("url").is_none());
+        let exa = preset_view(mcp_preset(Some("exa")).unwrap(), None);
+        assert_eq!(exa["ready"], json!(true));
+        assert_eq!(exa["install"], json!({ "runner": "npx", "package": "exa-mcp-server@3.4.2" }));
+        assert_eq!(exa["fields"][0]["name"], json!("EXA_API_KEY"));
+        let apify = preset_view(mcp_preset(Some("apify")).unwrap(), None);
+        assert_eq!(apify["ready"], json!(true));
+        assert_eq!(apify["transport"], json!("http"));
+        assert_eq!(apify["auth"], json!("token"));
+        assert_eq!(apify["fields"][0]["name"], json!("token"));
+        assert_eq!(apify["enable"], json!({ "names": ["apify--web-search", "apify--web-fetch"] }));
+        assert!(apify.get("install").is_none());
+        let mut orders: Vec<u32> = MCP_PRESETS.iter().map(|preset| preset.order).collect();
+        orders.dedup();
+        assert_eq!(orders, (1..=MCP_PRESETS.len() as u32).collect::<Vec<_>>(), "each preset its own place, in order");
         assert!(mcp_preset(Some("nope")).is_none());
         assert!(mcp_preset(None).is_none());
     }

@@ -22,6 +22,8 @@ use serde::Serialize;
 use crate::awake::Awake;
 
 pub const STOP_GRACE: Duration = Duration::from_secs(6);
+/// How long leaving the app waits for the own voices' servers to stop: a kill and a few looks at /health.
+const VOICE_RELEASE_GRACE: Duration = Duration::from_secs(6);
 /// A first start (migrations, the database's key) takes a moment; this is for a stuck one.
 const START_TIMEOUT: Duration = Duration::from_secs(90);
 /// An engine that stops by itself after this long a good run is started once more; one that stops sooner is left
@@ -299,6 +301,32 @@ impl Gateway {
 
     pub fn stop(&self, grace: Duration) {
         let _op = self.ops.lock().unwrap();
+        self.stop_locked(grace);
+    }
+
+    /// Leaving the app («Выход», Cmd+Q, a signal): the servers of the owner's own voices that this gateway started go
+    /// too. They outlive only a restart of the gateway (and an update of the app); the next start brings the chosen
+    /// voice's server back. Called off the async runtime (the event loop, the quit thread), as `stop` is.
+    pub fn quit(&self, grace: Duration) {
+        let _op = self.ops.lock().unwrap();
+        let engine = self
+            .state
+            .lock()
+            .unwrap()
+            .engine
+            .as_ref()
+            .map(|(_, engine)| engine.clone());
+        if let Some(engine) = engine {
+            let lab = engine.voice_lab.clone();
+            let released = tauri::async_runtime::block_on(async move {
+                tokio::time::timeout(VOICE_RELEASE_GRACE, lab.release()).await.is_ok()
+            });
+            self.note(if released {
+                "stopped the own voices' servers"
+            } else {
+                "the own voices' servers did not stop in time"
+            });
+        }
         self.stop_locked(grace);
     }
 
@@ -1124,5 +1152,17 @@ mod tests {
         wait_for(&gateway, Phase::Running);
         gateway.stop(STOP_GRACE);
         assert_eq!(gateway.status().phase, Phase::Stopped);
+
+        // Leaving the app stops it too, and the own voices' servers before it (none run here: nothing to kill).
+        gateway.start();
+        wait_for(&gateway, Phase::Running);
+        gateway.quit(STOP_GRACE);
+        assert_eq!(gateway.status().phase, Phase::Stopped);
+        assert!(
+            TcpStream::connect(("127.0.0.1", port)).is_err(),
+            "the port is free again"
+        );
+        let log = fs::read_to_string(dir.path().join("logs").join("gateway.log")).unwrap();
+        assert!(log.contains("stopped the own voices' servers"), "{log}");
     }
 }

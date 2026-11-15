@@ -4,9 +4,9 @@
 // на телефоне сначала список, страница — по нажатию.
 
 import { ComponentChildren, FunctionComponent } from 'preact';
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 
-import { api, can, problemOf, sessionStore } from '../api';
+import { api, can, problemOf, sessionStore, type CatalogView } from '../api';
 import { ask } from '../ui/confirm';
 import { tr } from '../i18n';
 import {
@@ -22,7 +22,7 @@ import {
     IconTerminal,
 } from '../icons';
 import { usePanel, useSectionTab } from '../shell/context';
-import { setDevMode, useDevMode } from '../shell/dev';
+import { setDevMode, setHiddenDevOptions, tapDev, useDevMode, useHiddenDevOptions } from '../shell/dev';
 import { ThemeCard } from '../shell/theme-picker';
 import { Switch } from '../ui/switch';
 import { useOfferedVersion } from '../updates';
@@ -245,6 +245,7 @@ function HistoryPage() {
 function DevPage() {
     const panel = usePanel();
     const dev = useDevMode();
+    const hidden = useHiddenDevOptions();
     const places: Array<{ title: string; sub: string; go: () => void; shown: boolean }> = [
         { title: tr.places.workshop, sub: tr.places.workshopSub, go: () => panel.go('skills', 'workshop'), shown: isAdmin() },
         { title: tr.places.routesTitle, sub: tr.places.routesSub, go: () => panel.go('skills', 'routes'), shown: !onComputer() },
@@ -264,6 +265,7 @@ function DevPage() {
                     <Switch on={dev} label={tr.places.devLayer} onChange={setDevMode} />
                 </label>
             </Card>
+            {hidden && <HiddenDevOptions />}
             {dev && (
                 <section class="card glass card-list" aria-label={tr.places.devPlaces}>
                     <div class="w-rows">
@@ -282,6 +284,65 @@ function DevPage() {
                 </section>
             )}
         </>
+    );
+}
+
+/**
+ * Скрытые возможности разработчика (восемь нажатий на «Для разработчиков»). «Показывать скрытые пакеты» — настройка
+ * шлюза packages.show_hidden: пакеты, которые ленты держат скрытыми (`unlisted`), видны в MagicPlace, в каталоге
+ * персонажей и голосом — из главного каталога, магазинов и своих источников. Меняет администратор.
+ */
+function HiddenDevOptions() {
+    const [view, setView] = useState<CatalogView | null>(null);
+    const [busy, setBusy] = useState(false);
+    const [problem, setProblem] = useState<string | null>(null);
+    useEffect(() => {
+        let alive = true;
+        api.packagesCatalog()
+            .then((next) => alive && setView(next))
+            .catch((error) => alive && setProblem(problemOf(error)));
+        return () => {
+            alive = false;
+        };
+    }, []);
+    const toggle = async (on: boolean) => {
+        setBusy(true);
+        setProblem(null);
+        try {
+            setView(await api.setShowHiddenPackages(on));
+        } catch (error) {
+            setProblem(problemOf(error));
+        } finally {
+            setBusy(false);
+        }
+    };
+    const shown = view?.packages.filter((entry) => entry.unlisted) ?? [];
+    return (
+        <Card id="dev-hidden" title={tr.places.hiddenTitle}>
+            <label class="w-toggle">
+                <span class="flex-1 min-w-0 flex flex-col">
+                    <span class="w-strong">{tr.places.showHiddenPackages}</span>
+                    <span class="w-cap">{tr.places.showHiddenPackagesAbout}</span>
+                </span>
+                <Switch
+                    on={!!view?.showHidden}
+                    label={tr.places.showHiddenPackages}
+                    disabled={!view || busy || !can('settings.edit')}
+                    onChange={(on) => void toggle(on)}
+                />
+            </label>
+            {view?.showHidden && (
+                <p class="w-cap">{shown.length ? tr.places.hiddenPackagesNow(shown.map((entry) => entry.title).join(', ')) : tr.places.hiddenPackagesNone}</p>
+            )}
+            {problem && (
+                <p class="w-cap" role="alert">
+                    {problem}
+                </p>
+            )}
+            <button class="w-btn" onClick={() => setHiddenDevOptions(false)}>
+                {tr.places.hiddenClose}
+            </button>
+        </Card>
     );
 }
 
@@ -317,10 +378,19 @@ export function SettingsSection() {
     const onStation = panel.health?.placement?.role === 'station';
     const pages = settingsPages(panel.role.role, onStation, offered);
     const shown = pages.find((entry) => entry.id === page) ?? pages[0];
+    // Скрытые возможности разработчика: восемь нажатий подряд на «Для разработчиков» — строку списка или заголовок
+    // открытой страницы (на телефоне список прячется после первого). Последние четыре — с подсказкой, сколько ещё.
+    const [devLeft, setDevLeft] = useState<number | null>(null);
+    const tapDevPage = () => {
+        const left = tapDev();
+        setDevLeft(left !== null && left <= 4 ? left : null);
+    };
     const open = (id: string) => {
+        if (id === 'dev') tapDevPage();
         setListed(false);
         setPage(id);
     };
+    const devHint = devLeft === null ? null : devLeft === 0 ? tr.places.hiddenOpened : tr.places.hiddenTapsLeft(devLeft);
     const { Page } = shown;
     return (
         <div class="set-split" data-view={listed ? 'list' : 'page'}>
@@ -334,7 +404,7 @@ export function SettingsSection() {
                             </span>
                             <span class="set-row-text">
                                 <b>{entry.title}</b>
-                                <span class="w-cap">{entry.sub}</span>
+                                <span class="w-cap">{entry.id === 'dev' && devHint ? devHint : entry.sub}</span>
                             </span>
                             {entry.dot && <span class="badge-dot" role="img" aria-label={tr.places.newVersion} />}
                             <IconChevronRight size={16} />
@@ -347,7 +417,18 @@ export function SettingsSection() {
                     <IconChevronLeft size={16} />
                     {tr.places.settings}
                 </button>
-                <h2 class="set-page-title">{shown.title}</h2>
+                {shown.id === 'dev' ? (
+                    <h2 class="set-page-title" onClick={tapDevPage}>
+                        {shown.title}
+                    </h2>
+                ) : (
+                    <h2 class="set-page-title">{shown.title}</h2>
+                )}
+                {shown.id === 'dev' && devHint && (
+                    <p class="w-cap" role="status">
+                        {devHint}
+                    </p>
+                )}
                 <Page key={shown.id} />
             </div>
         </div>

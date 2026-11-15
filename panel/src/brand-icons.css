@@ -19,6 +19,7 @@ html[data-theme='dark'] {
     --brand-todoist: #E44332;
     --brand-brave: #FB542B;
     --brand-tavily: #468BFF;
+    --brand-exa: currentColor;
     --brand-mcp: currentColor;
     --brand-telegram: #26A5E4;
     --brand-livekit: #FFFFFF;
@@ -43,6 +44,7 @@ html[data-theme='light'] {
     --brand-todoist: #E44332;
     --brand-brave: #FB542B;
     --brand-tavily: #468BFF;
+    --brand-exa: #1F40ED;
     --brand-mcp: #000000;
     --brand-telegram: currentColor;
     --brand-livekit: currentColor;

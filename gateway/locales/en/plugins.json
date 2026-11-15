@@ -313,6 +313,7 @@
  "своё": "own",
  "из каталога": "from the catalog",
  "Приложениями управляет только администратор.": "Only an administrator manages apps.",
+ "Нечего менять: enabled или showHidden.": "Nothing to change: enabled or showHidden.",
  "Свой источник добавляется после предупреждения: его пакеты никто не проверял (understood: true).": "A custom source is added after a warning: nobody has checked its packages (understood: true).",
  "Нет такого превью.": "No such preview.",
  "нет права на {name}": "no right to {name}",

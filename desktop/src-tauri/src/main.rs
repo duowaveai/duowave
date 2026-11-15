@@ -188,10 +188,11 @@ fn main() {
         .expect("the app could not start");
 
     app.run(|app, event| match event {
-        // Every way out ends here, Cmd+Q and logging out included: the gateway is stopped before the app goes.
+        // Every way out ends here, Cmd+Q and logging out included: the gateway is stopped before the app goes, and the
+        // own voices' servers with it.
         RunEvent::Exit => {
             if let Some(gateway) = app.try_state::<Arc<Gateway>>() {
-                gateway.stop(Duration::from_secs(4));
+                gateway.quit(Duration::from_secs(4));
             }
         }
         #[cfg(target_os = "macos")]
@@ -538,7 +539,7 @@ fn quit(app: &AppHandle) {
     }
     let app = app.clone();
     std::thread::spawn(move || {
-        app.state::<Arc<Gateway>>().stop(engine::STOP_GRACE);
+        app.state::<Arc<Gateway>>().quit(engine::STOP_GRACE);
         app.exit(0);
     });
 }

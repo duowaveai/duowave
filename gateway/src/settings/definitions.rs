@@ -231,6 +231,16 @@ pub const PACKAGES_CATALOG: SettingDefinition<bool> = SettingDefinition {
     parse: Value::as_bool,
 };
 
+/// The hidden developer option «Показывать скрытые пакеты» (src/plugins/catalog.rs): the feeds' `unlisted` packages are
+/// listed in MagicPlace, the characters' catalog and by voice too. Off unless the admin turns it on.
+pub const PACKAGES_SHOW_HIDDEN: SettingDefinition<bool> = SettingDefinition {
+    key: "packages.show_hidden",
+    scope: SettingScope::Global,
+    description: "Показывать скрытые пакеты",
+    sensitive: false,
+    parse: Value::as_bool,
+};
+
 /// The characters' memory (src/memory, docs/plans/memory.md): on unless the owner turns it off. Off, nothing that
 /// grew from talk — the household and the characters' personal records — goes into the prompt or is written; a
 /// character's world and package knowledge are not part of this switch.

@@ -49,6 +49,7 @@ const MARKS = [
     { id: 'brave', source: SIMPLE, name: 'brave' },
     // Цветной знак Tavily — три стрелки в шести цветах; цвет бренда — синий основной стрелки (скрипт проверяет, что он в файле).
     { id: 'tavily', source: LOBE, name: 'tavily', pick: '#468BFF' },
+    { id: 'exa', source: LOBE, name: 'exa' },
     { id: 'mcp', source: SIMPLE, name: 'modelcontextprotocol' },
     { id: 'telegram', source: SIMPLE, name: 'telegram' },
     { id: 'livekit', source: SIMPLE, name: 'livekit' },

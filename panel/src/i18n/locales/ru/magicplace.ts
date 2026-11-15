@@ -45,6 +45,7 @@ export default {
     switchOn: 'Включить',
     update: 'Обновить',
     recommendedPill: 'рекомендуем',
+    hiddenPill: 'скрытый',
     newPill: 'новое',
     mb: (n: number) => `${n} МБ`,
     downloadInstall: (title: string, size: string) => `Один раз скачает ${title} — около ${size}.`,

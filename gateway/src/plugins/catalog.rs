@@ -24,6 +24,10 @@
 //! A feed may say a package is `hidden`: it is not listed or installed, and the installed one that came from that very
 //! feed is hidden here (registry `hidden`) — not listed, its code off, its characters not offered — until the feed
 //! stops saying so.
+//!
+//! A feed may also keep a whole package out of sight (`unlisted: true`): it installs as any other, but the catalog's
+//! view and the voice leave it out unless the admin turned on the hidden developer option «Показывать скрытые пакеты»
+//! (setting packages.show_hidden), or it is installed here — then its card and updates are the household's.
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -41,7 +45,7 @@ use crate::config::PluginsConfig;
 use crate::core::availability::Placement;
 use crate::core::events::{Actor, EventBus, GatewayEvent};
 use crate::platform::http::ApiError;
-use crate::settings::definitions::PACKAGES_CATALOG;
+use crate::settings::definitions::{PACKAGES_CATALOG, PACKAGES_SHOW_HIDDEN};
 use crate::settings::SettingsService;
 use crate::storage::Db;
 use crate::utils::time::now_iso;
@@ -157,6 +161,10 @@ pub struct Entry {
     pub added_at: Option<String>,
     /// What it downloads by itself besides its archive (`downloads`): MagicPlace says it in words before the install.
     pub downloads: Vec<Download>,
+    /// The feed keeps it out of sight (`unlisted`): a whole entry, installable, but not listed in MagicPlace, the
+    /// characters' catalog or by voice unless the admin turned on «Показывать скрытые пакеты» (packages.show_hidden,
+    /// the hidden developer options). Not `hidden`, the feed's kill switch, which takes a package away from everyone.
+    pub unlisted: bool,
 }
 
 /// Something a package downloads by itself besides its archive: Remotion and a browser for drawing, a model.
@@ -578,6 +586,7 @@ fn entry(value: &Value, base: &url::Url) -> Result<Entry, String> {
         .unwrap_or_default();
     let recommended = value.get("recommended").and_then(Value::as_bool).unwrap_or(false);
     let added_at = text("addedAt").filter(|at| chrono::DateTime::parse_from_rfc3339(at).is_ok()).map(str::to_string);
+    let unlisted = value.get("unlisted").and_then(Value::as_bool).unwrap_or(false);
     let downloads = downloads_of(value);
     Ok(Entry {
         id,
@@ -608,6 +617,7 @@ fn entry(value: &Value, base: &url::Url) -> Result<Entry, String> {
         recommended,
         added_at,
         downloads,
+        unlisted,
     })
 }
 
@@ -976,6 +986,9 @@ pub struct CatalogEntryView {
     pub waits: Option<String>,
     /// A plugin or an app installed here: whether it is switched on — one that is off gets «Включить», not «Открыть».
     pub on: Option<bool>,
+    /// The feed keeps it out of sight (`unlisted`): listed only while «Показывать скрытые пакеты» is on, or when it is
+    /// installed here.
+    pub unlisted: bool,
 }
 
 /// A package's title and description in one language.
@@ -1036,6 +1049,8 @@ pub struct CatalogView {
     pub configured: bool,
     /// The owner's switch (setting packages_catalog).
     pub enabled: bool,
+    /// The hidden developer option «Показывать скрытые пакеты» (setting packages.show_hidden).
+    pub show_hidden: bool,
     pub url: Option<String>,
     pub fetched_at: Option<String>,
     /// The last read did not reach the feed: this is the copy before.
@@ -1164,6 +1179,16 @@ impl PackageCatalog {
     /// The owner's switch.
     pub fn set_enabled(&self, enabled: bool, actor: Option<Actor>) -> Result<(), ApiError> {
         self.settings.set(&PACKAGES_CATALOG, &enabled, actor)
+    }
+
+    /// The hidden developer option «Показывать скрытые пакеты»: the feeds' unlisted packages are listed too. Off
+    /// unless the admin turns it on.
+    pub fn show_hidden(&self) -> bool {
+        self.settings.get(&PACKAGES_SHOW_HIDDEN, None).unwrap_or(false)
+    }
+
+    pub fn set_show_hidden(&self, show: bool, actor: Option<Actor>) -> Result<(), ApiError> {
+        self.settings.set(&PACKAGES_SHOW_HIDDEN, &show, actor)
     }
 
     /// The feed's address, checked; the reason when it cannot be read.
@@ -1822,11 +1847,15 @@ impl PackageCatalog {
         let languages = crate::locale::preferences(&self.settings);
         // An app on Node downloads our Node first, once, when the gateway has none yet.
         let node_missing = crate::apps::node::needs_download(&self.node_dir, self.own_node.as_deref());
+        let show_hidden = self.show_hidden();
         let packages =
             feed.as_ref()
                 .map(|feed| {
                     feed.newest()
                         .into_iter()
+                        // An unlisted package shows while the hidden developer option is on, or once it is installed
+                        // here: its updates and its card are the household's.
+                        .filter(|entry| !entry.unlisted || show_hidden || installed.contains_key(&entry.id))
                         .map(|entry| {
                             let mine = installed.get(&entry.id);
                             let (state, reason) = entry_state(entry, mine, placement, signed, free_mb);
@@ -1894,6 +1923,7 @@ impl PackageCatalog {
                                 waits: waits_for(entry, mine, state),
                                 on: (mine.is_some() && matches!(entry.kind, PackageKind::Plugin | PackageKind::App))
                                     .then(|| self.host.is_switched_on(&entry.id)),
+                                unlisted: entry.unlisted,
                             }
                         })
                         .collect()
@@ -1941,6 +1971,7 @@ impl PackageCatalog {
             keyed: !self.keys.is_empty(),
             configured: matches!(self.source, FeedSource::Url(_)),
             enabled: self.enabled(),
+            show_hidden,
             url: match &self.source {
                 FeedSource::Url(url) => Some(url.clone()),
                 _ => None,
@@ -1993,8 +2024,13 @@ impl PackageCatalog {
             return None;
         }
         let mut best: Option<(usize, String)> = None;
+        let show_hidden = self.show_hidden();
         for entry in feed.newest() {
             if character && entry.kind != PackageKind::Character {
+                continue;
+            }
+            // Unlisted: the voice does not find it either, unless it is installed or the developer option is on.
+            if entry.unlisted && !show_hidden && self.host.installed(&entry.id).is_none() {
                 continue;
             }
             let names = entry.all_texts().into_iter().map(|(_, title, _)| title).chain([entry.id.replace('-', " ")]);
@@ -2778,6 +2814,45 @@ pub mod tests {
         assert_eq!(catalog.named("радио", false), None);
         catalog.install("arthur", None, false, None).await.unwrap();
         assert_eq!(catalog.named("Артур", false), Some(("arthur".into(), true)));
+    }
+
+    /// A package the feed keeps out of sight (`unlisted`) is not listed, nor found by voice, until the hidden developer
+    /// option «Показывать скрытые пакеты» is on; it installs all the same, and once installed it is listed as the
+    /// household's. Old gateways read the field as nothing and list it as before.
+    #[tokio::test]
+    async fn an_unlisted_package_shows_only_with_the_developer_option_or_once_installed() {
+        let site = site().await;
+        let mut freeman = arthur("1.0.0");
+        freeman["id"] = json!("freeman");
+        freeman["title"] = json!("Фримен");
+        freeman["url"] = json!("freeman-1.0.0.vgp");
+        freeman["unlisted"] = json!(true);
+        site.publish(&[
+            (arthur("1.0.0"), vgp(&character_manifest("arthur", "1.0.0"))),
+            (freeman, vgp(&character_manifest("freeman", "1.0.0"))),
+        ]);
+        let fixture = fixture(FeedSource::Url(site.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+        let ids = |view: &CatalogView| view.packages.iter().map(|entry| entry.id.clone()).collect::<Vec<_>>();
+
+        let view = catalog.view(false).await;
+        assert_eq!(ids(&view), ["arthur"], "out of sight");
+        assert!(!view.show_hidden);
+        assert_eq!(catalog.named("фримен", false), None, "nor by voice");
+
+        catalog.set_show_hidden(true, None).unwrap();
+        let view = catalog.view(false).await;
+        assert!(view.show_hidden);
+        assert_eq!(ids(&view), ["arthur", "freeman"]);
+        let freeman = view.packages.iter().find(|entry| entry.id == "freeman").unwrap();
+        assert!(freeman.unlisted, "the panel marks it");
+        assert_eq!(catalog.named("фримен", false), Some(("freeman".into(), false)));
+
+        catalog.install("freeman", None, false, None).await.unwrap();
+        catalog.set_show_hidden(false, None).unwrap();
+        let view = catalog.view(false).await;
+        assert_eq!(ids(&view), ["arthur", "freeman"], "installed: its card and updates are the household's");
+        assert_eq!(catalog.named("фримен", false), Some(("freeman".into(), true)));
     }
 
     #[tokio::test]

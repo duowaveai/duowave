@@ -114,6 +114,7 @@ function Pills({ entry, engines }: { entry: CatalogEntry; engines: Engines }) {
             <span class="pill pill-off">{placeOf(entry.kind, entry.runtime)}</span>
             {entry.recommended && !isInstalled(entry) && <span class="pill pill-own">{tr.magicplace.recommendedPill}</span>}
             {isNew(entry) && !isInstalled(entry) && <span class="pill pill-agent">{tr.magicplace.newPill}</span>}
+            {entry.unlisted && <span class="pill pill-off">{tr.magicplace.hiddenPill}</span>}
             {entryPills(entry, engines).map((pill) => (
                 <span key={pill.text} class={`pill ${pill.cls}`}>
                     {pill.text}

@@ -43,6 +43,14 @@ export default {
     showDevAbout: '«Мастерская» в доке, журнал запросов, маршруты таблицей, провайдеры и ключи',
     devLayer: 'Слой разработчика',
     devPlaces: 'Места разработчика',
+    hiddenTapsLeft: (n: number) => `ещё нажатий до скрытых возможностей: ${n}`,
+    hiddenOpened: 'Скрытые возможности открыты',
+    hiddenTitle: 'Скрытые возможности',
+    showHiddenPackages: 'Показывать скрытые пакеты',
+    showHiddenPackagesAbout: 'пакеты, которые ленты держат скрытыми, — в MagicPlace, в каталоге персонажей и голосом; из всех источников',
+    hiddenPackagesNow: (titles: string) => `Сейчас видны скрытые: ${titles}.`,
+    hiddenPackagesNone: 'Скрытых пакетов в лентах сейчас нет.',
+    hiddenClose: 'Спрятать скрытые возможности',
 
     // Список страниц
     pageMic: 'Микрофон',

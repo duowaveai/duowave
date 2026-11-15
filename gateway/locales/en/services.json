@@ -827,5 +827,22 @@
   "голос не ответил за {seconds} с": "the voice did not answer in {seconds} s",
   "слух не дал времени слов": "hearing gave no word times",
   "голос {voice} ({provider}) → {path}, платно: {count} знаков": "voice {voice} ({provider}) → {path}, paid: {count} characters",
-  "голос {voice} ({provider}) → {path}": "voice {voice} ({provider}) → {path}"
+  "голос {voice} ({provider}) → {path}": "voice {voice} ({provider}) → {path}",
+  "Свет, розетки, климат и сценарии через встроенный MCP-сервер Home Assistant: только устройства, открытые голосовым помощникам.": "Lights, sockets, climate and scenes through Home Assistant's built-in MCP server: only the devices open to voice assistants.",
+  "Долгоживущий токен Home Assistant": "Home Assistant long-lived token",
+  "Поиск Tavily": "Tavily search",
+  "Поиск в интернете для свежих ответов: новости, цены, факты. Нужен ключ Tavily.": "Web search for fresh answers: news, prices, facts. Needs a Tavily key.",
+  "Ключ Tavily": "Tavily key",
+  "Поиск Brave": "Brave search",
+  "Поиск в интернете Brave Search: страницы, новости, места рядом. Нужен ключ Brave Search API.": "Brave Search web search: pages, news, places nearby. Needs a Brave Search API key.",
+  "Ключ Brave Search API": "Brave Search API key",
+  "Поиск Exa": "Exa search",
+  "Поиск в интернете по смыслу: сразу отдаёт текст найденных страниц и читает страницу по адресу. Нужен ключ Exa.": "Web search by meaning: returns the text of the pages it finds and reads a page by its address. Needs an Exa key.",
+  "Ключ Exa": "Exa key",
+  "Поиск и чтение страниц через Apify, а по желанию — роботы из магазина Apify: собрать отзывы, цены, посты с сайтов. Нужен токен Apify; запуск робота платный.": "Web search and page reading through Apify and, if you wish, robots from the Apify Store: collect reviews, prices, posts from sites. Needs an Apify token; a robot run is paid.",
+  "Токен Apify API": "Apify API token",
+  "Чтение страниц": "Page reading",
+  "Открывает страницу по адресу и отдаёт её текст: к поиску, чтобы прочитать найденное.": "Opens a page by its address and returns its text: pairs with search to read what was found.",
+  "Задачи и списки: что на сегодня, добавить покупку, отметить сделанное. Вход через ваш аккаунт Todoist.": "Tasks and lists: what's on today, add a purchase, tick off what's done. Sign in with your Todoist account.",
+  "Заметки и страницы Notion: найти, прочитать, дописать. Вход через ваш аккаунт Notion.": "Notion notes and pages: find, read, add to them. Sign in with your Notion account."
 }

@@ -47,6 +47,7 @@ const en: Translation<typeof ru> = {
     switchOn: 'Turn on',
     update: 'Update',
     recommendedPill: 'recommended',
+    hiddenPill: 'hidden',
     newPill: 'new',
     mb: (n: number) => `${n} MB`,
     downloadInstall: (title: string, size: string) => `Downloads ${title} once — about ${size}.`,

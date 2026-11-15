@@ -668,6 +668,7 @@ mod tests {
             ],
             waits: None,
             on: None,
+            unlisted: false,
         };
         assert_eq!(
             question(pack::of(Lang::Ru), &entry),
