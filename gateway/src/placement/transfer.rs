@@ -27,7 +27,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
+use crate::dialog::brain::presets::{no_address, HELPER_PRESET};
+use crate::helpers::{parse_helpers, HelperSetting, HOME_COMPUTER};
 use crate::secrets::SecretsService;
+use crate::settings::definitions::{GATEWAY_SELF, HELPERS};
 use crate::storage::Db;
 use crate::utils::time::now_iso;
 
@@ -49,7 +52,33 @@ pub const FORMAT: &str = "duowave-settings";
 /// secrets it does not know: a calendar's key would be gone from a station still on 0.5 while its computer is on 0.6,
 /// and would not come back with its update. Such a station gets the routine package with the keys put back among the
 /// settings as it reads them (`keys_in_settings`), schema 2; its first start on 0.6 moves them into its safe.
-pub const SCHEMA: u32 = 3;
+///
+/// 4 (block 1 of «Дом» и помощники, docs/plans/home-and-helpers.md): the home and its helpers travel — the settings and
+/// the secrets' prefixes of `SINCE`; each gateway's own id and name (`gateway_self`) stay, an earlier import too
+/// (`LOCAL_SINCE`). A gateway of an earlier schema gets the package without them, at its own schema (`for_schema`):
+/// its import knows nothing of them, and a change of them alone sends it nothing (src/placement/watch.rs). A package
+/// from such a gateway leaves this one's as they are (`Bundle::carries`). The apps' own settings (`app_settings`, 0.13.0)
+/// came without a schema of their own — an earlier import passes the table by —, so 4 is the next after both.
+pub const SCHEMA: u32 = 4;
+
+/// The schema before the home (0.6.0 to 0.13): the computer's routine sending to such a station is cut to it
+/// (`for_schema`).
+pub const BEFORE_HOME_SCHEMA: u32 = 3;
+
+/// The schema whose import knows a «Мозг» row of a helper's model that stores no address (the hidden preset `helper`,
+/// dialog/brain/brain_service.rs): a linked helper's, asked only through this start's bridge to its link, or one kept
+/// while a choice answers with it after its helper went. An earlier import reads such a row as an OpenAI provider with
+/// no address of its own — OpenAI's, where a chosen question would go without a key —, so a package for it leaves the
+/// row out (`for_schema`).
+const ADDRESSLESS_ROWS_SCHEMA: u32 = 4;
+
+/// What each schema added to the package: its settings, and its secrets by their prefixes. A package for a gateway
+/// whose import knows an earlier schema leaves them out (`for_schema`), and an import keeps this gateway's own when the
+/// package does not carry that schema (`Bundle::carries`): its writer did not know them, and its package would remove
+/// them as settings it lacks. 4 brings the home (`home_identity`, the key `home:key`, src/core/identity/home.rs) and the
+/// helpers (`helpers`, `helper_pins`, `away`, their keys `helper:<id>:key`), the whole block in one schema.
+pub const SINCE: &[(u32, &[&str], &[&str])] =
+    &[(4, &["home_identity", "helpers", "helper_pins", "away"], &["home:", "helper:"])];
 
 /// The routine package for a station whose import knows schema 2 (0.5.x): the same, the plugins' keys among their
 /// settings too (`keys_in_settings`).
@@ -104,7 +133,25 @@ pub const LOCAL_SETTINGS: &[&str] = &[
     "package_history",
     // «Как говорить с DuoWave»: the computer's choice of its own microphone (src/talk/input.rs).
     "voice_input",
+    // This gateway itself, its id and name (src/core/identity/home.rs): the home travels, each gateway stays itself.
+    "gateway_self",
+    // Who this computer helps as a helper, and its address from outside (docs/plans/home-and-helpers.md, stage 7):
+    // the machine's own, like its link's secrets under `helping:`.
+    "helper_clients",
+    "helper_outside",
+    // The work folders and the agents (src/works): their paths and the way Claude Code pays are this computer's.
+    "work_folders",
+    "harness_claude_path",
+    "harness_claude_auth",
+    "harness_paths",
 ];
+
+/// Of each side's own settings (`LOCAL_SETTINGS`), what a schema brought: an import of an earlier schema does not know
+/// it as its own and removes it as a setting the package lacks. So what the computer sends a gateway of such a schema
+/// carries its own as its own package says it (`their_own`, src/placement/watch.rs): a station put back on 0.11 by the
+/// safety net keeps its id and the name a person gave it. 4 brings the gateway itself (`gateway_self`) and what it
+/// keeps as a helper (`helper_clients`, `helper_outside`).
+pub const LOCAL_SINCE: &[(u32, &[&str])] = &[(4, &["gateway_self", "helper_clients", "helper_outside"])];
 
 /// Of each side's own settings (`LOCAL_SETTINGS`), the ones a move to the station sets there all the same when its
 /// package carries them (moves.rs): the computer's choice of voice when the computer gives the station its voice
@@ -122,10 +169,24 @@ pub const MOVE_ONLY: &[&str] = &["gateway_mode"];
 
 /// The secrets that travel: the model providers', the connectors', the MCP servers', the voices' (ElevenLabs,
 /// `voice:<provider>:key`), the plugins' private settings
-/// (`plugin:<package>:<key>`, their settings travel too). Like every secret of the package they go sealed with the
-/// pair's key, and so do the copies kept on the computer. Everything else (the pair's key, the home server's, the
-/// panel's sessions, a sign-in's tokens under `oauth:`) is each side's own.
-pub const TRAVELLING_SECRETS: &[&str] = &["llm:", "connector:", "mcp:", "voice:", crate::secrets::PLUGIN_SECRETS];
+/// (`plugin:<package>:<key>`, their settings travel too), the home's key and the helpers' (schema 4, `SINCE`). Like
+/// every secret of the package they go sealed with the pair's key, and so do the copies kept on the computer.
+/// Everything else (the pair's key, the home server's, the panel's sessions, a sign-in's tokens under `oauth:`) is each
+/// side's own, and so is what `STAYING_SECRETS` keeps out of these.
+pub const TRAVELLING_SECRETS: &[&str] =
+    &["llm:", "connector:", "mcp:", "voice:", crate::secrets::PLUGIN_SECRETS, "home:", "helper:"];
+
+/// Of the travelling prefixes, what stays all the same: the key of the pair's own helper entry, `home-computer` (each
+/// gateway's own door to its computer, `OWN_PARTS`). A helper's own secrets — its connection key, its certificate, its
+/// clients' keys (docs/plans/home-and-helpers.md, stage 7) — live under `helping:`, which is no travelling prefix at
+/// all: one slip in a rule here must never ship them.
+pub const STAYING_SECRETS: &[&str] = &["helper:home-computer:"];
+
+/// Shared settings with one part that is each gateway's own: (setting, part id). The pair's door — the helper entry
+/// `home-computer`, the old «Домашний сервер» (src/helpers/legacy.rs) — and its certificate's pin are the station's
+/// own, as `connector_home_server` was: `export` leaves the part out, and an import keeps the stored one at its place
+/// whatever the package says (`with_own`). The computer's own list never carries the computer itself.
+pub const OWN_PARTS: &[(&str, &str)] = &[("helpers", "home-computer"), ("helper_pins", "home-computer")];
 
 /// The settings package.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -142,6 +203,11 @@ pub struct Bundle {
     /// The writer's settings revision.
     #[serde(default)]
     pub revision: u64,
+    /// The newest schema whose settings this package carries in full (`SINCE`): its writer's, or less when it was cut
+    /// for a gateway of an earlier schema (`for_schema`). 0 — a writer from before schema 4, whose JSON has none: an
+    /// import then keeps its own of what came since.
+    #[serde(default)]
+    pub carries: u32,
     /// Table → rows, each row column → value.
     pub tables: BTreeMap<String, Vec<Map<String, Value>>>,
     /// Setting key → its stored JSON.
@@ -298,8 +364,69 @@ fn columns(connection: &rusqlite::Connection, table: &str) -> rusqlite::Result<V
     Ok(names)
 }
 
+/// `value` without its part `id`: the array's item with that `id`, or the object's key. None — nothing left.
+fn without_own(value: &Value, id: &str) -> Option<Value> {
+    match value {
+        Value::Array(items) => {
+            let kept: Vec<Value> =
+                items.iter().filter(|item| item.get("id").and_then(Value::as_str) != Some(id)).cloned().collect();
+            (!kept.is_empty()).then_some(Value::Array(kept))
+        }
+        Value::Object(fields) => {
+            let mut kept = fields.clone();
+            kept.remove(id);
+            (!kept.is_empty()).then_some(Value::Object(kept))
+        }
+        other => Some(other.clone()),
+    }
+}
+
+/// What an import stores of a setting with an own part (`OWN_PARTS`): the package's value without any part `id`, and
+/// the stored part put back where it stood — at its index (clamped), or under its key. None — nothing left: the
+/// stored setting goes.
+fn with_own(incoming: Option<&Value>, stored: Option<&Value>, id: &str) -> Option<Value> {
+    let incoming = incoming.and_then(|value| without_own(value, id));
+    match stored {
+        Some(Value::Array(items)) => {
+            let Some(at) = items.iter().position(|item| item.get("id").and_then(Value::as_str) == Some(id)) else {
+                return incoming;
+            };
+            let mut list = match incoming {
+                Some(Value::Array(list)) => list,
+                _ => Vec::new(),
+            };
+            list.insert(at.min(list.len()), items[at].clone());
+            Some(Value::Array(list))
+        }
+        Some(Value::Object(fields)) => {
+            let Some(own) = fields.get(id) else { return incoming };
+            let mut object = match incoming {
+                Some(Value::Object(object)) => object,
+                _ => Map::new(),
+            };
+            object.insert(id.to_string(), own.clone());
+            Some(Value::Object(object))
+        }
+        _ => incoming,
+    }
+}
+
 fn travels(secret: &str) -> bool {
     TRAVELLING_SECRETS.iter().any(|prefix| secret.starts_with(prefix))
+        && !STAYING_SECRETS.iter().any(|prefix| secret.starts_with(prefix))
+}
+
+/// The schema that brought this setting into the package (`SINCE`); 0 — it travelled before.
+fn setting_since(key: &str) -> u32 {
+    SINCE.iter().find(|(_, settings, _)| settings.contains(&key)).map_or(0, |(schema, _, _)| *schema)
+}
+
+/// The schema that brought this secret into the package (`SINCE`, by its prefix); 0 — it travelled before.
+fn secret_since(id: &str) -> u32 {
+    SINCE
+        .iter()
+        .find(|(_, _, prefixes)| prefixes.iter().any(|prefix| id.starts_with(prefix)))
+        .map_or(0, |(schema, _, _)| *schema)
 }
 
 /// This gateway's settings as a package.
@@ -324,13 +451,21 @@ pub fn export(db: &Db, secrets: &SecretsService, from: &str) -> rusqlite::Result
             tables.insert(table.to_string(), rows);
         }
         let mut statement = connection.prepare("SELECT key, value FROM settings ORDER BY key")?;
-        let settings = statement
+        let mut settings: BTreeMap<String, Value> = statement
             .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?
             .into_iter()
             .filter(|(key, _)| !LOCAL_SETTINGS.contains(&key.as_str()))
             .filter_map(|(key, text)| serde_json::from_str(&text).ok().map(|value| (key, value)))
             .collect();
+        // Each gateway's own part of a shared setting stays here; a setting it alone made is left out.
+        for (key, id) in OWN_PARTS {
+            if let Some(value) = settings.remove(*key) {
+                if let Some(kept) = without_own(&value, id) {
+                    settings.insert(key.to_string(), kept);
+                }
+            }
+        }
         Ok((tables, settings))
     })?;
     let secrets = secrets
@@ -346,6 +481,7 @@ pub fn export(db: &Db, secrets: &SecretsService, from: &str) -> rusqlite::Result
         from: from.into(),
         at: now_iso(),
         revision: 0,
+        carries: SCHEMA,
         tables,
         settings,
         secrets,
@@ -453,26 +589,61 @@ fn apply_plugins(
     Ok(carried)
 }
 
-/// The computer's model as a station's «Мозг» has it: a provider at a home server's model route (`…/home/v1/llm`,
-/// home_server/serve.rs), which the station adds itself (home_server/mod.rs). On the computer it would point at the
-/// computer itself (live, 10.11: «Модель на компьютере» came back with the move). Known by its address, not its
-/// title.
+/// A helper's model as a gateway's «Мозг» has it: a row of the hidden preset `helper`, which «Мозг» makes itself for
+/// each helper of its own list (dialog/brain/brain_service.rs), or a provider at a home server's model route
+/// (`…/home/v1/llm`, home_server/serve.rs) — a station's old «Модель на компьютере». Known by its preset or its
+/// address, not its title: never a computer's own model.
 pub fn at_home_server(row: &Map<String, Value>) -> bool {
-    row.get("base_url")
-        .and_then(Value::as_str)
-        .and_then(|url| url::Url::parse(url.trim()).ok())
-        .is_some_and(|url| url.path().trim_end_matches('/').ends_with(HOME_MODEL_ROUTE))
+    row.get("preset").and_then(Value::as_str) == Some(HELPER_PRESET)
+        || row.get("base_url").and_then(Value::as_str).is_some_and(at_model_route)
+}
+
+/// What a computer leaves out of a station's package: the station's model of this computer, which here would point at
+/// the computer itself (live, 10.11: «Модель на компьютере» came back with the move) — the station's row for its door
+/// `home-computer` or for an entry that names this computer (`helperId`, `me`), or its old «Модель на компьютере» (a
+/// provider at a model route that is no helper's row; on a station before the helpers it was always the pair's
+/// computer). The other helpers' rows stay: their helpers come with the package, and this computer asks them as they
+/// are.
+fn of_this_computer(row: &Map<String, Value>, helpers: &[HelperSetting], me: Option<&str>) -> bool {
+    if row.get("preset").and_then(Value::as_str) != Some(HELPER_PRESET) {
+        return row.get("base_url").and_then(Value::as_str).is_some_and(at_model_route);
+    }
+    let options = match row.get("options") {
+        Some(Value::String(text)) => serde_json::from_str::<Value>(text).ok(),
+        other => other.cloned(),
+    };
+    // A helper's row that names no helper is asked nowhere: nothing to take.
+    let Some(helper) = options.as_ref().and_then(|options| options.get("helper")).and_then(Value::as_str) else {
+        return true;
+    };
+    helper == HOME_COMPUTER
+        || helpers.iter().any(|entry| entry.id == helper && me.is_some() && entry.helper_id.as_deref() == me)
+}
+
+/// A helper's model row that stores no address (`ADDRESSLESS_ROWS_SCHEMA`) or only the stand-in for none
+/// (`HELPER_NO_ADDRESS`: an earlier import would ask it nowhere, and a pick of it would answer nothing): it reaches its
+/// helper only through this gateway's own bridge to a link, made at each start, or nowhere at all.
+fn addressless(row: &Map<String, Value>) -> bool {
+    row.get("preset").and_then(Value::as_str) == Some(HELPER_PRESET)
+        && row.get("base_url").and_then(Value::as_str).is_none_or(|url| url.trim().is_empty() || no_address(url))
+}
+
+/// An address at a helper's model route.
+fn at_model_route(url: &str) -> bool {
+    url::Url::parse(url.trim()).is_ok_and(|url| url.path().trim_end_matches('/').ends_with(HOME_MODEL_ROUTE))
 }
 
 /// The home server's model route on the computer (home_server/serve.rs): a station's provider for it ends so.
 const HOME_MODEL_ROUTE: &str = "/home/v1/llm";
 
 /// The computer's own model among the providers a package brings: the one its home server hands the station's «Мозг»
-/// (home_server/serve.rs, `own_model`) — the first OpenAI-compatible provider at home, by when it was added.
+/// (home_server/serve.rs, `own_model`) — the first OpenAI-compatible provider at home, by when it was added; never a
+/// helper's model.
 fn own_model(rows: &[&Map<String, Value>]) -> Option<String> {
     let mut models: Vec<(&str, usize, &str)> = rows
         .iter()
         .enumerate()
+        .filter(|(_, row)| !at_home_server(row))
         .filter(|(_, row)| row.get("kind").and_then(Value::as_str) == Some("openai"))
         .filter(|(_, row)| {
             row.get("base_url")
@@ -487,9 +658,10 @@ fn own_model(rows: &[&Map<String, Value>]) -> Option<String> {
     models.first().map(|(_, _, id)| id.to_string())
 }
 
-/// A choice of model that answered with a provider left out (`at_home_server`): with the computer's own model, which
-/// that provider reached through the home server, else none — «Мозг» falls back to .env's. `brain` holds `fast` and
-/// `smart`, `workshop.agent` one pick. None: nothing of it stays.
+/// A choice of model that answered with a provider left out (`of_this_computer`; `leave_out_rows` for an earlier
+/// import): with the computer's own model, which that provider reached through the home server, else none — «Мозг»
+/// falls back to .env's, and has no backup. `brain` holds `fast`, `smart` and `backup`, `workshop.agent` one pick.
+/// None: nothing of it stays.
 fn pick_again(key: &str, value: &Value, left_out: &[String], own: Option<&str>) -> Option<Value> {
     let gone = |pick: &Value| {
         pick.get("provider").and_then(Value::as_str).is_some_and(|id| left_out.iter().any(|left| left == id))
@@ -503,7 +675,7 @@ fn pick_again(key: &str, value: &Value, left_out: &[String], own: Option<&str>) 
         "brain" => {
             let mut value = value.clone();
             if let Some(object) = value.as_object_mut() {
-                for profile in ["fast", "smart"] {
+                for profile in ["fast", "smart", "backup"] {
                     match object.get(profile).filter(|pick| gone(pick)).map(again) {
                         Some(Some(pick)) => {
                             object.insert(profile.into(), pick);
@@ -581,13 +753,77 @@ pub fn for_earlier(mut bundle: Bundle, theirs: &Bundle) -> Bundle {
     bundle
 }
 
+/// The package for a gateway whose import knows `schema` (its /health's `build.settingsSchema`, the computer's watch):
+/// what came after that schema left out (`SINCE`), and it asks no newer import than that. A station of 0.6 to 0.13
+/// (schema 3) takes the computer's routine package as before, without the home and the helpers, and without a helper's
+/// model row that stores no address (`ADDRESSLESS_ROWS_SCHEMA`, `leave_out_rows`) — the apps' own settings stay in it:
+/// a 0.13 import takes them, an earlier one passes the table by; a station of this build gets it as it is.
+pub fn for_schema(mut bundle: Bundle, schema: u32) -> Bundle {
+    bundle.settings.retain(|key, _| setting_since(key) <= schema);
+    bundle.secrets.retain(|id, _| secret_since(id) <= schema);
+    if schema < ADDRESSLESS_ROWS_SCHEMA {
+        leave_out_rows(&mut bundle, addressless);
+    }
+    bundle.schema = bundle.schema.min(schema);
+    bundle.carries = bundle.carries.min(schema);
+    bundle
+}
+
+/// «Мозг»'s rows that `out` names left out of a package, with their secrets (`llm:<id>:`), and every pick of them taken
+/// again with no model in their place (`pick_again`): the receiver answers with the rest of its choice, else with its
+/// .env's model, and has no backup from them. A pick `pick_again` does not know stays — the memory's own model, an
+/// app's —: a 0.11 gateway's night waits for a model it does not find («Ждёт модель…»), and an app's question goes to
+/// the profile's model; neither asks a row it has not.
+fn leave_out_rows(bundle: &mut Bundle, out: impl Fn(&Map<String, Value>) -> bool) {
+    let Some(rows) = bundle.tables.get_mut("llm_providers") else { return };
+    let left_out: Vec<String> = rows
+        .iter()
+        .filter(|row| out(row))
+        .filter_map(|row| row.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    if left_out.is_empty() {
+        return;
+    }
+    rows.retain(|row| !out(row));
+    bundle.secrets.retain(|id, _| !left_out.iter().any(|row| id.starts_with(&format!("llm:{row}:"))));
+    bundle.settings = std::mem::take(&mut bundle.settings)
+        .into_iter()
+        .filter_map(|(key, value)| pick_again(&key, &value, &left_out, None).map(|value| (key, value)))
+        .collect();
+}
+
+/// Whether an import of `schema` knows as its own all that this build keeps for each side (`LOCAL_SINCE`): a package
+/// for it needs nothing of its own put in (`their_own`).
+pub fn knows_own(schema: u32) -> bool {
+    LOCAL_SINCE.iter().all(|(since, _)| *since <= schema)
+}
+
+/// The package for a gateway whose import knows `schema`, with what this build keeps for each side and that import
+/// does not know as its own (`LOCAL_SINCE`) as the gateway's own package says it (`theirs`), left out when that has
+/// none: its import takes it as an ordinary setting and so keeps it, and never gets the sender's own. A kept copy put
+/// back gets it too: the gateway's own is never a copy's to change. The whole package for an earlier build carries it
+/// already (`for_earlier`).
+pub fn their_own(mut bundle: Bundle, theirs: &Bundle, schema: u32) -> Bundle {
+    for key in LOCAL_SINCE.iter().filter(|(since, _)| *since > schema).flat_map(|(_, keys)| keys.iter()) {
+        match theirs.settings.get(*key) {
+            Some(value) => bundle.settings.insert(key.to_string(), value.clone()),
+            None => bundle.settings.remove(*key),
+        };
+    }
+    bundle
+}
+
 /// Makes this gateway's settings the package's: the travelling tables replaced whole, the travelling settings and
 /// secrets set and the ones the package has not removed — but a `MOVE_ONLY` one it does not carry stays as it is, and
-/// of each side's own only what a move sets (`MOVE_SETS`) is taken. `station` leaves out what the station's build
-/// cannot run (MCP servers as programs); the computer leaves out the provider a station made for its home server
-/// (`at_home_server`), its key, and a choice that answered with it goes to the computer's own model. A key revoked
-/// here stays revoked whatever the package says. The plugins' state a move carries goes to the packages both sides
-/// have (`apply_plugins`). One transaction for the database; the secrets after it.
+/// of each side's own only what a move sets (`MOVE_SETS`) is taken. What came with a schema the package does not carry
+/// (`SINCE` above `Bundle::carries` — its writer is of an earlier build) stays as this gateway has it, the home and the
+/// helpers with their keys: a new station whose settings a 0.11 computer keeps would lose them at every sending.
+/// `station` leaves out what the station's build cannot run (MCP servers as programs); the computer leaves out the
+/// station's model of this computer (`of_this_computer`), its key, and a choice that answered with it goes to the
+/// computer's own model. A key revoked here stays revoked whatever the package says. The plugins' state a move
+/// carries goes to the packages both sides have (`apply_plugins`). Of a shared setting, this gateway's own part — the
+/// pair's door `home-computer` and its pin (`OWN_PARTS`) — stays at its place, and so does its key
+/// (`STAYING_SECRETS`). One transaction for the database; the secrets after it.
 pub fn import(db: &Db, secrets: &SecretsService, bundle: &Bundle, station: bool) -> Result<Imported, String> {
     if bundle.format != FORMAT {
         return Err(crate::tr!("это не набор настроек шлюза"));
@@ -599,20 +835,25 @@ pub fn import(db: &Db, secrets: &SecretsService, bundle: &Bundle, station: bool)
         ));
     }
     let mut imported = Imported::default();
-    // The station's provider for its home server, never the computer's: by id, with its key.
+    // The station's model of this computer, never the computer's: by id, with its key.
     let providers: Vec<&Map<String, Value>> =
         bundle.tables.get("llm_providers").map(|rows| rows.iter().collect()).unwrap_or_default();
     let left_out: Vec<String> = if station {
         Vec::new()
     } else {
+        let helpers = bundle.settings.get(HELPERS.key).and_then(parse_helpers).unwrap_or_default();
+        let me = this_gateway(db);
         providers
             .iter()
-            .filter(|row| at_home_server(row))
+            .filter(|row| of_this_computer(row, &helpers, me.as_deref()))
             .filter_map(|row| row.get("id").and_then(Value::as_str).map(str::to_string))
             .collect()
     };
     let own = own_model(&providers.iter().copied().filter(|row| !at_home_server(row)).collect::<Vec<_>>());
     let kept_secret = |id: &str| !left_out.iter().any(|provider| id.starts_with(&format!("llm:{provider}:")));
+    // What the package's writer did not know (`SINCE`): this gateway's own stays, absent or not in the package.
+    let unknown_setting = |key: &str| setting_since(key) > bundle.carries;
+    let unknown_secret = |id: &str| secret_since(id) > bundle.carries;
     db.transaction(|transaction| {
         // A key revoked here stays revoked: the package is the other side's copy, made before this side revoked it —
         // a move back revokes the station's key to its home server, then applies the station's settings, and the key
@@ -670,18 +911,31 @@ pub fn import(db: &Db, secrets: &SecretsService, bundle: &Bundle, station: bool)
                 params![id, at],
             )?;
         }
+        // This gateway's own part of a shared setting (`OWN_PARTS`) is kept at its place, whatever the package says.
+        let mut incoming = bundle.settings.clone();
+        for (key, id) in OWN_PARTS.iter().filter(|(key, _)| !unknown_setting(key)) {
+            let stored: Option<Value> = transaction
+                .query_row("SELECT value FROM settings WHERE key = ?1", params![key], |row| row.get::<_, String>(0))
+                .optional()?
+                .and_then(|text| serde_json::from_str(&text).ok());
+            match with_own(incoming.get(*key), stored.as_ref(), id) {
+                Some(value) => incoming.insert(key.to_string(), value),
+                None => incoming.remove(*key),
+            };
+        }
         let stored: Vec<String> = transaction
             .prepare("SELECT key FROM settings")?
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for key in stored {
-            let kept = LOCAL_SETTINGS.contains(&key.as_str()) || MOVE_ONLY.contains(&key.as_str());
-            if !kept && !bundle.settings.contains_key(&key) {
+            let kept =
+                LOCAL_SETTINGS.contains(&key.as_str()) || MOVE_ONLY.contains(&key.as_str()) || unknown_setting(&key);
+            if !kept && !incoming.contains_key(&key) {
                 transaction.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
             }
         }
-        for (key, value) in &bundle.settings {
-            if LOCAL_SETTINGS.contains(&key.as_str()) && !MOVE_SETS.contains(&key.as_str()) {
+        for (key, value) in &incoming {
+            if (LOCAL_SETTINGS.contains(&key.as_str()) && !MOVE_SETS.contains(&key.as_str())) || unknown_setting(key) {
                 continue;
             }
             let Some(value) = pick_again(key, value, &left_out, own.as_deref()) else {
@@ -702,17 +956,30 @@ pub fn import(db: &Db, secrets: &SecretsService, bundle: &Bundle, station: bool)
     })
     .map_err(|error| crate::tr!("База шлюза: {error}", error = error))?;
     for id in secrets.ids("") {
-        if travels(&id) && !(bundle.secrets.contains_key(&id) && kept_secret(&id)) {
+        if travels(&id) && !unknown_secret(&id) && !(bundle.secrets.contains_key(&id) && kept_secret(&id)) {
             secrets.delete(&id).map_err(|error| error.message)?;
         }
     }
     for (id, value) in &bundle.secrets {
-        if travels(id) && kept_secret(id) {
+        if travels(id) && !unknown_secret(id) && kept_secret(id) {
             secrets.set(id, Some(value)).map_err(|error| error.message)?;
             imported.secrets += 1;
         }
     }
     Ok(imported)
+}
+
+/// This gateway's own id (`gateway_self`, each gateway's own: it never travels), as the helpers' lists name it.
+fn this_gateway(db: &Db) -> Option<String> {
+    let stored: Option<String> = db
+        .with(|c| {
+            c.query_row("SELECT value FROM settings WHERE key = ?1", params![GATEWAY_SELF.key], |row| row.get(0))
+                .optional()
+        })
+        .ok()
+        .flatten();
+    let me = stored.and_then(|text| serde_json::from_str::<Value>(&text).ok())?;
+    me.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()).map(str::to_string)
 }
 
 /// The plugins' state alone, from the station a move back took it from while the settings lived on the computer
@@ -999,7 +1266,11 @@ mod tests {
 
     use super::*;
     use crate::core::events::EventBus;
-    use crate::settings::definitions::{ModeSetting, PanelMode, GATEWAY_STATE, KEEP_REQUESTS, MODE};
+    use crate::core::identity::home::HOME_KEY;
+    use crate::settings::definitions::{
+        GatewaySelf, HomeIdentity, ModeSetting, PanelMode, GATEWAY_SELF, GATEWAY_STATE, HOME_IDENTITY, KEEP_REQUESTS,
+        MODE,
+    };
     use crate::settings::SettingsService;
 
     fn gateway() -> (Arc<Db>, SecretsService, SettingsService) {
@@ -1191,7 +1462,7 @@ mod tests {
         pc_settings.set(&KEEP_REQUESTS, &7, None).unwrap();
         let whole = export(&pc, &pc_secrets, "pc").unwrap();
         let sent = routine(whole.clone());
-        assert_eq!((SCHEMA, sent.schema, whole.schema), (3, 3, WHOLE), "the routine package needs schema 2 at least");
+        assert_eq!((SCHEMA, sent.schema, whole.schema), (4, 4, WHOLE), "the routine package needs schema 2 at least");
 
         let station = BTreeMap::from([
             ("gateway_mode".to_string(), json!({ "mode": "relay" })),
@@ -1266,6 +1537,397 @@ mod tests {
         assert_eq!(station_settings.get(&MODE, None), Some(ModeSetting { mode: PanelMode::Gateway }));
         assert_eq!(station_settings.get(&KEEP_REQUESTS, None), Some(5));
         assert_eq!(station_settings.raw("voice_pending"), Some(json!({ "modelId": "station-voice" })));
+    }
+
+    /// A gateway's home and itself as its first start makes them (src/core/identity/home.rs).
+    fn at_home(settings: &SettingsService, secrets: &SecretsService, home: &str, me: &str) {
+        settings.set(&HOME_IDENTITY, &HomeIdentity { id: home.into(), name: None }, None).unwrap();
+        secrets.set(HOME_KEY, Some(&format!("{home}-not-a-real-key"))).unwrap();
+        settings.set(&GATEWAY_SELF, &GatewaySelf { id: me.into(), name: None }, None).unwrap();
+    }
+
+    /// The helpers' settings as the block keeps them: the list (the pair's own door first), the certificates' pins,
+    /// the regulator — stored raw — and the helpers' keys.
+    fn helpers_kept(db: &Db, secrets: &SecretsService) {
+        let helpers = json!([
+            { "id": "home-computer", "name": "Компьютер дома", "url": "http://192.0.2.10:7780", "kind": "home" },
+            { "id": "own-1", "name": "Мой сервер", "url": "https://helper.example.com", "kind": "own" }
+        ]);
+        let pins = json!({ "home-computer": { "sha256": "aa" }, "own-1": { "public": "helper.example.com" } });
+        for (key, value) in [("helpers", helpers), ("helper_pins", pins), ("away", json!("home"))] {
+            db.with(|c| {
+                c.execute(
+                    "INSERT INTO settings (key, value, is_default, updated_at) VALUES (?1, ?2, 0, 'now')
+                     ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                    params![key, value.to_string()],
+                )
+            })
+            .unwrap();
+        }
+        secrets.set("helper:home-computer:key", Some("helper-not-a-real-key")).unwrap();
+        secrets.set("helper:own-1:key", Some("own-not-a-real-key")).unwrap();
+    }
+
+    /// Default 8 of «Дом» и помощники: the settings owner's home comes to the other gateway with its package — the same
+    /// home, the same key — and each gateway stays itself: its own id never travels.
+    #[test]
+    fn the_settings_owners_home_comes_with_its_package_each_side_keeps_its_own_id() {
+        let (pc, pc_secrets, pc_settings) = gateway();
+        at_home(&pc_settings, &pc_secrets, "home-pc", "gateway-pc");
+        let (station, station_secrets, station_settings) = gateway();
+        at_home(&station_settings, &station_secrets, "home-station", "gateway-station");
+
+        let sent = routine(export(&pc, &pc_secrets, "pc").unwrap());
+        assert_eq!((sent.schema, sent.carries), (SCHEMA, SCHEMA));
+        assert_eq!(sent.settings["home_identity"], json!({ "id": "home-pc" }));
+        assert!(!sent.settings.contains_key("gateway_self"), "each gateway's own");
+        import(&station, &station_secrets, &sent, true).unwrap();
+        assert_eq!(station_settings.get(&HOME_IDENTITY, None).unwrap().id, "home-pc");
+        assert_eq!(station_secrets.get(HOME_KEY), pc_secrets.get(HOME_KEY), "one home, one key");
+        assert_eq!(station_settings.get(&GATEWAY_SELF, None).unwrap().id, "gateway-station", "still itself");
+
+        // The same both ways: a move back with the station's settings brings the computer its home, not its id.
+        at_home(&station_settings, &station_secrets, "home-station", "gateway-station");
+        import(&pc, &pc_secrets, &export(&station, &station_secrets, "station").unwrap(), false).unwrap();
+        assert_eq!(pc_settings.get(&HOME_IDENTITY, None).unwrap().id, "home-station");
+        assert_eq!(pc_settings.get(&GATEWAY_SELF, None).unwrap().id, "gateway-pc");
+    }
+
+    /// «Старому шлюзу уходит схема 3 без новых полей»: a package for a gateway of an earlier schema leaves out what
+    /// schema 4 brought, its settings and its secrets, and asks no newer import; the 0.5 cut and an earlier build's whole
+    /// package alike. A gateway of this build gets the package as it is.
+    #[test]
+    fn a_package_cut_for_schema_3_carries_nothing_schema_4_brought() {
+        let (pc, pc_secrets, pc_settings) = gateway();
+        at_home(&pc_settings, &pc_secrets, "home-pc", "gateway-pc");
+        helpers_kept(&pc, &pc_secrets);
+        pc_settings.set(&KEEP_REQUESTS, &7, None).unwrap();
+        pc_secrets.set("llm:claude:key", Some("sk-not-a-real-key")).unwrap();
+        pc.with(|c| {
+            c.execute(
+                "INSERT INTO app_settings (app_id, key, value, updated_at) VALUES (?1, ?2, ?3, 'now')",
+                params!["maps", "egress.route", r#""c1""#],
+            )
+        })
+        .unwrap();
+        let whole = export(&pc, &pc_secrets, "pc").unwrap();
+        let brought = ["home_identity", "helpers", "helper_pins", "away"];
+        assert!(brought.iter().all(|key| whole.settings.contains_key(*key)), "{:?}", whole.settings.keys());
+        let none_new = |bundle: &Bundle| {
+            brought.iter().all(|key| !bundle.settings.contains_key(*key))
+                && bundle.secrets.keys().all(|id| !id.starts_with("home:") && !id.starts_with("helper:"))
+        };
+
+        let cut = for_schema(routine(whole.clone()), BEFORE_HOME_SCHEMA);
+        assert_eq!((cut.schema, cut.carries), (3, 3), "a 0.11 import takes it");
+        assert!(none_new(&cut), "{:?} {:?}", cut.settings.keys(), cut.secrets.keys());
+        assert_eq!(cut.settings["requests_keep_days"], json!(7), "the rest as before");
+        assert_eq!(cut.secrets.keys().collect::<Vec<_>>(), ["llm:claude:key"]);
+        // The apps' own settings came with 0.13.0 at schema 3: a 0.13 import takes them, an earlier passes them by.
+        assert_eq!(cut.tables["app_settings"].len(), 1, "{:?}", cut.tables["app_settings"]);
+        assert_eq!(for_schema(routine(whole.clone()), SCHEMA), routine(whole.clone()), "this build: as it is");
+
+        let five =
+            for_schema(Bundle { schema: KEYS_IN_SETTINGS_SCHEMA, ..keys_in_settings(routine(whole.clone())) }, 2);
+        assert!((five.schema, five.carries) == (2, 2) && none_new(&five));
+        let bare = Bundle { settings: BTreeMap::new(), ..whole.clone() };
+        let earliest = for_schema(for_earlier(whole, &bare), 1);
+        assert!((earliest.schema, earliest.carries) == (WHOLE, 1) && none_new(&earliest));
+        assert_eq!(earliest.settings["requests_keep_days"], json!(7));
+    }
+
+    /// Stage 4's rollback risk (docs/plans/home-and-helpers.md): a linked helper's «Мозг» row stores no address — its
+    /// bridge and token are each start's —, and a 0.11 import reads such a row as an OpenAI provider at OpenAI's own
+    /// address, where a chosen question would go without a key. A package for an earlier import leaves it out, with
+    /// whatever is kept under its id and every pick of it that `pick_again` knows; a helper's row with its address,
+    /// which 0.11 asks as today, stays. What a 0.11 import then does with a pick of a row it did not get (bd1671f4:
+    /// dialog/brain/brain_service.rs `picked`, `slot`, `slot_of`; dialog/dialog_service.rs; memory/reflect.rs): «Мозг»
+    /// answers with its .env's model, a backup or an agent's model it does not find is none and the profile's, and the
+    /// memory's own model waits («Ждёт модель…») — no client is made for a row it has not, so nothing goes to a cloud.
+    #[test]
+    fn a_package_for_an_earlier_import_leaves_out_a_helpers_row_without_an_address_and_its_picks() {
+        let (pc, pc_secrets, _) = gateway();
+        provider(&pc, "claude", "anthropic", "Claude", "https://api.anthropic.com", "2026-11-01T00:00:00Z");
+        pc_secrets.set("llm:claude:key", Some("sk-not-a-real-key")).unwrap();
+        let helper_row = |id: &str, helper: &str, url: Option<&str>| {
+            let options = json!({ "helper": helper, "reach": "mine" }).to_string();
+            pc.with(|c| {
+                c.execute(
+                    "INSERT INTO llm_providers (id, preset, kind, title, base_url, options, created_at, updated_at)
+                     VALUES (?1, 'helper', 'openai', ?2, ?3, ?4, '2026-11-15T00:00:00Z', '2026-11-15T00:00:00Z')",
+                    params![id, format!("Модель: {helper}"), url, options],
+                )
+            })
+            .unwrap();
+        };
+        // A linked helper's row (no address, no key) and a plain one's (its address and key, as 0.11 asks it).
+        helper_row("helper-own-l", "own-l", None);
+        helper_row("helper-own-p", "own-p", Some("https://gpu.example.com/home/v1/llm"));
+        // One that keeps the stand-in for an address, as this build's table has it: left out alike.
+        helper_row("helper-own-s", "own-s", Some(crate::dialog::brain::presets::HELPER_NO_ADDRESS));
+        pc_secrets.set("llm:helper-own-p:key", Some("vgw_not-a-real-key")).unwrap();
+        pc_secrets.set("llm:helper-own-l:key", Some("whatever-stays-under-its-id")).unwrap();
+        let settings = [
+            (
+                "brain",
+                json!({
+                    "fast": { "provider": "claude", "model": "claude-haiku" },
+                    "smart": { "provider": "helper-own-l", "model": "qwen" },
+                    "backup": { "provider": "helper-own-l", "model": "qwen" }
+                }),
+            ),
+            ("workshop.agent", json!({ "provider": "helper-own-l", "model": "qwen" })),
+            ("memory_model", json!({ "mode": "pick", "provider": "helper-own-l", "model": "qwen" })),
+        ];
+        for (key, value) in &settings {
+            pc.with(|c| {
+                c.execute(
+                    "INSERT INTO settings (key, value, is_default, updated_at) VALUES (?1, ?2, 0, 'now')",
+                    params![key, value.to_string()],
+                )
+            })
+            .unwrap();
+        }
+        let whole = export(&pc, &pc_secrets, "pc").unwrap();
+        let ids = |bundle: &Bundle| -> Vec<String> {
+            bundle.tables["llm_providers"].iter().filter_map(|row| row["id"].as_str().map(str::to_string)).collect()
+        };
+        assert_eq!(ids(&whole), ["claude", "helper-own-l", "helper-own-p", "helper-own-s"]);
+
+        let cut = for_schema(routine(whole.clone()), BEFORE_HOME_SCHEMA);
+        assert_eq!(ids(&cut), ["claude", "helper-own-p"], "the row 0.11 would ask at OpenAI's address is left out");
+        assert!(
+            cut.tables["llm_providers"].iter().all(|row| row["base_url"].as_str().is_some_and(|url| !url.is_empty())),
+            "every row it carries has its own address"
+        );
+        assert_eq!(cut.secrets.keys().collect::<Vec<_>>(), ["llm:claude:key", "llm:helper-own-p:key"]);
+        // The smart and the backup picks go: the smart answers with the fast model, and there is no backup.
+        assert_eq!(cut.settings["brain"], json!({ "fast": { "provider": "claude", "model": "claude-haiku" } }));
+        assert!(!cut.settings.contains_key("workshop.agent"), "the agent answers with the smart profile");
+        assert_eq!(
+            cut.settings["memory_model"], settings[2].1,
+            "kept: a 0.11 night waits for a model it does not find"
+        );
+
+        // The 0.5 cut and an earlier build's whole package alike; this build knows the row: the package as it is.
+        let five =
+            for_schema(Bundle { schema: KEYS_IN_SETTINGS_SCHEMA, ..keys_in_settings(routine(whole.clone())) }, 2);
+        assert_eq!(ids(&five), ["claude", "helper-own-p"]);
+        let earliest =
+            for_schema(for_earlier(whole.clone(), &Bundle { settings: BTreeMap::new(), ..whole.clone() }), 1);
+        assert_eq!(ids(&earliest), ["claude", "helper-own-p"]);
+        assert_eq!(for_schema(routine(whole.clone()), SCHEMA), routine(whole));
+    }
+
+    /// A new station whose settings a 0.11 computer keeps: the computer's packages know nothing of the home and the
+    /// helpers (no `carries` in them), and the station keeps its own — or it would make a new home at every start. A
+    /// package of this build without them removes them, as any setting its writer has not — but the station's own door
+    /// to its computer (`OWN_PARTS`) and its key.
+    #[test]
+    fn a_package_from_a_writer_before_the_home_keeps_the_home_and_helpers_here() {
+        let (station, station_secrets, station_settings) = gateway();
+        at_home(&station_settings, &station_secrets, "home-station", "gateway-station");
+        helpers_kept(&station, &station_secrets);
+        let (pc, pc_secrets, pc_settings) = gateway();
+        pc_settings.set(&KEEP_REQUESTS, &7, None).unwrap();
+        let mut earlier = serde_json::to_value(routine(export(&pc, &pc_secrets, "pc").unwrap())).unwrap();
+        earlier.as_object_mut().unwrap().remove("carries");
+        earlier["schema"] = json!(BEFORE_HOME_SCHEMA);
+        let earlier: Bundle = serde_json::from_value(earlier).unwrap();
+        assert_eq!(earlier.carries, 0, "a writer from before schema 4");
+
+        let kept = |settings: &SettingsService, secrets: &SecretsService| {
+            ["home_identity", "helpers", "helper_pins", "away"].map(|key| settings.raw(key).is_some()) == [true; 4]
+                && secrets.get(HOME_KEY).as_deref() == Some("home-station-not-a-real-key")
+                && secrets.has("helper:home-computer:key")
+        };
+        import(&station, &station_secrets, &earlier, true).unwrap();
+        assert!(kept(&station_settings, &station_secrets), "the home and the helpers stay");
+        assert_eq!(station_settings.get(&KEEP_REQUESTS, None), Some(7), "the rest of the computer's settings came");
+        assert_eq!(station_settings.get(&HOME_IDENTITY, None).unwrap().id, "home-station");
+
+        // Such a package holding them all the same (a 0.11 build stores what it does not know): not taken.
+        let mut stale = earlier.clone();
+        stale.settings.insert("home_identity".into(), json!({ "id": "home-stale" }));
+        stale.secrets.insert(HOME_KEY.into(), "stale-not-a-real-key".into());
+        import(&station, &station_secrets, &stale, true).unwrap();
+        assert!(kept(&station_settings, &station_secrets));
+        assert_eq!(station_settings.get(&HOME_IDENTITY, None).unwrap().id, "home-station");
+
+        let now = routine(export(&pc, &pc_secrets, "pc").unwrap());
+        import(&station, &station_secrets, &now, true).unwrap();
+        assert!(["home_identity", "away"].iter().all(|key| station_settings.raw(key).is_none()));
+        let helpers = station_settings.raw("helpers").unwrap();
+        assert_eq!(helpers.as_array().map(|list| list.len()), Some(1));
+        assert_eq!(helpers[0]["id"], "home-computer", "the station's own door stays");
+        assert_eq!(station_settings.raw("helper_pins"), Some(json!({ "home-computer": { "sha256": "aa" } })));
+        assert!(!station_secrets.has(HOME_KEY) && !station_secrets.has("helper:own-1:key"));
+        assert!(station_secrets.has("helper:home-computer:key"), "and its key");
+        assert_eq!(station_settings.get(&GATEWAY_SELF, None).unwrap().id, "gateway-station", "its own never goes");
+    }
+
+    /// The pair's door is each gateway's own (the spec's C4): the computer's package leaves out its `home-computer`
+    /// entry, its pin and its key, and an import keeps the station's own at its place — an incoming one is passed by.
+    #[test]
+    fn the_home_computer_entry_its_pin_and_its_key_stay_on_each_gateway() {
+        let (pc, pc_secrets, _) = gateway();
+        helpers_kept(&pc, &pc_secrets);
+        let sent = routine(export(&pc, &pc_secrets, "pc").unwrap());
+        let ids = |list: &Value| list.as_array().unwrap().iter().map(|item| item["id"].clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&sent.settings["helpers"]), [json!("own-1")]);
+        assert_eq!(sent.settings["helper_pins"], json!({ "own-1": { "public": "helper.example.com" } }));
+        assert_eq!(
+            sent.secrets.keys().filter(|id| id.starts_with("helper:")).collect::<Vec<_>>(),
+            ["helper:own-1:key"]
+        );
+
+        // The station has its own door — second in its list — with its own key and pin.
+        let (station, station_secrets, station_settings) = gateway();
+        let own =
+            json!({ "id": "home-computer", "name": "Компьютер дома", "url": "http://192.0.2.20:7780", "kind": "home" });
+        let theirs = json!({ "id": "cloud-1", "name": "Облако", "url": "https://cloud.example.com", "kind": "cloud" });
+        let stored =
+            [("helpers", json!([theirs, own])), ("helper_pins", json!({ "home-computer": { "sha256": "bb" } }))];
+        for (key, value) in stored {
+            station
+                .with(|c| {
+                    c.execute(
+                        "INSERT INTO settings (key, value, is_default, updated_at) VALUES (?1, ?2, 0, 'now')",
+                        params![key, value.to_string()],
+                    )
+                })
+                .unwrap();
+        }
+        station_secrets.set("helper:home-computer:key", Some("station-door-not-a-real-key")).unwrap();
+        // A package that carries a `home-computer` all the same (a hand-made one): passed by.
+        let mut forged = sent.clone();
+        let mut list = forged.settings["helpers"].as_array().unwrap().clone();
+        list.insert(
+            0,
+            json!({ "id": "home-computer", "name": "Чужой", "url": "http://192.0.2.99:7780", "kind": "home" }),
+        );
+        forged.settings.insert("helpers".into(), Value::Array(list));
+        forged.secrets.insert("helper:home-computer:key".into(), "forged-not-a-real-key".into());
+        import(&station, &station_secrets, &forged, true).unwrap();
+        let helpers = station_settings.raw("helpers").unwrap();
+        assert_eq!(
+            ids(&helpers),
+            [json!("own-1"), json!("home-computer")],
+            "its own at its own place, the rest the package's"
+        );
+        assert_eq!(helpers[1], own, "its own as it was");
+        assert_eq!(
+            station_settings.raw("helper_pins"),
+            Some(json!({ "own-1": { "public": "helper.example.com" }, "home-computer": { "sha256": "bb" } }))
+        );
+        assert_eq!(station_secrets.get("helper:home-computer:key").as_deref(), Some("station-door-not-a-real-key"));
+        assert_eq!(station_secrets.get("helper:own-1:key").as_deref(), Some("own-not-a-real-key"), "the rest travel");
+
+        // A station whose list is only its own door gets nothing else and keeps it; the computer's own door never
+        // reaches it.
+        let (alone, alone_secrets, alone_settings) = gateway();
+        import(&alone, &alone_secrets, &sent, true).unwrap();
+        assert_eq!(ids(&alone_settings.raw("helpers").unwrap()), [json!("own-1")], "none of its own: none at all");
+        assert!(!alone_secrets.has("helper:home-computer:key"));
+    }
+
+    /// A helper's own secrets — its connection key, its certificate, its clients' keys (stage 7) — live under
+    /// `helping:`, no travelling prefix: never in its package, and an import neither takes another's nor removes its
+    /// own. So do what it keeps as a helper among the settings (`helper_clients`, `helper_outside`).
+    #[test]
+    fn the_helpers_own_secrets_never_leave_its_machine() {
+        let (pc, pc_secrets, pc_settings) = gateway();
+        for id in ["helping:link", "helping:tls", "helping:client:x"] {
+            pc_secrets.set(id, Some("pc-own-not-a-real-key")).unwrap();
+        }
+        pc_secrets.set("helper:cloud:key", Some("cloud-not-a-real-key")).unwrap();
+        for (key, value) in [
+            ("helper_clients", json!({ "link:1": {} })),
+            ("helper_outside", json!({ "url": "https://helper.example.com" })),
+        ] {
+            pc.with(|c| {
+                c.execute(
+                    "INSERT INTO settings (key, value, is_default, updated_at) VALUES (?1, ?2, 0, 'now')",
+                    params![key, value.to_string()],
+                )
+            })
+            .unwrap();
+        }
+        let sent = export(&pc, &pc_secrets, "pc").unwrap();
+        assert_eq!(sent.secrets.keys().collect::<Vec<_>>(), ["helper:cloud:key"]);
+        assert!(!sent.settings.contains_key("helper_clients") && !sent.settings.contains_key("helper_outside"));
+
+        let (station, station_secrets, _) = gateway();
+        station_secrets.set("helping:link", Some("station-link-not-a-real-key")).unwrap();
+        let mut forged = sent.clone();
+        forged.secrets.insert("helping:link".into(), "another-link-not-a-real-key".into());
+        forged.secrets.insert("helping:tls".into(), "another-tls-not-a-real-key".into());
+        forged.settings.insert("helper_outside".into(), json!({ "url": "https://elsewhere.example.com" }));
+        import(&station, &station_secrets, &forged, true).unwrap();
+        assert_eq!(station_secrets.get("helping:link").as_deref(), Some("station-link-not-a-real-key"));
+        assert!(!station_secrets.has("helping:tls"), "another's never taken");
+        assert_eq!(station_secrets.get("helper:cloud:key").as_deref(), Some("cloud-not-a-real-key"), "the rest travel");
+        import(&station, &station_secrets, &routine(export(&pc, &pc_secrets, "pc").unwrap()), true).unwrap();
+        assert!(station_secrets.has("helping:link"), "not removed by a package without it");
+        import(&pc, &pc_secrets, &routine(export(&station, &station_secrets, "station").unwrap()), false).unwrap();
+        assert_eq!(
+            pc_settings.raw("helper_outside"),
+            Some(json!({ "url": "https://helper.example.com" })),
+            "its own stays"
+        );
+        assert!(pc_settings.raw("helper_clients").is_some() && pc_secrets.has("helping:client:x"));
+    }
+
+    /// Review, round one: a station put back on 0.11 by the safety net, its database kept, does not know its own id and
+    /// name as its own, and its import removes each setting a package lacks. A package for it carries them as its own
+    /// package says them — never the sender's — and leaves them out when it has none; a gateway of this build keeps its
+    /// own itself, and the whole package for the earliest builds carries them already.
+    #[test]
+    fn a_package_for_an_earlier_import_carries_the_receivers_own_id_as_its_package_says_it() {
+        let (pc, pc_secrets, pc_settings) = gateway();
+        at_home(&pc_settings, &pc_secrets, "home-pc", "gateway-pc");
+        pc_settings.set(&KEEP_REQUESTS, &7, None).unwrap();
+        let whole = export(&pc, &pc_secrets, "pc").unwrap();
+        let sent = for_schema(routine(whole.clone()), BEFORE_HOME_SCHEMA);
+        assert!(!sent.settings.contains_key("gateway_self"), "the computer's own never goes");
+
+        // A 0.11 station's own package carries its id as an ordinary setting; so does its database.
+        let own = json!({ "id": "gateway-station", "name": "Кухня" });
+        let theirs = Bundle { settings: BTreeMap::from([("gateway_self".to_string(), own.clone())]), ..whole.clone() };
+        let stored = BTreeMap::from([("gateway_self".to_string(), own.clone())]);
+        // What a 0.11 import does with the settings: what it knows as its own stays, the rest is the package's.
+        let before_home = |bundle: &Bundle| {
+            let known = |key: &str| {
+                (LOCAL_SETTINGS.contains(&key) && !LOCAL_SINCE.iter().any(|(_, keys)| keys.contains(&key)))
+                    || MOVE_ONLY.contains(&key)
+            };
+            let mut after: BTreeMap<String, Value> = stored
+                .iter()
+                .filter(|(key, _)| known(key) || bundle.settings.contains_key(*key))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            after.extend(bundle.settings.iter().filter(|(key, _)| !known(key)).map(|(k, v)| (k.clone(), v.clone())));
+            after
+        };
+        assert!(!before_home(&sent).contains_key("gateway_self"), "what a station put back on 0.11 lost");
+
+        let kept = their_own(sent.clone(), &theirs, BEFORE_HOME_SCHEMA);
+        let after = before_home(&kept);
+        assert_eq!((&after["gateway_self"], &after["requests_keep_days"]), (&own, &json!(7)));
+        let mut rest = kept.clone();
+        rest.settings.remove("gateway_self");
+        assert_eq!(rest, sent, "nothing else of the package changes");
+        let bare = Bundle { settings: BTreeMap::new(), ..whole.clone() };
+        let none = their_own(kept, &bare, KEYS_IN_SETTINGS_SCHEMA);
+        assert!(!none.settings.contains_key("gateway_self"), "none of its own: none at all");
+        assert!(!knows_own(BEFORE_HOME_SCHEMA) && knows_own(SCHEMA));
+        assert_eq!(their_own(routine(whole.clone()), &theirs, SCHEMA), routine(whole.clone()), "this build: as it is");
+        assert_eq!(
+            for_earlier(whole, &theirs).settings["gateway_self"],
+            own,
+            "the earliest builds' package carries it"
+        );
+        assert!(LOCAL_SINCE.iter().flat_map(|(_, keys)| keys.iter()).all(|key| LOCAL_SETTINGS.contains(key)));
     }
 
     #[test]
@@ -1606,6 +2268,78 @@ mod tests {
         import(&other, &other_secrets, &theirs, true).unwrap();
         assert_eq!(other_secrets.get("llm:custom-openai:key").as_deref(), Some("the-pair-home-key"));
         let _ = station_settings;
+    }
+
+    /// docs/plans/home-and-helpers.md, stage 4: a station's «Мозг» has a row for each helper's model. The computer
+    /// leaves out only the station's model of the computer itself — its door's, or an entry that names the computer —
+    /// and every pick of it, the backup's too, goes to the computer's own model; the other helpers' rows come with
+    /// their helpers, picks and keys and all.
+    #[test]
+    fn the_computer_leaves_out_only_its_own_model_and_keeps_the_other_helpers_rows() {
+        let (station, station_secrets, _) = gateway();
+        provider(&station, "ollama", "openai", "Ollama", "http://127.0.0.1:11434/v1", "2026-11-01T00:00:00Z");
+        let helper_row = |id: &str, helper: &str, reach: &str, url: &str| {
+            let options = json!({ "helper": helper, "reach": reach }).to_string();
+            station
+                .with(|c| {
+                    c.execute(
+                        "INSERT INTO llm_providers (id, preset, kind, title, base_url, options, created_at, updated_at)
+                         VALUES (?1, 'helper', 'openai', ?2, ?3, ?4, '2026-11-15T00:00:00Z', '2026-11-15T00:00:00Z')",
+                        params![id, format!("Модель: {helper}"), url, options],
+                    )
+                })
+                .unwrap();
+            station_secrets.set(&format!("llm:{id}:key"), Some(&format!("{helper}-not-a-real-key"))).unwrap();
+        };
+        helper_row("helper-home-computer", "home-computer", "home", "http://192.0.2.20:7780/home/v1/llm");
+        helper_row("helper-own-gpu", "own-gpu", "mine", "https://gpu.example.com/home/v1/llm");
+        helper_row("helper-home-b", "home-b", "home", "http://192.0.2.21:7780/home/v1/llm");
+        let helpers = json!([
+            { "id": "own-gpu", "name": "GPU", "url": "https://gpu.example.com", "kind": "own", "helperId": "gpu-1" },
+            { "id": "home-b", "name": "Кабинет", "url": "http://192.0.2.21:7780", "kind": "home", "helperId": "pc-1" }
+        ]);
+        let brain = json!({
+            "fast": { "provider": "helper-own-gpu", "model": "qwen" },
+            "smart": { "provider": "helper-home-computer", "model": "qwen" },
+            "backup": { "provider": "helper-home-b", "model": "small" }
+        });
+        station
+            .with(|c| {
+                c.execute(
+                    "INSERT INTO settings (key, value, is_default, updated_at) VALUES ('helpers', ?1, 0, 'now'),
+                     ('brain', ?2, 0, 'now')",
+                    params![helpers.to_string(), brain.to_string()],
+                )
+            })
+            .unwrap();
+        let theirs = export(&station, &station_secrets, "station").unwrap();
+
+        let (pc, pc_secrets, pc_settings) = gateway();
+        at_home(&pc_settings, &pc_secrets, "home-1", "pc-1");
+        let imported = import(&pc, &pc_secrets, &theirs, false).unwrap();
+        assert_eq!((imported.rows["llm_providers"], imported.skipped), (2, 2), "the door's row and the one naming it");
+        let ids: Vec<String> = pc
+            .with(|c| c.prepare("SELECT id FROM llm_providers ORDER BY id")?.query_map([], |row| row.get(0))?.collect())
+            .unwrap();
+        assert_eq!(ids, ["helper-own-gpu", "ollama"]);
+        assert_eq!(pc_secrets.get("llm:helper-own-gpu:key").as_deref(), Some("own-gpu-not-a-real-key"));
+        assert_eq!(
+            (pc_secrets.get("llm:helper-home-computer:key"), pc_secrets.get("llm:helper-home-b:key")),
+            (None, None)
+        );
+        assert_eq!(
+            pc_settings.raw("brain"),
+            Some(json!({
+                "fast": { "provider": "helper-own-gpu", "model": "qwen" },
+                "smart": { "provider": "ollama", "model": "qwen" },
+                "backup": { "provider": "ollama", "model": "small" }
+            }))
+        );
+
+        // A computer that does not know its own id leaves out the door's row only.
+        let (other, other_secrets, _) = gateway();
+        let imported = import(&other, &other_secrets, &theirs, false).unwrap();
+        assert_eq!((imported.rows["llm_providers"], imported.skipped), (3, 1));
     }
 
     /// Live, 10.11: the copy before a package was 4 KB — under WAL the main file alone holds little of the database.

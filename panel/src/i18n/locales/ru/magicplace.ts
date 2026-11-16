@@ -3,6 +3,7 @@
 import { plural } from '../../format';
 
 export default {
+    downloadTitle: 'Что скачается',
     title: 'MagicPlace',
     searchLabel: 'Поиск в MagicPlace',
     searchPlaceholder: 'Найти приложение, персонажа, тему',
@@ -19,6 +20,14 @@ export default {
     kindCharacters: 'Персонажи',
     kindApps: 'Приложения',
     kindThemes: 'Темы',
+    kindAgents: 'Агенты',
+    // Карточка агента (docs/plans/router-and-works.md, 7б)
+    agentCardOnly: 'Установка ставит только карточку: программу агента вы ставите сами, DuoWave её не скачивает и не запускает.',
+    agentInstall: (name: string) => `Поставьте программу ${name} командой в терминале:`,
+    agentSignin: (title: string) => `Войдите в ${title} в терминале — вход остаётся в самой программе.`,
+    agentNoQuestions: 'В этом режиме агент делает всё без вопросов: разрешённые команды рабочей папки он не спрашивает и может, например, отправить ветку.',
+    agentViaDuowave: 'Модель агента ходит через DuoWave: расход считается точно.',
+    agentTerms: (title: string) => `Условия ${title}`,
     kindGroup: 'Что показать',
     faceLabel: 'Лицо',
     faceAny: 'Любое лицо',

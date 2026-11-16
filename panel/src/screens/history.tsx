@@ -4,6 +4,7 @@
 // вместе, отменить возврат. Ничего не стирается: возврат — тоже запись, его можно отменить. Вид — простой; новый
 // вид мастерской придёт из сессии нового визуала.
 
+import { SkeletonRows } from '../ui/sheet';
 import { useEffect, useState } from 'preact/hooks';
 
 import { HistoryComparison, HistoryFeed, HistoryPlace, HistoryRecord, HistoryRoom, MergeState, RestorePlan, RestoreWhat, api, problemOf } from '../api';
@@ -345,7 +346,8 @@ export function HistoryCard({ id, mode, onChanged }: { id: string; mode: Mode; o
         setOpen((now) => (now?.id === record.id && now.panel === which ? null : { id: record.id, panel: which }));
     const installed = feed?.marks.installed;
     if (error) return <p class="t-caption m-0 c-dot-offline">{error}</p>;
-    if (!feed) return null;
+    // Пока лента читается — место под неё занято: окно не прыгает, когда она приходит.
+    if (!feed) return <SkeletonRows rows={3} />;
     return (
         <section class="card glass card-list" aria-labelledby={`history-${mode}-h`}>
             <div class="card-head">

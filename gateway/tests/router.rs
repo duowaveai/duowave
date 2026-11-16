@@ -273,6 +273,7 @@ async fn a_model_at_home_costs_nothing_and_a_plans_sign_in_is_priced_as_its_key(
         rounds: 1,
         ms: 900,
         outcome: Outcome::Ok,
+        bill: None,
     };
     let plan = gateway.app.router.close(&spent, Links::default()).expect("written");
     let by_key = gateway.app.router.pool.price("openai", Some("openai"), "gpt-5").expect("the snapshot prices it");

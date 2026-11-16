@@ -27,6 +27,10 @@ const en: Translation<typeof ru> = {
 
     envLabel: (title: string, model: string) => `from .env: ${title} · ${model}`,
     optNotNeeded: 'not needed',
+    optGatewayChooses: 'let the gateway choose',
+    optGatewayChose: (model: string) => `let the gateway choose · ${model}`,
+    backupGatewayIdle:
+        'No backup now: the gateway sets one by itself only while the main model is a Turbo’s (Ollama on this computer, say). Want one now — choose a model.',
     optLikeFast: 'same as fast',
     optNotChosen: 'not chosen',
 
@@ -41,6 +45,8 @@ const en: Translation<typeof ru> = {
     smartSub: 'stories, games and hard questions',
     backup: 'Backup',
     backupSub: 'if the chosen one does not answer',
+    backupMoved: 'If the Turbo sleeps — in Home',
+    backupNow: (title: string, model: string) => `backup: ${title} · ${model}`,
     backupExplain: (title: string, cloud: boolean) =>
         `The backup answers when the chosen model did not: the subscription limit ran out, there is no connection or the service refused. The question then goes to “${title}” — ${cloud ? 'over the internet' : 'at home, offline'}.`,
     depth: 'Thinking depth',
@@ -67,6 +73,7 @@ const en: Translation<typeof ru> = {
     pillCloud: 'cloud',
     pillHome: 'at home',
     pillAnswers: 'answering',
+    pillChosen: 'chosen',
     pillBackup: 'backup',
     check: 'check',
     signInAgain: 'sign in again',

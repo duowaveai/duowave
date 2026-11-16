@@ -216,7 +216,7 @@ pub const PERSONA: SettingDefinition<Persona> = SettingDefinition {
 pub const PACKAGE_HISTORY: SettingDefinition<Value> = SettingDefinition {
     key: "package_history",
     scope: SettingScope::Global,
-    description: "История приложений: где хранить и сколько места",
+    description: "История приложений: где хранить и сколько памяти",
     sensitive: false,
     parse: |value| value.is_object().then(|| value.clone()),
 };
@@ -643,6 +643,19 @@ pub struct Brain {
     pub effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup: Option<BrainPick>,
+    /// How the backup came (docs/plans/home-and-helpers.md, default 6): unset — a person chose it, or, with no backup,
+    /// «пусть выберет шлюз» (decision 18). A gateway without the block never writes it: its «не нужна» is not kept.
+    #[serde(default, rename = "backupBy", skip_serializing_if = "Option::is_none")]
+    pub backup_by: Option<BackupBy>,
+}
+
+/// The gateway set the backup by itself, or a person said «не нужна» — then the gateway sets none again until
+/// `backup: "auto"` («пусть выберет шлюз») hands the choice back to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BackupBy {
+    Gateway,
+    Declined,
 }
 
 /// The workshop agent's own model (src/plugins/workshop/agent.rs): a provider of the panel and its model; unset — the
@@ -689,6 +702,7 @@ pub const BRAIN: SettingDefinition<Brain> = SettingDefinition {
             smart: pick("smart"),
             effort: object.get("effort").and_then(|effort| as_one_of(effort, crate::config::LLM_EFFORTS)),
             backup: pick("backup"),
+            backup_by: object.get("backupBy").and_then(|by| serde_json::from_value(by.clone()).ok()),
         })
     },
 };
@@ -1038,7 +1052,46 @@ pub const STATION_SELF: SettingDefinition<StationSelf> = SettingDefinition {
     parse: as_serde,
 };
 
-/// The station's home server (src/home_server): the computer's address. Its key is a secret, kept apart.
+/// The home this gateway belongs to (docs/plans/home-and-helpers.md, «Дом»): every gateway of a family is in one and
+/// shares its key (the secret `home:key`, src/core/identity/home.rs). It travels with the settings package from schema 4
+/// on (src/placement/transfer.rs, `SINCE`), so a station whose settings the computer keeps joins the computer's home with
+/// the first package (the plan's default 8).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HomeIdentity {
+    pub id: String,
+    /// What the household calls it; none — «Дом». Not shown in block 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+pub const HOME_IDENTITY: SettingDefinition<HomeIdentity> = SettingDefinition {
+    key: "home_identity",
+    scope: SettingScope::Global,
+    description: "Дом этого шлюза",
+    sensitive: false,
+    parse: |value| serde_json::from_value::<HomeIdentity>(value.clone()).ok().filter(|home| !home.id.trim().is_empty()),
+};
+
+/// This gateway itself: an id of its own and the name a person gave it (src/core/identity/home.rs). Each gateway's own,
+/// never in the settings package (`transfer::LOCAL_SETTINGS`): the station and the computer of one home keep their ids.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GatewaySelf {
+    pub id: String,
+    /// A person's name for it; none — the default (`Identity::default_name`), worked out when read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+pub const GATEWAY_SELF: SettingDefinition<GatewaySelf> = SettingDefinition {
+    key: "gateway_self",
+    scope: SettingScope::Global,
+    description: "Этот шлюз: его номер и имя",
+    sensitive: false,
+    parse: |value| serde_json::from_value::<GatewaySelf>(value.clone()).ok().filter(|me| !me.id.trim().is_empty()),
+};
+
+/// The station's home server (src/home_server): the computer's address. Its key is a secret, kept apart. Read one more
+/// version: the helpers' entry `home-computer` took its place, and the two are kept in step (src/helpers/legacy.rs).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HomeServerSetting {
@@ -1062,6 +1115,124 @@ pub const CONNECTOR_HOME_SERVER: SettingDefinition<HomeServerSetting> = SettingD
     key: "connector_home_server",
     scope: SettingScope::Global,
     description: "Домашний сервер колонки",
+    sensitive: false,
+    parse: as_serde,
+};
+
+/// The helpers in the household's order (src/helpers, docs/plans/home-and-helpers.md): the computer at home, one's own
+/// server, the DuoWave cloud. Shared by the home's gateways: it travels with the settings package from schema 4 on,
+/// but for each gateway's own entry `home-computer` (src/placement/transfer.rs, `OWN_PARTS`). Their keys are secrets,
+/// `helper:<id>:key`.
+pub const HELPERS: SettingDefinition<Vec<crate::helpers::HelperSetting>> = SettingDefinition {
+    key: "helpers",
+    scope: SettingScope::Global,
+    description: "Турбо",
+    sensitive: false,
+    parse: crate::helpers::parse_helpers,
+};
+
+/// «Что может уходить из дома» (src/helpers): «Только дома», «Дом и моё облако», «Любые облака» (the default). Travels
+/// with the settings package.
+pub const AWAY: SettingDefinition<crate::helpers::Away> = SettingDefinition {
+    key: "away",
+    scope: SettingScope::Global,
+    description: "Что может уходить из дома",
+    sensitive: false,
+    parse: as_serde,
+};
+
+/// The certificate a linked helper showed at its first meeting (src/helpers/link.rs): its DER's SHA-256, or — a helper
+/// behind a proxy with a real domain — the DNS name its public certificate is checked for. A helper whose
+/// certificate later differs is refused before anything is sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HelperPin {
+    /// The certificate's SHA-256, 64 hex characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// The DNS name of a publicly valid certificate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public: Option<String>,
+    pub since: String,
+}
+
+/// The pins of the linked helpers, by entry id. They travel with the list (schema 4), but for the pair's door
+/// `home-computer` (src/placement/transfer.rs, `OWN_PARTS`).
+pub const HELPER_PINS: SettingDefinition<BTreeMap<String, HelperPin>> = SettingDefinition {
+    key: "helper_pins",
+    scope: SettingScope::Global,
+    description: "Сертификаты Турбо",
+    sensitive: false,
+    parse: |value| {
+        let pins: BTreeMap<String, Value> = serde_json::from_value(value.clone()).ok()?;
+        Some(
+            pins.into_iter()
+                .filter_map(|(id, pin)| Some((id, serde_json::from_value::<HelperPin>(pin).ok()?)))
+                .filter(|(_, pin)| pin.sha256.is_some() || pin.public.is_some())
+                .collect(),
+        )
+    },
+};
+
+/// A gateway of a home this computer helps, as it named itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeenGateway {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen: Option<String>,
+}
+
+/// A home this computer helps over the link (src/helpers/clients.rs): who it said it is, whether its home key proved
+/// it is this computer's own home, its gateways (at most 16), what it is given. Its link key lives apart, hashed
+/// (`helping:client:<id>`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HelperClient {
+    pub home: crate::helpers::contract::HelperIdentity,
+    #[serde(default)]
+    pub own_home: bool,
+    #[serde(default)]
+    pub gateways: BTreeMap<String, SeenGateway>,
+    #[serde(default, deserialize_with = "crate::helpers::abilities_lenient")]
+    pub gives: Vec<crate::helpers::contract::Ability>,
+    pub since: String,
+    #[serde(default)]
+    pub confirmed: bool,
+    /// What its pairing bound (`Binding::stored`): its later links prove over it. None for a home paired before it was
+    /// kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<String>,
+}
+
+/// Who this computer helps over the link, by client id (`link:<12 hex>`). Each computer's own
+/// (`transfer::LOCAL_SETTINGS`).
+pub const HELPER_CLIENTS: SettingDefinition<BTreeMap<String, HelperClient>> = SettingDefinition {
+    key: "helper_clients",
+    scope: SettingScope::Global,
+    description: "Кому помогает этот компьютер",
+    sensitive: false,
+    parse: |value| {
+        let clients: BTreeMap<String, Value> = serde_json::from_value(value.clone()).ok()?;
+        Some(
+            clients
+                .into_iter()
+                .filter_map(|(id, client)| Some((id, serde_json::from_value::<HelperClient>(client).ok()?)))
+                .collect(),
+        )
+    },
+};
+
+/// «Адрес снаружи»: the address other homes reach this computer's link at — a domain of the owner's proxy, or a
+/// forwarded port. Each computer's own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HelperOutside {
+    pub url: String,
+}
+
+pub const HELPER_OUTSIDE: SettingDefinition<HelperOutside> = SettingDefinition {
+    key: "helper_outside",
+    scope: SettingScope::Global,
+    description: "Адрес снаружи",
     sensitive: false,
     parse: as_serde,
 };
@@ -1106,6 +1277,84 @@ pub const BUS_DANGERS: SettingDefinition<Vec<crate::bus::danger::DangerWord>> = 
     },
 };
 
+/// A work folder (docs/plans/router-and-works.md, block A, 6; src/works): a folder on this computer the owner added in
+/// the panel for the helper to work in. `kind` — how it is kept: only `git` in the first version (decision 9).
+/// `agent` and `model` — its agent and the model for it; empty — the seat «Исполнитель» (Claude Code and its own
+/// choice). `maxUsd` — the ceiling of one run. `prepare` — commands for a fresh work copy; `checks` — the folder's own
+/// checks after a run; `allow` — what the agent may run without a question, as Claude Code writes its rules
+/// (`Bash(npm test *)`; `git push` too only when listed, decision 21).
+#[cfg(feature = "pc")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkFolder {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    #[serde(default = "git_kind")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_usd: Option<f64>,
+    #[serde(default)]
+    pub prepare: Vec<String>,
+    #[serde(default)]
+    pub checks: Vec<String>,
+    #[serde(default)]
+    pub allow: Vec<String>,
+}
+
+#[cfg(feature = "pc")]
+fn git_kind() -> String {
+    "git".into()
+}
+
+/// The work folders: each computer's own — its paths stay here (placement/transfer.rs, `LOCAL_SETTINGS`).
+#[cfg(feature = "pc")]
+pub const WORK_FOLDERS: SettingDefinition<Vec<WorkFolder>> = SettingDefinition {
+    key: "work_folders",
+    scope: SettingScope::Global,
+    description: "Рабочие папки",
+    sensitive: false,
+    parse: |value| {
+        let list = value.as_array()?;
+        Some(list.iter().filter_map(|item| serde_json::from_value(item.clone()).ok()).collect())
+    },
+};
+
+/// Where Claude Code's program is, when not on the search path (src/works/harness/claude_code.rs). Local.
+#[cfg(feature = "pc")]
+pub const HARNESS_CLAUDE_PATH: SettingDefinition<String> = SettingDefinition {
+    key: "harness_claude_path",
+    scope: SettingScope::Global,
+    description: "Где программа Claude Code",
+    sensitive: false,
+    parse: as_string,
+};
+
+/// How Claude Code pays for a run: `terminal` — its own sign-in, `key` — the gateway's key. Not set — «как в
+/// терминале», and the panel asks to choose while it is not signed in. Local.
+#[cfg(feature = "pc")]
+pub const HARNESS_CLAUDE_AUTH: SettingDefinition<String> = SettingDefinition {
+    key: "harness_claude_auth",
+    scope: SettingScope::Global,
+    description: "Как платит Claude Code",
+    sensitive: false,
+    parse: |value| as_one_of(value, &["terminal", "key"]),
+};
+
+/// Where the programs of the agents' cards are, by the card's id, when not on the search path (stage 3б). Local.
+#[cfg(feature = "pc")]
+pub const HARNESS_PATHS: SettingDefinition<BTreeMap<String, String>> = SettingDefinition {
+    key: "harness_paths",
+    scope: SettingScope::Global,
+    description: "Где программы агентов",
+    sensitive: false,
+    parse: as_string_record,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1132,6 +1381,19 @@ mod tests {
             json!({"feeds": [{"url": "https://tass.ru/rss/v2.xml", "topic": "main", "enabled": true}]})
         );
         assert_eq!((CONNECTOR_HOME_ASSISTANT.parse)(&json!("not an object")), None);
+    }
+
+    /// The home and the gateway are known by their ids: a record without one is none, and a name is optional.
+    #[test]
+    fn the_home_and_this_gateway_are_read_only_with_an_id() {
+        let home = (HOME_IDENTITY.parse)(&json!({"id": "h1"})).unwrap();
+        assert_eq!(home, HomeIdentity { id: "h1".into(), name: None });
+        assert_eq!(serde_json::to_value(&home).unwrap(), json!({"id": "h1"}), "no name stored while nobody gave one");
+        assert_eq!((HOME_IDENTITY.parse)(&json!({"id": " "})), None);
+        assert_eq!((HOME_IDENTITY.parse)(&json!({"name": "Дом"})), None);
+        let me = (GATEWAY_SELF.parse)(&json!({"id": "g1", "name": "Кухня"})).unwrap();
+        assert_eq!(me, GatewaySelf { id: "g1".into(), name: Some("Кухня".into()) });
+        assert_eq!((GATEWAY_SELF.parse)(&json!("g1")), None);
     }
 
     #[test]

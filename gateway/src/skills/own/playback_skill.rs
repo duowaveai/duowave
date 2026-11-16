@@ -42,6 +42,8 @@ pub trait PlayerControl: Send + Sync {
     fn stopping(&self, device_tag: &str);
     /// «Мне нравится», «не нравится» for what it plays now.
     fn rate(&self, liked: bool, context: &ExecutionContext) -> Option<Outcome>;
+    /// «Что играет» of what it plays: the title and who, in words.
+    fn describe(&self, device_tag: &str) -> Option<String>;
 }
 
 #[derive(Default)]
@@ -94,6 +96,10 @@ impl PlaybackSkill {
             let outcome = ours.and_then(|player| player.rate(intent.action == "like", context));
             return Ok(outcome.unwrap_or_else(|| Outcome::speech("Отметить могу только нашу музыку.")));
         }
+        if intent.action == "what" {
+            let said = ours.and_then(|player| player.describe(device));
+            return Ok(Outcome::speech(said.unwrap_or_else(|| "Не знаю, что сейчас играет.".into())));
+        }
         if let (Some(action), Some(player)) = (PlayerAction::parse(&intent.action), &ours) {
             if let Some(outcome) = player.control(action, context) {
                 return Ok(outcome);
@@ -128,7 +134,7 @@ impl OwnSkill for PlaybackSkill {
         if js::truthy(intent.params.get("external")) {
             return false;
         }
-        if intent.action == "like" || intent.action == "dislike" {
+        if ["like", "dislike", "what"].contains(&intent.action.as_str()) {
             return js::is_true(&intent.params, "ours");
         }
         matches!(intent.action.as_str(), "stop" | "pause" | "silence")

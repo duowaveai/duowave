@@ -1554,6 +1554,32 @@ async fn answers_early_with_the_jingle_when_our_skill_is_slow_to_speak_the_weath
     station.close();
 }
 
+/// docs/plans/home-and-helpers.md, stage 4, the owner's answer of 15.11: in «Вместе» a question no model may answer goes
+/// to Alice instead of the words. Here «Мозг»'s model is a cloud the regulator «Только дома» keeps in, and nothing
+/// stands behind it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_together_a_chat_question_goes_to_yandex_while_no_model_may_be_asked() {
+    let env = env().await;
+    let cloud = json!({"preset": "custom-openai", "title": "Облако", "baseUrl": "https://llm.example.invalid/v1"});
+    let cloud = env.post("/api/v1/brain/providers", cloud, StatusCode::CREATED).await;
+    let (name, value) = bearer(&env.token);
+    let choice = json!({"fast": {"provider": cloud["id"], "model": "cloud-model"}});
+    message(env.gateway.put("/api/v1/brain/choice").header(name.clone(), value.clone()).json(&choice), StatusCode::OK)
+        .await;
+    let away = env.gateway.put("/api/v1/helpers/away").header(name, value).json(&json!({"away": "home"}));
+    message(away, StatusCode::OK).await;
+    let (station, _) = env.connected_station("sync-model-away").await;
+    station.text_input("text-away", "req-away", json!({ "type": "text_input", "text": "Как дела у тебя?" }));
+    until(8000, "Yandex got the question", || {
+        env.yandex.text_inputs().iter().any(|input| input.text.as_deref() == Some("Как дела у тебя?"))
+    })
+    .await;
+    // The cause: only the router's «model away» gives a chat question to Yandex here; «Мозг» would have said W4.
+    let route = env.route("Как дела у тебя?").await;
+    assert_eq!((route["executor"].as_str(), route["source"].as_str()), (Some("yandex"), Some("model away")), "{route}");
+    station.close();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn asks_yandex_what_the_model_asked_for_not_what_the_user_said() {
     let env = env().await;

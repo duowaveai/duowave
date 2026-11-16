@@ -23,6 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::{DialogProvider, ModelProfile};
 use crate::core::events::{EventBus, GatewayEvent};
+use crate::dialog::brain::presets::HELPER_PRESET;
 use crate::dialog::llm::brain::ModelSlot;
 use crate::dialog::llm::LlmUsage;
 use crate::storage::Db;
@@ -35,7 +36,8 @@ pub use pool::{Pool, Price};
 const CLEAN_EVERY: Duration = Duration::from_secs(24 * 3600);
 
 /// The seat a model answers on: the conversation's two (by the rule of the phrase), «Запасная» once it took over, the
-/// workshop's agent, the memory's night, an app. The seats of the works in folders come with their stage.
+/// workshop's agent, the memory's night, an app, the agent of a work in a folder («Исполнитель», stage 3). The
+/// planner's and the validator's come with the work by parts (set aside, decision 18).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Seat {
@@ -45,10 +47,12 @@ pub enum Seat {
     Workshop,
     Memory,
     App,
+    Worker,
 }
 
 impl Seat {
-    pub const ALL: [Seat; 6] = [Seat::Fast, Seat::Smart, Seat::Backup, Seat::Workshop, Seat::Memory, Seat::App];
+    pub const ALL: [Seat; 7] =
+        [Seat::Fast, Seat::Smart, Seat::Backup, Seat::Workshop, Seat::Memory, Seat::App, Seat::Worker];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -58,6 +62,7 @@ impl Seat {
             Seat::Workshop => "workshop",
             Seat::Memory => "memory",
             Seat::App => "app",
+            Seat::Worker => "worker",
         }
     }
 
@@ -97,12 +102,14 @@ impl Reason {
     }
 }
 
-/// How a deal is paid: by a key; by a plan's sign-in (ChatGPT's: the dollars are what a key would have cost); at home.
+/// How a deal is paid: by a key; by a plan's sign-in (ChatGPT's, Claude Code's: the dollars are what a key would have
+/// cost); at home; by an agent's own account (an agent of a card, stage 3б — how it pays is its business).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Billing {
     Key,
     Plan,
     Local,
+    Agent,
 }
 
 impl Billing {
@@ -111,12 +118,23 @@ impl Billing {
             Billing::Key => "key",
             Billing::Plan => "plan",
             Billing::Local => "local",
+            Billing::Agent => "agent",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Billing> {
+        match text {
+            "key" => Some(Billing::Key),
+            "plan" => Some(Billing::Plan),
+            "local" => Some(Billing::Local),
+            "agent" => Some(Billing::Agent),
+            _ => None,
         }
     }
 }
 
-/// Where the model is: at home, in one's own cloud (the regulator's class of «Дом и помощники», stage 3 — until then
-/// every model away from home is `cloud`), in someone else's cloud.
+/// Where the model is: at home, in one's own cloud (the regulator's class of «Дом и помощники», stage 3: a helper's
+/// model away from home — the hidden preset `helper` of «Мозг»), in someone else's cloud.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Place {
     Home,
@@ -135,7 +153,8 @@ impl Place {
 }
 
 /// How an answer ended: whole; failed; on a plan's or a service's limit; cut by its rounds or time (the last round
-/// asked for words); stopped (cancelled, or dropped in the middle of a round). `budget` comes with the budgets.
+/// asked for words); stopped (cancelled, or dropped in the middle of a round); on a run's ceiling of dollars (an
+/// agent's `--max-budget-usd`; the budgets of stage 2 later).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Ok,
@@ -143,6 +162,7 @@ pub enum Outcome {
     Limit,
     Cut,
     Stopped,
+    Budget,
 }
 
 impl Outcome {
@@ -153,6 +173,18 @@ impl Outcome {
             Outcome::Limit => "limit",
             Outcome::Cut => "cut",
             Outcome::Stopped => "stopped",
+            Outcome::Budget => "budget",
+        }
+    }
+
+    pub fn parse(text: &str) -> Outcome {
+        match text {
+            "ok" => Outcome::Ok,
+            "limit" => Outcome::Limit,
+            "cut" => Outcome::Cut,
+            "stopped" => Outcome::Stopped,
+            "budget" => Outcome::Budget,
+            _ => Outcome::Failed,
         }
     }
 
@@ -237,13 +269,27 @@ impl Answerer {
 /// One answer's spending, its rounds summed: what the dialog closes into a deal. No text of the phrase or the answer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Spent {
-    /// The conversation it was in — a device's, `panel:<id>`, `workshop:make:<draft>`; empty — none.
+    /// The conversation it was in — a device's, `panel:<id>`, `workshop:make:<draft>`, `work:<executor>:<target>`;
+    /// empty — none.
     pub key: String,
     pub by: Answerer,
     pub tokens: Tokens,
     pub rounds: u32,
     pub ms: u64,
     pub outcome: Outcome,
+    /// A run of an agent (a work in a folder): how it went and paid, and the dollars it said itself — the gateway
+    /// does not count them by its prices. None — the gateway called the model itself.
+    pub bill: Option<Bill>,
+}
+
+/// What an agent's run says of its own paying: the way of the call (`harness:claude-code`, `agent:<card>`), how it
+/// paid, its own estimate of the dollars and whose estimate it is; none — the price is unknown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bill {
+    pub via: String,
+    pub billing: Billing,
+    pub usd_micro: Option<u64>,
+    pub from: pool::PriceSource,
 }
 
 /// What the model spent, as the dialog's sink hears it: each round as it ends, with the provider and the seat; and
@@ -287,8 +333,11 @@ struct Part {
 }
 
 impl Tally {
-    /// An answer of `asked` (its seat and reason) in the conversation `key`; without a sink it counts for nobody.
+    /// An answer of `asked` (its seat and reason) in the conversation `key`; without a sink it counts for nobody. Nor
+    /// do the words said in a model's place when none may be asked (dialog/llm/unreachable.rs, kind `none`): no model
+    /// answered, so there is no deal.
     pub fn new(sink: Option<UsageSink>, key: &str, asked: Answerer) -> Arc<Tally> {
+        let sink = sink.filter(|_| asked.kind != DialogProvider::None);
         Arc::new(Tally {
             sink,
             key: key.to_string(),
@@ -378,6 +427,7 @@ impl Tally {
             rounds,
             ms,
             outcome: ended,
+            bill: None,
         };
         if state.parts.is_empty() {
             return vec![spent(&self.asked, Tokens::default(), 0)];
@@ -482,10 +532,37 @@ impl Router {
     /// The deal of an answer, not written yet: where its model is, how it is paid, the price and the dollars.
     pub fn price(&self, spent: &Spent, links: Links, at: u64) -> Deal {
         let by = &spent.by;
+        if let Some(bill) = &spent.bill {
+            // An agent's run: its own dollars, its way and its paying; away from home.
+            let price = bill.usd_micro.map(|_| Price::estimate(bill.from));
+            return Deal {
+                id: 0,
+                at,
+                seat: by.seat.as_str().to_string(),
+                via: bill.via.clone(),
+                provider: by.provider.clone(),
+                model: by.model.clone(),
+                place: if by.cloud { Place::Cloud } else { Place::Home }.as_str().to_string(),
+                reason: by.reason.as_str().to_string(),
+                request: links.request,
+                work: links.work,
+                part: links.part,
+                tokens: spent.tokens,
+                rounds: spent.rounds,
+                ms: spent.ms,
+                usd_micro: bill.usd_micro,
+                price,
+                billing: bill.billing.as_str().to_string(),
+                outcome: spent.outcome.as_str().to_string(),
+                check: None,
+            };
+        }
         let (place, billing, price) = if by.cloud {
             let book = self.pool.book(&by.provider);
             let billing = if book.plan { Billing::Plan } else { Billing::Key };
-            (Place::Cloud, billing, self.pool.price(&by.provider, book.preset.as_deref(), &by.model))
+            // A helper's model away from home is the household's own cloud (a helper is never a cloud by keys).
+            let place = if book.preset.as_deref() == Some(HELPER_PRESET) { Place::Mine } else { Place::Cloud };
+            (place, billing, self.pool.price(&by.provider, book.preset.as_deref(), &by.model))
         } else {
             (Place::Home, Billing::Local, Some(Price::local()))
         };
@@ -687,11 +764,65 @@ mod tests {
 
     #[test]
     fn names_the_seats_and_the_reasons() {
-        assert_eq!(Seat::ALL.map(Seat::as_str), ["fast", "smart", "backup", "workshop", "memory", "app"]);
+        assert_eq!(Seat::ALL.map(Seat::as_str), ["fast", "smart", "backup", "workshop", "memory", "app", "worker"]);
         assert_eq!(Seat::parse("memory"), Some(Seat::Memory));
         assert_eq!(Seat::parse("planner"), None);
         assert_eq!((Seat::of(ModelProfile::Fast), Seat::of(ModelProfile::Smart)), (Seat::Fast, Seat::Smart));
         let reasons = [Reason::RuleCommand, Reason::RuleHard, Reason::RuleShort, Reason::Seat, Reason::Backup];
         assert_eq!(reasons.map(Reason::as_str), ["rule:command", "rule:hard", "rule:short", "seat", "backup"]);
+    }
+
+    /// «Мозг» with no model that may be asked answers in honest words (docs/plans/home-and-helpers.md, stage 4): they
+    /// are no model's answer, so they leave no deal — none with an empty model in «Расход» or in the journal's request.
+    #[test]
+    fn the_words_in_a_models_place_leave_no_deal() {
+        let (sink, rounds, answers) = sink();
+        let words = Answerer {
+            provider: "words".into(),
+            model: String::new(),
+            kind: DialogProvider::None,
+            cloud: false,
+            seat: Seat::Fast,
+            reason: Reason::Seat,
+        };
+        let tally = Tally::new(Some(sink), "kitchen", words);
+        tally.asking();
+        tally.failed(&anyhow::anyhow!("Компьютер дома не на связи, а запасной модели нет."), None);
+        drop(tally);
+        assert!(rounds.lock().unwrap().is_empty() && answers.lock().unwrap().is_empty());
+    }
+
+    /// A helper's model is priced like any row of «Мозг», but where it is follows the regulator's classes: at home
+    /// `home` and free, away from home `mine` — the household's own cloud, never someone else's.
+    #[test]
+    fn a_helpers_model_away_from_home_is_the_households_own_cloud() {
+        let db = Arc::new(Db::memory());
+        for (id, preset) in [("helper-own-a", HELPER_PRESET), ("openrouter", "openrouter")] {
+            db.with(|c| {
+                c.execute(
+                    "INSERT INTO llm_providers (id, preset, kind, title, base_url, options, models, last_check,
+                        created_at, updated_at)
+                     VALUES (?1, ?2, 'openai', ?1, NULL, '{}', '[]', NULL, '2026-11-16', '2026-11-16')",
+                    rusqlite::params![id, preset],
+                )
+            })
+            .unwrap();
+        }
+        let router = Router::new(db, EventBus::new(), pool::EnvModel { kind: DialogProvider::None, base_url: None });
+        let spent = |provider: &str, cloud: bool| Spent {
+            key: String::new(),
+            by: Answerer { provider: provider.into(), cloud, ..answerer("m", Seat::Fast, Reason::Seat) },
+            tokens: Tokens::default(),
+            rounds: 1,
+            ms: 0,
+            outcome: Outcome::Ok,
+            bill: None,
+        };
+        let deal = |provider: &str, cloud: bool| router.price(&spent(provider, cloud), Links::default(), 0);
+        let away = deal("helper-own-a", true);
+        assert_eq!((away.place.as_str(), away.billing.as_str()), ("mine", "key"));
+        let home = deal("helper-own-a", false);
+        assert_eq!((home.place.as_str(), home.billing.as_str(), home.usd_micro), ("home", "local", Some(0)));
+        assert_eq!(deal("openrouter", true).place, "cloud");
     }
 }

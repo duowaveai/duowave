@@ -16,7 +16,7 @@ export default {
     hintNoisy: 'Слышен фон: закройте окно, выключите вентилятор и музыку.',
     hintClipped: 'Слишком громко: отодвиньтесь от микрофона на ладонь.',
 
-    jobMemory: (gb: string) => ` · память ${gb} ГБ`,
+    jobMemory: (gb: string) => ` · ОЗУ ${gb} ГБ`,
 
     // Шапка и строки
     ownVoice: 'Свой голос',
@@ -85,10 +85,10 @@ export default {
 
     // Шаг 3
     defaultName: 'Мой голос',
-    tightShort: 'Компьютеру сейчас не хватает памяти — лучше подождать минуту или закрыть тяжёлые программы.',
-    tightSpeaker: (free: string, need: string, reserve: string) => `Памяти впритык: свободно ${free} ГБ, отпечатку нужно около ${need} ГБ, а ${reserve} ГБ держу для колонки — она может подтормаживать.`,
-    tightVoice: (free: string, need: string, reserve: string) => `Памяти впритык: свободно ${free} ГБ, отпечатку нужно около ${need} ГБ, а ${reserve} ГБ держу для разговора — ответы могут подтормаживать.`,
-    tightLow: (free: string, need: string) => `Памяти мало: свободно ${free} ГБ, а отпечатку нужно около ${need} ГБ — Мак начнёт подкачивать память с диска.`,
+    tightShort: 'Компьютеру сейчас не хватает ОЗУ — лучше подождать минуту или закрыть тяжёлые программы.',
+    tightSpeaker: (free: string, need: string, reserve: string) => `ОЗУ впритык: свободно ${free} ГБ, отпечатку нужно около ${need} ГБ, а ${reserve} ГБ держу для колонки — она может подтормаживать.`,
+    tightVoice: (free: string, need: string, reserve: string) => `ОЗУ впритык: свободно ${free} ГБ, отпечатку нужно около ${need} ГБ, а ${reserve} ГБ держу для разговора — ответы могут подтормаживать.`,
+    tightLow: (free: string, need: string) => `ОЗУ мало: свободно ${free} ГБ, а отпечатку нужно около ${need} ГБ — Мак начнёт подкачку с диска.`,
     readyVoice: (name: string) => `Готово: «${name}»`,
     voiceTakenFrom: (seconds: string) => `Голос снят с лучших ${seconds} секунд ваших записей. Послушайте, как он звучит:`,
     voiceTakenFromUnknown: 'Голос снят с лучших секунд ваших записей. Послушайте, как он звучит:',
@@ -98,14 +98,14 @@ export default {
     loadingModel: 'загружаю модель голоса…',
     enableAnyway: 'Включить всё равно',
     enableVoice: 'Включить этот голос',
-    modelLoading: 'Модель голоса загружается в память — до минуты.',
+    modelLoading: 'Модель голоса загружается в ОЗУ — до минуты.',
     voiceNotEnabled: (reason: string) => `Голос не включён. ${reason}`,
     another: 'Снять ещё один',
     nameLabel: 'Имя голоса',
-    memory: 'Память',
+    memory: 'ОЗУ',
     memoryFree: (free: string, total: string) => `свободно ${free} из ${total} ГБ`,
-    memoryNoteSpeaker: (need: string, reserve: string) => `Отпечатку нужно около ${need} ГБ, ещё ${reserve} ГБ шлюз держит для колонки. Если Мак начнёт подкачивать память с диска, расчёт остановится сам — колонка важнее.`,
-    memoryNoteVoice: (need: string, reserve: string) => `Отпечатку нужно около ${need} ГБ, ещё ${reserve} ГБ шлюз держит для разговора. Если Мак начнёт подкачивать память с диска, расчёт остановится сам — разговор важнее.`,
+    memoryNoteSpeaker: (need: string, reserve: string) => `Отпечатку нужно около ${need} ГБ, ещё ${reserve} ГБ шлюз держит для колонки. Если Мак начнёт подкачку с диска, расчёт остановится сам — колонка важнее.`,
+    memoryNoteVoice: (need: string, reserve: string) => `Отпечатку нужно около ${need} ГБ, ещё ${reserve} ГБ шлюз держит для разговора. Если Мак начнёт подкачку с диска, расчёт остановится сам — разговор важнее.`,
     askAnyway: (text: string) => `${text} Снять всё равно?`,
     imprintAbout: (title: string) => `Модель ${title} найдёт в ваших записях лучшие 5–8 секунд речи и снимет с них отпечаток — около минуты. Потом скажет три пробные фразы вашим голосом.`,
     imprintAnyway: 'Снять всё равно',

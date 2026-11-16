@@ -61,13 +61,15 @@ impl Words for BrainWords {
             if !dialog.enabled() {
                 return Err(BusError::Failed(crate::tr!("отвечать словами некому: модель «Мозга» не выбрана")));
             }
-            if dialog.brain().cloud && !bus.links.options().cloud_asks {
+            // Where the model that answers now is: the chosen one, or a cloud backup answering while its helper is away.
+            let cloud = dialog.in_cloud();
+            if cloud && !bus.links.options().cloud_asks {
                 return Err(BusError::Denied(
                     crate::tr!("вопросы словами через облако выключены: модель «Мозга» — облачная («Настройки» → «Связи приложений»)"),
                 ));
             }
             // What the app's tools give back goes to this model: a folder without its tick gives it nothing.
-            let trail = trail.through_model(dialog.brain().cloud);
+            let trail = trail.through_model(cloud);
             let id = app.name().unwrap_or_default().to_string();
             let package = plugins.package(&id).ok_or_else(|| BusError::NotFound(app.to_string()))?;
             let tools: Vec<LlmTool> = package

@@ -27,7 +27,7 @@ use serde_json::{json, Map, Value};
 use super::budget::{self, Idle, MemoryGauge, MemoryNow, MemoryProbe, PluginShare, PressureAction, ResourcesView};
 use super::bundled::{self, BundledPackage};
 use super::host_api::{storage_used, DataNews, PluginHostApi};
-use super::manifest::{self, Budget, Manifest, PackageKind, Permission, Runtime, SettingSpec, ToolSpec};
+use super::manifest::{self, AgentCard, Budget, Manifest, PackageKind, Permission, Runtime, SettingSpec, ToolSpec};
 use super::media::PluginMediaSource;
 use super::phrases::Phrase;
 use super::registry::{self, Candidate, Origin, Package};
@@ -70,10 +70,14 @@ pub struct JournalLine {
 /// Where the gateway runs now: a plugin runs only where its `runs` says.
 pub type PlacementNow = Arc<dyn Fn() -> Placement + Send + Sync>;
 
-/// The home server as the plugins see it (stage 7, «колонка + сервер»): its address and key while it is up — a
-/// plugin with `prefer: home` runs there then.
+/// The helper that gives the station an ability (src/helpers: the apps, the history, the catalog), as the plugins see
+/// it: its address and key while it is up — a plugin with `prefer: home` runs there then.
 pub trait HomeLink: Send + Sync {
     fn up(&self) -> Option<(String, String)>;
+    /// A helper would give it, on the line or not: an app that prefers home is then «away» while it is not.
+    fn offered(&self) -> bool {
+        self.up().is_some()
+    }
 }
 
 /// A call to the home server's copy of a plugin: `POST <url>/home/v1/plugins/<id>/call`.
@@ -91,7 +95,7 @@ async fn call_home(
         CallKind::Background => "background",
         CallKind::Agent => "agent",
     };
-    let response = crate::utils::http::client()
+    let response = crate::utils::http::client_without_redirects()
         .post(format!("{}/home/v1/plugins/{id}/call", url.trim_end_matches('/')))
         .bearer_auth(key)
         .timeout(kind.limit())
@@ -130,7 +134,8 @@ pub struct PluginsDeps {
     /// what to play instead through the watch (stage 5а). None in tests that do not play.
     pub player: Option<Arc<MediaPlayer>>,
     pub watch: Option<Arc<PlaybackWatch>>,
-    /// The home server, on the station with one: where a plugin with `prefer: home` runs while it is up.
+    /// The helper that gives the apps (src/helpers), on a station: where a plugin with `prefer: home` runs while it
+    /// is up.
     pub home: Option<Arc<dyn HomeLink>>,
     /// Where an app's program reaches the gateway's Host API: `http://127.0.0.1:<port>` (src/apps).
     pub gateway_url: String,
@@ -364,6 +369,9 @@ pub struct PluginHost {
     deferred: Mutex<VecDeque<(String, String, Value)>>,
     /// The last count told on the bus: free MB and the pressure.
     told: Mutex<Option<(u64, Pressure)>>,
+    /// What fell asleep for want of memory (`relieve`), in that order, with the MB it needs: kept on, not started
+    /// again until the memory is back with room to spare (`wake_one`).
+    asleep: Mutex<Vec<(String, u64)>>,
     /// Each plugin's own journal, the last lines.
     journals: Mutex<HashMap<String, VecDeque<JournalLine>>>,
     /// The plugins' writes to their `kv`, told the panel (`packages.data`): its widgets read their data again.
@@ -460,6 +468,7 @@ impl PluginHost {
             apps_held: AtomicBool::new(false),
             deferred: Mutex::new(VecDeque::new()),
             told: Mutex::new(None),
+            asleep: Mutex::new(Vec::new()),
             journals: Mutex::new(HashMap::new()),
             data_news,
             history: std::sync::OnceLock::new(),
@@ -878,6 +887,34 @@ impl PluginHost {
             .map_err(|error| ApiError::bad_request(crate::tr!("Приложение не ответило: {error}.", error = error)))
     }
 
+    /// The agents' cards installed here from the catalog (docs/plans/router-and-works.md, 7б): a card names a program
+    /// to run, so one written in the workshop or put in by hand is not taken. By id: its title, description and card.
+    pub fn agent_cards(&self) -> Vec<(String, String, Option<String>, AgentCard)> {
+        let mut cards = Vec::new();
+        for plugin in self.list() {
+            let (package, source) = {
+                let state = plugin.state();
+                if state.hidden {
+                    continue;
+                }
+                (registry::newest_ready(&state.found), state.source.clone())
+            };
+            let Some(package) = package else { continue };
+            if package.manifest.kind != PackageKind::Agent || Origin::of(&source) != Origin::Catalog {
+                continue;
+            }
+            if let Some(card) = package.manifest.agent.clone() {
+                cards.push((
+                    plugin.id.clone(),
+                    package.manifest.title.clone(),
+                    package.manifest.description.clone(),
+                    card,
+                ));
+            }
+        }
+        cards
+    }
+
     /// The themes of the packages installed here (a theme package's, a plugin's that is on), for the panel's choice:
     /// each checked to be a theme in form; the panel fills the tokens a theme leaves out from «Стекло».
     pub fn themes(&self) -> Vec<ThemeView> {
@@ -928,7 +965,7 @@ impl PluginHost {
             return Some(package.assets());
         }
         let package = self.installed(id)?;
-        matches!(package.manifest.kind, PackageKind::Character | PackageKind::Theme).then(|| package.assets())
+        package.manifest.kind.is_data().then(|| package.assets())
     }
 
     /// The folder of the packages.
@@ -1165,11 +1202,14 @@ impl PluginHost {
         let _busy = Busy::new(&plugin);
         plugin.used.store(self.now_ms(), Ordering::Relaxed);
         let began = Instant::now();
-        // «Колонка + сервер»: a plugin that prefers home runs on the computer while it is up; away, here if it fits.
-        let away = (self.placement)() == Placement::StationServer
-            && plugin.active().is_some_and(|package| package.manifest.prefer_home);
-        if away {
-            if let Some((url, key)) = self.home.as_ref().and_then(|home| home.up()) {
+        // On a station a plugin that prefers home runs at the helper that gives the apps (src/helpers: the pair's
+        // computer or another) while one is up; with none up, here if it fits.
+        let home = self.home.as_ref().filter(|_| {
+            (self.placement)().on_station() && plugin.active().is_some_and(|package| package.manifest.prefer_home)
+        });
+        let away = home.is_some_and(|home| home.offered());
+        if let Some(home) = home {
+            if let Some((url, key)) = home.up() {
                 match call_home(&url, &key, id, function, &input, kind).await {
                     Ok(answer) => {
                         self.note_line(
@@ -1364,9 +1404,10 @@ impl PluginHost {
             return;
         }
         let here = self.placement_now();
+        let asleep: Vec<String> = self.sleeping().into_iter().map(|(id, _)| id).collect();
         for plugin in self.list() {
             let Some(package) = plugin.active() else { continue };
-            if !package.manifest.resident || !package.manifest.runs.contains(&here) {
+            if !package.manifest.resident || !package.manifest.runs.contains(&here) || asleep.contains(&plugin.id) {
                 continue;
             }
             // Loaded, or loading now (its slot is held).
@@ -1647,11 +1688,7 @@ impl PluginHost {
         drop(slot);
         loaded.instance.stop();
         tracing::info!(target: "plugins", "{}: unloaded to make room for {for_id}", plugin.id);
-        self.note_line(
-            &plugin.id,
-            "load",
-            &crate::tr!("выгружен: память понадобилась плагину {for_id}", for_id = for_id),
-        );
+        self.note_line(&plugin.id, "load", &crate::tr!("выгружен: ОЗУ понадобилось плагину {for_id}", for_id = for_id));
         self.changed(&plugin.id, "unloaded", Some(loaded.version), None, None);
         Some(loaded.share_mb)
     }
@@ -1719,8 +1756,9 @@ impl PluginHost {
     }
 
     /// One look at the memory: under pressure the idle plugins give their memory back and their background work
-    /// waits; at «critical» on the station the app, else the plugin, switched on last among those loaded goes off (or
-    /// the panel is told, if the owner chose `warn`). The built-in skills and the voice path are never touched.
+    /// waits; at «critical» on the station the app, else the plugin, switched on last among those loaded falls asleep
+    /// (or the panel is told, if the owner chose `warn`), and once the memory is back what sleeps wakes. The built-in
+    /// skills and the voice path are never touched.
     async fn watch_memory(&self) {
         let Some(memory) = self.memory_now().await else {
             self.gauge.set(None);
@@ -1746,6 +1784,8 @@ impl PluginHost {
         let critical = memory.pressure == Pressure::Critical || memory.available_mb < self.config.reserve_mb / 2;
         if critical && (self.placement)().on_station() && !self.config.disabled {
             self.relieve(memory).await;
+        } else if !low {
+            self.wake_one(memory);
         }
         let plugins = self.shares().await;
         let count = budget::count(Some(memory), self.config.reserve_mb, &plugins);
@@ -1768,13 +1808,17 @@ impl PluginHost {
         }
     }
 
-    /// At «critical» on the station: the app switched on last goes off — an app weighs more than a plugin and starts
+    /// At «critical» on the station: the app switched on last falls asleep — an app weighs more than a plugin and starts
     /// again as easily (docs/plans/plugins.md, «Надзор за приложениями») — else the plugin switched on last; or the
-    /// log and the panel are told. Only one that is loaded: one that holds nothing frees nothing by going off.
+    /// log and the panel are told. Only one that is loaded: one that holds nothing frees nothing by sleeping. It stays
+    /// on and wakes by itself (`wake_one`).
     async fn relieve(&self, memory: MemoryNow) {
         let mut order: Vec<String> = Vec::new();
         for id in registry::enabled_order(&self.db) {
             if !(self.is_active(&id) && self.may_switch_off(&id)) {
+                continue;
+            }
+            if self.lock_asleep().iter().any(|(asleep, _)| *asleep == id) {
                 continue;
             }
             let Some(plugin) = self.plugin(&id) else { continue };
@@ -1785,7 +1829,7 @@ impl PluginHost {
         let is_app = |id: &&String| self.package(id).is_some_and(|package| package.manifest.kind == PackageKind::App);
         let Some(id) = order.iter().find(is_app).or_else(|| order.first()).cloned() else { return };
         let why = crate::tr!(
-            "колонке не хватало памяти: свободно {available_mb} МБ при запасе {reserve_mb} МБ, давление {pressure}",
+            "колонке не хватало ОЗУ: свободно {available_mb} МБ при запасе {reserve_mb} МБ, давление {pressure}",
             available_mb = memory.available_mb,
             reserve_mb = self.config.reserve_mb,
             pressure = memory.pressure.as_str()
@@ -1795,23 +1839,60 @@ impl PluginHost {
                 tracing::warn!(target: "plugins", "{id}: {why}; PLUGINS_PRESSURE_ACTION=warn, it stays on");
                 self.changed(&id, "pressure", None, Some(why), None);
             }
-            PressureAction::Disable => {
-                tracing::warn!(target: "plugins", "{id}: switched off — {why}");
-                if self.disable(&id, None).await.is_ok() {
-                    if let Some(plugin) = self.plugin(&id) {
-                        plugin.state().problem = Some(crate::tr!("выключен сам: {why}", why = why));
-                        self.note_error(&plugin, &crate::tr!("выключен сам: {why}", why = why));
-                    }
-                    self.changed(&id, "pressure", None, Some(crate::tr!("выключен: {why}", why = why)), None);
+            PressureAction::Sleep => {
+                tracing::warn!(target: "plugins", "{id}: asleep — {why}");
+                let Some(plugin) = self.plugin(&id) else { return };
+                let mut slot = plugin.slot.lock().await;
+                let released = plugin.release(&mut slot);
+                drop(slot);
+                if let Some(loaded) = released {
+                    let instance = loaded.instance.clone();
+                    // The program is asked to stop and given its seconds: off the async threads.
+                    let _ = tokio::task::spawn_blocking(move || instance.stop()).await;
                 }
+                let need = self.package(&id).map_or(0, |package| package.manifest.budget.memory_mb);
+                self.lock_asleep().push((id.clone(), need));
+                let asleep = crate::tr!("спит: {why} — проснётся само, когда ОЗУ освободится", why = why);
+                plugin.state().problem = Some(asleep.clone());
+                self.note_error(&plugin, &asleep);
+                self.changed(&id, "asleep", None, Some(asleep), None);
             }
         }
     }
 
-    /// Whether a plugin's calls go to the home server now: it prefers home, the station has one, and it is up.
+    /// What fell asleep for want of memory and still sleeps, with the MB it needs.
+    pub fn sleeping(&self) -> Vec<(String, u64)> {
+        self.lock_asleep().clone()
+    }
+
+    fn lock_asleep(&self) -> std::sync::MutexGuard<'_, Vec<(String, u64)>> {
+        self.asleep.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The memory is back: the first that fell asleep wakes once its budget fits with room to spare (WAKE_MARGIN_MB
+    /// over the reserve) — one a look, so they do not wake into the same want. A resident app is started again by the
+    /// next tick; a plugin loads at its next call.
+    fn wake_one(&self, memory: MemoryNow) {
+        let woken = {
+            let mut asleep = self.lock_asleep();
+            let Some((_, need)) = asleep.first() else { return };
+            if memory.available_mb < self.config.reserve_mb + need + budget::WAKE_MARGIN_MB {
+                return;
+            }
+            asleep.remove(0).0
+        };
+        tracing::info!(target: "plugins", "{woken}: awake — {} MB available", memory.available_mb);
+        if let Some(plugin) = self.plugin(&woken) {
+            plugin.state().problem = None;
+        }
+        self.changed(&woken, "awake", None, None, None);
+    }
+
+    /// Whether a plugin's calls go to a helper now: it prefers home, this is a station, and a helper that gives the
+    /// apps is up.
     fn runs_at_home(&self, package: &Package) -> bool {
         package.manifest.prefer_home
-            && (self.placement)() == Placement::StationServer
+            && (self.placement)().on_station()
             && self.home.as_ref().and_then(|home| home.up()).is_some()
     }
 
@@ -1990,7 +2071,7 @@ impl PluginHost {
                         id,
                         "load",
                         &crate::tr!(
-                            "включён, но пока не загружен: {why}. Загрузится при первом вызове, когда хватит памяти",
+                            "включён, но пока не загружен: {why}. Загрузится при первом вызове, когда хватит ОЗУ",
                             why = why
                         ),
                     );
@@ -2377,9 +2458,30 @@ impl PluginHost {
                 None => format!("Done: the station's player — {word}."),
             };
         }
-        let Some(play) = object.get("play") else { return tool_text(answer) };
         let kind = super::media::kind_for(capability);
         let base = station.and_then(|station| station.media_base_url.clone());
+        if let (None, Some(add)) = (object.get("play"), object.get("add")) {
+            let items = super::media::media_items_with(plugin, kind, add, base.as_deref(), &self.play_rights(plugin));
+            let Some(first) = items.first().cloned() else {
+                return "Nothing to add: the tool found nothing playable.".into();
+            };
+            let (Some(station), Some(player)) = (station, self.player.as_ref()) else {
+                return format!("Would add «{}» (no station here: nothing changed).", first.title);
+            };
+            if player.add(&station.device, items.clone()) {
+                tracing::info!(target: "plugins", "{plugin}: its tool adds «{}» to the queue", first.title);
+                return match say {
+                    Some(say) => format!("Added «{}» to the queue. Tell the user: {say}", first.title),
+                    None => format!("Added «{}» to the queue: it plays after the current track.", first.title),
+                };
+            }
+            let directives = player.play(&station.device, items, 0, 0);
+            if !(station.add)(directives) {
+                return "error: the answer went out already; ask the user to say it again".into();
+            }
+            return format!("Nothing played, so «{}» plays now. Tell the user briefly what is on.", first.title);
+        }
+        let Some(play) = object.get("play") else { return tool_text(answer) };
         let items = super::media::media_items_with(plugin, kind, play, base.as_deref(), &self.play_rights(plugin));
         let Some(first) = items.first().cloned() else {
             return "Nothing to play: the tool found nothing playable.".into();
@@ -3069,7 +3171,7 @@ mod tests {
                 catalog_key: None,
                 reserve_mb: 40,
                 storage_reserve_mb: Some(15),
-                pressure_action: crate::plugins::budget::PressureAction::Disable,
+                pressure_action: crate::plugins::budget::PressureAction::Sleep,
                 bundled: false,
                 schedules: true,
                 node_dir: std::path::PathBuf::from("node"),
@@ -3461,7 +3563,7 @@ mod tests {
         let refused = host.call("big", "say", json!({"word": "а"}), CallKind::Voice).await.unwrap_err();
         assert!(matches!(&refused, PluginError::NoRoom(why) if why.contains("нужно 30 МБ, свободно")), "{refused}");
         assert!(is_loaded(&host, "alpha").await && is_loaded(&host, "beta").await);
-        assert!(host.view_one("big").await.unwrap().last_error.unwrap().message.contains("не хватает памяти"));
+        assert!(host.view_one("big").await.unwrap().last_error.unwrap().message.contains("не хватает ОЗУ"));
 
         // More memory: it loads at its call.
         memory.set(station(80));
@@ -3501,7 +3603,7 @@ mod tests {
         ];
         assert_eq!(loaded, [false, true, true, true]);
         assert_eq!(changes(&mut events), ["unloaded", "enabled"]);
-        assert!(host.journal("alpha").iter().any(|line| line.message.contains("понадобилась плагину delta")));
+        assert!(host.journal("alpha").iter().any(|line| line.message.contains("понадобилось плагину delta")));
 
         // alpha called again: beta is the longest idle now; gamma, in its call, stays.
         host.plugin("delta").unwrap().used.store(4, Ordering::Relaxed);
@@ -3515,9 +3617,7 @@ mod tests {
         let refused = host.call("beta", "say", json!({"word": "б"}), CallKind::Voice).await.unwrap_err();
         assert_eq!(
             refused,
-            PluginError::NoRoom(
-                "колонке не хватает памяти, чтобы загрузить приложение: нужно 4 МБ, свободно 0 МБ".into()
-            )
+            PluginError::NoRoom("колонке не хватает ОЗУ, чтобы загрузить приложение: нужно 4 МБ, свободно 0 МБ".into())
         );
         assert!(is_loaded(&host, "alpha").await && is_loaded(&host, "gamma").await && is_loaded(&host, "delta").await);
         let view = host.view_one("beta").await.unwrap();
@@ -3532,7 +3632,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gives_memory_back_under_pressure_and_switches_off_only_what_is_loaded() {
+    async fn gives_memory_back_under_pressure_and_puts_to_sleep_only_what_is_loaded() {
         use crate::plugins::budget::MemoryNow;
         let dir = tempfile::tempdir().unwrap();
         write_package(dir.path(), &echo("1.0.0"), Some(CODE));
@@ -3546,21 +3646,34 @@ mod tests {
         assert!(!host.enable("big", None).await.unwrap().loaded, "on, no room to load");
 
         // Pressure: an idle plugin unloads, background work waits; at «critical» the plugin switched on last among
-        // those loaded goes off — big, switched on later, holds nothing and stays on.
+        // those loaded falls asleep — still on — and big, switched on later, holds nothing and stays as it is.
         memory.set(MemoryNow { available_mb: 15, pressure: Pressure::Critical, ..station(60) });
         host.plugin("echo").unwrap().used.store(0, Ordering::Relaxed);
         tokio::time::sleep(Duration::from_millis(5)).await;
         host.watch_memory().await;
         assert!(host.deferring.load(Ordering::Relaxed));
         let view = host.view_one("echo").await.unwrap();
-        assert_eq!((view.enabled, view.loaded), (false, false));
-        assert!(view.problem.unwrap().contains("колонке не хватало памяти"));
+        assert_eq!((view.enabled, view.loaded), (true, false));
+        assert!(view.problem.unwrap().contains("спит: колонке не хватало ОЗУ"));
+        assert_eq!(host.sleeping(), [("echo".to_string(), 2)]);
         assert!(host.view_one("big").await.unwrap().enabled);
         let told: Vec<String> = changes(&mut events);
-        assert!(told.contains(&"pressure".to_string()), "{told:?}");
-        // Again: nothing is loaded, nothing more goes off.
+        assert!(told.contains(&"asleep".to_string()), "{told:?}");
+        // Again: nothing is loaded, nothing more sleeps.
         host.watch_memory().await;
         assert!(host.view_one("big").await.unwrap().enabled);
+        assert_eq!(host.sleeping().len(), 1);
+
+        // The memory is back, but not with room to spare: it sleeps on. Then there is room: it wakes by itself.
+        memory.set(MemoryNow { available_mb: 50, pressure: Pressure::Normal, ..station(60) });
+        host.watch_memory().await;
+        assert_eq!(host.sleeping().len(), 1, "40 of reserve + 2 + 15 to spare is more than 50");
+        memory.set(MemoryNow { available_mb: 80, pressure: Pressure::Normal, ..station(80) });
+        host.watch_memory().await;
+        assert!(host.sleeping().is_empty());
+        let view = host.view_one("echo").await.unwrap();
+        assert_eq!((view.enabled, view.problem), (true, None));
+        assert!(changes(&mut events).contains(&"awake".to_string()));
 
         // On a computer the budget is shown, not kept.
         let pc = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Pc).host;
@@ -3836,6 +3949,11 @@ mod tests {
             fn up(&self) -> Option<(String, String)> {
                 self.0.lock().unwrap().clone()
             }
+
+            /// The station's computer gives the apps, on the line or not.
+            fn offered(&self) -> bool {
+                true
+            }
         }
 
         // The computer: its copy of the plugin answers.
@@ -3875,6 +3993,47 @@ mod tests {
         memory.set(MemoryNow { total_mb: 238, available_mb: 50, pressure: Pressure::Normal, gateway_mb: Some(14) });
         let refused = host.call("echo", "say", json!({"word": "в"}), CallKind::Voice).await.unwrap_err();
         assert!(refused.to_string().contains("недоступно, пока компьютер не на связи"), "{refused}");
+        HOME.with(|cell| *cell.borrow_mut() = None);
+    }
+
+    /// The apps follow the helpers' list (docs/plans/home-and-helpers.md, stage 3): on a station a `prefer: home` app
+    /// goes to whichever helper gives the apps now — the pair's computer or another one, whose station keeps the plain
+    /// station's placement. A computer runs its apps itself.
+    #[tokio::test]
+    async fn an_app_that_prefers_home_goes_to_the_helper_that_gives_the_apps_on_any_station() {
+        use axum::routing::post;
+
+        struct Helper(String);
+        impl HomeLink for Helper {
+            fn up(&self) -> Option<(String, String)> {
+                Some((self.0.clone(), "key".into()))
+            }
+        }
+
+        let helper = axum::Router::new().route(
+            "/home/v1/plugins/{id}/call",
+            post(|axum::extract::Path(id): axum::extract::Path<String>| async move {
+                axum::Json(json!({ "result": format!("{id} у Турбо") }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, helper).await.unwrap() });
+
+        let mut heavy = echo("1.0.0");
+        heavy["prefer"] = json!("home");
+        HOME.with(|cell| *cell.borrow_mut() = Some(Arc::new(Helper(url)) as Arc<dyn HomeLink>));
+        for (placement, answer, runs_at) in
+            [(Placement::Station, "echo у Турбо", "home"), (Placement::Pc, "а (1)", "here")]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            write_package(dir.path(), &heavy, Some(CODE));
+            let host = host_on(dir.path(), Arc::new(Db::memory()), false, placement).host;
+            host.enable("echo", None).await.unwrap();
+            let call = host.call("echo", "say", json!({"word": "а"}), CallKind::Voice).await;
+            assert_eq!(said(call), answer, "{placement:?}");
+            assert_eq!(host.view_one("echo").await.unwrap().runs_at, Some(runs_at), "{placement:?}");
+        }
         HOME.with(|cell| *cell.borrow_mut() = None);
     }
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 
+import type { Ability } from './api';
 import type { FeatureId } from './availability-ids';
 import { tr } from './i18n';
 
@@ -12,7 +13,8 @@ export type { FeatureId } from './availability-ids';
  */
 
 export type Placement = 'pc' | 'station' | 'stationServer';
-export type Runs = 'here' | 'homeServer' | 'cloud' | 'yandex';
+/** `homeServer` — так шлюз блока 1 ещё называет дорогу помощника (для пультов 0.11); `helper` — новое имя. */
+export type Runs = 'here' | 'homeServer' | 'helper' | 'cloud' | 'yandex';
 export type FeatureLevel = 'yes' | 'partial' | 'no';
 export type HomeServerState = 'none' | 'up' | 'down';
 
@@ -50,6 +52,8 @@ export interface PlacementCard {
 export interface AvailabilityView {
     placement: Placement;
     homeServer: HomeServerState;
+    /** Помощники по умениям: на связи ли кто-нибудь, кто что объявил, кто даёт сейчас, что даёт встроенный. */
+    helpers?: { online: boolean; configured: Ability[]; up: Ability[]; builtin: Ability[] };
     features: FeatureState[];
     placements: PlacementCard[];
     table: FeatureRow[];
@@ -82,7 +86,10 @@ export const RUNS_TITLES: Record<Runs, string> = {
         return tr.core.runsHere;
     },
     get homeServer() {
-        return tr.core.runsHomeServer;
+        return tr.helpers.runsHelper;
+    },
+    get helper() {
+        return tr.helpers.runsHelper;
     },
     get cloud() {
         return tr.core.runsCloud;

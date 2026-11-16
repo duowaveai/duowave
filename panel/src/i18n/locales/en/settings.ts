@@ -5,6 +5,17 @@ import type { Translation } from '../../types';
 import type ru from '../ru/settings';
 
 const en: Translation<typeof ru> = {
+    // People and keys by the new anatomy (17.11)
+    addPerson: 'Add a person',
+    newPerson: 'New person',
+    newKey: 'New key',
+    keyWhatCan: 'What it can do',
+    keyChosen: (n: number, total: number) => `${n} of ${total} chosen`,
+    keyGroupSee: 'See',
+    keyGroupDo: 'Do',
+    keyGroupManage: 'Configure',
+    grantsMore: (n: number) => `${n} more`,
+    voiceDenied: 'Not allowed by voice',
     title: 'Settings',
     tabAccess: 'Access',
     tabLook: 'Appearance',
@@ -47,13 +58,13 @@ const en: Translation<typeof ru> = {
     removePersonTitle: (name: string) => `Remove “${name}”?`,
     removePersonText: 'Their settings go with them.',
     removeOk: 'Remove',
-    removeAction: 'remove',
+    removeAction: 'Remove',
     namePlaceholder: 'Name',
     newPersonName: 'New person’s name',
     passwordOptional: 'Password (optional)',
     passwordOptionalLabel: 'Password to sign in to the panel — optional',
     newPersonRole: 'New person’s role',
-    addAction: 'add',
+    addAction: 'Add',
     noPasswordNote: 'Without a password the person does not sign in to the panel — it is a profile the speaker will recognize.',
     noPasswordNoteComputer: 'Without a password the person does not sign in to the panel — it is a profile DuoWave will recognize.',
 
@@ -66,10 +77,10 @@ const en: Translation<typeof ru> = {
     copiedKey: 'copied',
     usedAgo: (ago: string) => `used ${ago}`,
     neverUsed: 'never used',
-    revokeAction: 'revoke',
+    revokeAction: 'Revoke',
     keyPlaceholder: 'What the key is for: OpenClaw, a script…',
     keyName: 'Key name',
-    createKey: 'create key',
+    createKey: 'Create key',
 
     connectorTelephony: 'telephony',
     connectorWeather: 'weather',

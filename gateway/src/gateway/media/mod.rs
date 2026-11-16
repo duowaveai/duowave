@@ -83,7 +83,7 @@ async fn media(
     if let Some(rest) = relative.strip_prefix("apps/") {
         let (id, path) = rest.split_once('/').ok_or_else(|| ApiError::not_found("Not Found"))?;
         let url = app.plugins.app_stream(id, path).await.ok_or_else(|| ApiError::not_found("Not Found"))?;
-        return stream::app_sound(&url).await;
+        return stream::app_sound(&url, request.headers().get(axum::http::header::RANGE).cloned()).await;
     }
     // A package's own files (its assets/): of a plugin that is on, of a character or a theme installed.
     if let Some(rest) = relative.strip_prefix("packages/") {

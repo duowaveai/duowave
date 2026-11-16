@@ -25,9 +25,13 @@ services:
       dockerfile: Dockerfile.prod
     restart: unless-stopped
     # The panel and the station's voice connection on this machine's port 7780 (GATEWAY_PORT in .env for another):
-    # the station dials whatever port its uniProxyUrl names, and an uncommon one is free on most machines.
+    # the station dials whatever port its uniProxyUrl names, and an uncommon one is free on most machines. Beside it the
+    # link other gateways dial when this one helps them («Подключить шлюз»): TLS only, nothing else behind it
+    # (GATEWAY_LINK_PORT for another; the key sheet lists no address from inside the container — give the gateways
+    # https://<this machine>:7781).
     ports:
       - '${GATEWAY_PORT:-7780}:3000'
+      - '${GATEWAY_LINK_PORT:-7781}:3001'
     env_file:
       - path: .env
         required: false

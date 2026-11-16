@@ -5,6 +5,7 @@ import type { Translation } from '../../types';
 import type ru from '../ru/magicplace';
 
 const en: Translation<typeof ru> = {
+    downloadTitle: 'What downloads',
     title: 'MagicPlace',
     searchLabel: 'Search MagicPlace',
     searchPlaceholder: 'Find an app, a character, a theme',
@@ -21,6 +22,14 @@ const en: Translation<typeof ru> = {
     kindCharacters: 'Characters',
     kindApps: 'Apps',
     kindThemes: 'Themes',
+    kindAgents: 'Agents',
+    // An agent's card (docs/plans/router-and-works.md, 7б)
+    agentCardOnly: "Installing puts in only the card: you install the agent's program yourself; DuoWave neither downloads nor runs it.",
+    agentInstall: (name: string) => `Install the program ${name} with this command in a terminal:`,
+    agentSignin: (title: string) => `Sign in to ${title} in a terminal — the sign-in stays in the program itself.`,
+    agentNoQuestions: "In this mode the agent does everything without asking: it does not ask about the work folder's allowed commands and may, say, push a branch.",
+    agentViaDuowave: "The agent's model goes through DuoWave: its spending is counted exactly.",
+    agentTerms: (title: string) => `${title}'s terms`,
     kindGroup: 'What to show',
     faceLabel: 'Face',
     faceAny: 'Any face',

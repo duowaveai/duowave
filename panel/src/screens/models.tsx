@@ -14,6 +14,7 @@ import { ask } from '../ui/confirm';
 import { onComputer } from '../voice-input';
 import { byMode } from '../words';
 import { tr } from '../i18n';
+import { usePanel } from '../shell/context';
 
 export type ModelsTab = 'voice' | 'recognition';
 type Tab = ModelsTab;
@@ -309,6 +310,8 @@ function LocalModelsAbsent({ kind, message }: { kind: Tab; message: string }) {
 /** `bare` — без своих вкладок: голос стоит в «Персонаже», слух — в «Настройки» → «Колонка» (docs/plans/panel-rebuild.md). */
 export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onTab: (tab: ModelsTab) => void; bare?: boolean }) {
     const [view, setView] = useState<ModelsView | null>(null);
+    // Пульт Турбо (компьютер, что только помогает): режим колонки к его слуху не относится.
+    const turboPanel = usePanel().role.role === 'helper';
     const [notes, setNotes] = useState<Record<string, CardNote>>({});
     const [busy, setBusy] = useState<Record<string, boolean>>({});
     const [limit, setLimit] = useState(8);
@@ -815,7 +818,8 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                                 {tr.models.hearingTitle}
                             </h2>
                             <span class="t-meta">
-                                {view.mode === 'relay'
+                                {/* На пульте Турбо режим колонки ни при чём: он даёт слух шлюзам — говорит, что работает. */}
+                                {view.mode === 'relay' && !turboPanel
                                     ? tr.models.hearingRelay
                                     : local
                                       ? localAsrLine(local)
@@ -949,7 +953,7 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                         {view.mode === 'relay' && (
                             <p
                                 role="note"
-                                class="m-0 mt-10 mb-2 py-8 px-12 r-pill bg-pill-yandex-bg c-pill-yandex-fg fs-13 lh-18"
+                                class="win-note mt-10 mb-2"
                             >
                                 {tr.models.relayNote}
                             </p>

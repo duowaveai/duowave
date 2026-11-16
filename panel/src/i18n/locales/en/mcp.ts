@@ -23,6 +23,8 @@ const en: Translation<typeof ru> = {
 
     addTitle: 'Add an MCP server',
     addAbout: 'Ready-made ones come with tested settings; your own are up to you',
+    presetsSection: 'Ready-made',
+    ownSection: 'Your own',
     ownProgram: 'Own program',
     ownProgramText: 'A command on this Mac: npx, uvx, your own file.',
     ownAddress: 'Own address',

@@ -48,7 +48,7 @@ export default {
     cmpJazz: '«Алиса, включи джаз»',
     cmpJazzWho: 'Яндекс Музыка, как было',
     yourAi: 'ваш ИИ',
-    switchOn: 'Включить «Вместе»',
+    switchOn: 'Включить «Алиса + ваш ИИ»',
     switching: 'Включаю…',
 
     talk: 'Поговорите',
@@ -77,7 +77,7 @@ export default {
     smarterStation: 'Теперь Алиса умнее',
     smarterComputer: 'Теперь ДиВи умнее',
     smarterConnected: (title: string) => `✓ ${title} подключён`,
-    smarterTogether: '✓ «Вместе» включён',
+    smarterTogether: '✓ «Алиса + ваш ИИ» включён',
     undo: 'Отменить',
     smarterLeadStation: 'Разговор, виджеты и игры теперь у вашего ИИ. Музыка, будильники и умный дом — как раньше, у Алисы.',
     smarterLeadComputer: 'ДиВи теперь отвечает сам: разговор, виджеты, игры и память.',

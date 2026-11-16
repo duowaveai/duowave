@@ -224,7 +224,7 @@ impl Room {
     pub fn no_memory(&self) -> String {
         let free = self.free_kb.unwrap_or(0);
         crate::tr!(
-            "Колонке не хватает памяти на пробу новой версии: нужно {need} МБ, свободно {available} МБ даже без приложений. Освободите на диске {short} МБ — тогда версия встанет рядом со старой без пробы.",
+            "Колонке не хватает ОЗУ на пробу новой версии: нужно {need} МБ, свободно {available} МБ даже без приложений. Освободите на диске {short} МБ — тогда версия встанет рядом со старой без пробы.",
             need = self.memory_for_trial().div_ceil(1024),
             available = self.available_kb.unwrap_or(0) / 1024,
             short = self.disk_beside().saturating_sub(free).div_ceil(1024).max(1)

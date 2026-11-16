@@ -70,19 +70,21 @@ pub trait NightModel: Send + Sync {
     fn home(&self) -> Option<ModelSlot>;
     /// The «Мозг»'s smart model, wherever it is.
     fn brain(&self) -> Option<ModelSlot>;
-    /// One model of a provider; None — no such provider.
-    fn pick(&self, provider: &str, model: &str) -> Option<ModelSlot>;
+    /// One model of a provider, or why not now: Err(None) — no such provider; Err(Some(why)) — it is there and waits
+    /// (its helper away, or kept in by the regulator).
+    fn pick(&self, provider: &str, model: &str) -> Result<ModelSlot, Option<String>>;
     /// Every model «Мозг»'s providers have, those at home first.
     fn options(&self) -> Vec<ModelOption>;
 }
 
 impl NightModel for BrainService {
     /// The «Мозг»'s own model when it is at home, else the first model of a provider at home (the lists hold only
-    /// models that talk: «Мозг» leaves out embeddings, voices and the like).
+    /// models that talk: «Мозг» leaves out embeddings, voices and the like). Only one that may be asked now: never the
+    /// words «Мозг» gives while none may (its helper away), nor a model past the regulator.
     fn home(&self) -> Option<ModelSlot> {
         [ModelProfile::Smart, ModelProfile::Fast]
             .into_iter()
-            .filter_map(|profile| BrainSource::slot(self, profile))
+            .filter_map(|profile| self.reachable_slot(profile))
             .find(|slot| !slot.cloud)
             .or_else(|| {
                 NightModel::options(self)
@@ -97,8 +99,8 @@ impl NightModel for BrainService {
         BrainSource::slot(self, ModelProfile::Smart)
     }
 
-    fn pick(&self, provider: &str, model: &str) -> Option<ModelSlot> {
-        BrainSource::slot_of(self, provider, model)
+    fn pick(&self, provider: &str, model: &str) -> Result<ModelSlot, Option<String>> {
+        self.pick_of(provider, model)
     }
 
     fn options(&self) -> Vec<ModelOption> {
@@ -238,8 +240,10 @@ impl Reflection {
 
     pub fn change(&self, change: ReflectionChange, actor: Option<Actor>) -> Result<ReflectionView, ApiError> {
         if let Some(model) = change.model {
+            // A model whose helper is away for now is there all the same: it waits for its helper.
             if let MemoryModel::Pick { provider, model } = &model {
-                if provider.trim().is_empty() || model.trim().is_empty() || self.model.pick(provider, model).is_none() {
+                let none = matches!(self.model.pick(provider, model), Err(None));
+                if provider.trim().is_empty() || model.trim().is_empty() || none {
                     return Err(ApiError::bad_request(crate::tr!("Такой модели нет в «Мозге».")));
                 }
             }
@@ -263,8 +267,9 @@ impl Reflection {
             MemoryModel::Brain => {
                 self.model.brain().ok_or_else(|| crate::tr!("Ждёт модель: в «Мозге» ничего не выбрано.").to_string())
             }
-            MemoryModel::Pick { provider, model } => self.model.pick(&provider, &model).ok_or_else(|| {
-                crate::tr!("Ждёт модель: «{model}» больше нет в «Мозге». Выберите модель памяти в её настройках.", model = model)
+            MemoryModel::Pick { provider, model } => self.model.pick(&provider, &model).map_err(|why| match why {
+                Some(why) => crate::tr!("Ждёт модель «{model}»: {why}.", model = model, why = why),
+                None => crate::tr!("Ждёт модель: «{model}» больше нет в «Мозге». Выберите модель памяти в её настройках.", model = model),
             }),
             MemoryModel::Home => self.model.home().ok_or_else(|| {
                 crate::tr!("Ждёт свою модель: дома её нет. Выберите модель памяти, домашнюю или облачную, в настройках памяти.")
@@ -1196,12 +1201,13 @@ mod tests {
         fn brain(&self) -> Option<ModelSlot> {
             self.brain.clone()
         }
-        fn pick(&self, provider: &str, model: &str) -> Option<ModelSlot> {
+        fn pick(&self, provider: &str, model: &str) -> Result<ModelSlot, Option<String>> {
             [&self.home, &self.brain]
                 .into_iter()
                 .flatten()
                 .find(|slot| slot.provider == provider && slot.model == model)
                 .cloned()
+                .ok_or(None)
         }
         fn options(&self) -> Vec<ModelOption> {
             [&self.home, &self.brain]
@@ -1450,5 +1456,48 @@ mod tests {
         assert_eq!(short_day("2026-11-12"), "12.11");
         assert_eq!(plural(21, "разговор", "разговора", "разговоров"), "разговор");
         assert_eq!(plural(12, "разговор", "разговора", "разговоров"), "разговоров");
+    }
+
+    /// docs/plans/home-and-helpers.md, stage 4: while the helper with «Мозг»'s model is away and nothing else may be
+    /// asked, the dialog gets the words — the night never takes them for a model at home.
+    #[tokio::test]
+    async fn the_night_never_takes_the_words_for_a_model_at_home() {
+        use crate::dialog::brain::brain_service::tests::{model_helper, with_helpers};
+        let (brain, helpers, _) = with_helpers();
+        let away = model_helper("home-computer", "Компьютер дома", "http://192.168.1.20:7780/home/v1/llm", false);
+        helpers.set(vec![away]);
+        brain.keep_helper_models().unwrap();
+        let row = brain.view().providers.into_iter().find(|row| row.helper.is_some()).unwrap();
+        let choice = json!({"fast": {"provider": row.id, "model": "home"}});
+        brain.choose(choice.as_object().unwrap(), None).unwrap();
+        assert_eq!(BrainSource::slot(&*brain, ModelProfile::Smart).unwrap().provider, "words", "the dialog's");
+        assert!(NightModel::home(&*brain).is_none(), "the night waits for a model");
+        helpers.up("home-computer", true);
+        assert_eq!(NightModel::home(&*brain).unwrap().provider, row.id, "back on the line: the helper's model");
+    }
+
+    /// docs/plans/home-and-helpers.md, stage 4 (review): a memory model on a helper that is away for now is still in
+    /// «Мозг» — it can be chosen, and the night waits for its helper, saying so, not that the model is gone.
+    #[tokio::test]
+    async fn a_memory_model_whose_helper_is_away_can_be_chosen_and_waits_for_it() {
+        use crate::dialog::brain::brain_service::tests::{model_helper, with_helpers};
+        let (brain, helpers, _) = with_helpers();
+        let away = model_helper("home-computer", "Компьютер дома", "http://192.168.1.20:7780/home/v1/llm", false);
+        helpers.set(vec![away]);
+        brain.keep_helper_models().unwrap();
+        let row = brain.view().providers.into_iter().find(|row| row.helper.is_some()).unwrap();
+        let (memory, settings) = memory();
+        let reflection = Reflection::new(memory, settings, brain.clone());
+        let pick = MemoryModel::Pick { provider: row.id.clone(), model: "qwen2.5".into() };
+        let view =
+            reflection.change(ReflectionChange { model: Some(pick.clone()), ..Default::default() }, None).unwrap();
+        assert_eq!((view.model, view.using), (pick, None));
+        assert_eq!(view.waiting.as_deref(), Some("Ждёт модель «qwen2.5»: Компьютер дома не на связи."));
+        let gone = MemoryModel::Pick { provider: "helper-gone".into(), model: "qwen2.5".into() };
+        let refused = reflection.change(ReflectionChange { model: Some(gone), ..Default::default() }, None);
+        assert_eq!(refused.unwrap_err().message, "Такой модели нет в «Мозге».");
+        helpers.up("home-computer", true);
+        let view = reflection.view();
+        assert_eq!((view.using.map(|using| using.model), view.waiting), (Some("qwen2.5".to_string()), None));
     }
 }

@@ -39,6 +39,10 @@ pub enum PriceSource {
     Snapshot,
     /// A model at home: nothing to pay.
     Local,
+    /// A harness's own estimate of its run: Claude Code's `total_cost_usd` (docs/plans/router-and-works.md, 2).
+    Harness,
+    /// An agent's own estimate, as its `usage_update` said it (stage 3б).
+    Agent,
 }
 
 impl PriceSource {
@@ -48,13 +52,22 @@ impl PriceSource {
             PriceSource::Provider => "provider",
             PriceSource::Snapshot => "snapshot",
             PriceSource::Local => "local",
+            PriceSource::Harness => "harness",
+            PriceSource::Agent => "agent",
         }
     }
 
     fn parse(text: &str) -> Option<PriceSource> {
-        [PriceSource::Manual, PriceSource::Provider, PriceSource::Snapshot, PriceSource::Local]
-            .into_iter()
-            .find(|source| source.as_str() == text)
+        [
+            PriceSource::Manual,
+            PriceSource::Provider,
+            PriceSource::Snapshot,
+            PriceSource::Local,
+            PriceSource::Harness,
+            PriceSource::Agent,
+        ]
+        .into_iter()
+        .find(|source| source.as_str() == text)
     }
 }
 
@@ -75,6 +88,11 @@ impl Price {
     /// A model at home.
     pub fn local() -> Price {
         Price { input: Some(0.0), output: Some(0.0), cache_read: None, cache_write: None, from: PriceSource::Local }
+    }
+
+    /// The dollars of a run said by whoever ran it, not counted here: no price per token, only where it came from.
+    pub fn estimate(from: PriceSource) -> Price {
+        Price { input: None, output: None, cache_read: None, cache_write: None, from }
     }
 
     /// What the tokens cost at this price, in millionths of a dollar: tokens × dollars per million. The cache without

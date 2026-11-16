@@ -2,7 +2,8 @@
 // колонкой, как PhoneAnswer). Режимы «Как раньше · Вместе · Своё» — тот же режим колонки, что переключатель на столе
 // (api.mode / api.setMode; DuoWave уже на колонке — через проход помощника к её шлюзу). «Чей ИИ отвечает» — те же
 // вызовы, что у «Мозга» (screens/brain.tsx): добавить провайдера, войти через OpenRouter, ключ, модель на компьютере,
-// проверить и выбрать. У «Только колонка» модель живёт на колонке — ключ туда же (отсюда предупреждение доски про SSH).
+// проверить и выбрать. DuoWave уже на колонке — вход и ключ уходят к ней (у «Только колонка» отсюда предупреждение
+// доски про SSH); модель на компьютере остаётся у компьютера.
 // Пока колонка перезагружается после «Дальше, не ждать», здесь видно, пришла ли она (onb/speaker.tsx).
 
 import { useEffect, useRef, useState } from 'preact/hooks';
@@ -116,10 +117,13 @@ export function AnswerStep() {
     const only = choice === 'station';
     const panel = usePanel();
     const live = useSpeakerLink();
-    // DuoWave уже на колонке — пульт стал помощником: режим (и у «Только колонка» модель) — у шлюза колонки.
+    // DuoWave уже на колонке — пульт стал помощником: режим и мозг (вход, ключ) — настройки колонки, они переехали с
+    // DuoWave и живут там (gateway/src/placement/routes.rs, SETTINGS_PATHS). Модель на этом компьютере (Ollama, LM
+    // Studio) остаётся в его «Мозге»: колонка берёт её у помощника (gateway/src/home_server/serve.rs).
     const stationKey = panel.role.role === 'helper' ? panel.role.station?.key : undefined;
     const modeGate = stationKey ? viaStation(stationKey) : direct;
-    const modelGate = only && stationKey ? viaStation(stationKey) : direct;
+    const modelGate = stationKey ? viaStation(stationKey) : direct;
+    const localGate = only && stationKey ? modelGate : direct;
     const mayPick = can('station.mode');
     const mayModel = can('connectors.manage') && can('models.manage');
 
@@ -261,18 +265,19 @@ export function AnswerStep() {
     /** «Выбрать модель»: Ollama или LM Studio на этом компьютере — та, что ответит на проверку. */
     const pickLocal = () =>
         void work(async () => {
-            const locals = (view?.presets ?? []).filter((preset) => preset.local);
+            const here = localGate === modelGate ? view : await localGate.brain();
+            const locals = (here?.presets ?? []).filter((preset) => preset.local);
             for (const preset of locals) {
-                const existing = view?.providers.find((provider) => provider.preset === preset.id);
-                const provider = existing ?? (await modelGate.addProvider({ preset: preset.id }));
-                const check = await modelGate.checkProvider(provider.id).catch(() => null);
+                const existing = here?.providers.find((provider) => provider.preset === preset.id);
+                const provider = existing ?? (await localGate.addProvider({ preset: preset.id }));
+                const check = await localGate.checkProvider(provider.id).catch(() => null);
                 if (check?.ok && check.model) {
-                    setView(await modelGate.chooseBrain({ fast: { provider: provider.id, model: check.model } }));
+                    setView(await localGate.chooseBrain({ fast: { provider: provider.id, model: check.model } }));
                     setNote({ text: t.modelWorks(check.model) });
                     return;
                 }
                 // Не ответила — не оставляем пустую карточку в «Мозге».
-                if (!existing) await modelGate.removeProvider(provider.id).catch(() => undefined);
+                if (!existing) await localGate.removeProvider(provider.id).catch(() => undefined);
             }
             throw new Error(t.localNone);
         });

@@ -6,7 +6,7 @@ import { CAPABILITIES } from '../capabilities';
 import { IconBraces, IconGlobe, IconPage, IconTerminal } from '../icons';
 import { BrandMark } from '../ui/brand';
 import { Action } from '../ui/cards';
-import { Sheet } from '../ui/sheet';
+import { SaveBar, Sheet, WinRow, WinSection } from '../ui/sheet';
 import { Switch } from '../ui/switch';
 import { ask } from '../ui/confirm';
 import { byMode } from '../words';
@@ -168,7 +168,13 @@ export function McpSection({ onAsk }: { onAsk: () => void }) {
 
 type Mode = { kind: 'pick' } | { kind: 'preset'; preset: McpPreset } | { kind: 'program' } | { kind: 'address' } | { kind: 'json' };
 
-/** Шит «Добавить сервер»: готовые (со знаками), своя программа, свой адрес, вставка JSON. */
+/** Слово с большой буквы — для кнопок, у которых строка словаря строчная (она же — в строках карточки). */
+const cap = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
+
+/** Крутилка в занятой кнопке. */
+const spin = (on: boolean) => on && <span class="spinner spinner-sm" aria-hidden="true" />;
+
+/** Окно «Добавить сервер»: готовые (со знаками), своя программа, свой адрес, вставка JSON. */
 function AddServer({ presets, onClose, onAdded }: { presets: McpPreset[]; onClose: () => void; onAdded: (server?: McpServer) => void }) {
     const [mode, setMode] = useState<Mode>({ kind: 'pick' });
     const [values, setValues] = useState<Record<string, string>>({});
@@ -191,8 +197,8 @@ function AddServer({ presets, onClose, onAdded }: { presets: McpPreset[]; onClos
     };
 
     const field = (name: string, title: string, options: { secret?: boolean; placeholder?: string; area?: boolean } = {}) => (
-        <label key={name} class="flex flex-col gap-4">
-            <span class="t-caption">{title}</span>
+        <label key={name} class="flex flex-col gap-6">
+            <span class="win-label">{title}</span>
             {options.area ? (
                 <textarea
                     class="field r-16 min-h-72 resize-y"
@@ -213,56 +219,63 @@ function AddServer({ presets, onClose, onAdded }: { presets: McpPreset[]; onClos
         </label>
     );
 
+    // Нижняя полоса шага: «Назад» к выбору и одно главное справа.
     const footer = (label: string, ready: boolean, go: () => void) => (
-        <div class="flex gap-8 flex-wrap">
-            <button class="pill pill-own dash-confirm-btn" disabled={busy || !ready} onClick={go}>
-                {busy ? tr.mcp.connecting : label}
-            </button>
-            <button class="pill pill-off dash-confirm-btn" onClick={() => (setMode({ kind: 'pick' }), setError(null), setImported(null))}>
+        <>
+            <button class="btn btn-plain" onClick={() => (setMode({ kind: 'pick' }), setError(null), setImported(null))}>
                 {tr.mcp.back}
             </button>
-        </div>
+            <button class="btn btn-main" disabled={busy || !ready} aria-busy={busy || undefined} onClick={go}>
+                {spin(busy)}
+                {busy ? tr.mcp.connecting : label}
+            </button>
+        </>
+    );
+
+    const problem = error && (
+        <p role="alert" class="win-callout m-0">
+            {error}
+        </p>
     );
 
     if (mode.kind === 'pick') {
         const tile = (key: string, icon: preact.ComponentChildren, title: string, text: string, pick: () => void, disabled = false) => (
-            <button
-                key={key}
-                class={`dash-option flex items-center gap-12 text-left border-glass r-16 py-10 px-12 ${disabled ? 'cursor-default opacity-50' : 'cursor-pointer'}`}
-                disabled={disabled}
-                onClick={pick}
-            >
+            <button key={key} class={`win-row win-choice text-left${disabled ? ' opacity-50' : ''}`} disabled={disabled} onClick={pick}>
                 {icon}
-                <span class="flex flex-col gap-2 min-w-0">
-                    <b>{title}</b>
-                    <span class="t-caption">{text}</span>
+                <span class="win-row-main">
+                    <span class="win-row-t">{title}</span>
+                    <span class="win-row-s">{text}</span>
                 </span>
             </button>
         );
         return (
             <Sheet title={tr.mcp.addTitle} about={tr.mcp.addAbout} onClose={onClose}>
-                <div class="grid grid-fill-220 gap-8">
-                    {presets.map((preset) =>
-                        tile(
-                            preset.id,
-                            <ServerIcon brand={preset.brand} transport={preset.transport} preset={preset.id} />,
-                            preset.title,
-                            preset.ready ? preset.description : (preset.why ?? preset.description),
-                            () => (setValues({ note: preset.note ?? '' }), setMode({ kind: 'preset', preset })),
-                        ),
-                    )}
-                    {tile('program', <ServerIcon transport="stdio" />, tr.mcp.ownProgram, tr.mcp.ownProgramText, () => setMode({ kind: 'program' }))}
-                    {tile('address', <ServerIcon transport="http" />, tr.mcp.ownAddress, tr.mcp.ownAddressText, () => setMode({ kind: 'address' }))}
+                {presets.length > 0 && (
+                    <WinSection title={tr.mcp.presetsSection} group>
+                        {presets.map((preset) =>
+                            tile(
+                                preset.id,
+                                <ServerIcon brand={preset.brand} transport={preset.transport} preset={preset.id} size={32} />,
+                                preset.title,
+                                preset.ready ? preset.description : (preset.why ?? preset.description),
+                                () => (setValues({ note: preset.note ?? '' }), setMode({ kind: 'preset', preset })),
+                            ),
+                        )}
+                    </WinSection>
+                )}
+                <WinSection title={tr.mcp.ownSection} group>
+                    {tile('program', <ServerIcon transport="stdio" size={32} />, tr.mcp.ownProgram, tr.mcp.ownProgramText, () => setMode({ kind: 'program' }))}
+                    {tile('address', <ServerIcon transport="http" size={32} />, tr.mcp.ownAddress, tr.mcp.ownAddressText, () => setMode({ kind: 'address' }))}
                     {tile(
                         'json',
-                        <span class="route-icon w-38 h-38 flex-none" aria-hidden="true">
-                            <IconBraces size={19} />
+                        <span class="route-icon w-32 h-32 flex-none" aria-hidden="true">
+                            <IconBraces size={16} />
                         </span>,
                         tr.mcp.pasteJson,
                         tr.mcp.pasteJsonText,
                         () => setMode({ kind: 'json' }),
                     )}
-                </div>
+                </WinSection>
             </Sheet>
         );
     }
@@ -275,7 +288,7 @@ function AddServer({ presets, onClose, onAdded }: { presets: McpPreset[]; onClos
             <Sheet
                 title={preset.title}
                 about={preset.transport === 'stdio' ? tr.mcp.aboutProgramMac : preset.outside ? tr.mcp.aboutServerInternet : tr.mcp.aboutServerAddress}
-                icon={<ServerIcon brand={preset.brand} transport={preset.transport} preset={preset.id} />}
+                icon={<ServerIcon brand={preset.brand} transport={preset.transport} preset={preset.id} size={44} />}
                 onClose={onClose}
                 footer={footer(tr.mcp.connect, !missing, () =>
                     void submit({
@@ -287,44 +300,24 @@ function AddServer({ presets, onClose, onAdded }: { presets: McpPreset[]; onClos
                     }),
                 )}
             >
-                <p class="t-caption m-0">
-                    {preset.description}
-                </p>
+                <p class="win-lead">{preset.description}</p>
+                {preset.id === 'homeassistant' && <p class="win-callout is-calm m-0">{tr.mcp.haSetup}</p>}
                 {needsUrl && field('url', tr.mcp.haAddress, { placeholder: 'http://homeassistant.local:8123' })}
                 {preset.fields.map((entry) => (
-                    <div key={entry.name} class="flex flex-col gap-4">
+                    <div key={entry.name} class="flex flex-col gap-6">
                         {field(entry.name, entry.title, { secret: entry.secret, placeholder: entry.placeholder })}
                         {entry.url && (
-                            <a class="t-caption c-accent-text" href={entry.url} target="_blank" rel="noopener noreferrer">
+                            <a class="win-hint c-accent-text self-start" href={entry.url} target="_blank" rel="noopener noreferrer">
                                 {tr.mcp.whereToGet}
                             </a>
                         )}
                     </div>
                 ))}
-                {preset.id === 'homeassistant' && (
-                    <p class="t-caption m-0">
-                        {tr.mcp.haSetup}
-                    </p>
-                )}
-                {preset.auth === 'oauth' && (
-                    <p class="t-caption m-0">
-                        {tr.mcp.oauthNote}
-                    </p>
-                )}
-                {preset.install && (
-                    <p class="t-caption m-0">
-                        {tr.mcp.firstRunDownload(preset.install.package, preset.install.runner)}
-                    </p>
-                )}
+                {preset.auth === 'oauth' && <p class="win-note">{tr.mcp.oauthNote}</p>}
+                {preset.install && <p class="win-note">{tr.mcp.firstRunDownload(preset.install.package, preset.install.runner)}</p>}
                 {field('note', tr.mcp.modelNoteField, { area: true })}
-                <p class="t-caption m-0">
-                    {tr.mcp.secretsNote}
-                </p>
-                {error && (
-                    <p role="alert" class="t-meta m-0 c-dot-offline">
-                        {error}
-                    </p>
-                )}
+                <p class="win-note">{tr.mcp.secretsNote}</p>
+                {problem}
             </Sheet>
         );
     }
@@ -334,7 +327,7 @@ function AddServer({ presets, onClose, onAdded }: { presets: McpPreset[]; onClos
             <Sheet
                 title={tr.mcp.ownProgram}
                 about={tr.mcp.programAbout}
-                icon={<ServerIcon transport="stdio" />}
+                icon={<ServerIcon transport="stdio" size={44} />}
                 onClose={onClose}
                 footer={footer(tr.mcp.connect, !!value('command').trim(), () =>
                     void submit({
@@ -346,18 +339,12 @@ function AddServer({ presets, onClose, onAdded }: { presets: McpPreset[]; onClos
                     }),
                 )}
             >
+                <p class="win-callout m-0">{tr.mcp.programWarning}</p>
                 {field('title', tr.mcp.fieldName, { placeholder: tr.mcp.programNamePlaceholder })}
                 {field('command', tr.mcp.fieldCommand, { placeholder: 'npx' })}
                 {field('args', tr.mcp.fieldArgs, { placeholder: '-y @modelcontextprotocol/server-filesystem /Users/…' })}
                 {field('env', tr.mcp.fieldEnv, { area: true, placeholder: 'API_KEY=…' })}
-                <p class="t-caption m-0 c-pill-yandex-fg">
-                    {tr.mcp.programWarning}
-                </p>
-                {error && (
-                    <p role="alert" class="t-meta m-0 c-dot-offline">
-                        {error}
-                    </p>
-                )}
+                {problem}
             </Sheet>
         );
     }
@@ -368,7 +355,7 @@ function AddServer({ presets, onClose, onAdded }: { presets: McpPreset[]; onClos
             <Sheet
                 title={tr.mcp.ownAddress}
                 about={tr.mcp.addressAbout}
-                icon={<ServerIcon transport="http" />}
+                icon={<ServerIcon transport="http" size={44} />}
                 onClose={onClose}
                 footer={footer(tr.mcp.connect, !!value('url').trim() && (auth !== 'token' || !!value('token').trim()), () =>
                     void submit({
@@ -383,8 +370,8 @@ function AddServer({ presets, onClose, onAdded }: { presets: McpPreset[]; onClos
             >
                 {field('title', tr.mcp.fieldName, { placeholder: tr.mcp.addressNamePlaceholder })}
                 {field('url', tr.mcp.fieldAddress, { placeholder: 'https://example.org/mcp' })}
-                <label class="flex flex-col gap-4">
-                    <span class="t-caption">{tr.mcp.fieldLogin}</span>
+                <label class="flex flex-col gap-6">
+                    <span class="win-label">{tr.mcp.fieldLogin}</span>
                     <select class="field" value={auth} onChange={set('auth')}>
                         <option value="none">{tr.mcp.authNone}</option>
                         <option value="token">{tr.mcp.authToken}</option>
@@ -393,25 +380,29 @@ function AddServer({ presets, onClose, onAdded }: { presets: McpPreset[]; onClos
                 </label>
                 {auth === 'token' && field('token', tr.mcp.fieldToken, { secret: true })}
                 {field('headers', tr.mcp.fieldHeaders, { area: true, placeholder: 'X-Api-Key: …' })}
-                {error && (
-                    <p role="alert" class="t-meta m-0 c-dot-offline">
-                        {error}
-                    </p>
-                )}
+                {problem}
             </Sheet>
         );
     }
 
+    // Разобрали: «Готово» открывает первый добавленный сервер; не добавилось ничего — окно закрывают крестиком.
     return (
         <Sheet
             title={tr.mcp.jsonTitle}
             about={tr.mcp.jsonAbout}
+            icon={
+                <span class="route-icon flex-none" aria-hidden="true" style={{ width: 44, height: 44 }}>
+                    <IconBraces size={22} />
+                </span>
+            }
             onClose={onClose}
             footer={
                 imported ? (
-                    <button class="dash-done" onClick={() => onAdded(imported.added[0])}>
-                        {tr.mcp.done}
-                    </button>
+                    imported.added.length > 0 ? (
+                        <button class="btn btn-main" onClick={() => onAdded(imported.added[0])}>
+                            {tr.mcp.done}
+                        </button>
+                    ) : undefined
                 ) : (
                     footer(tr.mcp.parseAndAdd, !!value('json').trim(), async () => {
                         setBusy(true);
@@ -429,30 +420,33 @@ function AddServer({ presets, onClose, onAdded }: { presets: McpPreset[]; onClos
         >
             {!imported && field('json', 'JSON', { area: true, placeholder: '{"mcpServers": {"name": {"command": "npx", "args": ["-y", "…"]}}}' })}
             {imported && (
-                <div class="flex flex-col gap-6">
-                    <p class="t-meta m-0 c-accent-text" role="status">
+                <>
+                    <p class="win-lead" role="status">
                         {imported.added.length ? tr.mcp.importedAdded(imported.added.map((server) => server.title).join(', ')) : tr.mcp.importedNothing}{' '}
                         {tr.mcp.importedToolsOff}
                     </p>
                     {imported.problems.map((problem) => (
-                        <p key={problem} class="t-caption m-0 c-pill-yandex-fg">
+                        <p key={problem} class="win-callout m-0">
                             {problem}
                         </p>
                     ))}
-                </div>
+                </>
             )}
-            {error && (
-                <p role="alert" class="t-meta m-0 c-dot-offline">
-                    {error}
-                </p>
-            )}
+            {problem}
         </Sheet>
     );
 }
 
-/** Лист сервера: состояние, инструменты с переключателями, инструкция, подсказка, права, секреты. */
+type ServerTab = 'tools' | 'settings';
+
+/**
+ * Окно сервера: шапка — состояние, где он, версия; «Инструменты» — вход, инструкция сервера, инструменты с
+ * переключателями; «Настройки» — подсказка модели (её «Сохранить» — в нижней полосе), кто пользуется, ключи, «Опасное».
+ * Включить выключенный и войти — главная кнопка внизу; переподключить и войти заново — за «⋯».
+ */
 function ServerSheet({ server, onClose, onChanged }: { server: McpServer; onClose: () => void; onChanged: (fresh?: McpServer) => void }) {
     const mayManage = can('connectors.manage');
+    const [tab, setTab] = useState<ServerTab>('tools');
     const [busy, setBusy] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [note, setNote] = useState(server.note);
@@ -538,296 +532,359 @@ function ServerSheet({ server, onClose, onChanged }: { server: McpServer; onClos
         }
     };
 
+    const remove = async () => {
+        const yes = await ask({ title: tr.mcp.removeTitle(server.title), text: tr.mcp.removeText, ok: tr.mcp.removeOk, danger: true });
+        if (!yes) return;
+        void act('remove', async () => {
+            await api.removeMcpServer(server.id);
+            onClose();
+        });
+    };
+
     const badge = (text: string, cls: string) => (
         <span key={text} class={`pill ${cls}`}>
             {text}
         </span>
     );
     const capabilities = CAPABILITIES.filter((entry) => ['smart_home', 'reminders', 'news', 'weather', 'calls', 'account', 'music'].includes(entry.name));
+    const oauth = server.auth === 'oauth' && mayManage;
+    const toolsOn = server.tools.filter((tool) => tool.on).length;
+    const noteDirty = mayManage && note !== server.note;
+
+    const tabs = [
+        { id: 'tools' as const, label: tr.mcp.tools },
+        { id: 'settings' as const, label: tr.plugins.tabSettings },
+    ];
+    const menu = mayManage
+        ? [
+              { label: cap(tr.mcp.reconnect), disabled: busy !== null, act: () => void act('reconnect', () => api.reconnectMcp(server.id)) },
+              ...(oauth && server.state !== 'login' ? [{ label: cap(tr.mcp.loginAgain), disabled: busy !== null, act: () => void login() }] : []),
+          ]
+        : undefined;
+
+    // Нижняя полоса: на «Настройках» с изменённой подсказкой — «Сохранить»; иначе — войти или включить, если нужно.
+    const footer =
+        tab === 'settings' && (noteDirty || busy === 'note') ? (
+            <SaveBar
+                dirty={noteDirty}
+                busy={busy === 'note'}
+                onRevert={() => setNote(server.note)}
+                onSave={() => void act('note', () => api.updateMcpServer(server.id, { note }))}
+            />
+        ) : oauth && server.state === 'login' ? (
+            <button class="btn btn-main" disabled={busy !== null} aria-busy={busy === 'login' || undefined} onClick={() => void login()}>
+                {spin(busy === 'login')}
+                {cap(tr.mcp.login)}
+            </button>
+        ) : mayManage && !server.enabled ? (
+            <button
+                class="btn btn-main"
+                disabled={busy !== null}
+                aria-busy={busy === 'enabled' || undefined}
+                onClick={() => void act('enabled', () => api.updateMcpServer(server.id, { enabled: true }))}
+            >
+                {spin(busy === 'enabled')}
+                {cap(tr.mcp.enable)}
+            </button>
+        ) : undefined;
 
     return (
         <Sheet
             title={server.title}
-            about={`${states()[server.state].text} · ${whereOf(server)}`}
-            icon={<ServerIcon brand={server.brand} transport={server.transport} preset={server.preset} />}
+            about={whereOf(server)}
+            meta={
+                <>
+                    <span class={`pill ${states()[server.state].cls}`}>{states()[server.state].text}</span>
+                    {badge(server.cloud ? tr.mcp.viaInternet : tr.mcp.atHome, server.cloud ? 'pill-yandex' : 'pill-own')}
+                    {server.server && <span class="win-chip">{tr.mcp.versionBadge(server.server.name, server.server.version)}</span>}
+                </>
+            }
+            icon={<ServerIcon brand={server.brand} transport={server.transport} preset={server.preset} size={44} />}
+            menu={menu}
+            tabs={tabs}
+            tab={tab}
+            onTab={setTab}
             onClose={onClose}
+            footer={footer}
         >
-            <div class="flex gap-6 flex-wrap">
-                {badge(server.cloud ? tr.mcp.viaInternet : tr.mcp.atHome, server.cloud ? 'pill-yandex' : 'pill-own')}
-                {server.server && badge(tr.mcp.versionBadge(server.server.name, server.server.version), 'pill-off')}
-            </div>
-            {server.detail && server.state !== 'ready' && (
-                <p class={`t-meta m-0 ${server.state === 'login' ? 'c-pill-yandex-fg' : 'c-dot-offline'}`} role="status">
-                    {server.state === 'login' ? tr.mcp.needLogin : server.detail}
+            {error && (
+                <p role="alert" class="win-callout m-0">
+                    {error}
                 </p>
             )}
-            {server.state === 'error' && server.log.length > 0 && <p class="t-mono m-0 opacity-80">{server.log.join('\n')}</p>}
-            {server.auth === 'oauth' && mayManage && (
-                <div class="flex flex-col gap-6">
-                    <div class="flex gap-6 flex-wrap items-center">
-                        <Action label={server.state === 'login' ? tr.mcp.login : tr.mcp.loginAgain} tone={server.state === 'login' ? 'on' : 'off'} busy={busy === 'login'} onClick={() => void login()} />
-                        <span class="t-caption">{tr.mcp.loginByYou}</span>
-                    </div>
-                    {loginOpen && (
-                        <form
-                            class="flex flex-col gap-6"
-                            onSubmit={(e) => {
-                                e.preventDefault();
-                                void finishLogin();
-                            }}
-                        >
-                            <span class="t-caption">
-                                {tr.mcp.loginPhoneNote}
-                            </span>
-                            <div class="flex gap-8 flex-wrap">
-                                <input
-                                    class="field flex-1-1-220 min-w-0"
-                                    aria-label={tr.mcp.returnedLabel}
-                                    placeholder="http://localhost/api/v1/mcp/oauth/callback?code=…"
-                                    value={returned}
-                                    onInput={(e) => setReturned((e.target as HTMLInputElement).value)}
-                                />
-                                <Action label={tr.mcp.finishLogin} tone="on" disabled={!returned.trim()} busy={busy === 'finish'} onClick={() => void finishLogin()} />
-                            </div>
-                        </form>
+            {tab === 'tools' && (
+                <>
+                    {server.detail && server.state !== 'ready' && (
+                        <p class="win-callout m-0" role="status">
+                            {server.state === 'login' ? (oauth ? `${tr.mcp.needLogin} ${cap(tr.mcp.loginByYou)}.` : tr.mcp.needLogin) : server.detail}
+                        </p>
                     )}
-                    {notice && (
-                        <p class="t-caption m-0 c-accent-text" role="status">
+                    {server.state === 'error' && server.log.length > 0 && <p class="win-callout is-calm m-0 t-mono">{server.log.join('\n')}</p>}
+                    {oauth && loginOpen && (
+                        <WinSection group>
+                            <form
+                                class="win-row is-col"
+                                onSubmit={(e) => {
+                                    e.preventDefault();
+                                    void finishLogin();
+                                }}
+                            >
+                                <span class="win-row-s">{tr.mcp.loginPhoneNote}</span>
+                                <div class="flex gap-8 flex-wrap items-center">
+                                    <input
+                                        class="field flex-1-1-220 min-w-0"
+                                        aria-label={tr.mcp.returnedLabel}
+                                        placeholder="http://localhost/api/v1/mcp/oauth/callback?code=…"
+                                        value={returned}
+                                        onInput={(e) => setReturned((e.target as HTMLInputElement).value)}
+                                    />
+                                    <button type="submit" class="btn btn-plain btn-sm" disabled={!returned.trim() || busy === 'finish'} aria-busy={busy === 'finish' || undefined}>
+                                        {spin(busy === 'finish')}
+                                        {cap(tr.mcp.finishLogin)}
+                                    </button>
+                                </div>
+                            </form>
+                        </WinSection>
+                    )}
+                    {oauth && notice && (
+                        <p class="win-callout is-calm m-0" role="status">
                             {notice}
                         </p>
                     )}
-                </div>
-            )}
-            {mayManage && (
-                <div class="flex gap-6 flex-wrap">
-                    <Action label={tr.mcp.reconnect} busy={busy === 'reconnect'} onClick={() => void act('reconnect', () => api.reconnectMcp(server.id))} />
-                    <Action
-                        label={server.enabled ? tr.mcp.disable : tr.mcp.enable}
-                        busy={busy === 'enabled'}
-                        onClick={() => void act('enabled', () => api.updateMcpServer(server.id, { enabled: !server.enabled }))}
-                    />
-                    <Action
-                        label={tr.mcp.remove}
-                        busy={busy === 'remove'}
-                        onClick={async () => {
-                            const yes = await ask({ title: tr.mcp.removeTitle(server.title), text: tr.mcp.removeText, ok: tr.mcp.removeOk, danger: true });
-                            if (!yes) return;
-                            void act('remove', async () => {
-                                await api.removeMcpServer(server.id);
-                                onClose();
-                            });
-                        }}
-                    />
-                </div>
-            )}
 
-            {server.tools.length > 0 && (
-                <div class="flex flex-col">
-                    <b class="my-4 mx-0">{tr.mcp.tools}</b>
-                    {server.tools.map((tool) => (
-                        <div key={tool.name} class="flex flex-col gap-6 py-8 px-0 bt-divider">
-                            <div class="flex items-center gap-10">
-                                <span class="flex-1 min-w-0 flex flex-col gap-2">
-                                    <b class="flex gap-6 items-center flex-wrap fs-14">
-                                        {tool.title}
+                    {server.instructions.text && (
+                        <WinSection
+                            title={tr.mcp.instructionsTitle}
+                            aside={server.instructions.approved ? badge(tr.mcp.inPrompt, 'pill-own') : badge(tr.mcp.awaitsApproval, 'pill-yandex')}
+                            group
+                        >
+                            <div class="win-row is-col">
+                                <p class="win-text m-0 max-h-120 overflow-auto pre-wrap">{server.instructions.text}</p>
+                                {mayManage && !server.instructions.approved && (
+                                    <button
+                                        class="btn btn-plain btn-sm self-start"
+                                        disabled={busy === 'approve'}
+                                        aria-busy={busy === 'approve' || undefined}
+                                        onClick={() => void act('approve', () => api.approveMcpInstructions(server.id))}
+                                    >
+                                        {spin(busy === 'approve')}
+                                        {cap(tr.mcp.approve)}
+                                    </button>
+                                )}
+                            </div>
+                        </WinSection>
+                    )}
+
+                    {server.tools.length > 0 && (
+                        <WinSection title={tr.mcp.tools} aside={tr.mcp.toolsSummary(toolsOn, server.tools.length)} group>
+                            {server.tools.map((tool) => (
+                                <div key={tool.name} class="win-row is-col">
+                                    <div class="flex items-center gap-12">
+                                        <div class="win-row-main">
+                                            <span class="win-row-t">{tool.title}</span>
+                                            <span class="win-row-s line-clamp-2 overflow-hidden">{tool.description || tool.name}</span>
+                                        </div>
+                                        <Switch
+                                            on={tool.on}
+                                            label={tr.mcp.toolSwitch(tool.title, tool.on)}
+                                            disabled={!mayManage || busy === `tool:${tool.name}` || server.state !== 'ready'}
+                                            onChange={(on) => void act(`tool:${tool.name}`, () => api.setMcpTool(server.id, tool.name, { on }))}
+                                        />
+                                    </div>
+                                    <div class="win-tags">
                                         {tool.readOnly ? badge(tr.mcp.readOnly, 'pill-off') : badge(tr.mcp.changesData, 'pill-yandex')}
                                         {tool.openWorld && badge(tr.mcp.goesOnline, 'pill-yandex')}
                                         {tool.background && badge(tr.mcp.inBackground, 'pill-own')}
                                         {tool.paid && badge(tr.mcp.paidRun, 'pill-yandex')}
-                                    </b>
-                                    <span class="t-caption line-clamp-2 overflow-hidden">
-                                        {tool.description || tool.name}
-                                    </span>
+                                    </div>
                                     {tool.changed && (
-                                        <span class="t-caption c-pill-yandex-fg" role="status">
+                                        <span class="win-row-s c-pill-yandex-fg" role="status">
                                             {tr.mcp.descriptionChanged}
                                         </span>
                                     )}
-                                </span>
-                                <Switch
-                                    on={tool.on}
-                                    label={tr.mcp.toolSwitch(tool.title, tool.on)}
-                                    disabled={!mayManage || busy === `tool:${tool.name}` || server.state !== 'ready'}
-                                    onChange={(on) => void act(`tool:${tool.name}`, () => api.setMcpTool(server.id, tool.name, { on }))}
-                                />
-                            </div>
-                            {mayManage && server.state === 'ready' && (
-                                <div class="flex gap-6 flex-wrap items-center" title={tr.mcp.backgroundHint}>
-                                    <Action
-                                        on={tool.background}
-                                        label={tr.mcp.backgroundToggle(tool.background)}
-                                        busy={busy === `bg:${tool.name}`}
-                                        onClick={() =>
-                                            void act(`bg:${tool.name}`, () =>
-                                                api.setMcpTool(server.id, tool.name, { background: !tool.background }),
-                                            )
-                                        }
-                                    />
-                                    <Action
-                                        on={tool.paid}
-                                        label={tr.mcp.paidToggle(tool.paid)}
-                                        busy={busy === `paid:${tool.name}`}
-                                        onClick={() =>
-                                            void act(`paid:${tool.name}`, () => api.setMcpTool(server.id, tool.name, { paid: !tool.paid }))
-                                        }
-                                    />
-                                    <Action
-                                        label={trying === tool.name ? tr.mcp.hide : tr.mcp.tryIt}
-                                        onClick={() => {
-                                            setTrying(trying === tool.name ? null : tool.name);
-                                            setTried(null);
-                                            setArgs('{}');
-                                        }}
-                                    />
-                                </div>
-                            )}
-                            {trying === tool.name && (
-                                <div class="flex flex-col gap-6">
-                                    <textarea
-                                        class="field t-mono r-16 min-h-56"
-                                        aria-label={tr.mcp.argsLabel(tool.title)}
-                                        value={args}
-                                        onInput={(e) => setArgs((e.target as HTMLTextAreaElement).value)}
-                                    />
-                                    <div>
-                                        <Action label={tr.mcp.call} tone="on" busy={busy === `try:${tool.name}`} onClick={() => void tryTool(tool)} />
-                                    </div>
-                                    {tried?.tool === tool.name && (
-                                        <p class={`t-mono m-0 ${tried.isError ? 'c-dot-offline' : 'c-text'}`} role="status">
-                                            {tr.mcp.triedResult(tried.isError, tried.ms, tried.content)}
-                                        </p>
+                                    {mayManage && server.state === 'ready' && (
+                                        <div class="flex gap-6 flex-wrap items-center" title={tr.mcp.backgroundHint}>
+                                            <Action
+                                                on={tool.background}
+                                                label={tr.mcp.backgroundToggle(tool.background)}
+                                                busy={busy === `bg:${tool.name}`}
+                                                onClick={() =>
+                                                    void act(`bg:${tool.name}`, () =>
+                                                        api.setMcpTool(server.id, tool.name, { background: !tool.background }),
+                                                    )
+                                                }
+                                            />
+                                            <Action
+                                                on={tool.paid}
+                                                label={tr.mcp.paidToggle(tool.paid)}
+                                                busy={busy === `paid:${tool.name}`}
+                                                onClick={() =>
+                                                    void act(`paid:${tool.name}`, () => api.setMcpTool(server.id, tool.name, { paid: !tool.paid }))
+                                                }
+                                            />
+                                            <button
+                                                class="btn btn-quiet btn-sm"
+                                                aria-expanded={trying === tool.name}
+                                                onClick={() => {
+                                                    setTrying(trying === tool.name ? null : tool.name);
+                                                    setTried(null);
+                                                    setArgs('{}');
+                                                }}
+                                            >
+                                                {cap(trying === tool.name ? tr.mcp.hide : tr.mcp.tryIt)}
+                                            </button>
+                                        </div>
+                                    )}
+                                    {trying === tool.name && (
+                                        <div class="flex flex-col gap-6">
+                                            <textarea
+                                                class="field t-mono r-16 min-h-56"
+                                                aria-label={tr.mcp.argsLabel(tool.title)}
+                                                value={args}
+                                                onInput={(e) => setArgs((e.target as HTMLTextAreaElement).value)}
+                                            />
+                                            <button
+                                                class="btn btn-plain btn-sm self-start"
+                                                disabled={busy === `try:${tool.name}`}
+                                                aria-busy={busy === `try:${tool.name}` || undefined}
+                                                onClick={() => void tryTool(tool)}
+                                            >
+                                                {spin(busy === `try:${tool.name}`)}
+                                                {cap(tr.mcp.call)}
+                                            </button>
+                                            {tried?.tool === tool.name && (
+                                                <p class={`t-mono m-0 ${tried.isError ? 'c-dot-offline' : 'c-text'}`} role="status">
+                                                    {tr.mcp.triedResult(tried.isError, tried.ms, tried.content)}
+                                                </p>
+                                            )}
+                                        </div>
                                     )}
                                 </div>
-                            )}
-                        </div>
-                    ))}
-                </div>
-            )}
-
-            {server.instructions.text && (
-                <div class="flex flex-col gap-6">
-                    <b class="flex gap-8 items-center">
-                        {tr.mcp.instructionsTitle}
-                        {server.instructions.approved ? badge(tr.mcp.inPrompt, 'pill-own') : badge(tr.mcp.awaitsApproval, 'pill-yandex')}
-                    </b>
-                    <p class="t-caption m-0 max-h-120 overflow-auto pre-wrap">
-                        {server.instructions.text}
-                    </p>
-                    {mayManage && !server.instructions.approved && (
-                        <div>
-                            <Action label={tr.mcp.approve} tone="on" busy={busy === 'approve'} onClick={() => void act('approve', () => api.approveMcpInstructions(server.id))} />
-                        </div>
-                    )}
-                </div>
-            )}
-
-            <div class="flex flex-col gap-6">
-                <b>{tr.mcp.modelNote}</b>
-                <textarea
-                    class="field r-16 min-h-64 resize-y"
-                    aria-label={tr.mcp.modelNote}
-                    placeholder={tr.mcp.modelNotePlaceholder}
-                    disabled={!mayManage}
-                    value={note}
-                    onInput={(e) => setNote((e.target as HTMLTextAreaElement).value)}
-                />
-                {mayManage && note !== server.note && (
-                    <div>
-                        <Action label={tr.mcp.save} tone="on" busy={busy === 'note'} onClick={() => void act('note', () => api.updateMcpServer(server.id, { note }))} />
-                    </div>
-                )}
-            </div>
-
-            {mayManage && (
-                <div class="flex flex-col">
-                    <b class="my-4 mx-0">{tr.mcp.whoUses}</b>
-                    {(
-                        [
-                            ['voice', tr.mcp.voiceAllowed, byMode(tr.mcp.voiceAllowedSpeaker, tr.mcp.voiceAllowedMic), server.voice],
-                            ['adminOnly', tr.mcp.adminOnly, tr.mcp.adminOnlySub, server.adminOnly],
-                            ['outside', tr.mcp.outsideAnswers, tr.mcp.outsideAnswersSub, server.outside],
-                        ] as const
-                    ).map(([key, title, sub, on]) => (
-                        <div key={key} class="flex items-center gap-10 py-8 px-0 bt-divider">
-                            <span class="flex-1 flex flex-col gap-2">
-                                <b class="fs-14">{title}</b>
-                                <span class="t-caption">{sub}</span>
-                            </span>
-                            <Switch on={on} label={title} disabled={busy === key} onChange={(next) => void act(key, () => api.updateMcpServer(server.id, { [key]: next }))} />
-                        </div>
-                    ))}
-                    <label class="flex items-center gap-10 py-8 px-0 bt-divider flex-wrap">
-                        <span class="flex-1 flex flex-col gap-2 min-w-180">
-                            <b class="fs-14">{byMode(tr.mcp.isCapabilitySpeaker, tr.mcp.isCapabilityOwn)}</b>
-                            <span class="t-caption">{tr.mcp.capabilitySub}</span>
-                        </span>
-                        <select
-                            class="field"
-                            value={server.capability ?? ''}
-                            onChange={(e) => {
-                                const capability = (e.target as HTMLSelectElement).value || null;
-                                void act('capability', () => api.updateMcpServer(server.id, { capability }));
-                            }}
-                        >
-                            <option value="">{tr.mcp.none}</option>
-                            {capabilities.map((entry) => (
-                                <option key={entry.name} value={entry.name}>
-                                    {entry.title}
-                                </option>
                             ))}
-                        </select>
-                    </label>
-                </div>
+                        </WinSection>
+                    )}
+                </>
             )}
 
-            {mayManage && server.secrets.length > 0 && (
-                <div class="flex flex-col">
-                    <b class="my-4 mx-0">{tr.mcp.secretsTitle}</b>
-                    {server.secrets.map((secret) => {
-                        const key = `${secret.kind}:${secret.name}`;
-                        const save = () =>
-                            void act(key, () =>
-                                api.updateMcpServer(
-                                    server.id,
-                                    secret.kind === 'token'
-                                        ? { token: secretDraft[key] ?? '' }
-                                        : secret.kind === 'env'
-                                          ? { env: { [secret.name]: secretDraft[key] ?? '' } }
-                                          : { headers: { [secret.name]: secretDraft[key] ?? '' } },
-                                ),
-                            );
-                        return (
-                            <form
-                                key={key}
-                                class="flex items-center gap-8 py-8 px-0 bt-divider flex-wrap"
-                                onSubmit={(e) => {
-                                    e.preventDefault();
-                                    save();
-                                }}
-                            >
-                                <span class="flex-1 min-w-140 flex flex-col">
-                                    <b class="fs-14">{secret.kind === 'token' ? tr.mcp.fieldToken : secret.name}</b>
-                                    <span class="t-caption">{secret.set ? tr.mcp.secretSet(secret.hint ?? '') : tr.mcp.secretNotSet}</span>
-                                </span>
-                                <input
-                                    class="field flex-1-1-160 min-w-0"
-                                    type="password"
-                                    autocomplete="off"
-                                    aria-label={tr.mcp.newValueLabel(secret.name)}
-                                    placeholder={tr.mcp.newValue}
-                                    value={secretDraft[key] ?? ''}
-                                    onInput={(e) => setSecretDraft((all) => ({ ...all, [key]: (e.target as HTMLInputElement).value }))}
-                                />
-                                <Action label={tr.mcp.replace} disabled={!(secretDraft[key] ?? '').trim()} busy={busy === key} onClick={save} />
-                            </form>
-                        );
-                    })}
-                </div>
-            )}
-            {error && (
-                <p role="alert" class="t-meta m-0 c-dot-offline">
-                    {error}
-                </p>
+            {tab === 'settings' && (
+                <>
+                    <label class="flex flex-col gap-6">
+                        <span class="win-label">{tr.mcp.modelNote}</span>
+                        <textarea
+                            class="field r-16 min-h-64 resize-y"
+                            placeholder={tr.mcp.modelNotePlaceholder}
+                            disabled={!mayManage}
+                            value={note}
+                            onInput={(e) => setNote((e.target as HTMLTextAreaElement).value)}
+                        />
+                    </label>
+
+                    {mayManage && (
+                        <WinSection title={tr.mcp.whoUses} group>
+                            {(
+                                [
+                                    ['voice', tr.mcp.voiceAllowed, byMode(tr.mcp.voiceAllowedSpeaker, tr.mcp.voiceAllowedMic), server.voice],
+                                    ['adminOnly', tr.mcp.adminOnly, tr.mcp.adminOnlySub, server.adminOnly],
+                                    ['outside', tr.mcp.outsideAnswers, tr.mcp.outsideAnswersSub, server.outside],
+                                ] as const
+                            ).map(([key, title, sub, on]) => (
+                                <WinRow key={key} title={title} sub={sub}>
+                                    <Switch on={on} label={title} disabled={busy === key} onChange={(next) => void act(key, () => api.updateMcpServer(server.id, { [key]: next }))} />
+                                </WinRow>
+                            ))}
+                            <WinRow title={byMode(tr.mcp.isCapabilitySpeaker, tr.mcp.isCapabilityOwn)} sub={tr.mcp.capabilitySub}>
+                                <select
+                                    class="field"
+                                    aria-label={byMode(tr.mcp.isCapabilitySpeaker, tr.mcp.isCapabilityOwn)}
+                                    value={server.capability ?? ''}
+                                    onChange={(e) => {
+                                        const capability = (e.target as HTMLSelectElement).value || null;
+                                        void act('capability', () => api.updateMcpServer(server.id, { capability }));
+                                    }}
+                                >
+                                    <option value="">{tr.mcp.none}</option>
+                                    {capabilities.map((entry) => (
+                                        <option key={entry.name} value={entry.name}>
+                                            {entry.title}
+                                        </option>
+                                    ))}
+                                </select>
+                            </WinRow>
+                        </WinSection>
+                    )}
+
+                    {mayManage && server.secrets.length > 0 && (
+                        <WinSection title={tr.mcp.secretsTitle} group>
+                            {server.secrets.map((secret) => {
+                                const key = `${secret.kind}:${secret.name}`;
+                                const draft = secretDraft[key] ?? '';
+                                return (
+                                    <form
+                                        key={key}
+                                        class="win-row is-col"
+                                        onSubmit={(e) => {
+                                            e.preventDefault();
+                                            void act(key, () =>
+                                                api.updateMcpServer(
+                                                    server.id,
+                                                    secret.kind === 'token'
+                                                        ? { token: draft }
+                                                        : secret.kind === 'env'
+                                                          ? { env: { [secret.name]: draft } }
+                                                          : { headers: { [secret.name]: draft } },
+                                                ),
+                                            );
+                                        }}
+                                    >
+                                        <div class="win-row-main">
+                                            <span class="win-row-t">{secret.kind === 'token' ? tr.mcp.fieldToken : <span class="win-code">{secret.name}</span>}</span>
+                                            <span class="win-row-s">{secret.set ? tr.mcp.secretSet(secret.hint ?? '') : tr.mcp.secretNotSet}</span>
+                                        </div>
+                                        <div class="flex gap-8 flex-wrap items-center">
+                                            <input
+                                                class="field flex-1-1-160 min-w-0"
+                                                type="password"
+                                                autocomplete="off"
+                                                aria-label={tr.mcp.newValueLabel(secret.name)}
+                                                placeholder={tr.mcp.newValue}
+                                                value={draft}
+                                                onInput={(e) => setSecretDraft((all) => ({ ...all, [key]: (e.target as HTMLInputElement).value }))}
+                                            />
+                                            <button type="submit" class="btn btn-plain btn-sm" disabled={!draft.trim() || busy === key} aria-busy={busy === key || undefined}>
+                                                {spin(busy === key)}
+                                                {cap(tr.mcp.replace)}
+                                            </button>
+                                        </div>
+                                    </form>
+                                );
+                            })}
+                        </WinSection>
+                    )}
+
+                    {mayManage && (
+                        <WinSection title={tr.ui.danger} group>
+                            {server.enabled && (
+                                <WinRow title={cap(tr.mcp.disable)}>
+                                    <button
+                                        class="btn btn-danger btn-sm"
+                                        disabled={busy !== null}
+                                        aria-busy={busy === 'enabled' || undefined}
+                                        onClick={() => void act('enabled', () => api.updateMcpServer(server.id, { enabled: false }))}
+                                    >
+                                        {spin(busy === 'enabled')}
+                                        {cap(tr.mcp.disable)}
+                                    </button>
+                                </WinRow>
+                            )}
+                            <WinRow title={cap(tr.mcp.remove)} sub={tr.mcp.removeText}>
+                                <button class="btn btn-danger btn-sm" disabled={busy !== null} aria-busy={busy === 'remove' || undefined} onClick={() => void remove()}>
+                                    {spin(busy === 'remove')}
+                                    {cap(tr.mcp.remove)}
+                                </button>
+                            </WinRow>
+                        </WinSection>
+                    )}
+                </>
             )}
         </Sheet>
     );

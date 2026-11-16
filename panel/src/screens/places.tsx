@@ -13,9 +13,9 @@ import {
     IconChevronLeft,
     IconChevronRight,
     IconGlobe,
+    IconHome,
     IconJournal,
     IconKey,
-    IconLaptop,
     IconMic,
     IconPalette,
     IconShield,
@@ -24,14 +24,14 @@ import {
 } from '../icons';
 import { usePanel, useSectionTab } from '../shell/context';
 import { setDevMode, setHiddenDevOptions, tapDev, useDevMode, useHiddenDevOptions } from '../shell/dev';
-import { ThemeCard } from '../shell/theme-picker';
 import { Switch } from '../ui/switch';
 import { useOfferedVersion } from '../updates';
-import { HelperCardWidget, HelperWidget, ModeWidget, WatchWidget } from './desk-widgets';
+import { WatchWidget } from './desk-widgets';
+import { HelpersPage } from './helpers';
 import { Stations, Updates } from './house';
 import { SetupSheet } from './stations';
-import { OwnFrame } from './helper-pc';
 import { TOP_VIA } from '../via';
+import { useHomeStationName } from '../station-name';
 import { JournalScreen } from './journal';
 import { StationMemoryCard } from './memory';
 import type { SettingsTab } from './mind';
@@ -88,8 +88,8 @@ function Card({ id, title, children }: { id: string; title: string; children: Co
 }
 
 /**
- * «Колонка»: как говорить с DuoWave, её имя и вид, какие колонки слушаем, режим, слух, где работает DuoWave и её
- * память. В режиме «Микрофон» (docs/plans/mic-mode.md) страница — «Микрофон»: тот же выбор, готовность, «Слух» и
+ * «Колонка»: как говорить с DuoWave, её имя и вид, какие колонки слушаем, слух, где работает DuoWave и её память.
+ * «Кто отвечает» (режим) — в «Доме» (решение владельца 16.11): там же, где Турбо и что будет без него. В режиме «Микрофон» (docs/plans/mic-mode.md) страница — «Микрофон»: тот же выбор, готовность, «Слух» и
  * проверка микрофона; о колонке на ней ничего.
  */
 function StationPage() {
@@ -99,6 +99,8 @@ function StationPage() {
     const current = panel.current;
     const computer = useOnComputer();
     const choiceHere = useTalkChoiceHere() && can('station.view');
+    // Одно имя колонки (владелец 16.11): в окне колонки на компьютере — имя из его списка.
+    const homeName = useHomeStationName();
     if (computer)
         return (
             <>
@@ -128,7 +130,7 @@ function StationPage() {
                 <Card id="name" title={tr.places.nameTitle}>
                     <div class="w-row">
                         <span class="flex-1 min-w-0 flex flex-col">
-                            <span class="w-strong">«{current.name}»</span>
+                            <span class="w-strong">«{homeName ?? current.name}»</span>
                             <span class="w-cap">{tr.places.nameAbout}</span>
                         </span>
                         <button class="w-btn" onClick={() => setNaming(true)}>
@@ -139,11 +141,6 @@ function StationPage() {
                 </Card>
             )}
             {can('station.view') && <Stations />}
-            {panel.role.role !== 'helper' && can('station.view') && (
-                <Card id="mode" title={tr.places.modeTitle}>
-                    <ModeWidget />
-                </Card>
-            )}
             <ModelsScreen tab="recognition" onTab={() => undefined} bare />
             {can('station.view') && <PlacementCard />}
             {can('station.view') && <StationMemoryCard />}
@@ -196,32 +193,18 @@ function BackToYandex() {
     );
 }
 
-/** «Компьютер-помощник»: что компьютер даёт колонке и как присматривает за ней. Одной страницей — этап 4. */
-function HelperPage() {
-    const panel = usePanel();
-    // Окно приложения — пульт колонки (этап 4): своё у компьютера — его страница, напрямую, без прохода.
-    if (TOP_VIA) return <OwnFrame page="helper" title={tr.places.helperTitle} />;
-    if (panel.role.role === 'helper')
-        return (
-            <>
-                <Card id="helper" title={tr.places.helpTitle}>
-                    <HelperWidget />
-                </Card>
-                <Card id="watch" title={tr.places.watchTitle}>
-                    <WatchWidget />
-                </Card>
-            </>
-        );
-    return (
-        <Card id="helper-card" title={tr.places.helperTitle}>
-            <HelperCardWidget />
-        </Card>
-    );
-}
-
 function AccessPage() {
     const panel = usePanel();
     return <SettingsScreen catalog={panel.catalog} tab="access" onTab={() => undefined} onSignOut={panel.signOut} bare />;
+}
+
+/**
+ * «Оформление» — вкладка «Оформление» прежних «Настроек» целиком: язык, вид пульта, стол (лента ярлыков) и «Пройти
+ * первые шаги». Со списка страниц (этап 1 переделки) здесь был только вид пульта — остальное не открывалось ниоткуда.
+ */
+function LookPage() {
+    const panel = usePanel();
+    return <SettingsScreen catalog={panel.catalog} tab="look" onTab={() => undefined} onSignOut={panel.signOut} bare />;
 }
 
 function UpdatesPage() {
@@ -332,17 +315,28 @@ const GROUP_TITLES = (): Record<SettingsPage['group'], string> => ({
     system: tr.places.groupSystem,
 });
 
-function settingsPages(role: string, onStation: boolean, offered: boolean): SettingsPage[] {
+function settingsPages(role: string, offered: boolean): SettingsPage[] {
     return [
         // Адрес страницы прежний (`#/settings/station`); в режиме «Микрофон» она — о микрофоне.
         onComputer()
             ? { id: 'station', title: tr.places.pageMic, sub: tr.places.pageMicSub, icon: IconMic, group: 'device' as const, Page: StationPage }
             : { id: 'station', title: tr.places.pageStation, sub: tr.places.pageStationSub, icon: IconSpeaker, group: 'device' as const, Page: StationPage },
-        ...(role === 'helper' || onStation
-            ? [{ id: 'helper', title: tr.places.helperTitle, sub: tr.places.pageHelperSub, icon: IconLaptop, group: 'device' as const, Page: HelperPage }]
+        // «Дом» (решение владельца 16.11) — одна страница вместо «Помощников» и «Этого компьютера»: у шлюза — он, его
+        // Турбо и что будет без них; у пульта Турбо — его силы и кому он помогает. Адрес прежний (`#/settings/helpers`).
+        ...(can('connectors.view') || TOP_VIA || role === 'helper'
+            ? [
+                  {
+                      id: 'helpers',
+                      title: tr.helpers.pageTitle,
+                      sub: role === 'helper' && !TOP_VIA ? tr.helpers.pageSubTurbo : tr.helpers.pageSub,
+                      icon: IconHome,
+                      group: 'device' as const,
+                      Page: HelpersPage,
+                  },
+              ]
             : []),
         { id: 'access', title: tr.places.pageAccess, sub: tr.places.pageAccessSub, icon: IconKey, group: 'access', Page: AccessPage },
-        { id: 'look', title: tr.places.pageLook, sub: tr.places.pageLookSub, icon: IconPalette, group: 'access', Page: ThemeCard },
+        { id: 'look', title: tr.places.pageLook, sub: tr.places.pageLookSub, icon: IconPalette, group: 'access', Page: LookPage },
         ...(can('station.view')
             ? [{ id: 'updates', title: tr.places.pageUpdates, sub: tr.places.pageUpdatesSub, icon: IconShield, dot: offered, group: 'system' as const, Page: UpdatesPage }]
             : []),
@@ -363,9 +357,10 @@ export function SettingsSection() {
     // Телефон: сначала список; ссылка на страницу (`#/settings/updates`, поиск) открывает её сразу. Док ведёт сюда без
     // вкладки в адресе — тогда список.
     const [listed, setListed] = useState(() => !/^#\/settings\/[^/?]/.test(location.hash));
-    const onStation = panel.health?.placement?.role === 'station';
-    const pages = settingsPages(panel.role.role, onStation, offered);
-    const shown = pages.find((entry) => entry.id === page) ?? pages[0];
+    const pages = settingsPages(panel.role.role, offered);
+    // Прежние «Этот компьютер» и «Где работает DuoWave» (`#/settings/helper`, `#/settings/placement`) — теперь «Дом».
+    const wanted = page === 'helper' || page === 'placement' ? 'helpers' : page;
+    const shown = pages.find((entry) => entry.id === wanted) ?? pages[0];
     // Скрытые возможности разработчика: восемь нажатий подряд на «Для разработчиков» — строку списка или заголовок
     // открытой страницы (на телефоне список прячется после первого). Последние четыре — с подсказкой, сколько ещё.
     const [devLeft, setDevLeft] = useState<number | null>(null);

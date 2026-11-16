@@ -1,9 +1,10 @@
 //! What this build is — the gateway for a PC or the one on the station itself — in one place: the parts it has. The
 //! station build has none of the heavy parts (local model servers, the voice lab, calls, the station connect over
 //! SSH, MCP servers as programs). What works where, the modes included, is the registry's (core/availability.rs):
-//! the build is one of its inputs, the placement and the home server the others.
+//! the build is one of its inputs, the placement and the helpers the others.
 
-use crate::core::availability::{evaluate, feature, mode_feature, Context, HomeServer, Placement};
+use crate::core::availability::{evaluate, feature, mode_feature, Context, HelperContext, Placement};
+use crate::helpers::contract::Abilities;
 use crate::settings::definitions::PanelMode;
 
 pub use crate::core::availability::OWN_ON_STATION;
@@ -63,15 +64,18 @@ pub trait ModeGate: Send + Sync {
     }
 }
 
-/// The build alone, for tests and tools: the station without a home server.
+/// The build alone, for tests and tools: the station without a helper; a computer gives its heavy parts itself.
 impl ModeGate for Profile {
     fn check(&self, mode: PanelMode) -> Result<(), String> {
+        let helpers =
+            if self.station { HelperContext::default() } else { HelperContext::default().with_builtin(Abilities::V1) };
         let context = Context {
             pc_build: !self.station,
             placement: self.placement(),
-            home_server: HomeServer::None,
+            helpers,
             cloud_asr: true,
             cloud_tts: true,
+            clouds: true,
             yandex: true,
             memory_free_mb: None,
             transcoder: false,

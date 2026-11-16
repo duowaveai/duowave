@@ -61,7 +61,7 @@ export default {
     gives: 'Что даёт',
     phrasesLine: (list: string, more: string) => `Фразы: ${list}${more}`,
     toolsLine: (list: string) => `Инструменты «Мозга»: ${list}`,
-    budget: (memoryMb: number, storageMb: number) => `Бюджет: память ${memoryMb} МБ, хранилище ${storageMb} МБ. Не поднимется — работает прежняя версия.`,
+    budget: (memoryMb: number, storageMb: number) => `Бюджет: ОЗУ ${memoryMb} МБ, память ${storageMb} МБ. Не поднимется — работает прежняя версия.`,
     previousStays: (from: string, kept: number) => `Прежняя ${from} останется на шлюзе — вернуть её можно здесь же, в «Версиях» (хранятся последние ${kept}).`,
     pluginDisabledNote: ' Плагин выключен — новая версия тоже будет выключена.',
     orTryFirst: 'Или сначала попробовать',

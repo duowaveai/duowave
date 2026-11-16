@@ -4,6 +4,7 @@
 //! a `.ts` file, a Nest module, a `test/*.e2e-spec.ts` or `src/voice-lab` means that tag (PORTING.md).
 
 pub mod access;
+pub mod activator;
 pub mod app;
 pub mod apps;
 pub mod bus;
@@ -18,6 +19,7 @@ pub mod dialog;
 pub mod egress;
 pub mod gateway;
 pub mod health_status;
+pub mod helpers;
 pub mod home_server;
 pub mod links;
 pub mod live;
@@ -48,6 +50,8 @@ pub mod tools;
 pub mod updates;
 pub mod utils;
 pub mod voice_lab;
+#[cfg(feature = "pc")]
+pub mod works;
 
 pub use platform::http::ApiError;
 

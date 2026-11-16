@@ -24,13 +24,14 @@ import {
 } from '../api';
 import { IconChevronRight, IconPlus } from '../icons';
 import { useLinkedItem, usePanel } from '../shell/context';
-import { Action, CardNote } from '../ui/cards';
+import { CardNote } from '../ui/cards';
 import { diffText } from '../ui/diff';
 import { Avatar, PlayButton, markOf } from '../ui/media';
 import { Progress, useNeedsFlow, voicePill } from '../ui/needs';
-import { Sheet } from '../ui/sheet';
+import { Sheet, SkeletonRows, WinRow, WinSection } from '../ui/sheet';
 import {
     CatalogEntrySheet,
+    Companions,
     NoteLine,
     PackageActions,
     canManage,
@@ -51,6 +52,9 @@ import { byMode } from '../words';
 
 /** id «Собрать своего» в адресе: `#/mind/characters/own`. */
 const OWN = 'own';
+
+/** Крутилка в занятой кнопке. */
+const spin = (on: boolean) => on && <span class="spinner spinner-sm" aria-hidden="true" />;
 
 type Pill = { text: string; cls: string };
 
@@ -322,6 +326,7 @@ export function CharactersTab() {
                     active={active}
                     persona={persona}
                     entry={entryOf(opened)}
+                    all={catalog.view?.packages}
                     actions={actions}
                     askNeeds={intent !== null && (intent === opened.id || intent === opened.package?.id)}
                     onAsked={() => setIntent(null)}
@@ -331,16 +336,16 @@ export function CharactersTab() {
                 />
             )}
             {openedEntry && (
-                <CatalogEntrySheet entry={openedEntry} actions={actions} engines={engines} onClose={linked.close}>
+                <CatalogEntrySheet entry={openedEntry} actions={actions} engines={engines} all={catalog.view?.packages} onClose={linked.close}>
                     {intent === openedEntry.id && !isInstalled(openedEntry) && (
-                        <p class="t-caption m-0">{tr.characters.afterInstall}</p>
+                        <p class="win-note">{tr.characters.afterInstall}</p>
                     )}
                 </CatalogEntrySheet>
             )}
             {item === OWN && <OwnSheet active={active} persona={persona} onPersona={setPersona} onChanged={changed} onClose={linked.close} />}
             {lost && (
-                <Sheet title={tr.characters.notFoundTitle} about={item ?? undefined} onClose={linked.close}>
-                    <p class="t-body-sm m-0">
+                <Sheet title={tr.characters.notFoundTitle} meta={item ? <span class="win-code">{item}</span> : undefined} onClose={linked.close}>
+                    <p class="win-lead">
                         {catalogOpen(catalog.view)
                             ? tr.characters.notInstalledNorCatalog(item)
                             : tr.characters.notInstalledCatalogDown(item)}
@@ -377,14 +382,19 @@ function VoiceLine({ character, onInstall }: { character: CharacterView; onInsta
             text = tr.characters.voiceNone;
     }
     return (
-        <div class="char-block">
-            <span class="t-meta fw-700">{tr.characters.voice}</span>
-            <div class="flex flex-wrap items-center gap-8">
-                <span class="t-body-sm flex-1 min-w-0">{text}</span>
-                {voice.state === 'needs' && onInstall && <Action tone="on" label={tr.characters.installReal} onClick={onInstall} />}
+        <WinSection title={tr.characters.voice} group>
+            <div class="win-row is-col">
+                <div class="flex flex-wrap items-center gap-12">
+                    <span class="win-row-s flex-1 min-w-0">{text}</span>
+                    {voice.state === 'needs' && onInstall && (
+                        <button class="btn btn-plain btn-sm" onClick={onInstall}>
+                            {tr.characters.installReal}
+                        </button>
+                    )}
+                </div>
+                {voice.state === 'installing' && voice.progress !== undefined && <Progress percent={voice.progress} label={tr.characters.installingModel} />}
             </div>
-            {voice.state === 'installing' && voice.progress !== undefined && <Progress percent={voice.progress} label={tr.characters.installingModel} />}
-        </div>
+        </WinSection>
     );
 }
 
@@ -394,6 +404,7 @@ function CharacterSheet({
     active,
     persona,
     entry,
+    all,
     actions,
     askNeeds,
     onAsked,
@@ -405,6 +416,8 @@ function CharacterSheet({
     active: ActiveCharacter | null;
     persona: PersonaInfo | null;
     entry?: CatalogEntry;
+    /** Весь каталог: строка «В паре» (слово персонажа) находит в нём пакеты-пару. */
+    all?: CatalogEntry[];
     actions: PackageActions;
     /** Пришли по ссылке «поставить»: голосу нужна модель — сразу окно. */
     askNeeds: boolean;
@@ -516,42 +529,74 @@ function CharacterSheet({
     if (needs.dialog) return needs.dialog;
 
     const greeting = character.samples[0];
-    const meta = [character.package && tr.characters.versionMeta(character.package.version), character.package?.license].filter(Boolean).join(' · ');
     const fresh = speaking && active?.update ? updateText(active, persona, character.id) : null;
     const diff = fresh && persona ? diffText(persona.persona, fresh) : null;
     const removing = actions.busy[character.package?.id ?? ''];
+    const removable = !!character.package && canManage('character');
+
+    // Главная внизу: говорит — «Применить тон», когда тон поменяли; не говорит — «Выбрать».
+    const footer = speaking ? (
+        tonesChanged && mayEdit ? (
+            <button class="btn btn-main" disabled={busy === 'tones'} aria-busy={busy === 'tones' || undefined} onClick={() => void choose('tones', false)}>
+                {spin(busy === 'tones')}
+                {tr.characters.applyTone}
+            </button>
+        ) : undefined
+    ) : mayEdit ? (
+        <button
+            class="btn btn-main"
+            disabled={busy === 'choose' || !!character.problem}
+            aria-busy={busy === 'choose' || undefined}
+            onClick={() => void choose('choose')}
+        >
+            {spin(busy === 'choose')}
+            {tight !== null ? tr.characters.chooseAnyway : tr.characters.choose}
+        </button>
+    ) : undefined;
 
     return (
-        <Sheet title={character.title} about={character.description} onClose={onClose}>
-            <div class="char-hero">
-                <Avatar src={character.avatar} title={character.title} color={character.color} size="lg" mark={markOf(character)} />
-                <div class="char-hero-text">
-                    {greeting && <p class="char-greeting">{tr.characters.quoted(greeting.text)}</p>}
-                    <div class="flex flex-wrap items-center gap-8">
-                        {greeting && <PlayButton id={`sheet:${character.id}`} url={greeting.url} label={character.title} className="char-play is-inline" />}
-                        {speaking && <span class="pill pill-own">{tr.characters.speaks}</span>}
-                        {character.package && !character.package.verified && <span class="pill pill-off">{tr.characters.notFromCatalog}</span>}
-                        {character.voiceOrigin === 'unknown' && <span class="pill pill-yandex">{tr.characters.voiceNotChecked}</span>}
-                        {character.builtin && <span class="pill pill-off">{tr.characters.builtin}</span>}
-                    </div>
-                    {meta && <span class="t-caption">{meta}</span>}
-                    {character.voiceOrigin === 'unknown' && (
-                        <span class="t-caption c-pill-yandex-fg">{tr.characters.unknownVoiceOwner}</span>
-                    )}
-                </div>
-            </div>
+        <Sheet
+            title={character.title}
+            icon={<Avatar src={character.avatar} title={character.title} color={character.color} mark={markOf(character)} />}
+            meta={
+                <>
+                    {speaking && <span class="pill pill-own">{tr.characters.speaks}</span>}
+                    {character.voiceOrigin === 'unknown' && <span class="pill pill-yandex">{tr.characters.voiceNotChecked}</span>}
+                    {character.package && !character.package.verified && <span class="pill pill-off">{tr.characters.notFromCatalog}</span>}
+                    {character.builtin && <span class="win-chip">{tr.characters.builtin}</span>}
+                    {character.package && <span class="win-chip">{tr.characters.versionMeta(character.package.version)}</span>}
+                    {character.package?.license && <span class="win-chip">{character.package.license}</span>}
+                </>
+            }
+            onClose={onClose}
+            footer={footer}
+        >
             {character.problem && (
-                <p class="t-caption m-0 c-dot-offline" role="alert">
+                <p class="win-callout m-0" role="alert">
                     {character.problem}
                 </p>
             )}
+            {character.voiceOrigin === 'unknown' && <p class="win-callout m-0">{tr.characters.unknownVoiceOwner}</p>}
+            {character.description && <p class="win-lead">{character.description}</p>}
+            {greeting && (
+                <div class="flex items-center gap-10">
+                    <PlayButton id={`sheet:${character.id}`} url={greeting.url} label={character.title} className="char-play is-inline" />
+                    <p class="char-greeting">{tr.characters.quoted(greeting.text)}</p>
+                </div>
+            )}
+            {tight && (
+                <p class="win-callout m-0" role="status">
+                    {tight}
+                </p>
+            )}
+            <NoteLine note={note} />
+            <NoteLine note={character.package ? actions.notes[character.package.id] : undefined} />
 
             {character.tones.length > 0 && (
-                <div class="char-block">
-                    <span class="t-meta fw-700">{tr.characters.tone}</span>
+                <WinSection title={tr.characters.tone} group>
                     {character.tones.map((tone) => (
-                        <div key={tone.id} class="tone-row">
-                            <span class="t-caption">{tone.title}</span>
+                        <div key={tone.id} class="win-row is-col">
+                            <span class="win-row-t">{tone.title}</span>
                             <div role="radiogroup" aria-label={tone.title} class="tone-seg">
                                 {tone.options.map((option, at) => (
                                     <button
@@ -569,99 +614,73 @@ function CharacterSheet({
                             </div>
                         </div>
                     ))}
-                </div>
+                </WinSection>
             )}
 
             <VoiceLine character={character} onInstall={mayEdit && mayVoice && character.voice.needs ? () => askModel(speaking) : undefined} />
 
-            <div class="char-actions">
-                {speaking ? (
-                    tonesChanged && mayEdit && <Action tone="on" label={tr.characters.applyTone} busy={busy === 'tones'} onClick={() => void choose('tones', false)} />
-                ) : (
-                    mayEdit && (
-                        <Action
-                            tone="on"
-                            label={tight !== null ? tr.characters.chooseAnyway : tr.characters.choose}
-                            busy={busy === 'choose'}
-                            disabled={!!character.problem}
-                            onClick={() => void choose('choose')}
-                        />
-                    )
-                )}
-                <Action label={tuning ? tr.characters.hideText : tr.characters.fineTuning} disabled={!persona} onClick={openTuning} />
-                {character.package && canManage('character') && (
-                    <Action
-                        label={tr.characters.remove}
-                        busy={removing === 'remove'}
-                        disabled={!!removing}
-                        onClick={() =>
-                            void actions.remove(character.package!.id, character.title, 'character').then((done) => {
-                                if (done) onClose();
-                            })
-                        }
-                    />
-                )}
-            </div>
-            {tight && (
-                <p class="t-caption m-0 c-pill-yandex-fg" role="status">
-                    {tight}
-                </p>
-            )}
-            <NoteLine note={note} />
-            <NoteLine note={character.package ? actions.notes[character.package.id] : undefined} />
+            <Companions entry={entry} all={all} actions={actions} />
 
             {entry?.state === 'update' && (
-                <div class="char-block">
-                    <span class="t-meta fw-700">{tr.characters.inCatalogVersion(entry.version)}</span>
-                    <span class="t-caption">
-                        {tr.characters.downloadsNew}
-                    </span>
-                    {canManage('character') && (
-                        <div>
-                            <Action
-                                tone="on"
-                                label={tr.characters.downloadNew}
-                                busy={actions.busy[entry.id] === 'update'}
+                <WinSection title={tr.characters.inCatalogVersion(entry.version)} group>
+                    <div class="win-row is-col">
+                        <span class="win-row-s">{tr.characters.downloadsNew}</span>
+                        {canManage('character') && (
+                            <button
+                                class="btn btn-plain btn-sm self-start"
                                 disabled={!!actions.busy[entry.id]}
+                                aria-busy={actions.busy[entry.id] === 'update' || undefined}
                                 onClick={() => void actions.update(entry.id, entry.title)}
-                            />
-                        </div>
-                    )}
-                </div>
+                            >
+                                {spin(actions.busy[entry.id] === 'update')}
+                                {tr.characters.downloadNew}
+                            </button>
+                        )}
+                    </div>
+                </WinSection>
             )}
 
             {speaking && active?.update && (
-                <div class="char-block">
-                    <span class="t-meta fw-700">{tr.characters.newVersionOtherCharacter}</span>
-                    {diff ? (
-                        <div class="diff" aria-label={tr.characters.whatChanges}>
-                            {diff.map((part, at) => (
-                                <span key={at} class={`diff-${part.op}`}>
-                                    {part.op === 'del' ? '− ' : part.op === 'add' ? '+ ' : ''}
-                                    {part.text}
-                                </span>
-                            ))}
-                        </div>
-                    ) : (
-                        <span class="t-caption">{tr.characters.readingChanges}</span>
-                    )}
-                    <span class="t-caption">
-                        {active.edited ? tr.characters.editedKept : ''}{tr.characters.untilUpdate}
-                    </span>
-                    {mayEdit && (
-                        <div>
-                            <Action tone="on" label={tr.characters.update} busy={busy === 'update'} onClick={() => void choose('update', false)} />
-                        </div>
-                    )}
-                </div>
+                <WinSection title={tr.characters.newVersionOtherCharacter} group>
+                    <div class="win-row is-col">
+                        {diff ? (
+                            <div class="diff" aria-label={tr.characters.whatChanges}>
+                                {diff.map((part, at) => (
+                                    <span key={at} class={`diff-${part.op}`}>
+                                        {part.op === 'del' ? '− ' : part.op === 'add' ? '+ ' : ''}
+                                        {part.text}
+                                    </span>
+                                ))}
+                            </div>
+                        ) : (
+                            <span class="win-row-s">{tr.characters.readingChanges}</span>
+                        )}
+                        <span class="win-row-s">
+                            {active.edited ? tr.characters.editedKept : ''}
+                            {tr.characters.untilUpdate}
+                        </span>
+                        {mayEdit && (
+                            <button class="btn btn-plain btn-sm self-start" disabled={busy === 'update'} aria-busy={busy === 'update' || undefined} onClick={() => void choose('update', false)}>
+                                {spin(busy === 'update')}
+                                {tr.characters.update}
+                            </button>
+                        )}
+                    </div>
+                </WinSection>
             )}
 
-            {tuning && (
-                <div class="char-block">
-                    <span class="t-meta fw-700">{tr.characters.fineTuning}</span>
-                    {speaking && mayEdit ? (
+            <WinSection
+                title={tr.characters.fineTuning}
+                aside={
+                    <button class="btn btn-quiet btn-sm" aria-expanded={tuning} disabled={!persona} onClick={openTuning}>
+                        {tuning ? tr.characters.hideText : tr.characters.showText}
+                    </button>
+                }
+            >
+                {tuning &&
+                    (speaking && mayEdit ? (
                         <>
-                            {active?.edited && <span class="t-caption">{tr.characters.editedByHand}</span>}
+                            {active?.edited && <span class="win-hint">{tr.characters.editedByHand}</span>}
                             <PersonaEditor
                                 editorRef={editor}
                                 label={tr.characters.characterText(character.title)}
@@ -674,14 +693,31 @@ function CharacterSheet({
                     ) : draft ? (
                         <>
                             <pre class="prompt-view">{draft}</pre>
-                            <span class="t-caption">
-                                {mayEdit ? tr.characters.editOnlySpeaking : tr.characters.adminChangesCharacter}
-                            </span>
+                            <span class="win-hint">{mayEdit ? tr.characters.editOnlySpeaking : tr.characters.adminChangesCharacter}</span>
                         </>
                     ) : (
-                        <span class="t-caption">{tr.characters.fullTextLater}</span>
-                    )}
-                </div>
+                        <span class="win-hint">{tr.characters.fullTextLater}</span>
+                    ))}
+            </WinSection>
+
+            {removable && (
+                <WinSection title={tr.ui.danger} group>
+                    <WinRow title={tr.characters.remove}>
+                        <button
+                            class="btn btn-danger btn-sm"
+                            disabled={!!removing}
+                            aria-busy={removing === 'remove' || undefined}
+                            onClick={() =>
+                                void actions.remove(character.package!.id, character.title, 'character').then((done) => {
+                                    if (done) onClose();
+                                })
+                            }
+                        >
+                            {spin(removing === 'remove')}
+                            {tr.characters.remove}
+                        </button>
+                    </WinRow>
+                </WinSection>
             )}
         </Sheet>
     );
@@ -790,10 +826,18 @@ function OwnSheet({
 
     const ownCards = models?.tts.filter((card) => card.group === 'own') ?? [];
     return (
-        <Sheet title={tr.characters.buildOwn} about={tr.characters.buildOwnAbout} onClose={onClose}>
-            <div class="char-block">
-                <span class="t-meta fw-700">{tr.characters.manner}</span>
-                {own && <span class="pill pill-own self-start">{tr.characters.speaks}</span>}
+        <Sheet
+            title={tr.characters.buildOwn}
+            about={tr.characters.buildOwnAbout}
+            icon={
+                <span class="char-avatar char-avatar-add" aria-hidden="true">
+                    <IconPlus size={22} />
+                </span>
+            }
+            meta={own ? <span class="pill pill-own">{tr.characters.speaks}</span> : undefined}
+            onClose={onClose}
+        >
+            <WinSection title={tr.characters.manner}>
                 {mayEdit ? (
                     <PersonaEditor
                         label={tr.characters.ownCharacter}
@@ -804,42 +848,50 @@ function OwnSheet({
                         placeholder={tr.characters.ownPlaceholder}
                     />
                 ) : (
-                    <span class="t-caption">{tr.characters.adminChangesCharacter}</span>
+                    <p class="win-callout is-calm m-0">{tr.characters.adminChangesCharacter}</p>
                 )}
                 <NoteLine note={note} />
-            </div>
-            <div class="char-block">
-                <div class="flex items-center justify-between gap-8">
-                    <span class="t-meta fw-700">{tr.characters.voice}</span>
-                    {mayVoice && !noVoices && models && (
-                        <button class="pill pill-own pill-btn-sm inline-flex items-center gap-6" onClick={() => setWizard(true)}>
-                            <IconPlus size={14} />
-                            {tr.characters.recordVoice}
-                        </button>
-                    )}
-                </div>
+            </WinSection>
+            <WinSection title={tr.characters.voice}>
                 {noVoices ? (
-                    <span class={noVoices.absent ? 't-caption' : 't-caption c-dot-offline'} role={noVoices.absent ? undefined : 'alert'}>
+                    <p class={noVoices.absent ? 'win-callout is-calm m-0' : 'win-callout m-0'} role={noVoices.absent ? undefined : 'alert'}>
                         {noVoices.absent ? tr.characters.ownVoiceOnComputer(noVoices.text) : noVoices.text}
-                    </span>
+                    </p>
                 ) : !models ? (
-                    <span class="t-caption">{tr.characters.readingVoices}</span>
-                ) : ownCards.length === 0 ? (
-                    <span class="t-caption">
-                        {byMode(tr.characters.noOwnVoicesStation, tr.characters.noOwnVoicesDevice)}
-                    </span>
+                    <SkeletonRows rows={2} label={tr.characters.readingVoices} />
                 ) : (
-                    <OwnVoiceRows
-                        cards={ownCards}
-                        isAdmin={mayVoice}
-                        notes={voiceNotes}
-                        busy={voiceBusy}
-                        onActivate={(cardId) => void activate(cardId)}
-                        tightFor={tightFor}
-                        onChanged={readModels}
-                    />
+                    <>
+                        {ownCards.length > 0 && (
+                            <OwnVoiceRows
+                                cards={ownCards}
+                                isAdmin={mayVoice}
+                                notes={voiceNotes}
+                                busy={voiceBusy}
+                                onActivate={(cardId) => void activate(cardId)}
+                                tightFor={tightFor}
+                                onChanged={readModels}
+                            />
+                        )}
+                        {(ownCards.length === 0 || mayVoice) && (
+                            <div class="win-group">
+                                {ownCards.length === 0 && (
+                                    <div class="win-row">
+                                        <span class="win-row-s">{byMode(tr.characters.noOwnVoicesStation, tr.characters.noOwnVoicesDevice)}</span>
+                                    </div>
+                                )}
+                                {mayVoice && (
+                                    <div class="win-row">
+                                        <button class="btn btn-plain btn-sm" onClick={() => setWizard(true)}>
+                                            <IconPlus size={14} />
+                                            {tr.characters.recordVoice}
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </>
                 )}
-            </div>
+            </WinSection>
         </Sheet>
     );
 }

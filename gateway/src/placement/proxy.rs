@@ -235,7 +235,12 @@ async fn pass(
     let Some(peer) = gateway.client() else {
         return Err(ApiError::conflict(crate::tr!("Колонка не связана с этим компьютером: нет ключа пары.")));
     };
-    let name = record.and_then(|record| record.device).unwrap_or_else(|| key.clone());
+    // The station as people know it: its name in this computer's list, else its address; the key last of all.
+    let name = gateway
+        .name()
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| record.map(|record| record.address).filter(|address| !address.is_empty()))
+        .unwrap_or_else(|| key.clone());
     let path = format!("/{rest}{}", query.as_deref().map(|query| format!("?{query}")).unwrap_or_default());
     // The address as it will be asked, checked once more: nothing in it may lead out of the whitelist.
     let url = reqwest::Url::parse(&format!("{}{path}", peer.base()))
@@ -547,6 +552,38 @@ mod tests {
         let (status, headers) = (response.status(), response.headers().clone());
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         (status, headers, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    /// Rehearsal 16.11: an away station was named by its device id («Колонка «h:…» не на связи»).
+    #[tokio::test]
+    async fn an_away_station_is_named_as_people_know_it() {
+        let state = tempfile::tempdir().unwrap();
+        let env = Env::from_pairs([
+            ("STATE_DIR", state.path().to_string_lossy().into_owned()),
+            ("PANEL_REMOTE", "true".to_string()),
+        ]);
+        let app = App::build(Config::for_tests(&env)).unwrap();
+        let admin = app.access.auth.setup("admin-password-1", "Мама", "test").await.unwrap().unwrap().token;
+        // A port nobody listens on: the station is away.
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        app.secrets.set(&crate::placement::peer::station_secret("h:kitchen"), Some(PAIR)).unwrap();
+        app.station_gateway.watch("h:kitchen").set_record(Some(&kitchen(port, SettingsHome::Station)), None).unwrap();
+        let brain = "/station/h:kitchen/api/v1/brain";
+
+        let (status, _, body) = send(&app, "192.168.1.20", "GET", brain, &admin).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["message"], away("127.0.0.1"), "no name in the list: its address, never «h:kitchen»");
+
+        app.db
+            .with(|c| {
+                c.execute(
+                    "INSERT INTO stations (device, name, status, first_seen, last_seen) VALUES ('h:kitchen', 'Кухня', 'approved', 'then', 'then')",
+                    [],
+                )
+            })
+            .unwrap();
+        let (_, _, body) = send(&app, "192.168.1.20", "GET", brain, &admin).await;
+        assert_eq!(body["message"], away("Кухня"));
     }
 
     #[tokio::test]

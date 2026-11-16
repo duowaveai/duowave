@@ -375,6 +375,20 @@ pub trait HostServices: Send + Sync {
         let _ = (caller, input);
         Err(crate::tr!("выхода в интернет через свои серверы здесь нет"))
     }
+    /// Where the station's processed microphone is, for the app `caller` on the station (`system/mic` → `open`,
+    /// src/activator): `{port, channel, rate}`.
+    fn mic(&self, caller: &str) -> Result<Value, String> {
+        let _ = caller;
+        Err(crate::tr!("микрофон колонки слышит только шлюз на самой колонке"))
+    }
+    /// The app `caller` heard a word of its own (`system/activator` → `wake`, src/activator): the station is woken as
+    /// by its button, its request starting with the sound before the word — `{started, reason?}`.
+    fn wake(&self, caller: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
+        let _ = (caller, input);
+        Box::pin(async {
+            Err(crate::tr!("будить колонку может только шлюз на самой колонке"))
+        })
+    }
     /// Said aloud by a station without a request, for the plugin `caller` (`system/voice`): whether it was said —
     /// no station on the line, nothing is.
     fn say(&self, caller: &str, text: String, device: Option<String>) -> BoxFuture<'static, Result<bool, String>> {

@@ -34,11 +34,30 @@ pub struct Handle {
     /// it at all. None — every role.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<crate::core::identity::roles::Role>>,
+    /// A dangerous handle whose «да» is for good, not for one act: what it gives lasts (a microphone that hears the room
+    /// all the time). An admin's «да» to a package's rights at its install is «всегда» for that app (`approve_install`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub standing: bool,
 }
 
 impl Handle {
     pub fn new(name: &str, level: Level) -> Handle {
-        Handle { name: name.to_string(), level, title: None, danger: None, private: false, needs: None, roles: None }
+        Handle {
+            name: name.to_string(),
+            level,
+            title: None,
+            danger: None,
+            private: false,
+            needs: None,
+            roles: None,
+            standing: false,
+        }
+    }
+
+    /// Its «да» is for good: approved with a package's install, it is «всегда» for that app.
+    pub fn standing(mut self) -> Handle {
+        self.standing = true;
+        self
     }
 
     /// Open only to people of these roles.

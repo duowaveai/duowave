@@ -281,6 +281,39 @@ export function useBrainConnect() {
         if (local === null) void findLocal(false);
     }, [path, !!view, local, !!workingOn('local')]);
 
+    // Модель на компьютере стала основной — шлюз чуть позже сам ставит облачную «Запасную» (умолчание 6 блока «Дом»,
+    // по событию выбора, а список облака может прийти и ещё позже). Пока путь открыт, выбор перечитывается: карточка
+    // говорит, куда уйдёт вопрос, когда модель молчит, а не «вопросы не уходят из дома».
+    const localFast =
+        path === 'local' &&
+        !!view &&
+        view.providers.some((provider) => provider.id === view.choice.fast?.provider && LOCAL_PRESETS.includes(provider.preset));
+    useEffect(() => {
+        if (!localFast) return undefined;
+        const reread = () =>
+            void api
+                .brain()
+                .then((fresh) => alive.current && setView(fresh))
+                .catch(() => undefined);
+        const soon = window.setTimeout(reread, 1500);
+        const every = window.setInterval(reread, 10_000);
+        return () => {
+            window.clearTimeout(soon);
+            window.clearInterval(every);
+        };
+    }, [localFast, view?.choice.fast?.provider, view?.choice.fast?.model]);
+
+    /** «Без запасной»: вопросы остаются дома; шлюз запоминает отказ и сам её больше не ставит. */
+    const noBackup = async () => {
+        setProblem(null);
+        try {
+            const fresh = await api.chooseBrain({ backup: null });
+            if (alive.current) setView(fresh);
+        } catch (e) {
+            if (alive.current) setProblem({ path: 'local', text: problemOf(e) });
+        }
+    };
+
     /** Отметить путь. Его провайдер уже работает — отвечать им (радио доски = кто думает). */
     const choosePath = (which: Path) => {
         setPath(which);
@@ -314,6 +347,7 @@ export function useBrainConnect() {
         beginSignIn,
         workingOn,
         answering,
+        noBackup,
     };
 }
 

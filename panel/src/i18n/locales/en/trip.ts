@@ -62,7 +62,7 @@ const en: Translation<typeof ru> = {
     placeOwn: 'home',
     placeCloud: 'cloud',
     placeYandex: 'Yandex',
-    placeAgent: 'helper',
+    placeAgent: 'Turbo',
     kindVoice: 'by voice',
     kindText: 'by text',
     kindSay: 'said on its own',

@@ -92,6 +92,8 @@ pub struct VoiceRequest {
     pub speech: SpeechPipeline,
     /// Recognition while the command is spoken; its text goes into every interim AsrResult.
     pub interim: InterimRecognition,
+    /// An activator's word began it (src/activator): the word, as recognition writes it, and its character.
+    pub activation: Option<crate::activator::Activation>,
 }
 
 /// The station's audio kept for Yandex, as `append` and `mark_spotter_end` fill it.
@@ -137,6 +139,7 @@ impl VoiceRequest {
             audio,
             speech,
             interim,
+            activation: None,
         }
     }
 

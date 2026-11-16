@@ -1,0 +1,398 @@
+//! «Где сейчас» (docs/plans/home-and-helpers.md, «Помощники»): who gives each ability now — hearing, the model, the
+//! voice, messages, apps, the history — and why not the first. One chain per ability: the helpers that could give it,
+//! in the list's order (the regulator and liveness are judged, not filtered, so the reason can name them), then this
+//! gateway's own road, then Yandex where it applies. In use is the first that passes; `why` says what stopped the
+//! first. The model's row is «Мозг»'s own answer (stage 4). On a computer that takes its own parts from itself, its
+//! built-in helper («Этот компьютер») is the first road of hearing and voice (stage 6); the clouds' roads go under the
+//! regulator on every gateway.
+
+use serde::Serialize;
+
+use super::contract::Ability;
+use super::{reach_of, Helpers, Reach};
+use crate::app::App;
+use crate::config::{ModelProfile, TtsProvider};
+use crate::core::availability::State;
+use crate::operations::networks::is_local_url;
+use crate::placement::service::Role;
+use crate::settings::definitions::PanelMode;
+
+/// Who gives an ability now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum By {
+    /// A helper of the list.
+    Helper,
+    /// This gateway itself.
+    Here,
+    /// A cloud by keys.
+    Cloud,
+    Yandex,
+    /// Nobody.
+    None,
+}
+
+/// One ability's row.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NowRow {
+    pub ability: Ability,
+    pub by: By,
+    /// The helper's entry id, when a helper gives it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub helper: Option<String>,
+    /// For people: the helper's, the cloud's, the model's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reach: Option<Reach>,
+    /// The road in use is the first of its chain.
+    pub first: bool,
+    /// Why not the first, for people.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
+/// The abilities shown, in their order: слух, мозг, голос, сообщения, приложения, история.
+pub const SHOWN: [Ability; 6] =
+    [Ability::Hearing, Ability::Model, Ability::Voice, Ability::Messages, Ability::Apps, Ability::History];
+
+/// One road of a chain, and what stops it now (None — it gives).
+struct Road {
+    by: By,
+    helper: Option<String>,
+    name: Option<String>,
+    reach: Option<Reach>,
+    problem: Option<String>,
+}
+
+impl Road {
+    fn of(by: By, name: Option<String>, reach: Option<Reach>, problem: Option<String>) -> Road {
+        Road { by, helper: None, name, reach, problem }
+    }
+}
+
+/// The row of a chain: its first road that gives, and why the first did not.
+fn row(ability: Ability, roads: Vec<Road>) -> NowRow {
+    let why = roads.first().and_then(|road| road.problem.clone());
+    match roads.into_iter().enumerate().find(|(_, road)| road.problem.is_none()) {
+        Some((at, road)) => NowRow {
+            ability,
+            by: road.by,
+            helper: road.helper,
+            name: road.name,
+            reach: road.reach,
+            first: at == 0,
+            why: (at > 0).then_some(why).flatten(),
+        },
+        None => NowRow { ability, by: By::None, helper: None, name: None, reach: None, first: false, why },
+    }
+}
+
+/// Every shown ability's row.
+pub fn rows(app: &App) -> Vec<NowRow> {
+    let station = app.placement.role() == Role::Station;
+    let yandex_allowed = app.modes.current() != PanelMode::Own;
+    let yandex = || {
+        let problem = (!yandex_allowed).then(|| crate::core::tx("в режиме «Ваш ИИ» Яндекс выключен"));
+        Road::of(By::Yandex, None, None, problem)
+    };
+    let helpers = &app.helpers;
+    // This computer's own parts, when it takes them from itself (a computer that is not in the station role): first.
+    let own = helpers.own.get();
+    let ours = |ability: Ability| own.is_some_and(|own| own.gives_here(ability));
+    let silent = |ability: Ability| own.is_some_and(|own| own.silent(ability));
+    SHOWN
+        .into_iter()
+        .map(|ability| {
+            if ability == Ability::Model {
+                return model_row(app, station);
+            }
+            // Hearing and voice go the helpers' way on a computer too (stage 6): its own helpers after itself.
+            let through = station
+                || ability == Ability::Messages
+                || (own.is_some() && matches!(ability, Ability::Hearing | Ability::Voice));
+            let mut roads = if through { helper_roads(helpers, ability) } else { Vec::new() };
+            match ability {
+                Ability::Hearing => {
+                    if ours(Ability::Hearing) {
+                        let problem =
+                            silent(Ability::Hearing).then(|| crate::tr!("слух на этом компьютере не отвечает"));
+                        roads.insert(0, built_in(problem));
+                    }
+                    let asr = &app.config.speech.asr;
+                    if asr.enabled && !is_local_url(Some(&asr.base_url)) {
+                        // The .env's cloud hearing goes under the regulator, a computer's too (its chain, stage 6).
+                        roads.push(cloud(helpers, &asr.base_url));
+                    }
+                    roads.push(yandex());
+                }
+                Ability::Voice => {
+                    // Alice's voice is the first road only when a person chose it; when ours has nobody to speak
+                    // with (the helpers away, the cloud kept in) she stands in, and the chain says why.
+                    if app.voice.chosen_provider() == TtsProvider::Yandex && yandex_allowed {
+                        roads = vec![yandex()];
+                    } else {
+                        if ours(Ability::Voice) {
+                            let problem =
+                                silent(Ability::Voice).then(|| crate::tr!("голос на этом компьютере не отвечает"));
+                            roads.insert(0, built_in(problem));
+                        }
+                        if let Some(own) = app.voice.own_speech() {
+                            let url = own.base_url();
+                            if !is_local_url(Some(&url)) {
+                                roads.push(cloud(helpers, &url));
+                            } else if !ours(Ability::Voice) {
+                                // Our voice at home; on a computer that takes it from itself, the built-in road is it.
+                                // A server elsewhere in the home is named by its host: a speaker runs none itself.
+                                roads.push(Road::of(By::Here, home_name(&url), Some(Reach::Home), None));
+                            }
+                        }
+                        if station {
+                            roads.push(yandex());
+                        }
+                    }
+                }
+                Ability::Messages => {
+                    if own_bot(app) {
+                        roads.insert(0, Road::of(By::Here, None, Some(Reach::Home), None));
+                    }
+                }
+                _ => roads.push(Road::of(By::Here, None, Some(Reach::Home), None)),
+            }
+            row(ability, roads)
+        })
+        .collect()
+}
+
+/// A cloud's road: the regulator keeps it out unless it lets foreign roads out.
+fn cloud(helpers: &Helpers, url: &str) -> Road {
+    let problem = (!helpers.lets(Reach::Foreign)).then(|| crate::tr!("Регулятор не пускает облако"));
+    Road::of(By::Cloud, cloud_name(url), Some(Reach::Foreign), problem)
+}
+
+/// The built-in helper's road (stage 6): «Этот компьютер», at home — giving, unless its server was found closed.
+fn built_in(problem: Option<String>) -> Road {
+    Road {
+        by: By::Helper,
+        helper: Some(super::SELF.to_string()),
+        name: Some(crate::tr!("Этот компьютер")),
+        reach: Some(Reach::Home),
+        problem,
+    }
+}
+
+/// The helpers that could give the ability, in order, each with what stops it now: switched on, not this gateway,
+/// not the same as an earlier one on the line, not switched off for it, keyed, declaring it. A sticky one (the
+/// history) has only its first.
+fn helper_roads(helpers: &Helpers, ability: Ability) -> Vec<Road> {
+    let snap = helpers.snap();
+    let candidates: Vec<_> = snap
+        .list
+        .iter()
+        .filter(|entry| entry.enabled && !helpers.is_self(entry) && helpers.twin_of(entry, &snap).is_none())
+        .filter_map(|entry| helpers.remote(entry).map(|remote| (entry, remote)))
+        .filter(|(_, remote)| remote.declares(ability))
+        .collect();
+    let candidates = match ability.sticky() {
+        true => candidates.into_iter().take(1).collect(),
+        false => candidates,
+    };
+    candidates
+        .into_iter()
+        .filter(|(entry, _)| !entry.without.contains(&ability))
+        .map(|(entry, remote)| {
+            let reach = reach_of(entry);
+            let problem = if !snap.away.lets(reach) {
+                Some(crate::tr!("Регулятор не пускает: {name}", name = entry.name))
+            } else if !remote.up() {
+                Some(crate::tr!("{name} не на связи", name = entry.name))
+            } else if !remote.gives(ability) {
+                // No bot by the registry's rule (`no_bot`): its contacts answer so, or its contract says so.
+                match ability == Ability::Messages && remote.no_bot() {
+                    true => Some(crate::tr!("{name}: не настроен бот Telegram", name = entry.name)),
+                    false => Some(crate::tr!("{name} пока не готов", name = entry.name)),
+                }
+            } else {
+                None
+            };
+            Road {
+                by: By::Helper,
+                helper: Some(entry.id.clone()),
+                name: Some(entry.name.clone()),
+                reach: Some(reach),
+                problem,
+            }
+        })
+        .collect()
+}
+
+/// The model's row: «Мозг»'s own answer for the fast profile (dialog/brain/brain_service.rs) — the chosen model;
+/// another in its place, the backup or the next helper, and why; or none may be asked: then Alice on a station whose
+/// mode lets Yandex (the owner, 15.11: in «Вместе» such a question goes to her), else nobody — the words say why.
+fn model_row(app: &App, station: bool) -> NowRow {
+    let now = app.brain.now(ModelProfile::Fast);
+    let (by, name) = match now.helper.as_deref() {
+        // A model server of this computer (stage 6): the built-in helper's row.
+        Some(super::SELF) => (By::Helper, Some(crate::tr!("Этот компьютер"))),
+        Some(id) => (By::Helper, app.helpers.entry(id).map(|entry| entry.name).or(now.title)),
+        None if now.reach == Some(Reach::Foreign) => (By::Cloud, now.title),
+        None => (By::Here, now.title),
+    };
+    let ability = Ability::Model;
+    match now.state {
+        State::Off => {
+            // The words say why none may be asked; with no model at all there are none, and nobody answers.
+            let alice = now.reason.is_some() && station && app.modes.yandex_allowed();
+            let by = if alice { By::Yandex } else { By::None };
+            NowRow { ability, by, helper: None, name: None, reach: None, first: false, why: now.reason }
+        }
+        state => NowRow {
+            ability,
+            by,
+            helper: now.helper,
+            name,
+            reach: now.reach,
+            first: state == State::Ready,
+            why: now.reason,
+        },
+    }
+}
+
+/// This computer's own Telegram bot is set up.
+fn own_bot(app: &App) -> bool {
+    #[cfg(feature = "pc")]
+    let own = app.calls.telegram.enabled();
+    #[cfg(not(feature = "pc"))]
+    let own = {
+        let _ = app;
+        false
+    };
+    own
+}
+
+/// A server at home that is not this machine, for people: its host. One at a loopback address is this gateway's own
+/// and goes unnamed.
+fn home_name(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let own = match parsed.host()? {
+        url::Host::Ipv4(ip) => ip.is_loopback(),
+        url::Host::Ipv6(ip) => ip.is_loopback(),
+        url::Host::Domain(name) => name.eq_ignore_ascii_case("localhost"),
+    };
+    (!own).then(|| parsed.host_str().unwrap_or_default().to_string())
+}
+
+/// A cloud by its address, for people: the known ones by name, else the host without its `api.`.
+pub fn cloud_name(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    Some(match host {
+        "api.openai.com" => "OpenAI".to_string(),
+        "api.groq.com" => "Groq".to_string(),
+        "api.elevenlabs.io" => "ElevenLabs".to_string(),
+        other => other.strip_prefix("api.").unwrap_or(other).to_string(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cloud_is_named_by_its_host() {
+        assert_eq!(cloud_name("https://api.openai.com/v1").as_deref(), Some("OpenAI"));
+        assert_eq!(cloud_name("https://api.groq.com/openai/v1").as_deref(), Some("Groq"));
+        assert_eq!(cloud_name("https://api.elevenlabs.io").as_deref(), Some("ElevenLabs"));
+        assert_eq!(cloud_name("https://api.example.invalid/v1").as_deref(), Some("example.invalid"));
+        assert_eq!(cloud_name("not an address"), None);
+    }
+
+    #[test]
+    fn a_server_elsewhere_at_home_is_named_by_its_host_and_one_on_this_machine_goes_unnamed() {
+        assert_eq!(home_name("http://192.168.1.50:8091/v1").as_deref(), Some("192.168.1.50"));
+        assert_eq!(home_name("http://tts:8091/v1").as_deref(), Some("tts"));
+        assert_eq!(home_name("http://nas.local:8091").as_deref(), Some("nas.local"));
+        for own in ["http://127.0.0.1:8091/v1", "http://localhost:8091", "http://LOCALHOST:8091", "http://[::1]:8091"] {
+            assert_eq!(home_name(own), None, "{own}");
+        }
+        assert_eq!(home_name("not an address"), None);
+    }
+
+    /// A station's own voice server elsewhere at home (TTS_OWN_URL, not a helper's): «Где сейчас» says its host — the
+    /// speaker runs no voice server itself; one on this machine stays unnamed, as before.
+    #[cfg(feature = "pc")]
+    #[tokio::test]
+    async fn a_stations_voice_server_elsewhere_at_home_is_named_in_where_now() {
+        use crate::helpers::builtin::tests::computer;
+        let voice = |app: &App| rows(app).into_iter().find(|row| row.ability == Ability::Voice).unwrap();
+        let station =
+            |voice: &'static str| [("DUOWAVE_ROLE", "station"), ("TTS_PROVIDER", "mixed"), ("TTS_OWN_URL", voice)];
+        let (app, _dir) = computer(&station("http://192.168.1.50:8091/v1"));
+        let row = voice(&app);
+        assert_eq!(
+            (row.by, row.name.as_deref(), row.reach, row.first),
+            (By::Here, Some("192.168.1.50"), Some(Reach::Home), true),
+            "{row:?}"
+        );
+        let (app, _dir) = computer(&station("http://127.0.0.1:8091/v1"));
+        let row = voice(&app);
+        assert_eq!((row.by, row.name, row.first), (By::Here, None, true), "on this machine");
+    }
+
+    #[test]
+    fn the_first_road_that_gives_is_in_use_and_the_first_ones_problem_says_why() {
+        let away = |name: &str| Road {
+            by: By::Helper,
+            helper: Some(name.into()),
+            name: Some(name.into()),
+            reach: Some(Reach::Home),
+            problem: Some(format!("{name} не на связи")),
+        };
+        let cloud = Road::of(By::Cloud, Some("OpenAI".into()), Some(Reach::Foreign), None);
+        let row_ = row(Ability::Hearing, vec![away("A"), away("B"), cloud]);
+        assert_eq!((row_.by, row_.first, row_.why.as_deref()), (By::Cloud, false, Some("A не на связи")));
+        let first = row(Ability::Apps, vec![Road::of(By::Here, None, Some(Reach::Home), None)]);
+        assert_eq!((first.by, first.first, first.why), (By::Here, true, None));
+        let none = row(Ability::Messages, vec![away("A")]);
+        assert_eq!((none.by, none.first, none.why.as_deref()), (By::None, false, Some("A не на связи")));
+        assert_eq!(row(Ability::Messages, Vec::new()).by, By::None);
+    }
+
+    /// «Где сейчас» and the registry say a helper has no bot by one rule (`RemoteHelper::no_bot`): its contacts answer
+    /// so, or its contract of version 1 declares the messages not ready, read or not; its contacts only unread (just
+    /// added) are «не готов» on both.
+    #[tokio::test]
+    async fn where_now_and_the_registry_say_no_bot_by_one_rule() {
+        use crate::core::build::Profile;
+        use crate::core::events::EventBus;
+        use crate::helpers::tests::{contract, stand, station, ALL, KEY};
+        use crate::helpers::AddInput;
+        use crate::placement::AvailabilityService;
+
+        // A station's one helper, added (it answered, its contacts not read) and maybe looked at since: the problem of
+        // its road of the messages in «Где сейчас», and the registry's reason.
+        async fn said(status: serde_json::Value, look: bool) -> (Option<String>, String) {
+            let helper = stand(status).await;
+            let station = station(&[]);
+            let registry = AvailabilityService::with(Profile { station: true }, false, false, EventBus::new());
+            registry.set_helpers(station.helpers.clone());
+            let add = AddInput { url: helper.url.clone(), key: KEY.into(), ..AddInput::default() };
+            station.helpers.add(add, None).await.unwrap();
+            if look {
+                station.helpers.check_all().await;
+            }
+            let road = helper_roads(&station.helpers, Ability::Messages).remove(0);
+            (road.problem, registry.get("messages").unwrap().reason)
+        }
+        let no_bot = |name: &str| {
+            (Some(format!("{name}: не настроен бот Telegram")), "У Турбо не настроен бот Telegram".to_string())
+        };
+
+        let unread = (Some("Турбо a пока не готов".to_string()), "Турбо ещё не готово".to_string());
+        assert_eq!(said(contract("a", ALL), false).await, unread, "its bot's contacts not read yet");
+        let botless = [("hearing", true), ("voice", true), ("messages", false)];
+        assert_eq!(said(contract("b", &botless), false).await, no_bot("Турбо b"), "its contract says so");
+        assert_eq!(said(contract("a", ALL), true).await, no_bot("Турбо a"), "its contacts answer so (503)");
+    }
+}

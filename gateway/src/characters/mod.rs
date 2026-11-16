@@ -521,15 +521,7 @@ impl CharactersService {
                     crate::tr!("Голос персонажа меняет тот, у кого право на голоса (models.manage); выберите без голоса: \"voice\": false."),
                 ));
             }
-            let positions = character.positions(body.tones.as_ref());
-            let text = character.text(Some(&positions));
-            let persona = Persona {
-                preset_id: Some(character.id.clone()),
-                text: text.clone(),
-                base: Some(text),
-                tones: Some(positions),
-            };
-            self.personas.choose(persona, actor.clone())?;
+            self.personas.choose(persona_of(&character, body.tones.as_ref()), actor.clone())?;
             tracing::info!(target: "characters", "{} answers now", character.id);
             let voice = if wants_voice {
                 self.choose_voice(&character, &body, actor).await?
@@ -592,6 +584,45 @@ impl CharactersService {
         }
         let _ = package;
         Ok(())
+    }
+}
+
+/// A package's character as the house's persona: its text with these tones (its own by default), the text it gave
+/// kept as the measure of later edits.
+fn persona_of(character: &Character, tones: Option<&BTreeMap<String, usize>>) -> Persona {
+    let positions = character.positions(tones);
+    let text = character.text(Some(&positions));
+    Persona { preset_id: Some(character.id.clone()), text: text.clone(), base: Some(text), tones: Some(positions) }
+}
+
+/// An activator's word called its character (src/activator, `WordCharacter`): one character lives in the house today,
+/// so the word's becomes the house's — as «Выбрать» in the panel: its text at once (the answer to the word's request is
+/// already its), its voice right after (on the computer, where the voice lab is; nothing is downloaded for it).
+impl crate::activator::WordCharacter for CharactersService {
+    fn answer_as(&self, character: &str, word: &str) -> bool {
+        let Some(character) = self.character(character) else { return false };
+        if self.personas.chosen().and_then(|chosen| chosen.preset_id).as_deref() == Some(character.id.as_str()) {
+            return false;
+        }
+        let actor = Actor {
+            kind: crate::core::identity::PrincipalKind::System,
+            id: "activator".into(),
+            name: crate::tr!("слово «{word}»", word = word),
+        };
+        if let Err(error) = self.personas.choose(persona_of(&character, None), Some(actor.clone())) {
+            tracing::warn!(target: "characters", "{}: not switched by its word: {}", character.id, error.message);
+            return false;
+        }
+        tracing::info!(target: "characters", "{} answers now: its word «{word}»", character.id);
+        #[cfg(feature = "pc")]
+        if let Some(voices) = self.voices() {
+            tokio::spawn(async move {
+                if let Err(error) = voices.choose(&character, false, false, Some(actor)).await {
+                    tracing::warn!(target: "characters", "{}: its voice not switched: {}", character.id, error.message);
+                }
+            });
+        }
+        true
     }
 }
 
@@ -763,6 +794,22 @@ mod tests {
         let view = app.characters.view().await.unwrap();
         assert!(view.characters.iter().any(|character| character.id == "arthur:arthur"));
         assert_eq!(view.active.id.as_deref(), Some(ALICE));
+    }
+
+    /// docs/plans/wake-word-station.md: an activator's word makes its character the house's — once, and only when that
+    /// character is here.
+    #[tokio::test]
+    async fn a_word_makes_its_character_the_houses_once_and_only_when_it_is_here() {
+        use crate::activator::WordCharacter;
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(dir.path());
+        write_arthur(&dir.path().join("packages"), &arthur_manifest("1.2.0"));
+        app.characters.sync();
+        assert!(!app.characters.answer_as("butler:otto", "Отто"), "a word whose character is not installed");
+        assert!(app.characters.answer_as("arthur:arthur", "Артур"));
+        assert_eq!(app.personas.chosen().and_then(|chosen| chosen.preset_id).as_deref(), Some("arthur:arthur"));
+        assert!(app.personas.system_prompt(None).text.starts_with("Ты — Артур, дворецкий умной колонки."));
+        assert!(!app.characters.answer_as("arthur:arthur", "Артур"), "answers already");
     }
 
     #[tokio::test]

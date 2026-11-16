@@ -22,6 +22,7 @@ import {
 import { executorOf, withFirst } from '../executor';
 import {
     IconCheck,
+    IconChevronRight,
     IconEar,
     IconGauge,
     IconHome,
@@ -44,7 +45,7 @@ import { safeColor } from '../ui/media';
 import { useAvailability } from '../availability';
 import { BrandMark } from '../ui/brand';
 import { BRANDS, type BrandId } from '../brand-icons';
-import { Sheet } from '../ui/sheet';
+import { Sheet, SkeletonRows } from '../ui/sheet';
 import {
     DashData,
     LINE,
@@ -81,6 +82,10 @@ import { MODE_TITLES, Solved, Who } from '../truth';
 import { WhoThree } from './placement-map';
 import { tr } from '../i18n';
 import { byMode } from '../words';
+import { useHelpers } from '../helpers';
+import { backupPlace } from './brain-backup';
+import { fallLine, turboOf } from './turbo-model';
+import { AsleepLine, FallLine, TurboBody, TurboSlot } from './turbo-scene';
 
 /** How far the stage's glow reaches past its core («Минимал»): what the blur(60px) spread was. */
 const GLOW_REACH = 110;
@@ -160,6 +165,8 @@ interface Props {
      * прижатой к низу экрана.
      */
     room?: number;
+    /** В «Дом»: блок Турбо и пустое место для него ведут туда. */
+    onOpenHome?: () => void;
 }
 
 let probe: HTMLDivElement | null = null;
@@ -224,9 +231,11 @@ function useTalkStage(): 'listen' | 'speak' | null {
     return listening ? 'listen' : speaking ? 'speak' : null;
 }
 
-export function Dashboard({ health, session, drawing, online, trip, skew = 0, version = 0, onOpenSettings, onOpenHouse, whoOpen, onToggleWho, room }: Props) {
+export function Dashboard({ health, session, drawing, online, trip, skew = 0, version = 0, onOpenSettings, onOpenHouse, whoOpen, onToggleWho, room, onOpenHome }: Props) {
     const mode: PanelMode = health?.panelMode ?? (health?.mode === 'relay' ? 'relay' : 'gateway');
     const computer = useOnComputer();
+    // Турбо и «где сейчас»: кто на деле слышит, думает и говорит, и второе тело сцены (решение владельца 16.11).
+    const helpers = useHelpers();
     const talkStage = useTalkStage();
     const [models, setModels] = useState<ModelsView | null>(null);
     // На колонке слух и голос — по списку шлюза: у компьютера, в облаке, у Яндекса.
@@ -335,6 +344,7 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
         availability,
         computer,
         yandexEar: health?.yandexEar,
+        helpers: helpers.view,
     };
     const truth = truthOf(data);
     const nodes = nodesOf(data, truth);
@@ -417,9 +427,32 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
     useEffect(() => () => window.clearTimeout(swapTimer.current), []);
     const artBox = { left: `${art.left}px`, top: `${art.top}px`, width: `${art.size}px`, height: `${art.size * ART_RATIO}px` };
 
+    // Второе тело: Турбо рядом со шлюзом; у колонки без Турбо — пустое место для него; у одинокого компьютера без
+    // встроенного Турбо — ничего (стартовый стол остаётся простым). Под сценой — что встанет вместо Турбо, если уснёт.
+    const station = health?.placement?.role === 'station';
+    const turbo = turboOf(helpers.view);
+    const openHome = onOpenHome ?? (() => undefined);
+    const side = turbo ? <TurboBody turbo={turbo} onOpen={openHome} /> : station && helpers.view ? <TurboSlot onAdd={openHome} /> : null;
+    const cloudOn = (id: string): boolean =>
+        connectors?.some((entry) => entry.manifest.id === id && entry.manifest.cloud && (entry.status.state === 'ready' || entry.status.state === 'configured')) ?? false;
+    const backup = brainView ? backupPlace(brainView) : null;
+    const away = helpers.view?.away ?? 'home';
+    const fall = fallLine(turbo, {
+        station,
+        computer,
+        mode,
+        away,
+        cloudEar: cloudOn('asr'),
+        cloudVoice: cloudOn('tts'),
+        backup: !!backup && backup.helper !== turbo?.helper.id && !(backup.cloud && away !== 'any'),
+    });
+    const asleep = turbo && !turbo.builtin && !turbo.up && turbo.helper.allowed !== false;
+
     return (
         <>
+            {asleep && <AsleepLine turbo={turbo} station={station} />}
             <TruthStrip nodes={nodes} truth={truth} mode={mode} open={whoOpen} onToggle={onToggleWho} />
+            <div class={`dash-pair${side ? ' has-side' : ''}`}>
             <div ref={box} class="dash-stage" style={{ height: `${Math.round(scene.height * scene.scale)}px` }}>
                 <div
                     class="dash-board"
@@ -573,6 +606,9 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
                     ))}
                 </div>
             </div>
+            {side}
+            </div>
+            {fall && <FallLine items={fall.items} modeFalls={fall.modeFalls} backup={backup ?? undefined} />}
 
             {sheet && sheet !== 'links' && (
                 <ChoiceSheet key={sheet} spec={specFor(sheet, context)} onClose={() => setSheet(null)} onApplied={() => void reload()} />
@@ -1129,12 +1165,38 @@ function ChoiceSheet({ spec, onClose, onApplied }: { spec: Spec; onClose: () => 
         void run(choice);
     };
 
+    // «Станет … вместо …» and «включить всё равно?» wait below, as the window's one action: «Отменить · Применить».
+    const question = pending?.confirm
+        ? { text: pending.confirm, ok: tr.dashboard.apply, yes: () => void run(pending), no: () => setPending(null) }
+        : tight
+          ? { text: tr.dashboard.voiceNotEnabled(tight.text), ok: tr.dashboard.enableAnyway, yes: () => void run(tight.choice, true), no: () => setTight(null) }
+          : null;
+
     return (
-        <Sheet title={spec.title} about={spec.about} icon={<SheetIcon icon={NODE_ICONS[spec.key]} tone={spec.tone} />} onClose={onClose}>
+        <Sheet
+            title={spec.title}
+            icon={<SheetIcon icon={NODE_ICONS[spec.key]} tone={spec.tone} />}
+            onClose={onClose}
+            footer={
+                question ? (
+                    <>
+                        <span class="win-dirty" role="status">
+                            {question.text}
+                        </span>
+                        <span class="win-grow" />
+                        <button class="btn btn-plain" onClick={question.no}>
+                            {tr.dashboard.cancel}
+                        </button>
+                        <button class="btn btn-main" onClick={question.yes}>
+                            {question.ok}
+                        </button>
+                    </>
+                ) : undefined
+            }
+        >
+            <p class="win-lead">{spec.about}</p>
             {spec.empty ? (
-                <p class="t-meta m-0">
-                    {spec.empty}
-                </p>
+                <SkeletonRows rows={3} label={spec.empty} />
             ) : (
                 <div role="radiogroup" aria-label={spec.title} class="flex flex-col">
                     {spec.choices.map((choice) => (
@@ -1163,53 +1225,40 @@ function ChoiceSheet({ spec, onClose, onApplied }: { spec: Spec; onClose: () => 
                     ))}
                 </div>
             )}
-            {pending?.confirm && (
-                <div role="status" class="dash-confirm">
-                    <p>{pending.confirm}</p>
-                    <div class="flex gap-8">
-                        <button class="pill pill-own dash-confirm-btn" onClick={() => void run(pending)}>
-                            {tr.dashboard.apply}
-                        </button>
-                        <button class="pill pill-off dash-confirm-btn" onClick={() => setPending(null)}>
-                            {tr.dashboard.cancel}
-                        </button>
-                    </div>
-                </div>
-            )}
-            {tight && (
-                <div role="status" class="dash-confirm">
-                    <p>{tr.dashboard.voiceNotEnabled(tight.text)}</p>
-                    <div class="flex gap-8">
-                        <button class="pill pill-own dash-confirm-btn" onClick={() => void run(tight.choice, true)}>
-                            {tr.dashboard.enableAnyway}
-                        </button>
-                        <button class="pill pill-off dash-confirm-btn" onClick={() => setTight(null)}>
-                            {tr.dashboard.cancel}
-                        </button>
-                    </div>
-                </div>
-            )}
             {error && (
-                <p role="alert" class="t-meta m-0 c-dot-offline">
+                <p role="alert" class="win-callout m-0 wrap-anywhere">
                     {error}
                 </p>
             )}
             {notice && (
-                <p role="status" class="t-meta m-0 c-text">
+                <p role="status" class="win-text m-0 c-text">
                     {notice}
                 </p>
             )}
             {spec.notes.map((note) => (
-                <p key={note} class="t-caption m-0 wrap-anywhere">
+                <p key={note} class="win-note wrap-anywhere">
                     {note}
                 </p>
             ))}
-            {spec.links.map((link) => (
-                <button key={link.label} class="dash-sheet-link" onClick={link.open}>
-                    {link.label}
+            <GoRows links={spec.links} />
+        </Sheet>
+    );
+}
+
+/** Where else this is set: rows that lead there («Провайдеры и модели», «Все подключения»). */
+function GoRows({ links }: { links: Spec['links'] }) {
+    if (links.length === 0) return null;
+    return (
+        <div class="win-group">
+            {links.map((link) => (
+                <button key={link.label} class="win-row win-choice text-left" onClick={link.open}>
+                    <span class="win-row-main">
+                        <span class="win-row-t">{link.label}</span>
+                    </span>
+                    <IconChevronRight size={16} />
                 </button>
             ))}
-        </Sheet>
+        </div>
     );
 }
 
@@ -1251,42 +1300,36 @@ function LinksSheet({
             onClose={onClose}
         >
             {!allowed ? (
-                <p class="t-meta m-0">
-                    {tr.dashboard.linksAdminOnly}
-                </p>
+                <p class="win-callout is-calm m-0">{tr.dashboard.linksAdminOnly}</p>
             ) : !loaded ? (
-                <p class="t-meta m-0">
-                    {tr.dashboard.linksLoading}
-                </p>
+                <SkeletonRows rows={4} label={tr.dashboard.linksLoading} />
             ) : (
-                <div class="flex flex-col">
-                    {rows.map((row) => {
-                        const body = (
-                            <>
-                                <span class="dash-option-text">
-                                    <b>{row.name}</b>
-                                    <span class="t-caption">{row.sub}</span>
-                                </span>
-                                <span class={row.cls}>{row.pill}</span>
-                            </>
-                        );
-                        return row.setup ? (
-                            <button key={row.id} class="dash-option cursor-pointer min-h-54 w-full" onClick={() => onOpenHouse(row.id)}>
-                                {body}
-                            </button>
-                        ) : (
-                            <div key={row.id} class="dash-option cursor-default min-h-54">
-                                {body}
-                            </div>
-                        );
-                    })}
-                </div>
+                rows.length > 0 && (
+                    <div class="win-group">
+                        {rows.map((row) => {
+                            const body = (
+                                <>
+                                    <span class="win-row-main">
+                                        <span class="win-row-t">{row.name}</span>
+                                        <span class="win-row-s">{row.sub}</span>
+                                    </span>
+                                    <span class={row.cls}>{row.pill}</span>
+                                </>
+                            );
+                            return row.setup ? (
+                                <button key={row.id} class="win-row win-choice text-left" onClick={() => onOpenHouse(row.id)}>
+                                    {body}
+                                </button>
+                            ) : (
+                                <div key={row.id} class="win-row">
+                                    {body}
+                                </div>
+                            );
+                        })}
+                    </div>
+                )
             )}
-            {allowed && (
-                <button class="dash-sheet-link" onClick={() => onOpenHouse()}>
-                    {tr.dashboard.allLinks}
-                </button>
-            )}
+            {allowed && <GoRows links={[{ label: tr.dashboard.allLinks, open: () => onOpenHouse() }]} />}
         </Sheet>
     );
 }

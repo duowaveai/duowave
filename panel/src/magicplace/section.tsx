@@ -7,9 +7,10 @@
 // MagicPlace — не пакет, а часть пульта и шлюза: его не выключить и не удалить, своих прав ставить у него нет — он
 // ходит в те же ручки, что кнопки каталога, с правами вошедшего (шлюз проверяет каждое действие сам).
 
+import { WinRow, WinSection } from '../ui/sheet';
 import { useEffect, useState } from 'preact/hooks';
 
-import type { CatalogEntry, CatalogFace, CatalogPlace, VoiceLabEngine } from '../api';
+import type { AgentCard, CatalogEntry, CatalogFace, CatalogPlace, VoiceLabEngine } from '../api';
 import { tr } from '../i18n';
 import { IconClose, IconGear, IconSearch } from '../icons';
 import { useLinkedItem, usePanel } from '../shell/context';
@@ -77,10 +78,38 @@ export function openTarget(entry: CatalogEntry, go: PanelState['go']): (() => vo
     if (!isInstalled(entry)) return null;
     if (entry.kind === 'character') return () => go('character', 'characters', entry.id);
     if (entry.kind === 'theme') return () => go('settings', 'look');
+    // Агент выбирается в рабочих папках: там видно, найдена ли его программа и вошли ли вы.
+    if (entry.kind === 'agent') return () => go('works', 'folders');
     const plugin = registeredPlugins().find((plugin) => plugin.id === entry.id || plugin.id === `package.${entry.id}`);
     const section = plugin?.sections?.find((section) => section.nav !== 'link') ?? plugin?.sections?.[0];
     if (section) return () => go(section.id);
     return () => go('skills', 'installed', entry.id);
+}
+
+/**
+ * Карточка агента до установки: установка ставит только карточку — программу агента ставите вы сами (командой), входите
+ * в неё сами; ссылка на его условия; агент без вопросов перед командами помечен.
+ */
+export function AgentFacts({ card, title }: { card: AgentCard; title: string }) {
+    return (
+        <div class="mp-agent flex flex-col gap-4">
+            <p class="t-caption m-0">{tr.magicplace.agentCardOnly}</p>
+            {card.program.install && (
+                <>
+                    <p class="t-caption m-0">{tr.magicplace.agentInstall(card.program.name)}</p>
+                    <code class="mp-agent-code">{card.program.install}</code>
+                </>
+            )}
+            <p class="t-caption m-0">{card.signin.hint ?? tr.magicplace.agentSignin(title)}</p>
+            {card.asks === false && <p class="t-caption m-0 mp-agent-warn">{tr.magicplace.agentNoQuestions}</p>}
+            {card.model.via === 'duowave' && <p class="t-caption m-0">{tr.magicplace.agentViaDuowave}</p>}
+            {card.terms && (
+                <a class="t-caption c-accent-text" href={card.terms} target="_blank" rel="noopener noreferrer">
+                    {tr.magicplace.agentTerms(title)}
+                </a>
+            )}
+        </div>
+    );
 }
 
 /** Что пакет скачает сам, словами: «Один раз скачает Node — около 50 МБ». */
@@ -189,7 +218,7 @@ function FiltersBar({ entries, filters, onFilters }: { entries: CatalogEntry[]; 
     const faces = faceFilters().filter((face) => apps.some((entry) => (entry.faces ?? []).includes(face)));
     const places = placeFilters().filter((place) => apps.some((entry) => placeOfEntry(entry) === place));
     const states = stateFilters().filter((state) => entries.some((entry) => stateOf(entry) === state));
-    const chip = (active: boolean) => `pill ${active ? 'pill-own' : 'pill-off'} cursor-pointer min-h-36`;
+    const chip = (active: boolean) => `pill ${active ? 'pill-pick' : 'pill-off'} cursor-pointer min-h-32`;
     const pickKind = (kind: KindFilter | null) => onFilters({ ...filters, kind, ...(kind && kind !== 'app' ? { face: null, place: null } : {}) });
     return (
         <>
@@ -403,16 +432,21 @@ export function MagicPlaceSection() {
             {settings && <StoreSettings catalog={catalog} onClose={() => setSettings(false)} />}
 
             {linkedEntry && (
-                <CatalogEntrySheet entry={linkedEntry} actions={actions} engines={engines} onClose={linked.close}>
-                    {downloadLines(linkedEntry).map((line) => (
-                        <p key={line} class="t-caption m-0">
-                            {line}
-                        </p>
-                    ))}
-                    {openTarget(linkedEntry, panel.go) && (
-                        <div>
-                            <Action label={tr.magicplace.open} onClick={() => openTarget(linkedEntry, panel.go)?.()} />
-                        </div>
+                <CatalogEntrySheet
+                    entry={linkedEntry}
+                    actions={actions}
+                    engines={engines}
+                    all={view?.packages}
+                    onClose={linked.close}
+                    open={openTarget(linkedEntry, panel.go) ? { label: tr.magicplace.open, go: () => openTarget(linkedEntry, panel.go)?.() } : null}
+                >
+                    {linkedEntry.agent && <AgentFacts card={linkedEntry.agent} title={linkedEntry.title} />}
+                    {downloadLines(linkedEntry).length > 0 && (
+                        <WinSection title={tr.magicplace.downloadTitle} group>
+                            {downloadLines(linkedEntry).map((line) => (
+                                <WinRow key={line} title={line} />
+                            ))}
+                        </WinSection>
                     )}
                 </CatalogEntrySheet>
             )}

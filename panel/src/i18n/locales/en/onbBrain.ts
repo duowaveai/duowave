@@ -18,6 +18,7 @@ const en: Translation<typeof ru> = {
     localTitle: 'A model on this computer',
     localChip: 'offline',
     localSub: 'Ollama or LM Studio: questions never leave home. Needs a powerful computer.',
+    localSubAway: 'Ollama or LM Studio: a model on this computer answers. Needs a powerful computer.',
 
     orSignIn: 'Sign in with OpenRouter',
     orSignInNote: 'The OpenRouter page opens: sign in and press “Authorize”. The key arrives by itself, nothing to copy.',
@@ -46,6 +47,11 @@ const en: Translation<typeof ru> = {
     localNoneNote: 'Install one of them and press “Check again”. Or start with the cloud and add a model on this computer later.',
     localFound: (title: string) => `Found ${title}`,
     localFoundNote: (model: string) => `${model} answers, and questions never leave home. We picked it for you; to change, go to “Character” → “Brain”.`,
+    localFoundBackup: (model: string, title: string) =>
+        `${model} answers. When the model on this computer is silent, the question goes to the backup, “${title}”, over the internet. To change, go to “Character” → “Brain”.`,
+    localFoundSmart: (model: string, title: string) =>
+        `${model} answers; hard questions go to “${title}” over the internet. To change, go to “Character” → “Brain”.`,
+    noBackup: 'No backup',
 
     earTitle: 'Getting ready to listen',
     earDownloading: 'downloading the speech model once, then it works offline',

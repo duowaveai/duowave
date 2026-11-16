@@ -447,7 +447,7 @@ impl MovesService {
             let available = memory.split_whitespace().nth(1).and_then(|kb| kb.parse::<u64>().ok()).unwrap_or(u64::MAX);
             if available < NEEDED_MEMORY_KB {
                 anyhow::bail!(crate::tr!(
-                    "У колонки свободно {free} МБ памяти, а шлюзу нужно {needed} МБ.",
+                    "У колонки свободно {free} МБ ОЗУ, а шлюзу нужно {needed} МБ.",
                     free = available / 1024,
                     needed = NEEDED_MEMORY_KB / 1024
                 ));

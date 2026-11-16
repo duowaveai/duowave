@@ -4,7 +4,7 @@ import { devMode } from '../shell/dev';
 import { AccessCatalog, Health, RoutesSetting, api, can, problemOf } from '../api';
 import { CAPABILITIES, CapabilityMeta, capabilityIcon } from '../capabilities';
 import { capabilityIconComponent } from '../icons';
-import { Overlay } from '../ui/sheet';
+import { SaveBar, Sheet } from '../ui/sheet';
 import { tr } from '../i18n';
 
 function routePill(route: string | undefined): { cls: string; label: string } {
@@ -198,17 +198,24 @@ export function RoutesScreen({ health, catalog, title = tr.routes.whoAnswers }: 
             )}
 
             {sheet && (
-                <Overlay onDismiss={close}>
-                    <div class="sheet glass-strong" role="dialog" aria-modal="true" aria-label={tr.routes.sheetLabel(sheet.title)}>
-                        <div class="flex items-center gap-8">
-                            <h2 class="t-title-xs m-0 flex-1">
-                                {sheet.title}
-                            </h2>
-                            <span class={`pill ${routePill(routes[sheet.name]).cls}`}>{routePill(routes[sheet.name]).label}</span>
-                            <button class="pill pill-off pill-btn-sm" onClick={close} aria-label={tr.routes.close}>
-                                ✕
-                            </button>
-                        </div>
+                <Sheet
+                    title={sheet.title}
+                    meta={<span class={`pill ${routePill(routes[sheet.name]).cls}`}>{routePill(routes[sheet.name]).label}</span>}
+                    onClose={close}
+                    footer={
+                        pending ? (
+                            <SaveBar
+                                dirty
+                                busy={saving}
+                                what={tr.routes.willBecome(routePill(pending).label, routePill(routes[sheet.name]).label)}
+                                saveLabel={tr.routes.apply}
+                                onRevert={() => setPending(null)}
+                                onSave={() => void apply(sheet, pending)}
+                            />
+                        ) : undefined
+                    }
+                >
+                    <div class="win-group">
                         {options().map((option, index) => {
                             const current = routes[sheet.name] === option.value;
                             const marked = pending === option.value || (current && !pending);
@@ -219,49 +226,19 @@ export function RoutesScreen({ health, catalog, title = tr.routes.whoAnswers }: 
                                     disabled={saving || !mayEdit}
                                     onClick={() => setPending(current ? null : option.value)}
                                     aria-pressed={marked}
-                                    class={`flex items-center gap-12 min-h-52 py-0 px-14 r-pill ${marked ? 'bg-icon-bg' : 'bg-none'}${mayEdit ? '' : ' opacity-70'}`}
+                                    class={`win-row win-choice text-left${marked ? ' is-on' : ''}${mayEdit ? '' : ' opacity-70'}`}
                                 >
                                     <span class={`pill ${option.cls}`}>{option.label}</span>
-                                    <span class="t-caption flex-1 text-left">
+                                    <span class="win-row-s flex-1">
                                         {option.note}
                                         {own && option.value.includes('yandex') ? tr.routes.withoutYandexInOwn : ''}
                                     </span>
                                 </button>
                             );
                         })}
-                        {pending && (
-                            <div
-                                role="status"
-                                class="py-12 px-14 r-panel bg-pill-yandex-bg c-pill-yandex-fg"
-                            >
-                                <p class="m-0 mb-10 fs-13 lh-18 fw-700">
-                                    {tr.routes.willBecome(routePill(pending).label, routePill(routes[sheet.name]).label)}
-                                </p>
-                                <div class="flex gap-8">
-                                    <button
-                                        class="pill pill-own pill-btn"
-                                        disabled={saving}
-                                        onClick={() => void apply(sheet, pending)}
-                                    >
-                                        {saving ? tr.routes.applying : tr.routes.apply}
-                                    </button>
-                                    <button
-                                        class="pill pill-off pill-btn"
-                                        disabled={saving}
-                                        onClick={() => setPending(null)}
-                                    >
-                                        {tr.routes.cancel}
-                                    </button>
-                                </div>
-                            </div>
-                        )}
-                        {!mayEdit && (
-                            <p class="t-caption m-0">
-                                {tr.routes.adminOnly}
-                            </p>
-                        )}
                     </div>
-                </Overlay>
+                    {!mayEdit && <p class="win-note">{tr.routes.adminOnly}</p>}
+                </Sheet>
             )}
         </>
     );

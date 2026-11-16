@@ -32,7 +32,8 @@ const en: Translation<typeof ru> = {
     noStationShort: 'No speakers found on the network.',
     whereComputer: 'on this computer',
     whereStation: 'on the speaker',
-    changeLater: 'Changed your mind? “Settings” → “Where DuoWave lives”. Nothing changes on the speaker until you press “Connect”.',
+    changeLater: 'Changed your mind? “Settings” → “Speaker” → “Where DuoWave runs”. Nothing changes on the speaker until you press “Connect”.',
+    changeLaterComputer: 'Changed your mind? “Settings” → “Microphone” → “How to talk to DuoWave”.',
     recommended: 'Recommended',
     needsRoot: 'needs root',
     choiceComputer: 'Computer only',
@@ -65,7 +66,7 @@ const en: Translation<typeof ru> = {
         stationNamed: (name: string) => `Speaker “${name}”`,
         stationMain: 'main: memory, characters',
         thisComputer: 'This computer',
-        helper: 'helper',
+        helper: 'Turbo',
         homeHelper: 'speaker and this computer',
         notNeeded: 'not needed',
         legendHome: 'stays home',
@@ -104,8 +105,8 @@ const en: Translation<typeof ru> = {
     helperStays: 'Memory, characters, apps and settings stay on the speaker, one set for the whole home. Computer asleep: the speaker keeps working.',
     helperPassword: (name: string) => `Panel password of the speaker “${name}”`,
     helperPasswordHint: 'the one you set on the speaker',
-    helperLinkNote: 'Only within your home network. Unlink any time: “Settings” → “Helpers”.',
-    helperYes: 'Help the speaker',
+    helperLinkNote: 'Only within your home network. Changed your mind — “Settings” → “Home”.',
+    helperYes: 'Computer as the speaker’s Turbo',
     helperNo: 'No, this computer stays separate',
 
     brainTitle: 'Who will think about the answers?',
@@ -117,11 +118,11 @@ const en: Translation<typeof ru> = {
     speakerAbout: 'I’ll look at the speaker over SSH, show what I’ll change, and change it only after “Connect”. One button puts it back.',
     speakerConnect: 'Connect the speaker',
     speakerDone: (name: string) => `Speaker “${name}” is connected`,
-    speakerDoneSub: 'Alice answers for now, as before. Your own AI turns on with the “Together” mode on the desk.',
+    speakerDoneSub: 'Alice answers for now, as before. Your own AI turns on with “Alice + your AI” on the desk.',
     speakerLater: 'You can connect the speaker later: “Connect a speaker” on the desk.',
 
     moveTitleStation: 'Moving DuoWave onto the speaker',
-    moveTitleStationPc: 'Speaker + helper computer',
+    moveTitleStationPc: 'Speaker + Turbo computer',
     moveAboutStation:
         'DuoWave will run on the speaker itself, so the computer can be turned off. Settings move there too; the computer keeps a copy.',
     moveAboutStationPc:

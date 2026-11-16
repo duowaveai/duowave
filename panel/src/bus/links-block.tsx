@@ -3,6 +3,7 @@
 // что ждут вашего «да»; что оно видит сейчас; последние письма в журнале. Всё решает шлюз: блок только показывает и
 // передаёт ваше слово.
 
+import { SkeletonRows, WinRow, WinSection } from '../ui/sheet';
 import { useEffect, useState } from 'preact/hooks';
 
 import { BusAppView, BusJournalLine, BusLevel, BusLink, BusMode, api, can, problemOf } from '../api';
@@ -66,34 +67,39 @@ function LinkRow({ link, me, titles, onChanged }: { link: BusLink; me: string; t
         }
     };
     return (
-        <div class="flex flex-col gap-4">
-            <div class="flex flex-wrap items-center gap-8">
-                <span class="t-body-sm flex-1 min-w-0">{outgoing ? tr.bus.outgoing(name) : tr.bus.incoming(name)}</span>
-                <select
-                    class="field"
-                    aria-label={tr.bus.levelLabel(name)}
-                    value={link.level}
-                    disabled={busy}
-                    onChange={(e) => void run(() => api.busLink(link.from, link.to, (e.target as HTMLSelectElement).value as BusLevel))}
-                >
-                    {LEVELS.map((level) => (
-                        <option key={level} value={level}>
-                            {levelWord(level, link.to)}
-                        </option>
-                    ))}
-                </select>
-                <Action
-                    label={fromInstall ? tr.bus.close : tr.bus.remove}
-                    disabled={busy || (fromInstall && link.level === 'none')}
-                    onClick={() => void run(() => (fromInstall ? api.busLink(link.from, link.to, 'none') : api.busUnlink(link.from, link.to)))}
-                />
-            </div>
-            <span class="t-caption">{SOURCE_TITLES[link.source] ?? link.source}{link.at ? ` · ${timeAgo(link.at)}` : ''}</span>
-            {error && (
-                <span class="t-caption c-dot-offline" role="alert">
-                    {error}
+        <div class="win-row">
+            <div class="win-row-main">
+                <span class="win-row-t">{outgoing ? tr.bus.outgoing(name) : tr.bus.incoming(name)}</span>
+                <span class="win-row-s">
+                    {SOURCE_TITLES[link.source] ?? link.source}
+                    {link.at ? ` · ${timeAgo(link.at)}` : ''}
                 </span>
-            )}
+                {error && (
+                    <span class="win-row-s c-dot-offline" role="alert">
+                        {error}
+                    </span>
+                )}
+            </div>
+            <select
+                class="field"
+                aria-label={tr.bus.levelLabel(name)}
+                value={link.level}
+                disabled={busy}
+                onChange={(e) => void run(() => api.busLink(link.from, link.to, (e.target as HTMLSelectElement).value as BusLevel))}
+            >
+                {LEVELS.map((level) => (
+                    <option key={level} value={level}>
+                        {levelWord(level, link.to)}
+                    </option>
+                ))}
+            </select>
+            <button
+                class="btn btn-quiet btn-sm"
+                disabled={busy || (fromInstall && link.level === 'none')}
+                onClick={() => void run(() => (fromInstall ? api.busLink(link.from, link.to, 'none') : api.busUnlink(link.from, link.to)))}
+            >
+                {fromInstall ? tr.bus.close : tr.bus.remove}
+            </button>
         </div>
     );
 }
@@ -145,8 +151,13 @@ export function LinksBlock({ id }: { id: string }) {
         };
     }, [id, version, nonce]);
     if (!can('plugins.manage')) return null;
-    if (error && !view) return <span class="t-caption">{tr.bus.linksError(error)}</span>;
-    if (!view) return null;
+    if (error && !view) return <p class="win-callout m-0">{tr.bus.linksError(error)}</p>;
+    if (!view)
+        return (
+            <WinSection title={tr.bus.links}>
+                <SkeletonRows rows={2} />
+            </WinSection>
+        );
     const mode: BusMode = view.mode;
     const run = async (action: () => Promise<unknown>): Promise<void> => {
         setBusy(true);
@@ -164,62 +175,71 @@ export function LinksBlock({ id }: { id: string }) {
     const answer = (question: string, yes: boolean) => run(() => api.busAnswer(question, yes));
     const reaches = view.reaches.filter((visible) => visible.address !== me);
     return (
-        <div class="flex flex-col gap-8">
-            <h3 class="t-title-xs m-0">{tr.bus.links}</h3>
-            <div class="flex items-center gap-12">
-                <span class="t-body-sm flex-1">{tr.bus.talksToOthers}</span>
-                <Switch
-                    on={mode !== 'isolated'}
-                    label={tr.bus.talksToOthers}
-                    disabled={busy}
-                    onChange={(on) => void run(() => api.busMode(me, on ? (view.ownMode ? null : 'rules') : 'isolated'))}
-                />
-            </div>
-            {mode !== 'isolated' && (
-                <div class="flex flex-wrap items-center gap-8">
-                    {(['rules', 'free'] as BusMode[]).map((option) => (
-                        <Action key={option} on={mode === option} label={MODE_TITLES[option]} disabled={busy} onClick={() => void run(() => api.busMode(me, option))} />
-                    ))}
-                    {view.ownMode && <Action label={tr.bus.likeHome} disabled={busy} onClick={() => void run(() => api.busMode(me, null))} />}
+        <>
+            <WinSection
+                title={tr.bus.links}
+                aside={
+                    <button class="btn btn-quiet btn-sm" aria-expanded={journal} onClick={() => setJournal((open) => !open)}>
+                        {journal ? tr.bus.hideJournal : tr.bus.journalTitle}
+                    </button>
+                }
+                group
+            >
+                <WinRow title={tr.bus.talksToOthers}>
+                    <Switch
+                        on={mode !== 'isolated'}
+                        label={tr.bus.talksToOthers}
+                        disabled={busy}
+                        onChange={(on) => void run(() => api.busMode(me, on ? (view.ownMode ? null : 'rules') : 'isolated'))}
+                    />
+                </WinRow>
+                <div class="win-row is-col">
+                    {mode !== 'isolated' && (
+                        <div class="flex flex-wrap items-center gap-8">
+                            {(['rules', 'free'] as BusMode[]).map((option) => (
+                                <Action key={option} on={mode === option} label={MODE_TITLES[option]} disabled={busy} onClick={() => void run(() => api.busMode(me, option))} />
+                            ))}
+                            {view.ownMode && <Action label={tr.bus.likeHome} disabled={busy} onClick={() => void run(() => api.busMode(me, null))} />}
+                        </div>
+                    )}
+                    <span class="win-row-s">
+                        {MODE_HINTS[mode]}
+                        {view.ownMode ? '' : tr.bus.homeMode}
+                    </span>
                 </div>
-            )}
-            <span class="t-caption">
-                {MODE_HINTS[mode]}
-                {view.ownMode ? '' : tr.bus.homeMode}
-            </span>
-            {view.questions.map((question) => (
-                <div key={question.id} class="flex flex-col gap-4">
-                    <span class="t-body-sm">{tr.bus.waitsYes(question.what)}</span>
-                    <div class="flex flex-wrap gap-8">
-                        <Action tone="on" label={question.kind === 'once' ? tr.bus.allowOnce : tr.bus.allow} disabled={busy} onClick={() => void answer(question.id, true)} />
-                        <Action label={tr.bus.deny} disabled={busy} onClick={() => void answer(question.id, false)} />
+                {view.questions.map((question) => (
+                    <div key={question.id} class="win-row is-col">
+                        <span class="win-row-t">{tr.bus.waitsYes(question.what)}</span>
+                        <div class="flex flex-wrap gap-8">
+                            <Action tone="on" label={question.kind === 'once' ? tr.bus.allowOnce : tr.bus.allow} disabled={busy} onClick={() => void answer(question.id, true)} />
+                            <Action label={tr.bus.deny} disabled={busy} onClick={() => void answer(question.id, false)} />
+                        </div>
                     </div>
-                </div>
-            ))}
-            {view.asked.length > 0 && <span class="t-caption">{tr.bus.asksInManifest(view.asked.map((right) => askedWords(right, titles)).join(', '))}</span>}
-            {view.links.length > 0 ? (
-                view.links.map((link) => <LinkRow key={`${link.from}>${link.to}`} link={link} me={me} titles={titles} onChanged={() => setNonce((n) => n + 1)} />)
-            ) : (
-                <span class="t-caption">{tr.bus.noOwnLinks}</span>
-            )}
+                ))}
+            </WinSection>
+            <WinSection title={tr.bus.linksWho} group>
+                {view.links.length > 0 ? (
+                    view.links.map((link) => <LinkRow key={`${link.from}>${link.to}`} link={link} me={me} titles={titles} onChanged={() => setNonce((n) => n + 1)} />)
+                ) : (
+                    <WinRow title={tr.bus.noOwnLinks} />
+                )}
+            </WinSection>
+            {view.asked.length > 0 && <p class="win-note">{tr.bus.asksInManifest(view.asked.map((right) => askedWords(right, titles)).join(', '))}</p>}
             {reaches.length > 0 && (
-                <span class="t-caption">
+                <p class="win-note">
                     {tr.bus.seesNow(
                         reaches
                             .map((visible) => tr.bus.seesItem(visible.title, !visible.handles.some((handle) => handle.allowed && handle.level !== 'see')))
                             .join(', '),
                     )}
-                </span>
+                </p>
             )}
-            <div class="flex flex-wrap gap-8">
-                <Action label={journal ? tr.bus.hideJournal : tr.bus.journalTitle} onClick={() => setJournal((open) => !open)} />
-            </div>
             {journal && <JournalLines me={me} titles={titles} />}
             {error && (
-                <span class="t-caption c-dot-offline" role="alert">
+                <p class="win-callout m-0" role="alert">
                     {error}
-                </span>
+                </p>
             )}
-        </div>
+        </>
     );
 }

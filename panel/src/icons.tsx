@@ -301,6 +301,17 @@ export const IconDots = ({ size = 20 }: IconProps) => svg(size, <path d="M5 12h.
 
 export const IconMinus = ({ size = 20 }: IconProps) => svg(size, <path d="M5 12h14" />);
 
+/** Турбо — тяжёлая часть дома: молния (доски ролей, 16.11). */
+export const IconBolt = ({ size = 20 }: IconProps) => svg(size, <path d="M13 3L5 14h6l-1 7 8-11h-6z" />);
+
+/** Свой сервер — Турбо не дома. */
+export const IconServer = ({ size = 20 }: IconProps) =>
+    svg(size, <>
+        <rect x="4" y="4" width="16" height="7" rx="2" />
+        <rect x="4" y="13" width="16" height="7" rx="2" />
+        <path d="M8 7.5h.01M8 16.5h.01" />
+    </>);
+
 /** Компьютер — помощник. */
 export const IconLaptop = ({ size = 20 }: IconProps) =>
     svg(size, <>

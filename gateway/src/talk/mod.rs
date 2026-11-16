@@ -12,6 +12,7 @@
 pub mod asked;
 pub mod door;
 pub mod executor;
+pub mod folder;
 pub mod input;
 pub mod layer;
 pub mod now;

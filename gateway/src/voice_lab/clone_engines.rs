@@ -222,7 +222,7 @@ pub fn verdict(engine: &EngineSpec, platform: &PlatformInfo) -> Verdict {
         ));
     }
     if platform.ram_mb < 8_000 {
-        return no(crate::tr!("Мало памяти: нужно от 8 ГБ."));
+        return no(crate::tr!("Мало ОЗУ: нужно от 8 ГБ."));
     }
     let nvidia = platform.gpu.kind == GpuKind::Nvidia;
     match platform.os {

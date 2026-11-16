@@ -213,7 +213,7 @@ async fn setup(config: &Config, address: &str, shell: &dyn StationShell, yes: bo
     }
     if let Some(free) = memory.filter(|free| *free < NEEDED_MEMORY_KB) {
         return Err(Stop(crate::tr!(
-            "У колонки свободно {free} МБ памяти, а шлюзу нужно {needed} МБ.",
+            "У колонки свободно {free} МБ ОЗУ, а шлюзу нужно {needed} МБ.",
             free = free / 1024,
             needed = NEEDED_MEMORY_KB / 1024
         )));
@@ -379,7 +379,7 @@ fn name_of(neighbour: &Neighbour) -> String {
         "config-mount" => crate::tr!("чужая копия quasar.cfg"),
         "alice-mount" => crate::tr!("подменён файл Алисы"),
         "alice-preload" => crate::tr!("чужая библиотека внутри Алисы"),
-        "low-memory" => crate::tr!("мало свободной памяти"),
+        "low-memory" => crate::tr!("мало свободного ОЗУ"),
         other => other.to_string(),
     };
     match (&neighbour.detail, neighbour.id.as_str()) {

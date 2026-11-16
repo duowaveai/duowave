@@ -1,3 +1,4 @@
+import { ComponentChildren } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 
 import { ConnectJob, ConnectStepId, FoundStation, StationCheck, StationNeighbour, api, can, problemOf } from '../api';
@@ -6,8 +7,23 @@ import { tr } from '../i18n';
 import { drawingOf } from '../stations';
 import { confetti } from '../ui/confetti';
 import { DuoWaveMark } from '../ui/duowave';
-import { Sheet } from '../ui/sheet';
+import { Sheet, SkeletonRows, WinSection } from '../ui/sheet';
 import { CharactersTab } from './characters';
+
+/** Кнопка занята: крутится внутри неё. */
+const Spin = () => <span class="spinner spinner-sm" aria-hidden="true" />;
+
+/** «Шаг 2 из 4» — меткой в шапке мастера. */
+const stepChip = (step: number) => <span class="win-chip">{tr.connect.stepOf(step, 4)}</span>;
+
+/** Строка плана в рамке: что изменится; адреса и пути — метками кода. */
+function PlanLine({ children }: { children: ComponentChildren }) {
+    return (
+        <li class="win-row">
+            <span class="win-text c-text min-w-0">{children}</span>
+        </li>
+    );
+}
 
 // «Подключить колонку»: мастер из плана открытия (docs/plans/open-source.md, раздел 6). Шлюз находит колонку,
 // с согласия читает её настройки, показывает построчно, что изменит, и только по «Подключить» меняет: копия,
@@ -89,10 +105,15 @@ function Steps({ job, labels }: { job: ConnectJob; labels: Partial<Record<Connec
     );
 }
 
-/** Команда, которую нельзя ни потерять, ни опечатать: выделяется целиком, копируется кнопкой. */
-function Command({ text }: { text: string }) {
+/**
+ * Команда, которую нельзя ни потерять, ни опечатать: выделяется целиком, копируется кнопкой. Ею же лист «Подключить
+ * шлюз» даёт текст подключения (screens/helper-pc.tsx) — со своей подписью поля.
+ */
+export function Command({ text, label = tr.connect.commandLabel }: { text: string; label?: string }) {
     const [copied, setCopied] = useState(false);
     const field = useRef<HTMLTextAreaElement>(null);
+    // Другой текст — ещё не скопирован.
+    useEffect(() => setCopied(false), [text]);
     const copy = async () => {
         try {
             await navigator.clipboard.writeText(text);
@@ -104,8 +125,8 @@ function Command({ text }: { text: string }) {
     };
     return (
         <div class="connect-command">
-            <textarea ref={field} class="field" readOnly rows={3} value={text} aria-label={tr.connect.commandLabel} onFocus={(e) => (e.target as HTMLTextAreaElement).select()} />
-            <button class="pill pill-off" onClick={() => void copy()}>
+            <textarea ref={field} class="field" readOnly rows={3} value={text} aria-label={label} onFocus={(e) => (e.target as HTMLTextAreaElement).select()} />
+            <button class="btn btn-plain btn-sm self-start" onClick={() => void copy()}>
                 {copied ? tr.connect.copied : tr.connect.copy}
             </button>
         </div>
@@ -176,17 +197,20 @@ function PhoneLine() {
             alive = false;
         };
     }, []);
-    const host = addresses?.[0];
+    // Пока адрес идёт — место под строкой, чтобы она не сдвинула окно, когда придёт.
+    if (addresses === null) return <SkeletonRows rows={1} />;
+    const host = addresses[0];
     if (!host) return null;
     // Шлюз отдаёт адрес уже с портом, если он не 80 (station_connect.rs, home_addresses): свой порт — только адресу без него.
     const withPort = /:\d+$/.test(host) || !location.port ? host : `${host}:${location.port}`;
     const url = `http://${withPort}/panel/`;
     return (
-        <div class="connect-phone">
-            <b>{tr.connect.phoneTitle}</b>
-            <span class="t-meta">{tr.connect.phoneText}</span>
-            <span class="connect-path">{url}</span>
-        </div>
+        <WinSection title={tr.connect.phoneTitle} group>
+            <div class="win-row is-col">
+                <span class="win-row-s">{tr.connect.phoneText}</span>
+                <span class="win-code self-start">{url}</span>
+            </div>
+        </WinSection>
     );
 }
 
@@ -213,7 +237,9 @@ export function ConnectSheet({
     const [ownPort, setOwnPort] = useState(80);
     const [check, setCheck] = useState<StationCheck | null>(null);
     const [job, setJob] = useState<ConnectJob | null>(null);
-    const [busy, setBusy] = useState(false);
+    /** Что сейчас делается: прочитать колонку, подключить, вернуть как было. Кнопки ждут, крутится — у того, что нажали. */
+    const [doing, setDoing] = useState<'read' | 'connect' | 'restore' | null>(null);
+    const busy = doing !== null;
     const [error, setError] = useState<string | null>(null);
 
     // Колонка вышла на связь — салют, один раз за подключение.
@@ -254,36 +280,36 @@ export function ConnectSheet({
         return () => clearInterval(timer);
     }, [job?.id, job?.status]);
 
-    const run = async (work: () => Promise<void>) => {
-        setBusy(true);
+    const run = async (what: 'read' | 'connect' | 'restore', work: () => Promise<void>) => {
+        setDoing(what);
         setError(null);
         try {
             await work();
         } catch (e) {
             setError(problemOf(e));
         } finally {
-            setBusy(false);
+            setDoing(null);
         }
     };
 
     const read = () =>
-        run(async () => {
+        run('read', async () => {
             const result = await api.checkStation(address.trim(), gateway.trim() || undefined);
             setCheck(result);
             setStep('plan');
         });
     const connect = () =>
-        run(async () => {
+        run('connect', async () => {
             setJob(await api.connectStation(check!.address, gateway.trim()));
             setStep('progress');
         });
     const restore = () =>
-        run(async () => {
+        run('restore', async () => {
             setJob(await api.restoreStation(check!.address, 'previous'));
         });
 
     const problem = error && (
-        <p role="alert" class="t-meta m-0 c-dot-offline">
+        <p role="alert" class="win-callout m-0">
             {error}
         </p>
     );
@@ -292,63 +318,70 @@ export function ConnectSheet({
         return (
             <Sheet
                 title={tr.connect.findTitle}
-                about={tr.connect.findAbout}
+                about={tr.connect.findHint}
+                meta={stepChip(1)}
                 icon={guide}
                 onClose={onClose}
                 footer={
-                    <div class="dash-actions">
-                        <button class="dash-done" disabled={!address.trim()} onClick={() => setStep('consent')}>
-                            {tr.connect.next}
-                        </button>
-                        <button class="pill pill-off dash-wide" onClick={onClose}>
+                    <>
+                        <button class="btn btn-plain" onClick={onClose}>
                             {tr.connect.cancel}
                         </button>
-                    </div>
+                        <button class="btn btn-main" disabled={!address.trim()} onClick={() => setStep('consent')}>
+                            {tr.connect.next}
+                        </button>
+                    </>
                 }
             >
                 {found === null ? (
-                    <p class="t-meta m-0">
-                        {tr.connect.searching}
-                    </p>
+                    <SkeletonRows rows={2} label={tr.connect.searching} />
                 ) : found.length ? (
-                    <div role="radiogroup" aria-label={tr.connect.foundLabel} class="flex flex-col">
-                        {found.map((station) => (
-                            <button
-                                key={station.address}
-                                role="radio"
-                                aria-checked={address === station.address}
-                                class="picker-row"
-                                onClick={() => setAddress(station.address)}
-                            >
-                                <span class="dash-option-text">
-                                    <b>{station.txt.platform ? drawingOf(null, station.txt.platform).title : station.name || tr.connect.speakerDefault}</b>
-                                    <span class="t-caption">
-                                        {station.address} · {station.ssh ? tr.connect.sshYes : tr.connect.sshNo}
-                                    </span>
-                                </span>
-                                <span class={`dash-radio${address === station.address ? ' on' : ''}`} aria-hidden="true">
-                                    {address === station.address && <IconCheck />}
-                                </span>
-                            </button>
-                        ))}
-                    </div>
+                    <WinSection title={tr.connect.foundLabel}>
+                        <div role="radiogroup" aria-label={tr.connect.foundLabel} class="win-group">
+                            {found.map((station) => {
+                                const on = address === station.address;
+                                return (
+                                    <button
+                                        key={station.address}
+                                        role="radio"
+                                        aria-checked={on}
+                                        class="win-row win-choice text-left"
+                                        onClick={() => setAddress(station.address)}
+                                    >
+                                        <span class="win-row-main">
+                                            <span class="win-row-t">
+                                                {station.txt.platform ? drawingOf(null, station.txt.platform).title : station.name || tr.connect.speakerDefault}
+                                            </span>
+                                            <span class="win-row-s">
+                                                <span class="win-code">{station.address}</span> {station.ssh ? tr.connect.sshYes : tr.connect.sshNo}
+                                            </span>
+                                        </span>
+                                        <span class={`dash-radio${on ? ' on' : ''}`} aria-hidden="true">
+                                            {on && <IconCheck />}
+                                        </span>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </WinSection>
                 ) : (
-                    <p class="t-meta m-0">
-                        {tr.connect.noneFound}
-                    </p>
+                    <p class="win-callout is-calm m-0">{tr.connect.noneFound}</p>
                 )}
-                <input
-                    class="field"
-                    value={address}
-                    inputMode="decimal"
-                    placeholder={tr.connect.addressPlaceholder}
-                    aria-label={tr.connect.addressLabel}
-                    onInput={(event) => setAddress((event.target as HTMLInputElement).value)}
-                    onKeyDown={(event) => {
-                        if (event.key === 'Enter' && address.trim()) setStep('consent');
-                    }}
-                />
-                <p class="t-caption m-0">
+                <label class="flex flex-col gap-6">
+                    <span class="win-label">{tr.connect.addressLabel}</span>
+                    <input
+                        class="field"
+                        value={address}
+                        inputMode="decimal"
+                        placeholder={tr.connect.addressPlaceholder}
+                        aria-label={tr.connect.addressLabel}
+                        onInput={(event) => setAddress((event.target as HTMLInputElement).value)}
+                        onKeyDown={(event) => {
+                            if (event.key === 'Enter' && address.trim()) setStep('consent');
+                        }}
+                    />
+                </label>
+                <p class="win-note">
                     {tr.connect.lanHint}{' '}
                     <a href={WIKI_ROOT} target="_blank" rel="noreferrer">
                         {tr.connect.wikiStep1}
@@ -366,25 +399,29 @@ export function ConnectSheet({
         return (
             <Sheet
                 title={tr.connect.consentTitle}
-                about={tr.connect.step2About(address.trim())}
+                meta={
+                    <>
+                        {stepChip(2)}
+                        <span class="win-chip">{address.trim()}</span>
+                    </>
+                }
                 icon={guide}
                 onClose={onClose}
                 footer={
-                    <div class="dash-actions">
-                        <button class="dash-done" disabled={busy} onClick={() => void read()}>
-                            {busy ? tr.connect.reading : tr.connect.read}
-                        </button>
-                        <button class="pill pill-off dash-wide" disabled={busy} onClick={() => setStep('find')}>
+                    <>
+                        <button class="btn btn-plain" disabled={busy} onClick={() => setStep('find')}>
                             {tr.connect.back}
                         </button>
-                    </div>
+                        <button class="btn btn-main" disabled={busy} aria-busy={busy || undefined} onClick={() => void read()}>
+                            {busy && <Spin />}
+                            {busy ? tr.connect.reading : tr.connect.read}
+                        </button>
+                    </>
                 }
             >
-                <p class="t-meta m-0 c-text">
-                    {tr.connect.consentText}
-                </p>
-                <label class="t-caption flex flex-col gap-6">
-                    {tr.connect.gatewayAddress}
+                <p class="win-lead">{tr.connect.consentText}</p>
+                <label class="flex flex-col gap-6">
+                    <span class="win-label">{tr.connect.gatewayAddress}</span>
                     <input
                         class="field"
                         value={gateway}
@@ -392,10 +429,8 @@ export function ConnectSheet({
                         aria-label={tr.connect.gatewayLabel}
                         onInput={(event) => setGateway((event.target as HTMLInputElement).value)}
                     />
+                    <span class="win-hint">{tr.connect.portNote(gatewayPort(gateway, ownPort))}</span>
                 </label>
-                <p class="t-caption m-0">
-                    {tr.connect.portNote(gatewayPort(gateway, ownPort))}
-                </p>
                 {problem}
             </Sheet>
         );
@@ -405,118 +440,114 @@ export function ConnectSheet({
         const ready = !check.problem && !!facts && !!check.target;
         const neighbours = check.neighbours ?? [];
         const blocked = neighbours.some((neighbour) => neighbour.severity === 'blocks');
+        const factChips = facts ? [facts.deviceType && drawingOf(null, facts.deviceType).title, facts.softwareVersion && tr.connect.firmware(facts.softwareVersion)] : [];
         return (
             <Sheet
                 title={check.problem ? tr.connect.planCannot : check.connected ? tr.connect.planAlready : tr.connect.planTitle}
                 icon={guide}
-                about={tr.connect.step2About(
-                    facts
-                        ? [facts.deviceType && drawingOf(null, facts.deviceType).title, facts.softwareVersion && tr.connect.firmware(facts.softwareVersion), check.address]
-                              .filter(Boolean)
-                              .join(' · ')
-                        : check.address,
-                )}
+                meta={
+                    <>
+                        {stepChip(2)}
+                        {factChips.filter(Boolean).map((fact) => (
+                            <span key={fact} class="win-chip">
+                                {fact}
+                            </span>
+                        ))}
+                        <span class="win-chip">{check.address}</span>
+                    </>
+                }
                 onClose={onClose}
                 footer={
-                    <div class="dash-actions">
-                        {ready && !check.connected && (
-                            <button class="dash-done" disabled={busy || !gateway.trim()} onClick={() => void connect()}>
-                                {busy ? tr.connect.connecting : blocked ? tr.connect.connectAnyway : tr.connect.connect}
-                            </button>
-                        )}
-                        {!check.problem && neighbours.length > 0 && (
-                            <button class="pill pill-off dash-wide" disabled={busy} onClick={() => void read()}>
-                                {busy ? tr.connect.reading : tr.connect.checkAgain}
-                            </button>
-                        )}
-                        {ready && !check.connected && (
-                            <button class="pill pill-off dash-wide" disabled={busy} onClick={() => setStep('manual')}>
-                                {tr.connect.doItMyself}
-                            </button>
-                        )}
-                        {(!ready || check.connected) && (
-                            <button class="dash-done" onClick={onClose}>
-                                {tr.connect.close}
-                            </button>
-                        )}
-                        <button class="pill pill-off dash-wide" disabled={busy} onClick={() => setStep('consent')}>
+                    <>
+                        <button class="btn btn-plain" disabled={busy} onClick={() => setStep('consent')}>
                             {tr.connect.back}
                         </button>
-                    </div>
+                        {ready && !check.connected && (
+                            <>
+                                <button class="btn btn-plain" disabled={busy} onClick={() => setStep('manual')}>
+                                    {tr.connect.doItMyself}
+                                </button>
+                                <button
+                                    class="btn btn-main"
+                                    disabled={busy || !gateway.trim()}
+                                    aria-busy={doing === 'connect' || undefined}
+                                    onClick={() => void connect()}
+                                >
+                                    {doing === 'connect' && <Spin />}
+                                    {doing === 'connect' ? tr.connect.connecting : blocked ? tr.connect.connectAnyway : tr.connect.connect}
+                                </button>
+                            </>
+                        )}
+                    </>
                 }
             >
                 {!check.problem && (
                     <Neighbours
                         found={neighbours}
                         address={check.address}
+                        busy={busy}
+                        checking={doing === 'read'}
+                        onCheck={() => void read()}
                         onChanged={() => api.checkStation(check.address, gateway.trim() || undefined).then(setCheck)}
                     />
                 )}
                 {check.problem ? (
-                    <p class="t-meta m-0 c-text">
-                        {problemText(check.problem)}{' '}
-                        {(check.problem === 'no-ssh' || check.problem === 'auth-failed') && (
-                            <a href={WIKI_SSH} target="_blank" rel="noreferrer">
-                                {tr.connect.sshWiki}
-                            </a>
-                        )}
+                    <p class="win-callout m-0">
+                        <span>
+                            {problemText(check.problem)}{' '}
+                            {(check.problem === 'no-ssh' || check.problem === 'auth-failed') && (
+                                <a href={WIKI_SSH} target="_blank" rel="noreferrer">
+                                    {tr.connect.sshWiki}
+                                </a>
+                            )}
+                        </span>
                     </p>
                 ) : check.connected ? (
-                    <p class="t-meta m-0 c-text">
-                        {tr.connect.alreadyOnGateway}
-                    </p>
+                    <p class="win-lead">{tr.connect.alreadyOnGateway}</p>
                 ) : (
                     facts &&
                     check.target && (
                         <>
-                            <ul class="connect-plan">
-                                <li>
-                                    {tr.connect.planVoiceServer} <code>{facts.addresses.url}</code> → <code>{check.target.url}</code>
-                                </li>
-                                <li>
-                                    {tr.connect.planQuic} <code>{facts.addresses.quic || tr.connect.emptyWord}</code>
+                            <ul class="win-group m-0 p-0">
+                                <PlanLine>
+                                    {tr.connect.planVoiceServer} <span class="win-code">{facts.addresses.url}</span> →{' '}
+                                    <span class="win-code">{check.target.url}</span>
+                                </PlanLine>
+                                <PlanLine>
+                                    {tr.connect.planQuic} <span class="win-code">{facts.addresses.quic || tr.connect.emptyWord}</span>
                                     {tr.connect.planQuicAfter}
-                                </li>
-                                <li>
-                                    {tr.connect.planFwBefore} <code>quasar.cfg</code> {tr.connect.planFwMid} <code>/data/opt/duowave</code>
-                                    {tr.connect.planFwAfter} <code>/data/opt/duowave/restore.sh</code>.
-                                </li>
-                                <li>{tr.connect.planReboot}</li>
+                                </PlanLine>
+                                <PlanLine>
+                                    {tr.connect.planFwBefore} <span class="win-code">quasar.cfg</span> {tr.connect.planFwMid}{' '}
+                                    <span class="win-code">/data/opt/duowave</span>
+                                    {tr.connect.planFwAfter} <span class="win-code">/data/opt/duowave/restore.sh</span>.
+                                </PlanLine>
+                                <PlanLine>{tr.connect.planReboot}</PlanLine>
                             </ul>
                             {facts.pointsTo === 'gateway' ? (
-                                <p class="t-meta connect-warning m-0">
-                                    {tr.connect.otherGatewayBefore} <code>{facts.addresses.url}</code>
-                                    {tr.connect.otherGatewayAfter}
+                                <p class="win-callout m-0">
+                                    <span>
+                                        {tr.connect.otherGatewayBefore} <span class="win-code">{facts.addresses.url}</span>
+                                        {tr.connect.otherGatewayAfter}
+                                    </span>
                                 </p>
                             ) : (
-                                <p class="t-caption m-0">
-                                    {tr.connect.voiceGoes(where(facts.pointsTo))}
-                                </p>
+                                <p class="win-callout is-calm m-0">{tr.connect.voiceGoes(where(facts.pointsTo))}</p>
                             )}
                             {check.updates === 'on' && (
-                                <p class="t-meta connect-warning m-0">
-                                    {tr.connect.updatesBefore}{' '}
-                                    <a href={WIKI_SSH} target="_blank" rel="noreferrer">
-                                        {tr.connect.updatesLink}
-                                    </a>
-                                    .
+                                <p class="win-callout m-0">
+                                    <span>
+                                        {tr.connect.updatesBefore}{' '}
+                                        <a href={WIKI_SSH} target="_blank" rel="noreferrer">
+                                            {tr.connect.updatesLink}
+                                        </a>
+                                        .
+                                    </span>
                                 </p>
                             )}
-                            {check.copy?.refused === 'firmware-changed' && (
-                                <p class="t-meta connect-warning m-0">
-                                    {tr.connect.firmwareChanged}
-                                </p>
-                            )}
-                            {check.copy?.refused === 'gateway-off' && (
-                                <p class="t-meta m-0">
-                                    {tr.connect.gatewayOff}
-                                </p>
-                            )}
-                            {check.dataFreeKb !== undefined && check.dataFreeKb < 2048 && (
-                                <p class="t-meta m-0">
-                                    {tr.connect.lowSpace}
-                                </p>
-                            )}
+                            {check.copy?.refused === 'firmware-changed' && <p class="win-callout m-0">{tr.connect.firmwareChanged}</p>}
+                            {check.copy?.refused === 'gateway-off' && <p class="win-callout is-calm m-0">{tr.connect.gatewayOff}</p>}
+                            {check.dataFreeKb !== undefined && check.dataFreeKb < 2048 && <p class="win-callout is-calm m-0">{tr.connect.lowSpace}</p>}
                         </>
                     )
                 )}
@@ -534,19 +565,14 @@ export function ConnectSheet({
                 icon={guide}
                 onClose={onClose}
                 footer={
-                    <div class="dash-actions">
-                        <button class="dash-done" onClick={onClose}>
-                            {tr.connect.done}
-                        </button>
-                        <button class="pill pill-off dash-wide" onClick={() => setStep('plan')}>
-                            {tr.connect.back}
-                        </button>
-                    </div>
+                    <button class="btn btn-plain" onClick={() => setStep('plan')}>
+                        {tr.connect.back}
+                    </button>
                 }
             >
                 <Command text={command} />
-                <p class="t-caption m-0">
-                    {tr.connect.manualBefore} <code>ssh -p 2222 root@{check.address} sh /data/opt/duowave/restore.sh</code>
+                <p class="win-text m-0">
+                    {tr.connect.manualBefore} <span class="win-code">ssh -p 2222 root@{check.address} sh /data/opt/duowave/restore.sh</span>
                     {tr.connect.manualAfter}
                 </p>
             </Sheet>
@@ -558,20 +584,21 @@ export function ConnectSheet({
         return (
             <Sheet
                 title={tr.connect.whoTitle}
-                about={tr.connect.whoAbout}
+                about={tr.connect.whoHint}
+                meta={
+                    <>
+                        {stepChip(3)}
+                        <span class="pill pill-yandex">{tr.connect.pillYandex}</span>
+                    </>
+                }
                 onClose={onClose}
                 footer={
-                    <div class="dash-actions">
-                        <button class="dash-done" onClick={() => setStep('who')}>
-                            {tr.connect.next}
-                        </button>
-                    </div>
+                    <button class="btn btn-main" onClick={() => setStep('who')}>
+                        {tr.connect.next}
+                    </button>
                 }
             >
-                <p class="connect-now m-0">
-                    <span class="pill pill-yandex">{tr.connect.pillYandex}</span>
-                    <span class="t-meta">{tr.connect.connectedNote}</span>
-                </p>
+                <p class="win-lead">{tr.connect.connectedNote}</p>
                 <CharactersTab />
             </Sheet>
         );
@@ -582,58 +609,54 @@ export function ConnectSheet({
         return (
             <Sheet
                 title={tr.connect.readyTitle}
-                about={tr.connect.step4About}
+                meta={stepChip(4)}
                 onClose={() => onConnected(device)}
                 footer={
-                    <div class="dash-actions">
-                        <button class="dash-done" onClick={() => onConnected(device)}>
-                            {tr.connect.openHome}
-                        </button>
-                    </div>
+                    <button class="btn btn-main" onClick={() => onConnected(device)}>
+                        {tr.connect.openHome}
+                    </button>
                 }
             >
                 {/* ДиВи радуется вместе с салютом (эффект выше), потом снова оглядывается. */}
                 <div class="connect-hero">
                     <DuoWaveMark size={72} live cheer idle="lively" />
                 </div>
-                <p class="t-meta m-0">{tr.connect.sayToSpeaker}</p>
-                <p class="connect-say m-0">{tr.connect.sayExample}</p>
+                <p class="win-text m-0">{tr.connect.sayToSpeaker}</p>
+                <p class="connect-say m-0 self-start">{tr.connect.sayExample}</p>
                 <PhoneLine />
             </Sheet>
         );
     }
 
-    // progress: подключение, а при «не пришла» — откат на том же экране.
+    // progress: подключение, а при «не пришла» — откат на том же экране. Закрыть, когда кончилось, — крестиком.
     const restoring = job?.kind === 'restore';
     return (
         <Sheet
             title={restoring ? tr.connect.restoringTitle : tr.connect.connectingTitle}
-            about={check?.address}
+            meta={check?.address ? <span class="win-chip">{check.address}</span> : undefined}
             onClose={onClose}
             dismissable={job?.status !== 'running'}
             footer={
                 job?.status === 'done' && !restoring ? (
-                    <button class="dash-done" onClick={() => (bare && job.device ? onConnected(job.device) : setStep('ready'))}>
+                    <button class="btn btn-main" onClick={() => (bare && job.device ? onConnected(job.device) : setStep('ready'))}>
                         {tr.connect.next}
                     </button>
                 ) : job?.status === 'timeout' ? (
-                    <div class="dash-actions">
-                        <button class="dash-done" disabled={busy} onClick={() => void restore()}>
-                            {tr.connect.restoreBack}
-                        </button>
-                        <button class="pill pill-off dash-wide" disabled={busy} onClick={onClose}>
+                    <>
+                        <button class="btn btn-plain" disabled={busy} onClick={onClose}>
                             {tr.connect.keep}
                         </button>
-                    </div>
+                        <button class="btn btn-main" disabled={busy} aria-busy={doing === 'restore' || undefined} onClick={() => void restore()}>
+                            {doing === 'restore' && <Spin />}
+                            {tr.connect.restoreBack}
+                        </button>
+                    </>
                 ) : job?.status === 'running' ? (
-                    <button class="dash-done" disabled>
+                    <button class="btn btn-main" disabled aria-busy="true">
+                        <Spin />
                         {tr.connect.wait}
                     </button>
-                ) : (
-                    <button class="dash-done" onClick={onClose}>
-                        {tr.connect.close}
-                    </button>
-                )
+                ) : undefined
             }
         >
             {!restoring && (
@@ -643,21 +666,17 @@ export function ConnectSheet({
             )}
             {job && <Steps job={job} labels={restoring ? restoreLabels() : stepLabels()} />}
             {job?.status === 'timeout' && (
-                <p class="t-meta m-0 c-text">
+                <p class="win-callout m-0">
                     {problemText('no-arrival')} {tr.connect.timeoutHint(gatewayPort(gateway, ownPort))}
                 </p>
             )}
             {job?.status === 'failed' && (
-                <p role="alert" class="t-meta m-0 c-text">
+                <p role="alert" class="win-callout m-0">
                     {problemText(job.error)}
                     {job.copy ? tr.connect.ourCopy(job.copy) : ''}
                 </p>
             )}
-            {job?.status === 'done' && restoring && (
-                <p class="t-meta m-0 c-text">
-                    {tr.connect.restoredOk}
-                </p>
-            )}
+            {job?.status === 'done' && restoring && <p class="win-lead">{tr.connect.restoredOk}</p>}
             {problem}
         </Sheet>
     );
@@ -714,48 +733,51 @@ function WayBackSheet({
     return (
         <Sheet
             title={removing ? tr.connect.uninstallTitle : tr.connect.restoreTitle}
-            about={`${name} · ${address}`}
+            meta={
+                <>
+                    <span class="win-chip">{name}</span>
+                    <span class="win-chip">{address}</span>
+                </>
+            }
             onClose={onClose}
             dismissable={job?.status !== 'running'}
             footer={
                 !job ? (
-                    <div class="dash-actions">
-                        <button class={removing ? 'dash-done danger' : 'dash-done'} disabled={busy} onClick={() => void start()}>
-                            {busy ? tr.connect.starting : removing ? tr.connect.uninstall : tr.connect.restore}
-                        </button>
-                        <button class="pill pill-off dash-wide" disabled={busy} onClick={onClose}>
+                    <>
+                        <button class="btn btn-plain" disabled={busy} onClick={onClose}>
                             {tr.connect.cancel}
                         </button>
-                    </div>
-                ) : (
-                    <button class="dash-done" disabled={job.status === 'running'} onClick={onClose}>
-                        {job.status === 'running' ? tr.connect.wait : tr.connect.close}
+                        <button class={`btn ${removing ? 'btn-danger-fill' : 'btn-main'}`} disabled={busy} aria-busy={busy || undefined} onClick={() => void start()}>
+                            {busy && <Spin />}
+                            {busy ? tr.connect.starting : removing ? tr.connect.uninstall : tr.connect.restore}
+                        </button>
+                    </>
+                ) : job.status === 'running' ? (
+                    <button class="btn btn-main" disabled aria-busy="true">
+                        <Spin />
+                        {tr.connect.wait}
                     </button>
-                )
+                ) : undefined
             }
         >
             {!job ? (
-                <p class="t-meta m-0 c-text">
-                    {removing ? tr.connect.uninstallText : tr.connect.restoreText}
-                </p>
+                <p class="win-lead">{removing ? tr.connect.uninstallText : tr.connect.restoreText}</p>
             ) : (
                 <Steps job={job} labels={removing ? uninstallLabels() : restoreLabels()} />
             )}
             {job?.status === 'failed' && (
-                <p role="alert" class="t-meta m-0 c-text">
-                    {problemText(job.error)} {tr.connect.withoutGateway}{' '}
-                    <code>
-                        ssh -p 2222 root@{address} sh /data/opt/duowave/{removing ? 'uninstall.sh' : 'restore.sh'}
-                    </code>
+                <p role="alert" class="win-callout m-0">
+                    <span>
+                        {problemText(job.error)} {tr.connect.withoutGateway}{' '}
+                        <span class="win-code">
+                            ssh -p 2222 root@{address} sh /data/opt/duowave/{removing ? 'uninstall.sh' : 'restore.sh'}
+                        </span>
+                    </span>
                 </p>
             )}
-            {job?.status === 'done' && (
-                <p class="t-meta m-0 c-text">
-                    {removing ? tr.connect.uninstallDone : tr.connect.restoreDone}
-                </p>
-            )}
+            {job?.status === 'done' && <p class="win-lead">{removing ? tr.connect.uninstallDone : tr.connect.restoreDone}</p>}
             {error && (
-                <p role="alert" class="t-meta m-0 c-dot-offline">
+                <p role="alert" class="win-callout m-0">
                     {error}
                 </p>
             )}
@@ -778,7 +800,23 @@ interface NeighbourWords {
  * чтобы его раскрыли. У мода со своим выключателем — «Выключить»: шлюз выполнит команду самого мода (ничего не удаляя)
  * после «Да», а пульт посмотрит колонку снова. Остальное человек выключает сам.
  */
-function Neighbours({ found, address, onChanged }: { found: StationNeighbour[]; address: string; onChanged: () => Promise<void> }) {
+function Neighbours({
+    found,
+    address,
+    busy,
+    checking,
+    onCheck,
+    onChanged,
+}: {
+    found: StationNeighbour[];
+    address: string;
+    /** Мастер занят (читает колонку, подключает): «Проверить снова» ждёт. */
+    busy: boolean;
+    /** Колонку читают заново по «Проверить снова». */
+    checking: boolean;
+    onCheck: () => void;
+    onChanged: () => Promise<void>;
+}) {
     const [asking, setAsking] = useState<string | null>(null);
     const [working, setWorking] = useState<string | null>(null);
     const [failed, setFailed] = useState<{ id: string; text: string } | null>(null);
@@ -799,11 +837,8 @@ function Neighbours({ found, address, onChanged }: { found: StationNeighbour[]; 
         }
     };
     return (
-        <div class="connect-neighbours">
-            <p class="t-meta m-0 c-text">
-                <b>{tr.connect.neighboursTitle}</b> · {found.length}
-            </p>
-            {blocking && <p class="t-caption m-0 connect-warning">{tr.connect.neighboursOpen}</p>}
+        <WinSection title={tr.connect.neighboursTitle} aside={found.length}>
+            {blocking && <p class="win-callout m-0">{tr.connect.neighboursOpen}</p>}
             {found.map((neighbour) => {
                 const words = known[neighbour.id];
                 const memory = neighbour.id === 'low-memory' ? neighbour.detail : undefined;
@@ -818,11 +853,11 @@ function Neighbours({ found, address, onChanged }: { found: StationNeighbour[]; 
                                 {neighbour.off ? tr.connect.neighboursOff : blocks ? tr.connect.neighboursBlocks : tr.connect.neighboursWarns}
                             </span>
                             <b>{words?.name ?? neighbour.id}</b>
-                            {short && <code>{short}</code>}
+                            {short && <span class="win-code">{short}</span>}
                             {memory && <span class="t-caption">{tr.connect.megabytes(memory)}</span>}
                         </summary>
                         <div class="connect-neighbour-body t-meta">
-                            {neighbour.detail && !memory && <code>{neighbour.detail}</code>}
+                            {neighbour.detail && !memory && <span class="win-code self-start">{neighbour.detail}</span>}
                             {neighbour.off ? (
                                 <p class="m-0">{tr.connect.offNote}</p>
                             ) : (
@@ -834,32 +869,36 @@ function Neighbours({ found, address, onChanged }: { found: StationNeighbour[]; 
                                     {words.cmd && (
                                         <>
                                             {' '}
-                                            <code>{words.cmd}</code>
+                                            <span class="win-code">{words.cmd}</span>
                                         </>
                                     )}
                                 </p>
                             )}
                             {neighbour.switch && asking !== neighbour.id && (
-                                <div>
-                                    <button class="pill pill-off" disabled={working !== null} onClick={() => setAsking(neighbour.id)}>
-                                        {tr.connect.turnOff}
-                                    </button>
-                                </div>
+                                <button class="btn btn-plain btn-sm self-start" disabled={working !== null} onClick={() => setAsking(neighbour.id)}>
+                                    {tr.connect.turnOff}
+                                </button>
                             )}
                             {neighbour.switch && asking === neighbour.id && (
                                 <div class="connect-neighbour-ask">
                                     <p class="m-0">{tr.connect.turnOffAsk}</p>
-                                    <code>{neighbour.switch}</code>
+                                    <span class="win-code self-start">{neighbour.switch}</span>
                                     {words?.back && (
                                         <p class="m-0">
-                                            {tr.connect.turnBack} <code>{words.back}</code>
+                                            {tr.connect.turnBack} <span class="win-code">{words.back}</span>
                                         </p>
                                     )}
                                     <div class="flex gap-8">
-                                        <button class="pill pill-own" disabled={working !== null} onClick={() => void turnOff(neighbour.id)}>
+                                        <button
+                                            class="btn btn-plain btn-sm"
+                                            disabled={working !== null}
+                                            aria-busy={working === neighbour.id || undefined}
+                                            onClick={() => void turnOff(neighbour.id)}
+                                        >
+                                            {working === neighbour.id && <Spin />}
                                             {working === neighbour.id ? tr.connect.turningOff : tr.connect.turnOffYes}
                                         </button>
-                                        <button class="pill pill-off" disabled={working !== null} onClick={() => setAsking(null)}>
+                                        <button class="btn btn-quiet btn-sm" disabled={working !== null} onClick={() => setAsking(null)}>
                                             {tr.connect.cancel}
                                         </button>
                                     </div>
@@ -867,11 +906,11 @@ function Neighbours({ found, address, onChanged }: { found: StationNeighbour[]; 
                             )}
                             {neighbour.off && words?.back && (
                                 <p class="m-0">
-                                    {tr.connect.turnBack} <code>{words.back}</code>
+                                    {tr.connect.turnBack} <span class="win-code">{words.back}</span>
                                 </p>
                             )}
                             {failed?.id === neighbour.id && (
-                                <p role="alert" class="m-0 c-dot-offline">
+                                <p role="alert" class="win-callout m-0">
                                     {failed.text}
                                 </p>
                             )}
@@ -879,7 +918,11 @@ function Neighbours({ found, address, onChanged }: { found: StationNeighbour[]; 
                     </details>
                 );
             })}
-            <p class="t-caption m-0">{tr.connect.neighboursNote}</p>
-        </div>
+            <p class="win-note">{tr.connect.neighboursNote}</p>
+            <button class="btn btn-plain btn-sm self-start" disabled={busy} aria-busy={checking || undefined} onClick={onCheck}>
+                {checking && <Spin />}
+                {checking ? tr.connect.reading : tr.connect.checkAgain}
+            </button>
+        </WinSection>
     );
 }

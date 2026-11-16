@@ -81,71 +81,88 @@ export interface NeedsProps {
     onReimprint?: (engine: string) => void;
 }
 
-/** Содержимое окна: что нужно, сколько, и что можно сделать. Мастер своего голоса рисует его у себя, без окна. */
-export function NeedsBody({ needs, fallback, busy = null, error, tight, onInstall, onFallback, onReimprint }: NeedsProps) {
+/** «Скачать и включить» (памяти впритык — «Включить всё равно»): главное действие; `main` — лайм, в нижней полосе окна. */
+function InstallButton({ busy = null, tight, onInstall, main }: Pick<NeedsProps, 'busy' | 'tight' | 'onInstall'> & { main: boolean }) {
+    return (
+        <button type="button" class={`btn ${main ? 'btn-main' : 'btn-plain'}`} disabled={busy !== null} aria-busy={busy === 'install' || undefined} onClick={onInstall}>
+            {busy === 'install' && <span class="spinner spinner-sm" aria-hidden="true" />}
+            {tight ? tr.ui.enableAnyway : tr.ui.downloadAndEnable}
+        </button>
+    );
+}
+
+/**
+ * Содержимое окна: что нужно, сколько, и что можно сделать. Мастер своего голоса рисует его у себя, внутри своего
+ * окна (`inline`: и «Скачать и включить» здесь же); окно «нужна модель» ставит его в нижнюю полосу.
+ */
+export function NeedsBody({ needs, fallback, busy = null, error, tight, onInstall, onFallback, onReimprint, inline = true }: NeedsProps & { inline?: boolean }) {
     const alternatives = onReimprint ? (needs.alternatives ?? []).filter((entry) => entry.kind === 'reimprint') : [];
     const waiting = busy !== null;
     const spin = (what: NeedsBusy) => busy === what && <span class="spinner spinner-sm" aria-hidden="true" />;
+    const others = alternatives.length > 0 || !!(fallback && onFallback);
     return (
         <>
-            <p class="needs-facts">{facts(needs)}</p>
-            <p class="t-caption m-0">
+            <p class="win-lead">{facts(needs)}</p>
+            <p class="win-text m-0">
                 {needs.kind === 'file' ? tr.ui.willEnableFile : tr.ui.willEnableModel}
                 {fallback ? ` ${tr.ui.meanwhileSpeaks(fallback)}` : ''}
             </p>
             {tight && (
-                <p class="t-caption m-0 c-pill-yandex-fg" role="status">
+                <p class="win-callout m-0" role="status">
                     {tight}
                 </p>
             )}
             {error && (
-                <p class="t-caption m-0 c-dot-offline" role="alert">
+                <p class="win-callout m-0" role="alert">
                     {error}
                 </p>
             )}
-            <div class="needs-actions">
-                <button type="button" class="pill pill-own pill-btn inline-flex items-center gap-6" disabled={waiting} onClick={onInstall}>
-                    {spin('install')}
-                    {tight ? tr.ui.enableAnyway : tr.ui.downloadAndEnable}
-                </button>
-                {alternatives.map((entry) => (
-                    <button
-                        key={entry.engine}
-                        type="button"
-                        class="pill pill-off pill-btn inline-flex items-center gap-6"
-                        disabled={waiting}
-                        onClick={() => onReimprint?.(entry.engine)}
-                    >
-                        {spin('reimprint')}
-                        {tr.ui.reimprintFor(entry.title ?? entry.engine)}
-                    </button>
-                ))}
-                {fallback && onFallback && (
-                    <button type="button" class="pill pill-off pill-btn inline-flex items-center gap-6" disabled={waiting} onClick={onFallback}>
-                        {spin('fallback')}
-                        {tr.ui.speakWithFallback(fallback)}
-                    </button>
-                )}
-            </div>
+            {(inline || others) && (
+                <div class="flex flex-wrap gap-8">
+                    {inline && <InstallButton busy={busy} tight={tight} onInstall={onInstall} main={false} />}
+                    {alternatives.map((entry) => (
+                        <button
+                            key={entry.engine}
+                            type="button"
+                            class="btn btn-plain"
+                            disabled={waiting}
+                            aria-busy={busy === 'reimprint' || undefined}
+                            onClick={() => onReimprint?.(entry.engine)}
+                        >
+                            {spin('reimprint')}
+                            {tr.ui.reimprintFor(entry.title ?? entry.engine)}
+                        </button>
+                    ))}
+                    {fallback && onFallback && (
+                        <button type="button" class="btn btn-plain" disabled={waiting} aria-busy={busy === 'fallback' || undefined} onClick={onFallback}>
+                            {spin('fallback')}
+                            {tr.ui.speakWithFallback(fallback)}
+                        </button>
+                    )}
+                </div>
+            )}
         </>
     );
 }
 
-/** Окно «нужна модель» поверх экрана: о ком речь — в подзаголовке. */
+/** Окно «нужна модель» поверх экрана: о ком речь — меткой в шапке; «Скачать и включить» — внизу справа. */
 export function NeedsDialog({ who, onClose, ...props }: NeedsProps & { who: string; onClose: () => void }) {
     const what = needsWhat(props.needs);
     return (
         <Sheet
             title={tr.ui.needsTitle(props.needs.kind === 'file', what)}
-            about={who}
+            meta={<span class="win-chip">{who}</span>}
             onClose={onClose}
             footer={
-                <button type="button" class="pill pill-off pill-btn justify-center min-h-44" onClick={onClose}>
-                    {tr.ui.notNow}
-                </button>
+                <>
+                    <button type="button" class="btn btn-plain" onClick={onClose}>
+                        {tr.ui.notNow}
+                    </button>
+                    <InstallButton busy={props.busy} tight={props.tight} onInstall={props.onInstall} main />
+                </>
             }
         >
-            <NeedsBody {...props} />
+            <NeedsBody {...props} inline={false} />
         </Sheet>
     );
 }

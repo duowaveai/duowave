@@ -14,7 +14,7 @@ use crate::settings::SettingsService;
 
 /// What a switch to «Яндекс» or «Вместе» hears while the microphone is chosen.
 pub const ONLY_OWN: &str =
-    "В режиме «Микрофон» — только «Своё»: сначала выберите «Через колонку с Алисой» в «Настройках».";
+    "В режиме «Микрофон» — только «Ваш ИИ»: сначала выберите «Через колонку с Алисой» в «Настройках».";
 
 /// The station's own gateway has no microphone of a computer.
 pub const NOT_HERE: &str = "Микрофон компьютера выбирается у шлюза на компьютере.";

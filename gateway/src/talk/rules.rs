@@ -636,7 +636,7 @@ mod gateway {
             text: text.into(),
             device_tag: "kitchen".into(),
             wake_word: true,
-            model: ModelState { enabled: true, tools: true },
+            model: ModelState { enabled: true, tools: true, ..Default::default() },
             now: now_ms(),
             ..RouteInput::default()
         };

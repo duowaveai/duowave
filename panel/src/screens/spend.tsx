@@ -11,14 +11,14 @@
 // Слова о сделке (место, причина, исход, деньги) и строка сделки живут здесь: их берут вкладка «Сделки» у работы
 // (screens/work.tsx) и журнал запросов (screens/journal.tsx).
 
-import { useState } from 'preact/hooks';
+import { useId, useState } from 'preact/hooks';
 
 import { DealSums, ModelDeal, ModelPrice, PriceNow, PriceWrite, RouterStats, api, problemOf } from '../api';
 import { IconChevronRight } from '../icons';
 import { formatDate, formatNumber, tr } from '../i18n';
 import { usePoll } from '../poll';
 import { usePanel } from '../shell/context';
-import { Sheet } from '../ui/sheet';
+import { Sheet, SkeletonRows, WinRow, WinSection } from '../ui/sheet';
 import { dollars, gatewayNow, placeWord, tokensShort } from './works';
 import '../ui/spend.css';
 
@@ -38,6 +38,8 @@ export function seatWord(seat: string): string {
             return tr.router.seatMemory;
         case 'app':
             return tr.router.seatApp;
+        case 'worker':
+            return tr.router.seatWorker;
         default:
             return seat;
     }
@@ -70,6 +72,8 @@ export function outcomeWord(outcome: string): string | null {
             return tr.router.outcomeStopped;
         case 'limit':
             return tr.router.outcomeLimit;
+        case 'budget':
+            return tr.router.outcomeBudget;
         default:
             return null;
     }
@@ -87,6 +91,10 @@ export function moneyOf(usdMicro: number | null | undefined, billing: string | u
     if (billing === 'local') return { main: tr.router.moneyHome, sub: tr.router.moneyFree };
     if (billing === 'plan') {
         return usdMicro === null || usdMicro === undefined ? { main: tr.router.moneyPlan } : { main: tr.router.moneyPlanUsd(dollars(usdMicro)), sub: tr.router.moneyPlan };
+    }
+    // Агент карточки платит своим счётом: его доллары — его оценка, без цены — «цена неизвестна».
+    if (billing === 'agent') {
+        return usdMicro === null || usdMicro === undefined ? { main: tr.router.moneyAgentNone } : { main: dollars(usdMicro), sub: tr.router.priceFromAgent };
     }
     if (usdMicro === null || usdMicro === undefined) return { main: tr.router.noPrice };
     return { main: dollars(usdMicro), plain: true };
@@ -565,6 +573,10 @@ function sourceWord(from: string): string {
             return tr.router.priceFromSnapshot;
         case 'local':
             return tr.router.priceFromLocal;
+        case 'harness':
+            return tr.router.priceFromHarness;
+        case 'agent':
+            return tr.router.priceFromAgent;
         default:
             return from;
     }
@@ -591,6 +603,7 @@ function PriceSheet({ provider, model, billing, onClose }: { provider: string; m
     const [busy, setBusy] = useState(false);
     const [fields, setFields] = useState({ input: '', output: '', cacheRead: '', cacheWrite: '' });
     const home = billing === 'local';
+    const formId = useId();
 
     const fill = (fresh: PriceNow) => {
         setNow(fresh);
@@ -638,7 +651,7 @@ function PriceSheet({ provider, model, billing, onClose }: { provider: string; m
     const backLabel = !now?.unwritten ? tr.router.priceBackNone : now.unwritten.from === 'provider' ? tr.router.priceBackProvider : tr.router.priceBackSnapshot;
     const field = (name: keyof typeof fields, label: string, hint?: string) => (
         <label class="sp-field">
-            <span class="w-cap">{label}</span>
+            <span class="win-label">{label}</span>
             <input
                 class="field"
                 inputMode="decimal"
@@ -654,55 +667,69 @@ function PriceSheet({ provider, model, billing, onClose }: { provider: string; m
         </label>
     );
 
+    // «Вписать цену» — главная внизу (кнопка формы через form=); «Вернуть цену…» — рядом, когда вписана своя.
+    // Полоса есть и пока цена читается (кнопка приглушена): пришла — ничего не сдвинулось.
+    const footer = !home ? (
+        <>
+            {now?.written && (
+                <button type="button" class="btn btn-plain" disabled={busy} onClick={() => void save(null)}>
+                    {backLabel}
+                </button>
+            )}
+            <button type="submit" form={formId} class="btn btn-main" disabled={busy || !now} aria-busy={busy || undefined}>
+                {busy && <span class="spinner spinner-sm" aria-hidden="true" />}
+                {busy ? tr.router.priceSaving : tr.router.priceSave}
+            </button>
+        </>
+    ) : undefined;
+
     return (
-        <Sheet title={model} about={home ? provider : tr.router.priceAbout(provider)} onClose={onClose}>
+        <Sheet title={model} about={home ? provider : tr.router.priceAbout(provider)} onClose={onClose} footer={footer}>
             {home ? (
-                <p class="t-meta m-0">{tr.router.priceHome}</p>
+                <p class="win-callout is-calm m-0">{tr.router.priceHome}</p>
             ) : !now ? (
-                <p class="t-meta m-0">{problem ?? tr.router.priceReading}</p>
+                problem ? (
+                    <p class="win-callout m-0" role="alert">
+                        {problem}
+                    </p>
+                ) : (
+                    <SkeletonRows rows={2} />
+                )
             ) : (
-                <form class="sp-price" onSubmit={submit}>
-                    <div class="sp-price-now">
-                        <span class="w-cap">{tr.router.priceNow}</span>
+                <form id={formId} class="sp-price" onSubmit={submit}>
+                    <WinSection title={tr.router.priceNow} group>
                         {now.price ? (
-                            <>
-                                <b>{priceLine(now.price)}</b>
-                                <span class="w-cap">{sourceWord(now.price.from)}</span>
-                            </>
+                            <WinRow title={priceLine(now.price)} sub={sourceWord(now.price.from)} />
                         ) : (
-                            <span class="t-meta">{tr.router.priceNone}</span>
+                            <div class="win-row">
+                                <span class="win-row-s">{tr.router.priceNone}</span>
+                            </div>
                         )}
-                        {(now.plan || billing === 'plan') && <span class="w-cap">{tr.router.pricePlan}</span>}
-                    </div>
+                        {(now.plan || billing === 'plan') && (
+                            <div class="win-row">
+                                <span class="win-row-s">{tr.router.pricePlan}</span>
+                            </div>
+                        )}
+                    </WinSection>
                     <div class="sp-fields">
                         {field('input', tr.router.priceInput)}
                         {field('output', tr.router.priceOutput)}
                         {field('cacheRead', tr.router.priceCacheRead, tr.router.priceCacheEmpty)}
                         {field('cacheWrite', tr.router.priceCacheWrite, tr.router.priceCacheEmpty)}
                     </div>
-                    <p class="w-cap m-0">{tr.router.priceNext}</p>
+                    <p class="win-note">{tr.router.priceNext}</p>
                     {/* Что будет без вписанной — до кнопки, а не после. */}
-                    {now.written && <p class="w-cap m-0">{now.unwritten ? tr.router.priceBackWill(priceLine(now.unwritten)) : tr.router.priceBackWillNone}</p>}
+                    {now.written && <p class="win-note">{now.unwritten ? tr.router.priceBackWill(priceLine(now.unwritten)) : tr.router.priceBackWillNone}</p>}
                     {problem && (
-                        <p class="w-cap m-0 c-dot-offline" role="alert">
+                        <p class="win-callout m-0" role="alert">
                             {problem}
                         </p>
                     )}
                     {notice && (
-                        <p class="w-cap m-0" role="status">
+                        <p class="win-callout is-calm m-0" role="status">
                             {notice}
                         </p>
                     )}
-                    <div class="flex gap-8 flex-wrap">
-                        <button type="submit" class="pill pill-own dash-confirm-btn" disabled={busy}>
-                            {busy ? tr.router.priceSaving : tr.router.priceSave}
-                        </button>
-                        {now.written && (
-                            <button type="button" class="pill pill-off dash-confirm-btn" disabled={busy} onClick={() => void save(null)}>
-                                {backLabel}
-                            </button>
-                        )}
-                    </div>
                 </form>
             )}
         </Sheet>

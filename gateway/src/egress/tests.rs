@@ -250,6 +250,40 @@ async fn kept_connections_wait_after_a_restart_until_the_app_speaks() {
     assert_eq!(decided(&again, "provider:claude"), Decision::Down { connection: "nl".into() });
 }
 
+/// The first decisions stand as soon as the service is made — before its `start` and before anything else of the
+/// gateway's build goes out (the merge with main, review of 16.11: «Мозг» asks a cloud's model list in the background
+/// while the gateway builds): a keyed row whose connection does not answer yet is refused from the first request.
+#[tokio::test]
+async fn the_first_decisions_stand_before_the_start() {
+    let _turn = TURN.lock().await;
+    let _fresh = Fresh;
+    let (egress, settings, _dir) = egress(&[]);
+    provider(&egress, "claude", "claude", None);
+    home(&settings, "RU");
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let port = stand_in(asked.clone()).await;
+    egress.report("own-server", &letter(port, true)).unwrap();
+    // The program starts again: nothing published until its service is made.
+    *TABLE.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    let again = Egress::new(
+        egress.config.clone(),
+        egress.db.clone(),
+        settings.clone(),
+        egress.secrets.clone(),
+        EventBus::new(),
+    );
+    assert_eq!(decided(&again, "provider:claude"), Decision::Down { connection: "nl".into() }, "decided at once");
+    // Published — unless another gateway of this test program was made in the same instant and got in first.
+    if published().is_some_and(|table| Arc::ptr_eq(&table, &again.table())) {
+        assert!(refused_row("provider:claude"), "the model waits for its connection");
+        let claude = url::Url::parse("https://api.anthropic.com/v1/models").unwrap();
+        let refusal = proxy_for(&claude).expect("never directly");
+        assert_eq!(refusal.host_str(), Some("127.0.0.1"));
+        assert_ne!(refusal.port(), Some(port));
+    }
+    assert!(asked.lock().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn the_country_is_the_apps_and_an_old_answer_moves_into_it_once() {
     let _turn = TURN.lock().await;

@@ -8,10 +8,11 @@
         "jsxImportSource": "preact",
         "strict": true,
         "noEmit": true,
+        "allowImportingTsExtensions": true,
         "skipLibCheck": true,
         "isolatedModules": true,
         "esModuleInterop": true,
         "forceConsistentCasingInFileNames": true
     },
-    "include": ["src", "vite.config.ts"]
+    "include": ["src", "scripts/*.ts", "vite.config.ts"]
 }

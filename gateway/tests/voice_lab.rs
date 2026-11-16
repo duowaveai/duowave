@@ -238,6 +238,8 @@ echo "{\"stage\":\"done\",\"percent\":100,\"peakMb\":2100,\"rtf\":1.2,\"refSecon
             ("TTS_OWN_URL", clone_url.clone()),
             ("ASR_PROVIDER", "openai".into()),
             ("ASR_BASE_URL", "http://127.0.0.1:9/v1".into()),
+            // The link's port: a free one, never PORT + 1 (the port of the gateway that runs on this machine).
+            ("LINK_PORT", "0".into()),
         ]);
         let mut config = Config::load(&env).expect("the test's configuration");
         config.voice_lab.server_dir = root.join("clone-server");
@@ -359,7 +361,7 @@ echo "{\"stage\":\"done\",\"percent\":100,\"peakMb\":2100,\"rtf\":1.2,\"refSecon
         let gw = gateway().await.signed_in().await;
         let view = gw.lab().await;
         assert_eq!(view["available"], true);
-        assert_eq!(view["platform"]["summary"], "Мак, Apple M4 Max, 36 ГБ памяти");
+        assert_eq!(view["platform"]["summary"], "Мак, Apple M4 Max, 36 ГБ ОЗУ");
         assert_eq!((&view["platform"]["os"], &view["platform"]["gpu"]), (&json!("darwin"), &json!("apple")));
         let engines: Vec<Value> = view["engines"]
             .as_array()
@@ -497,12 +499,12 @@ echo "{\"stage\":\"done\",\"percent\":100,\"peakMb\":2100,\"rtf\":1.2,\"refSecon
         assert_eq!(warned.status, StatusCode::PRECONDITION_REQUIRED);
         assert_eq!(
             warned.body["message"],
-            "Памяти впритык: свободно 3,9 ГБ, нужно около 2,4 ГБ, а 2,2 ГБ держу для колонки — она может подтормаживать."
+            "ОЗУ впритык: свободно 3,9 ГБ, нужно около 2,4 ГБ, а 2,2 ГБ держу для колонки — она может подтормаживать."
         );
         gw.memory.pressure_level.store(2, Ordering::SeqCst);
         let pressed = imprint(false).await;
         assert_eq!(pressed.status, StatusCode::PRECONDITION_REQUIRED, "13.11: a warning, never a refusal");
-        assert!(pressed.body["message"].as_str().unwrap().contains("не хватает памяти"));
+        assert!(pressed.body["message"].as_str().unwrap().contains("не хватает ОЗУ"));
         gw.memory.pressure_level.store(1, Ordering::SeqCst);
         assert_eq!(imprint(true).await.status, StatusCode::CREATED);
         let job = gw.finished_job().await;

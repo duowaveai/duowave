@@ -5,7 +5,7 @@
 #                    the computer's build carrying it (DUOWAVE_STATION_PAYLOAD)
 #   rust-windows     that the gateway compiles on Windows
 #   desktop          the desktop app with the gateway inside (desktop/src-tauri): format, lints, tests
-#   panel            the panel's types and build
+#   panel            the panel's types, its checks without a browser (scripts/panel-check.ts) and build
 #   private          that nothing private (keys, home paths, a household's addresses) is in the tree
 #   docker-context   that Dockerfile.prod's build from source has every file the gateway embeds from outside gateway/
 #   python           the model servers' syntax
@@ -35,6 +35,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Types
         run: cd panel && npx tsc --noEmit -p .
+      - name: Checks
+        run: node panel/scripts/panel-check.ts
       - name: Build
         run: pnpm --filter panel build
 

@@ -65,30 +65,28 @@ export function ConfirmHost() {
         };
     }, []);
     if (!current) return null;
-    // Слой вопросов — над всем: над «+», окном раздела на телефоне и шитом, из которого спросили.
+    // Слой вопросов — над всем: над «+», окном раздела на телефоне и окном, из которого спросили. Маленькое окно
+    // посередине: вопрос, что будет, две кнопки справа; опасная — красная, «Отмена» рядом и в фокусе.
     return (
         <Sheet
             key={queue.length + current.title}
             layer="confirm"
+            shape="dialog"
             title={current.title}
             onClose={() => current.answer(false)}
             footer={
-                <div class="dash-actions">
-                    <button class={`dash-done${current.danger ? ' danger' : ''}`} onClick={() => current.answer(true)}>
-                        {current.ok ?? tr.ui.yes}
-                    </button>
+                <>
                     {/* Удаление не случается по Enter: фокус сначала на «Отмена». */}
-                    <button
-                        class="dash-done ghost"
-                        data-autofocus={current.danger ? true : undefined}
-                        onClick={() => current.answer(false)}
-                    >
+                    <button class="btn btn-plain" data-autofocus={current.danger ? true : undefined} onClick={() => current.answer(false)}>
                         {current.cancel ?? tr.ui.cancel}
                     </button>
-                </div>
+                    <button class={`btn ${current.danger ? 'btn-danger-fill' : 'btn-main'}`} onClick={() => current.answer(true)}>
+                        {current.ok ?? tr.ui.yes}
+                    </button>
+                </>
             }
         >
-            {current.text && <p class="t-body m-0 pre-line max-h-52vh overflow-auto">{current.text}</p>}
+            {current.text && <p class="win-text m-0 pre-line max-h-52vh overflow-auto">{current.text}</p>}
         </Sheet>
     );
 }

@@ -36,6 +36,19 @@ pub struct Continuation {
 pub struct ModelState {
     pub enabled: bool,
     pub tools: bool,
+    /// No model of this profile may be asked now: «Мозг» would only say why (docs/plans/home-and-helpers.md, stage
+    /// 4 — the helper with the model away, no backup).
+    pub unreachable_fast: bool,
+    pub unreachable_smart: bool,
+}
+
+impl ModelState {
+    pub fn unreachable(self, profile: ModelProfile) -> bool {
+        match profile {
+            ModelProfile::Fast => self.unreachable_fast,
+            ModelProfile::Smart => self.unreachable_smart,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -182,6 +195,9 @@ pub enum Decision {
         command: bool,
         profile: ModelProfile,
     },
+    /// No model of the question's profile may be asked and Yandex is up: the question goes to Alice (the owner, 15.11;
+    /// in «Своё» «Мозг» says why in words instead).
+    ModelAway,
     Unsupported {
         capability: CapabilityName,
         reason: String,
@@ -297,7 +313,12 @@ impl Router {
         }
         if input.model.enabled {
             let command = input.model.tools && looks_like_command(&input.text);
-            return Decision::Model { command, profile: choose_profile(&input.text, command) };
+            let profile = choose_profile(&input.text, command);
+            // Judged for the profile the question needs: a smart question with only the smart model away goes too.
+            if input.model.unreachable(profile) && input.yandex_available {
+                return Decision::ModelAway;
+            }
+            return Decision::Model { command, profile };
         }
         Decision::Unsupported {
             capability: CapabilityName::Chat,
@@ -433,7 +454,7 @@ mod tests {
         RouteInput {
             text: text.into(),
             device_tag: "h:test".into(),
-            model: ModelState { enabled: true, tools: true },
+            model: ModelState { enabled: true, tools: true, ..Default::default() },
             now: now_ms(),
             ..RouteInput::default()
         }
@@ -553,10 +574,34 @@ mod tests {
             router().decide(&input("как дела")),
             Decision::Model { command: false, profile: ModelProfile::Fast }
         );
-        let no_tools = RouteInput { model: ModelState { enabled: true, tools: false }, ..input("как дела") };
+        let no_tools = RouteInput {
+            model: ModelState { enabled: true, tools: false, ..Default::default() },
+            ..input("как дела")
+        };
         assert!(matches!(router().decide(&no_tools), Decision::Model { command: false, .. }));
-        let no_model = RouteInput { model: ModelState { enabled: false, tools: false }, ..input("как дела") };
+        let no_model = RouteInput {
+            model: ModelState { enabled: false, tools: false, ..Default::default() },
+            ..input("как дела")
+        };
         assert!(matches!(router().decide(&no_model), Decision::Unsupported { .. }));
+    }
+
+    /// The owner, 15.11 (docs/plans/home-and-helpers.md, stage 4): the helper with the model away and no backup — in
+    /// «Вместе» the question goes to Alice; in «Своё» (no Yandex) «Мозг» says why in words.
+    #[test]
+    fn in_together_a_question_goes_to_alice_while_no_model_of_its_profile_may_be_asked() {
+        let away = |fast: bool, smart: bool, yandex: bool, text: &str| RouteInput {
+            model: ModelState { enabled: true, tools: true, unreachable_fast: fast, unreachable_smart: smart },
+            yandex_available: yandex,
+            ..input(text)
+        };
+        let chat = Decision::Model { command: false, profile: ModelProfile::Fast };
+        assert_eq!(router().decide(&away(true, false, true, "как дела")), Decision::ModelAway);
+        // Only the smart model away: a command (smart) goes to Alice, a chat (fast) stays the model's.
+        assert_eq!(router().decide(&away(false, true, true, "включи свет на кухне")), Decision::ModelAway);
+        assert_eq!(router().decide(&away(false, true, true, "как дела")), chat);
+        assert_eq!(router().decide(&away(true, true, false, "как дела")), chat, "no Yandex: the words");
+        assert_eq!(router().decide(&away(false, false, true, "как дела")), chat, "reachable: the model");
     }
 
     #[test]

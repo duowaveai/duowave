@@ -8,13 +8,14 @@
 //   сделки — та же, что в «Расходе» (screens/spend.tsx).
 // - «Где» — что известно о месте работы: шлюз, где попросили, кто делает, черновик и его папка, сервис или
 //   приложение, модель и где она думает.
-// Работы в рабочих папках (этапы 3–5, 6в) добавят сюда своё, не перестраивая страницу: в «Ход» — план, части с
-// состоянием и замечания проверяющего; вкладку «Журнал» (запуски и журнал выбранного запуска) — в `TABS`; в «Где» —
-// папку, ветку работы, рабочую копию части и сессию Claude Code; рядом с кнопками — «Продолжить» и бюджет.
+// Работа в рабочей папке (этап 3): в «Ходе» — агент, модель, строка хода, проверки папки и последнее сообщение агента;
+// вкладка «Журнал» (screens/work-journal.tsx) — запуски и журнал выбранного; в «Где» — папка, ветка, рабочая копия,
+// сессия агента и команда, которой она открывается в терминале; у кнопок — «Продолжить» и «Добавить вдогонку» (новый
+// запуск в той же сессии). Бюджет работы — этап 6в.
 
 import { useEffect, useState } from 'preact/hooks';
 
-import { AppTaskLog, ApiError, DraftView, ModelDeal, WorkView, api, problemOf } from '../api';
+import { AppTaskLog, ApiError, DraftView, FolderWorkView, ModelDeal, WorkView, api, problemOf } from '../api';
 import { IconChevronLeft } from '../icons';
 import { formatDate, tr } from '../i18n';
 import { usePoll } from '../poll';
@@ -24,6 +25,7 @@ import { ask } from '../ui/confirm';
 import { SectionTabs } from '../ui/tabs';
 import { DealRow, dealsMoney } from './spend';
 import { AgentLog } from './workshop';
+import { Journal, useFolderRuns } from './work-journal';
 import {
     AnswerButtons,
     ModelChip,
@@ -38,12 +40,10 @@ import {
     waitLine,
 } from './works';
 
-/**
- * Вкладки работы. Вкладка «Журнал» работ в рабочих папках встанет между «Ходом» и «Сделками», когда у работы будут
- * запуски (этап 6в).
- */
-type WorkTab = 'progress' | 'deals' | 'where';
+/** Вкладки работы: у работы в рабочей папке между «Ходом» и «Сделками» — «Журнал» её запусков. */
+type WorkTab = 'progress' | 'journal' | 'deals' | 'where';
 const TABS: WorkTab[] = ['progress', 'deals', 'where'];
+const FOLDER_TABS: WorkTab[] = ['progress', 'journal', 'deals', 'where'];
 
 /** Время шлюза (мс) — по часам этого браузера: «14:05». */
 function at(ms: number, skew: number): string {
@@ -58,8 +58,9 @@ function dayAt(ms: number, skew: number): string {
 export function WorkPage({ id }: { id: string }) {
     const panel = usePanel();
     const picked = panel.link.item as WorkTab | undefined;
-    const tab: WorkTab = picked && TABS.includes(picked) ? picked : 'progress';
     const [work, setWork] = useState<WorkView | null>(null);
+    const tabs = work?.kind === 'folder' ? FOLDER_TABS : TABS;
+    const tab: WorkTab = picked && tabs.includes(picked) ? picked : 'progress';
     const [problem, setProblem] = useState<string | null>(null);
     const [missing, setMissing] = useState(false);
     const live = work?.state === 'working' || work?.state === 'queued';
@@ -97,18 +98,20 @@ export function WorkPage({ id }: { id: string }) {
                 </p>
             </div>
         );
-    const label = (entry: WorkTab) => (entry === 'progress' ? tr.router.tabProgress : entry === 'deals' ? tr.router.tabDeals : tr.router.tabWhere);
+    const label = (entry: WorkTab) =>
+        entry === 'progress' ? tr.router.tabProgress : entry === 'journal' ? tr.router.tabJournal : entry === 'deals' ? tr.router.tabDeals : tr.router.tabWhere;
     return (
         <div class="wk-page">
             {back}
             <Head work={work} onChanged={reread} />
             <SectionTabs
                 label={tr.router.tabsLabel}
-                tabs={TABS.map((entry) => ({ id: entry, label: label(entry), icon: null }))}
+                tabs={tabs.map((entry) => ({ id: entry, label: label(entry), icon: null }))}
                 tab={tab}
                 onPick={(next) => panel.openItem('works', id, next === 'progress' ? null : next, {}, true)}
             />
             {tab === 'progress' && <Progress work={work} />}
+            {tab === 'journal' && <Journal work={work} />}
             {tab === 'deals' && <Deals work={work} />}
             {tab === 'where' && <Where work={work} />}
         </div>
@@ -127,7 +130,11 @@ function Head({ work, onChanged }: { work: WorkView; onChanged: () => void }) {
     const [noteOpen, setNoteOpen] = useState(false);
     const [note, setNote] = useState('');
     // Вдогонку — работе, что делает вещь (мастерская): пока она идёт или ждёт, или ответом на её вопрос — новая версия.
-    const mayAdd = work.kind === 'app' && (going || queued || work.group === 'asking');
+    // Работе в папке — всегда: идёт — заметка ждёт конца запуска; кончилась — новый запуск в той же сессии.
+    const folder = work.kind === 'folder';
+    const mayAdd = (work.kind === 'app' && (going || queued || work.group === 'asking')) || folder;
+    // «Продолжить» — работе в папке, которую прервали, остановили или которая не доделана: та же сессия агента.
+    const mayGoOn = folder && ['interrupted', 'stopped', 'unfinished', 'failed'].includes(work.state);
     const act = (job: () => Promise<{ said: string }>) => {
         setBusy(true);
         setSaid(null);
@@ -192,11 +199,16 @@ function Head({ work, onChanged }: { work: WorkView; onChanged: () => void }) {
                     />
                 </div>
             )}
-            {(going || queued || mayAdd) && !noteOpen && (
+            {(going || queued || mayAdd || mayGoOn) && !noteOpen && (
                 <div class="wk-actions">
                     {(going || queued) && (
                         <button type="button" class="pill" disabled={busy} onClick={() => void stop()}>
                             {tr.router.stop}
+                        </button>
+                    )}
+                    {mayGoOn && (
+                        <button type="button" class="pill pill-own" disabled={busy} onClick={() => act(() => goOn(work, (id) => panel.go('works', id)))}>
+                            {tr.router.goOn}
                         </button>
                     )}
                     {mayAdd && (
@@ -249,6 +261,19 @@ function Head({ work, onChanged }: { work: WorkView; onChanged: () => void }) {
     );
 }
 
+/**
+ * «Продолжить» работу в папке: шлюз заводит ей новую запись с той же целью (та же сессия агента) — страница переходит на
+ * неё.
+ */
+async function goOn(work: WorkView, open: (id: string) => void): Promise<{ said: string }> {
+    const reply = await api.workDo(work.id, 'continue');
+    const fresh = (await api.worksIn([]).catch(() => [] as WorkView[]))
+        .filter((other) => other.id !== work.id && other.target === work.target && other.executor === work.executor)
+        .sort((a, b) => b.startedAt - a.startedAt)[0];
+    if (fresh) open(fresh.id);
+    return reply;
+}
+
 // ─── «Ход» ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /** Где просили: этот компьютер или колонка по имени. */
@@ -271,7 +296,7 @@ function Progress({ work }: { work: WorkView }) {
                 </div>
                 {/* У приложения мастерской заявка — всё желание; у фонового дела — его название, а `brief` — сервис и
                     инструмент или приложение задачи. */}
-                <p class="wk-brief m-0">{work.kind === 'app' ? work.brief : work.title}</p>
+                <p class="wk-brief m-0">{work.kind === 'app' || work.kind === 'folder' ? work.brief : work.title}</p>
                 {work.kind === 'tool' && <p class="w-cap m-0">{work.brief}</p>}
                 {work.kind === 'task' && <p class="w-cap m-0">{tr.router.taskOf(work.brief)}</p>}
                 <p class="w-cap m-0 wk-under">{tr.router.askedHow(how, askedWhere(work.origin.device, panel.stations), dayAt(work.startedAt, skew))}</p>
@@ -291,6 +316,7 @@ function Progress({ work }: { work: WorkView }) {
                 )}
             </section>
             {work.kind === 'app' && work.target && <AgentLog id={work.target} title={work.title} />}
+            {work.kind === 'folder' && <FolderProgress work={work} />}
             {work.kind === 'task' && work.target && <TaskSteps id={work.target} going={work.state === 'working'} />}
             {work.kind === 'tool' && work.state === 'working' && work.step && (
                 <section class="card glass card-list" aria-labelledby="wk-tool-h">
@@ -304,6 +330,55 @@ function Progress({ work }: { work: WorkView }) {
             )}
             <Result work={work} />
         </>
+    );
+}
+
+/** Работа в рабочей папке: агент и модель, строка хода, проверки папки, последнее сообщение агента. */
+function FolderProgress({ work }: { work: WorkView }) {
+    const { folder } = useFolderRuns(work);
+    if (!folder) return null;
+    const checks = folder.checks ?? [];
+    return (
+        <section class="card glass card-list" aria-labelledby="wk-folder-h">
+            <div class="card-head">
+                <h3 id="wk-folder-h" class="t-title-xs m-0">
+                    {folder.agentTitle}
+                </h3>
+                <span class="w-cap">{[folder.folderName, folder.model].filter(Boolean).join(' · ')}</span>
+            </div>
+            {work.state === 'working' && work.step && <p class="m-0 wk-brief">{work.step}</p>}
+            {(checks.length > 0 || folder.checksSkipped) && (
+                <>
+                    <h4 class="wk-sub m-0">{tr.router.folderChecksTitle}</h4>
+                    {folder.checksSkipped ? (
+                        <p class="w-cap m-0">{tr.router.choreChecksSkipped}</p>
+                    ) : (
+                        <ul class="wk-steps">
+                            {checks.map((check) => (
+                                <li key={check.command} class="wk-step">
+                                    <span class={`wk-dot ${check.ok ? 'is-own' : 'is-failed'}`} aria-hidden="true" />
+                                    <span class="wk-step-text">
+                                        <code class="wk-code">{check.command}</code> — {check.ok ? tr.router.checkPassed : tr.router.checkFailed}
+                                        {!check.ok && check.tail && (
+                                            <details class="wk-data">
+                                                <summary>{tr.router.toolOutput}</summary>
+                                                <pre>{check.tail}</pre>
+                                            </details>
+                                        )}
+                                    </span>
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                </>
+            )}
+            {folder.last && (
+                <>
+                    <h4 class="wk-sub m-0">{tr.router.folderLast}</h4>
+                    <p class="m-0 wk-brief">{folder.last}</p>
+                </>
+            )}
+        </section>
     );
 }
 
@@ -453,8 +528,24 @@ function CopyButton({ text }: { text: string }) {
     );
 }
 
+/** «Где» работы в папке: папка, ветка, откуда начата, рабочая копия, агент, сессия и команда для терминала. */
+function folderRows(folder: FolderWorkView): Array<[string, string, boolean?]> {
+    const rows: Array<[string, string, boolean?]> = [
+        [tr.router.whereFolder, folder.folderName],
+        [tr.router.whereBranch, folder.fetched ? folder.branch : `${folder.branch} · ${tr.router.whereBranchNotYet}`, true],
+    ];
+    if (folder.base) rows.push([tr.router.whereBase, folder.baseCommit ? `${folder.base} · ${folder.baseCommit.slice(0, 8)}` : folder.base]);
+    rows.push(folder.copy ? [tr.router.whereCopy, folder.copy, true] : [tr.router.whereCopy, tr.router.whereCopyGone]);
+    rows.push([tr.router.whereAgent, folder.agentTitle]);
+    if (folder.billing) rows.push([tr.router.wherePays, folder.billing === 'plan' ? tr.router.paysPlan : folder.billing === 'key' ? tr.router.paysKey : folder.billing]);
+    if (folder.session) rows.push([tr.router.whereSession, folder.session, true]);
+    if (folder.resumeCommand) rows.push([tr.router.whereResume, folder.resumeCommand, true]);
+    return rows;
+}
+
 function Where({ work }: { work: WorkView }) {
     const panel = usePanel();
+    const { folder } = useFolderRuns(work);
     const [draft, setDraft] = useState<DraftView | null>(null);
     const [dir, setDir] = useState<string | null>(null);
     const target = work.kind === 'app' ? work.target : undefined;
@@ -472,7 +563,16 @@ function Where({ work }: { work: WorkView }) {
         };
     }, [target]);
     const station = panel.health?.placement?.role === 'station';
-    const who = work.kind === 'app' ? tr.router.whoWorkshop : work.kind === 'tool' ? tr.router.whoTool : work.kind === 'task' ? tr.router.whoTask : work.executor;
+    const who =
+        work.kind === 'app'
+            ? tr.router.whoWorkshop
+            : work.kind === 'tool'
+              ? tr.router.whoTool
+              : work.kind === 'task'
+                ? tr.router.whoTask
+                : work.kind === 'folder'
+                  ? tr.router.whoFolder
+                  : work.executor;
     const rows: Array<[string, string, boolean?]> = [
         [tr.router.whereNumber, tr.router.whereNumberValue(work.id)],
         [tr.router.whereGateway, station ? tr.router.whereGatewayStation : tr.router.whereGatewayPc],
@@ -484,6 +584,7 @@ function Where({ work }: { work: WorkView }) {
         if (dir) rows.push([tr.router.whereDraftDir, `${dir.replace(/\/$/, '')}/${target}`, true]);
         if (draft) rows.push([tr.router.whereOnDesk, draft.installed ? tr.router.whereOnDeskYes(draft.installed) : tr.router.whereOnDeskNo]);
     }
+    if (work.kind === 'folder' && folder) rows.push(...folderRows(folder));
     if (work.kind === 'tool') rows.push([tr.router.whereService, work.brief]);
     if (work.kind === 'task') {
         rows.push([tr.router.whereApp, work.brief, true]);
@@ -499,6 +600,7 @@ function Where({ work }: { work: WorkView }) {
                     {tr.router.tabWhere}
                 </h3>
             </div>
+            {work.kind === 'folder' && folder?.resumeCommand && <p class="w-cap m-0 wk-under">{tr.router.whereResumeHint}</p>}
             <dl class="wk-facts">
                 {rows.map(([name, value, code]) => (
                     <div key={name} class="wk-fact">

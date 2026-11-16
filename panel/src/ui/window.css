@@ -1,0 +1,282 @@
+/* Окна пульта — одна анатомия (ui/sheet.tsx; холст «Окна DuoWave: один подход», владелец 17.11).
+   Шапка: значок, имя, метки, «⋯», крестик. Вкладки. Тело прокручивается. Нижняя полоса — только когда есть дело.
+   На широком экране — окно посередине, на телефоне — лист снизу, вопрос ask() — маленькое окно посередине.
+   Кнопки: одна главная (лайм) на окно, обычная (контур), тихая (текст), опасная (красная). Белой нет.
+   Подключается последним (main.tsx): правила под html[data-look] перекрывают ui/glass.css и ui/minimal.css. */
+
+/* ─── Окно ─────────────────────────────────────────────────────── */
+html[data-look] .sheet.win {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    padding: 0;
+    overflow: hidden;
+    width: 100%;
+    max-height: 92dvh;
+    border-radius: var(--r-panel-desk) var(--r-panel-desk) 0 0;
+    background: var(--glass-bg);
+    box-shadow: 0 0 0 1px var(--strong-border), 0 24px 64px rgba(0, 0, 0, 0.28);
+}
+html[data-look] .sheet.win > .dash-grabber { margin-top: 8px; }
+
+/* Широкий экран: окно посередине, 600 точек, все углы скруглены (владелец 17.11 сравнил с панелью справа — оставил
+   посередине). На телефоне — лист снизу с ручкой. */
+@media (min-width: 761px) {
+    html[data-look] .sheet-backdrop:has(> .win.is-window) { align-items: center; justify-content: center; padding: 24px; }
+    html[data-look] .sheet.win.is-window {
+        width: min(600px, 100%);
+        max-height: min(86dvh, 100%);
+        border-radius: var(--r-panel-desk);
+        animation: sheet-in 0.2s ease-out;
+    }
+    html[data-look] .sheet.win.is-window > .dash-grabber { display: none; }
+}
+html[data-look] .sheet-backdrop.dash-scrim:has(> .win.is-window) { background: rgba(0, 0, 0, 0.32); }
+html[data-look][data-theme='dark'] .sheet-backdrop.dash-scrim:has(> .win.is-window) { background: rgba(0, 0, 0, 0.45); }
+
+/* Вопрос: маленькое окно посередине на любом экране. */
+html[data-look] .sheet-backdrop:has(> .win.is-dialog) { align-items: center; justify-content: center; padding: 16px; }
+html[data-look] .sheet.win.is-dialog {
+    width: min(420px, 100%);
+    max-height: min(80dvh, 100%);
+    border-radius: var(--r-panel-desk);
+    animation: sheet-in 0.18s ease-out;
+}
+html[data-look] .sheet.win.is-dialog .win-head { padding: 22px 24px 4px; }
+html[data-look] .sheet.win.is-dialog .win-title { font-size: 22px; line-height: 28px; }
+html[data-look] .sheet.win.is-dialog .win-body { padding: 6px 24px 20px; }
+html[data-look] .sheet.win.is-dialog .win-foot { padding: 0 24px 20px; border-top: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+    html[data-look] .sheet.win { animation: none !important; }
+}
+
+/* ─── Шапка ────────────────────────────────────────────────────── */
+.win-head { flex: none; display: flex; align-items: flex-start; gap: 14px; padding: 20px 14px 14px 24px; }
+.win-head > .dash-sheet-icon,
+.win-head > .app-icon { flex: none; }
+.win-head-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
+html[data-look] .win-title { font-size: 26px; line-height: 30px; overflow-wrap: anywhere; }
+.win-about { font-size: 13px; line-height: 18px; color: var(--sub); }
+.win-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+.win-tools { flex: none; display: flex; align-items: center; gap: 2px; }
+.win-icon-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: var(--r-pill);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--sub);
+    background: transparent;
+    cursor: pointer;
+}
+.win-icon-btn:hover, .win-icon-btn[aria-expanded='true'] { background: var(--hover-bg); color: var(--text); }
+.win-menu-box { position: relative; }
+.win-menu-box .win-icon-btn svg { stroke-width: 3.2; }
+.win-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 2;
+    min-width: 240px;
+    padding: 6px;
+    border-radius: 16px;
+    display: flex;
+    flex-direction: column;
+}
+.win-menu .tab-more-item { min-height: 40px; border-radius: 10px; font-size: 14px; font-weight: 400; }
+.win-menu .tab-more-item.is-danger { color: var(--dot-offline); }
+.win-menu .tab-more-item:disabled { opacity: 0.45; cursor: default; }
+.win-menu-line { height: 1px; margin: 4px 6px; background: var(--divider); }
+
+/* ─── Вкладки ──────────────────────────────────────────────────── */
+.win-tabs { flex: none; padding: 0 24px 12px; }
+.win-tabs-row { display: inline-flex; max-width: 100%; gap: 2px; padding: 3px; border-radius: var(--r-pill); background: var(--track); overflow-x: auto; scrollbar-width: none; }
+.win-tabs-row::-webkit-scrollbar { display: none; }
+.win-tab { flex: none; height: 30px; padding: 0 14px; border-radius: var(--r-pill); font-size: 13px; line-height: 30px; font-weight: 500; color: var(--seg-off-fg, var(--sub)); white-space: nowrap; cursor: pointer; }
+.win-tab:hover { color: var(--text); }
+.win-tab[aria-selected='true'], .win-tab[aria-checked='true'] { background: var(--seg-on-bg); color: var(--seg-on-fg); box-shadow: var(--seg-shadow); }
+
+/* ─── Тело и нижняя полоса ─────────────────────────────────────── */
+.win-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 4px 24px calc(24px + env(safe-area-inset-bottom));
+}
+.win:has(> .win-foot) .win-body { padding-bottom: 24px; }
+.win-text, .t-body { font-size: 14px; line-height: 21px; color: var(--sub); }
+.win-foot {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom)) 24px;
+    border-top: 1px solid var(--divider);
+}
+.win-grow { flex: 1; }
+.win-dirty { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; line-height: 18px; color: var(--sub); }
+.win-dirty::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--bar-yandex); }
+/* Прежние ряды кнопок внизу (столбик «dash-actions», ряд пилюль) — одной строкой, главная справа. */
+.win-foot > .dash-actions { width: 100%; flex-direction: row-reverse; flex-wrap: wrap-reverse; justify-content: flex-start; align-items: center; }
+.win-foot > .flex { flex-wrap: wrap; justify-content: flex-end; }
+
+/* ─── Разделы и строки ─────────────────────────────────────────── */
+.win-sec { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.win-sec-h { display: flex; align-items: baseline; gap: 8px; padding: 0 2px; }
+.win-sec-title { margin: 0; font-size: 12px; line-height: 16px; font-weight: 500; color: var(--sub); }
+.win-sec-aside { margin-left: auto; font-size: 12px; line-height: 16px; color: var(--sub); text-align: right; }
+.win-group { display: flex; flex-direction: column; border-radius: 16px; background: var(--strong-bg); box-shadow: inset 0 0 0 1px var(--strong-border); overflow: hidden; }
+.win-row { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 10px 16px; }
+.win-row + .win-row, .win-group > * + * { border-top: 1px solid var(--strong-border); }
+.win-row.is-col { flex-direction: column; align-items: stretch; gap: 8px; padding: 12px 16px 14px; }
+.win-row-ico { flex: none; width: 30px; height: 30px; border-radius: 8px; background: var(--chip-bg); color: var(--sub); display: inline-flex; align-items: center; justify-content: center; }
+.win-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.win-row-t { font-size: 14px; line-height: 20px; font-weight: 500; color: var(--text); overflow-wrap: anywhere; }
+.win-row-s { font-size: 13px; line-height: 18px; color: var(--sub); overflow-wrap: anywhere; }
+.win-lead { margin: 0; font-size: 15px; line-height: 23px; color: var(--text); }
+.win-note { margin: 0; font-size: 12px; line-height: 17px; color: var(--sub); }
+.win-callout { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 12px; background: var(--pill-yandex-bg); color: var(--pill-yandex-fg); font-size: 13px; line-height: 19px; }
+.win-callout b { font-weight: 500; }
+.win-callout.is-calm { background: var(--chip-bg); color: var(--sub); }
+
+/* Метки: тег (фразы, протоколы, умения) и код (адреса, права, команды). Состояние — span.pill (minimal.css). */
+.win-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.win-tag { display: inline-flex; align-items: center; min-height: 28px; padding: 4px 12px; border-radius: var(--r-pill); box-shadow: inset 0 0 0 1px var(--glass-border); font-size: 13px; line-height: 18px; color: var(--text); overflow-wrap: anywhere; }
+.win-tag.is-more { box-shadow: none; background: var(--chip-bg); color: var(--sub); }
+.win-code { display: inline-flex; align-items: center; min-height: 22px; padding: 2px 8px; border-radius: 8px; background: var(--chip-bg); box-shadow: inset 0 0 0 1px var(--glass-border); font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 18px; color: var(--text); overflow-wrap: anywhere; }
+
+/* ─── Кнопки ───────────────────────────────────────────────────── */
+html[data-look] .btn,
+html[data-look] .dash-done {
+    flex: none;
+    min-height: 36px;
+    height: auto;
+    padding: 6px 16px;
+    border-radius: var(--r-pill);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 500;
+    white-space: nowrap;
+    background: transparent;
+    color: var(--text);
+    box-shadow: inset 0 0 0 1px var(--strong-border);
+    cursor: pointer;
+    transition: transform 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+html[data-look] .btn:active:not(:disabled),
+html[data-look] .dash-done:active:not(:disabled) { transform: scale(0.97); }
+html[data-look] .btn:disabled,
+html[data-look] .dash-done:disabled { cursor: default; }
+html[data-look] .btn:disabled:not([aria-busy='true']),
+html[data-look] .dash-done:disabled:not([aria-busy='true']) { opacity: 0.4; }
+html[data-look] .btn-plain:hover:not(:disabled),
+html[data-look] .dash-done.ghost:hover:not(:disabled) { background: var(--hover-bg); }
+/* Главная — лайм, без свечения. Прежняя «Готово» внизу шагов мастера — тоже главная его шага. */
+html[data-look] .btn-main,
+html[data-look] .dash-done:not(.ghost):not(.danger):not(.soft-yandex) { background: var(--accent); color: var(--on-accent); box-shadow: none; }
+html[data-look] .btn-main:hover:not(:disabled),
+html[data-look] .dash-done:not(.ghost):not(.danger):not(.soft-yandex):hover:not(:disabled) { background: var(--accent-hi); }
+html[data-look] .btn-quiet { box-shadow: none; color: var(--sub); padding-left: 10px; padding-right: 10px; }
+html[data-look] .btn-quiet:hover:not(:disabled) { color: var(--text); background: var(--hover-bg); }
+html[data-look] .btn-danger { box-shadow: none; background: rgba(255, 90, 70, 0.12); color: var(--dot-offline); }
+html[data-look] .btn-danger:hover:not(:disabled) { background: rgba(255, 90, 70, 0.2); }
+html[data-look] .btn-danger-fill,
+html[data-look] .dash-done.danger { box-shadow: none; background: var(--dot-offline); color: var(--bg); }
+html[data-look] .btn-danger-fill:hover:not(:disabled),
+html[data-look] .dash-done.danger:hover:not(:disabled) { background: var(--dot-offline); filter: brightness(1.08); }
+html[data-look] .dash-done.soft-yandex { box-shadow: none; background: var(--pill-yandex-bg); color: var(--pill-yandex-fg); }
+html[data-look] .btn-sm { min-height: 32px; padding: 4px 12px; font-size: 13px; line-height: 18px; }
+
+/* Пилюли-кнопки (Action, pill): без свечения; в строке окна — 32. */
+html[data-look] button.pill-own,
+html[data-look] a.pill-own { box-shadow: none; }
+html[data-look] button.pill-own:hover:not(:disabled),
+html[data-look] a.pill-own:hover { box-shadow: none; }
+html[data-look] .win-body button.pill { min-height: 32px; }
+/* Лайм в окне — один, справа внизу: если нижняя полоса есть, лаймовые кнопки в теле становятся обычными. */
+html[data-look] .win:has(> .win-foot .btn-main, > .win-foot .pill-own, > .win-foot .dash-done:not(.ghost):not(.danger):not(.soft-yandex)) .win-body button.pill-own {
+    background: transparent;
+    color: var(--text);
+    box-shadow: inset 0 0 0 1px var(--strong-border);
+}
+/* Выбранное (фильтр, вариант) — не лайм: обводка цветом текста. */
+html[data-look] button.pill.pill-pick,
+html[data-look] a.pill.pill-pick { background: var(--chip-bg); color: var(--text); box-shadow: inset 0 0 0 1.5px var(--text); }
+html[data-look] button.pill.pill-pick:hover:not(:disabled) { background: var(--hover-bg); }
+
+/* ─── Скелеты ──────────────────────────────────────────────────── */
+.sk { display: block; border-radius: 8px; background: linear-gradient(90deg, var(--chip-bg) 0%, var(--hover-bg) 50%, var(--chip-bg) 100%); background-size: 200% 100%; animation: sk-shine 1.4s ease-in-out infinite; }
+.sk-line { height: 12px; }
+.sk-thin { height: 10px; }
+.sk-lines { gap: 8px; }
+.sk-ico { flex: none; width: 32px; height: 32px; border-radius: 28%; }
+.sk-chip { width: 72px; height: 24px; border-radius: var(--r-pill); }
+.sk-block { height: 120px; border-radius: 16px; }
+@keyframes sk-shine { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@media (prefers-reduced-motion: reduce) { .sk { animation: none; } }
+/* Обновляется: старое на месте, сверху тонкая линия. */
+.is-refreshing { position: relative; }
+.is-refreshing::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 2px; z-index: 1; background: linear-gradient(90deg, transparent, var(--sub), transparent); background-size: 50% 100%; background-repeat: no-repeat; animation: refresh-run 1.1s linear infinite; }
+@keyframes refresh-run { from { background-position: -50% 0; } to { background-position: 150% 0; } }
+
+/* Метка без точки — откуда, где, версия. */
+.win-chip { display: inline-flex; align-items: center; min-height: 22px; padding: 2px 10px; border-radius: var(--r-pill); background: var(--chip-bg); color: var(--sub); font-size: 12px; line-height: 18px; white-space: nowrap; }
+/* Выбор в строке окна — компактный, справа. */
+html[data-look] .win-row > select.field { flex: none; width: auto; max-width: 46%; min-height: 32px; height: 32px; padding: 0 28px 0 12px; border-radius: var(--r-pill); font-size: 13px; }
+/* Подпись над полем и подсказка под ним (ui/fields.tsx). */
+.win-label { font-size: 13px; line-height: 18px; font-weight: 500; color: var(--text); }
+.win-hint { font-size: 12px; line-height: 18px; color: var(--sub); }
+/* Строки людей и ключей (screens/settings.tsx): буква-аватар, галочка права. */
+.win-initial { border-radius: 50%; font-size: 13px; font-weight: 500; color: var(--text); }
+.win-head-ico { width: 44px; height: 44px; border-radius: 12px; color: var(--text); }
+.win-person + .win-person, .win-person + .win-row { border-top: 1px solid var(--strong-border); }
+.win-check { min-height: 44px; cursor: pointer; }
+.win-check input { flex: none; width: 18px; height: 18px; margin: 0; accent-color: var(--bar-own); }
+.win-callout.flex-col { flex-direction: column; align-items: flex-start; gap: 8px; }
+/* Строка-выбор в рамке (маршруты): выбранная — заливкой. */
+.win-choice { width: 100%; cursor: pointer; background: transparent; color: var(--text); }
+.win-choice:hover:not(:disabled) { background: var(--hover-bg); }
+.win-choice.is-on { background: var(--hover-bg); box-shadow: inset 3px 0 0 var(--text); }
+
+/* ─── Одни кнопки на весь пульт ─────────────────────────────────── */
+/* Обычная: пилюли без тона (Action, pill-off), кнопки виджетов (w-btn) — контур, как .btn-plain. */
+html[data-look] button.pill:not(.pill-own):not(.pill-pick):not(.pill-yandex):not(.pill-agent):not(.pill-error),
+html[data-look] a.pill.pill-off,
+html[data-look] .w-btn {
+    background: transparent;
+    color: var(--text);
+    box-shadow: inset 0 0 0 1px var(--strong-border);
+}
+html[data-look] button.pill:not(.pill-own):not(.pill-pick):not(.pill-yandex):not(.pill-agent):not(.pill-error):hover:not(:disabled),
+html[data-look] .w-btn:hover:not(:disabled) { background: var(--hover-bg); box-shadow: inset 0 0 0 1px var(--strong-border); }
+/* Бывшая «чернильная» (белая в тёмной теме) — главная: лайм. */
+html[data-look] .w-btn.w-btn-ink { background: var(--accent); color: var(--on-accent); box-shadow: none; }
+html[data-look] .w-btn.w-btn-ink:hover:not(:disabled) { background: var(--accent-hi); box-shadow: none; }
+
+/* Окно раздела («Приложения», «Настройки») под открытым окном исчезает целиком (владелец 17.11) — видно
+   только верхнее; закрыли — возвращается. Вопрос ask() поверх окна приглушает и само окно. Остаётся фокусируемым:
+   при закрытии фокус возвращается туда, откуда окно открыли. */
+@media (min-width: 761px) {
+    .desk-window { transition: opacity 0.18s ease; }
+    body:has(> .sheet-backdrop > .win.is-window) .desk-window { opacity: 0; pointer-events: none; }
+    body:has(> .sheet-backdrop.confirm-layer) > .sheet-backdrop:not(.confirm-layer) > .win { opacity: 0.3; transition: opacity 0.18s ease; }
+}
+/* В виде с боковой панелью окно встаёт над содержимым, а не над панелью (как раньше в ui/glass.css). */
+@media (min-width: 900px) {
+    html[data-look][data-shell='sidebar'] .sheet-backdrop:has(> .win.is-window) { padding-left: 344px; }
+}
+/* Строка-выбор, которую выбрать нельзя (модель не пойдёт здесь): без подсветки под мышью. */
+.win-choice[aria-disabled='true'] { cursor: default; opacity: 0.6; }
+.win-choice[aria-disabled='true']:hover { background: transparent; }

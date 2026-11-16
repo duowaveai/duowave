@@ -133,6 +133,10 @@ pub struct ProviderPreset {
     pub fields: &'static [PresetField],
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suggested: Option<Suggested>,
+    /// The service's fast models, by their exact ids as its list names them: what the gateway may take as the backup
+    /// by itself (docs/plans/home-and-helpers.md, default 6). None — it takes none from this service.
+    #[serde(skip)]
+    pub fast: &'static [&'static str],
     /// Runs on this Mac: nothing leaves the house.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub local: bool,
@@ -157,10 +161,28 @@ const BLANK: ProviderPreset = ProviderPreset {
     usage_url: None,
     fields: &[],
     suggested: None,
+    fast: &[],
     local: false,
     brand: None,
     order: 0,
 };
+
+/// The preset of a helper's model (docs/plans/home-and-helpers.md, stage 4): its row is the gateway's own, made and
+/// changed with the helper — never offered, added or edited in the panel.
+pub const HELPER_PRESET: &str = "helper";
+
+/// What a helper's row stores in place of an address it does not keep — a linked helper's, asked only through this
+/// start's bridge to its link, or one kept while a choice answers with it after its helper went: a closed port on the
+/// device itself. This version reads it as no address (brain_service.rs `load_rows`) and asks a helper's row only where
+/// its helper is now. A version from before the helpers (0.14 and earlier) knows no preset `helper` and takes an empty
+/// address for OpenAI's: a station or a computer taken back to it would send a question chosen for the row to
+/// api.openai.com, without a key. At this address the question goes nowhere — the device refuses the connection.
+pub const HELPER_NO_ADDRESS: &str = "http://127.0.0.1:9/helper-no-address/v1";
+
+/// Whether a stored address is the stand-in for none (`HELPER_NO_ADDRESS`).
+pub fn no_address(url: &str) -> bool {
+    url.trim().trim_end_matches('/') == HELPER_NO_ADDRESS
+}
 
 pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
     ProviderPreset {
@@ -171,6 +193,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         base_url: Some("https://api.anthropic.com"),
         key_url: Some("https://console.anthropic.com/settings/keys"),
         suggested: Some(Suggested { fast: "claude-haiku-5-5", smart: "claude-sonnet-5-5", more: &["claude-opus-5-5"] }),
+        fast: &["claude-haiku-5-5"],
         brand: Some("claude"),
         order: 1,
         ..BLANK
@@ -181,6 +204,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         description: "Модели GPT напрямую у OpenAI.",
         base_url: Some("https://api.openai.com/v1"),
         key_url: Some("https://platform.openai.com/api-keys"),
+        fast: &["gpt-5-mini", "gpt-5-nano", "gpt-4.1-mini", "gpt-4o-mini"],
         brand: Some("openai"),
         order: 2,
         ..BLANK
@@ -242,6 +266,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         key_url: Some("https://yandex.cloud/ru/docs/ai-studio/quickstart/"),
         fields: &[PresetField { id: "folder", title: "ID каталога", placeholder: Some("b1g…") }],
         suggested: Some(Suggested { fast: "yandexgpt-lite/latest", smart: "yandexgpt/latest", more: &[] }),
+        fast: &["yandexgpt-lite/latest"],
         order: 7,
         ..BLANK
     },
@@ -251,6 +276,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         description: "Модели Google через совместимый с OpenAI адрес.",
         base_url: Some("https://generativelanguage.googleapis.com/v1beta/openai"),
         key_url: Some("https://aistudio.google.com/apikey"),
+        fast: &["gemini-2.5-flash", "gemini-2.5-flash-lite"],
         brand: Some("gemini"),
         order: 8,
         ..BLANK
@@ -261,6 +287,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         description: "Недорогие модели DeepSeek.",
         base_url: Some("https://api.deepseek.com/v1"),
         key_url: Some("https://platform.deepseek.com/api_keys"),
+        fast: &["deepseek-chat"],
         brand: Some("deepseek"),
         order: 9,
         ..BLANK
@@ -271,6 +298,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         description: "Открытые модели на очень быстром железе: первое слово почти сразу.",
         base_url: Some("https://api.groq.com/openai/v1"),
         key_url: Some("https://console.groq.com/keys"),
+        fast: &["llama-3.1-8b-instant"],
         brand: Some("groq"),
         order: 10,
         ..BLANK
@@ -281,6 +309,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         description: "Модели Mistral AI.",
         base_url: Some("https://api.mistral.ai/v1"),
         key_url: Some("https://console.mistral.ai/api-keys"),
+        fast: &["mistral-small-latest"],
         brand: Some("mistral"),
         order: 11,
         ..BLANK
@@ -301,6 +330,16 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         kind: ProviderKind::Anthropic,
         editable_url: true,
         order: 13,
+        ..BLANK
+    },
+    // Hidden: a helper's model, at its `/home/v1/llm` (`BrainView.presets` leaves it out).
+    ProviderPreset {
+        id: HELPER_PRESET,
+        title: "Модель Турбо",
+        description: "Модель, которую даёт Турбо: шлюз добавляет её сам.",
+        needs_key: false,
+        brand: Some("helper"),
+        order: 99,
         ..BLANK
     },
 ];
@@ -387,6 +426,29 @@ mod tests {
             suggested_of(preset_of("claude").unwrap()),
             vec!["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"]
         );
+    }
+
+    #[test]
+    fn a_helpers_model_has_a_hidden_preset_and_the_fast_models_are_named_exactly() {
+        let helper = preset_of(HELPER_PRESET).unwrap();
+        assert_eq!(
+            (helper.kind, helper.base_url, helper.editable_url, helper.needs_key, helper.order),
+            (ProviderKind::OpenAi, None, false, false, 99)
+        );
+        assert!(helper.suggested.is_none() && helper.fields.is_empty() && helper.sign_in.is_none());
+        // The suggested fast model, where a preset has one, is its first hint.
+        for preset in PROVIDER_PRESETS {
+            if let Some(suggested) = &preset.suggested {
+                assert_eq!(preset.fast.first(), Some(&suggested.fast), "{}", preset.id);
+            }
+        }
+        let without: Vec<&str> =
+            PROVIDER_PRESETS.iter().filter(|preset| preset.fast.is_empty()).map(|p| p.id).collect();
+        assert_eq!(
+            without,
+            ["chatgpt", "openrouter", "ollama", "lmstudio", "custom-openai", "custom-anthropic", "helper"]
+        );
+        assert!(serde_json::to_value(preset_of("openai").unwrap()).unwrap().get("fast").is_none(), "not the panel's");
     }
 
     #[test]

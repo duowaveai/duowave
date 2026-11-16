@@ -1,10 +1,10 @@
-import { useRef, useState } from 'preact/hooks';
+import { useState } from 'preact/hooks';
 
 import { ApiError, Health, SessionSnapshot, UnsupportedEntry, api, problemOf } from '../api';
 import { IconSend } from '../icons';
 import { Slot } from '../shell/slot';
 import { tr } from '../i18n';
-import { Overlay, useDialogFocus } from '../ui/sheet';
+import { Sheet } from '../ui/sheet';
 
 interface Props {
     health: Health | null;
@@ -18,8 +18,6 @@ export function SaySheet({ health, debug, onClose }: Props) {
     const [text, setText] = useState('');
     const [outcome, setOutcome] = useState<Outcome>({ state: 'idle' });
     // Окно как окно: фокус внутрь, Esc закрывает его (а не окно раздела под ним), фокус — обратно.
-    const box = useRef<HTMLDivElement>(null);
-    useDialogFocus(box, onClose);
 
     const live = debug.sessions?.find((s) => !s.closedAt);
     const speakable = live?.canSpeak === true;
@@ -51,16 +49,11 @@ export function SaySheet({ health, debug, onClose }: Props) {
     };
 
     return (
-        <Overlay onDismiss={onClose}>
-            <div ref={box} class="sheet glass-strong" role="dialog" aria-modal="true" aria-label={tr.say.title}>
-                <div class="flex items-center justify-between">
-                    <h2 class="t-title-xs m-0">
-                        {tr.say.title}
-                    </h2>
-                    <span class="t-meta">
-                        {health?.station?.connected ? tr.say.stationOnline : tr.say.stationOffline}
-                    </span>
-                </div>
+        <Sheet
+            title={tr.say.title}
+            meta={<span class={`pill ${health?.station?.connected ? 'pill-own' : 'pill-off'}`}>{health?.station?.connected ? tr.say.stationOnline : tr.say.stationOffline}</span>}
+            onClose={onClose}
+        >
 
                 {speakable ? (
                     <>
@@ -96,7 +89,6 @@ export function SaySheet({ health, debug, onClose }: Props) {
                     </p>
                 )}
                 <Slot name="say.extras" props={{ speakable }} />
-            </div>
-        </Overlay>
+        </Sheet>
     );
 }

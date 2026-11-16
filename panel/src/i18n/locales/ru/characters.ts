@@ -38,7 +38,7 @@ export default {
     // character.tsx
     characterWord: 'Персонаж',
     mannerApplied: 'Манера применена — со следующего вопроса.',
-    relayAnswers: 'Режим «Яндекс»: отвечает Алиса со своим голосом и характером.',
+    relayAnswers: 'Режим «Алиса»: отвечает Алиса со своим голосом и характером.',
     ownTextDescription: 'Свой текст: как отвечать, вы написали сами.',
     chooseAnother: 'Выбрать другого',
     rowsLabel: 'Голос, манера и мозг',
@@ -99,6 +99,7 @@ export default {
     choose: 'Выбрать',
     hideText: 'Скрыть текст',
     fineTuning: 'Тонкая настройка',
+    showText: 'Показать текст',
     remove: 'Удалить',
     inCatalogVersion: (version: string) => `В каталоге версия ${version}`,
     downloadsNew: 'Скачается новая версия персонажа. Что говорит персонаж, поменяется только после «Обновить» — сначала покажем, что изменится.',

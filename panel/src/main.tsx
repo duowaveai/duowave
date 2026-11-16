@@ -22,6 +22,8 @@ import './ui/recall.css';
 import './ui/onboarding.css';
 // Клавиатура на экране для приложений (sdk/piano-keys.tsx).
 import './ui/piano-keys.css';
+// Окна пульта — одна анатомия (ui/sheet.tsx): поверх всех правил окон и кнопок выше.
+import './ui/window.css';
 import { registerPlugin } from './shell/registry';
 import { applyTheme } from './shell/theme';
 import { ThemeBackdrop } from './shell/backdrop';

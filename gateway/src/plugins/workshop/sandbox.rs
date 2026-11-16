@@ -719,7 +719,7 @@ pub fn station_warnings(folder: &Path) -> Vec<String> {
     if !pictures || manifest.prefer_home {
         return Vec::new();
     }
-    vec![crate::tr!("Шлюз на колонке, а места там мало: картинка — до 1 МБ, все картинки плагинов — до 5 МБ. Лучше \"prefer\": \"home\" — тогда картинки живут на компьютере.")]
+    vec![crate::tr!("Шлюз на колонке, а памяти там мало: картинка — до 1 МБ, все картинки плагинов — до 5 МБ. Лучше \"prefer\": \"home\" — тогда картинки живут на компьютере.")]
 }
 
 /// What a link of an item says about the station.

@@ -59,6 +59,8 @@ pub struct TalkLayer {
     pub(super) store: super::store::Store,
     /// The background tools' executor (tool_work.rs): a paid run's «да», «подробнее».
     background: OnceLock<Weak<super::tool_work::ToolExecutor>>,
+    /// The works in folders' executor (folder.rs): «Новая работа».
+    folders: OnceLock<Weak<super::folder::FolderExecutor>>,
 }
 
 /// A device's conversation is remembered this long after its work last changed.
@@ -88,6 +90,7 @@ impl TalkLayer {
             planned: std::sync::Mutex::new(std::collections::HashSet::new()),
             hinted: std::sync::Mutex::new(std::collections::HashMap::new()),
             background: OnceLock::new(),
+            folders: OnceLock::new(),
         });
         // A question nobody answered in its time ends silent: the work's question says so, and waits.
         let me = Arc::downgrade(&layer);
@@ -110,6 +113,15 @@ impl TalkLayer {
 
     pub(super) fn background(&self) -> Option<Arc<super::tool_work::ToolExecutor>> {
         self.background.get().and_then(Weak::upgrade)
+    }
+
+    /// The works in folders' executor joined (it added itself as an executor too).
+    pub fn set_folders(&self, executor: &Arc<super::folder::FolderExecutor>) {
+        let _ = self.folders.set(Arc::downgrade(executor));
+    }
+
+    pub fn folders(&self) -> Option<Arc<super::folder::FolderExecutor>> {
+        self.folders.get().and_then(Weak::upgrade)
     }
 
     /// An executor joins: from now on it reports here.
@@ -418,13 +430,17 @@ impl TalkLayer {
     }
 
     /// The works whose question waits for the person: ready or not finished, asked, neither answered nor declined —
-    /// «Ждёт вас».
+    /// «Ждёт вас»; and a work in a folder going on that a plan's limit holds («подождать или остановить?»).
     pub fn waiting(&self) -> Vec<Work> {
-        self.works
-            .all(None, None)
-            .into_iter()
-            .filter(|work| work.awaiting() && work.question.as_ref().is_some_and(|question| question.waits()))
-            .collect()
+        let asks = |work: &Work| {
+            let question = work.question.as_ref().filter(|question| question.waits());
+            match question.and_then(|question| question.kind) {
+                Some(super::asked::Kind::Wait) => work.going(),
+                Some(_) => work.awaiting(),
+                None => false,
+            }
+        };
+        self.works.all(None, None).into_iter().filter(asks).collect()
     }
 
     /// After a device's talk: the question of its work that ended silent, asked once more — once ever. Its words, and

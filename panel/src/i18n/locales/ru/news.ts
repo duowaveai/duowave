@@ -15,6 +15,7 @@ export default {
         '«Что нового?» — DuoWave читает заголовки этих лент, модель пересказывает. «Новости спорта» и другие темы каталога — ленты этой темы. Без лент новостей нет.',
     yourFeeds: 'Ваши ленты',
     yourFeedsCount: (on: number, all: number) => ` · ${on} из ${all}`,
+    yourFeedsAside: (on: number, all: number) => `${on} из ${all}`,
     noFeeds: 'Пока ни одной: добавьте из каталога ниже или свою по адресу.',
     feedLabel: (name: string) => `Лента ${name}`,
     remove: 'убрать',

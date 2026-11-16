@@ -12,6 +12,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::core::build::{ModeGate, Profile};
+use crate::core::identity::home::{GatewayHealth, HomeView, Identity};
 use crate::requests::ModeSource;
 use crate::settings::definitions::{PanelMode, TalkInput};
 
@@ -76,6 +77,13 @@ pub trait PlacementHealthSource: Send + Sync {
 pub struct HealthStatus {
     pub status: &'static str,
     pub build: BuildInfo,
+    /// The home this gateway is in (src/core/identity/home.rs): its id only, never its key. The computer reads the
+    /// station's in its look at it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub home: Option<HomeView>,
+    /// This gateway: its own id and the name people see.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<GatewayHealth>,
     /// gateway: we answer the station; relay: its session goes to Yandex and is only journaled.
     pub mode: &'static str,
     /// The panel's three: relay, gateway, or own (the gateway without Yandex).
@@ -153,6 +161,7 @@ pub struct HealthStatusService {
     sources: RwLock<Vec<Arc<dyn HealthSources>>>,
     placement: RwLock<Option<Arc<dyn PlacementHealthSource>>>,
     gate: RwLock<Option<Arc<dyn ModeGate>>>,
+    identity: RwLock<Option<Arc<Identity>>>,
 }
 
 impl HealthStatusService {
@@ -162,11 +171,17 @@ impl HealthStatusService {
             sources: RwLock::new(Vec::new()),
             placement: RwLock::new(None),
             gate: RwLock::new(None),
+            identity: RwLock::new(None),
         }
     }
 
     pub fn set_placement(&self, source: Arc<dyn PlacementHealthSource>) {
         *self.placement.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(source);
+    }
+
+    /// Who this gateway is: its home and itself join /health.
+    pub fn set_identity(&self, identity: Arc<Identity>) {
+        *self.identity.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(identity);
     }
 
     /// Which modes may be switched to now: the registry; without it, the build alone.
@@ -194,9 +209,12 @@ impl HealthStatusService {
             None => build_info(&Profile::this()),
         };
         let placement = self.placement.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        let identity = self.identity.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         HealthStatus {
             status: "ok",
             build,
+            home: identity.as_ref().and_then(|identity| identity.home()),
+            gateway: identity.as_ref().and_then(|identity| identity.gateway()),
             mode,
             panel_mode,
             yandex_ear: self.modes.yandex_ear(),
@@ -267,6 +285,35 @@ mod tests {
         let relay = serde_json::to_value(health.status()).unwrap();
         assert_eq!((relay["mode"].as_str(), relay["tts"].as_str()), (Some("relay"), Some("yandex")));
         assert!(relay.get("skills").is_none(), "skills only in gateway mode");
+    }
+
+    /// /health says the home by its id and this gateway by its id and name — the home's key never, in no field.
+    #[test]
+    fn health_shows_the_home_and_this_gateway_never_the_key() {
+        use crate::core::events::EventBus;
+        use crate::core::identity::home::{DeviceKind, HOME_KEY};
+        use crate::secrets::SecretsService;
+        use crate::settings::SettingsService;
+        use crate::storage::Db;
+
+        let health = HealthStatusService::new(Arc::new(Mode(Mutex::new(PanelMode::Gateway))));
+        let bare = serde_json::to_value(health.status()).unwrap();
+        assert!(bare.get("home").is_none() && bare.get("gateway").is_none(), "no identity, no fields");
+
+        let db = Arc::new(Db::memory());
+        let secrets = Arc::new(SecretsService::new(db.clone(), None).unwrap());
+        let settings = Arc::new(SettingsService::new(db.clone(), EventBus::new()));
+        let identity = Arc::new(Identity::new(settings, secrets.clone(), db, DeviceKind::Station, EventBus::new()));
+        health.set_identity(identity.clone());
+        let unmade = serde_json::to_value(health.status()).unwrap();
+        assert!(unmade.get("home").is_none() && unmade.get("gateway").is_none(), "nothing made yet");
+        identity.ensure().unwrap();
+        let status = serde_json::to_value(health.status()).unwrap();
+        let (home, me) = (identity.home().unwrap(), identity.gateway().unwrap());
+        assert_eq!(status["home"], json!({ "id": home.id }));
+        assert_eq!(status["gateway"], json!({ "id": me.id, "name": "Колонка" }));
+        let key = secrets.get(HOME_KEY).unwrap();
+        assert!(!status.to_string().contains(&key), "the key is nobody's to see");
     }
 
     /// The station link's sessions beside the modules' parts.

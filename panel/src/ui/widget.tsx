@@ -38,7 +38,19 @@ export function useWidgetEmpty(empty: boolean): void {
     useEffect(() => tell?.(empty), [tell, empty]);
 }
 
-function Menu({ title, menu }: { title: string; menu: WidgetMenu }) {
+/** An item of a «⋯» menu: a button, or a link opened in a new tab (`href`). */
+export interface PopItem {
+    label: string;
+    act?: () => void;
+    href?: string;
+    disabled?: boolean;
+}
+
+/**
+ * A «⋯» menu: opens under its button, closes on a tap elsewhere and on Esc; `note` — a line above the items. The
+ * widgets' menu below and the rows of «Помощники» (screens/helpers.tsx) share it.
+ */
+export function PopMenu({ label, menuLabel = label, note, items }: { label: string; menuLabel?: string; note?: string; items: PopItem[] }) {
     const [open, setOpen] = useState(false);
     const box = useRef<HTMLDivElement>(null);
     useEffect(() => {
@@ -59,48 +71,57 @@ function Menu({ title, menu }: { title: string; menu: WidgetMenu }) {
             window.removeEventListener('keydown', key, true);
         };
     }, [open]);
-    const item = (label: string, act?: () => void) =>
-        act && (
-            <button
-                role="menuitem"
-                class="tab-more-item"
-                disabled={menu.locked}
-                onClick={() => {
-                    setOpen(false);
-                    act();
-                }}
-            >
-                {label}
-            </button>
-        );
+    if (items.length === 0) return null;
     return (
         <div class="widget-menu-box" ref={box}>
-            <button
-                class="widget-more"
-                aria-label={tr.ui.widgetMore(title)}
-                aria-haspopup="menu"
-                aria-expanded={open}
-                onClick={() => setOpen(!open)}
-                data-no-drag
-            >
+            <button class="widget-more" aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)} data-no-drag>
                 <IconDots size={16} />
             </button>
             {open && (
-                <div class="widget-menu menu" role="menu" aria-label={tr.ui.widgetMenuLabel(title, !!menu.locked)}>
-                    {menu.locked && (
+                <div class="widget-menu menu" role="menu" aria-label={menuLabel}>
+                    {note && (
                         <p class="widget-menu-note" aria-hidden="true">
-                            {tr.ui.deskLocked}
+                            {note}
                         </p>
                     )}
-                    {item(tr.ui.moveEarlier, menu.earlier)}
-                    {item(tr.ui.moveLater, menu.later)}
-                    {item(tr.ui.wider, menu.wider)}
-                    {item(tr.ui.narrower, menu.narrower)}
-                    {item(tr.ui.removeFromDesk, menu.hide)}
+                    {items.map((item) =>
+                        item.href ? (
+                            <a key={item.label} role="menuitem" class="tab-more-item" href={item.href} target="_blank" rel="noreferrer" onClick={() => setOpen(false)}>
+                                {item.label}
+                            </a>
+                        ) : (
+                            <button
+                                key={item.label}
+                                role="menuitem"
+                                class="tab-more-item"
+                                disabled={item.disabled}
+                                onClick={() => {
+                                    setOpen(false);
+                                    item.act?.();
+                                }}
+                            >
+                                {item.label}
+                            </button>
+                        ),
+                    )}
                 </div>
             )}
         </div>
     );
+}
+
+/** The widget's «⋯»: earlier, later, wider, narrower — those its place has — and «Убрать со стола»; a locked desk greys them. */
+function Menu({ title, menu }: { title: string; menu: WidgetMenu }) {
+    const items: PopItem[] = [];
+    const all = [
+        [tr.ui.moveEarlier, menu.earlier],
+        [tr.ui.moveLater, menu.later],
+        [tr.ui.wider, menu.wider],
+        [tr.ui.narrower, menu.narrower],
+        [tr.ui.removeFromDesk, menu.hide],
+    ] as const;
+    for (const [label, act] of all) if (act) items.push({ label, act, disabled: menu.locked });
+    return <PopMenu label={tr.ui.widgetMore(title)} menuLabel={tr.ui.widgetMenuLabel(title, !!menu.locked)} note={menu.locked ? tr.ui.deskLocked : undefined} items={items} />;
 }
 
 export function WidgetFrame({

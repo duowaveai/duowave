@@ -6,8 +6,13 @@
 import { useEffect, useState } from 'preact/hooks';
 
 import { api } from '../api';
+import { VIA } from '../via';
 
-const COPY = 'panel-memory';
+/**
+ * Копия — у каждого шлюза своя: окно колонки у помощника (via.ts) открыто с адреса компьютера, и общая копия носила
+ * память колонки в пульт компьютера и обратно — так запись «Первых шагов» компьютера оказывалась у колонки.
+ */
+const COPY = VIA ? `panel-memory@${VIA}` : 'panel-memory';
 /** Правки подряд (листают папки) уходят на шлюз одной записью — когда человек остановился. */
 const SAVE_AFTER = 800;
 
@@ -40,13 +45,32 @@ function notify(): void {
 }
 
 function send(): void {
+    void flushPanelMemory();
+}
+
+/**
+ * Отправить ждущее на шлюз сейчас, не дожидаясь паузы: перед уходом со страницы (окно помощника уходит в пульт колонки,
+ * app.tsx) — иначе правка последних 800 мс осталась бы только в копии браузера. Без входа (или ключ) шлюз не помнит —
+ * остаётся копия; ошибка не мешает уйти. Небольшая правка идёт с keepalive — доходит, даже если страницу тут же
+ * перезагрузили.
+ */
+export function flushPanelMemory(): Promise<void> {
+    window.clearTimeout(timer);
     timer = undefined;
     const changes = pending;
     pending = {};
-    if (Object.keys(changes).length === 0) return;
-    // Без входа (или ключ) шлюз не помнит — остаётся копия браузера.
-    void api.rememberPanel(changes).catch(() => {});
+    if (Object.keys(changes).length === 0) return Promise.resolve();
+    // keepalive берёт тело до 64 КБ, больше — запрос не уходит вовсе: большая правка идёт обычным запросом.
+    const body = JSON.stringify(changes).length;
+    return api.rememberPanel(changes, body < 60_000).then(
+        () => undefined,
+        () => undefined,
+    );
 }
+
+// Страницу закрыли или перезагрузили в паузе перед отправкой: ждущее уходит сейчас — иначе при новом запуске шлюз
+// вернул бы старое (так «Первые шаги» открывались снова после × и быстрой перезагрузки).
+if (typeof window !== 'undefined') window.addEventListener('pagehide', () => void flushPanelMemory());
 
 /** Что помнится под ключом. */
 export function recalled<T>(key: string): T | undefined {

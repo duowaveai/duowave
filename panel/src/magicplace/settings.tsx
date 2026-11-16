@@ -8,8 +8,7 @@ import { api, can, problemOf, sessionStore } from '../api';
 import { tr } from '../i18n';
 import { CatalogState, OwnSources } from '../screens/catalog';
 import { timeAgo } from '../time';
-import { Action } from '../ui/cards';
-import { Sheet } from '../ui/sheet';
+import { Sheet, SkeletonRows, WinRow, WinSection } from '../ui/sheet';
 import { Switch } from '../ui/switch';
 import { MagicPlaceMark } from './icon';
 
@@ -34,24 +33,28 @@ export function StoreSettings({ catalog, onClose }: { catalog: CatalogState; onC
 
     return (
         <Sheet title={tr.magicplace.settingsTitle} about={tr.magicplace.settingsAbout} icon={<MagicPlaceMark size={40} />} onClose={onClose}>
+            {!view && !catalog.absent && !catalog.error && <SkeletonRows rows={2} />}
             {view?.configured && view.enabled && (
-                <div class="flex flex-wrap items-center gap-8">
-                    {view.fetchedAt && <span class="t-caption">{tr.magicplace.checkedAgo(timeAgo(view.fetchedAt))}</span>}
-                    <Action label={catalog.refreshing ? tr.magicplace.checking : tr.magicplace.checkNow} busy={catalog.refreshing} onClick={() => void catalog.reload(true)} />
-                </div>
+                <WinSection group>
+                    <div class="win-row">
+                        <span class="win-row-s flex-1 min-w-0">{view.fetchedAt ? tr.magicplace.checkedAgo(timeAgo(view.fetchedAt)) : ''}</span>
+                        <button class="btn btn-plain btn-sm" disabled={catalog.refreshing} aria-busy={catalog.refreshing || undefined} onClick={() => void catalog.reload(true)}>
+                            {catalog.refreshing && <span class="spinner spinner-sm" aria-hidden="true" />}
+                            {catalog.refreshing ? tr.magicplace.checking : tr.magicplace.checkNow}
+                        </button>
+                    </div>
+                </WinSection>
             )}
             {isAdmin() && view?.configured && view.enabled && <OwnSources view={view} onView={catalog.setView} />}
             {view?.configured && can('settings.edit') && (
-                <div class="pkg-switch">
-                    <div class="flex-1 min-w-0 flex flex-col gap-2">
-                        <span class="fw-700">{tr.catalog.noCatalogTitle}</span>
-                        <span class="t-caption">{tr.catalog.noCatalogNote}</span>
-                    </div>
-                    <Switch on={!view.enabled} label={tr.catalog.noCatalogTitle} disabled={busy} onChange={(off) => void setCatalogOn(!off)} />
-                </div>
+                <WinSection group>
+                    <WinRow title={tr.catalog.noCatalogTitle} sub={tr.catalog.noCatalogNote}>
+                        <Switch on={!view.enabled} label={tr.catalog.noCatalogTitle} disabled={busy} onChange={(off) => void setCatalogOn(!off)} />
+                    </WinRow>
+                </WinSection>
             )}
             {error && (
-                <p class="t-caption m-0 c-dot-offline" role="alert">
+                <p class="win-callout m-0" role="alert">
                     {error}
                 </p>
             )}

@@ -7,7 +7,8 @@
 //! - QuickJS is not thread-safe, and here it never crosses threads: no `unsafe impl Send` anywhere;
 //! - `await host.http.fetch(…)` still works: the request runs on the gateway's runtime with its HTTP client
 //!   (`HostApi::fetch`), the plugin's thread only awaits the answer;
-//! - stopping a plugin is closing its channel: the thread ends and drops the context, freeing all of its memory.
+//! - stopping a plugin is closing its channel: the thread ends and drops the context, freeing all of its memory —
+//!   QuickJS's own in a block of its own, which goes back to the system whole (quickjs_memory.rs).
 //!
 //! A thread costs its stack (a megabyte reserved, little of it touched) only while the plugin is loaded: the host
 //! loads a plugin at its first call and unloads it after a while without one.
@@ -342,7 +343,10 @@ fn run(
     local.block_on(&runtime, async move {
         let id = code.id.clone();
         let memory_limit = code.memory_mb * 1024 * 1024;
-        let Ok(engine) = AsyncRuntime::new() else {
+        // Its memory in a block of its own, given back whole when the plugin unloads (quickjs_memory.rs).
+        let engine = super::quickjs_memory::BlockAllocator::for_limit(code.memory_mb)
+            .and_then(|memory| AsyncRuntime::new_with_alloc(memory).ok());
+        let Some(engine) = engine else {
             let _ = ready.send(Err(PluginError::Memory(code.memory_mb)));
             return;
         };

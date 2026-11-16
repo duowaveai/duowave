@@ -389,7 +389,7 @@ pub fn move_to_disk(source: &Path, program: &Path, sha256: &str, free_kb: Option
     let tight = free_kb < need_kb;
     if tight && free_kb.saturating_add(old_kb) < need_kb {
         return Err(crate::tr!(
-            "На колонке не хватает места для новой версии: нужно {need} МБ, свободно {free} МБ вместе со старой.",
+            "На колонке не хватает памяти для новой версии: нужно {need} МБ, свободно {free} МБ вместе со старой.",
             need = need_kb / 1024,
             free = free_kb.saturating_add(old_kb) / 1024
         ));

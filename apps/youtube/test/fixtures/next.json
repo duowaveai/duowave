@@ -1,0 +1,153 @@
+{
+ "contents": {
+  "twoColumnWatchNextResults": {
+   "playlist": {
+    "playlist": {
+     "title": "Джем – Группа крови",
+     "contents": [
+      {
+       "playlistPanelVideoRenderer": {
+        "videoId": "xtxjm7ciwmc",
+        "title": {
+         "accessibility": {
+          "accessibilityData": {
+           "label": "Группа крови 4 минуты 45 секунд"
+          }
+         },
+         "simpleText": "Группа крови"
+        },
+        "longBylineText": {
+         "runs": [
+          {
+           "text": "Группа КИНО"
+          }
+         ]
+        },
+        "lengthText": {
+         "accessibility": {
+          "accessibilityData": {
+           "label": "4 минуты 45 секунд"
+          }
+         },
+         "simpleText": "4:45"
+        }
+       }
+      },
+      {
+       "playlistPanelVideoRenderer": {
+        "videoId": "Z4jQ4hZfk00",
+        "title": {
+         "accessibility": {
+          "accessibilityData": {
+           "label": "Звезда по имени Солнце 3 минуты 46 секунд"
+          }
+         },
+         "simpleText": "Звезда по имени Солнце"
+        },
+        "longBylineText": {
+         "runs": [
+          {
+           "text": "Группа КИНО"
+          }
+         ]
+        },
+        "lengthText": {
+         "accessibility": {
+          "accessibilityData": {
+           "label": "3 минуты 46 секунд"
+          }
+         },
+         "simpleText": "3:46"
+        }
+       }
+      },
+      {
+       "playlistPanelVideoRenderer": {
+        "videoId": "iXk8QXhr7Fk",
+        "title": {
+         "accessibility": {
+          "accessibilityData": {
+           "label": "Кукушка 6 минут 39 секунд"
+          }
+         },
+         "simpleText": "Кукушка"
+        },
+        "longBylineText": {
+         "runs": [
+          {
+           "text": "Группа КИНО"
+          }
+         ]
+        },
+        "lengthText": {
+         "accessibility": {
+          "accessibilityData": {
+           "label": "6 минут 39 секунд"
+          }
+         },
+         "simpleText": "6:39"
+        }
+       }
+      },
+      {
+       "playlistPanelVideoRenderer": {
+        "videoId": "w7GTLIhNO1g",
+        "title": {
+         "accessibility": {
+          "accessibilityData": {
+           "label": "Пачка сигарет 4 минуты 27 секунд"
+          }
+         },
+         "simpleText": "Пачка сигарет"
+        },
+        "longBylineText": {
+         "runs": [
+          {
+           "text": "Группа КИНО"
+          }
+         ]
+        },
+        "lengthText": {
+         "accessibility": {
+          "accessibilityData": {
+           "label": "4 минуты 27 секунд"
+          }
+         },
+         "simpleText": "4:27"
+        }
+       }
+      },
+      {
+       "playlistPanelVideoRenderer": {
+        "videoId": "DiDUIfMk7go",
+        "title": {
+         "accessibility": {
+          "accessibilityData": {
+           "label": "Спокойная ночь 6 минут 23 секунды"
+          }
+         },
+         "simpleText": "Спокойная ночь"
+        },
+        "longBylineText": {
+         "runs": [
+          {
+           "text": "Группа КИНО"
+          }
+         ]
+        },
+        "lengthText": {
+         "accessibility": {
+          "accessibilityData": {
+           "label": "6 минут 23 секунды"
+          }
+         },
+         "simpleText": "6:23"
+        }
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}

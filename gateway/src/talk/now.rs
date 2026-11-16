@@ -236,10 +236,14 @@ fn desk_line(pack: &Pack, desk: &[String], room: usize) -> Option<String> {
     }
 }
 
-/// What a work is called in the block: its face, or «фоновое дело» for a tool's call and an app's task.
+/// What a work is called in the block: its face, «фоновое дело» for a tool's call and an app's task, «работа в
+/// папке» for an agent in a work folder.
 fn face_of(work: &Work, words: &super::pack::WorkWords) -> &'static str {
     if matches!(work.kind.as_str(), super::works::TOOL | super::works::TASK) {
         return words.background.face;
+    }
+    if work.kind == super::works::FOLDER {
+        return words.folder.face;
     }
     work.face.map(|face| words.faces[face.index()]).unwrap_or(words.faces[0])
 }

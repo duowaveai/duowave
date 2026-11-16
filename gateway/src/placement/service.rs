@@ -16,9 +16,7 @@ use crate::core::build::{Profile, PEER_API};
 use crate::core::events::{Actor, EventBus, GatewayEvent};
 use crate::platform::http::ApiError;
 use crate::secrets::SecretsService;
-use crate::settings::definitions::{
-    GatewayState, SafetyCase, SettingsHome, CONNECTOR_HOME_SERVER, GATEWAY_STATE, STATION_SELF,
-};
+use crate::settings::definitions::{GatewayState, SafetyCase, SettingsHome, GATEWAY_STATE, HELPERS, STATION_SELF};
 use crate::settings::SettingsService;
 use crate::storage::Db;
 
@@ -30,9 +28,14 @@ pub enum Role {
     Station,
 }
 
-/// The home server as the station's gateway sees it (src/home_server): its address, up or down, since when.
+/// The home server as the station's gateway sees it (src/home_server): its address, up or down, since when — the old
+/// shape of the pair's door; and the helpers (src/helpers).
 pub trait HomeServerView: Send + Sync {
     fn view(&self) -> Option<Value>;
+    /// `placement.helpers`: the regulator and the helpers in brief.
+    fn helpers(&self) -> Option<Value> {
+        None
+    }
 }
 
 /// What starts this gateway again: the program anew in its own process (exec) — the station's service sees no exit,
@@ -63,7 +66,8 @@ pub struct PlacementService {
     /// The computer's view of the station's gateway (src/placement/watch.rs).
     #[cfg(feature = "pc")]
     station: OnceLock<Arc<super::watch::StationGateways>>,
-    restarter: OnceLock<Restarter>,
+    /// What starts it again; the last one set wins (a test's own over the test support's).
+    restarter: Mutex<Option<Restarter>>,
     /// The revision, computed at most every few seconds: the panels and the computer ask /health often.
     revision: Mutex<Option<(Instant, u64)>>,
     /// The pair's key made here, on the station, when its .env had none: the computer took it with the admin's
@@ -93,7 +97,7 @@ impl PlacementService {
             home: OnceLock::new(),
             #[cfg(feature = "pc")]
             station: OnceLock::new(),
-            restarter: OnceLock::new(),
+            restarter: Mutex::new(None),
             revision: Mutex::new(None),
             made_key: OnceLock::new(),
         }
@@ -138,12 +142,13 @@ impl PlacementService {
     }
 
     pub fn set_restarter(&self, restarter: Restarter) {
-        let _ = self.restarter.set(restarter);
+        *self.restarter.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(restarter);
     }
 
     /// Starts this gateway again: new settings are applied at its start.
     pub fn restart(&self) {
-        match self.restarter.get() {
+        let restarter = self.restarter.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        match restarter {
             Some(restarter) => restarter(),
             None => restart_soon()(),
         }
@@ -243,18 +248,15 @@ impl PlacementService {
         })
     }
 
-    /// The station this gateway runs on, as the computer that moved it here knows it (`STATION_SELF`): its device, and
-    /// its name — the one this gateway's list of stations gives that device now (renamed since, it follows), else the
-    /// one the move brought. The default name of a new station («Колонка») does not count.
+    /// The station this gateway runs on, as the computer that moved it here knows it (`station_self`).
     pub fn station_self(&self) -> (Option<String>, Option<String>) {
-        let Some(own) = self.settings.get(&STATION_SELF, None) else { return (None, None) };
-        let listed = own
-            .device
-            .as_deref()
-            .and_then(|device| station_name(&self.db, device))
-            .filter(|name| !name.trim().is_empty() && name != DEFAULT_STATION_NAME);
-        let name = listed.or(own.name).filter(|name| !name.trim().is_empty());
-        (own.device, name)
+        station_self(&self.settings, &self.db)
+    }
+
+    /// Whether this gateway keeps its main settings itself: a computer always, a station unless they live on the
+    /// computer — whose package then replaces them.
+    pub fn owns_settings(&self) -> bool {
+        self.role() == Role::Pc || self.state().settings_home == SettingsHome::Station
     }
 
     pub fn health_value(&self) -> Value {
@@ -264,6 +266,10 @@ impl PlacementService {
             "placement": self.placement(),
             "peerApi": self.peer_api(),
         });
+        // The helpers on both roles (a 0.11 computer reads only `homeServer`, below).
+        if let Some(helpers) = self.home.get().and_then(|home| home.helpers()) {
+            merge(&mut health, json!({ "helpers": helpers }));
+        }
         match self.role() {
             Role::Station => {
                 let fs = StationFs::real();
@@ -348,6 +354,21 @@ impl PlacementService {
 /// What a station is called in a list of stations until the household names it (src/stations/service.rs).
 pub const DEFAULT_STATION_NAME: &str = "Колонка";
 
+/// The station a gateway runs on, as the computer that moved it there knows it (`STATION_SELF`): its device, and its
+/// name — the one the gateway's list of stations gives that device now (renamed since, it follows), else the one the
+/// move brought. The default name of a new station («Колонка») does not count. /health says it, and the gateway's own
+/// name follows it while nobody names the gateway (src/core/identity/home.rs).
+pub fn station_self(settings: &SettingsService, db: &Db) -> (Option<String>, Option<String>) {
+    let Some(own) = settings.get(&STATION_SELF, None) else { return (None, None) };
+    let listed = own
+        .device
+        .as_deref()
+        .and_then(|device| station_name(db, device))
+        .filter(|name| !name.trim().is_empty() && name != DEFAULT_STATION_NAME);
+    let name = listed.or(own.name).filter(|name| !name.trim().is_empty());
+    (own.device, name)
+}
+
 /// A station's name in this gateway's list of stations, by its device.
 pub fn station_name(db: &Db, device: &str) -> Option<String> {
     use rusqlite::OptionalExtension;
@@ -378,15 +399,25 @@ impl crate::health_status::service::PlacementHealthSource for PlacementService {
 }
 
 impl PlacementSource for PlacementService {
+    /// «ПК помогает колонке» on: the pair's door `home-computer` switched on with its key — the address alone (a move
+    /// to the station brings it) is not it, and other helpers do not make it: a 0.11 computer's switch and the
+    /// registry's «с компьютера» keep meaning the computer.
     fn placement(&self) -> Placement {
         match self.role() {
             Role::Pc => Placement::Pc,
-            // «ПК помогает колонке» on: the address and the key alone (a move to the station brings them) are not it.
-            Role::Station if self.settings.get(&CONNECTOR_HOME_SERVER, None).is_some_and(|home| home.enabled) => {
-                Placement::StationServer
-            }
+            Role::Station if self.computer_helps() => Placement::StationServer,
             Role::Station => Placement::Station,
         }
+    }
+}
+
+impl PlacementService {
+    /// The station leans on its computer: the pair's door switched on, with its key (src/helpers/legacy.rs).
+    fn computer_helps(&self) -> bool {
+        use crate::helpers::{key_secret, HOME_COMPUTER};
+        let door =
+            self.settings.get(&HELPERS, None).and_then(|list| list.into_iter().find(|entry| entry.id == HOME_COMPUTER));
+        door.is_some_and(|entry| entry.enabled) && self.secrets.has(&key_secret(HOME_COMPUTER))
     }
 }
 
@@ -394,21 +425,54 @@ impl PlacementSource for PlacementService {
 mod tests {
     use super::*;
     use crate::config::Env;
-    use crate::settings::definitions::HomeServerSetting;
+
+    fn station(settings: &Arc<SettingsService>, secrets: &Arc<SecretsService>, db: &Arc<Db>) -> PlacementService {
+        let config = Arc::new(Config::for_tests(&Env::from_pairs::<[(&str, &str); 0], &str, &str>([])));
+        let station = Profile { station: true };
+        PlacementService::new(station, config, db.clone(), secrets.clone(), settings.clone(), EventBus::new())
+    }
+
+    fn entry(id: &str, url: &str, kind: crate::helpers::HelperKind, enabled: bool) -> crate::helpers::HelperSetting {
+        crate::helpers::HelperSetting {
+            id: id.into(),
+            name: "Турбо".into(),
+            url: url.into(),
+            kind,
+            enabled,
+            without: Vec::new(),
+            helper_id: None,
+        }
+    }
 
     #[test]
-    fn the_station_with_the_computer_known_but_not_leaned_on_is_alone() {
+    fn the_station_with_its_helpers_off_is_alone() {
+        use crate::helpers::HelperKind;
         let db = Arc::new(Db::memory());
         let settings = Arc::new(SettingsService::new(db.clone(), EventBus::new()));
         let secrets = Arc::new(SecretsService::new(db.clone(), None).unwrap());
-        let config = Arc::new(Config::for_tests(&Env::from_pairs::<[(&str, &str); 0], &str, &str>([])));
-        let service =
-            PlacementService::new(Profile { station: true }, config, db, secrets, settings.clone(), EventBus::new());
+        let service = station(&settings, &secrets, &db);
         assert_eq!(service.placement(), Placement::Station);
-        let home = |enabled| HomeServerSetting { url: "http://192.0.2.10".into(), enabled, without: Vec::new() };
-        settings.set(&CONNECTOR_HOME_SERVER, &home(false), None).unwrap();
+        let door = |enabled| vec![entry("home-computer", "http://192.0.2.10", HelperKind::Home, enabled)];
+        settings.set(&HELPERS, &door(false), None).unwrap();
+        secrets.set("helper:home-computer:key", Some("vgw_home")).unwrap();
         assert_eq!(service.placement(), Placement::Station, "the move brought the address; the switch is off");
-        settings.set(&CONNECTOR_HOME_SERVER, &home(true), None).unwrap();
+        settings.set(&HELPERS, &door(true), None).unwrap();
         assert_eq!(service.placement(), Placement::StationServer);
+        secrets.delete("helper:home-computer:key").unwrap();
+        assert_eq!(service.placement(), Placement::Station, "on, without its key: not leaned on");
+    }
+
+    #[test]
+    fn another_helper_than_the_computer_leaves_the_placement_alone() {
+        use crate::helpers::HelperKind;
+        let db = Arc::new(Db::memory());
+        let settings = Arc::new(SettingsService::new(db.clone(), EventBus::new()));
+        let secrets = Arc::new(SecretsService::new(db.clone(), None).unwrap());
+        let service = station(&settings, &secrets, &db);
+        settings
+            .set(&HELPERS, &vec![entry("own-1", "https://helper.example.com", HelperKind::Own, true)], None)
+            .unwrap();
+        secrets.set("helper:own-1:key", Some("vgw_own")).unwrap();
+        assert_eq!(service.placement(), Placement::Station, "«the computer helps» stays the computer's");
     }
 }

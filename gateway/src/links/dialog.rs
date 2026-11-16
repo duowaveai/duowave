@@ -45,7 +45,14 @@ impl AskDialog for AskBrain {
         self.0.enabled()
     }
 
+    /// The model that answers now: the backup or the next helper while the chosen one's helper is away; the chosen
+    /// one when none may be asked (the answer then says why), or when the brain cannot tell.
     fn fast_model(&self) -> AskModel {
+        if let Some(now) = self.0.now(ModelProfile::Fast) {
+            if let (Some(model), Some(title)) = (now.model, now.title) {
+                return AskModel { model, provider: title };
+            }
+        }
         self.0
             .brain()
             .profiles
@@ -126,5 +133,40 @@ mod tests {
             .collect()
             .await;
         assert!(!told.is_empty(), "the game host answers");
+    }
+
+    /// «Спросить мозг» starts with the name of the model that answers now (docs/plans/home-and-helpers.md, stage 4):
+    /// the backup's, while the chosen model's helper is away.
+    #[tokio::test]
+    async fn ask_brain_names_the_model_that_answers_now() {
+        use crate::dialog::brain::ProviderInput;
+        use crate::helpers::tests::{contract, stand, ALL, KEY};
+        use serde_json::json;
+
+        let computer = stand(contract("pc", ALL)).await;
+        let app = app(&[("STATE_DIR", ""), ("DIALOG_PROVIDER", "none")]);
+        let input = crate::helpers::AddInput {
+            url: computer.url.clone(),
+            key: KEY.into(),
+            name: Some("Компьютер дома".into()),
+            ..crate::helpers::AddInput::default()
+        };
+        let id = app.helpers.add(input, None).await.unwrap();
+        app.brain.keep_helper_models().unwrap();
+        let row = app.brain.view().providers.into_iter().find(|row| row.helper.is_some()).expect("its model's row");
+        let spare = json!({"preset": "custom-openai", "title": "Запас", "baseUrl": "http://127.0.0.1:9/v1"});
+        let spare = app.brain.add(&ProviderInput::from_value(spare), None).unwrap();
+        let choice = json!({
+            "fast": {"provider": row.id, "model": "home"},
+            "backup": {"provider": spare.id, "model": "big-model"},
+        });
+        app.brain.choose(choice.as_object().unwrap(), None).unwrap();
+        let chat = app.mcp.dialog().unwrap();
+        assert_eq!(chat.fast_model(), AskModel { model: "home".into(), provider: "Модель: Компьютер дома".into() });
+
+        computer.set_away(true);
+        app.helpers.check(&id).await.unwrap();
+        app.helpers.check(&id).await.unwrap();
+        assert_eq!(chat.fast_model(), AskModel { model: "big-model".into(), provider: "Запас".into() });
     }
 }

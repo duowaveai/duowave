@@ -2,6 +2,7 @@
 // облако» — с прямым предупреждением, что приложения, спрашивая друг друга словами, могут отдать облачной модели то,
 // что знают, — и журнал шины: кто кому писал и чем кончилось, без содержимого.
 
+import { SkeletonRows } from '../ui/sheet';
 import { useEffect, useState } from 'preact/hooks';
 
 import { BusJournalLine, BusMode, BusOverview, api, can, problemOf } from '../api';
@@ -83,7 +84,7 @@ export function BusCard() {
             setBusy(false);
         }
     };
-    const house: BusMode = view?.modes.house ?? 'rules';
+    const house: BusMode | null = view?.modes.house ?? null;
     const titles = new Map((view?.participants ?? []).map((participant) => [participant.address, participant.title]));
     const cloud = view?.options.cloudAsks ?? false;
     return (
@@ -94,28 +95,41 @@ export function BusCard() {
                         {tr.bus.appLinks}
                     </h2>
                     {can('journal.view') && (
-                        <button class="pill pill-off pill-btn" onClick={() => setJournal(true)}>
+                        <button class="btn btn-quiet btn-sm" onClick={() => setJournal(true)}>
                             {tr.bus.journalPill}
                         </button>
                     )}
                 </div>
-                <p class="t-caption m-0">{tr.bus.appLinksNote}</p>
-                <div class="flex flex-wrap items-center gap-8">
-                    {(['rules', 'free', 'isolated'] as BusMode[]).map((mode) => (
-                        <Action key={mode} on={house === mode} label={MODE_TITLES[mode]} disabled={busy || !view} onClick={() => void run(() => api.busMode(null, mode))} />
-                    ))}
-                </div>
-                <p class="t-caption m-0">{MODE_HINTS[house]}</p>
-                <div class="flex items-center gap-12">
-                    <span class="t-body-sm flex-1">{tr.bus.cloudAsks}</span>
-                    <Switch on={cloud} label={tr.bus.cloudAsks} disabled={busy || !view} onChange={(on) => void run(() => api.busOptions({ cloudAsks: on }))} />
-                </div>
-                <p class={`t-caption m-0 ${cloud ? 'c-pill-yandex-fg' : ''}`}>
-                    {tr.bus.cloudAsksNote}
-                </p>
-                {view && view.questions.length > 0 && <p class="t-caption m-0">{tr.bus.waitingYes(view.questions.length)}</p>}
+                <p class="win-text m-0">{tr.bus.appLinksNote}</p>
+                {/* Пока режим не прочитан — скелет, а не «По правилам» по умолчанию: выбранное не перескакивает. */}
+                {!view && !error ? (
+                    <SkeletonRows rows={2} />
+                ) : (
+                    <div class="win-group">
+                        <div class="win-row is-col">
+                            <div class="flex flex-wrap items-center gap-8">
+                                {(['rules', 'free', 'isolated'] as BusMode[]).map((mode) => (
+                                    <Action key={mode} on={house === mode} label={MODE_TITLES[mode]} disabled={busy || !view} onClick={() => void run(() => api.busMode(null, mode))} />
+                                ))}
+                            </div>
+                            {house && <span class="win-row-s">{MODE_HINTS[house]}</span>}
+                        </div>
+                        <div class="win-row">
+                            <div class="win-row-main">
+                                <span class="win-row-t">{tr.bus.cloudAsks}</span>
+                                <span class={`win-row-s ${cloud ? 'c-pill-yandex-fg' : ''}`}>{tr.bus.cloudAsksNote}</span>
+                            </div>
+                            <Switch on={cloud} label={tr.bus.cloudAsks} disabled={busy || !view} onChange={(on) => void run(() => api.busOptions({ cloudAsks: on }))} />
+                        </div>
+                        {view && view.questions.length > 0 && (
+                            <div class="win-row">
+                                <span class="win-row-s">{tr.bus.waitingYes(view.questions.length)}</span>
+                            </div>
+                        )}
+                    </div>
+                )}
                 {error && (
-                    <p class="t-caption m-0 c-dot-offline" role="alert">
+                    <p class="win-callout m-0" role="alert">
                         {error}
                     </p>
                 )}

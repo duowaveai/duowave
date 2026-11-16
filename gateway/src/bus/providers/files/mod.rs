@@ -293,7 +293,7 @@ impl Files {
             let used = Places::size_of(&self.places.files);
             if used + bytes > STATION_ALL_MAX {
                 return Err(BusError::Failed(crate::tr!(
-                    "на колонке места под файлы нет: занято {used} КБ из {max} КБ",
+                    "на колонке нет памяти под файлы: занято {used} КБ из {max} КБ",
                     used = used / 1024,
                     max = STATION_ALL_MAX / 1024
                 )));

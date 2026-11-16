@@ -79,13 +79,19 @@ async fn check(
     Body(body): Body<Value>,
 ) -> ApiResult<ProviderCheck> {
     caller.permitted(CONNECTORS_MANAGE)?;
-    Ok(ok(app.brain.check(&id, body.get("model")).await?))
+    let check = app.brain.check(&id, body.get("model")).await?;
+    // A provider's list just arrived: a fast cloud model may now be named exactly for the default backup.
+    app.brain.keep_backup();
+    Ok(ok(check))
 }
 
 async fn models(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
     caller.permitted(CONNECTORS_MANAGE)?;
     match app.brain.models(&id).await {
-        Ok(models) => Ok(ok(json!({"models": models}))),
+        Ok(models) => {
+            app.brain.keep_backup();
+            Ok(ok(json!({"models": models})))
+        }
         Err(error) => Err(match error.downcast::<ApiError>() {
             Ok(api) => api,
             // A plain failure is a 500, as Nest answered it; the log gets the reason without secrets.
@@ -149,7 +155,7 @@ mod tests {
         let ids: Vec<&str> = start["presets"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
         assert_eq!(&ids[..4], &["claude", "openai", "chatgpt", "openrouter"]);
         assert_eq!(start["providers"], json!([]));
-        assert_eq!(start["choice"], json!({"fast": null, "smart": null, "effort": "low"}));
+        assert_eq!(start["choice"], json!({"fast": null, "smart": null, "effort": "low", "autoBackup": true}));
         assert_eq!(start["status"]["source"], json!("env"));
 
         let added = json!({"preset": "custom-openai", "title": "Дома", "baseUrl": url, "key": "sk-test-key-1234"});
@@ -209,7 +215,7 @@ mod tests {
         assert_eq!(busy.unwrap_err().status, StatusCode::CONFLICT);
         let (_, back) = body(choose(State(app.clone()), admin(&app), Body(json!({"fast": null}))).await);
         assert_eq!(back["status"]["source"], json!("env"));
-        assert_eq!(back["choice"], json!({"fast": null, "smart": null, "effort": "low"}));
+        assert_eq!(back["choice"], json!({"fast": null, "smart": null, "effort": "low", "autoBackup": true}));
         let gone = remove(State(app.clone()), admin(&app), Path("custom-openai".into())).await.unwrap();
         assert_eq!(gone.status(), StatusCode::NO_CONTENT);
         let (_, after) = body(view(State(app.clone()), admin(&app)).await);
@@ -217,6 +223,18 @@ mod tests {
         assert!(app.secrets.ids("llm:").is_empty());
         let failing = models(State(app.clone()), admin(&app), Path("custom-openai".into())).await;
         assert_eq!(failing.err().unwrap().status, StatusCode::NOT_FOUND);
+    }
+
+    /// Rehearsal 16.11: the first steps look for Ollama and LM Studio; one that is not there answered 500 and an
+    /// ERROR in the log. Words now, and a 502.
+    #[tokio::test]
+    async fn a_local_model_server_that_is_not_there_is_said_in_words() {
+        let app = app();
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let ollama = json!({"preset": "ollama", "baseUrl": format!("http://127.0.0.1:{port}/v1")});
+        assert_eq!(body(add(State(app.clone()), admin(&app), Body(ollama)).await).0, StatusCode::CREATED);
+        let (status, answer) = body(models(State(app.clone()), admin(&app), Path("ollama".into())).await);
+        assert_eq!((status, answer["message"].as_str()), (StatusCode::BAD_GATEWAY, Some("Адрес не отвечает.")));
     }
 
     fn param(url: &str, name: &str) -> Option<String> {

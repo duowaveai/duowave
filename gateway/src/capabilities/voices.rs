@@ -6,6 +6,10 @@
 //! A voice that sends the text out of the house or spends money (cloud, paid) speaks for an app only after the owner's
 //! «да» for `system/voice/cloud` (links/plugins.rs asks the bus). The provider's word times come back with the sound;
 //! where it has none, the gateway's hearing finds them (capabilities/hearing.rs).
+//!
+//! The regulator «Что может уходить из дома» (docs/plans/home-and-helpers.md) governs them too: a provider whose text
+//! would leave the house — ElevenLabs, the computer's voice server at a cloud address — is not ready and voices nothing
+//! while the regulator keeps the clouds on keys in.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock, Weak};
@@ -15,7 +19,12 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
+use crate::helpers::Reach;
+use crate::operations::networks::is_local_url;
 use crate::speech::asr::HeardWord;
+
+/// Whether the regulator «Что может уходить из дома» lets a road of this reach out now (the helpers' `lets`).
+pub type Gate = Arc<dyn Fn(Reach) -> bool + Send + Sync>;
 
 /// The computer's provider: its voices are `<engine>/<voice>`.
 pub const COMPUTER: &str = "computer";
@@ -89,33 +98,106 @@ pub trait VoiceProvider: Send + Sync {
         let _ = key;
         Err(crate::tr!("этому поставщику ключ не нужен"))
     }
+    /// How far an app's text goes with it now: home (the computer's server at home), or out of it (a cloud).
+    fn reach(&self) -> Reach {
+        Reach::Home
+    }
 }
 
 /// The registry: who voices, and which provider a voice belongs to.
-#[derive(Default)]
 pub struct Voices {
-    list: RwLock<Vec<Arc<dyn VoiceProvider>>>,
+    list: RwLock<Vec<Arc<Governed>>>,
     /// The last failure of each provider's list of voices, for its card.
     problems: Mutex<HashMap<&'static str, String>>,
+    /// The regulator over the providers whose text leaves the house.
+    gate: Gate,
+}
+
+/// What a provider says while the regulator keeps its road in.
+fn closed() -> String {
+    crate::tr!("Регулятор «Что может уходить из дома» не пускает облака по ключам.")
+}
+
+/// A provider as the registry gives it out: under the regulator — one whose text would leave the house while the
+/// regulator keeps it in is not ready, lists no voices and voices nothing.
+struct Governed {
+    inner: Arc<dyn VoiceProvider>,
+    gate: Gate,
+}
+
+impl Governed {
+    fn shut(&self) -> bool {
+        let reach = self.inner.reach();
+        reach != Reach::Home && !(self.gate)(reach)
+    }
+
+    /// It would voice but for the regulator: shut, and ready by itself (a key, a server).
+    fn kept_in(&self) -> bool {
+        self.shut() && self.inner.card().ready
+    }
+}
+
+impl VoiceProvider for Governed {
+    fn id(&self) -> &'static str {
+        self.inner.id()
+    }
+
+    fn card(&self) -> ProviderCard {
+        let mut card = self.inner.card();
+        if self.shut() {
+            card.ready = false;
+            card.needs = Some(closed());
+        }
+        card
+    }
+
+    fn voices(&self) -> BoxFuture<'static, Result<Vec<Value>, String>> {
+        if self.shut() {
+            return Box::pin(async { Err(closed()) });
+        }
+        self.inner.voices()
+    }
+
+    fn synth(&self, line: Line, cancel: CancellationToken) -> BoxFuture<'static, Result<Spoken, String>> {
+        if self.shut() {
+            return Box::pin(async { Err(closed()) });
+        }
+        self.inner.synth(line, cancel)
+    }
+
+    fn balance(&self) -> BoxFuture<'static, Result<Option<Value>, String>> {
+        self.inner.balance()
+    }
+
+    fn set_key(&self, key: Option<&str>) -> Result<(), String> {
+        self.inner.set_key(key)
+    }
+
+    fn reach(&self) -> Reach {
+        self.inner.reach()
+    }
 }
 
 impl Voices {
-    pub fn new() -> Voices {
-        Voices::default()
+    /// The registry under the regulator: `gate` says whether a road of a reach may be taken now.
+    pub fn new(gate: Gate) -> Voices {
+        Voices { list: RwLock::new(Vec::new()), problems: Mutex::new(HashMap::new()), gate }
     }
 
-    /// A provider voices from now on; one with the same id goes.
+    /// A provider voices from now on, under the regulator; one with the same id goes.
     pub fn register(&self, provider: Arc<dyn VoiceProvider>) {
+        let provider = Arc::new(Governed { inner: provider, gate: self.gate.clone() });
         let mut list = self.list.write().unwrap_or_else(|poisoned| poisoned.into_inner());
         list.retain(|known| known.id() != provider.id());
         list.push(provider);
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<dyn VoiceProvider>> {
-        self.list.read().unwrap_or_else(|poisoned| poisoned.into_inner()).iter().find(|one| one.id() == id).cloned()
+        let list = self.list.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+        list.iter().find(|one| one.id() == id).map(|one| one.clone() as Arc<dyn VoiceProvider>)
     }
 
-    fn providers(&self) -> Vec<Arc<dyn VoiceProvider>> {
+    fn providers(&self) -> Vec<Arc<Governed>> {
         self.list.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
     }
 
@@ -148,10 +230,15 @@ impl Voices {
     }
 
     /// The voices of every ready provider, one after another; a provider that fails gives none, and its card says why.
-    /// No provider ready at all — an error, so an app knows to go on without a voice.
+    /// No provider ready at all — an error, so an app knows to go on without a voice: the regulator's words when one
+    /// would voice but for it.
     pub async fn all(&self) -> Result<Vec<Value>, String> {
-        let ready: Vec<_> = self.providers().into_iter().filter(|provider| provider.card().ready).collect();
+        let providers = self.providers();
+        let ready: Vec<_> = providers.iter().filter(|provider| provider.card().ready).cloned().collect();
         if ready.is_empty() {
+            if providers.iter().any(|provider| provider.kept_in()) {
+                return Err(closed());
+            }
             return Err(crate::tr!("голосов нет: сервер голоса не настроен, ключей облачных голосов нет"));
         }
         let mut voices = Vec::new();
@@ -296,6 +383,14 @@ impl VoiceProvider for Computer {
             Ok(Spoken { bytes: wav.to_vec(), ext: "wav", alignment: None, words: Vec::new() })
         })
     }
+
+    /// Where its voice server is (TTS_OWN_URL, what the apps' lines are voiced by): at home, or a cloud's.
+    fn reach(&self) -> Reach {
+        match self.speech() {
+            Some(speech) if !is_local_url(Some(speech.env_base_url())) => Reach::Foreign,
+            _ => Reach::Home,
+        }
+    }
 }
 
 /// ElevenLabs by the owner's key: MP3 with each character's time.
@@ -313,6 +408,7 @@ mod eleven {
     use tokio_util::sync::CancellationToken;
 
     use super::{words_of_alignment, Line, ProviderCard, Spoken, VoiceProvider};
+    use crate::helpers::Reach;
     use crate::secrets::SecretsService;
 
     pub const ELEVENLABS: &str = "elevenlabs";
@@ -506,6 +602,11 @@ mod eleven {
             }
             self.secrets.set(KEY, key).map_err(|error| error.to_string())
         }
+
+        /// A cloud by the owner's key: the lines leave the house.
+        fn reach(&self) -> Reach {
+            Reach::Foreign
+        }
     }
 }
 
@@ -548,9 +649,14 @@ mod tests {
         }
     }
 
+    /// The regulator lets every road out («Любые облака»).
+    fn open() -> Gate {
+        Arc::new(|_| true)
+    }
+
     #[tokio::test]
     async fn a_voice_goes_to_its_provider_by_its_id_and_the_list_keeps_a_failure_on_the_card() {
-        let voices = Voices::new();
+        let voices = Voices::new(open());
         voices.register(Arc::new(Fake(COMPUTER, true)));
         voices.register(Arc::new(Fake("elevenlabs", true)));
         voices.register(Arc::new(Fake("broken", true)));
@@ -566,7 +672,82 @@ mod tests {
         assert_eq!(ids, ["computer/one", "elevenlabs/one"], "the one not ready is not asked");
         let cards = voices.cards();
         assert_eq!(cards.iter().find(|card| card.id == "broken").unwrap().problem.as_deref(), Some("сломан"));
-        assert!(Voices::new().all().await.unwrap_err().contains("сервер голоса не настроен"), "no provider: no voice");
+        assert!(
+            Voices::new(open()).all().await.unwrap_err().contains("сервер голоса не настроен"),
+            "no provider: no voice"
+        );
+    }
+
+    /// A voice server at home: it voices every line (a short WAV) and counts them.
+    #[cfg(feature = "pc")]
+    async fn voice_server() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        let lines = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = lines.clone();
+        let router = axum::Router::new().route(
+            "/v1/audio/speech",
+            axum::routing::post(move || {
+                let lines = counted.clone();
+                async move {
+                    lines.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    crate::speech::audio::pcm::encode_wav(&[0i16; 160], 16000)
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, router).await });
+        (url, lines)
+    }
+
+    /// The computer's voices with its voice server at this address, under this regulator; the voice service with them
+    /// (the provider holds it weakly).
+    #[cfg(feature = "pc")]
+    fn computer_voices(own_url: &str, gate: Gate) -> (Voices, Arc<crate::speech::VoiceService>) {
+        let config = crate::config::Config::for_tests(&crate::config::Env::from_pairs([("TTS_OWN_URL", own_url)]));
+        let voice = Arc::new(crate::speech::VoiceService::new(&config.gateway, crate::core::events::EventBus::new()));
+        let voices = Voices::new(gate);
+        voices.register(Arc::new(Computer::new(&voice)));
+        (voices, voice)
+    }
+
+    #[cfg(feature = "pc")]
+    #[tokio::test]
+    async fn only_at_home_keeps_the_apps_cloud_voices_out() {
+        let at_home: Gate = Arc::new(|reach| reach == Reach::Home);
+        let closed = "Регулятор «Что может уходить из дома» не пускает облака по ключам.";
+        let line = |voice: &str| Line { voice: voice.into(), text: "Да".into(), ..Line::default() };
+
+        // ElevenLabs is a cloud by the owner's key: not ready, no voices, no line while only the home may be reached.
+        let secrets =
+            Arc::new(crate::secrets::SecretsService::new(Arc::new(crate::storage::db::Db::memory()), None).unwrap());
+        let shut = Voices::new(at_home.clone());
+        shut.register(Arc::new(ElevenLabs::at(&secrets, "https://api.elevenlabs.example.invalid")));
+        assert!(shut.all().await.unwrap_err().contains("сервер голоса не настроен"), "no key: nothing would voice");
+        shut.get(ELEVENLABS).unwrap().set_key(Some("sk-test-key")).unwrap();
+        let eleven = shut.get(ELEVENLABS).unwrap();
+        let card = eleven.card();
+        assert_eq!((card.ready, card.needs.as_deref()), (false, Some(closed)));
+        assert_eq!(eleven.voices().await.unwrap_err(), closed);
+        assert_eq!(eleven.synth(line("v1"), CancellationToken::new()).await.err().as_deref(), Some(closed));
+        assert_eq!(shut.all().await.unwrap_err(), closed, "an app goes on without a voice, told why");
+        let open = Voices::new(open());
+        open.register(Arc::new(ElevenLabs::at(&secrets, "https://api.elevenlabs.example.invalid")));
+        assert!(open.get(ELEVENLABS).unwrap().card().ready, "«Любые облака»: its key is all it needs");
+
+        // The computer's voice server at a cloud's address: the same.
+        let (cloud, _voice) = computer_voices("https://tts.example.invalid/v1", at_home.clone());
+        let computer = cloud.get(COMPUTER).unwrap();
+        assert_eq!((computer.card().ready, computer.card().needs.as_deref()), (false, Some(closed)));
+        assert_eq!(computer.synth(line("piper/denis"), CancellationToken::new()).await.err().as_deref(), Some(closed));
+        assert_eq!(cloud.all().await.unwrap_err(), closed);
+
+        // At home it voices under every position of the regulator.
+        let (url, lines) = voice_server().await;
+        let (home, _voice) = computer_voices(&url, at_home);
+        let computer = home.get(COMPUTER).unwrap();
+        assert!(computer.card().ready);
+        let spoken = computer.synth(line("piper/denis"), CancellationToken::new()).await.unwrap();
+        assert_eq!((spoken.ext, lines.load(std::sync::atomic::Ordering::SeqCst)), ("wav", 1));
     }
 
     #[test]

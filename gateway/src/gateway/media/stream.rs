@@ -136,11 +136,39 @@ impl StreamRelays {
 }
 
 /// An app's own sound on localhost (its `/stream/…`, docs/plans/plugins.md, «Звук приложения на колонку»), given on
-/// to the station as it comes: the app chose its format, nothing is transcoded.
-pub async fn app_sound(url: &str) -> Result<Response, ApiError> {
-    let upstream = open(url, true).await?;
+/// to the station as it comes: the app chose its format, nothing is transcoded. The station's Range goes to the app,
+/// and the app's length and part (206) come back: a paused track resumes where it stood.
+pub async fn app_sound(url: &str, range: Option<HeaderValue>) -> Result<Response, ApiError> {
+    let client = crate::utils::http::client_builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .no_proxy()
+        .build()
+        .map_err(|error| ApiError::internal(format!("stream relay: {error}")))?;
+    let mut asked = client.get(url);
+    if let Some(range) = range {
+        asked = asked.header(header::RANGE, range);
+    }
+    let upstream = asked.send().await.map_err(|error| {
+        ApiError::bad_gateway(crate::tr!("Поток не открылся: {error}", error = error.without_url()))
+    })?;
+    let status = upstream.status();
+    if status == StatusCode::RANGE_NOT_SATISFIABLE {
+        return Ok(StatusCode::RANGE_NOT_SATISFIABLE.into_response());
+    }
+    if !status.is_success() {
+        return Err(ApiError::bad_gateway(crate::tr!("Поток ответил HTTP {status}", status = status)));
+    }
+    // A file the app has whole: its length and a part of it from where the station resumes (an app's 206).
+    let kept: Vec<(header::HeaderName, HeaderValue)> =
+        [header::CONTENT_LENGTH, header::CONTENT_RANGE, header::ACCEPT_RANGES]
+            .into_iter()
+            .filter_map(|name| upstream.headers().get(&name).cloned().map(|value| (name, value)))
+            .collect();
     let kind = content_type(&upstream);
-    Ok(passed(upstream, kind))
+    let mut response = passed(upstream, kind);
+    *response.status_mut() = if status == StatusCode::PARTIAL_CONTENT { status } else { StatusCode::OK };
+    response.headers_mut().extend(kept);
+    Ok(response)
 }
 
 /// A stream opened for the station; `local` for the machine's own address (no proxy).

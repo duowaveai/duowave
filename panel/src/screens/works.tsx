@@ -1,6 +1,7 @@
 // «Работы» (docs/plans/router-and-works.md, решение 17, этап 6а): одна страница на все виды работ — приложения
-// мастерской (`app`), фоновые инструменты (`tool`), задачи приложений (`task`); работы в рабочих папках (`folder`)
-// встанут сюда же со своими этапами. Сверху «Сейчас» — что идёт: вид, строка хода, сколько идёт, на какой модели,
+// мастерской (`app`), фоновые инструменты (`tool`), задачи приложений (`task`), работы в рабочих папках (`folder`, этап
+// 3). Сверху — «Новая работа» в рабочей папке и вход в «Рабочие папки» (`#/works/folders`, screens/work-folders.tsx:
+// папки и агенты — здесь же, решение владельца 16.11.2026). Ниже «Сейчас» — что идёт: вид, строка хода, сколько идёт, на какой модели,
 // расход; ниже «Ждёт» — очередь и почему, «Спрашивает» — открытый вопрос и кнопки ответа (те же ответы, что голосом),
 // «Недавние» — законченные за месяц, с исходом и расходом. Нажатие ведёт внутрь работы (screens/work.tsx):
 // `#/works/<работа>/<вкладка>`. Список — `GET /api/v1/works` с группами шлюза; перечитывается на перемены работ и, пока
@@ -10,6 +11,7 @@ import type { JSX } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 
 import { WorkAnswer, WorkGroup, WorkModel, WorkSpent, WorkView, WorkWait, api, can, problemOf } from '../api';
+import { agentTitle, useHarnesses, useWorkFolders, WorkFoldersPage } from './work-folders';
 import { IconChevronRight } from '../icons';
 import { formatDate, formatNumber, tr } from '../i18n';
 import { usePoll } from '../poll';
@@ -211,6 +213,12 @@ export function answersOf(work: WorkView): Array<{ answer: WorkAnswer; label: st
                 { answer: 'yes', label: tr.router.answerDetails },
                 { answer: 'no', label: tr.router.answerNoNeed },
             ];
+        // Лимит подписки держит работу в папке: подождать (и без ответа ждёт) или остановить.
+        case 'wait':
+            return [
+                { answer: 'yes', label: tr.router.answerWait },
+                { answer: 'no', label: tr.router.answerStop, danger: true },
+            ];
         default:
             return [];
     }
@@ -279,6 +287,7 @@ export function WorksSection() {
     const panel = usePanel();
     if (!can('settings.edit')) return <p class="w-cap m-0">{tr.router.adminOnly}</p>;
     const id = panel.link.section === 'works' ? panel.link.tab : undefined;
+    if (id === 'folders') return <WorkFoldersPage />;
     if (id) return <WorkPage key={id} id={id} />;
     return <WorksList />;
 }
@@ -332,9 +341,18 @@ function WorksList() {
     const shownRecent = allRecent ? recent : recent.slice(0, RECENT_SHOWN);
     return (
         <div class="wk-page">
-            <p class="wk-summary m-0" role="status">
-                {tr.router.summary(going.length, queued.length, asking.length)}
-            </p>
+            <div class="wk-top">
+                <p class="wk-summary m-0" role="status">
+                    {tr.router.summary(going.length, queued.length, asking.length)}
+                </p>
+                <button type="button" class="pill" onClick={() => panel.go('works', 'folders')}>
+                    {tr.router.foldersOpen}
+                </button>
+            </div>
+            <NewWork onStarted={(work, text) => {
+                say(work.title, text);
+                reread();
+            }} />
             {said && (
                 <p class="wk-said m-0" role="status">
                     {said}
@@ -407,6 +425,113 @@ function WorksList() {
                 )}
             </Group>
         </div>
+    );
+}
+
+/**
+ * «Новая работа» в рабочей папке: папка, задание, агент (по умолчанию — агент папки), «Запустить». Ответ шлюза — строкой
+ * сверху, работа встаёт в «Сейчас» или в очередь. Папок нет — ссылка на «Рабочие папки».
+ */
+function NewWork({ onStarted }: { onStarted: (work: WorkView, said: string) => void }) {
+    const panel = usePanel();
+    const { folders, problem: foldersProblem } = useWorkFolders();
+    const { harnesses } = useHarnesses();
+    const [folder, setFolder] = useState('');
+    const [task, setTask] = useState('');
+    const [agent, setAgent] = useState('');
+    const [busy, setBusy] = useState(false);
+    const [problem, setProblem] = useState<string | null>(null);
+    // Работа в папках есть только у компьютера: шлюз колонки этих папок не знает.
+    if (foldersProblem && !folders) return null;
+    if (!folders) return null;
+    const chosen = folders.find((entry) => entry.id === folder) ?? folders[0];
+    const start = () => {
+        if (!chosen || !task.trim()) return;
+        setBusy(true);
+        setProblem(null);
+        api.startFolderWork(chosen.id, task.trim(), agent || undefined)
+            .then((begun) => {
+                setTask('');
+                onStarted(begun.work, begun.said);
+            })
+            .catch((e) => setProblem(problemOf(e)))
+            .finally(() => setBusy(false));
+    };
+    return (
+        <section class="card glass card-list wk-group" aria-labelledby="wk-new-h">
+            <div class="card-head">
+                <h2 id="wk-new-h" class="t-title-xs m-0">
+                    {tr.router.newWork}
+                </h2>
+            </div>
+            {folders.length === 0 ? (
+                <p class="w-cap m-0 wk-empty">
+                    {tr.router.newWorkNoFolders}{' '}
+                    <button type="button" class="sp-link" onClick={() => panel.go('works', 'folders')}>
+                        {tr.router.foldersOpen}
+                    </button>
+                </p>
+            ) : (
+                <form
+                    class="wf-form"
+                    onSubmit={(event) => {
+                        event.preventDefault();
+                        start();
+                    }}
+                >
+                    <div class="wf-pair">
+                        <label class="flex flex-col gap-4">
+                            <span class="t-caption">{tr.router.newWorkFolder}</span>
+                            <select class="field" value={chosen?.id} onChange={(e) => setFolder((e.target as HTMLSelectElement).value)}>
+                                {folders.map((entry) => (
+                                    <option key={entry.id} value={entry.id}>
+                                        {entry.name}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                        <label class="flex flex-col gap-4">
+                            <span class="t-caption">{tr.router.newWorkAgent}</span>
+                            <select class="field" value={agent} onChange={(e) => setAgent((e.target as HTMLSelectElement).value)}>
+                                <option value="">{tr.router.newWorkAgentOfFolder(agentTitle(harnesses, chosen?.agent))}</option>
+                                {(harnesses ?? []).map((harness) => (
+                                    <option key={harness.id} value={harness.id}>
+                                        {harness.title}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                    </div>
+                    <label class="flex flex-col gap-4">
+                        <span class="t-caption">{tr.router.newWorkTask}</span>
+                        <textarea
+                            class="field wk-note-field"
+                            rows={3}
+                            maxLength={4000}
+                            placeholder={tr.router.newWorkTaskHint}
+                            value={task}
+                            onInput={(e) => setTask((e.currentTarget as HTMLTextAreaElement).value)}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                                    e.preventDefault();
+                                    start();
+                                }
+                            }}
+                        />
+                    </label>
+                    {problem && (
+                        <p class="w-cap m-0 c-dot-offline" role="alert">
+                            {problem}
+                        </p>
+                    )}
+                    <div class="wk-actions">
+                        <button type="submit" class="pill pill-own" disabled={busy || !task.trim()}>
+                            {busy ? '…' : tr.router.newWorkStart}
+                        </button>
+                    </div>
+                </form>
+            )}
+        </section>
     );
 }
 

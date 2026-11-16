@@ -3,11 +3,15 @@ import type { Translation } from '../../types';
 import type ru from '../ru/catalog';
 
 const en: Translation<typeof ru> = {
+    listenTitle: 'Listen',
+    needsTitle: 'What it needs',
+    licenseTitle: 'Licence',
     kindCharacter: 'character',
     kindPlugin: 'in the gateway',
     kindApp: 'on the computer',
     kindAppStation: 'on the speaker',
     kindTheme: 'theme',
+    kindAgent: 'agent',
     placeNetwork: 'online',
     filterCharacters: 'Characters',
     filterApps: 'Apps',
@@ -105,6 +109,26 @@ const en: Translation<typeof ru> = {
     noCatalogTitle: 'Do not load the catalog',
     noCatalogNote: 'Requesting the catalog tells our site the gateway’s address. Turn it off and the gateway will not fetch it.',
     openCharacter: 'Open the character',
+    pairTitle: (name: string) => `Install “${name}” too?`,
+    installTitle: (name: string) => `Install “${name}”?`,
+    installRights: (list: string) => `Rights: ${list}. “Install” is your yes to them as well: it won’t ask later.`,
+    pairCost: (sizeMb: number | null, memoryMb: number | null, station: boolean) =>
+        [sizeMb ? `about ${sizeMb} MB of storage` : null, memoryMb ? `up to ${memoryMb} MB of${station ? ' the speaker’s' : ''} RAM` : null]
+            .filter(Boolean)
+            .join(' and ')
+            .replace(/^./, (first) => `Takes ${first}`)
+            .concat(sizeMb || memoryMb ? '.' : ''),
+    pairOk: 'Install',
+    pairLater: 'Not now',
+    pairCannot: (name: string, reason: string) => `“${name}” cannot be installed yet: ${reason}`,
+    pairRemoveTitle: (name: string) => `Remove “${name}” too?`,
+    pairRemoveText: 'It went together with the one removed. It can come back from the catalog.',
+    pairHead: 'Goes with',
+    pairOn: 'installed',
+    pairOff: 'turned off',
+    pairAsleep: 'asleep: not enough RAM — it wakes by itself',
+    pairMissing: 'not installed',
+    pairInstall: 'install',
 };
 
 export default en;

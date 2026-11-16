@@ -1,19 +1,19 @@
 // Встроенные виджеты стола (docs/plans/desk.md): то, что уже знает пульт, — режим колонки, последние вопросы, кто
-// сколько ответил, чего пока не умеем; у помощника — что он даёт колонке, как присматривает за ней и его мастерская;
-// у шлюза на колонке — его помощник. Регистрируются в слот `desk.widgets` (builtin.tsx) тем же путём, что виджеты
-// плагинов.
+// сколько ответил, чего пока не умеем; у помощника — как он присматривает за колонкой и его мастерская; у шлюза 0.11 на
+// колонке — его компьютер прежней карточкой. Что компьютер даёт другим шлюзам — screens/helper-pc.tsx, «Где сейчас» —
+// screens/helpers.tsx (docs/plans/home-and-helpers.md, блок 1). Регистрируются в слот `desk.widgets` (builtin.tsx) тем
+// же путём, что виджеты плагинов.
 
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { useDevMode } from '../shell/dev';
 
-import { ApiError, DraftView, HelperPart, HelperServed, PlacementView, RequestView, WorkView, api, can, problemOf } from '../api';
+import { ApiError, DraftView, PlacementView, RequestView, WorkView, api, can, problemOf } from '../api';
 import { CAPABILITY_TITLES } from '../capabilities';
 import { SETTLE_MS, usePoll } from '../poll';
 import { useSettledVersion } from '../shell/agent-plaque';
 import { usePanel } from '../shell/context';
 import { timeAgo } from '../time';
-import { Switch } from '../ui/switch';
 import { useWidgetEmpty } from '../ui/widget';
+import { VIA } from '../via';
 import { AllocPanel, ModeCard } from './home';
 import { readStationRequests } from './station-widgets';
 import { feltMs, seconds } from './trip';
@@ -223,16 +223,6 @@ function stationOf(view: PlacementView | null, device?: string) {
 
 const mb = (kb?: number): string => (kb === undefined ? '—' : `${Math.round(kb / 1024)}`);
 
-/** «214 вопросов», «198 фраз», «31 ответ» — слова и числа по языку. */
-const parts = (): Array<{ id: HelperPart; title: string; served: (n: number) => string; without: string }> => [
-    { id: 'asr', title: tr.desk.partEar, served: tr.desk.questionsCount, without: tr.desk.withoutCloud },
-    { id: 'tts', title: tr.desk.partVoice, served: tr.desk.phrasesCount, without: tr.desk.withoutAlice },
-    { id: 'llm', title: tr.desk.partModel, served: tr.desk.answersCount, without: tr.desk.withoutAlice },
-    // Бот Telegram этого компьютера для колонки, в обе стороны: «Передай маме, что…» и сообщения контактов. У колонки
-    // своего бота нет. Один переключатель на оба направления; счёт — тоже за оба.
-    { id: 'messages', title: tr.desk.partMessages, served: tr.desk.messagesCount, without: tr.desk.withoutNobody },
-];
-
 /** «сегодня 14:02», «вчера 22:10», «08.11 09:30» — когда снята копия. */
 function copyDay(at: string): string {
     const date = new Date(at);
@@ -245,151 +235,8 @@ function copyDay(at: string): string {
 }
 
 /**
- * «Что даю колонке» (docs/plans/desk.md, этап 4; макет SpaceHelper): помощь целиком и по отдельности — слух, голос,
- * модель, сообщения — со счётом за сегодня и тем, чем колонка обходится без компьютера.
- */
-export function HelperWidget() {
-    const panel = usePanel();
-    const dev = useDevMode();
-    const [view, reread] = usePlacementView();
-    const [served, setServed] = useState<HelperServed | null>(null);
-    const [busy, setBusy] = useState<string | null>(null);
-    const [error, setError] = useState<string | null>(null);
-    usePoll({
-        every: 30_000,
-        version: panel.version,
-        read: (signal) => api.helperServed(signal).then((fresh) => !signal.aborted && setServed(fresh)),
-    });
-    const station = stationOf(view, panel.current?.device);
-    const helping = station?.record?.placement === 'stationServer';
-    const reachable = station?.live.reachable ?? panel.role.station?.reachable ?? false;
-    const home = station?.live.health?.placement?.homeServer;
-    const without = home?.without ?? [];
-    const mayManage = can('stations.manage');
-    // Помощник на столе (docs/plans/start-desk.md): под сценой и так сказано, что компьютер помогает. Виджет — когда
-    // есть что сделать: помощь выключена или колонка его не слышит.
-    useWidgetEmpty(!view || (helping && home?.state !== 'down'));
-    const run = (what: string, job: () => Promise<unknown>) => {
-        setBusy(what);
-        setError(null);
-        void job()
-            .then(() => reread())
-            .catch((e) => setError(problemOf(e)))
-            .finally(() => setBusy(null));
-    };
-    return (
-        <div class="flex flex-col gap-10">
-            <label class="w-toggle">
-                <span class="flex-1 min-w-0 flex flex-col">
-                    <span class="w-strong">{tr.desk.helpStation}</span>
-                    <span class="w-cap">
-                        {!helping
-                            ? tr.desk.helpOff
-                            : home?.state === 'down'
-                              ? tr.desk.helpDown
-                              : tr.desk.helpOn}
-                    </span>
-                </span>
-                <Switch
-                    on={helping}
-                    label={tr.desk.helpStation}
-                    disabled={!mayManage || busy !== null || !reachable}
-                    onChange={(on) => run('all', () => api.setStationHelper(on, station?.key))}
-                />
-            </label>
-            {/* Один переключатель; по частям — «Тонкая настройка», слой разработчика (docs/plans/panel-rebuild.md, этап 6). */}
-            {!dev && helping && <p class="w-cap m-0">{tr.desk.helpAll}</p>}
-            {dev && <span class="w-cap">{tr.desk.fineTuning}</span>}
-            {dev && (
-            <div class="w-rows">
-                {parts().map((part) => {
-                    const on = helping && !without.includes(part.id);
-                    const today = served?.[part.id];
-                    return (
-                        <div key={part.id} class="w-row">
-                            <span class={`w-dot ${on ? 'w-dot-own' : 'w-dot-off'}`} aria-hidden="true" />
-                            <span class="w-text">
-                                {part.title}
-                                <span class="w-cap">
-                                    {' · '}
-                                    {on
-                                        ? today && today.count > 0
-                                            ? `${part.served(today.count)} · ${seconds(today.avgMs)}`
-                                            : tr.desk.here
-                                        : tr.desk.nowWithout(part.without)}
-                                </span>
-                            </span>
-                            <span class="w-cap">{tr.desk.otherwise(part.without)}</span>
-                            <Switch
-                                on={on}
-                                label={tr.desk.giveToStation(part.title.toLowerCase())}
-                                disabled={!mayManage || busy !== null || !reachable || !helping}
-                                onChange={(next) =>
-                                    run(part.id, () =>
-                                        api.setHelperParts(next ? without.filter((id) => id !== part.id) : [...without, part.id], station?.key),
-                                    )
-                                }
-                            />
-                        </div>
-                    );
-                })}
-            </div>
-            )}
-            {dev && served && <p class="w-cap m-0">{tr.desk.countToday}</p>}
-            <KeepAwake />
-            {error && (
-                <p class="w-cap c-dot-offline m-0" role="alert">
-                    {error}
-                </p>
-            )}
-        </div>
-    );
-}
-
-/**
- * «Не давать компьютеру спать» (макет Main): уснёт — колонка не замолчит (слышит облако, говорит Алиса), но «Свой»
- * вернётся, только когда помощник проснётся. Настройка приложения DuoWave: в браузере вне его её нет.
- */
-function KeepAwake() {
-    const [state, setState] = useState<{ managed: boolean; keepAwake?: boolean } | null>(null);
-    const [busy, setBusy] = useState(false);
-    useEffect(() => {
-        let alive = true;
-        void api
-            .desktopAwake()
-            .then((fresh) => alive && setState(fresh))
-            .catch(() => alive && setState({ managed: false }));
-        return () => {
-            alive = false;
-        };
-    }, []);
-    if (!state?.managed) return null;
-    return (
-        <label class="w-toggle">
-            <span class="flex-1 min-w-0 flex flex-col">
-                <span class="w-strong">{tr.desk.keepAwake}</span>
-                <span class="w-cap">{tr.desk.keepAwakeNote}</span>
-            </span>
-            <Switch
-                on={state.keepAwake !== false}
-                label={tr.desk.keepAwake}
-                disabled={busy || !can('settings.edit')}
-                onChange={(on) => {
-                    setBusy(true);
-                    void api
-                        .setDesktopAwake(on)
-                        .then(setState)
-                        .catch(() => undefined)
-                        .finally(() => setBusy(false));
-                }}
-            />
-        </label>
-    );
-}
-
-/**
  * «Присматриваю за колонкой»: копия настроек, обновления, страховка, память. «Открыть» — всё о размещении: на столе —
- * переход в «Колонку», на странице «Компьютер-помощник» (`onOpen`) — блок «Где работает DuoWave» под карточкой, ведь
+ * переход в «Колонку», на странице «Этот компьютер» (`onOpen`) — блок «Где работает DuoWave» под карточкой, ведь
  * пульт колонки вокруг неё видит размещение глазами колонки, а копии, перенос и ошибки обновления — у компьютера.
  */
 export function WatchWidget() {
@@ -638,8 +485,11 @@ export function HelperCardWidget() {
         panelUrl = null;
     }
     const up = home.state === 'up' && home.enabled !== false;
-    // The computer's panel only while the computer answers: a link to a computer that is away leads nowhere.
+    // The computer's panel only while the computer answers: a link to a computer that is away leads nowhere. Neither
+    // the link nor when it opens in the station's panel seen through this computer (`?via=`): that is the computer's
+    // own window — its /panel sends a helper back to it, and its own page there is «Этот компьютер».
     const reachable = home.state === 'up';
+    const computerPanel = !VIA && panelUrl;
     return (
         <div class="flex flex-col gap-8">
             <div class="w-row">
@@ -654,10 +504,10 @@ export function HelperCardWidget() {
                     ? tr.desk.helperUp
                     : tr.desk.helperDown}
             </p>
-            {!reachable && address && <p class="w-cap m-0">{tr.desk.helperAwayStart(address)}</p>}
-            {reachable && panelUrl && (
+            {!reachable && computerPanel && address && <p class="w-cap m-0">{tr.desk.helperAwayStart(address)}</p>}
+            {reachable && computerPanel && (
                 <div class="w-actions">
-                    <a class="w-btn" href={panelUrl} target="_blank" rel="noreferrer">
+                    <a class="w-btn" href={computerPanel} target="_blank" rel="noreferrer">
                         {tr.desk.openComputerPanel}
                     </a>
                 </div>

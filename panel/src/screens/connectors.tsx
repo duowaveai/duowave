@@ -8,7 +8,7 @@ import { timeAgo } from '../time';
 import { BrandMark } from '../ui/brand';
 import { Action } from '../ui/cards';
 import { CheckLine, ContactDraft, ContactsField, EnvNote, SecretField, TextField, contactsInput } from '../ui/fields';
-import { Sheet } from '../ui/sheet';
+import { SaveBar, Sheet, SkeletonRows, WinRow, WinSection } from '../ui/sheet';
 import { Switch } from '../ui/switch';
 import type { SettingsTab } from './mind';
 import { NewsSheet } from './news';
@@ -170,6 +170,7 @@ export function Connectors({
                 <ConnectorSheet
                     id={open}
                     kind={opened?.manifest.kind ?? ''}
+                    title={opened?.manifest.title}
                     onClose={() => setOpen(null)}
                     onChanged={() => void read()}
                 />
@@ -178,8 +179,11 @@ export function Connectors({
     );
 }
 
-/** Лист подключения: новости — свой, остальные — поля, секреты маской, «Сохранить и проверить», «Очистить». */
-function ConnectorSheet({ id, kind, onClose, onChanged }: { id: string; kind: string; onClose: () => void; onChanged: () => void }) {
+/**
+ * Окно подключения: новости — своё, остальные — поля, секреты маской. Одно окно с первого кадра: пока настройки
+ * читаются — скелет на их месте, окно не открывается второй раз.
+ */
+function ConnectorSheet({ id, kind, title, onClose, onChanged }: { id: string; kind: string; title?: string; onClose: () => void; onChanged: () => void }) {
     const [view, setView] = useState<ConnectorSettings | null>(null);
     const [error, setError] = useState<string | null>(null);
     useEffect(() => {
@@ -188,18 +192,12 @@ function ConnectorSheet({ id, kind, onClose, onChanged }: { id: string; kind: st
             .catch((e) => setError(problemOf(e)));
     }, [id]);
     if (id === 'news') return <NewsSheet onClose={onClose} onChanged={onChanged} />;
-    if (!view)
-        return (
-            <Sheet title={tr.connectors.sheetTitle} icon={<ConnectorIcon id={id} kind={kind} />} onClose={onClose}>
-                <p class={`t-meta m-0${error ? ' c-dot-offline' : ''}`} role={error ? 'alert' : undefined}>
-                    {error ?? tr.connectors.readingSettings}
-                </p>
-            </Sheet>
-        );
     return (
         <SettingsForm
-            key={view.id}
+            id={id}
             view={view}
+            loadError={error}
+            title={title}
             kind={kind}
             onClose={onClose}
             onSaved={(fresh) => {
@@ -335,35 +333,82 @@ function contactsOf(values: Record<string, unknown>): ContactDraft[] {
     return list.map((contact, index) => ({ key: `saved-${index}`, name: contact.name, was: contact.name, hint: contact.hint, to: '' }));
 }
 
-function SettingsForm({ view, kind, onClose, onSaved }: { view: ConnectorSettings; kind: string; onClose: () => void; onSaved: (view: ConnectorSettings) => void }) {
-    const spec = specOf(view.id, view.values);
-    const [fields, setFields] = useState<Record<string, string>>(() =>
-        Object.fromEntries(spec.fields.map((field) => [field.name, text(view.values[field.name])])),
-    );
-    const [enabled, setEnabled] = useState(view.values.enabled !== false);
+function SettingsForm({
+    id,
+    view,
+    loadError,
+    title,
+    kind,
+    onClose,
+    onSaved,
+}: {
+    id: string;
+    view: ConnectorSettings | null;
+    loadError: string | null;
+    title?: string;
+    kind: string;
+    onClose: () => void;
+    onSaved: (view: ConnectorSettings) => void;
+}) {
+    const values = view?.values ?? {};
+    const spec = specOf(id, values);
+    const fieldsOf = () => Object.fromEntries(spec.fields.map((field) => [field.name, text(values[field.name])]));
+    const [fields, setFields] = useState<Record<string, string>>(fieldsOf);
     const [secrets, setSecrets] = useState<Record<string, string>>({});
     const [removing, setRemoving] = useState<Record<string, boolean>>({});
-    const [contacts, setContacts] = useState<ContactDraft[]>(() => contactsOf(view.values));
+    const [contacts, setContacts] = useState<ContactDraft[]>(() => contactsOf(values));
     // Чат оповещений не из контактов (перенесён из .env) остаётся, пока не выбран другой.
-    const [alertTo, setAlertTo] = useState(typeof view.values.alertHint === 'string' ? KEEP : text(view.values.alertTo));
+    const alertOf = () => (typeof values.alertHint === 'string' ? KEEP : text(values.alertTo));
+    const [alertTo, setAlertTo] = useState(alertOf);
     const [strangers, setStrangers] = useState<TelegramStranger[]>([]);
     const [busy, setBusy] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const reset = () => {
+        setFields(fieldsOf());
+        setSecrets({});
+        setRemoving({});
+        setContacts(contactsOf(values));
+        setAlertTo(alertOf());
+    };
+    // Настройки пришли — поля встают в их значения (окно то же, без второго открытия).
+    const loaded = view !== null;
+    useEffect(() => {
+        if (loaded) reset();
+    }, [loaded]);
 
     useEffect(() => {
-        if (view.id === 'telegram' && view.available)
+        if (id === 'telegram' && view?.available)
             api.telegramChats()
                 .then(setStrangers)
                 .catch(() => setStrangers([]));
-    }, [view.id]);
+    }, [id, view?.available]);
 
-    // Что изменилось: шлюзу уходит только это.
+    if (!view) {
+        return (
+            <Sheet title={title ?? tr.connectors.sheetTitle} icon={<ConnectorIcon id={id} kind={kind} />} onClose={onClose}>
+                {loadError ? (
+                    <p class="win-callout m-0" role="alert">
+                        {loadError}
+                    </p>
+                ) : (
+                    <>
+                        <div class="flex flex-col gap-8" aria-hidden="true">
+                            <span class="sk sk-line" style={{ width: '92%' }} />
+                            <span class="sk sk-line" style={{ width: '64%' }} />
+                        </div>
+                        <SkeletonRows rows={2} label={tr.connectors.readingSettings} />
+                    </>
+                )}
+            </Sheet>
+        );
+    }
+
+    // Что изменилось: шлюзу уходит только это. «Включено» — сразу, отдельно (переключатель полосы не ждёт).
     const change: Record<string, unknown> = {};
     for (const field of spec.fields) {
         const before = text(view.values[field.name]);
         if (fields[field.name] !== before) change[field.name] = field.numeric ? Number(fields[field.name]) : fields[field.name];
     }
-    if (spec.switchable && enabled !== (view.values.enabled !== false)) change.enabled = enabled;
     for (const secret of spec.secrets) {
         if (removing[secret.name]) change[secret.name] = '';
         else if ((secrets[secret.name] ?? '').trim()) change[secret.name] = secrets[secret.name].trim();
@@ -373,7 +418,7 @@ function SettingsForm({ view, kind, onClose, onSaved }: { view: ConnectorSetting
         const now = contactsInput(contacts);
         if (JSON.stringify(now) !== before) change.contacts = now;
     }
-    if (view.id === 'telegram' && alertTo !== KEEP && alertTo !== text(view.values.alertTo)) change.alertTo = alertTo;
+    if (id === 'telegram' && alertTo !== KEEP && alertTo !== text(view.values.alertTo)) change.alertTo = alertTo;
     const changed = Object.keys(change).length > 0;
 
     const act = async (key: string, work: () => Promise<ConnectorSettings>) => {
@@ -382,8 +427,10 @@ function SettingsForm({ view, kind, onClose, onSaved }: { view: ConnectorSetting
         try {
             const fresh = await work();
             onSaved(fresh);
+            return true;
         } catch (e) {
             setError(problemOf(e));
+            return false;
         } finally {
             setBusy(null);
         }
@@ -393,7 +440,14 @@ function SettingsForm({ view, kind, onClose, onSaved }: { view: ConnectorSetting
             let fresh = changed ? await api.updateConnector(view.id, change) : view;
             if (fresh.status.state !== 'unset' && fresh.status.state !== 'off') fresh = await api.checkConnector(view.id);
             return fresh;
+        }).then((ok) => {
+            if (ok) {
+                setSecrets({});
+                setRemoving({});
+            }
         });
+    const enabled = view.values.enabled !== false;
+    const flip = (on: boolean) => void act('enabled', () => api.updateConnector(view.id, { enabled: on }));
     const clear = async () => {
         const yes = await ask({
             title: tr.connectors.clearTitle(view.title),
@@ -408,142 +462,137 @@ function SettingsForm({ view, kind, onClose, onSaved }: { view: ConnectorSetting
     const pill = statePill()[view.status.state];
     const named = contacts.filter((contact) => contact.name.trim());
     const known = new Set(contacts.map((contact) => contact.stranger).filter(Boolean));
+    const fresh = strangers.filter((stranger) => !known.has(stranger.id));
+
+    // Нижняя полоса: изменили — «Сохранить и проверить»; нет — «Проверить», если есть что проверять.
+    const footer = !view.available ? undefined : changed || busy === 'save' ? (
+        <SaveBar dirty={changed} busy={busy === 'save'} saveLabel={tr.connectors.andCheck(saveLabel())} onRevert={reset} onSave={save} />
+    ) : ready ? (
+        <button class="btn btn-plain" disabled={busy !== null} aria-busy={busy === 'save' || undefined} onClick={save}>
+            {tr.connectors.check}
+        </button>
+    ) : undefined;
 
     return (
         <Sheet
             title={view.title}
-            about={view.status.detail ? `${pill.label} · ${view.status.detail}` : pill.label}
+            meta={
+                <>
+                    <span class={`pill ${pill.cls}`}>{pill.label}</span>
+                    {view.status.detail && <span class="win-chip">{view.status.detail}</span>}
+                </>
+            }
             icon={<ConnectorIcon id={view.id} kind={kind} />}
             onClose={onClose}
-            footer={
-                view.available ? (
-                    <div class="flex gap-8 flex-wrap">
-                        <button
-                            class="pill pill-own dash-confirm-btn"
-                            disabled={busy !== null || (!changed && !ready)}
-                            aria-busy={busy === 'save'}
-                            onClick={save}
-                        >
-                            {busy === 'save' ? (changed ? tr.connectors.saving : tr.connectors.checking) : changed ? tr.connectors.andCheck(saveLabel()) : tr.connectors.check}
-                        </button>
-                        <button class="pill pill-off dash-confirm-btn" onClick={onClose}>
-                            {tr.connectors.close}
-                        </button>
-                    </div>
-                ) : undefined
-            }
+            footer={footer}
         >
-            <p class="t-meta m-0">
-                {spec.about}
-            </p>
+            <p class="win-lead">{spec.about}</p>
             {!view.available ? (
-                <p class="t-meta m-0">
-                    {tr.connectors.noCallsOnStation}
-                </p>
+                <p class="win-callout is-calm m-0">{tr.connectors.noCallsOnStation}</p>
             ) : (
                 <>
                     <EnvNote fromEnv={view.fromEnv} envLeft={view.envLeft} />
                     <CheckLine check={view.check} />
                     {view.busy && (
-                        <p class="t-meta m-0 c-pill-yandex-fg" role="status">
+                        <p class="win-callout m-0" role="status">
                             {tr.connectors.callInProgress}
                         </p>
                     )}
                     {spec.switchable && (
-                        <label class="flex items-center justify-between gap-12 min-h-44">
-                            <span class="flex flex-col">
-                                <b>{tr.connectors.enabled}</b>
-                                <span class="t-caption">{tr.connectors.enabledHint}</span>
-                            </span>
-                            <Switch on={enabled} label={tr.connectors.enabled} onChange={setEnabled} />
-                        </label>
+                        <WinSection group>
+                            <WinRow title={tr.connectors.enabled} sub={tr.connectors.enabledHint}>
+                                <Switch on={enabled} label={tr.connectors.enabled} disabled={busy !== null} onChange={flip} />
+                            </WinRow>
+                        </WinSection>
                     )}
-                    {spec.fields.map((field) => (
-                        <TextField
-                            key={field.name}
-                            label={field.label}
-                            value={fields[field.name] ?? ''}
-                            placeholder={field.placeholder}
-                            hint={field.hint}
-                            inputMode={field.numeric ? 'numeric' : 'url'}
-                            onInput={(value) => setFields((all) => ({ ...all, [field.name]: value }))}
-                        />
-                    ))}
-                    {spec.secrets.map((secret) => (
-                        <SecretField
-                            key={secret.name}
-                            label={secret.label}
-                            mask={view.secrets[secret.name]}
-                            value={secrets[secret.name] ?? ''}
-                            removing={!!removing[secret.name]}
-                            hint={secret.hint}
-                            onInput={(value) => setSecrets((all) => ({ ...all, [secret.name]: value }))}
-                            onRemove={(on) => setRemoving((all) => ({ ...all, [secret.name]: on }))}
-                        />
-                    ))}
+                    {(spec.fields.length > 0 || spec.secrets.length > 0) && (
+                        <section class="win-sec gap-14">
+                            {spec.fields.map((field) => (
+                                <TextField
+                                    key={field.name}
+                                    label={field.label}
+                                    value={fields[field.name] ?? ''}
+                                    placeholder={field.placeholder}
+                                    hint={field.hint}
+                                    inputMode={field.numeric ? 'numeric' : 'url'}
+                                    onInput={(value) => setFields((all) => ({ ...all, [field.name]: value }))}
+                                />
+                            ))}
+                            {spec.secrets.map((secret) => (
+                                <SecretField
+                                    key={secret.name}
+                                    label={secret.label}
+                                    mask={view.secrets[secret.name]}
+                                    value={secrets[secret.name] ?? ''}
+                                    removing={!!removing[secret.name]}
+                                    hint={secret.hint}
+                                    onInput={(value) => setSecrets((all) => ({ ...all, [secret.name]: value }))}
+                                    onRemove={(on) => setRemoving((all) => ({ ...all, [secret.name]: on }))}
+                                />
+                            ))}
+                            {spec.secrets.length > 0 && <p class="win-note">{tr.connectors.secretsNote}</p>}
+                        </section>
+                    )}
                     {spec.contacts && (
-                        <ContactsField
-                            title={spec.contacts.title}
-                            contacts={contacts}
-                            targetLabel={spec.contacts.targetLabel}
-                            targetPlaceholder={spec.contacts.targetPlaceholder}
-                            targetMode={spec.contacts.targetMode}
-                            onChange={setContacts}
-                        />
+                        <section class="win-sec">
+                            <ContactsField
+                                title={spec.contacts.title}
+                                contacts={contacts}
+                                targetLabel={spec.contacts.targetLabel}
+                                targetPlaceholder={spec.contacts.targetPlaceholder}
+                                targetMode={spec.contacts.targetMode}
+                                onChange={setContacts}
+                            />
+                        </section>
                     )}
-                    {view.id === 'telegram' && strangers.some((stranger) => !known.has(stranger.id)) && (
-                        <div class="flex flex-col gap-6">
-                            <span class="t-caption">{byMode(tr.connectors.wroteToBotSpeaker, tr.connectors.wroteToBotOwn)}</span>
-                            {strangers
-                                .filter((stranger) => !known.has(stranger.id))
-                                .map((stranger) => (
-                                    <div key={stranger.id} class="flex items-center gap-8 flex-wrap">
-                                        <span class="flex-1 min-w-0">
-                                            <b>{stranger.name}</b>{' '}
-                                            <span class="t-caption">
-                                                {tr.connectors.chatWithAgo(stranger.hint, timeAgo(stranger.at))}
-                                            </span>
-                                        </span>
-                                        <Action
-                                            label={tr.connectors.add}
-                                            tone="on"
-                                            onClick={() =>
-                                                setContacts((all) => [
-                                                    ...all,
-                                                    { key: `stranger-${stranger.id}`, name: stranger.name.split(' ')[0], hint: stranger.hint, to: '', stranger: stranger.id },
-                                                ])
-                                            }
-                                        />
-                                    </div>
-                                ))}
-                        </div>
+                    {id === 'telegram' && fresh.length > 0 && (
+                        <WinSection title={byMode(tr.connectors.wroteToBotSpeaker, tr.connectors.wroteToBotOwn)} group>
+                            {fresh.map((stranger) => (
+                                <WinRow key={stranger.id} title={stranger.name} sub={tr.connectors.chatWithAgo(stranger.hint, timeAgo(stranger.at))}>
+                                    <button
+                                        class="btn btn-plain btn-sm"
+                                        onClick={() =>
+                                            setContacts((all) => [
+                                                ...all,
+                                                { key: `stranger-${stranger.id}`, name: stranger.name.split(' ')[0], hint: stranger.hint, to: '', stranger: stranger.id },
+                                            ])
+                                        }
+                                    >
+                                        {tr.connectors.add}
+                                    </button>
+                                </WinRow>
+                            ))}
+                        </WinSection>
                     )}
-                    {view.id === 'telegram' && (
-                        <label class="flex flex-col gap-4">
-                            <span class="t-caption">{byMode(tr.connectors.alertsSpeaker, tr.connectors.alertsOwn)}</span>
-                            <select class="field" value={alertTo} onChange={(e) => setAlertTo((e.target as HTMLSelectElement).value)}>
-                                {typeof view.values.alertHint === 'string' && <option value={KEEP}>{tr.connectors.chatNotFromContacts(view.values.alertHint)}</option>}
-                                <option value="">{tr.connectors.nowhere}</option>
-                                {named.map((contact) => (
-                                    <option key={contact.key} value={contact.name.trim()}>
-                                        {contact.name.trim()}
-                                    </option>
-                                ))}
-                            </select>
-                        </label>
+                    {id === 'telegram' && (
+                        <WinSection group>
+                            <div class="win-row is-col">
+                                <span class="win-row-t">{byMode(tr.connectors.alertsSpeaker, tr.connectors.alertsOwn)}</span>
+                                <select class="field" value={alertTo} onChange={(e) => setAlertTo((e.target as HTMLSelectElement).value)}>
+                                    {typeof view.values.alertHint === 'string' && <option value={KEEP}>{tr.connectors.chatNotFromContacts(view.values.alertHint)}</option>}
+                                    <option value="">{tr.connectors.nowhere}</option>
+                                    {named.map((contact) => (
+                                        <option key={contact.key} value={contact.name.trim()}>
+                                            {contact.name.trim()}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                        </WinSection>
                     )}
-                    <p class="t-meta m-0">
-                        {tr.connectors.secretsNote}
-                    </p>
                     {view.stored && (
-                        <span>
-                            <Action label={tr.connectors.clearSettings} busy={busy === 'clear'} disabled={busy !== null} onClick={clear} />
-                        </span>
+                        <WinSection title={tr.ui.danger} group>
+                            <WinRow title={tr.connectors.clearSettings} sub={tr.connectors.clearText}>
+                                <button class="btn btn-danger btn-sm" disabled={busy !== null} aria-busy={busy === 'clear' || undefined} onClick={() => void clear()}>
+                                    {tr.connectors.clear}
+                                </button>
+                            </WinRow>
+                        </WinSection>
                     )}
                 </>
             )}
             {error && (
-                <p role="alert" class="t-meta m-0 c-dot-offline">
+                <p role="alert" class="win-callout m-0">
                     {error}
                 </p>
             )}

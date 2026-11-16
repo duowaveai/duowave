@@ -3,6 +3,7 @@ import type { ComponentChildren } from 'preact';
 import type { ConnectorCheck } from '../api';
 import { timeAgo } from '../time';
 import { Action } from './cards';
+import { IconClose, IconPlus } from '../icons';
 import { byMode } from '../words';
 import { tr } from '../i18n';
 
@@ -25,8 +26,8 @@ export function TextField({
     onInput: (value: string) => void;
 }) {
     return (
-        <label class="flex flex-col gap-4">
-            <span class="t-caption">{label}</span>
+        <label class="flex flex-col gap-6">
+            <span class="win-label">{label}</span>
             <input
                 class="field"
                 type={type}
@@ -37,7 +38,7 @@ export function TextField({
                 value={value}
                 onInput={(e) => onInput((e.target as HTMLInputElement).value)}
             />
-            {hint && <span class="t-meta">{hint}</span>}
+            {hint && <span class="win-hint">{hint}</span>}
         </label>
     );
 }
@@ -68,8 +69,8 @@ export function SecretField({
 }) {
     const state = removing ? tr.ui.secretRemoving : mask?.set ? tr.ui.secretSet(mask.hint ?? '') : tr.ui.secretUnset;
     return (
-        <label class="flex flex-col gap-4">
-            <span class="t-caption flex gap-8 items-center flex-wrap">
+        <label class="flex flex-col gap-6">
+            <span class="win-label flex gap-8 items-center flex-wrap">
                 {label}
                 <span class={`pill ${mask?.set && !removing ? 'pill-own' : 'pill-off'} py-2 px-8`}>
                     {state}
@@ -87,10 +88,12 @@ export function SecretField({
                     onInput={(e) => onInput((e.target as HTMLInputElement).value)}
                 />
                 {mask?.set && (
-                    <Action label={removing ? tr.ui.secretKeep : tr.ui.secretRemove} onClick={() => onRemove(!removing)} />
+                    <button type="button" class="btn btn-quiet btn-sm" onClick={() => onRemove(!removing)}>
+                        {removing ? tr.ui.secretKeep : tr.ui.secretRemove}
+                    </button>
                 )}
             </span>
-            {hint && <span class="t-meta">{hint}</span>}
+            {hint && <span class="win-hint">{hint}</span>}
         </label>
     );
 }
@@ -128,10 +131,10 @@ export function ContactsField({
     const edit = (key: string, change: Partial<ContactDraft>) =>
         onChange(contacts.map((contact) => (contact.key === key ? { ...contact, ...change } : contact)));
     return (
-        <div class="flex flex-col gap-6">
-            <span class="t-caption">{title}</span>
+        <div class="flex flex-col gap-8">
+            <span class="win-label">{title}</span>
             {contacts.length === 0 && (
-                <span class="t-meta">{byMode(tr.ui.contactsEmptySpeaker, tr.ui.contactsEmptyAloud)}</span>
+                <span class="win-hint">{byMode(tr.ui.contactsEmptySpeaker, tr.ui.contactsEmptyAloud)}</span>
             )}
             {contacts.map((contact) => (
                 <div key={contact.key} class="grid grid-pair-36 gap-6 items-center">
@@ -157,23 +160,23 @@ export function ContactsField({
                     )}
                     <button
                         type="button"
-                        class="pill pill-off cursor-pointer w-36 h-36 p-0 inline-flex items-center justify-center fs-18"
+                        class="win-icon-btn"
                         aria-label={tr.ui.contactRemove(contact.name)}
                         title={tr.ui.remove}
                         onClick={() => onChange(contacts.filter((other) => other.key !== contact.key))}
                     >
-                        ×
+                        <IconClose size={16} />
                     </button>
                 </div>
             ))}
             {contacts.some((contact) => contact.hint && !contact.stranger) && (
-                <span class="t-meta">{tr.ui.contactsHintNote}</span>
+                <span class="win-hint">{tr.ui.contactsHintNote}</span>
             )}
             <span>
-                <Action
-                    label={tr.ui.contactAdd}
-                    onClick={() => onChange([...contacts, { key: `new-${Date.now()}`, name: '', to: '' }])}
-                />
+                <button type="button" class="btn btn-plain btn-sm" onClick={() => onChange([...contacts, { key: `new-${Date.now()}`, name: '', to: '' }])}>
+                    <IconPlus size={14} />
+                    {tr.ui.contactAdd}
+                </button>
             </span>
         </div>
     );

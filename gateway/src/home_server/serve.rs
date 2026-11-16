@@ -1,8 +1,10 @@
 //! `/home/v1` on the computer: its own servers for the gateway on the station, OpenAI-compatible, only from the home
 //! network and only with a key that has the right `home.models`. Its recognition and voice servers listen on
-//! 127.0.0.1 and stay closed to the network: this gateway is the one door to them.
+//! 127.0.0.1 and stay closed to the network: this gateway is the one door to them. What it has to give is the built-in
+//! helper's (src/helpers/builtin.rs) — the same parts the computer takes for itself.
 //!
-//! - `/home/v1/status` — what is ready: recognition, our voice, a model of its own;
+//! - `/home/v1/status` — what is ready: recognition, our voice, a model of its own; and in `contract`, what this
+//!   computer gives as a helper, by the helper's contract (helpers/contract.rs: `{version, helper, abilities}`);
 //! - `/home/v1/asr/audio/transcriptions`, `/home/v1/asr/models` — its recognition server, as it is;
 //! - `/home/v1/tts/audio/speech` — the voice it speaks with now, the voice lab's too: Ogg/Opus, ready for a station;
 //! - `/home/v1/llm/chat/completions`, `/home/v1/llm/models` — its own model (the first of «Мозг»'s providers at
@@ -31,9 +33,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::app::App;
 use crate::core::identity::permissions::HOME_MODELS;
+use crate::helpers::builtin::Hearing;
+use crate::helpers::contract::{Ability, Contract};
+use crate::helpers::OwnParts;
 use crate::operations::networks::is_local_url;
 use crate::platform::http::{ApiError, Caller, Zone};
-use crate::speech::asr::local::supervisor::LocalAsr;
 
 /// A minute of speech as WAV is ~2 MB; a request with history for the model, less.
 const BODY_LIMIT: usize = 16 * 1024 * 1024;
@@ -109,17 +113,55 @@ pub fn served_today() -> Value {
     })
 }
 
-fn allowed(caller: &Caller) -> Result<(), ApiError> {
-    caller.zone_at_least(Zone::Home)?;
-    caller.permitted(HOME_MODELS)?;
+/// What a handler needs of its caller besides the right: only the status, or one ability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Needs {
+    Status,
+    Ability(Ability),
+}
+
+/// Who may ask `/home/v1`: a home over the link (stage 7) with the right `home.models` and — for an ability — only
+/// what this computer gives that home (another home's voice only a stock one, `voice_for_others`); anyone else only
+/// from this computer or the home network (a proxied request is judged by its client), with the right. Then the
+/// caller is seen for «Помогаю».
+fn allowed(caller: &Caller, needs: Needs) -> Result<(), ApiError> {
+    let app = caller.app();
+    if let Some(link) = caller.link() {
+        caller.permitted(HOME_MODELS)?;
+        if let Needs::Ability(ability) = needs {
+            let given = app.clients.gives(&link.client, ability)
+                && (ability != Ability::Voice || link.own_home || voice_for_others(app));
+            if !given {
+                return Err(ApiError::forbidden(crate::tr!("Это Турбо не даёт этого вашим шлюзам.")));
+            }
+        }
+    } else {
+        caller.zone_at_least(Zone::Home)?;
+        caller.permitted(HOME_MODELS)?;
+    }
+    app.clients.saw(caller);
     Ok(())
+}
+
+/// Whether another home may hear this computer's voice now (D31): only a stock engine of this computer — Silero or
+/// Piper at a home address —, never «Мой голос», a voice lab's voice or a cloud voice.
+pub(crate) fn voice_for_others(app: &App) -> bool {
+    let Some(own) = app.voice.own_speech() else { return false };
+    let stock = app.voice.own_choice().is_some_and(|pair| matches!(pair.model.as_str(), "silero" | "piper"));
+    stock && is_local_url(Some(&own.base_url()))
+}
+
+/// One answer given: today's «Что даю колонке» and the client's own count.
+fn served(caller: &Caller, which: usize, ability: Ability, started: Instant) {
+    count(which, started);
+    caller.app().clients.served(caller, ability, started);
 }
 
 /// The packages' catalog for the station without internet of its own (docs/plans/plugins.md, stage 9, «через Mac»):
 /// this computer's copy of the feed and its signature — the station checks them with its own key — and the copies of
 /// the extra feeds it names (`feeds: [{url, feed}]`, docs/plans/catalog-feeds.md).
 async fn catalog(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
-    allowed(&caller)?;
+    allowed(&caller, Needs::Ability(Ability::Catalog))?;
     let copy =
         app.catalog.export_for_station().ok_or_else(|| ApiError::not_found(crate::tr!("Копии каталога здесь нет.")))?;
     Ok(axum::Json(copy).into_response())
@@ -137,14 +179,14 @@ async fn catalog_file(
     caller: Caller,
     axum::extract::Query(query): axum::extract::Query<FileQuery>,
 ) -> Result<Response, ApiError> {
-    allowed(&caller)?;
+    allowed(&caller, Needs::Ability(Ability::Catalog))?;
     let bytes = app.catalog.fetch_for_station(&query.url).await?;
     Ok(bytes.into_response())
 }
 
 /// The plugins on here and their versions: what the station may hand over.
 async fn plugins(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
-    allowed(&caller)?;
+    allowed(&caller, Needs::Ability(Ability::Apps))?;
     let view = app.plugins.view().await;
     let on: Vec<Value> = view
         .packages
@@ -162,7 +204,7 @@ async fn plugin_call(
     axum::extract::Path(id): axum::extract::Path<String>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    allowed(&caller)?;
+    allowed(&caller, Needs::Ability(Ability::Apps))?;
     let request: Value =
         serde_json::from_slice(&body).map_err(|_| ApiError::bad_request("JSON: {function, input, kind}"))?;
     let function = request.get("function").and_then(Value::as_str).unwrap_or_default();
@@ -215,14 +257,14 @@ fn peer_of(caller: &Caller) -> String {
 
 /// Of the station's history objects, the ones this computer lacks.
 async fn history_have(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
-    allowed(&caller)?;
+    allowed(&caller, Needs::Ability(Ability::History))?;
     let history = history_of(&app)?;
     Ok(axum::Json(json!({ "missing": history.missing(&ids_of(&body)?) })).into_response())
 }
 
 /// The station's history objects: each kept only when its name is its hash.
 async fn history_objects(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
-    allowed(&caller)?;
+    allowed(&caller, Needs::Ability(Ability::History))?;
     let history = history_of(&app)?;
     let request: Value = serde_json::from_slice(&body).map_err(|_| ApiError::bad_request("JSON: {objects}"))?;
     let objects = request.get("objects").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -232,7 +274,7 @@ async fn history_objects(State(app): State<Arc<App>>, caller: Caller, body: Byte
 
 /// The station's lines and marks: its marks apart, its records into the apps' lines here.
 async fn history_lines(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
-    allowed(&caller)?;
+    allowed(&caller, Needs::Ability(Ability::History))?;
     let history = history_of(&app)?;
     let request: Value = serde_json::from_slice(&body).map_err(|_| ApiError::bad_request("JSON: {apps}"))?;
     let apps = request.get("apps").and_then(Value::as_object).cloned().unwrap_or_default();
@@ -246,7 +288,7 @@ async fn history_lines(State(app): State<Arc<App>>, caller: Caller, body: Bytes)
 
 /// Objects the station cleaned and needs back (a step back, its feed).
 async fn history_fetch(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
-    allowed(&caller)?;
+    allowed(&caller, Needs::Ability(Ability::History))?;
     let history = history_of(&app)?;
     Ok(axum::Json(json!({ "objects": history.give(&ids_of(&body)?) })).into_response())
 }
@@ -260,7 +302,7 @@ fn send_shape() -> String {
 
 /// The names of this computer's Telegram contacts, for the station's «передай …»: no chats.
 async fn messenger_contacts(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
-    allowed(&caller)?;
+    allowed(&caller, Needs::Ability(Ability::Messages))?;
     let bot = &app.calls.telegram;
     if !bot.enabled() {
         return Err(ApiError::unavailable(no_bot()));
@@ -270,7 +312,7 @@ async fn messenger_contacts(State(app): State<Arc<App>>, caller: Caller) -> Resu
 
 /// The station's «передай маме, что …»: a text to a contact of this computer's bot.
 async fn messenger_send(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
-    allowed(&caller)?;
+    allowed(&caller, Needs::Ability(Ability::Messages))?;
     let request: Value = serde_json::from_slice(&body).map_err(|_| ApiError::bad_request(send_shape()))?;
     let field = |name: &str| request.get(name).and_then(Value::as_str).map(str::trim).unwrap_or_default().to_string();
     let (contact, text) = (field("contact"), field("text"));
@@ -279,7 +321,7 @@ async fn messenger_send(State(app): State<Arc<App>>, caller: Caller, body: Bytes
     }
     let started = Instant::now();
     let name = pass_on(&app.calls.telegram, &contact, &text).await?;
-    count(3, started);
+    served(&caller, 3, Ability::Messages, started);
     tracing::info!("home server: a message from the station passed on to «{name}»");
     Ok(axum::Json(json!({ "sent": true, "contact": name })).into_response())
 }
@@ -301,33 +343,10 @@ async fn pass_on(bot: &crate::calls::TelegramMessenger, contact: &str, text: &st
     Ok(found.name)
 }
 
-/// This computer's recognition server, when it is its own (at home): a cloud's is never handed on.
-fn recognition(app: &App) -> Option<(String, Option<String>)> {
-    let asr = &app.config.speech.asr;
-    (asr.enabled && asr.local.is_none() && is_local_url(Some(&asr.base_url)))
-        .then(|| (asr.base_url.trim_end_matches('/').to_string(), asr.api_key.clone()))
-}
-
-/// What hears for the station: this computer's own engine (src/speech/asr/local), or its recognition server.
-enum Hearing {
-    Local(Arc<LocalAsr>),
-    Server(String, Option<String>),
-}
-
+/// What hears for the station: the built-in helper's hearing (helpers/builtin.rs) — this computer's own engine, or its
+/// recognition server at home.
 fn hearing(app: &App) -> Option<Hearing> {
-    if let Some(local) = &app.local_asr {
-        return Some(Hearing::Local(local.clone()));
-    }
-    recognition(app).map(|(base, key)| Hearing::Server(base, key))
-}
-
-/// Whether the station may lean on this computer's hearing now: the own engine once its model is in.
-fn hears(app: &App) -> bool {
-    match hearing(app) {
-        Some(Hearing::Local(local)) => local.ready(),
-        Some(Hearing::Server(..)) => true,
-        None => false,
-    }
+    app.builtin.hearing().cloned()
 }
 
 /// The parts of a multipart/form-data body by name (what an OpenAI-compatible client sends: `file`, `model`,
@@ -374,37 +393,71 @@ fn form_parts(headers: &HeaderMap, body: &[u8]) -> Vec<(String, Vec<u8>)> {
     parts
 }
 
-/// This computer's own model: the first OpenAI-compatible provider of «Мозг» at home, and its key.
+/// This computer's own model: the built-in helper's (helpers/builtin.rs) — the first OpenAI-compatible provider of
+/// «Мозг» at home, and its key, never a helper's model: a computer does not pass a station's questions on to another
+/// helper, nor to a link's bridge.
 fn own_model(app: &App) -> Option<(String, Option<String>)> {
-    let rows: Vec<(String, String)> = app
-        .db
-        .with(|connection| {
-            connection
-                .prepare(
-                    "SELECT id, base_url FROM llm_providers WHERE kind = 'openai' AND base_url IS NOT NULL
-                     ORDER BY created_at, rowid",
-                )?
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect()
-        })
-        .ok()?;
-    rows.into_iter()
-        .find(|(_, url)| is_local_url(Some(url)))
-        .map(|(id, url)| (url.trim_end_matches('/').to_string(), app.secrets.get(&format!("llm:{id}:key"))))
+    app.builtin.model_route()
+}
+
+/// The language of a Piper voice by its id: «piper/ru_RU-irina-medium» — «ru». Other voices say none. The built-in
+/// helper's contract says it of its voice.
+pub(crate) fn piper_language(pair: &str) -> Option<String> {
+    let voice = pair.rsplit('/').next()?;
+    let [locale, _name, _quality] = voice.split('-').collect::<Vec<_>>()[..] else { return None };
+    let (language, region) = locale.split_once('_')?;
+    let letters = |part: &str, upper: bool| {
+        (2..=3).contains(&part.len())
+            && part.chars().all(|c| if upper { c.is_ascii_uppercase() } else { c.is_ascii_lowercase() })
+    };
+    (letters(language, false) && letters(region, true)).then(|| language.to_string())
+}
+
+/// What this computer serves now as a helper — the contract of `/home/v1/status` (helpers/contract.rs): the built-in
+/// helper's (helpers/builtin.rs), one answer for the gateways it helps and for itself.
+pub(crate) fn contract(app: &App) -> Contract {
+    app.builtin.contract()
+}
+
+/// What a home over the link is given (stage 7): its abilities, and whether its home key proved it this computer's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Given {
+    pub abilities: crate::helpers::contract::Abilities,
+    pub own_home: bool,
+}
+
+/// What is ready here, for the station: the fields a station of 0.11 and before reads, and the contract they are
+/// worked out of — one look at the parts. The contract says this computer speaks the link while it helps; a home
+/// over the link sees only what it is given, and another home's voice ready only when it is a stock one.
+pub(crate) fn status_of(app: &App, given: Option<Given>) -> Value {
+    let mut contract = contract(app);
+    if app.link.helps() {
+        contract.link = Some(crate::helpers::link::VERSION);
+    }
+    if let Some(given) = given {
+        contract.abilities.retain(|state| given.abilities.has(state.id));
+        if !given.own_home && !voice_for_others(app) {
+            for state in contract.abilities.iter_mut().filter(|state| state.id == Ability::Voice) {
+                state.ready = false;
+            }
+        }
+    }
+    let voice = contract.get(Ability::Voice).and_then(|voice| voice.details.get("voice")).cloned();
+    json!({
+        "version": crate::VERSION,
+        "peerApi": crate::core::build::PEER_API,
+        "asr": contract.ready(Ability::Hearing),
+        "tts": contract.declares(Ability::Voice),
+        "voice": voice,
+        "llm": contract.declares(Ability::Model),
+        "contract": contract,
+    })
 }
 
 async fn status(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
-    allowed(&caller)?;
-    let voice = app.voice.own_choice().map(|pair| format!("{}/{}", pair.model, pair.voice));
-    Ok(axum::Json(json!({
-        "version": crate::VERSION,
-        "peerApi": crate::core::build::PEER_API,
-        "asr": hears(&app),
-        "tts": app.voice.own_speech().is_some(),
-        "voice": voice,
-        "llm": own_model(&app).is_some(),
-    }))
-    .into_response())
+    allowed(&caller, Needs::Status)?;
+    let given = caller.link().map(|link| Given { abilities: app.clients.given(&link.client), own_home: link.own_home });
+    Ok(axum::Json(status_of(&app, given)).into_response())
 }
 
 /// A request handed on as it came, its answer handed back as it comes (a model's stream too).
@@ -448,7 +501,7 @@ async fn transcribe(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    allowed(&caller)?;
+    allowed(&caller, Needs::Ability(Ability::Hearing))?;
     let hearing = hearing(&app)
         .ok_or_else(|| ApiError::unavailable(crate::tr!("На этом компьютере нет своего распознавания.")))?;
     let started = Instant::now();
@@ -471,7 +524,7 @@ async fn transcribe(
                         crate::tr!("Распознавание этого компьютера: {error}", error = format!("{error:#}")),
                     )
                 })?;
-            count(0, started);
+            served(&caller, 0, Ability::Hearing, started);
             return Ok(axum::Json(json!({ "text": text })).into_response());
         }
     };
@@ -486,13 +539,13 @@ async fn transcribe(
     )
     .await?;
     if answer.status().is_success() {
-        count(0, started);
+        served(&caller, 0, Ability::Hearing, started);
     }
     Ok(answer)
 }
 
 async fn asr_models(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
-    allowed(&caller)?;
+    allowed(&caller, Needs::Ability(Ability::Hearing))?;
     let (base, key) = match hearing(&app) {
         None => return Err(ApiError::unavailable(crate::tr!("На этом компьютере нет своего распознавания."))),
         // The one model the engine serves, as an OpenAI-compatible server lists it.
@@ -507,7 +560,7 @@ async fn asr_models(State(app): State<Arc<App>>, caller: Caller) -> Result<Respo
 
 /// The voice this computer speaks with now, whatever the station asked: Ogg/Opus.
 async fn speak(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
-    allowed(&caller)?;
+    allowed(&caller, Needs::Ability(Ability::Voice))?;
     let request: Value =
         serde_json::from_slice(&body).map_err(|_| ApiError::bad_request(crate::tr!("input: текст")))?;
     let text = request.get("input").and_then(Value::as_str).unwrap_or("").to_string();
@@ -519,6 +572,11 @@ async fn speak(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Resu
         .own_speech()
         .cloned()
         .ok_or_else(|| ApiError::unavailable(crate::tr!("На этом компьютере нет своего голоса.")))?;
+    // Its voice at a cloud's address while the regulator keeps the clouds in: the text stays home (a station of 0.11
+    // reads only `tts`).
+    if app.builtin.voice_kept_in() {
+        return Err(ApiError::unavailable(crate::tr!("Регулятор не пускает облако")));
+    }
     let started = Instant::now();
     let spoken = own.synthesize(&text, &CancellationToken::new()).await.map_err(|error| {
         ApiError::new(
@@ -526,7 +584,7 @@ async fn speak(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Resu
             crate::tr!("Голос этого компьютера: {error}", error = format!("{error:#}")),
         )
     })?;
-    count(1, started);
+    served(&caller, 1, Ability::Voice, started);
     Ok(([(header::CONTENT_TYPE, "audio/ogg")], spoken.audio).into_response())
 }
 
@@ -536,7 +594,7 @@ async fn chat(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    allowed(&caller)?;
+    allowed(&caller, Needs::Ability(Ability::Model))?;
     let (base, key) =
         own_model(&app).ok_or_else(|| ApiError::unavailable(crate::tr!("На этом компьютере нет своей модели.")))?;
     let started = Instant::now();
@@ -551,13 +609,13 @@ async fn chat(
     .await?;
     // A stream counts by its first word: how soon the model began to answer.
     if answer.status().is_success() {
-        count(2, started);
+        served(&caller, 2, Ability::Model, started);
     }
     Ok(answer)
 }
 
 async fn llm_models(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
-    allowed(&caller)?;
+    allowed(&caller, Needs::Ability(Ability::Model))?;
     let (base, key) =
         own_model(&app).ok_or_else(|| ApiError::unavailable(crate::tr!("На этом компьютере нет своей модели.")))?;
     forward(reqwest::Method::GET, format!("{base}/models"), key, None, None, Duration::from_secs(10)).await
@@ -591,6 +649,7 @@ mod tests {
     use super::*;
     use crate::calls::TelegramMessenger;
     use crate::config::{Config, Env, TelegramConfig};
+    use crate::helpers::contract::{HelperIdentity, HelperStatus};
 
     /// The computer's gateway, its .env with these; its bot never started (no Telegram here).
     fn computer(vars: &[(&str, &str)]) -> Arc<App> {
@@ -620,6 +679,178 @@ mod tests {
 
     const CONTACTS: &str = "/home/v1/messenger/contacts";
     const SEND: &str = "/home/v1/messenger/send";
+    const STATUS: &str = "/home/v1/status";
+
+    #[test]
+    fn a_piper_voice_says_its_language_and_the_other_voices_none() {
+        assert_eq!(piper_language("piper/ru_RU-irina-medium").as_deref(), Some("ru"));
+        assert_eq!(piper_language("piper/en_US-amy-medium").as_deref(), Some("en"));
+        assert_eq!(piper_language("silero/baya"), None);
+        assert_eq!(piper_language("piper/denis"), None, "a voice by its name alone");
+        assert_eq!(piper_language("omnivoice/3f2a9c1e-77b0-4c1d-9a55-0c1d2e3f4a5b"), None, "a voice lab's id");
+        assert_eq!(piper_language("piper/RU_ru-irina-medium"), None);
+    }
+
+    #[tokio::test]
+    async fn the_computer_answers_its_status_with_the_contract_and_the_old_fields() {
+        let app = computer(&[
+            ("ASR_BASE_URL", "http://127.0.0.1:8090/v1"),
+            ("ASR_LANGUAGE", "ru"),
+            ("TTS_OWN_URL", "http://127.0.0.1:8091/v1"),
+            ("TTS_OWN_MODEL", "piper"),
+            ("TTS_OWN_VOICE", "ru_RU-irina-medium"),
+        ]);
+        let station = key(&app, &["home.models"]);
+        let (status, body) = send(&app, "GET", STATUS, Some(&station), Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        // The fields a station of 0.11 reads, as they were.
+        assert_eq!(
+            (&body["version"], &body["peerApi"]),
+            (&json!(crate::VERSION), &json!(crate::core::build::PEER_API))
+        );
+        assert_eq!((&body["asr"], &body["tts"], &body["llm"]), (&json!(true), &json!(true), &json!(false)));
+        assert_eq!(body["voice"], "piper/ru_RU-irina-medium");
+
+        // And what it gives as a helper, by the contract.
+        assert_eq!(body["contract"]["version"], 1);
+        let read = HelperStatus::read(&body).unwrap();
+        assert_eq!(read.program.as_deref(), Some(crate::VERSION));
+        let contract = &read.contract;
+        assert_eq!(serde_json::to_value(contract).unwrap(), body["contract"], "read as it was written");
+        // This gateway as a helper: its own id and name (core/identity/home.rs), made at its start.
+        let me = app.identity.gateway().expect("made at the start");
+        assert_eq!((contract.helper.id.as_str(), contract.helper.name.as_str()), (me.id.as_str(), me.name.as_str()));
+        let hearing = contract.get(Ability::Hearing).unwrap();
+        assert!(hearing.ready, "its recognition server");
+        assert_eq!(hearing.details, Map::from_iter([("languages".to_string(), json!(["ru"]))]));
+        let voice = contract.get(Ability::Voice).unwrap();
+        assert!(voice.ready);
+        assert_eq!(voice.details["voice"], "piper/ru_RU-irina-medium");
+        assert_eq!(voice.details["languages"], json!(["ru"]));
+        assert!(!contract.declares(Ability::Model), "no model of its own");
+        assert!(contract.declares(Ability::Messages) && !contract.ready(Ability::Messages), "no bot set up here");
+        assert!(contract.ready(Ability::Apps));
+        assert_eq!(contract.declares(Ability::History), app.history.is_some());
+        assert!(!contract.declares(Ability::Catalog), "no feed here (no PACKAGES_FEED_URL, none built in): no copy");
+        reads_the_same_without_the_contract(&body);
+
+        // A model of its own at home, an id and a name of its own: the contract says them, the old field too.
+        app.db
+            .with(|c| {
+                c.execute(
+                    "INSERT INTO llm_providers (id, preset, kind, title, base_url, created_at, updated_at)
+                     VALUES ('ollama', 'ollama', 'openai', 'Ollama', 'http://127.0.0.1:11434/v1', ?1, ?1)",
+                    ["2026-11-15T10:00:00.000Z"],
+                )
+            })
+            .unwrap();
+        app.identity.rename(Some("Кабинет"), None).unwrap();
+        let (_, body) = send(&app, "GET", STATUS, Some(&station), Value::Null).await;
+        assert_eq!(body["llm"], true);
+        let read = HelperStatus::read(&body).unwrap().contract;
+        assert!(read.ready(Ability::Model));
+        assert_eq!(read.helper, HelperIdentity { id: me.id.clone(), name: "Кабинет".into() });
+        reads_the_same_without_the_contract(&body);
+
+        // The contract is behind the same door as the rest of /home/v1.
+        let (status, _) = send(&app, "GET", STATUS, None, Value::Null).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    /// The answer read again without its `contract`, as a computer of 0.11 answers it: version 0 with the parts the
+    /// contract declares — hearing, voice, the model and the apps as ready, the voice by its name — and the messages.
+    /// What version 0 cannot know is left out: whether the bot is set up (its contacts' read says it), the history and
+    /// the catalog (taken by the release).
+    fn reads_the_same_without_the_contract(body: &Value) {
+        let read = HelperStatus::read(body).unwrap().contract;
+        let mut old = body.clone();
+        old.as_object_mut().unwrap().remove("contract");
+        let old = HelperStatus::read(&old).unwrap().contract;
+        assert_eq!(old.version, 0);
+        for ability in [Ability::Hearing, Ability::Voice, Ability::Model, Ability::Apps] {
+            let both = |contract: &Contract| (contract.declares(ability), contract.ready(ability));
+            assert_eq!(both(&old), both(&read), "{ability:?} in {body}");
+        }
+        let voice =
+            |contract: &Contract| contract.get(Ability::Voice).and_then(|voice| voice.details.get("voice")).cloned();
+        assert_eq!(voice(&old), voice(&read));
+        assert!(old.declares(Ability::Messages) && read.declares(Ability::Messages));
+    }
+
+    #[tokio::test]
+    async fn a_computer_without_a_voice_or_a_model_of_its_own_declares_neither_and_so_reads_without_the_contract() {
+        // Its recognition server (ASR_BASE_URL at home by default), no TTS_OWN_URL, no model at home.
+        let app = computer(&[]);
+        let station = key(&app, &["home.models"]);
+        let (status, body) = send(&app, "GET", STATUS, Some(&station), Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            (&body["asr"], &body["tts"], &body["voice"], &body["llm"]),
+            (&json!(true), &json!(false), &Value::Null, &json!(false))
+        );
+        let contract = HelperStatus::read(&body).unwrap().contract;
+        assert!(contract.ready(Ability::Hearing));
+        assert!(!contract.declares(Ability::Voice) && !contract.declares(Ability::Model), "{body}");
+        reads_the_same_without_the_contract(&body);
+    }
+
+    #[tokio::test]
+    async fn a_computer_whose_own_engine_still_loads_its_model_declares_hearing_not_ready_yet() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::from_pairs([("STATE_DIR", "")]);
+        let mut config = Config::for_tests(&env);
+        // Its own engine, never started here: the model not in.
+        config.speech.asr.local =
+            Some(crate::config::LocalAsrConfig { dir: dir.path().to_path_buf(), mirror: None, gpu: false });
+        let app = App::build(config).unwrap();
+        let station = key(&app, &["home.models"]);
+        let (status, body) = send(&app, "GET", STATUS, Some(&station), Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["asr"], false, "a station of 0.11 leans on it once the model is in");
+        let contract = HelperStatus::read(&body).unwrap().contract;
+        let hearing = contract.get(Ability::Hearing).unwrap();
+        assert!(!hearing.ready);
+        let model = app.local_asr.as_ref().unwrap().model();
+        let known = crate::speech::asr::local::catalog::find(&model).unwrap();
+        let details = [("model".to_string(), json!(model)), ("languages".to_string(), json!(known.languages))];
+        assert_eq!(hearing.details, Map::from_iter(details));
+        reads_the_same_without_the_contract(&body);
+    }
+
+    #[tokio::test]
+    async fn the_contract_says_the_bot_once_it_is_set_up_and_the_catalog_once_there_is_a_copy_for_the_station() {
+        const FEED: &str = "https://packages.example.invalid/catalog.json";
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().to_str().unwrap();
+        let app = computer(&[
+            ("DATA_DIR", data),
+            ("PLUGINS_BUNDLED", "false"),
+            ("TELEGRAM_BOT_TOKEN", "123:test"),
+            ("PACKAGES_FEED_URL", FEED),
+        ]);
+        let station = key(&app, &["home.models"]);
+        let (_, body) = send(&app, "GET", STATUS, Some(&station), Value::Null).await;
+        let contract = HelperStatus::read(&body).unwrap().contract;
+        assert!(contract.ready(Ability::Messages), "its bot is set up");
+        assert!(!contract.declares(Ability::Catalog), "its feed is named, not read yet");
+        let (status, _) = send(&app, "GET", "/home/v1/catalog", Some(&station), Value::Null).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        reads_the_same_without_the_contract(&body);
+
+        // The feed read once (its copy and the note of whose copy it is): the station may take the catalog from here.
+        let folder = &app.config.plugins.catalog_dir;
+        std::fs::create_dir_all(folder).unwrap();
+        std::fs::write(folder.join("catalog.json"), r#"{"format":1,"packages":[]}"#).unwrap();
+        let state = json!({ "url": FEED, "fetchedAt": "2026-11-15T10:00:00.000Z" });
+        std::fs::write(folder.join("state.json"), state.to_string()).unwrap();
+        let (_, body) = send(&app, "GET", STATUS, Some(&station), Value::Null).await;
+        assert!(HelperStatus::read(&body).unwrap().contract.ready(Ability::Catalog), "{body}");
+        let (status, copy) = send(&app, "GET", "/home/v1/catalog", Some(&station), Value::Null).await;
+        assert_eq!(
+            (status, &copy["url"], &copy["feed"]),
+            (StatusCode::OK, &json!(FEED), &json!(r#"{"format":1,"packages":[]}"#))
+        );
+    }
 
     #[tokio::test]
     async fn the_station_reads_the_bots_contacts_by_name_only_with_its_key() {
@@ -660,6 +891,153 @@ mod tests {
         let message = json!({ "contact": "мама", "text": "Я задержусь" });
         let (status, body) = send(&app, "POST", SEND, Some(&station), message).await;
         assert_eq!((status, body["message"].as_str()), (StatusCode::SERVICE_UNAVAILABLE, Some(no_bot().as_str())));
+    }
+
+    /// A home's request over the link: its client and whether its home key proved it this computer's own.
+    async fn over_link(
+        app: &Arc<App>,
+        method: &str,
+        uri: &str,
+        client: &str,
+        own_home: bool,
+        body: Value,
+    ) -> (StatusCode, Value) {
+        let mut request = Request::builder().method(method).uri(uri).header("content-type", "application/json");
+        request = request.header("authorization", "Bearer anything");
+        let mut request = request.body(HttpBody::from(body.to_string())).unwrap();
+        request.extensions_mut().insert(ConnectInfo(SocketAddr::new("127.0.0.1".parse().unwrap(), 5000)));
+        request.extensions_mut().insert(crate::platform::http::LinkOrigin {
+            client: client.to_string(),
+            own_home,
+            home: HelperIdentity { id: "home-1".into(), name: "Дача".into() },
+            gateway: HelperIdentity { id: "gw-1".into(), name: "Колонка".into() },
+        });
+        let response = crate::app::router(app.clone()).oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    /// A home paired with this computer: its client id.
+    fn client(app: &App, own_home: bool) -> String {
+        let (id, _) = app.clients.pair("home-1", "gw-1", own_home, None).unwrap();
+        assert!(app.clients.confirm(&id, crate::helpers::clients::Names::default()));
+        id
+    }
+
+    fn voice_ready(body: &Value) -> Option<bool> {
+        let contract = HelperStatus::read(body).unwrap().contract;
+        contract.get(Ability::Voice).map(|voice| voice.ready)
+    }
+
+    #[tokio::test]
+    async fn another_home_hears_nothing_of_the_owners_own_voice() {
+        let speech = json!({ "input": "Привет" });
+        // The owner's voice at a cloud address: never another home's.
+        let app = computer(&[
+            ("TTS_OWN_URL", "https://tts.example.invalid/v1"),
+            ("TTS_OWN_MODEL", "piper"),
+            ("TTS_OWN_VOICE", "ru_RU-irina-medium"),
+        ]);
+        assert!(!voice_for_others(&app));
+        let other = client(&app, false);
+        let (status, body) = over_link(&app, "GET", STATUS, &other, false, Value::Null).await;
+        assert_eq!((status, voice_ready(&body)), (StatusCode::OK, Some(false)), "{body}");
+        let (status, body) = over_link(&app, "POST", "/home/v1/tts/audio/speech", &other, false, speech.clone()).await;
+        assert_eq!(
+            (status, body["message"].as_str()),
+            (StatusCode::FORBIDDEN, Some("Это Турбо не даёт этого вашим шлюзам."))
+        );
+        // Its own home hears it.
+        let own = client(&app, true);
+        let (_, body) = over_link(&app, "GET", STATUS, &own, true, Value::Null).await;
+        assert_eq!(voice_ready(&body), Some(true));
+        let (status, _) = over_link(&app, "POST", "/home/v1/tts/audio/speech", &own, true, speech.clone()).await;
+        assert_ne!(status, StatusCode::FORBIDDEN);
+        // A voice of the voice lab's engine, even at home: the owner's own.
+        let app = computer(&[
+            ("TTS_OWN_URL", "http://127.0.0.1:9/v1"),
+            ("TTS_OWN_MODEL", "omnivoice"),
+            ("TTS_OWN_VOICE", "3f2a9c1e"),
+        ]);
+        assert!(!voice_for_others(&app));
+        // A stock voice of this computer: served to another home too (the server here does not answer: 502, not 403).
+        let app = computer(&[
+            ("TTS_OWN_URL", "http://127.0.0.1:9/v1"),
+            ("TTS_OWN_MODEL", "piper"),
+            ("TTS_OWN_VOICE", "ru_RU-irina-medium"),
+        ]);
+        assert!(voice_for_others(&app));
+        let other = client(&app, false);
+        let (_, body) = over_link(&app, "GET", STATUS, &other, false, Value::Null).await;
+        assert_eq!(voice_ready(&body), Some(true));
+        let (status, _) = over_link(&app, "POST", "/home/v1/tts/audio/speech", &other, false, speech).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+    }
+
+    /// The built-in helper's voice at a cloud's address (stage 6) over the link: its own home hears it only while the
+    /// regulator lets the clouds out — «Только дома» keeps the text home for its own home too: the status says the
+    /// voice not ready, and the voice refuses in the regulator's words, not the link's.
+    #[tokio::test]
+    async fn the_regulator_keeps_the_computers_cloud_voice_from_its_own_home_over_the_link_too() {
+        let app = computer(&[
+            ("TTS_OWN_URL", "https://tts.example.invalid/v1"),
+            ("TTS_OWN_MODEL", "piper"),
+            ("TTS_OWN_VOICE", "ru_RU-irina-medium"),
+        ]);
+        let own = client(&app, true);
+        let (_, body) = over_link(&app, "GET", STATUS, &own, true, Value::Null).await;
+        assert_eq!(voice_ready(&body), Some(true), "«Любые облака»");
+        app.helpers.set_away(crate::helpers::Away::Home, None).unwrap();
+        let (_, body) = over_link(&app, "GET", STATUS, &own, true, Value::Null).await;
+        assert_eq!(voice_ready(&body), Some(false), "{body}");
+        let speech = json!({ "input": "Привет" });
+        let (status, body) = over_link(&app, "POST", "/home/v1/tts/audio/speech", &own, true, speech).await;
+        assert_eq!(
+            (status, body["message"].as_str()),
+            (StatusCode::SERVICE_UNAVAILABLE, Some("Регулятор не пускает облако"))
+        );
+    }
+
+    #[tokio::test]
+    async fn every_route_names_what_it_needs() {
+        let app = computer(&[("TTS_OWN_URL", "http://127.0.0.1:9/v1"), ("TTS_OWN_MODEL", "piper")]);
+        let nothing = client(&app, false);
+        app.clients.set_gives(&nothing, Vec::new(), None).unwrap();
+        let routes = [
+            ("POST", "/home/v1/asr/audio/transcriptions"),
+            ("POST", "/home/v1/audio/transcriptions"),
+            ("GET", "/home/v1/asr/models"),
+            ("POST", "/home/v1/tts/audio/speech"),
+            ("POST", "/home/v1/audio/speech"),
+            ("POST", "/home/v1/llm/chat/completions"),
+            ("POST", "/home/v1/chat/completions"),
+            ("GET", "/home/v1/llm/models"),
+            ("GET", "/home/v1/models"),
+            ("GET", "/home/v1/plugins"),
+            ("GET", "/home/v1/catalog"),
+            ("GET", "/home/v1/catalog/file?url=https://packages.example.invalid/a.tgz"),
+            ("POST", "/home/v1/plugins/weather/call"),
+            ("GET", "/home/v1/messenger/contacts"),
+            ("POST", "/home/v1/messenger/send"),
+            ("POST", "/home/v1/history/have"),
+            ("POST", "/home/v1/history/objects"),
+            ("POST", "/home/v1/history/lines"),
+            ("POST", "/home/v1/history/fetch"),
+        ];
+        for (method, uri) in routes {
+            let (status, body) = over_link(&app, method, uri, &nothing, false, json!({})).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {body}");
+            assert_eq!(body["message"], "Это Турбо не даёт этого вашим шлюзам.", "{method} {uri}");
+        }
+        // The status only says what it gives: nothing.
+        let (status, body) = over_link(&app, "GET", STATUS, &nothing, false, Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        let contract = HelperStatus::read(&body).unwrap().contract;
+        assert!(contract.abilities.is_empty() && contract.link == Some(crate::helpers::link::VERSION), "{body}");
+        // An unknown client is given nothing either; and a link caller is outside, never this computer.
+        let (status, _) = over_link(&app, "GET", "/home/v1/plugins", "link:000000000000", false, Value::Null).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
     /// A Bot API server of our own: what was sent to it; `refuse` answers 400 as Telegram does to a bad chat.

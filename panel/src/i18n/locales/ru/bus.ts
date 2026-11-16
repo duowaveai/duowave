@@ -119,6 +119,7 @@ export default {
     readingJournal: 'Читаю журнал…',
     noLetters: 'Писем пока не было.',
     linksError: (error: string) => `Связи: ${error}`,
+    linksWho: 'Кого зовёт и кто зовёт его',
     links: 'Связи',
     talksToOthers: 'Общается с другими',
     likeHome: 'Как у дома',

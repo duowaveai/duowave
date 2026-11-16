@@ -1,4 +1,6 @@
 //! The core: pure types and rules every module shares — events, identity and rights, requests, settings, presence.
+//! One part keeps state, where docs/plans/home-and-helpers.md puts it: who this gateway is (identity/home.rs,
+//! `Identity`) — its home and itself, kept in the settings and the secrets.
 
 pub mod availability;
 pub mod build;

@@ -136,6 +136,67 @@
 .wk-widget-lines .w-text,
 .wk-widget-lines .w-cap { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* «Работы» сверху: сводка и вход в «Рабочие папки»; «Новая работа» и формы папок. */
+.wk-top { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; }
+.wk-top button.pill { min-height: 32px; padding: 0 14px; }
+.wf-form { display: flex; flex-direction: column; gap: 12px; padding: 8px 0 4px; }
+.wf-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.wf-usd { max-width: 240px; }
+.wf-lines { width: 100%; min-height: 52px; resize: vertical; font: 400 12px/1.5 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
+.wf-warn { padding: 10px 12px; border-radius: 12px; background: var(--strong-bg); box-shadow: 0 0 0 1px var(--glass-border); }
+.wf-folder { padding: 10px 0; }
+.wf-folder-head { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.wf-folder-head > .wk-dot { margin-top: 6px; }
+.wf-folder-head .wk-actions { flex: none; }
+.wf-path { display: block; color: var(--sub); }
+.wf-claude { display: flex; flex-direction: column; gap: 12px; padding: 4px 0 4px 18px; }
+.wf-auth { margin: 0; padding: 0; border: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.wf-auth legend { padding: 0 0 4px; }
+.wf-radio { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; font-size: 13px; line-height: 18px; }
+.wf-radio input { margin-top: 2px; flex: none; }
+.wf-radio > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.wf-path-row { display: flex; gap: 8px; align-items: center; }
+.wf-path-row .field { flex: 1; min-width: 0; }
+
+/* Вкладка «Журнал» работы в папке: запуски, отбор, шаги; шаги помощника агента — с отступом. */
+.wj-runs { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0 4px; }
+.wj-runs button.pill { min-height: 30px; padding: 0 12px; }
+.wj-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 8px 0; }
+.wj-check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; line-height: 18px; cursor: pointer; }
+.wj-find { flex: 1; min-width: 160px; }
+.wj-live { padding-bottom: 4px; }
+.wj-steps { list-style: none; margin: 0; padding: 0; }
+.wj-step { display: flex; align-items: baseline; gap: 10px; padding: 7px 0; font-size: 13px; line-height: 18px; }
+.wj-step + .wj-step { border-top: 1px solid var(--row-line, var(--divider)); }
+.wj-step.is-nested { padding-left: 22px; }
+.wj-step.is-trouble .wj-line { color: var(--dot-offline); }
+.wj-step-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.wj-line { overflow-wrap: anywhere; }
+.wj-step.is-tool .wj-line,
+.wj-step.is-chore .wj-line { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.wj-sub-agent { color: var(--sub); }
+.wj-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.wj-thought { color: var(--sub); font-style: italic; }
+.wj-plan { margin: 0; padding-left: 18px; color: var(--sub); }
+.wj-plan .is-completed { text-decoration: line-through; }
+.wj-plan .is-in_progress { color: var(--text); }
+.wj-more summary { cursor: pointer; font-size: 12px; line-height: 16px; color: var(--sub); }
+.wj-more pre {
+    margin: 6px 0 0;
+    max-height: 280px;
+    overflow: auto;
+    padding: 8px 12px;
+    border-radius: 12px;
+    background: var(--field-bg);
+    box-shadow: 0 0 0 1px var(--glass-border);
+    font: 400 12px/1.5 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.wj-diff { display: flex; flex-direction: column; gap: 4px; padding-top: 6px; }
+.wj-more pre.wj-was { box-shadow: inset 3px 0 0 var(--dot-offline), 0 0 0 1px var(--glass-border); }
+.wj-more pre.wj-now { box-shadow: inset 3px 0 0 var(--bar-own), 0 0 0 1px var(--glass-border); }
+
 @media (max-width: 560px) {
     .wk-model { display: none; }
     .wk-head .wk-model { display: inline-flex; }
@@ -143,4 +204,10 @@
     .wk-answers { padding-left: 0; }
     .wk-deal { flex-wrap: wrap; }
     .wk-deal .wk-row-main { flex-basis: calc(100% - 60px); }
+    .wf-pair { grid-template-columns: minmax(0, 1fr); }
+    .wf-folder-head { flex-wrap: wrap; }
+    .wf-folder-head .wk-actions { flex-basis: 100%; padding-left: 18px; }
+    .wf-claude { padding-left: 0; }
+    .wf-path-row { flex-wrap: wrap; }
+    .wj-step.is-nested { padding-left: 12px; }
 }

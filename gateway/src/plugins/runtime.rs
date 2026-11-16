@@ -57,7 +57,7 @@ impl std::fmt::Display for PluginError {
         match self {
             PluginError::Load(why) => f.write_str(&crate::tr!("код не загрузился: {why}", why = why)),
             PluginError::Timeout(ms) => f.write_str(&crate::tr!("не уложился в {ms} мс", ms = ms)),
-            PluginError::Memory(mb) => f.write_str(&crate::tr!("превысил свою память ({mb} МБ)", mb = mb)),
+            PluginError::Memory(mb) => f.write_str(&crate::tr!("превысил свой предел ОЗУ ({mb} МБ)", mb = mb)),
             PluginError::Missing(name) => f.write_str(&crate::tr!("нет функции {name} в backend.js", name = name)),
             PluginError::Script(text)
             | PluginError::Answer(text)

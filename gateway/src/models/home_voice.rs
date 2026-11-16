@@ -1,11 +1,12 @@
-//! The station's «Голос» while the computer gives it its voice (docs/plans/desk-after-station.md, В): the station's
-//! build has no model shop, so its panel's window offers «Голос компьютера (имя) / Алиса» here —
-//! `GET|POST /api/v1/models/home-voice`. Without the computer, with a cloud voice set up (src/speech/cloud_speech.rs,
-//! docs/plans/speaker-alone.md): «Облачный голос / Алиса». The choice is the station's own (`tts_provider`, each side's own in
-//! src/placement/transfer.rs); a move with the computer as the station's server brings the computer's.
+//! The station's «Голос» while a helper gives it its voice (docs/plans/desk-after-station.md, В; the helpers,
+//! docs/plans/home-and-helpers.md): the station's build has no model shop, so its panel's window offers «Голос
+//! компьютера (имя) / Алиса» here — `GET|POST /api/v1/models/home-voice`. The choice is the station's own
+//! (`tts_provider`, each side's own in src/placement/transfer.rs); a move with the computer as the station's server
+//! brings the computer's. Without a helper, with a cloud voice set up (src/speech/cloud_speech.rs,
+//! docs/plans/speaker-alone.md): «Облачный голос / Алиса». In block 1 the helper that gives a station its voice is a
+//! computer: the words say so.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::extract::State;
 use axum::routing::get;
@@ -15,13 +16,11 @@ use serde_json::Value;
 
 use crate::app::App;
 use crate::config::TtsProvider;
-use crate::core::availability::HomeServer;
 use crate::core::identity::permissions::{MODELS_MANAGE, STATION_VIEW};
+use crate::helpers::contract::Ability;
+use crate::helpers::Giver;
 use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller};
 use crate::settings::definitions::VOICE_PROVIDER;
-
-/// How long the computer's name for its voice is waited for: it answers at home in milliseconds, or it is away.
-const ASK_FOR: Duration = Duration::from_secs(3);
 
 pub fn routes() -> Router<Arc<App>> {
     Router::new().route("/api/v1/models/home-voice", get(view).post(choose))
@@ -31,26 +30,24 @@ pub fn routes() -> Router<Arc<App>> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HomeVoiceView {
-    /// The computer gives this gateway its voice: a station whose home server helps it, the voice not left out
-    /// («Что даю колонке»).
+    /// A helper gives this gateway its voice: a station whose helpers would give it (the voice not left out).
     pub offered: bool,
-    /// The computer answers now.
+    /// The helper gives it now.
     pub up: bool,
-    /// The computer's voice by its name («Baya»), as its home server says it; none while it is away, or when it says
-    /// no name (a voice of its voice lab is known by an id).
+    /// The helper's voice by its name («Baya»), as its last status said it; none while it is away, or when it says no
+    /// name (a voice of its voice lab is known by an id).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub voice: Option<String>,
     /// A cloud voice is set up on the station (src/speech/cloud_speech.rs): without the computer it speaks.
     pub cloud: bool,
     /// The station's choice: «computer», «cloud» or «alice».
     pub chosen: &'static str,
-    /// The provider chosen: `own` — Yandex's answers in the computer's voice too, `mixed` — ours only.
+    /// The provider chosen: `own` — Yandex's answers in the helper's voice too, `mixed` — ours only.
     pub provider: &'static str,
 }
 
 fn offered(app: &App) -> bool {
-    let status = app.home_server.status();
-    app.voice.has_home() && status.configured && status.enabled && !status.without.iter().any(|part| part == "tts")
+    app.voice.has_home() && matches!(app.helpers.offer(Ability::Voice), Some(Giver::Helper(_)))
 }
 
 fn chosen(app: &App) -> &'static str {
@@ -61,26 +58,22 @@ fn chosen(app: &App) -> &'static str {
     }
 }
 
-async fn current(app: &App) -> HomeVoiceView {
+fn current(app: &App) -> HomeVoiceView {
     let offered = offered(app);
-    let up = offered && app.home_server.state() == HomeServer::Up;
-    let voice = if up { computers_voice(app).await } else { None };
-    let cloud = app.voice.cloud_speech().is_some();
-    HomeVoiceView { offered, up, voice, cloud, chosen: chosen(app), provider: app.voice.chosen_provider().as_str() }
-}
-
-/// The computer's voice as its home server names it (`/home/v1/status`: «silero/baya»), by name.
-async fn computers_voice(app: &App) -> Option<String> {
-    let (url, key) = app.home_server.configured()?;
-    let answer = crate::utils::http::client()
-        .get(format!("{}/home/v1/status", url.trim_end_matches('/')))
-        .bearer_auth(key)
-        .timeout(ASK_FOR)
-        .send()
-        .await
-        .ok()?;
-    let status: Value = answer.json().await.ok()?;
-    voice_name(status.get("voice")?.as_str()?)
+    let giving = app.helpers.pick_remote(Ability::Voice).filter(|_| offered);
+    // Its voice as its last status named it: no extra request.
+    let voice = giving.as_ref().and_then(|helper| helper.status()).and_then(|status| {
+        let pair = status.contract.get(Ability::Voice)?.details.get("voice")?.as_str()?.to_string();
+        voice_name(&pair)
+    });
+    HomeVoiceView {
+        offered,
+        up: giving.is_some(),
+        voice,
+        cloud: app.voice.cloud_speech().is_some(),
+        chosen: chosen(app),
+        provider: app.voice.chosen_provider().as_str(),
+    }
 }
 
 /// A voice's name for the household out of the pair the voice server knows: «silero/baya» — «Baya»,
@@ -105,7 +98,7 @@ pub fn voice_name(pair: &str) -> Option<String> {
 
 async fn view(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<HomeVoiceView> {
     caller.permitted(STATION_VIEW)?;
-    Ok(ok(current(&app).await))
+    Ok(ok(current(&app)))
 }
 
 /// `{"voice": "computer"}` — the computer's voice (ours in it, Yandex's in Alice's unless the computer gave `own`);
@@ -133,7 +126,7 @@ async fn choose(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Va
         Some("computer") => {
             if !offered(&app) {
                 return Err(ApiError::conflict(crate::tr!(
-                    "Компьютер не даёт колонке голос: включите «Помогать колонке» в пульте компьютера."
+                    "Компьютер не даёт колонке голос: в его пульте включите «Помогать» у этой колонки («Настройки» → «Этот компьютер» → «Помогаю»)."
                 )));
             }
             let provider = app.voice.use_home().map_err(ApiError::internal)?;
@@ -146,12 +139,55 @@ async fn choose(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Va
             )))
         }
     }
-    Ok(created(current(&app).await))
+    Ok(created(current(&app)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{Config, Env};
+    use crate::helpers::tests::{stand, KEY};
+    use crate::helpers::{AddInput, HelperKind};
+
+    fn gateway(dir: &std::path::Path, role: &str) -> Arc<App> {
+        let data = dir.to_string_lossy().into_owned();
+        let env = Env::from_pairs([
+            ("STATE_DIR", ""),
+            ("DATA_DIR", data.as_str()),
+            ("PLUGINS_BUNDLED", "false"),
+            ("DUOWAVE_ROLE", role),
+        ]);
+        App::build(Config::for_tests(&env)).unwrap()
+    }
+
+    /// The window offers the voice of the helper that gives it — not only the old «computer» — and names it as its
+    /// last status did; without a helper it offers nothing; a computer never leans on its helpers for its voice.
+    #[tokio::test]
+    async fn the_voice_window_offers_the_helper_that_gives_the_voice() {
+        let status = serde_json::json!({
+            "version": "0.12.0", "peerApi": 2,
+            "contract": { "version": 1, "helper": { "id": "srv", "name": "Мой сервер" }, "abilities": [
+                { "id": "voice", "ready": true, "details": { "voice": "silero/baya" } },
+                { "id": "hearing", "ready": true }
+            ] }
+        });
+        let server = stand(status).await;
+        let dir = tempfile::tempdir().unwrap();
+        let station = gateway(dir.path(), "station");
+        let alone = current(&station);
+        assert!(!alone.offered && !alone.up && alone.voice.is_none(), "no helper, no voice to offer");
+        let own =
+            AddInput { url: server.url.clone(), key: KEY.into(), kind: Some(HelperKind::Own), ..AddInput::default() };
+        station.helpers.add(own, None).await.unwrap();
+        assert!(station.helpers.entry("home-computer").is_none(), "one's own server, not the computer");
+        let view = current(&station);
+        assert_eq!((view.offered, view.up, view.voice.as_deref()), (true, true, Some("Baya")));
+
+        let other = tempfile::tempdir().unwrap();
+        let computer = gateway(other.path(), "pc");
+        computer.voice.set_home(computer.helpers.clone());
+        assert!(!computer.voice.has_home() && !offered(&computer), "its own voice window, as before");
+    }
 
     #[test]
     fn names_a_voice_by_its_name_not_by_its_id() {

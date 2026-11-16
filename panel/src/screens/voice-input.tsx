@@ -133,9 +133,9 @@ interface Ready {
 
 /**
  * Список готовности режима «Микрофон»: слух, голос, мозг. Перечитывает голос, пока открыт: сервер своего голоса
- * запускается не сразу.
+ * запускается не сразу. `win` — строками окна (ui/window.css), а не карточки страницы.
  */
-export function Readiness({ onGo }: { onGo?: () => void }) {
+export function Readiness({ onGo, win = false }: { onGo?: () => void; win?: boolean }) {
     const panel = usePanel();
     const [models, setModels] = useState<ModelsView | null>(null);
     const [local] = useLocalAsr();
@@ -198,6 +198,30 @@ export function Readiness({ onGo }: { onGo?: () => void }) {
         },
     ];
     const ready = items.every((item) => item.ok);
+    if (win)
+        return (
+            <>
+                <ul class="win-group m-0 p-0" aria-label={tr.voiceInput.readinessLabel}>
+                    {items.map((item) => (
+                        <li key={item.key} class="win-row">
+                            <span class={`ready-mark${item.ok ? ' is-ok' : ''}`} aria-hidden="true">
+                                {item.ok && <IconCheck size={12} />}
+                            </span>
+                            <span class="win-row-main">
+                                <span class="win-row-t">{item.title}</span>
+                                <span class="win-row-s">{item.state}</span>
+                            </span>
+                            {item.fix && (
+                                <button class="btn btn-plain btn-sm" onClick={item.fix.go}>
+                                    {item.fix.label}
+                                </button>
+                            )}
+                        </li>
+                    ))}
+                </ul>
+                <p class="win-note">{ready ? tr.voiceInput.allReady : tr.voiceInput.whenReady}</p>
+            </>
+        );
     return (
         <div class="flex flex-col gap-10">
             <ul class="w-rows ready-list" aria-label={tr.voiceInput.readinessLabel}>
@@ -462,7 +486,7 @@ export function TalkChoiceSheet({ onClose, onStation }: { onClose: () => void; o
     if (computer)
         return (
             <Sheet title={tr.voiceInput.sheetComputerTitle} about={tr.voiceInput.sheetComputerAbout} onClose={onClose}>
-                <Readiness onGo={onClose} />
+                <Readiness onGo={onClose} win />
             </Sheet>
         );
     return (
@@ -471,14 +495,14 @@ export function TalkChoiceSheet({ onClose, onStation }: { onClose: () => void; o
             about={tr.voiceInput.sheetAbout}
             onClose={onClose}
             footer={
-                <button class="dash-done" onClick={onClose}>
+                <button class="btn btn-plain" onClick={onClose}>
                     {tr.voiceInput.later}
                 </button>
             }
         >
             <Options current={null} busy={busy} onPick={(input) => void pick(input)} />
             {problem && (
-                <p role="alert" class="w-cap m-0 c-dot-offline">
+                <p role="alert" class="win-callout m-0">
                     {problem}
                 </p>
             )}

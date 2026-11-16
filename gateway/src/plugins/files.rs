@@ -162,16 +162,16 @@ impl PluginFiles {
         let replaced = self.files(plugin).iter().find(|(known, _, _)| *known == name).map_or(0, |(_, size, _)| *size);
         if (self.on_station)() {
             if size > STATION_FILE_MAX {
-                return Err(crate::tr!("на колонке нет места для картинки: до 1 МБ на картинку"));
+                return Err(crate::tr!("на колонке нет памяти для картинки: до 1 МБ на картинку"));
             }
             if self.usage(None) - replaced + size > STATION_ALL_MAX {
-                return Err(crate::tr!("на колонке нет места для картинок: все картинки приложений — до 5 МБ"));
+                return Err(crate::tr!("на колонке нет памяти для картинок: все картинки приложений — до 5 МБ"));
             }
         } else if size > FILE_MAX {
             return Err(crate::tr!("картинка больше 10 МБ"));
         }
         if self.usage(Some(plugin)) - replaced + size > storage_mb * MB {
-            return Err(crate::tr!("места приложения ({mb} МБ) не хватает: удалите старые картинки", mb = storage_mb));
+            return Err(crate::tr!("памяти приложения ({mb} МБ) не хватает: удалите старые картинки", mb = storage_mb));
         }
         let folder = self.folder(plugin);
         std::fs::create_dir_all(&folder).map_err(|error| crate::tr!("папка картинок: {error}", error = error))?;
@@ -320,7 +320,7 @@ mod tests {
         // A computer: up to 10 MB a picture, within the plugin's room.
         assert_eq!(files.put("day", "today", &png(2 * MB as usize), 4).unwrap()["name"], "today.png");
         assert!(files.put("day", "huge", &png(11 * MB as usize), 64).unwrap_err().contains("больше 10 МБ"));
-        assert!(files.put("day", "more", &png(3 * MB as usize), 4).unwrap_err().contains("места приложения (4 МБ)"));
+        assert!(files.put("day", "more", &png(3 * MB as usize), 4).unwrap_err().contains("памяти приложения (4 МБ)"));
         // The same name replaces: its own size does not count twice.
         files.put("day", "today", &png(3 * MB as usize), 4).unwrap();
         assert_eq!(files.usage(Some("day")), 3 * MB);

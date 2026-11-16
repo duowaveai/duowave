@@ -23,7 +23,7 @@ path = "src/bin/echo_app.rs"
 default = ["pc", "wasm"]
 # Everything that builds from source: the station connect over SSH, local model servers, the voice lab, calls.
 # MCP servers as programs on this computer (npx, uvx) too.
-pc = ["rmcp/transport-async-rw", "dep:libc", "dep:russh", "dep:if-addrs", "dep:socket2"]
+pc = ["rmcp/transport-async-rw", "dep:libc", "dep:russh", "dep:if-addrs", "dep:socket2", "dep:ring"]
 # The build for the station itself: none of the PC parts.
 station = []
 # Recognition on this computer itself (src/speech/asr/local): GigaAM, Parakeet and Whisper as GGUF through
@@ -79,8 +79,13 @@ rand = "0.10.3"
 regex = "1.13.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "stream", "multipart", "charset", "query", "form"] }
 # The plugins' engine (src/plugins): QuickJS, built from its C sources with the target's cc (zig for the station).
-# Without "parallel": each plugin's runtime lives on its own thread and never crosses threads.
-rquickjs = { version = "0.14.0", default-features = false, features = ["std", "futures"] }
+# Without "parallel": each plugin's runtime lives on its own thread and never crosses threads. "allocator": each runtime
+# takes its memory from a block of its own (src/plugins/quickjs_memory.rs), TLSF inside it (rlsf).
+rquickjs = { version = "0.14.0", default-features = false, features = ["std", "futures", "allocator"] }
+rlsf = "0.2.3"
+# The helper's own TLS key for the link (src/helpers/link_serve.rs, pc): ECDSA P-256, already in both builds through
+# rustls's `ring`.
+ring = { version = "0.17.14", optional = true }
 rmcp = { version = "3.9.0", default-features = false, features = ["client", "transport-streamable-http-client-reqwest", "reqwest-tls-no-provider", "auth"] }
 rtc = { version = "0.21.1", default-features = false, optional = true }
 rusqlite = { version = "0.41.1", features = ["bundled", "serde_json"] }
@@ -100,6 +105,9 @@ tar = "0.4.46"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["full"] }
 tokio-stream = { version = "0.1.19", features = ["sync"] }
+# The link's TLS on both ends (src/helpers/link.rs, link_serve.rs): already in both builds through tokio-tungstenite;
+# without its default features, which would bring aws-lc-rs.
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 tokio-util = { version = "0.7.20", features = ["rt"] }
 tower = { version = "0.5.3", features = ["util"] }
@@ -125,6 +133,8 @@ midir = { version = "0.11.1", optional = true }
 midly = { version = "0.5.3", optional = true, default-features = false, features = ["alloc", "std"] }
 
 [build-dependencies]
+# The panel's text gzip-compressed into the program (build.rs): the same flate2 the gateway has already.
+flate2 = "1.1.10"
 prost-build = "0.14.4"
 protox = "0.10.0"
 

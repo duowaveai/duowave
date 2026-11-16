@@ -1,15 +1,18 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { HomeServerStatus, MoveJob, MoveTo, PlacementView, Station, StationGatewayView, api, can, problemOf } from '../api';
+import { HomeServerStatus, MoveJob, MoveTo, PlacementHealth, PlacementView, Station, StationGatewayView, api, can, problemOf } from '../api';
 import { FeatureRow, GROUP_TITLES, PLACEMENT_TITLES, Placement, useAvailability } from '../availability';
 import { locale, tr } from '../i18n';
+import { IconLinks } from '../icons';
+import { usePanel } from '../shell/context';
+import { helperOf } from '../shell/role';
 import { timeAgo } from '../time';
 import { Host, Solved, solve } from '../truth';
 import { DashData, ourBrain, scenarioOf } from './dash-model';
 import { Gear, NodeIcon, PlacementMap, WhoThree } from './placement-map';
 import { Action } from '../ui/cards';
 import { SecretField, TextField } from '../ui/fields';
-import { Sheet } from '../ui/sheet';
+import { Sheet, WinRow, WinSection } from '../ui/sheet';
 import { Switch } from '../ui/switch';
 import { ask } from '../ui/confirm';
 
@@ -173,6 +176,7 @@ export function PlacementCard() {
             {copies && view.station && (
                 <CopiesSheet
                     station={view.station}
+                    busy={busy}
                     onClose={() => setCopies(false)}
                     onRestore={(id) =>
                         act('restore', () => api.restoreStationSettings(id), tr.placement.copySent)
@@ -476,7 +480,13 @@ function StationSide({
     return (
         <>
             <Line>{[tr.placement.runsOnStation, resources(health.memory, health.data)].filter(Boolean).join(' · ')}</Line>
-            <StationHelper mayManage={can('connectors.manage')} onChanged={() => void act('helperRead', async () => undefined)} />
+            {/* Шлюз со списком помощников (docs/plans/home-and-helpers.md, блок 1): одна строка — всё о них в «Помощниках»;
+                колонка 0.11 — прежний переключатель «ПК помогает колонке». */}
+            {health.helpers ? (
+                <HelpersLine health={health} />
+            ) : (
+                <StationHelper mayManage={can('connectors.manage')} onChanged={() => void act('helperRead', async () => undefined)} />
+            )}
             <Line>
                 {view.state.settingsHome === 'pc'
                     ? `${tr.placement.settingsComeFromPc}${health.settingsReceivedAt ? tr.placement.settingsReceived(timeAgo(health.settingsReceivedAt)) : ''}`
@@ -717,7 +727,8 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
             about={helperOnly ? tr.placement.chooserAboutHelper : tr.placement.chooserAboutMove}
             onClose={onClose}
             footer={
-                <button class="dash-done" disabled={busy || same || noBuild || !address.trim()} onClick={() => void start()}>
+                <button class="btn btn-main" disabled={busy || same || noBuild || !address.trim()} aria-busy={busy || undefined} onClick={() => void start()}>
+                    {busy && <span class="spinner spinner-sm" aria-hidden="true" />}
                     {label}
                 </button>
             }
@@ -745,11 +756,7 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
             </div>
 
             <PlacementMap solved={solved} placement={picked} settingsAt={settingsAt} brainName={brainName} />
-            {cloudAssumed && (
-                <Line>
-                    {tr.placement.cloudAssumed}
-                </Line>
-            )}
+            {cloudAssumed && <p class="win-note">{tr.placement.cloudAssumed}</p>}
 
             {onStation ? (
                 <label class="helper-row">
@@ -778,10 +785,9 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
             )}
 
             <WhoThree ear={solved.ear} brain={solved.brain} voice={solved.voice} />
-            {solved.notes.length > 0 && <p class="truth-note">{solved.notes.join(' ')}</p>}
+            {solved.notes.length > 0 && <p class="win-callout m-0">{solved.notes.join(' ')}</p>}
 
-            <div class="flex flex-col gap-8">
-                <span class="t-caption fw-700">{tr.placement.whatWillBe}</span>
+            <WinSection title={tr.placement.whatWillBe}>
                 <ul class="what-list">
                     {WHAT_KINDS[picked].map((kind, index) => (
                         <li key={index}>
@@ -792,23 +798,34 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
                         </li>
                     ))}
                 </ul>
-            </div>
+            </WinSection>
 
             {!helperOnly && (
-                <div class="flex flex-col gap-8">
-                    <span class="t-caption fw-700">{tr.placement.link}</span>
-                    <div class="link-rows">
-                        <div class="link-row">
-                            <span class={`link-dot${address.trim() ? '' : ' warn'}`} aria-hidden="true" />
-                            <span class="link-text">
+                <WinSection title={tr.placement.link} group>
+                    <div class="win-row">
+                        <span class={`link-dot flex-none${address.trim() ? '' : ' warn'}`} aria-hidden="true" />
+                        <div class="win-row-main">
+                            <span class="win-row-t">
                                 {station ? tr.placement.stationNamed(station.name) : address.trim() ? tr.placement.stationPlain : tr.placement.stationNotFound}
-                                <span>{address.trim() ? (station ? tr.placement.foundInStations : address.trim()) : tr.placement.connectInStations}</span>
                             </span>
-                            <button class="link-edit" onClick={() => setEditing({ ...editing, station: !editing.station })}>
-                                {editing.station ? tr.placement.done : tr.placement.edit}
-                            </button>
+                            <span class="win-row-s">
+                                {address.trim() ? (
+                                    station ? (
+                                        tr.placement.foundInStations
+                                    ) : (
+                                        <span class="win-code">{address.trim()}</span>
+                                    )
+                                ) : (
+                                    tr.placement.connectInStations
+                                )}
+                            </span>
                         </div>
-                        {(editing.station || !address.trim()) && (
+                        <button class="btn btn-plain btn-sm" onClick={() => setEditing({ ...editing, station: !editing.station })}>
+                            {editing.station ? tr.placement.done : tr.placement.edit}
+                        </button>
+                    </div>
+                    {(editing.station || !address.trim()) && (
+                        <div class="win-row is-col">
                             <TextField
                                 label={tr.placement.stationAddress}
                                 value={address}
@@ -817,18 +834,20 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
                                 hint={stations && !stations.length ? tr.placement.noStationsYet : undefined}
                                 onInput={setAddress}
                             />
-                        )}
-                        <div class="link-row">
-                                <span class={`link-dot${pcAddress ? '' : ' warn'}`} aria-hidden="true" />
-                                <span class="link-text">
-                                    {tr.placement.pcThis}
-                                    <span>{pcAddress ? tr.placement.pcVisible : tr.placement.pcNotFound}</span>
-                                </span>
-                                <button class="link-edit" onClick={() => setEditing({ ...editing, pc: !editing.pc })}>
-                                    {editing.pc ? tr.placement.done : tr.placement.edit}
-                                </button>
-                            </div>
-                        {(editing.pc || !pcAddress) && (
+                        </div>
+                    )}
+                    <div class="win-row">
+                        <span class={`link-dot flex-none${pcAddress ? '' : ' warn'}`} aria-hidden="true" />
+                        <div class="win-row-main">
+                            <span class="win-row-t">{tr.placement.pcThis}</span>
+                            <span class="win-row-s">{pcAddress ? tr.placement.pcVisible : tr.placement.pcNotFound}</span>
+                        </div>
+                        <button class="btn btn-plain btn-sm" onClick={() => setEditing({ ...editing, pc: !editing.pc })}>
+                            {editing.pc ? tr.placement.done : tr.placement.edit}
+                        </button>
+                    </div>
+                    {(editing.pc || !pcAddress) && (
+                        <div class="win-row is-col">
                             <TextField
                                 label={tr.placement.pcAddress}
                                 value={gateway}
@@ -837,35 +856,40 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
                                 hint={view.homeAddresses?.length ? tr.placement.pcOnNetwork(view.homeAddresses.join(', ')) : undefined}
                                 onInput={setGateway}
                             />
-                        )}
-                        <div class="link-row">
-                            <span class="link-dot" aria-hidden="true" />
-                            <span class="link-text">
-                                {tr.placement.homeKey}
-                                <span>{onStation ? tr.placement.homeKeyStation : tr.placement.homeKeyPc}</span>
-                            </span>
+                        </div>
+                    )}
+                    <div class="win-row">
+                        <span class="link-dot flex-none" aria-hidden="true" />
+                        <div class="win-row-main">
+                            <span class="win-row-t">{tr.placement.homeKey}</span>
+                            <span class="win-row-s">{onStation ? tr.placement.homeKeyStation : tr.placement.homeKeyPc}</span>
                         </div>
                     </div>
-                </div>
+                </WinSection>
             )}
 
-            {!helperOnly && (
-                <Line tone={onStation ? 'warn' : undefined}>
-                    {onStation
-                        ? tr.placement.keysOnStation
-                        : tr.placement.keysOnPc}
-                </Line>
-            )}
+            {!helperOnly &&
+                (onStation ? (
+                    <p class="win-callout m-0" role="status">
+                        {tr.placement.keysOnStation}
+                    </p>
+                ) : (
+                    <p class="win-note">{tr.placement.keysOnPc}</p>
+                ))}
             {availability && (
                 <details>
-                    <summary class="t-caption cursor-pointer fw-700">{tr.placement.availabilityDetails}</summary>
+                    <summary class="win-sec-title cursor-pointer">{tr.placement.availabilityDetails}</summary>
                     <div class="pt-8 flex flex-col gap-8">
                         <FeatureList rows={availability.table} placement={picked} />
-                        {view.station?.payload && onStation && <Line>{view.station.payload.note}</Line>}
+                        {view.station?.payload && onStation && <p class="win-note">{view.station.payload.note}</p>}
                     </div>
                 </details>
             )}
-            {error && <Line tone="error">{error}</Line>}
+            {error && (
+                <p role="alert" class="win-callout m-0">
+                    {error}
+                </p>
+            )}
         </Sheet>
     );
 }
@@ -893,21 +917,23 @@ function UnlinkSheet({ onClose, onConfirm }: { onClose: () => void; onConfirm: (
             title={tr.placement.unlinkTitle}
             onClose={onClose}
             footer={
-                <div class="flex flex-col gap-8">
+                <>
+                    <button class="btn btn-plain" onClick={onClose}>
+                        {tr.placement.cancel}
+                    </button>
                     <button
-                        class="dash-done danger"
+                        class="btn btn-danger-fill"
                         disabled={left > 0 || !sure || busy}
+                        aria-busy={busy || undefined}
                         onClick={() => {
                             setBusy(true);
                             void onConfirm().finally(() => setBusy(false));
                         }}
                     >
+                        {busy && <span class="spinner spinner-sm" aria-hidden="true" />}
                         {busy ? tr.placement.restarting : `${tr.placement.giveBackYandex}${left > 0 ? ` · ${left}` : ''}`}
                     </button>
-                    <button class="dash-done ghost" onClick={onClose}>
-                        {tr.placement.cancel}
-                    </button>
-                </div>
+                </>
             }
         >
             <ul class="what-list">
@@ -944,21 +970,23 @@ function GiveBackSheet({ onClose, onConfirm }: { onClose: () => void; onConfirm:
             title={tr.placement.giveTitle}
             onClose={onClose}
             footer={
-                <div class="flex flex-col gap-8">
+                <>
+                    <button class="btn btn-plain" onClick={onClose}>
+                        {tr.placement.cancel}
+                    </button>
                     <button
-                        class="dash-done soft-yandex"
+                        class="btn btn-main"
                         disabled={busy}
+                        aria-busy={busy || undefined}
                         onClick={() => {
                             setBusy(true);
                             void onConfirm().finally(() => setBusy(false));
                         }}
                     >
+                        {busy && <span class="spinner spinner-sm" aria-hidden="true" />}
                         {busy ? tr.placement.restarting : tr.placement.giveYandex}
                     </button>
-                    <button class="dash-done ghost" onClick={onClose}>
-                        {tr.placement.cancel}
-                    </button>
-                </div>
+                </>
             }
         >
             <ul class="what-list">
@@ -979,8 +1007,39 @@ function GiveBackSheet({ onClose, onConfirm }: { onClose: () => void; onConfirm:
     );
 }
 
+/** Турбо одной строкой: кто помогает и на связи ли; «Открыть» — «Дом» в «Настройках». */
+function HelpersLine({ health }: { health: PlacementHealth }) {
+    const panel = usePanel();
+    const helper = helperOf(health);
+    // Every helper switched off (`none` with a name) is not «помощников нет»: they are listed, only off. Every one on
+    // kept out by the regulator is not «не на связи»: nothing is broken.
+    const sub = !helper
+        ? tr.helpers.noneShort
+        : helper.state === 'none'
+          ? helper.name
+              ? tr.helpers.statusOff(helper.name)
+              : tr.helpers.noneShort
+          : helper.state === 'kept'
+            ? tr.helpers.statusKept(helper.name ?? '')
+            : helper.state === 'up'
+              ? tr.helpers.statusHelping(helper.name ?? '')
+              : tr.helpers.statusAway(helper.name ?? '');
+    return (
+        <div class="helper-row">
+            <span class="helper-icon">
+                <IconLinks size={18} />
+            </span>
+            <span class="helper-text">
+                {tr.helpers.pageTitle}
+                <span>{sub}</span>
+            </span>
+            <Action label={tr.helpers.openHome} onClick={() => panel.go('settings', 'helpers')} />
+        </div>
+    );
+}
+
 /**
- * «ПК помогает колонке» в пульте колонки: один переключатель — адрес и ключ привёз перенос (решение 7). Адрес —
+ * «ПК помогает колонке» в пульте колонки 0.11: один переключатель — адрес и ключ привёз перенос (решение 7). Адрес —
  * только под «Изменить», когда ПК не спит, а связи нет: обычно ПК сам сообщает свой новый адрес (решение 9).
  */
 function StationHelper({ mayManage, onChanged }: { mayManage: boolean; onChanged: () => void }) {
@@ -1118,14 +1177,15 @@ export function LinkSheet({ onClose, onLinked, initialAddress }: { onClose: () =
     return (
         <Sheet
             title={tr.placement.linkTitle}
-            about={tr.placement.linkAbout}
             onClose={onClose}
             footer={
-                <button class="dash-done" disabled={busy || !ready} onClick={() => void link()}>
+                <button class="btn btn-main" disabled={busy || !ready} aria-busy={busy || undefined} onClick={() => void link()}>
+                    {busy && <span class="spinner spinner-sm" aria-hidden="true" />}
                     {busy ? tr.placement.linking : tr.placement.becomeHelper}
                 </button>
             }
         >
+            <p class="win-lead">{tr.placement.linkAbout}</p>
             <TextField label={tr.placement.stationAddress} value={address} placeholder="192.0.2.23" inputMode="url" onInput={setAddress} />
             {byKey ? (
                 <>
@@ -1152,51 +1212,67 @@ export function LinkSheet({ onClose, onLinked, initialAddress }: { onClose: () =
                     />
                 </>
             )}
-            <button class="t-caption underline cursor-pointer self-start" onClick={() => setByKey(!byKey)}>
+            <button class="btn btn-quiet btn-sm self-start" onClick={() => setByKey(!byKey)}>
                 {byKey ? tr.placement.linkByPassword : tr.placement.linkByKey}
             </button>
-            {error && <Line tone="error">{error}</Line>}
+            {error && (
+                <p role="alert" class="win-callout m-0">
+                    {error}
+                </p>
+            )}
         </Sheet>
     );
 }
 
 function CopiesSheet({
     station,
+    busy,
     onClose,
     onRestore,
     onBackup,
 }: {
     station: StationGatewayView;
+    /** Что делает карточка: «backup» — копия берётся. */
+    busy: string | null;
     onClose: () => void;
     onRestore: (id: string) => Promise<void>;
     onBackup: () => Promise<void>;
 }) {
+    const taking = busy === 'backup';
     return (
-        <Sheet title={tr.placement.copiesTitle} about={tr.placement.copiesAbout} onClose={onClose}>
-            <Row>
-                <Action label={tr.placement.takeCopy} onClick={() => void onBackup()} />
-            </Row>
+        <Sheet
+            title={tr.placement.copiesTitle}
+            onClose={onClose}
+            footer={
+                <button class="btn btn-main" disabled={taking} aria-busy={taking || undefined} onClick={() => void onBackup()}>
+                    {taking && <span class="spinner spinner-sm" aria-hidden="true" />}
+                    {tr.placement.takeCopy}
+                </button>
+            }
+        >
+            <p class="win-lead">{tr.placement.copiesAbout}</p>
             {station.backups.length ? (
-                station.backups.map((copy) => (
-                    <div key={copy.id} class="flex items-center gap-8 justify-between">
-                        <span class="t-caption">
-                            {tr.placement.copyLine(clock(copy.at), copy.revision, tr.placement.kb(Math.max(1, Math.round(copy.size / 1024))))}
-                        </span>
-                        <Action
-                            label={tr.placement.restore}
-                            onClick={async () => {
-                                const yes = await ask({
-                                    title: tr.placement.restoreAskTitle(clock(copy.at)),
-                                    text: tr.placement.restoreAskText,
-                                    ok: tr.placement.restoreAskOk,
-                                });
-                                if (yes) void onRestore(copy.id);
-                            }}
-                        />
-                    </div>
-                ))
+                <WinSection group>
+                    {station.backups.map((copy) => (
+                        <WinRow key={copy.id} title={clock(copy.at)} sub={tr.placement.copySub(copy.revision, tr.placement.kb(Math.max(1, Math.round(copy.size / 1024))))}>
+                            <button
+                                class="btn btn-plain btn-sm"
+                                onClick={async () => {
+                                    const yes = await ask({
+                                        title: tr.placement.restoreAskTitle(clock(copy.at)),
+                                        text: tr.placement.restoreAskText,
+                                        ok: tr.placement.restoreAskOk,
+                                    });
+                                    if (yes) void onRestore(copy.id);
+                                }}
+                            >
+                                {tr.placement.restore}
+                            </button>
+                        </WinRow>
+                    ))}
+                </WinSection>
             ) : (
-                <Line>{tr.placement.noCopies}</Line>
+                <p class="win-callout is-calm m-0">{tr.placement.noCopies}</p>
             )}
         </Sheet>
     );
@@ -1205,19 +1281,31 @@ function CopiesSheet({
 function InspectSheet({ inspected, onClose }: { inspected: Inspected; onClose: () => void }) {
     return (
         <Sheet title={tr.placement.inspectTitle} about={tr.placement.inspectAbout} onClose={onClose}>
-            {!inspected.installed && <Line tone="warn">{tr.placement.notInstalled}</Line>}
-            {inspected.programMissing && <Line tone="warn">{tr.placement.programMissing}</Line>}
+            {!inspected.installed && (
+                <p class="win-callout m-0" role="status">
+                    {tr.placement.notInstalled}
+                </p>
+            )}
+            {inspected.programMissing && (
+                <p class="win-callout m-0" role="status">
+                    {tr.placement.programMissing}
+                </p>
+            )}
             {inspected.installed && (
-                <Line>
+                <p class="win-lead">
                     {inspected.running
                         ? tr.placement.running
                         : inspected.disabled
                           ? tr.placement.disabledBySafety
                           : tr.placement.notRunning}{' '}
                     {inspected.local ? tr.placement.voiceGoesIn : tr.placement.voiceNotIn}
-                </Line>
+                </p>
             )}
-            {inspected.fired && <Line tone="warn">{tr.placement.fired(inspected.fired)}</Line>}
+            {inspected.fired && (
+                <p class="win-callout m-0" role="status">
+                    {tr.placement.fired(inspected.fired)}
+                </p>
+            )}
             {inspected.log && (
                 <pre class="t-meta pre-wrap max-h-40vh overflow-auto m-0">
                     {inspected.log}

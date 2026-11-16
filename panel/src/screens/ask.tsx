@@ -103,7 +103,7 @@ export function AskSheet({ onClose }: { onClose: () => void }) {
             onClose={onClose}
             footer={
                 <form
-                    class="flex gap-8 items-center"
+                    class="flex gap-8 items-center w-full"
                     onSubmit={(e) => {
                         e.preventDefault();
                         void send();
@@ -116,23 +116,20 @@ export function AskSheet({ onClose }: { onClose: () => void }) {
                         value={text}
                         onInput={(e) => setText((e.target as HTMLInputElement).value)}
                     />
-                    <button class="pill pill-own dash-confirm-btn" type="submit" disabled={busy || !text.trim()}>
-                        {busy ? '…' : tr.ask.ask}
-                    </button>
                     {lines.length > 0 && (
-                        <button class="pill pill-off dash-confirm-btn" type="button" onClick={restart}>
+                        <button class="btn btn-plain" type="button" onClick={restart}>
                             {tr.ask.restart}
                         </button>
                     )}
+                    <button class="btn btn-main" type="submit" disabled={busy || !text.trim()} aria-busy={busy || undefined}>
+                        {busy && <span class="spinner spinner-sm" aria-hidden="true" />}
+                        {tr.ask.ask}
+                    </button>
                 </form>
             }
         >
-            <div role="log" aria-live="polite" class="flex flex-col gap-8 max-h-52vh-460 overflow-y-auto">
-                {!lines.length && (
-                    <p class="t-caption m-0">
-                        {byMode(tr.ask.introStation, tr.ask.introComputer)}
-                    </p>
-                )}
+            <div role="log" aria-live="polite" class="flex flex-col gap-8">
+                {!lines.length && <p class="win-lead">{byMode(tr.ask.introStation, tr.ask.introComputer)}</p>}
                 {lines.map((line, index) => {
                     if (line.kind === 'question') {
                         return (
@@ -145,32 +142,28 @@ export function AskSheet({ onClose }: { onClose: () => void }) {
                         return (
                             <div key={index} class="flex flex-col gap-2 max-w-92p">
                                 <p class="m-0">{line.text}</p>
-                                {line.ms !== undefined && <span class="t-caption">{tr.ask.firstWord(formatNumber(line.ms / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 }))}</span>}
+                                {line.ms !== undefined && <span class="win-hint">{tr.ask.firstWord(formatNumber(line.ms / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 }))}</span>}
                             </div>
                         );
                     }
                     if (line.kind === 'tool') {
                         return (
-                            <div key={index} class="flex flex-col gap-4 py-8 px-12 r-16 border-glass">
-                                <span class="flex gap-6 items-center flex-wrap">
-                                    <b class="fs-14">{toolTitle(line.name)}</b>
-                                    {line.server && <span class="pill pill-off">{line.server}</span>}
-                                    {line.result?.outside && <span class="pill pill-yandex">{tr.ask.outsideText}</span>}
-                                    {!line.result && <span class="spinner spinner-sm" aria-label={tr.ask.waitingServer} />}
-                                </span>
-                                <span class="t-mono opacity-80">
-                                    {JSON.stringify(line.input)}
-                                </span>
-                                {line.result && (
-                                    <span class={`t-mono ${line.result.isError ? 'c-dot-offline' : 'c-sub'}`}>
-                                        {line.result.content}
+                            <div key={index} class="win-group">
+                                <div class="win-row is-col">
+                                    <span class="flex gap-6 items-center flex-wrap">
+                                        <span class="win-code">{toolTitle(line.name)}</span>
+                                        {line.server && <span class="win-chip">{line.server}</span>}
+                                        {line.result?.outside && <span class="pill pill-yandex">{tr.ask.outsideText}</span>}
+                                        {!line.result && <span class="spinner spinner-sm" aria-label={tr.ask.waitingServer} />}
                                     </span>
-                                )}
+                                    <span class="t-mono opacity-80">{JSON.stringify(line.input)}</span>
+                                    {line.result && <span class={`t-mono ${line.result.isError ? 'c-dot-offline' : 'c-sub'}`}>{line.result.content}</span>}
+                                </div>
                             </div>
                         );
                     }
                     return (
-                        <p key={index} role={line.error ? 'alert' : 'status'} class={`t-caption m-0${line.error ? ' c-dot-offline' : ''}`}>
+                        <p key={index} role={line.error ? 'alert' : 'status'} class={line.error ? 'win-callout m-0' : 'win-note'}>
                             {line.text}
                         </p>
                     );

@@ -305,6 +305,17 @@ impl Egress {
             table: RwLock::new(Arc::new(Table::default())),
         });
         let _ = SERVICE.set(Arc::downgrade(&egress));
+        // The first decisions at once, before `start`: what the rest of the gateway's build sends out — a model list
+        // «Мозг» asks for in the background, the MCP servers it connects — goes by them, never directly with a key from
+        // a country its service refuses. The apps' rows come with `start`, once the plugins are set. A table already
+        // published (another gateway of this program: the tests) is left as it is.
+        let first = egress.decide();
+        {
+            let mut shared = TABLE.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if shared.is_none() {
+                *shared = Some(first);
+            }
+        }
         egress
     }
 
@@ -448,6 +459,12 @@ impl Egress {
 
     /// Gathers the table and decides each row; publishes the decisions.
     pub fn rebuild(&self) {
+        let table = self.decide();
+        *TABLE.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(table);
+    }
+
+    /// Gathers the table and decides each row: the table as decided last (`table`), not published.
+    fn decide(&self) -> Arc<Table> {
         // The connections of an app switched off or removed go: the app off — everything directly.
         if let Some(plugins) = self.plugins() {
             if self.connections.keep_apps(|app| plugins.is_switched_on(app)) {
@@ -514,7 +531,7 @@ impl Egress {
             reach_updated: reach.updated_at,
         });
         *self.table.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = table.clone();
-        *TABLE.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(table);
+        table
     }
 
     fn keep_connections(&self) {

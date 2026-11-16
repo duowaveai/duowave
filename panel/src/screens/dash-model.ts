@@ -1,4 +1,4 @@
-import { BrainStatus, BrainView, ConnectorView, ModelsView, PanelMode, PersonaInfo, TtsCard } from '../api';
+import { Ability, BrainStatus, BrainView, ConnectorView, HelpersView, ModelsView, PanelMode, PersonaInfo, TtsCard } from '../api';
 import type { AvailabilityView, FeatureState, Placement } from '../availability';
 import { Scenario, Solved, solve } from '../truth';
 import { executorOf } from '../executor';
@@ -8,7 +8,10 @@ import { formatList, tr } from '../i18n';
 // цветом его показать и что сказать в подписи. Источник — API шлюза; макет — renderVals в
 // docs/design/glass/source/GlassDash.dc.html.
 
-/** Цвет узла — кто делает работу (DESIGN.md: лайм дома, янтарь Яндекс и облако, фиолет помощник, сланец — нет). */
+/**
+ * Цвет узла — кто делает работу (DESIGN.md; решение владельца 16.11): лайм — сам шлюз, фиолет — Турбо (компьютер дома,
+ * свой сервер, встроенный Турбо компьютера), янтарь — облако и Яндекс, сланец — никто.
+ */
 export type Tone = 'own' | 'cloud' | 'yandex' | 'agent' | 'off';
 export type NodeKey = 'brain' | 'think' | 'persona' | 'ear' | 'voice';
 /** Узлы на орбите — полукругом: слух, мозг, голос. Мышление и характер открываются из шитов мозга и голоса. */
@@ -90,6 +93,8 @@ export interface DashData {
     computer?: boolean;
     /** «Слух Яндекса» из /health: во «Вместе» без своего слуха распознаёт Яндекс, отвечает наш мозг. */
     yandexEar?: boolean;
+    /** Турбо и «где сейчас» (/api/v1/helpers): кто слышит, думает и говорит на деле; шлюз 0.11 их не присылает. */
+    helpers?: HelpersView;
 }
 
 export const THINKING: Record<Thinking, { name: string; sub: string; pill: string }> = {
@@ -270,8 +275,9 @@ export function voiceNode(data: DashData): NodeView {
     if (data.mode === 'relay') return { key: 'voice', value: tr.dashboard.alice, tone: 'yandex', detail: tr.dashboard.yandexVoice };
     const view = data.models;
     if (!view) return { key: 'voice', value: '—', tone: 'off', detail: tr.dashboard.modelsUnread };
-    // Режим «Микрофон»: голос Алисы идёт через колонку, без неё он молчит — нужен свой.
-    if (data.computer && view.voice === 'yandex') return { key: 'voice', value: tr.dashboard.none, tone: 'off', detail: tr.dashboard.ownVoiceNotChosen };
+    // Режим «Микрофон»: голос Алисы идёт через колонку, без неё он молчит — нужен свой. Смотрим на то, что звучит:
+    // выбран голос Алисы, а Алисы нет — шлюз говорит своим голосом, если он у него есть.
+    if (data.computer && view.speaking === 'yandex') return { key: 'voice', value: tr.dashboard.none, tone: 'off', detail: tr.dashboard.ownVoiceNotChosen };
     if (view.speaking === 'yandex') return { key: 'voice', value: tr.dashboard.alice, tone: 'yandex', detail: tr.dashboard.yandexVoice };
     if (!view.ownVoiceServer) return { key: 'voice', value: tr.dashboard.none, tone: 'off', detail: tr.dashboard.ownVoiceServerNotSet };
     const card = view.tts.find((entry) => entry.active && entry.engine !== 'yandex');
@@ -298,14 +304,21 @@ export function voiceNode(data: DashData): NodeView {
 }
 
 /**
- * Узел на колонке по списку шлюза: где работает сейчас — у компьютера (дома, лайм: он дома), в облаке, у Яндекса, или
- * нигде. На компьютере узлы — из его моделей, как раньше.
+ * Узел на колонке по списку шлюза: где работает сейчас — у Турбо (фиолет: тяжёлая часть дома), в облаке, у Яндекса, или
+ * нигде. На компьютере узлы — из его моделей, как раньше. `turbo` — что Турбо назвал о себе («Whisper», «Артур»).
  */
-export function placedNode(key: 'ear' | 'voice', feature: FeatureState | undefined, fallback: NodeView): NodeView {
+export function placedNode(key: 'ear' | 'voice', feature: FeatureState | undefined, fallback: NodeView, turbo?: string): NodeView {
     if (!feature) return fallback;
     switch (feature.runs) {
+        // A helper's road: block 1 still calls it `homeServer` for 0.11 panels; a later gateway says `helper`.
+        case 'helper':
         case 'homeServer':
-            return { key, value: tr.dashboard.computerWord, tone: 'own', detail: key === 'ear' ? tr.dashboard.homeServerEar : tr.dashboard.homeServerVoice };
+            return {
+                key,
+                value: turbo ? tr.dashboard.byTurbo(turbo) : tr.dashboard.turboWord,
+                tone: 'agent',
+                detail: key === 'ear' ? tr.dashboard.homeServerEar : tr.dashboard.homeServerVoice,
+            };
         case 'cloud':
             return { key, value: tr.dashboard.cloudWord, tone: 'cloud', detail: feature.state === 'fallback' ? feature.reason : key === 'ear' ? tr.dashboard.cloudEar : tr.dashboard.cloudVoice };
         case 'yandex':
@@ -313,6 +326,22 @@ export function placedNode(key: 'ear' | 'voice', feature: FeatureState | undefin
         default:
             return feature.state === 'off' ? { key, value: tr.dashboard.none, tone: 'off', detail: feature.reason } : fallback;
     }
+}
+
+/** Строка «где сейчас» об умении и Турбо, что его даёт (встроенный тоже), если даёт Турбо. */
+function turboRow(data: DashData, ability: Ability) {
+    const row = data.helpers?.now.find((entry) => entry.ability === ability);
+    if (!row || row.by !== 'helper') return { row, helper: undefined };
+    return { row, helper: data.helpers?.helpers.find((entry) => entry.id === row.helper) };
+}
+
+/** Что Турбо назвал о своей силе: модель слуха, голос («Артур»), модель мозга. */
+function turboDetail(data: DashData, ability: Ability): string | undefined {
+    const details = turboRow(data, ability).helper?.abilities.find((entry) => entry.id === ability)?.details;
+    if (!details) return undefined;
+    const raw = ability === 'voice' ? (details.voice ?? details.model) : details.model;
+    if (!raw) return undefined;
+    return ability === 'voice' ? (tr.dashboard.sileroNames[raw] ?? raw) : ability === 'model' ? familyName(raw) : shortTitle(raw);
 }
 
 /** Узлы, как их видят модели и список шлюза, — до сверки с тем, кто на деле отвечает. */
@@ -324,9 +353,37 @@ function rawNodesOf(data: DashData): Record<NodeKey, NodeView> {
         brain,
         think: thinkNode(data, brain),
         persona: personaNode(data, brain),
-        ear: onStation ? placedNode('ear', feature('asr.own'), earNode(data)) : earNode(data),
-        voice: onStation ? placedNode('voice', feature('voice.own'), voiceNode(data)) : voiceNode(data),
+        ear: onStation ? placedNode('ear', feature('asr.own'), earNode(data), turboDetail(data, 'hearing')) : earNode(data),
+        voice: onStation ? placedNode('voice', feature('voice.own'), voiceNode(data), turboDetail(data, 'voice')) : voiceNode(data),
     };
+}
+
+/**
+ * Кто на деле делает работу узла по «где сейчас» шлюза (решение владельца 16.11): Турбо — фиолет и «Llama · Турбо»
+ * (компьютер дома, свой сервер, встроенный Турбо самого компьютера); модель Турбо молчит и отвечает облако — янтарь и
+ * почему. Яндекс и «никого» уже сказала сверка (truth.ts) — их не трогаем.
+ */
+function byTurbo(data: DashData, nodes: Record<NodeKey, NodeView>): Record<NodeKey, NodeView> {
+    if (!data.helpers) return nodes;
+    const next = { ...nodes };
+    const pairs: Array<['ear' | 'brain' | 'voice', Ability]> = [
+        ['ear', 'hearing'],
+        ['brain', 'model'],
+        ['voice', 'voice'],
+    ];
+    for (const [key, ability] of pairs) {
+        const node = next[key];
+        if (node.tone === 'yandex' || node.tone === 'off') continue;
+        const { row, helper } = turboRow(data, ability);
+        // On a speaker hearing and voice came painted by its list (placedNode); here — the model, and on a computer its
+        // built-in Турбо's hearing and voice, named by its own models.
+        if (helper && node.tone !== 'agent') {
+            next[key] = { ...node, value: tr.dashboard.byTurbo(node.value), tone: 'agent' };
+        } else if (key === 'brain' && row?.by === 'cloud' && node.tone !== 'cloud') {
+            next.brain = { key: 'brain', value: row.name ?? tr.dashboard.cloudWord, tone: 'cloud', detail: row.why ?? tr.dashboard.cloudWord };
+        }
+    }
+    return next;
 }
 
 const working = (entry: ConnectorView): boolean => entry.status.state === 'ready' || entry.status.state === 'configured';
@@ -375,7 +432,7 @@ export function truthOf(data: DashData): Solved {
  * модель на ПК без ПК — Алиса; ПК спит при шлюзе на ПК — никто.
  */
 export function nodesOf(data: DashData, truth: Solved = truthOf(data)): Record<NodeKey, NodeView> {
-    const nodes = rawNodesOf(data);
+    const nodes = byTurbo(data, rawNodesOf(data));
     if (truth.silent) {
         const none = (key: NodeKey): NodeView => ({ key, value: tr.dashboard.none, tone: 'off', detail: tr.dashboard.computerSleeps });
         return { brain: none('brain'), think: none('think'), persona: none('persona'), ear: none('ear'), voice: none('voice') };

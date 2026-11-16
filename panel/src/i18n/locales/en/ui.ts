@@ -85,6 +85,18 @@ const en: Translation<typeof ru> = {
     sheetFailedAbout: 'It has an error. Close it — the rest of the panel works.',
     close: 'Close',
     done: 'Done',
+    // windows (ui/sheet.tsx): «⋯», the bottom bar, danger, loading
+    more: 'More',
+    moreOf: (title: string) => `${title}: more`,
+    unsaved: 'Unsaved changes',
+    save: 'Save',
+    saving: 'Saving…',
+    saved: 'Saved',
+    revert: 'Undo',
+    danger: 'Danger zone',
+    loading: 'Loading',
+    loadFailed: 'Could not read it — try again',
+    retry: 'Try again',
     // sign-in, tabs, update-banner, widget
     signInSayHere: (service: string) => `Sign in on the ${service} page — the gateway gets access by itself and the panel will see it.`,
     signInSayCode: (service: string) => `Sign in on the ${service} page: it will show a code — copy it and paste it here.`,

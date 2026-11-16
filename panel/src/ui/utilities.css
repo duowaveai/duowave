@@ -221,6 +221,7 @@
 .max-w-85p { max-width: 85% !important; }
 .max-w-92p { max-width: 92% !important; }
 .max-w-full { max-width: 100% !important; }
+.min-h-32 { min-height: 32px !important; }
 .min-h-36 { min-height: 36px !important; }
 .min-h-44 { min-height: 44px !important; }
 .min-h-54 { min-height: 54px !important; }

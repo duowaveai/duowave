@@ -71,6 +71,8 @@ pub const RELAYED: &[&str] = &[
     "work.changed",
     // A deal closed (src/router): «Расход» reads the deals again.
     "router.deal",
+    // A run of a work in a folder moved (src/works): its journal is read on.
+    "works.run",
     "connector.changed",
     "station.updated",
     "station.pending",
@@ -80,6 +82,13 @@ pub const RELAYED: &[&str] = &[
     "homeServer.up",
     "homeServer.down",
     "homeServer.changed",
+    // The helpers (src/helpers): the list, the regulator, a helper up or away.
+    "helpers.changed",
+    "helpers.up",
+    "helpers.down",
+    // Who this computer helps over the link, and its connection key changed.
+    "helpers.clients",
+    "helpers.key",
     "placement.moved",
     "placement.changed",
     "gateway.state",
@@ -177,6 +186,12 @@ fn subject_of(event: &GatewayEvent) -> (Option<String>, Option<String>) {
         GatewayEvent::BusChanged { target, change, .. } => (target.clone(), Some(change.clone())),
         GatewayEvent::BusAsked { from, .. } => (Some(from.clone()), Some("asked".into())),
         GatewayEvent::BusNews { from, event } => (Some(from.clone()), Some(event.clone())),
+        // Which helper and how: `added`, `order`, `contract`…; up or away.
+        GatewayEvent::HelpersChanged { id, change, .. } => (id.clone(), Some(change.clone())),
+        GatewayEvent::HelperUp { id, .. } => (Some(id.clone()), Some("up".into())),
+        GatewayEvent::HelperDown { id, .. } => (Some(id.clone()), Some("down".into())),
+        // Which home this computer helps, and how: `paired`, `online`…
+        GatewayEvent::HelperClients { client, change, .. } => (Some(client.clone()), Some(change.clone())),
         _ => (None, None),
     }
 }
@@ -582,6 +597,35 @@ mod tests {
         live.set_presence(Arc::new(Stations));
         live.start(&events);
         (live, events, trip.snapshot())
+    }
+
+    /// The helpers' page and «Где сейчас» read again when a helper is added, goes or comes.
+    #[tokio::test]
+    async fn helpers_changes_reach_the_panel_live() {
+        let (live, events, _) = hub();
+        let panel = Arc::new(Recorder::default());
+        let _panel = live.join(&person(&["station.view"]), Box::new(panel.clone()));
+        events.emit(GatewayEvent::HelpersChanged { id: Some("home-a".into()), change: "added".into(), actor: None });
+        events.emit(GatewayEvent::HelperUp { id: "home-a".into(), url: "http://192.168.1.20:7780".into() });
+        let reason = "Турбо не на связи".to_string();
+        events.emit(GatewayEvent::HelperDown { id: "home-a".into(), url: "http://192.168.1.20:7780".into(), reason });
+        tick().await;
+        let changed: Vec<(String, Option<String>, Option<String>)> = panel.messages()[1..]
+            .iter()
+            .filter_map(|message| match message {
+                LiveMessage::Changed { name, subject, change } => Some((name.clone(), subject.clone(), change.clone())),
+                _ => None,
+            })
+            .collect();
+        let home = Some("home-a".to_string());
+        assert_eq!(
+            changed,
+            [
+                ("helpers.changed".to_string(), home.clone(), Some("added".to_string())),
+                ("helpers.up".to_string(), home.clone(), Some("up".to_string())),
+                ("helpers.down".to_string(), home, Some("down".to_string())),
+            ]
+        );
     }
 
     #[tokio::test]

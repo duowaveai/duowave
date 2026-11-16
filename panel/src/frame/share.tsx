@@ -12,7 +12,7 @@ import { tr } from '../i18n';
 import { rightWords as busRightWords } from '../bus/rights';
 import { rightWords } from '../plugins/rights';
 import { Recorder, recordingSupport } from '../recorder';
-import { Sheet } from '../ui/sheet';
+import { Sheet, WinRow, WinSection } from '../ui/sheet';
 import { mediaUrl } from './media';
 
 /** Что окошко отдаёт наружу: файл своей папки и/или текст к посту. */
@@ -320,81 +320,85 @@ function ShareSheet({ pending, close }: { pending: PendingShare; close: (result:
     const senders = (publishers ?? []).filter((place) => place.kind === 'direct' && !!request.file && fits(place));
     const pages = (publishers ?? []).filter((place) => place.kind === 'manual' && (!request.file || fits(place)));
 
+    const menuReady = typeof navigator.canShare === 'function';
+    const spin = (on: boolean) => on && <span class="spinner spinner-sm" aria-hidden="true" />;
+
+    // Закрыть — крестиком, Esc или мимо: отправили что-то — «done», нет — null (как прежняя «Готово» / «Закрыть»).
     return (
         <Sheet
             title={request.title || tr.share.title}
             about={request.file ? fileName(request.file) : tr.share.textOnly}
-            onClose={() => close({ where: null })}
+            onClose={() => close({ where: said ? 'done' : null })}
             footer={
-                <div class="dash-actions">
-                    <button class="dash-done ghost" onClick={() => close({ where: said ? 'done' : null })}>
-                        {said ? tr.share.done : tr.share.close}
-                    </button>
-                </div>
-            }
-        >
-            {preparing && <p class="t-caption m-0">{tr.share.preparing}</p>}
-            {problem && <p class="t-caption m-0 c-dot-offline">{problem}</p>}
-            {said && <p class="t-caption m-0 wrap-anywhere">{said}</p>}
-            <div class="dash-actions">
-                {canSystem && (
-                    <button class="dash-done" onClick={() => void system()}>
+                canSystem || (preparing && menuReady) ? (
+                    <button class="btn btn-main" disabled={!canSystem} aria-busy={preparing || undefined} onClick={() => void system()}>
+                        {spin(preparing)}
                         {tr.share.sendMenu}
                     </button>
-                )}
-                {request.file && app && (
-                    <button class="dash-done ghost" disabled={busy === 'videos'} onClick={() => void videos()}>
-                        {tr.share.saveToVideos}
-                    </button>
-                )}
-                {request.file && (app || url) && (
-                    <button class="dash-done ghost" disabled={!file} onClick={() => void download()}>
+                ) : undefined
+            }
+        >
+            {problem && (
+                <p class="win-callout m-0" role="alert">
+                    {problem}
+                </p>
+            )}
+            {said && (
+                <p class="win-callout is-calm m-0 wrap-anywhere" role="status">
+                    {said}
+                </p>
+            )}
+            {request.text && (
+                <WinSection group>
+                    <div class="win-row is-col">
+                        <p class="win-text m-0 pre-line">{request.text}</p>
+                        <button class="btn btn-plain btn-sm self-start" onClick={() => void copy()}>
+                            {tr.share.copyText}
+                        </button>
+                    </div>
+                </WinSection>
+            )}
+            {request.file && (app || url) && (
+                <div class="flex flex-wrap gap-8">
+                    {app && (
+                        <button class="btn btn-plain" disabled={busy === 'videos'} aria-busy={busy === 'videos' || undefined} onClick={() => void videos()}>
+                            {spin(busy === 'videos')}
+                            {tr.share.saveToVideos}
+                        </button>
+                    )}
+                    <button class="btn btn-plain" disabled={!file} aria-busy={preparing || undefined} onClick={() => void download()}>
+                        {spin(preparing)}
                         {tr.share.download}
                     </button>
-                )}
-                {request.text && (
-                    <button class="dash-done ghost" onClick={() => void copy()}>
-                        {tr.share.copyText}
-                    </button>
-                )}
-            </div>
-            {request.text && <p class="t-body m-0 pre-line">{request.text}</p>}
+                </div>
+            )}
             {senders.length > 0 && (
-                <>
-                    <p class="t-caption m-0">{tr.share.gatewaySends}</p>
-                    <div class="dash-actions">
-                        {senders.map((place) => (
+                <WinSection title={tr.share.gatewaySendsTitle} group>
+                    {senders.map((place) => (
+                        <WinRow key={place.id} title={place.title} sub={place.ready ? place.about : (place.needs ?? place.about)}>
                             <button
-                                key={place.id}
-                                class="dash-done ghost"
-                                title={place.ready ? place.about : place.needs ?? place.about}
+                                class="btn btn-plain btn-sm"
                                 disabled={!place.ready || busy === place.id}
+                                aria-busy={busy === place.id || undefined}
                                 onClick={() => void direct(place)}
                             >
-                                {busy === place.id ? tr.share.sending : place.title}
+                                {spin(busy === place.id)}
+                                {busy === place.id ? tr.share.sending : tr.share.send}
                             </button>
-                        ))}
-                    </div>
-                    {senders
-                        .filter((place) => !place.ready && place.needs)
-                        .map((place) => (
-                            <p key={`${place.id}-needs`} class="t-caption m-0">
-                                {place.title}: {place.needs}
-                            </p>
-                        ))}
-                </>
+                        </WinRow>
+                    ))}
+                </WinSection>
             )}
             {pages.length > 0 && (
-                <>
-                    <p class="t-caption m-0">{tr.share.pages}</p>
-                    <div class="dash-actions">
-                        {pages.map((place) => (
-                            <button key={place.id} class="dash-done ghost" onClick={() => void page(place)}>
-                                {place.title}
+                <WinSection title={tr.share.pagesTitle} group>
+                    {pages.map((place) => (
+                        <WinRow key={place.id} title={place.title} sub={place.about}>
+                            <button class="btn btn-plain btn-sm" onClick={() => void page(place)}>
+                                {tr.share.openPage}
                             </button>
-                        ))}
-                    </div>
-                </>
+                        </WinRow>
+                    ))}
+                </WinSection>
             )}
         </Sheet>
     );
@@ -440,38 +444,42 @@ function RecordSheet({ pending, close }: { pending: PendingRecord; close: (resul
         }
     };
     const width = Math.max(0, Math.min(100, ((level + 60) / 60) * 100));
+    const saving = state === 'saving';
     return (
         <Sheet
             title={options.title || tr.share.recordTitle}
             about={tr.share.upTo(max)}
             onClose={() => close(null, tr.share.recordCancelled)}
             footer={
-                <div class="dash-actions">
+                <>
+                    <button class="btn btn-plain" onClick={() => close(null, tr.share.recordCancelled)}>
+                        {tr.share.cancel}
+                    </button>
                     {state !== 'recording' ? (
-                        <button class="dash-done" disabled={!support.ok || state === 'saving'} onClick={() => void start()}>
-                            {state === 'saving' ? tr.share.saving : tr.share.record}
+                        <button class="btn btn-main" disabled={!support.ok || saving} aria-busy={saving || undefined} onClick={() => void start()}>
+                            {saving && <span class="spinner spinner-sm" aria-hidden="true" />}
+                            {saving ? tr.share.saving : tr.share.record}
                         </button>
                     ) : (
-                        <button class="dash-done" onClick={() => void stop()}>
+                        <button class="btn btn-main" onClick={() => void stop()}>
                             {tr.share.stop(Math.round(seconds))}
                         </button>
                     )}
-                    <button class="dash-done ghost" onClick={() => close(null, tr.share.recordCancelled)}>
-                        {tr.share.cancel}
-                    </button>
-                </div>
+                </>
             }
         >
-            {options.text && <p class="t-body m-0 pre-line">{options.text}</p>}
+            {options.text && <p class="win-lead pre-line">{options.text}</p>}
             {state === 'recording' && (
                 <div class="record-level" aria-hidden="true">
                     <div style={{ width: `${width}%` }} />
                 </div>
             )}
-            {problem && <p class="t-caption m-0 c-dot-offline">{problem}</p>}
-            <p class="t-caption m-0">
-                {'app' in into ? tr.share.micToApp : tr.share.intoFolder(into.folder.split('/').pop() ?? into.folder)}
-            </p>
+            {problem && (
+                <p class="win-callout m-0" role="alert">
+                    {problem}
+                </p>
+            )}
+            <p class="win-note">{'app' in into ? tr.share.micToApp : tr.share.intoFolder(into.folder.split('/').pop() ?? into.folder)}</p>
         </Sheet>
     );
 }
@@ -483,22 +491,23 @@ function RightsSheet({ pending, close }: { pending: PendingRights; close: (allow
             about={tr.share.once}
             onClose={() => close(false)}
             footer={
-                <div class="dash-actions">
-                    <button class="dash-done" onClick={() => close(true)}>
-                        {tr.share.allowAll}
-                    </button>
-                    <button class="dash-done ghost" onClick={() => close(false)}>
+                <>
+                    <button class="btn btn-plain" onClick={() => close(false)}>
                         {tr.share.notNow}
                     </button>
-                </div>
+                    <button class="btn btn-main" onClick={() => close(true)}>
+                        {tr.share.allowAll}
+                    </button>
+                </>
             }
         >
-            {pending.rights.map((right) => (
-                <p key={right.right} class={`t-body m-0${right.out ? ' c-pill-yandex-fg' : ''}`}>
-                    {right.words}
-                    {right.out && <span class="t-caption c-pill-yandex-fg">{tr.share.leavesHouse}</span>}
-                </p>
-            ))}
+            <WinSection group>
+                {pending.rights.map((right) => (
+                    <WinRow key={right.right} title={right.words}>
+                        {right.out && <span class="pill pill-yandex">{tr.share.leavesHouseShort}</span>}
+                    </WinRow>
+                ))}
+            </WinSection>
         </Sheet>
     );
 }

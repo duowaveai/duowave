@@ -398,6 +398,19 @@ impl PluginSkill {
                 outcome.speech = Some("Не нашла, что включить.".into());
             }
         }
+        // Into the queue of what plays («добавь в очередь»): after what plays and what was added before; with nothing
+        // of ours playing, it plays now.
+        if let Some(add) = answer.get("add").filter(|_| !answer.contains_key("play")) {
+            let items =
+                media_items_with(plugin, kind, add, context.media_base_url.as_deref(), &host.play_rights(plugin));
+            if items.is_empty() {
+                if outcome.speech.is_none() {
+                    outcome.speech = Some("Не нашла, что добавить.".into());
+                }
+            } else if !self.player.add(&context.device_tag, items.clone()) {
+                outcome.directives.extend(self.player.play(&context.device_tag, items, 0, 0));
+            }
+        }
         outcome.listen = answer.get("listen").and_then(Value::as_bool).unwrap_or(false);
         if answer.contains_key("timeout") {
             host.note_line(
@@ -647,15 +660,21 @@ mod tests {
             if (station !== "джаз") return null;
             return { say: `Включаю: ${request.text}`, play: [{ id: "jazz", title: "Джаз", url: "https://radio.example/jazz.mp3" }] };
         }
+        export function queue({ station }) {
+            return { say: "Добавила", add: [{ id: station, title: station, url: `https://radio.example/${station}.mp3` }] };
+        }
     "#;
 
     /// A router with our radio (a list with «Студия 21») and a plugin that serves the radio's words.
-    async fn router() -> (Arc<Router>, Arc<PluginHost>, tempfile::TempDir) {
+    async fn router() -> (Arc<Router>, Arc<PluginHost>, tempfile::TempDir, Arc<MediaPlayer>) {
         let dir = tempfile::tempdir().unwrap();
         let manifest = serde_json::json!({
             "schema": 1, "id": "radio", "version": "1.0.0", "title": "Радио", "api": "^2", "runs": ["pc"],
             "permissions": [],
-            "contributes": { "intents": [{ "phrases": ["включи радио {station}"], "handler": "play", "capability": "radio" }] }
+            "contributes": { "intents": [
+                { "phrases": ["включи радио {station}"], "handler": "play", "capability": "radio" },
+                { "phrases": ["добавь станцию {station}"], "handler": "queue", "capability": "radio" }
+            ] }
         });
         write_package(&dir.path().join("packages"), &manifest, Some(CODE));
         std::fs::write(
@@ -678,7 +697,7 @@ mod tests {
                 catalog_key: None,
                 reserve_mb: 40,
                 storage_reserve_mb: Some(15),
-                pressure_action: crate::plugins::budget::PressureAction::Disable,
+                pressure_action: crate::plugins::budget::PressureAction::Sleep,
                 bundled: false,
                 schedules: true,
                 node_dir: std::path::PathBuf::from("node"),
@@ -708,16 +727,16 @@ mod tests {
             RouteTable::parse("own,yandex", ""),
             vec![Arc::new(RadioSkill::new(sources, player.clone()))],
         ));
-        router.register(Arc::new(PluginSkill::new(Arc::downgrade(&host), Arc::downgrade(&router), player)));
+        router.register(Arc::new(PluginSkill::new(Arc::downgrade(&host), Arc::downgrade(&router), player.clone())));
         router.add_rules(host.clone());
-        (router, host, dir)
+        (router, host, dir, player)
     }
 
     async fn heard(router: &Router, text: &str) -> anyhow::Result<Outcome> {
         let input = RouteInput {
             text: text.into(),
             device_tag: "kitchen".into(),
-            model: ModelState { enabled: true, tools: true },
+            model: ModelState { enabled: true, tools: true, ..Default::default() },
             now: now_ms(),
             ..RouteInput::default()
         };
@@ -736,7 +755,7 @@ mod tests {
 
     #[tokio::test]
     async fn plays_what_the_plugin_found_and_gives_the_built_in_radio_what_it_let_go() {
-        let (router, _host, _dir) = router().await;
+        let (router, _host, _dir, _player) = router().await;
         let jazz = heard(&router, "Включи радио джаз").await.unwrap();
         assert_eq!(jazz.directives[0].name, "audio_play");
         assert_eq!(stream(&jazz), "https://radio.example/jazz.mp3");
@@ -747,6 +766,21 @@ mod tests {
         // The plugin failed: our radio answers as it would without the plugin.
         let failed = heard(&router, "включи радио ошибка").await.unwrap();
         assert_eq!(failed.speech.as_deref(), Some("Не нашла такую станцию."));
+    }
+
+    /// `add`: into the queue of what plays, after it; with nothing of ours playing it plays now.
+    #[tokio::test]
+    async fn adds_to_the_queue_of_what_plays_or_plays_it_when_nothing_does() {
+        let (router, _host, _dir, player) = router().await;
+        let first = heard(&router, "добавь станцию rock").await.unwrap();
+        assert_eq!(first.directives[0].name, "audio_play", "nothing played: it plays");
+        assert_eq!(stream(&first), "https://radio.example/rock.mp3");
+        let more = heard(&router, "добавь станцию blues").await.unwrap();
+        assert_eq!(more.speech.as_deref(), Some("Добавила"));
+        assert!(more.directives.is_empty(), "the music goes on: {:?}", more.directives);
+        let queue: Vec<String> =
+            player.current("kitchen").unwrap().1.queue.iter().map(|item| item.id.clone()).collect();
+        assert_eq!(queue, ["radio/rock", "radio/blues"]);
     }
 
     /// The household's music as the gateway's services give it: two files of content/music.
@@ -838,7 +872,7 @@ mod tests {
                 catalog_key: None,
                 reserve_mb: 40,
                 storage_reserve_mb: Some(15),
-                pressure_action: crate::plugins::budget::PressureAction::Disable,
+                pressure_action: crate::plugins::budget::PressureAction::Sleep,
                 bundled: false,
                 schedules: true,
                 node_dir: std::path::PathBuf::from("node"),
@@ -892,7 +926,7 @@ mod tests {
             device_tag: "kitchen".into(),
             continuation,
             wake_word: continuation.is_none(),
-            model: ModelState { enabled: true, tools: true },
+            model: ModelState { enabled: true, tools: true, ..Default::default() },
             now: now_ms(),
             ..RouteInput::default()
         };
@@ -1100,7 +1134,7 @@ mod tests {
                 text: text.into(),
                 device_tag: "kitchen".into(),
                 wake_word: true,
-                model: ModelState { enabled: true, tools: true },
+                model: ModelState { enabled: true, tools: true, ..Default::default() },
                 now: now_ms(),
                 ..RouteInput::default()
             };
@@ -1150,7 +1184,7 @@ mod tests {
                 catalog_key: None,
                 reserve_mb: 40,
                 storage_reserve_mb: Some(15),
-                pressure_action: crate::plugins::budget::PressureAction::Disable,
+                pressure_action: crate::plugins::budget::PressureAction::Sleep,
                 bundled: false,
                 schedules: true,
                 node_dir: std::path::PathBuf::from("node"),

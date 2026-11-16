@@ -198,6 +198,8 @@ pub struct WorkWords {
     pub say: SayWords,
     /// The background works' phrases (docs/plans/long-tools.md): a tool's call, an app's task.
     pub background: BackgroundWords,
+    /// The works in folders (docs/plans/router-and-works.md, 10): an agent in a work folder.
+    pub folder: FolderWords,
     /// The words the layer's rules catch (talk/rules.rs): regular expressions over the normalized phrase — lower
     /// case, «ё» as «е», no punctuation. Named groups: `thing` (what it is about), `text` (the words added), `what`
     /// (the face asked for), `ask` (the wish).
@@ -240,6 +242,76 @@ pub struct BackgroundWords {
     pub summary_prompt: &'static str,
     /// What the model is told when it goes on with a background call's result: `{title}`.
     pub follow_prompt: &'static str,
+}
+
+/// The words of a work in a folder: its line of how it goes, its end and its questions. The agent is named in plain
+/// words («Claude Code»), never as a thing of DuoWave's own.
+pub struct FolderWords {
+    /// What it is in the block «Сейчас».
+    pub face: &'static str,
+    /// `{title} {folder}`: it began.
+    pub started: &'static str,
+    /// `{title} {folder}`: it waits for its turn (one work in folders at a time).
+    pub queued: &'static str,
+    /// `{title}`: words after its end went to the agent in the same session.
+    pub again: &'static str,
+    /// What it is at, from its journal: `{what}` — a file or a command.
+    pub reads: &'static str,
+    pub edits: &'static str,
+    pub runs: &'static str,
+    pub searches: &'static str,
+    pub fetches: &'static str,
+    pub thinks: &'static str,
+    pub writes: &'static str,
+    pub prepares: &'static str,
+    /// `{what}`: a check of the folder.
+    pub checks: &'static str,
+    pub hands: &'static str,
+    pub begins: &'static str,
+    /// `{until}`: a plan's limit holds it.
+    pub waits_until: &'static str,
+    pub waits: &'static str,
+    /// `{agent} {until}`: a plan's limit — wait or stop?
+    pub limit_q_until: &'static str,
+    pub limit_q: &'static str,
+    /// «Подождать» to the limit's question.
+    pub waiting: &'static str,
+    /// `{branch}`: the result's parts.
+    pub branch: &'static str,
+    pub no_changes: &'static str,
+    pub checks_passed: &'static str,
+    /// `{command}`: the first check that failed.
+    pub checks_failed: &'static str,
+    pub checks_skipped: &'static str,
+    /// `{usd}`: the agent's own estimate; by a plan — what a key would have cost.
+    pub usd: &'static str,
+    pub usd_plan: &'static str,
+    pub price_unknown: &'static str,
+    /// `{why}`: the branch did not reach the folder.
+    pub not_fetched: &'static str,
+    /// `{title} {summary}`: done.
+    pub ready: &'static str,
+    /// `{title} {why} {summary}`: not finished.
+    pub unfinished: &'static str,
+    /// `{title} {why}`: failed.
+    pub failed: &'static str,
+    /// Why, in words: `{agent}`, `{why}` where they take it.
+    pub why_auth: &'static str,
+    pub why_billing: &'static str,
+    pub why_budget: &'static str,
+    pub why_turns: &'static str,
+    pub why_refused: &'static str,
+    pub why_limit: &'static str,
+    pub why_agent: &'static str,
+    pub why_folder: &'static str,
+    pub why_git: &'static str,
+    pub why_failed: &'static str,
+    /// Said to the agent to go on in its session: after a restart, after a plan's limit.
+    pub resume_prompt: &'static str,
+    /// No helper does works in folders here.
+    pub no_computer: &'static str,
+    /// The work has nothing to go on with (its folder is gone).
+    pub no_again: &'static str,
 }
 
 /// The rules' words.

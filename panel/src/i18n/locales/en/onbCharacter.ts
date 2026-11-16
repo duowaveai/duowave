@@ -20,6 +20,7 @@ const en: Translation<typeof ru> = {
     chosen: (name: string) => `${name} answers from the next question.`,
     onlyEditors: 'The character is chosen by someone allowed to change the personality.',
     pickAnyway: 'Memory is tight. Tap the character again to choose it anyway.',
+    stationMissed: (problem: string) => `The voice is chosen, but the speaker kept its character: ${problem}`,
 };
 
 export default en;

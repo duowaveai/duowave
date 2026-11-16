@@ -266,6 +266,9 @@ fn secured(
     }
 }
 
+/// XHTTP's buffer for data not yet read, per connection (shoes' `limits.max_buffered_bytes`).
+pub const XHTTP_BUFFER_BYTES: usize = 1024 * 1024;
+
 /// The transport under the security: `tcp`/`raw` as is, `xhttp`/`splithttp`, `ws`. Others (gRPC, httpupgrade, KCP) are
 /// not in shoes' client.
 fn transported(scheme: &str, query: &Query, inner: Value) -> Result<(Value, bool), Skip> {
@@ -286,6 +289,10 @@ fn transported(scheme: &str, query: &Query, inner: Value) -> Result<(Value, bool
                 }
                 xhttp.insert("mode".into(), json!(mode));
             }
+            // What the engine may hold for the slow reader of a download: shoes' client lets HTTP/2 buffer 4 MB a stream
+            // and 64 MB a connection — ten slow downloads took 47 MB in Linux ARM (16.11). 1 MB in all still carries
+            // 80 Mbit/s at 100 ms.
+            xhttp.insert("limits".into(), json!({ "max_buffered_bytes": XHTTP_BUFFER_BYTES }));
             xhttp.insert("protocol".into(), inner);
             // Vision does not go over XHTTP (Xray ignores the flow there too).
             Ok((Value::Object(xhttp), false))
@@ -719,6 +726,7 @@ mod tests {
                 "type": "tls", "sni_hostname": "cdn.example.com", "verify": false, "alpn_protocols": ["h2"],
                 "protocol": {
                     "type": "xhttp", "path": "/tunnel", "host": "cdn.example.com", "mode": "packet-up",
+                    "limits": { "max_buffered_bytes": 1048576 },
                     "protocol": { "type": "vless", "user_id": "id" }
                 }
             })

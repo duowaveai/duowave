@@ -6,5 +6,5 @@ pub mod security;
 pub mod zone;
 
 pub use api::{created, ok, Api, ApiError, ApiResult, Body};
-pub use caller::Caller;
+pub use caller::{Caller, LinkOrigin};
 pub use zone::Zone;

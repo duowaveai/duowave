@@ -2,10 +2,14 @@
 //! DATA_DIR in a temporary folder, reqwest as the client. Every test in tests/ shares it: `mod support;`.
 //!
 //! The environment is only what the test gives (no process variables, no .env files), on top of a quiet base: no
-//! models, no recorder, the energy VAD. The gateway stops when the `Gateway` is dropped.
+//! models, no recorder, the energy VAD. The gateway stops when the `Gateway` is dropped; `restart` starts it again on
+//! its folder, as the program starts again on a package of settings. A package a gateway takes asks it to start again
+//! (`placement.restart()`, whose default execs the program — here the test binary): a test gateway only counts it
+//! (`Gateway::restarts`), and a test restarts it itself.
 
 #![allow(dead_code)]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use duowave::app::{self, App};
@@ -28,6 +32,8 @@ const BASE: &[(&str, &str)] = &[
     // The built-in plugins answer the weather, the news, the music by themselves, and some reach the internet: a test
     // gets them when it asks (tests/plugins.rs), the built-in skills otherwise.
     ("PLUGINS_BUNDLED", "false"),
+    // A computer's link port: a free one (src/helpers/link_serve.rs), never PORT + 1.
+    ("LINK_PORT", "0"),
 ];
 
 pub struct Gateway {
@@ -37,21 +43,70 @@ pub struct Gateway {
     pub port: u16,
     pub dir: tempfile::TempDir,
     pub client: reqwest::Client,
+    /// The times the gateway asked to start again (a package of settings taken): counted, never done. A test may set
+    /// its own restarter over it.
+    pub restarts: Arc<AtomicUsize>,
+    /// The test's own variables, for a restart.
+    vars: Vec<(String, String)>,
+    server: Server,
+}
+
+/// The server going: told to stop when it is dropped.
+struct Server {
     stop: Option<oneshot::Sender<()>>,
-    server: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
+    handle: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
+}
+
+impl Server {
+    /// Stops it and waits: open streams end, the services beside it stop (`app::serve`).
+    async fn stop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.await;
+        }
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+    }
 }
 
 impl Gateway {
     /// A gateway with these variables over the base, serving at once.
     pub async fn start(vars: &[(&str, &str)]) -> Gateway {
-        let dir = tempfile::tempdir().expect("a temporary folder");
+        let vars = vars.iter().map(|(key, value)| (key.to_string(), value.to_string())).collect();
+        Gateway::serve(tempfile::tempdir().expect("a temporary folder"), vars).await
+    }
+
+    /// The same gateway started again on its folder — its database, its secrets, a package of settings left for its
+    /// start — with its variables, on a new free port; its count of restarts starts again. A restarter the test set on
+    /// the app before is gone with it.
+    pub async fn restart(mut self) -> Gateway {
+        self.server.stop().await;
+        self.app.requests.shutdown();
+        let Gateway { dir, vars, .. } = self;
+        Gateway::serve(dir, vars).await
+    }
+
+    async fn serve(dir: tempfile::TempDir, vars: Vec<(String, String)>) -> Gateway {
         let mut env = Env::from_pairs(BASE.iter().copied()).with("DATA_DIR", &dir.path().to_string_lossy());
-        for (key, value) in vars {
+        for (key, value) in &vars {
             env = env.with(key, value);
         }
         prepare_data_dir(&env).expect("DATA_DIR ready");
         let config = Config::load(&env).unwrap_or_else(|error| panic!("{error}"));
         let app = App::build(config).expect("the gateway builds");
+        let restarts = Arc::new(AtomicUsize::new(0));
+        let counted = restarts.clone();
+        app.placement.set_restarter(Arc::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        }));
         // As the program does: what runs before the first request (the stations' listeners, the catalog, …).
         app.start().await.expect("the gateway starts");
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("a free port");
@@ -67,9 +122,16 @@ impl Gateway {
             port,
             dir,
             client,
-            stop: Some(stop),
-            server: Some(server),
+            restarts,
+            vars,
+            server: Server { stop: Some(stop), handle: Some(server) },
         }
+    }
+
+    /// The port the link listens on (a computer that helps), once bound.
+    #[cfg(feature = "pc")]
+    pub fn link_port(&self) -> Option<u16> {
+        self.app.link.port()
     }
 
     pub fn url(&self, path: &str) -> String {
@@ -102,21 +164,8 @@ impl Gateway {
 
     /// Stops the server and waits for it: open streams end, the requests going now are journaled.
     pub async fn stop(mut self) {
-        if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
-        }
-        if let Some(server) = self.server.take() {
-            let _ = server.await;
-        }
+        self.server.stop().await;
         self.app.requests.shutdown();
-    }
-}
-
-impl Drop for Gateway {
-    fn drop(&mut self) {
-        if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
-        }
     }
 }
 

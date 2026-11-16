@@ -12,7 +12,8 @@ import { registeredPlugins } from '../shell/registry';
 import { STARTING_SHORTCUTS, useDeskLayout } from '../shell/widgets';
 import { timeAgo } from '../time';
 import { Action } from '../ui/cards';
-import { Sheet } from '../ui/sheet';
+import { SaveBar, Sheet, SkeletonRows, WinRow, WinSection } from '../ui/sheet';
+import { AppIcon } from '../ui/app-icon';
 import { SettingsFields } from '../ui/settings-fields';
 import { Switch } from '../ui/switch';
 import { useMicHold } from '../voice/phrases';
@@ -80,16 +81,10 @@ function FilesLine({ id }: { id: string }) {
     }, [id, panel.version]);
     if (!view || view.files.length === 0) return null;
     return (
-        <div class="flex flex-col gap-4">
-            <span class="t-caption">
-                {tr.plugins.filesLine(view.files.length, mb(view.bytes), view.onStation ? null : mb(view.limitBytes))}
-            </span>
-            {view.onStation && (
-                <span class="t-caption">
-                    {tr.plugins.filesStation(mb(view.limitBytes), allBytes != null ? mb(allBytes) : null)}
-                </span>
-            )}
-        </div>
+        <WinRow
+            title={tr.plugins.filesLine(view.files.length, mb(view.bytes), view.onStation ? null : mb(view.limitBytes))}
+            sub={view.onStation ? tr.plugins.filesStation(mb(view.limitBytes), allBytes != null ? mb(allBytes) : null) : undefined}
+        />
     );
 }
 
@@ -104,12 +99,13 @@ function MidiLine({ id }: { id: string }) {
             .catch(() => setView(null));
     }, [id, panel.version]);
     if (!view) return null;
-    if (!view.available) return <span class="t-caption">{tr.plugins.midiUnavailable(view.why ?? tr.plugins.midiNone)}</span>;
+    if (!view.available) return <WinRow title="MIDI" sub={tr.plugins.midiUnavailable(view.why ?? tr.plugins.midiNone)} />;
     const listening = view.listeners.filter((listener) => listener.package === id);
     const where = (zone: string): string => (zone === 'local' ? tr.plugins.zoneLocal : zone === 'home' ? tr.plugins.zoneHome : tr.plugins.zoneAway);
     return (
-        <span class="t-caption">
-            {listening.length > 0
+        <WinRow
+            title="MIDI"
+            sub={listening.length > 0
                 ? tr.plugins.midiListening(
                       [...new Set(listening.flatMap((listener) => listener.devices))].join(', '),
                       [...new Set(listening.map((listener) => where(listener.zone)))].join(', '),
@@ -117,7 +113,7 @@ function MidiLine({ id }: { id: string }) {
                 : view.devices.length > 0
                   ? tr.plugins.midiIdle(view.devices.map((device) => device.name).join(', '))
                   : tr.plugins.midiNotConnected}
-        </span>
+        />
     );
 }
 
@@ -126,17 +122,21 @@ export const permissionTitle = rightTitle;
 
 const isAdmin = (): boolean => can('plugins.manage') && sessionStore.get()?.role === 'admin';
 
-/** Поля настроек плагина: строка (или выбор), число, да/нет, секрет — форма из манифеста. */
-function SettingsForm({ entry, onSaved }: { entry: PackageView; onSaved: (view: PackageView) => void }) {
+/**
+ * Настройки приложения из манифеста (строка, выбор, число, да/нет, секрет): поля — во вкладке «Настройки», а
+ * «Сохранить» — в нижней полосе окна (SaveBar), только когда что-то изменили.
+ */
+function useSettingsForm(entry: PackageView, onSaved: (view: PackageView) => void) {
     const fields = entry.settings ?? [];
-    const [values, setValues] = useState<Record<string, unknown>>(() => Object.fromEntries(fields.map((field) => [field.key, field.value ?? field.default ?? null])));
+    const initial = (): Record<string, unknown> => Object.fromEntries(fields.map((field) => [field.key, field.value ?? field.default ?? null]));
+    const [values, setValues] = useState<Record<string, unknown>>(initial);
     const [busy, setBusy] = useState(false);
     const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
     // Пока открыто поле личного, микрофон пульта выключен: ключ вслух не называют.
     const [privateOpen, setPrivateOpen] = useState(false);
     useMicHold(privateOpen);
-    useEffect(() => setValues(Object.fromEntries(fields.map((field) => [field.key, field.value ?? field.default ?? null]))), [entry.id, entry.version]);
-    if (fields.length === 0) return null;
+    useEffect(() => setValues(initial()), [entry.id, entry.version]);
+    const dirty = fields.length > 0 && JSON.stringify(values) !== JSON.stringify(initial());
     const save = async () => {
         setBusy(true);
         setNote(null);
@@ -149,20 +149,20 @@ function SettingsForm({ entry, onSaved }: { entry: PackageView; onSaved: (view: 
             setBusy(false);
         }
     };
-    return (
-        <div class="flex flex-col gap-8">
-            <h3 class="t-title-xs m-0">{tr.plugins.settings}</h3>
-            <SettingsFields fields={fields} values={values} busy={busy} onChange={setValues} onPrivate={setPrivateOpen} />
-            <div>
-                <Action tone="on" label={saveLabel()} busy={busy} onClick={() => void save()} />
+    const form =
+        fields.length === 0 ? (
+            <p class="win-text m-0">{tr.plugins.noSettings}</p>
+        ) : (
+            <div class="flex flex-col gap-12">
+                <SettingsFields fields={fields} values={values} busy={busy} onChange={(next) => (setNote(null), setValues(next))} onPrivate={setPrivateOpen} />
+                {note && (
+                    <span class={`t-caption ${note.ok ? 'c-accent-text' : 'c-dot-offline'}`} role={note.ok ? 'status' : 'alert'}>
+                        {note.text}
+                    </span>
+                )}
             </div>
-            {note && (
-                <span class={`t-caption ${note.ok ? 'c-accent-text' : 'c-dot-offline'}`} role={note.ok ? 'status' : 'alert'}>
-                    {note.text}
-                </span>
-            )}
-        </div>
-    );
+        );
+    return { has: fields.length > 0, form, dirty, busy, save, revert: () => setValues(initial()) };
 }
 
 /** Время колонки из её ISO-строки: «13.11 в 07:30». */
@@ -194,18 +194,25 @@ export function scheduleWords(spec: ScheduleSpec): string {
  *  срок, чем кончился прошлый раз; администратор запускает сейчас, ставит на паузу и снимает задачи из кода. */
 function ScheduleBlock({ id, admin }: { id: string; admin: boolean }) {
     const panel = usePanel();
-    const [view, setView] = useState<ScheduleView | null>(null);
+    // undefined — читается (место держит скелет), null — не прочиталось или задач нет.
+    const [view, setView] = useState<ScheduleView | null | undefined>(undefined);
     const [busy, setBusy] = useState<string | null>(null);
     const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
     useEffect(() => {
         let alive = true;
         api.packageSchedule(id)
             .then((answer) => alive && setView(answer))
-            .catch(() => alive && setView(null));
+            .catch(() => alive && setView((was) => (was === undefined ? null : was)));
         return () => {
             alive = false;
         };
     }, [id, panel.version]);
+    if (view === undefined)
+        return (
+            <WinSection title={tr.plugins.schedule}>
+                <SkeletonRows rows={1} />
+            </WinSection>
+        );
     if (!view || view.jobs.length === 0) return null;
     const act = async (what: string, action: () => Promise<ScheduleView | { outcome: string }>) => {
         setBusy(what);
@@ -234,40 +241,41 @@ function ScheduleBlock({ id, admin }: { id: string; admin: boolean }) {
             .filter(Boolean)
             .join(' · ');
     return (
-        <div class="flex flex-col gap-8">
-            <h3 class="t-title-xs m-0">{tr.plugins.schedule}</h3>
-            {!view.on && <span class="t-caption c-pill-yandex-fg">{tr.plugins.schedulesOff}</span>}
-            {view.jobs.map((job) => (
-                <div key={job.id} class="flex flex-col gap-4">
-                    <span class="fw-700">{job.title}</span>
-                    <span class="t-caption">{line(job)}</span>
-                    {job.problem && (
-                        <span class="t-caption c-dot-offline" role="alert">
-                            {job.problem}
-                        </span>
-                    )}
-                    {admin && (
-                        <div class="flex flex-wrap items-center gap-8">
-                            <Action label={tr.plugins.runNow} busy={busy === `run:${job.id}`} disabled={!!busy} onClick={() => void act(`run:${job.id}`, () => api.runScheduleJob(id, job.id))} />
-                            <Action
-                                label={job.paused ? tr.plugins.resume : tr.plugins.pause}
-                                busy={busy === `pause:${job.id}`}
-                                disabled={!!busy}
-                                onClick={() => void act(`pause:${job.id}`, () => api.pauseScheduleJob(id, job.id, !job.paused))}
-                            />
-                            {job.source === 'code' && (
-                                <Action label={tr.plugins.removeJob} busy={busy === `remove:${job.id}`} disabled={!!busy} onClick={() => void act(`remove:${job.id}`, () => api.removeScheduleJob(id, job.id))} />
-                            )}
-                        </div>
-                    )}
-                </div>
-            ))}
+        <WinSection title={tr.plugins.schedule} aside={!view.on ? tr.plugins.schedulesOff : undefined}>
+            <div class="win-group">
+                {view.jobs.map((job) => (
+                    <div key={job.id} class="win-row is-col">
+                        <span class="win-row-t">{job.title}</span>
+                        <span class="win-row-s">{line(job)}</span>
+                        {job.problem && (
+                            <span class="win-row-s c-dot-offline" role="alert">
+                                {job.problem}
+                            </span>
+                        )}
+                        {admin && (
+                            <div class="flex flex-wrap items-center gap-8">
+                                <button class="btn btn-plain btn-sm" disabled={!!busy} aria-busy={busy === `run:${job.id}` || undefined} onClick={() => void act(`run:${job.id}`, () => api.runScheduleJob(id, job.id))}>
+                                    {tr.plugins.runNow}
+                                </button>
+                                <button class="btn btn-plain btn-sm" disabled={!!busy} aria-busy={busy === `pause:${job.id}` || undefined} onClick={() => void act(`pause:${job.id}`, () => api.pauseScheduleJob(id, job.id, !job.paused))}>
+                                    {job.paused ? tr.plugins.resume : tr.plugins.pause}
+                                </button>
+                                {job.source === 'code' && (
+                                    <button class="btn btn-quiet btn-sm" disabled={!!busy} aria-busy={busy === `remove:${job.id}` || undefined} onClick={() => void act(`remove:${job.id}`, () => api.removeScheduleJob(id, job.id))}>
+                                        {tr.plugins.removeJob}
+                                    </button>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                ))}
+            </div>
             {note && (
                 <span class={`t-caption ${note.ok ? 'c-accent-text' : 'c-dot-offline'}`} role={note.ok ? 'status' : 'alert'}>
                     {note.text}
                 </span>
             )}
-        </div>
+        </WinSection>
     );
 }
 
@@ -367,7 +375,18 @@ export function appSectionOf(id: string): string | null {
     return (plugin?.sections?.find((section) => section.nav !== 'link') ?? plugin?.sections?.[0])?.id ?? null;
 }
 
-/** Окно установленного пакета: состояние, память, права, что даёт, настройки и кнопки по его виду. */
+/** Вкладки окна приложения. */
+type AppTab = 'overview' | 'access' | 'settings' | 'versions';
+
+/** Пояснение словами без ведущих « — », «: » и скобок: строки сделаны для продолжения фразы. */
+const bare = (text: string): string => text.replace(/^[\s—:(]+/, '').replace(/\)$/, '');
+
+/**
+ * Окно установленного пакета (холст «Окна DuoWave», владелец 17.11): шапка — значок, имя и метки (состояние, откуда,
+ * где, версия), редкое — за «⋯». Вкладки: «Обзор» — что это, что сказать, что даёт, состояние, «Опасное»; «Доступ» —
+ * права, адреса, ОЗУ, картинки и связи; «Настройки» — поля, «Сохранить» снизу; «Версии» — история. Главная кнопка одна,
+ * внизу справа: «Включить», «Обновить» или «Открыть».
+ */
 export function InstalledPackageSheet({
     entry,
     onClose,
@@ -388,8 +407,7 @@ export function InstalledPackageSheet({
     const [view, setView] = useState<PackageView>(entry);
     const [busy, setBusy] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
-    /** «История и версии»: лента приложения в этом окне. */
-    const [history, setHistory] = useState(false);
+    const [tab, setTab] = useState<AppTab>('overview');
     useEffect(() => setView(entry), [entry]);
     const kind = view.kind ?? 'plugin';
     // Приложение (своя программа рядом со шлюзом) ведёт себя как плагин: включается, работает, пишет журнал.
@@ -409,6 +427,10 @@ export function InstalledPackageSheet({
             setBusy(null);
         }
     };
+    const settings = useSettingsForm(view, (next) => {
+        setView(next);
+        onChanged();
+    });
     const memory = pluginMemoryLine(view);
     const contributes = view.contributes;
     const section = appSectionOf(view.id);
@@ -417,155 +439,263 @@ export function InstalledPackageSheet({
     const [desk, deskDo] = useDeskLayout(panel.role.role);
     const shortcuts = desk.shortcuts ?? STARTING_SHORTCUTS;
     const pinned = shortcuts.includes(view.id);
-    const hosts = view.permissions.filter((permission) => permission.startsWith('net:'));
+    const hosts = view.permissions.filter((permission) => permission.startsWith('net:')).map((host) => host.slice(4));
     const rights = view.permissions.filter((permission) => !permission.startsWith('net:'));
     const forkable = admin && (origin === 'bundled' || origin === 'catalog') && (kind === 'plugin' || kind === 'theme');
     const editable = admin && (view.editable ?? origin === 'user') && (kind === 'plugin' || kind === 'theme');
+    const canDisable = admin && runs && view.enabled && (view.canDisable ?? true);
+    const removable = admin && (view.removable ?? origin !== 'bundled') && origin !== 'system';
+    const open = section && view.enabled ? () => (onClose(), panel.go(section)) : null;
+
+    const tabs: Array<{ id: AppTab; label: string }> = [
+        { id: 'overview', label: tr.plugins.tabOverview },
+        ...(runs || view.permissions.length > 0 ? [{ id: 'access' as const, label: tr.plugins.tabAccess }] : []),
+        ...(admin && runs && settings.has ? [{ id: 'settings' as const, label: tr.plugins.tabSettings }] : []),
+        ...(admin && origin !== 'system' ? [{ id: 'versions' as const, label: tr.plugins.tabVersions }] : []),
+    ];
+    const shown = tabs.some((entry) => entry.id === tab) ? tab : 'overview';
+
+    const menu = [
+        ...(runs && view.enabled && admin ? [{ label: tr.plugins.reload, disabled: !!busy, act: () => void run('reload', () => api.reloadPackage(view.id)) }] : []),
+        ...(editable ? [{ label: tr.plugins.openWorkshop, act: () => (onClose(), panel.go('skills', 'workshop', view.id)) }] : []),
+        ...(forkable
+            ? [
+                  {
+                      label: tr.plugins.fork,
+                      disabled: !!busy,
+                      act: () =>
+                          void run('fork', async () => {
+                              const copy = await api.forkPackage(view.id);
+                              onClose();
+                              panel.go('skills', 'workshop', copy.id);
+                          }),
+                  },
+              ]
+            : []),
+    ];
+
+    const state = !runs ? null : view.problem ? (
+        <span class="pill pill-error">{tr.plugins.stateProblem}</span>
+    ) : view.enabled ? (
+        <span class="pill pill-own">{tr.plugins.stateOn}</span>
+    ) : (
+        <span class="pill pill-off">{tr.plugins.stateOff}</span>
+    );
+    const meta = (
+        <>
+            {state}
+            <span class="win-chip">{ORIGIN_TITLES[origin]}</span>
+            <span class="win-chip">{placeOf(kind, view.runtime, view.runs)}</span>
+            {view.version && <span class="win-chip">{view.version}</span>}
+        </>
+    );
+
+    // Нижняя полоса: на «Настройках» — «Сохранить», когда изменили; иначе — одно главное действие.
+    const footer =
+        shown === 'settings' ? (
+            settings.dirty || settings.busy ? (
+                <SaveBar dirty={settings.dirty} busy={settings.busy} saveLabel={saveLabel()} onRevert={settings.revert} onSave={() => void settings.save()} />
+            ) : undefined
+        ) : admin && runs && !view.enabled && (view.canDisable ?? true) ? (
+            <button class="btn btn-main" disabled={!!busy} aria-busy={busy === 'toggle' || undefined} onClick={() => void run('toggle', () => api.enablePackage(view.id))}>
+                {busy === 'toggle' && <span class="spinner spinner-sm" aria-hidden="true" />}
+                {tr.plugins.turnOn}
+            </button>
+        ) : update ? (
+            <>
+                {open && (
+                    <button class="btn btn-plain" onClick={open}>
+                        {tr.magicplace.open}
+                    </button>
+                )}
+                <button class="btn btn-main" disabled={update.busy} aria-busy={update.busy || undefined} onClick={update.run}>
+                    {update.busy && <span class="spinner spinner-sm" aria-hidden="true" />}
+                    {tr.catalog.update}
+                </button>
+            </>
+        ) : open ? (
+            <button class="btn btn-main" onClick={open}>
+                {tr.magicplace.open}
+            </button>
+        ) : undefined;
+
+    // Фразы как их говорят: «какая погода {when}» → «какая погода …»; одинаковые после этого — одной меткой.
+    const phrases = [...new Set((contributes?.phrases ?? []).map((phrase) => phrase.replace(/\{[^}]+\}/g, '…')))];
+    const gives = contributes && runs && (contributes.tools.length > 0 || contributes.media.length > 0 || contributes.events.length > 0 || contributes.panel);
+    const panelWords = !contributes?.panel
+        ? ''
+        : view.panelModule
+          ? origin === 'system' || origin === 'bundled'
+              ? ''
+              : bare(tr.plugins.panelOwnWindow)
+          : view.enabled
+            ? bare(tr.plugins.panelCards)
+            : bare(tr.plugins.panelWhenOn);
+    const status = runs && (view.lastCallAt || view.problem || view.lastError);
+    const where = view.runs.length > 0 ? view.runs.map((place) => ({ pc: tr.plugins.runsPc, station: tr.plugins.runsStation, stationServer: tr.plugins.runsStationServer })[place] ?? place).join(', ') : null;
+
     return (
-        <Sheet title={view.title} about={`${ORIGIN_TITLES[origin]} · ${placeOf(kind, view.runtime, view.runs)}${view.version ? tr.plugins.versionSuffix(view.version) : ''}`} onClose={onClose}>
-            {view.description && <p class="t-body-sm m-0">{view.description}</p>}
-            {/* Выключенное — первым делом «Включить»: без этого у приложения нет ни виджета, ни окна, а настройки ниже
-                можно заполнить и потом. */}
-            {admin && runs && !view.enabled && (view.canDisable ?? true) && (
-                <div class="flex flex-wrap items-center gap-8">
-                    <span class="t-body-sm flex-1 min-w-0">{tr.plugins.offNote}</span>
-                    <Action
-                        tone="on"
-                        label={tr.plugins.turnOn}
-                        busy={busy === 'toggle'}
-                        disabled={!!busy}
-                        onClick={() => void run('toggle', () => api.enablePackage(view.id))}
-                    />
-                </div>
+        <Sheet
+            title={view.title}
+            icon={<AppIcon id={view.id} title={view.title} size={44} />}
+            meta={meta}
+            menu={menu}
+            tabs={tabs}
+            tab={shown}
+            onTab={setTab}
+            onClose={onClose}
+            footer={footer}
+        >
+            {error && (
+                <p class="win-callout m-0" role="alert">
+                    {error}
+                </p>
             )}
-            {/* Окно приложения (его раздел): в доке ячейки нет (docs/plans/menu-scheme.md) — открывается отсюда и ярлыком. */}
-            {(section || update) && (
-                <div class="flex flex-wrap items-center gap-8">
-                    {section && view.enabled && (
-                        <Action
-                            label={tr.magicplace.open}
-                            onClick={() => {
-                                onClose();
-                                panel.go(section);
-                            }}
-                        />
+            {shown === 'overview' && (
+                <>
+                    {view.description && <p class="win-lead">{view.description}</p>}
+                    {admin && runs && !view.enabled && (view.canDisable ?? true) && <p class="win-callout is-calm m-0">{tr.plugins.offNote}</p>}
+                    {runs && phrases.length > 0 && (
+                        <WinSection title={tr.plugins.sayTitle}>
+                            <div class="win-tags">
+                                {phrases.slice(0, 8).map((phrase) => (
+                                    <span key={phrase} class="win-tag">
+                                        {phrase}
+                                    </span>
+                                ))}
+                                {phrases.length > 8 && <span class="win-tag is-more">{tr.plugins.phrasesMore(phrases.length - 8)}</span>}
+                            </div>
+                        </WinSection>
                     )}
-                    {update && <Action tone="on" label={tr.catalog.update} busy={update.busy} disabled={update.busy} onClick={update.run} />}
-                </div>
+                    {(gives || (runs && view.enabled && desk.shortcutsBar)) && (
+                        <WinSection title={tr.plugins.contributes} group>
+                            {contributes && runs && contributes.tools.length > 0 && (
+                                <div class="win-row is-col">
+                                    <div class="win-row-main">
+                                        <span class="win-row-t">{tr.plugins.toolsTitle}</span>
+                                        <span class="win-row-s">{tr.plugins.toolsAbout}</span>
+                                    </div>
+                                    <div class="win-tags">
+                                        {contributes.tools.map((tool) => (
+                                            <span key={tool} class="win-code">
+                                                {tool}
+                                            </span>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                            {contributes && runs && contributes.media.length > 0 && (
+                                <WinRow title={tr.plugins.sourcesTitle} sub={contributes.media.join(', ')} />
+                            )}
+                            {contributes && runs && contributes.events.length > 0 && (
+                                <div class="win-row is-col">
+                                    <span class="win-row-t">{tr.plugins.eventsTitle}</span>
+                                    <div class="win-tags">
+                                        {contributes.events.map((event) => (
+                                            <span key={event} class="win-code">
+                                                {event}
+                                            </span>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                            {contributes?.panel && runs && <WinRow title={tr.plugins.panelPart} sub={panelWords || undefined} />}
+                            {runs && view.enabled && desk.shortcutsBar && (
+                                <WinRow title={tr.desk.shortcutOnDesk} sub={tr.desk.shortcutOnDeskAbout}>
+                                    <Switch
+                                        on={pinned}
+                                        label={tr.desk.shortcutOnDesk}
+                                        onChange={(on) => deskDo.shortcuts(on ? [...shortcuts.filter((id) => id !== view.id), view.id] : shortcuts.filter((id) => id !== view.id))}
+                                    />
+                                </WinRow>
+                            )}
+                        </WinSection>
+                    )}
+                    {runs && view.permissions.includes('call:system/schedule') && <ScheduleBlock id={view.id} admin={admin} />}
+                    {status && (
+                        <WinSection title={tr.plugins.statusTitle} group>
+                            {view.problem && (
+                                <div class="win-row">
+                                    <span class="win-row-s c-dot-offline" role="alert">
+                                        {view.problem}
+                                    </span>
+                                </div>
+                            )}
+                            {view.lastError && (
+                                <div class="win-row">
+                                    <span class="win-row-s c-dot-offline">{tr.plugins.lastError(timeAgo(view.lastError.at), view.lastError.message)}</span>
+                                </div>
+                            )}
+                            {view.lastCallAt && (
+                                <div class="win-row">
+                                    <span class="win-row-s">{tr.plugins.lastCall(timeAgo(view.lastCallAt))}</span>
+                                </div>
+                            )}
+                        </WinSection>
+                    )}
+                    {(where || view.runsAt) && (
+                        <WinSection title={tr.plugins.whereTitle} group>
+                            <WinRow
+                                title={where ?? ''}
+                                sub={view.runsAt === 'home' ? tr.plugins.runsAtHome : view.runsAt === 'here' ? tr.plugins.runsAtHere : undefined}
+                            />
+                        </WinSection>
+                    )}
+                    {(canDisable || removable) && (
+                        <WinSection title={tr.ui.danger} group>
+                            {canDisable && (
+                                <WinRow title={tr.plugins.turnOff} sub={tr.plugins.turnOffAbout}>
+                                    <button class="btn btn-danger btn-sm" disabled={!!busy} aria-busy={busy === 'toggle' || undefined} onClick={() => void run('toggle', () => api.disablePackage(view.id))}>
+                                        {tr.plugins.turnOff}
+                                    </button>
+                                </WinRow>
+                            )}
+                            {removable && (
+                                <WinRow title={tr.plugins.remove} sub={tr.plugins.removeAbout}>
+                                    <button class="btn btn-danger btn-sm" disabled={!!busy} onClick={() => onRemove(view)}>
+                                        {tr.plugins.remove}
+                                    </button>
+                                </WinRow>
+                            )}
+                        </WinSection>
+                    )}
+                    <p class="win-note">{ORIGIN_RULES[origin]}</p>
+                    {!admin && runs && <p class="win-note">{tr.plugins.adminOnly}</p>}
+                </>
             )}
-            {runs && view.enabled && desk.shortcutsBar && (
-                <label class="w-toggle">
-                    <span class="flex-1 min-w-0 flex flex-col">
-                        <span class="w-strong">{tr.desk.shortcutOnDesk}</span>
-                        <span class="w-cap">{tr.desk.shortcutOnDeskAbout}</span>
-                    </span>
-                    <Switch
-                        on={pinned}
-                        label={tr.desk.shortcutOnDesk}
-                        onChange={(on) => deskDo.shortcuts(on ? [...shortcuts.filter((id) => id !== view.id), view.id] : shortcuts.filter((id) => id !== view.id))}
-                    />
-                </label>
+            {shown === 'access' && (
+                <>
+                    <WinSection title={tr.plugins.takesTitle} group>
+                        {rights.map((right) => (
+                            <WinRow key={right} title={permissionTitle(right)}>
+                                <span class="win-code">{right}</span>
+                            </WinRow>
+                        ))}
+                        {hosts.length > 0 && (
+                            <div class="win-row is-col">
+                                <div class="win-row-main">
+                                    <span class="win-row-t">{tr.plugins.internetTitle}</span>
+                                    <span class="win-row-s">{tr.plugins.internetAbout}</span>
+                                </div>
+                                <div class="win-tags">
+                                    {hosts.map((host) => (
+                                        <span key={host} class="win-code">
+                                            {host}
+                                        </span>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                        {memory && runs && <WinRow title={memory} />}
+                        {runs && <FilesLine id={view.id} />}
+                        {runs && view.permissions.includes('listen:device/midi') && <MidiLine id={view.id} />}
+                        {view.permissions.length === 0 && !memory && <WinRow title={tr.ui.rightsNoneHome} />}
+                    </WinSection>
+                    {admin && runs && view.enabled && <LinksBlock id={view.id} />}
+                </>
             )}
-            <p class="t-caption m-0">{ORIGIN_RULES[origin]}</p>
-            {runs && (
-                <div class="flex flex-col gap-4">
-                    {memory && <span class="t-caption">{memory}</span>}
-                    {view.lastCallAt && <span class="t-caption">{tr.plugins.lastCall(timeAgo(view.lastCallAt))}</span>}
-                    {view.problem && (
-                        <span class="t-caption c-dot-offline" role="alert">
-                            {view.problem}
-                        </span>
-                    )}
-                    {view.lastError && (
-                        <span class="t-caption c-dot-offline">
-                            {tr.plugins.lastError(timeAgo(view.lastError.at), view.lastError.message)}
-                        </span>
-                    )}
-                </div>
-            )}
-            {contributes && runs && (
-                <div class="flex flex-col gap-4">
-                    <h3 class="t-title-xs m-0">{tr.plugins.contributes}</h3>
-                    {contributes.phrases.length > 0 && <span class="t-caption">{tr.plugins.phrases(contributes.phrases.slice(0, 6), Math.max(0, contributes.phrases.length - 6))}</span>}
-                    {contributes.tools.length > 0 && <span class="t-caption">{tr.plugins.brainTools(contributes.tools.join(', '))}</span>}
-                    {contributes.media.length > 0 && <span class="t-caption">{tr.plugins.sources(contributes.media.join(', '))}</span>}
-                    {contributes.events.length > 0 && <span class="t-caption">{tr.plugins.events(contributes.events.join(', '))}</span>}
-                    {contributes.panel && (
-                        <span class="t-caption">
-                            {tr.plugins.panelPart}
-                            {view.panelModule
-                                ? origin === 'system' || origin === 'bundled'
-                                    ? ''
-                                    : tr.plugins.panelOwnWindow
-                                : view.enabled
-                                  ? tr.plugins.panelCards
-                                  : tr.plugins.panelWhenOn}
-                        </span>
-                    )}
-                </div>
-            )}
-            {view.permissions.length > 0 && (
-                <div class="flex flex-col gap-4">
-                    <h3 class="t-title-xs m-0">{tr.plugins.rights}</h3>
-                    {rights.length > 0 && <span class="t-caption">{rights.map(permissionTitle).join(', ')}</span>}
-                    {hosts.length > 0 && <span class="t-caption">{tr.plugins.network(hosts.map((host) => host.slice(4)).join(', '))}</span>}
-                </div>
-            )}
-            {view.runsAt === 'home' && <span class="t-caption">{tr.plugins.runsAtHome}</span>}
-            {view.runsAt === 'here' && <span class="t-caption">{tr.plugins.runsAtHere}</span>}
-            {view.runs.length > 0 && <span class="t-caption">{tr.plugins.runsList(view.runs.map((runs) => ({ pc: tr.plugins.runsPc, station: tr.plugins.runsStation, stationServer: tr.plugins.runsStationServer })[runs] ?? runs).join(', '))}</span>}
-            {runs && view.permissions.includes('call:system/schedule') && <ScheduleBlock id={view.id} admin={admin} />}
-            {runs && <FilesLine id={view.id} />}
-            {runs && view.permissions.includes('listen:device/midi') && <MidiLine id={view.id} />}
-            {admin && runs && view.enabled && <LinksBlock id={view.id} />}
-            {admin && runs && <SettingsForm entry={view} onSaved={(next) => { setView(next); onChanged(); }} />}
-            {admin && (
-                <div class="flex flex-wrap items-center gap-8">
-                    {runs && view.enabled && (view.canDisable ?? true) && (
-                        <Action
-                            tone="off"
-                            label={tr.plugins.turnOff}
-                            busy={busy === 'toggle'}
-                            disabled={!!busy}
-                            onClick={() => void run('toggle', () => api.disablePackage(view.id))}
-                        />
-                    )}
-                    {runs && view.enabled && (
-                        <Action label={tr.plugins.reload} busy={busy === 'reload'} disabled={!!busy} onClick={() => void run('reload', () => api.reloadPackage(view.id))} />
-                    )}
-                    {origin !== 'system' && (
-                        <Action label={history ? tr.plugins.hideHistory : tr.plugins.history} disabled={!!busy} onClick={() => setHistory((open) => !open)} />
-                    )}
-                    {editable && (
-                        <Action
-                            label={tr.plugins.openWorkshop}
-                            disabled={!!busy}
-                            onClick={() => {
-                                onClose();
-                                panel.go('skills', 'workshop', view.id);
-                            }}
-                        />
-                    )}
-                    {forkable && (
-                        <Action
-                            label={tr.plugins.fork}
-                            busy={busy === 'fork'}
-                            disabled={!!busy}
-                            onClick={() =>
-                                void run('fork', async () => {
-                                    const copy = await api.forkPackage(view.id);
-                                    onClose();
-                                    panel.go('skills', 'workshop', copy.id);
-                                })
-                            }
-                        />
-                    )}
-                    {(view.removable ?? origin !== 'bundled') && origin !== 'system' && (
-                        <Action label={tr.plugins.remove} disabled={!!busy} onClick={() => onRemove(view)} />
-                    )}
-                </div>
-            )}
-            {admin && history && (
+            {shown === 'settings' && settings.form}
+            {shown === 'versions' && admin && (
                 <HistoryCard
                     id={view.id}
                     mode="installed"
@@ -577,12 +707,6 @@ export function InstalledPackageSheet({
                         })
                     }
                 />
-            )}
-            {!admin && runs && <p class="t-caption m-0">{tr.plugins.adminOnly}</p>}
-            {error && (
-                <p class="t-caption m-0 c-dot-offline" role="alert">
-                    {error}
-                </p>
             )}
         </Sheet>
     );

@@ -1,0 +1,137 @@
+#!/bin/sh
+# A stub of Claude Code for the tests of the works in folders (docs/plans/router-and-works.md, stage 3): it answers
+# `--version`, `auth status` and a run `-p … --output-format stream-json` with a stream like the real one. What it does
+# is told by files beside it (the gateway gives a run no environment of the test):
+#   signed-out — `auth status` says nobody signed in (exit 1);
+#   mode       — ok (default): writes contacts.txt, a subagent's step, a plan, a result with dollars;
+#                push: tries `git push` of the branch — only when --allowedTools lists it, else a refusal;
+#                slow: works until SIGINT ends its turn; limit: a plan's limit the first time, then ok;
+#                fail: an error; bypass: reports the mode bypassPermissions; billing: a key with no money.
+# Each run appends to calls.log its arguments and whether a key came, and to prompts.log what it was asked.
+here=$(cd "$(dirname "$0")" && pwd)
+case "$1" in
+--version)
+    echo "2.1.302 (Claude Code)"
+    exit 0
+    ;;
+auth)
+    if [ -f "$here/signed-out" ]; then
+        echo '{"loggedIn":false,"authMethod":"none"}'
+        exit 1
+    fi
+    if [ -n "$ANTHROPIC_API_KEY" ]; then
+        echo '{"loggedIn":true,"authMethod":"api_key"}'
+    else
+        echo '{"loggedIn":true,"authMethod":"claude.ai"}'
+    fi
+    exit 0
+    ;;
+esac
+
+session="none"
+allowed=""
+taking=""
+for arg in "$@"; do
+    case "$taking" in
+    session) session="$arg"; taking="" ; continue ;;
+    allow)
+        case "$arg" in
+        --*) taking="" ;;
+        *) allowed="$allowed|$arg"; continue ;;
+        esac
+        ;;
+    esac
+    case "$arg" in
+    --session-id|--resume) taking="session" ;;
+    --allowedTools) taking="allow" ;;
+    esac
+done
+key="no"
+source="none"
+if [ -n "$ANTHROPIC_API_KEY" ]; then
+    key="yes"
+    source="ANTHROPIC_API_KEY"
+fi
+prompt=$(cat)
+echo "$* key=$key" >> "$here/calls.log"
+printf '%s\n' "$prompt" >> "$here/prompts.log"
+mode=$(cat "$here/mode" 2>/dev/null || echo ok)
+permission="acceptEdits"
+[ "$mode" = "bypass" ] && permission="bypassPermissions"
+
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$session\",\"model\":\"claude-sonnet-5-5\",\"apiKeySource\":\"$source\",\"permissionMode\":\"$permission\",\"claude_code_version\":\"2.1.302\",\"cwd\":\"$(pwd)\"}"
+
+result() {
+    echo "{\"type\":\"result\",\"subtype\":\"$1\",\"is_error\":$2,\"result\":\"$3\",\"session_id\":\"$session\",\"total_cost_usd\":$4,\"modelUsage\":{\"claude-sonnet-5-5\":{\"inputTokens\":100,\"outputTokens\":50,\"cacheReadInputTokens\":1000,\"cacheCreationInputTokens\":10,\"costUSD\":$4}},\"permission_denials\":[]}"
+}
+
+case "$mode" in
+bypass)
+    sleep 5
+    result success false "done" 0
+    exit 0
+    ;;
+fail)
+    echo '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"Something broke."}]}}'
+    result error_during_execution true "API Error: 500" 0.01
+    exit 1
+    ;;
+billing)
+    echo '{"type":"assistant","error":"billing_error","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"Credit balance is too low"}]}}'
+    result success true "Credit balance is too low" 0
+    exit 1
+    ;;
+limit)
+    if [ ! -f "$here/limited" ]; then
+        touch "$here/limited"
+        resets=$(( $(date +%s) + 2 ))
+        echo "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"resetsAt\":$resets,\"rateLimitType\":\"five_hour\"},\"session_id\":\"$session\"}"
+        result success true "You've hit your session limit" 0.02
+        exit 1
+    fi
+    ;;
+slow)
+    trap 'result success false "Stopped by the person." 0.05; exit 0' INT
+    echo '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","id":"t-slow","name":"Bash","input":{"command":"npm test","description":"Run tests"}}]}}'
+    i=0
+    while [ $i -lt 300 ]; do
+        if [ -f "$here/go-on" ]; then
+            break
+        fi
+        sleep 0.1
+        i=$((i + 1))
+    done
+    echo '{"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"t-slow","content":"ok"}]}}'
+    ;;
+push)
+    branch=$(git rev-parse --abbrev-ref HEAD)
+    echo "{\"type\":\"assistant\",\"parent_tool_use_id\":null,\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"t-push\",\"name\":\"Bash\",\"input\":{\"command\":\"git push origin $branch\"}}]}}"
+    case "$allowed" in
+    *"Bash(git push"*)
+        git add -A >/dev/null 2>&1
+        git -c user.name=Stub -c user.email=stub@example.com commit -qm "stub" >/dev/null 2>&1
+        if git push -q origin "$branch" >/dev/null 2>&1; then
+            echo '{"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"t-push","content":"pushed"}]}}'
+        else
+            echo '{"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"t-push","content":"push failed","is_error":true}]}}'
+        fi
+        ;;
+    *)
+        echo '{"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"t-push","message":"This command requires approval"}'
+        ;;
+    esac
+    ;;
+esac
+
+# The work itself: a file, a subagent's step, a plan, the last words.
+echo "form v$(wc -l < "$here/calls.log" | tr -d ' ')" >> contacts.txt
+echo '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"thinking","thinking":"A contacts page with a form."},{"type":"tool_use","id":"t1","name":"Write","input":{"file_path":"contacts.txt","content":"form"}}]}}'
+echo '{"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"written"}]}}'
+echo '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","id":"task1","name":"Task","input":{"description":"Check the form"}}]}}'
+echo '{"type":"assistant","parent_tool_use_id":"task1","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"contacts.txt"}}]}}'
+echo '{"type":"user","parent_tool_use_id":"task1","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"form"}]}}'
+echo '{"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"task1","content":"fine"}]}}'
+echo '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","id":"todo","name":"TodoWrite","input":{"todos":[{"content":"Form","status":"completed"}]}}]}}'
+echo '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"Done: the contacts page."}]}}'
+result success false "Done: the contacts page." 1.2
+exit 0

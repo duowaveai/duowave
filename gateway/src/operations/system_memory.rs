@@ -70,7 +70,7 @@ pub fn number(text: &str) -> f64 {
 
 /// What `sysctl` is asked on macOS, by name: each answers as `name: value`, so one the system lacks costs only itself.
 /// 13.11: macOS 15 has no `vm.compressor.swapper.swapins_total`; asked with -n, the whole call failed (exit 1) and a
-/// 48 GB Mac with 90 % free fell back to its free pages alone — «Системе уже не хватает памяти».
+/// 48 GB Mac with 90 % free fell back to its free pages alone — «Системе уже не хватает ОЗУ».
 pub const DARWIN_SYSCTL: [&str; 8] = [
     "hw.pagesize",
     "vm.page_free_count",
@@ -267,6 +267,79 @@ pub fn process_rss_mb(pid: Option<u32>) -> Option<u64> {
     None
 }
 
+/// What an app's program holds together with the processes it started (the «VPN»'s engine is its own child), MB:
+/// each one's own memory (RssAnon) and the pages of files once — the largest RssFile + RssShmem among them, since such
+/// helpers mostly run the program's own file and share its code (from tmpfs that code is RssShmem). For a program
+/// alone this is its VmRSS. /proc on
+/// Linux; elsewhere the program alone, as `ps` tells it (a sum of resident sets would count shared code twice).
+pub fn program_rss_mb(pid: u32) -> Option<u64> {
+    if !cfg!(target_os = "linux") {
+        return process_rss_mb(Some(pid));
+    }
+    let own = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let mut statuses = vec![own];
+    let table = process_table();
+    statuses.extend(
+        descendants(pid, &table)
+            .into_iter()
+            .filter_map(|child| std::fs::read_to_string(format!("/proc/{child}/status")).ok()),
+    );
+    tree_rss(&statuses)
+}
+
+/// Every process's id and its parent's, from /proc/<pid>/stat.
+fn process_table() -> Vec<(u32, u32)> {
+    let Ok(entries) = std::fs::read_dir("/proc") else { return Vec::new() };
+    entries
+        .filter_map(|entry| {
+            let pid: u32 = entry.ok()?.file_name().to_str()?.parse().ok()?;
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            Some((pid, parent_in_stat(&stat)?))
+        })
+        .collect()
+}
+
+/// The parent's id in a /proc/<pid>/stat line: the second field after the name, which is in parentheses and may hold
+/// spaces and parentheses itself.
+fn parent_in_stat(stat: &str) -> Option<u32> {
+    stat[stat.rfind(')')? + 1..].split_whitespace().nth(1)?.parse().ok()
+}
+
+/// The children of `pid`, their children and so on.
+fn descendants(pid: u32, table: &[(u32, u32)]) -> Vec<u32> {
+    let mut found = Vec::new();
+    let mut next = vec![pid];
+    while let Some(parent) = next.pop() {
+        let children: Vec<u32> = table.iter().filter(|(_, of)| *of == parent).map(|(child, _)| *child).collect();
+        for child in children {
+            if child != pid && !found.contains(&child) {
+                found.push(child);
+                next.push(child);
+            }
+        }
+    }
+    found
+}
+
+/// The sum of /proc/<pid>/status of a program and its processes, MB (`program_rss_mb`). A kernel older than 4.5 has no
+/// RssAnon: each process's VmRSS is its own then.
+fn tree_rss(statuses: &[String]) -> Option<u64> {
+    let mut own = 0.0;
+    let mut files: f64 = 0.0;
+    for status in statuses {
+        match meminfo_field(status, "RssAnon") {
+            Some(anon) => {
+                own += anon;
+                let shared =
+                    meminfo_field(status, "RssFile").unwrap_or(0.0) + meminfo_field(status, "RssShmem").unwrap_or(0.0);
+                files = files.max(shared);
+            }
+            None => own += meminfo_field(status, "VmRSS")?,
+        }
+    }
+    Some(round((own + files) / MB) as u64)
+}
+
 /// Free room on the disk that holds `path`, MB; None where it cannot tell.
 #[cfg(unix)]
 pub fn free_disk_mb(path: &Path) -> Option<u64> {
@@ -394,5 +467,33 @@ mod tests {
         assert!(free_disk_mb(&dir.path().join("not/yet")).is_some(), "a folder to be is on its parent's disk");
         std::fs::write(dir.path().join("a"), vec![0u8; 1_500_000]).unwrap();
         assert_eq!(folder_mb(dir.path()), 2);
+    }
+
+    #[test]
+    fn counts_a_program_with_its_children_and_their_shared_code_once() {
+        // The «VPN» on Linux ARM made like the station (16.11): the control and its engine, one file.
+        let control = "Name:\tduowave-own-se\nVmRSS:\t    8532 kB\nRssAnon:\t     436 kB\nRssFile:\t    8096 kB\nRssShmem:\t       0 kB\n";
+        let engine = "Name:\tduowave-own-se\nVmRSS:\t   10828 kB\nRssAnon:\t    1352 kB\nRssFile:\t    9476 kB\nRssShmem:\t       0 kB\n";
+        assert_eq!(tree_rss(&[control.into()]), Some(8), "alone: its VmRSS");
+        assert_eq!(tree_rss(&[control.into(), engine.into()]), Some(11), "0.4 + 1.3 own + 9.3 of the file once");
+        // The same file from tmpfs: its code is RssShmem, still once.
+        let control = "VmRSS:\t    8512 kB\nRssAnon:\t     416 kB\nRssFile:\t       4 kB\nRssShmem:\t    8092 kB\n";
+        let engine = "VmRSS:\t   10508 kB\nRssAnon:\t    1224 kB\nRssFile:\t       4 kB\nRssShmem:\t    9280 kB\n";
+        assert_eq!(tree_rss(&[control.into(), engine.into()]), Some(11));
+        // A kernel without RssAnon: each one's VmRSS.
+        assert_eq!(tree_rss(&["VmRSS:\t 2048 kB\n".into(), "VmRSS:\t 1024 kB\n".into()]), Some(3));
+        assert_eq!(tree_rss(&["Name:\tx\n".into()]), None);
+
+        assert_eq!(parent_in_stat("812 (duowave-own-se) S 811 812 1 0 -1"), Some(811));
+        assert_eq!(parent_in_stat("9 (a (b) c) R 4 9 9 0"), Some(4), "a name with spaces and parentheses");
+        let table = [(1, 0), (10, 1), (11, 10), (12, 11), (13, 10), (20, 1)];
+        let mut tree = descendants(10, &table);
+        tree.sort();
+        assert_eq!(tree, vec![11, 12, 13]);
+        assert!(descendants(20, &table).is_empty());
+
+        // This test's own process: with whatever it started, never less than its own memory counted the same way.
+        let pid = std::process::id();
+        assert!(program_rss_mb(pid).is_some_and(|mb| mb > 0));
     }
 }

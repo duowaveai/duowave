@@ -2,12 +2,16 @@
 // персонажей с цветным «лицом», фразой и «Послушать»; нажатие выбирает персонажа сразу (POST …/choose), как «Выбрать»
 // в «Персонажах» (screens/characters.tsx): голосу без модели — окно «нужна модель», памяти впритык — второе нажатие
 // «всё равно». Шапку и кнопки внизу рисует рамка.
+// DuoWave уже на колонке (пульт стал помощником): характер — настройка колонки, её мозг говорит им; голос — этого
+// компьютера, колонка говорит его голосом (gateway/src/characters/mod.rs, station_voice). Выбор идёт в оба места: здесь
+// — голос и его модель, на колонке — характер.
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { CharacterView, CharactersView, api, can, isTight, needsOf, problemOf } from '../../api';
+import { CharacterView, CharactersView, api, can, isTight, needsOf, problemOf, stationCall } from '../../api';
 import { stopAudio, useAudio } from '../../audio';
 import { tr } from '../../i18n';
+import { usePanel } from '../../shell/context';
 import { useMediaUrl } from '../../ui/media';
 import { useNeedsFlow } from '../../ui/needs';
 import { useOnboarding } from './nav';
@@ -70,6 +74,8 @@ type Note = { text: string; tone?: 'warn' | 'bad' } | null;
 
 export function CharacterStep() {
     const { wake } = useOnboarding();
+    const panel = usePanel();
+    const stationKey = panel.role.role === 'helper' ? panel.role.station?.key : undefined;
     const audio = useAudio();
     const [view, setView] = useState<CharactersView | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -85,6 +91,19 @@ export function CharacterStep() {
     playing.current = audio.playing;
     const mayEdit = can('persona.edit');
     const mayVoice = can('models.manage');
+    /** Что колонка не приняла, пока ставилась модель голоса: окно модели закончит — скажем вместе. */
+    const missed = useRef<string | null>(null);
+
+    /** Характер — и колонке, когда DuoWave на ней; не вышло — строка, что сказать. */
+    const toStation = async (character: CharacterView): Promise<string | null> => {
+        if (!stationKey) return null;
+        try {
+            await stationCall(stationKey, 'POST', `/api/v1/characters/${encodeURIComponent(character.id)}/choose`, {});
+            return null;
+        } catch (e) {
+            return tr.onbCharacter.stationMissed(problemOf(e));
+        }
+    };
 
     const read = async (): Promise<CharactersView | null> => {
         try {
@@ -98,7 +117,9 @@ export function CharacterStep() {
         }
     };
     const needs = useNeedsFlow((message) => {
-        setNote({ text: message });
+        const left = missed.current;
+        missed.current = null;
+        setNote(left ? { text: `${message} ${left}`, tone: 'warn' } : { text: message });
         void read();
     });
 
@@ -115,7 +136,11 @@ export function CharacterStep() {
             who: character.title,
             needs: wanted,
             fallback: character.voice.fallback?.title,
-            retry: ({ install, anyway }) => api.chooseCharacter(character.id, { install, anyway }),
+            retry: async ({ install, anyway }) => {
+                const result = await api.chooseCharacter(character.id, { install, anyway });
+                missed.current = await toStation(character);
+                return result;
+            },
         });
 
     const pick = async (character: CharacterView): Promise<void> => {
@@ -128,6 +153,7 @@ export function CharacterStep() {
         try {
             const result = await api.chooseCharacter(character.id, anyway ? { anyway: true } : {});
             setTight(null);
+            const left = await toStation(character);
             const state = result.voice?.state;
             const wanted = result.voice?.needs ?? character.voice.needs;
             if (state === 'needs' && wanted && !mayVoice) setNote({ text: tr.characters.spokenReserveRestricted });
@@ -135,6 +161,7 @@ export function CharacterStep() {
                 setNote({ text: tr.characters.spokenReserveNeeds });
                 askModel(character, wanted);
             } else setNote({ text: result.voice?.pending ? tr.characters.chosenModelInstalling : tr.onbCharacter.chosen(character.title) });
+            if (left) setNote({ text: left, tone: 'warn' });
             void read();
         } catch (e) {
             const wanted = needsOf(e);

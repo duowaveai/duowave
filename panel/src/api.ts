@@ -109,14 +109,33 @@ function authHeaders(): Record<string, string> {
 }
 
 /** `signal` обрывает запрос: виджет ушёл со стола, опрос начался заново (poll.ts). */
-async function call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+/** `keepalive` — запрос переживает уход со страницы (перезагрузку): так уходит последняя правка памяти пульта. */
+async function call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal, keepalive?: boolean): Promise<T> {
     const response = await fetch(gw(path), {
         method,
         headers: { Accept: 'application/json', ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...authHeaders() },
         body: body !== undefined ? JSON.stringify(body) : undefined,
         signal,
+        keepalive,
     });
     if (VIA && response.status !== 503) noteAnswer(response.headers.get('x-duowave-copy-at'));
+    if (!response.ok) throw new ApiError(response.status, await response.text().catch(() => ''));
+    if (response.status === 204) return undefined as T;
+    const envelope = (await response.json()) as { message: T | null };
+    return envelope.message as T;
+}
+
+/**
+ * Запрос к шлюзу этого компьютера мимо прохода — из окна колонки (`?via=`), где обычные запросы идут колонке. Так окно
+ * колонки читает и правит запись компьютера о ней: одно имя колонки (владелец 16.11, station-name.ts).
+ */
+export async function ownCall<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+    const response = await fetch(path, {
+        method,
+        headers: { Accept: 'application/json', ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...authHeaders() },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal,
+    });
     if (!response.ok) throw new ApiError(response.status, await response.text().catch(() => ''));
     if (response.status === 204) return undefined as T;
     const envelope = (await response.json()) as { message: T | null };
@@ -358,6 +377,8 @@ export interface ProviderView {
     local: boolean;
     brand?: string;
     account?: ProviderAccount;
+    /** Модель помощника: строку ведёт шлюз (адрес и ключ — в «Помощниках»); `builtin` — сервер моделей этого компьютера. */
+    helper?: { id: string; name: string; kind: HelperKind; state: HelperState; builtin?: boolean };
 }
 
 /** Готовый MCP-сервер из набора шлюза. */
@@ -545,10 +566,25 @@ export interface BrainPick {
 export interface BrainView {
     presets: ProviderPreset[];
     providers: ProviderView[];
-    /** `backup` — запасная: отвечает, когда выбранная модель не ответила; провайдер `env` — модель из .env. */
-    choice: { fast: BrainPick | null; smart: BrainPick | null; effort: LlmEffort; backup?: BrainPick | null };
+    /**
+     * `backup` — запасная: отвечает, когда выбранная модель не ответила; провайдер `env` — модель из .env. `backupBy` —
+     * запасную выбрал шлюз сам (`gateway`) или человек от неё отказался (`declined`); нет при запасной — выбрал человек,
+     * нет без запасной — «пусть выберет шлюз». `autoBackup` — шлюз ставит запасную сам, пока от неё не отказались, и
+     * понимает `backup: 'auto'` (решение 18 плана docs/plans/home-and-helpers.md); у шлюза без блока (0.13.0, 0.14.0)
+     * его нет.
+     */
+    choice: {
+        fast: BrainPick | null;
+        smart: BrainPick | null;
+        effort: LlmEffort;
+        backup?: BrainPick | null;
+        backupBy?: 'gateway' | 'declined';
+        autoBackup?: boolean;
+    };
     status: BrainStatus;
     env: { provider: BrainStatus['provider']; title: string; models: { fast: string; smart: string }; usable: boolean; cloud: boolean };
+    /** Строка шлюза о запасной: выбрал сам (и что это может стоить денег), нужна, закрыта регулятором. */
+    note?: { kind: 'backupAuto' | 'backupNeeded' | 'backupClosed'; text: string };
 }
 
 export interface ProviderInput {
@@ -599,7 +635,7 @@ export interface StationPlacementRecord {
 
 /** Голос колонки, пока компьютер даёт ей свой (`/api/v1/models/home-voice`). */
 export interface HomeVoice {
-    /** Компьютер помогает колонке, и голос он даёт («Что даю колонке»). */
+    /** Компьютер помогает колонке, и голос он даёт («Этот компьютер» → «Даю»). */
     offered: boolean;
     /** Компьютер на связи. */
     up: boolean;
@@ -727,7 +763,130 @@ export interface PlacementView {
     homeAddresses?: string[];
 }
 
-/** Что компьютер-помощник даёт колонке: слух, голос, модель, сообщения через свой бот Telegram. */
+// ─── Помощники (docs/plans/home-and-helpers.md, блок 1) ───────────────────────────────────────────────────────────
+
+/** Что помощник даёт: умения договора 1. */
+export type Ability = 'hearing' | 'voice' | 'model' | 'messages' | 'apps' | 'history' | 'catalog';
+/** Где помощник, как это говорит человек: дома, мой сервер, облако. */
+export type HelperKind = 'home' | 'own' | 'cloud';
+/** off — выключен в списке; self — это сам этот шлюз; twin — тот же помощник, что выше в списке. */
+export type HelperState = 'unknown' | 'up' | 'down' | 'off' | 'self' | 'twin';
+/** Регулятор «Что может уходить из дома»: «Только дома» · «Дом и моё облако» · «Любые облака». */
+export type Away = 'home' | 'mine' | 'any';
+/** Как далеко дорога: дома, моё облако, чужие облака по ключам. */
+export type Reach = 'home' | 'mine' | 'foreign';
+
+export interface AbilityView {
+    id: Ability;
+    ready: boolean;
+    details?: { languages?: string[]; model?: string; voice?: string };
+}
+
+/** Связь, которую шлюз открыл к помощнику (этап 7): `pin` — `sha256:<hex>` или `public:<имя>`. */
+export interface LinkView {
+    state: 'connecting' | 'up' | 'down';
+    since?: string;
+    reason?: string;
+    pin: string;
+}
+
+/** Помощник в списке: `builtin` — встроенный помощник этого компьютера (без адреса, без проверки по сети). */
+export interface HelperView {
+    id: string;
+    name: string;
+    kind: HelperKind;
+    builtin?: boolean;
+    url?: string;
+    enabled: boolean;
+    without: Ability[];
+    key?: { set: boolean; hint?: string };
+    state: HelperState;
+    since?: string;
+    error?: string;
+    /** Регулятор его пускает. */
+    allowed: boolean;
+    /** Версия договора: 0 — помощник 0.11; нет — ещё не прочитан. */
+    contract?: number;
+    helper?: { id: string; name: string };
+    version?: string;
+    /** Объявленные умения, как прочитаны последний раз. */
+    abilities: AbilityView[];
+    link?: LinkView;
+}
+
+/** Строка «Где сейчас»: кто даёт умение сейчас и, если не первый по порядку, почему. */
+export interface WhereRow {
+    ability: Ability;
+    by: 'helper' | 'here' | 'cloud' | 'yandex' | 'none';
+    helper?: string;
+    name?: string;
+    reach?: Reach;
+    first: boolean;
+    why?: string;
+}
+
+/** `GET /api/v1/helpers` и ответ на каждую перемену списка. */
+export interface HelpersView {
+    helpers: HelperView[];
+    now: WhereRow[];
+    away: Away;
+    gateway?: { id: string; name: string };
+}
+
+/** Помощник в /health (`placement.helpers.list`). */
+export interface HelperBrief {
+    id: string;
+    name: string;
+    kind: HelperKind;
+    builtin?: boolean;
+    enabled: boolean;
+    state: HelperState;
+    since?: string;
+    abilities: Ability[];
+    /** Регулятор его пускает; шлюз этапа 3 поля не присылает (пульт судит по месту, shell/role.ts). */
+    allowed?: boolean;
+}
+
+/** Ключ подключения, который показывает этот компьютер (только администратору). */
+export interface HelperKeyView {
+    key: string;
+    addresses: string[];
+    outside?: string;
+    /** `<адрес> <ключ>` — текст и QR для шлюза. */
+    payload: string;
+    since?: string;
+    name: string;
+    /** До когда ключ принимают: 15 минут после того, как открыли «Подключить шлюз». */
+    armedUntil?: string;
+    port?: number;
+    /** Почему связи нет (порт занят): тогда ни QR, ни текста. */
+    problem?: string;
+}
+
+/** Кому помогает этот компьютер: дом и его шлюзы. `station` — колонка, которую компьютер ведёт сам. */
+export interface ClientView {
+    id: string;
+    via: 'link' | 'key';
+    name: string;
+    home?: { id: string; name: string };
+    ownHome: boolean;
+    station?: string;
+    gateways: Array<{ id: string; name: string; online: boolean; lastSeen?: string }>;
+    gives: Ability[];
+    since?: string;
+    today?: Partial<Record<Ability, { count: number; avgMs: number }>>;
+}
+
+/** Этот шлюз: его имя (данное человеком или по умолчанию) и дом. */
+export interface GatewayView {
+    id: string;
+    name: string;
+    defaultName: string;
+    named: boolean;
+    home: { id: string } | null;
+}
+
+/** Что компьютер-помощник даёт колонке 0.11: слух, голос, модель, сообщения через свой бот Telegram. */
 export type HelperPart = 'asr' | 'tts' | 'llm' | 'messages';
 
 /** Сколько и как быстро помощник дал колонке сегодня. */
@@ -764,6 +923,8 @@ export interface PlacementHealth {
     data?: { freeKb: number; totalKb: number };
     memory?: { rssKb?: number; totalKb?: number; availableKb?: number };
     homeServer?: { url: string; enabled?: boolean; state: 'none' | 'up' | 'down'; since?: string; error?: string; without?: HelperPart[] };
+    /** Помощники по порядку и регулятор; шлюз 0.11 их не присылает. */
+    helpers?: { away: Away; list: HelperBrief[] };
     voice?: { url: string; pointsTo: 'yandex' | 'gateway' | 'other'; local?: boolean };
     managedBy?: string;
     settingsHome?: 'station' | 'pc';
@@ -877,7 +1038,8 @@ export interface WorkView {
     question?: {
         text: string;
         until: number;
-        kind?: 'ready' | 'unfinished' | 'apply' | 'delete' | 'more';
+        /** `wait` — работу в рабочей папке держит лимит подписки: подождать или остановить. */
+        kind?: 'ready' | 'unfinished' | 'apply' | 'delete' | 'more' | 'wait';
         askedAt?: number;
         outcome?: 'answered' | 'declined' | 'silent';
         reminded?: boolean;
@@ -935,6 +1097,197 @@ export interface WorkSpent {
 
 /** Ответ на вопрос работы кнопкой — тот же, что голосом: «да», «примерить», «нет», «в черновики», «подробнее». */
 export type WorkAnswer = 'yes' | 'fit' | 'no' | 'park' | 'details';
+
+/**
+ * Рабочая папка (docs/plans/router-and-works.md, этап 3): папка с git на этом компьютере, где агент делает работы — у
+ * каждой своя рабочая копия и своя ветка. `agent` и `model` пусто — место «Исполнитель»; `maxUsd` — потолок запуска;
+ * `prepare` — подготовка свежей копии, `checks` — проверки после агента, `allow` — что агенту можно без вопроса.
+ */
+export interface WorkFolderView {
+    id: string;
+    name: string;
+    path: string;
+    kind: string;
+    agent?: string;
+    model?: string;
+    maxUsd?: number;
+    prepare: string[];
+    checks: string[];
+    allow: string[];
+    /** Ветка, выбранная в папке сейчас. */
+    branch?: string;
+    /** git отвечает в папке. */
+    git: boolean;
+}
+
+export interface WorkFolderInput {
+    name?: string;
+    path?: string;
+    agent?: string;
+    model?: string;
+    maxUsd?: number;
+    prepare?: string[];
+    checks?: string[];
+    allow?: string[];
+}
+
+/** Готов ли агент: где программа, версия, вошёл ли, чем платит — и почему не готов. */
+export interface HarnessReady {
+    path?: string | null;
+    version?: string | null;
+    signedIn?: boolean | null;
+    pays?: string | null;
+    not?: {
+        why: 'missing' | 'old' | 'unknown' | 'signed-out' | 'no-key' | 'gone' | string;
+        install?: string;
+        version?: string;
+        need?: string;
+        detail?: string;
+        hint?: string;
+    } | null;
+}
+
+/** Агент: встроенный Claude Code или поставленный карточкой. У Claude Code — выбранный вход, есть ли ключ, свой путь. */
+export interface HarnessView {
+    id: string;
+    title: string;
+    builtin: boolean;
+    ready: HarnessReady;
+    auth?: 'terminal' | 'key';
+    keySet?: boolean;
+    pathSet?: string;
+    /** Агент карточки: сама карточка и описание. */
+    card?: AgentCard;
+    description?: string;
+}
+
+export interface ClaudeCodeChange {
+    path?: string;
+    auth?: 'terminal' | 'key';
+    key?: string;
+    /** Провайдер «Мозга», чей ключ взять. */
+    keyFrom?: string;
+}
+
+/** Проверка папки после агента: команда, прошла ли, код, сколько шла, конец вывода. */
+export interface FolderCheck {
+    command: string;
+    ok: boolean;
+    code?: number | null;
+    ms: number;
+    tail: string;
+}
+
+/** Работа в рабочей папке, как её ведёт помощник: папка, агент, ветка, копия, сессия, итог. */
+export interface FolderWorkView {
+    id: string;
+    folder: string;
+    folderName: string;
+    agent: string;
+    agentTitle: string;
+    model?: string | null;
+    title: string;
+    task: string;
+    branch: string;
+    base?: string | null;
+    baseCommit?: string | null;
+    copy?: string | null;
+    billing?: string | null;
+    session?: string | null;
+    state: 'working' | 'waiting' | 'ready' | 'unfinished' | 'failed' | 'stopped' | 'interrupted';
+    why?: string | null;
+    waitUntil?: number | null;
+    last?: string | null;
+    checks?: FolderCheck[] | null;
+    checksSkipped: boolean;
+    committed: boolean;
+    fetched: boolean;
+    changed: boolean;
+    error?: string | null;
+    usdMicro?: number | null;
+    runs: number;
+    createdAt: number;
+    updatedAt: number;
+    endedAt?: number | null;
+    /** Команда, которой эта сессия открывается в терминале. */
+    resumeCommand?: string;
+    going: boolean;
+}
+
+/** Запуск агента: работа, вдогонку, продолжение. */
+export interface FolderRun {
+    n: number;
+    what: 'work' | 'note' | 'resume';
+    model?: string;
+    session?: string;
+    startedAt: number;
+    endedAt?: number;
+    outcome?: string;
+    deal?: number;
+    cut: boolean;
+}
+
+/** Шаг журнала запуска — общий для всех агентов (gateway/src/works/harness/mod.rs, `Step`). */
+export interface RunStep {
+    n: number;
+    at: number;
+    /** Вызов, которым его начал помощник агента (субагент). */
+    parent?: string;
+    type: 'begin' | 'says' | 'thinks' | 'tool' | 'plan' | 'usage' | 'retry' | 'limit' | 'denied' | 'asks' | 'chore' | 'cut' | 'end';
+    session?: string;
+    model?: string;
+    billing?: string;
+    version?: string;
+    prompt?: string;
+    text?: string;
+    id?: string;
+    kind?: string;
+    title?: string;
+    path?: string;
+    command?: string;
+    output?: string;
+    diff?: Array<{ path: string; old?: string; new: string }>;
+    state?: 'pending' | 'in_progress' | 'completed' | 'failed';
+    entries?: Array<{ text: string; state: string }>;
+    tokens?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+    usdMicro?: number;
+    used?: number;
+    size?: number;
+    reason?: string;
+    attempt?: number;
+    waitMs?: number;
+    until?: number;
+    tool?: string;
+    what?: string;
+    allowed?: boolean;
+    chore?: 'copy' | 'prepare' | 'commit' | 'fetch' | 'check';
+    ok?: boolean;
+    outcome?: string;
+    error?: string;
+}
+
+export interface RunLogView {
+    steps: RunStep[];
+    /** Откуда читать дальше. */
+    next: number;
+    /** Запуск идёт: журнал дописывается. */
+    going: boolean;
+}
+
+/** «Скачать как есть»: сырой файл запуска — что агент печатал, строка за строкой. */
+export async function downloadRunRaw(work: string, n: number): Promise<void> {
+    const response = await fetch(gw(`/api/v1/works/${encodeURIComponent(work)}/runs/${n}/raw`), { headers: authHeaders() });
+    if (!response.ok) throw new ApiError(response.status, await response.text().catch(() => ''));
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `duowave-work-${work}-run-${n}.jsonl`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
 
 /**
  * Сделка роутера (gateway/src/router/deals.rs): какое место спросило, какая модель ответила и почему, токены, доллары
@@ -1083,6 +1436,9 @@ export interface Health {
     tts?: string;
     station?: { connected: boolean; lastSeenAt: string };
     placement?: PlacementHealth;
+    /** Дом этого шлюза и он сам (имя — как его видят помощники); шлюз 0.11 не присылает. */
+    home?: { id: string };
+    gateway?: { id: string; name: string };
     skills?: {
         routes: Record<string, string>;
         implemented: Record<string, boolean>;
@@ -1498,7 +1854,22 @@ export interface PersonaInfo {
 }
 
 /** Вид пакета: плагин (код в шлюзе), приложение (своя программа рядом), персонаж и тема (данные без кода). */
-export type PackageKind = 'plugin' | 'app' | 'character' | 'theme';
+export type PackageKind = 'plugin' | 'app' | 'character' | 'theme' | 'agent';
+
+/**
+ * Карточка агента (вид пакета `agent`, docs/plans/router-and-works.md, 7б): какую программу поставить и как, как её
+ * запустить по ACP, как войти; `asks: false` — в этом режиме агент делает всё без вопросов; `terms` — его условия.
+ */
+export interface AgentCard {
+    site?: string;
+    terms?: string;
+    program: { name: string; install?: string; check?: string[]; minVersion?: string };
+    acp: { command: string[]; protocol: number };
+    signin: { check?: string[]; hint?: string };
+    model: { choose: boolean; via: string };
+    resume?: string;
+    asks?: boolean;
+}
 
 /** Пакет, который стоит на шлюзе (GET /api/v1/packages), любого вида. */
 export interface PackageView {
@@ -2445,6 +2816,15 @@ export interface CatalogEntry {
     on?: boolean | null;
     /** Лента держит его скрытым (`unlisted`): в списке — только с «Показывать скрытые пакеты» или поставленный здесь. */
     unlisted?: boolean;
+    /** Карточка агента: что поставить, как войти, его условия. */
+    agent?: AgentCard;
+    /** Пакеты-пара (`companions`): персонаж и его слово, позже — голос; ставишь один — предлагается другой. */
+    companions?: Array<{ id: string; why?: string | null }>;
+    /** Сколько займёт, до установки: ОЗУ по бюджету кода и память (файлы распакованными), МБ. */
+    memoryMb?: number | null;
+    sizeMb?: number | null;
+    /** Стоит, включён и спит: не хватило ОЗУ, проснётся сам. */
+    asleep?: boolean;
 }
 
 /** Лицо приложения в ленте каталога. */
@@ -3246,6 +3626,37 @@ export const api = {
     setDesktopAwake: (on: boolean) => put<{ managed: boolean; keepAwake: boolean }>('/api/v1/desktop/awake', { on }),
     setStationHelper: (on: boolean, station?: string) =>
         post<StationGatewayView>(forStation('/api/v1/placement/helper', station), { on }),
+    // Помощники (docs/plans/home-and-helpers.md, блок 1): список, порядок, регулятор, «Где сейчас»; у компьютера — ключ
+    // подключения и кому он помогает. Каждая перемена списка отвечает всем списком. Шлюз 0.11 отвечает 404.
+    helpers: (signal?: AbortSignal) => get<HelpersView>('/api/v1/helpers', signal),
+    /**
+     * Что даёт помощник по этому адресу и ключу — до сохранения: ничего не записано, ключ подключения не потрачен.
+     * `replace` — «Подключить заново»: та же проверка «уже в списке», что у сохранения, пропускает эту строку.
+     * `matched` — строка списка, которую сохранение обновит на месте (её имя и «Не брать у него…» останутся): та, что
+     * названа в `replace`, или помощник, уже стоящий в списке с тем же закреплённым сертификатом (этап 7).
+     */
+    probeHelper: (url: string, key: string, replace?: string) =>
+        post<{ helper: HelperView; matched?: string }>('/api/v1/helpers', { url, key, dryRun: true, replace }),
+    /** Весь список, `id` сохранённой строки и `matched`, когда обновлена строка, что уже была: `name` и `without` тогда не применены. */
+    addHelper: (body: { url: string; key: string; name?: string; without?: Ability[]; replace?: string }) =>
+        post<HelpersView & { id: string; matched?: string }>('/api/v1/helpers', body),
+    updateHelper: (id: string, change: { name?: string; enabled?: boolean; without?: Ability[] }) =>
+        put<HelpersView>(`/api/v1/helpers/${encodeURIComponent(id)}`, change),
+    orderHelpers: (ids: string[]) => put<HelpersView>('/api/v1/helpers/order', { ids }),
+    removeHelper: (id: string) => del<HelpersView>(`/api/v1/helpers/${encodeURIComponent(id)}`),
+    checkHelper: (id: string) => post<HelpersView>(`/api/v1/helpers/${encodeURIComponent(id)}/check`),
+    setAway: (away: Away) => put<HelpersView>('/api/v1/helpers/away', { away }),
+    /** Этот шлюз: его имя, имя по умолчанию и дано ли имя человеком. */
+    gatewaySelf: () => get<GatewayView>('/api/v1/gateway/self'),
+    /** Имя этого шлюза, как его видят помощники; null — имя по умолчанию. */
+    renameGateway: (name: string | null) => put<GatewayView>('/api/v1/gateway/self', { name }),
+    /** Ключ подключения этого компьютера — только администратору; открыть его — принимать ключ 15 минут. */
+    helperKey: () => get<HelperKeyView>('/api/v1/helpers/key'),
+    rotateHelperKey: () => post<HelperKeyView>('/api/v1/helpers/key/rotate'),
+    setHelperOutside: (url: string | null) => put<HelperKeyView>('/api/v1/helpers/key/outside', { url }),
+    helperClients: (signal?: AbortSignal) => get<{ clients: ClientView[] }>('/api/v1/helpers/clients', signal),
+    setClientGives: (id: string, gives: Ability[]) => put<{ clients: ClientView[] }>(`/api/v1/helpers/clients/${encodeURIComponent(id)}`, { gives }),
+    removeClient: (id: string) => del<{ clients: ClientView[] }>(`/api/v1/helpers/clients/${encodeURIComponent(id)}`),
     say: (text: string) => post<{ outcome: string }>('/api/v1/station/sessions/latest/say', { text }),
     timers: (device?: string, signal?: AbortSignal) =>
         get<{ device?: string | null; timers: TimerView[] }>(`/api/v1/station/timers${device ? `?device=${encodeURIComponent(device)}` : ''}`, signal),
@@ -3403,7 +3814,8 @@ export const api = {
     signInStatus: (id: string) => get<SignInStatus>(`/api/v1/oauth/${encodeURIComponent(id)}`),
     /** Код со страницы сервиса или адрес страницы после входа — с другого устройства. */
     completeSignIn: (id: string, text: string) => post<{ title: string }>('/api/v1/oauth/complete', { id, text }),
-    chooseBrain: (choice: { fast?: BrainPick | null; smart?: BrainPick | null; backup?: BrainPick | null; effort?: LlmEffort }) =>
+    /** `backup`: null — «не нужна» (шлюз сам больше не ставит); 'auto' — «пусть выберет шлюз» (только при `autoBackup`). */
+    chooseBrain: (choice: { fast?: BrainPick | null; smart?: BrainPick | null; backup?: BrainPick | null | 'auto'; effort?: LlmEffort }) =>
         put<BrainView>('/api/v1/brain/choice', choice),
 
     mcp: () => get<McpView>('/api/v1/mcp'),
@@ -3527,7 +3939,7 @@ export const api = {
     /** Слова работе вдогонку (или новая версия готовой вещи): что сказать в ответ. */
     workNotes: (id: string, text: string) => post<{ said: string }>(`/api/v1/works/${encodeURIComponent(id)}/notes`, { text }),
     /** Действие с работой: как идёт, подробнее, примерить, на стол, в черновики, остановить. */
-    workDo: (id: string, action: 'status' | 'details' | 'show' | 'desk' | 'park' | 'stop') =>
+    workDo: (id: string, action: 'status' | 'details' | 'show' | 'desk' | 'park' | 'stop' | 'continue') =>
         post<{ said: string }>(`/api/v1/works/${encodeURIComponent(id)}/do`, { action }),
     /** «Работы»: работы групп (через запятую: going, queued, asking, recent; без групп — все), с группой и причиной. */
     worksIn: (groups: WorkGroup[], signal?: AbortSignal) =>
@@ -3562,6 +3974,29 @@ export const api = {
         put<PriceNow>(`/api/v1/router/prices/${encodeURIComponent(provider)}/${model.split('/').map(encodeURIComponent).join('/')}`, price ?? {}),
     /** Сделки роутера этой работы, новые первыми. Только администратору. */
     workDeals: (id: string, signal?: AbortSignal) => get<{ deals: ModelDeal[] }>(`/api/v1/works/${encodeURIComponent(id)}/deals`, signal),
+    /** Рабочие папки (этап 3 роутера): с веткой, выбранной сейчас. Только администратору. */
+    workFolders: (signal?: AbortSignal) => get<{ folders: WorkFolderView[] }>('/api/v1/work-folders', signal),
+    addWorkFolder: (folder: WorkFolderInput) => post<WorkFolderView>('/api/v1/work-folders', folder),
+    updateWorkFolder: (id: string, folder: WorkFolderInput) => put<WorkFolderView>(`/api/v1/work-folders/${encodeURIComponent(id)}`, folder),
+    removeWorkFolder: (id: string) => del<{ ok: boolean }>(`/api/v1/work-folders/${encodeURIComponent(id)}`),
+    /** «Новая работа» в папке: сразу или в очереди — одна работа в папках за раз. */
+    startFolderWork: (folder: string, task: string, agent?: string, model?: string) =>
+        post<{ said: string; work: WorkView }>(`/api/v1/work-folders/${encodeURIComponent(folder)}/start`, { task, agent, model }),
+    /** Агенты: Claude Code и поставленные карточки — найден ли, версия, вошёл ли. */
+    harnesses: (signal?: AbortSignal) => get<{ harnesses: HarnessView[] }>('/api/v1/harnesses', signal),
+    setClaudeCode: (change: ClaudeCodeChange) => put<HarnessView>('/api/v1/harnesses/claude-code', change),
+    /** Где программа агента карточки; пусто — искать по имени. */
+    setAgentPath: (id: string, path: string) => put<HarnessView>(`/api/v1/harnesses/${encodeURIComponent(id)}`, { path }),
+    /** Работа в папке у помощника и её запуски. */
+    workRuns: (id: string, signal?: AbortSignal) => get<{ work: FolderWorkView; runs: FolderRun[] }>(`/api/v1/works/${encodeURIComponent(id)}/runs`, signal),
+    /** Журнал запуска общими шагами с места `after`; «только ошибки» и поиск. */
+    workLog: (id: string, n: number, query: { after?: number; trouble?: boolean; find?: string }, signal?: AbortSignal) => {
+        const params = new URLSearchParams();
+        if (query.after) params.set('after', String(query.after));
+        if (query.trouble) params.set('trouble', '1');
+        if (query.find) params.set('find', query.find);
+        return get<RunLogView>(`/api/v1/works/${encodeURIComponent(id)}/runs/${n}/log?${params}`, signal);
+    },
     /** Что сейчас знает «Мозг» на устройстве (блок «Сейчас»): пусто, когда ничего не происходит. */
     talkNow: (device?: string) => get<{ device: string; text: string }>(`/api/v1/talk/now${device ? `?device=${encodeURIComponent(device)}` : ''}`),
     /** «В черновики»: черновик уходит со стола и ждёт в мастерской. */
@@ -3575,7 +4010,8 @@ export const api = {
     /** Что пульт помнит о человеке (docs/plans/menu-scheme.md): место в «Папках», слой разработчика. */
     panelMemory: () => get<{ state: Record<string, unknown>; at: string | null }>('/api/v1/panel/state'),
     /** Дописать ключи; `null` — забыть ключ. */
-    rememberPanel: (changes: Record<string, unknown>) => patch<{ state: Record<string, unknown>; at: string }>('/api/v1/panel/state', changes),
+    rememberPanel: (changes: Record<string, unknown>, keepalive = false) =>
+        call<{ state: Record<string, unknown>; at: string }>('PATCH', '/api/v1/panel/state', changes, undefined, keepalive),
     createDraft: (body: { id: string; kind?: 'plugin' | 'quiz' | 'theme' | 'widget'; title?: string; openapi?: string }) => post<DraftView>('/api/v1/workshop/drafts', body),
     /** Адрес части пульта черновика — показать виджет до установки (docs/plans/desk.md, этап 5). */
     draftPreview: (id: string) => post<{ module: string; styles?: string | null }>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/preview`),
@@ -3654,11 +4090,19 @@ export const api = {
     /** Свой источник пакетов по ссылке — после предупреждения (только администратор). */
     addPackageSource: (url: string) => post<CatalogView>('/api/v1/packages/sources', { url, understood: true }),
     removePackageSource: (url: string) => call<CatalogView>('DELETE', '/api/v1/packages/sources', { url }),
-    /** Из каталога; `on` — из магазина: приложение или плагин сразу и включается (шлюз постарше поле пропустит). */
-    installPackage: (id: string, version?: string, on = false) =>
-        post<PackageView>(`/api/v1/packages/${encodeURIComponent(id)}/install`, { ...(version ? { version } : {}), ...(on ? { on } : {}) }),
+    /**
+     * Из каталога; `on` — из магазина: приложение или плагин сразу и включается; `rights` — права одобрены вместе с
+     * установкой (пульт спросил один раз): шлюз даёт их до первого запуска. Шлюз постарше поля пропустит.
+     */
+    installPackage: (id: string, version?: string, on = false, rights = false) =>
+        post<PackageView>(`/api/v1/packages/${encodeURIComponent(id)}/install`, {
+            ...(version ? { version } : {}),
+            ...(on ? { on } : {}),
+            ...(rights ? { rights } : {}),
+        }),
     updatePackage: (id: string) => post<PackageView>(`/api/v1/packages/${encodeURIComponent(id)}/update`),
-    removePackage: (id: string) => del<unknown>(`/api/v1/packages/${encodeURIComponent(id)}`),
+    /** Удалить пакет; у карточки агента шлюз говорит, из каких рабочих папок он ушёл (`said`). */
+    removePackage: (id: string) => del<{ deleted?: boolean; said?: string }>(`/api/v1/packages/${encodeURIComponent(id)}`),
     // Память персонажей: окно «Память», виджет, строка «Запомнено» под ответом.
     memory: (signal?: AbortSignal) => get<MemoryOverview>('/api/v1/memory', signal),
     setMemoryState: (change: { enabled?: boolean; inPassing?: boolean }) => put<MemoryState>('/api/v1/memory/state', change),

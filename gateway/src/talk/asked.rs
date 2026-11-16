@@ -62,6 +62,9 @@ pub enum Kind {
     Run,
     /// «Рассказать подробнее?»: a background work's retelling was cut.
     More,
+    /// «Лимит … кончился до …: подождать или остановить?»: a work in a folder waits for a plan's limit; silence waits
+    /// too (docs/plans/router-and-works.md, 9).
+    Wait,
 }
 
 /// What was asked for before the question, done once it is answered: the wish of «Поправить … или новую?», the change

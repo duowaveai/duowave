@@ -16,6 +16,9 @@ use crate::operations::networks::is_local_url;
 
 /// The provider id of the model .env describes.
 pub const ENV_PROVIDER: &str = "env";
+/// The provider id of the honest words (docs/plans/home-and-helpers.md, stage 4): no model may be asked, and the words
+/// say why at once — as a profile's slot, or behind a model as its backup while its helper is not judged away yet.
+pub const WORDS_PROVIDER: &str = "words";
 
 /// The kind of a provider as the panel names it: anthropic, openai, echo, none.
 pub fn serialize_kind<S: Serializer>(kind: &DialogProvider, serializer: S) -> Result<S::Ok, S::Error> {
@@ -120,12 +123,51 @@ pub struct BrainStatus {
     pub source: BrainOrigin,
 }
 
+/// Who answers a profile now (docs/plans/home-and-helpers.md, stage 4), for «Где сейчас» and «Спросить мозг»: the
+/// chosen model, another in its place (the backup at once, the next helper), or nobody — then the words say why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrainNow {
+    /// ready — the chosen model answers; fallback — another one does; off — none may be asked: words.
+    pub state: crate::core::availability::State,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// How far its questions go.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reach: Option<crate::helpers::Reach>,
+    /// The helper whose model answers: its entry id, or `self` for a model server of this computer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub helper: Option<String>,
+    /// Why not the chosen model, for people: «Компьютер дома не на связи», «облака закрыты регулятором»; off — the
+    /// words themselves.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 pub trait BrainSource: Send + Sync {
     /// The model of a profile now; None when there is none (the dialog is off).
     fn slot(&self, profile: ModelProfile) -> Option<ModelSlot>;
     /// A given provider's model, apart from the profiles (the workshop agent's own choice); None when there is no such
     /// provider — the caller falls back to a profile.
     fn slot_of(&self, _provider: &str, _model: &str) -> Option<ModelSlot> {
+        None
+    }
+    /// Whether a model of this profile may be asked now: false when its slot would only say why none may.
+    fn reachable(&self, _profile: ModelProfile) -> bool {
+        true
+    }
+    /// Who answers this profile now; None for a source that cannot tell.
+    fn now(&self, _profile: ModelProfile) -> Option<BrainNow> {
+        None
+    }
+    /// Whether what a model reads may leave the house now: a model that may take a round of either profile — the one
+    /// that answers, or one standing behind it, which takes a round its model fails with all the earlier rounds read
+    /// — is not at home. None for a source that cannot tell.
+    fn in_cloud(&self) -> Option<bool> {
         None
     }
     /// Model and provider, for logs and /health.

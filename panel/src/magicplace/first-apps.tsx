@@ -8,7 +8,6 @@ import { useState } from 'preact/hooks';
 import type { CatalogEntry, CatalogView } from '../api';
 import { tr } from '../i18n';
 import { usePanel } from '../shell/context';
-import { Action } from '../ui/cards';
 import { Sheet } from '../ui/sheet';
 import { NoteLine, PackageThumb, canManage, isInstalled, usePackageActions } from '../screens/catalog';
 import { goesHere } from './filters';
@@ -23,7 +22,7 @@ export function firstAppsOf(view: CatalogView | null): CatalogEntry[] {
 
 export function FirstAppsSheet({ entries, onClose }: { entries: CatalogEntry[]; onClose: () => void }) {
     const panel = usePanel();
-    const [done, setDone] = useState<string[]>([]);
+    // Закрыть («Потом» / «Готово») — крестиком, Esc или мимо; внизу — только дорога в MagicPlace.
     return (
         <Sheet
             title={tr.magicplace.firstTitle}
@@ -31,28 +30,23 @@ export function FirstAppsSheet({ entries, onClose }: { entries: CatalogEntry[]; 
             icon={<MagicPlaceMark size={40} />}
             onClose={onClose}
             footer={
-                <div class="mp-first-footer">
-                    <button
-                        class="dash-done"
-                        onClick={() => {
-                            onClose();
-                            panel.go('magicplace');
-                        }}
-                    >
-                        {tr.magicplace.firstAll}
-                    </button>
-                    <button class="dash-done" onClick={onClose}>
-                        {done.length > 0 ? tr.magicplace.firstDone : tr.magicplace.firstLater}
-                    </button>
-                </div>
+                <button
+                    class="btn btn-plain"
+                    onClick={() => {
+                        onClose();
+                        panel.go('magicplace');
+                    }}
+                >
+                    {tr.magicplace.firstAll}
+                </button>
             }
         >
-            <FirstAppsList entries={entries} onInstalled={(id) => setDone((all) => [...all, id])} />
+            <FirstAppsList entries={entries} />
         </Sheet>
     );
 }
 
-/** Рекомендованные приложения строками, каждое — «Поставить» одним нажатием (лист выше и шаг «MagicPlace» первых шагов). */
+/** Рекомендованные приложения строками, каждое — «Установить» одним нажатием. */
 export function FirstAppsList({ entries, onInstalled }: { entries: CatalogEntry[]; onInstalled?: (id: string) => void }) {
     const actions = usePackageActions(() => undefined);
     const [done, setDone] = useState<string[]>([]);
@@ -62,35 +56,36 @@ export function FirstAppsList({ entries, onInstalled }: { entries: CatalogEntry[
         onInstalled?.(entry.id);
     };
     return (
-        <>
+        <div class="win-group">
             {entries.map((entry) => {
                 const installed = done.includes(entry.id);
                 const busy = actions.busy[entry.id];
                 return (
-                    <div key={entry.id} class="pkg-row">
-                        <div class="pkg-main">
+                    <div key={entry.id} class="win-row is-col">
+                        <div class="flex items-center gap-12">
                             <PackageThumb url={entry.preview?.image} />
-                            <span class="pkg-text">
-                                <span class="pkg-title">{entry.title}</span>
-                                {entry.description && <span class="t-caption">{entry.description}</span>}
+                            <div class="win-row-main">
+                                <span class="win-row-t">{entry.title}</span>
+                                {entry.description && <span class="win-row-s">{entry.description}</span>}
                                 {downloadLines(entry).map((line) => (
-                                    <span key={line} class="t-caption">
+                                    <span key={line} class="win-row-s">
                                         {line}
                                     </span>
                                 ))}
-                            </span>
-                            <div class="pkg-actions">
-                                {installed ? (
-                                    <span class="pill pill-own">{tr.magicplace.installed}</span>
-                                ) : (
-                                    <Action tone="on" label={tr.magicplace.install} busy={busy === 'install'} disabled={!!busy} onClick={() => void install(entry)} />
-                                )}
                             </div>
+                            {installed ? (
+                                <span class="pill pill-own">{tr.magicplace.installed}</span>
+                            ) : (
+                                <button class="btn btn-plain btn-sm" disabled={!!busy} aria-busy={busy === 'install' || undefined} onClick={() => void install(entry)}>
+                                    {busy === 'install' && <span class="spinner spinner-sm" aria-hidden="true" />}
+                                    {tr.magicplace.install}
+                                </button>
+                            )}
                         </div>
                         <NoteLine note={actions.notes[entry.id]} />
                     </div>
                 );
             })}
-        </>
+        </div>
     );
 }

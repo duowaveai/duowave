@@ -1,0 +1,169 @@
+{
+  "schema": 1,
+  "kind": "app",
+  "runtime": "node",
+  "node": {
+    "entry": "server.mjs"
+  },
+  "id": "youtube",
+  "version": "0.1.0",
+  "title": "YouTube",
+  "license": "Apache-2.0",
+  "description": "Музыка с YouTube на колонке: «включи с ютуба Кино, группа крови», «добавь в очередь …», дальше — похожее из микса YouTube. Работает на компьютере: звук берёт yt-dlp (скачивается сам и сам обновляется), ffmpeg делает из него MP3. В России YouTube заблокирован — нужен VPN на компьютере.",
+  "api": "^2",
+  "minGateway": "0.15.0",
+  "runs": [
+    "pc"
+  ],
+  "resident": true,
+  "budget": {
+    "memoryMb": 256
+  },
+  "permissions": [
+    "net:www.youtube.com",
+    "net:*.googlevideo.com",
+    "net:i.ytimg.com",
+    "net:github.com",
+    "net:*.githubusercontent.com",
+    "call:system/voice"
+  ],
+  "health": {
+    "path": "/health",
+    "intervalS": 15
+  },
+  "languages": [
+    "ru",
+    "en"
+  ],
+  "locales": {
+    "en": {
+      "title": "YouTube",
+      "description": "Music from YouTube on the speaker: “play Kino Blood Type from YouTube”, “add … to the queue”, then similar songs from YouTube’s mix. Runs on the computer: yt-dlp takes the sound (downloads and updates itself), ffmpeg makes MP3 of it. Where YouTube is blocked, the computer needs a VPN.",
+      "intents": {
+        "playPhrase": [
+          "play {query} from youtube",
+          "play {query} on youtube",
+          "play youtube {query}"
+        ],
+        "addPhrase": [
+          "add {query} to the queue",
+          "queue {query}"
+        ]
+      }
+    }
+  },
+  "contributes": {
+    "intents": [
+      {
+        "phrases": [
+          "включи с ютуба {query}",
+          "включи на ютубе {query}",
+          "включи из ютуба {query}",
+          "включи ютуб {query}",
+          "поставь с ютуба {query}",
+          "поставь на ютубе {query}",
+          "найди на ютубе {query}",
+          "запусти с ютуба {query}",
+          "включи с youtube {query}",
+          "включи на youtube {query}"
+        ],
+        "handler": "playPhrase",
+        "capability": "music"
+      },
+      {
+        "phrases": [
+          "добавь в очередь {query}",
+          "поставь в очередь {query}",
+          "добавь с ютуба {query}",
+          "добавь из ютуба {query}"
+        ],
+        "handler": "addPhrase",
+        "capability": "music"
+      }
+    ],
+    "tools": [
+      {
+        "name": "youtube_search",
+        "description": "Ищет видео и музыку на YouTube по словам. Возвращает список; включить — youtube_play, в очередь — youtube_add.",
+        "input": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Что искать: исполнитель, песня, альбом"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        },
+        "handler": "searchTool",
+        "capability": "music",
+        "annotations": {
+          "readOnlyHint": true
+        }
+      },
+      {
+        "name": "youtube_play",
+        "description": "Включает на колонке музыку с YouTube по словам — сразу, без отдельного поиска; за найденным играет похожее из микса YouTube.",
+        "input": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Исполнитель, песня, альбом"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        },
+        "handler": "playTool",
+        "capability": "music"
+      },
+      {
+        "name": "youtube_add",
+        "description": "Добавляет песню с YouTube в очередь после той, что играет (и после добавленных раньше).",
+        "input": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Исполнитель, песня"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        },
+        "handler": "addTool",
+        "capability": "music"
+      }
+    ],
+    "media": [
+      {
+        "id": "youtube",
+        "kind": "music",
+        "handler": "source"
+      }
+    ],
+    "events": [
+      {
+        "name": "player.started",
+        "handler": "onPlayer"
+      },
+      {
+        "name": "player.stopped",
+        "handler": "onPlayer"
+      },
+      {
+        "name": "player.failed",
+        "handler": "onPlayer"
+      },
+      {
+        "name": "player.silent",
+        "handler": "onPlayer"
+      }
+    ]
+  }
+}

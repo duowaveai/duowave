@@ -53,6 +53,10 @@ const FORGIVEN_AFTER: Duration = Duration::from_secs(600);
 const ADDRESS_SPACE_FLOOR: u64 = 4 << 30;
 /// How long a program asked to stop (SIGTERM) has before it is killed.
 const STOP_GRACE: Duration = Duration::from_secs(3);
+/// An app's program is the kernel's first choice when it must kill for memory: −1000…1000, Alice and the gateway at 0.
+#[cfg(target_os = "linux")]
+const OOM_SCORE_ADJ: &str = "500";
+
 /// Looks over its memory budget in a row that make a fall.
 const OVER_BUDGET_LOOKS: u32 = 3;
 const MEMORY_EVERY: Duration = Duration::from_secs(10);
@@ -260,6 +264,13 @@ fn spawn(launch: &Launch, host: &Arc<dyn HostApi>) -> Result<tokio::process::Chi
         }
     }
     let mut child = command.spawn().map_err(|error| crate::tr!("не запустилось: {error}", error = error))?;
+    // When the kernel must kill for memory, an app goes before Alice and the gateway (OOM_SCORE_ADJ).
+    #[cfg(target_os = "linux")]
+    if let Some(pid) = child.id() {
+        if let Err(error) = std::fs::write(format!("/proc/{pid}/oom_score_adj"), OOM_SCORE_ADJ) {
+            tracing::debug!(target: "apps", "{}: oom_score_adj not set: {error}", launch.id);
+        }
+    }
     for (stream, level) in [
         (child.stdout.take().map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Unpin + Send>), "info"),
         (child.stderr.take().map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Unpin + Send>), "warn"),
@@ -385,11 +396,11 @@ impl Shared {
                     fell = Some(crate::tr!("три раза подряд не ответило, здорово ли"));
                 }
                 let pid = *self.pid.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                if let Some(rss) = pid.and_then(|pid| crate::operations::system_memory::process_rss_mb(Some(pid))) {
+                if let Some(rss) = pid.and_then(crate::operations::system_memory::program_rss_mb) {
                     over_budget = if rss > self.launch.memory_mb { over_budget + 1 } else { 0 };
                     if over_budget >= OVER_BUDGET_LOOKS {
                         fell = Some(crate::tr!(
-                            "держит {rss} МБ при бюджете {budget} МБ",
+                            "держит {rss} МБ ОЗУ при бюджете {budget} МБ",
                             rss = rss,
                             budget = self.launch.memory_mb
                         ));
@@ -506,7 +517,7 @@ impl PluginInstance for Instance {
         let shared = self.shared.clone();
         Box::pin(async move {
             let pid = (*shared.pid.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))?;
-            let rss = tokio::task::spawn_blocking(move || crate::operations::system_memory::process_rss_mb(Some(pid)))
+            let rss = tokio::task::spawn_blocking(move || crate::operations::system_memory::program_rss_mb(pid))
                 .await
                 .ok()
                 .flatten()?;

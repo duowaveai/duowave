@@ -41,6 +41,8 @@ struct Inner {
     base_url: String,
     now: Box<dyn Fn() -> u64 + Send + Sync>,
     served: Mutex<Served>,
+    /// The shared client; a helper's hearing has one that follows no redirect.
+    http: reqwest::Client,
 }
 
 /// Any OpenAI-compatible `POST /audio/transcriptions`: OpenAI itself, Groq and similar clouds, or our GigaAM server
@@ -75,6 +77,19 @@ impl OpenAiTranscriber {
 
     /// With a clock of its own (ms), for tests.
     pub fn with_clock(config: AsrConfig, now: impl Fn() -> u64 + Send + Sync + 'static) -> OpenAiTranscriber {
+        OpenAiTranscriber::built(config, now, client())
+    }
+
+    /// Over an HTTP client of its own: a helper's hearing (src/helpers/remote.rs) follows no redirect.
+    pub fn with_client(config: AsrConfig, http: reqwest::Client) -> OpenAiTranscriber {
+        OpenAiTranscriber::built(config, now_ms, http)
+    }
+
+    fn built(
+        config: AsrConfig,
+        now: impl Fn() -> u64 + Send + Sync + 'static,
+        http: reqwest::Client,
+    ) -> OpenAiTranscriber {
         let base_url = config.base_url.trim_end_matches('/').to_string();
         OpenAiTranscriber {
             inner: Arc::new(Inner {
@@ -82,6 +97,7 @@ impl OpenAiTranscriber {
                 base_url,
                 now: Box::new(now),
                 served: Mutex::new(Served { served: None, due: 0, restarts: 0, asking: None }),
+                http,
             }),
         }
     }
@@ -109,7 +125,7 @@ impl OpenAiTranscriber {
         }
         let request = self
             .inner
-            .authorized(client().post(format!("{}/audio/transcriptions", self.inner.base_url)))
+            .authorized(self.inner.http.post(format!("{}/audio/transcriptions", self.inner.base_url)))
             .multipart(form)
             .timeout(Duration::from_millis(config.timeout_ms));
         let exchange = async {
@@ -157,7 +173,7 @@ impl OpenAiTranscriber {
         let timeout = Duration::from_millis(config.timeout_ms.max(30_000).max(seconds * 4_000));
         let request = self
             .inner
-            .authorized(client().post(format!("{}/audio/transcriptions", self.inner.base_url)))
+            .authorized(self.inner.http.post(format!("{}/audio/transcriptions", self.inner.base_url)))
             .multipart(form)
             .timeout(timeout);
         let exchange = async {
@@ -257,7 +273,7 @@ impl Inner {
 
     async fn list_models(&self, timeout_ms: u64) -> Result<ModelsAnswer, reqwest::Error> {
         let response = self
-            .authorized(client().get(format!("{}/models", self.base_url)))
+            .authorized(self.http.get(format!("{}/models", self.base_url)))
             .timeout(Duration::from_millis(timeout_ms))
             .send()
             .await?;

@@ -100,6 +100,20 @@ impl Origin {
         Origin { activator, name: None, character: None, who: None, device: COMPUTER.into(), via, why: None }
     }
 
+    /// A station's phrase opened by an app's word of its own (src/activator): which word, and the character it goes
+    /// to.
+    pub fn station_word(device: &str, word: &str, character: Option<String>) -> Origin {
+        Origin {
+            activator: Activator::Word,
+            name: Some(word.to_string()),
+            character,
+            who: None,
+            device: device.to_string(),
+            via: Via::Voice,
+            why: None,
+        }
+    }
+
     /// A station's phrase: with its wake word (which one: today's only, `STATION_WORD`), or without it — the answer
     /// to a question the station listened for.
     pub fn station(device: &str, wake_word: bool) -> Origin {

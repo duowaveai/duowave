@@ -60,7 +60,7 @@ export default {
     placeOwn: 'дома',
     placeCloud: 'облако',
     placeYandex: 'Яндекс',
-    placeAgent: 'помощник',
+    placeAgent: 'Турбо',
     kindVoice: 'голосом',
     kindText: 'текстом',
     kindSay: 'сказала сама',

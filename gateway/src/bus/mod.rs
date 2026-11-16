@@ -224,6 +224,63 @@ impl Bus {
         })
     }
 
+    /// A package's rights an admin approved with its install — the panel asked once, before it went in: what it costs
+    /// and what it may, in words (docs/plans/wake-word-station.md). Each becomes a link «при установке» before the app
+    /// first runs, so it asks nobody at first use; a right it already has as high is left as it is. A handle whose «да»
+    /// is for good (`standing`: a microphone that hears the room all the time) gets «всегда» for this app — only when the
+    /// right names that very participant, never through a wider pattern. How many links it made.
+    pub fn approve_install(
+        &self,
+        app: &Address,
+        rights: &[(Level, Pattern)],
+        actor: Option<Actor>,
+    ) -> Result<usize, ApiError> {
+        let me = Pattern::exact(app);
+        let had = self.links.all();
+        let mut made = 0;
+        for (level, pattern) in rights {
+            if *level == Level::None
+                || had.iter().any(|link| link.from == me && &link.to == pattern && link.level >= *level)
+            {
+                continue;
+            }
+            let mut link = Link::new(me.clone(), pattern.clone(), *level, LinkSource::Install);
+            link.by = actor.as_ref().map(|actor| actor.name.clone());
+            self.links.grant(link, actor.clone())?;
+            made += 1;
+        }
+        for provider in self.providers() {
+            for participant in provider.participants() {
+                let Some(level) = rights
+                    .iter()
+                    .filter(|(_, pattern)| *pattern == Pattern::exact(&participant.address))
+                    .map(|(level, _)| *level)
+                    .max()
+                else {
+                    continue;
+                };
+                for handle in provider.handles(&participant.address) {
+                    if !(handle.standing && handle.danger.is_some() && handle.level <= level) {
+                        continue;
+                    }
+                    let target = format!("{}:{}", participant.address, handle.name);
+                    // The owner's own mark on it stays: «всегда» is added, nothing taken.
+                    let mark = self
+                        .links
+                        .dangers()
+                        .into_iter()
+                        .find(|word| word.target == target && word.caller == app.as_str())
+                        .and_then(|word| word.mark);
+                    self.links.say_danger(
+                        danger::DangerWord { target, caller: app.to_string(), always: true, mark },
+                        actor.clone(),
+                    )?;
+                }
+            }
+        }
+        Ok(made)
+    }
+
     /// The title of a participant, for people; its address when no provider knows it.
     pub fn title_of(&self, address: &Address) -> String {
         if let Some(principal_like) = PEOPLE.iter().find(|kind| **kind == address.kind()) {

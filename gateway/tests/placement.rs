@@ -35,6 +35,15 @@ async fn recognition() -> String {
     format!("http://{address}/v1")
 }
 
+/// The computer's own voice server as its look sees it: a port that takes connections (a closed one would not be ready
+/// for the station, src/helpers/builtin.rs). It speaks nothing: whatever is asked of it is not found.
+async fn voice_port() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, axum::Router::new()).await.unwrap() });
+    format!("http://{address}/v1")
+}
+
 async fn admin(gateway: &Gateway, password: &str) -> (reqwest::header::HeaderName, String) {
     let setup = message(gateway.post("/api/v1/auth/setup").json(&json!({"password": password})), StatusCode::CREATED);
     bearer(setup.await["token"].as_str().expect("a token"))
@@ -47,7 +56,12 @@ fn feature<'a>(view: &'a Value, id: &str) -> &'a Value {
 #[tokio::test]
 async fn the_station_leans_on_the_computer_and_the_computer_keeps_a_copy_of_its_settings() {
     let asr = recognition().await;
-    let pc = Gateway::start(&[("ASR_PROVIDER", "openai"), ("ASR_BASE_URL", asr.as_str())]).await;
+    // The computer gives the station its voice too: «Свой» has no Yandex, and the station leans on its helpers for
+    // hearing and voice both (src/helpers, `svoi_lacks`). The voice server itself is not asked here.
+    let voice = voice_port().await;
+    let pc =
+        Gateway::start(&[("ASR_PROVIDER", "openai"), ("ASR_BASE_URL", asr.as_str()), ("TTS_OWN_URL", voice.as_str())])
+            .await;
     let (name, pc_admin) = admin(&pc, "pair-computer-password").await;
     // A key for the station's home server: only the right to the computer's models.
     let created = message(
@@ -180,7 +194,8 @@ async fn the_station_leans_on_the_computer_and_the_computer_keeps_a_copy_of_its_
 /// choice, set through its API and kept for its next start. The computer's own gateway chooses in its shop.
 #[tokio::test]
 async fn the_station_chooses_between_the_computers_voice_and_alices() {
-    let pc = Gateway::start(&[("TTS_OWN_URL", "http://127.0.0.1:9/v1"), ("TTS_OWN_VOICE", "baya")]).await;
+    let voice = voice_port().await;
+    let pc = Gateway::start(&[("TTS_OWN_URL", voice.as_str()), ("TTS_OWN_VOICE", "baya")]).await;
     let (name, pc_admin) = admin(&pc, "pair-computer-password").await;
     let created = message(
         pc.post("/api/v1/api-keys")

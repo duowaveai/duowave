@@ -35,6 +35,11 @@ const MEMORY: &str = "system/memory";
 /// The gateway's way to the internet (src/egress, «Выход в интернет»): an app with its own servers («VPN») gives the
 /// gateway its connections here; the owner's «да» to «VPN → Сеть шлюза» first, and until then everything goes directly.
 pub const NETWORK: &str = crate::egress::NETWORK;
+/// The station's processed microphone, for an app on the station that hears a word of its own (src/activator): where
+/// it is. It listens to the room all the time — a camera's or a microphone's danger, the owner's «да» first.
+pub const MIC: &str = "system/mic";
+/// A word of an app's own that wakes the station as its button does (src/activator, `contributes.activators`).
+pub const ACTIVATOR: &str = "system/activator";
 /// The household's model answering in an app's words (the answer's `model`, plugins/skill.rs): a participant for the
 /// bus's word on it, not a letter's target.
 pub const BRAIN: &str = "system/brain";
@@ -92,6 +97,8 @@ impl Provider for System {
             (HEARING, crate::tr!("Слух: распознать речь в своём файле")),
             (PUBLISH, crate::tr!("Публикация: Telegram, страница «смотри и выбирай», страницы площадок")),
             (NETWORK, crate::tr!("Сеть шлюза: выход в интернет через ваши серверы")),
+            (MIC, crate::tr!("Микрофон колонки: слышит комнату всё время")),
+            (ACTIVATOR, crate::tr!("Слово-активатор: начать разговор с колонкой")),
         ]
         .iter()
         .filter_map(|(text, title)| Some(Participant::new(Address::parse(text).ok()?, title)))
@@ -141,6 +148,12 @@ impl Provider for System {
                 .titled(&crate::tr!("распознать речь в своём файле: слова со временем"))],
             NETWORK => vec![Handle::new("connections", Level::Call)
                 .titled(&crate::tr!("дать шлюзу свои подключения: через них он ходит в интернет по вашим правилам"))],
+            MIC => vec![Handle::new("open", Level::Call)
+                .titled(&crate::tr!("слушать микрофон колонки: узнать, где его звук"))
+                .dangerous(Some(crate::bus::danger::Danger::Camera))
+                .standing()],
+            ACTIVATOR => vec![Handle::new("wake", Level::Call)
+                .titled(&crate::tr!("разбудить колонку своим словом: она слушает, как после кнопки"))],
             PUBLISH => vec![
                 Handle::new("publishers", Level::Call)
                     .titled(&crate::tr!("кто может отправить: что берёт, нужно ли подключение")),
@@ -212,6 +225,8 @@ impl Provider for System {
                 (HOME, "weather-place") => Ok(services.weather_place().map(Value::String).unwrap_or(Value::Null)),
                 (HOME, "news-feeds") => Ok(Value::Array(services.news_feeds())),
                 (NETWORK, "connections") => services.network_connections(&id, input.clone()).map_err(failed),
+                (MIC, "open") => services.mic(&id).map_err(failed),
+                (ACTIVATOR, "wake") => services.wake(&id, input.clone()).await.map_err(failed),
                 (BRAIN, _) => Err(BusError::Failed(crate::tr!(
                     "модель отвечает словами приложения полем model в ответе на фразу, не письмом"
                 ))),
@@ -245,6 +260,8 @@ mod tests {
             "system/memory",
             "system/publish",
             "system/network",
+            "system/mic",
+            "system/activator",
         ] {
             assert!(addresses.iter().any(|known| known == address), "{address}");
         }

@@ -143,3 +143,16 @@
 /* Ссылка в MagicPlace из других экранов: «Каталог в MagicPlace ›» у «Персонажей». */
 .mp-link { display: inline-flex; align-items: center; gap: 4px; min-height: 44px; color: var(--text); font: inherit; cursor: pointer; }
 .mp-link:hover { text-decoration: underline; }
+
+/* Карточка агента до установки (docs/plans/router-and-works.md, 7б): команда установки — моноширинно, без вопросов — заметно. */
+.mp-agent { padding: 4px 0; }
+.mp-agent-code {
+    display: block;
+    padding: 8px 12px;
+    border-radius: 12px;
+    background: var(--field-bg);
+    box-shadow: 0 0 0 1px var(--glass-border);
+    font: 400 12px/1.5 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    overflow-wrap: anywhere;
+}
+.mp-agent-warn { padding: 8px 12px; border-radius: 12px; background: var(--strong-bg); box-shadow: 0 0 0 1px var(--glass-border); }

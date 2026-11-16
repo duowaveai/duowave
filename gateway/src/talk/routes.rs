@@ -25,8 +25,10 @@
 //! - `POST /api/v1/works/{id}/said` — the computer said the work's line to its end (the panel's voice): its question
 //!   opens for the answer the panel listens for. `POST /api/v1/works/{id}/notes {text}` — words added to it («вдогонку»,
 //!   or its new version); `POST /api/v1/works/{id}/do {action}` — `status`, `details`, `show`, `desk`, `park`, `stop`,
-//!   and `answer` with `{answer}` — `yes`, `fit`, `no`, `park`, `details`: the work's question answered by a button,
-//!   as if said aloud. Each answers `{said}`, the phrase to say or show. The same right.
+//!   `continue` (a work in a folder that ended goes on in the agent's session), and `answer` with `{answer}` — `yes`,
+//!   `fit`, `no`, `park`, `details`: the work's question answered by a button, as if said aloud (a work in a folder
+//!   held by a plan's limit: `yes` waits, `no` stops). Each answers `{said}`, the phrase to say or show. The same
+//!   right.
 //! - `POST /api/v1/talk {…, why?}`: a phrase with `via: answer` is the closed window's — `why` the microphone opened
 //!   by itself (`question`, `work`, `ready`; docs/plans/audio-interface-2.md, «К2»); what the window does not take
 //!   answers `dropped`, and nothing keeps it.
@@ -320,12 +322,13 @@ impl<'a> Shelf<'a> {
 
     /// Where a work stands: going, in the queue, asking — as «Ждёт вас» counts it — or recent.
     fn group(&self, work: &Work) -> Group {
-        if work.going() {
+        // A work in a folder going on may ask too: a plan's limit, «подождать или остановить?».
+        if self.asking.contains(&work.id) {
+            Group::Asking
+        } else if work.going() {
             Group::Going
         } else if work.state.queued() {
             Group::Queued
-        } else if self.asking.contains(&work.id) {
-            Group::Asking
         } else {
             Group::Recent
         }
@@ -337,7 +340,7 @@ impl<'a> Shelf<'a> {
         let executor = self.app.talk.executor(&work.executor);
         let (doing, step) = match (&executor, group) {
             (Some(executor), Group::Going) if work.kind == APP => (executor.status(&work).map(doing_name), None),
-            (Some(executor), Group::Going) => (None, executor.details(&work)),
+            (Some(executor), Group::Going | Group::Asking) if work.going() => (None, executor.details(&work)),
             _ => (None, None),
         };
         let (model, spent) = if self.admin { self.spending(&work) } else { (None, None) };

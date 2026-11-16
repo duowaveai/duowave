@@ -50,13 +50,18 @@ pub const TOOL: &str = "tool";
 pub const TASK: &str = "task";
 /// Background tools' works at once; the next one waits in the queue (the owner's default 2).
 pub const TOOLS_AT_ONCE: usize = 3;
+/// A work in a work folder (docs/plans/router-and-works.md, 10): an agent in its copy of the folder, for hours.
+pub const FOLDER: &str = "folder";
+/// Works in folders at once on the helper; the next one waits in the queue (decision 16).
+pub const FOLDERS_AT_ONCE: usize = 1;
 
-/// Which works count together against the limits: the things made (apps, and later the folders' works), the
-/// background tools, the apps' tasks.
+/// Which works count together against the limits: the things made (apps), the background tools, the apps' tasks, the
+/// works in folders — those have their own count, and their new ones by voice count with the apps' for the day.
 fn pool(kind: &str) -> u8 {
     match kind {
         TOOL => 1,
         TASK => 2,
+        FOLDER => 3,
         _ => 0,
     }
 }
@@ -436,12 +441,16 @@ impl Works {
             1 => return Ok(()),
             _ => {}
         }
-        if list.iter().filter(|work| work.going()).count() >= self.at_once() {
+        let at_once = if pool == 3 { FOLDERS_AT_ONCE } else { self.at_once() };
+        if list.iter().filter(|work| work.going()).count() >= at_once {
             return Err(Refused::Busy);
         }
         if again || origin.via != Via::Voice {
             return Ok(());
         }
+        // The day's new works by voice: the apps' and the folders' together (decision 16).
+        let list: Vec<Work> =
+            self.list().iter().filter(|work| matches!(self::pool(&work.kind), 0 | 3)).cloned().collect();
         let day_ago = now.saturating_sub(24 * 60 * 60_000);
         // What waits in the queue has not started: it holds nothing back, itself least of all.
         let new_by_voice: Vec<&Work> = list

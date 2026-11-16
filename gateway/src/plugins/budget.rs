@@ -28,8 +28,9 @@
 //!   PLUGINS_STORAGE_RESERVE_MB when it is set.
 //! - Under pressure (MemAvailable below the reserve, or the system's own pressure at «warn»): the contexts of plugins
 //!   idle longer than a minute are unloaded and their work in the background waits. At «critical» on the station the
-//!   plugin switched on last among those loaded is switched off (PLUGINS_PRESSURE_ACTION=warn only says so: the
-//!   owner's open decision 3); one that holds nothing frees nothing and stays on. The built-in skills and the voice
+//!   app (else the plugin) switched on last among those loaded falls asleep: unloaded, still on, and it wakes by
+//!   itself once the memory is back with room to spare (PLUGINS_PRESSURE_ACTION=warn only says so); one that holds
+//!   nothing frees nothing and stays as it is. The built-in skills and the voice
 //!   path are never touched: a plugin's voice route that does not fit fails as any failed call does, and a built-in
 //!   skill takes the phrase when there is one.
 use std::path::Path;
@@ -39,6 +40,10 @@ use serde::Serialize;
 
 use crate::core::availability::Placement;
 use crate::operations::system_memory::{self, Pressure};
+
+/// An app asleep for want of memory wakes when this much is free over the reserve and its own budget: not into the
+/// same want again.
+pub const WAKE_MARGIN_MB: u64 = 15;
 
 /// What a plugin that is idle this long gives back under pressure.
 pub const PRESSED_IDLE_MS: u64 = 60_000;
@@ -85,8 +90,9 @@ impl MemoryProbe for MachineMemory {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PressureAction {
-    /// Switch the plugin switched on last off (the plan's choice).
-    Disable,
+    /// The one switched on last falls asleep: unloaded, still on, and it wakes by itself once the memory is back
+    /// (the owner's choice, 16.11.2026: «засыпает и само просыпается»). `disable`, the word before, means it too.
+    Sleep,
     /// Only say so: the log and the panel.
     Warn,
 }
@@ -94,7 +100,7 @@ pub enum PressureAction {
 impl PressureAction {
     pub fn parse(text: &str) -> Option<PressureAction> {
         match text.trim() {
-            "disable" => Some(PressureAction::Disable),
+            "sleep" | "disable" => Some(PressureAction::Sleep),
             "warn" => Some(PressureAction::Warn),
             _ => None,
         }
@@ -217,7 +223,7 @@ pub fn count(memory: Option<MemoryNow>, reserve_mb: u64, plugins: &[PluginShare]
 /// What the panel says under the bar: what is in use now and how much more can be loaded.
 pub fn note(count: &Count, measured: bool, pressure: Pressure) -> String {
     if !measured {
-        return crate::tr!("Сколько памяти свободно, шлюз здесь сказать не может.");
+        return crate::tr!("Сколько ОЗУ свободно, шлюз здесь сказать не может.");
     }
     let used = match count.loaded {
         0 => crate::tr!("Сейчас ни одно приложение не загружено."),
@@ -230,9 +236,9 @@ pub fn note(count: &Count, measured: bool, pressure: Pressure) -> String {
     let more = if count.free_mb > 0 {
         crate::tr!("Можно загрузить ещё {mb} МБ.", mb = count.free_mb)
     } else if count.budget_mb == 0 {
-        crate::tr!("Приложениям места нет: памяти меньше запаса для системы и Алисы.")
+        crate::tr!("Приложениям ОЗУ не осталось: свободного меньше запаса для системы и Алисы.")
     } else if count.room_mb > 0 {
-        crate::tr!("Свободного места нет: следующее приложение сначала выгрузит простаивающие.")
+        crate::tr!("Свободного ОЗУ нет: следующее приложение сначала выгрузит простаивающие.")
     } else {
         crate::tr!("Больше не загрузить, пока работают загруженные.")
     };
@@ -240,9 +246,9 @@ pub fn note(count: &Count, measured: bool, pressure: Pressure) -> String {
     match pressure {
         Pressure::Normal => room,
         Pressure::Warn => {
-            crate::tr!("{room} Памяти мало: простаивающие приложения выгружаются, фоновая работа ждёт.", room = room)
+            crate::tr!("{room} ОЗУ мало: простаивающие приложения выгружаются, фоновая работа ждёт.", room = room)
         }
-        Pressure::Critical => crate::tr!("{room} Памяти очень мало: приложения выгружаются.", room = room),
+        Pressure::Critical => crate::tr!("{room} ОЗУ очень мало: приложения выгружаются.", room = room),
     }
 }
 
@@ -250,7 +256,7 @@ pub fn note(count: &Count, measured: bool, pressure: Pressure) -> String {
 pub fn does_not_fit(need_mb: u64, free_mb: u64) -> Option<String> {
     (need_mb > free_mb).then(|| {
         crate::tr!(
-            "колонке не хватает памяти, чтобы загрузить приложение: нужно {need_mb} МБ, свободно {free_mb} МБ",
+            "колонке не хватает ОЗУ, чтобы загрузить приложение: нужно {need_mb} МБ, свободно {free_mb} МБ",
             need_mb = need_mb,
             free_mb = free_mb
         )
@@ -297,7 +303,7 @@ pub fn no_room(need_mb: u64, free_mb: Option<u64>, reserve_mb: u64) -> Option<St
     let free = free_mb?;
     (need_mb + reserve_mb > free).then(|| {
         crate::tr!(
-            "не хватит места: нужно {need_mb} МБ и ещё {reserve_mb} МБ про запас на обновление шлюза, свободно {free}",
+            "не хватит памяти: нужно {need_mb} МБ и ещё {reserve_mb} МБ про запас на обновление шлюза, свободно {free}",
             need_mb = need_mb,
             reserve_mb = reserve_mb,
             free = free
@@ -356,7 +362,7 @@ mod tests {
         let starving = super::count(Some(MemoryNow { available_mb: 30, ..memory }), 40, &plugins);
         assert_eq!((starving.free_mb, starving.room_mb), (0, 0), "below the reserve nothing is free");
         let said = note(&starving, true, Pressure::Warn);
-        assert!(said.contains("памяти меньше запаса") && said.contains("Памяти мало"), "{said}");
+        assert!(said.contains("свободного меньше запаса") && said.contains("ОЗУ мало"), "{said}");
         assert_eq!(super::count(None, 40, &plugins).budget_mb, 0);
     }
 
@@ -385,6 +391,8 @@ mod tests {
         gauge.set(Some(80));
         assert_eq!(gauge.get(), Some(80));
         assert_eq!(PressureAction::parse("warn"), Some(PressureAction::Warn));
+        assert_eq!(PressureAction::parse("sleep"), Some(PressureAction::Sleep));
+        assert_eq!(PressureAction::parse("disable"), Some(PressureAction::Sleep), "the word before");
         assert_eq!(PressureAction::parse("panic"), None);
     }
 }

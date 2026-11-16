@@ -3,6 +3,17 @@
 import { plural } from '../../format';
 
 export default {
+    // Люди и ключи по новой анатомии (17.11)
+    addPerson: 'Добавить человека',
+    newPerson: 'Новый человек',
+    newKey: 'Новый ключ',
+    keyWhatCan: 'Что может',
+    keyChosen: (n: number, total: number) => `выбрано ${n} из ${total}`,
+    keyGroupSee: 'Смотреть',
+    keyGroupDo: 'Делать',
+    keyGroupManage: 'Настраивать',
+    grantsMore: (n: number) => `ещё ${n}`,
+    voiceDenied: 'Что нельзя голосом',
     title: 'Настройки',
     tabAccess: 'Доступ',
     tabLook: 'Оформление',
@@ -45,13 +56,13 @@ export default {
     removePersonTitle: (name: string) => `Удалить «${name}»?`,
     removePersonText: 'Его настройки уйдут вместе с ним.',
     removeOk: 'Удалить',
-    removeAction: 'удалить',
+    removeAction: 'Удалить',
     namePlaceholder: 'Имя',
     newPersonName: 'Имя нового человека',
     passwordOptional: 'Пароль (не обязательно)',
     passwordOptionalLabel: 'Пароль для входа в пульт — не обязательно',
     newPersonRole: 'Роль нового человека',
-    addAction: 'добавить',
+    addAction: 'Добавить',
     noPasswordNote: 'Без пароля человек не входит в пульт — это профиль, который колонка будет узнавать.',
     noPasswordNoteComputer: 'Без пароля человек не входит в пульт — это профиль, который DuoWave будет узнавать.',
 
@@ -64,10 +75,10 @@ export default {
     copiedKey: 'скопировал',
     usedAgo: (ago: string) => `пользовались ${ago}`,
     neverUsed: 'ещё не пользовались',
-    revokeAction: 'отозвать',
+    revokeAction: 'Отозвать',
     keyPlaceholder: 'Для чего ключ: OpenClaw, скрипт…',
     keyName: 'Имя ключа',
-    createKey: 'создать ключ',
+    createKey: 'Создать ключ',
 
     connectorTelephony: 'телефония',
     connectorWeather: 'погода',

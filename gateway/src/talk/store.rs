@@ -669,6 +669,11 @@ mod tests {
             waits: None,
             on: None,
             unlisted: false,
+            agent: None,
+            companions: Vec::new(),
+            memory_mb: None,
+            size_mb: None,
+            asleep: false,
         };
         assert_eq!(
             question(pack::of(Lang::Ru), &entry),

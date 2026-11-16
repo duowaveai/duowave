@@ -8,7 +8,8 @@
 //!   gateway), `restart` (the pair's key only);
 //! - on the computer: `move`, `move/{id}`, `backup`, `restore`, `auto-update`, `update-station`, `inspect`, `retry`;
 //! - `GET|POST /api/v1/transfer` — the settings package: sealed with the pair's key between the two gateways, plain
-//!   for an admin who downloads or uploads one. A package received is applied at a restart.
+//!   for an admin who downloads or uploads one. A package received is applied at a restart;
+//! - `GET|PUT /api/v1/gateway/self` — this gateway's own id and name (src/core/identity/home.rs).
 use std::sync::Arc;
 
 use axum::extract::{DefaultBodyLimit, Query, State};
@@ -23,6 +24,7 @@ use super::station_fs::{RealSystem, StationFs, Target};
 use super::transfer::{self, Bundle};
 use crate::app::App;
 use crate::core::availability::Placement;
+use crate::core::identity::home::GatewayView;
 use crate::core::identity::permissions::{SETTINGS_EDIT, STATIONS_MANAGE, STATION_VIEW, USERS_MANAGE};
 use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller};
 use crate::settings::definitions::{GatewayState, SettingsHome};
@@ -40,7 +42,8 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/v1/placement/point-local", post(point_local))
         .route("/api/v1/placement/restart", post(restart))
         .route("/api/v1/placement/pair", post(pair))
-        .route("/api/v1/transfer", get(export).post(import));
+        .route("/api/v1/transfer", get(export).post(import))
+        .route("/api/v1/gateway/self", get(gateway_self).put(rename));
     #[cfg(feature = "pc")]
     let router = router
         .route("/api/v1/placement/move", post(pc::start_move))
@@ -76,6 +79,8 @@ pub(crate) const SETTINGS_PATHS: &[&str] = &[
     "/api/v1/household",
     "/api/v1/stations",
     "/api/v1/access",
+    // The helpers and the regulator travel (schema 4) — but the station's own door to its computer (below).
+    "/api/v1/helpers",
 ];
 
 /// Single routes outside those paths that write what the computer sends: the journal's days (`requests_keep_days`),
@@ -105,7 +110,14 @@ fn writes_nothing(segments: &[&str]) -> bool {
             | ["api", "v1", "connectors", _, "check"]
             | ["api", "v1", "connectors", "news", "preview"]
             | ["api", "v1", "mcp", "servers", _, "tools", _, "try"]
+            | ["api", "v1", "helpers", _, "check"]
     )
+}
+
+/// The station's own entry of the helpers, the pair's door `home-computer`: each gateway's own, kept by the package's
+/// rules (transfer.rs, `OWN_PARTS`), so the computer's sending never overwrites it.
+fn own_part(segments: &[&str]) -> bool {
+    matches!(segments, ["api", "v1", "helpers", crate::helpers::HOME_COMPUTER])
 }
 
 /// Whether a change at this path is one the computer's next sending overwrites (transfer.rs: every setting but each
@@ -114,7 +126,7 @@ fn writes_nothing(segments: &[&str]) -> bool {
 /// player, the workshop's drafts — nothing of theirs travels — nor the mode, the station's own (`MOVE_ONLY`).
 pub(crate) fn sent_over(path: &str) -> bool {
     let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
-    if writes_nothing(&segments) {
+    if writes_nothing(&segments) || own_part(&segments) {
         return false;
     }
     SETTINGS_PATHS.iter().any(|prefix| path.starts_with(prefix))
@@ -393,6 +405,25 @@ async fn restart(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value
     }
     app.placement.restart();
     Ok(created(json!({ "restarting": true })))
+}
+
+/// This gateway as its panel's rename reads it: its own id, the name people see, the default and its home.
+async fn gateway_self(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<GatewayView> {
+    caller.permitted(STATION_VIEW)?;
+    Ok(ok(app.identity.view()?))
+}
+
+/// A person's name for this gateway, `{"name": "Кухня"}`; empty or null — the default again. The name is this gateway's
+/// own, not a setting the computer sends: a station whose settings live on the computer is renamed too — in its panel,
+/// or from the computer through its pass (`/station/<key>/api/v1/gateway/self`).
+async fn rename(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<GatewayView> {
+    caller.permitted(SETTINGS_EDIT)?;
+    let name = match body.get("name") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(name)) => Some(name.as_str()),
+        Some(_) => return Err(ApiError::bad_request(crate::tr!("{name}: нужна строка.", name = "name"))),
+    };
+    Ok(ok(app.identity.rename(name, caller.actor())?))
 }
 
 /// What the package is asked with: `?plugins=1` — the plugins' state too (a move back takes it, moves.rs).
@@ -746,13 +777,17 @@ mod pc {
             .await;
         let Ok(answer) = answer else { return Ok(ok(json!({ "gateway": false }))) };
         let health: Value = answer.json().await.unwrap_or(Value::Null);
-        let role = health.pointer("/placement/role").and_then(Value::as_str);
-        let version = health.pointer("/build/version").and_then(Value::as_str);
-        Ok(ok(json!({
-            "gateway": version.is_some() && role != Some("pc"),
-            "version": version,
-            "port": port,
-        })))
+        let (gateway, version) = recognise(&health);
+        Ok(ok(json!({ "gateway": gateway, "version": version, "port": port })))
+    }
+
+    /// A /health answer: a DuoWave gateway that is not a computer's, and its version. The answer comes in the API's
+    /// envelope ({code, message}); a gateway from before the envelope answered bare.
+    pub(super) fn recognise(health: &Value) -> (bool, Option<&str>) {
+        let status = health.get("message").filter(|message| message.is_object()).unwrap_or(health);
+        let role = status.pointer("/placement/role").and_then(Value::as_str);
+        let version = status.pointer("/build/version").and_then(Value::as_str);
+        (version.is_some() && role != Some("pc"), version)
     }
 
     /// «ПК помогает колонке»: on — the station leans on this computer (a key made here first, if it has none of
@@ -844,6 +879,22 @@ mod tests {
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    /// The first run's probe reads a real /health answer, envelope and all: a station's gateway is one, a computer's
+    /// is not; a gateway from before the envelope (bare) still is.
+    #[cfg(feature = "pc")]
+    #[tokio::test]
+    async fn the_probe_recognises_a_station_gateway_by_its_real_health_answer() {
+        let (status, health) = send(&station(&[]), "GET", "/health", &[], Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{health}");
+        assert_eq!(pc::recognise(&health), (true, Some(crate::VERSION)), "{health}");
+        assert_eq!(pc::recognise(&health["message"]), (true, Some(crate::VERSION)), "bare");
+
+        let computer = App::build(Config::for_tests(&Env::from_pairs([("STATE_DIR", "")]))).unwrap();
+        let (_, health) = send(&computer, "GET", "/health", &[], Value::Null).await;
+        assert_eq!(pc::recognise(&health), (false, Some(crate::VERSION)), "{health}");
+        assert_eq!(pc::recognise(&json!({ "code": 200, "message": { "status": "ok" } })), (false, None), "a stranger");
     }
 
     #[tokio::test]
@@ -969,7 +1020,23 @@ mod tests {
             // A sign-in, the desk: nothing of theirs travels.
             "/api/v1/auth/login",
             "/api/v1/desk/helper",
+            // The gateway's own name: a station whose settings live on the computer is renamed too.
+            "/api/v1/gateway/self",
         ] {
+            assert!(!sent_over(path), "{path}");
+        }
+    }
+
+    /// The helpers' list and the regulator travel with the computer's package; the station's own door to its computer
+    /// does not, and a look writes nothing that travels.
+    #[test]
+    fn the_stations_own_computer_entry_stays_its_own_while_the_computer_keeps_its_settings() {
+        for path in ["/api/v1/helpers", "/api/v1/helpers/order", "/api/v1/helpers/away", "/api/v1/helpers/own-1"] {
+            assert!(sent_over(path), "{path}");
+        }
+        for path in
+            ["/api/v1/helpers/home-computer", "/api/v1/helpers/own-1/check", "/api/v1/helpers/home-computer/check"]
+        {
             assert!(!sent_over(path), "{path}");
         }
     }

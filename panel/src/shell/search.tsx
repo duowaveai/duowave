@@ -13,6 +13,7 @@ import type { Place } from './links';
 import { onComputer } from '../voice-input';
 import { byMode } from '../words';
 import { choosingTalkKey, isTalkKey } from '../voice/talk-key';
+import { TOP_VIA } from '../via';
 import { tr } from '../i18n';
 
 export interface SearchPlace {
@@ -38,6 +39,8 @@ export function searchPlaces(helper: boolean, onStation: boolean): SearchPlace[]
         { title: s.shortcuts.title, path: s.shortcuts.path, words: s.shortcuts.words, place: { section: 'settings', tab: 'look' } },
         // «Работы» (docs/plans/router-and-works.md, решение 17): ячейки в доке нет — виджет на столе, плашка и поиск.
         { title: s.works.title, path: s.works.path, words: s.works.words, place: { section: 'works', tab: '' }, when: () => can('settings.edit') },
+        // «Рабочие папки» и «Агенты» (этап 3) — со страницы «Работы» (решение владельца 16.11.2026).
+        { title: s.workFolders.title, path: s.workFolders.path, words: s.workFolders.words, place: { section: 'works', tab: 'folders' }, when: () => can('settings.edit') },
         { title: s.folders.title, path: s.folders.path, words: s.folders.words, place: { section: 'folders' }, when: () => can('station.view') },
         { title: s.newWidget.title, path: s.newWidget.path, words: s.newWidget.words, act: 'add' },
         // «Сказать» в доке — микрофон пульта (docs/plans/voice-creation.md, решение 1); текст, который колонка произнесёт, — здесь.
@@ -85,7 +88,8 @@ export function searchPlaces(helper: boolean, onStation: boolean): SearchPlace[]
             place: { section: 'settings', tab: 'station' },
             when: () => !helper && !onStation,
         },
-        { title: s.mode.title, path: s.mode.path, words: s.mode.words, place: { section: 'settings', tab: 'station' }, when: () => !onComputer() },
+        // «Кто отвечает» (режим колонки) — в «Доме» (решение владельца 16.11).
+        { title: s.mode.title, path: s.mode.path, words: s.mode.words, place: { section: 'settings', tab: 'helpers' }, when: () => !onComputer() && !helper },
         { title: s.hearing.title,
             path: byMode(s.hearing.path, s.hearing.pathMic),
             words: s.hearing.words, place: { section: 'settings', tab: 'station' } },
@@ -99,10 +103,13 @@ export function searchPlaces(helper: boolean, onStation: boolean): SearchPlace[]
             place: { section: 'settings', tab: 'station' },
             when: () => can('station.view') && !onComputer(),
         },
+        // «Дом» (решение владельца 16.11): шлюз, Турбо, «Запасная», регулятор — у всех, кто видит подключения; у пульта
+        // Турбо — его силы и кому он помогает. В окне колонки свой «Дом» компьютера — его пульт, вкладкой в строке.
+        { title: s.helpers.title, path: s.helpers.path, words: s.helpers.words, place: { section: 'settings', tab: 'helpers' }, when: () => can('connectors.view') || helper },
         {
             title: s.helper.title, path: s.helper.path, words: s.helper.words,
-            place: { section: 'settings', tab: 'helper' },
-            when: () => helper || onStation,
+            place: { section: 'settings', tab: 'helpers' },
+            when: () => helper && !TOP_VIA,
         },
         { title: s.access.title, path: s.access.path, words: s.access.words, place: { section: 'settings', tab: 'access' } },
         { title: s.look.title, path: s.look.path, words: s.look.words, place: { section: 'settings', tab: 'look' } },

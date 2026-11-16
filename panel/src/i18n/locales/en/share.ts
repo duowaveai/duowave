@@ -40,6 +40,10 @@ const en: Translation<typeof ru> = {
     gatewaySends: 'The gateway sends:',
     sending: 'Sending…',
     pages: 'Platforms — upload the file yourself:',
+    gatewaySendsTitle: 'The gateway sends',
+    pagesTitle: 'Platforms — upload the file yourself',
+    send: 'Send',
+    openPage: 'Open',
     recordTitle: 'Record in your own voice',
     upTo: (seconds: number) => `up to ${seconds} s`,
     saving: 'Saving…',
@@ -53,6 +57,7 @@ const en: Translation<typeof ru> = {
     allowAll: 'Allow all',
     notNow: 'Not now',
     leavesHouse: ' · leaves the house',
+    leavesHouseShort: 'leaves the house',
     rightBrain: 'the “Brain” model: writes texts',
     rightVoice: 'voice: speak and voice lines into its own folder',
     rightVoiceCloud: 'cloud voices (ElevenLabs): the lines’ text goes to the provider and spends your plan',
@@ -63,6 +68,8 @@ const en: Translation<typeof ru> = {
     rightHearing: 'hearing: recognize speech in its own files — words with their times',
     rightSmartHome: 'smart home',
     rightContent: 'the family’s music and tales',
+    rightMic: 'the speaker’s microphone: hears the room all the time',
+    rightActivator: 'wakes the speaker by its own word',
     rightNet: (host: string) => `network: ${host}`,
 };
 

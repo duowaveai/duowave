@@ -2587,7 +2587,7 @@ mod tests {
                     return Err(ApiError::not_found("нет такого голоса"));
                 }
                 if !anyway {
-                    return Err(ApiError::new(axum::http::StatusCode::PRECONDITION_REQUIRED, "Памяти впритык."));
+                    return Err(ApiError::new(axum::http::StatusCode::PRECONDITION_REQUIRED, "ОЗУ впритык."));
                 }
                 Ok(PreparedVoice {
                     engine: "omnivoice".into(),
@@ -3308,7 +3308,7 @@ mod tests {
         lab.omnivoice("ready");
         shop.shop.try_pending().await;
         let tight = pending(&shop).unwrap();
-        assert_eq!((tight.state.as_str(), tight.reason.as_deref()), ("tight", Some("Памяти впритык.")));
+        assert_eq!((tight.state.as_str(), tight.reason.as_deref()), ("tight", Some("ОЗУ впритык.")));
         shop.shop.activate_tts(&json!({"modelId": "own:v1", "anyway": true}), None).await.unwrap();
         assert!(pending(&shop).is_none(), "a choice that succeeds forgets the pending one");
         assert!(shop.shop.view().await.unwrap().tts_pending.is_none());

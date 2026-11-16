@@ -40,7 +40,7 @@ import { Theme, normalizeTheme } from '../shell/themes';
 import { deskActions } from '../shell/widgets';
 import { timeAgo } from '../time';
 import { Action } from '../ui/cards';
-import { Sheet } from '../ui/sheet';
+import { Sheet, SkeletonRows, WinSection } from '../ui/sheet';
 import { locale, tr } from '../i18n';
 import { VIA } from '../via';
 import { RightsLines } from '../ui/rights-lines';
@@ -279,26 +279,45 @@ function InstallSheet({
     const asks = plan.first || plan.added.length > 0 || plan.hostsAdded.length > 0;
     const title = trial ? tr.workshop.trialTitle(plan.to) : plan.first ? tr.workshop.installFirstTitle(plan.title, plan.to) : tr.workshop.installTitle(plan.to);
     const about = plan.first ? (plugin ? tr.workshop.aboutFirstPlugin : tr.workshop.aboutFirstTheme) : tr.workshop.aboutFromTo(plan.from ?? '', plan.to);
+    const spin = (what: string) => busy === what && <span class="spinner spinner-sm" aria-hidden="true" />;
+    // Внизу: «Отмена», второе действие (насовсем или проба) и главное справа.
     const buttons = (
-            <div class="flex flex-wrap gap-8">
-                {trial ? (
-                    <>
-                        <Action tone="on" label={asks ? tr.workshop.approveTrial(minutes) : tr.workshop.tryMinutes(minutes)} busy={busy === 'trial'} disabled={!!busy} onClick={() => onTrial(minutes)} />
-                        <Action label={tr.workshop.installForever(plan.to)} busy={busy === 'install'} disabled={!!busy} onClick={onInstall} />
-                    </>
-                ) : (
-                    <>
-                        <Action tone="on" label={asks ? tr.workshop.approveInstall(plan.to) : tr.workshop.installTo(plan.to)} busy={busy === 'install'} disabled={!!busy} onClick={onInstall} />
-                        {plugin && <Action label={tr.workshop.trialMinutes(minutes)} busy={busy === 'trial'} disabled={!!busy} onClick={() => onTrial(minutes)} />}
-                    </>
-                )}
-                <Action label={tr.workshop.cancel} disabled={!!busy} onClick={onClose} />
-            </div>
+        <>
+            <button class="btn btn-plain" disabled={!!busy} onClick={onClose}>
+                {tr.workshop.cancel}
+            </button>
+            {trial ? (
+                <>
+                    <button class="btn btn-plain" disabled={!!busy} aria-busy={busy === 'install' || undefined} onClick={onInstall}>
+                        {spin('install')}
+                        {tr.workshop.installForever(plan.to)}
+                    </button>
+                    <button class="btn btn-main" disabled={!!busy} aria-busy={busy === 'trial' || undefined} onClick={() => onTrial(minutes)}>
+                        {spin('trial')}
+                        {asks ? tr.workshop.approveTrial(minutes) : tr.workshop.tryMinutes(minutes)}
+                    </button>
+                </>
+            ) : (
+                <>
+                    {plugin && (
+                        <button class="btn btn-plain" disabled={!!busy} aria-busy={busy === 'trial' || undefined} onClick={() => onTrial(minutes)}>
+                            {spin('trial')}
+                            {tr.workshop.trialMinutes(minutes)}
+                        </button>
+                    )}
+                    <button class="btn btn-main" disabled={!!busy} aria-busy={busy === 'install' || undefined} onClick={onInstall}>
+                        {spin('install')}
+                        {asks ? tr.workshop.approveInstall(plan.to) : tr.workshop.installTo(plan.to)}
+                    </button>
+                </>
+            )}
+        </>
     );
+    const phrases = plan.phrases.slice(0, 6);
     return (
         <Sheet title={title} about={about} onClose={onClose} footer={buttons}>
             {trial && (
-                <p class="t-body-sm m-0">
+                <p class="win-lead">
                     {plan.from
                         ? tr.workshop.trialBodyFrom(plan.from, byMode(tr.workshop.speakAsUsualSpeaker, tr.workshop.speakAsUsual))
                         : tr.workshop.trialBodyNew(byMode(tr.workshop.speakAsUsualSpeaker, tr.workshop.speakAsUsual))}
@@ -306,40 +325,53 @@ function InstallSheet({
             )}
             <RightsLines plan={plan} />
             {(plan.phrases.length > 0 || plan.tools.length > 0) && (
-                <div class="flex flex-col gap-4">
-                    <h3 class="t-title-xs m-0">{tr.workshop.gives}</h3>
+                <WinSection title={tr.workshop.gives} group>
                     {plan.phrases.length > 0 && (
-                        <span class="t-caption">
-                            {tr.workshop.phrasesLine(plan.phrases.slice(0, 6).map((phrase) => `«${phrase}»`).join(', '), plan.phrases.length > 6 ? tr.workshop.andMore(plan.phrases.length - 6) : '')}
-                        </span>
+                        <div class="win-row is-col">
+                            <span class="win-row-t">{tr.plugins.sayTitle}</span>
+                            <div class="win-tags">
+                                {phrases.map((phrase) => (
+                                    <span key={phrase} class="win-tag">
+                                        {phrase}
+                                    </span>
+                                ))}
+                                {plan.phrases.length > 6 && <span class="win-tag is-more">{tr.plugins.phrasesMore(plan.phrases.length - 6)}</span>}
+                            </div>
+                        </div>
                     )}
-                    {plan.tools.length > 0 && <span class="t-caption">{tr.workshop.toolsLine(plan.tools.join(', '))}</span>}
-                </div>
+                    {plan.tools.length > 0 && (
+                        <div class="win-row is-col">
+                            <span class="win-row-t">{tr.plugins.toolsTitle}</span>
+                            <div class="win-tags">
+                                {plan.tools.map((tool) => (
+                                    <span key={tool} class="win-code">
+                                        {tool}
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                </WinSection>
             )}
             {plugin && (
-                <p class="t-caption m-0">
-                    {tr.workshop.budget(plan.budget.memoryMb, plan.budget.storageMb)}
-                </p>
-            )}
-            {!trial && plan.from && (
-                <p class="t-caption m-0">
-                    {tr.workshop.previousStays(plan.from, plan.keptVersions)}
-                    {plugin && !plan.enabled ? tr.workshop.pluginDisabledNote : ''}
-                </p>
-            )}
-            {plugin && (
-                <div class="flex flex-col gap-6">
-                    {!trial && <h3 class="t-title-xs m-0">{tr.workshop.orTryFirst}</h3>}
-                    <div class="ws-chips" role="radiogroup" aria-label={tr.workshop.trialLengthLabel}>
-                        <span class="t-caption">{byMode(tr.workshop.trialColonSpeaker, tr.workshop.trialColonVoice)}</span>
+                <WinSection title={!trial ? tr.workshop.orTryFirst : undefined}>
+                    <div class="win-tags items-center" role="radiogroup" aria-label={tr.workshop.trialLengthLabel}>
+                        <span class="win-row-s">{byMode(tr.workshop.trialColonSpeaker, tr.workshop.trialColonVoice)}</span>
                         {TRIAL_MINUTES.map((value) => (
-                            <button key={value} role="radio" aria-checked={minutes === value} class={`pill ${minutes === value ? 'pill-own' : 'pill-off'} cursor-pointer min-h-36`} onClick={() => setMinutes(value)}>
+                            <button key={value} role="radio" aria-checked={minutes === value} class={`pill ${minutes === value ? 'pill-pick' : 'pill-off'} cursor-pointer min-h-36`} onClick={() => setMinutes(value)}>
                                 {tr.workshop.minShort(value)}
                             </button>
                         ))}
                     </div>
-                </div>
+                </WinSection>
             )}
+            {!trial && plan.from && (
+                <p class="win-note">
+                    {tr.workshop.previousStays(plan.from, plan.keptVersions)}
+                    {plugin && !plan.enabled ? tr.workshop.pluginDisabledNote : ''}
+                </p>
+            )}
+            {plugin && <p class="win-note">{tr.workshop.budget(plan.budget.memoryMb, plan.budget.storageMb)}</p>}
         </Sheet>
     );
 }
@@ -749,38 +781,47 @@ function AgentModelSheet({ current, onSaved, onClose }: { current: WorkshopAgent
     };
     const smart = current.smart;
     const buttons = (
-            <div class="flex flex-wrap gap-8">
-                <Action tone="on" label={tr.workshop.save} busy={busy} disabled={own && (!provider || !model.trim())} onClick={() => void save()} />
-                <Action label={tr.workshop.cancel} disabled={busy} onClick={onClose} />
-            </div>
+        <>
+            <button class="btn btn-plain" disabled={busy} onClick={onClose}>
+                {tr.workshop.cancel}
+            </button>
+            <button class="btn btn-main" disabled={busy || (own && (!provider || !model.trim()))} aria-busy={busy || undefined} onClick={() => void save()}>
+                {busy && <span class="spinner spinner-sm" aria-hidden="true" />}
+                {tr.workshop.save}
+            </button>
+        </>
     );
+    const ownLocked = !brain?.providers.length;
     return (
         <Sheet title={tr.workshop.modelSheetTitle} about={tr.workshop.modelSheetAbout} onClose={onClose} footer={buttons}>
-            <p class="t-caption m-0 ws-hint">{tr.workshop.modelHint}</p>
-            <div role="radiogroup" aria-label={tr.workshop.modelGroupLabel} class="flex flex-col">
-                <button role="radio" aria-checked={!own} class="dash-option" onClick={() => setOwn(false)}>
-                    <span class="dash-option-text">
-                        <b>{tr.workshop.likeBrain}</b>
-                        <span class="t-caption">{smart ? tr.workshop.smartProfileWith(smart.model, smart.title) : tr.workshop.smartProfile}</span>
+            <p class="win-lead">{tr.workshop.modelHint}</p>
+            <div role="radiogroup" aria-label={tr.workshop.modelGroupLabel} class="win-group">
+                <button role="radio" aria-checked={!own} class={`win-row win-choice text-left${!own ? ' is-on' : ''}`} onClick={() => setOwn(false)}>
+                    <span class="win-row-main">
+                        <span class="win-row-t">{tr.workshop.likeBrain}</span>
+                        <span class="win-row-s">{smart ? tr.workshop.smartProfileWith(smart.model, smart.title) : tr.workshop.smartProfile}</span>
                     </span>
-                    <span class={`dash-radio${!own ? ' on' : ''}`} aria-hidden="true">
-                        {!own && <IconCheck />}
-                    </span>
+                    {!own && <IconCheck size={18} />}
                 </button>
-                <button role="radio" aria-checked={own} class="dash-option" disabled={!brain?.providers.length} onClick={() => setOwn(true)}>
-                    <span class="dash-option-text">
-                        <b>{tr.workshop.ownModel}</b>
-                        <span class="t-caption">{brain && !brain.providers.length ? tr.workshop.addProviderFirst : tr.workshop.providerAndModel}</span>
+                <button
+                    role="radio"
+                    aria-checked={own}
+                    class={`win-row win-choice text-left${own ? ' is-on' : ''}${ownLocked ? ' opacity-50' : ''}`}
+                    disabled={ownLocked}
+                    onClick={() => setOwn(true)}
+                >
+                    <span class="win-row-main">
+                        <span class="win-row-t">{tr.workshop.ownModel}</span>
+                        <span class="win-row-s">{brain && !brain.providers.length ? tr.workshop.addProviderFirst : tr.workshop.providerAndModel}</span>
                     </span>
-                    <span class={`dash-radio${own ? ' on' : ''}`} aria-hidden="true">
-                        {own && <IconCheck />}
-                    </span>
+                    {own && <IconCheck size={18} />}
                 </button>
             </div>
+            {own && !brain && !error && <SkeletonRows rows={2} />}
             {own && brain && brain.providers.length > 0 && (
-                <div class="ws-form">
-                    <label class="ws-label">
-                        <span class="t-caption">{tr.workshop.provider}</span>
+                <div class="flex flex-col gap-14">
+                    <label class="flex flex-col gap-6">
+                        <span class="win-label">{tr.workshop.provider}</span>
                         <select
                             class="field"
                             value={provider}
@@ -797,8 +838,8 @@ function AgentModelSheet({ current, onSaved, onClose }: { current: WorkshopAgent
                             ))}
                         </select>
                     </label>
-                    <label class="ws-label">
-                        <span class="t-caption">{tr.workshop.model}</span>
+                    <label class="flex flex-col gap-6">
+                        <span class="win-label">{tr.workshop.model}</span>
                         {chosen && chosen.models.length > 0 ? (
                             <select class="field" value={model} onChange={(e) => setModel((e.target as HTMLSelectElement).value)}>
                                 {!chosen.models.includes(model) && model && <option value={model}>{model}</option>}
@@ -815,7 +856,7 @@ function AgentModelSheet({ current, onSaved, onClose }: { current: WorkshopAgent
                 </div>
             )}
             {error && (
-                <p class="t-caption m-0 c-dot-offline" role="alert">
+                <p class="win-callout m-0" role="alert">
                     {error}
                 </p>
             )}

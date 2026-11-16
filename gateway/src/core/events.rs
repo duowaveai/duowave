@@ -198,6 +198,13 @@ events! {
         model: String,
         #[serde(default, skip_serializing_if = "Option::is_none")] usd_micro: Option<u64>,
     }
+    /// A run of a work in a folder changed (src/works): began, a step (at most once a second), ended. `work` — the
+    /// helper's id of the work (the talk's work names it as its `target`). The panel reads the journal again.
+    WorksRun = "works.run" {
+        work: String,
+        run: u32,
+        change: String,
+    }
     /// The plugins' memory changed enough to tell (src/plugins/budget.rs): what is free of their budget, the
     /// pressure. «Ресурсы колонки» reads the rest through the API.
     PluginsResources = "plugins.resources" {
@@ -378,9 +385,39 @@ events! {
         url: String,
         reason: String,
     }
-    /// The home server's connection was set up, changed or removed in the panel.
+    /// The home server's connection was set up, changed or removed in the panel. Emitted one more version, for the
+    /// helpers' entry `home-computer` only (src/helpers): a 0.11 computer's panel listens.
     HomeServerChanged = "homeServer.changed" {
         configured: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")] actor: Option<Actor>,
+    }
+    /// The helpers' list changed (src/helpers): a helper `added`, `updated`, `removed`, their `order`, the regulator
+    /// (`away`), the pair's door (`door`) — or what a helper declares (`contract`).
+    HelpersChanged = "helpers.changed" {
+        #[serde(default, skip_serializing_if = "Option::is_none")] id: Option<String>,
+        change: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")] actor: Option<Actor>,
+    }
+    /// A helper answers again (its look).
+    HelperUp = "helpers.up" {
+        id: String,
+        url: String,
+    }
+    /// A helper is away: its first look, or two misses in a row.
+    HelperDown = "helpers.down" {
+        id: String,
+        url: String,
+        reason: String,
+    }
+    /// Who this computer helps over the link changed (src/helpers/clients.rs): a home `paired` or `removed`, what it
+    /// `gives`, one of its gateways `online` or `offline`, a pairing `refused`.
+    HelperClients = "helpers.clients" {
+        change: String,
+        client: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")] actor: Option<Actor>,
+    }
+    /// The connection key this computer shows was changed («Сменить ключ»).
+    HelperKeyRotated = "helpers.key" {
         #[serde(default, skip_serializing_if = "Option::is_none")] actor: Option<Actor>,
     }
     /// The gateway moved between the computer and the station, or gave the station back to Yandex (src/placement):

@@ -3,11 +3,13 @@ import { useEffect, useState } from 'preact/hooks';
 import { ConnectorSettings, FeedPreview, NewsCatalog, NewsFeedEntry, api, problemOf } from '../api';
 import { tr } from '../i18n';
 import { BrandIconCircle } from '../ui/brand';
-import { Action } from '../ui/cards';
 import { CheckLine, EnvNote } from '../ui/fields';
-import { Sheet } from '../ui/sheet';
+import { Sheet, SkeletonRows, WinRow, WinSection } from '../ui/sheet';
 import { Switch } from '../ui/switch';
 import { byMode } from '../words';
+
+/** Слово с большой буквы — для кнопок окна (строки словаря строчные). */
+const cap = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
 
 /** Ленты в том виде, что ждёт шлюз: адрес, имя, тема и включена ли. */
 const asInput = (feeds: NewsFeedEntry[]) => feeds.map(({ url, title, topic, enabled }) => ({ url, title, topic, enabled }));
@@ -122,120 +124,127 @@ export function NewsSheet({ onClose, onChanged }: { onClose: () => void; onChang
     };
 
     const shown = catalog?.feeds.filter((feed) => feed.topic === topic) ?? [];
+    const spin = (on: boolean) => on && <span class="spinner spinner-sm" aria-hidden="true" />;
     return (
         <Sheet
             title={tr.news.title}
-            about={view ? (view.status.detail ?? '') : tr.news.reading}
+            about={view?.status.detail || undefined}
             icon={<BrandIconCircle id="rss" />}
             onClose={onClose}
             footer={
-                <div class="flex gap-8 flex-wrap">
-                    <button
-                        class="pill pill-own dash-confirm-btn"
-                        disabled={busy !== null || feeds.length === 0}
-                        aria-busy={busy === 'check'}
-                        onClick={() => void act('check', () => api.checkConnector('news'))}
-                    >
-                        {busy === 'check' ? tr.news.checkBusy : tr.news.check}
-                    </button>
-                    <button class="pill pill-off dash-confirm-btn" onClick={onClose}>
-                        {tr.news.done}
-                    </button>
-                </div>
+                <button
+                    class="btn btn-plain"
+                    disabled={busy !== null || feeds.length === 0}
+                    aria-busy={busy === 'check' || undefined}
+                    onClick={() => void act('check', () => api.checkConnector('news'))}
+                >
+                    {busy === 'check' ? tr.news.checkBusy : tr.news.check}
+                </button>
             }
         >
-            <p class="t-meta m-0">
-                {byMode(tr.news.aboutSpeaker, tr.news.aboutOwn)}
-            </p>
+            <p class="win-lead">{byMode(tr.news.aboutSpeaker, tr.news.aboutOwn)}</p>
             {view && <EnvNote fromEnv={view.fromEnv} envLeft={view.envLeft} />}
             <CheckLine check={view?.check} />
 
-            <div class="flex flex-col">
-                <b class="my-4 mx-0">{tr.news.yourFeeds}{feeds.length ? tr.news.yourFeedsCount(feeds.filter((feed) => feed.enabled).length, feeds.length) : ''}</b>
-                {view && !feeds.length && (
-                    <span class="t-meta">{tr.news.noFeeds}</span>
+            <WinSection title={tr.news.yourFeeds} aside={feeds.length ? tr.news.yourFeedsAside(feeds.filter((feed) => feed.enabled).length, feeds.length) : undefined}>
+                {!view ? (
+                    <SkeletonRows rows={2} />
+                ) : (
+                    <div class="win-group">
+                        {!feeds.length && (
+                            <div class="win-row">
+                                <span class="win-row-s">{tr.news.noFeeds}</span>
+                            </div>
+                        )}
+                        {feeds.map((feed) => {
+                            const item = itemOf(feed.url);
+                            return (
+                                <WinRow
+                                    key={feed.url}
+                                    title={feed.title ?? hostOf(feed.url)}
+                                    sub={
+                                        <>
+                                            {[topicTitle(feed.topic), hostOf(feed.url)].filter(Boolean).join(' · ')}
+                                            {item && <span class={`ml-6 ${item.ok ? 'c-accent-text' : 'c-dot-offline'}`}>· {item.text}</span>}
+                                        </>
+                                    }
+                                >
+                                    <button
+                                        class="btn btn-quiet btn-sm"
+                                        disabled={busy !== null}
+                                        onClick={() => save(`off:${feed.url}`, feeds.filter((other) => other.url !== feed.url))}
+                                    >
+                                        {cap(tr.news.remove)}
+                                    </button>
+                                    <Switch
+                                        on={feed.enabled}
+                                        label={tr.news.feedLabel(feed.title ?? hostOf(feed.url))}
+                                        disabled={busy !== null}
+                                        onChange={(on) => save(`on:${feed.url}`, feeds.map((other) => (other.url === feed.url ? { ...other, enabled: on } : other)))}
+                                    />
+                                </WinRow>
+                            );
+                        })}
+                    </div>
                 )}
-                {feeds.map((feed) => {
-                    const item = itemOf(feed.url);
-                    return (
-                        <div
-                            key={feed.url}
-                            class="flex items-center gap-10 py-8 px-0 bt-divider"
-                        >
-                            <Switch
-                                on={feed.enabled}
-                                label={tr.news.feedLabel(feed.title ?? hostOf(feed.url))}
-                                disabled={busy !== null}
-                                onChange={(on) => save(`on:${feed.url}`, feeds.map((other) => (other.url === feed.url ? { ...other, enabled: on } : other)))}
-                            />
-                            <span class="flex-1 min-w-0 flex flex-col">
-                                <b class="fs-14 overflow-hidden text-ellipsis nowrap">{feed.title ?? hostOf(feed.url)}</b>
-                                <span class="t-caption wrap-anywhere">
-                                    {[topicTitle(feed.topic), hostOf(feed.url)].filter(Boolean).join(' · ')}
-                                    {item && (
-                                        <span class={`ml-6 ${item.ok ? 'c-accent-text' : 'c-dot-offline'}`}>· {item.text}</span>
-                                    )}
-                                </span>
-                            </span>
-                            <Action
-                                label={tr.news.remove}
-                                disabled={busy !== null}
-                                onClick={() => save(`off:${feed.url}`, feeds.filter((other) => other.url !== feed.url))}
-                            />
-                        </div>
-                    );
-                })}
-            </div>
+            </WinSection>
 
-            <div class="flex flex-col gap-8">
-                <b>{tr.news.catalog}</b>
-                <div role="group" aria-label={tr.news.topics} class="flex gap-6 flex-wrap">
-                    {catalog?.topics.map((entry) => (
-                        <button
-                            key={entry.id}
-                            class={`pill ${entry.id === topic ? 'pill-own' : 'pill-off'} pill-btn-sm`}
-                            aria-pressed={entry.id === topic}
-                            onClick={() => setTopic(entry.id)}
-                        >
-                            {entry.title}
-                        </button>
-                    ))}
-                </div>
-                {!catalog && <span class="t-meta">{tr.news.readingCatalog}</span>}
-                {shown.map((feed) => {
-                    const added = has(feed.url);
-                    return (
-                        <div key={feed.id} class="flex items-center gap-10 min-h-44">
-                            <span class="flex-1 min-w-0 flex flex-col">
-                                <b class="fs-14">{feed.title}</b>
-                                <span class="t-caption">{feed.site}</span>
-                            </span>
-                            <Action
-                                label={added ? tr.news.added : tr.news.add}
-                                tone={added ? 'off' : 'on'}
-                                disabled={added || busy !== null}
-                                busy={busy === `add:${feed.id}`}
-                                onClick={() =>
-                                    save(`add:${feed.id}`, [...feeds, { url: feed.url, title: feed.title, topic: feed.topic, catalog: feed.id, enabled: true }])
-                                }
-                            />
+            <WinSection title={tr.news.catalog}>
+                {!catalog ? (
+                    <SkeletonRows rows={3} label={tr.news.readingCatalog} />
+                ) : (
+                    <>
+                        <div role="group" aria-label={tr.news.topics} class="win-tags">
+                            {catalog.topics.map((entry) => (
+                                <button
+                                    key={entry.id}
+                                    class={`pill ${entry.id === topic ? 'pill-pick' : 'pill-off'} pill-btn-sm`}
+                                    aria-pressed={entry.id === topic}
+                                    onClick={() => setTopic(entry.id)}
+                                >
+                                    {entry.title}
+                                </button>
+                            ))}
                         </div>
-                    );
-                })}
-                <span class="t-meta">
-                    {tr.news.catalogNote}
-                </span>
-            </div>
+                        {shown.length > 0 && (
+                            <div class="win-group">
+                                {shown.map((feed) => {
+                                    const added = has(feed.url);
+                                    return (
+                                        <WinRow key={feed.id} title={feed.title} sub={feed.site}>
+                                            {added ? (
+                                                <span class="pill pill-own">{tr.news.added}</span>
+                                            ) : (
+                                                <button
+                                                    class="btn btn-plain btn-sm"
+                                                    disabled={busy !== null}
+                                                    aria-busy={busy === `add:${feed.id}` || undefined}
+                                                    onClick={() =>
+                                                        save(`add:${feed.id}`, [...feeds, { url: feed.url, title: feed.title, topic: feed.topic, catalog: feed.id, enabled: true }])
+                                                    }
+                                                >
+                                                    {spin(busy === `add:${feed.id}`)}
+                                                    {cap(tr.news.add)}
+                                                </button>
+                                            )}
+                                        </WinRow>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </>
+                )}
+                <p class="win-note">{tr.news.catalogNote}</p>
+            </WinSection>
 
-            <form
-                class="flex flex-col gap-8"
-                onSubmit={(e) => {
-                    e.preventDefault();
-                    if (address.trim()) look();
-                }}
-            >
-                <b>{tr.news.ownFeed}</b>
-                <span class="flex gap-8 items-center">
+            <WinSection title={tr.news.ownFeed}>
+                <form
+                    class="flex gap-8 items-center"
+                    onSubmit={(e) => {
+                        e.preventDefault();
+                        if (address.trim()) look();
+                    }}
+                >
                     <input
                         class="field flex-1 min-w-0"
                         type="url"
@@ -249,65 +258,76 @@ export function NewsSheet({ onClose, onChanged }: { onClose: () => void; onChang
                             setPreview(null);
                         }}
                     />
-                    <Action label={tr.news.look} busy={busy === 'look'} disabled={!address.trim() || busy !== null} onClick={look} />
-                </span>
+                    <button type="submit" class="btn btn-plain" disabled={!address.trim() || busy !== null} aria-busy={busy === 'look' || undefined}>
+                        {spin(busy === 'look')}
+                        {cap(tr.news.look)}
+                    </button>
+                </form>
                 {preview && (
-                    <div class="dash-confirm flex flex-col gap-6 bg-icon-bg c-text">
-                        <b>{preview.title ?? hostOf(preview.url)}</b>
-                        <span class="t-caption">
-                            {tr.news.headlines(preview.count, preview.headlines.slice(0, 3).join(' · '))}
-                        </span>
-                        <span class="flex gap-8 items-center flex-wrap">
-                            <select
-                                class="field flex-1-1-160"
-                                aria-label={tr.news.topicLabel}
-                                value={previewTopic}
-                                onChange={(e) => setPreviewTopic((e.target as HTMLSelectElement).value)}
-                            >
-                                <option value="">{tr.news.noTopic}</option>
-                                {catalog?.topics.map((entry) => (
-                                    <option key={entry.id} value={entry.id}>
-                                        {entry.title}
-                                    </option>
-                                ))}
-                            </select>
-                            <Action
-                                label={has(preview.url) ? tr.news.alreadyHave : tr.news.add}
-                                tone="on"
-                                disabled={has(preview.url) || busy !== null}
-                                onClick={() => {
-                                    save('own', [...feeds, { url: preview.url, title: preview.title, topic: previewTopic || undefined, enabled: true }]);
-                                    setPreview(null);
-                                    setAddress('');
-                                }}
-                            />
-                        </span>
+                    <div class="win-group">
+                        <div class="win-row is-col">
+                            <div class="win-row-main">
+                                <span class="win-row-t">{preview.title ?? hostOf(preview.url)}</span>
+                                <span class="win-row-s">{tr.news.headlines(preview.count, preview.headlines.slice(0, 3).join(' · '))}</span>
+                            </div>
+                            <div class="flex gap-8 items-center flex-wrap">
+                                <select
+                                    class="field flex-1-1-160"
+                                    aria-label={tr.news.topicLabel}
+                                    value={previewTopic}
+                                    onChange={(e) => setPreviewTopic((e.target as HTMLSelectElement).value)}
+                                >
+                                    <option value="">{tr.news.noTopic}</option>
+                                    {catalog?.topics.map((entry) => (
+                                        <option key={entry.id} value={entry.id}>
+                                            {entry.title}
+                                        </option>
+                                    ))}
+                                </select>
+                                <button
+                                    class="btn btn-plain btn-sm"
+                                    disabled={has(preview.url) || busy !== null}
+                                    onClick={() => {
+                                        save('own', [...feeds, { url: preview.url, title: preview.title, topic: previewTopic || undefined, enabled: true }]);
+                                        setPreview(null);
+                                        setAddress('');
+                                    }}
+                                >
+                                    {has(preview.url) ? cap(tr.news.alreadyHave) : cap(tr.news.add)}
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 )}
-            </form>
+            </WinSection>
 
-            <div class="flex gap-8 items-center flex-wrap">
-                <span class="t-caption flex-1-1-100p">
-                    {tr.news.opmlNote}
-                </span>
-                <label class="pill pill-off cursor-pointer py-8 px-14 min-h-36 inline-flex items-center">
-                    {busy === 'opml' ? tr.news.opmlReading : tr.news.opmlImport}
-                    <input
-                        type="file"
-                        accept=".opml,.xml,text/xml,text/x-opml"
-                        class="hidden"
-                        onChange={(e) => {
-                            const file = (e.target as HTMLInputElement).files?.[0];
-                            if (file) void importOpml(file);
-                            (e.target as HTMLInputElement).value = '';
-                        }}
-                    />
-                </label>
-                <Action label={tr.news.opmlExport} disabled={!feeds.length} onClick={exportOpml} />
-            </div>
+            <WinSection group>
+                <div class="win-row is-col">
+                    <span class="win-row-s">{tr.news.opmlNote}</span>
+                    <div class="flex gap-8 flex-wrap">
+                        <label class="btn btn-plain btn-sm" aria-busy={busy === 'opml' || undefined}>
+                            {spin(busy === 'opml')}
+                            {busy === 'opml' ? tr.news.opmlReading : cap(tr.news.opmlImport)}
+                            <input
+                                type="file"
+                                accept=".opml,.xml,text/xml,text/x-opml"
+                                class="hidden"
+                                onChange={(e) => {
+                                    const file = (e.target as HTMLInputElement).files?.[0];
+                                    if (file) void importOpml(file);
+                                    (e.target as HTMLInputElement).value = '';
+                                }}
+                            />
+                        </label>
+                        <button class="btn btn-plain btn-sm" disabled={!feeds.length} onClick={exportOpml}>
+                            {cap(tr.news.opmlExport)}
+                        </button>
+                    </div>
+                </div>
+            </WinSection>
 
             {error && (
-                <p role="alert" class="t-meta m-0 c-dot-offline">
+                <p role="alert" class="win-callout m-0">
                     {error}
                 </p>
             )}

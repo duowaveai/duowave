@@ -60,8 +60,9 @@ impl SyncState {
     }
 }
 
+/// The way to the helper's history: `/home/v1` never sends anywhere else, so no redirect is followed.
 fn client() -> reqwest::Client {
-    crate::utils::http::client()
+    crate::utils::http::client_without_redirects()
 }
 
 impl History {

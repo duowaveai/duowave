@@ -41,6 +41,18 @@ pub fn client() -> reqwest::Client {
     CLIENT.get_or_init(|| client_builder().build().expect("the HTTP client builds")).clone()
 }
 
+/// The shared client that follows no redirect: for a helper's `/home/v1` (src/helpers), which never sends anywhere
+/// else — its 3xx is its answer, and nothing it names is visited, neither a device of its home nor another host for
+/// the household's words.
+pub fn client_without_redirects() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            client_builder().redirect(reqwest::redirect::Policy::none()).build().expect("the HTTP client builds")
+        })
+        .clone()
+}
+
 /// The WebSocket connector for tokio-tungstenite with the same TLS.
 pub fn ws_connector() -> tokio_tungstenite::Connector {
     tokio_tungstenite::Connector::Rustls(tls_config())
@@ -51,6 +63,7 @@ mod tests {
     #[test]
     fn builds_the_clients() {
         let _ = super::client();
+        let _ = super::client_without_redirects();
         let _ = super::ws_connector();
     }
 }

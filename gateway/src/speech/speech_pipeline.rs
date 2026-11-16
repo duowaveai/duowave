@@ -128,6 +128,8 @@ pub struct VadReport {
 
 enum Task {
     Audio(Vec<u8>),
+    /// Decoded sound from elsewhere, at the station's rate: an activator's sound before its word (src/activator).
+    Pcm(Vec<i16>),
     SpotterEnd,
 }
 
@@ -239,6 +241,14 @@ impl SpeechPipeline {
         }
     }
 
+    /// Sound already decoded, 16 kHz mono, in the stream's order: the sound before an activator's word goes in front of
+    /// the station's own (src/activator).
+    pub fn push_pcm(&mut self, pcm: &[i16]) {
+        if self.accepting && !pcm.is_empty() {
+            self.queue.push_back(Task::Pcm(pcm.to_vec()));
+        }
+    }
+
     /// StreamControl.SpotterEnd: the wake word buffer is complete.
     pub fn mark_spotter_end(&mut self) {
         if self.accepting {
@@ -260,6 +270,7 @@ impl SpeechPipeline {
             }
             let done = match task {
                 Task::Audio(chunk) => self.consume(&chunk, &mut events),
+                Task::Pcm(pcm) => self.consume_pcm(&pcm, &mut events),
                 Task::SpotterEnd => self.on_spotter_end(&mut events),
             };
             if let Err(error) = done {
@@ -421,6 +432,15 @@ impl SpeechPipeline {
                 }
             }
         }
+        if self.pcm.len() >= MAX_AUDIO_SAMPLES {
+            self.accepting = false;
+        }
+        self.advance(events)
+    }
+
+    fn consume_pcm(&mut self, pcm: &[i16], events: &mut Vec<SpeechEvent>) -> Result<()> {
+        let room = MAX_AUDIO_SAMPLES.saturating_sub(self.pcm.len());
+        self.pcm.extend_from_slice(&pcm[..pcm.len().min(room)]);
         if self.pcm.len() >= MAX_AUDIO_SAMPLES {
             self.accepting = false;
         }
@@ -604,6 +624,40 @@ pub(crate) mod tests {
         // From the wake word onset (1.2 s) minus 200 ms of padding to the end of speech plus 200 ms.
         assert!(within(audio.from_ms, 900.0, 1100.0), "{}", audio.from_ms);
         assert!(within(audio.to_ms, 3450.0, 3650.0), "{}", audio.to_ms);
+        pipeline.close();
+    }
+
+    #[test]
+    fn an_activators_sound_before_its_word_goes_in_front_of_the_stations() {
+        // The app's sound: 1.2 s of the room and its word (0.8 s), then 0.2 s after the word before the station's
+        // stream begins; the station's stream holds the command and silence (src/activator).
+        let before = concat(&[&wake_word_buffer(), &silence(200.0)]);
+        let word_end = wake_word_buffer().len();
+        let command = concat(&[&silence(300.0), &voice(600.0, -55.0), &silence(1500.0)]);
+        let mut pipeline = pipeline();
+        pipeline.push_pcm(&before[..word_end]);
+        pipeline.mark_spotter_end();
+        pipeline.push_pcm(&before[word_end..]);
+        for page in ogg_opus_chain(&command, 7).chunks(1000) {
+            pipeline.push(page);
+        }
+        let events = pipeline.flush();
+
+        let report = pipeline.report();
+        assert_eq!(report.command_start_source, Some(CommandStartSource::Station));
+        assert_eq!(report.command_start_ms, Some(2000));
+        // The gain is the word's, as after the station's own wake word.
+        assert!(report.wake_word_dbfs.is_some());
+        assert!(report.gain_db > 25.0, "{}", report.gain_db);
+        let [SpeechEvent::SpeechStart { at_ms: start }, SpeechEvent::End { reason, .. }] = events[..] else {
+            panic!("{events:?}");
+        };
+        // The command: 2.2 s of the app's sound, 0.3 s of silence, then speech.
+        assert!(within(start, 2450.0, 2600.0), "{start}");
+        assert_eq!(reason, SpeechEndReason::EndOfUtterance);
+        // Recognition hears the word too (its text loses it by the activator's words), then the command.
+        let audio = pipeline.utterance_audio().unwrap();
+        assert!(within(audio.from_ms, 900.0, 1100.0), "{}", audio.from_ms);
         pipeline.close();
     }
 

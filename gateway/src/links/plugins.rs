@@ -43,6 +43,8 @@ pub struct PluginServices {
     publishers: OnceLock<Arc<crate::capabilities::publish::Publishers>>,
     /// «Выход в интернет»: the connections an app gives (`system/network` → `connections`).
     egress: OnceLock<Weak<crate::egress::Egress>>,
+    /// The station's microphone and its Alice, for the apps that hear a word of their own (src/activator).
+    activator: OnceLock<Arc<crate::activator::Activator>>,
 }
 
 /// The words an interest is found by in the memory: likes, pastimes, what one watches and reads.
@@ -113,7 +115,13 @@ impl PluginServices {
             brain: OnceLock::new(),
             publishers: OnceLock::new(),
             egress: OnceLock::new(),
+            activator: OnceLock::new(),
         })
+    }
+
+    /// The activators' service, once the station's sessions stand.
+    pub fn set_activator(&self, activator: Arc<crate::activator::Activator>) {
+        let _ = self.activator.set(activator);
     }
 
     pub fn set_brain(&self, brain: &Arc<crate::dialog::brain::brain_service::BrainService>) {
@@ -761,6 +769,29 @@ impl HostServices for PluginServices {
                 plugins.note_line(&caller, "info", &line);
             }
             Ok(answer)
+        })
+    }
+
+    fn mic(&self, caller: &str) -> Result<Value, String> {
+        let activator =
+            self.activator.get().ok_or_else(|| crate::tr!("микрофон колонки слышит только шлюз на самой колонке"))?;
+        tracing::info!(target: "plugins", "{caller}: opens the station's microphone");
+        activator.mic()
+    }
+
+    fn wake(&self, caller: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
+        let activator = self.activator.get().cloned();
+        let words = self
+            .plugins
+            .get()
+            .and_then(Weak::upgrade)
+            .and_then(|host| host.installed(caller))
+            .map(|package| package.manifest.contributes.activators.clone())
+            .unwrap_or_default();
+        let caller = caller.to_string();
+        Box::pin(async move {
+            let activator = activator.ok_or_else(|| crate::tr!("будить колонку может только шлюз на самой колонке"))?;
+            activator.wake(&caller, &words, &input).await
         })
     }
 

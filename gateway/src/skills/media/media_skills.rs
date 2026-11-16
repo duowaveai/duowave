@@ -271,6 +271,18 @@ impl PlayerControl for MediaControl {
         Some(Outcome::said("Хорошо, больше не поставлю.", next.unwrap_or_else(commands::stop_player)))
     }
 
+    fn describe(&self, device_tag: &str) -> Option<String> {
+        let (item, _) = self.player.current(device_tag)?;
+        let title = item.title.trim();
+        if title.is_empty() {
+            return None;
+        }
+        Some(match item.subtitle.as_deref().map(str::trim).filter(|who| !who.is_empty()) {
+            Some(who) => format!("Сейчас играет «{title}», {who}."),
+            None => format!("Сейчас играет «{title}»."),
+        })
+    }
+
     fn owns(&self, device_tag: &str) -> bool {
         self.player.current(device_tag).is_some_and(|(_, state)| {
             state.state != super::player::PlayState::Finished && now_ms().saturating_sub(state.at) < 6 * 3_600_000

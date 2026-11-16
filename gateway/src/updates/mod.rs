@@ -275,7 +275,7 @@ impl UpdatesService {
             Some("pc") => (
                 false,
                 Some(
-                    crate::tr!("Шлюз на колонке обновляет компьютер, который его поставил: «Настройки» → «Компьютер-помощник» → «Обновить до …»."),
+                    crate::tr!("Шлюз на колонке обновляет компьютер, который его поставил: в его пульте «Настройки» → «Этот компьютер» → «Присматриваю за колонкой» → «Обновить до …»."),
                 ),
             ),
             Some("yam") => (
@@ -595,7 +595,7 @@ impl UpdatesService {
     ) -> Result<(), String> {
         let target = fs.trial_dir().join(format!("duowave-{version}"));
         let (_, sha256) = install::unpack_to(archive, "duowave", &target)
-            .map_err(|error| crate::tr!("Новая версия не распаковалась в память колонки: {error}", error = error))?;
+            .map_err(|error| crate::tr!("Новая версия не распаковалась в ОЗУ колонки: {error}", error = error))?;
         if let Err(problem) = install::answers_version(&target, version, trial::ANSWER_WAIT) {
             let _ = std::fs::remove_file(&target);
             return match problem {

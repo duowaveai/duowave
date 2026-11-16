@@ -28,6 +28,6 @@ pub mod transfer;
 #[cfg(feature = "pc")]
 pub mod watch;
 
-pub use availability::{AvailabilityService, HomeServerSource, PlacementSource};
+pub use availability::{AvailabilityService, HelperSource, PlacementSource};
 pub use routes::router;
 pub use service::PlacementService;

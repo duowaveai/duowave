@@ -110,12 +110,17 @@ interface Props {
     scene: ComponentChildren;
     /** «Новый виджет» — плитка в левом столбце. */
     addTile: ComponentChildren;
+    /**
+     * Сколько точек сцене нужно справа от колонки — для Турбо рядом со шлюзом (решение владельца 16.11): колонка остаётся
+     * в середине поля, правые столбцы виджетов отходят на столько же.
+     */
+    sceneExtra?: number;
     banner: ComponentChildren;
     /** `grip` — перетаскивание за шапку; у закреплённого стола его нет. */
     render: (widget: DeskWidget, menu: WidgetMenu, grip?: (event: PointerEvent) => void) => ComponentChildren;
 }
 
-export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, render }: Props) {
+export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, render, sceneExtra = 0 }: Props) {
     const box = useRef<HTMLDivElement>(null);
     const plane = useRef<HTMLDivElement>(null);
     const [zoom, setZoom] = useState(layout.zoom ?? 1);
@@ -377,7 +382,7 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
     // чтобы было видно, что там ещё есть.
     const half = SCENE_W / 2;
     const underWidth = under.some((widget) => widget.wide) ? UNDER_WIDE : SCENE_W;
-    const columnX = [-half - GAP - WIDTH, half + GAP, half + GAP + WIDTH + 40];
+    const columnX = [-half - GAP - WIDTH, half + sceneExtra + GAP, half + sceneExtra + GAP + WIDTH + 40];
     const top = -SCENE_H / 2;
 
     // Мини-карта: что на столе и где окно, — после каждой отрисовки, по местам в DOM. И «Новый виджет» — ниже тех
@@ -433,7 +438,7 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
             {/* Опускание под баннером — своим слоем с плавным ходом: сдвиг и масштаб поля идут без задержки. */}
             <div class="desk-push" style={push ? { transform: `translateY(${push}px)` } : undefined}>
                 <div ref={plane} class="desk-plane" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>
-                    <div ref={sceneBox} class="desk-scene-spot" style={{ left: `${-half}px`, top: `${top}px`, width: `${SCENE_W}px` }}>
+                    <div ref={sceneBox} class="desk-scene-spot" style={{ left: `${-half}px`, top: `${top}px`, width: `${SCENE_W + sceneExtra}px` }}>
                         {scene}
                     </div>
                     {under.length > 0 && (

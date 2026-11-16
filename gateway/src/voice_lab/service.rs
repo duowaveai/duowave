@@ -1174,7 +1174,7 @@ impl VoiceLabService {
 fn admitted(admission: &Admission, anyway: bool) -> Result<(), ApiError> {
     match admission.verdict {
         AdmissionVerdict::Tight if !anyway => {
-            Err(tight_memory(admission.reason.clone().unwrap_or_else(|| crate::tr!("Памяти впритык."))))
+            Err(tight_memory(admission.reason.clone().unwrap_or_else(|| crate::tr!("ОЗУ впритык."))))
         }
         _ => Ok(()),
     }

@@ -49,7 +49,7 @@ const en: Translation<typeof ru> = {
     cmpJazz: '“Alice, play jazz”',
     cmpJazzWho: 'Yandex Music, as before',
     yourAi: 'your AI',
-    switchOn: 'Turn on “Together”',
+    switchOn: 'Turn on “Alice + your AI”',
     switching: 'Turning on…',
 
     talk: 'Talk',
@@ -78,7 +78,7 @@ const en: Translation<typeof ru> = {
     smarterStation: 'Alice is smarter now',
     smarterComputer: 'DiVi is smarter now',
     smarterConnected: (title: string) => `✓ ${title} connected`,
-    smarterTogether: '✓ “Together” on',
+    smarterTogether: '✓ “Alice + your AI” on',
     undo: 'Undo',
     smarterLeadStation: 'Talk, widgets and games now go to your AI. Music, alarms and the smart home stay with Alice.',
     smarterLeadComputer: 'DiVi answers on its own now: talk, widgets, games and memory.',

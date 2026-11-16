@@ -55,6 +55,7 @@ use super::yandex_relay::{
     RelayOutcome, RelayOutput, YandexAnswer, YandexRelay, YandexRelayOptions, NO_EVENTS, RECOGNITION_EVENTS,
 };
 use crate::access::{HouseholdService, SpeakerHint};
+use crate::activator::{Activation, Starter, Wake, WakeOutcome};
 use crate::config::{GatewayConfig, ListenMode, ModelProfile, TtsProvider};
 use crate::core::connectors::{ContributedOffer, ContributedTools};
 use crate::core::events::{EventBus, GatewayEvent};
@@ -131,6 +132,9 @@ pub struct SessionDeps {
     pub rescue: Option<Arc<dyn super::rescue::StationRescue>>,
     /// The talk's layer (src/talk): its reader reads a phrase about the works before the model answers it.
     pub talk: Option<Arc<crate::talk::TalkLayer>>,
+    /// Who answers a request an activator's word began (src/activator): today the word's character becomes the
+    /// house's. None: the house's character answers every request.
+    pub characters: Option<Arc<dyn crate::activator::WordCharacter>>,
 }
 
 /// The station's model and firmware, as the debug API shows them.
@@ -630,7 +634,54 @@ pub struct Inner {
     deferred: Vec<Arc<SpokenAnswer>>,
     /// A deferred answer is being said now: the next waits.
     delivering: bool,
+    /// An activator's word asked the station to listen (src/activator): the request it began takes the sound before
+    /// the word.
+    pending_wake: Option<PendingWake>,
+    /// When the station's last request began, ms: a word heard right after it is that request's own wake word's.
+    last_voice_at_ms: u64,
+    /// The requests an activator's word began, by the station's message id: the word and its character.
+    activations: VecDeque<(String, Activation)>,
 }
+
+/// An activator's word waiting for the station's request it asked for.
+struct PendingWake {
+    wake: Wake,
+    asked_at_ms: u64,
+    started: Option<oneshot::Sender<WakeOutcome>>,
+}
+
+impl PendingWake {
+    /// The word is told what came of it.
+    fn tell(&mut self, outcome: WakeOutcome) {
+        if let Some(started) = self.started.take() {
+            let _ = started.send(outcome);
+        }
+    }
+}
+
+/// Why an activator's word does not wake the station now: it listens, it was woken just now, or a word is waiting.
+fn wake_refused(inner: &Inner, now: u64) -> Option<String> {
+    if inner.voice_requests.iter().any(|voice| voice.state == super::voice_request::VoiceState::Listening) {
+        return Some(crate::tr!("колонка уже слушает"));
+    }
+    if now.saturating_sub(inner.last_voice_at_ms) < WAKE_YIELD_MS {
+        return Some(crate::tr!("колонку только что позвали"));
+    }
+    if inner.pending_wake.as_ref().is_some_and(|pending| now.saturating_sub(pending.asked_at_ms) < WAKE_PENDING_MS) {
+        return Some(crate::tr!("колонку уже будят"));
+    }
+    None
+}
+
+/// A word heard right after the station began a request is that request's: the station's own wake word won.
+const WAKE_YIELD_MS: u64 = 1_500;
+/// How long the station is waited for to begin the request a word asked for (it took 0.06–0.13 s live, 16.11); then
+/// it is asked once more.
+const WAKE_CONFIRM_MS: u64 = 1_200;
+/// A request that begins later than this after the word is not the word's.
+const WAKE_PENDING_MS: u64 = 3_000;
+/// The requests an activator began, remembered for their answers.
+const ACTIVATIONS_KEPT: usize = 8;
 
 impl Inner {
     fn voice(&mut self, key: VoiceKey) -> Option<&mut VoiceRequest> {
@@ -659,6 +710,16 @@ impl Inner {
             None
         };
         Some((voice, raw))
+    }
+
+    /// The activator's word that began a request (src/activator), if one did.
+    fn activation(&self, r#ref: &str) -> Option<Activation> {
+        self.activations.iter().find(|(known, _)| known == r#ref).map(|(_, activation)| activation.clone())
+    }
+
+    /// Whether a wake word began the request: the station's own, or an activator's.
+    fn by_wake_word(&self, r#ref: &str, request: &AliceRequest) -> bool {
+        request.activation_type.as_deref() == Some("spotter") || self.activation(r#ref).is_some()
     }
 
     fn trip(&self, r#ref: &str) -> Option<Arc<RequestHandle>> {
@@ -852,6 +913,9 @@ impl StationSession {
                 pending_says: Vec::new(),
                 deferred: Vec::new(),
                 delivering: false,
+                pending_wake: None,
+                last_voice_at_ms: 0,
+                activations: VecDeque::new(),
             }),
             me: me.clone(),
         });
@@ -1077,6 +1141,70 @@ impl StationSession {
             VoiceState::Listening => !interim || !voice.interim.text().is_empty(),
             VoiceState::Done => false,
         })
+    }
+
+    /// An activator's word (src/activator): the station is asked to listen as by its button, and the request it
+    /// begins takes the sound before the word. Not while it listens, nor right after it began a request (its own wake
+    /// word came first); while it speaks, the word interrupts — the button does. Asked once more when no request came
+    /// within WAKE_CONFIRM_MS (live, one word in six had none).
+    pub fn wake_by_activator(self: &Arc<Self>, wake: Wake, starter: Starter) -> BoxFuture<'static, WakeOutcome> {
+        let session = self.clone();
+        async move {
+            let (started, mut told) = oneshot::channel();
+            let asked_at_ms = now_ms();
+            {
+                let mut inner = session.lock();
+                if let Some(reason) = wake_refused(&inner, asked_at_ms) {
+                    return WakeOutcome::Skipped(reason);
+                }
+                inner.pending_wake = Some(PendingWake { wake, asked_at_ms, started: Some(started) });
+            }
+            let confirm = Duration::from_millis(WAKE_CONFIRM_MS);
+            for attempt in 1..=2 {
+                if let Err(error) = starter().await {
+                    session.drop_wake(asked_at_ms);
+                    return WakeOutcome::Failed(error);
+                }
+                match tokio::time::timeout(confirm, &mut told).await {
+                    Ok(Ok(outcome)) => return outcome,
+                    Ok(Err(_)) => return WakeOutcome::Failed(crate::tr!("колонка отключилась")),
+                    Err(_) if attempt == 1 => {
+                        // Begun meanwhile (the word's or another): its word comes; else the station is asked again.
+                        if !session.waits_for(asked_at_ms) {
+                            return match tokio::time::timeout(confirm, &mut told).await {
+                                Ok(Ok(outcome)) => outcome,
+                                _ => WakeOutcome::Skipped(crate::tr!("колонка начала другой запрос")),
+                            };
+                        }
+                        session.note(
+                            "activatorRetry",
+                            "no request within 1.2 s of the word: the station is asked again",
+                            None,
+                        );
+                    }
+                    Err(_) => {}
+                }
+            }
+            session.drop_wake(asked_at_ms);
+            session.note("activatorLost", "the station began no request for the word", None);
+            WakeOutcome::Failed(crate::tr!("колонка не начала слушать"))
+        }
+        .boxed()
+    }
+
+    /// The word asked at `asked_at_ms` still waits for its request, and nothing listens yet.
+    fn waits_for(&self, asked_at_ms: u64) -> bool {
+        let inner = self.lock();
+        inner.pending_wake.as_ref().is_some_and(|pending| pending.asked_at_ms == asked_at_ms)
+            && !inner.voice_requests.iter().any(|voice| voice.state == super::voice_request::VoiceState::Listening)
+    }
+
+    /// The word asked at `asked_at_ms` waits no more.
+    fn drop_wake(&self, asked_at_ms: u64) {
+        let mut inner = self.lock();
+        if inner.pending_wake.as_ref().is_some_and(|pending| pending.asked_at_ms == asked_at_ms) {
+            inner.pending_wake = None;
+        }
     }
 
     /// The station's player plays, as it last said (its device state in a request).
@@ -1643,6 +1771,23 @@ impl StationSession {
         if request.activation_type.as_deref() == Some("auto_listening") && !self.follow_up_wanted(inner) {
             return self.dismiss_follow_up(inner, &message_id, &request, stream_id);
         }
+        let now = now_ms();
+        inner.last_voice_at_ms = now;
+        // The request an activator's word asked for (src/activator): «activation directive», soon after the word.
+        // Any other request is not the word's.
+        let woken = match inner.pending_wake.take() {
+            Some(pending)
+                if request.activation_type.as_deref() == Some("directive")
+                    && now.saturating_sub(pending.asked_at_ms) <= WAKE_PENDING_MS =>
+            {
+                Some(pending)
+            }
+            Some(mut pending) => {
+                pending.tell(WakeOutcome::Skipped(crate::tr!("колонка начала другой запрос")));
+                None
+            }
+            None => None,
+        };
         // The speech session opens while the user speaks, so the answer does not wait for it.
         if let Some(yandex) = &inner.yandex {
             yandex.warm_up();
@@ -1656,11 +1801,58 @@ impl StationSession {
         // The session's last wake word, else the station's typical one: after a restart or a reconnect, or with a
         // wake word of our own only, the session has heard none.
         let assumed = inner.last_gain_db.or_else(|| self.deps.speech.wake_word_gain(&self.device_tag));
-        let speech = self.deps.speech.create_pipeline(request.activation_type.as_deref(), assumed);
+        // The sound before an activator's word goes in front of the station's: the word in it picks the gain, and the
+        // command starts where the word ended — as after the station's own wake word.
+        let preroll = woken.as_ref().and_then(|pending| pending.wake.preroll());
+        let mut speech = match &preroll {
+            Some(_) => self.deps.speech.create_pipeline(Some("spotter"), assumed),
+            None => self.deps.speech.create_pipeline(request.activation_type.as_deref(), assumed),
+        };
+        if let Some((pcm, word_end)) = &preroll {
+            speech.push_pcm(&pcm[..*word_end]);
+            speech.mark_spotter_end();
+            speech.push_pcm(&pcm[*word_end..]);
+        }
+        let by_word = woken.map(|mut pending| {
+            let wake = &pending.wake;
+            let sound_ms = preroll.as_ref().map_or(0, |(pcm, _)| pcm.len() as u64 / 16);
+            self.note(
+                "activatorWake",
+                &format!(
+                    "«{}» ({:.2}) of {}: {sound_ms} ms of sound before the station's, the word ended {} ms before the request",
+                    wake.title,
+                    wake.score,
+                    wake.app,
+                    (now as i64).saturating_sub(wake.at_ms)
+                ),
+                Some(json!({
+                    "app": wake.app,
+                    "word": wake.word,
+                    "score": wake.score,
+                    "soundMs": sound_ms,
+                    "askedMs": now.saturating_sub(pending.asked_at_ms),
+                })),
+            );
+            let activation = Activation {
+                app: wake.app.clone(),
+                title: wake.title.clone(),
+                words: wake.wake_words(),
+                character: wake.character.clone(),
+            };
+            pending.tell(WakeOutcome::Started);
+            activation
+        });
         let interim = InterimRecognition::new(self.interim_options());
         let serial = self.next_serial.fetch_add(1, Ordering::SeqCst);
         let activation = request.activation_type.clone();
         let mut voice = VoiceRequest::new(serial, message_id.clone(), stream_id, request, audio, speech, interim);
+        if let Some(by_word) = by_word {
+            inner.activations.push_back((message_id.clone(), by_word.clone()));
+            while inner.activations.len() > ACTIVATIONS_KEPT {
+                inner.activations.pop_front();
+            }
+            voice.activation = Some(by_word);
+        }
         // Voice for Yandex (YANDEX_VOICE, a whisper): the station's audio as it came, until the route is decided.
         let keeps = !self.deps.skills.config.yandex_voice.is_empty() || self.deps.dialog.config.whisper_reply;
         if let Some(kept) = inner.request_frames.iter_mut().find(|kept| kept.message_id == message_id).filter(|_| keeps)
@@ -1832,7 +2024,10 @@ impl StationSession {
         // A station close can overtake audio that is still queued for VAD.
         self.flush_voice(inner, key);
         let enabled = self.deps.speech.recognition_enabled();
-        if let Some(picked) = inner.voice(key).and_then(|voice| voice.speech.picked_gain_db()) {
+        // The gain an activator's sound gave is the app's channel's, not the station's stream's: not remembered.
+        if let Some(picked) =
+            inner.voice(key).filter(|voice| voice.activation.is_none()).and_then(|voice| voice.speech.picked_gain_db())
+        {
             inner.last_gain_db = Some(picked);
             self.deps.speech.note_wake_word_gain(&self.device_tag, picked);
         }
@@ -2009,9 +2204,8 @@ impl StationSession {
             return self.handle_request(inner, &message_id, &request, text, false);
         }
         let error = voice.error.clone();
-        if request.activation_type.as_deref() == Some("spotter")
-            && self.deps.skills.ringing_now(&self.device_tag, request.device_state.as_ref(), now_ms())
-        {
+        let by_wake_word = request.activation_type.as_deref() == Some("spotter") || voice.activation.is_some();
+        if by_wake_word && self.deps.skills.ringing_now(&self.device_tag, request.device_state.as_ref(), now_ms()) {
             // While its timer rings the station sends next to nothing (live, 02.11: «Алиса, стоп» at −70 dBFS, no
             // words): the wake word alone then means stop.
             voice.timeline.mark("answerStart");
@@ -2082,18 +2276,32 @@ impl StationSession {
             return self.rescue(inner, r#ref, request, text, rescue);
         }
         let router = self.deps.skills.router.clone();
-        let input = self.route_input(inner, text, request);
-        // Where the phrase came from: this station, by its wake word or as the answer to its question.
+        // A request an activator's word began, now with words: the word's character answers it — today the house's
+        // from here on (src/activator, `WordCharacter`). A word heard in silence never gets here.
+        if let (Some(activation), Some(characters)) = (inner.activation(r#ref), self.deps.characters.as_ref()) {
+            if let Some(character) = activation.character.as_deref() {
+                if characters.answer_as(character, &activation.title) {
+                    self.note(
+                        "activatorCharacter",
+                        &format!("«{}» called {character}: the house's character from now on", activation.title),
+                        Some(json!({ "word": activation.title, "character": character })),
+                    );
+                }
+            }
+        }
+        let input = self.route_input(inner, r#ref, text, request);
+        // Where the phrase came from: this station, by its wake word (or an activator's) or as the answer to its
+        // question.
         if let Some(trip) = inner.trip(r#ref) {
             let who = input.principal.as_ref().map(|principal| principal.name.clone());
-            trip.set_origin(crate::talk::Origin::station(&self.device_tag, input.wake_word).by(who));
+            trip.set_origin(self.origin(inner.activation(r#ref).as_ref(), request).by(who));
         }
         // Right after connecting a request can come before our session with Yandex is up (live 02.11: «Кто сейчас
         // играет?» 80 ms early got «Этого я пока не умею»): what Yandex would take waits for the opening session.
         if let (false, Some(yandex), false) = (waited, inner.yandex.clone(), input.yandex_available) {
             let with_yandex = router.decide(&RouteInput { yandex_available: true, ..input.clone() });
             let to_yandex = match &with_yandex {
-                Decision::YandexDialog { .. } => true,
+                Decision::YandexDialog { .. } | Decision::ModelAway => true,
                 Decision::Intent { resolution, .. } => *resolution == Resolution::Yandex,
                 _ => false,
             };
@@ -2179,6 +2387,15 @@ impl StationSession {
                 self.deps.skills.stats.count(CapabilityName::Chat, Executor::Own);
                 self.converse(inner, r#ref, request, text, profile);
             }
+            // No model may be asked now (the helper with it away, no backup): in «Вместе» Alice answers instead of the
+            // words (the owner, 15.11).
+            Decision::ModelAway => {
+                self.record_route(text, CapabilityName::Chat, &Resolution::Yandex, "model away", None);
+                if let Some(trip) = inner.trip(r#ref) {
+                    trip.routed(Some(CapabilityName::Chat.as_str()), "yandex");
+                }
+                self.ask_yandex(inner, r#ref, request, text, CapabilityName::Chat, false);
+            }
             Decision::Unsupported { capability, reason } => {
                 let resolution = Resolution::Unsupported { reason: reason.clone() };
                 self.record_route(text, capability, &resolution, "model", None);
@@ -2260,11 +2477,24 @@ impl StationSession {
         });
     }
 
+    /// Where a phrase of this station came from: an activator's word (src/activator), the station's own wake word, or
+    /// neither — the answer to its question.
+    fn origin(&self, activation: Option<&Activation>, request: &AliceRequest) -> crate::talk::Origin {
+        match activation {
+            Some(activation) => {
+                crate::talk::Origin::station_word(&self.device_tag, &activation.title, activation.character.clone())
+            }
+            None => {
+                crate::talk::Origin::station(&self.device_tag, request.activation_type.as_deref() == Some("spotter"))
+            }
+        }
+    }
+
     fn speaker(&self, text: &str) -> Principal {
         self.deps.household.speaker(Some(&SpeakerHint { device_tag: self.device_tag.clone(), text: text.to_string() }))
     }
 
-    fn route_input(&self, inner: &Inner, text: &str, request: &AliceRequest) -> RouteInput {
+    fn route_input(&self, inner: &Inner, r#ref: &str, text: &str, request: &AliceRequest) -> RouteInput {
         let now = now_ms();
         // What the station holds now — its player, its timers — for the panel between requests.
         self.deps.skills.note_device_state(&self.device_tag, request.device_state.as_ref(), now);
@@ -2275,9 +2505,14 @@ impl StationSession {
             continuation: inner.continuation,
             yandex_available: self.yandex_available(inner),
             ringing: self.deps.skills.ringing_now(&self.device_tag, request.device_state.as_ref(), now),
-            wake_word: request.activation_type.as_deref() == Some("spotter"),
+            wake_word: inner.by_wake_word(r#ref, request),
             principal: Some(self.speaker(text)),
-            model: ModelState { enabled: self.deps.dialog.enabled(), tools: self.deps.dialog.tools_enabled() },
+            model: ModelState {
+                enabled: self.deps.dialog.enabled(),
+                tools: self.deps.dialog.tools_enabled(),
+                unreachable_fast: !self.deps.dialog.reachable(ModelProfile::Fast),
+                unreachable_smart: !self.deps.dialog.reachable(ModelProfile::Smart),
+            },
             now,
         }
     }
@@ -2527,9 +2762,8 @@ impl StationSession {
             reason: Some(crate::skills::quick_commands::profile_reason(text, profile)),
             ..DialogContext::default()
         };
-        let origin =
-            crate::talk::Origin::station(&self.device_tag, request.activation_type.as_deref() == Some("spotter"))
-                .by(Some(self.speaker(text).name.clone()));
+        let activation = inner.activation(r#ref);
+        let origin = self.origin(activation.as_ref(), request).by(Some(self.speaker(text).name.clone()));
         let session = self.clone();
         let reading = answer.clone();
         let question = text.to_string();
@@ -2550,7 +2784,8 @@ impl StationSession {
                 session.model_command(&inner, &reading, &r#ref, &request, &text, profile)
             } else {
                 session.deps.skills.stats.count(CapabilityName::Chat, Executor::Own);
-                let toolbox = session.lookup_toolbox(&r#ref, &request, &text, &reading, profile, None);
+                let toolbox =
+                    session.lookup_toolbox(&r#ref, &request, &text, &reading, profile, None, activation.as_ref());
                 session.deps.dialog.answer(&session.device_tag, &text, context, reading.token(), toolbox)
             };
             while let Some(phrase) = phrases.next().await {
@@ -2634,7 +2869,16 @@ impl StationSession {
                 if session.deps.dialog.config.early_response {
                     answer.respond_early();
                 }
-                let toolbox = session.lookup_toolbox(&r#ref, &request, &text, &answer, profile, Some(mcp.clone()));
+                let activation = session.lock().activation(&r#ref);
+                let toolbox = session.lookup_toolbox(
+                    &r#ref,
+                    &request,
+                    &text,
+                    &answer,
+                    profile,
+                    Some(mcp.clone()),
+                    activation.as_ref(),
+                );
                 let Some(toolbox) = toolbox else { return };
                 let mut phrases = choice.proceed(toolbox, answer.token());
                 while let Some(phrase) = phrases.next().await {
@@ -2678,7 +2922,7 @@ impl StationSession {
             let (resolution, intent, context) = {
                 let mut inner = session.lock();
                 let router = session.deps.skills.router.clone();
-                let intent = router.rewrite(&found, &session.route_input(&inner, &text, &request));
+                let intent = router.rewrite(&found, &session.route_input(&inner, &r#ref, &text, &request));
                 let resolution = router.resolve(&intent, session.yandex_available(&inner), Some(&principal));
                 session.record_route(&text, intent.capability, &resolution, "model", Some(&call.name));
                 if let Some(trip) = inner.trip(&r#ref) {
@@ -2753,7 +2997,8 @@ impl StationSession {
             reason: Some(crate::skills::quick_commands::profile_reason(text, profile)),
             ..DialogContext::default()
         };
-        let toolbox = self.lookup_toolbox(r#ref, request, text, &answer, profile, None);
+        let activation = inner.activation(r#ref);
+        let toolbox = self.lookup_toolbox(r#ref, request, text, &answer, profile, None, activation.as_ref());
         let phrases = self.deps.dialog.answer(&self.device_tag, text, context, answer.token(), toolbox);
         let parts = self.with_errors(&answer, phrases);
         self.spawn_answer(answer, parts, text.to_string());
@@ -2762,6 +3007,7 @@ impl StationSession {
     /// The model's tools in a conversation: lookups (commands for the station are not among them) and the MCP
     /// servers' tools; a command that went to a server keeps its command tools (`from`: the command's offer). After
     /// a text from outside the house (a web page, the news) only the tools that change nothing stay offered.
+    #[allow(clippy::too_many_arguments)]
     fn lookup_toolbox(
         self: &Arc<Self>,
         r#ref: &str,
@@ -2770,6 +3016,7 @@ impl StationSession {
         answer: &Arc<SpokenAnswer>,
         profile: ModelProfile,
         from: Option<Option<Arc<McpOffer>>>,
+        activation: Option<&Activation>,
     ) -> Option<ToolBox> {
         if !self.deps.dialog.tools_enabled() {
             return None;
@@ -2788,10 +3035,9 @@ impl StationSession {
         if let Some(contributed) = &contributed {
             tools.extend(contributed.tools.iter().cloned());
         }
-        // Where the phrase came from: this station, by its wake word or as the answer to its question.
-        let origin =
-            crate::talk::Origin::station(&self.device_tag, request.activation_type.as_deref() == Some("spotter"))
-                .by(Some(principal.name.clone()));
+        // Where the phrase came from: this station, by its wake word (or an activator's) or as the answer to its
+        // question.
+        let origin = self.origin(activation, request).by(Some(principal.name.clone()));
         let session = self.clone();
         let (r#ref, request, text) = (r#ref.to_string(), request.clone(), text.to_string());
         let (tool_answer, tool_mcp, tool_contributed) = (answer.clone(), mcp.clone(), contributed.clone());
@@ -3487,9 +3733,10 @@ impl StationSession {
         if super::rescue::rescue_of(text).is_some() {
             return false;
         }
-        let decision = self.deps.skills.router.decide(&self.route_input(inner, text, request));
+        let decision = self.deps.skills.router.decide(&self.route_input(inner, message_id, text, request));
         let (capability, source, rule) = match &decision {
             Decision::YandexDialog { capability } => (*capability, "continuation", None),
+            Decision::ModelAway => (CapabilityName::Chat, "model away", None),
             Decision::Intent { intent, source, rule, resolution: Resolution::Yandex }
                 if intent.params.get("yandexText").and_then(Value::as_str).is_none_or(|said| said == text) =>
             {
@@ -3535,20 +3782,25 @@ impl StationSession {
         self.end_trip(inner, &held.message_id, status, Some(reason), None);
     }
 
+    /// Whether the model that answers this profile now goes through a server of «Выход в интернет» that does not answer:
+    /// the chosen one, or the one in its place while its helper is away (dialog/brain: «Мозг» never puts a model whose
+    /// VPN does not answer there). A brain that cannot tell who answers: the chosen one.
+    fn brain_refused(&self, profile: ModelProfile) -> bool {
+        let answering = self.deps.dialog.now(profile).and_then(|now| now.provider).or_else(|| {
+            let profiles = self.deps.dialog.brain().profiles;
+            let slot = match profile {
+                ModelProfile::Fast => profiles.fast,
+                ModelProfile::Smart => profiles.smart,
+            };
+            slot.map(|slot| slot.provider)
+        });
+        answering.is_some_and(|provider| crate::egress::refused_row(&format!("provider:{provider}")))
+    }
+
     /// The request goes to Yandex: as text (the station's own request with our recognised text, the voice stays
     /// here) or as the station's voice: for capabilities in YANDEX_VOICE, and for a whisper, which Yandex answers in
     /// a whisper only when it hears one (live, 02.11: «Включаю Miyagi» whispered back to a whispered request).
     /// Yandex's answer is relayed.
-    /// Whether the model of this profile goes through a server of «Выход в интернет» that does not answer now.
-    fn brain_refused(&self, profile: ModelProfile) -> bool {
-        let profiles = self.deps.dialog.brain().profiles;
-        let slot = match profile {
-            ModelProfile::Fast => profiles.fast,
-            ModelProfile::Smart => profiles.smart,
-        };
-        slot.is_some_and(|slot| crate::egress::refused_row(&format!("provider:{}", slot.provider)))
-    }
-
     fn ask_yandex(
         self: &Arc<Self>,
         inner: &mut Inner,
@@ -4762,7 +5014,8 @@ impl StationSession {
 
 /// The spotter phrase the station reports is removed from the text along with WAKE_WORDS.
 fn extra_wake_words(voice: &VoiceRequest) -> Vec<String> {
-    voice.request.spotter_phrase.iter().cloned().collect()
+    let activator = voice.activation.iter().flat_map(|activation| activation.words.iter().cloned());
+    voice.request.spotter_phrase.iter().cloned().chain(activator).collect()
 }
 
 /// A synthesis that cannot be: every phrase fails with the reason.
@@ -4789,6 +5042,14 @@ mod tests {
     /// waits holding the session's state only, which journaling never takes, so both finish.
     /// A session of an in-memory gateway, with no socket under it: what it sends stays in the queue.
     fn session_of(app: &App) -> (Arc<StationSession>, mpsc::UnboundedReceiver<Outgoing>) {
+        session_with(app, None)
+    }
+
+    /// The same, with who answers a word's request.
+    fn session_with(
+        app: &App,
+        characters: Option<Arc<dyn crate::activator::WordCharacter>>,
+    ) -> (Arc<StationSession>, mpsc::UnboundedReceiver<Outgoing>) {
         let deps = Arc::new(SessionDeps {
             codec: Arc::new(AapiCodec::new()),
             config: Arc::new(app.config.gateway.clone()),
@@ -4804,6 +5065,7 @@ mod tests {
             tools: None,
             rescue: None,
             talk: None,
+            characters,
         });
         let handshake = Handshake { headers: HeaderMap::new(), remote_address: "192.168.1.50".into() };
         StationSession::new(&handshake, deps)
@@ -4861,6 +5123,173 @@ mod tests {
         ended.sort();
         assert_eq!(ended, ["our Yandex session journaled", "the poll answered"]);
         assert!(session.recent_events(10).iter().any(|event| event.kind == "yandexConnected"));
+    }
+
+    /// An activator's word on the station (src/activator): asked once, the station's «directive» request takes the
+    /// sound before the word — the command starts where the word ended, the request is the word's and its text loses
+    /// the word; while that request listens, another word wakes nothing.
+    #[tokio::test]
+    async fn an_activators_word_wakes_the_station_and_its_request_starts_with_the_word() {
+        let app = memory_gateway();
+        let (session, _outgoing) = session_of(&app);
+        let asked = Arc::new(AtomicU32::new(0));
+        let starter: Starter = {
+            let (session, asked) = (session.clone(), asked.clone());
+            Arc::new(move || {
+                asked.fetch_add(1, Ordering::SeqCst);
+                let session = session.clone();
+                Box::pin(async move {
+                    // The station answers as its button: a request of its own.
+                    let mut request = unknown_request();
+                    request.activation_type = Some("directive".into());
+                    let header = EventHeader { message_id: "woken-1".into(), ref_message_id: None, stream_id: Some(3) };
+                    let mut inner = session.lock();
+                    session.start_voice(&mut inner, header, request);
+                    Ok(())
+                })
+            })
+        };
+        let now = now_ms() as i64;
+        // Two seconds of sound, the word ending 1.9 s into it.
+        let wake = Wake {
+            app: "words".into(),
+            word: "otto".into(),
+            title: "Отто".into(),
+            heard: vec!["ото".into()],
+            character: Some("butler:otto".into()),
+            score: 0.99,
+            at_ms: now - 100,
+            audio: vec![0; 16 * 2000],
+            audio_start_ms: now - 2000,
+        };
+        assert_eq!(session.wake_by_activator(wake.clone(), starter.clone()).await, WakeOutcome::Started);
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        {
+            let mut inner = session.lock();
+            let request = {
+                let voice = inner.voice_by_stream(3).expect("the station's request");
+                assert_eq!(voice.activation.as_ref().map(|by| by.title.as_str()), Some("Отто"));
+                assert!(extra_wake_words(voice).contains(&"ото".to_string()));
+                voice.speech.flush();
+                // 1.5 s of sound before the word's end goes in front of the station's.
+                assert_eq!(voice.speech.command_start_ms(), Some(1500.0));
+                voice.request.clone()
+            };
+            assert!(inner.by_wake_word("woken-1", &request));
+            assert_eq!(
+                session.origin(inner.activation("woken-1").as_ref(), &request).character.as_deref(),
+                Some("butler:otto")
+            );
+        }
+        let again = session.wake_by_activator(wake, starter).await;
+        assert_eq!(again, WakeOutcome::Skipped(crate::tr!("колонка уже слушает")));
+        assert_eq!(asked.load(Ordering::SeqCst), 1, "a listening station is not asked again");
+        assert!(session.recent_events(10).iter().any(|event| event.kind == "activatorWake"));
+    }
+
+    /// Who answers a word's request, as a test sees it: the calls; «answers already» after the first.
+    struct Called(std::sync::Mutex<Vec<(String, String)>>);
+
+    impl crate::activator::WordCharacter for Called {
+        fn answer_as(&self, character: &str, word: &str) -> bool {
+            let mut calls = self.0.lock().unwrap();
+            calls.push((character.to_string(), word.to_string()));
+            calls.len() == 1
+        }
+    }
+
+    /// A word's request with words makes the word's character answer — today the house's from then on — and it is
+    /// noted; a request no word began calls nobody.
+    #[tokio::test]
+    async fn a_words_request_with_words_makes_its_character_answer() {
+        let app = memory_gateway();
+        let called = Arc::new(Called(std::sync::Mutex::new(Vec::new())));
+        let (session, _outgoing) = session_with(&app, Some(called.clone()));
+        let starter: Starter = {
+            let session = session.clone();
+            Arc::new(move || {
+                let session = session.clone();
+                Box::pin(async move {
+                    let mut request = unknown_request();
+                    request.activation_type = Some("directive".into());
+                    let header = EventHeader { message_id: "woken-1".into(), ref_message_id: None, stream_id: Some(3) };
+                    let mut inner = session.lock();
+                    session.start_voice(&mut inner, header, request);
+                    Ok(())
+                })
+            })
+        };
+        let now = now_ms() as i64;
+        let wake = Wake {
+            app: "words".into(),
+            word: "otto".into(),
+            title: "Отто".into(),
+            heard: vec!["ото".into()],
+            character: Some("butler:otto".into()),
+            score: 0.99,
+            at_ms: now - 100,
+            audio: vec![0; 16 * 2000],
+            audio_start_ms: now - 2000,
+        };
+        assert_eq!(session.wake_by_activator(wake, starter).await, WakeOutcome::Started);
+        {
+            let mut inner = session.lock();
+            let request = inner.voice_by_stream(3).expect("the station's request").request.clone();
+            session.handle_request(&mut inner, "woken-1", &request, "который час", false);
+            session.handle_request(&mut inner, "spoken-2", &unknown_request(), "который час", false);
+        }
+        assert_eq!(*called.0.lock().unwrap(), vec![("butler:otto".to_string(), "Отто".to_string())]);
+        assert!(session.recent_events(30).iter().any(|event| event.kind == "activatorCharacter"));
+    }
+
+    /// A word the station begins no request for is asked once more, then given up; a request of another kind meanwhile
+    /// is not the word's.
+    #[tokio::test(start_paused = true)]
+    async fn a_word_without_a_request_is_asked_once_more_then_given_up() {
+        let app = memory_gateway();
+        let (session, _outgoing) = session_of(&app);
+        let asked = Arc::new(AtomicU32::new(0));
+        let silent: Starter = {
+            let asked = asked.clone();
+            Arc::new(move || {
+                asked.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Ok(()) })
+            })
+        };
+        let wake = Wake {
+            app: "words".into(),
+            word: "otto".into(),
+            title: "Отто".into(),
+            heard: Vec::new(),
+            character: None,
+            score: 1.0,
+            at_ms: now_ms() as i64,
+            audio: Vec::new(),
+            audio_start_ms: now_ms() as i64,
+        };
+        let outcome = session.wake_by_activator(wake.clone(), silent).await;
+        assert_eq!(outcome, WakeOutcome::Failed(crate::tr!("колонка не начала слушать")));
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+        assert!(session.lock().pending_wake.is_none());
+
+        // The station's own wake word comes while the word waits: that request is not the word's.
+        let spotter: Starter = {
+            let session = session.clone();
+            Arc::new(move || {
+                let session = session.clone();
+                Box::pin(async move {
+                    let mut request = unknown_request();
+                    request.activation_type = Some("spotter".into());
+                    let header = EventHeader { message_id: "alice-1".into(), ref_message_id: None, stream_id: Some(5) };
+                    let mut inner = session.lock();
+                    session.start_voice(&mut inner, header, request);
+                    Ok(())
+                })
+            })
+        };
+        let outcome = session.wake_by_activator(wake, spotter).await;
+        assert_eq!(outcome, WakeOutcome::Skipped(crate::tr!("колонка начала другой запрос")));
+        assert!(session.lock().activation("alice-1").is_none());
     }
 
     /// A vgw_say callback that comes as its speech stops waiting (the 5 s ran out, and the speech has not yet taken

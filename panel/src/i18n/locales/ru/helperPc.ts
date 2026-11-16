@@ -1,7 +1,6 @@
 // Тексты: screens/helper-pc.tsx.
 
 export default {
-    helpTitle: 'Помогать колонке',
     watchTitle: 'Присматриваю за колонкой',
     modelsLabel: 'Модели на этом компьютере',
     hearingTitle: 'Слух на этом компьютере',

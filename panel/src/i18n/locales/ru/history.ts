@@ -101,7 +101,7 @@ export default {
         `${head} ${used} МБ из ${budget} МБ · шаги хранятся ${days} дн., до ${steps} на приложение`,
     whereToKeep: 'Где хранить историю:',
     computerOffline: 'компьютер сейчас не на связи — история подождёт',
-    howMuchRoom: 'Сколько места, МБ:',
+    howMuchRoom: 'Сколько памяти, МБ:',
     cleanNow: 'Почистить сейчас',
     cleaned: (records: number, objects: number) => `Убрано записей: ${records}, файлов: ${objects}.`,
 };

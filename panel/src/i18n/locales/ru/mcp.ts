@@ -21,6 +21,8 @@ export default {
 
     addTitle: 'Добавить MCP-сервер',
     addAbout: 'Готовые — с проверенными настройками; свои — на ваше усмотрение',
+    presetsSection: 'Готовые',
+    ownSection: 'Свои',
     ownProgram: 'Своя программа',
     ownProgramText: 'Команда на этом Mac: npx, uvx, свой файл.',
     ownAddress: 'Свой адрес',

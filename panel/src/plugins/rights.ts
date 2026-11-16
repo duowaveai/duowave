@@ -25,6 +25,10 @@ function words(right: string): string | undefined {
             return tr.share.rightSmartHome;
         case 'call:system/content':
             return tr.share.rightContent;
+        case 'call:system/mic':
+            return tr.share.rightMic;
+        case 'call:system/activator':
+            return tr.share.rightActivator;
         default:
             return undefined;
     }

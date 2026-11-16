@@ -3,7 +3,6 @@ import type { Translation } from '../../types';
 import type ru from '../ru/helperPc';
 
 const en: Translation<typeof ru> = {
-    helpTitle: 'Help the speaker',
     watchTitle: 'Watching over the speaker',
     modelsLabel: 'Models on this computer',
     hearingTitle: 'Hearing on this computer',

@@ -40,7 +40,7 @@ const en: Translation<typeof ru> = {
     alice: 'Alice',
     cloudVoice: 'Cloud voice',
     allByCloud: 'All answers are in the cloud voice.',
-    ourByCloud: 'Our answers are in the cloud voice, Yandex’s in Alice’s voice. In “Own” — all in the cloud voice.',
+    ourByCloud: 'Our answers are in the cloud voice, Yandex’s in Alice’s voice. In “Your AI” — all in the cloud voice.',
 
     ownVoicesHere: 'Own voices live on the computer',
     ownRecognitionHere: 'Own recognition lives on the computer',
@@ -49,8 +49,8 @@ const en: Translation<typeof ru> = {
 
     readingCatalog: 'Reading the catalog…',
 
-    guardVoice: 'You are in “Own” — without Yandex. Yandex’s voice brings it back: Yandex will voice your answers. Press again to agree.',
-    guardRecognition: 'You are in “Own”. Yandex hearing hands the whole speaker over to Yandex (“Yandex” mode). Press again to agree.',
+    guardVoice: 'You are in “Your AI” — without Yandex. Yandex’s voice brings it back: Yandex will voice your answers. Press again to agree.',
+    guardRecognition: 'You are in “Your AI”. Yandex hearing hands the whole speaker over to Yandex (“Alice” mode). Press again to agree.',
 
     loadingVoiceModel: 'Loading the voice model — up to a minute…',
     voiceWillEnable: 'The voice will turn on by itself once its model is ready.',
@@ -61,7 +61,7 @@ const en: Translation<typeof ru> = {
     voiceNotEnabled: (problem: string) => `The voice is not turned on. ${problem}`,
 
     giveYandexTitle: 'Hand hearing to Yandex?',
-    giveYandexText: 'Then Yandex runs the whole speaker: the mode becomes “Yandex”, and your own brain, voice and skills go quiet. To undo, choose “Together” or “Own” in “Settings” → “Speaker”.',
+    giveYandexText: 'Then Yandex runs the whole speaker: the mode becomes “Alice”, and your own brain, voice and skills go quiet. To undo, choose “Alice + your AI” or “Your AI” in “Settings” → “Home”.',
     giveYandexOk: 'Hand to Yandex',
     speakerGoingToYandex: 'The speaker is moving to Yandex — reconnecting.',
     rememberedRestart: 'Saved — restart recognition.',
@@ -96,7 +96,7 @@ const en: Translation<typeof ru> = {
     speakingNow: 'speaking now',
 
     hearingTitle: 'Hearing',
-    hearingRelay: 'in “Yandex” mode, Yandex recognizes speech',
+    hearingRelay: 'in “Alice” mode, Yandex recognizes speech',
     hearingWorking: (model: string) => `working: ${model}`,
     serverSilent: 'the server is silent',
     recognitionModel: 'Recognition model',
@@ -125,10 +125,10 @@ const en: Translation<typeof ru> = {
     voiceAriaSpeaker: 'Alice’s voice',
     voiceAriaComputer: 'Voice',
     voiceTitle: 'Voice',
-    voiceRelay: 'in “Yandex” mode, Alice speaks',
+    voiceRelay: 'in “Alice” mode, Alice speaks',
     voiceServerSilent: 'the voice server is silent',
     speakingPrefix: 'speaking: ',
-    relayNote: 'The mode is “Yandex” now — Alice’s voice speaks. You can pick an own voice in advance: it will sound when you go back to “Together” or “Own”.',
+    relayNote: 'The mode is “Alice” now — Alice’s voice speaks. You can pick an own voice in advance: it will sound when you go back to “Alice + your AI” or “Your AI”.',
     readyVoices: 'Ready-made voices',
     readyVoicesAbout: 'Silero and Piper',
     readyVoicesNote: 'Recommended and already downloaded. The rest are in the catalog below.',

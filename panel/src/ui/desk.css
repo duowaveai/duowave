@@ -74,6 +74,64 @@ html[data-theme='dark'] {
 .desk-top-short .status-dot { flex: none; }
 .desk-top-short svg { flex: none; }
 
+/* «Где я» (решение владельца 16.11): вкладки устройств дома — сегменты на тёплой дорожке, нажатая — белая капсула;
+   «Турбо» у вкладки — фиолетом. Рядом — «Вы в пульте колонки». */
+.dev-tabs { display: inline-flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px; background: var(--track); min-width: 0; flex: 0 1 auto; }
+.dev-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 30px;
+    padding: 0 12px 0 10px;
+    border-radius: 999px;
+    color: var(--sub);
+    font: inherit;
+    font-size: 13px;
+    line-height: 1;
+    font-weight: 500;
+    white-space: nowrap;
+    text-decoration: none;
+    min-width: 0;
+    flex: 0 1 auto;
+}
+a.dev-tab:hover { color: var(--text); background: var(--hover-bg); }
+.dev-tab.is-on { background: var(--seg-on-bg, var(--strong-bg)); color: var(--text); box-shadow: var(--seg-shadow, 0 1px 3px rgba(0, 0, 0, 0.08)); }
+.dev-tab.is-off { opacity: 0.6; }
+.dev-tab svg { flex: none; }
+.dev-tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.dev-tab-tag { font-size: 11px; font-weight: 400; color: var(--sub); }
+.dev-tab-tag.is-turbo { color: var(--pill-agent-fg); }
+.dev-tab .status-dot { flex: none; }
+button.dev-tab svg:last-child { width: 14px; height: 14px; }
+.dev-here { font-size: 13px; line-height: 18px; color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.dev-here b { color: var(--text); font-weight: 500; }
+.dev-tabs.is-short { max-width: 100%; }
+.dev-tabs.is-short .dev-tab { padding: 0 10px 0 8px; gap: 5px; max-width: 30vw; }
+/* Телефон: нажатая вкладка — с именем целиком, сколько влезет; другие уступают; три и больше — только значком. */
+.dev-tabs.is-short .dev-tab.is-on { flex-shrink: 0; max-width: 46vw; }
+.dev-tabs.is-short:has(> :nth-child(3)) .dev-tab:not(.is-on) { padding: 0 9px; }
+.dev-tabs.is-short:has(> :nth-child(3)) .dev-tab:not(.is-on) .dev-tab-name { display: none; }
+@media (max-width: 1100px) { .desk-top-line .dev-here { display: none; } }
+
+/* Пульт Турбо (компьютер, что только помогает): рамка тёмная — верхняя строка и док (доска HelperDesk). */
+html[data-role='helper'] .desk-top,
+html[data-role='helper'] .dock {
+    background: var(--helper-bg);
+    border-color: var(--helper-line);
+    color: var(--helper-text);
+    --text: var(--helper-text);
+    --sub: var(--helper-sub);
+    --track: var(--helper-chip);
+    --chip-bg: var(--helper-chip);
+    --hover-bg: #262422;
+    --seg-on-bg: #3a3835;
+    --seg-shadow: none;
+    --strong-bg: #1c1b19;
+    --label-bg: #262422;
+    --glass-border: var(--helper-line);
+    --pill-agent-fg: #c4b5fd;
+}
+
 /* Капсулы строки: режим, связь с помощником или шлюзом. Тёмная — помощник (тёмное = помощник везде). */
 .role-chip {
     display: inline-flex;
@@ -759,9 +817,97 @@ html[data-theme='dark'] .desk-map-item { background: #3a3734; }
 .mic-check { height: 6px; border-radius: 3px; background: var(--track, var(--chip-bg)); overflow: hidden; }
 .mic-check > span { display: block; height: 100%; border-radius: 3px; background: var(--bar-own); transition: width 0.08s linear; }
 /* Под колонкой у помощника — этот компьютер (макет SpaceHelper). */
-.desk-helper-pc { display: flex; align-items: center; gap: 10px; margin: 8px auto 0; width: max-content; max-width: 100%; padding: 8px 14px 8px 8px; border-radius: 999px; background: var(--helper-bg); color: var(--helper-text); --sub: var(--helper-sub); font-size: 13px; line-height: 18px; }
-.desk-helper-pc b { font-weight: 500; }
-.desk-helper-pc-icon { width: 32px; height: 32px; border-radius: 50%; background: var(--helper-chip); display: flex; align-items: center; justify-content: center; flex: none; }
+/* ─── Сцена: второе тело — Турбо (решение владельца 16.11, доски DuoDesk, DuoAsleep, SpeakerDesk, MicDesk) ─────────
+   Шлюз светлый, Турбо — тёмный блок рядом: на свободном столе справа от колонки (desk-canvas отводит ему место), в
+   ленте и столбце — под ней. Связь — короткая линия: сплошная — дома, пунктир — через интернет, серая — уснул. */
+.dash-pair { display: flex; flex-direction: column; align-items: center; gap: 0; }
+.dash-pair > .dash-stage { align-self: stretch; }
+.desk-scene-spot .dash-pair.has-side { flex-direction: row; align-items: center; }
+.desk-scene-spot .dash-pair.has-side > .dash-stage { flex: none; width: 560px; align-self: auto; }
+.turbo-side { position: relative; display: flex; flex-direction: column; align-items: center; width: 100%; max-width: 340px; }
+.desk-scene-spot .dash-pair.has-side > .turbo-side { flex-direction: row; align-items: center; width: auto; max-width: none; flex: 1 1 auto; min-width: 0; margin-top: 60px; }
+.turbo-link { position: relative; flex: none; width: 2px; height: 22px; background: var(--bar-agent); }
+.turbo-link.is-net { background: none; border-left: 2px dashed var(--bar-agent); width: 0; }
+.turbo-link.is-off, .turbo-link.is-empty { background: none; border-left: 2px dashed var(--bar-off); width: 0; }
+.turbo-link.is-same { background: none; border-left: 2px dotted var(--bar-agent); width: 0; }
+.turbo-link > span { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 11px; line-height: 14px; color: var(--sub); white-space: nowrap; }
+.desk-scene-spot .has-side .turbo-link { width: 56px; height: 2px; border-left: 0; }
+.desk-scene-spot .has-side .turbo-link.is-net,
+.desk-scene-spot .has-side .turbo-link.is-off,
+.desk-scene-spot .has-side .turbo-link.is-empty,
+.desk-scene-spot .has-side .turbo-link.is-same { height: 0; width: 56px; border-left: 0; border-top: 2px dashed var(--bar-agent); }
+.desk-scene-spot .has-side .turbo-link.is-off,
+.desk-scene-spot .has-side .turbo-link.is-empty { border-top-color: var(--bar-off); }
+.desk-scene-spot .has-side .turbo-link.is-same { border-top-style: dotted; }
+.desk-scene-spot .has-side .turbo-link > span { left: 50%; top: auto; bottom: 6px; transform: translateX(-50%); font-size: 10px; background: var(--bg); padding: 0 3px; border-radius: 4px; }
+.turbo-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    min-width: 0;
+    padding: 14px 16px 16px;
+    border-radius: 18px;
+    background: var(--helper-bg);
+    color: var(--helper-text);
+    text-align: left;
+    font: inherit;
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--bar-agent) 55%, transparent), 0 14px 40px rgba(91, 33, 182, 0.22);
+    cursor: pointer;
+}
+.turbo-body:focus-visible { outline: 2px solid var(--bar-agent); outline-offset: 3px; }
+.turbo-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.turbo-icon { flex: none; width: 34px; height: 34px; border-radius: 10px; background: var(--helper-chip); display: flex; align-items: center; justify-content: center; color: #c4b5fd; }
+.turbo-names { display: flex; flex-direction: column; min-width: 0; }
+.turbo-names > b { font-size: 15px; line-height: 20px; font-weight: 500; overflow-wrap: anywhere; }
+.turbo-names > span { font-size: 12px; line-height: 16px; color: var(--helper-sub); }
+.turbo-state { margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 6px; font-size: 11px; line-height: 14px; color: var(--helper-sub); white-space: nowrap; }
+.turbo-state > i { width: 7px; height: 7px; border-radius: 50%; background: #a3e635; }
+.turbo-chips { display: flex; flex-direction: column; gap: 6px; }
+.turbo-chip { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 10px; border-radius: 10px; background: var(--helper-chip); font-size: 12px; line-height: 16px; min-width: 0; }
+.turbo-chip > svg { flex: none; color: #c4b5fd; }
+.turbo-chip > em { margin-left: auto; font-style: normal; color: var(--helper-sub); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.turbo-chip.is-idle { color: var(--helper-sub); }
+.turbo-chip.is-idle > svg { color: var(--helper-sub); }
+/* Уснул: блок серый пунктиром, тише. */
+.turbo-body.is-off { background: var(--strong-bg); color: var(--sub); box-shadow: none; border: 1.5px dashed var(--bar-off); }
+.turbo-body.is-off .turbo-icon,
+.turbo-body.is-off .turbo-chip { background: var(--chip-bg); color: var(--sub); }
+.turbo-body.is-off .turbo-icon,
+.turbo-body.is-off .turbo-chip > svg,
+.turbo-body.is-off .turbo-names > span,
+.turbo-body.is-off .turbo-state,
+.turbo-body.is-off .turbo-chip > em { color: var(--sub); }
+.turbo-body.is-off .turbo-state > i { background: var(--bar-off); }
+/* Встроенный Турбо — часть этого же компьютера: блок плотнее. */
+.turbo-body.is-inner { border-radius: 14px; padding: 10px 12px 12px; gap: 8px; }
+/* Пустое место для Турбо у колонки без него. */
+.turbo-slot { display: flex; flex-direction: column; gap: 8px; width: 100%; padding: 14px 16px; border-radius: 18px; border: 1.5px dashed var(--bar-off); color: var(--sub); font-size: 13px; line-height: 18px; }
+.turbo-slot > b { color: var(--text); font-size: 14px; line-height: 20px; font-weight: 500; }
+.turbo-slot > .w-btn { align-self: flex-start; }
+/* «Если Турбо уснёт: …» — строка под сценой; точки — янтарь (облако, Яндекс), серые — никто. */
+.turbo-fall { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px 14px; width: max-content; max-width: 100%; margin: 12px auto 20px; padding: 10px 14px; border-radius: 14px; background: var(--strong-bg); box-shadow: 0 0 0 1px var(--glass-border), 0 2px 10px rgba(0, 0, 0, 0.04); font-size: 13px; line-height: 18px; }
+.turbo-fall-lead { color: var(--sub); }
+.turbo-fall-go { display: inline-flex; align-items: center; gap: 6px; }
+.turbo-fall-go > i { width: 7px; height: 7px; border-radius: 50%; background: var(--bar-yandex); flex: none; }
+.turbo-fall-go.is-none > i { background: var(--bar-off); }
+.turbo-asleep { width: max-content; max-width: 100%; margin: 0 auto 12px; padding: 8px 14px; border-radius: 999px; background: var(--pill-yandex-bg); color: var(--pill-yandex-fg); font-size: 13px; line-height: 18px; text-align: center; }
+
+/* Стол пульта Турбо (доска HelperDesk): его Турбо, шлюзы, которым помогает, «Здесь не разговаривают», не засыпать. */
+.turbo-desk { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 8px 0; }
+.desk-scene-spot .turbo-desk { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); align-items: start; padding-top: 40px; }
+.turbo-desk .turbo-link { display: none; }
+.turbo-desk .turbo-side { max-width: none; }
+.turbo-desk-main, .turbo-desk-aside, .turbo-desk-gateways { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.turbo-gw { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; border-radius: 16px; background: var(--strong-bg); box-shadow: 0 0 0 1px var(--glass-border); }
+.turbo-gw.is-off { opacity: 0.7; }
+.turbo-gw-icon { flex: none; width: 34px; height: 34px; border-radius: 50%; background: var(--chip-bg); display: flex; align-items: center; justify-content: center; }
+.turbo-gw-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 12px; line-height: 16px; color: var(--sub); }
+.turbo-gw-text > b { color: var(--text); font-size: 14px; line-height: 20px; font-weight: 500; }
+.turbo-gw-text > .truth-more { align-self: flex-start; margin-top: 4px; }
+.turbo-desk-card { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: 16px; background: var(--strong-bg); box-shadow: 0 0 0 1px var(--glass-border); }
+.turbo-desk-card > b { font-size: 14px; line-height: 20px; font-weight: 500; }
+.turbo-desk-awake:empty { display: none; }
 
 /* ─── Виджет голосом (screens/widget-agent.tsx) ────────────────── */
 .widget-agent { display: flex; flex-direction: column; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--glass-border); }
@@ -1009,7 +1155,8 @@ html[data-look] .code-editor:focus-within { border-color: var(--text); }
 }
 
 /* Ярлыки стола (screens/shortcuts.tsx, docs/plans/menu-scheme.md): значок и имя, «+ Ярлык» с меню. На широком столе —
-   столбиком у левого края поверх поля (стол двигают — ярлыки на месте), в ленте и в боковой панели — рядом сверху. */
+   столбиком у левого края поверх поля (стол двигают — ярлыки на месте), в ленте и в боковой панели — рядом сверху.
+   Столбик летает над полем прозрачным (владелец, 16.11): поле не сдвигается, между значками стол тянется как обычно. */
 .desk-shortcuts { display: flex; gap: 6px; }
 .desk-shortcuts.is-column {
     position: fixed;
@@ -1020,10 +1167,10 @@ html[data-look] .code-editor:focus-within { border-color: var(--text); }
     max-height: calc(100dvh - var(--top-h) - var(--dock-h) - var(--dock-gap) - 64px);
     overflow-y: auto;
     scrollbar-width: none;
+    pointer-events: none;
 }
 .desk-shortcuts.is-column::-webkit-scrollbar { display: none; }
-/* Поле свободного стола — правее столбика ярлыков: виджет, поставленный у края, их не закрывает. */
-.desk-main:has(> .desk-shortcuts.is-column) .desk-canvas { left: 104px; }
+.desk-shortcuts.is-column > * { pointer-events: auto; }
 .desk-shortcuts.is-row { flex-wrap: wrap; justify-content: flex-start; }
 .desk-shortcut {
     display: flex;
@@ -1530,3 +1677,83 @@ html[data-theme='dark'] .draft-slot { border-color: #3a3734; }
     background: var(--accent, currentColor);
     transition: width 80ms linear;
 }
+
+/* «Помощники» и «Этот компьютер» (screens/helpers.tsx, screens/helper-pc.tsx; docs/plans/home-and-helpers.md, блок 1).
+   Имя `.helper-row` занято placement.tsx — отсюда `helpers-`. На телефоне строка переносится: стрелки и меню уходят вниз. */
+.helpers-row { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; min-width: 0; padding: 10px 0; }
+.helpers-icon { flex: none; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--icon-bg); color: var(--text); }
+.helpers-main { flex: 1 1 150px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+/* Подписи несут слова шлюза — длинный адрес, имя по сертификату: переносятся где угодно, а не уезжают за край телефона. */
+.helpers-main .w-cap, .where-row .w-cap { overflow-wrap: anywhere; }
+.helpers-name { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 14px; line-height: 20px; }
+.helpers-name > b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.helpers-name > .pill { flex: none; }
+.helpers-tools { flex: none; display: flex; align-items: center; gap: 2px; margin-left: auto; }
+.helpers-abilities { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; color: var(--text); }
+.helpers-abilities > span { display: inline-flex; }
+.helpers-ability-off { opacity: 0.3; }
+.helpers-move { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: var(--sub); }
+.helpers-move:hover:not(:disabled) { background: var(--hover-bg); color: var(--text); }
+.helpers-move:disabled { opacity: 0.3; cursor: default; }
+.helpers-up svg { transform: rotate(180deg); }
+.helpers-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.helpers-chips > .pill { white-space: normal; }
+.helpers-parts { padding-left: 17px; }
+/* «Кому помогаю» на пульте Турбо (владелец 16.11): блоки с разделителями; на каждый шлюз — плитка: картинка колонки по
+   её модели, имя и модель, состояние, «Помогать»; ниже — что даю значками; тонкая настройка — свёрнутой панелью внутри. */
+.side-block { display: flex; flex-direction: column; gap: 8px; padding-top: 14px; border-top: 1px solid var(--glass-border); }
+.side-block-head { display: flex; align-items: baseline; gap: 8px; }
+.turbo-clients { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.turbo-client { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 14px; border: 1px solid var(--glass-border); background: var(--strong-bg); }
+.turbo-client-row { display: flex; align-items: center; gap: 12px; min-width: 0; flex-wrap: wrap; }
+.turbo-client-pic { flex: none; width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; background: var(--chip-bg); color: var(--sub); }
+.turbo-client-text { flex: 1 1 140px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.turbo-client-text b { font-weight: 500; overflow-wrap: anywhere; }
+.turbo-client-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; line-height: 16px; color: var(--sub); white-space: nowrap; }
+.turbo-client-state i { width: 7px; height: 7px; border-radius: 50%; background: var(--bar-off); }
+.turbo-client-state.is-on i { background: var(--bar-own); }
+.turbo-client-gives { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-left: 56px; }
+.turbo-fine { margin-left: 56px; border-radius: 12px; background: var(--chip-bg); }
+.turbo-fine-toggle { display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 12px; border: 0; border-radius: 12px; background: transparent; color: var(--sub); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.turbo-fine-toggle:hover { color: var(--text); }
+.turbo-fine-toggle[aria-expanded='true'] svg { transform: rotate(180deg); }
+.turbo-fine-rows { display: flex; flex-direction: column; padding: 0 12px 6px; }
+.turbo-fine-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--glass-border); }
+.turbo-fine-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+@media (max-width: 520px) {
+    .turbo-client-gives { padding-left: 0; }
+    .turbo-fine { margin-left: 0; }
+}
+.away-options { display: flex; flex-direction: column; gap: 8px; }
+.away-option { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 10px; align-items: start; padding: 12px; border-radius: 14px; border: 1px solid var(--glass-border); text-align: left; color: inherit; }
+.away-option:hover:not(:disabled) { background: var(--hover-bg); }
+.away-option[aria-checked='true'] { border-color: var(--accent); background: var(--strong-bg); }
+.away-option:disabled { cursor: default; }
+.away-option:disabled:not([aria-checked='true']) { opacity: 0.6; }
+.away-mark { display: flex; align-items: center; height: 20px; color: var(--accent-text); }
+.where-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.where-line > .w-text { flex: 1 1 auto; }
+/* Пилюля остаётся flex: её точка (::before у «Минимала») — цвет того, кто даёт; слова — во вложенном span. */
+.where-giver { flex: none; max-width: 62%; }
+.where-giver > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.where-short .where-line { flex-direction: column; align-items: flex-start; gap: 4px; }
+.where-short .where-line > .w-text { width: 100%; }
+.where-short .where-giver { max-width: 100%; border-radius: 10px; }
+.where-short .where-giver > span { white-space: normal; overflow-wrap: anywhere; }
+.where-short .where-row { align-items: flex-start; }
+.qr-card { align-self: center; padding: 12px; border-radius: 16px; background: #fff; line-height: 0; }
+
+/* «Дом» (решение владельца 16.11, доски DuoHome, HelperHome): карточка Турбо — с фиолетовой кромкой, его место в очереди —
+   фиолетовый кружок с цифрой, силы — переключателями прямо в строке; «Если Турбо уснёт» — что встанет вместо. */
+.home-card-head { justify-content: flex-start; align-items: center; }
+.home-card-head > .w-cap { flex: 1 1 auto; min-width: 0; }
+.home-card-pill { margin-left: auto; flex: none; }
+.home-card-turbo { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bar-agent) 40%, transparent); }
+.helpers-order { background: var(--pill-agent-bg); color: var(--pill-agent-fg); font-size: 12px; font-weight: 600; width: 26px; height: 26px; margin: 3px; }
+.helpers-switches { display: flex; flex-direction: column; margin-top: 6px; }
+.helpers-switch { padding: 6px 0; border-top: 1px solid var(--row-line); }
+.helpers-switch > svg { flex: none; color: var(--sub); }
+.fall-row { align-items: flex-start; }
+.fall-row > svg { flex: none; margin-top: 2px; color: var(--sub); }
+.fall-row .field { width: 100%; }
+.key-text { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }

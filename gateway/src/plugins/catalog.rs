@@ -14,11 +14,12 @@
 //! read after it, into its own folder `packages-catalog/feeds/<name by its address>/` with its own ETag and state; a
 //! feed the main one no longer names goes with its copy. Their packages come after the main's, in the main's order,
 //! and an id an earlier feed has is not taken from a later one. Every file from the package's own feed's origin;
-//! `verified` only when the main feed's declaration allows it; never code from them — there is no signature for them
-//! yet. Only the main feed names feeds: an extra feed's own `feeds` are not followed.
+//! `verified` only when the main feed's declaration allows it; code from them only when the signed main feed pinned
+//! that very archive by its hash (`recommends`, `code_allowed`). Only the main feed names feeds: an extra feed's own `feeds` are not followed.
 //!
 //! Own sources (docs/plans/custom-feeds.md): feeds the admin adds here by a link, after a warning — read after the
-//! main feed's, kept in `packages-catalog/sources.json` (up to 4), never vouched for, never code. One that answers 404
+//! main feed's, kept in `packages-catalog/sources.json` (up to 4), vouched for and given code only by the main feed's
+//! pin of the very archive (the YouTube app of a separate feed, docs/plugins/apps/youtube.md). One that answers 404
 //! or 410 is closed: its copy goes and what was installed from it is hidden.
 //!
 //! A feed may say a package is `hidden`: it is not listed or installed, and the installed one that came from that very
@@ -39,7 +40,7 @@ use sha2::Digest;
 
 use super::controller::{PackageView, PlacementNow, PluginHost};
 use super::install::{self, Expected, MAX_ARCHIVE};
-use super::manifest::{valid_id, PackageKind, HOST_API, MAX_LICENSE};
+use super::manifest::{agent_card, valid_id, AgentCard, PackageKind, HOST_API, MAX_LICENSE};
 use super::registry;
 use crate::config::PluginsConfig;
 use crate::core::availability::Placement;
@@ -165,6 +166,16 @@ pub struct Entry {
     /// characters' catalog or by voice unless the admin turned on «Показывать скрытые пакеты» (packages.show_hidden,
     /// the hidden developer options). Not `hidden`, the feed's kill switch, which takes a package away from everyone.
     pub unlisted: bool,
+    /// The main feed pinned this very archive by its hash (`recommends`): we looked at its code. Code of an extra
+    /// feed or an own source installs only so, and only from a signed main feed (`code_allowed`).
+    pub pinned: bool,
+    /// An agent's card (`agent`, kind `agent` only): what to install, how to sign in, its terms — shown before the
+    /// install (docs/plans/router-and-works.md, 7б).
+    pub agent: Option<AgentCard>,
+    /// The packages that go with it (`companions`, the manifest's): installing one offers the other.
+    pub companions: Vec<crate::plugins::manifest::Companion>,
+    /// What its files take unpacked, bytes (`unpacked`): the room it needs, said before the install.
+    pub unpacked: Option<u64>,
 }
 
 /// Something a package downloads by itself besides its archive: Remotion and a browser for drawing, a model.
@@ -408,11 +419,14 @@ impl Feed {
             // We recommend only what we vouch for: never what an own source or an unvouched feed says of itself.
             entry.recommended &= extra.verified && !extra.own;
             // A package of it the main feed looked at and recommends — that very archive, by its hash: recommended and
-            // checked. Another archive under the same id is not what we looked at.
-            let pinned = self.recommends.iter().any(|pin| pin.is(&extra.url, &entry.id, &entry.sha256));
+            // checked. Another archive under the same id is not what we looked at. An app built per platform: the
+            // archive this machine takes (its platform's), the one installed here.
+            let archive = entry.archive();
+            let pinned = self.recommends.iter().any(|pin| pin.is(&extra.url, &entry.id, &archive.sha256));
             if pinned {
                 entry.recommended = true;
                 entry.verified = true;
+                entry.pinned = true;
             }
             entry.extra = Some(extra.clone());
             self.packages.push(entry);
@@ -597,6 +611,35 @@ fn entry(value: &Value, base: &url::Url) -> Result<Entry, String> {
     let added_at = text("addedAt").filter(|at| chrono::DateTime::parse_from_rfc3339(at).is_ok()).map(str::to_string);
     let unlisted = value.get("unlisted").and_then(Value::as_bool).unwrap_or(false);
     let downloads = downloads_of(value);
+    // The packages that go with it: each `{id, why?}`, another one's id; anything else is left out.
+    let companions = value
+        .get("companions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let other = item.get("id").and_then(Value::as_str)?.trim();
+            (valid_id(other) && other != id).then(|| crate::plugins::manifest::Companion {
+                id: other.to_string(),
+                why: item.get("why").and_then(Value::as_str).map(|why| why.trim().chars().take(200).collect()),
+            })
+        })
+        .take(crate::plugins::manifest::MAX_COMPANIONS)
+        .collect();
+    let unpacked = value.get("unpacked").and_then(Value::as_u64).filter(|bytes| *bytes > 0);
+    // An agent's card says what it is: one without a whole card is not listed.
+    let agent = match kind {
+        PackageKind::Agent => {
+            let card = value.get("agent").and_then(Value::as_object).ok_or_else(|| at("agent"))?;
+            let mut problems = Vec::new();
+            let card = agent_card(card, &mut problems);
+            if !problems.is_empty() {
+                return Err(at(&problems.join("; ")));
+            }
+            card
+        }
+        _ => None,
+    };
     Ok(Entry {
         id,
         kind,
@@ -627,6 +670,10 @@ fn entry(value: &Value, base: &url::Url) -> Result<Entry, String> {
         added_at,
         downloads,
         unlisted,
+        pinned: false,
+        agent,
+        companions,
+        unpacked,
     })
 }
 
@@ -870,9 +917,26 @@ pub fn needs_signature() -> String {
     crate::tr!("Плагины и приложения ставятся из каталога только с его подписью: у этой сборки нет ключа каталога (PACKAGES_PUBKEY) или подпись ленты не сошлась.")
 }
 
+/// Whether code — a plugin, an app — of this entry may be installed: from the signed main feed; from an extra feed or
+/// an own source only when the signed main feed pinned that very archive by its hash (`recommends`: we looked at the
+/// code) — for an app built per platform, the archive this machine takes.
+pub fn code_allowed(entry: &Entry, signed: bool) -> bool {
+    signed && (entry.extra.is_none() || entry.pinned)
+}
+
+/// Whether what needs the signature may come from where this entry comes: code as `code_allowed` says; an agent's card
+/// — it names a program to run on this computer — only from the signed main feed, never pinned from another; the rest
+/// from anywhere.
+fn signed_kind_allowed(entry: &Entry, signed: bool) -> bool {
+    match entry.kind {
+        PackageKind::Plugin | PackageKind::App => code_allowed(entry, signed),
+        PackageKind::Agent => signed && entry.extra.is_none(),
+        _ => true,
+    }
+}
+
 /// Whether a package of the feed can be installed here, and how it stands against the installed version. Code — a
-/// plugin, an app — only from a signed feed, and never from an extra one (no signature for them yet); on the station,
-/// only what fits the plugins' free memory.
+/// plugin, an app — only as `code_allowed` says; on the station, only what fits the plugins' free memory.
 pub fn entry_state(
     entry: &Entry,
     installed: Option<&semver::Version>,
@@ -880,16 +944,16 @@ pub fn entry_state(
     signed: bool,
     free_mb: Option<u64>,
 ) -> (EntryState, Option<String>) {
-    if matches!(entry.kind, PackageKind::Plugin | PackageKind::App) && (!signed || entry.extra.is_some()) {
-        // What is installed stays installed; a new version of code waits for a signed feed.
+    if !signed_kind_allowed(entry, signed) {
+        // What is installed stays installed; a new version of code waits for a signed feed or our look at it.
         let why = match &entry.extra {
-            Some(extra) => {
+            Some(extra) if signed => {
                 crate::tr!(
-                    "Приложения из ленты «{extra}» не ставятся: подписи для дополнительных лент пока нет.",
+                    "Приложения из ленты «{extra}» ставятся, только когда каталог DuoWave проверил именно этот архив — этот пока не проверен.",
                     extra = extra.title
                 )
             }
-            None => needs_signature(),
+            _ => needs_signature(),
         };
         return match installed {
             Some(installed) if *installed >= entry.version => (EntryState::Installed, None),
@@ -911,7 +975,7 @@ pub fn entry_state(
                 return (
                     EntryState::Incompatible,
                     Some(crate::tr!(
-                        "на колонке не хватит памяти: нужно {need} МБ, свободно {free}",
+                        "на колонке не хватит ОЗУ: нужно {need} МБ, свободно {free}",
                         need = need,
                         free = free
                     )),
@@ -1002,6 +1066,17 @@ pub struct CatalogEntryView {
     /// The feed keeps it out of sight (`unlisted`): listed only while «Показывать скрытые пакеты» is on, or when it is
     /// installed here.
     pub unlisted: bool,
+    /// An agent's card: its program and how to install it, its sign-in, its terms, whether it asks before commands.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentCard>,
+    /// The packages that go with it: installing it offers them, its card shows them.
+    pub companions: Vec<crate::plugins::manifest::Companion>,
+    /// What it takes, said before the install: its budget of RAM (code's) and the room its files need, MB (the files
+    /// unpacked, else the archive this machine takes).
+    pub memory_mb: Option<u64>,
+    pub size_mb: Option<u64>,
+    /// Installed here, on, and asleep for want of RAM (it wakes by itself): «спит» on its pair's card.
+    pub asleep: bool,
 }
 
 /// A package's title and description in one language.
@@ -1687,7 +1762,7 @@ impl PackageCatalog {
     /// (`feeds`: none from a computer older than them — the main feed alone then). Whether it came.
     async fn through_home(&self, url: &url::Url) -> bool {
         let Some((home, key)) = self.home.as_ref().and_then(|home| home.up()) else { return false };
-        let answer = crate::utils::http::client()
+        let answer = crate::utils::http::client_without_redirects()
             .get(format!("{}/home/v1/catalog", home.trim_end_matches('/')))
             .bearer_auth(key)
             .timeout(FEED_TIMEOUT)
@@ -1745,7 +1820,7 @@ impl PackageCatalog {
             Ok(bytes) => Ok(bytes),
             Err(failed) => {
                 let Some((home, key)) = self.home.as_ref().and_then(|home| home.up()) else { return Err(failed) };
-                let answer = crate::utils::http::client()
+                let answer = crate::utils::http::client_without_redirects()
                     .get(format!("{}/home/v1/catalog/file", home.trim_end_matches('/')))
                     .query(&[("url", url.as_str())])
                     .bearer_auth(key)
@@ -1774,6 +1849,15 @@ impl PackageCatalog {
                 Ok(bytes.to_vec())
             }
         }
+    }
+
+    /// Whether `export_for_station` has a copy to give, without reading the copy: the feed's address, its folder's
+    /// note that the copy there is of that address, and the file. The helper's contract asks it at every look of a
+    /// station (home_server/serve.rs, ability `catalog`); the whole feed is too much to read every 15 s.
+    pub fn has_copy_for_station(&self) -> bool {
+        let Some(Ok(url)) = self.url() else { return false };
+        fetched_in(&self.dir).is_some_and(|fetched| fetched.url == url.as_str())
+            && self.dir.join("catalog.json").is_file()
     }
 
     /// For the station's gateway that leans on this computer: the copy of the feed and its signature, and the copies
@@ -1912,87 +1996,94 @@ impl PackageCatalog {
         // An app on Node downloads our Node first, once, when the gateway has none yet.
         let node_missing = crate::apps::node::needs_download(&self.node_dir, self.own_node.as_deref());
         let show_hidden = self.show_hidden();
-        let packages =
-            feed.as_ref()
-                .map(|feed| {
-                    feed.newest()
-                        .into_iter()
-                        // An unlisted package shows while the hidden developer option is on, or once it is installed
-                        // here: its updates and its card are the household's.
-                        .filter(|entry| !entry.unlisted || show_hidden || installed.contains_key(&entry.id))
-                        .map(|entry| {
-                            let mine = installed.get(&entry.id);
-                            let (state, reason) = entry_state(entry, mine, placement, signed, free_mb);
-                            let dir = self.preview_dir(entry);
-                            let base = format!("/api/v1/packages/catalog/{}/preview", entry.id);
-                            // The version in the address: a new version is a new address, the panel's cache can't
-                            // show the old picture or phrases.
-                            let version = format!("?v={}", entry.version);
-                            let (title, description) = entry.texts_in(&languages);
-                            let node = (entry.runtime.as_deref() == Some("node") && node_missing && mine.is_none())
-                                .then(|| DownloadView {
+        let sleeping = self.host.sleeping();
+        let packages = feed
+            .as_ref()
+            .map(|feed| {
+                feed.newest()
+                    .into_iter()
+                    // An unlisted package shows while the hidden developer option is on, or once it is installed
+                    // here: its updates and its card are the household's.
+                    .filter(|entry| !entry.unlisted || show_hidden || installed.contains_key(&entry.id))
+                    .map(|entry| {
+                        let mine = installed.get(&entry.id);
+                        let (state, reason) = entry_state(entry, mine, placement, signed, free_mb);
+                        let dir = self.preview_dir(entry);
+                        let base = format!("/api/v1/packages/catalog/{}/preview", entry.id);
+                        // The version in the address: a new version is a new address, the panel's cache can't
+                        // show the old picture or phrases.
+                        let version = format!("?v={}", entry.version);
+                        let (title, description) = entry.texts_in(&languages);
+                        let node =
+                            (entry.runtime.as_deref() == Some("node") && node_missing && mine.is_none()).then(|| {
+                                DownloadView {
                                     id: "node".into(),
                                     title: "Node".into(),
                                     mb: NODE_DOWNLOAD_MB,
                                     when: "install".into(),
-                                });
-                            let downloads = node
-                                .into_iter()
-                                .chain(entry.downloads.iter().map(|download| DownloadView {
-                                    id: download.id.clone(),
-                                    title: entry.download_title(download, &languages),
-                                    mb: download.mb,
-                                    when: download.when.clone(),
-                                }))
-                                .collect();
-                            CatalogEntryView {
-                                id: entry.id.clone(),
-                                kind: entry.kind,
-                                version: entry.version.to_string(),
-                                title,
-                                description,
-                                license: entry.license.clone(),
-                                verified: entry.verified,
-                                runs: entry.runs.iter().map(|runs| runs.as_str()).collect(),
-                                min_gateway: entry.min_gateway.as_ref().map(ToString::to_string),
-                                needs: entry.needs.clone(),
-                                preview: PreviewView {
-                                    image: self.preview_file(&dir, "image").map(|_| format!("{base}/image{version}")),
-                                    samples: (1..=entry.samples.len())
-                                        .filter(|n| self.preview_file(&dir, &format!("sample-{n}")).is_some())
-                                        .map(|n| format!("{base}/{n}{version}"))
-                                        .collect(),
-                                },
-                                installed: mine.map(ToString::to_string),
-                                state,
-                                reason,
-                                publisher: entry.publisher.clone(),
-                                source: entry.extra.as_ref().map(|extra| extra.title.clone()),
-                                own: entry.extra.as_ref().is_some_and(|extra| extra.own),
-                                runtime: entry.runtime.clone(),
-                                permissions: entry.permissions.clone(),
-                                signed: signed
-                                    && entry.extra.is_none()
-                                    && matches!(entry.kind, PackageKind::Plugin | PackageKind::App),
-                                faces: entry.faces.clone(),
-                                place: entry.place(),
-                                recommended: entry.recommended,
-                                added_at: entry.added_at.clone(),
-                                texts: entry
-                                    .all_texts()
-                                    .into_iter()
-                                    .map(|(lang, title, description)| TextsView { lang, title, description })
+                                }
+                            });
+                        let downloads = node
+                            .into_iter()
+                            .chain(entry.downloads.iter().map(|download| DownloadView {
+                                id: download.id.clone(),
+                                title: entry.download_title(download, &languages),
+                                mb: download.mb,
+                                when: download.when.clone(),
+                            }))
+                            .collect();
+                        CatalogEntryView {
+                            id: entry.id.clone(),
+                            kind: entry.kind,
+                            version: entry.version.to_string(),
+                            title,
+                            description,
+                            license: entry.license.clone(),
+                            verified: entry.verified,
+                            runs: entry.runs.iter().map(|runs| runs.as_str()).collect(),
+                            min_gateway: entry.min_gateway.as_ref().map(ToString::to_string),
+                            needs: entry.needs.clone(),
+                            preview: PreviewView {
+                                image: self.preview_file(&dir, "image").map(|_| format!("{base}/image{version}")),
+                                samples: (1..=entry.samples.len())
+                                    .filter(|n| self.preview_file(&dir, &format!("sample-{n}")).is_some())
+                                    .map(|n| format!("{base}/{n}{version}"))
                                     .collect(),
-                                downloads,
-                                waits: waits_for(entry, mine, state),
-                                on: (mine.is_some() && matches!(entry.kind, PackageKind::Plugin | PackageKind::App))
-                                    .then(|| self.host.is_switched_on(&entry.id)),
-                                unlisted: entry.unlisted,
-                            }
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+                            },
+                            installed: mine.map(ToString::to_string),
+                            state,
+                            reason,
+                            publisher: entry.publisher.clone(),
+                            source: entry.extra.as_ref().map(|extra| extra.title.clone()),
+                            own: entry.extra.as_ref().is_some_and(|extra| extra.own),
+                            runtime: entry.runtime.clone(),
+                            permissions: entry.permissions.clone(),
+                            signed: code_allowed(entry, signed)
+                                && matches!(entry.kind, PackageKind::Plugin | PackageKind::App),
+                            faces: entry.faces.clone(),
+                            place: entry.place(),
+                            recommended: entry.recommended,
+                            added_at: entry.added_at.clone(),
+                            texts: entry
+                                .all_texts()
+                                .into_iter()
+                                .map(|(lang, title, description)| TextsView { lang, title, description })
+                                .collect(),
+                            downloads,
+                            waits: waits_for(entry, mine, state),
+                            on: (mine.is_some() && matches!(entry.kind, PackageKind::Plugin | PackageKind::App))
+                                .then(|| self.host.is_switched_on(&entry.id)),
+                            unlisted: entry.unlisted,
+                            agent: entry.agent.clone(),
+                            companions: entry.companions.clone(),
+                            memory_mb: entry.memory_mb,
+                            size_mb: Some(entry.unpacked.unwrap_or_else(|| entry.archive().size).div_ceil(1024 * 1024)),
+                            asleep: mine.is_some() && sleeping.iter().any(|(id, _)| *id == entry.id),
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         // The own sources are listed even without a copy: the admin removes them here.
         let own = self.url().and_then(Result::ok).map(|url| self.own_feeds(&url)).unwrap_or_default();
         let status = lock(&self.status);
@@ -2236,8 +2327,12 @@ impl PackageCatalog {
         }
         // Vouched for: the feed says so (an extra one's only when the main allows), and code only from a signed main.
         // Noted before the history: on the station a catalog's version is kept there without its big files.
-        let signed = feed.signed && entry.extra.is_none();
-        let vouched = entry.verified && (signed || !matches!(entry.kind, PackageKind::Plugin | PackageKind::App));
+        let signed = match entry.kind {
+            PackageKind::Agent => feed.signed && entry.extra.is_none(),
+            _ => code_allowed(&entry, feed.signed),
+        };
+        let vouched = entry.verified
+            && (signed || !matches!(entry.kind, PackageKind::Plugin | PackageKind::App | PackageKind::Agent));
         registry::set_installed(
             &self.db,
             id,
@@ -2311,6 +2406,12 @@ impl PackageCatalog {
         actor: Option<Actor>,
     ) -> Result<PackageView, ApiError> {
         let view = self.install(id, version, false, actor.clone()).await?;
+        self.switch_on(id, view, actor).await
+    }
+
+    /// A package just put in place switched on, when it is a plugin or an app that is not on yet: the second half of
+    /// `install_and_switch_on`, for the install that does something in between (its rights approved before it runs).
+    pub async fn switch_on(&self, id: &str, view: PackageView, actor: Option<Actor>) -> Result<PackageView, ApiError> {
         if view.enabled || !matches!(view.kind, Some(PackageKind::Plugin | PackageKind::App)) {
             return Ok(view);
         }
@@ -2634,7 +2735,7 @@ pub mod tests {
             catalog_key: key,
             reserve_mb: 40,
             storage_reserve_mb: Some(15),
-            pressure_action: crate::plugins::budget::PressureAction::Disable,
+            pressure_action: crate::plugins::budget::PressureAction::Sleep,
             bundled: false,
             schedules: true,
             node_dir: std::path::PathBuf::from("node"),
@@ -2717,6 +2818,33 @@ pub mod tests {
         assert_eq!(FeedSource::of(None, Some("https://x/c.json")), FeedSource::Url("https://x/c.json".into()));
     }
 
+    /// An agent's card is listed with its card — what to install, how to sign in, its terms — and one without a whole
+    /// card, or naming a shell, is skipped.
+    #[test]
+    fn an_agents_card_comes_with_its_card_or_not_at_all() {
+        let base = url::Url::parse("https://duowave.app/catalog.json").unwrap();
+        let mut value = json!({
+            "id": "factory-droid", "kind": "agent", "version": "1.0.0", "title": "Factory Droid", "api": "^1",
+            "runs": ["pc"], "url": "a.vgp", "sha256": "a".repeat(64), "size": 10,
+            "agent": {
+                "terms": "https://factory.com/legal/terms-individual",
+                "program": { "name": "droid", "install": "curl -fsSL https://app.factory.ai/cli | sh", "check": ["--version"] },
+                "acp": { "command": ["exec", "--output-format", "acp"] },
+                "signin": { "hint": "Откройте droid в терминале и войдите." },
+                "resume": "droid --resume {session}"
+            }
+        });
+        let agent = entry(&value, &base).unwrap();
+        let card = agent.agent.unwrap();
+        assert_eq!(card.program.name, "droid");
+        assert_eq!(card.acp.command, ["exec", "--output-format", "acp"]);
+        assert_eq!((card.acp.protocol, card.asks, card.model.via.as_str()), (1, None, "agent"));
+        value["agent"]["program"]["name"] = json!("bash");
+        assert!(entry(&value, &base).is_err(), "a shell is no agent");
+        value["agent"] = Value::Null;
+        assert!(entry(&value, &base).is_err(), "no card");
+    }
+
     #[test]
     fn tells_how_a_package_stands_here_and_never_installs_code_from_an_unsigned_catalog() {
         let base = url::Url::parse("https://duowave.app/catalog.json").unwrap();
@@ -2741,6 +2869,11 @@ pub mod tests {
         let mut app = character.clone();
         app.kind = PackageKind::App;
         assert_eq!(entry_state(&app, None, Placement::Pc, false, None).0, EntryState::NeedsSignature);
+        // An agent's card names a program to run: only from the signed main feed, like code.
+        let mut agent = character.clone();
+        agent.kind = PackageKind::Agent;
+        assert_eq!(entry_state(&agent, None, Placement::Pc, false, None).0, EntryState::NeedsSignature);
+        assert_eq!(entry_state(&agent, None, Placement::Pc, true, None).0, EntryState::Available);
         let mut newer = character.clone();
         newer.min_gateway = Some(semver::Version::new(99, 0, 0));
         let (state, why) = entry_state(&newer, None, Placement::Pc, false, None);
@@ -3254,6 +3387,131 @@ pub mod tests {
         let unkeyed = fixture(FeedSource::Url(site.url.clone()), Placement::Pc);
         let refused = unkeyed.catalog.install("clock", None, false, None).await.unwrap_err();
         assert_eq!(refused.message, NEEDS_SIGNATURE);
+    }
+
+    /// The packages that go with one come from the feed as they are, another one's ids only; so does its room.
+    #[test]
+    fn a_feeds_pairs_and_room_are_read() {
+        let base = url::Url::parse("https://own.example/catalog.json").unwrap();
+        let mut character = arthur("1.0.0");
+        character["url"] = json!("packages/arthur-1.0.0.vgp");
+        character["sha256"] = json!("a".repeat(64));
+        character["size"] = json!(3 * 1024 * 1024);
+        character["unpacked"] = json!(5 * 1024 * 1024 + 1);
+        character["companions"] =
+            json!([{ "id": "arthur-word", "why": "своё слово" }, { "id": "arthur" }, { "id": "Bad" }]);
+        let feed = parse_feed(&json!({ "format": 1, "packages": [character] }).to_string(), &base).unwrap();
+        let entry = &feed.packages[0];
+        assert_eq!(
+            entry.companions,
+            [crate::plugins::manifest::Companion { id: "arthur-word".into(), why: Some("своё слово".into()) }]
+        );
+        assert_eq!(entry.unpacked, Some(5 * 1024 * 1024 + 1));
+    }
+
+    /// An own source's app built per platform (src/activator's words on the station): code only by the pin of the
+    /// archive this machine takes — the pin of the archive with every build, or another platform's, is not that.
+    #[test]
+    fn an_own_sources_app_built_per_platform_is_code_by_the_pin_of_this_machines_archive() {
+        let base = url::Url::parse("https://own.example/catalog.json").unwrap();
+        let here = super::super::manifest::platform();
+        let (whole, mine, theirs) = ("a".repeat(64), "b".repeat(64), "c".repeat(64));
+        let mut app = arthur("1.0.0");
+        app["id"] = json!("words");
+        app["kind"] = json!("app");
+        app["budget"] = json!({ "memoryMb": 12 });
+        app["url"] = json!("packages/words-1.0.0.vgp");
+        app["sha256"] = json!(whole);
+        app["size"] = json!(100);
+        app["platforms"] = json!({
+            here.clone(): { "url": format!("packages/words-1.0.0-{here}.vgp"), "sha256": mine, "size": 90 },
+            "other-os": { "url": "packages/words-1.0.0-other-os.vgp", "sha256": theirs, "size": 90 }
+        });
+        let own = parse_feed(&json!({ "format": 1, "packages": [app] }).to_string(), &base).unwrap();
+        let extra =
+            ExtraFeed {
+                url: base.clone(), publisher: "own".into(), title: "Своя".into(), verified: false, own: true
+            };
+        let pinned_by = |sha256: &str| {
+            let main = json!({ "format": 1, "packages": [], "recommends": [{ "id": "words", "sha256": sha256 }] });
+            let mut main =
+                parse_feed(&main.to_string(), &url::Url::parse("https://main.example/catalog.json").unwrap()).unwrap();
+            main.take(&extra, own.clone());
+            main.packages.into_iter().find(|entry| entry.id == "words").unwrap()
+        };
+        for other in [&whole, &theirs] {
+            let entry = pinned_by(other);
+            assert!(!entry.pinned && !code_allowed(&entry, true), "{other}: not the archive this machine takes");
+        }
+        let entry = pinned_by(&mine);
+        assert!(entry.pinned && code_allowed(&entry, true));
+        assert!(!code_allowed(&entry, false), "only by a signed main feed's pin");
+    }
+
+    /// Code of an own source installs only when the signed main feed pinned that very archive by its hash (the
+    /// YouTube app of a separate feed): an unpinned plugin of the same source does not, nor a new archive of the
+    /// pinned one, nor the pinned one when the main feed's signature does not hold.
+    #[tokio::test]
+    async fn code_of_an_own_source_installs_only_when_the_signed_main_feed_pinned_that_archive() {
+        let keys = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        let plugin = |id: &str, version: &str| {
+            let manifest = json!({
+                "schema": 1, "kind": "plugin", "id": id, "version": version, "title": id, "api": "^2",
+                "runs": ["pc", "station", "stationServer"], "permissions": [],
+                "contributes": { "intents": [{ "phrases": [format!("скажи {id}")], "handler": "say" }] }
+            });
+            let mut entry = arthur(version);
+            entry["id"] = json!(id);
+            entry["kind"] = json!("plugin");
+            entry["budget"] = json!({ "memoryMb": 4 });
+            (entry, plugin_vgp(&manifest, "export function say() { return 'да'; }"))
+        };
+        own.publish(&[plugin("tube", "1.0.0"), plugin("moon", "1.0.0")]);
+        let looked_at = {
+            let feed: Value = serde_json::from_str(&lock(&own.feed)).unwrap();
+            feed["packages"][0]["sha256"].as_str().unwrap().to_string()
+        };
+        let sign_main = || {
+            let mut feed: Value = serde_json::from_str(&lock(&main.feed)).unwrap();
+            // Pinned without the feed's address: the demo feed's way.
+            feed["recommends"] = json!([{ "id": "tube", "sha256": looked_at }]);
+            let text = feed.to_string();
+            let signature = minisign::sign(Some(&keys.pk), &keys.sk, std::io::Cursor::new(text.as_bytes()), None, None)
+                .unwrap()
+                .to_string();
+            *lock(&main.feed) = text;
+            lock(&main.files).insert("catalog.json.minisig".into(), signature.into_bytes());
+        };
+        sign_main();
+        let keyed = fixture_keyed(FeedSource::Url(main.url.clone()), Placement::Pc, Some(keys.pk.to_base64()));
+        let catalog = &keyed.catalog;
+        let view = catalog.add_source(&own.url, None).await.unwrap();
+        let of = |view: &CatalogView, id: &str| view.packages.iter().find(|entry| entry.id == id).cloned().unwrap();
+        let tube = of(&view, "tube");
+        assert_eq!(tube.state, EntryState::Available, "{tube:?}");
+        assert!(tube.verified && tube.own && tube.signed, "{tube:?}");
+        let moon = of(&view, "moon");
+        assert_eq!(moon.state, EntryState::NeedsSignature, "not pinned: never code");
+        assert!(moon.reason.as_deref().unwrap_or_default().contains("проверил именно этот архив"), "{moon:?}");
+        let installed = catalog.install("tube", None, false, None).await.unwrap();
+        assert_eq!((installed.origin, installed.verified), (crate::plugins::registry::Origin::Catalog, true));
+        assert_eq!(catalog.install("moon", None, false, None).await.unwrap_err().status, StatusCode::CONFLICT);
+
+        // A new archive under the pinned id is not what we looked at: the installed one stays, the new one waits.
+        own.publish(&[plugin("tube", "1.1.0"), plugin("moon", "1.0.0")]);
+        let tube = of(&catalog.view(true).await, "tube");
+        assert_eq!((tube.state, tube.installed.as_deref()), (EntryState::NeedsSignature, Some("1.0.0")), "{tube:?}");
+        assert_eq!(catalog.install("tube", None, true, None).await.unwrap_err().status, StatusCode::CONFLICT);
+
+        // The main feed's signature does not hold: its pins vouch for nothing.
+        own.publish(&[plugin("tube", "1.0.0"), plugin("moon", "1.0.0")]);
+        sign_main();
+        *lock(&main.feed) = format!("{} ", lock(&main.feed));
+        let unsigned = fixture_keyed(FeedSource::Url(main.url.clone()), Placement::Pc, Some(keys.pk.to_base64()));
+        let view = unsigned.catalog.add_source(&own.url, None).await.unwrap();
+        assert_eq!(of(&view, "tube").state, EntryState::NeedsSignature);
     }
 
     #[tokio::test]
@@ -4037,5 +4295,26 @@ pub mod tests {
         let view = station.catalog.view(true).await;
         assert_eq!(ids(&view), ["arthur"]);
         assert!(view.feeds[0].count == 0 && !view.feeds[0].offline && view.feeds[0].problem.is_none());
+    }
+
+    /// The helper's contract declares the catalog by this: it must say what `export_for_station` would give.
+    #[tokio::test]
+    async fn the_computer_has_a_copy_for_the_station_once_it_read_its_own_feed() {
+        let main = site().await;
+        main.publish(&[character("arthur", "1.0.0")]);
+        let computer = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        assert!(!computer.catalog.has_copy_for_station(), "not read yet");
+        assert_eq!(ids(&computer.catalog.view(false).await), ["arthur"]);
+        assert!(computer.catalog.has_copy_for_station() && computer.catalog.export_for_station().is_some());
+
+        // The folder still holds the copy of the feed it read before its address changed: none of the new one yet.
+        let moved = fixture(FeedSource::Url("https://packages.example.org/catalog.json".into()), Placement::Pc);
+        std::fs::create_dir_all(&moved.catalog.dir).unwrap();
+        for file in ["catalog.json", "state.json"] {
+            std::fs::copy(computer.catalog.dir.join(file), moved.catalog.dir.join(file)).unwrap();
+        }
+        assert!(!moved.catalog.has_copy_for_station() && moved.catalog.export_for_station().is_none());
+        // No feed at all.
+        assert!(!fixture(FeedSource::Missing, Placement::Pc).catalog.has_copy_for_station());
     }
 }

@@ -37,7 +37,7 @@ const en: Translation<typeof ru> = {
 
     characterWord: 'Character',
     mannerApplied: 'Manner applied — from the next question.',
-    relayAnswers: '“Yandex” mode: Alice answers with her own voice and personality.',
+    relayAnswers: '“Alice” mode: Alice answers with her own voice and personality.',
     ownTextDescription: 'Your own text: you wrote how to answer yourself.',
     chooseAnother: 'Choose another',
     rowsLabel: 'Voice, manner and brain',
@@ -95,6 +95,7 @@ const en: Translation<typeof ru> = {
     choose: 'Choose',
     hideText: 'Hide text',
     fineTuning: 'Fine-tuning',
+    showText: 'Show text',
     remove: 'Remove',
     inCatalogVersion: (version) => `Version ${version} in the catalog`,
     downloadsNew: 'A new version of the character will be downloaded. What the character says changes only after “Update” — we’ll show what changes first.',

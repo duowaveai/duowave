@@ -4,7 +4,7 @@ import { AccessCatalog, ApiError, Health, MovedGateway, SessionSnapshot, Station
 import { noteAvailability } from './availability';
 import { language, tr } from './i18n';
 import { settingsPlace } from './builtin';
-import { IconChevronDown, IconSearch } from './icons';
+import { IconSearch } from './icons';
 import { useLive, useStationLive } from './live';
 import { Reach, dotClass, isReachable, reachOf } from './presence';
 import { AuthScreen } from './screens/auth';
@@ -15,12 +15,14 @@ import { SetupBanner, SetupSheet, StationButton, StationsPicker, displayName, ne
 import { DebugState, PanelContext, PanelState } from './shell/context';
 import { Place, hashOf, normalizePlace, parsePlace, writePlace } from './shell/links';
 import { AccountMenu } from './shell/account-menu';
-import { loadPanelMemory } from './shell/memory';
+import { flushPanelMemory, loadPanelMemory } from './shell/memory';
 import { SearchPalette, SearchPlace, searchPlaces, useSearchKey, useTalkKey } from './shell/search';
 import { timeAgo } from './time';
 import { SectionDef, useSections } from './shell/sections';
 import { Nav, NavEntry, OpenWindow, TopLine } from './shell/shell';
-import { applyRole, ownName, roleOf, RoleInfo } from './shell/role';
+import { applyRole, ownName, roleOf, RoleInfo, whereAmI } from './shell/role';
+import { DeviceTabs, HereLine } from './shell/device-tabs';
+import { useHomeStationName } from './station-name';
 import { shellFor } from './shell/shells';
 import { Boundary, Slot } from './shell/slot';
 import { useTheme } from './shell/theme';
@@ -33,6 +35,7 @@ import { notePackageChange, runtimeOnly } from './plugins/versions';
 import { ConsentSheet } from './bus/consent-sheet';
 import { noteBusChange } from './bus/state';
 import { noteFoldersChange } from './folders/state';
+import { noteHelperKey, noteHelpersNews } from './helpers';
 import { noteTasksChange } from './tasks/state';
 import { forgetStationPackages } from './sdk';
 import { AddWidgetPanel } from './screens/add-widget';
@@ -49,7 +52,7 @@ import { onTextToStation } from './voice/strip';
 import { deskActions } from './shell/widgets';
 import { StationFrame, StationModeChip, ViaRefused, WindowShell } from './shell/station-window';
 import { leaving, mayLeave } from './shell/leave';
-import { LOCAL, OWN_PAGE, TOP_VIA, VIA, WINDOW } from './via';
+import { LOCAL, ONBOARDING, OWN_PAGE, TOP_VIA, VIA, WINDOW } from './via';
 import { noteVoiceInput, useOnComputer } from './voice-input';
 import { OwnPage } from './screens/helper-pc';
 import { ViaNotice } from './shell/station-window';
@@ -120,13 +123,17 @@ function reachWords(reach: Reach, lastSeen?: string): string {
 }
 
 /**
- * Компьютер рядом с колонкой — второй половиной строки: «компьютер помогает». Одно имя вместо «помощника», «ПК» и
- * «Колонки + ПК» (docs/plans/panel-rebuild.md, «Словарь»). Шлюз на компьютере без колонки со своим шлюзом — ничего.
+ * Турбо колонки — второй половиной строки: «Турбо на связи», «Турбо уснул» (решение владельца 16.11). В пульте самого
+ * Турбо строки нет: кто он, говорят вкладки и «Вы в пульте компьютера». Шлюз на компьютере без колонки со своим
+ * шлюзом — ничего.
  */
 function helpWords(role: RoleInfo): string | null {
-    if (role.role === 'helper') return role.helping ? tr.core.helperHelping : tr.core.helperStationAlone;
+    if (role.role === 'helper') return null;
     const helper = role.helper;
-    if (!helper || !helper.enabled) return null;
+    // Выключен или его не пускает регулятор — это выбор, не поломка: строке состояния сказать нечего.
+    if (!helper || !helper.enabled || helper.state === 'kept') return null;
+    // Помощники по именам (docs/plans/home-and-helpers.md, блок 1); шлюз 0.11 имени не знает — прежние слова.
+    if (helper.name) return helper.state === 'up' ? tr.helpers.statusHelping(helper.name) : tr.helpers.statusAway(helper.name);
     return helper.state === 'up' ? tr.core.helperHelping : tr.core.helperOffline;
 }
 
@@ -210,9 +217,15 @@ export function App() {
      * Первый запуск: пароль задан — «Первые шаги» во весь пульт (docs/plans/onboarding.md): где живёт DuoWave, колонка
      * или модель, персонаж, что попробовать сказать, MagicPlace. Ждёт /health: у шлюза на колонке шаги другие. Не
      * дошли до конца и перезагрузили пульт — шаги открываются снова; пройти заново — «Настройки» → «Оформление».
+     * Окно колонки у помощника просит их адресом `?onboarding` (via.ts): тогда они открыты с первой отрисовки.
      */
     const [firstRun, setFirstRun] = useState(false);
-    const [onboardingOpen, setOnboardingOpen] = useState(false);
+    const [onboardingOpen, setOnboardingOpen] = useState(ONBOARDING);
+    const closeOnboarding = (): void => {
+        setOnboardingOpen(false);
+        // Просьба адресом исполнена: перезагрузка не открывает шаги снова.
+        if (ONBOARDING) history.replaceState(history.state, '', `${location.pathname}${location.hash}`);
+    };
     useEffect(() => {
         if (!firstRun || !health) return;
         setFirstRun(false);
@@ -260,6 +273,10 @@ export function App() {
         noteBusChange(name);
         // Домашняя папка: раздел «Папки» и плитка флешки на столе (folders/state.ts).
         noteFoldersChange(name);
+        // Ключ подключения этого компьютера сменили или потратили: лист «Подключить шлюз» читает новый (helpers.ts).
+        noteHelperKey(name, change);
+        // Помощник пришёл, ушёл, список сменился: «Помощники» перечитывают его и сразу после своего ответа (helpers.ts).
+        noteHelpersNews(name);
         // Черновики мастерской: плитка на столе, «Готово» на полосе, «Примерка» по просьбе колонки (voice/drafts.ts).
         if (name === 'workshop.changed' || name === 'hello') noteWorkshopChange(subject, change);
         // Работы разговора: «Готово…» на полосе и голосом компьютера, заметки на плитке (voice/works.ts).
@@ -550,11 +567,17 @@ export function App() {
     // Пульт колонки в окне помощника — пульт шлюза: белая рамка (via.ts).
     useEffect(() => applyRole(VIA ? 'gateway' : role.role), [role.role]);
     // Этап 4: компьютер помогает колонке — его окно и есть её пульт. Весь пульт идёт к колонке через проход компьютера;
-    // своё у компьютера — «Настройки» → «Компьютер-помощник». `?local` оставляет пульт компьютера (разработчику).
+    // своё у компьютера — «Настройки» → «Этот компьютер». `?local` оставляет пульт компьютера (разработчику).
+    // Пока идут «Первые шаги» — открыты или не дошли до конца, — пульт остаётся здесь: компьютер становится помощником
+    // посреди шага «Колонка» (перенос записал колонку), а шаги дальше («Кто отвечает», персонаж) ведёт этот пульт и
+    // пишет на колонку сам (screens/onb/*). Закончили или закрыли — тогда в окно колонки.
     useEffect(() => {
         if (VIA || OWN_PAGE || LOCAL || auth !== 'ok' || role.role !== 'helper' || !role.station?.key) return;
-        location.replace(`${location.pathname}?via=${encodeURIComponent(role.station.key)}${location.hash}`);
-    }, [auth, role.role, role.station?.key]);
+        if (onboardingOpen || onboardingPending()) return;
+        // Сначала память пульта: «шаги пройдены» только что записаны и ещё ждут отправки (shell/memory.ts).
+        const station = encodeURIComponent(role.station.key);
+        void flushPanelMemory().then(() => location.replace(`${location.pathname}?via=${station}${location.hash}`));
+    }, [auth, role.role, role.station?.key, onboardingOpen]);
     useLeaveWhenNotHelping();
 
     if (auth === 'setup' || auth === 'login') {
@@ -576,6 +599,8 @@ export function App() {
             />
         );
     }
+    // Одно имя колонки (владелец 16.11, station-name.ts): в окне колонки на компьютере — имя из списка компьютера.
+    const homeName = useHomeStationName();
     if (auth === 'loading') return <div class="screen" />;
 
     const link: Place = { section, tab: tabs[tabKey(section, opened.query)], item: opened.item, query: opened.query };
@@ -652,48 +677,34 @@ export function App() {
     const nav = navOf(sections);
     const activeNav = activeKey(link, role);
     const onNav = (entry: NavEntry): void => go(entry.section, entry.tab, undefined, entry.station ? { on: 'station' } : {});
-    const name = computer ? 'DuoWave' : (ownName(health, role) ?? displayName(current, drawing));
-    // Верхняя строка — колонка и её состояние; имя открывает выбор колонки. В режиме «Микрофон» — «DuoWave» и связь со
-    // шлюзом: выбирать нечего.
-    const line = computer ? (
+    const name = computer ? 'DuoWave' : (homeName ?? ownName(health, role) ?? displayName(current, drawing));
+    // Верхняя строка — «где я» (решение владельца 16.11): вкладки устройств дома, нажатая — чей это пульт («Колонка
+    // «Кухня» · шлюз | Этот компьютер · Турбо»), строка «Вы в пульте колонки» и состояние. У шлюза на компьютере с
+    // колонками нажатая вкладка открывает выбор колонки. В пульте Турбо состояния нет: он сам не отвечает.
+    const where = whereAmI({
+        placement: health?.placement,
+        role,
+        via: TOP_VIA ? VIA : null,
+        computer,
+        path: location.pathname,
+        hash: location.hash,
+        current: computer ? undefined : name,
+    });
+    const turboPanel = role.role === 'helper' && !VIA;
+    const line = (
         <>
-            <span class="desk-top-name">{name}</span>
-            <span class="desk-top-state">
-                <span aria-hidden="true" class={dotClass(reach)} />
-                {status}
-            </span>
-        </>
-    ) : (
-        <>
-            <button class="desk-top-pick desk-top-name" aria-haspopup="dialog" aria-expanded={pickerOpen} onClick={() => setPickerOpen(true)}>
-                {name}
-                <IconChevronDown />
-            </button>
-            <span class="desk-top-state">
-                <span aria-hidden="true" class={dotClass(reach)} />
-                {status}
-            </span>
+            <DeviceTabs where={where} picking={pickerOpen} onPick={() => setPickerOpen(true)} />
+            <HereLine where={where} turbo={turboPanel && role.helping} />
+            {!turboPanel && (
+                <span class="desk-top-state">
+                    <span aria-hidden="true" class={dotClass(reach)} />
+                    {status}
+                </span>
+            )}
         </>
     );
-    // Телефон: строка короче — имя колонки с точкой связи.
-    const short = computer ? (
-        <span class="desk-top-short" aria-label={`${name}, ${status}`}>
-            <span aria-hidden="true" class={dotClass(reach)} />
-            <span class="desk-top-short-name">{name}</span>
-        </span>
-    ) : (
-        <button
-            class="desk-top-pick desk-top-short"
-            aria-haspopup="dialog"
-            aria-expanded={pickerOpen}
-            aria-label={tr.core.stationAria(name, status)}
-            onClick={() => setPickerOpen(true)}
-        >
-            <span aria-hidden="true" class={dotClass(reach)} />
-            <span class="desk-top-short-name">{name}</span>
-            <IconChevronDown />
-        </button>
-    );
+    // Телефон: те же вкладки — значок и короткое имя, у нажатой — точка связи.
+    const short = <DeviceTabs where={where} short dot={turboPanel ? undefined : dotClass(reach)} picking={pickerOpen} onPick={() => setPickerOpen(true)} />;
     const top: TopLine = { role: role.role, line, narrow: short };
     const places: SearchPlace[] = searchPlaces(role.role === 'helper', health?.placement?.role === 'station');
     const pickPlace = (entry: SearchPlace): void => {
@@ -811,7 +822,7 @@ export function App() {
             {auth === 'ok' && <CreationFlow />}
             {auth === 'ok' && <MagicPlaceFlow tab={STORE_TAB} />}
             {auth === 'ok' && <ConsentSheet />}
-            {auth === 'ok' && onboardingOpen && !VIA && !OWN_PAGE && <Onboarding onClose={() => setOnboardingOpen(false)} />}
+            {auth === 'ok' && onboardingOpen && !VIA && !OWN_PAGE && <Onboarding onClose={closeOnboarding} />}
             {pickerOpen && (
                 <StationsPicker
                     stations={stations}

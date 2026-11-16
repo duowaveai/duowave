@@ -83,6 +83,18 @@ export default {
     sheetFailedAbout: 'В нём ошибка. Закройте его — остальной пульт работает.',
     close: 'Закрыть',
     done: 'Готово',
+    // windows (ui/sheet.tsx): «⋯», нижняя полоса, опасное, загрузка
+    more: 'Ещё',
+    moreOf: (title: string) => `${title}: ещё`,
+    unsaved: 'Есть изменения',
+    save: 'Сохранить',
+    saving: 'Сохраняю…',
+    saved: 'Сохранено',
+    revert: 'Отменить',
+    danger: 'Опасное',
+    loading: 'Загружается',
+    loadFailed: 'Не прочиталось — попробуйте ещё раз',
+    retry: 'Ещё раз',
     // sign-in, tabs, update-banner, widget
     signInSayHere: (service: string) => `Войдите на странице ${service} — шлюз получит доступ сам, пульт это увидит.`,
     signInSayCode: (service: string) => `Войдите на странице ${service}: она покажет код — скопируйте его и вставьте сюда.`,

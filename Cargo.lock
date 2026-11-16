@@ -766,6 +766,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "const-default"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b396d1f76d455557e1218ec8066ae14bba60b4b36ecd55577ba979f5db7ecaa"
+
+[[package]]
 name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1233,7 +1239,7 @@ checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
 name = "duowave"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1270,6 +1276,8 @@ dependencies = [
  "rand 0.10.3",
  "regex",
  "reqwest 0.13.5",
+ "ring",
+ "rlsf",
  "rmcp",
  "rquickjs",
  "rtc",
@@ -1290,6 +1298,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-rustls",
  "tokio-stream",
  "tokio-tungstenite",
  "tokio-util",
@@ -4239,6 +4248,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "rlsf"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07393724337be2ee43a9d86164df4505746874a3fa65913374bc6d6a92314362"
+dependencies = [
+ "cfg-if",
+ "const-default",
+ "libc",
+ "rustversion",
 ]
 
 [[package]]

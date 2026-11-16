@@ -90,7 +90,8 @@ export function DeskShell({ nav, active, onNav, top, actions, talk, notice, desk
                     {nav.left.map((entry) => (
                         <Cell key={entry.key} entry={entry} active={active === entry.key} onNav={onNav} />
                     ))}
-                    <button
+                    {/* У пульта Турбо разговора нет (решение владельца 16.11): компьютер только помогает, отвечает шлюз. */}
+                    {top.role !== 'helper' && <button
                         aria-label={held ? tr.shell.micHeld : listening ? tr.shell.endPhrase : tr.shell.say}
                         aria-pressed={listening}
                         class={`talk-btn dock-talk${listening ? ' is-listening' : ''}${held ? ' is-held' : ''}`}
@@ -98,7 +99,7 @@ export function DeskShell({ nav, active, onNav, top, actions, talk, notice, desk
                         onClick={talk.onTalk}
                     >
                         {held ? <IconMicOff size={22} /> : <IconMic size={22} />}
-                    </button>
+                    </button>}
                     {nav.right.map((entry) => (
                         <Cell key={entry.key} entry={entry} active={active === entry.key} onNav={onNav} />
                     ))}

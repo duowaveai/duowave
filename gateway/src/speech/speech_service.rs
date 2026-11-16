@@ -223,17 +223,18 @@ impl SpeechService {
     }
 
     /// The model that recognises, as its server says: the journal and the dashboard name it. A look asks the server
-    /// again when that is due (a minute after its last answer, at once after its restart). None: recognition is off.
+    /// again when that is due (a minute after its last answer, at once after its restart). None: recognition is off,
+    /// or nothing hears now (the helpers' chain with nobody to hear).
     pub fn ear(&self) -> Option<String> {
-        let recognizer = self.recognizer.as_ref()?;
+        let recognizer = self.recognizer.as_ref().filter(|recognizer| recognizer.available())?;
         drop(recognizer.refresh());
         Some(recognizer.model())
     }
 
-    /// The household's recognizer as it stands (local, the configured server, the station's chain), for the hearing
-    /// for apps (capabilities/hearing.rs); None when recognition is off.
+    /// The household's recognizer as it stands (the helpers' chain: this computer's own parts, the helpers, the
+    /// cloud), for the hearing for apps (capabilities/hearing.rs); None when nothing recognises now.
     pub fn recognizer(&self) -> Option<Arc<dyn SpeechRecognizer>> {
-        self.recognizer.clone()
+        self.recognizer.clone().filter(|recognizer| recognizer.available())
     }
 
     pub fn status(&self) -> SpeechStatus {
@@ -258,12 +259,17 @@ impl SpeechService {
 
 /// Half a second of silence whenever the recognizer has not been asked for a quarter of an hour, the first at once.
 /// A warm-up past ASR_TIMEOUT_MS still loads the model: the server goes on with it after the gateway stops waiting.
+/// While nothing hears (recognition off, the helpers away) the round is skipped, and while what hears now is outside
+/// the home (a helper's own cloud): the silence never leaves the house.
 async fn keep_warm(recognizer: Arc<dyn SpeechRecognizer>, asked_at: Arc<AtomicU64>, stop: CancellationToken) {
     let silence = vec![0i16; WARM_CLIP_SAMPLES];
     let mut first = true;
     loop {
         let idle = now_ms().saturating_sub(asked_at.load(Ordering::Relaxed));
-        let wait = if idle >= KEEP_WARM_IDLE_MS {
+        let skipped = || !recognizer.available() || recognizer.at_home() == Some(false);
+        let wait = if idle >= KEEP_WARM_IDLE_MS && skipped() {
+            KEEP_WARM_IDLE_MS
+        } else if idle >= KEEP_WARM_IDLE_MS {
             asked_at.store(now_ms(), Ordering::Relaxed);
             let started = Instant::now();
             let result = recognizer.recognize(&silence, SPEECH_SAMPLE_RATE, &stop).await;
@@ -474,6 +480,105 @@ mod tests {
         speech.start(&EventBus::new());
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(cloud.0.load(Ordering::SeqCst), 0, "a cloud bills every request");
+    }
+
+    /// The helpers' chain with nobody to hear (recognition off on a computer, a station's helpers away): counts what it
+    /// is asked.
+    struct Nobody(std::sync::atomic::AtomicUsize);
+
+    impl SpeechRecognizer for Nobody {
+        fn description(&self) -> String {
+            "off".into()
+        }
+        fn model(&self) -> String {
+            "off".into()
+        }
+        fn recognize<'a>(
+            &'a self,
+            _pcm: &'a [i16],
+            _sample_rate: u32,
+            _cancel: &'a CancellationToken,
+        ) -> BoxFuture<'a, Result<String>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            futures::future::ready(Err(anyhow::anyhow!("nobody hears"))).boxed()
+        }
+        fn probe(&self) -> BoxFuture<'_, String> {
+            futures::future::ready("away".to_string()).boxed()
+        }
+        fn refresh(&self) -> BoxFuture<'static, ()> {
+            futures::future::ready(()).boxed()
+        }
+        fn forget(&self) {}
+        fn available(&self) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn with_nothing_that_hears_the_ear_is_none_and_nothing_is_warmed() {
+        let nobody = Arc::new(Nobody(Default::default()));
+        let speech = SpeechService::with_recognizer(
+            config(&[("VAD_ENGINE", "energy"), ("ASR_BASE_URL", "http://127.0.0.1:8090/v1")]),
+            Some(nobody.clone()),
+        );
+        speech.start(&EventBus::new());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(nobody.0.load(Ordering::SeqCst), 0, "no warm-up while nothing hears");
+        assert_eq!((speech.ear(), speech.recognizer().is_none()), (None, true));
+        assert!(!speech.recognizes() && !speech.recognition_enabled());
+        assert_eq!(speech.status().asr, "off");
+    }
+
+    /// The helpers' chain hearing through a helper outside the home (one's own server in a cloud) or at home, as
+    /// `home` says: counts what it is asked.
+    struct Roaming {
+        asked: std::sync::atomic::AtomicUsize,
+        home: std::sync::atomic::AtomicBool,
+    }
+
+    impl SpeechRecognizer for Roaming {
+        fn description(&self) -> String {
+            "helper own: roaming".into()
+        }
+        fn model(&self) -> String {
+            "roaming".into()
+        }
+        fn recognize<'a>(
+            &'a self,
+            _pcm: &'a [i16],
+            _sample_rate: u32,
+            _cancel: &'a CancellationToken,
+        ) -> BoxFuture<'a, Result<String>> {
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            futures::future::ready(Ok(String::new())).boxed()
+        }
+        fn probe(&self) -> BoxFuture<'_, String> {
+            futures::future::ready("reachable".to_string()).boxed()
+        }
+        fn refresh(&self) -> BoxFuture<'static, ()> {
+            futures::future::ready(()).boxed()
+        }
+        fn forget(&self) {}
+        fn at_home(&self) -> Option<bool> {
+            Some(self.home.load(Ordering::SeqCst))
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_warm_up_never_leaves_the_house_through_a_helper_outside_it() {
+        let ear = Arc::new(Roaming { asked: Default::default(), home: Default::default() });
+        let speech = SpeechService::with_recognizer(
+            config(&[("VAD_ENGINE", "energy"), ("ASR_BASE_URL", "http://127.0.0.1:8090/v1")]),
+            Some(ear.clone()),
+        );
+        speech.start(&EventBus::new());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(ear.asked.load(Ordering::SeqCst), 0, "no silence sent out of the house at the start");
+        assert!(speech.recognizes(), "it hears all the same");
+        // What hears is at home by the next round: warmed, as the computer's own server is.
+        ear.home.store(true, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(KEEP_WARM_IDLE_MS + 50)).await;
+        assert_eq!(ear.asked.load(Ordering::SeqCst), 1);
     }
 
     #[test]

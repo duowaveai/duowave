@@ -1499,7 +1499,7 @@ mod tests {
                 catalog_key: None,
                 reserve_mb: 40,
                 storage_reserve_mb: Some(15),
-                pressure_action: crate::plugins::budget::PressureAction::Disable,
+                pressure_action: crate::plugins::budget::PressureAction::Sleep,
                 bundled: false,
                 schedules: true,
                 node_dir: std::path::PathBuf::from("node"),

@@ -22,7 +22,7 @@ use crate::speech::VoiceService;
 
 fn note(mode: PanelMode) -> String {
     match mode {
-        PanelMode::Relay => crate::tr!("Всё отвечает Яндекс, как до DuoWave. Звонки по ссылке и помощник не работают."),
+        PanelMode::Relay => crate::tr!("Всё отвечает Яндекс, как до DuoWave. Звонки по ссылке и Турбо не работают."),
         PanelMode::Gateway => crate::tr!("Сначала свой, Яндекс подхватывает то, чего мы не умеем."),
         PanelMode::Own => crate::tr!("Без Яндекса. Радио, сказки, напоминания и навыки пока не умеем."),
     }
@@ -62,7 +62,7 @@ pub struct ModeService {
     events: EventBus,
     voice: Arc<VoiceService>,
     /// What may be switched to now: the registry of what works where (src/core/availability.rs) — no «Свой» on the
-    /// station alone, on the station with a home server only while it is up.
+    /// station alone, on the station with a helper only while one is on the line and gives it hearing and voice.
     gate: Arc<dyn ModeGate>,
     mode: Mutex<PanelMode>,
 }
@@ -72,7 +72,7 @@ impl ModeService {
     /// panel's routes kept aside by its «Свой» are a Node data format and are not read here (gateway/PORTING.md).
     /// A mode that has no way at all here — «Свой» kept in a database moved onto the station alone — becomes «Шлюз»,
     /// and the setting with it, so everything that reads the setting agrees. One only out of reach for now («Свой» on
-    /// the station while its home server is not up yet) stays: the gateway's state decides about it.
+    /// the station while its helper is not on the line yet) stays: the gateway's state decides about it.
     pub fn new(
         configured: UniproxyMode,
         settings: Arc<SettingsService>,
@@ -205,7 +205,7 @@ impl ModeService {
         Ok(self.view())
     }
 
-    /// The gateway leaves a mode by itself (its home server went): to `to`, kept as its own switch, with why.
+    /// The gateway leaves a mode by itself (its helper went): to `to`, kept as its own switch, with why.
     /// Nothing happens when the mode is not `from` any more.
     pub fn leave_by_itself(&self, from: PanelMode, to: PanelMode, reason: &str) -> Result<bool, ApiError> {
         if self.current() != from || (to != PanelMode::Own && self.locked()) {
@@ -218,7 +218,7 @@ impl ModeService {
         Ok(true)
     }
 
-    /// The reason passed (the home server is back): the mode the gateway left by itself comes back — only while that
+    /// The reason passed (the helper is back): the mode the gateway left by itself comes back — only while that
     /// switch still holds, a person's choice since is never undone.
     pub fn return_by_itself(&self, reason: &str) -> Result<bool, ApiError> {
         let state = self.state();
@@ -382,19 +382,19 @@ mod tests {
         let error = modes.switch(Some(&json!("own")), None).unwrap_err();
         assert_eq!(
             (error.status.as_u16(), error.message.as_str()),
-            (409, "«Своё» сейчас не включить: нет облачного распознавания.")
+            (409, "«Ваш ИИ» сейчас не включить: нет облачного распознавания.")
         );
         assert_eq!(modes.current(), PanelMode::Gateway);
         assert_eq!(serde_json::to_value(modes.switch(Some(&json!("relay")), None).unwrap()).unwrap()["mode"], "relay");
     }
 
-    /// The station with a home server: «Свой» only while the server is up.
+    /// The station with a helper: «Свой» only while the helper is on the line.
     struct Server(std::sync::atomic::AtomicBool);
 
     impl ModeGate for Server {
         fn check(&self, mode: PanelMode) -> Result<(), String> {
             if mode == PanelMode::Own && !self.0.load(std::sync::atomic::Ordering::Relaxed) {
-                return Err("«Своё» сейчас не включить: компьютер не на связи.".into());
+                return Err("«Ваш ИИ» сейчас не включить: Турбо не на связи.".into());
             }
             Ok(())
         }
@@ -418,32 +418,32 @@ mod tests {
         let (modes, server, settings) = with_server();
         modes.switch(Some(&json!("own")), None).unwrap();
         server.0.store(false, std::sync::atomic::Ordering::Relaxed);
-        assert!(modes.leave_by_itself(PanelMode::Own, PanelMode::Gateway, "компьютер не на связи").unwrap());
+        assert!(modes.leave_by_itself(PanelMode::Own, PanelMode::Gateway, "Турбо не на связи").unwrap());
         let view = modes.view();
         assert_eq!((view.mode, view.by), (PanelMode::Gateway, ModeBy::Auto));
         assert_eq!(
             view.auto.as_ref().map(|auto| (auto.from, auto.reason.as_str())),
-            Some((PanelMode::Own, "компьютер не на связи"))
+            Some((PanelMode::Own, "Турбо не на связи"))
         );
         assert_eq!(settings.get(&GATEWAY_STATE, None).unwrap().mode_by, ModeBy::Auto, "kept in the database");
-        assert!(!modes.return_by_itself("компьютер снова на связи").unwrap(), "not while the server is away");
+        assert!(!modes.return_by_itself("Турбо снова на связи").unwrap(), "not while the helper is away");
         server.0.store(true, std::sync::atomic::Ordering::Relaxed);
-        assert!(modes.return_by_itself("компьютер снова на связи").unwrap());
+        assert!(modes.return_by_itself("Турбо снова на связи").unwrap());
         assert_eq!((modes.current(), modes.view().by, modes.view().auto), (PanelMode::Own, ModeBy::Person, None));
 
         // A person decides while it holds: the choice stays.
         server.0.store(false, std::sync::atomic::Ordering::Relaxed);
-        assert!(modes.leave_by_itself(PanelMode::Own, PanelMode::Gateway, "компьютер не на связи").unwrap());
+        assert!(modes.leave_by_itself(PanelMode::Own, PanelMode::Gateway, "Турбо не на связи").unwrap());
         modes.switch(Some(&json!("relay")), None).unwrap();
         server.0.store(true, std::sync::atomic::Ordering::Relaxed);
-        assert!(!modes.return_by_itself("компьютер снова на связи").unwrap());
+        assert!(!modes.return_by_itself("Турбо снова на связи").unwrap());
         assert_eq!(modes.current(), PanelMode::Relay);
 
         // «Остаться в «Шлюзе»»: the same, without switching.
         modes.switch(Some(&json!("own")), None).unwrap();
-        assert!(modes.leave_by_itself(PanelMode::Own, PanelMode::Gateway, "компьютер не на связи").unwrap());
+        assert!(modes.leave_by_itself(PanelMode::Own, PanelMode::Gateway, "Турбо не на связи").unwrap());
         modes.keep(None).unwrap();
-        assert!(!modes.return_by_itself("компьютер снова на связи").unwrap());
+        assert!(!modes.return_by_itself("Турбо снова на связи").unwrap());
         assert_eq!((modes.current(), modes.view().by), (PanelMode::Gateway, ModeBy::Person));
         assert!(!modes.leave_by_itself(PanelMode::Own, PanelMode::Gateway, "x").unwrap(), "not in «Свой»: nothing");
     }

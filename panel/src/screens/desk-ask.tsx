@@ -144,12 +144,14 @@ export function DeskAsk() {
         <div class="desk-ask" role="status">
             {Icon && <Icon size={15} />}
             <span class="desk-ask-text">{t.asked(offer.title, offer.times)}</span>
-            <button type="button" class="desk-ask-yes" onClick={() => actions.land(offer.widget.key)}>
-                {t.put}
-            </button>
-            <button type="button" class="desk-ask-no" onClick={dismiss}>
-                {t.no}
-            </button>
+            <span class="desk-ask-acts">
+                <button type="button" class="desk-ask-yes" onClick={() => actions.land(offer.widget.key)}>
+                    {t.put}
+                </button>
+                <button type="button" class="desk-ask-no" onClick={dismiss}>
+                    {t.no}
+                </button>
+            </span>
         </div>
     );
 }

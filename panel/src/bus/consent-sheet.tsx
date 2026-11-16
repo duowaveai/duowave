@@ -7,7 +7,6 @@ import { useEffect, useState } from 'preact/hooks';
 
 import { BusQuestion, api, can, problemOf } from '../api';
 import { tr } from '../i18n';
-import { Action } from '../ui/cards';
 import { Sheet } from '../ui/sheet';
 import { busChanged, useBusVersion } from './state';
 import { DANGER_TITLES } from './words';
@@ -54,35 +53,34 @@ export function ConsentSheet() {
         setHidden((n) => n + 1);
     };
     const waiting = questions.filter((entry) => !later.has(entry.id)).length;
+    const spin = (what: 'yes' | 'no') => busy === what && <span class="spinner spinner-sm" aria-hidden="true" />;
     return (
         <Sheet
             title={once ? tr.bus.wantsDanger(question.fromTitle) : tr.bus.asksAccess(question.fromTitle)}
-            about={waiting > 1 ? tr.bus.moreQuestions(waiting - 1) : undefined}
+            meta={waiting > 1 ? <span class="win-chip">{tr.bus.moreQuestions(waiting - 1)}</span> : undefined}
             onClose={postpone}
             footer={
-                <div class="flex flex-wrap items-center gap-8">
-                    <Action tone="on" label={once ? tr.bus.allowOnce : tr.bus.allow} busy={busy === 'yes'} disabled={!!busy} onClick={() => void answer(true)} />
-                    <Action label={once ? tr.bus.no : tr.bus.deny} busy={busy === 'no'} disabled={!!busy} onClick={() => void answer(false)} />
-                    <Action label={tr.bus.later} disabled={!!busy} onClick={postpone} />
-                </div>
+                <>
+                    <button class="btn btn-quiet" disabled={!!busy} onClick={postpone}>
+                        {tr.bus.later}
+                    </button>
+                    <button class="btn btn-plain" disabled={!!busy} aria-busy={busy === 'no' || undefined} onClick={() => void answer(false)}>
+                        {spin('no')}
+                        {once ? tr.bus.no : tr.bus.deny}
+                    </button>
+                    <button class="btn btn-main" disabled={!!busy} aria-busy={busy === 'yes' || undefined} onClick={() => void answer(true)}>
+                        {spin('yes')}
+                        {once ? tr.bus.allowOnce : tr.bus.allow}
+                    </button>
+                </>
             }
         >
-            <p class="t-body m-0">
-                {tr.bus.wants(question.fromTitle, question.what)}
-            </p>
-            {once && question.danger && (
-                <p class="t-caption m-0 c-pill-yandex-fg">
-                    {tr.bus.dangerNote(DANGER_TITLES[question.danger] ?? question.danger)}
-                </p>
-            )}
-            {question.root && <p class="t-caption m-0">{tr.bus.startedBy(question.root)}</p>}
-            <p class="t-caption m-0">
-                {once
-                    ? tr.bus.answerOnce
-                    : tr.bus.answerRemembered}
-            </p>
+            <p class="win-lead">{tr.bus.wants(question.fromTitle, question.what)}</p>
+            {once && question.danger && <p class="win-callout m-0">{tr.bus.dangerNote(DANGER_TITLES[question.danger] ?? question.danger)}</p>}
+            {question.root && <p class="win-note">{tr.bus.startedBy(question.root)}</p>}
+            <p class="win-note">{once ? tr.bus.answerOnce : tr.bus.answerRemembered}</p>
             {error && (
-                <p class="t-caption m-0 c-dot-offline" role="alert">
+                <p class="win-callout m-0" role="alert">
                     {error}
                 </p>
             )}

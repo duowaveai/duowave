@@ -308,7 +308,7 @@ impl TalkLayer {
         }
         let device = origin.device.clone();
         let say = &pack::of(self.lang(&device)).work.say;
-        let (executor_name, target, title) = match self.find(&device, thing) {
+        let (executor_name, target, title, kind) = match self.find(&device, thing) {
             Found::Many(works) => return Err(self.which(&device, &works, "add", Some(text))),
             Found::Gone(work) => return Err(self.gone(&device, &work)),
             Found::None => return Err(Refusal::NoThing),
@@ -323,9 +323,11 @@ impl TalkLayer {
                     return Ok(fill(say.noted, &[("text", &in_sentence(text))]));
                 }
                 let target = work.target.clone().ok_or_else(|| Refusal::Failed("there is no thing yet".into()))?;
-                (executor.name(), target, work.title.clone())
+                // A work in a folder goes on as a work in a folder; the rest are the workshop's things.
+                let kind = if work.kind == super::works::FOLDER { super::works::FOLDER } else { APP };
+                (executor.name(), target, work.title.clone(), kind)
             }
-            Found::Thing(executor, started) => (executor, started.target, started.title),
+            Found::Thing(executor, started) => (executor, started.target, started.title, APP),
         };
         let executor = self.executor(executor_name).ok_or_else(|| Refusal::Failed("its executor is gone".into()))?;
         let opened = match executor.open(&target, copy).await {
@@ -339,10 +341,10 @@ impl TalkLayer {
             Err(Closed::Failed(why)) => return Err(Refusal::Failed(why)),
         };
         // Two at once: the new version waits in the queue (a version is never held by the two minutes).
-        let busy = self.works.may_start(&origin, true, now_ms()).is_err();
+        let busy = self.works.may_start_kind(kind, &origin, true, now_ms()).is_err();
         let face = self.works.of_target(executor_name, &opened.target).and_then(|work| work.face);
         let work = self.works.create(NewWork {
-            kind: APP,
+            kind,
             face,
             executor: executor_name.to_string(),
             target: Some(opened.target.clone()),
@@ -357,6 +359,10 @@ impl TalkLayer {
         }
         let work = self.launch(work)?;
         tracing::info!(target: "talk", "work {}: a new version of {}", work.id, opened.target);
+        if kind == super::works::FOLDER {
+            let words = &pack::of(self.lang(&device)).work.folder;
+            return Ok(fill(words.again, &[("title", &work.title)]));
+        }
         let version = self.version_of(&work).to_string();
         Ok(fill(say.again, &[("title", &work.title), ("version", &version)]))
     }
@@ -411,6 +417,13 @@ impl TalkLayer {
         self.acted_on(device, &work.id);
         let by = super::executor::ByVoice { device: device.to_string(), who: origin.who.clone() };
         Ok(match action {
+            // A work in a folder: its line from the agent's journal — «В работе шесть минут: правит `form.ts`».
+            "status" if work.going() && work.kind == super::works::FOLDER => {
+                let since = say.duration(now_ms().saturating_sub(work.started_at));
+                let words = &pack::of(self.lang(device)).work.folder;
+                let doing = executor.details(&work).unwrap_or_else(|| words.begins.to_string());
+                fill(say.working, &[("since", &since), ("doing", &doing)])
+            }
             "status" if work.going() && matches!(work.kind.as_str(), super::works::TOOL | super::works::TASK) => {
                 let words = &pack::of(self.lang(device)).work.background;
                 let since = say.duration(now_ms().saturating_sub(work.started_at));
@@ -443,6 +456,12 @@ impl TalkLayer {
                 fill(say.stopped, &[("title", &title)])
             }
             "stop" if executor.stop(&work) => fill(say.stopped, &[("title", &title)]),
+            // A work in a folder that ended — cut by a restart, stopped, not finished — goes on in the agent's session.
+            "continue" if work.kind == super::works::FOLDER && !work.going() && !work.state.queued() => {
+                let words = &pack::of(self.lang(device)).work.folder;
+                let label = format!("{}{}", pack::of(self.lang(device)).work.label, work.id);
+                return self.add(origin.clone(), words.resume_prompt, Some(&label), false).await;
+            }
             "stop" => fill(say.not_going, &[("title", &work.title)]),
             _ => return Err(Refusal::UnknownAction),
         })

@@ -6,7 +6,7 @@ import { IconMic, IconPlus, IconVoice } from '../icons';
 import { fileToWav, MAX_TAKE_SECONDS, microphones, Recorder, recordingSupport } from '../recorder';
 import { Action, Card, CardNote } from '../ui/cards';
 import { Progress, useNeedsFlow, voicePill } from '../ui/needs';
-import { Sheet } from '../ui/sheet';
+import { Sheet, SkeletonRows, WinSection } from '../ui/sheet';
 import { ask } from '../ui/confirm';
 import { formatNumber, tr } from '../i18n';
 import { byMode } from '../words';
@@ -42,11 +42,9 @@ function JobBar({ label, percent, memoryMb }: { label: string; percent: number; 
                 <div role="progressbar" aria-label={label} aria-valuenow={percent} class="flex-1 h-8 r-pill bg-track overflow-hidden">
                     <div class="progress-fill" style={{ width: `${Math.max(3, percent)}%`, transition: 'width .4s' }} />
                 </div>
-                <span class="t-caption fw-700 flex-none">
-                    {percent}%
-                </span>
+                <span class="win-row-s c-text flex-none">{percent}%</span>
             </div>
-            <span class="t-caption">
+            <span class="win-row-s">
                 {label}
                 {memoryMb !== undefined ? tr.voiceLab.jobMemory(gb(memoryMb)) : ''}
             </span>
@@ -57,7 +55,7 @@ function JobBar({ label, percent, memoryMb }: { label: string; percent: number; 
 function Problem({ text }: { text?: string | null }) {
     if (!text) return null;
     return (
-        <p class="t-caption m-0 c-dot-offline" role="alert">
+        <p class="win-callout m-0 wrap-anywhere" role="alert">
             {text}
         </p>
     );
@@ -67,7 +65,7 @@ function Problem({ text }: { text?: string | null }) {
 function Warning({ text }: { text?: string | null }) {
     if (!text) return null;
     return (
-        <p class="t-caption m-0 c-pill-yandex-fg" role="status">
+        <p class="win-callout m-0" role="status">
             {text}
         </p>
     );
@@ -228,10 +226,6 @@ export function OwnVoiceRows({
 
 type Step = 1 | 2 | 3;
 
-const GO = 'cursor-pointer py-10 px-18';
-/** Шаг дальше пока закрыт: кнопка видна, но приглушена. */
-const DIM = 'cursor-default py-10 px-18 opacity-45';
-
 /** Мастер «Свой голос»: модель → запись → отпечаток. */
 export function VoiceWizard({ onClose }: { onClose: () => void }) {
     const [lab, setLab] = useState<VoiceLabView | null>(null);
@@ -297,39 +291,41 @@ export function VoiceWizard({ onClose }: { onClose: () => void }) {
     const step1Blocked = chosen?.status !== 'ready';
     const step2Blocked = !lab || lab.draft.seconds < 15;
 
+    // The wizard is not closed by a tap outside or Esc (a recording may be on): «Закрыть» on the first step stays its way
+    // out, «Готово» finishes; the step forward is the window's one main action.
     const footer = (
-        <div class="flex gap-8 justify-between items-center">
+        <>
             {step === 1 ? (
-                <button class="pill pill-off cursor-pointer py-10 px-18" onClick={onClose}>
+                <button class="btn btn-plain" onClick={onClose}>
                     {tr.voiceLab.close}
                 </button>
             ) : (
-                <button class={`pill pill-off ${imprintRunning ? DIM : GO}`} disabled={imprintRunning} onClick={() => setStep((step - 1) as Step)}>
+                <button class="btn btn-plain" disabled={imprintRunning} onClick={() => setStep((step - 1) as Step)}>
                     {tr.voiceLab.back}
                 </button>
             )}
             {step === 1 && (
-                <button class={`pill pill-own ${step1Blocked ? DIM : GO}`} disabled={step1Blocked} onClick={() => setStep(2)}>
+                <button class="btn btn-main" disabled={step1Blocked} onClick={() => setStep(2)}>
                     {tr.voiceLab.next}
                 </button>
             )}
             {step === 2 && (
-                <button class={`pill pill-own ${step2Blocked ? DIM : GO}`} disabled={step2Blocked} onClick={() => setStep(3)}>
+                <button class="btn btn-main" disabled={step2Blocked} onClick={() => setStep(3)}>
                     {tr.voiceLab.next}
                 </button>
             )}
             {step === 3 && (
-                <button class="pill pill-own cursor-pointer py-10 px-18" onClick={onClose}>
+                <button class="btn btn-main" onClick={onClose}>
                     {tr.voiceLab.done}
                 </button>
             )}
-        </div>
+        </>
     );
 
     return (
         <Sheet
             title={tr.voiceLab.ownVoice}
-            about={tr.voiceLab.stepAbout(step, titles[step])}
+            meta={<span class="win-chip">{tr.voiceLab.stepAbout(step, titles[step])}</span>}
             icon={
                 <span class="dash-sheet-icon dash-circle inline-flex items-center justify-center">
                     <IconMic size={22} />
@@ -340,11 +336,15 @@ export function VoiceWizard({ onClose }: { onClose: () => void }) {
             dismissable={false}
         >
             {!lab ? (
-                <p class="t-meta m-0" role={loadError ? 'alert' : undefined}>
-                    {loadError ?? tr.voiceLab.checkingComputer}
-                </p>
+                loadError ? (
+                    <p class="win-callout m-0" role="alert">
+                        {loadError}
+                    </p>
+                ) : (
+                    <SkeletonRows rows={3} label={tr.voiceLab.checkingComputer} />
+                )
             ) : !lab.available ? (
-                <p class="t-caption m-0 c-dot-offline" role="alert">
+                <p class="win-callout m-0" role="alert">
                     {lab.reason}
                 </p>
             ) : step === 1 ? (
@@ -389,68 +389,68 @@ function EngineStep({
     };
     return (
         <>
-            <p class="t-caption m-0">
-                {lab.platform?.summary}.{' '}
-                <button class="t-caption cursor-pointer underline" onClick={() => void act('recheck', () => api.voiceLabRecheck())}>
-                    {tr.voiceLab.recheck}
-                </button>
-            </p>
-            <div role="radiogroup" aria-label={tr.voiceLab.engineGroupLabel} class="flex flex-col gap-8">
-                {lab.engines.map((entry) => {
-                    const selected = engine === entry.id;
-                    const installing = job?.kind === 'install' && job.engine === entry.id && job.state === 'running';
-                    const failed = job?.kind === 'install' && job.engine === entry.id && job.state !== 'running' && job.state !== 'done';
-                    return (
-                        <div
-                            key={entry.id}
-                            role="radio"
-                            aria-checked={selected}
-                            aria-disabled={entry.status === 'unsupported'}
-                            tabIndex={entry.status === 'unsupported' ? -1 : 0}
-                            class={`card glass py-12 px-14 flex flex-col gap-8 ${entry.status === 'unsupported' ? 'cursor-default opacity-55' : 'cursor-pointer'} ${selected ? 'outline-accent' : 'outline-none'}`}
-                            onClick={() => entry.status !== 'unsupported' && setEngine(entry.id)}
-                            onKeyDown={(event) => (event.key === ' ' || event.key === 'Enter') && entry.status !== 'unsupported' && setEngine(entry.id)}
-                        >
-                            <div class="flex items-center gap-8 flex-wrap">
-                                <span class="fw-800">{entry.title}</span>
-                                {entry.recommended && <span class="pill pill-agent">{tr.voiceLab.recommended}</span>}
-                                <span class="t-caption">{entry.license}</span>
+            {lab.platform?.summary && <p class="win-text m-0">{lab.platform.summary}.</p>}
+            <WinSection
+                title={tr.voiceLab.engineGroupLabel}
+                aside={
+                    <button class="btn btn-quiet btn-sm" onClick={() => void act('recheck', () => api.voiceLabRecheck())}>
+                        {tr.voiceLab.recheck}
+                    </button>
+                }
+            >
+                {/* The chosen model — the row filled and edged in the text's colour, not lime (lime is the window's action). */}
+                <div role="radiogroup" aria-label={tr.voiceLab.engineGroupLabel} class="win-group">
+                    {lab.engines.map((entry) => {
+                        const selected = engine === entry.id;
+                        const installing = job?.kind === 'install' && job.engine === entry.id && job.state === 'running';
+                        const failed = job?.kind === 'install' && job.engine === entry.id && job.state !== 'running' && job.state !== 'done';
+                        return (
+                            <div
+                                key={entry.id}
+                                role="radio"
+                                aria-checked={selected}
+                                aria-disabled={entry.status === 'unsupported'}
+                                tabIndex={entry.status === 'unsupported' ? -1 : 0}
+                                class={`win-row is-col win-choice${selected ? ' is-on' : ''}${entry.status === 'unsupported' ? ' cursor-default opacity-55' : ''}`}
+                                onClick={() => entry.status !== 'unsupported' && setEngine(entry.id)}
+                                onKeyDown={(event) => (event.key === ' ' || event.key === 'Enter') && entry.status !== 'unsupported' && setEngine(entry.id)}
+                            >
+                                <div class="flex items-center gap-8 flex-wrap">
+                                    <span class="win-row-t">{entry.title}</span>
+                                    {entry.recommended && <span class="pill pill-agent">{tr.voiceLab.recommended}</span>}
+                                    <span class="win-chip">{entry.license}</span>
+                                </div>
+                                <span class="win-row-s">{entry.about}</span>
+                                {status(entry) && <span class="win-row-s c-text">{status(entry)}</span>}
+                                {installing && job && <JobBar label={job.label} percent={job.percent} />}
+                                {installing && job?.log.length ? (
+                                    <code class="win-note opacity-70 nowrap overflow-hidden text-ellipsis">
+                                        {job.log[job.log.length - 1]}
+                                    </code>
+                                ) : null}
+                                {failed && job?.error && <Problem text={job.error} />}
+                                {entry.status === 'missing' && !installing && (
+                                    <div class="flex items-center gap-10 flex-wrap">
+                                        <Action
+                                            label={working === `install:${entry.id}` ? tr.voiceLab.starting : tr.voiceLab.install}
+                                            busy={working === `install:${entry.id}`}
+                                            disabled={job?.state === 'running'}
+                                            onClick={() => void act(`install:${entry.id}`, () => api.installEngine(entry.id))}
+                                        />
+                                        {job?.state === 'running' && <span class="win-row-s">{waitFor(lab, job)}</span>}
+                                    </div>
+                                )}
+                                {installing && (
+                                    <div>
+                                        <Action label={tr.voiceLab.stopJob} onClick={() => void act('stop', () => api.stopVoiceJob())} />
+                                    </div>
+                                )}
                             </div>
-                            <span class="t-caption">{entry.about}</span>
-                            {status(entry) && <span class="t-caption fw-700">{status(entry)}</span>}
-                            {installing && job && <JobBar label={job.label} percent={job.percent} />}
-                            {installing && job?.log.length ? (
-                                <code class="t-caption opacity-70 nowrap overflow-hidden text-ellipsis">
-                                    {job.log[job.log.length - 1]}
-                                </code>
-                            ) : null}
-                            {failed && job?.error && <Problem text={job.error} />}
-                            {entry.status === 'missing' && !installing && (
-                                <div class="flex items-center gap-10 flex-wrap">
-                                    <Action
-                                        tone="on"
-                                        label={working === `install:${entry.id}` ? tr.voiceLab.starting : tr.voiceLab.install}
-                                        busy={working === `install:${entry.id}`}
-                                        disabled={job?.state === 'running'}
-                                        onClick={() => void act(`install:${entry.id}`, () => api.installEngine(entry.id))}
-                                    />
-                                    {job?.state === 'running' && <span class="t-caption">{waitFor(lab, job)}</span>}
-                                </div>
-                            )}
-                            {installing && (
-                                <div>
-                                    <Action label={tr.voiceLab.stopJob} onClick={() => void act('stop', () => api.stopVoiceJob())} />
-                                </div>
-                            )}
-                        </div>
-                    );
-                })}
-            </div>
-            {!lab.platform?.uv && lab.engines.some((entry) => entry.status === 'missing') && (
-                <p class="t-caption m-0">
-                    {tr.voiceLab.needUv}
-                </p>
-            )}
+                        );
+                    })}
+                </div>
+            </WinSection>
+            {!lab.platform?.uv && lab.engines.some((entry) => entry.status === 'missing') && <p class="win-note">{tr.voiceLab.needUv}</p>}
         </>
     );
 }
@@ -530,26 +530,21 @@ function RecordStep({ lab, refresh }: { lab: VoiceLabView; refresh: () => Promis
     const takes = lab.draft.takes;
     return (
         <>
-            <div class="card glass py-12 px-14 flex flex-col gap-6">
-                <span class="fw-800">{tr.voiceLab.howToRecord}</span>
-                <span class="t-caption">
-                    {tr.voiceLab.howToRecordText}
-                </span>
-            </div>
+            <WinSection title={tr.voiceLab.howToRecord}>
+                <p class="win-callout is-calm m-0">{tr.voiceLab.howToRecordText}</p>
+            </WinSection>
 
-            <div class="card glass py-12 px-14 flex flex-col gap-8">
-                <div class="flex items-center justify-between">
-                    <span class="t-meta">
-                        {tr.voiceLab.passageOf(passage + 1, lab.passages.length)}
-                    </span>
-                    <span class="flex gap-6">
-                        <Action label="←" onClick={() => setPassage((current) => Math.max(0, current - 1))} />
-                        <Action label="→" onClick={() => setPassage((current) => Math.min(lab.passages.length - 1, current + 1))} />
-                    </span>
+            <div class="win-group">
+                <div class="win-row is-col">
+                    <div class="flex items-center justify-between gap-8">
+                        <span class="win-row-s">{tr.voiceLab.passageOf(passage + 1, lab.passages.length)}</span>
+                        <span class="flex gap-6">
+                            <Action label="←" onClick={() => setPassage((current) => Math.max(0, current - 1))} />
+                            <Action label="→" onClick={() => setPassage((current) => Math.min(lab.passages.length - 1, current + 1))} />
+                        </span>
+                    </div>
+                    <p class="win-lead">{lab.passages[passage]}</p>
                 </div>
-                <p class="m-0 fs-15 lh-22">
-                    {lab.passages[passage]}
-                </p>
             </div>
 
             {support.ok ? (
@@ -566,8 +561,9 @@ function RecordStep({ lab, refresh }: { lab: VoiceLabView; refresh: () => Promis
                     )}
                     <div class="flex items-center gap-10">
                         <button
-                            class={`${recorder ? 'pill pill-yandex' : 'pill pill-own'} cursor-pointer py-12 px-20 fw-800 inline-flex items-center gap-8`}
+                            class={`btn ${recorder ? 'btn-danger' : 'btn-plain'}`}
                             disabled={uploading}
+                            aria-busy={uploading || undefined}
                             onClick={() => void (recorder ? stop() : start())}
                         >
                             {uploading ? <span class="spinner spinner-sm" aria-hidden="true" /> : <IconMic size={16} />}
@@ -579,12 +575,10 @@ function RecordStep({ lab, refresh }: { lab: VoiceLabView; refresh: () => Promis
                             </div>
                         )}
                     </div>
-                    {recorder && seconds > 0 && seconds < 3 && <span class="t-caption">{tr.voiceLab.speakMeter}</span>}
+                    {recorder && seconds > 0 && seconds < 3 && <span class="win-note">{tr.voiceLab.speakMeter}</span>}
                 </div>
             ) : (
-                <p class="t-caption m-0">
-                    {support.reason}
-                </p>
+                <p class="win-callout is-calm m-0">{support.reason}</p>
             )}
 
             <div>
@@ -594,19 +588,16 @@ function RecordStep({ lab, refresh }: { lab: VoiceLabView; refresh: () => Promis
             <Problem text={problem} />
 
             {takes.length > 0 && (
-                <div class="flex flex-col">
-                    <span class="t-meta py-4 px-0">
-                        {tr.voiceLab.takes(clock(lab.draft.seconds))}
-                    </span>
+                <WinSection title={tr.voiceLab.takes(clock(lab.draft.seconds))} group>
                     {takes.map((take) => {
                         const verdict = verdicts()[take.verdict];
                         const key = `take:${take.n}`;
                         return (
-                            <div key={take.n} class="flex flex-col gap-4 bt-divider py-8 px-0">
+                            <div key={take.n} class="win-row is-col">
                                 <div class="flex items-center gap-8">
-                                    <span class="fw-700 flex-1">
+                                    <span class="win-row-t flex-1">
                                         {tr.voiceLab.take(take.n)}
-                                        <span class="t-caption">
+                                        <span class="win-row-s">
                                             {' '}
                                             · {clock(take.seconds)}
                                             {take.passage ? tr.voiceLab.takePassage(take.passage) : ''}
@@ -624,11 +615,11 @@ function RecordStep({ lab, refresh }: { lab: VoiceLabView; refresh: () => Promis
                                         }
                                     />
                                 </div>
-                                {verdict.hint && <span class="t-caption">{verdict.hint}</span>}
+                                {verdict.hint && <span class="win-row-s">{verdict.hint}</span>}
                             </div>
                         );
                     })}
-                </div>
+                </WinSection>
             )}
         </>
     );
@@ -709,37 +700,38 @@ function ImprintStep({ lab, engine, working, act }: { lab: VoiceLabView; engine:
     if (voice)
         return (
             <>
-                <p class="m-0 fw-800">{tr.voiceLab.readyVoice(voice.name)}</p>
-                <span class="t-caption">
-                    {voice.refSeconds ? tr.voiceLab.voiceTakenFrom(fixed1(voice.refSeconds)) : tr.voiceLab.voiceTakenFromUnknown}
-                </span>
-                {voice.samples.map((sample) => {
-                    const key = `sample:${voice.id}:${sample.n}`;
-                    return (
-                        <div key={sample.n} class="flex items-center gap-10 bt-divider py-8 px-0">
-                            <Action label={audio.playing === key ? '■' : '▶'} onClick={() => void audio.toggle(key, () => api.sampleAudio(voice.id, sample.n))} />
-                            <span class="t-body-sm">{sample.text}</span>
-                        </div>
-                    );
-                })}
+                <p class="win-lead">{tr.voiceLab.readyVoice(voice.name)}</p>
+                <p class="win-text m-0">{voice.refSeconds ? tr.voiceLab.voiceTakenFrom(fixed1(voice.refSeconds)) : tr.voiceLab.voiceTakenFromUnknown}</p>
+                {voice.samples.length > 0 && (
+                    <div class="win-group">
+                        {voice.samples.map((sample) => {
+                            const key = `sample:${voice.id}:${sample.n}`;
+                            return (
+                                <div key={sample.n} class="win-row">
+                                    <Action label={audio.playing === key ? '■' : '▶'} onClick={() => void audio.toggle(key, () => api.sampleAudio(voice.id, sample.n))} />
+                                    <span class="win-row-main win-row-s">{sample.text}</span>
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
                 {enabling === 'done' ? (
-                    <p class="t-caption m-0 c-accent-text">
+                    <p class="win-text m-0 c-accent-text">
                         {pendingNote ?? byMode(tr.voiceLab.speaksYourVoiceSpeaker, tr.voiceLab.speaksYourVoiceVoice)}
                         {tr.voiceLab.restoreOld}
                     </p>
                 ) : needs.body ? (
-                    <div class="flex flex-col gap-8">{needs.body}</div>
+                    <div class="flex flex-col gap-12">{needs.body}</div>
                 ) : (
                     <div>
                         <Action
-                            tone="on"
                             label={enabling === 'busy' ? tr.voiceLab.loadingModel : voiceTight ? tr.voiceLab.enableAnyway : tr.voiceLab.enableVoice}
                             busy={enabling === 'busy'}
                             onClick={() => void enable()}
                         />
                     </div>
                 )}
-                {enabling === 'busy' && <span class="t-caption">{tr.voiceLab.modelLoading}</span>}
+                {enabling === 'busy' && <p class="win-note">{tr.voiceLab.modelLoading}</p>}
                 <Warning text={voiceTight && enabling !== 'busy' ? tr.voiceLab.voiceNotEnabled(voiceTight) : null} />
                 <Problem text={problem} />
                 <div>
@@ -760,20 +752,18 @@ function ImprintStep({ lab, engine, working, act }: { lab: VoiceLabView; engine:
     return (
         <>
             <label class="flex flex-col gap-6">
-                <span class="t-meta">{tr.voiceLab.nameLabel}</span>
+                <span class="win-label">{tr.voiceLab.nameLabel}</span>
                 <input class="field" maxLength={60} value={name} disabled={job?.state === 'running'} onInput={(event) => setName((event.target as HTMLInputElement).value)} />
             </label>
 
-            <div class="card glass py-12 px-14 flex flex-col gap-4">
-                <div class="flex items-center justify-between gap-8">
-                    <span class="fw-800">{tr.voiceLab.memory}</span>
-                    <span class="t-caption">
-                        {tr.voiceLab.memoryFree(gb(memory.poolMb), gb(memory.totalMb))}
-                    </span>
+            <div class="win-group">
+                <div class="win-row is-col">
+                    <div class="flex items-center justify-between gap-8">
+                        <span class="win-row-t">{tr.voiceLab.memory}</span>
+                        <span class="win-chip">{tr.voiceLab.memoryFree(gb(memory.poolMb), gb(memory.totalMb))}</span>
+                    </div>
+                    <span class="win-row-s">{byMode(tr.voiceLab.memoryNoteSpeaker, tr.voiceLab.memoryNoteVoice)(gb(need), gb(memory.reserveMb))}</span>
                 </div>
-                <span class="t-caption">
-                    {byMode(tr.voiceLab.memoryNoteSpeaker, tr.voiceLab.memoryNoteVoice)(gb(need), gb(memory.reserveMb))}
-                </span>
             </div>
 
             {job?.state === 'running' ? (
@@ -789,13 +779,10 @@ function ImprintStep({ lab, engine, working, act }: { lab: VoiceLabView; engine:
                     {card && anyway && (
                         <Warning text={tr.voiceLab.askAnyway(warned ?? tightText)} />
                     )}
-                    <span class="t-caption">
-                        {tr.voiceLab.imprintAbout(title)}
-                    </span>
-                    {lab.job?.state === 'running' && <span class="t-caption">{waitFor(lab, lab.job)}</span>}
+                    <p class="win-text m-0">{tr.voiceLab.imprintAbout(title)}</p>
+                    {lab.job?.state === 'running' && <p class="win-note">{waitFor(lab, lab.job)}</p>}
                     <div>
                         <Action
-                            tone="on"
                             label={working === 'imprint' ? tr.voiceLab.starting : anyway ? tr.voiceLab.imprintAnyway : tr.voiceLab.imprint}
                             busy={working === 'imprint'}
                             disabled={lab.job?.state === 'running'}

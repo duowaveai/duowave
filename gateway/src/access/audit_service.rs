@@ -53,14 +53,24 @@ pub const AUDITED: &[&str] = &[
     "station.switched",
     "station.firmware",
     "station.modOff",
-    "homeServer.up",
-    "homeServer.down",
-    "homeServer.changed",
+    // The helpers: one row for each happening (`homeServer.*` still reach the panels live, not the log).
+    "helpers.changed",
+    "helpers.up",
+    "helpers.down",
+    // Who this computer helps: a home paired or removed, what it gives, a pairing refused (the live comings and goings
+    // of its gateways are no change); the connection key changed.
+    "helpers.clients",
+    "helpers.key",
     "placement.moved",
     "gateway.state",
     "safety.fired",
     "stationGateway.updated",
 ];
+
+/// Settings whose changes have a row of their own: the helpers and the regulator (`helpers.changed`), the home and
+/// this gateway (`gateway.state`), the pins and «Помогаю» (`helpers.changed`, `helpers.clients`). «Адрес снаружи»
+/// (`helper_outside`) has none: its `settings.changed` is its row.
+const OWN_ROWS: &[&str] = &["helpers", "away", "home_identity", "gateway_self", "helper_pins", "helper_clients"];
 
 const KEPT_ROWS: i64 = 5000;
 
@@ -134,14 +144,29 @@ impl AuditService {
         if let GatewayEvent::MemoryChanged { actor: None, .. } = event {
             return;
         }
+        // A gateway of a home this computer helps coming and going is no change of how the house runs.
+        if let GatewayEvent::HelperClients { change, .. } = event {
+            if change == "online" || change == "offline" {
+                return;
+            }
+        }
         // The night's own timer is not a person: only «Запустить сон сейчас» and «Откатить ночь» are logged.
         if let GatewayEvent::SleepChanged { actor: None, .. } = event {
             return;
         }
+        // What a helper says of itself — its contract read at a look, the first after a start too, its readiness — is
+        // the helper's own: the panels and «Мозг» hear it live, the log does not (a helper whose readiness flaps
+        // would fill it). Its comings and goings are rows (`helpers.up`, `helpers.down`).
+        if let GatewayEvent::HelpersChanged { actor: None, change, .. } = event {
+            if change == "contract" {
+                return;
+            }
+        }
         if let GatewayEvent::SettingsChanged { key, .. } = event {
             // The token secret is nobody's business; a connector's setting has its own, fuller row
-            // (connector.changed: which fields, the secrets too).
-            if key == AUTH_SECRET.key || key.starts_with("connector_") {
+            // (connector.changed: which fields, the secrets too); so have the helpers' and the gateway's own
+            // (helpers.changed, gateway.state).
+            if key == AUTH_SECRET.key || key.starts_with("connector_") || OWN_ROWS.contains(&key.as_str()) {
                 return;
             }
         }
@@ -244,6 +269,67 @@ mod tests {
             Some(AuditActor { kind: Some("user".into()), id: Some("u1".into()), name: Some("Мама".into()) })
         );
         assert_eq!(entries[1].details, serde_json::json!({"userId": "u2", "name": "Аня", "role": "member"}));
+        // «Адрес снаружи» decides what a proxied pairing binds: its change is a row of its own, with who made it.
+        let outside = crate::settings::definitions::HELPER_OUTSIDE.key;
+        audit.write(&GatewayEvent::SettingsChanged { key: outside.into(), user_id: None, actor: Some(actor()) });
+        let entries = audit.recent(1).unwrap();
+        assert_eq!(
+            (entries[0].action.as_str(), &entries[0].details),
+            ("settings.changed", &serde_json::json!({"key": outside}))
+        );
+        assert_eq!(entries[0].actor.as_ref().and_then(|actor| actor.name.as_deref()), Some("Мама"));
+    }
+
+    /// A change of the helpers is one happening, one row: `helpers.changed`, not also the setting it wrote; and the
+    /// old `homeServer.*` the shell still emits for older panels are no rows of their own.
+    #[tokio::test]
+    async fn a_change_of_the_helpers_writes_one_row() {
+        use crate::helpers::tests::{contract, stand, station, ALL, KEY};
+        let computer = stand(contract("pc", ALL)).await;
+        let station = station(&[]);
+        let audit = Arc::new(AuditService::new(station.db.clone()));
+        let mut heard = station.events.subscribe();
+        let input = crate::helpers::AddInput { url: computer.url.clone(), key: KEY.into(), ..Default::default() };
+        station.helpers.add(input, Some(actor())).await.unwrap();
+        station.helpers.set_away(crate::helpers::Away::Mine, Some(actor())).unwrap();
+        audit.write(&GatewayEvent::HomeServerChanged { configured: true, actor: None });
+        while let Ok(event) = heard.try_recv() {
+            audit.write(&event);
+        }
+        let rows = audit.recent(100).unwrap();
+        let actions: Vec<&str> = rows.iter().rev().map(|entry| entry.action.as_str()).collect();
+        assert_eq!(actions, ["helpers.changed", "helpers.changed"], "no settings.changed of «helpers» or «away»");
+        assert_eq!(rows[1].details["change"], "added");
+        assert_eq!(rows[0].details, serde_json::json!({ "change": "away" }));
+        assert_eq!(rows[0].actor.as_ref().and_then(|actor| actor.name.as_deref()), Some("Мама"));
+    }
+
+    /// What a helper says of itself is nobody's change (review): its contract read at a look — the first after a start
+    /// too — and its readiness that changes reach the panels live, not the log, so a helper whose readiness flaps
+    /// never fills it; its coming is a row.
+    #[tokio::test]
+    async fn a_helpers_own_contract_is_heard_live_and_not_logged() {
+        use crate::helpers::tests::{contract, stand, station, ALL};
+        let computer = stand(contract("pc", ALL)).await;
+        let station = station(&[]);
+        station.put("home-a", &computer.url, crate::helpers::HelperKind::Home);
+        let audit = AuditService::new(station.db.clone());
+        let mut heard = station.events.subscribe();
+        station.helpers.check("home-a").await.unwrap();
+        let mut loading = ALL.to_vec();
+        loading[0] = ("hearing", false);
+        *computer.status.lock().unwrap() = contract("pc", &loading);
+        station.helpers.check("home-a").await.unwrap();
+        let mut contracts = 0;
+        while let Ok(event) = heard.try_recv() {
+            if matches!(&*event, GatewayEvent::HelpersChanged { change, .. } if change == "contract") {
+                contracts += 1;
+            }
+            audit.write(&event);
+        }
+        assert_eq!(contracts, 2, "the first read and the readiness that changed, live");
+        let actions: Vec<String> = audit.recent(100).unwrap().into_iter().map(|entry| entry.action).collect();
+        assert_eq!(actions, ["helpers.up"]);
     }
 
     #[test]

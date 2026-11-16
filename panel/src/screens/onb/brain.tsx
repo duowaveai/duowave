@@ -4,9 +4,11 @@
 // добавить провайдера, войти, проверить, выбрать модели (логика — общий хук screens/brain-connect.ts, тот же у витрины
 // стола); слух — useLocalAsr (screens/local-asr.tsx).
 
+import type { ProviderView } from '../../api';
 import { tr } from '../../i18n';
 import { PATHS, useBrainConnect } from '../brain-connect';
 import { localAsrNeedsCard, localAsrPercent, useLocalAsr } from '../local-asr';
+import { awayBackup, awayBehind } from './brain-home';
 import { useOnboarding, useStepNav } from './nav';
 import '../../ui/onboarding-canvas.css';
 import '../../ui/onb-brain.css';
@@ -49,15 +51,18 @@ export function BrainStep() {
     const t = tr.onbBrain;
     const { next } = useOnboarding();
     const [ear] = useLocalAsr();
-    const { view, path, choosePath, checking, problem, key, setKey, fields, setFields, keyPreset, keyFields, keyReady, saveKey, local, findLocal, signIn, beginSignIn, workingOn, answering } =
+    const { view, path, choosePath, checking, problem, key, setKey, fields, setFields, keyPreset, keyFields, keyReady, saveKey, local, findLocal, signIn, beginSignIn, workingOn, answering, noBackup } =
         useBrainConnect();
     useStepNav(answering ? {} : { secondary: { label: t.later, onClick: next } }, [answering]);
 
+    // Облачная «Запасная» остаётся и за моделью на компьютере: тогда «вопросы не уходят из дома» неправда — и пометка
+    // «без интернета» тоже.
+    const backupAway = view ? awayBackup(view) : null;
     const cards: Array<{ title: string; chip?: { text: string; lime?: boolean }; sub: string }> = [
         { title: t.orTitle, chip: { text: t.orChip, lime: true }, sub: t.orSub },
         { title: t.gptTitle, sub: t.gptSub },
         { title: t.keyTitle, sub: t.keySub },
-        { title: t.localTitle, chip: { text: t.localChip }, sub: t.localSub },
+        { title: t.localTitle, chip: backupAway ? undefined : { text: t.localChip }, sub: backupAway ? t.localSubAway : t.localSub },
     ];
 
     const working = workingOn(path);
@@ -79,6 +84,41 @@ export function BrainStep() {
             {signIn.target === which && signIn.steps && <div class="ob-brain-full ob-brain-steps">{signIn.steps}</div>}
         </>
     );
+
+    /**
+     * «Нашёл Ollama»: кто отвечает и уходят ли вопросы из дома. За моделью на компьютере стоит облачная умная или
+     * «Запасная» (её шлюз ставит и сам) — карточка называет её вместо «не уходят из дома»; при облачной «Запасной» под
+     * ней — строка шлюза (может стоить денег, папки закрыты) и «Без запасной».
+     */
+    const localFound = (provider: ProviderView) => {
+        const fast = view?.choice.fast;
+        const answers = fast?.provider === provider.id;
+        const model = answers && fast ? fast.model : (provider.models[0] ?? provider.title);
+        const away = answers && view ? awayBehind(view) : null;
+        const backup = answers && view ? awayBackup(view) : null;
+        const gatewayNote = backup && view?.note?.kind === 'backupAuto' ? view.note.text : null;
+        const note = !away ? t.localFoundNote(model) : away.backup ? t.localFoundBackup(model, away.title) : t.localFoundSmart(model, away.title);
+        return (
+            <>
+                <Said mark="ok" title={t.localFound(provider.title)} note={note} />
+                {backup && (
+                    <button
+                        type="button"
+                        class="dw-btn dw-btn-sm dw-btn-light"
+                        style={{ marginLeft: 'auto', flex: 'none' }}
+                        onClick={() => void noBackup()}
+                    >
+                        {t.noBackup}
+                    </button>
+                )}
+                {gatewayNote && (
+                    <p class="small ob-brain-full" role="status" style={{ margin: 0 }}>
+                        {gatewayNote}
+                    </p>
+                )}
+            </>
+        );
+    };
 
     const body = busy ? (
         <Said mark="busy" title={t.checking(busy.title)} note={t.checkingNote} />
@@ -129,7 +169,7 @@ export function BrainStep() {
             </form>
         )
     ) : working ? (
-        <Said mark="ok" title={t.localFound(working.title)} note={t.localFoundNote(view?.choice.fast?.provider === working.id ? view.choice.fast.model : working.models[0] ?? working.title)} />
+        localFound(working)
     ) : local === 'none' ? (
         <>
             <Said mark="warn" title={t.localNone} note={t.localNoneNote} />

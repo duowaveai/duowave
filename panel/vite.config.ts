@@ -18,10 +18,29 @@ const themeBoot: Plugin = {
     transformIndexHtml: (html) => html.replace('<!-- theme-boot -->', `<style id="theme-boot" ${bootAttributes(DEFAULT_THEME)}>\n${bootCss(DEFAULT_THEME)}\n</style>`),
 };
 
+// Шрифты — только woff2. @fontsource к каждому начертанию даёт запасной .woff для браузеров без woff2 (старше Chrome 36,
+// Firefox 39, Safari 12), а пульт собран под es2022 — Chrome 94, Firefox 93, Safari 16.4 и новее; woff2 читают все они,
+// и окно приложения DuoWave тоже (WebKit, WebView2). Запасные только растили программу колонки (~180 КБ): их ссылки
+// уходят из @font-face до сборки, и .woff в dist не попадают. Появится .woff всё же — сборка остановится и скажет.
+const WOFF_FALLBACK = /,\s*url\([^)]*\.woff['"]?\s*\)\s*format\(\s*['"]?woff['"]?\s*\)/g;
+const woff2Only: Plugin = {
+    name: 'woff2-only',
+    enforce: 'pre',
+    transform(code, id) {
+        if (!id.split('?')[0].endsWith('.css')) return null;
+        const trimmed = code.replace(WOFF_FALLBACK, '');
+        return trimmed === code ? null : { code: trimmed, map: null };
+    },
+    generateBundle(_, bundle) {
+        const woff = Object.keys(bundle).filter((name) => name.endsWith('.woff'));
+        if (woff.length > 0) this.error(`в сборке пульта .woff, а шрифты — только woff2 (vite.config.ts, woff2Only): ${woff.join(', ')}`);
+    },
+};
+
 export default defineConfig({
     // Прод-сборка живёт на гейтвее под /panel — сборка ссылается на свои ассеты оттуда же.
     base: '/panel/',
-    plugins: [preact(), themeBoot],
+    plugins: [preact(), themeBoot, woff2Only],
     server: {
         proxy: {
             '/health': { target: gateway },

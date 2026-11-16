@@ -1,14 +1,15 @@
-//! «передай маме, что …» on the station: its build has no Telegram bot (the calls module is the computer's), so while
-//! the computer helps it («Колонка + ПК», «Что даю колонке» → «Сообщения») the message goes through the computer's
-//! bot: `POST /home/v1/messenger/send` with the station's home-server key (serve.rs). The names of the computer's
-//! contacts come with each look at the computer (`HomeServerService::check`), so the skill knows at once whether a
-//! name is ours; their chats stay on the computer.
+//! «передай маме, что …» on the station: its build has no Telegram bot (the calls module is the computer's), so the
+//! message goes through a helper's bot — the first helper that gives messages (src/helpers, «Сообщения»), the computer
+//! at home now: `POST /home/v1/messenger/send` with its key (serve.rs). The names of the helper's contacts come with
+//! each look at it (`RemoteHelper::read_contacts`), so the skill knows at once whether a name is ours; their chats stay
+//! on the helper. A helper at home is never kept out by the regulator, so «передай …» passes under every position of
+//! it; the bot's own way to Telegram is no road of the regulator's.
 //!
 //! A gateway with a bot of its own (the computer's build) uses its own: this one stands aside then.
 //!
 //! The other way: the bot's messages from the contacts come from the computer (src/placement/messages.rs) to
-//! `POST /api/v1/home-server/message` here, with the pair's key, and the calls skill says or plays them. The same part
-//! of «Что даю колонке», «Сообщения», governs both ways.
+//! `POST /api/v1/home-server/message` here, with the pair's key, and the calls skill says or plays them. The pair's
+//! door's part «Сообщения» («Что даю колонке») governs both ways.
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -19,10 +20,11 @@ use axum::http::StatusCode;
 use futures::future::BoxFuture;
 use serde_json::{json, Value};
 
-use super::{HomeServerService, Messenger};
 use crate::app::App;
-use crate::core::availability::HomeServer;
 use crate::core::identity::permissions::STATIONS_MANAGE;
+use crate::helpers::contract::Ability;
+use crate::helpers::remote::{Messenger, RemoteHelper};
+use crate::helpers::{Giver, Helpers};
 use crate::platform::http::{created, ApiError, ApiResult, Caller};
 use crate::skills::media::sources::match_score;
 use crate::skills::own::calls_skill::{Contact, IncomingMessage, LinkButton, MessengerAccess, NotSent, NO_RECIPIENT};
@@ -39,7 +41,9 @@ const WAITING: usize = 5;
 const STALE: Duration = Duration::from_secs(600);
 /// The station's answers to the computer.
 pub fn not_taken() -> String {
-    crate::tr!("Колонка не берёт сообщения у компьютера: «Сообщения» в «Что даю колонке» выключены.")
+    crate::tr!(
+        "Колонка не берёт сообщения у компьютера: в её «Доме» у компьютера выключены «Сообщения» («Не брать у него…»)."
+    )
 }
 pub fn only_pair() -> String {
     crate::tr!("Сообщения колонке передаёт только компьютер пары.")
@@ -59,26 +63,38 @@ pub const FAILED: &str = "Компьютер не смог передать со
 /// Telegram's own wait on the computer is 30 s; a message rarely takes a second.
 const SEND_WAIT: Duration = Duration::from_secs(20);
 
-/// The skill's messenger: this gateway's own bot when it has one, otherwise the computer's through the home server.
+/// The skill's messenger: this gateway's own bot when it has one, otherwise a helper's.
 pub struct HomeMessenger {
     local: Arc<dyn MessengerAccess>,
-    home: Arc<HomeServerService>,
+    helpers: Arc<Helpers>,
 }
 
 impl HomeMessenger {
-    pub fn new(local: Arc<dyn MessengerAccess>, home: Arc<HomeServerService>) -> Arc<HomeMessenger> {
-        Arc::new(HomeMessenger { local, home })
+    pub fn new(local: Arc<dyn MessengerAccess>, helpers: Arc<Helpers>) -> Arc<HomeMessenger> {
+        Arc::new(HomeMessenger { local, helpers })
     }
 
-    /// The computer's bot is the one: none here, the station leans on the computer and takes «Сообщения» from it.
+    /// The helper that would pass messages on, on the line or not.
+    fn offered(&self) -> Option<Arc<RemoteHelper>> {
+        match self.helpers.offer(Ability::Messages)? {
+            Giver::Helper(remote) => Some(remote),
+            Giver::Itself => None,
+        }
+    }
+
+    /// A helper's bot is the one: none here, and a helper would pass messages on.
     fn through_home(&self) -> bool {
-        !self.local.enabled() && self.home.configured().is_some() && self.home.serves("messages")
+        !self.local.enabled() && self.offered().is_some()
     }
 
-    /// The names of the computer's contacts, when the station takes messages through it and knows them.
+    /// The names of the helper's contacts: the one that passes messages now, else the last seen of the one that would.
     fn names(&self) -> Option<Vec<String>> {
-        match self.home.messenger() {
-            Messenger::Contacts(names) if self.through_home() => Some(names),
+        if !self.through_home() {
+            return None;
+        }
+        let helper = self.helpers.pick_remote(Ability::Messages).or_else(|| self.offered())?;
+        match helper.messenger() {
+            Messenger::Contacts(names) => Some(names),
             _ => None,
         }
     }
@@ -97,7 +113,7 @@ impl MessengerAccess for HomeMessenger {
         self.local.enabled() || self.names().is_some()
     }
 
-    /// The contact's «chat» is its name on the computer: the computer's bot finds the chat by it.
+    /// The contact's «chat» is its name on the helper: the helper's bot finds the chat by it.
     fn contact(&self, name: &str) -> Option<Contact> {
         if !self.through_home() {
             return self.local.contact(name);
@@ -109,10 +125,13 @@ impl MessengerAccess for HomeMessenger {
         if !self.through_home() {
             return self.local.unavailable();
         }
-        if self.home.state() != HomeServer::Up {
-            return Some(AWAY.into());
+        if self.helpers.pick_remote(Ability::Messages).is_some() {
+            return None;
         }
-        (self.home.messenger() == Messenger::NoBot).then(|| NO_BOT.into())
+        match self.offered() {
+            Some(helper) if helper.up() && helper.messenger() == Messenger::NoBot => Some(NO_BOT.into()),
+            _ => Some(AWAY.into()),
+        }
     }
 
     fn send_text(
@@ -124,14 +143,14 @@ impl MessengerAccess for HomeMessenger {
         if !self.through_home() {
             return self.local.send_text(chat_id, text, button);
         }
-        let home = self.home.configured();
+        let helper = self.helpers.pick_remote(Ability::Messages).map(|helper| (helper.base(), helper.credential()));
         Box::pin(async move {
             // A call's link is the calls module's, and that stays on the computer.
             if button.is_some() {
                 anyhow::bail!("a call's link through the computer: not supported");
             }
-            let Some((url, key)) = home else { return Err(NotSent(AWAY.into()).into()) };
-            let answer = crate::utils::http::client()
+            let Some((url, key)) = helper else { return Err(NotSent(AWAY.into()).into()) };
+            let answer = crate::utils::http::client_without_redirects()
                 .post(format!("{url}/home/v1/messenger/send"))
                 .bearer_auth(key)
                 .json(&json!({ "contact": chat_id, "text": text }))
@@ -153,7 +172,7 @@ impl MessengerAccess for HomeMessenger {
             }
             let message = response.json::<Value>().await.ok();
             let message = message.as_ref().and_then(|body| body.get("message")).and_then(Value::as_str);
-            tracing::warn!("home server: a message not passed on: HTTP {status}: {}", message.unwrap_or("-"));
+            tracing::warn!("helpers: a message not passed on: HTTP {status}: {}", message.unwrap_or("-"));
             let said = match status {
                 404 => NO_RECIPIENT,
                 503 => NO_BOT,
@@ -250,114 +269,44 @@ pub async fn receive(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::Ordering;
     use std::sync::Mutex;
 
-    use axum::http::{HeaderMap, StatusCode};
-    use axum::routing::{get, post};
-    use axum::Router;
+    use axum::http::StatusCode;
     use chrono::Utc;
 
     use super::*;
     use crate::config::{Config, Env};
-    use crate::core::events::EventBus;
-    use crate::secrets::SecretsService;
-    use crate::settings::SettingsService;
+    use crate::core::availability::HomeServer;
+    use crate::helpers::contract::HelperStatus;
+    use crate::helpers::tests::{contract, stand, station, Stand, Station, ALL, KEY};
+    use crate::helpers::{DoorInput, HOME_COMPUTER};
     use crate::skills::capabilities::{CapabilityName, Intent};
     use crate::skills::own::calls_skill::{CallsSkill, NoCalls};
     use crate::skills::skill::{ExecutionContext, OwnSkill};
-    use crate::storage::Db;
 
-    /// The computer as the station sees it: its status, its bot's contacts, its sends.
-    #[derive(Default)]
-    struct Computer {
-        away: AtomicBool,
-        /// None: no bot set up.
-        contacts: Mutex<Option<Vec<&'static str>>>,
-        /// What the bot was asked to pass on.
-        sent: Mutex<Vec<(String, String)>>,
-        /// Telegram refuses.
-        refuses: AtomicBool,
-    }
-
-    fn keyed(headers: &HeaderMap) -> bool {
-        headers.get("authorization").and_then(|value| value.to_str().ok()) == Some("Bearer vgw_home")
-    }
-
-    async fn computer(state: Arc<Computer>) -> String {
-        let status = {
-            let state = state.clone();
-            move |headers: HeaderMap| {
-                let state = state.clone();
-                async move {
-                    if state.away.load(Ordering::Relaxed) {
-                        return Err(StatusCode::SERVICE_UNAVAILABLE);
-                    }
-                    if !keyed(&headers) {
-                        return Err(StatusCode::UNAUTHORIZED);
-                    }
-                    Ok(axum::Json(json!({ "asr": true, "tts": true })))
-                }
-            }
-        };
-        let contacts = {
-            let state = state.clone();
-            move |headers: HeaderMap| {
-                let state = state.clone();
-                async move {
-                    if !keyed(&headers) {
-                        return Err(StatusCode::UNAUTHORIZED);
-                    }
-                    let contacts = state.contacts.lock().unwrap().clone().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-                    Ok(axum::Json(json!({ "contacts": contacts })))
-                }
-            }
-        };
-        let send = move |headers: HeaderMap, axum::Json(body): axum::Json<Value>| {
-            let state = state.clone();
-            async move {
-                if !keyed(&headers) {
-                    return Err(StatusCode::UNAUTHORIZED);
-                }
-                let Some(contacts) = state.contacts.lock().unwrap().clone() else {
-                    return Err(StatusCode::SERVICE_UNAVAILABLE);
-                };
-                let contact = body["contact"].as_str().unwrap_or_default().to_string();
-                if !contacts.iter().any(|known| *known == contact) {
-                    return Err(StatusCode::NOT_FOUND);
-                }
-                if state.refuses.load(Ordering::Relaxed) {
-                    return Err(StatusCode::BAD_GATEWAY);
-                }
-                state.sent.lock().unwrap().push((contact.clone(), body["text"].as_str().unwrap_or_default().into()));
-                Ok(axum::Json(json!({ "sent": true, "contact": contact })))
-            }
-        };
-        let router = Router::new()
-            .route("/home/v1/status", get(status))
-            .route("/home/v1/messenger/contacts", get(contacts))
-            .route("/home/v1/messenger/send", post(send));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-        format!("http://{address}")
+    /// The computer as the station sees it: a helper of its list, with its bot's contacts.
+    async fn computer(contacts: Option<&[&str]>) -> Arc<Stand> {
+        let pc = stand(contract("pc", ALL)).await;
+        *pc.contacts.lock().unwrap() = contacts.map(|names| names.iter().map(|name| name.to_string()).collect());
+        pc
     }
 
     /// The station leaning on the computer at `url`, and its calls skill with no bot of its own.
-    fn station(url: &str) -> (Arc<HomeServerService>, Arc<CallsSkill>) {
-        let config = Arc::new(Config::for_tests(&Env::from_pairs([
-            ("HOME_SERVER_URL", url),
-            ("HOME_SERVER_KEY", "vgw_home"),
-            ("DUOWAVE_ROLE", "station"),
-        ])));
-        let db = Arc::new(Db::memory());
-        let events = EventBus::new();
-        let settings = Arc::new(SettingsService::new(db.clone(), events.clone()));
-        let secrets = Arc::new(SecretsService::new(db, None).unwrap());
-        let home = HomeServerService::new(config, settings, secrets, events);
+    fn station_on(url: &str) -> (Station, Arc<CallsSkill>) {
+        let station = station(&[("HOME_SERVER_URL", url), ("HOME_SERVER_KEY", KEY)]);
         let none = Arc::new(NoCalls);
-        let skill = CallsSkill::new(none.clone(), none.clone(), HomeMessenger::new(none, home.clone()));
-        (home, skill)
+        let skill = CallsSkill::new(none.clone(), none.clone(), HomeMessenger::new(none, station.helpers.clone()));
+        (station, skill)
+    }
+
+    async fn look(station: &Station) {
+        station.helpers.check(HOME_COMPUTER).await.unwrap();
+    }
+
+    fn messenger(station: &Station) -> Messenger {
+        let entry = station.helpers.entry(HOME_COMPUTER).unwrap();
+        station.helpers.remote(&entry).unwrap().messenger()
     }
 
     fn message(contact: &str, text: &str) -> Intent {
@@ -377,14 +326,13 @@ mod tests {
     /// station's build has no bot. Through the computer's it goes.
     #[tokio::test]
     async fn the_station_passes_a_message_on_through_the_computers_bot() {
-        let pc = Arc::new(Computer::default());
-        *pc.contacts.lock().unwrap() = Some(vec!["мама", "бабушка"]);
-        let (home, skill) = station(&computer(pc.clone()).await);
+        let pc = computer(Some(&["мама", "бабушка"])).await;
+        let (station, skill) = station_on(&pc.url);
         let to_granny = message("Бабушке", "Купи хлеба.");
         assert!(!skill.ours(&to_granny, "default"), "the computer's contacts are not read yet");
 
-        home.check().await;
-        assert_eq!(home.messenger(), Messenger::Contacts(vec!["мама".into(), "бабушка".into()]));
+        look(&station).await;
+        assert_eq!(messenger(&station), Messenger::Contacts(vec!["мама".into(), "бабушка".into()]));
         assert!(skill.ours(&to_granny, "default"), "Бабушка is the computer's contact: ours, not Yandex's");
         let outcome = skill.execute(&to_granny, &ExecutionContext::new("default", Utc::now())).await.unwrap();
         assert_eq!(outcome.speech.as_deref(), Some("Передала."));
@@ -394,33 +342,37 @@ mod tests {
         // Telegram refuses on the computer: said so.
         pc.refuses.store(true, Ordering::Relaxed);
         assert_eq!(said(&skill, &message("маме", "Я задержусь")).await, NOT_ACCEPTED);
+
+        // «Только дома» never stops it: a helper at home is never kept out, and the bot's way to Telegram is no
+        // road of the regulator's (the owner's answer, 15.11).
+        pc.refuses.store(false, Ordering::Relaxed);
+        station.helpers.set_away(crate::helpers::Away::Home, None).unwrap();
+        assert_eq!(said(&skill, &message("маме", "Я задержусь")).await, "Передала.");
     }
 
     #[tokio::test]
     async fn a_name_the_computer_does_not_know_is_not_ours_and_is_said_so() {
-        let pc = Arc::new(Computer::default());
-        *pc.contacts.lock().unwrap() = Some(vec!["мама"]);
-        let (home, skill) = station(&computer(pc.clone()).await);
-        home.check().await;
+        let pc = computer(Some(&["мама"])).await;
+        let (station, skill) = station_on(&pc.url);
+        look(&station).await;
         let to_petya = message("Пете", "Привет");
         assert!(!skill.ours(&to_petya, "default"), "Yandex's, while it is up");
         assert_eq!(said(&skill, &to_petya).await, NO_RECIPIENT, "«Свой»: ours all the same");
         // The contact gone from the computer's bot since the last look: the computer's answer says so.
-        *pc.contacts.lock().unwrap() = Some(vec!["папа"]);
+        *pc.contacts.lock().unwrap() = Some(vec!["папа".into()]);
         assert_eq!(said(&skill, &message("маме", "Привет")).await, NO_RECIPIENT);
         assert!(pc.sent.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn the_computer_away_is_said_so_and_its_contacts_are_still_ours() {
-        let pc = Arc::new(Computer::default());
-        *pc.contacts.lock().unwrap() = Some(vec!["мама"]);
-        let (home, skill) = station(&computer(pc.clone()).await);
-        home.check().await;
-        pc.away.store(true, Ordering::Relaxed);
-        home.check().await;
-        home.check().await;
-        assert_eq!(home.state(), HomeServer::Down);
+        let pc = computer(Some(&["мама"])).await;
+        let (station, skill) = station_on(&pc.url);
+        look(&station).await;
+        pc.set_away(true);
+        look(&station).await;
+        look(&station).await;
+        assert_eq!(station.helpers.state(), HomeServer::Down);
         let to_mom = message("маме", "Я задержусь");
         assert!(skill.ours(&to_mom, "default"), "a contact seen before: ours, to say the computer is away");
         assert_eq!(said(&skill, &to_mom).await, AWAY);
@@ -431,30 +383,53 @@ mod tests {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             format!("http://{}", listener.local_addr().unwrap())
         };
-        let (home, skill) = station(&closed);
-        home.seen(&closed, Ok(()));
-        *home.messenger.lock().unwrap() = Messenger::Contacts(vec!["мама".into()]);
+        let (station, skill) = station_on(&closed);
+        let entry = station.helpers.entry(HOME_COMPUTER).unwrap();
+        let remote = station.helpers.remote(&entry).unwrap();
+        remote.seen(&Ok(HelperStatus::read(&contract("pc", ALL)).unwrap()));
+        remote.set_messenger(Messenger::Contacts(vec!["мама".into()]));
         assert_eq!(said(&skill, &to_mom).await, AWAY);
     }
 
     #[tokio::test]
     async fn no_bot_on_the_computer_is_said_so_and_messages_not_taken_leave_it_alone() {
-        let pc = Arc::new(Computer::default());
-        let (home, skill) = station(&computer(pc.clone()).await);
-        home.check().await;
-        assert_eq!((home.state(), home.messenger()), (HomeServer::Up, Messenger::NoBot));
+        let pc = computer(None).await;
+        let (station, skill) = station_on(&pc.url);
+        look(&station).await;
+        assert_eq!((station.helpers.state(), messenger(&station)), (HomeServer::Up, Messenger::NoBot));
         let to_mom = message("маме", "Я задержусь");
         assert!(!skill.ours(&to_mom, "default"));
         assert_eq!(said(&skill, &to_mom).await, NO_BOT);
 
         // «Что даю колонке» without «Сообщения»: the station does not ask the computer, as with no computer.
-        *pc.contacts.lock().unwrap() = Some(vec!["мама"]);
-        home.check().await;
+        *pc.contacts.lock().unwrap() = Some(vec!["мама".into()]);
+        look(&station).await;
         assert!(skill.ours(&to_mom, "default"));
-        home.link(None, None, None, Some(vec!["messages".into()]), None).unwrap();
+        let parts = DoorInput { without: Some(vec!["messages".into()]), ..DoorInput::default() };
+        station.helpers.door(parts, None).unwrap();
         assert!(!skill.ours(&to_mom, "default"));
         assert_eq!(said(&skill, &to_mom).await, NO_RECIPIENT);
         assert!(pc.sent.lock().unwrap().is_empty());
+    }
+
+    /// A computer of 0.11 and before answers its status without a contract and has the messenger's routes; an older
+    /// one does not: its 404 forgets messages, and it is never asked again.
+    #[tokio::test]
+    async fn an_older_computer_without_the_messengers_routes_passes_nothing() {
+        let pc = stand(json!({ "version": "0.2.0", "peerApi": 2, "asr": true, "tts": true, "llm": false })).await;
+        let (station, skill) = station_on(&pc.url);
+        look(&station).await;
+        let entry = station.helpers.entry(HOME_COMPUTER).unwrap();
+        assert!(!station.helpers.remote(&entry).unwrap().declares(Ability::Messages), "0.2.0 had no messenger");
+        assert_eq!(said(&skill, &message("маме", "Привет")).await, NO_RECIPIENT, "as with no computer");
+        let old = stand(json!({ "version": "0.11.1", "peerApi": 2, "asr": true, "tts": true, "llm": false })).await;
+        old.no_messenger.store(true, Ordering::SeqCst);
+        let (station, _) = station_on(&old.url);
+        look(&station).await;
+        let remote = station.helpers.remote(&station.helpers.entry(HOME_COMPUTER).unwrap()).unwrap();
+        assert!(!remote.declares(Ability::Messages), "its 404 forgets messages");
+        look(&station).await;
+        assert!(!remote.declares(Ability::Messages), "and its next status does not bring them back");
     }
 
     // ── The other way: the computer's bot's messages, said or played on the station. ──

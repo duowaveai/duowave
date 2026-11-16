@@ -1,11 +1,13 @@
 //! Build steps: the station's protocol from proto/station-protocol.proto (protox, no protoc needed) as prost types
 //! and as an encoded descriptor set for the codec's reflection, the list of SQL migrations in migrations/ (adding a
-//! migration is adding a file), an empty panel folder when the panel is not built, so the program still builds
-//! (it then says the panel is missing), and the station's build inside the computer's when one is given
-//! (DUOWAVE_STATION_PAYLOAD: duowave-station-aarch64.tar.gz with its .sig beside it; src/placement/payload.rs); and,
-//! for recognition on a Mac (feature local-asr), clang's runtime that ggml-metal's version checks call.
+//! migration is adding a file), the panel's files packed for the program, its text gzip-compressed (an empty panel
+//! folder when the panel is not built, so the program still builds and then says the panel is missing), and the
+//! station's build inside the computer's when one is given (DUOWAVE_STATION_PAYLOAD: duowave-station-aarch64.tar.gz
+//! with its .sig beside it; src/placement/payload.rs); and, for recognition on a Mac (feature local-asr), clang's
+//! runtime that ggml-metal's version checks call.
 
 use std::fmt::Write as _;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,6 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::create_dir_all(&panel)?;
     }
     println!("cargo:rerun-if-changed=../panel/dist");
+    std::fs::write(out.join("panel_files.rs"), panel_files(&panel, &out)?)?;
 
     std::fs::write(out.join("station_payload.rs"), station_payload(&out)?)?;
     link_clang_rt_osx();
@@ -87,6 +90,56 @@ fn station_payload(out: &Path) -> Result<String, Box<dyn std::error::Error>> {
          pub const BUILT_IN: Option<(&[u8], &str)> = Some((include_bytes!(concat!(env!(\"OUT_DIR\"), \"/station-payload.tar.gz\")), {:?}));\n",
         signature.trim()
     ))
+}
+
+/// The panel's files for the program (src/panel/controller.rs): all of panel/dist in one blob, with a table of where
+/// each file lies. A file that gzip makes smaller by an eighth or more — scripts, styles, pages, SVG — is kept
+/// compressed at the best level, as a browser takes it; fonts in woff2 and PNG pictures are compressed already and stay
+/// as they are. The station keeps the program on a small flash (docs/plans/home-and-helpers.md: +300 KB a block at
+/// most), and the panel's 1.5 MB of text goes in as about 0.45 MB. An empty panel/dist packs to nothing.
+fn panel_files(dist: &Path, out: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let mut files = Vec::new();
+    panel_folder(dist, dist, &mut files)?;
+    files.sort();
+    let mut blob = Vec::new();
+    let mut code = String::from(
+        "/// The panel's files packed from panel/dist, by path: where each lies in `BLOB` and whether it is gzip.\n\
+         pub static FILES: &[Packed] = &[\n",
+    );
+    for (path, bytes) in files {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        encoder.write_all(&bytes)?;
+        let compressed = encoder.finish()?;
+        let gzip = compressed.len() <= bytes.len() - bytes.len() / 8;
+        let start = blob.len();
+        blob.extend_from_slice(if gzip { &compressed } else { &bytes });
+        writeln!(code, "    Packed {{ path: {path:?}, gzip: {gzip}, start: {start}, end: {} }},", blob.len())?;
+    }
+    code.push_str(
+        "];\n\n/// Every packed file's bytes, one after another.\n\
+         pub static BLOB: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/panel.bin\"));\n",
+    );
+    std::fs::write(out.join("panel.bin"), blob)?;
+    Ok(code)
+}
+
+/// Every file under `folder` with its path from `root`, `/` between the parts; links are followed, as rust-embed does.
+fn panel_folder(
+    root: &Path,
+    folder: &Path,
+    files: &mut Vec<(String, Vec<u8>)>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for entry in std::fs::read_dir(folder)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            panel_folder(root, &path, files)?;
+        } else if path.is_file() {
+            let parts: Option<Vec<&str>> = path.strip_prefix(root)?.iter().map(|part| part.to_str()).collect();
+            let relative = parts.ok_or_else(|| format!("panel/dist: {} is not UTF-8", path.display()))?.join("/");
+            files.push((relative, std::fs::read(&path)?));
+        }
+    }
+    Ok(())
 }
 
 /// `NNNN_name.sql`, in order, each once: the program refuses a gap or a repeated number at build time.

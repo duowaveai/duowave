@@ -3,11 +3,15 @@ import { useEffect, useState } from 'preact/hooks';
 import { BrainPick, BrainView, LlmEffort, ProviderCheck, ProviderPreset, ProviderView, api, can, problemOf } from '../api';
 import { IconKey } from '../icons';
 import { BRANDS, type BrandId } from '../brand-icons';
+import { placeIcon, placeTitle } from '../helpers';
+import { usePoll } from '../poll';
+import { usePanel } from '../shell/context';
 import { BrandMark } from '../ui/brand';
 import { Action, Card, CardNote } from '../ui/cards';
-import { Sheet } from '../ui/sheet';
+import { Sheet, WinSection } from '../ui/sheet';
 import { useSignIn } from '../ui/sign-in';
 import { AskSheet } from './ask';
+import { backupIdle, backupOf, backupPlace, backupShown, blankBackups, parsePick, pickValue } from './brain-backup';
 import { ask } from '../ui/confirm';
 import { byMode } from '../words';
 import { formatNumber, tr } from '../i18n';
@@ -102,13 +106,6 @@ function isHomeAddress(url: string): boolean {
     }
 }
 
-const pickValue = (pick: BrainPick | null): string => (pick ? `${pick.provider}\u0000${pick.model}` : '');
-const parsePick = (value: string): BrainPick | null => {
-    if (!value) return null;
-    const [provider, model] = value.split('\u0000');
-    return { provider, model };
-};
-
 /**
  * «Мозг»: кто думает над ответами. Сверху — быстрая модель (разговор) и умная (сказки, игры, сложное) из любых
  * добавленных провайдеров, ниже — сами провайдеры со своими ключами. Ключи пульт видит только хвостом.
@@ -118,10 +115,13 @@ const parsePick = (value: string): BrainPick | null => {
  * когда есть из чего выбирать; «Что сейчас знает Мозг» там не нужно.
  */
 export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChildren; first?: boolean } = {}) {
+    const panel = usePanel();
     const [view, setView] = useState<BrainView | null>(null);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [notes, setNotes] = useState<Record<string, CardNote>>({});
     const [busy, setBusy] = useState<Record<string, boolean>>({});
+    /** What the person picked in a list, while its answer is on its way (`apply`). */
+    const [picked, setPicked] = useState<Record<string, string | undefined>>({});
     const [adding, setAdding] = useState(false);
     const [keyFor, setKeyFor] = useState<string | null>(null);
     const [keyDraft, setKeyDraft] = useState('');
@@ -139,27 +139,35 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
             })
             .catch((e) => setLoadError(problemOf(e)));
 
-    useEffect(() => {
-        void load();
-        const id = setInterval(() => void load(), 15_000);
-        return () => clearInterval(id);
-    }, []);
+    // Every 15 s and on the gateway's news (panel.version): the backup the gateway sets itself right after a choice
+    // (`brain.changed`, block «Дом», default 6) and a helper's model coming or going (`helpers.*`) show at once.
+    usePoll({ every: 15_000, version: panel.version, read: () => load() });
 
     const say = (id: string, note: CardNote) => setNotes((all) => ({ ...all, [id]: note }));
     const mark = (id: string, on: boolean) => setBusy((all) => ({ ...all, [id]: on }));
 
-    const choose = async (profile: 'fast' | 'smart' | 'backup', pick: BrainPick | null) => {
+    /**
+     * A choice to the gateway. `value` — what the person picked in the list: it stays shown while the answer is on its
+     * way, instead of the old choice coming back until then.
+     */
+    const apply = async (profile: 'fast' | 'smart' | 'backup', choice: Parameters<typeof api.chooseBrain>[0], value?: string) => {
         mark(profile, true);
+        if (value !== undefined) setPicked((all) => ({ ...all, [profile]: value }));
         say('choice', {});
         try {
-            setView(await api.chooseBrain({ [profile]: pick }));
+            setView(await api.chooseBrain(choice));
             say('choice', { notice: tr.brain.applied });
         } catch (e) {
             say('choice', { error: problemOf(e) });
         } finally {
             mark(profile, false);
+            setPicked((all) => ({ ...all, [profile]: undefined }));
         }
     };
+    const choose = (profile: 'fast' | 'smart' | 'backup', pick: BrainPick | null, value?: string) =>
+        apply(profile, { [profile]: pick }, value);
+    /** What the list shows: the person's pick while its answer is on its way, otherwise the choice as read. */
+    const shown = (profile: 'fast' | 'smart' | 'backup', read: string) => (busy[profile] && picked[profile] !== undefined ? picked[profile] : read);
 
     const setEffort = async (effort: LlmEffort) => {
         mark('effort', true);
@@ -238,6 +246,12 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
         .find((preset) => preset?.signIn?.keyless);
     const envAnswers = status.source !== 'panel';
     const backup = choice.backup ?? null;
+    /**
+     * Шлюз ставит «Запасную» сам, пока от неё не отказались (решение 18): тогда два пункта — «пусть выберет шлюз»
+     * (`'auto'`: шлюз выбирает заново) и «не нужна» (`null`, шлюз больше не ставит). Шлюз без блока (0.13.0, 0.14.0 —
+     * окно колонки) — один «не нужна», как в нём самом.
+     */
+    const autoBackup = !!choice.autoBackup;
     const envLabel = tr.brain.envLabel(env.title, env.models.fast);
     /** Куда уйдёт вопрос, если ответит запасная: её название и дома она или в интернете. */
     const backupWhere = !backup
@@ -245,31 +259,33 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
         : backup.provider === 'env'
           ? { title: env.title, cloud: env.cloud }
           : providers.find((provider) => provider.id === backup.provider) ?? null;
-    const chosenOf = (profile: 'fast' | 'smart' | 'backup') => (profile === 'fast' ? choice.fast : profile === 'smart' ? choice.smart : backup);
-    const options = (profile: 'fast' | 'smart' | 'backup') => (
-        <>
-            <option value="">
-                {profile === 'backup' ? tr.brain.optNotNeeded : profile === 'smart' ? tr.brain.optLikeFast : env.usable ? envLabel : tr.brain.optNotChosen}
-            </option>
-            {profile === 'backup' && env.usable && (
-                <option value={pickValue({ provider: 'env', model: backup?.provider === 'env' ? backup.model : env.models.fast })}>{envLabel}</option>
-            )}
-            {providers.map((provider) => {
-                const models = modelsOf(provider, presets);
-                const chosen = chosenOf(profile);
-                const extra = chosen?.provider === provider.id && !models.includes(chosen.model) ? [chosen.model] : [];
-                return (
-                    <optgroup key={provider.id} label={provider.title}>
-                        {[...extra, ...models].map((model) => (
-                            <option key={model} value={pickValue({ provider: provider.id, model })}>
-                                {model}
-                            </option>
-                        ))}
-                    </optgroup>
-                );
-            })}
-        </>
-    );
+    /**
+     * Helpers whose model answers (docs/plans/home-and-helpers.md, блок 1): what happens when one is away. Not this
+     * computer's own model server: its card says whether it answers, and the gateway's note what answers when it does
+     * not — «Этот компьютер не на связи» on the computer itself would say nothing true.
+     */
+    const helpers = [choice.fast, choice.smart]
+        .map((pick) => providers.find((provider) => provider.id === pick?.provider)?.helper)
+        .filter(
+            (helper, i, all): helper is NonNullable<ProviderView['helper']> =>
+                !!helper && !helper.builtin && all.findIndex((other) => other?.id === helper.id) === i,
+        );
+    const isUp = (helper: NonNullable<ProviderView['helper']>) => helper.state === 'up' || helper.state === 'self';
+    const online = (helper: NonNullable<ProviderView['helper']>) =>
+        isUp(helper) ? { text: tr.helpers.brainHelperOnline, cls: 'pill-own' } : { text: tr.helpers.brainHelperOffline, cls: 'pill-off' };
+    /** The chosen model's card: «отвечает»; «выбрана» while its helper is away — the backup or the honest words answer. */
+    const chosenPill = (helper: ProviderView['helper']) =>
+        helper && !isUp(helper) ? { text: tr.brain.pillChosen, cls: 'pill-off' } : { text: tr.brain.pillAnswers, cls: 'pill-own' };
+    /**
+     * The backup stands in for a helper away only as the gateway judges it (stage 4): never one on that same helper —
+     * it is away with it —, nor one the regulator keeps in. The latter the gateway's note names (`backupClosed`); a backup
+     * beside a main model gives that note too, so the note is read as «kept in» only for a backup beside none.
+     */
+    const helperOf = (pick: BrainPick | null | undefined) => (pick ? providers.find((provider) => provider.id === pick.provider)?.helper : undefined);
+    const backupHelper = helperOf(backup)?.id;
+    const besideMain = !!backupHelper && [choice.fast, choice.smart].some((pick) => helperOf(pick)?.id === backupHelper);
+    const backupShut = view.note?.kind === 'backupClosed' && !besideMain;
+    const options = (profile: 'fast' | 'smart') => modelOptions(view, profile);
 
     const choiceCard = (
         <>
@@ -294,33 +310,25 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
                         </span>
                         <select
                             class="field max-w-full min-w-0 flex-1-1-220"
-                            value={pickValue(profile === 'fast' ? choice.fast : choice.smart)}
+                            value={shown(profile, pickValue(profile === 'fast' ? choice.fast : choice.smart))}
                             disabled={!mayChoose || busy[profile] || (profile === 'smart' && !choice.fast)}
-                            onChange={(e) => void choose(profile, parsePick((e.target as HTMLSelectElement).value))}
+                            onChange={(e) => {
+                                const value = (e.target as HTMLSelectElement).value;
+                                void choose(profile, parsePick(value), value);
+                            }}
                         >
                             {options(profile)}
                         </select>
                     </label>
                 ))}
-                <label class="list-row">
-                    <span class="flex-1 min-w-180 flex flex-col gap-2">
-                        <b>{tr.brain.backup}</b>
-                        <span class="t-caption">{tr.brain.backupSub}</span>
-                    </span>
-                    <select
-                        class="field max-w-full min-w-0 flex-1-1-220"
-                        value={pickValue(backup)}
-                        disabled={!mayChoose || busy.backup}
-                        onChange={(e) => void choose('backup', parsePick((e.target as HTMLSelectElement).value))}
-                    >
-                        {options('backup')}
-                    </select>
-                </label>
-                {backupWhere && (
-                    <p class="t-caption m-0 mt-4">
-                        {tr.brain.backupExplain(backupWhere.title, !!backupWhere.cloud)}
-                    </p>
-                )}
+                {/* «Запасная» — кто думает, пока Турбо спит — живёт в «Доме» (решение владельца 16.11): здесь только
+                    выбор моделей и одна строка туда. */}
+                <p class="t-caption m-0 mt-4">
+                    <button class="truth-more" onClick={() => panel.go('settings', 'helpers')}>
+                        {tr.brain.backupMoved}
+                    </button>
+                    {backup && backupWhere ? ` · ${tr.brain.backupNow(backupWhere.title, backup.model)}` : ''}
+                </p>
                 {anthropic && (
                     <div class="list-row">
                         <span class="flex-1 min-w-180 flex flex-col gap-2">
@@ -334,7 +342,7 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
                                     role="radio"
                                     aria-checked={choice.effort === effort.id}
                                     title={effort.sub}
-                                    class={`pill ${choice.effort === effort.id ? 'pill-own' : 'pill-off'} cursor-pointer py-8 px-14 min-h-36`}
+                                    class={`pill ${choice.effort === effort.id ? 'pill-pick' : 'pill-off'} cursor-pointer py-8 px-14 min-h-32`}
                                     disabled={!mayChoose || busy.effort}
                                     onClick={() => void setEffort(effort.id)}
                                 >
@@ -410,6 +418,11 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
                             ? tr.brain.noKey
                             : tr.brain.keyless;
                     const noKey = via ? tr.brain.noKeyVia(via.with) : tr.brain.noKeyPlain;
+                    // A helper's model: the gateway keeps its row (address and key live in «Помощники»); this computer's
+                    // own model server keeps its card, with whether it answers.
+                    const mark = provider.helper;
+                    const managed = !!mark && !mark.builtin && provider.preset === 'helper';
+                    const MarkIcon = mark && managed ? placeIcon(mark) : null;
                     const accountNote: CardNote | undefined = !account
                         ? undefined
                         : !account.signedIn
@@ -420,22 +433,42 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
                     return (
                         <Card
                             key={provider.id}
-                            icon={<ProviderIcon brand={provider.brand} />}
+                            icon={
+                                MarkIcon ? (
+                                    <span class="route-icon" aria-hidden="true" style={{ width: 38, height: 38, flex: 'none' }}>
+                                        <MarkIcon size={19} />
+                                    </span>
+                                ) : (
+                                    <ProviderIcon brand={provider.brand} />
+                                )
+                            }
                             title={provider.title}
                             pills={[
-                                provider.cloud ? { text: tr.brain.pillCloud, cls: 'pill-yandex' } : { text: tr.brain.pillHome, cls: 'pill-own' },
-                                ...(answering ? [{ text: tr.brain.pillAnswers, cls: 'pill-own' }] : []),
+                                // Whose it is, by the colours of «Где сейчас»: at home lime, my server or cloud violet.
+                                managed && mark
+                                    ? { text: placeTitle(mark.kind), cls: mark.kind === 'home' ? 'pill-own' : 'pill-agent' }
+                                    : provider.cloud
+                                      ? { text: tr.brain.pillCloud, cls: 'pill-yandex' }
+                                      : { text: tr.brain.pillHome, cls: 'pill-own' },
+                                ...(mark ? [online(mark)] : []),
+                                ...(answering ? [chosenPill(mark)] : []),
                                 ...(backup?.provider === provider.id ? [{ text: tr.brain.pillBackup, cls: 'pill-off' }] : []),
                             ]}
-                            description={`${words.text} · ${keyLine}`}
+                            description={managed ? `${words.text} · ${tr.helpers.brainManaged}` : `${words.text} · ${keyLine}`}
                             note={
                                 notes[provider.id] ??
                                 accountNote ??
-                                (provider.needsKey && !provider.key.set ? { warning: noKey } : words.ok === false ? { error: words.text } : undefined)
+                                (!managed && provider.needsKey && !provider.key.set ? { warning: noKey } : words.ok === false ? { error: words.text } : undefined)
                             }
                             action={null}
                         >
-                            {mayManage && (
+                            {mayManage && managed && (
+                                <div class="flex items-center gap-6 flex-wrap pl-50">
+                                    <Action label={tr.brain.check} tone="on" busy={busy[provider.id]} onClick={() => void check(provider.id)} />
+                                    <Action label={tr.helpers.brainOpenHelpers} onClick={() => panel.go('settings', 'helpers')} />
+                                </div>
+                            )}
+                            {mayManage && !managed && (
                                 <div class="flex items-center gap-6 flex-wrap pl-50">
                                     <Action label={tr.brain.check} tone="on" busy={busy[provider.id]} onClick={() => void check(provider.id)} />
                                     {via && (
@@ -559,6 +592,149 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
  * сохранить» сохраняет и сразу проверяет; если это первый провайдер и он работает — предложит отвечать им. У сервиса со
  * входом (OpenRouter) ключ можно не вставлять: «Войти через …» добавляет провайдера без ключа, ключ приходит входом.
  */
+/**
+ * Пункты списка модели: «как быстрая» / модель из .env / «не выбрана» у быстрой и умной; у «Запасной» — пункты без
+ * модели из blankBackups и модель из .env; дальше модели каждого провайдера (выбранная, которой нет в его списке, —
+ * первой).
+ */
+function modelOptions(view: BrainView, profile: 'fast' | 'smart' | 'backup') {
+    const { providers, presets, choice, env } = view;
+    const backup = choice.backup ?? null;
+    const envLabel = tr.brain.envLabel(env.title, env.models.fast);
+    const chosen = profile === 'fast' ? choice.fast : profile === 'smart' ? choice.smart : backup;
+    return (
+        <>
+            {profile === 'backup' ? (
+                blankBackups(choice).map((blank) => (
+                    <option key={blank.value} value={blank.value}>
+                        {blank.model ? tr.brain.optGatewayChose(blank.model) : tr.brain[blank.word]}
+                    </option>
+                ))
+            ) : (
+                <option value="">{profile === 'smart' ? tr.brain.optLikeFast : env.usable ? envLabel : tr.brain.optNotChosen}</option>
+            )}
+            {profile === 'backup' && env.usable && (
+                <option value={pickValue({ provider: 'env', model: backup?.provider === 'env' ? backup.model : env.models.fast })}>{envLabel}</option>
+            )}
+            {providers.map((provider) => {
+                const models = modelsOf(provider, presets);
+                const extra = chosen?.provider === provider.id && !models.includes(chosen.model) ? [chosen.model] : [];
+                return (
+                    <optgroup key={provider.id} label={provider.title}>
+                        {[...extra, ...models].map((model) => (
+                            <option key={model} value={pickValue({ provider: provider.id, model })}>
+                                {model}
+                            </option>
+                        ))}
+                    </optgroup>
+                );
+            })}
+        </>
+    );
+}
+
+/**
+ * «Если Турбо уснёт» → «Думает» (страница «Дом», решение владельца 16.11): «Запасная» — кто ответит, пока модель Турбо
+ * не на связи, и что станет с вопросом без неё. Прежде — в «Мозге», рядом с быстрой и умной; там теперь строка сюда.
+ */
+export function BackupChoice() {
+    const panel = usePanel();
+    const [view, setView] = useState<BrainView | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const [busy, setBusy] = useState(false);
+    /** What the person picked, while its answer is on its way. */
+    const [picked, setPicked] = useState<string | undefined>(undefined);
+    const [note, setNote] = useState<CardNote>({});
+    const mayChoose = can('models.manage');
+    // Every 15 s and on the gateway's news: the backup the gateway sets itself right after a choice shows at once.
+    usePoll({
+        every: 15_000,
+        version: panel.version,
+        read: () =>
+            api.brain().then(
+                (fresh) => {
+                    setView(fresh);
+                    setError(null);
+                },
+                (e) => setError(problemOf(e)),
+            ),
+    });
+    if (!view)
+        return (
+            <p class="w-cap m-0" role={error ? 'alert' : undefined}>
+                {error ?? tr.brain.askingGateway}
+            </p>
+        );
+    const { choice, providers } = view;
+    const backup = choice.backup ?? null;
+    const where = backupPlace(view);
+    const helperOf = (pick: BrainPick | null | undefined) => (pick ? providers.find((provider) => provider.id === pick.provider)?.helper : undefined);
+    // Турбо, чья модель отвечает (кроме сервера моделей этого компьютера: о нём — заметка шлюза).
+    const turbos = [choice.fast, choice.smart]
+        .map((pick) => helperOf(pick))
+        .filter((helper, i, all): helper is NonNullable<ProviderView['helper']> => !!helper && !helper.builtin && all.findIndex((other) => other?.id === helper.id) === i);
+    const isUp = (helper: NonNullable<ProviderView['helper']>) => helper.state === 'up' || helper.state === 'self';
+    const backupHelper = helperOf(backup)?.id;
+    const besideMain = !!backupHelper && [choice.fast, choice.smart].some((pick) => helperOf(pick)?.id === backupHelper);
+    const shut = view.note?.kind === 'backupClosed' && !besideMain;
+    const apply = async (value: string): Promise<void> => {
+        setBusy(true);
+        setPicked(value);
+        setNote({});
+        try {
+            setView(await api.chooseBrain({ backup: backupOf(value, !!choice.autoBackup) }));
+            setNote({ notice: tr.brain.applied });
+        } catch (e) {
+            setNote({ error: problemOf(e) });
+        } finally {
+            setBusy(false);
+            setPicked(undefined);
+        }
+    };
+    return (
+        <div class="flex flex-col gap-6">
+            <select
+                class="field max-w-full min-w-0"
+                aria-label={tr.brain.backup}
+                value={busy && picked !== undefined ? picked : backupShown(choice)}
+                disabled={!mayChoose || busy}
+                onChange={(e) => void apply((e.target as HTMLSelectElement).value)}
+            >
+                {modelOptions(view, 'backup')}
+            </select>
+            {/* Without a backup: through a speaker — a station, or a computer that answers one — an «Алиса + ваш ИИ»
+                question goes to Alice; in «Микрофон» there is no Alice. */}
+            {turbos.map((helper) => (
+                <p key={helper.id} class="w-cap m-0">
+                    <b>{helper.name}</b> · {isUp(helper) ? tr.helpers.brainHelperOnline : tr.helpers.brainHelperOffline}.{' '}
+                    {backup && where && backupHelper !== helper.id && !shut
+                        ? tr.helpers.brainIfAway(where.title, backup.model)
+                        : byMode(tr.helpers.brainIfAwayNoneStation, tr.helpers.brainIfAwayNoneComputer)(
+                              backup && where ? tr.helpers.brainBackupIdle : tr.helpers.brainNoBackup,
+                          )}
+                </p>
+            ))}
+            {backupIdle(choice, [choice.fast, choice.smart].some((pick) => !!helperOf(pick))) && <p class="w-cap m-0">{tr.brain.backupGatewayIdle}</p>}
+            {where && <p class="w-cap m-0">{tr.brain.backupExplain(where.title, where.cloud)}</p>}
+            {view.note && (
+                <p class={`w-cap m-0${view.note.kind === 'backupAuto' ? '' : ' c-pill-yandex-fg'}`} role="status">
+                    {view.note.text}
+                </p>
+            )}
+            {note.error && (
+                <p class="w-cap m-0 c-dot-offline" role="alert">
+                    {note.error}
+                </p>
+            )}
+            {note.notice && (
+                <p class="w-cap m-0" role="status">
+                    {note.notice}
+                </p>
+            )}
+        </div>
+    );
+}
+
 function AddProvider({
     presets,
     firstOne,
@@ -656,21 +832,15 @@ function AddProvider({
     if (!preset) {
         return (
             <Sheet title={tr.brain.addTitle} about={tr.brain.addAbout} onClose={onClose}>
-                <div class="grid grid-fill-220 gap-8">
+                <div class="win-group">
                     {presets.map((entry) => (
-                        <button
-                            key={entry.id}
-                            class="dash-option flex items-center gap-12 text-left border-glass r-16 py-10 px-12 cursor-pointer"
-                            onClick={() => start(entry)}
-                        >
-                            <ProviderIcon brand={entry.brand} />
-                            <span class="flex flex-col gap-2 min-w-0">
-                                <b class="flex gap-6 items-center flex-wrap">
-                                    {entry.title}
-                                    {entry.local && <span class="pill pill-own">{tr.brain.pillHome}</span>}
-                                </b>
-                                <span class="t-caption">{entry.description}</span>
+                        <button key={entry.id} class="win-row win-choice text-left" onClick={() => start(entry)}>
+                            <ProviderIcon brand={entry.brand} size={32} />
+                            <span class="win-row-main">
+                                <span class="win-row-t">{entry.title}</span>
+                                <span class="win-row-s">{entry.description}</span>
                             </span>
+                            {entry.local && <span class="pill pill-own">{tr.brain.pillHome}</span>}
                         </button>
                     ))}
                 </div>
@@ -679,6 +849,50 @@ function AddProvider({
     }
 
     const words = result ? checkWords(result.check) : null;
+    const keyless = !!preset.signIn?.keyless;
+    const spin = (on: boolean) => on && <span class="spinner spinner-sm" aria-hidden="true" />;
+    const signInButton = (main: boolean) =>
+        preset.signIn && (
+            <button
+                type="button"
+                class={main ? 'btn btn-main' : 'btn btn-plain btn-sm self-start'}
+                disabled={busy || signIn.starting}
+                aria-busy={signIn.starting || undefined}
+                onClick={() => preset.signIn && beginSignIn(preset, preset.signIn.with)}
+            >
+                {spin(signIn.starting)}
+                {signIn.starting ? tr.brain.opening : (preset.signIn.label ?? tr.brain.signInWith(preset.signIn.with))}
+            </button>
+        );
+    // Внизу: «Назад» к выбору и главное — «Проверить и сохранить» или, когда ключ не нужен, «Войти через …»;
+    // после проверки — «Отвечать им» (первый провайдер). Закрыть — крестиком.
+    const footer = result ? (
+        firstOne && result.check.ok && result.check.model ? (
+            <button class="btn btn-main" disabled={busy} aria-busy={busy || undefined} onClick={() => void useIt()}>
+                {spin(busy)}
+                {tr.brain.useIt(result.check.model)}
+            </button>
+        ) : undefined
+    ) : (
+        <>
+            <button class="btn btn-plain" onClick={() => setPreset(null)}>
+                {tr.brain.back}
+            </button>
+            {keyless ? (
+                signInButton(true)
+            ) : (
+                <button
+                    class="btn btn-main"
+                    disabled={busy || (preset.needsKey && !key.trim()) || (preset.editableUrl && !url.trim())}
+                    aria-busy={busy || undefined}
+                    onClick={() => void save()}
+                >
+                    {spin(busy)}
+                    {busy ? tr.brain.checking : tr.brain.checkAndSave}
+                </button>
+            )}
+        </>
+    );
     return (
         <Sheet
             title={preset.title}
@@ -689,131 +903,97 @@ function AddProvider({
                       ? tr.brain.aboutOwnAddress
                       : tr.brain.aboutInternet
             }
-            icon={<ProviderIcon brand={preset.brand} />}
+            icon={<ProviderIcon brand={preset.brand} size={44} />}
             onClose={onClose}
-            footer={
-                result ? (
-                    <>
-                        {firstOne && result.check.ok && result.check.model && (
-                            <button class="pill pill-own dash-confirm-btn self-start" disabled={busy} onClick={() => void useIt()}>
-                                {tr.brain.useIt(result.check.model)}
-                            </button>
-                        )}
-                        <button class="dash-done" onClick={onClose}>
-                            {tr.brain.done}
-                        </button>
-                    </>
-                ) : (
-                    <div class="flex gap-8 flex-wrap">
-                        {!preset.signIn?.keyless && (
-                            <button
-                                class="pill pill-own dash-confirm-btn"
-                                disabled={busy || (preset.needsKey && !key.trim()) || (preset.editableUrl && !url.trim())}
-                                onClick={() => void save()}
-                            >
-                                {busy ? tr.brain.checking : tr.brain.checkAndSave}
-                            </button>
-                        )}
-                        <button class="pill pill-off dash-confirm-btn" onClick={() => setPreset(null)}>
-                            {tr.brain.back}
-                        </button>
-                    </div>
-                )
-            }
+            footer={footer}
         >
             {!result && (
-                <form
-                    class="flex flex-col gap-10"
-                    onSubmit={(e) => {
-                        e.preventDefault();
-                        void save();
-                    }}
-                >
-                    <p class="t-caption m-0">
-                        {preset.description}
-                    </p>
+                <>
+                    <p class="win-lead">{preset.description}</p>
                     {preset.signIn && (
-                        <div class="flex flex-col gap-6">
-                            <button
-                                type="button"
-                                class="pill pill-own dash-confirm-btn self-start"
-                                disabled={busy || signIn.starting}
-                                onClick={() => preset.signIn && beginSignIn(preset, preset.signIn.with)}
-                            >
-                                {signIn.starting ? tr.brain.opening : (preset.signIn.label ?? tr.brain.signInWith(preset.signIn.with))}
-                            </button>
-                            {preset.signIn.keyless ? (
-                                <span class="t-caption">
-                                    {tr.brain.keylessNote(preset.signIn.with)}
-                                    {preset.usageUrl && (
-                                        <>
-                                            {' '}
-                                            <a class="c-accent-text" href={preset.usageUrl} target="_blank" rel="noopener noreferrer">
-                                                {tr.brain.limits}
-                                            </a>
-                                        </>
-                                    )}
-                                </span>
-                            ) : (
-                                <span class="t-caption">
-                                    {tr.brain.keyCreated(preset.signIn.with)}
-                                </span>
-                            )}
-                            {signIn.steps}
-                        </div>
+                        <WinSection group>
+                            <div class="win-row is-col">
+                                {!keyless && signInButton(false)}
+                                {keyless ? (
+                                    <span class="win-row-s">
+                                        {tr.brain.keylessNote(preset.signIn.with)}
+                                        {preset.usageUrl && (
+                                            <>
+                                                {' '}
+                                                <a class="c-accent-text" href={preset.usageUrl} target="_blank" rel="noopener noreferrer">
+                                                    {tr.brain.limits}
+                                                </a>
+                                            </>
+                                        )}
+                                    </span>
+                                ) : (
+                                    <span class="win-row-s">{tr.brain.keyCreated(preset.signIn.with)}</span>
+                                )}
+                                {signIn.steps}
+                            </div>
+                        </WinSection>
                     )}
-                    {preset.editableUrl && (
-                        <label class="flex flex-col gap-4">
-                            <span class="t-caption">{tr.brain.address}</span>
-                            <input class="field" value={url} placeholder="http://localhost:8000/v1" onInput={(e) => setUrl((e.target as HTMLInputElement).value)} />
+                    <form
+                        class="flex flex-col gap-14"
+                        onSubmit={(e) => {
+                            e.preventDefault();
+                            void save();
+                        }}
+                    >
+                        {preset.editableUrl && (
+                            <label class="flex flex-col gap-6">
+                                <span class="win-label">{tr.brain.address}</span>
+                                <input class="field" value={url} placeholder="http://localhost:8000/v1" onInput={(e) => setUrl((e.target as HTMLInputElement).value)} />
+                            </label>
+                        )}
+                        {!keyless && (
+                            <label class="flex flex-col gap-6">
+                                <span class="win-label">{preset.needsKey ? tr.brain.keyField : tr.brain.keyFieldOptional}</span>
+                                <input
+                                    class="field"
+                                    type="password"
+                                    autocomplete="off"
+                                    value={key}
+                                    onInput={(e) => setKey((e.target as HTMLInputElement).value)}
+                                />
+                                {preset.keyUrl && (
+                                    <a class="win-hint c-accent-text self-start" href={preset.keyUrl} target="_blank" rel="noopener noreferrer">
+                                        {tr.brain.whereKey}
+                                    </a>
+                                )}
+                            </label>
+                        )}
+                        {keyless && preset.keyUrl && (
+                            <a class="win-hint c-accent-text self-start" href={preset.keyUrl} target="_blank" rel="noopener noreferrer">
+                                {tr.brain.whereKey}
+                            </a>
+                        )}
+                        {(preset.fields ?? []).map((field) => (
+                            <label key={field.id} class="flex flex-col gap-6">
+                                <span class="win-label">{field.title}</span>
+                                <input
+                                    class="field"
+                                    value={fields[field.id] ?? ''}
+                                    placeholder={field.placeholder}
+                                    onInput={(e) => setFields((all) => ({ ...all, [field.id]: (e.target as HTMLInputElement).value }))}
+                                />
+                            </label>
+                        ))}
+                        <label class="flex flex-col gap-6">
+                            <span class="win-label">{tr.brain.titleField}</span>
+                            <input class="field" value={title} placeholder={preset.title} onInput={(e) => setTitle((e.target as HTMLInputElement).value)} />
                         </label>
-                    )}
-                    {!preset.signIn?.keyless && (
-                        <label class="flex flex-col gap-4">
-                            <span class="t-caption">{preset.needsKey ? tr.brain.keyField : tr.brain.keyFieldOptional}</span>
-                            <input
-                                class="field"
-                                type="password"
-                                autocomplete="off"
-                                value={key}
-                                onInput={(e) => setKey((e.target as HTMLInputElement).value)}
-                            />
-                        </label>
-                    )}
-                    {preset.keyUrl && (
-                        <a class="t-caption c-accent-text" href={preset.keyUrl} target="_blank" rel="noopener noreferrer">
-                            {tr.brain.whereKey}
-                        </a>
-                    )}
-                    {(preset.fields ?? []).map((field) => (
-                        <label key={field.id} class="flex flex-col gap-4">
-                            <span class="t-caption">{field.title}</span>
-                            <input
-                                class="field"
-                                value={fields[field.id] ?? ''}
-                                placeholder={field.placeholder}
-                                onInput={(e) => setFields((all) => ({ ...all, [field.id]: (e.target as HTMLInputElement).value }))}
-                            />
-                        </label>
-                    ))}
-                    <label class="flex flex-col gap-4">
-                        <span class="t-caption">{tr.brain.titleField}</span>
-                        <input class="field" value={title} placeholder={preset.title} onInput={(e) => setTitle((e.target as HTMLInputElement).value)} />
-                    </label>
-                    <p class="t-caption m-0">
-                        {preset.signIn?.keyless
-                            ? byMode(tr.brain.loginStoredSpeaker, tr.brain.loginStoredComputer)
-                            : tr.brain.keyStored}
-                    </p>
-                </form>
+                    </form>
+                    <p class="win-note">{keyless ? byMode(tr.brain.loginStoredSpeaker, tr.brain.loginStoredComputer) : tr.brain.keyStored}</p>
+                </>
             )}
             {result && words && (
-                <p role="status" class={`t-meta m-0 ${words.ok ? 'c-accent-text' : 'c-dot-offline'}`}>
+                <p role="status" class={words.ok ? 'win-callout is-calm m-0' : 'win-callout m-0'}>
                     {words.ok ? tr.brain.savedOk(words.text) : tr.brain.savedFailed(words.text)}
                 </p>
             )}
             {error && (
-                <p role="alert" class="t-meta m-0 c-dot-offline">
+                <p role="alert" class="win-callout m-0">
                     {error}
                 </p>
             )}

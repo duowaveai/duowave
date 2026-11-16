@@ -88,6 +88,9 @@ pub struct PlayerState {
     pub queued: Option<Queued>,
     /// The request it was started for: what the station says of it goes into that request's journal (stage 5а).
     pub request: Option<String>,
+    /// Where the items added to the queue end («добавь в очередь», a plugin's `add`): the next added go here, after
+    /// the earlier ones and before the rest of the queue. Kept while the queue stays the same.
+    pub added_until: usize,
 }
 
 impl PlayerState {
@@ -305,6 +308,11 @@ impl MediaPlayer {
         let Some(item) = queue.get(index).cloned() else { return (Vec::new(), None) };
         let play_id = self.new_play_id();
         let request = self.requests.lock().unwrap().get(device).map(|(request, _)| request.clone());
+        // The same queue going on (the next item, «дальше», «продолжи»): its added items keep their place.
+        let added_until = players
+            .get(device)
+            .filter(|before| same_queue(&before.queue, &queue))
+            .map_or(0, |before| before.added_until);
         let state = PlayerState {
             queue,
             index,
@@ -316,6 +324,7 @@ impl MediaPlayer {
             stop_asked_at: None,
             queued: None,
             request,
+            added_until,
         };
         let replaced = players.insert(device.to_string(), state).filter(|before| {
             before.state == PlayState::Playing && before.queue.get(before.index).is_some_and(|was| was.id != item.id)
@@ -350,6 +359,29 @@ impl MediaPlayer {
         state.queue = queue;
         state.index = 0;
         state.offset_ms = 0;
+        state.added_until = 0;
+        true
+    }
+
+    /// Items into the queue of what plays («добавь в очередь»): after the item that plays, after the one the station
+    /// was given to play next and after the items added before — the rest of the queue (a mix that goes on by itself)
+    /// moves down. False when nothing of ours plays or stands paused on the device: play them instead.
+    pub fn add(&self, device: &str, items: Vec<MediaItem>) -> bool {
+        let mut players = self.players.lock().unwrap();
+        let Some(state) = players.get_mut(device) else { return false };
+        let going = match state.state {
+            PlayState::Starting | PlayState::Playing => true,
+            PlayState::Stopped => state.stop_asked_at.is_some(),
+            PlayState::Finished | PlayState::Failed => false,
+        };
+        if !going || items.is_empty() {
+            return false;
+        }
+        let after_queued = state.queued.as_ref().map_or(0, |queued| queued.index + 1);
+        let at = (state.index + 1).max(after_queued).max(state.added_until).min(state.queue.len());
+        let count = items.len();
+        state.queue.splice(at..at, items);
+        state.added_until = at + count;
         true
     }
 
@@ -442,6 +474,11 @@ impl MediaPlayer {
     }
 }
 
+/// The same queue by its items (a relayed item's link may have changed).
+fn same_queue(before: &[MediaItem], now: &[MediaItem]) -> bool {
+    before.len() == now.len() && before.iter().zip(now).all(|(before, now)| before.id == now.id)
+}
+
 fn played_to_end(state: &PlayerState, now: u64) -> bool {
     let Some(duration) = state.queue.get(state.index).and_then(|item| item.duration_ms).filter(|d| *d > 0) else {
         return false;
@@ -517,6 +554,44 @@ mod tests {
         let third = play_id_of(&player.next("h:test", &second).unwrap()[0]);
         player.on_event("h:test", PlayerEvent::Started, &third, t0 + 200_000);
         assert!(player.next("h:test", &third).is_none());
+    }
+
+    #[test]
+    fn adds_to_the_queue_after_what_plays_the_queued_next_and_the_items_added_before() {
+        let player = MediaPlayer::new();
+        let ids = |player: &MediaPlayer| -> Vec<String> {
+            player.current("h:test").unwrap().1.queue.iter().map(|item| item.id.clone()).collect()
+        };
+        assert!(!player.add("h:test", vec![item("x", None)]), "nothing plays: play it instead");
+        let directives = player.play("h:test", vec![item("a", None), item("m1", None), item("m2", None)], 0, 0);
+        let first = play_id_of(&directives[0]);
+        player.on_event("h:test", PlayerEvent::Started, &first, 1_000);
+        assert!(player.add("h:test", vec![item("x", None)]));
+        assert!(player.add("h:test", vec![item("y", None)]));
+        assert_eq!(ids(&player), ["a", "x", "y", "m1", "m2"], "in the order asked, before the mix");
+        // The station was given x to play next; then z is added — after the earlier ones.
+        let queued = play_id_of(&player.next("h:test", &first).unwrap()[0]);
+        player.on_event("h:test", PlayerEvent::Started, &queued, 100_000);
+        assert_eq!(player.current("h:test").unwrap().0.id, "x");
+        assert!(player.add("h:test", vec![item("z", None)]));
+        assert_eq!(ids(&player), ["a", "x", "y", "z", "m1", "m2"]);
+        // «Дальше» keeps the place of the added ones: the next added goes after z.
+        let directives = player.step("h:test", 1, 0).unwrap();
+        player.on_event("h:test", PlayerEvent::Started, &play_id_of(&directives[0]), 120_000);
+        assert!(player.add("h:test", vec![item("w", None)]));
+        assert_eq!(ids(&player), ["a", "x", "y", "z", "w", "m1", "m2"]);
+        // Given to the station already, the next one stays next: the added goes after it.
+        let player = MediaPlayer::new();
+        let directives = player.play("h:test", vec![item("a", None), item("m1", None), item("m2", None)], 0, 0);
+        let first = play_id_of(&directives[0]);
+        player.on_event("h:test", PlayerEvent::Started, &first, 1_000);
+        player.next("h:test", &first).unwrap();
+        assert!(player.add("h:test", vec![item("x", None)]));
+        assert_eq!(ids(&player), ["a", "m1", "x", "m2"]);
+        // A new play is a new queue: nothing added in it yet.
+        player.play("h:test", vec![item("b", None), item("n1", None)], 0, 0);
+        assert!(player.add("h:test", vec![item("y", None)]));
+        assert_eq!(ids(&player), ["b", "y", "n1"]);
     }
 
     #[test]

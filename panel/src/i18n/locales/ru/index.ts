@@ -10,6 +10,7 @@ import places from './places';
 import stationsScreen from './stationsScreen';
 import stationWidgets from './stationWidgets';
 import helperPc from './helperPc';
+import helpers from './helpers';
 import firstRun from './firstRun';
 import onboarding from './onboarding';
 import onbBrain from './onbBrain';
@@ -76,6 +77,7 @@ const ru = {
     stationsScreen,
     stationWidgets,
     helperPc,
+    helpers,
     firstRun,
     onboarding,
     onbBrain,

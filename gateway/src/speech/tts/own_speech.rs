@@ -241,15 +241,23 @@ pub struct OwnSpeech {
     chosen: Mutex<Chosen>,
     /// Ready phrases kept on disk (phrase_cache.rs): said at once, the rest synthesized after them.
     cache: std::sync::OnceLock<Arc<super::phrase_cache::PhraseCache>>,
+    /// The shared client; a helper's voice has one that follows no redirect.
+    http: reqwest::Client,
 }
 
 impl OwnSpeech {
     pub fn new(config: OwnSpeechConfig) -> OwnSpeech {
+        OwnSpeech::with_client(config, client())
+    }
+
+    /// Over an HTTP client of its own: a helper's voice (src/helpers/remote.rs) follows no redirect.
+    pub fn with_client(config: OwnSpeechConfig, http: reqwest::Client) -> OwnSpeech {
         let env_route = Arc::new(SpeechRoute::new(&config.base_url, config.timeout_ms));
         OwnSpeech {
             chosen: Mutex::new(Chosen { config, route: env_route.clone() }),
             env_route,
             cache: std::sync::OnceLock::new(),
+            http,
         }
     }
 
@@ -308,6 +316,12 @@ impl OwnSpeech {
     /// The server the current voice is asked from.
     pub fn base_url(&self) -> String {
         self.lock().route.base_url().to_string()
+    }
+
+    /// The env's server (TTS_OWN_URL), whatever voice speaks now: the apps' voices are asked from it
+    /// (`synthesize_wav_as`, `computer_voices`).
+    pub fn env_base_url(&self) -> &str {
+        self.env_route.base_url()
     }
 
     /// Another voice from the next request on: the server picks the engine by the pair in each call. Without a route
@@ -396,7 +410,8 @@ impl OwnSpeech {
             "response_format": format,
         });
         let place = route.acquire(cancel).await?;
-        let mut request = client()
+        let mut request = self
+            .http
             .post(format!("{}/audio/speech", route.base_url()))
             .json(&body)
             .timeout(Duration::from_millis(route.timeout_ms()));
@@ -447,7 +462,8 @@ impl OwnSpeech {
             "response_format": "wav",
         });
         let place = route.acquire(cancel).await?;
-        let mut request = client()
+        let mut request = self
+            .http
             .post(format!("{}/audio/speech", route.base_url()))
             .json(&body)
             .timeout(Duration::from_millis(route.timeout_ms().max(30_000)));
@@ -478,7 +494,8 @@ impl OwnSpeech {
     /// The computer server's voices: `[(model, [voice…])]` as it lists them (`GET /models`).
     pub async fn computer_voices(&self) -> Result<Vec<(String, Vec<String>)>> {
         let api_key = self.lock().config.api_key.clone();
-        let mut request = client().get(format!("{}/models", self.env_route.base_url())).timeout(Duration::from_secs(5));
+        let mut request =
+            self.http.get(format!("{}/models", self.env_route.base_url())).timeout(Duration::from_secs(5));
         if let Some(key) = api_key {
             request = request.bearer_auth(key);
         }

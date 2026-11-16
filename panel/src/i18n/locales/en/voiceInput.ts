@@ -5,7 +5,7 @@ import type ru from '../ru/voiceInput';
 const en: Translation<typeof ru> = {
     toComputerTitle: 'Talk with this computer’s microphone?',
     toComputerText:
-        'Alice, Yandex and the speaker will leave the panel, and the mode becomes “Own”. There is no music, radio, timers or alarms on the computer yet. To undo it: “Settings” → “Microphone” → “Through the speaker with Alice”.',
+        'Alice, Yandex and the speaker will leave the panel, and the mode becomes “Your AI”. There is no music, radio, timers or alarms on the computer yet. To undo it: “Settings” → “Microphone” → “Through the speaker with Alice”.',
     toComputerOk: 'Switch to the microphone',
     toStationTitle: 'Bring back Alice and the speaker?',
     toStationText: 'The panel will show the speaker, Alice and Yandex again, and the mode returns to what it was. You can pick this computer’s microphone again — right here.',

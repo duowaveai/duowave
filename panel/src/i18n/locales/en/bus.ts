@@ -121,6 +121,7 @@ const en: Translation<typeof ru> = {
     readingJournal: 'Reading the journal…',
     noLetters: 'No messages yet.',
     linksError: (error: string) => `Links: ${error}`,
+    linksWho: 'Whom it calls, who calls it',
     links: 'Links',
     talksToOthers: 'Talks to others',
     likeHome: 'Same as home',

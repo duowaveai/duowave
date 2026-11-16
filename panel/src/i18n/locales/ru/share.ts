@@ -39,6 +39,10 @@ export default {
     gatewaySends: 'Отправит шлюз:',
     sending: 'Отправляю…',
     pages: 'Площадки — загрузите файл сами:',
+    gatewaySendsTitle: 'Отправит шлюз',
+    pagesTitle: 'Площадки — загрузите файл сами',
+    send: 'Отправить',
+    openPage: 'Открыть',
     // «Запись своим голосом»
     recordTitle: 'Запись своим голосом',
     upTo: (seconds: number) => `до ${seconds} с`,
@@ -54,6 +58,7 @@ export default {
     allowAll: 'Разрешить всё',
     notNow: 'Не сейчас',
     leavesHouse: ' · уходит из дома',
+    leavesHouseShort: 'уходит из дома',
     // Права приложения словами — в каталоге до установки и на листе «Разрешить всё»
     rightBrain: 'модель «Мозга»: пишет тексты',
     rightVoice: 'голос: говорить и озвучивать в свою папку',
@@ -65,5 +70,7 @@ export default {
     rightHearing: 'слух: распознать речь в своих файлах — слова со временем',
     rightSmartHome: 'умный дом',
     rightContent: 'музыка и сказки семьи',
+    rightMic: 'микрофон колонки: слышит комнату всё время',
+    rightActivator: 'будит колонку своим словом',
     rightNet: (host: string) => `сеть: ${host}`,
 };

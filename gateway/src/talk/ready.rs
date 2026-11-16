@@ -133,6 +133,9 @@ impl TalkLayer {
         if matches!(work.kind.as_str(), super::works::TOOL | super::works::TASK) {
             return self.finish_background(work, executor);
         }
+        if work.kind == super::works::FOLDER {
+            return self.finish_folder(work, executor);
+        }
         let planned = self.planned.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&work.id);
         let (line, kind, end) = match work.state {
             WorkState::Failed => (fill(say.failed_line, &[("title", &title)]), None, None),
@@ -282,7 +285,7 @@ impl TalkLayer {
 
     /// The work's line on its station, once the station is free; `again` — not said to its end, it waits for the
     /// device's next conversation (once).
-    fn say_on_station(self: &Arc<Self>, id: String, again: bool) {
+    pub(super) fn say_on_station(self: &Arc<Self>, id: String, again: bool) {
         let turns = self.turns.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         let (Some(turns), Ok(handle)) = (turns, tokio::runtime::Handle::try_current()) else { return };
         let Some(work) = self.works.get(&id) else { return };
@@ -375,6 +378,17 @@ impl TalkLayer {
                 return more.unwrap_or_else(|| words.no_more.to_string());
             }
             (Kind::More, _) => return pack.work.background.fine.to_string(),
+            // A plan's limit holds a work in a folder: «подождать» — it waits and goes on by itself; «остановить».
+            (Kind::Wait, Answer::No | Answer::Drop) => {
+                let label = format!("{}{id}", pack.work.label);
+                return self.act(&origin, "stop", Some(&label)).await.unwrap_or_else(refused);
+            }
+            (Kind::Wait, _) => {
+                if let Some(work) = self.works.update(id, |work| work.question = None) {
+                    self.told(&work, "answered");
+                }
+                return pack.work.folder.waiting.to_string();
+            }
             (Kind::Similar, Answer::New | Answer::No) => {
                 let Some(wish) = pending else { return say.what.to_string() };
                 return self.start(origin, &wish.text, wish.face, wish.title.as_deref(), true).unwrap_or_else(refused);
@@ -487,10 +501,15 @@ impl TalkLayer {
     /// a new one or this one) are answered aloud.
     pub(super) async fn answer_work(&self, origin: Origin, id: &str, answer: Answer) -> Option<String> {
         let work = self.works.get(id)?;
-        let question = work.question.as_ref().filter(|question| question.waits() && work.awaiting())?;
-        let kind = question
-            .kind
-            .filter(|kind| matches!(kind, Kind::Ready | Kind::Unfinished | Kind::Apply | Kind::Delete | Kind::More))?;
+        let question = work.question.as_ref().filter(|question| question.waits())?;
+        let kind = match question.kind? {
+            // A work in a folder going on asks it: wait for the limit, or stop.
+            Kind::Wait if work.going() => Kind::Wait,
+            kind @ (Kind::Ready | Kind::Unfinished | Kind::Apply | Kind::Delete | Kind::More) if work.awaiting() => {
+                kind
+            }
+            _ => return None,
+        };
         self.acted_on(&origin.device, id);
         Some(self.answer(origin, id, kind, false, answer).await)
     }
@@ -609,7 +628,7 @@ mod gateway {
             text: text.into(),
             device_tag: "kitchen".into(),
             wake_word,
-            model: ModelState { enabled: true, tools: true },
+            model: ModelState { enabled: true, tools: true, ..Default::default() },
             now: now_ms(),
             ..RouteInput::default()
         };

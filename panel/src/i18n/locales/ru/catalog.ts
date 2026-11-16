@@ -1,11 +1,15 @@
 // Тексты: screens/catalog.tsx — каталог, установленное, свои источники (их показывает MagicPlace).
 
 export default {
+    listenTitle: 'Послушать',
+    needsTitle: 'Что понадобится',
+    licenseTitle: 'Лицензия',
     kindCharacter: 'персонаж',
     kindPlugin: 'в шлюзе',
     kindApp: 'на компьютере',
     kindAppStation: 'на колонке',
     kindTheme: 'тема',
+    kindAgent: 'агент',
     placeNetwork: 'в сети',
     filterCharacters: 'Персонажи',
     filterApps: 'Приложения',
@@ -103,4 +107,25 @@ export default {
     noCatalogTitle: 'Не загружать каталог',
     noCatalogNote: 'Запрос каталога сообщает нашему сайту адрес шлюза. Выключите — шлюз не будет ходить за ним.',
     openCharacter: 'Открыть персонажа',
+    // Пакеты-пара: персонаж и его слово (позже — голос).
+    pairTitle: (name: string) => `Поставить и «${name}»?`,
+    installTitle: (name: string) => `Поставить «${name}»?`,
+    installRights: (list: string) => `Права: ${list}. «Поставить» — это и ваше «да» на них: потом спрашивать не будет.`,
+    pairCost: (sizeMb: number | null, memoryMb: number | null, station: boolean) =>
+        [sizeMb ? `около ${sizeMb} МБ памяти` : null, memoryMb ? `до ${memoryMb} МБ ОЗУ${station ? ' колонки' : ''}` : null]
+            .filter(Boolean)
+            .join(' и ')
+            .replace(/^./, (first) => `Займёт ${first}`)
+            .concat(sizeMb || memoryMb ? '.' : ''),
+    pairOk: 'Поставить',
+    pairLater: 'Не сейчас',
+    pairCannot: (name: string, reason: string) => `«${name}» пока не поставить: ${reason}`,
+    pairRemoveTitle: (name: string) => `Убрать и «${name}»?`,
+    pairRemoveText: 'Он шёл в паре с удалённым. Вернуть можно из каталога.',
+    pairHead: 'В паре',
+    pairOn: 'стоит',
+    pairOff: 'выключено',
+    pairAsleep: 'спит: не хватает ОЗУ — проснётся само',
+    pairMissing: 'не стоит',
+    pairInstall: 'поставить',
 };

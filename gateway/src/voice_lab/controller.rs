@@ -337,7 +337,7 @@ mod tests {
         let lab = lab().await;
         let view = view_of(&lab).await;
         assert_eq!(view["available"], true);
-        assert_eq!(view["platform"]["summary"], "Мак, Apple M4 Max, 36 ГБ памяти");
+        assert_eq!(view["platform"]["summary"], "Мак, Apple M4 Max, 36 ГБ ОЗУ");
         assert_eq!((&view["platform"]["os"], &view["platform"]["gpu"]), (&json!("darwin"), &json!("apple")));
         let engines: Vec<(Value, Value, Value)> = view["engines"]
             .as_array()
@@ -462,13 +462,13 @@ mod tests {
             warned,
             (
                 StatusCode::PRECONDITION_REQUIRED,
-                json!("Памяти впритык: свободно 3,9 ГБ, нужно около 2,4 ГБ, а 2,2 ГБ держу для колонки — она может подтормаживать.")
+                json!("ОЗУ впритык: свободно 3,9 ГБ, нужно около 2,4 ГБ, а 2,2 ГБ держу для колонки — она может подтормаживать.")
             )
         );
         lab.memory.pressure_level.store(2, Ordering::SeqCst);
         let pressed = imprint_as(&lab, json!({ "engine": "omnivoice" })).await;
         assert_eq!(pressed.0, StatusCode::PRECONDITION_REQUIRED, "a pressed computer is a warning, not a refusal");
-        assert!(pressed.1.as_str().unwrap().contains("не хватает памяти"), "{}", pressed.1);
+        assert!(pressed.1.as_str().unwrap().contains("не хватает ОЗУ"), "{}", pressed.1);
         lab.memory.pressure_level.store(1, Ordering::SeqCst);
         assert_eq!(imprint_as(&lab, json!({ "engine": "omnivoice", "anyway": true })).await.0, StatusCode::CREATED);
         let job = finished_job(&lab).await;

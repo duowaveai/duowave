@@ -6,8 +6,7 @@
 
 import { useEffect, useState } from 'preact/hooks';
 
-import type { PlacedStation } from '../api';
-import { IconLaptop } from '../icons';
+import { useHelpers } from '../helpers';
 import { usePanel } from '../shell/context';
 import { useTheme } from '../shell/theme';
 import { DeskWidget, isFresh, orderedOnDesk, useDeskLayout, useWidgets } from '../shell/widgets';
@@ -19,6 +18,9 @@ import { MicFirstCard } from './voice-input';
 import { LocalAsrSetup, localAsrNeedsCard, useLocalAsr } from './local-asr';
 import { Dashboard } from './dashboard';
 import { DeskCanvas } from './desk-canvas';
+import { turboOf } from './turbo-model';
+import { TurboDesk } from './turbo-desk';
+import { VIA } from '../via';
 import { useWhoOpen } from './desk-widgets';
 import { AddTile, DraftTile } from './draft-tile';
 import { FolderOffers, useFolderOffers } from './folder-offers';
@@ -27,7 +29,6 @@ import { useDeskDrafts } from '../voice/drafts';
 export { AddTile };
 import { RememberedLine } from './recall';
 import { DeskAsk } from './desk-ask';
-import { tr } from '../i18n';
 import { Shortcuts } from './shortcuts';
 
 /** С этой ширины виджеты стоят по сторонам от колонки; уже — лентой. */
@@ -45,10 +46,25 @@ export function useMedia(query: string): boolean {
     return matches;
 }
 
+/** Стол пульта Турбо: компьютер только помогает — вместо орбиты его Турбо и шлюзы, которым он помогает. */
+const turboPanel = (role: string): boolean => role === 'helper' && !VIA;
+
+/**
+ * Второе тело сцены рядом со шлюзом (решение владельца 16.11): Турбо или пустое место для него — сцене на свободном
+ * столе нужно места на него справа. Столько точек ему.
+ */
+const TURBO_W = 360;
+
 /** Сцена колонки — середина стола. `room` — её высота, без неё — до низа экрана. */
 function Scene({ room }: { room?: number }) {
     const panel = usePanel();
     const [whoOpen, toggleWho] = useWhoOpen();
+    if (turboPanel(panel.role.role))
+        return (
+            <div class="desk-scene">
+                <TurboDesk />
+            </div>
+        );
     return (
         <div class="desk-scene">
             <Dashboard
@@ -64,6 +80,7 @@ function Scene({ room }: { room?: number }) {
                 whoOpen={whoOpen}
                 onToggleWho={toggleWho}
                 room={room}
+                onOpenHome={() => panel.go('settings', 'helpers')}
             />
             {/* Персонаж только что запомнил что-то голосом или мимоходом: видно сразу, с «Отменить». */}
             {/* Строки под сценой — своим блоком с отступом снизу: широкий виджет под сценой (витрина) заходит на пустой низ
@@ -75,29 +92,8 @@ function Scene({ room }: { room?: number }) {
                     <DeskAsk />
                 </div>
             )}
-            {panel.role.role === 'helper' && (
-                // Макет SpaceHelper: под колонкой — этот компьютер, её помощник.
-                <div class="desk-helper-pc">
-                    <span class="desk-helper-pc-icon" aria-hidden="true">
-                        <IconLaptop size={18} />
-                    </span>
-                    <span class="flex flex-col">
-                        <b>{tr.desk.helperPcTitle}</b>
-                        <span class="w-cap">{tr.desk.helperPcLine(placedName(panel.role.station) ?? panel.current?.name ?? panel.drawing.title)}</span>
-                    </span>
-                </div>
-            )}
         </div>
     );
-}
-
-/**
- * Имя колонки помощника из записи компьютера о её размещении (/health → placement.stations[].name): выбранная в
- * списке колонок может быть другой, а пока список не прочитан, пульт знает только «Колонка». Шлюз постарше имени не
- * присылает.
- */
-function placedName(station: PlacedStation | undefined): string | undefined {
-    return (station as (PlacedStation & { name?: string }) | undefined)?.name || undefined;
 }
 
 /**
@@ -151,6 +147,10 @@ export function DeskScreen() {
             </>
         ) : null;
     const ordered = orderedOnDesk(widgets, layout);
+    // Место справа от колонки для второго тела: Турбо, пустое место для него у колонки, стол пульта Турбо.
+    const helpers = useHelpers();
+    const sceneExtra =
+        turboPanel(role) || turboOf(helpers.view) || (panel.health?.placement?.role === 'station' && helpers.view) ? TURBO_W : 0;
     // Без колонки столу нечего показать: режимы и орбита были бы о колонке, которой нет. Виджеты «под сценой» —
     // приложения этого компьютера («Лента») — стоят и здесь, под первыми шагами: им колонка не нужна.
     if (panel.noStation)
@@ -221,6 +221,7 @@ export function DeskScreen() {
             <Shortcuts layout={layout} actions={actions} place="column" />
             <DeskCanvas
             widgets={shown}
+            sceneExtra={sceneExtra}
             layout={layout}
             actions={actions}
             scene={<Scene room={460} />}

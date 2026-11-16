@@ -1,7 +1,8 @@
 import { Component, ComponentChildren, RefObject } from 'preact';
 import { createPortal } from 'preact/compat';
-import { useEffect, useId, useLayoutEffect, useRef } from 'preact/hooks';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
+import { IconClose, IconDots } from '../icons';
 import { VIA } from '../via';
 import { tr } from '../i18n';
 
@@ -235,51 +236,279 @@ export function Overlay({
     );
 }
 
-interface Props {
+/** Строка меню «⋯» в шапке окна: редкое действие. `danger` — красным, после черты. */
+export interface SheetMenuItem {
+    label: string;
+    act: () => void;
+    disabled?: boolean;
+    danger?: boolean;
+}
+
+/** Вкладка окна: «Обзор · Доступ · Настройки · Версии». */
+export interface SheetTab<T extends string = string> {
+    id: T;
+    label: string;
+}
+
+interface Props<T extends string = string> {
     title: string;
+    /** Строка под заголовком: откуда, что с ним. Короткая; состояние лучше метками (`meta`). */
     about?: string;
-    /** Круг с иконкой слева от заголовка — того же оттенка, что узел, который открыл шит. */
+    /** Метки под заголовком: состояние с точкой, откуда, версия. */
+    meta?: ComponentChildren;
+    /** Значок слева от заголовка: значок приложения или круг узла, который открыл окно. */
     icon?: ComponentChildren;
     onClose: () => void;
     children: ComponentChildren;
-    /** Свой низ вместо «Готово»: кнопки шага мастера. */
+    /**
+     * Нижняя полоса — только когда есть дело: «Есть изменения · Отменить · Сохранить» (SaveBar), «Установить», шаг
+     * мастера. Главная кнопка одна, справа. «Готово» и «Закрыть» сюда не ставят: окно закрывают крестик, Esc и нажатие
+     * мимо.
+     */
     footer?: ComponentChildren;
-    /** false — не закрывать нажатием мимо и Esc: мастер с записью закрывают его собственные кнопки. */
+    /** Редкие действия за «⋯» в шапке: перезагрузить, версии, своя копия. */
+    menu?: SheetMenuItem[];
+    /** Вкладки под шапкой; содержимое выбранной — в `children`. */
+    tabs?: Array<SheetTab<T>>;
+    tab?: T;
+    onTab?: (id: T) => void;
+    /** false — не закрывать нажатием мимо и Esc, без крестика: мастер с записью закрывают его собственные кнопки. */
     dismissable?: boolean;
-    /** Слой: шит (по умолчанию) или вопрос ask(), который встаёт над всем. */
+    /** Слой: окно (по умолчанию) или вопрос ask(), который встаёт над всем. */
     layer?: Layer;
+    /** Вид: обычное окно (посередине, на телефоне — лист снизу) или маленькое окно для вопроса. */
+    shape?: 'window' | 'dialog';
+}
+
+/** «⋯» в шапке окна и в строке списка: меню редких действий; закрывается нажатием мимо и Esc (Esc не закрывает окно). */
+export function MoreMenu({ title, items }: { title: string; items: SheetMenuItem[] }) {
+    const [open, setOpen] = useState(false);
+    const box = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        if (!open) return;
+        const away = (event: PointerEvent) => {
+            if (!box.current?.contains(event.target as Node)) setOpen(false);
+        };
+        const key = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape') return;
+            event.preventDefault();
+            setOpen(false);
+        };
+        window.addEventListener('pointerdown', away, true);
+        window.addEventListener('keydown', key, true);
+        return () => {
+            window.removeEventListener('pointerdown', away, true);
+            window.removeEventListener('keydown', key, true);
+        };
+    }, [open]);
+    if (items.length === 0) return null;
+    const calm = items.filter((item) => !item.danger);
+    const danger = items.filter((item) => item.danger);
+    const row = (item: SheetMenuItem) => (
+        <button
+            key={item.label}
+            role="menuitem"
+            class={`tab-more-item${item.danger ? ' is-danger' : ''}`}
+            disabled={item.disabled}
+            onClick={() => {
+                setOpen(false);
+                item.act();
+            }}
+        >
+            {item.label}
+        </button>
+    );
+    return (
+        <div class="win-menu-box" ref={box}>
+            <button class="win-icon-btn" aria-label={tr.ui.moreOf(title)} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>
+                <IconDots size={18} />
+            </button>
+            {open && (
+                <div class="win-menu menu" role="menu" aria-label={tr.ui.moreOf(title)}>
+                    {calm.map(row)}
+                    {danger.length > 0 && calm.length > 0 && <span class="win-menu-line" aria-hidden="true" />}
+                    {danger.map(row)}
+                </div>
+            )}
+        </div>
+    );
 }
 
 /**
- * Шит из макета дашборда: затемнение на весь экран, заголовок, содержимое и «Готово». На телефоне — нижний лист с
- * ручкой, на экране шире 760 точек — окно посередине (ui/glass.css). Выше экрана не растёт: содержимое прокручивается
- * внутри. Нажатие мимо закрывает.
+ * Окно пульта — одна анатомия на все (холст «Окна DuoWave: один подход», владелец 17.11): шапка (значок, имя, метки,
+ * «⋯», крестик), вкладки, прокручиваемое тело, нижняя полоса только когда есть дело. На экране шире 760 точек — окно
+ * посередине, окно раздела под ним прячется; на телефоне — лист снизу с ручкой. Вопрос ask() —
+ * маленькое окно посередине (`shape: 'dialog'`). Нажатие мимо, Esc и крестик закрывают.
  */
-export function Sheet({ title, about, icon, onClose, children, footer, dismissable = true, layer = 'sheet' }: Props) {
+export function Sheet<T extends string = string>({
+    title,
+    about,
+    meta,
+    icon,
+    onClose,
+    children,
+    footer,
+    menu,
+    tabs,
+    tab,
+    onTab,
+    dismissable = true,
+    layer = 'sheet',
+    shape = 'window',
+}: Props<T>) {
     const panel = useRef<HTMLElement>(null);
     const labelId = useId();
     useDialogFocus(panel, dismissable ? onClose : () => undefined);
+    const dialog = shape === 'dialog';
+    const step = (event: KeyboardEvent, at: number) => {
+        if (!tabs || !onTab) return;
+        const next = event.key === 'ArrowRight' ? at + 1 : event.key === 'ArrowLeft' ? at - 1 : null;
+        if (next === null) return;
+        event.preventDefault();
+        const entry = tabs[(next + tabs.length) % tabs.length];
+        onTab(entry.id);
+        (event.currentTarget as HTMLElement).parentElement?.querySelector<HTMLButtonElement>(`[data-tab="${entry.id}"]`)?.focus();
+    };
 
     return (
         <Overlay layer={layer} scrim="dash-scrim" onDismiss={dismissable ? onClose : undefined} onClose={onClose}>
-            <section ref={panel} role="dialog" aria-modal="true" aria-labelledby={labelId} class="sheet glass-strong dash-sheet">
-                <span class="dash-grabber" aria-hidden="true" />
-                <div class="flex items-center gap-12">
+            <section
+                ref={panel}
+                role={dialog ? 'alertdialog' : 'dialog'}
+                aria-modal="true"
+                aria-labelledby={labelId}
+                class={`sheet glass-strong dash-sheet win ${dialog ? 'is-dialog' : 'is-window'}`}
+            >
+                {!dialog && <span class="dash-grabber" aria-hidden="true" />}
+                <header class="win-head">
                     {icon}
-                    <div class="flex-1 min-w-0 flex flex-col">
-                        <h2 id={labelId} class="t-title m-0">
+                    <div class="win-head-main">
+                        <h2 id={labelId} class="t-title win-title m-0">
                             {title}
                         </h2>
-                        {about && <span class="t-meta">{about}</span>}
+                        {about && <span class="win-about">{about}</span>}
+                        {meta && <div class="win-meta">{meta}</div>}
                     </div>
-                </div>
-                {children}
-                {footer ?? (
-                    <button class="dash-done" onClick={onClose}>
-                        {tr.ui.done}
-                    </button>
+                    {!dialog && (menu?.length || dismissable) && (
+                        <div class="win-tools">
+                            {menu && <MoreMenu title={title} items={menu} />}
+                            {dismissable && (
+                                <button class="win-icon-btn" aria-label={tr.ui.close} onClick={onClose}>
+                                    <IconClose size={18} />
+                                </button>
+                            )}
+                        </div>
+                    )}
+                </header>
+                {tabs && tabs.length > 1 && (
+                    <div class="win-tabs">
+                        <div class="win-tabs-row" role="tablist" aria-label={title}>
+                            {tabs.map((entry, at) => (
+                                <button
+                                    key={entry.id}
+                                    data-tab={entry.id}
+                                    role="tab"
+                                    aria-selected={entry.id === tab}
+                                    tabIndex={entry.id === tab ? 0 : -1}
+                                    class="win-tab"
+                                    onClick={() => onTab?.(entry.id)}
+                                    onKeyDown={(event) => step(event, at)}
+                                >
+                                    {entry.label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
                 )}
+                <div class="win-body">{children}</div>
+                {footer && <div class="win-foot">{footer}</div>}
             </section>
         </Overlay>
+    );
+}
+
+/**
+ * Нижняя полоса окна с несохранённым: «Есть изменения · Отменить · Сохранить». Переключатели и выбор срабатывают
+ * сразу и сюда не попадают; ждёт кнопки только текст. Ничего не изменили — полосы нет (`dirty: false` → null).
+ */
+export function SaveBar({
+    dirty,
+    busy = false,
+    what,
+    saveLabel = tr.ui.save,
+    canSave = true,
+    onRevert,
+    onSave,
+}: {
+    dirty: boolean;
+    busy?: boolean;
+    /** Что изменилось, коротко: «новый токен». Без него — «Есть изменения». */
+    what?: string;
+    saveLabel?: string;
+    canSave?: boolean;
+    onRevert?: () => void;
+    onSave: () => void;
+}) {
+    if (!dirty && !busy) return null;
+    return (
+        <>
+            <span class="win-dirty">{what ?? tr.ui.unsaved}</span>
+            <span class="win-grow" />
+            {onRevert && (
+                <button class="btn btn-plain" disabled={busy} onClick={onRevert}>
+                    {tr.ui.revert}
+                </button>
+            )}
+            <button class="btn btn-main" disabled={busy || !canSave} aria-busy={busy || undefined} onClick={onSave}>
+                {busy && <span class="spinner spinner-sm" aria-hidden="true" />}
+                {busy ? tr.ui.saving : saveLabel}
+            </button>
+        </>
+    );
+}
+
+/** Раздел окна: подпись сверху (и короткая справа), содержимое — строками в одной рамке (`group`) или как есть. */
+export function WinSection({ title, aside, group = false, children }: { title?: string; aside?: ComponentChildren; group?: boolean; children: ComponentChildren }) {
+    return (
+        <section class="win-sec">
+            {(title || aside) && (
+                <div class="win-sec-h">
+                    {title && <h3 class="win-sec-title">{title}</h3>}
+                    {aside && <span class="win-sec-aside">{aside}</span>}
+                </div>
+            )}
+            {group ? <div class="win-group">{children}</div> : children}
+        </section>
+    );
+}
+
+/** Строка в рамке раздела: значок, имя и подпись слева, управление справа. */
+export function WinRow({ icon, title, sub, children }: { icon?: ComponentChildren; title: ComponentChildren; sub?: ComponentChildren; children?: ComponentChildren }) {
+    return (
+        <div class="win-row">
+            {icon && <span class="win-row-ico">{icon}</span>}
+            <div class="win-row-main">
+                <span class="win-row-t">{title}</span>
+                {sub && <span class="win-row-s">{sub}</span>}
+            </div>
+            {children}
+        </div>
+    );
+}
+
+/** Место под данными, пока они идут: серые строки той же высоты, что и настоящие, — пришло, ничего не сдвинулось. */
+export function SkeletonRows({ rows = 3, icon = false, label = tr.ui.loading }: { rows?: number; icon?: boolean; label?: string }) {
+    return (
+        <div class="win-group" role="status" aria-label={label} aria-busy="true">
+            {Array.from({ length: rows }, (_, at) => (
+                <div key={at} class="win-row" aria-hidden="true">
+                    {icon && <span class="sk sk-ico" />}
+                    <div class="win-row-main sk-lines">
+                        <span class="sk sk-line" style={{ width: `${[46, 34, 52, 40][at % 4]}%` }} />
+                        <span class="sk sk-line sk-thin" style={{ width: `${[68, 58, 74, 62][at % 4]}%` }} />
+                    </div>
+                </div>
+            ))}
+        </div>
     );
 }

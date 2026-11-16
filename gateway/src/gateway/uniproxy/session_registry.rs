@@ -287,6 +287,20 @@ impl SessionRegistry {
         Arc::new(RegistrySpeaker(self.me.clone()))
     }
 
+    /// The activators' way to the station this gateway runs on (src/activator).
+    pub fn wake_station(&self) -> Arc<dyn crate::activator::WakeStation> {
+        Arc::new(RegistrySpeaker(self.me.clone()))
+    }
+
+    /// The station this gateway runs on: its live session comes from this machine. The newest one.
+    pub fn local_station(&self) -> Option<Arc<StationSession>> {
+        let active = self.lock().active.clone();
+        active.into_iter().rev().find_map(|session| match session {
+            AnySession::Station(station) if is_local(&station.remote_address) => Some(station),
+            _ => None,
+        })
+    }
+
     /// The newest live session of a device (`*`: any) that can speak.
     pub fn speaking_on(&self, device_tag: &str) -> Option<Arc<StationSession>> {
         let active = self.lock().active.clone();
@@ -303,6 +317,28 @@ impl SessionRegistry {
 
 /// How the skills speak (reminders, calls announced): through the live station of the device.
 struct RegistrySpeaker(Weak<SessionRegistry>);
+
+/// A connection from this machine: the station the gateway runs on.
+fn is_local(remote_address: &str) -> bool {
+    remote_address.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// An activator's word (src/activator): the station this gateway runs on is woken, when it is connected in our mode.
+impl crate::activator::WakeStation for RegistrySpeaker {
+    fn wake(
+        &self,
+        wake: crate::activator::Wake,
+        starter: crate::activator::Starter,
+    ) -> BoxFuture<'static, crate::activator::WakeOutcome> {
+        match self.0.upgrade().and_then(|registry| registry.local_station()) {
+            Some(station) => station.wake_by_activator(wake, starter),
+            None => async {
+                crate::activator::WakeOutcome::Failed(crate::tr!("колонка не подключена к этому шлюзу"))
+            }
+            .boxed(),
+        }
+    }
+}
 
 impl Speaker for RegistrySpeaker {
     fn say(&self, device_tag: String, text: String, clip: Option<AudioClip>) -> BoxFuture<'static, bool> {

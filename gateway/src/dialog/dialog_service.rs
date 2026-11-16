@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::dialog_history::DialogHistory;
 use super::generator::{generate, Yielder};
-use super::llm::brain::{Backup, BrainOrigin, BrainSource, BrainStatus, EnvBrain, ModelSlot};
+use super::llm::brain::{Backup, BrainOrigin, BrainSource, BrainStatus, EnvBrain, ModelSlot, WORDS_PROVIDER};
 use super::llm::{
     AssistantTurn, Interrupted, LlmClient, LlmEvent, LlmMessage, LlmRequest, LlmSettings, LlmStream, LlmTool,
     SpokenFailure, ToolCall, ToolCallCut, ToolChoice, ToolResult,
@@ -510,6 +510,25 @@ impl DialogService {
 
     pub fn enabled(&self) -> bool {
         self.brain.slot(ModelProfile::Fast).is_some()
+    }
+
+    /// Whether a model of this profile may be asked now: false while «Мозг» would only say why none may (the helper
+    /// with the model away, no backup) — the station in «Вместе» gives such a question to Alice.
+    pub fn reachable(&self, profile: ModelProfile) -> bool {
+        self.brain.reachable(profile)
+    }
+
+    /// Who answers this profile now, when the brain can tell.
+    pub fn now(&self, profile: ModelProfile) -> Option<crate::dialog::llm::brain::BrainNow> {
+        self.brain.now(profile)
+    }
+
+    /// Whether what the model reads may leave the house now: a model of either profile that may take a round is out
+    /// of it — the one answering (another in the chosen one's place while its helper is away), or a backup behind it,
+    /// which takes the round its model fails with what the earlier rounds read. The apps' tools, the folders and the
+    /// bus's questions in words ask it. A brain that cannot tell: the fast profile's chosen model.
+    pub fn in_cloud(&self) -> bool {
+        self.brain.in_cloud().unwrap_or_else(|| self.brain().cloud)
     }
 
     /// A text for an app (`system/brain` → `write`, docs/plans/feed.md, stage 4): the profile's model with the app's
@@ -1323,13 +1342,22 @@ impl DialogService {
                 y.send(Err(error)).await;
                 return;
             };
-            tracing::warn!(
-                target: "dialog",
-                "the model gave no answer ({}): the backup {} via {} answers",
-                head_of(&error.to_string(), 200),
-                backup.slot.model,
-                backup.slot.title
-            );
+            if backup.slot.provider == WORDS_PROVIDER {
+                // Behind a helper's model not judged away yet stand the honest words, not a model: no backup answered.
+                tracing::warn!(
+                    target: "dialog",
+                    "the model gave no answer ({}): no backup — the honest words answer",
+                    head_of(&error.to_string(), 200)
+                );
+            } else {
+                tracing::warn!(
+                    target: "dialog",
+                    "the model gave no answer ({}): the backup {} via {} answers",
+                    head_of(&error.to_string(), 200),
+                    backup.slot.model,
+                    backup.slot.title
+                );
+            }
             backup.take();
             on_backup(backup, request).await;
         })
@@ -2274,6 +2302,178 @@ pub(crate) mod tests {
         assert_eq!(primary.calls.load(Ordering::SeqCst), 1, "the second round went straight to the backup");
         let models: Vec<Value> = llm.requests.lock().unwrap().iter().map(|request| request["model"].clone()).collect();
         assert_eq!(models, vec![json!("backup-model"), json!("backup-model")]);
+    }
+
+    /// «Мозг» while no model may be asked (docs/plans/home-and-helpers.md, stage 4): its slot is the words.
+    struct Words;
+
+    impl BrainSource for Words {
+        fn slot(&self, _profile: ModelProfile) -> Option<ModelSlot> {
+            let words = "Компьютер дома не на связи, а запасной модели нет.".to_string();
+            Some(ModelSlot {
+                client: Arc::new(crate::dialog::llm::unreachable::Unreachable::new(words)),
+                model: String::new(),
+                provider: "words".into(),
+                kind: DialogProvider::None,
+                title: "нет модели на связи".into(),
+                cloud: false,
+                backup: None,
+            })
+        }
+
+        fn reachable(&self, _profile: ModelProfile) -> bool {
+            false
+        }
+
+        fn description(&self) -> String {
+            "words".into()
+        }
+
+        fn status(&self) -> BrainStatus {
+            unimplemented!("not asked")
+        }
+    }
+
+    #[tokio::test]
+    async fn the_honest_words_are_said_in_place_of_the_error_phrase_in_under_a_second() {
+        let service = Arc::new(DialogService {
+            config: config(None),
+            personas: personas(),
+            brain: Arc::new(Words),
+            history: Mutex::new(DialogHistory::new(2, 60_000)),
+            prompt_problem: Mutex::new(None),
+            memory: std::sync::OnceLock::new(),
+            now: std::sync::OnceLock::new(),
+            usage: std::sync::OnceLock::new(),
+            catchphrases: std::sync::OnceLock::new(),
+            picker: Mutex::new(Picker::default()),
+        });
+        assert!(service.enabled(), "the router still gives the question to «Мозг»: in «Своё» it answers so");
+        assert!(!service.reachable(ModelProfile::Fast));
+        let cancel = CancellationToken::new();
+        let phrases = service.answer("device-31", "Который час?", DialogContext::default(), cancel.clone(), None);
+        let said: Vec<String> =
+            tokio::time::timeout(Duration::from_secs(1), with_error_phrase(phrases, cancel, |_| {}).collect())
+                .await
+                .expect("in under a second, not after a connection's ten");
+        assert_eq!(said, vec!["Компьютер дома не на связи, а запасной модели нет."]);
+    }
+
+    /// A helper's model, not judged away yet, with the honest words behind it (block «Дом», stage 4): the model fails.
+    struct WordsBehind {
+        primary: Arc<Failing>,
+    }
+
+    impl BrainSource for WordsBehind {
+        fn slot(&self, _profile: ModelProfile) -> Option<ModelSlot> {
+            let words = "Компьютер дома: модель сейчас не отвечает, а запасной модели нет.".to_string();
+            let words = ModelSlot {
+                client: Arc::new(crate::dialog::llm::unreachable::Unreachable::new(words)),
+                model: String::new(),
+                provider: WORDS_PROVIDER.into(),
+                kind: DialogProvider::None,
+                title: "нет модели на связи".into(),
+                cloud: false,
+                backup: None,
+            };
+            Some(ModelSlot {
+                client: self.primary.clone(),
+                model: "home".into(),
+                provider: "helper-home-computer".into(),
+                kind: DialogProvider::OpenAi,
+                title: "Модель: Компьютер дома".into(),
+                cloud: false,
+                backup: Some(Arc::new(Backup::new(words))),
+            })
+        }
+
+        fn description(&self) -> String {
+            "test".into()
+        }
+
+        fn status(&self) -> BrainStatus {
+            unimplemented!("not asked")
+        }
+    }
+
+    /// The log lines written on this thread while the guard lives.
+    fn capture_logs() -> (Arc<Mutex<Vec<u8>>>, tracing::subscriber::DefaultGuard) {
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let into = logs.clone();
+        let subscriber = tracing_subscriber::fmt().with_ansi(false).with_writer(move || Sink(into.clone())).finish();
+        (logs, tracing::subscriber::set_default(subscriber))
+    }
+
+    #[tokio::test]
+    async fn the_log_says_the_honest_words_answered_and_names_no_backup_when_only_they_stand_behind_the_model() {
+        let (logs, _guard) = capture_logs();
+        let primary = Arc::new(Failing { calls: AtomicUsize::new(0), after_word: false });
+        let service = Arc::new(DialogService {
+            config: config(None),
+            personas: personas(),
+            brain: Arc::new(WordsBehind { primary: primary.clone() }),
+            history: Mutex::new(DialogHistory::new(2, 60_000)),
+            prompt_problem: Mutex::new(None),
+            memory: std::sync::OnceLock::new(),
+            now: std::sync::OnceLock::new(),
+            usage: std::sync::OnceLock::new(),
+            catchphrases: std::sync::OnceLock::new(),
+            picker: Mutex::new(Picker::default()),
+        });
+        let cancel = CancellationToken::new();
+        let phrases = service.answer("device-32", "Который час?", DialogContext::default(), cancel.clone(), None);
+        let said: Vec<String> = with_error_phrase(phrases, cancel, |_| {}).collect().await;
+        assert_eq!(said, vec!["Компьютер дома: модель сейчас не отвечает, а запасной модели нет."]);
+        assert_eq!(primary.calls.load(Ordering::SeqCst), 1);
+        let logged = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        assert!(logged.contains("the model gave no answer (limit): no backup — the honest words answer"), "{logged}");
+        assert!(!logged.contains("the backup"), "no backup answered: {logged}");
+    }
+
+    /// docs/plans/home-and-helpers.md, stage 4: what the apps' tools and the folders give the model goes wherever a
+    /// model that may take the round is — a cloud answering in place of the computer away, a cloud backup behind the
+    /// computer on the line (it takes the round the computer fails, with what the earlier rounds read), the smart
+    /// model of the commands with tools —; only the models at home keep it in.
+    #[tokio::test]
+    async fn the_model_is_in_the_cloud_while_any_model_that_may_take_the_round_is() {
+        use crate::dialog::brain::brain_service::tests::{model_helper, with_helpers};
+        use crate::dialog::brain::ProviderInput;
+        let (brain, helpers, _) = with_helpers();
+        let computer = model_helper("home-computer", "Компьютер дома", "http://192.168.1.20:7780/home/v1/llm", false);
+        helpers.set(vec![computer]);
+        brain.keep_helper_models().unwrap();
+        let row = brain.view().providers.into_iter().find(|row| row.helper.is_some()).unwrap();
+        let claude = json!({"preset": "claude", "key": "sk-ant-test-0001"});
+        let claude = brain.add(&ProviderInput::from_value(claude), None).unwrap();
+        let nas = json!({"preset": "custom-openai", "title": "NAS", "baseUrl": "http://192.168.1.50:11434/v1"});
+        let nas = brain.add(&ProviderInput::from_value(nas), None).unwrap();
+        let choose = |choice: Value| brain.choose(choice.as_object().unwrap(), None).unwrap();
+        choose(json!({
+            "fast": {"provider": row.id, "model": "home"},
+            "backup": {"provider": claude.id, "model": "claude-haiku-5-5"},
+        }));
+        let service = DialogService::new(config(None), personas(), Some(brain.clone()));
+        assert!(service.in_cloud(), "the computer away: Claude answers");
+        assert!(!service.brain().cloud, "the choice itself is at home");
+        helpers.up("home-computer", true);
+        assert!(service.in_cloud(), "on the line, with Claude behind it to take a round it fails");
+        choose(json!({"backup": {"provider": nas.id, "model": "llama"}}));
+        assert!(!service.in_cloud(), "a backup at home: nothing leaves");
+        choose(json!({"smart": {"provider": claude.id, "model": "claude-sonnet-5-5"}}));
+        assert!(service.in_cloud(), "the commands with tools go to Claude");
+        choose(json!({"smart": null, "backup": null}));
+        helpers.up("home-computer", false);
+        assert!(!service.in_cloud(), "nothing may be asked: the words leave nothing");
     }
 
     /// What the sink heard: each round's key, provider, model and seat; each answer's deal.

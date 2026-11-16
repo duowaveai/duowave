@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'preact/hooks';
 
 import { AccessCatalog, ApiKey, AuditEntry, Person, Role, api, can, problemOf, sessionStore } from '../api';
-import { IconJournal, IconKey, IconPalette } from '../icons';
+import { IconJournal, IconKey, IconPalette, IconPlus } from '../icons';
 import { timeAgo } from '../time';
 import { ThemeCard } from '../shell/theme-picker';
-import { Sheet } from '../ui/sheet';
+import { MoreMenu, Sheet, SkeletonRows, WinSection } from '../ui/sheet';
 import { SectionTabs, TabEntry } from '../ui/tabs';
 import { ask } from '../ui/confirm';
 import { BusCard } from '../bus/settings-card';
@@ -15,6 +15,7 @@ import { usePanel } from '../shell/context';
 import { useDeskLayout } from '../shell/widgets';
 import { Switch } from '../ui/switch';
 import { useVoiceAction } from '../voice/phrases';
+import { VIA } from '../via';
 import { openOnboarding } from './onboarding';
 
 export type SettingsSectionTab = 'access' | 'look';
@@ -61,7 +62,9 @@ export function SettingsScreen({
                     <LanguageCard />
                     <ThemeCard />
                     <DeskCard />
-                    {can('settings.edit') && <OnboardingCard />}
+                    {/* Первые шаги открывает только свой пульт шлюза (app.tsx): в пульте колонки через компьютер кнопке
+                        нечего открыть. */}
+                    {can('settings.edit') && !VIA && <OnboardingCard />}
                 </>
             )}
         </>
@@ -119,13 +122,22 @@ function OnboardingCard() {
 const roleTitles = (): Record<Role, string> => ({ admin: tr.settings.roleAdmin, member: tr.settings.roleMember, guest: tr.settings.roleGuest });
 const ROLES: Role[] = ['admin', 'member', 'guest'];
 
-/** Люди дома и голос дома: роль, ограничения на возможности, вход в пульт. */
+/** Буква-аватар человека или ключа. */
+function Initial({ name }: { name: string }) {
+    return <span class="win-row-ico win-initial">{name.trim().slice(0, 1).toUpperCase() || '·'}</span>;
+}
+
+/**
+ * Люди дома и голос дома (холст «Окна DuoWave», 17.11): строки — имя, роль выбором, редкое за «⋯» (что нельзя голосом,
+ * приостановить, удалить); добавить человека — своим окном справа.
+ */
 function People({ catalog }: { catalog: AccessCatalog | null }) {
     const [people, setPeople] = useState<Person[] | null>(null);
     const [household, setHousehold] = useState<Role | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [open, setOpen] = useState<string | null>(null);
+    const [adding, setAdding] = useState(false);
     const [name, setName] = useState('');
     const [password, setPassword] = useState('');
     const [role, setRole] = useState<Role>('member');
@@ -147,18 +159,23 @@ function People({ catalog }: { catalog: AccessCatalog | null }) {
         try {
             await work();
             await read();
+            return true;
         } catch (e) {
             setError(problemOf(e));
+            return false;
         } finally {
             setBusy(false);
         }
     };
 
     const add = () =>
-        run(async () => {
+        void run(async () => {
             await api.addPerson({ name: name.trim(), role, ...(password ? { password } : {}) });
+        }).then((ok) => {
+            if (!ok) return;
             setName('');
             setPassword('');
+            setAdding(false);
         });
 
     const toggleDeny = (person: Person, permission: string) => {
@@ -167,6 +184,10 @@ function People({ catalog }: { catalog: AccessCatalog | null }) {
         else deny.add(permission);
         return run(() => api.updatePerson(person.id, { restrictions: { ...person.restrictions, deny: [...deny] } }));
     };
+    const remove = async (person: Person) => {
+        const yes = await ask({ title: tr.settings.removePersonTitle(person.name), text: tr.settings.removePersonText, ok: tr.settings.removeOk, danger: true });
+        if (yes) void run(() => api.removePerson(person.id));
+    };
 
     return (
         <section class="card glass card-list" aria-labelledby="people-h">
@@ -174,175 +195,166 @@ function People({ catalog }: { catalog: AccessCatalog | null }) {
                 <h2 id="people-h" class="t-title-xs m-0">
                     {tr.settings.people}
                 </h2>
-                {people && (
-                    <span class="t-meta">
-                        {tr.settings.peopleCount(people.length)}
-                    </span>
-                )}
+                {people && <span class="t-meta">{tr.settings.peopleCount(people.length)}</span>}
             </div>
             {error && (
-                <p class="t-caption c-dot-offline m-0 mb-8" role="alert">
+                <p class="win-callout m-0 mb-8" role="alert">
                     {error}
                 </p>
             )}
-
-            <div class="list-row">
-                <div class="flex-1 min-w-160 flex flex-col gap-2">
-                    <span class="fw-700">{tr.settings.householdVoice}</span>
-                    <span class="t-caption">{byMode(tr.settings.householdVoiceAbout, tr.settings.householdVoiceAboutComputer)}</span>
-                </div>
-                <select
-                    class="field"
-                    aria-label={tr.settings.householdVoiceRole}
-                    value={household ?? 'member'}
-                    disabled={busy}
-                    onChange={(e) => void run(() => api.setHousehold({ role: (e.target as HTMLSelectElement).value as Role }))}
-                >
-                    <option value="member">{tr.settings.householdMember}</option>
-                    <option value="guest">{tr.settings.householdGuest}</option>
-                </select>
-            </div>
-
-            {people?.map((person) => (
-                <div
-                    key={person.id}
-                    class="flex flex-col gap-8 py-10 px-0 bt-divider"
-                >
-                    <div class="flex items-center gap-12 flex-wrap">
-                        <div class="flex-1 min-w-160 flex flex-col gap-2">
-                            <span class="fw-700">{person.name}</span>
-                            <span class="t-caption">
-                                {roleTitles()[person.role]}
-                                {person.canSignIn
-                                    ? person.lastLoginAt
-                                        ? tr.settings.signedInAgo(timeAgo(person.lastLoginAt))
-                                        : tr.settings.neverSignedIn
-                                    : tr.settings.noSignIn}
-                                {person.restrictions.deny?.length ? tr.settings.denials(person.restrictions.deny.length) : ''}
-                            </span>
+            {!people && !error ? (
+                <SkeletonRows rows={2} icon />
+            ) : (
+                <div class="win-group">
+                    {people?.map((person) => (
+                        <div key={person.id} class="win-person">
+                            <div class="win-row">
+                                <Initial name={person.name} />
+                                <div class="win-row-main">
+                                    <span class="win-row-t">{person.name}</span>
+                                    <span class="win-row-s">
+                                        {person.canSignIn
+                                            ? person.lastLoginAt
+                                                ? tr.settings.signedInAgo(timeAgo(person.lastLoginAt)).replace(/^\s*·\s*/, '')
+                                                : tr.settings.neverSignedIn.replace(/^\s*·\s*/, '')
+                                            : tr.settings.noSignIn.replace(/^\s*·\s*/, '')}
+                                        {person.restrictions.deny?.length ? tr.settings.denials(person.restrictions.deny.length) : ''}
+                                    </span>
+                                </div>
+                                <select
+                                    class="field"
+                                    aria-label={tr.settings.roleOf(person.name)}
+                                    value={person.role}
+                                    disabled={busy}
+                                    onChange={(e) => void run(() => api.updatePerson(person.id, { role: (e.target as HTMLSelectElement).value as Role }))}
+                                >
+                                    {ROLES.map((value) => (
+                                        <option key={value} value={value}>
+                                            {roleTitles()[value]}
+                                        </option>
+                                    ))}
+                                </select>
+                                <MoreMenu
+                                    title={person.name}
+                                    items={[
+                                        { label: open === person.id ? tr.settings.collapse : tr.settings.voiceDenied, act: () => setOpen(open === person.id ? null : person.id) },
+                                        {
+                                            label: person.status === 'active' ? tr.settings.suspend : tr.settings.restore,
+                                            disabled: busy,
+                                            act: () => void run(() => api.updatePerson(person.id, { status: person.status === 'active' ? 'disabled' : 'active' })),
+                                        },
+                                        { label: tr.settings.removeAction, danger: true, disabled: busy, act: () => void remove(person) },
+                                    ]}
+                                />
+                            </div>
+                            {open === person.id && (
+                                <div class="win-row is-col">
+                                    <span class="win-row-s">{tr.settings.deniedByVoice}</span>
+                                    <div class="win-tags">
+                                        {(catalog?.capabilities ?? []).map((capability) => {
+                                            const denied = person.restrictions.deny?.includes(capability.permission) ?? false;
+                                            return (
+                                                <button
+                                                    key={capability.id}
+                                                    class={`pill ${denied ? 'pill-pick' : 'pill-off'} cursor-pointer py-6 px-12 min-h-32`}
+                                                    aria-pressed={denied}
+                                                    disabled={busy}
+                                                    onClick={() => void toggleDeny(person, capability.permission)}
+                                                >
+                                                    {denied ? '✕ ' : ''}
+                                                    {capability.title}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    ))}
+                    <div class="win-row">
+                        <div class="win-row-main">
+                            <span class="win-row-t">{tr.settings.householdVoice}</span>
+                            <span class="win-row-s">{byMode(tr.settings.householdVoiceAbout, tr.settings.householdVoiceAboutComputer)}</span>
                         </div>
                         <select
                             class="field"
-                            aria-label={tr.settings.roleOf(person.name)}
-                            value={person.role}
+                            aria-label={tr.settings.householdVoiceRole}
+                            value={household ?? 'member'}
                             disabled={busy}
-                            onChange={(e) =>
-                                void run(() => api.updatePerson(person.id, { role: (e.target as HTMLSelectElement).value as Role }))
-                            }
+                            onChange={(e) => void run(() => api.setHousehold({ role: (e.target as HTMLSelectElement).value as Role }))}
                         >
+                            <option value="member">{tr.settings.householdMember}</option>
+                            <option value="guest">{tr.settings.householdGuest}</option>
+                        </select>
+                    </div>
+                    <div class="win-row">
+                        <button class="btn btn-plain btn-sm" onClick={() => setAdding(true)}>
+                            <IconPlus size={14} />
+                            {tr.settings.addPerson}
+                        </button>
+                    </div>
+                </div>
+            )}
+            {adding && (
+                <Sheet
+                    title={tr.settings.newPerson}
+                    onClose={() => setAdding(false)}
+                    footer={
+                        <>
+                            <button class="btn btn-plain" onClick={() => setAdding(false)}>
+                                {tr.ui.cancel}
+                            </button>
+                            <button class="btn btn-main" disabled={busy || name.trim().length < 2} aria-busy={busy || undefined} onClick={add}>
+                                {tr.settings.addPerson}
+                            </button>
+                        </>
+                    }
+                >
+                    <label class="flex flex-col gap-6">
+                        <span class="win-label">{tr.settings.newPersonName}</span>
+                        <input class="field" value={name} placeholder={tr.settings.namePlaceholder} data-autofocus onInput={(e) => setName((e.target as HTMLInputElement).value)} />
+                    </label>
+                    <label class="flex flex-col gap-6">
+                        <span class="win-label">{tr.settings.passwordOptionalLabel}</span>
+                        <input class="field" type="password" value={password} placeholder={tr.settings.passwordOptional} onInput={(e) => setPassword((e.target as HTMLInputElement).value)} />
+                        <span class="win-hint">{byMode(tr.settings.noPasswordNote, tr.settings.noPasswordNoteComputer)}</span>
+                    </label>
+                    <label class="flex flex-col gap-6">
+                        <span class="win-label">{tr.settings.newPersonRole}</span>
+                        <select class="field" value={role} onChange={(e) => setRole((e.target as HTMLSelectElement).value as Role)}>
                             {ROLES.map((value) => (
                                 <option key={value} value={value}>
                                     {roleTitles()[value]}
                                 </option>
                             ))}
                         </select>
-                        <button
-                            class="pill pill-off pill-btn"
-                            aria-expanded={open === person.id}
-                            onClick={() => setOpen(open === person.id ? null : person.id)}
-                        >
-                            {open === person.id ? tr.settings.collapse : tr.settings.rights}
-                        </button>
-                    </div>
-                    {open === person.id && (
-                        <div class="flex flex-col gap-8">
-                            <span class="t-caption">{tr.settings.deniedByVoice}</span>
-                            <div class="flex flex-wrap gap-6">
-                                {(catalog?.capabilities ?? []).map((capability) => {
-                                    const denied = person.restrictions.deny?.includes(capability.permission) ?? false;
-                                    return (
-                                        <button
-                                            key={capability.id}
-                                            class={`pill ${denied ? 'pill-yandex' : 'pill-off'} cursor-pointer py-6 px-12 min-h-36`}
-                                            aria-pressed={denied}
-                                            disabled={busy}
-                                            onClick={() => void toggleDeny(person, capability.permission)}
-                                        >
-                                            {denied ? '✕ ' : ''}
-                                            {capability.title}
-                                        </button>
-                                    );
-                                })}
-                            </div>
-                            <div class="flex gap-8 flex-wrap">
-                                <button
-                                    class="pill pill-off pill-btn"
-                                    disabled={busy}
-                                    onClick={() =>
-                                        void run(() =>
-                                            api.updatePerson(person.id, { status: person.status === 'active' ? 'disabled' : 'active' }),
-                                        )
-                                    }
-                                >
-                                    {person.status === 'active' ? tr.settings.suspend : tr.settings.restore}
-                                </button>
-                                <button
-                                    class="pill pill-off pill-btn"
-                                    disabled={busy}
-                                    onClick={async () => {
-                                        const yes = await ask({
-                                            title: tr.settings.removePersonTitle(person.name),
-                                            text: tr.settings.removePersonText,
-                                            ok: tr.settings.removeOk,
-                                            danger: true,
-                                        });
-                                        if (yes) void run(() => api.removePerson(person.id));
-                                    }}
-                                >
-                                    {tr.settings.removeAction}
-                                </button>
-                            </div>
-                        </div>
+                    </label>
+                    {error && (
+                        <p class="win-callout m-0" role="alert">
+                            {error}
+                        </p>
                     )}
-                </div>
-            ))}
-
-            <div class="flex gap-8 flex-wrap pt-10 bt-divider">
-                <input
-                    class="field flex-1 min-w-120"
-                    value={name}
-                    placeholder={tr.settings.namePlaceholder}
-                    aria-label={tr.settings.newPersonName}
-                    onInput={(e) => setName((e.target as HTMLInputElement).value)}
-                />
-                <input
-                    class="field flex-1 min-w-120"
-                    type="password"
-                    value={password}
-                    placeholder={tr.settings.passwordOptional}
-                    aria-label={tr.settings.passwordOptionalLabel}
-                    onInput={(e) => setPassword((e.target as HTMLInputElement).value)}
-                />
-                <select
-                    class="field"
-                    aria-label={tr.settings.newPersonRole}
-                    value={role}
-                    onChange={(e) => setRole((e.target as HTMLSelectElement).value as Role)}
-                >
-                    {ROLES.map((value) => (
-                        <option key={value} value={value}>
-                            {roleTitles()[value]}
-                        </option>
-                    ))}
-                </select>
-                <button
-                    class="pill pill-own pill-btn"
-                    disabled={busy || name.trim().length < 2}
-                    onClick={() => void add()}
-                >
-                    {tr.settings.addAction}
-                </button>
-            </div>
-            <p class="t-caption m-0 mt-8">
-                {byMode(tr.settings.noPasswordNote, tr.settings.noPasswordNoteComputer)}
-            </p>
+                </Sheet>
+            )}
         </section>
     );
 }
 
-/** Ключи для скриптов и агентов: ровно те права, что дал администратор; секрет показывается один раз. */
+/** Группа права ключа: смотреть, делать, настраивать — по имени права. */
+function keyGroup(id: string): 'see' | 'do' | 'manage' {
+    if (id.endsWith('.view')) return 'see';
+    if (['station.say', 'station.mode', 'mcp.use'].includes(id)) return 'do';
+    return 'manage';
+}
+
+/**
+ * Ключи для скриптов и агентов: ровно те права, что дал администратор; секрет показывается один раз. Строки — имя,
+ * когда пользовались, права кодом; «Отозвать» — за «⋯»; новый ключ — своим окном с правами по смыслу.
+ */
 function Keys({ catalog }: { catalog: AccessCatalog | null }) {
     const [keys, setKeys] = useState<ApiKey[] | null>(null);
+    const [creating, setCreating] = useState(false);
+    const [busy, setBusy] = useState(false);
     const [name, setName] = useState('');
     const [grants, setGrants] = useState<string[]>(['station.view', 'station.say']);
     const [secret, setSecret] = useState<string | null>(null);
@@ -355,13 +367,17 @@ function Keys({ catalog }: { catalog: AccessCatalog | null }) {
     useEffect(() => void read(), []);
     const create = async () => {
         setError(null);
+        setBusy(true);
         try {
             const created = await api.createApiKey(name.trim(), grants);
             setSecret(created.secret);
             setName('');
+            setCreating(false);
             await read();
         } catch (e) {
             setError(problemOf(e));
+        } finally {
+            setBusy(false);
         }
     };
     const revoke = async (key: ApiKey) => {
@@ -375,6 +391,12 @@ function Keys({ catalog }: { catalog: AccessCatalog | null }) {
         }
     };
     const choices = (catalog?.permissions ?? []).filter((permission) => !['users.manage', 'audit.view'].includes(permission.id));
+    const groups: Array<{ id: 'see' | 'do' | 'manage'; title: string }> = [
+        { id: 'see', title: tr.settings.keyGroupSee },
+        { id: 'do', title: tr.settings.keyGroupDo },
+        { id: 'manage', title: tr.settings.keyGroupManage },
+    ];
+    const live = keys?.filter((key) => !key.revoked);
     return (
         <section class="card glass card-list" aria-labelledby="keys-h">
             <div class="section-head">
@@ -383,78 +405,111 @@ function Keys({ catalog }: { catalog: AccessCatalog | null }) {
                 </h2>
                 <span class="t-meta">{tr.settings.keysFor}</span>
             </div>
-            {error && (
-                <p class="t-caption c-dot-offline m-0 mb-8" role="alert">
+            {error && !creating && (
+                <p class="win-callout m-0 mb-8" role="alert">
                     {error}
                 </p>
             )}
             {secret && (
-                <div
-                    role="status"
-                    class="py-12 px-14 r-panel bg-pill-yandex-bg c-pill-yandex-fg mb-8"
-                >
-                    <p class="m-0 mb-6 fs-13 fw-700">{tr.settings.copyKeyNow}</p>
-                    <code class="break-all fs-13">{secret}</code>
-                    <div class="mt-8">
-                        <button class="pill pill-off pill-btn-sm" onClick={() => setSecret(null)}>
-                            {tr.settings.copiedKey}
+                <div role="status" class="win-callout flex-col mb-8">
+                    <b>{tr.settings.copyKeyNow}</b>
+                    <code class="win-code break-all">{secret}</code>
+                    <button class="btn btn-plain btn-sm self-start" onClick={() => setSecret(null)}>
+                        {tr.settings.copiedKey}
+                    </button>
+                </div>
+            )}
+            {!keys && !error ? (
+                <SkeletonRows rows={1} icon />
+            ) : (
+                <div class="win-group">
+                    {live?.map((key) => (
+                        <div key={key.id} class="win-row">
+                            <span class="win-row-ico">
+                                <IconKey size={16} />
+                            </span>
+                            <div class="win-row-main">
+                                <span class="win-row-t">{key.name}</span>
+                                <span class="win-row-s">{key.lastUsedAt ? tr.settings.usedAgo(timeAgo(key.lastUsedAt)) : tr.settings.neverUsed}</span>
+                                <span class="win-tags mt-6">
+                                    {key.grants.slice(0, 3).map((grant) => (
+                                        <span key={grant} class="win-code">
+                                            {grant}
+                                        </span>
+                                    ))}
+                                    {key.grants.length > 3 && <span class="win-chip">{tr.settings.grantsMore(key.grants.length - 3)}</span>}
+                                </span>
+                            </div>
+                            <MoreMenu title={key.name} items={[{ label: tr.settings.revokeAction, danger: true, act: () => void revoke(key) }]} />
+                        </div>
+                    ))}
+                    <div class="win-row">
+                        <button class="btn btn-plain btn-sm" onClick={() => (setError(null), setCreating(true))}>
+                            <IconPlus size={14} />
+                            {tr.settings.createKey}
                         </button>
                     </div>
                 </div>
             )}
-            {keys
-                ?.filter((key) => !key.revoked)
-                .map((key) => (
-                    <div
-                        key={key.id}
-                        class="list-row"
-                    >
-                        <div class="flex-1 min-w-160 flex flex-col gap-2">
-                            <span class="fw-700">{key.name}</span>
-                            <span class="t-caption">
-                                {key.grants.join(', ')} ·{' '}
-                                {key.lastUsedAt ? tr.settings.usedAgo(timeAgo(key.lastUsedAt)) : tr.settings.neverUsed}
-                            </span>
-                        </div>
-                        <button class="pill pill-off pill-btn" onClick={() => void revoke(key)}>
-                            {tr.settings.revokeAction}
-                        </button>
-                    </div>
-                ))}
-            <div class="flex flex-col gap-8 pt-10 bt-divider">
-                <input
-                    class="field"
-                    value={name}
-                    placeholder={tr.settings.keyPlaceholder}
-                    aria-label={tr.settings.keyName}
-                    onInput={(e) => setName((e.target as HTMLInputElement).value)}
-                />
-                <div class="flex flex-wrap gap-6">
-                    {choices.map((permission) => {
-                        const on = grants.includes(permission.id);
-                        return (
-                            <button
-                                key={permission.id}
-                                class={`pill ${on ? 'pill-own' : 'pill-off'} cursor-pointer py-6 px-12 min-h-36`}
-                                aria-pressed={on}
-                                title={permission.title}
-                                onClick={() =>
-                                    setGrants(on ? grants.filter((grant) => grant !== permission.id) : [...grants, permission.id])
-                                }
-                            >
-                                {permission.id}
+            {creating && (
+                <Sheet
+                    title={tr.settings.newKey}
+                    meta={<span class="win-chip">{tr.settings.keysFor}</span>}
+                    icon={
+                        <span class="win-row-ico win-head-ico">
+                            <IconKey size={20} />
+                        </span>
+                    }
+                    onClose={() => setCreating(false)}
+                    footer={
+                        <>
+                            <button class="btn btn-plain" onClick={() => setCreating(false)}>
+                                {tr.ui.cancel}
                             </button>
-                        );
-                    })}
-                </div>
-                <button
-                    class="pill pill-own cursor-pointer py-8 px-14 self-start"
-                    disabled={name.trim().length < 2 || !grants.length}
-                    onClick={() => void create()}
+                            <button class="btn btn-main" disabled={busy || name.trim().length < 2 || !grants.length} aria-busy={busy || undefined} onClick={() => void create()}>
+                                {tr.settings.createKey}
+                            </button>
+                        </>
+                    }
                 >
-                    {tr.settings.createKey}
-                </button>
-            </div>
+                    <label class="flex flex-col gap-6">
+                        <span class="win-label">{tr.settings.keyName}</span>
+                        <input class="field" value={name} placeholder={tr.settings.keyPlaceholder} data-autofocus onInput={(e) => setName((e.target as HTMLInputElement).value)} />
+                    </label>
+                    <WinSection title={tr.settings.keyWhatCan} aside={tr.settings.keyChosen(grants.length, choices.length)}>
+                        {groups.map((group) => {
+                            const list = choices.filter((permission) => keyGroup(permission.id) === group.id);
+                            if (list.length === 0) return null;
+                            return (
+                                <div key={group.id} class="flex flex-col gap-6">
+                                    <span class="win-sec-title">{group.title}</span>
+                                    <div class="win-group">
+                                        {list.map((permission) => {
+                                            const on = grants.includes(permission.id);
+                                            return (
+                                                <label key={permission.id} class="win-row win-check">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={on}
+                                                        onChange={() => setGrants(on ? grants.filter((grant) => grant !== permission.id) : [...grants, permission.id])}
+                                                    />
+                                                    <span class="win-row-main win-row-t">{permission.title}</span>
+                                                    <span class="win-code">{permission.id}</span>
+                                                </label>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </WinSection>
+                    {error && (
+                        <p class="win-callout m-0" role="alert">
+                            {error}
+                        </p>
+                    )}
+                </Sheet>
+            )}
         </section>
     );
 }

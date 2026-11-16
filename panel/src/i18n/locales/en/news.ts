@@ -17,6 +17,7 @@ const en: Translation<typeof ru> = {
         '“What’s new?” — DuoWave reads the headlines of these feeds and the model retells them. “Sports news” and other catalog topics use the feeds of that topic. Without feeds, there is no news.',
     yourFeeds: 'Your feeds',
     yourFeedsCount: (on: number, all: number) => ` · ${on} of ${all}`,
+    yourFeedsAside: (on: number, all: number) => `${on} of ${all}`,
     noFeeds: 'None yet: add one from the catalog below, or your own by address.',
     feedLabel: (name: string) => `Feed ${name}`,
     remove: 'remove',

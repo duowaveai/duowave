@@ -107,6 +107,52 @@ pub fn invalid_networks(networks: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// The entries of a list that reach beyond these networks — outside all of them, or wider than the one they start in —
+/// for the startup log of the link's proxies (pc). "private" (every home network) and a typo count as beyond
+/// (`invalid_networks` names a typo).
+#[cfg(feature = "pc")]
+pub fn beyond(networks: &[String], within: &[&str]) -> Vec<String> {
+    let network_of = |network: &str| {
+        let (base, bits) = match network.split_once('/') {
+            Some((base, bits)) => (base, Some(bits)),
+            None => (network, None),
+        };
+        let address = parse(base)?;
+        Some((address, prefix(bits, address.1)?))
+    };
+    networks
+        .iter()
+        .filter(|network| {
+            let Some((address, bits)) = network_of(network) else { return true };
+            !within.iter().any(|outer| {
+                network_of(outer).is_some_and(|(_, outer_bits)| outer_bits <= bits) && in_network(address, outer)
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+/// The entries of a list wider than an IPv4 network of `v4` bits or an IPv6 one of `v6` — "private" too —, for the
+/// startup log of the link's proxies (pc). A typo is not counted here (`invalid_networks` names it).
+#[cfg(feature = "pc")]
+pub fn wider_than(networks: &[String], v4: u32, v6: u32) -> Vec<String> {
+    networks
+        .iter()
+        .filter(|network| {
+            if *network == "private" {
+                return true;
+            }
+            let (base, bits) = match network.split_once('/') {
+                Some((base, bits)) => (base, Some(bits)),
+                None => (network.as_str(), None),
+            };
+            let Some((_, width)) = parse(base) else { return false };
+            prefix(bits, width).is_some_and(|bits| bits < if width == 32 { v4 } else { v6 })
+        })
+        .cloned()
+        .collect()
+}
+
 /// Whether a service's address is this computer or the home network, so what is sent there stays in the house. No
 /// address is nothing sent anywhere. A name without a dot — a Docker service (`asr`), a machine on the home network
 /// (`raspberrypi`) — has no public DNS: it is at home too.
@@ -147,6 +193,17 @@ mod tests {
         assert!(in_networks("fd00::1", &nets(&["private"])));
         assert!(!in_networks("not an ip", &nets(&["private"])));
         assert!(in_networks("192.168.1.7", &nets(&["192.168.1.7"])));
+    }
+
+    #[cfg(feature = "pc")]
+    #[test]
+    fn names_the_entries_beyond_some_networks() {
+        let here = &["127.0.0.0/8", "::1/128", "172.16.0.0/12"];
+        assert!(
+            beyond(&nets(&["127.0.0.1", "::1", "172.17.0.0/16", "172.18.0.1", "::ffff:172.17.0.1"]), here).is_empty()
+        );
+        let out = ["192.0.2.5", "10.0.0.0/8", "172.0.0.0/8", "0.0.0.0/0", "fd00::/8", "private", "10.0.0.0/40"];
+        assert_eq!(beyond(&nets(&out), here), nets(&out), "outside, wider, every home network, a typo");
     }
 
     #[test]

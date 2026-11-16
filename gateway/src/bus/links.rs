@@ -220,6 +220,15 @@ impl Links {
         if links.len() != before {
             self.write_links(&links, actor.clone())?;
         }
+        // Its «всегда» and marks go too — said for it as a caller or about its own handles: the same app put in again
+        // is asked anew.
+        let mut words = self.dangers();
+        let (before, own) = (words.len(), format!("{}:", address.as_str()));
+        words.retain(|word| word.caller != address.as_str() && !word.target.starts_with(&own));
+        if words.len() != before {
+            self.settings.set(&BUS_DANGERS, &words, actor.clone())?;
+            self.forget();
+        }
         let mut modes = self.modes();
         if modes.own.remove(address.as_str()).is_some() {
             self.settings.set(&BUS_MODES, &modes, actor)?;

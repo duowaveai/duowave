@@ -68,7 +68,7 @@ impl DialogInfo for DialogConnector {
     }
 
     fn cloud(&self) -> bool {
-        self.0.brain().cloud
+        self.0.in_cloud()
     }
 }
 

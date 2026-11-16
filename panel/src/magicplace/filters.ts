@@ -6,7 +6,7 @@ import type { CatalogEntry, CatalogFace, CatalogPlace } from '../api';
 import { tr } from '../i18n';
 import { isBlocked, isInstalled, onStationOnly } from '../screens/catalog';
 
-export type KindFilter = 'character' | 'app' | 'theme';
+export type KindFilter = 'character' | 'app' | 'theme' | 'agent';
 export type StateFilter = 'installed' | 'available' | 'update';
 
 export interface Filters {
@@ -21,14 +21,14 @@ export const NO_FILTERS: Filters = { kind: null, face: null, place: null, state:
 /** «Новое» — появилось в каталоге за столько дней. */
 export const NEW_DAYS = 30;
 
-const KINDS: KindFilter[] = ['character', 'app', 'theme'];
+const KINDS: KindFilter[] = ['character', 'app', 'theme', 'agent'];
 const FACES: CatalogFace[] = ['widget', 'skill', 'window'];
 const PLACES: CatalogPlace[] = ['gateway', 'computer', 'station', 'network'];
 const STATES: StateFilter[] = ['installed', 'available', 'update'];
 
 /** Вид пакета для людей: плагин и приложение — оба «приложение». */
 export function kindOf(entry: CatalogEntry): KindFilter {
-    return entry.kind === 'character' ? 'character' : entry.kind === 'theme' ? 'theme' : 'app';
+    return entry.kind === 'character' ? 'character' : entry.kind === 'theme' ? 'theme' : entry.kind === 'agent' ? 'agent' : 'app';
 }
 
 /** Состояние пакета для фильтра. */
@@ -93,6 +93,7 @@ export function filterWords(entry: CatalogEntry): string[] {
 }
 
 export function kindTitle(kind: KindFilter): string {
+    if (kind === 'agent') return tr.magicplace.kindAgents;
     return kind === 'character' ? tr.magicplace.kindCharacters : kind === 'theme' ? tr.magicplace.kindThemes : tr.magicplace.kindApps;
 }
 

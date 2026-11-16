@@ -22,6 +22,7 @@ pub mod mcp_runtime;
 pub mod media;
 pub mod phrases;
 pub mod quickjs;
+mod quickjs_memory;
 pub mod registry;
 pub mod routes;
 pub mod runtime;

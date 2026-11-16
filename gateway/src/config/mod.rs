@@ -68,8 +68,9 @@ pub struct PluginsConfig {
     /// gateway's program (`PluginHost::storage_reserve_mb`: its growth and a floor, some 8 MB; the new version is tried
     /// from memory and takes the old one's place, docs/plans/station-update-space.md).
     pub storage_reserve_mb: Option<u64>,
-    /// PLUGINS_PRESSURE_ACTION: `disable` (default: the plugin switched on last goes off at «critical» on the station)
-    /// or `warn` (only the log and the panel) — the owner's open decision 3.
+    /// PLUGINS_PRESSURE_ACTION: `sleep` (default; `disable` is the word before: at «critical» on the station the app,
+    /// else the plugin, switched on last falls asleep and wakes by itself once the memory is back) or `warn` (only the
+    /// log and the panel) — the owner's decision 16.11.2026.
     pub pressure_action: crate::plugins::budget::PressureAction,
     /// PLUGINS_BUNDLED: the packages built into the gateway (packages/bundled.json) are laid out into PACKAGES_DIR at
     /// the start, on the first time switched on; `0` leaves them out and the built-in skills answer alone. Off in tests
@@ -130,6 +131,14 @@ pub struct AppConfig {
     pub tls: Option<TlsConfig>,
     /// The hosts a request may name besides IPs and local names: ALLOWED_HOSTS and the public URLs' hosts.
     pub allowed_hosts: Vec<String>,
+    /// The link's own TLS port on a computer that helps (LINK_PORT, src/helpers/link_serve.rs): PORT + 1 when unset
+    /// (none when PORT is the last port), `0` an ephemeral one (tests), `off` none.
+    pub link_port: Option<u16>,
+    /// Proxies at another address than this computer that may hand the link on in plain HTTP (LINK_PROXY_FROM,
+    /// CIDRs): only a proxy container's address on this machine, or a small compose network, as the link's requests and
+    /// answers cross that hop unencrypted and any address in it may say whom a link came for (anything wider than a /24,
+    /// an IPv6 /64, is warned of at the start). A proxy on this computer itself needs nothing.
+    pub link_proxy_from: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -770,6 +779,11 @@ impl Config {
         if env.get("DATA_DIR").is_none() && env.get("PACKAGES_DIR").is_none() {
             config.plugins.bundled = env.flag("PLUGINS_BUNDLED", false);
         }
+        // A served test computer binds its link port beside its main one: a free one, never PORT + 1 — the port of
+        // the gateway that runs on this machine.
+        if env.get("LINK_PORT").is_none() {
+            config.app.link_port = Some(0);
+        }
         config
     }
 }
@@ -796,6 +810,8 @@ fn build(env: &Env) -> Config {
     let threshold = env.number("VAD_THRESHOLD", 0.5);
     let media_base_url =
         env.get("MEDIA_BASE_URL").map(|url| url.trim_end_matches('/').to_string()).filter(|url| !url.is_empty());
+    let port =
+        env.get("PORT").and_then(|port| port.trim().parse().ok()).filter(|port| *port > 0).unwrap_or(DEFAULT_PORT);
     let mut allowed_hosts: Vec<String> =
         env.list("ALLOWED_HOSTS", &[]).into_iter().map(|name| name.to_ascii_lowercase()).collect();
     // LiveKit's public and page hosts are the panel's (src/connectors): the Host check takes them as they change.
@@ -806,11 +822,7 @@ fn build(env: &Env) -> Config {
         data_dir: env.get("DATA_DIR").map(str::trim).filter(|root| !root.is_empty()).map(PathBuf::from),
         app: AppConfig {
             env: env.string("NODE_ENV", "development"),
-            port: env
-                .get("PORT")
-                .and_then(|port| port.trim().parse().ok())
-                .filter(|port| *port > 0)
-                .unwrap_or(DEFAULT_PORT),
+            port,
             public_port: env.get("PUBLIC_PORT").and_then(|port| port.trim().parse().ok()).filter(|port| *port > 0),
             tls: match (env.get("TLS_CERT_FILE"), env.get("TLS_KEY_FILE")) {
                 (Some(cert), Some(key)) => Some(TlsConfig {
@@ -821,6 +833,12 @@ fn build(env: &Env) -> Config {
                 _ => None,
             },
             allowed_hosts,
+            link_port: match env.get("LINK_PORT").map(str::trim) {
+                None | Some("") => port.checked_add(1),
+                Some("off") => None,
+                Some(given) => given.parse().ok(),
+            },
+            link_proxy_from: env.list("LINK_PROXY_FROM", &[]),
         },
         gateway: GatewayConfig {
             uniproxy_path: socket_path(&env.string("UNIPROXY_PATH", "/uni.ws")),
@@ -935,7 +953,7 @@ fn build(env: &Env) -> Config {
             pressure_action: env
                 .optional("PLUGINS_PRESSURE_ACTION")
                 .and_then(|action| crate::plugins::budget::PressureAction::parse(&action))
-                .unwrap_or(crate::plugins::budget::PressureAction::Disable),
+                .unwrap_or(crate::plugins::budget::PressureAction::Sleep),
             bundled: env.flag("PLUGINS_BUNDLED", true),
             schedules: env.flag("PLUGINS_SCHEDULES", true),
             node_dir: env.get("NODE_DIR").map(PathBuf::from).unwrap_or_else(|| data_path(env, "node", "data/node")),
@@ -1316,6 +1334,11 @@ fn validate(env: &Env) -> Vec<String> {
             problems.push("CALLS_STATION_MIC_PORT must be a port or empty".into());
         }
     }
+    if let Some(port) = env.get("LINK_PORT").map(str::trim).filter(|port| !port.is_empty() && *port != "off") {
+        if port.parse::<u16>().is_err() {
+            problems.push("LINK_PORT must be a port, 0 or off".into());
+        }
+    }
 
     for key in [
         "RECORDER_ENABLED",
@@ -1582,6 +1605,23 @@ mod tests {
         assert_eq!(split.dialog.models.smart, "qwen");
         let old = Config::load(&Env::from_pairs([("DIALOG_LISTEN_AFTER_QUESTION", "false")])).unwrap();
         assert_eq!(old.dialog.listen, ListenMode::Never);
+    }
+
+    #[test]
+    fn the_link_port_is_the_next_one_unless_named_or_switched_off() {
+        let port =
+            |pairs: &[(&str, &str)]| Config::load(&Env::from_pairs(pairs.iter().copied())).unwrap().app.link_port;
+        assert_eq!(port(&[]), Some(7781), "beside the panel's 7780");
+        assert_eq!(port(&[("PORT", "8080")]), Some(8081));
+        assert_eq!(port(&[("PORT", "65535")]), None, "no port after the last one");
+        assert_eq!(port(&[("LINK_PORT", "9443")]), Some(9443));
+        assert_eq!(port(&[("LINK_PORT", "0")]), Some(0), "an ephemeral one, for tests");
+        assert_eq!(port(&[("LINK_PORT", "off")]), None);
+        let wrong = Config::load(&Env::from_pairs([("LINK_PORT", "seventy")])).unwrap_err();
+        assert!(wrong.problems.iter().any(|problem| problem.contains("LINK_PORT")), "{:?}", wrong.problems);
+        let proxies = Config::load(&Env::from_pairs([("LINK_PROXY_FROM", "172.17.0.0/16, 10.0.0.2")])).unwrap();
+        assert_eq!(proxies.app.link_proxy_from, vec!["172.17.0.0/16", "10.0.0.2"]);
+        assert!(Config::load(&Env::default()).unwrap().app.link_proxy_from.is_empty());
     }
 
     #[test]

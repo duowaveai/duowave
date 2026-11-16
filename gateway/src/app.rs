@@ -17,6 +17,7 @@ use crate::config::Config;
 use crate::connectors::settings::ConnectorSettings;
 use crate::connectors::{ConnectorLinks, ConnectorsService};
 use crate::core::events::EventBus;
+use crate::core::identity::home::{DeviceKind, Identity};
 use crate::dialog::brain::BrainService;
 use crate::dialog::{BrainSource, DialogService, PersonaService};
 use crate::gateway::mode::ModeService;
@@ -53,6 +54,8 @@ pub struct App {
     pub events: EventBus,
     pub secrets: Arc<SecretsService>,
     pub settings: Arc<SettingsService>,
+    /// Who this gateway is (src/core/identity/home.rs): the home it is in, its own id and name.
+    pub identity: Arc<Identity>,
     pub access: Arc<AccessService>,
     /// The requests going now and the journal; the `RequestStarter` sessions start requests with.
     pub requests: Arc<RequestsService>,
@@ -125,6 +128,10 @@ pub struct App {
     pub workshop: Arc<crate::plugins::workshop::Workshop>,
     /// The talk layer (src/talk): the records of works, what the brain knows now.
     pub talk: Arc<crate::talk::TalkLayer>,
+    /// The works in folders, the helper's heavy part (src/works): work folders, agents, work copies, journals of runs.
+    /// A computer's part; the talk layer reaches it through its port (talk/folder.rs).
+    #[cfg(feature = "pc")]
+    pub works: Option<Arc<crate::works::FolderWorks>>,
     /// The apps' history (src/plugins/history): every step and version kept by hash; None when its folder cannot be
     /// made — the gateway goes on without it.
     pub history: Option<Arc<crate::plugins::history::History>>,
@@ -146,6 +153,10 @@ pub struct App {
     /// The own voice's server the desktop app sets up and keeps (src/speech/tts/managed.rs).
     #[cfg(feature = "pc")]
     pub managed_tts: Option<Arc<crate::speech::tts::managed::ManagedTts>>,
+    /// The built-in helper (src/helpers/builtin.rs): this computer's heavy part behind the helpers' contract —
+    /// `/home/v1` answers through it, and a computer that is not in the station role takes its own parts through it.
+    #[cfg(feature = "pc")]
+    pub builtin: Arc<crate::helpers::builtin::BuiltinHelper>,
     /// Our own calls (src/calls): the hub, the station clients, the bridges, the Telegram bot.
     #[cfg(feature = "pc")]
     pub calls: Arc<crate::calls::CallsService>,
@@ -153,10 +164,18 @@ pub struct App {
     pub placement: Arc<PlacementService>,
     /// What works where, now (src/placement/availability.rs): the panels and the mode switch ask it.
     pub availability: Arc<AvailabilityService>,
+    /// The helpers (src/helpers): the list, the choice of road, the regulator.
+    pub helpers: Arc<crate::helpers::Helpers>,
     /// The station's cloud hearing and voice as the panel sets them (src/speech/cloud_speech.rs).
     pub cloud_speech: Arc<crate::speech::cloud_speech::CloudSpeech>,
-    /// The station's home server (src/home_server): the computer it leans on, while it is up.
+    /// The station's home server (src/home_server): the helpers' entry `home-computer`, in the old shape.
     pub home_server: Arc<crate::home_server::HomeServerService>,
+    /// Who this computer helps over the link («Помогаю», src/helpers/clients.rs).
+    #[cfg(feature = "pc")]
+    pub clients: Arc<crate::helpers::clients::Clients>,
+    /// The helper's side of the link (src/helpers/link_serve.rs): its TLS port, the pairings, the homes' links.
+    #[cfg(feature = "pc")]
+    pub link: Arc<crate::helpers::link_serve::LinkServer>,
     /// The computer's watches over the stations' gateways (one per station with a placement of its own), and the
     /// moves between the computer and a station.
     #[cfg(feature = "pc")]
@@ -184,7 +203,10 @@ impl App {
         self.presence.start();
         // Where the gateway runs: the safety net's news on the station, the watch over the station's gateway here.
         self.placement.start();
-        self.home_server.start();
+        // The built-in helper follows what it declares; the helpers' tick looks at its model servers.
+        #[cfg(feature = "pc")]
+        self.builtin.start();
+        self.helpers.start();
         #[cfg(feature = "pc")]
         self.station_gateway.start();
         // The live channel of each station whose gateway runs on it, relayed to this gateway's panels.
@@ -194,6 +216,11 @@ impl App {
         self.retention.start();
         // The old deals and their days cleaned: now and daily.
         self.router.start();
+        // The works in folders: old works, journals and copies cleaned.
+        #[cfg(feature = "pc")]
+        if let Some(works) = &self.works {
+            works.start_cleaning();
+        }
         self.updates.spawn_checks();
         // On the station: what an update left, and a trial of a new version from memory (src/updates/trial.rs).
         self.updates.start_on_station();
@@ -309,6 +336,38 @@ impl App {
         let settings = Arc::new(SettingsService::new(db.clone(), events.clone()));
         // The household's language for the gateway's own words (src/locale/text.rs).
         crate::locale::text::remember_household(crate::locale::household(&settings));
+        // Who this gateway is: its home and itself, made when missing — after the other gateway's package, which may
+        // bring the home, and before the audit log listens (nobody made them).
+        let identity = Arc::new(Identity::new(
+            settings.clone(),
+            secrets.clone(),
+            db.clone(),
+            DeviceKind::of(crate::core::build::Profile::for_role(config.placement.role.as_deref())),
+            events.clone(),
+        ));
+        if let Err(error) = identity.ensure() {
+            tracing::error!("identity: the home and this gateway's id are not made: {error}");
+        }
+        // This computer as a helper (stage 7): who it helps, and its side of the link — its certificate made at the
+        // first start of a computer that helps (never in the station role).
+        #[cfg(feature = "pc")]
+        let (clients, link) = {
+            let station = crate::core::build::Profile::for_role(config.placement.role.as_deref()).station;
+            let clients =
+                Arc::new(crate::helpers::clients::Clients::new(settings.clone(), secrets.clone(), events.clone()));
+            let link = Arc::new(crate::helpers::link_serve::LinkServer::new(
+                config.clone(),
+                secrets.clone(),
+                settings.clone(),
+                events.clone(),
+                clients.clone(),
+                !station,
+            ));
+            (clients, link)
+        };
+        // The old «Домашний сервер» into the helpers' list (and back, for a rollback): before anything reads the
+        // placement.
+        crate::helpers::legacy::at_start(&config, &settings, &secrets);
         // «Выход в интернет» (src/egress): its routes are read by every HTTP client; decided before anything goes out.
         let egress =
             crate::egress::Egress::new(config.clone(), db.clone(), settings.clone(), secrets.clone(), events.clone());
@@ -366,19 +425,26 @@ impl App {
             availability.set_cloud(cloud_speech.clone());
             voice.set_cloud(cloud_speech.clone());
         }
-        // The station's home server: its state feeds what works where and /health; our voice goes through it first.
-        let home_server = crate::home_server::HomeServerService::new(
+        // The helpers: their state feeds what works where and /health; a station's voice goes through them first.
+        let helpers = crate::helpers::Helpers::new(
             config.clone(),
             settings.clone(),
             secrets.clone(),
             events.clone(),
+            profile,
+            identity.clone(),
         );
-        availability.set_home_server(home_server.clone());
-        placement.set_home_server(home_server.clone());
+        availability.set_helpers(helpers.clone());
+        placement.set_home_server(helpers.clone());
+        // Our voice through the helpers on every gateway: a computer's own first (its built-in helper), the regulator
+        // over a cloud one; only a station leans on them for its «Голос» window (`HomeVoice::leans`).
+        voice.set_home(helpers.clone());
+        // «Свой» on the station stands on the cloud's hearing and voice while no helper gives them.
         if profile.station {
-            home_server.set_cloud(cloud_speech.clone());
-            voice.set_home(home_server.clone());
+            helpers.set_cloud(cloud_speech.clone());
         }
+        // The old «Домашний сервер», now the helpers' entry `home-computer`, for the code and the routes that ask it.
+        let home_server = crate::home_server::HomeServerService::over(helpers.clone());
         let mode_service = Arc::new(ModeService::new(
             config.gateway.mode,
             settings.clone(),
@@ -390,15 +456,15 @@ impl App {
         crate::talk::input::hold_at_start(&mode_service, &settings, profile.station);
         let modes: Arc<dyn ModeSource> = mode_service.clone();
         availability.set_modes(modes.clone());
-        // The gateway's own switch out of «Свой» and back, as its home server goes and comes.
-        home_server.set_modes(mode_service.clone());
+        // The gateway's own switch out of «Свой» and back, as its helpers go and come.
+        helpers.set_modes(mode_service.clone());
         // The station by itself in «Свой» on the cloud's hearing and voice: one gone (off in its panel, the key
         // removed) — «Свой» gives way to «Шлюз» rather than stay deaf or mute (docs/plans/speaker-alone.md).
         if profile.station && tokio::runtime::Handle::try_current().is_ok() {
             let (modes, registry) = (mode_service.clone(), availability.clone());
             events.on("cloud-svoi", move |event| {
                 let crate::core::events::GatewayEvent::AvailabilityChanged { features } = &*event else { return };
-                // With a home server its watch leaves and brings back «Свой» itself (src/home_server).
+                // With helpers their watch leaves and brings back «Свой» itself (src/helpers).
                 let alone = registry.context().placement == crate::core::availability::Placement::Station;
                 let own = modes.current() == crate::settings::definitions::PanelMode::Own;
                 if !alone || !own || !features.iter().any(|id| id == "mode.own") {
@@ -424,6 +490,7 @@ impl App {
         let health = Arc::new(HealthStatusService::new(modes.clone()));
         health.set_placement(placement.clone());
         health.set_gate(availability.clone());
+        health.set_identity(identity.clone());
         let updates = Arc::new(UpdatesService::new(&config, events.clone()));
         if profile.station {
             updates.set_station(placement.managed_by());
@@ -438,13 +505,49 @@ impl App {
             secrets.clone(),
             events.clone(),
         )?);
-        // On the station the computer's own model is one of «Мозг»'s providers while the home server is set up.
-        if profile.station {
-            crate::home_server::keep_brain_provider(&home_server, &brain);
-            let (home, models) = (home_server.clone(), brain.clone());
-            events.on("home-brain", move |event| {
-                if let crate::core::events::GatewayEvent::HomeServerChanged { .. } = &*event {
-                    crate::home_server::keep_brain_provider(&home, &models);
+        // «Мозг» knows the helpers (docs/plans/home-and-helpers.md, stage 4): each helper with a model has its row, a
+        // chosen model whose helper is away gives way at once, and the gateway sets a backup by itself where it keeps
+        // its own settings.
+        brain.set_helpers(helpers.clone());
+        {
+            let placement = placement.clone();
+            brain.set_owner(Arc::new(move || placement.owns_settings()));
+        }
+        // A model whose VPN does not answer now («Выход в интернет», published since `Egress::new`) stands in for
+        // nobody: not for an away helper's model, not as the gateway's own backup.
+        brain.set_refusals(Arc::new(|provider| crate::egress::refused_row(&format!("provider:{provider}"))));
+        if let Err(error) = brain.keep_helper_models() {
+            tracing::warn!("brain: the helpers' models are not kept: {}", error.message);
+        }
+        brain.keep_backup();
+        {
+            use crate::core::events::GatewayEvent;
+            // The rows follow the helpers; a row a choice kept goes once no choice answers with it; a helper up, or one
+            // away (the next helper is wanted then), gets the list asked that it could not give before.
+            let models = Arc::downgrade(&brain);
+            events.on("helper-models", move |event| {
+                let follows = match &*event {
+                    GatewayEvent::HelpersChanged { .. } | GatewayEvent::HelperUp { .. } => true,
+                    GatewayEvent::HelperDown { .. } => true,
+                    GatewayEvent::BrainChanged { change, .. } => change == "choice",
+                    _ => false,
+                };
+                if let Some(brain) = models.upgrade().filter(|_| follows) {
+                    if let Err(error) = brain.keep_helper_models() {
+                        tracing::warn!("brain: the helpers' models are not kept: {}", error.message);
+                    }
+                }
+            });
+            let backup = Arc::downgrade(&brain);
+            events.on("brain-backup", move |event| {
+                let looks_again = match &*event {
+                    GatewayEvent::BrainChanged { change, .. } => change != "backup.auto",
+                    GatewayEvent::HelpersChanged { .. } => true,
+                    GatewayEvent::SettingsChanged { key, .. } => key == crate::settings::definitions::AWAY.key,
+                    _ => false,
+                };
+                if let Some(brain) = backup.upgrade().filter(|_| looks_again) {
+                    brain.keep_backup();
                 }
             });
         }
@@ -508,23 +611,36 @@ impl App {
             }
             _ => None,
         };
-        // On the station recognition goes the computer's way first, then the cloud's (src/home_server/chain.rs).
-        let speech = if profile.station {
-            let chain = crate::home_server::chain::station_recognizer(cloud_speech.clone(), home_server.clone());
-            SpeechService::with_recognizer(config.speech.clone(), Some(Arc::new(chain)))
+        // The built-in helper (src/helpers/builtin.rs): this computer's heavy part behind the helpers' contract, made in
+        // both roles — `/home/v1` answers through it —; a computer that is not in the station role takes its own
+        // hearing, voice and model through it, first among its helpers.
+        #[cfg(feature = "pc")]
+        let builtin = crate::helpers::builtin::BuiltinHelper::new(crate::helpers::builtin::BuiltinParts {
+            config: config.clone(),
+            db: db.clone(),
+            settings: settings.clone(),
+            secrets: secrets.clone(),
+            events: events.clone(),
+            identity: identity.clone(),
+            local_asr: local_asr.clone(),
+            voice: voice.clone(),
+            local: helpers.local(),
+        });
+        #[cfg(feature = "pc")]
+        if !profile.station {
+            helpers.set_own(builtin.clone());
+            // «Мозг» sees this computer's model servers now: a main model on one of them gets its default backup.
+            brain.keep_backup();
+        }
+        // Recognition goes the helpers' way (src/home_server/chain.rs): this computer's own parts first, then the helpers
+        // of the list, then the cloud while the regulator lets it out — else Yandex.
+        // On the station the cloud is the panel's (src/speech/cloud_speech.rs), read on every request; elsewhere the .env's.
+        let chain = if profile.station {
+            crate::home_server::chain::station_chain(cloud_speech.clone(), helpers.clone())
         } else {
-            #[cfg(feature = "pc")]
-            let speech = match &local_asr {
-                Some(asr) => {
-                    let local = crate::speech::asr::local::recognizer::LocalRecognizer::new(asr.clone());
-                    SpeechService::with_recognizer(config.speech.clone(), Some(Arc::new(local)))
-                }
-                None => SpeechService::new(config.speech.clone()),
-            };
-            #[cfg(not(feature = "pc"))]
-            let speech = SpeechService::new(config.speech.clone());
-            speech
+            crate::home_server::chain::hearing_chain(&config.speech.asr, helpers.clone())
         };
+        let speech = SpeechService::with_recognizer(config.speech.clone(), Some(Arc::new(chain)));
         // The gains the stations' wake words picked outlive a restart: a request without one starts from them.
         let speech = Arc::new(speech.keeping_wake_word_gains(StateStore::open(db.clone(), "wake_word_gain")));
         speech.start(&events);
@@ -652,7 +768,7 @@ impl App {
         let calls_links = crate::skills::CallsLinks {
             messenger: crate::home_server::messenger::HomeMessenger::new(
                 calls_links.messenger.clone(),
-                home_server.clone(),
+                helpers.clone(),
             ),
             ..calls_links
         };
@@ -677,8 +793,12 @@ impl App {
             Arc::new(links::connectors::SkillSettings(connector_settings.clone())),
         );
         plugin_services.set_model(&dialog);
-        // The voices' providers (capabilities/voices.rs): the computer's, ElevenLabs by the owner's key.
-        let voices = Arc::new(crate::capabilities::voices::Voices::new());
+        // The voices' providers (capabilities/voices.rs): the computer's, ElevenLabs by the owner's key — the clouds' only
+        // while the regulator «Что может уходить из дома» lets them out.
+        let voices = {
+            let helpers = helpers.clone();
+            Arc::new(crate::capabilities::voices::Voices::new(Arc::new(move |reach| helpers.lets(reach))))
+        };
         voices.register(Arc::new(crate::capabilities::voices::Computer::new(&voice)));
         #[cfg(feature = "pc")]
         voices.register(Arc::new(crate::capabilities::voices::ElevenLabs::new(&secrets)));
@@ -697,14 +817,14 @@ impl App {
                 settings: settings.clone(),
                 events: events.clone(),
                 media: skills.media_sources.clone(),
-                placement: Arc::new(move || availability.context().placement),
+                placement: Arc::new(move || availability.placement()),
                 runtime: Arc::new(crate::plugins::quickjs::QuickJs),
                 memory: Arc::new(crate::plugins::budget::MachineMemory),
                 gauge,
                 bundled: if config.plugins.bundled { crate::plugins::bundled::packages() } else { Vec::new() },
                 player: Some(skills.player.clone()),
                 watch: Some(skills.player_watch.clone()),
-                home: Some(home_server.clone() as Arc<dyn crate::plugins::controller::HomeLink>),
+                home: Some(helpers.link_for(crate::helpers::contract::Ability::Apps)),
                 gateway_url: format!("http://127.0.0.1:{}", config.app.port),
                 services: Some(plugin_services.clone() as Arc<dyn crate::plugins::host_api::HostServices>),
                 secrets: secrets.clone(),
@@ -729,7 +849,7 @@ impl App {
         plugin_services.set_tasks(&tasks);
         {
             let dialog = dialog.clone();
-            plugins.set_cloud_model(Arc::new(move || dialog.brain().cloud));
+            plugins.set_cloud_model(Arc::new(move || dialog.in_cloud()));
         }
         // Apps and the gateway's services on the bus; the services reach the bus for the plugins' `host.bus`.
         {
@@ -781,7 +901,7 @@ impl App {
                 let (voice, dialog) = (voice.clone(), dialog.clone());
                 files.set_leaving(
                     Arc::new(move || voice.whose(true) == crate::speech::voice_service::Whose::Own),
-                    Arc::new(move || dialog.brain().cloud),
+                    Arc::new(move || dialog.in_cloud()),
                 );
             }
             if config.files.attach && placement.role() != crate::placement::service::Role::Station {
@@ -795,8 +915,7 @@ impl App {
         let schedules = {
             let station_build = placement.role() == crate::placement::service::Role::Station;
             let availability = availability.clone();
-            let leads =
-                move || station_build || availability.context().placement == crate::core::availability::Placement::Pc;
+            let leads = move || station_build || availability.placement() == crate::core::availability::Placement::Pc;
             Arc::new(crate::plugins::schedule::Scheduler::new(
                 db.clone(),
                 Arc::downgrade(&plugins),
@@ -871,7 +990,7 @@ impl App {
             let availability = availability.clone();
             crate::gateway::media::stream::StreamRelays::new(
                 ffmpeg,
-                Arc::new(move || !availability.context().placement.on_station() || on_station_flag),
+                Arc::new(move || !availability.placement().on_station() || on_station_flag),
             )
         };
         skills.player_watch.set_relay(Arc::new(crate::gateway::media::stream::Relay(streams.clone())));
@@ -906,6 +1025,40 @@ impl App {
         crate::talk::tool_work::ToolExecutor::new(&talk, &mcp, Some(&dialog));
         // An app's long task begun in a conversation is a work too: «как там…?», «стоп», its «Готово» said there.
         crate::talk::task_work::TaskExecutor::new(&talk, &tasks, &events, Some(&dialog));
+        // A work in a work folder (docs/plans/router-and-works.md, 10): the executor in both builds, its helper — the
+        // works' module — only on a computer.
+        let folder_executor = crate::talk::folder::FolderExecutor::new(&talk);
+        #[cfg(feature = "pc")]
+        let works = {
+            let dir = config.plugins.dev_dir.with_file_name("works");
+            let mut guarded: Vec<std::path::PathBuf> = vec![
+                config.plugins.packages_dir.clone(),
+                config.plugins.dev_dir.clone(),
+                config.plugins.catalog_dir.clone(),
+                dir.clone(),
+            ];
+            guarded.extend(config.data_dir.clone());
+            guarded.extend(config.skills.state_dir.clone());
+            let works = crate::works::FolderWorks::new(
+                db.clone(),
+                dir,
+                guarded,
+                settings.clone(),
+                secrets.clone(),
+                events.clone(),
+            );
+            folder_executor.attach(works.clone());
+            // The agents' cards from MagicPlace: only those installed from the catalog (src/works/agents.rs).
+            let host = Arc::downgrade(&plugins);
+            works.agents.set_cards(Arc::new(move || {
+                let Some(host) = host.upgrade() else { return Vec::new() };
+                host.agent_cards()
+                    .into_iter()
+                    .map(|(id, title, description, card)| crate::works::agents::Card { id, title, description, card })
+                    .collect()
+            }));
+            Some(works)
+        };
         {
             // «…: готово.» of a work synthesized ahead, while it is made: its title is known from the start.
             let voice = voice.clone();
@@ -1016,6 +1169,26 @@ impl App {
             });
             dialog.attach_usage(usage.clone());
             reflection.attach_usage(usage);
+            // Each run of an agent in a work folder is one deal, by `work:folder:<id>` (talk/folder.rs).
+            let (layer, deals) = (Arc::downgrade(&talk), Arc::downgrade(&router));
+            let work_of = move |key: &str| {
+                let (executor, target) = key.strip_prefix("work:")?.split_once(':')?;
+                layer.upgrade()?.work_of(executor, target)
+            };
+            let work_of = Arc::new(work_of);
+            let (closing, hearing) = (work_of.clone(), work_of);
+            let heard_by = deals.clone();
+            folder_executor.attach_deals(crate::talk::folder::FolderDeals {
+                close: Arc::new(move |spent: &crate::router::Spent| {
+                    let links = crate::router::Links { request: None, work: closing(&spent.key), part: None };
+                    deals.upgrade()?.close(spent, links).map(|deal| deal.id)
+                }),
+                heard: Arc::new(move |key: &str, provider: &str, model: &str| {
+                    if let (Some(work), Some(router)) = (hearing(key), heard_by.upgrade()) {
+                        router.heard(&work, provider, model, crate::router::Seat::Worker);
+                    }
+                }),
+            });
         }
         // The apps' history (src/plugins/history), in DATA_DIR/package-history: the workshop's steps, the versions
         // the workshop, the catalog and copies put in, the plugins' data before each change.
@@ -1036,7 +1209,7 @@ impl App {
                 schedules: Some(schedules.clone()),
                 files: Some(files.clone()),
             });
-            history.set_home(home_server.clone() as Arc<dyn crate::plugins::controller::HomeLink>);
+            history.set_home(helpers.link_for(crate::helpers::contract::Ability::History));
             plugins.set_history(history.clone());
             workshop.set_history(history.clone());
         }
@@ -1088,8 +1261,8 @@ impl App {
                 db: db.clone(),
                 settings: settings.clone(),
                 events: events.clone(),
-                placement: Arc::new(move || availability.context().placement),
-                home: Some(home_server.clone() as Arc<dyn crate::plugins::controller::HomeLink>),
+                placement: Arc::new(move || availability.placement()),
+                home: Some(helpers.link_for(crate::helpers::contract::Ability::Catalog)),
             })
         };
         // MagicPlace by voice (src/talk/store.rs, docs/plans/magicplace.md): it installs from this catalog under the
@@ -1180,7 +1353,13 @@ impl App {
             tools: Some(connectors.clone()),
             rescue,
             talk: Some(talk.clone()),
+            characters: Some(characters.clone()),
         });
+        // An app on the station that hears a word of its own wakes the station through its session (src/activator).
+        plugin_services.set_activator(crate::activator::Activator::new(
+            placement.role() == crate::placement::service::Role::Station,
+            station_sessions.wake_station(),
+        ));
         // The plugins' turn timer says «время вышло» on the device's live station; their schedules speak there too.
         plugin_skill.set_turns(station_sessions.turns());
         // «Готово» of a work said on the station that asked; once more after its next talk when it was cut.
@@ -1336,12 +1515,13 @@ impl App {
         publishers.register_upload_pages();
         plugin_services.set_publishers(&publishers);
 
-        Ok(Arc::new(App {
+        let app = Arc::new(App {
             config,
             db,
             events,
             secrets,
             settings,
+            identity,
             egress,
             access,
             requests,
@@ -1367,6 +1547,8 @@ impl App {
             skills,
             workshop,
             talk,
+            #[cfg(feature = "pc")]
+            works,
             history,
             plugins,
             tasks,
@@ -1394,11 +1576,18 @@ impl App {
             #[cfg(feature = "pc")]
             managed_tts,
             #[cfg(feature = "pc")]
+            builtin,
+            #[cfg(feature = "pc")]
             calls,
             placement,
             availability,
+            helpers,
             cloud_speech,
             home_server,
+            #[cfg(feature = "pc")]
+            clients,
+            #[cfg(feature = "pc")]
+            link,
             #[cfg(feature = "pc")]
             station_gateway,
             #[cfg(feature = "pc")]
@@ -1407,11 +1596,23 @@ impl App {
             sessions: station_sessions,
             started: Instant::now(),
             started_at: now_iso(),
-        }))
+        });
+        // The built-in helper's late parts: the bot, the apps, their history, the catalog (stage 6).
+        #[cfg(feature = "pc")]
+        app.builtin.attach(Arc::downgrade(&app));
+        // What needs the whole app joins here (stage 6: the built-in helper; stage 7: the link).
+        #[cfg(feature = "pc")]
+        app.link.attach(Arc::downgrade(&app));
+        Ok(app)
     }
 
     /// Stops what runs beside the HTTP server: MCP connections and their programs, the skills' tasks.
     pub async fn shutdown(&self) {
+        // The helpers' looks end: an engine started again in its process leaves no tick behind; the links close.
+        self.helpers.stop();
+        // Who this computer helped, and when it last saw them.
+        #[cfg(feature = "pc")]
+        self.clients.persist_seen();
         self.mcp.shutdown().await;
         self.skills.shutdown();
         // Before the apps stop: what they ran was cut short by the gateway, not by them.
@@ -1427,6 +1628,11 @@ impl App {
         self.station_watch.stop();
         self.retention.stop();
         self.router.stop();
+        // The agents in work folders end their turns: their works are interrupted, «продолжай» goes on.
+        #[cfg(feature = "pc")]
+        if let Some(works) = &self.works {
+            works.stop_all();
+        }
         // Recognition's worker and the own voice's server end with the gateway: the desktop app restarts the gateway
         // inside its process, and an old gateway's processes must not stay behind with their models.
         #[cfg(feature = "pc")]
@@ -1444,6 +1650,10 @@ impl App {
     pub fn before_shutdown(&self) {
         #[cfg(feature = "pc")]
         self.calls.stop();
+        // The homes' links hear that this helper stops (1001), this gateway's own links close (1000).
+        #[cfg(feature = "pc")]
+        self.link.close_all();
+        self.helpers.stop_links();
         // The stations' sockets are cut: they reconnect to the next gateway.
         self.sessions.stop();
     }
@@ -1492,14 +1702,20 @@ pub fn router(app: Arc<App>) -> Router {
         .merge(crate::stations::router())
         .merge(crate::placement::router())
         .merge(crate::home_server::router())
+        .merge(crate::helpers::routes::router())
+        // The bridge of this gateway's own clients to its linked helpers (src/helpers/link.rs).
+        .merge(crate::helpers::link::via_routes())
         .merge(crate::voice_lab::router());
     // Our calls are a PC's part: the station's build has no /calls.
     #[cfg(feature = "pc")]
     let routes = routes.merge(crate::calls::router());
+    // The works in folders: folders, agents, runs and their journals (src/works) — a computer's part.
+    #[cfg(feature = "pc")]
+    let routes = routes.merge(crate::works::routes::routes());
     // The helper's pass to the station's gateway (src/placement/proxy.rs): a PC's part too.
     #[cfg(feature = "pc")]
     let routes = routes.merge(crate::placement::proxy::routes());
-    routes
+    let routes = routes
         .fallback(not_found)
         // After every route: a path that exists with another method is Express's 404 too, not 405.
         .method_not_allowed_fallback(not_found)
@@ -1512,10 +1728,20 @@ pub fn router(app: Arc<App>) -> Router {
         .layer(axum::middleware::from_fn_with_state(names, security))
         // The station's voice socket (an upgrade to UNIPROXY_PATH), before the Host check: Node's 'upgrade' listener
         // never went through Express's middleware. The upgrade has its own checks.
-        .layer(axum::middleware::from_fn_with_state(app, crate::gateway::uniproxy::uniproxy_server::station_socket))
+        .layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            crate::gateway::uniproxy::uniproxy_server::station_socket,
+        ));
+    // The link's door for a proxy on this computer (a plain upgrade to /home/v1/link), outermost: the proxy passes the
+    // site's name, which the Host check does not know.
+    #[cfg(feature = "pc")]
+    let routes = routes.layer(axum::middleware::from_fn_with_state(app, crate::helpers::link_serve::link_socket));
+    routes
 }
 
-/// Serves the router on a listener until `shutdown` resolves, then stops the services that run beside it.
+/// Serves the router on a listener until `shutdown` resolves, then stops the services that run beside it. A computer
+/// that helps serves the link's own TLS port beside it, on the same address (src/helpers/link_serve.rs): both end
+/// together, and both ports are free when this returns.
 pub async fn serve(
     app: Arc<App>,
     listener: TcpListener,
@@ -1525,16 +1751,40 @@ pub async fn serve(
     // Apps reach the Host API at the address the server really listens on.
     if let Ok(address) = listener.local_addr() {
         app.plugins.set_gateway_url(format!("http://127.0.0.1:{}", address.port()));
+        app.helpers.set_local_port(address.port());
     }
-    let served = axum::serve(listener, router(app.clone()).into_make_service_with_connect_info::<SocketAddr>())
+    #[cfg(feature = "pc")]
+    crate::helpers::link_serve::raise_open_files();
+    #[cfg(feature = "pc")]
+    let link = crate::helpers::link_serve::bind(&app, &listener).await;
+    let link_stop = tokio_util::sync::CancellationToken::new();
+    let stop_link = link_stop.clone();
+    let main = axum::serve(listener, router(app.clone()).into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(async move {
             shutdown.await;
             // What would hold the graceful close ends now: the panel's live streams, the station clients' polls and
-            // streams, the calls' sockets.
+            // streams, the calls' sockets, the links.
             stopping.live.shutdown();
             stopping.before_shutdown();
-        })
-        .await;
+            stop_link.cancel();
+        });
+    #[cfg(feature = "pc")]
+    let served = match link {
+        Some(link) => {
+            let link = crate::helpers::link_serve::serve(app.clone(), link, link_stop.cancelled_owned());
+            let (served, linked) = tokio::join!(std::future::IntoFuture::into_future(main), link);
+            if let Err(error) = linked {
+                tracing::warn!("link: the port stopped: {error}");
+            }
+            served
+        }
+        None => main.await,
+    };
+    #[cfg(not(feature = "pc"))]
+    let served = {
+        drop(link_stop);
+        main.await
+    };
     app.shutdown().await;
     served
 }

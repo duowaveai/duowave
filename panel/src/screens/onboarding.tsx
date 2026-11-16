@@ -6,10 +6,10 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { FoundStation, api, can, problemOf } from '../api';
+import { FoundStation, api, can, problemOf, stationCall } from '../api';
 import { LANGUAGES, setLanguage, tr, useLanguage } from '../i18n';
 import { usePanel } from '../shell/context';
-import { recalled, remember } from '../shell/memory';
+import { flushPanelMemory, recalled, remember } from '../shell/memory';
 import { Boundary } from '../shell/slot';
 import { noteVoiceInput } from '../voice-input';
 import { AnswerStep } from './onb/answer';
@@ -19,14 +19,20 @@ import { Choice, OnboardingContext, StepNav, StepNavContext } from './onb/nav';
 import { SpeakerStep } from './onb/speaker';
 import { StoreStep } from './onb/store';
 import { TryStep } from './onb/try';
+import { TOP_VIA, VIA } from '../via';
 import '../ui/onboarding-canvas.css';
 
 type StepId = 'where' | 'brain' | 'speaker' | 'answer' | 'character' | 'try' | 'store';
 
-/** Что помнит память пульта: выбор и шаг. Нет записи — первые шаги пройдены или закрыты. */
+/**
+ * Что помнит память пульта: выбор и шаг. Нет записи — первые шаги пройдены или закрыты. Запись появляется с первого
+ * экрана: смена языка пересоздаёт пульт (main.tsx), и шаги открываются снова по ней. `picked: false` — место выбрал
+ * поиск колонок, не человек (запись постарше без поля — выбрал человек).
+ */
 interface Saved {
     choice: Choice;
     step: StepId;
+    picked?: boolean;
 }
 const KEY = 'onboarding';
 
@@ -39,9 +45,17 @@ function stepsOf(choice: Choice, onStation: boolean): StepId[] {
     return ['where', 'speaker', 'answer', 'character', 'try', 'store'];
 }
 
-/** Открыть первые шаги из «Настроек» (или откуда угодно): пульт слушает это событие (app.tsx). */
+/**
+ * Открыть первые шаги из «Настроек» (или откуда угодно): пульт слушает это событие (app.tsx). В окне колонки у
+ * помощника их нет — шаги ведёт пульт компьютера: окно уходит туда с просьбой `?onboarding` (via.ts).
+ */
 export const OPEN_ONBOARDING = 'duowave:onboarding';
 export function openOnboarding(): void {
+    if (VIA) {
+        const top = TOP_VIA ? window : (window.top ?? window);
+        top.location.assign(`${location.pathname}?onboarding`);
+        return;
+    }
     window.dispatchEvent(new Event(OPEN_ONBOARDING));
 }
 
@@ -113,7 +127,7 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
     const onStation = panel.health?.placement?.role === 'station';
     const saved = recalled<Saved>(KEY);
     const [choice, setChoice] = useState<Choice>(saved?.choice ?? 'stationPc');
-    const [picked, setPicked] = useState(!!saved);
+    const [picked, setPicked] = useState(!!saved && saved.picked !== false);
     const steps = stepsOf(choice, onStation);
     const [step, setStep] = useState<StepId>(saved && steps.includes(saved.step) ? saved.step : steps[0]);
     const [busy, setBusy] = useState(false);
@@ -121,11 +135,21 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
     const [nav, setNav] = useState<StepNav | null>(null);
     const main = useRef<HTMLElement>(null);
 
+    // Шаги открыты — пульт помнит это сразу, ещё до «Дальше» (см. Saved).
+    useEffect(() => {
+        if (!recalled<Saved>(KEY)) remember(KEY, { choice, step, picked: false } satisfies Saved);
+    }, []);
+
     // Колонки дома: поиск начинается сразу и заранее выбирает вариант.
     const scan = useScan(!onStation);
     useEffect(() => {
         if (picked || !scan.done) return;
-        setChoice(scan.found.length > 0 ? 'stationPc' : 'computer');
+        // У компьютера уже есть шлюз колонки (помогает ей или отвечает ей): поиск в сети мог её не увидеть, но дом —
+        // с колонкой, и «Дальше» с «Только компьютер» перевёл бы разговор с неё на микрофон.
+        const linked = panel.role.role === 'helper' || (panel.health?.placement?.stations ?? []).length > 0;
+        const found = scan.found.length > 0 || linked ? 'stationPc' : 'computer';
+        setChoice(found);
+        remember(KEY, { choice: found, step, picked: false } satisfies Saved);
     }, [scan.done]);
 
     const index = Math.max(0, steps.indexOf(step));
@@ -138,6 +162,12 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
     };
     const finish = () => {
         remember(KEY, undefined);
+        // Сразу на шлюз, не через паузу: перезагрузка сразу после × иначе вернула бы шаги.
+        void flushPanelMemory();
+        // Колонка могла получить запись шагов от пульта компьютера (до отдельных копий памяти, shell/memory.ts): шаги
+        // пройдены — и там тоже, иначе её пульт (телефон) открыл бы их снова.
+        const station = panel.role.role === 'helper' ? panel.role.station?.key : undefined;
+        if (station) void stationCall(station, 'PATCH', '/api/v1/panel/state', { [KEY]: null }).catch(() => undefined);
         onClose();
     };
     const forward = () => (index === steps.length - 1 ? finish() : go(steps[index + 1]));
@@ -523,7 +553,7 @@ function WhereStep({ choice, scan, onPick }: { choice: Choice; scan: Scan; onPic
                     })}
                 </ul>
                 <p class="small" style={{ margin: 0 }}>
-                    {t.changeLater}
+                    {choice === 'computer' ? t.changeLaterComputer : t.changeLater}
                 </p>
             </section>
         </div>
@@ -612,12 +642,15 @@ function HelperStep({ found, onNo, onLinked }: { found: Found; onNo: () => void;
                 />
                 <div class="field">
                     <label for="onb-stpw">{t.helperPassword(name)}</label>
+                    {/* Пароль другого устройства — пульта колонки, не входа сюда: менеджер паролей не должен ни
+                        подставлять пароль этого компьютера, ни сохранять этот вместо него (как SecretField на столе). */}
                     <input
                         id="onb-stpw"
+                        name="speaker-password"
                         class="input"
                         type="password"
                         placeholder={t.helperPasswordHint}
-                        autocomplete="current-password"
+                        autocomplete="off"
                         value={password}
                         onInput={(event) => setPassword((event.target as HTMLInputElement).value)}
                         onKeyDown={(event) => event.key === 'Enter' && password && void link()}

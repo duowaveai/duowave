@@ -1,13 +1,15 @@
 {
     "name": "panel",
     "private": true,
-    "version": "0.14.0",
+    "version": "0.15.0",
     "type": "module",
     "scripts": {
         "dev": "vite --port 5173 --strictPort",
         "build": "vite build",
         "preview": "vite preview",
-        "icons": "node scripts/brand-icons.mjs"
+        "icons": "node scripts/brand-icons.mjs",
+        "qr": "node scripts/qr-check.ts",
+        "check": "node scripts/panel-check.ts"
     },
     "dependencies": {
         "preact": "^10.27.0"

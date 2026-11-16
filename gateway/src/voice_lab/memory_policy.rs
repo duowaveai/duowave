@@ -74,13 +74,13 @@ pub fn admit(snapshot: &MemorySnapshot, reserve: u64, need: u64, video_need_mb: 
     if snapshot.pressure != Pressure::Normal {
         return verdict(
             AdmissionVerdict::Tight,
-            Some(crate::tr!("Системе уже не хватает памяти — лучше подождать или закрыть тяжёлые программы.")),
+            Some(crate::tr!("Системе уже не хватает ОЗУ — лучше подождать или закрыть тяжёлые программы.")),
         );
     }
     if snapshot.swap_in_mbps.unwrap_or(0.0) > START_SWAP_MBPS {
         return verdict(
             AdmissionVerdict::Tight,
-            Some(crate::tr!("Компьютер сейчас подкачивает память с диска — лучше подождать минуту.")),
+            Some(crate::tr!("Компьютеру сейчас не хватает ОЗУ, идёт подкачка с диска — лучше подождать минуту.")),
         );
     }
     if let (Some(video), Some(free)) = (video_need_mb, snapshot.vram_free_mb) {
@@ -101,14 +101,14 @@ pub fn admit(snapshot: &MemorySnapshot, reserve: u64, need: u64, video_need_mb: 
     }
     let reason = if snapshot.pool_mb >= need {
         crate::tr!(
-            "Памяти впритык: свободно {free} ГБ, нужно около {need} ГБ, а {reserve} ГБ держу для колонки — она может подтормаживать.",
+            "ОЗУ впритык: свободно {free} ГБ, нужно около {need} ГБ, а {reserve} ГБ держу для колонки — она может подтормаживать.",
             free = gb(pool),
             need = gb(need as f64),
             reserve = gb(reserve as f64)
         )
     } else {
         crate::tr!(
-            "Памяти мало: свободно {free} ГБ, а нужно около {need} ГБ — Мак начнёт подкачивать память с диска, колонка будет подтормаживать.",
+            "ОЗУ мало: свободно {free} ГБ, а нужно около {need} ГБ — Мак начнёт подкачку с диска, колонка будет подтормаживать.",
             free = gb(pool),
             need = gb(need as f64)
         )
@@ -199,9 +199,9 @@ pub fn stop_message(reason: StopReason, limit: u64) -> String {
                 limit = gb(limit as f64)
             )
         }
-        StopReason::Pressure => crate::tr!("Остановлено: системе стало не хватать памяти — колонка важнее."),
+        StopReason::Pressure => crate::tr!("Остановлено: системе стало не хватать ОЗУ — колонка важнее."),
         StopReason::Swap => {
-            crate::tr!("Остановлено: компьютер начал подкачивать память с диска — колонка важнее.")
+            crate::tr!("Остановлено: компьютеру не хватило ОЗУ, началась подкачка с диска — колонка важнее.")
         }
     }
 }
@@ -261,12 +261,12 @@ mod tests {
         assert_eq!((tight.verdict, tight.need_mb, tight.ceiling_mb), (AdmissionVerdict::Tight, 3_500, 5_250));
         assert_eq!(
             tight.reason.as_deref(),
-            Some("Памяти впритык: свободно 5,0 ГБ, нужно около 3,4 ГБ, а 2,2 ГБ держу для колонки — она может подтормаживать.")
+            Some("ОЗУ впритык: свободно 5,0 ГБ, нужно около 3,4 ГБ, а 2,2 ГБ держу для колонки — она может подтормаживать.")
         );
         assert_eq!(
             admit(&snapshot(3_000), 2_212, 3_500, None).reason.as_deref(),
             Some(
-                "Памяти мало: свободно 2,9 ГБ, а нужно около 3,4 ГБ — Мак начнёт подкачивать память с диска, колонка \
+                "ОЗУ мало: свободно 2,9 ГБ, а нужно около 3,4 ГБ — Мак начнёт подкачку с диска, колонка \
                  будет подтормаживать."
             )
         );
@@ -276,12 +276,12 @@ mod tests {
     fn only_warns_while_the_computer_is_short_already_pressure_paging_video_memory_13_11_never_a_refusal() {
         let pressed = admit(&MemorySnapshot { pressure: Pressure::Warn, ..snapshot(20_000) }, 2_212, 3_500, None);
         assert_eq!(pressed.verdict, AdmissionVerdict::Tight);
-        assert!(pressed.reason.unwrap().contains("не хватает памяти"));
+        assert!(pressed.reason.unwrap().contains("не хватает ОЗУ"));
         let critical = admit(&MemorySnapshot { pressure: Pressure::Critical, ..snapshot(20_000) }, 2_212, 3_500, None);
         assert_eq!(critical.verdict, AdmissionVerdict::Tight);
         let paging = admit(&MemorySnapshot { swap_in_mbps: Some(5.0), ..snapshot(20_000) }, 2_212, 3_500, None);
         assert_eq!(paging.verdict, AdmissionVerdict::Tight);
-        assert!(paging.reason.unwrap().contains("подкачивает"));
+        assert!(paging.reason.unwrap().contains("подкачка"));
         let video =
             admit(&MemorySnapshot { vram_free_mb: Some(1_000.0), ..snapshot(20_000) }, 2_212, 3_500, Some(3_000));
         assert_eq!(video.verdict, AdmissionVerdict::Tight);
@@ -324,6 +324,6 @@ mod tests {
             stop_message(StopReason::Memory, 5_289),
             "Остановлено: модель заняла больше 5,2 ГБ — намного больше обычного, похоже на сбой."
         );
-        assert!(stop_message(StopReason::Swap, 4_096).contains("подкачивать"));
+        assert!(stop_message(StopReason::Swap, 4_096).contains("подкачка"));
     }
 }

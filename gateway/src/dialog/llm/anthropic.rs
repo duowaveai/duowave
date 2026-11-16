@@ -334,10 +334,15 @@ async fn open(
                 }
                 retry_after(response.headers())
             }
+            // The person reads words; the transport's details stay in the log.
             Ok(Err(error)) if retries == 0 => {
-                return Err(interrupted(format!("cannot reach Anthropic: Connection error. ({})", describe(&error))))
+                tracing::warn!(target: "llm", "cannot reach Anthropic: Connection error. ({})", describe(&error));
+                return Err(interrupted(unreachable()));
             }
-            Err(_) if retries == 0 => return Err(interrupted("cannot reach Anthropic: Request timed out.")),
+            Err(_) if retries == 0 => {
+                tracing::warn!(target: "llm", "cannot reach Anthropic: Request timed out.");
+                return Err(interrupted(timed_out()));
+            }
             Ok(Err(_)) | Err(_) => None,
         };
         let wait = asked_wait.unwrap_or_else(|| default_retry_delay(MAX_RETRIES - retries));
@@ -347,6 +352,16 @@ async fn open(
             _ = tokio::time::sleep(wait) => {}
         }
     }
+}
+
+/// Anthropic could not be reached: said to the person (the brain's check, «Спросить мозг»).
+fn unreachable() -> String {
+    crate::tr!("Claude сейчас недоступен: нет связи с Anthropic.")
+}
+
+/// Anthropic took the request and did not answer in time.
+fn timed_out() -> String {
+    crate::tr!("Claude сейчас недоступен: Anthropic не ответил вовремя.")
 }
 
 fn should_retry(response: &reqwest::Response) -> bool {
@@ -740,6 +755,19 @@ mod tests {
 
     async fn events(llm: &AnthropicLlm, request: LlmRequest) -> anyhow::Result<Vec<LlmEvent>> {
         llm.stream(request, CancellationToken::new()).collect::<Vec<_>>().await.into_iter().collect()
+    }
+
+    /// Rehearsal 16.11: «Спросить мозг» showed «cannot reach Anthropic: Connection error. (…)». Words now, the
+    /// details in the log; the brain's card still reads it as an address that does not answer.
+    #[tokio::test]
+    async fn an_unreachable_anthropic_is_said_in_words() {
+        use crate::dialog::llm::Interrupted;
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let llm = AnthropicLlm::new(settings(&format!("http://127.0.0.1:{port}"), true, Some("panel-key")));
+        let request = LlmRequest { system: "s".into(), messages: ask("q"), ..LlmRequest::default() };
+        let error = events(&llm, request).await.unwrap_err();
+        assert!(error.is::<Interrupted>(), "{error}");
+        assert_eq!(format!("{error:#}"), "Claude сейчас недоступен: нет связи с Anthropic.");
     }
 
     #[tokio::test]

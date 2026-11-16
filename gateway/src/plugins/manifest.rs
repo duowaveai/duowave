@@ -63,11 +63,15 @@ pub enum PackageKind {
     App,
     Character,
     Theme,
+    /// An agent's card (docs/plans/router-and-works.md, 7б): which program to install, how to run it over the Agent
+    /// Client Protocol, how to check its sign-in. Data: the host never switches it on, the socket of the works runs
+    /// the program the person installed.
+    Agent,
 }
 
 impl PackageKind {
-    pub const ALL: [PackageKind; 4] =
-        [PackageKind::Plugin, PackageKind::App, PackageKind::Character, PackageKind::Theme];
+    pub const ALL: [PackageKind; 5] =
+        [PackageKind::Plugin, PackageKind::App, PackageKind::Character, PackageKind::Theme, PackageKind::Agent];
 
     pub fn parse(text: &str) -> Option<PackageKind> {
         PackageKind::ALL.into_iter().find(|kind| kind.as_str() == text)
@@ -79,7 +83,13 @@ impl PackageKind {
             PackageKind::App => "app",
             PackageKind::Character => "character",
             PackageKind::Theme => "theme",
+            PackageKind::Agent => "agent",
         }
+    }
+
+    /// Data, nothing of it runs in the host: a character, a theme, an agent's card.
+    pub fn is_data(self) -> bool {
+        matches!(self, PackageKind::Character | PackageKind::Theme | PackageKind::Agent)
     }
 
     /// Why the plugin host does not switch a package of this kind on; none for a plugin and an app (its program runs
@@ -91,6 +101,9 @@ impl PackageKind {
                 Some(crate::tr!("персонаж — не приложение: его выбирают среди персонажей, а не включают здесь"))
             }
             PackageKind::Theme => Some(crate::tr!("тема — не приложение: её выбирают в пульте, а не включают здесь")),
+            PackageKind::Agent => Some(crate::tr!(
+                "агент — не приложение: его выбирают в «Работы» → «Рабочие папки», а не включают здесь"
+            )),
         }
     }
 }
@@ -342,7 +355,67 @@ pub struct Contributes {
     pub panel: Option<Value>,
     pub themes: Option<Value>,
     pub characters: Option<Value>,
+    /// Words of its own that wake the station (src/activator): an app that hears them asks for it by a letter.
+    pub activators: Vec<ActivatorSpec>,
 }
+
+/// An app's word that wakes the station (`contributes.activators`, src/activator): the id its letter names, the word
+/// as people say it, how recognition may write it (the command's text loses those words), and the character the
+/// request goes to (`<package>:<character>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivatorSpec {
+    pub id: String,
+    pub title: String,
+    pub heard: Vec<String>,
+    pub character: Option<String>,
+}
+
+/// An app's own words at most.
+pub const MAX_ACTIVATORS: usize = 4;
+
+/// A package that goes with this one (`companions`): its id, and why — the words of the offer.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Companion {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
+/// Packages that go with one, at most.
+pub const MAX_COMPANIONS: usize = 4;
+
+/// `companions`: `[{id, why?}]` — other packages, not itself, each once.
+fn companions(root: &Map<String, Value>, id: &str, problems: &mut Vec<String>) -> Vec<Companion> {
+    let items = match root.get("companions") {
+        None | Some(Value::Null) => return Vec::new(),
+        Some(Value::Array(items)) => items,
+        Some(_) => {
+            problems.push(crate::tr!("companions: список пакетов-пары [{id, why}]"));
+            return Vec::new();
+        }
+    };
+    if items.len() > MAX_COMPANIONS {
+        problems.push(crate::tr!("companions: до {max} пакетов", max = MAX_COMPANIONS));
+    }
+    let mut out: Vec<Companion> = Vec::new();
+    for (index, item) in items.iter().enumerate().take(MAX_COMPANIONS) {
+        let other = item.get("id").and_then(Value::as_str).unwrap_or_default().trim().to_string();
+        if !valid_id(&other) || other == id || out.iter().any(|known| known.id == other) {
+            problems.push(crate::tr!("companions[{index}]: id другого пакета, один раз", index = index));
+            continue;
+        }
+        let why = item
+            .get("why")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|why| !why.is_empty())
+            .map(|why| why.chars().take(200).collect());
+        out.push(Companion { id: other, why });
+    }
+    out
+}
+/// How recognition may write one word, at most.
+const MAX_HEARD: usize = 12;
 
 /// `contributes.bus` (src/bus, docs/plans/bus.md).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -407,13 +480,17 @@ pub struct Manifest {
     pub targets: std::collections::BTreeMap<String, Target>,
     pub health: HealthCheck,
     pub runs: Vec<Placement>,
-    /// `"prefer": "home"`: on the station with a home server, its calls go to the computer while it is up (stage 7);
-    /// the station runs it only when the computer is away and it fits there.
+    /// `"prefer": "home"`: on a station, its calls go to the helper that gives the apps while one is up (src/helpers);
+    /// the station runs it only when none is and it fits there.
     pub prefer_home: bool,
     /// `"resident": true` (an app only): its program runs the whole time it is switched on — started when switched on
     /// and when the gateway starts, never unloaded for idling or to make room. A receiver (AirPlay) that a phone finds
     /// by itself is no use started at the first call.
     pub resident: bool,
+    /// `companions`: packages that go with this one — a character and its word that wakes the station, later its voice
+    /// apart. Each names the other; installing one offers the other, and its card shows it (docs/plugins/AUTHORING.md,
+    /// «Пакеты-пара»).
+    pub companions: Vec<Companion>,
     pub budget: Budget,
     pub permissions: Vec<Permission>,
     pub settings: Vec<SettingSpec>,
@@ -426,6 +503,209 @@ pub struct Manifest {
     pub languages: Vec<String>,
     /// `locales.<code>`: its texts in the other languages it speaks.
     pub locales: std::collections::BTreeMap<String, LocaleTexts>,
+    /// An agent's card: its program, its command over ACP, its sign-in (kind `agent` only).
+    pub agent: Option<AgentCard>,
+}
+
+/// An agent's card (docs/plans/router-and-works.md, 7б): only data. `program` — the program the person installs
+/// themselves (`install` — the command to say to them; `check` — the arguments that print its version; `minVersion`);
+/// `acp` — the arguments that start it as an Agent Client Protocol agent and the protocol's version; `signin` — the
+/// arguments that answer exit 0 when the person is signed in, and what to tell them; `model` — whether a model can be
+/// chosen and where the agent's model goes (`agent` — the agent's cloud, `duowave` — through our router, block Б);
+/// `resume` — the command that opens a session in a terminal (`{session}`); `asks` — whether in this mode it asks
+/// before its commands (false — it does everything without questions); `site`, `terms` — its pages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCard {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terms: Option<String>,
+    pub program: AgentProgram,
+    pub acp: AgentAcp,
+    pub signin: AgentSignin,
+    pub model: AgentModel,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asks: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentProgram {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub check: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAcp {
+    pub command: Vec<String>,
+    pub protocol: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSignin {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub check: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentModel {
+    pub choose: bool,
+    pub via: String,
+}
+
+/// Programs a card may never name: shells, interpreters, launchers and tools that run what they are given. A card
+/// names an agent the person installed, never a way to run anything else.
+const NOT_AGENTS: &[&str] = &[
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "dash",
+    "ksh",
+    "csh",
+    "tcsh",
+    "cmd",
+    "cmd.exe",
+    "powershell",
+    "pwsh",
+    "python",
+    "python3",
+    "node",
+    "deno",
+    "bun",
+    "perl",
+    "ruby",
+    "php",
+    "osascript",
+    "env",
+    "sudo",
+    "su",
+    "doas",
+    "npx",
+    "bunx",
+    "pnpx",
+    "pnpm",
+    "npm",
+    "yarn",
+    "uvx",
+    "uv",
+    "pipx",
+    "pip",
+    "curl",
+    "wget",
+    "git",
+    "rm",
+    "mv",
+    "cp",
+    "dd",
+    "find",
+    "xargs",
+    "open",
+    "launchctl",
+    "systemctl",
+    "ssh",
+    "scp",
+    "nc",
+    "awk",
+    "sed",
+    "tee",
+    "chmod",
+    "chown",
+];
+
+/// An agent's card from the manifest's top-level fields (kind `agent`), or from a feed's entry `agent`.
+pub fn agent_card(root: &Map<String, Value>, problems: &mut Vec<String>) -> Option<AgentCard> {
+    let object = |key: &str| root.get(key).and_then(Value::as_object);
+    let text_of = |value: Option<&Value>, limit: usize| {
+        value
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(|text| text.chars().take(limit).collect::<String>())
+    };
+    let link = |key: &str, problems: &mut Vec<String>| {
+        let link = text_of(root.get(key), 300)?;
+        if !link.starts_with("https://") {
+            problems.push(crate::tr!("{key}: ссылка https://", key = key));
+            return None;
+        }
+        Some(link)
+    };
+    let args = |value: Option<&Value>, field: &str, problems: &mut Vec<String>| -> Vec<String> {
+        let Some(value) = value else { return Vec::new() };
+        let items = value
+            .as_array()
+            .map(|items| items.iter().map(|item| item.as_str().map(str::to_string)).collect::<Option<Vec<_>>>());
+        match items {
+            Some(Some(items))
+                if items.len() <= 16
+                    && items.iter().all(|item| !item.is_empty() && item.len() <= 100 && !item.contains('\n')) =>
+            {
+                items
+            }
+            _ => {
+                problems.push(crate::tr!("{field}: список аргументов — до 16 строк по 100 знаков", field = field));
+                Vec::new()
+            }
+        }
+    };
+    let site = link("site", problems);
+    let terms = link("terms", problems);
+    let program = object("program");
+    let name = text_of(program.and_then(|program| program.get("name")), 64).unwrap_or_default();
+    let plain = !name.is_empty()
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        && !name.starts_with('.');
+    if !plain {
+        problems.push(crate::tr!("program.name: имя программы агента — латиница, цифры, «-», «_», «.»"));
+    } else if NOT_AGENTS.contains(&name.to_lowercase().as_str()) {
+        problems.push(crate::tr!(
+            "program.name: «{name}» — не агент: карточка называет только программу агента",
+            name = name
+        ));
+    }
+    let program = AgentProgram {
+        name,
+        install: text_of(program.and_then(|program| program.get("install")), 300),
+        check: args(program.and_then(|program| program.get("check")), "program.check", problems),
+        min_version: text_of(program.and_then(|program| program.get("minVersion")), 32),
+    };
+    let acp = object("acp");
+    let command = args(acp.and_then(|acp| acp.get("command")), "acp.command", problems);
+    let protocol = acp.and_then(|acp| acp.get("protocol")).and_then(Value::as_u64).unwrap_or(1);
+    let signin = object("signin");
+    let signin = AgentSignin {
+        check: args(signin.and_then(|signin| signin.get("check")), "signin.check", problems),
+        hint: text_of(signin.and_then(|signin| signin.get("hint")), 300),
+    };
+    let model = object("model");
+    let via = text_of(model.and_then(|model| model.get("via")), 16).unwrap_or_else(|| "agent".into());
+    if via != "agent" && via != "duowave" {
+        problems.push(crate::tr!("model.via: agent или duowave"));
+    }
+    let model = AgentModel {
+        choose: model.and_then(|model| model.get("choose")).and_then(Value::as_bool).unwrap_or(false),
+        via,
+    };
+    let resume = text_of(root.get("resume"), 200);
+    if resume.as_ref().is_some_and(|resume| !resume.contains("{session}")) {
+        problems.push(crate::tr!("resume: в команде нужно место для номера сессии — слово session в фигурных скобках"));
+    }
+    let asks = root.get("asks").and_then(Value::as_bool);
+    Some(AgentCard { site, terms, program, acp: AgentAcp { command, protocol }, signin, model, resume, asks })
 }
 
 /// A package's texts in one language (`locales.<code>` of its manifest). What is missing is said in the next language
@@ -867,6 +1147,7 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
             false
         }
     };
+    let companions = companions(root, &id, &mut problems);
     let budget = root.get("budget").and_then(Value::as_object);
     let limit = |key: &str, default: u64, max: u64, problems: &mut Vec<String>| match budget.and_then(|b| b.get(key)) {
         None => default,
@@ -942,8 +1223,8 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
     if hears_midi && !runs.contains(&Placement::Pc) {
         problems.push(crate::tr!("midi: MIDI-клавиатура подключается к компьютеру — добавьте pc в runs"));
     }
-    // A character and a theme are data: what needs code is a plugin's to give.
-    if matches!(kind, PackageKind::Character | PackageKind::Theme) {
+    // A character, a theme and an agent's card are data: what needs code is a plugin's to give.
+    if kind.is_data() {
         let coded = [
             ("intents", contributes.intents.len()),
             ("tools", contributes.tools.len()),
@@ -960,11 +1241,13 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
         }
     }
 
+    let agent = (kind == PackageKind::Agent).then(|| agent_card(root, &mut problems)).flatten();
     if !problems.is_empty() {
         return Err(ManifestError { problems });
     }
     Ok(Manifest {
         kind,
+        agent,
         id,
         version,
         title,
@@ -979,6 +1262,7 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
         runs,
         prefer_home,
         resident,
+        companions,
         budget,
         permissions,
         settings,
@@ -1446,6 +1730,62 @@ fn contributes(value: Option<&Value>, permissions: &[Permission], problems: &mut
         out.schedules.push(spec);
     }
     out.bus = bus_spec(contributes.get("bus"), permissions, problems);
+    out.activators = activators(contributes, permissions, problems);
+    out
+}
+
+/// `contributes.activators`: an app's own words that wake the station, by the letter `system/activator` → `wake`.
+fn activators(
+    contributes: &Map<String, Value>,
+    permissions: &[Permission],
+    problems: &mut Vec<String>,
+) -> Vec<ActivatorSpec> {
+    let items = list(contributes, "activators", problems);
+    if !items.is_empty() && !asks(permissions, crate::bus::providers::system::ACTIVATOR, crate::bus::Level::Call) {
+        problems.push(crate::tr!("contributes.activators: нужна связь call:system/activator"));
+    }
+    if items.len() > MAX_ACTIVATORS {
+        problems.push(crate::tr!("contributes.activators: до {max} слов", max = MAX_ACTIVATORS));
+    }
+    let mut out: Vec<ActivatorSpec> = Vec::new();
+    for (index, item) in items.iter().enumerate().take(MAX_ACTIVATORS) {
+        let at = format!("contributes.activators[{index}]");
+        let id = item.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+        if !valid_id(&id) {
+            problems.push(crate::tr!("{at}: id — строчные латинские буквы, цифры и «-»", at = at));
+            continue;
+        }
+        if out.iter().any(|known| known.id == id) {
+            problems.push(crate::tr!("{at}: id «{id}» дважды", at = at, id = id));
+            continue;
+        }
+        let title = item.get("title").and_then(Value::as_str).unwrap_or_default().trim().to_string();
+        if title.is_empty() || title.chars().count() > 40 {
+            problems.push(crate::tr!("{at}: title — слово, как его говорят, до 40 знаков", at = at));
+            continue;
+        }
+        let heard = match item.get("heard") {
+            None => Vec::new(),
+            Some(Value::Array(words)) => words
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|word| word.trim().to_lowercase())
+                .filter(|word| !word.is_empty() && word.chars().count() <= 40)
+                .take(MAX_HEARD)
+                .collect(),
+            Some(_) => {
+                problems.push(crate::tr!("{at}: heard — список слов, как их пишет распознавание", at = at));
+                Vec::new()
+            }
+        };
+        let character = item
+            .get("character")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|character| !character.is_empty() && character.len() <= 80)
+            .map(str::to_string);
+        out.push(ActivatorSpec { id, title, heard, character });
+    }
     out
 }
 
@@ -1571,6 +1911,59 @@ mod tests {
 
     fn problems(manifest: Value) -> Vec<String> {
         check(&manifest).unwrap_err().problems
+    }
+
+    /// Packages that go with this one: other ids, each once, with the words of the offer.
+    #[test]
+    fn companions_are_other_packages_each_once() {
+        let mut manifest = radio();
+        manifest["companions"] = json!([{ "id": "radio-word", "why": "  своё слово  " }, { "id": "news" }]);
+        let read = check(&manifest).unwrap();
+        assert_eq!(
+            read.companions,
+            [
+                Companion { id: "radio-word".into(), why: Some("своё слово".into()) },
+                Companion { id: "news".into(), why: None }
+            ]
+        );
+        manifest["companions"] = json!([{ "id": "radio" }, { "id": "news" }, { "id": "news" }]);
+        assert_eq!(
+            problems(manifest.clone()),
+            ["companions[0]: id другого пакета, один раз", "companions[2]: id другого пакета, один раз"]
+        );
+        manifest["companions"] = json!("news");
+        assert_eq!(problems(manifest), ["companions: список пакетов-пары [{id, why}]"]);
+    }
+
+    /// An app's own words that wake the station (src/activator): read with the right to wake it, refused without.
+    #[test]
+    fn an_apps_words_that_wake_the_station_need_the_right_to_wake_it() {
+        let words = json!([
+            { "id": "otto", "title": "Отто", "heard": ["Ото", " отта "], "character": "butler:otto" },
+            { "id": "otto", "title": "Отто" },
+            { "id": "Bad Id", "title": "Нет" },
+            { "id": "max", "title": "" }
+        ]);
+        let mut manifest = with(radio(), "/contributes/themes", json!([]));
+        manifest["contributes"]["activators"] = words.clone();
+        let found = problems(manifest.clone());
+        assert!(found.iter().any(|problem| problem.contains("call:system/activator")), "{found:?}");
+        assert!(found.iter().any(|problem| problem.contains("дважды")), "{found:?}");
+        assert!(found.iter().any(|problem| problem.contains("activators[2]: id")), "{found:?}");
+        assert!(found.iter().any(|problem| problem.contains("activators[3]: title")), "{found:?}");
+
+        manifest["permissions"] = json!(["net:*.api.radio-browser.info", "call:system/activator"]);
+        manifest["contributes"]["activators"] = json!([words[0].clone()]);
+        let read = check(&manifest).unwrap();
+        assert_eq!(
+            read.contributes.activators,
+            [ActivatorSpec {
+                id: "otto".into(),
+                title: "Отто".into(),
+                heard: vec!["ото".into(), "отта".into()],
+                character: Some("butler:otto".into()),
+            }]
+        );
     }
 
     #[test]
@@ -1796,7 +2189,10 @@ mod tests {
         assert_eq!(manifest.contributes.characters.unwrap()[0]["id"], "ded-moroz");
         assert!(PackageKind::Character.not_a_plugin().is_some() && PackageKind::Plugin.not_a_plugin().is_none());
         let unknown = with(character.clone(), "/kind", json!("skin"));
-        assert_eq!(problems(unknown), ["kind «skin»: такого вида пакетов нет; есть plugin, app, character, theme"]);
+        assert_eq!(
+            problems(unknown),
+            ["kind «skin»: такого вида пакетов нет; есть plugin, app, character, theme, agent"]
+        );
         let mut talking = character.clone();
         talking["permissions"] = json!([]);
         talking["contributes"]["intents"] = json!([{ "phrases": ["скажи хо-хо"], "handler": "ho" }]);
@@ -1879,5 +2275,36 @@ mod tests {
         assert!(!host_allowed(&patterns, "example.com.evil.org"));
         assert!(Permission::parse("net:localhost").is_none(), "a bare name is no host on the internet");
         assert!(Permission::parse("net:*.ru").is_none(), "a whole zone is too much");
+    }
+
+    /// An agent's card is data: its program by name, its command over ACP, its sign-in — never a shell, never code.
+    #[test]
+    fn an_agents_card_is_data_and_names_only_its_program() {
+        let mut card = json!({
+            "schema": 1, "kind": "agent", "id": "opencode", "version": "1.0.0", "title": "OpenCode", "api": "^1",
+            "runs": ["pc"], "site": "https://opencode.ai", "terms": "https://opencode.ai/legal/terms-of-service",
+            "program": { "name": "opencode", "install": "curl -fsSL https://opencode.ai/v2/install | bash" },
+            "acp": { "command": ["acp"] },
+            "signin": { "hint": "opencode auth login" },
+            "model": { "choose": true },
+            "asks": false
+        });
+        let manifest = check(&card).unwrap();
+        assert!(manifest.kind.is_data() && manifest.kind.not_a_plugin().is_some());
+        let agent = manifest.agent.unwrap();
+        assert_eq!(
+            (agent.program.name.as_str(), agent.acp.command.as_slice(), agent.asks),
+            ("opencode", ["acp".to_string()].as_slice(), Some(false))
+        );
+        card["program"]["name"] = json!("python3");
+        assert!(check(&card).unwrap_err().problems.iter().any(|problem| problem.contains("не агент")));
+        card["program"]["name"] = json!("../bin/agent");
+        assert!(check(&card).is_err(), "a name, never a path");
+        card["program"]["name"] = json!("opencode");
+        card["resume"] = json!("opencode -s");
+        assert!(check(&card).is_err(), "resume needs the session's place");
+        card["resume"] = Value::Null;
+        card["contributes"] = json!({ "tools": [{ "name": "x" }] });
+        assert!(check(&card).is_err(), "no code in a card");
     }
 }

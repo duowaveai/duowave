@@ -9,6 +9,8 @@ use serde_json::{Map, Value};
 use super::tts::own_speech::{OwnSpeech, SpeechRoute};
 use crate::config::{GatewayConfig, TtsConfig, TtsProvider};
 use crate::core::events::{EventBus, GatewayEvent};
+use crate::helpers::Reach;
+use crate::operations::networks::is_local_url;
 use crate::settings::definitions::{VOICE_CHOICE, VOICE_PROVIDER};
 use crate::settings::SettingsService;
 
@@ -69,10 +71,20 @@ pub fn provider_at_start(env: &TtsConfig, stored: Option<TtsProvider>) -> TtsPro
     }
 }
 
-/// Our voice through the station's home server while it is up (src/home_server): the computer speaks with the voice
-/// it has chosen, the voice lab's too.
+/// Our voice through the station's helpers while one gives it (src/helpers): the computer speaks with the voice it has
+/// chosen, the voice lab's too.
 pub trait HomeVoice: Send + Sync {
     fn speech(&self) -> Option<Arc<OwnSpeech>>;
+    /// Whether a road of this reach may be taken now (the regulator «Что может уходить из дома»): our own voice at a
+    /// cloud address is a foreign road.
+    fn allows(&self, _reach: Reach) -> bool {
+        true
+    }
+    /// This gateway leans on its helpers for its voice: a station. A computer never does — its «Голос» window and its
+    /// stored choice keep their own meaning.
+    fn leans(&self) -> bool {
+        true
+    }
 }
 
 /// Whose voice answers, decided in one place and read on every answer. The env (TTS_PROVIDER, TTS_OWN_*) gives the
@@ -118,14 +130,18 @@ impl VoiceService {
         let _ = self.cloud.set(cloud);
     }
 
-    /// The engine that speaks our voice now: the home server's while it is up, else ours (TTS_OWN_URL), else the
-    /// station's cloud voice.
+    /// The engine that speaks our voice now: the first helper's that gives it, else ours (TTS_OWN_URL), else the
+    /// station's cloud voice — at a cloud address only while the regulator lets the clouds out.
     pub fn speaker(&self) -> Option<Arc<OwnSpeech>> {
-        self.home
-            .get()
-            .and_then(|home| home.speech())
-            .or_else(|| self.own_speech.clone())
-            .or_else(|| self.cloud_speech())
+        let home = self.home.get();
+        let lets = |reach: Reach| home.is_none_or(|home| home.allows(reach));
+        home.and_then(|home| home.speech())
+            .or_else(|| {
+                let own = self.own_speech.clone()?;
+                let reach = if is_local_url(Some(&own.base_url())) { Reach::Home } else { Reach::Foreign };
+                lets(reach).then_some(own)
+            })
+            .or_else(|| self.cloud_speech().filter(|_| lets(Reach::Foreign)))
     }
 
     /// The station's cloud voice now, when its panel set one up.
@@ -189,9 +205,9 @@ impl VoiceService {
         self.config.own.as_ref().map(|own| VoicePair { model: own.model.clone(), voice: own.voice.clone() })
     }
 
-    /// The station leans on a home server for our voice (`set_home`).
+    /// The station leans on its helpers for our voice (`set_home`, and the helpers say it leans: a station).
     pub fn has_home(&self) -> bool {
-        self.home.get().is_some()
+        self.home.get().is_some_and(|home| home.leans())
     }
 
     /// The home server's voice from the next answer on — the computer's choice, its voice lab's too — while it is up;
@@ -514,6 +530,81 @@ mod tests {
         assert_eq!(station.provider(true), TtsProvider::Yandex);
         assert_eq!(station.use_home().unwrap(), TtsProvider::Mixed);
         assert_eq!(station.provider(true), TtsProvider::Mixed);
+    }
+
+    /// The helpers as the voice sees them: what the first gives (none here), and the regulator.
+    struct Helpers {
+        speech: Option<Arc<OwnSpeech>>,
+        allows: bool,
+        leans: bool,
+    }
+
+    impl HomeVoice for Helpers {
+        fn speech(&self) -> Option<Arc<OwnSpeech>> {
+            self.speech.clone()
+        }
+        fn allows(&self, reach: Reach) -> bool {
+            self.allows || reach == Reach::Home
+        }
+        fn leans(&self) -> bool {
+            self.leans
+        }
+    }
+
+    /// Default 5 under the regulator: the helper's voice first, then our own — a cloud one only while the regulator
+    /// lets the clouds out —, then Alice's while the mode lets Yandex, else none.
+    #[test]
+    fn the_voice_comes_from_the_first_helper_then_our_own_and_a_cloud_one_only_when_the_regulator_lets_it() {
+        let cloud = gateway(&[("TTS_OWN_URL", "https://tts.example.invalid/v1"), ("TTS_PROVIDER", "mixed")]);
+        let denied = VoiceService::new(&cloud, EventBus::new());
+        denied.set_home(Arc::new(Helpers { speech: None, allows: false, leans: true }));
+        assert!(denied.speaker().is_none(), "the cloud voice is kept in");
+        assert_eq!((denied.provider(true), denied.provider(false)), (TtsProvider::Yandex, TtsProvider::None));
+
+        let allowed = VoiceService::new(&cloud, EventBus::new());
+        allowed.set_home(Arc::new(Helpers { speech: None, allows: true, leans: true }));
+        assert_eq!(
+            allowed.speaker().unwrap().base_url(),
+            "https://tts.example.invalid/v1",
+            "let out: the cloud speaks"
+        );
+        assert_eq!(allowed.provider(true), TtsProvider::Mixed);
+
+        let helped = VoiceService::new(&cloud, EventBus::new());
+        helped.set_home(Arc::new(Helpers { speech: Some(home_speech()), allows: false, leans: true }));
+        assert_eq!(helped.speaker().unwrap().base_url(), "http://192.0.2.10:7780/home/v1/tts", "the helper's first");
+
+        // Our own at home is never kept in.
+        let local = gateway(&[("TTS_OWN_URL", "http://127.0.0.1:8091/v1")]);
+        let home = VoiceService::new(&local, EventBus::new());
+        home.set_home(Arc::new(Helpers { speech: None, allows: false, leans: true }));
+        assert!(home.speaker().is_some());
+        // A computer never leans on its helpers for its voice window, whatever is set.
+        let computer = VoiceService::new(&local, EventBus::new());
+        computer.set_home(Arc::new(Helpers { speech: None, allows: true, leans: false }));
+        assert!(!computer.has_home() && home.has_home());
+    }
+
+    /// A computer's voice through its helpers (stage 6): its built-in helper gives it its own engine, and its «Голос»
+    /// window, its stored choice and `use_home` keep the computer's meaning — the seam does not lean.
+    #[test]
+    fn on_a_computer_the_voice_window_still_refuses() {
+        let settings = settings();
+        settings.set(&VOICE_PROVIDER, &"mixed".to_string(), None).unwrap();
+        let bare = VoiceService::new(&gateway(&[]), EventBus::new());
+        bare.set_home(Arc::new(Helpers { speech: None, allows: true, leans: false }));
+        assert!(!bare.has_home());
+        assert!(bare.use_home().is_err(), "the computer chooses its voice in its shop");
+        bare.restore_from_settings(&settings, None);
+        assert_eq!(bare.chosen_provider(), TtsProvider::Yandex, "a stored «mixed» without an engine is not restored");
+
+        let own = VoiceService::new(&gateway(&[("TTS_OWN_URL", "http://127.0.0.1:8091/v1")]), EventBus::new());
+        own.set_home(Arc::new(Helpers { speech: None, allows: false, leans: false }));
+        own.restore_from_settings(&settings, None);
+        assert_eq!(own.chosen_provider(), TtsProvider::Mixed, "its own engine speaks the stored choice");
+        assert!(Arc::ptr_eq(&own.speaker().unwrap(), own.own_speech().unwrap()), "the own engine itself");
+        assert_eq!((own.provider(true), own.provider(false)), (TtsProvider::Mixed, TtsProvider::Mixed));
+        assert_eq!(own.describe(true), "mixed: ours own, Yandex's its own: silero/xenia via http://127.0.0.1:8091/v1");
     }
 
     #[test]

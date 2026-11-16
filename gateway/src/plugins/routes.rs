@@ -20,8 +20,9 @@ use serde_json::{json, Map, Value};
 use super::budget::ResourcesView;
 use super::catalog::CatalogView;
 use super::controller::{PackageView, PackagesView};
-use super::manifest::PackageKind;
+use super::manifest::{PackageKind, Permission};
 use crate::app::App;
+use crate::bus::Address;
 use crate::core::events::Actor;
 use crate::core::identity::permissions::use_of;
 use crate::core::identity::permissions::{
@@ -91,7 +92,7 @@ pub(crate) fn admin(caller: &Caller) -> Result<Option<Actor>, ApiError> {
 fn may_handle(caller: &Caller, kind: Option<PackageKind>) -> Result<Option<Actor>, ApiError> {
     match kind {
         Some(PackageKind::Character) => caller.permitted(PERSONA_EDIT)?,
-        Some(PackageKind::Theme) => caller.permitted(SETTINGS_EDIT)?,
+        Some(PackageKind::Theme | PackageKind::Agent) => caller.permitted(SETTINGS_EDIT)?,
         Some(PackageKind::Plugin | PackageKind::App) | None => return admin(caller),
     };
     Ok(caller.actor())
@@ -191,9 +192,14 @@ pub struct InstallBody {
     /// From the store (MagicPlace): a plugin or an app is switched on right after it is in place.
     #[serde(default)]
     on: bool,
+    /// The person approved its rights with the install: the panel asked once, before it went in, what it costs and what
+    /// it may, in words. Its links are made before it first runs, so it asks nothing at first use.
+    #[serde(default)]
+    rights: bool,
 }
 
-/// From the catalog: `{version?, on?}` — the newest without a version; `on` — switched on as well.
+/// From the catalog: `{version?, on?, rights?}` — the newest without a version; `on` — switched on as well; `rights` —
+/// its rights approved with it.
 async fn install(
     State(app): State<Arc<App>>,
     caller: Caller,
@@ -201,13 +207,42 @@ async fn install(
     Body(body): Body<InstallBody>,
 ) -> ApiResult<PackageView> {
     let actor = may_handle(&caller, app.catalog.kind_of(&id).await)?;
-    let view = if body.on {
-        app.catalog.install_and_switch_on(&id, body.version.as_deref(), actor).await?
-    } else {
-        app.catalog.install(&id, body.version.as_deref(), false, actor).await?
-    };
+    let view = app.catalog.install(&id, body.version.as_deref(), false, actor.clone()).await?;
+    if body.rights {
+        approve_rights(&app, &caller, &id, actor.clone());
+    }
+    let view = if body.on { app.catalog.switch_on(&id, view, actor).await? } else { view };
     app.characters.sync();
     Ok(created(view))
+}
+
+/// The package's rights on the bus approved with its install, before it first runs (`Bus::approve_install`). Rights
+/// are the house admin's at home to give, as in «Связи»: anyone else's install leaves them to the questions at first
+/// use.
+fn approve_rights(app: &App, caller: &Caller, id: &str, actor: Option<Actor>) {
+    if caller.zone_at_least(Zone::Home).is_err() || caller.permitted(PLUGINS_MANAGE).is_err() {
+        return;
+    }
+    let Some(package) = app.plugins.package(id) else { return };
+    let rights: Vec<_> = package
+        .manifest
+        .permissions
+        .iter()
+        .filter_map(|permission| match permission {
+            Permission::Bus { level, pattern } => Some((*level, pattern.clone())),
+            _ => None,
+        })
+        .collect();
+    if rights.is_empty() {
+        return;
+    }
+    let me = Address::app(id);
+    match app.bus.approve_install(&me, &rights, actor.clone()) {
+        Ok(_) => app.bus.changed("links", Some(&me), actor),
+        Err(error) => {
+            tracing::warn!(target: "plugins", "{id}: rights not approved with the install: {}", error.message)
+        }
+    }
 }
 
 /// The newest version from the catalog over the installed one.
@@ -237,6 +272,18 @@ async fn remove(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<Stri
     app.watch.forget(&id);
     if let Some(files) = app.bus.files() {
         files.media().forget_app(&id);
+    }
+    // An agent's card: the work folders that had it go back to the seat «Исполнитель» — the answer names them.
+    #[cfg(feature = "pc")]
+    if kind == Some(PackageKind::Agent) {
+        let folders = crate::works::folders::forget_agent(&app.settings, &id);
+        if !folders.is_empty() {
+            let said = crate::tr!(
+                "Агент убран из рабочих папок: {folders}. В них теперь работает агент по умолчанию.",
+                folders = folders.join(", ")
+            );
+            return Ok(ok(json!({ "deleted": true, "said": said, "folders": folders })));
+        }
     }
     Ok(ok(json!({ "deleted": true })))
 }

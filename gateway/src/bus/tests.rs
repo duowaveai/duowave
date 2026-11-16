@@ -347,3 +347,59 @@ fn a_right_that_reaches_a_dangerous_handle_is_for_the_panel() {
     assert!(!bus.any_dangerous(&["net:api.todoist.com".into(), "call:system/voice".into()]));
     assert!(!bus.any_dangerous(&[]));
 }
+
+/// A made-up station microphone: `system/mic` and `system/other`, each with `open` — dangerous, its «да» for good — and
+/// `wipe`, dangerous for one act.
+struct Mic;
+
+impl Provider for Mic {
+    fn kind(&self) -> &'static str {
+        "system"
+    }
+
+    fn participants(&self) -> Vec<Participant> {
+        ["mic", "other"]
+            .iter()
+            .map(|name| Participant::new(Address::parse(&format!("system/{name}")).unwrap(), name))
+            .collect()
+    }
+
+    fn handles(&self, _address: &Address) -> Vec<Handle> {
+        vec![
+            Handle::new("open", Level::Call).dangerous(Some(Danger::Camera)).standing(),
+            Handle::new("wipe", Level::Call).dangerous(Some(Danger::Delete)),
+        ]
+    }
+
+    fn call(&self, letter: Letter) -> BoxFuture<'static, Result<Value, BusError>> {
+        Box::pin(async move { Ok(json!({ "handle": letter.handle })) })
+    }
+}
+
+/// docs/plans/wake-word-station.md: the rights approved with an install are links before the app first runs — it asks
+/// nothing at first use; a standing danger the rights name exactly is «всегда» for this app; one act's danger still
+/// asks each time, and a wider pattern gives no «всегда».
+#[tokio::test]
+async fn rights_approved_with_the_install_ask_nothing_and_a_standing_danger_is_always() {
+    let (bus, _) = bus();
+    bus.register(Arc::new(Mic));
+    let (mic, other) = (Address::parse("system/mic").unwrap(), Address::parse("system/other").unwrap());
+    let rights = vec![(Level::Call, Pattern::exact(&mic)), (Level::Call, Pattern::parse("system/*").unwrap())];
+    assert_eq!(bus.approve_install(&a(), &rights, None).unwrap(), 2);
+    assert_eq!(bus.links.all().iter().filter(|link| link.source == LinkSource::Install).count(), 2);
+    for _ in 0..2 {
+        bus.call(Trail::app("a"), a(), mic.clone(), "open", json!({}), vec![]).await.unwrap();
+    }
+    assert!(matches!(
+        bus.call(Trail::app("a"), a(), mic, "wipe", json!({}), vec![]).await,
+        Err(BusError::NeedsYes { .. })
+    ));
+    assert!(matches!(
+        bus.call(Trail::app("a"), a(), other, "open", json!({}), vec![]).await,
+        Err(BusError::NeedsYes { .. })
+    ));
+    assert_eq!(bus.approve_install(&a(), &rights, None).unwrap(), 0, "approved again: nothing new");
+    // Removed: its links and its «всегда» go with it — put in again, it is asked anew.
+    bus.forget(&a(), None);
+    assert!(bus.links.all().is_empty() && bus.links.dangers().is_empty());
+}

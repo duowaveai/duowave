@@ -88,12 +88,14 @@ export function Action({
     disabled?: boolean;
     onClick: () => void;
 }) {
-    const cls = on || tone === 'on' ? 'pill pill-own' : tone === 'yandex' ? 'pill pill-yandex' : 'pill pill-off';
+    // `on` — выбранный вариант (обводка, не лайм); `tone: 'on'` — главное действие (лайм).
+    const cls = on ? 'pill pill-pick' : tone === 'on' ? 'pill pill-own' : tone === 'yandex' ? 'pill pill-yandex' : 'pill pill-off';
     const resting = disabled && !busy;
     return (
         <button
             class={`${cls} py-8 px-14 min-h-36 inline-flex items-center gap-6 ${busy || disabled ? 'cursor-default' : 'cursor-pointer'}${resting ? ' opacity-45' : ''}`}
             disabled={busy || disabled}
+            aria-pressed={on === undefined ? undefined : on}
             onClick={onClick}
         >
             {busy && <span class="spinner spinner-sm" aria-hidden="true" />}

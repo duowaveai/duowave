@@ -23,7 +23,7 @@ use super::media::app_playback::{AppPlayState, AppPlayback, ANY_DEVICE, APP_ACTI
 use super::media::favorites::Favorites;
 use super::media::media_skills::{MediaControl, MusicSkill, RadioSkill, TaleWriter, TalesSkill};
 use super::media::playback::{PlaybackWatch, RETRY_CALLBACK};
-use super::media::player::{MediaPlayer, PlayerEvent, MEDIA_CALLBACK, MEDIA_PLAY_ID, STACK_GET_NEXT};
+use super::media::player::{MediaPlayer, PlayState, PlayerEvent, MEDIA_CALLBACK, MEDIA_PLAY_ID, STACK_GET_NEXT};
 use super::media::sources::{FolderLibrary, MediaSources, StaticRadioCatalog};
 use super::own::alarms_skill::AlarmsSkill;
 use super::own::bluetooth_skill::BluetoothSkill;
@@ -402,6 +402,8 @@ impl SkillsService {
         self.router.intercept(Box::new(move |intent, input| yandex_content(&memory, intent, input)));
         let media = self.media.clone();
         self.router.intercept(Box::new(move |intent, input| our_content(&media, intent, input)));
+        let player = self.player.clone();
+        self.router.intercept(Box::new(move |intent, input| our_track_named(&player, intent, input)));
     }
 
     /// Routes live in the database: the panel's changes survive restarts. A fresh gateway seeds them from
@@ -1069,6 +1071,18 @@ fn our_content(media: &MediaControl, intent: &Intent, input: &RouteInput) -> Opt
     media.owns(&input.device_tag).then(|| with_param(intent, "ours", true.into()))
 }
 
+/// «Что играет» under a track of our player (the YouTube app's, a file of the family's): we know its title — the
+/// station's music recognition would only listen. A radio station's song is not known by its name: Yandex listens.
+fn our_track_named(player: &MediaPlayer, intent: &Intent, input: &RouteInput) -> Option<Intent> {
+    if intent.capability != CapabilityName::MusicRecognition || input.ringing {
+        return None;
+    }
+    let (item, state) = player.current(&input.device_tag)?;
+    let playing = matches!(state.state, PlayState::Starting | PlayState::Playing);
+    (playing && item.r#type != "FmRadio" && !item.title.trim().is_empty())
+        .then(|| with_param(&Intent::new(CapabilityName::Playback, "what"), "ours", true.into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1150,7 +1164,7 @@ mod tests {
             text: text.into(),
             device_tag: "kitchen".into(),
             yandex_available: true,
-            model: ModelState { enabled: true, tools: true },
+            model: ModelState { enabled: true, tools: true, ..Default::default() },
             now: now_ms(),
             ..RouteInput::default()
         }
@@ -1438,6 +1452,33 @@ mod tests {
         assert_eq!(ours.params.get("ours"), Some(&Value::Bool(true)));
         let resolution = skills.router.resolve(&ours, true, None);
         assert_eq!(resolution.kind(), "own");
+    }
+
+    /// «Что играет» under a track of ours (the YouTube app's): its title and who, said by us — not Yandex's
+    /// recognition, which only listens. Under a radio station of ours and with nothing of ours playing it stays the
+    /// recognition's.
+    #[tokio::test]
+    async fn names_our_own_track_when_asked_what_plays() {
+        let built = build(&[]);
+        let skills = &built.service;
+        let office = |text: &str| RouteInput { device_tag: "office".into(), ..input(text) };
+        let recognition = intent_of(skills.router.decide(&office("что сейчас играет")));
+        assert_eq!(recognition.capability, CapabilityName::MusicRecognition, "nothing of ours plays");
+        let mut song = media("xtxjm7ciwmc", "Track", Some(285_000));
+        song.title = "Группа крови".into();
+        song.subtitle = Some("Группа КИНО".into());
+        skills.player.play("office", vec![song], 0, 0);
+        let decision = skills.router.decide(&office("что сейчас играет"));
+        let Decision::Intent { intent, resolution: Resolution::Own(skill), .. } = decision else {
+            panic!("ours: {decision:?}")
+        };
+        assert_eq!((intent.capability, intent.action.as_str()), (CapabilityName::Playback, "what"));
+        let outcome = skill.execute(&intent, &ExecutionContext::new("office", Utc::now())).await.unwrap();
+        assert_eq!(outcome.speech.as_deref(), Some("Сейчас играет «Группа крови», Группа КИНО."));
+        assert!(outcome.directives.is_empty(), "the music goes on");
+        skills.player.play("office", vec![media("jazz", "FmRadio", None)], 0, 0);
+        let radio = intent_of(skills.router.decide(&office("что сейчас играет")));
+        assert_eq!(radio.capability, CapabilityName::MusicRecognition, "a radio's song: Yandex listens");
     }
 
     fn media(id: &str, kind: &str, duration_ms: Option<u64>) -> crate::skills::media::media_types::MediaItem {

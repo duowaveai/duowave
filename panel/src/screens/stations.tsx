@@ -8,7 +8,9 @@ import { Reach, dotClass, isReachable, reachOf } from '../presence';
 import { StationDrawing, colorInfo, drawingOf } from '../stations';
 import { timeAgo } from '../time';
 import { tr } from '../i18n';
-import { Sheet, useDialogFocus } from '../ui/sheet';
+import { usePanel } from '../shell/context';
+import { syncStationName } from '../station-name';
+import { Sheet, WinSection, useDialogFocus } from '../ui/sheet';
 import { ConnectSheet, RestoreSheet, UninstallSheet } from './connect';
 import { Switch } from '../ui/switch';
 
@@ -450,6 +452,7 @@ export function SetupSheet({
     onChanged: () => void;
     onLater: () => void;
 }) {
+    const health = usePanel().health;
     const [step, setStep] = useState<'approve' | 'name' | 'look'>(station.status === 'pending' ? 'approve' : 'name');
     const [name, setName] = useState(station.name === DEFAULT_NAME ? '' : station.name);
     const [value, setValue] = useState<LookValue>({ model: station.model ?? null, color: station.color ?? null, sticker: station.look?.sticker ?? null });
@@ -497,37 +500,46 @@ export function SetupSheet({
                 if (look.sticker != null && value.sticker != null && value.sticker !== look.sticker) change.sticker = value.sticker;
             }
             if (Object.keys(change).length) await api.updateStation(station.device, change);
+            // Одно имя колонки (владелец 16.11): то же имя — во вторую запись, у компьютера или у колонки.
+            if (change.name) await syncStationName(station.device, change.name, health);
             onChanged();
             onClose();
         });
 
     const later = (
-        <button class="pill pill-off dash-wide" disabled={busy} onClick={onLater}>
+        <button class="btn btn-plain" disabled={busy} onClick={onLater}>
             {tr.stationsScreen.later}
         </button>
     );
     const problem = error && (
-        <p role="alert" class="t-meta m-0 c-dot-offline">
+        <p role="alert" class="win-callout m-0">
             {error}
         </p>
     );
+    const spin = busy && <span class="spinner spinner-sm" aria-hidden="true" />;
 
     if (step === 'approve')
         return (
             <Sheet
                 title={tr.stationsScreen.newStation}
-                about={`${lookName(look, drawing)}${station.lastAddress ? tr.stationsScreen.fromAddress(station.lastAddress) : ''}`}
+                meta={
+                    <>
+                        <span class="win-chip">{lookName(look, drawing)}</span>
+                        {station.lastAddress && <span class="win-chip">{station.lastAddress}</span>}
+                    </>
+                }
                 onClose={onClose}
                 footer={
                     mayManage ? (
-                        <div class="dash-actions">
-                            <button class="dash-done" disabled={busy} onClick={() => void approve()}>
-                                {busy ? tr.stationsScreen.connecting : tr.stationsScreen.connect}
-                            </button>
-                            <button class="pill pill-off dash-wide" disabled={busy} onClick={() => void block()}>
+                        <>
+                            <button class="btn btn-plain" disabled={busy} onClick={() => void block()}>
                                 {tr.stationsScreen.dontConnect}
                             </button>
-                        </div>
+                            <button class="btn btn-main" disabled={busy} aria-busy={busy || undefined} onClick={() => void approve()}>
+                                {spin}
+                                {busy ? tr.stationsScreen.connecting : tr.stationsScreen.connect}
+                            </button>
+                        </>
                     ) : undefined
                 }
             >
@@ -535,17 +547,13 @@ export function SetupSheet({
                     <div class="look-preview">
                         <Art skin={drawing.color} clock={drawing.clock} sticker={drawing.sticker} ring="var(--bar-off)" stage="idle" offline />
                     </div>
-                    <p class="t-meta m-0 flex-1 c-text">
+                    <p class="win-lead flex-1">
                         {tr.stationsScreen.asksBefore}
                         {station.firstSeen ? tr.stationsScreen.firstSeen(timeAgo(station.firstSeen)) : ''}
                         {tr.stationsScreen.asksAfter}
                     </p>
                 </div>
-                {!mayManage && (
-                    <p class="t-caption m-0">
-                        {tr.stationsScreen.onlyAdminConnect}
-                    </p>
-                )}
+                {!mayManage && <p class="win-note">{tr.stationsScreen.onlyAdminConnect}</p>}
                 {problem}
             </Sheet>
         );
@@ -557,12 +565,18 @@ export function SetupSheet({
                 about={tr.stationsScreen.nameAbout}
                 onClose={onClose}
                 footer={
-                    <div class="dash-actions">
-                        <button class="dash-done" disabled={busy} onClick={() => (askLook ? setStep('look') : void finish())}>
+                    <>
+                        {later}
+                        <button
+                            class="btn btn-main"
+                            disabled={busy}
+                            aria-busy={busy || undefined}
+                            onClick={() => (askLook ? setStep('look') : void finish())}
+                        >
+                            {!askLook && spin}
                             {askLook ? tr.stationsScreen.next : busy ? tr.stationsScreen.saving : tr.stationsScreen.done}
                         </button>
-                        {later}
-                    </div>
+                    </>
                 }
             >
                 <input
@@ -576,18 +590,20 @@ export function SetupSheet({
                         if (event.key === 'Enter') askLook ? setStep('look') : void finish();
                     }}
                 />
-                <div class="name-chips" role="group" aria-label={tr.stationsScreen.readyNames}>
-                    {tr.stationsScreen.places.map((place) => (
-                        <button
-                            key={place}
-                            class={`pill ${name === place ? 'pill-own' : 'pill-off'} dash-chip`}
-                            aria-pressed={name === place}
-                            onClick={() => setName(place)}
-                        >
-                            {place}
-                        </button>
-                    ))}
-                </div>
+                <WinSection title={tr.stationsScreen.readyNames}>
+                    <div class="name-chips" role="group" aria-label={tr.stationsScreen.readyNames}>
+                        {tr.stationsScreen.places.map((place) => (
+                            <button
+                                key={place}
+                                class={`pill ${name === place ? 'pill-pick' : 'pill-off'} dash-chip`}
+                                aria-pressed={name === place}
+                                onClick={() => setName(place)}
+                            >
+                                {place}
+                            </button>
+                        ))}
+                    </div>
+                </WinSection>
                 {problem}
             </Sheet>
         );
@@ -598,14 +614,15 @@ export function SetupSheet({
             about={tr.stationsScreen.lookAbout}
             onClose={onClose}
             footer={
-                <div class="dash-actions">
-                    <button class="dash-done" disabled={busy} onClick={() => void finish()}>
-                        {busy ? tr.stationsScreen.saving : tr.stationsScreen.done}
-                    </button>
-                    <button class="pill pill-off dash-wide" disabled={busy} onClick={() => setStep('name')}>
+                <>
+                    <button class="btn btn-plain" disabled={busy} onClick={() => setStep('name')}>
                         {tr.stationsScreen.back}
                     </button>
-                </div>
+                    <button class="btn btn-main" disabled={busy} aria-busy={busy || undefined} onClick={() => void finish()}>
+                        {spin}
+                        {busy ? tr.stationsScreen.saving : tr.stationsScreen.done}
+                    </button>
+                </>
             }
         >
             <LookEditor station={station} value={value} disabled={busy} onChange={(change) => setValue({ ...value, ...change })} />

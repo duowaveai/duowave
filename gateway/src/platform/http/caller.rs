@@ -24,6 +24,38 @@ use crate::core::events::Actor;
 use crate::core::identity::permissions::title_of;
 use crate::core::identity::{can, Principal};
 
+/// A request a home sent over the link (src/helpers/link_serve.rs): which client of this computer it is, whether its
+/// home key proved it this computer's own home, and who it named. Only the link server inserts it, as an extension —
+/// never a header —, and a caller with it is outside the home whatever socket it came by.
+#[derive(Clone, Debug)]
+pub struct LinkOrigin {
+    pub client: String,
+    pub own_home: bool,
+    pub home: crate::helpers::contract::HelperIdentity,
+    pub gateway: crate::helpers::contract::HelperIdentity,
+}
+
+impl LinkOrigin {
+    /// The principal of its requests: a key that grants only the computer's help (`home.models`), named by the home
+    /// and the gateway.
+    fn principal(&self) -> Principal {
+        let name = match (self.home.name.trim(), self.gateway.name.trim()) {
+            ("", "") => self.client.clone(),
+            (home, "") => home.to_string(),
+            ("", gateway) => gateway.to_string(),
+            (home, gateway) => format!("{home} · {gateway}"),
+        };
+        Principal {
+            kind: crate::core::identity::principal::PrincipalKind::ApiKey,
+            id: format!("link-{}", self.client),
+            name,
+            role: None,
+            grants: vec![crate::core::identity::permissions::HOME_MODELS.to_string()],
+            denies: Vec::new(),
+        }
+    }
+}
+
 pub struct Caller {
     app: Arc<App>,
     pub zone: Zone,
@@ -33,6 +65,8 @@ pub struct Caller {
     pub peer: Option<SocketAddr>,
     pub headers: HeaderMap,
     authorization: Option<String>,
+    /// A home's request over the link.
+    link: Option<LinkOrigin>,
     /// Who signed, checked once: nobody, somebody, or a check that failed.
     principal: OnceLock<Result<Option<Principal>, ApiError>>,
 }
@@ -42,7 +76,13 @@ impl FromRequestParts<Arc<App>> for Caller {
 
     async fn from_request_parts(parts: &mut Parts, app: &Arc<App>) -> Result<Self, Self::Rejection> {
         let peer = parts.extensions.get::<ConnectInfo<SocketAddr>>().map(|info| info.0);
-        let zone = zone_of(&parts.headers, peer, &app.config.gateway.debug_api_allow);
+        let link = parts.extensions.get::<LinkOrigin>().cloned();
+        // A home over the link is outside, whatever socket the link came by (a proxy on this computer).
+        let zone = if link.is_some() {
+            Zone::Remote
+        } else {
+            zone_of(&parts.headers, peer, &app.config.gateway.debug_api_allow)
+        };
         Ok(Caller {
             app: app.clone(),
             zone,
@@ -50,6 +90,7 @@ impl FromRequestParts<Arc<App>> for Caller {
             peer,
             headers: parts.headers.clone(),
             authorization: parts.headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).map(str::to_string),
+            link,
             principal: OnceLock::new(),
         })
     }
@@ -61,11 +102,8 @@ impl FromRequestParts<Arc<App>> for Caller {
 fn helper_principal(person: Option<&str>, role: Option<&str>) -> Principal {
     use crate::core::identity::roles::{normalize_role, Role};
     let person: String = person.unwrap_or("").chars().filter(|c| !c.is_control()).take(40).collect();
-    let name = if person.trim().is_empty() {
-        "Помощник".to_string()
-    } else {
-        format!("Помощник ({})", person.trim())
-    };
+    let name =
+        if person.trim().is_empty() { "Турбо".to_string() } else { format!("Турбо ({})", person.trim()) };
     let role = role.map(|role| normalize_role(role.trim())).unwrap_or(Role::Member);
     Principal {
         kind: crate::core::identity::principal::PrincipalKind::User,
@@ -89,8 +127,14 @@ impl Caller {
             peer: None,
             headers: HeaderMap::new(),
             authorization: None,
+            link: None,
             principal: cell,
         }
+    }
+
+    /// The home that sent this request over the link, when one did.
+    pub fn link(&self) -> Option<&LinkOrigin> {
+        self.link.as_ref()
     }
 
     /// Only from this computer (`Local`) or the home network too (`Home`).
@@ -113,6 +157,10 @@ impl Caller {
 
     fn checked(&self) -> &Result<Option<Principal>, ApiError> {
         self.principal.get_or_init(|| {
+            // A home over the link: the link's own principal, whatever the request carries.
+            if let Some(link) = &self.link {
+                return Ok(Some(link.principal()));
+            }
             // The pair's key from the home network: the helper — the computer's gateway passing its panel's requests
             // to this station (src/placement/proxy.rs) — acts here with the rights of the role of who is at the
             // computer, under their name. Both headers count only beside the key. A name comes as UTF-8 («Мама»).
@@ -128,10 +176,11 @@ impl Caller {
         })
     }
 
-    /// A signed-in person or a key; from outside the home only when the owner opened it (PANEL_REMOTE). A sign-in
-    /// that could not be checked is the server's error, not «sign in again».
+    /// A signed-in person or a key; from outside the home only when the owner opened it (PANEL_REMOTE) — a home over
+    /// the link aside, which reaches only `/home/v1`. A sign-in that could not be checked is the server's error, not
+    /// «sign in again».
     pub fn signed_in(&self) -> Result<&Principal, ApiError> {
-        if self.zone == Zone::Remote && !self.app.config.gateway.panel_remote {
+        if self.zone == Zone::Remote && !self.app.config.gateway.panel_remote && self.link.is_none() {
             return Err(ApiError::forbidden(crate::tr!("Пульт вне дома выключен (PANEL_REMOTE).")));
         }
         match self.checked() {
@@ -199,6 +248,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_link_caller_is_remote_whatever_socket_it_came_by() {
+        let app = station();
+        let origin = LinkOrigin {
+            client: "link:0123456789ab".into(),
+            own_home: false,
+            home: crate::helpers::contract::HelperIdentity { id: "h1".into(), name: "Дача".into() },
+            gateway: crate::helpers::contract::HelperIdentity { id: "g1".into(), name: "Колонка".into() },
+        };
+        let mut request = Request::builder().uri("/home/v1/status").body(HttpBody::empty()).unwrap();
+        request.extensions_mut().insert(ConnectInfo(SocketAddr::new("127.0.0.1".parse().unwrap(), 5000)));
+        request.extensions_mut().insert(origin);
+        let (mut parts, _) = request.into_parts();
+        let caller = Caller::from_request_parts(&mut parts, &app).await.unwrap();
+        assert_eq!(caller.zone, Zone::Remote, "a loopback socket does not make a home's request this computer's");
+        assert!(caller.zone_at_least(Zone::Home).is_err());
+        assert_eq!(caller.link().map(|link| link.client.as_str()), Some("link:0123456789ab"));
+        // Its own principal: the computer's help only, named by its home and gateway; PANEL_REMOTE does not stop it.
+        let principal = caller.signed_in().unwrap();
+        assert_eq!((principal.id.as_str(), principal.name.as_str()), ("link-link:0123456789ab", "Дача · Колонка"));
+        assert!(caller.permitted("home.models").is_ok());
+        assert_eq!(caller.permitted("station.view").unwrap_err().status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
     async fn the_helper_has_the_rights_of_the_role_the_pass_names_and_a_members_without_one() {
         let app = station();
         let pair = format!("Bearer {PAIR}");
@@ -212,10 +285,10 @@ mod tests {
         let (status, body) = get(&app, "/api/v1/auth/me", &[("authorization", pair.as_str())]).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["message"]["role"], "member");
-        assert_eq!(body["message"]["name"], "Помощник");
+        assert_eq!(body["message"]["name"], "Турбо");
         let (_, body) = get(&app, "/api/v1/auth/me", &me(Some("admin"))).await;
         assert_eq!(body["message"]["role"], "admin");
-        assert_eq!(body["message"]["name"], "Помощник (Мама)", "the name as it came, in UTF-8");
+        assert_eq!(body["message"]["name"], "Турбо (Мама)", "the name as it came, in UTF-8");
         let (_, body) = get(&app, "/api/v1/auth/me", &me(Some("owner"))).await;
         assert_eq!(body["message"]["role"], "guest", "an unknown role is the least");
 

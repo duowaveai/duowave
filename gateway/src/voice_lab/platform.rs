@@ -551,7 +551,7 @@ pub fn describe_platform(platform: &PlatformInfo) -> String {
     };
     let docker = if platform.docker { " (Docker)" } else { "" };
     crate::tr!(
-        "{os}{docker}, {gpu}, {size} ГБ памяти",
+        "{os}{docker}, {gpu}, {size} ГБ ОЗУ",
         os = os,
         docker = docker,
         gpu = gpu,
@@ -705,7 +705,7 @@ pub(crate) mod tests {
             info.tools,
             Tools { uv: Some("uv".into()), git: true, taskpolicy: Taskpolicy::Limits, systemd_run: false }
         );
-        assert_eq!(describe_platform(&info), "Мак, Apple M4 Max, 36 ГБ памяти");
+        assert_eq!(describe_platform(&info), "Мак, Apple M4 Max, 36 ГБ ОЗУ");
     }
 
     #[tokio::test]
@@ -729,7 +729,7 @@ pub(crate) mod tests {
                 systemd_run: true
             }
         );
-        assert_eq!(describe_platform(&info), "Linux, NVIDIA GeForce RTX 4070, 12 ГБ видеопамяти, 32 ГБ памяти");
+        assert_eq!(describe_platform(&info), "Linux, NVIDIA GeForce RTX 4070, 12 ГБ видеопамяти, 32 ГБ ОЗУ");
     }
 
     #[tokio::test]
