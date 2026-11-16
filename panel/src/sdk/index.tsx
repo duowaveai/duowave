@@ -11,7 +11,7 @@ import * as hooks from 'preact/hooks';
 import { DraftTrying as DraftTryingValue, PackagesView, PanelMode, RequestView, StationPresence, api, fetchPluginFile, stationCall } from '../api';
 import { IconCoins, IconGlobe, IconHeart, IconList, IconMusic, IconPackage, IconSparkle, IconSpeaker, IconTimer, IconWeather } from '../icons';
 import { tr } from '../i18n';
-import { enabledHere, packageSettings } from '../plugins/loader';
+import { enabledHere, onPackageSettings, packageSettings } from '../plugins/loader';
 import { PluginScope, usePluginVersion } from '../plugins/versions';
 import { PanelContext, usePanel } from '../shell/context';
 import { onRegistryChange } from '../shell/registry';
@@ -147,7 +147,9 @@ export function useFile(name: string): string | null {
 /** Значения настроек своего плагина (меняет их администратор в окне плагина): только чтение. */
 export function useSettings(pluginId: string): Record<string, unknown> {
     const panel = usePanel();
-    return hooks.useMemo(() => ({ ...(packageSettings.get(pluginId) ?? {}) }), [pluginId, panel.version]);
+    const [read, setRead] = hooks.useState(0);
+    hooks.useEffect(() => onPackageSettings(() => setRead((value) => value + 1)), []);
+    return hooks.useMemo(() => ({ ...(packageSettings.get(pluginId) ?? {}) }), [pluginId, panel.version, read]);
 }
 
 /**

@@ -199,6 +199,27 @@ tar -xzf ~/Downloads/duowave-linux-x86_64.tar.gz
 DUOWAVE=./duowave deploy/linux/install.sh     # служба, данные в /var/lib/duowave, порт 7780
 ```
 
+### На колонку одной командой — без компьютера потом
+
+Колонка с root и SSH ([вики](https://hackalice.me/)), компьютер в той же сети Wi-Fi. В Терминале (macOS, Linux):
+
+```sh
+curl -fsSL https://github.com/duowaveai/duowave/releases/latest/download/install.sh | sh
+```
+
+В PowerShell (Windows 10 и новее):
+
+```powershell
+irm https://github.com/duowaveai/duowave/releases/latest/download/install.ps1 | iex
+```
+
+Команда скачает DuoWave для этого компьютера, сверит его с `SHA256SUMS` выпуска и спросит дальше в том же окне:
+найдёт колонку, покажет, что на ней может помешать (другие моды — их можно выключить их же командой), и только после
+вашего «да» поставит шлюз на колонку, направит туда её голос и перезагрузит её. В конце — адрес пульта колонки,
+`http://<адрес колонки>:8790`. На компьютере ничего не остаётся. Адрес колонки можно назвать сразу:
+`… | sh -s -- 192.168.1.20`. Назад к Яндексу — `sh /data/opt/duowave/restore.sh` на колонке, убрать DuoWave совсем —
+`sh /data/opt/duowave/uninstall.sh`.
+
 ### На самой колонке — пакет YAM
 
 На колонке с менеджером пакетов [YAM 0.2](https://hackalice.me/start/packages/) (пока Станция Лайт 2): файл

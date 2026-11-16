@@ -1,36 +1,567 @@
-/* «Выход в интернет» (egress.tsx): строки точной настройки — имя, адреса и решение слева, маршрут справа. */
-.egress-rows {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: grid;
-    gap: calc(10px * var(--density, 1));
+/* «VPN» (egress.tsx): по образцу телефонного VPN владельца (16.11) — главная с большим переключателем и локацией,
+   список локаций с флагами и полосками, настройки группами, подписки. Материал и цвета — пульта («Минимал»,
+   DESIGN.md): карточки с линией 1px, лайм — только у включённого и главного действия. Ритм 4/8/12/16 по плотности. */
+
+.vpn-screen,
+.vpn-tab {
+    display: flex;
+    flex-direction: column;
+    gap: calc(16px * var(--density, 1));
 }
 
-.egress-row {
+.vpn-card {
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    overflow: hidden;
+}
+.vpn-card-pad { padding: calc(12px * var(--density, 1)) calc(16px * var(--density, 1)); }
+
+.vpn-note {
+    margin: 0;
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--sub);
+}
+.vpn-warn { color: var(--pill-yandex-fg); }
+.vpn-foot { padding: 0 4px; }
+.vpn-empty {
+    margin: 0;
+    padding: 16px;
+    font-size: 14px;
+    color: var(--sub);
+}
+.vpn-label {
+    font-size: 12px;
+    line-height: 16px;
+    font-weight: 500;
+    color: var(--sub);
+}
+
+/* Подсказка с кнопкой: нет приложения, нет «да». */
+.vpn-notice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 16px;
+    border: 1px solid var(--row-line, var(--divider));
+    border-radius: 16px;
+    background: var(--field-bg);
+    font-size: 14px;
+    line-height: 20px;
+}
+.vpn-notice > p { flex: 1 1 240px; }
+
+/* ── Главная ─────────────────────────────────────────────── */
+
+.vpn-hero {
+    display: flex;
+    flex-direction: column;
+    gap: calc(16px * var(--density, 1));
+    padding: calc(16px * var(--density, 1));
+}
+.vpn-hint {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin: 0;
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--sub);
+    text-align: center;
+}
+.vpn-hint > svg { flex: none; }
+.vpn-hero-on .vpn-hint { color: var(--text); }
+.vpn-hero-on .vpn-hint > svg { color: var(--bar-own, var(--accent)); }
+.vpn-hero-off .vpn-hint,
+.vpn-hero-down .vpn-hint { color: var(--dot-offline); }
+
+/* Локация на главной — строка-кнопка в рамке, как поле. */
+.vpn-hero > .vpn-line {
+    border: 1px solid var(--glass-border);
+    border-radius: 16px;
+    background: var(--field-bg);
+}
+.vpn-line-label {
+    display: block;
+    font-size: 12px;
+    line-height: 16px;
+    font-weight: 400;
+    color: var(--sub);
+}
+
+.vpn-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 0 4px;
+}
+.vpn-state-title {
+    margin: 0;
+    font-family: 'Inter Tight', Inter, system-ui, sans-serif;
+    font-size: 24px;
+    line-height: 30px;
+    font-weight: 300;
+    letter-spacing: -0.02em;
+    text-align: center;
+}
+
+/* Большой переключатель «Выкл | Вкл»: дорожка, выбранная половина — капсула; «Вкл» — лайм со свечением. */
+.vpn-power {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    width: min(320px, 100%);
+    padding: 5px;
+    border-radius: 999px;
+    background: var(--track);
+}
+.vpn-power > button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 52px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--sub);
+    font: inherit;
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s, box-shadow 0.2s;
+}
+.vpn-power > button:disabled { cursor: default; }
+.vpn-power > button[aria-checked='true'] {
+    background: var(--seg-on-bg);
+    color: var(--seg-on-fg, var(--text));
+    box-shadow: var(--seg-shadow);
+}
+.vpn-power > button:last-child[aria-checked='true'] {
+    background: var(--accent);
+    color: var(--on-accent);
+    box-shadow: 0 6px 18px rgba(132, 204, 22, 0.32);
+}
+.vpn-power > button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.vpn-power[aria-busy='true'] > button { opacity: 0.7; }
+
+.vpn-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 4px;
+    border: 0;
+    background: none;
+    color: var(--sub);
+    font: inherit;
+    font-size: 14px;
+    line-height: 20px;
+    text-align: center;
+    cursor: pointer;
+}
+.vpn-link:hover { color: var(--text); }
+
+/* ── Строки списков ──────────────────────────────────────── */
+
+.vpn-line {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-height: 56px;
+    padding: 10px 16px;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+.vpn-card > .vpn-line + .vpn-line,
+.vpn-card > .vpn-line + .vpn-set-row,
+.vpn-card > .vpn-set-row + .vpn-line,
+.vpn-card > .vpn-set-row + .vpn-set-row { border-top: 1px solid var(--divider); }
+.vpn-line:hover:not(:disabled) { background: var(--hover-bg); }
+.vpn-line:disabled { cursor: default; }
+.vpn-line:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
+.vpn-line-text {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+.vpn-line-title {
+    font-size: 15px;
+    line-height: 20px;
+    font-weight: 500;
+    overflow-wrap: anywhere;
+}
+.vpn-line-sub {
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--sub);
+}
+.vpn-city { font-weight: 400; color: var(--sub); }
+.vpn-accent { color: var(--text); }
+.vpn-line-sub .vpn-accent { font-weight: 500; }
+.vpn-dead { color: var(--mute); }
+.vpn-chevron { flex: none; display: inline-flex; color: var(--mute); }
+
+/* Флаг — круг 40px, как значок строки. */
+.vpn-flag {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: var(--chip-bg);
+    font-size: 22px;
+    line-height: 1;
+    color: var(--sub);
+    overflow: hidden;
+}
+.vpn-spark {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    color: var(--text);
+    background: var(--chip-bg);
+}
+.vpn-spark-filled { background: var(--accent); color: var(--on-accent); }
+.vpn-badge {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 6px;
+    padding: 1px 8px;
+    border: 1px solid var(--glass-border);
+    border-radius: 999px;
+    font-size: 12px;
+    line-height: 16px;
+    font-weight: 500;
+    color: var(--sub);
+    vertical-align: 2px;
+}
+.vpn-badge-new { border-color: transparent; background: var(--pill-own-bg); color: var(--pill-own-fg); }
+.vpn-check { flex: none; display: inline-flex; color: var(--text); }
+
+/* Полоски сигнала из задержки. */
+.vpn-bars {
+    flex: none;
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 16px;
+}
+.vpn-bars > i {
+    display: block;
+    width: 4px;
+    border-radius: 2px;
+    background: var(--track);
+}
+.vpn-bars > i.on { background: var(--bar-own, var(--accent)); }
+.vpn-bars-dead > i { background: var(--dot-offline); opacity: 0.35; }
+
+/* Поиск и сортировка. */
+.vpn-search { display: flex; gap: 8px; }
+.vpn-search-field { flex: 1; min-width: 0; width: 100%; }
+.vpn-icon-btn {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 38px;
+    border: 1px solid var(--glass-border);
+    border-radius: 999px;
+    background: var(--field-bg);
+    color: var(--text);
+    cursor: pointer;
+}
+.vpn-icon-btn:hover { background: var(--hover-bg); }
+
+/* ── Настройки ───────────────────────────────────────────── */
+
+.vpn-group { display: flex; flex-direction: column; gap: 8px; }
+.vpn-group-title {
+    margin: 0;
+    padding: 0 4px;
+    font-size: 13px;
+    line-height: 18px;
+    font-weight: 500;
+    color: var(--sub);
+}
+.vpn-set-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 16px;
+}
+.vpn-off { opacity: 0.5; }
+.vpn-count {
+    flex: none;
+    min-width: 28px;
+    padding: 2px 8px;
+    border: 1px solid var(--glass-border);
+    border-radius: 999px;
+    font-size: 13px;
+    line-height: 18px;
+    font-weight: 500;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+.vpn-ondown { display: flex; flex-direction: column; gap: 10px; }
+.vpn-select-wide { width: 100%; }
+
+.vpn-back {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 10px 6px 4px;
+    border: 0;
+    border-radius: 999px;
+    background: none;
+    color: var(--sub);
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+}
+.vpn-back:hover { color: var(--text); }
+.vpn-page-title {
+    margin: -8px 0 0;
+    padding: 0 4px;
+    font-family: 'Inter Tight', Inter, system-ui, sans-serif;
+    font-size: 24px;
+    line-height: 30px;
+    font-weight: 300;
+    letter-spacing: -0.02em;
+}
+
+/* Три режима: значок из четырёх клеток, радио справа. */
+.vpn-radio-line { min-height: 64px; }
+.vpn-radio {
+    flex: none;
+    box-sizing: border-box;
+    width: 22px;
+    height: 22px;
+    border: 2px solid var(--glass-border);
+    border-radius: 50%;
+}
+.vpn-radio-line[aria-checked='true'] .vpn-radio { border: 7px solid var(--text); }
+.vpn-pick-icon {
+    flex: none;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 3px;
+    width: 36px;
+    height: 36px;
+}
+.vpn-pick-icon > i {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+}
+.vpn-pick-icon > i.fill { background: var(--bar-own, var(--accent)); }
+.vpn-pick-icon > i.tick { border: 1.5px solid var(--text); color: var(--text); }
+.vpn-pick-icon > i.tick > svg { width: 12px; height: 12px; }
+.vpn-pick-icon > i.empty { border: 1.5px solid var(--glass-border); }
+
+/* Список «Выбранные»: строка с галочкой; у отмеченной при двух подписках — через какую. */
+.vpn-check-line { border-top: 1px solid var(--divider); }
+.vpn-check-label {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 56px;
+    padding: 8px 16px;
+    cursor: pointer;
+}
+.vpn-checkbox {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    accent-color: var(--text);
+    cursor: pointer;
+}
+.vpn-off .vpn-check-label { cursor: default; }
+.vpn-select {
+    margin: -4px 16px 10px;
+    max-width: calc(100% - 32px);
+    min-height: 30px;
+    padding: 4px 28px 4px 12px;
+    border: 1px solid var(--glass-border);
+    border-radius: 999px;
+    background-color: var(--field-bg);
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+}
+
+/* Страна дома. */
+.vpn-countries-wrap { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--divider); }
+.vpn-countries {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 280px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 6px;
+    border: 1px solid var(--glass-border);
+    border-radius: 14px;
+    background: var(--field-bg);
+}
+.vpn-country {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 40px;
+    padding: 8px 12px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 14px;
+    text-align: left;
+    cursor: pointer;
+}
+.vpn-country:hover,
+.vpn-country[aria-selected='true'] { background: var(--hover-bg); }
+.vpn-country-flag { width: 1.5em; text-align: center; }
+
+/* Свои адреса. */
+.vpn-custom { display: flex; flex-direction: column; gap: 8px; }
+.vpn-custom-add { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.vpn-host {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 40px;
+    border-top: 1px solid var(--divider);
+    font-size: 14px;
+    overflow-wrap: anywhere;
+}
+.vpn-text-btn {
+    flex: none;
+    padding: 6px 0;
+    border: 0;
+    border-bottom: 1px solid var(--glass-border);
+    background: none;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+}
+.vpn-text-btn:hover:not(:disabled) { border-bottom-color: currentColor; }
+.vpn-text-btn:disabled { opacity: 0.5; cursor: default; }
+.vpn-danger { color: var(--dot-offline); }
+
+/* ── Подписки ────────────────────────────────────────────── */
+
+.vpn-conn { gap: 0; }
+.vpn-conn > * { padding-left: 16px; padding-right: 16px; }
+.vpn-conn-head {
     display: flex;
     align-items: flex-start;
-    justify-content: space-between;
-    gap: calc(12px * var(--density, 1));
+    gap: 12px;
+    padding-top: 14px;
+    padding-bottom: 12px;
 }
-
-.egress-row > .pill {
+.vpn-conn > .vpn-note { padding-bottom: 8px; }
+.vpn-conn-name { font-size: 15px; line-height: 20px; font-weight: 500; }
+.vpn-status {
     flex: none;
-    max-width: 45%;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 10px 2px 8px;
+    border-radius: 999px;
+    background: var(--chip-bg);
+    font-size: 12px;
+    line-height: 18px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+.vpn-status > i { width: 6px; height: 6px; border-radius: 50%; background: var(--mute); }
+.vpn-status-up > i { background: var(--bar-own, var(--accent)); }
+.vpn-status-down { color: var(--dot-offline); }
+.vpn-status-down > i { background: var(--dot-offline); }
+.vpn-rename { flex: 1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.vpn-rename > .field { flex: 1 1 200px; min-width: 0; }
+.vpn-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.vpn-actions-split {
+    justify-content: space-between;
+    padding-top: 12px;
+    padding-bottom: 14px;
+    border-top: 1px solid var(--divider);
+}
+
+.vpn-form { display: flex; flex-direction: column; gap: 12px; }
+.vpn-field { display: flex; flex-direction: column; gap: 6px; }
+.vpn-source {
+    min-height: 112px;
+    border-radius: 14px;
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    resize: vertical;
+}
+.vpn-help {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    background: var(--chip-bg);
+}
+.vpn-help ul {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 0;
+    padding-left: 18px;
+    font-size: 13px;
+    line-height: 18px;
+}
+
+.vpn-about { display: flex; flex-direction: column; gap: 12px; font-size: 14px; line-height: 20px; }
+.vpn-facts {
+    display: grid;
+    grid-template-columns: 100px minmax(0, 1fr);
+    gap: 10px 12px;
+    margin: 0;
+}
+.vpn-facts dt { padding-top: 4px; font-size: 12px; line-height: 16px; font-weight: 500; color: var(--sub); }
+.vpn-facts dd { margin: 0; min-width: 0; }
+.vpn-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.vpn-chips > li {
+    padding: 3px 10px;
+    border-radius: 999px;
+    background: var(--chip-bg);
+    font-size: 12px;
+    line-height: 18px;
+    font-weight: 500;
     white-space: nowrap;
 }
 
-.egress-row .t-meta.truncate {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-/* Три кнопки простого режима: подписи целиком в две строки, а не обрезанные, на узком экране. */
-.egress-modes > button {
-    white-space: normal;
-    text-overflow: clip;
-    line-height: 1.2;
+@media (max-width: 560px) {
+    .vpn-facts { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+    .vpn-facts dt { padding-top: 0; }
+    .vpn-state-title { font-size: 22px; line-height: 28px; }
 }

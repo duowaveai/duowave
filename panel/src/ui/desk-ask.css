@@ -1,0 +1,45 @@
+/* Строки под сценой («Запомнил…», «Поставить на стол?»): отступ снизу — его не перекрывает витрина под сценой. */
+.desk-scene-lines { padding-bottom: 16px; }
+.desk-scene-lines:empty { display: none; }
+
+/* «Поставить на стол?» под сценой (screens/desk-ask.tsx) — доска «Тот же стол через неделю» холста «Стартовый стол —
+   лаконично»: белая капсула с вопросом, «Поставить» чернилами, «Не надо» тихо. На узком экране кнопки уходят под текст. */
+.desk-ask {
+    margin: 10px auto 0;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px 12px;
+    width: fit-content;
+    max-width: min(100%, 620px);
+    padding: 8px 8px 8px 18px;
+    border-radius: 999px;
+    background: var(--widget-bg);
+    border: 1px solid var(--widget-line);
+    box-shadow: var(--widget-shadow);
+    color: var(--text);
+    font-size: 14px;
+    line-height: 20px;
+}
+.desk-ask > svg { flex: none; color: var(--sub); }
+.desk-ask-text { min-width: 0; }
+.desk-ask-yes,
+.desk-ask-no {
+    display: inline-flex;
+    align-items: center;
+    height: 34px;
+    padding: 0 14px;
+    border: 0;
+    border-radius: 999px;
+    font: 500 13px/1 var(--font);
+    white-space: nowrap;
+    cursor: pointer;
+}
+.desk-ask-yes { background: var(--ink-bg); color: var(--ink-fg); }
+.desk-ask-yes:hover { background: var(--ink-hi); }
+.desk-ask-no { margin-left: -6px; padding: 0 12px; background: transparent; color: var(--sub); }
+.desk-ask-no:hover { background: var(--hover-bg); color: var(--text); }
+@media (max-width: 560px) {
+    .desk-ask { border-radius: 18px; padding: 10px 12px; }
+}

@@ -10,7 +10,7 @@
 //! - Like the rest of `/home/v1`: only from the home network and only with the home key — the way the station's speech
 //!   and its talks with the model already go.
 //! - What the computer has is noted in `synced`: the station's cleaning with «На компьютере» takes only that.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -232,8 +232,15 @@ impl History {
         came
     }
 
-    /// A record and all it points to here, taken from the computer when this side cleaned them.
+    /// A record and all it points to here, taken from the computer when this side cleaned them — and a catalog's
+    /// files the station kept out of its history (`light`) that the computer does not have, from the catalog's
+    /// archive again (`fetch_from_catalog`).
     pub async fn ensure_local(&self, record: &str) {
+        self.fetch_from_computer(record).await;
+        self.fetch_from_catalog(record).await;
+    }
+
+    async fn fetch_from_computer(&self, record: &str) {
         if !self.on_station() || self.sync.home().is_none() {
             return;
         }
@@ -249,6 +256,72 @@ impl History {
             files.extend(snapshot.pictures.into_iter().map(|picture| picture.file));
         }
         self.fetch(&files).await;
+    }
+
+    /// The files of a record's version that are not here, out of the catalog's archive it came from
+    /// (`remember_archive`): downloaded, checked by its size and sum, each file put into the store under its own sum.
+    /// Nothing when the catalog no longer has the archive: the step back then says the version is gone.
+    async fn fetch_from_catalog(&self, record: &str) {
+        let Some(found) = self.record(record) else { return };
+        let Some(entries) = self.tree(&found.tree) else { return };
+        let missing: HashSet<String> =
+            entries.iter().filter(|entry| !self.store().has(&entry.file)).map(|entry| entry.path.clone()).collect();
+        if missing.is_empty() {
+            return;
+        }
+        let Some(archive) = self.store().archive(&found.tree) else { return };
+        let limit = crate::plugins::install::MAX_ARCHIVE;
+        let bytes = match crate::plugins::install::download(&archive.url, limit, Duration::from_secs(180)).await {
+            Ok(bytes) => bytes,
+            Err(why) => {
+                tracing::warn!(target: "plugins", "history: {}: the catalog's archive did not come: {why}", found.app);
+                return;
+            }
+        };
+        if let Err(why) = crate::plugins::install::check_archive(&bytes, &archive.sha256, archive.size) {
+            tracing::warn!(target: "plugins", "history: {}: the catalog's archive is not the one noted: {why}", found.app);
+            return;
+        }
+        let wanted: HashMap<String, String> = entries
+            .into_iter()
+            .filter(|entry| missing.contains(&entry.path))
+            .map(|entry| (entry.path, entry.file))
+            .collect();
+        match self.files_from_archive(&bytes, &wanted) {
+            Ok(came) => {
+                tracing::info!(target: "plugins", "history: {}: {came} file(s) from the catalog's archive", found.app)
+            }
+            Err(why) => {
+                tracing::warn!(target: "plugins", "history: {}: the catalog's archive does not read: {why}", found.app)
+            }
+        }
+    }
+
+    /// The files of `wanted` (path → its sum) out of a package's archive into the store; one whose content is not its
+    /// sum is not kept. How many came.
+    fn files_from_archive(&self, bytes: &[u8], wanted: &HashMap<String, String>) -> Result<usize, String> {
+        use std::io::Read as _;
+        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(bytes));
+        let mut came = 0;
+        for entry in archive.entries().map_err(|error| error.to_string())? {
+            let mut entry = entry.map_err(|error| error.to_string())?;
+            if !entry.header().entry_type().is_file() {
+                continue;
+            }
+            let path = entry.path().map_err(|error| error.to_string())?.into_owned();
+            let Some(inside) = crate::plugins::install::inside(&path)? else { continue };
+            let path = inside.to_string_lossy().replace('\\', "/");
+            let Some(sum) = wanted.get(&path) else { continue };
+            let mut content = Vec::new();
+            entry.read_to_end(&mut content).map_err(|error| error.to_string())?;
+            if super::store::id_of(super::store::Kind::File, &content) != *sum {
+                continue;
+            }
+            if self.store().put(super::store::Kind::File, &content).is_ok() {
+                came += 1;
+            }
+        }
+        Ok(came)
     }
 
     // The computer's side.

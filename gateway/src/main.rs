@@ -94,7 +94,8 @@ fn health() -> anyhow::Result<()> {
 fn update(check_only: bool) -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let config = duowave::config::Config::load(&duowave::config::Env::from_process())?;
-    let updates = duowave::updates::UpdatesService::new(&config, duowave::core::events::EventBus::new());
+    let updates =
+        std::sync::Arc::new(duowave::updates::UpdatesService::new(&config, duowave::core::events::EventBus::new()));
     match runtime()?.block_on(updates.update_from_console(check_only)) {
         Ok(message) => {
             println!("{message}");

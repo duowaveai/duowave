@@ -13,6 +13,7 @@ use tokio::sync::broadcast;
 use tokio::time::{timeout_at, Instant};
 
 use super::discovery::{discover_stations, FoundStation};
+use super::neighbours::{self, Neighbour};
 use super::quasar_config::{
     gateway_addresses, parse_gateway_host, points_to, read_config, with_addresses, yandex, GatewayHost, PointsTo,
     StationFacts, VoiceAddresses,
@@ -88,6 +89,12 @@ pub struct StationCheck {
     /// file changed under it — an update), or none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub copy: Option<CopyState>,
+    /// What else on the station stands in the way, the worst first — named, never removed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub neighbours: Option<Vec<Neighbour>>,
+    /// The memory the station has free, kilobytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mem_available_kb: Option<u64>,
     /// The station this gateway knows at that address.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
@@ -378,6 +385,14 @@ impl StationConnectService {
         let lines: Vec<&str> = extra.stdout.trim().split('\n').collect();
         let data_free_kb = lines.first().and_then(|line| free_kb(line));
         let arch = lines.get(1).filter(|value| arch_ok(value)).map(|value| value.to_string());
+        // A station that cannot say does not stop the look: the panel just has nothing to warn of.
+        let (neighbours, mem_available_kb) = match shell.run(&STEPS.neighbours, None).await {
+            Ok(around) if around.code == 0 => {
+                let (found, memory) = neighbours::read(&around.stdout);
+                (Some(found), memory)
+            }
+            _ => (None, None),
+        };
         let target = gateway.map(|gateway| gateway_addresses(gateway, &self.path));
         if link.is_none() {
             self.remember(address, LinkChange { fingerprint: Some(fingerprint.clone()), ..Default::default() })?;
@@ -397,11 +412,51 @@ impl StationConnectService {
                 _ => None,
             },
             copy: copy_state(lines.get(4).copied(), lines.get(5).copied()),
+            neighbours,
+            mem_available_kb,
             device,
             target,
             connected: Some(connected),
             problem: None,
         })
+    }
+
+    /// «Выключить» another mod by its own switch (neighbours.rs): its folder, settings and records stay, only its
+    /// switch is turned. Over the key the first look learned — never a station not looked at. The panel looks again
+    /// after it; the change goes to «Кто что менял».
+    pub async fn turn_off(&self, address: &str, addon: &str, actor: Option<Actor>) -> Result<(), ApiError> {
+        let Some(command) = neighbours::turn_off_command(addon) else {
+            return Err(ApiError::bad_request(crate::tr!("Этот мод шлюз выключать не умеет.")));
+        };
+        let Some(link) = self.link(address)? else {
+            return Err(ApiError::conflict(crate::tr!("Сначала проверьте колонку: шлюз её ещё не видел.")));
+        };
+        let shell = self
+            .opener
+            .open(address, self.options(Some(link.fingerprint.clone())))
+            .await
+            .map_err(|error| ApiError::bad_gateway(problem_of(&error)))?;
+        let result = shell.run(&command, None).await;
+        shell.close().await;
+        let failure = match &result {
+            Ok(run) if run.code == 0 => None,
+            Ok(run) => Some(first_nonempty(&run.stderr, &run.stdout)),
+            Err(error) => Some(problem_of(error)),
+        };
+        self.events.emit(GatewayEvent::StationModOff {
+            address: address.to_string(),
+            addon: addon.to_string(),
+            result: if failure.is_none() { "done" } else { "failed" }.to_string(),
+            error: failure.clone(),
+            actor,
+        });
+        match failure {
+            None => Ok(()),
+            Some(why) => {
+                let why: String = why.chars().take(300).collect();
+                Err(ApiError::bad_gateway(crate::tr!("Мод не выключился: {why}", why = why)))
+            }
+        }
     }
 
     /// «Подключить»: the job runs on; the panel follows it by its id.
@@ -855,6 +910,8 @@ fn base(address: &str, ssh: Option<String>, device: Option<String>) -> StationCh
         client: None,
         updates: None,
         copy: None,
+        neighbours: None,
+        mem_available_kb: None,
         device,
         target: None,
         connected: None,
@@ -1030,6 +1087,8 @@ mod tests {
         key: String,
         /// What the check after uninstall.sh finds still there, a line each.
         left: String,
+        /// What the look for neighbours prints.
+        around: String,
     }
 
     #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1059,6 +1118,7 @@ mod tests {
                     undo: Undo::Works,
                     key: "SHA256:fake-key".into(),
                     left: String::new(),
+                    around: "maind on\nmemavail 61440\n".into(),
                 })),
             }
         }
@@ -1121,6 +1181,14 @@ mod tests {
             } else if command == STEPS.facts {
                 let copy = if state.copy.is_some() { "mounted" } else { "none" };
                 done(&format!("/dev/ubi0_5 89088 2048 87040 2% /data\narmv7l\nnone\nupdates-blocked\n{copy}\n-\n"))
+            } else if ["pulsar", "quasar-bridge", "yajavis", "jarvis-server"]
+                .iter()
+                .any(|id| neighbours::turn_off_command(id).as_deref() == Some(command))
+            {
+                done("")
+            } else if command == STEPS.neighbours {
+                let around = state.around.clone();
+                done(&around)
             } else if let Some((step, _)) = delivered {
                 let path = step.split("mv -f ").nth(1).and_then(|rest| rest.split(' ').nth(1)).unwrap().to_string();
                 state.files.insert(path, input.unwrap_or_default().to_string());
@@ -1312,6 +1380,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_look_names_what_stands_in_the_way_and_changes_nothing() {
+        let setup = Setup::new(fast());
+        setup.station.state().around = "mod yajavis\nmod quasar-bridge\nmaind on\nmemavail 20480\n".into();
+        let check = setup.service.check(ADDRESS, Some(&gateway())).await.unwrap();
+        let found: Vec<(&str, neighbours::Severity)> =
+            check.neighbours.iter().flatten().map(|n| (n.id.as_str(), n.severity)).collect();
+        assert_eq!(
+            found,
+            [
+                ("quasar-bridge", neighbours::Severity::Blocks),
+                ("yajavis", neighbours::Severity::Warns),
+                ("low-memory", neighbours::Severity::Warns)
+            ]
+        );
+        // Named only: «Подключить» is still offered, the station is as it was.
+        assert!(check.problem.is_none());
+        assert_eq!(setup.station.state().config(), config_text());
+        assert_eq!(setup.station.state().reboots, 0);
+        let json = serde_json::to_value(&check).unwrap();
+        assert_eq!(json["neighbours"][0]["severity"], "blocks");
+        assert_eq!(json["memAvailableKb"], 20480);
+    }
+
+    #[tokio::test]
+    async fn turns_a_known_mod_off_by_its_own_switch_only_after_a_look_and_says_so() {
+        let setup = Setup::new(fast());
+        let mut events = setup.events.subscribe();
+        // Not looked at yet: no key to trust, nothing runs.
+        assert!(setup.service.turn_off(ADDRESS, "pulsar", None).await.is_err());
+        assert!(setup.station.state().commands.is_empty());
+
+        setup.service.check(ADDRESS, None).await.unwrap();
+        let unknown = setup.service.turn_off(ADDRESS, "alisa-voice", None).await;
+        assert!(unknown.is_err(), "no switch of its own: no button");
+        setup.service.turn_off(ADDRESS, "pulsar", None).await.unwrap();
+        let commands = setup.station.state().commands.clone();
+        assert_eq!(commands.last().map(String::as_str), neighbours::turn_off_command("pulsar").as_deref());
+        assert_eq!(setup.station.state().reboots, 0);
+        assert_eq!(setup.station.state().config(), config_text(), "Alice's voice untouched");
+
+        let said: Vec<_> = std::iter::from_fn(|| events.try_recv().ok())
+            .filter_map(|event| match &*event {
+                GatewayEvent::StationModOff { addon, result, .. } => Some((addon.clone(), result.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(said, [("pulsar".to_string(), "done".to_string())]);
+    }
+
+    #[tokio::test]
     async fn looks_first_reading_only_and_learns_the_key() {
         let setup = Setup::new(fast());
         let check = setup.service.check(ADDRESS, Some(&gateway())).await.unwrap();
@@ -1328,7 +1446,12 @@ mod tests {
         assert_eq!(check.updates.as_deref(), Some("blocked"));
         assert_eq!(check.target, Some(VoiceAddresses { url: "ws://192.0.2.10/uni.ws".into(), quic: String::new() }));
         assert_eq!(check.connected, Some(false));
-        assert_eq!(setup.station.state().commands, vec![STEPS.read.clone(), STEPS.facts.clone()]);
+        assert_eq!(check.neighbours, Some(vec![]));
+        assert_eq!(check.mem_available_kb, Some(61440));
+        assert_eq!(
+            setup.station.state().commands,
+            vec![STEPS.read.clone(), STEPS.facts.clone(), STEPS.neighbours.clone()]
+        );
         assert_eq!(setup.station.state().config(), config_text());
         assert_eq!(
             setup.link(),

@@ -45,6 +45,8 @@ pub const CATALOG: &str = "catalog";
 const COALESCE_MS: i64 = 2 * 60_000;
 /// Files of an app at most, and all of them together: the installer's limits (install.rs).
 const MAX_FILES: usize = super::install::MAX_FILES;
+/// A catalog's file bigger than this stays out of the station's history (`History::light`).
+const LIGHT_MAX: u64 = 256 * 1024;
 const MAX_BYTES: u64 = super::install::MAX_UNPACKED;
 /// What a record keeps of a request and of the agent's last words.
 const ASKED_MAX: usize = 600;
@@ -443,6 +445,7 @@ impl History {
 
     /// A folder's files put in; its tree's id.
     pub fn snapshot_dir(&self, dir: &Path) -> Result<String, String> {
+        let light = self.light(dir);
         let mut files = Vec::new();
         walk(dir, dir, &mut files).map_err(|error| crate::tr!("папка не читается: {error}", error = error))?;
         if files.len() > MAX_FILES {
@@ -451,15 +454,45 @@ impl History {
         let mut entries = Vec::new();
         let mut total = 0u64;
         for (path, full) in files {
-            let bytes = std::fs::read(&full).map_err(|error| format!("{path}: {error}"))?;
-            total += bytes.len() as u64;
+            let size = std::fs::metadata(&full).map_err(|error| format!("{path}: {error}"))?.len();
+            total += size;
             if total > MAX_BYTES {
                 return Err(crate::tr!("больше {max_bytes} МБ", max_bytes = MAX_BYTES / 1024 / 1024));
             }
+            if light && size > LIGHT_MAX {
+                // Its sum only: the file is in the catalog's archive (and on the computer), not in the station's store.
+                let (size, file) = store::file_id(&full).map_err(|error| format!("{path}: {error}"))?;
+                entries.push(TreeEntry { path, file, size });
+                continue;
+            }
+            let bytes = std::fs::read(&full).map_err(|error| format!("{path}: {error}"))?;
             let file = self.store.put(Kind::File, &bytes).map_err(|error| format!("{path}: {error}"))?;
             entries.push(TreeEntry { path, file, size: bytes.len() as u64 });
         }
         self.put_tree(entries)
+    }
+
+    /// Whether `dir` is kept light (docs/plans/station-update-space.md, decision 5): on the station, a catalog's
+    /// version keeps its big files — an app's program is 10 MB — out of the history; the catalog's archive has them
+    /// (`remember_archive`), and so has the computer when it runs the app too. A step back takes them from there
+    /// (`ensure_local`). The station's history has 2 MB, and its last two versions of every app used to be kept whole
+    /// past that.
+    fn light(&self, dir: &Path) -> bool {
+        if !self.on_station() {
+            return false;
+        }
+        let Some(host) = self.host() else { return false };
+        let Ok(inside) = dir.strip_prefix(host.packages_dir()) else { return false };
+        let Some(app) = inside.components().next().and_then(|part| part.as_os_str().to_str()) else { return false };
+        host.origin_noted(app) == super::registry::Origin::Catalog
+    }
+
+    /// The catalog's archive a record's version came from: its files kept out of the store come from it again.
+    pub fn remember_archive(&self, record: &str, archive: &store::ArchiveRef) {
+        let Some(found) = self.record(record) else { return };
+        if let Err(error) = self.store.set_archive(&found.tree, archive) {
+            tracing::warn!(target: "plugins", "history: the archive of {} is not noted: {error}", found.app);
+        }
     }
 
     pub(crate) fn put_tree(&self, mut entries: Vec<TreeEntry>) -> Result<String, String> {
@@ -888,7 +921,12 @@ impl History {
         self.mark(app, INSTALLED, None);
         let _ = self.store.set_removed(app, Some(&now_at()));
         drop(_held);
+        drop(_writing);
         self.tell(app, "history");
+        // On the station what the removed app held goes now when it is elsewhere too (gc.rs, `removed_days`).
+        if self.on_station() {
+            self.clean();
+        }
     }
 
     /// Whether `ancestor` is `of` or one of its parents' parents… (as far as the store still has them).

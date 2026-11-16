@@ -1,6 +1,7 @@
 //! The station's «Голос» while the computer gives it its voice (docs/plans/desk-after-station.md, В): the station's
 //! build has no model shop, so its panel's window offers «Голос компьютера (имя) / Алиса» here —
-//! `GET|POST /api/v1/models/home-voice`. The choice is the station's own (`tts_provider`, each side's own in
+//! `GET|POST /api/v1/models/home-voice`. Without the computer, with a cloud voice set up (src/speech/cloud_speech.rs,
+//! docs/plans/speaker-alone.md): «Облачный голос / Алиса». The choice is the station's own (`tts_provider`, each side's own in
 //! src/placement/transfer.rs); a move with the computer as the station's server brings the computer's.
 
 use std::sync::Arc;
@@ -39,7 +40,9 @@ pub struct HomeVoiceView {
     /// no name (a voice of its voice lab is known by an id).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub voice: Option<String>,
-    /// The station's choice: «computer» or «alice».
+    /// A cloud voice is set up on the station (src/speech/cloud_speech.rs): without the computer it speaks.
+    pub cloud: bool,
+    /// The station's choice: «computer», «cloud» or «alice».
     pub chosen: &'static str,
     /// The provider chosen: `own` — Yandex's answers in the computer's voice too, `mixed` — ours only.
     pub provider: &'static str,
@@ -52,6 +55,7 @@ fn offered(app: &App) -> bool {
 
 fn chosen(app: &App) -> &'static str {
     match app.voice.chosen_provider() {
+        TtsProvider::Own | TtsProvider::Mixed if !offered(app) && app.voice.cloud_speech().is_some() => "cloud",
         TtsProvider::Own | TtsProvider::Mixed => "computer",
         TtsProvider::Yandex | TtsProvider::None => "alice",
     }
@@ -61,7 +65,8 @@ async fn current(app: &App) -> HomeVoiceView {
     let offered = offered(app);
     let up = offered && app.home_server.state() == HomeServer::Up;
     let voice = if up { computers_voice(app).await } else { None };
-    HomeVoiceView { offered, up, voice, chosen: chosen(app), provider: app.voice.chosen_provider().as_str() }
+    let cloud = app.voice.cloud_speech().is_some();
+    HomeVoiceView { offered, up, voice, cloud, chosen: chosen(app), provider: app.voice.chosen_provider().as_str() }
 }
 
 /// The computer's voice as its home server names it (`/home/v1/status`: «silero/baya»), by name.
@@ -113,6 +118,13 @@ async fn choose(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Va
     }
     let actor = caller.actor();
     match body.get("voice").and_then(Value::as_str) {
+        Some("cloud") => {
+            let provider = app.voice.use_cloud().map_err(|_| {
+                ApiError::conflict(crate::tr!("Облачный голос не настроен: выберите сервис и ключ ниже."))
+            })?;
+            app.settings.set(&VOICE_PROVIDER, &provider.as_str().to_string(), actor)?;
+            tracing::info!(target: "voice", "the station speaks its cloud voice ({}, its «Голос»)", provider.as_str());
+        }
         Some("alice") => {
             app.voice.use_yandex();
             app.settings.set(&VOICE_PROVIDER, &TtsProvider::Yandex.as_str().to_string(), actor)?;
@@ -129,7 +141,9 @@ async fn choose(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Va
             tracing::info!(target: "voice", "the station speaks the computer's voice ({}, its «Голос»)", provider.as_str());
         }
         _ => {
-            return Err(ApiError::bad_request(crate::tr!("body: {\"voice\": \"computer\"} или {\"voice\": \"alice\"}")))
+            return Err(ApiError::bad_request(crate::tr!(
+                "body: {\"voice\": \"computer\"}, {\"voice\": \"cloud\"} или {\"voice\": \"alice\"}"
+            )))
         }
     }
     Ok(created(current(&app).await))

@@ -1,8 +1,10 @@
 // Значок приложения — на плитке «Моих» и на ярлыке стола (docs/plans/menu-scheme.md): картинка приложения, если она
-// есть; нет — цветная плитка с его значком из пульта (значок раздела или виджета), а без значка — с первой буквой.
+// есть; у встроенного приложения — его нарисованный логотип (ui/builtin-logos.tsx); иначе — цветная плитка с его
+// значком из пульта (значок раздела или виджета), а без значка — с первой буквой.
 // Цвет — один из трёх градиентов бренда (тёплый, холодный, фиолетовый), по id: у приложения он не меняется.
 
 import { IconMagicPlace, MagicPlaceMark } from '../magicplace/icon';
+import { BuiltinLogo, hasBuiltinLogo } from './builtin-logos';
 import { registeredPlugins } from '../shell/registry';
 import type { Icon } from '../shell/sections';
 
@@ -25,6 +27,7 @@ export function AppIcon({ id, title, image, icon, size = 44 }: { id: string; tit
     if (id === 'magicplace' || icon === IconMagicPlace) return <MagicPlaceMark size={size} />;
     const style = { width: `${size}px`, height: `${size}px` };
     if (image) return <img class="app-icon is-image" src={image} alt="" style={style} />;
+    if (hasBuiltinLogo(id)) return <BuiltinLogo id={id} size={size} />;
     const Glyph = icon ?? appIconOf(id);
     return (
         <span class={`app-icon is-${toneOf(id)}`} style={style} aria-hidden="true">

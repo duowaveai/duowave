@@ -9,6 +9,12 @@ const en: Translation<typeof ru> = {
     tabAccess: 'Access',
     tabLook: 'Appearance',
 
+    deskTitle: 'Desk',
+    shortcutsBar: 'Shortcuts bar',
+    shortcutsBarAbout: 'app icons on the desk, open in one tap',
+    shortcutsBarOnPhrase: 'show shortcuts',
+    shortcutsBarOffPhrase: 'hide shortcuts',
+
     languageTitle: 'Language',
     languageLabel: 'Panel language',
     languageWhere: 'panel and apps',
@@ -91,6 +97,7 @@ const en: Translation<typeof ru> = {
         'station.updated': 'speaker',
         'station.switched': 'speaker voice',
         'station.firmware': 'speaker firmware updated',
+        'station.modOff': 'a mod on the speaker turned off',
         'safety.fired': 'speaker safety net',
         'language.changed': 'household language',
     },

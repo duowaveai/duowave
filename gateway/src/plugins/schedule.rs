@@ -1498,7 +1498,7 @@ mod tests {
                 dev_dir: dir.join("packages-dev"),
                 catalog_key: None,
                 reserve_mb: 40,
-                storage_reserve_mb: 15,
+                storage_reserve_mb: Some(15),
                 pressure_action: crate::plugins::budget::PressureAction::Disable,
                 bundled: false,
                 schedules: true,

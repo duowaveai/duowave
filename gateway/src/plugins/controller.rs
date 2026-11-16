@@ -27,7 +27,7 @@ use serde_json::{json, Map, Value};
 use super::budget::{self, Idle, MemoryGauge, MemoryNow, MemoryProbe, PluginShare, PressureAction, ResourcesView};
 use super::bundled::{self, BundledPackage};
 use super::host_api::{storage_used, DataNews, PluginHostApi};
-use super::manifest::{self, Budget, Manifest, PackageKind, Permission, SettingSpec, ToolSpec};
+use super::manifest::{self, Budget, Manifest, PackageKind, Permission, Runtime, SettingSpec, ToolSpec};
 use super::media::PluginMediaSource;
 use super::phrases::Phrase;
 use super::registry::{self, Candidate, Origin, Package};
@@ -178,6 +178,12 @@ struct Loaded {
     instance: Arc<dyn PluginInstance>,
     /// What it takes of the plugins' memory budget while loaded (`share_of`).
     share_mb: u64,
+}
+
+/// A package that runs as a program of its own (an app under the supervisor, an MCP server): what a pause for the
+/// gateway's trial stops.
+fn is_program(manifest: &Manifest) -> bool {
+    matches!(manifest.runtime, Runtime::Process | Runtime::Node | Runtime::Mcp)
 }
 
 /// What a package's context takes of the plugins' memory budget while it is loaded: a plugin's declared
@@ -352,6 +358,9 @@ pub struct PluginHost {
     admitting: Mutex<()>,
     /// Under pressure: the plugins' work in the background waits (`deferred`) until it eases.
     deferring: AtomicBool,
+    /// The apps' programs held off while the gateway is updated on the station (src/updates/trial.rs): switched off
+    /// for the trial's memory, not as the owner's choice.
+    apps_held: AtomicBool,
     deferred: Mutex<VecDeque<(String, String, Value)>>,
     /// The last count told on the bus: free MB and the pressure.
     told: Mutex<Option<(u64, Pressure)>>,
@@ -448,6 +457,7 @@ impl PluginHost {
             gauge,
             admitting: Mutex::new(()),
             deferring: AtomicBool::new(false),
+            apps_held: AtomicBool::new(false),
             deferred: Mutex::new(VecDeque::new()),
             told: Mutex::new(None),
             journals: Mutex::new(HashMap::new()),
@@ -772,6 +782,16 @@ impl PluginHost {
     /// A package's kind by where it came from; one the host does not know is one's own.
     pub fn origin_of(&self, id: &str) -> Origin {
         self.plugin(id).map(|plugin| Origin::of(&plugin.state().source)).unwrap_or(Origin::User)
+    }
+
+    /// The same, for a package being installed now too: its row is written before the host has seen its folder.
+    pub fn origin_noted(&self, id: &str) -> Origin {
+        match self.plugin(id) {
+            Some(plugin) => Origin::of(&plugin.state().source),
+            None => {
+                registry::choices(&self.db).get(id).map(|choice| Origin::of(&choice.source)).unwrap_or(Origin::User)
+            }
+        }
     }
 
     /// `panel.js` or `panel.css` of a plugin that is on, of the version in force: what the panel loads.
@@ -1257,6 +1277,9 @@ impl PluginHost {
             (state.active.clone().filter(|_| state.enabled), state.good.clone())
         };
         let package = package.ok_or_else(|| PluginError::Unavailable(crate::tr!("приложение выключено")))?;
+        if self.apps_held.load(Ordering::Relaxed) && is_program(&package.manifest) {
+            return Err(PluginError::Unavailable(crate::tr!("приложение на паузе, пока шлюз пробует новую версию")));
+        }
         let version = package.version();
         if let Some(loaded) = slot.as_ref() {
             if loaded.version == version {
@@ -1337,7 +1360,7 @@ impl PluginHost {
     /// the background — at the gateway's start (the first tick), after a reload or an unload. One the supervisor gave
     /// up on is switched off and stays so.
     fn keep_residents(&self) {
-        if self.config.disabled {
+        if self.config.disabled || self.apps_held.load(Ordering::Relaxed) {
             return;
         }
         let here = self.placement_now();
@@ -1553,7 +1576,7 @@ impl PluginHost {
             pressure,
             deferring: self.deferring.load(Ordering::Relaxed),
             action: self.config.pressure_action,
-            disk: budget::DiskView { free_mb: free_disk, reserve_mb: self.config.storage_reserve_mb, packages_mb },
+            disk: budget::DiskView { free_mb: free_disk, reserve_mb: self.storage_reserve_mb(), packages_mb },
             note: budget::note(&count, memory.is_some(), pressure),
             plugins,
         }
@@ -1639,10 +1662,60 @@ impl PluginHost {
             return Ok(());
         }
         let free = self.memory.free_disk_mb(&self.config.packages_dir);
-        match budget::no_room(need_mb, free, self.config.storage_reserve_mb) {
+        match budget::no_room(need_mb, free, self.storage_reserve_mb()) {
             Some(why) => Err(why),
             None => Ok(()),
         }
+    }
+
+    /// The room on the disk kept for the gateway's own next update: PLUGINS_STORAGE_RESERVE_MB when it is set, else
+    /// counted from the gateway's program (`updates::install::update_reserve_kb`: its growth and the floor — the new
+    /// version is tried from memory and takes the old one's place).
+    pub fn storage_reserve_mb(&self) -> u64 {
+        if let Some(reserve) = self.config.storage_reserve_mb {
+            return reserve;
+        }
+        let program = if (self.placement)().on_station() {
+            crate::placement::station_fs::StationFs::real().program_on_disk()
+        } else {
+            std::env::current_exe().unwrap_or_default()
+        };
+        let size = std::fs::metadata(&program).map(|meta| meta.len()).unwrap_or(20 * 1024 * 1024);
+        crate::updates::install::update_reserve_kb(size).div_ceil(1024)
+    }
+
+    /// The apps' programs held off (or let start again): a trial of the gateway's new version for which they were
+    /// switched off starts with them held.
+    pub fn hold_apps(&self, held: bool) {
+        self.apps_held.store(held, Ordering::Relaxed);
+        if held {
+            tracing::info!(target: "plugins", "the apps' programs wait: the gateway tries its new version from memory");
+        }
+    }
+
+    /// The apps' programs switched off for a while, not as the owner's choice (src/updates/trial.rs: the memory a
+    /// trial of the gateway's new version needs), and the idle plugins unloaded: the ids of the apps stopped. They
+    /// start again at `hold_apps(false)`, or with the gateway's next start.
+    pub async fn pause_apps(&self) -> Vec<String> {
+        self.hold_apps(true);
+        let mut stopped = Vec::new();
+        for id in registry::enabled_order(&self.db).into_iter().rev() {
+            let Some(plugin) = self.plugin(&id) else { continue };
+            if !plugin.active().is_some_and(|package| is_program(&package.manifest)) {
+                continue;
+            }
+            let mut slot = plugin.slot.lock().await;
+            if let Some(loaded) = plugin.release(&mut slot) {
+                drop(slot);
+                let instance = loaded.instance.clone();
+                // The program is asked to stop and given its seconds: off the async threads.
+                let _ = tokio::task::spawn_blocking(move || instance.stop()).await;
+                self.changed(&id, "unloaded", Some(loaded.version), None, None);
+                stopped.push(id);
+            }
+        }
+        self.unload_idle_for(0);
+        stopped
     }
 
     /// One look at the memory: under pressure the idle plugins give their memory back and their background work
@@ -2064,7 +2137,11 @@ impl PluginHost {
             })
             .collect();
         let [newest, before, ..] = ready.as_slice() else {
-            return Err(ApiError::conflict(crate::tr!("Откатываться не на что: версия одна.")));
+            return Err(ApiError::conflict(if (self.placement)().on_station() && origin == Origin::Catalog {
+                crate::tr!("На колонке хранится только текущая версия: прежнюю вернёт «История» — с компьютера или из каталога.")
+            } else {
+                crate::tr!("Откатываться не на что: версия одна.")
+            }));
         };
         let (gone, back) = (newest.version(), before.version());
         let dir = newest.dir.clone();
@@ -2226,6 +2303,7 @@ impl PluginHost {
                 let (me, plugin, handler) = (self.me.clone(), offered.plugin.clone(), offered.spec.handler.clone());
                 let capability = offered.spec.capability;
                 ToolContribution {
+                    app: Some(offered.plugin.clone()),
                     tool: LlmTool {
                         name: offered.spec.name.clone(),
                         description: format!("[{}] {}", offered.title, offered.spec.description)
@@ -2570,8 +2648,10 @@ fn copy_package(from: &std::path::Path, to: &std::path::Path, id: &str, title: &
     std::fs::write(file, serde_json::to_string_pretty(&manifest)?)
 }
 
-/// A theme as a package gives it (docs/design/glass/THEMES.md): an id, a title, the palettes of both modes as text
-/// tokens; the layout, if given, one the panel knows the name of. What it leaves out the panel takes from «Стекло».
+/// A theme as a package gives it (docs/design/glass/THEMES.md): an id, a title, each mode by its palette of text
+/// tokens or by three colors the panel builds the palette from (`colors`, «Три цвета»), or both; a drawn backdrop of
+/// the panel's scenes (`backdrop`, «Фон»); the layout, if given, one the panel knows the name of. What it leaves out
+/// the panel takes from «Минимал».
 pub fn theme_form(theme: &Value) -> Result<(), String> {
     let id = theme.get("id").and_then(Value::as_str).unwrap_or_default();
     if id.is_empty() || id.len() > 40 || !id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
@@ -2580,10 +2660,16 @@ pub fn theme_form(theme: &Value) -> Result<(), String> {
     if theme.get("title").and_then(Value::as_str).is_none_or(|title| title.trim().is_empty()) {
         return Err(crate::tr!("{id}: нет title", id = id));
     }
+    if let Some(colors) = theme.get("colors") {
+        theme_colors(id, colors)?;
+    }
     for mode in ["dark", "light"] {
         let palette = theme.pointer(&format!("/palette/{mode}")).and_then(Value::as_object);
         let Some(palette) = palette else {
-            return Err(crate::tr!("{id}: нет palette.{mode}", id = id, mode = mode));
+            if theme.pointer(&format!("/colors/{mode}")).is_some() {
+                continue;
+            }
+            return Err(crate::tr!("{id}: нет palette.{mode} и colors.{mode}", id = id, mode = mode));
         };
         if let Some((token, _)) = palette.iter().find(|(token, value)| {
             !value.is_string()
@@ -2598,6 +2684,9 @@ pub fn theme_form(theme: &Value) -> Result<(), String> {
             ));
         }
     }
+    if let Some(backdrop) = theme.get("backdrop") {
+        theme_backdrop(id, backdrop)?;
+    }
     match theme.get("layout").and_then(Value::as_str) {
         // «desk» — стол и док (docs/plans/desk.md); «tabbar» прежних тем — тоже стол.
         None | Some("desk") | Some("tabbar") | Some("sidebar") => Ok(()),
@@ -2607,6 +2696,148 @@ pub fn theme_form(theme: &Value) -> Result<(), String> {
             other = other
         )),
     }
+}
+
+/// `#rgb` or `#rrggbb` as its three channels.
+fn hex_rgb(value: &Value) -> Option<[f64; 3]> {
+    let digits = value.as_str()?.strip_prefix('#')?;
+    if !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let full: String = match digits.len() {
+        3 => digits.chars().flat_map(|c| [c, c]).collect(),
+        6 => digits.to_string(),
+        _ => return None,
+    };
+    let channel = |at: usize| u8::from_str_radix(&full[at..at + 2], 16).ok().map(f64::from);
+    Some([channel(0)?, channel(2)?, channel(4)?])
+}
+
+/// How bright a color looks (WCAG): 0 black, 1 white.
+fn luminance([r, g, b]: [f64; 3]) -> f64 {
+    let linear = |v: f64| {
+        let c = v / 255.0;
+        if c <= 0.03928 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+}
+
+/// The contrast of two colors (WCAG): 1 the same, 21 black on white; text reads from 4.5.
+fn contrast(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let (x, y) = (luminance(a), luminance(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+/// The three colors of each mode the theme gives (`colors.dark`, `colors.light`): the background, the text and the
+/// accent, all `#rrggbb`; the text must read on the background and the accent must not melt into it.
+fn theme_colors(id: &str, colors: &Value) -> Result<(), String> {
+    let Some(modes) = colors.as_object() else {
+        return Err(crate::tr!("{id}: colors — {dark: {bg, text, accent}, light: {…}}", id = id));
+    };
+    for (mode, anchors) in modes {
+        if mode != "dark" && mode != "light" {
+            return Err(crate::tr!("{id}: colors.{mode} — режимы только dark и light", id = id, mode = mode));
+        }
+        let color = |name: &str| anchors.get(name).and_then(hex_rgb);
+        let (Some(bg), Some(text), Some(accent)) = (color("bg"), color("text"), color("accent")) else {
+            return Err(crate::tr!(
+                "{id}: colors.{mode} — три цвета \"#rrggbb\": bg, text, accent",
+                id = id,
+                mode = mode
+            ));
+        };
+        let ratio = contrast(text, bg);
+        if ratio < 4.5 {
+            return Err(crate::tr!(
+                "{id}: colors.{mode} — текст на фоне не читается (контраст {ratio}, нужно от 4,5): возьмите фон и текст дальше по яркости",
+                id = id,
+                mode = mode,
+                ratio = format!("{ratio:.1}")
+            ));
+        }
+        if contrast(accent, bg) < 1.3 {
+            return Err(crate::tr!("{id}: colors.{mode} — акцент сливается с фоном", id = id, mode = mode));
+        }
+    }
+    Ok(())
+}
+
+/// A drawn backdrop: one for both modes or its own for each (`{dark, light}`, `null` — none in that mode); each is
+/// `scene` or `layers` (1–3 of the panel's scenes, `opacity` 0.1–1), `colors` (1–3) and `dim` (0–0.8).
+fn theme_backdrop(id: &str, backdrop: &Value) -> Result<(), String> {
+    let Some(fields) = backdrop.as_object() else {
+        return Err(crate::tr!("{id}: backdrop — объект {scene | layers, colors?, dim?}", id = id));
+    };
+    if fields.contains_key("dark") || fields.contains_key("light") {
+        for (mode, own) in fields {
+            if mode != "dark" && mode != "light" {
+                return Err(crate::tr!("{id}: backdrop.{mode} — режимы только dark и light", id = id, mode = mode));
+            }
+            if !own.is_null() {
+                one_backdrop(id, own)?;
+            }
+        }
+        return Ok(());
+    }
+    one_backdrop(id, backdrop)
+}
+
+fn one_backdrop(id: &str, backdrop: &Value) -> Result<(), String> {
+    let scenes = || crate::bus::cards::SCENES.iter().map(|(scene, _)| *scene).collect::<Vec<_>>().join(", ");
+    let known = |scene: &Value| {
+        scene.as_str().is_some_and(|scene| crate::bus::cards::SCENES.iter().any(|(name, _)| *name == scene))
+    };
+    let opacity_ok =
+        |value: Option<&Value>| value.is_none_or(|value| value.as_f64().is_some_and(|v| (0.1..=1.0).contains(&v)));
+    let Some(fields) = backdrop.as_object() else {
+        return Err(crate::tr!("{id}: backdrop — объект {scene | layers, colors?, dim?}", id = id));
+    };
+    for (name, value) in fields {
+        let fine = match name.as_str() {
+            "scene" => known(value),
+            "opacity" => opacity_ok(Some(value)),
+            "layers" => value.as_array().is_some_and(|layers| {
+                (1..=3).contains(&layers.len())
+                    && layers.iter().all(|layer| {
+                        layer.get("scene").is_some_and(known)
+                            && opacity_ok(layer.get("opacity"))
+                            && layer
+                                .as_object()
+                                .is_some_and(|layer| layer.keys().all(|key| key == "scene" || key == "opacity"))
+                    })
+            }),
+            "colors" => value
+                .as_array()
+                .is_some_and(|colors| (1..=3).contains(&colors.len()) && colors.iter().all(|c| hex_rgb(c).is_some())),
+            "dim" => value.as_f64().is_some_and(|dim| (0.0..=0.8).contains(&dim)),
+            _ => false,
+        };
+        if !fine {
+            return Err(match name.as_str() {
+                "scene" | "layers" => crate::tr!(
+                    "{id}: backdrop.layers — 1–3 слоя {scene, opacity?: 0,1–1}; сцены — {scenes}",
+                    id = id,
+                    scenes = scenes()
+                ),
+                "opacity" => crate::tr!("{id}: backdrop.opacity — от 0,1 до 1", id = id),
+                "colors" => crate::tr!("{id}: backdrop.colors — 1–3 цвета \"#rrggbb\"", id = id),
+                "dim" => crate::tr!("{id}: backdrop.dim — от 0 до 0,8", id = id),
+                other => crate::tr!(
+                    "{id}: в backdrop нет поля «{other}» — scene, layers, opacity, colors, dim",
+                    id = id,
+                    other = other
+                ),
+            });
+        }
+    }
+    if !fields.contains_key("scene") && !fields.contains_key("layers") && !fields.contains_key("colors") {
+        return Err(crate::tr!("{id}: backdrop — нужна сцена (scene или layers) или цвета (colors)", id = id));
+    }
+    Ok(())
 }
 
 /// A plugin's part of the panel, to load.
@@ -2837,7 +3068,7 @@ mod tests {
                 dev_dir: dir.join(".dev"),
                 catalog_key: None,
                 reserve_mb: 40,
-                storage_reserve_mb: 15,
+                storage_reserve_mb: Some(15),
                 pressure_action: crate::plugins::budget::PressureAction::Disable,
                 bundled: false,
                 schedules: true,
@@ -2905,6 +3136,33 @@ mod tests {
             }
         }
         found
+    }
+
+    /// Stage 2 of docs/plans/speaker-alone.md: «Своя музыка» with an empty folder is no source once a request found it
+    /// empty — the next «включи музыку» goes straight to Yandex; a library with something in it stays one. Nothing is
+    /// asked just to look.
+    #[tokio::test]
+    async fn an_empty_music_library_is_no_source_and_a_full_one_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manifest = echo("1.0.0");
+        manifest["id"] = json!("shelf");
+        write_package(
+            dir.path(),
+            &manifest,
+            Some("export function tracks() { return []; }\nexport function say() { return ''; }"),
+        );
+        let fixture = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Pc);
+        fixture.host.enable("shelf", None).await.unwrap();
+        assert!(fixture.media.available(MediaKind::Music), "not asked yet: taken as having something");
+        assert!(fixture.media.find(MediaKind::Music, None, None).await.is_none_or(|(_, items)| items.is_empty()));
+        assert!(!fixture.media.available(MediaKind::Music), "found empty: no source");
+
+        let full = tempfile::tempdir().unwrap();
+        write_package(full.path(), &echo("1.0.0"), Some(CODE));
+        let fixture = host_on(full.path(), Arc::new(Db::memory()), false, Placement::Pc);
+        fixture.host.enable("echo", None).await.unwrap();
+        assert!(fixture.media.find(MediaKind::Music, None, None).await.is_some());
+        assert!(fixture.media.available(MediaKind::Music), "it has a track");
     }
 
     #[tokio::test]
@@ -3618,5 +3876,46 @@ mod tests {
         let refused = host.call("echo", "say", json!({"word": "в"}), CallKind::Voice).await.unwrap_err();
         assert!(refused.to_string().contains("недоступно, пока компьютер не на связи"), "{refused}");
         HOME.with(|cell| *cell.borrow_mut() = None);
+    }
+
+    /// A theme of three colors and a drawn backdrop (THEMES.md, «Три цвета», «Фон»): what reads passes, what does not
+    /// is told in words the agent can act on.
+    #[test]
+    fn a_theme_of_three_colors_and_a_backdrop() {
+        let night = json!({
+            "id": "night-sky",
+            "title": "Звёздное небо",
+            "colors": {
+                "dark": { "bg": "#0B1026", "text": "#EEF0FF", "accent": "#FFD36E" },
+                "light": { "bg": "#F4F1FF", "text": "#1B1A33", "accent": "#5B4BD6" }
+            },
+            "backdrop": { "dark": { "layers": [{ "scene": "stars" }, { "scene": "aurora", "opacity": 0.5 }], "dim": 0.2 }, "light": null }
+        });
+        assert_eq!(theme_form(&night), Ok(()));
+        // One backdrop for both modes, by a scene alone.
+        let mut snow = night.clone();
+        snow["backdrop"] = json!({ "scene": "snow", "colors": ["#1d2b44", "#3a5277"] });
+        assert_eq!(theme_form(&snow), Ok(()));
+        // A palette alone still makes a mode, as before.
+        let old =
+            json!({ "id": "old", "title": "Old", "palette": { "dark": { "bg": "#000" }, "light": { "bg": "#fff" } } });
+        assert_eq!(theme_form(&old), Ok(()));
+
+        let mut grey = night.clone();
+        grey["colors"]["light"]["text"] = json!("#C9C6D8");
+        assert!(theme_form(&grey).unwrap_err().contains("не читается"));
+        let mut half = night.clone();
+        half["colors"].as_object_mut().unwrap().remove("light");
+        assert!(theme_form(&half).unwrap_err().contains("palette.light"));
+        let mut unknown = night.clone();
+        unknown["backdrop"] = json!({ "scene": "volcano" });
+        assert!(theme_form(&unknown).unwrap_err().contains("stars"));
+        let mut many = night.clone();
+        many["backdrop"] =
+            json!({ "layers": [{ "scene": "stars" }, { "scene": "snow" }, { "scene": "fog" }, { "scene": "rain" }] });
+        assert!(theme_form(&many).is_err());
+        let mut code = night.clone();
+        code["backdrop"] = json!({ "scene": "stars", "draw": "function () {}" });
+        assert!(theme_form(&code).unwrap_err().contains("draw"));
     }
 }

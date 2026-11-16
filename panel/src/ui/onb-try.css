@@ -1,0 +1,122 @@
+/* Шаг «Попробуйте сказать» (screens/onb/try.tsx): только то, чего нет в onboarding-canvas.css, — раскладка шага и
+   места на сцене. Сцена холста — 744×620; здесь она рисуется в этом размере и сжимается под ширину (--ot-k).
+   Правила — под .onb .ot: на ступень сильнее классов холста, чтобы перекрывать их без оглядки на порядок файлов. */
+
+.onb .ot { display: flex; gap: 32px; align-items: stretch; width: 100%; color: var(--text); font: 400 15px/22px var(--font-ui); font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; }
+.onb .ot * { box-sizing: border-box; }
+
+/* Левая колонка: заголовок, фразы, подсказка */
+.onb .ot .ot-side { width: 392px; flex: none; display: flex; flex-direction: column; gap: 10px; }
+.onb .ot .ot-how { margin: 0; font-size: 14px; line-height: 20px; }
+.onb .ot .ot-rows { display: flex; flex-direction: column; gap: 2px; }
+.onb .ot .ot-rowt { display: flex; flex-direction: column; min-width: 0; }
+.onb .ot .ot-kind { font-size: 12px; line-height: 16px; }
+.onb .ot .ot-key { margin-top: auto; display: flex; align-items: center; gap: 12px; padding: 12px 14px; }
+.onb .ot .ot-kchips { display: inline-flex; gap: 4px; }
+.onb .ot .ot-kchip { font-family: var(--font-mono); color: var(--text); background: var(--paper); box-shadow: var(--shadow-ring); }
+
+/* Сцена: рамка с сеткой держит пропорцию, внутри — холст 744×620, сжатый под ширину */
+.onb .ot .ot-box.stage { flex: 1; min-width: 0; height: auto; align-self: flex-start; aspect-ratio: 744 / 620; }
+.onb .ot .ot-c { position: absolute; left: 0; top: 0; width: 744px; height: 620px; transform-origin: 0 0; transform: scale(var(--ot-k, 1)); }
+
+/* Узко (телефон): фразы сверху, сцена меньше, под ней — то же словами */
+.onb .ot.narrow { flex-direction: column; gap: 12px; }
+.onb .ot.narrow .ot-side { width: auto; }
+.onb .ot.narrow .h2 { font-size: 28px; }
+.onb .ot.narrow .row-btn { padding: 8px 10px; }
+.onb .ot.narrow .ot-box.stage { align-self: stretch; }
+.onb .ot.narrow .ot-key { margin-top: 0; }
+.onb .ot .ot-phone { padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; }
+.onb .ot .ot-phone .h3 { font-size: 15px; }
+.onb .ot .ot-grey { font-size: 12px; line-height: 16px; padding-top: 6px; border-top: 1px solid var(--line-soft); }
+
+/* Общее на сцене */
+.onb .ot .ot-h3s { font-size: 14px; line-height: 20px; }
+.onb .ot .ot-fine { font-size: 12px; line-height: 16px; }
+.onb .ot .ot-rise { animation: onb-rise .35s ease-out both; }
+.onb .ot .ot-still { animation: none; }
+.onb .ot .ot-br { right: 24px; bottom: 24px; }
+.onb .ot .ot-rule { padding-top: 10px; border-top: 1px solid var(--line-soft); }
+.onb .ot .ot-say1 { right: 24px; top: 22px; }
+.onb .ot .ot-again { position: absolute; left: 20px; top: 16px; height: 32px; }
+
+/* 1. Виджет */
+.onb .ot .ot-comet { left: 190px; top: 84px; width: 330px; height: 196px; }
+.onb .ot .ot-agent { color: var(--agent-fg); }
+.onb .ot .ot-sk1 { width: 46%; }
+.onb .ot .ot-sk2 { width: 70%; height: 30px; }
+.onb .ot .ot-sk3 { width: 88%; height: 44px; }
+.onb .ot .ot-wcard { left: 190px; top: 84px; width: 330px; }
+.onb .ot .ot-wrow { display: flex; align-items: flex-end; justify-content: space-between; margin-top: 10px; }
+.onb .ot .ot-up { color: var(--up); }
+.onb .ot .ot-dn { color: var(--dn); }
+.onb .ot .ot-eur { margin-top: 6px; font-size: 15px; }
+.onb .ot .ot-eur b { font-weight: 500; }
+.onb .ot .ot-spark { fill: none; stroke: var(--up); stroke-width: 2px; stroke-linejoin: round; stroke-linecap: round; }
+.onb .ot .ot-landed { right: 24px; bottom: 30px; }
+.onb .ot .ot-sayw { right: 24px; top: 270px; }
+.onb .ot .ot-watch { right: 24px; top: 346px; }
+.onb .ot .ot-help { position: absolute; left: 24px; bottom: 20px; width: 680px; padding: 14px 16px; }
+.onb .ot .ot-help-b { margin-top: 4px; }
+.onb .ot .ot-help-n { margin-top: 8px; }
+
+/* 2. Игра */
+.onb .ot .ot-codewin { left: 96px; top: 84px; width: 520px; }
+.onb .ot .ot-game { left: 150px; top: 92px; width: 420px; }
+.onb .ot .ot-score { margin-left: auto; color: var(--text); }
+.onb .ot .ot-keys { text-align: center; padding: 0 0 12px; }
+
+/* 3. Поиск */
+.onb .ot .ot-search { position: absolute; left: 150px; top: 100px; width: 430px; display: flex; flex-direction: column; gap: 12px; }
+.onb .ot .ot-line { display: flex; align-items: center; gap: 10px; }
+.onb .ot .ot-busy { width: 18px; height: 18px; }
+.onb .ot .ot-srcs { display: flex; flex-wrap: wrap; gap: 6px; }
+.onb .ot .ot-films { left: 150px; top: 84px; width: 430px; }
+.onb .ot .ot-films-l { margin-top: 6px; }
+.onb .ot .ot-card-note { margin-top: 8px; }
+.onb .ot .ot-reply-s { left: 108px; bottom: 100px; }
+
+/* 4. Память */
+.onb .ot .ot-saved { right: 24px; top: 78px; }
+.onb .ot .ot-undo { height: 28px; padding: 0 10px; }
+.onb .ot .ot-say2 { right: 24px; top: 150px; }
+.onb .ot .ot-reply-m { left: 108px; top: 220px; }
+.onb .ot .ot-home { position: absolute; left: 108px; top: 300px; width: 460px; padding: 14px 16px; display: flex; gap: 12px; align-items: flex-start; }
+.onb .ot .ot-home-mark { width: 28px; height: 28px; }
+.onb .ot .ot-col4 { display: flex; flex-direction: column; gap: 4px; }
+
+/* 5. Связи */
+.onb .ot .ot-graph { position: absolute; left: 0; top: 0; }
+.onb .ot .ot-g0 { left: 280px; top: 220px; }
+.onb .ot .ot-g1 { left: 110px; top: 124px; animation-delay: .15s; background: var(--mem-bg); color: var(--mem-fg); }
+.onb .ot .ot-g2 { left: 470px; top: 124px; animation-delay: .3s; }
+.onb .ot .ot-g3 { left: 520px; top: 234px; animation-delay: .45s; }
+.onb .ot .ot-g4 { left: 110px; top: 324px; animation-delay: .6s; }
+.onb .ot .ot-g5 { left: 400px; top: 334px; animation-delay: .75s; flex-direction: column; align-items: flex-start; gap: 2px; white-space: normal; border-radius: 12px; }
+.onb .ot .ot-why { font-size: 11px; line-height: 14px; opacity: .8; }
+.onb .ot .ot-reply-l { left: 108px; top: 410px; }
+.onb .ot .ot-more { left: 108px; top: 488px; width: 460px; }
+
+/* 6. Сон */
+.onb .ot .ot-night { left: 150px; top: 70px; width: 440px; }
+.onb .ot .ot-night-p { margin: 6px 0 4px; }
+.onb .ot .ot-morning { left: 150px; top: 330px; width: 440px; }
+.onb .ot .ot-summary { margin: 8px 0; }
+.onb .ot .ot-choose { display: flex; align-items: center; gap: 8px; }
+.onb .ot .ot-infer { position: static; animation: none; }
+.onb .ot .ot-sleep-note { left: 150px; top: 486px; width: 440px; }
+
+/* Кто слушает */
+.onb .ot .ot-who { position: absolute; left: 24px; bottom: 20px; display: flex; align-items: center; gap: 10px; }
+.onb .ot .ot-divi { width: 64px; height: 64px; }
+.onb .ot .ot-speaker { width: 48px; height: 64px; border-radius: 24px; padding-top: 9px; }
+.onb .ot .ot-speaker i { width: 26px; height: 5px; }
+
+/* Телефон: фразы — лентой капсул над сценой (листается вбок), чтобы показ был сразу под пальцем, а не за краем. */
+.onb .ot.narrow .ot-rows { flex-direction: row; gap: 6px; overflow-x: auto; margin: 0 -16px; padding: 0 16px 4px; scrollbar-width: none; }
+.onb .ot.narrow .ot-rows::-webkit-scrollbar { display: none; }
+.onb .ot.narrow .row-btn { flex: none; width: auto; max-width: 260px; padding: 5px 12px 5px 5px; border: 1px solid var(--line); border-radius: var(--radius-pill); }
+.onb .ot.narrow .row-btn.on { border-color: var(--ink); }
+.onb .ot.narrow .row-btn .n { width: 26px; height: 26px; border-radius: 50%; }
+.onb .ot.narrow .ot-rowt > :first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.onb .ot.narrow .ot-kind { display: none; }

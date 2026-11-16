@@ -98,10 +98,6 @@ pub trait SkillConnectors: Send + Sync {
     fn weather_place(&self) -> Option<String>;
     /// Home Assistant, when it is set up and on.
     fn home_assistant(&self) -> Option<HomeAssistantConfig>;
-    /// The household's country (src/locale/country.rs); None when it did not say.
-    fn home_country(&self) -> Option<String> {
-        None
-    }
 }
 
 /// Nothing set up: no feeds, no smart home, the weather by the time zone.
@@ -200,6 +196,8 @@ pub struct SkillsService {
     /// Whether the station's player played before a break: its request to continue after reconnecting goes on only
     /// then.
     pub player_memory: Arc<PlayerMemory>,
+    /// What Yandex plays, live: its tracks from its answers, its player's starts and stops (skills/yandex_now.rs).
+    pub yandex_now: Arc<super::yandex_now::YandexNow>,
     pub led: Arc<LedSkill>,
     pub calls: Arc<CallsSkill>,
     pub weather: Arc<WeatherSkill>,
@@ -230,7 +228,7 @@ fn station_radio_stopped() -> String {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NowPlaying {
-    /// `own` — our player, `station` — the station's own (Yandex's), `none`.
+    /// `own` — our player, `station` — the station's own (Yandex's), `app` — an app that plays by itself, `none`.
     pub source: &'static str,
     /// `playing`, `paused`, `stopped`, `idle`.
     pub state: &'static str,
@@ -353,6 +351,7 @@ impl SkillsService {
             reminders,
             later,
             player_memory,
+            yandex_now: Arc::new(super::yandex_now::YandexNow::new()),
             led,
             calls,
             weather,
@@ -528,6 +527,35 @@ impl SkillsService {
         }
     }
 
+    /// Yandex sent the station these tracks (its answer, the next track of its queue): the widget shows their title,
+    /// artist and cover.
+    pub fn note_yandex_tracks(&self, device: &str, tracks: &[super::yandex_now::YandexTrack]) {
+        if self.yandex_now.note_tracks(device, tracks) {
+            self.player_changed(device);
+        }
+    }
+
+    /// The station's player called back about Yandex's content between requests (`*_on_started`, `_on_stopped`,
+    /// `_on_finished`, `_on_failed`): the widget follows a track change or a pause without anyone speaking.
+    pub fn note_yandex_player(&self, device: &str, name: &str, payload: Option<&Value>, now: u64) {
+        if name.starts_with("vgw_media") {
+            return;
+        }
+        let started = name.ends_with("on_started");
+        let finished = name.ends_with("on_finished") || name.ends_with("on_failed");
+        if !(started || finished || name.ends_with("on_stopped")) {
+            return;
+        }
+        let track = payload.and_then(super::yandex_now::track_id_in);
+        if self.yandex_now.note_player(device, started, finished, track.as_deref(), now) {
+            self.player_changed(device);
+        }
+    }
+
+    fn player_changed(&self, device: &str) {
+        self.events.emit(GatewayEvent::StationStateChanged { device: device.to_string(), what: "player".into() });
+    }
+
     /// The station's state its last request carried, and when.
     pub fn device_state(&self, device: &str) -> Option<(DeviceState, u64)> {
         self.device_states.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(device).cloned()
@@ -565,9 +593,27 @@ impl SkillsService {
         self.timers.views(device, state.as_ref().map(|(state, at)| (state, *at)), now)
     }
 
-    /// What plays on a device: our player's item while it plays or stands paused by us, else the station's word.
+    /// What plays on a device: an app that plays by itself (AirPlay, the YouTube app), our player's item while it
+    /// plays or stands paused by us, else the station's word.
     pub fn now_playing(&self, device: &str, now: u64) -> NowPlaying {
         use super::media::player::PlayState;
+        if let Some(app) = self.app_playback.owner(device) {
+            let track = app.track.clone().unwrap_or_default();
+            return NowPlaying {
+                source: "app",
+                state: match app.state {
+                    AppPlayState::Playing => "playing",
+                    AppPlayState::Paused => "paused",
+                },
+                title: Some(track.title.unwrap_or_else(|| self.app_playback.title(&app.app))),
+                subtitle: track.artist,
+                image_url: track.cover,
+                kind: None,
+                duration_ms: None,
+                position_ms: None,
+                since: Some(app.since),
+            };
+        }
         let station = self.device_state(device);
         // When Yandex's player was last heard of (its callbacks, kept in the player memory).
         let yandex_since = self
@@ -601,6 +647,23 @@ impl SkillsService {
                 };
             }
         }
+        // Yandex's content as its player called back since the station's last word: live between requests, with the
+        // title, artist and cover of Yandex's own answer (skills/yandex_now.rs).
+        if let Some(yandex) =
+            self.yandex_now.get(device).filter(|yandex| station.as_ref().is_none_or(|(_, at)| yandex.at >= *at))
+        {
+            return NowPlaying {
+                source: "station",
+                state: if yandex.playing { "playing" } else { "paused" },
+                title: Some(yandex.track.title.clone()),
+                subtitle: yandex.track.subtitle.clone(),
+                image_url: yandex.track.image_url.clone(),
+                kind: yandex.track.kind.clone(),
+                duration_ms: yandex.track.duration_ms,
+                position_ms: Some(yandex.position_ms(now)),
+                since: Some(yandex.since),
+            };
+        }
         let Some((state, at)) = station else {
             return NowPlaying {
                 source: "none",
@@ -630,6 +693,8 @@ impl SkillsService {
         use crate::gateway::protocol::protocol_types::PlayerState as StationPlayer;
         let playing = player.state == StationPlayer::Playing;
         let offset = player.offset_ms.unwrap_or(0).max(0) as u64;
+        // The station names the track by its id and title; Yandex's answer brought its artist and cover.
+        let known = player.id.as_deref().and_then(|id| self.yandex_now.known(device, id));
         NowPlaying {
             source: if player.title.is_some() { "station" } else { "none" },
             state: match player.state {
@@ -638,10 +703,10 @@ impl SkillsService {
                 StationPlayer::Idle | StationPlayer::Unknown => "idle",
             },
             title: player.title,
-            subtitle: None,
-            image_url: None,
+            subtitle: known.as_ref().and_then(|track| track.subtitle.clone()),
+            image_url: known.as_ref().and_then(|track| track.image_url.clone()),
             kind: player.r#type,
-            duration_ms: None,
+            duration_ms: known.as_ref().and_then(|track| track.duration_ms),
             position_ms: Some(if playing { offset + now.saturating_sub(at) } else { offset }),
             since: None,
         }
@@ -659,25 +724,9 @@ impl SkillsService {
         action: &str,
         yandex_available: bool,
     ) -> Result<Vec<crate::gateway::protocol::protocol_types::Directive>, ApiError> {
-        // Live radio has no pause: the station's player_pause alone left it playing (the owner, 10.11), while next and
-        // previous worked. It is stopped as Yandex stops it — player_pause and clear_queue, ours marked stopping — and
-        // «продолжить» starts ours again. The panel sends «stop» for it; a «pause» is taken the same.
         let now = now_ms();
-        let playing = self.now_playing(device, now);
-        let radio = playing.kind.as_deref() == Some("FmRadio");
-        let action = if action == "pause" && radio { "stop" } else { action };
-        let mut intent = Intent::new(CapabilityName::Playback, action);
-        if action == "like" || action == "dislike" {
-            intent.params.insert("ours".into(), Value::Bool(true));
-        }
-        // The interceptors of what plays, as the router has them after `while_ringing` — that one is the voice's: a
-        // «стоп» said while a timer rings is for the timer, a button of the player is for the player. No station state
-        // here (between requests it is old): our player's own count stands in for its word.
-        let input = RouteInput { device_tag: device.to_string(), yandex_available, now, ..RouteInput::default() };
-        let intent = app_content(&self.app_playback, &intent, &input)
-            .or_else(|| yandex_content(&self.player_memory, &intent, &input))
-            .or_else(|| our_content(&self.media, &intent, &input))
-            .unwrap_or(intent);
+        let (action, radio, playing, intent) = self.player_intent(device, action, yandex_available, now);
+        let action = action.as_str();
         // The station's own radio we stopped: its queue went with the station, its player_continue brings nothing
         // back — and Yandex's «продолжи» starts music instead. A pause the station made itself goes on as it was.
         if action == "resume" && !js::is_true(&intent.params, "ours") && self.stopped_radio(device) {
@@ -695,13 +744,68 @@ impl SkillsService {
         Ok(outcome.directives)
     }
 
+    /// A button of the player and what it is about: the action as it is taken (a radio's «pause» is its «stop»),
+    /// whether a radio plays, what plays, and the intent the interceptors of what plays made of it.
+    fn player_intent(
+        &self,
+        device: &str,
+        action: &str,
+        yandex_available: bool,
+        now: u64,
+    ) -> (String, bool, NowPlaying, Intent) {
+        // Live radio has no pause: the station's player_pause alone left it playing (the owner, 10.11), while next and
+        // previous worked. It is stopped as Yandex stops it — player_pause and clear_queue, ours marked stopping — and
+        // «продолжить» starts ours again. The panel sends «stop» for it; a «pause» is taken the same.
+        let playing = self.now_playing(device, now);
+        let radio = playing.kind.as_deref() == Some("FmRadio");
+        let action = if action == "pause" && radio { "stop" } else { action };
+        let mut intent = Intent::new(CapabilityName::Playback, action);
+        if action == "like" || action == "dislike" {
+            intent.params.insert("ours".into(), Value::Bool(true));
+        }
+        // The interceptors of what plays, as the router has them after `while_ringing` — that one is the voice's: a
+        // «стоп» said while a timer rings is for the timer, a button of the player is for the player. No station state
+        // here (between requests it is old): our player's own count stands in for its word.
+        let input = RouteInput { device_tag: device.to_string(), yandex_available, now, ..RouteInput::default() };
+        let intent = app_content(&self.app_playback, &intent, &input)
+            .or_else(|| yandex_content(&self.player_memory, &intent, &input))
+            .or_else(|| our_content(&self.media, &intent, &input))
+            .unwrap_or(intent);
+        (action.to_string(), radio, playing, intent)
+    }
+
+    /// The words a button of the player is said as when Yandex plays and its session is up: Yandex holds the queue,
+    /// so the panel's «пауза» goes to it as the same words said aloud (the owner's decision 5, 16.11,
+    /// docs/plans/speaker-alone.md). None: the button is ours (`player_command`).
+    pub fn yandex_words(&self, device: &str, action: &str, yandex_available: bool) -> Option<&'static str> {
+        if !yandex_available {
+            return None;
+        }
+        let (action, _, _, intent) = self.player_intent(device, action, yandex_available, now_ms());
+        js::is_true(&intent.params, "external").then(|| words_of(&action)).flatten()
+    }
+
     /// An app says what it plays by itself on a station (`system/player` → `playing`, docs/plans/media-apps.md stage
     /// 2): kept for the voice commands. When it starts playing, the station's own player there is paused — Alice falls
     /// silent under the phone's music. The device it is kept for.
     pub fn app_playing(&self, app: &str, state: &str, device: Option<&str>) -> Result<String, String> {
+        self.app_playing_track(app, state, device, None)
+    }
+
+    /// The same, with what it plays (title, artist, cover) for the panel's «Музыка».
+    pub fn app_playing_track(
+        &self,
+        app: &str,
+        state: &str,
+        device: Option<&str>,
+        track: Option<super::media::app_playback::AppTrack>,
+    ) -> Result<String, String> {
         let state = AppPlayState::parse(state)?;
         let device = self.device_or_latest(device).unwrap_or_else(|| ANY_DEVICE.to_string());
-        if self.app_playback.report(&device, app, state) {
+        let started = self.app_playback.report(&device, app, state);
+        self.app_playback.describe(&device, app, track);
+        self.player_changed(&device);
+        if started {
             // Ours paused by us is not the end of its track.
             if self.media.owns(&device) {
                 self.media.stopping(&device);
@@ -928,9 +1032,9 @@ fn yandex_content(memory: &PlayerMemory, intent: &Intent, input: &RouteInput) ->
     (control || stop).then(|| with_param(intent, "external", true.into()))
 }
 
-/// Why the panel's button does nothing to what Yandex plays: the words that do it, said to the station.
-fn yandex_plays(action: &str) -> String {
-    let words = match action {
+/// The words that do a button's action, said to Alice. Russian: Alice hears Russian.
+fn words_of(action: &str) -> Option<&'static str> {
+    Some(match action {
         "pause" => "пауза",
         "stop" => "стоп",
         "resume" => "продолжи",
@@ -939,9 +1043,18 @@ fn yandex_plays(action: &str) -> String {
         "replay" => "сначала",
         "like" => "мне нравится",
         "dislike" => "не нравится",
-        _ => return crate::tr!("Это играет Яндекс: им управляет он — скажите колонке голосом."),
-    };
-    crate::tr!("Это играет Яндекс: им управляет он — скажите колонке «Алиса, {words}».", words = words)
+        _ => return None,
+    })
+}
+
+/// Why the panel's button does nothing to what Yandex plays: the words that do it, said to the station.
+fn yandex_plays(action: &str) -> String {
+    match words_of(action) {
+        Some(words) => {
+            crate::tr!("Это играет Яндекс: им управляет он — скажите колонке «Алиса, {words}».", words = words)
+        }
+        None => crate::tr!("Это играет Яндекс: им управляет он — скажите колонке голосом."),
+    }
 }
 
 /// Controlling what our player plays is ours, whatever the route says of Yandex: only we hold the queue and know the
@@ -1365,6 +1478,69 @@ mod tests {
         // Without Yandex the voice command is ours, and so is the panel's.
         let paused = skills.player_command("kitchen", "pause", false).await.unwrap();
         assert!(paused.iter().any(|directive| directive.name == "player_pause"));
+    }
+
+    /// The owner's decision 5 (16.11, docs/plans/speaker-alone.md): the panel's buttons for what Yandex plays are said
+    /// to Alice as the voice would say them; ours stay ours, and without Yandex there is nothing to say.
+    #[tokio::test]
+    async fn the_panels_buttons_for_yandexs_music_are_its_own_words() {
+        let built = build(&[]);
+        let skills = &built.service;
+        skills.player_memory.note_callback("kitchen", "music_thin_client_on_started", Utc::now());
+        for (action, words) in
+            [("pause", "пауза"), ("resume", "продолжи"), ("next", "дальше"), ("like", "мне нравится")]
+        {
+            assert_eq!(skills.yandex_words("kitchen", action, true), Some(words), "{action}");
+        }
+        assert_eq!(skills.yandex_words("kitchen", "pause", false), None, "no Yandex, no words");
+        skills.player.play("office", vec![media("music/a.mp3", "Track", Some(60_000))], 0, 0);
+        assert_eq!(skills.yandex_words("office", "next", true), None, "our music is ours");
+    }
+
+    /// Stage 2: what Yandex plays follows its player between requests, with the title, artist and cover of its own
+    /// answer; an app that plays by itself says what it plays.
+    #[tokio::test]
+    async fn the_widget_follows_yandexs_tracks_and_an_apps_music() {
+        use crate::skills::yandex_now::YandexTrack;
+        let built = build(&[]);
+        let skills = &built.service;
+        let track = |id: &str, title: &str| YandexTrack {
+            id: id.into(),
+            title: title.into(),
+            subtitle: Some("Кино".into()),
+            image_url: Some("https://avatars.yandex.net/x/400x400".into()),
+            kind: Some("Track".into()),
+            duration_ms: Some(200_000),
+        };
+        skills.note_yandex_tracks("kitchen", &[track("1", "Группа крови")]);
+        let now = now_ms();
+        skills.note_yandex_player("kitchen", "music_thin_client_on_started", None, now);
+        let playing = skills.now_playing("kitchen", now + 5_000);
+        assert_eq!(
+            (playing.source, playing.state, playing.title.as_deref(), playing.subtitle.as_deref()),
+            ("station", "playing", Some("Группа крови"), Some("Кино"))
+        );
+        assert_eq!(playing.position_ms, Some(5_000));
+        assert!(playing.image_url.is_some());
+        skills.note_yandex_player("kitchen", "music_thin_client_on_stopped", None, now + 10_000);
+        assert_eq!(skills.now_playing("kitchen", now + 60_000).state, "paused");
+        // Ours does not count as Yandex's.
+        skills.note_yandex_player("kitchen", "vgw_media_on_started", None, now + 70_000);
+        assert_eq!(skills.now_playing("kitchen", now + 70_000).state, "paused");
+
+        let track = crate::skills::media::app_playback::AppTrack {
+            title: Some("Песня с телефона".into()),
+            artist: Some("Исполнитель".into()),
+            cover: None,
+        };
+        skills.app_playing_track("airplay", "playing", Some("kitchen"), Some(track)).unwrap();
+        let app = skills.now_playing("kitchen", now_ms());
+        assert_eq!(
+            (app.source, app.state, app.title.as_deref(), app.subtitle.as_deref()),
+            ("app", "playing", Some("Песня с телефона"), Some("Исполнитель"))
+        );
+        skills.app_playing("airplay", "stopped", Some("kitchen")).unwrap();
+        assert_eq!(skills.now_playing("kitchen", now_ms()).source, "station", "Yandex's again");
     }
 
     /// Review G5: our track paused from the panel stands where it was paused, and goes on from there — the panel's

@@ -558,6 +558,7 @@ impl Connector for TalkConnector {
         let tool = |tool: LlmTool, run: Run| {
             let (layer, kept_layer) = (self.layer.clone(), self.layer.clone());
             ToolContribution {
+                app: None,
                 tool,
                 permission: use_of(CapabilityName::Plugins),
                 run: Arc::new(move |input: Map<String, Value>, context: ToolContext| {

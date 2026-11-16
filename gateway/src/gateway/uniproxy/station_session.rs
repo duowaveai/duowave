@@ -1728,11 +1728,14 @@ impl StationSession {
         self.send(&message, true);
     }
 
-    /// Interim recognition is a decision of the speech side; the session runs it, one request at a time.
+    /// Interim recognition is a decision of the speech side; the session runs it, one request at a time. A cloud
+    /// that hears gets one request after the end of speech, not one every half second: each costs (the owner's
+    /// decision 2, docs/plans/speaker-alone.md).
     fn interim_options(&self) -> InterimOptions {
         let config = &self.deps.config;
+        let interim = self.deps.speech.recognition_enabled() && self.deps.speech.at_home();
         InterimOptions {
-            interval_ms: if self.deps.speech.recognition_enabled() { config.interim_interval_ms } else { 0 },
+            interval_ms: if interim { config.interim_interval_ms } else { 0 },
             quiet_speech: config.quiet_speech,
             quiet_end_ms: config.quiet_end_ms,
             unchanged_end_ms: config.unchanged_end_ms,
@@ -2117,6 +2120,13 @@ impl StationSession {
                 self.record_route(text, intent.capability, &resolution, source.as_str(), rule);
                 if let Some(trip) = inner.trip(r#ref) {
                     trip.routed(Some(intent.capability.as_str()), resolution.kind());
+                    // An app's phrase (its quick rule is «plugin:<id>») that we serve: the journal names the app on
+                    // the step it thinks in (docs/plans/start-desk.md, «Поставить на стол?»).
+                    if let (Some(app), Resolution::Own(_)) =
+                        (rule.and_then(|rule| rule.strip_prefix("plugin:")), &resolution)
+                    {
+                        trip.app_step(RequestPhase::Think, Some(Place::Own), None, app);
+                    }
                 }
                 self.serve_intent(inner, r#ref, request, text, intent, resolution);
             }
@@ -2340,12 +2350,16 @@ impl StationSession {
         let phrases_early = early.clone();
         let (request, text) = (request.clone(), text.to_string());
         let question = text.clone();
+        let own_ref = r#ref.to_string();
         let phrases: PhraseStream = generate(move |y| async move {
             let answer = phrases_answer;
             let mut outcome = match skill.execute(&intent, &context).await {
                 Ok(outcome) => outcome,
                 Err(error) => return y.send(Err(error)).await,
             };
+            if outcome.to_yandex && session.hand_to_yandex(&answer, &own_ref, &request, &text, intent.capability) {
+                return;
+            }
             if may_answer_early && !outcome.directives.is_empty() {
                 // The display's command joins the response, which goes at once: the model still has to word the
                 // result. A response already out (a slow forecast) goes without it.
@@ -2377,6 +2391,26 @@ impl StationSession {
         });
     }
 
+    /// Our skill found it is not ours (an empty «Своя музыка»): with Yandex up, our answer ends silently and Yandex
+    /// answers the request. False: Yandex is not there — our words are said.
+    fn hand_to_yandex(
+        self: &Arc<Self>,
+        answer: &Arc<SpokenAnswer>,
+        r#ref: &str,
+        request: &AliceRequest,
+        text: &str,
+        capability: CapabilityName,
+    ) -> bool {
+        let mut inner = self.lock();
+        if !self.yandex_available(&inner) {
+            return false;
+        }
+        answer.cancel("handed to Yandex");
+        self.note("toYandex", &format!("{capability}: nothing of ours — Yandex answers"), None);
+        self.ask_yandex(&mut inner, r#ref, request, text, capability, false);
+        true
+    }
+
     /// An outcome's commands join the response; then its speech, or, for a lookup's data, the model's words for it
     /// (`on_data`: the model that called the tool goes on; otherwise a new answer with the data as facts).
     fn apply_outcome(
@@ -2387,8 +2421,19 @@ impl StationSession {
         outcome: Outcome,
         on_data: Option<Box<dyn FnOnce(String) -> PhraseStream + Send>>,
     ) -> PhraseStream {
-        let Outcome { speech, phrases, directives, listen, data, continuation, record_audio, done, kept, on_spoken } =
-            outcome;
+        let Outcome {
+            speech,
+            phrases,
+            directives,
+            listen,
+            data,
+            continuation,
+            record_audio,
+            done,
+            kept,
+            on_spoken,
+            to_yandex: _,
+        } = outcome;
         if let Some(on_spoken) = on_spoken {
             answer.after_spoken(on_spoken);
         }
@@ -2663,6 +2708,9 @@ impl StationSession {
                 Ok(outcome) => outcome,
                 Err(error) => return y.send(Err(error)).await,
             };
+            if outcome.to_yandex && session.hand_to_yandex(&answer, &r#ref, &request, &text, intent.capability) {
+                return;
+            }
             let choice = Arc::new(choice);
             let continued = choice.clone();
             let token = answer.token();
@@ -2930,7 +2978,10 @@ impl StationSession {
     ) -> ToolOutcome {
         let trip = self.lock().trip(r#ref);
         if let Some(trip) = &trip {
-            trip.step(RequestPhase::Tool, Some(Place::Own), Some(call.name.as_str()));
+            match offer.app_of(&call.name) {
+                Some(app) => trip.app_step(RequestPhase::Tool, Some(Place::Own), Some(call.name.as_str()), app),
+                None => trip.step(RequestPhase::Tool, Some(Place::Own), Some(call.name.as_str())),
+            }
         }
         // A plugin's tool that acts (plays, speaks) adds its commands to this answer.
         let station = {
@@ -3778,6 +3829,8 @@ impl StationSession {
                 session.end_trip(&mut inner, &r#ref, status, error, Some(relay.owner));
             }
             let ms = started.elapsed().as_millis() as u64;
+            // What Yandex starts on the station, as its answer describes it (a request, the next track of its queue).
+            session.deps.skills.note_yandex_tracks(&session.device_tag, &answer.tracks);
             session.after_yandex_answer(&mut inner, &answer, &r#ref, capability, &text, ms);
         });
     }
@@ -4379,6 +4432,11 @@ impl StationSession {
         }
         if !waited {
             self.deps.skills.player_memory.note_callback(&self.device_tag, &name, chrono::Utc::now());
+            // Yandex's player between requests: the panel's widget follows its track and its pauses.
+            if !name.starts_with(OUR_CALLBACK_PREFIX) {
+                let payload = request.event.payload.clone().map(serde_json::Value::Object);
+                self.deps.skills.note_yandex_player(&self.device_tag, &name, payload.as_ref(), now_ms());
+            }
             // The station's player started (Yandex's music, our radio): an app that played by itself gives way.
             if name.ends_with("_on_started") {
                 self.deps.skills.station_player_started(&self.device_tag);

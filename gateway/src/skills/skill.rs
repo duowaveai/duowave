@@ -87,6 +87,9 @@ pub struct Outcome {
     /// The answer's speech has ended on the station: called with when. An answer not spoken to its end (superseded,
     /// cancelled, deferred) never calls it.
     pub on_spoken: Option<SpokenHook>,
+    /// Not ours after all — «Своя музыка» with nothing in it: the request goes on to Yandex when it is up; without it
+    /// the speech here is said (docs/plans/speaker-alone.md, stage 2).
+    pub to_yandex: bool,
 }
 
 impl Outcome {

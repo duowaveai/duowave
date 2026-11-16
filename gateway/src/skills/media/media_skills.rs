@@ -111,7 +111,8 @@ impl MusicSkill {
         }
         if items.is_empty() {
             let Some(query) = query.filter(|query| !query.is_empty()) else {
-                return Ok(Outcome::speech("Музыки пока нет."));
+                // Nothing of one's own: Yandex plays music, when it is there.
+                return Ok(Outcome { to_yandex: true, ..Outcome::speech("Музыки пока нет.") });
             };
             // Not in one's own music, but asked by mood or genre («что-нибудь спокойное»): the radio may have it.
             let radio = self.sources.find(MediaKind::Radio, Some(query.clone()), context.media_base_url.clone()).await;
@@ -453,6 +454,12 @@ mod tests {
         assert_eq!(jazz.speech.as_deref(), Some("В своей музыке не нашла — включаю радио «Джаз ФМ»."));
         let none = skill.execute(&intent(CapabilityName::Music, json!({"query": "опера"})), &context()).await.unwrap();
         assert_eq!(none.speech.as_deref(), Some("Не нашла «опера»."));
+        assert!(!none.to_yandex, "asked by name and not found: said so");
+
+        // Nothing of one's own at all: Yandex plays music when it is up (docs/plans/speaker-alone.md, stage 2).
+        let nothing = MusicSkill::new(MediaSources::new(Vec::new()), player.clone(), None);
+        let empty = nothing.execute(&intent(CapabilityName::Music, json!({})), &context()).await.unwrap();
+        assert!(empty.to_yandex && empty.speech.as_deref() == Some("Музыки пока нет."));
     }
 
     #[tokio::test]

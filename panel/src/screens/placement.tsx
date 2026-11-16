@@ -340,6 +340,19 @@ function ComputerSide({
                     live.reachable && <Line>{tr.placement.latestGateway}</Line>
                 )}
                 {live.updateError && <Line tone="error">{tr.placement.updateFailed(live.updateError)}</Line>}
+                {health?.update?.trial && (
+                    <Line>
+                        {tr.placement.trialOnStation(health.update.trial.version, clock(health.update.trial.until))}
+                        {health.update.trial.appsPaused && ` ${tr.placement.trialAppsPaused}`}
+                    </Line>
+                )}
+                {!health?.update?.trial && health?.update?.trialFailed && (
+                    <Line tone="warn">
+                        {health.update.trialFailed.why === 'rebooted'
+                            ? tr.placement.trialRebooted(health.update.trialFailed.version)
+                            : tr.placement.trialCrashed(health.update.trialFailed.version)}
+                    </Line>
+                )}
                 {can('system.update') && record.managed && (
                     <label class="t-caption flex items-center gap-10">
                         <Switch
@@ -514,7 +527,7 @@ function StationSide({
 }
 
 /** Шаги перехода. */
-function MoveProgress({ job }: { job: MoveJob }) {
+export function MoveProgress({ job }: { job: MoveJob }) {
     return (
         <div role="status" class="flex flex-col gap-4 py-10 px-12 r-panel bg-divider">
             <span class="fw-700 fs-13">
@@ -1193,6 +1206,7 @@ function InspectSheet({ inspected, onClose }: { inspected: Inspected; onClose: (
     return (
         <Sheet title={tr.placement.inspectTitle} about={tr.placement.inspectAbout} onClose={onClose}>
             {!inspected.installed && <Line tone="warn">{tr.placement.notInstalled}</Line>}
+            {inspected.programMissing && <Line tone="warn">{tr.placement.programMissing}</Line>}
             {inspected.installed && (
                 <Line>
                     {inspected.running

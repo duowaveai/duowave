@@ -325,7 +325,8 @@ pub fn folders(id: &str, title: &str) -> Vec<(String, String)> {
     ]
 }
 
-/// A theme: the tokens of «Минимал» it changes in both modes, the view it suggests and the density.
+/// A theme: three colors of each mode the panel builds the palette from, a drawn backdrop of the panel's scenes in
+/// the dark mode, the view it suggests and the density (docs/design/glass/THEMES.md).
 pub fn theme(id: &str, title: &str) -> Vec<(String, String)> {
     let manifest = json!({
         "schema": 1,
@@ -344,10 +345,11 @@ pub fn theme(id: &str, title: &str) -> Vec<(String, String)> {
                 "modes": { "dark": "Тёмная", "light": "Светлая" },
                 "layout": "desk",
                 "density": 1,
-                "palette": {
-                    "dark": { "bg": "#0B120E", "accent": "#6EE7A8", "accent-text": "#6EE7A8" },
-                    "light": { "bg": "#F1F7F3", "accent": "#1F9D63", "accent-text": "#137A4B" }
-                }
+                "colors": {
+                    "dark": { "bg": "#0B120E", "text": "#EEF5F0", "accent": "#6EE7A8" },
+                    "light": { "bg": "#F1F7F3", "text": "#10201A", "accent": "#1F9D63" }
+                },
+                "backdrop": { "dark": { "scene": "aurora", "opacity": 0.6, "dim": 0.2 }, "light": null }
             }]
         }
     });
@@ -355,7 +357,9 @@ pub fn theme(id: &str, title: &str) -> Vec<(String, String)> {
         ("manifest.json".into(), pretty(&manifest)),
         (
             "README.md".into(),
-            format!("# {title}\n\nТема пульта: токены «Стекла» поверх его палитры (docs/design/glass/THEMES.md).\n"),
+            format!(
+                "# {title}\n\nТема пульта: три цвета каждого режима и рисованный фон (docs/design/glass/THEMES.md).\n"
+            ),
         ),
     ]
 }

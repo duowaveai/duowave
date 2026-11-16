@@ -92,10 +92,11 @@ impl ModeGate for Profile {
 mod tests {
     use super::*;
 
+    /// The build alone counts a cloud's hearing and voice as set up: the station's build can take «Свой» through them.
     #[test]
-    fn the_station_alone_refuses_svoi_a_pc_takes_all_three() {
+    fn the_station_takes_svoi_through_the_cloud_a_pc_takes_all_three() {
         let station = Profile { station: true };
-        assert_eq!(station.check(PanelMode::Own), Err(OWN_ON_STATION.to_string()));
+        assert!(station.check(PanelMode::Own).is_ok());
         assert!(station.check(PanelMode::Gateway).is_ok() && station.check(PanelMode::Relay).is_ok());
         let pc = Profile { station: false };
         for mode in [PanelMode::Relay, PanelMode::Gateway, PanelMode::Own] {

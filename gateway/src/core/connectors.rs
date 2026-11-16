@@ -178,6 +178,8 @@ pub type ToolRun =
 #[derive(Clone)]
 pub struct ToolContribution {
     pub tool: LlmTool,
+    /// The app whose tool it is (a plugin's); None for the core's own. The journal names it on the tool's step.
+    pub app: Option<String>,
     pub permission: String,
     pub run: ToolRun,
     /// It changes nothing: it stays offered after a text from outside the house.
@@ -246,6 +248,11 @@ impl ContributedOffer {
 
     pub fn owns(&self, name: &str) -> bool {
         self.index.contains_key(name)
+    }
+
+    /// The app whose tool this is, if an app's (the journal names it on the tool's step).
+    pub fn app_of(&self, name: &str) -> Option<&str> {
+        self.index.get(name).and_then(|contribution| contribution.app.as_deref())
     }
 
     /// Whether a tool changes nothing (still offered after a text from outside the house).
@@ -413,6 +420,7 @@ mod tests {
         fn tools(&self) -> Vec<ToolContribution> {
             self.tool_permission
                 .map(|permission| ToolContribution {
+                    app: None,
                     tool: LlmTool {
                         name: format!("{}_tool", self.id),
                         description: String::new(),
@@ -486,6 +494,7 @@ mod tests {
         answer: Result<&'static str, &'static str>,
     ) -> ToolContribution {
         ToolContribution {
+            app: None,
             tool: LlmTool { name: name.into(), description: String::new(), parameters: Value::Null },
             permission: "use:plugins".into(),
             run: Arc::new(move |_, _| {

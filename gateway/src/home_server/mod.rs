@@ -121,6 +121,8 @@ pub struct HomeServerService {
     built: Mutex<Option<Built>>,
     modes: OnceLock<Arc<ModeService>>,
     messenger: Mutex<Messenger>,
+    /// The station's cloud hearing and voice as its panel sets them (src/speech/cloud_speech.rs).
+    cloud: OnceLock<Arc<crate::speech::cloud_speech::CloudSpeech>>,
 }
 
 impl HomeServerService {
@@ -142,6 +144,7 @@ impl HomeServerService {
             watch: Mutex::new(Watch::default()),
             built: Mutex::new(None),
             modes: OnceLock::new(),
+            cloud: OnceLock::new(),
             messenger: Mutex::new(Messenger::Unknown),
         });
         if let (Some(url), Some(key)) =
@@ -162,6 +165,36 @@ impl HomeServerService {
             }
         }
         service
+    }
+
+    /// The station's cloud hearing and voice: «Свой» stands on them while the computer is away.
+    pub fn set_cloud(&self, cloud: Arc<crate::speech::cloud_speech::CloudSpeech>) {
+        let _ = self.cloud.set(cloud);
+    }
+
+    /// The cloud hears for the station: the panel's (src/speech/cloud_speech.rs), else the .env's.
+    fn cloud_hears(&self) -> bool {
+        match self.cloud.get() {
+            Some(cloud) => cloud.hears(),
+            None => {
+                let asr = &self.config.speech.asr;
+                asr.enabled && !crate::operations::networks::is_local_url(Some(&asr.base_url))
+            }
+        }
+    }
+
+    /// The cloud speaks for the station: the panel's, else the .env's.
+    fn cloud_speaks(&self) -> bool {
+        match self.cloud.get() {
+            Some(cloud) => cloud.speaks(),
+            None => self
+                .config
+                .gateway
+                .tts
+                .own
+                .as_ref()
+                .is_some_and(|own| !crate::operations::networks::is_local_url(Some(&own.base_url))),
+        }
     }
 
     pub fn set_modes(&self, modes: Arc<ModeService>) {
@@ -323,7 +356,7 @@ impl HomeServerService {
     }
 
     /// What «Свой» would lack now: the computer's hearing or voice not taken («Что даю колонке») and no cloud for it
-    /// in the station's .env — without Yandex there it would hear or say nothing. On the station only (a computer's
+    /// in the station's panel or .env — without Yandex there it would hear or say nothing. On the station only (a computer's
     /// gateway hears and speaks itself), and only while it leans on the computer: with the help off «Свой» has gone
     /// already, as with a computer away.
     pub fn svoi_lacks(&self) -> Option<&'static str> {
@@ -331,12 +364,10 @@ impl HomeServerService {
             return None;
         }
         self.configured()?;
-        let cloud = |url: &str| !crate::operations::networks::is_local_url(Some(url));
-        let asr = &self.config.speech.asr;
-        if !self.serves("asr") && !(asr.enabled && cloud(&asr.base_url)) {
+        if !self.serves("asr") && !self.cloud_hears() {
             return Some(NO_HEARING);
         }
-        if !self.serves("tts") && !self.config.gateway.tts.own.as_ref().is_some_and(|own| cloud(&own.base_url)) {
+        if !self.serves("tts") && !self.cloud_speaks() {
             return Some(NO_VOICE);
         }
         None
@@ -508,7 +539,10 @@ impl HomeServerService {
                 let reason = self.lock().error.clone().unwrap_or_else(|| AWAY.into());
                 tracing::warn!("home server: {url} is away: {reason}");
                 self.events.emit(GatewayEvent::HomeServerDown { url: url.to_string(), reason });
-                self.leave_svoi(AWAY);
+                // The cloud hears and speaks for the station (docs/plans/speaker-alone.md): «Свой» stays on it.
+                if !(self.cloud_hears() && self.cloud_speaks()) {
+                    self.leave_svoi(AWAY);
+                }
             }
         }
         if up {

@@ -1,0 +1,59 @@
+// Тексты шага «Кто думает» первых шагов (screens/onb/brain.tsx) — слова холста «Онбординг», доска Brain.
+// Русский — исходный словарь; английский — тот же набор ключей.
+
+export default {
+    title1: 'Кто будет думать',
+    title2: 'над ответами?',
+    lead: 'DuoWave — дом для ИИ, а не сам ИИ. Подключите модель, которая вам удобна: оплата идёт напрямую её сервису.',
+    groupLabel: 'Кто думает над ответами',
+
+    orTitle: 'OpenRouter',
+    orChip: 'Проще всего',
+    orSub: 'Один вход — много моделей: ChatGPT, Claude, Gemini, DeepSeek. Оплата на OpenRouter, по факту.',
+    gptTitle: 'Подписка ChatGPT',
+    gptSub: 'Есть ChatGPT Plus или Pro? Войдите тем же аккаунтом — ответы пойдут из подписки.',
+    keyTitle: 'Свой ключ',
+    keySub: 'Ключ API от OpenAI, Anthropic, DeepSeek, YandexGPT или другого сервиса.',
+    localTitle: 'Модель на этом компьютере',
+    localChip: 'без интернета',
+    localSub: 'Ollama или LM Studio: вопросы не уходят из дома. Нужен мощный компьютер.',
+
+    orSignIn: 'Войти через OpenRouter',
+    orSignInNote: 'Откроется страница OpenRouter: войдите и нажмите «Разрешить». Ключ придёт сам — копировать ничего не нужно.',
+    orDone: 'Вошли в OpenRouter',
+    gptSignIn: 'Войти через ChatGPT',
+    gptSignInNote: 'Откроется вход OpenAI. Работает с подпиской Plus и Pro.',
+    gptDone: 'Вошли в ChatGPT',
+    /** Под «Вошли…» и «Ключ … работает»: модели выбраны за человека. */
+    chosenNote: 'Быстрая модель — для коротких ответов, умная — для виджетов и игр. Выбрали за вас; поменять — «Персонаж» → «Мозг».',
+    opening: 'Открываю…',
+    checking: (title: string) => `Проверяю ${title}…`,
+    checkingNote: 'Задаю модели короткий вопрос — это несколько секунд.',
+
+    keyLabel: 'Ключ API',
+    keyPlaceholder: 'sk-…',
+    keyCheck: 'Проверить',
+    keyChecking: 'Проверяю…',
+    keyNote: 'Сервис узнаю по ключу. Ключ хранится на этом компьютере.',
+    keyKnown: (title: string) => `Это ключ ${title}. Ключ хранится на этом компьютере.`,
+    keyUnknown: 'Не узнал сервис по этому ключу. Добавьте его в «Персонаж» → «Мозг»: там сервис можно выбрать самому.',
+    keyDone: (title: string) => `Ключ ${title} работает`,
+
+    localSearching: 'Ищу Ollama и LM Studio…',
+    localSearchingNote: 'Смотрю, запущена ли одна из них на этом компьютере.',
+    localAgain: 'Проверить снова',
+    localNone: 'Ollama и LM Studio не нашёл',
+    localNoneNote: 'Поставьте одну из них и нажмите «Проверить снова». Или начните с облака: модель на компьютере добавите потом.',
+    localFound: (title: string) => `Нашёл ${title}`,
+    localFoundNote: (model: string) => `Отвечает ${model}, вопросы не уходят из дома. Выбрали за вас; поменять — «Персонаж» → «Мозг».`,
+
+    earTitle: 'Готовлю слух',
+    earDownloading: 'скачиваю модель распознавания, один раз — дальше без интернета',
+    earLoading: 'загружаю модель распознавания',
+    earFailed: 'Слух не встал',
+    earSize: (done: number, total: number) => `${done} из ${total} МБ`,
+    earProgress: 'Скачано',
+
+    later: 'Решу позже',
+    noModelNote: 'Не выберете — DuoWave пока не сможет отвечать. Напомню на столе.',
+};

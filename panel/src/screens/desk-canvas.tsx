@@ -3,9 +3,11 @@
 // перетаскиванием фона и колесом, масштаб — кнопками, ⌘/Ctrl + колесом (щипок на тачпаде); мини-карта показывает,
 // что есть за краем, и ведёт туда. Ещё не переставленные виджеты стоят столбцами по сторонам от колонки. Колесо над
 // списком в виджете, который ещё есть куда листать, листает его, а не поле.
-// Замок рядом с масштабом закрепляет стол: поле не едет и не масштабируется, виджеты не двигаются и не тянутся, пункты
-// раскладки в их меню не нажимаются. Места, масштаб, сдвиг и замок — в раскладке стола: её хранит шлюз, свою у каждой
-// роли (shell/widgets.ts).
+// Замок в углу закрепляет стол: поле не едет и не масштабируется, виджеты не двигаются и не тянутся, пункты раскладки в
+// их меню не нажимаются. Стол начинается закреплённым, и тогда в углу только замок; открыли — рядом появляются
+// «Расставить заново», масштаб и мини-карта. Места, масштаб, сдвиг и замок — в раскладке стола: её хранит шлюз, свою у
+// каждой роли (shell/widgets.ts). Плашки над столом (баннер: «Готовлю слух», флешка…) опускают поле, пока видны: сцена
+// стоит под ними, а не за ними.
 
 import type { ComponentChildren } from 'preact';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
@@ -24,7 +26,17 @@ const MAX_W = 640;
 /** Сцена колонки: ширина и высота на столе. */
 export const SCENE_W = 560;
 export const SCENE_H = 520;
+/** Широкий виджет под сценой (`wide`, витрина стола — docs/plans/start-desk.md): шире сцены, по её середине. */
+const UNDER_WIDE = 908;
+/**
+ * Широкий виджет под сценой встаёт сразу под тем, что в сцене нарисовано (кольцо орбиты кончается выше низа сцены, под
+ * ним бывают строки «Запомнил…» и «Поставить на стол?»): так он виден весь, без прокрутки, не заходит под док и не
+ * ложится на эти строки. Обычный — ниже сцены, как раньше. На столько точек он заходит на пустой низ кольца.
+ */
+const UNDER_WIDE_OVERLAP = 16;
 const GAP = 60;
+/** Между баннером и сценой под ним, точек экрана. */
+const BANNER_GAP = 16;
 
 interface Point {
     x: number;
@@ -116,9 +128,28 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
     const [map, setMap] = useState<{ items: Array<{ key: string; rect: DOMRect; scene?: boolean }>; view: DOMRect } | null>(null);
     /** «Новый виджет» под севшими на его место виджетами (docs/plans/voice-creation.md, «Посадка»): на сколько ниже, точки поля. */
     const [addOffset, setAddOffset] = useState(0);
-    const view = useRef({ zoom, pan });
-    view.current = { zoom, pan };
-    const locked = layout.locked === true;
+    /**
+     * На сколько поле опущено под баннером, точек экрана. Мерится по столу как сначала (стартовый сдвиг, сохранённый
+     * масштаб): у нетронутого стола сцена — сразу под баннером; у сдвинутого всё поле опускается на то же, пока баннер
+     * виден. Сдвиг поля не трогает — ушёл баннер, поле вернулось.
+     */
+    const [push, setPush] = useState(0);
+    const bannerBox = useRef<HTMLDivElement>(null);
+    /** Что нарисовано в сцене — его высота (без масштаба поля): под ним встаёт широкий виджет. */
+    const sceneBox = useRef<HTMLDivElement>(null);
+    const [sceneHeight, setSceneHeight] = useState(SCENE_H - 64);
+    useLayoutEffect(() => {
+        const element = sceneBox.current;
+        if (!element) return;
+        const measure = () => setSceneHeight(element.offsetHeight);
+        measure();
+        const observer = new ResizeObserver(measure);
+        observer.observe(element);
+        return () => observer.disconnect();
+    }, []);
+    const view = useRef({ zoom, pan, push });
+    view.current = { zoom, pan, push };
+    const locked = layout.locked !== false;
     /** Для слушателей, поставленных один раз (колесо, прокрутка). */
     const lockedNow = useRef(locked);
     lockedNow.current = locked;
@@ -156,6 +187,25 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
         };
     }, []);
 
+    // Баннер над столом — поле ниже его на BANNER_GAP: сцена с её строкой («Мозг не выбран…») видна целиком.
+    useLayoutEffect(() => {
+        const node = bannerBox.current;
+        const outer = box.current;
+        if (!node || !outer) {
+            setPush(0);
+            return;
+        }
+        const measure = () => {
+            const sceneTop = outer.clientHeight / 2 + startPan.current.y - (SCENE_H / 2) * (layout.zoom ?? 1);
+            setPush(Math.max(0, Math.round(node.offsetTop + node.offsetHeight + BANNER_GAP - sceneTop)));
+        };
+        measure();
+        const sizes = new ResizeObserver(measure);
+        sizes.observe(node);
+        sizes.observe(outer);
+        return () => sizes.disconnect();
+    }, [!!banner, layout.zoom, withUnder]);
+
     // Масштаб и сдвиг — в раскладку, когда человек остановился. Вид как сначала там не нужен: стартовый стол шлюз не хранит.
     useEffect(() => {
         const id = window.setTimeout(() => {
@@ -178,8 +228,8 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
     const toPlane = (clientX: number, clientY: number): Point => {
         const rect = box.current?.getBoundingClientRect();
         if (!rect) return { x: 0, y: 0 };
-        const { zoom: z, pan: p } = view.current;
-        return { x: (clientX - rect.left - rect.width / 2 - p.x) / z, y: (clientY - rect.top - rect.height / 2 - p.y) / z };
+        const { zoom: z, pan: p, push: down } = view.current;
+        return { x: (clientX - rect.left - rect.width / 2 - p.x) / z, y: (clientY - rect.top - rect.height / 2 - down - p.y) / z };
     };
 
     // Мерило для посадки черновика: точка поля по месту на экране.
@@ -203,7 +253,7 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
         const cy = clientY ?? rect.top + rect.height / 2;
         const point = toPlane(cx, cy);
         setZoom(target);
-        setPan({ x: cx - rect.left - rect.width / 2 - point.x * target, y: cy - rect.top - rect.height / 2 - point.y * target });
+        setPan({ x: cx - rect.left - rect.width / 2 - point.x * target, y: cy - rect.top - rect.height / 2 - view.current.push - point.y * target });
     };
 
     // Колесо: сдвиг поля; с ⌘/Ctrl (и щипок тачпада) — масштаб у курсора. Над списком, которому есть куда листаться, —
@@ -326,6 +376,7 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
     // Как в макете (SpaceGateway): слева столбец в 60 точках от колонки, справа два — второй подрезан краем окна,
     // чтобы было видно, что там ещё есть.
     const half = SCENE_W / 2;
+    const underWidth = under.some((widget) => widget.wide) ? UNDER_WIDE : SCENE_W;
     const columnX = [-half - GAP - WIDTH, half + GAP, half + GAP + WIDTH + 40];
     const top = -SCENE_H / 2;
 
@@ -348,11 +399,14 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
             }
             if (Math.abs(need - addOffset) > 1) setAddOffset(Math.round(need));
         }
-        const items = [...node.querySelectorAll<HTMLElement>('[data-widget], .desk-scene, .desk-add-tile')].map((element) => ({
-            key: element.dataset.widget ?? (element.classList.contains('desk-scene') ? 'scene' : 'add'),
-            rect: element.getBoundingClientRect(),
-            scene: element.classList.contains('desk-scene'),
-        }));
+        // Невидимые (пустой виджет с hideWhileEmpty) — не на карте: их место пусто, а нулевая рамка растянула бы карту.
+        const items = [...node.querySelectorAll<HTMLElement>('[data-widget], .desk-scene, .desk-add-tile')]
+            .map((element) => ({
+                key: element.dataset.widget ?? (element.classList.contains('desk-scene') ? 'scene' : 'add'),
+                rect: element.getBoundingClientRect(),
+                scene: element.classList.contains('desk-scene'),
+            }))
+            .filter((item) => item.rect.width > 0 || item.rect.height > 0);
         const next = { items, view: outer.getBoundingClientRect() };
         setMap((old) =>
             old && old.items.length === next.items.length && old.items.every((item, index) => sameRect(item.rect, next.items[index].rect)) && sameRect(old.view, next.view)
@@ -371,57 +425,84 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
 
     return (
         <div ref={box} class={`desk-canvas${locked ? ' is-locked' : ''}`} onPointerDown={(event) => onBackground(event as PointerEvent)}>
-            {banner && <div class="desk-canvas-banner">{banner}</div>}
-            <div ref={plane} class="desk-plane" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>
-                <div class="desk-scene-spot" style={{ left: `${-half}px`, top: `${top}px`, width: `${SCENE_W}px` }}>
-                    {scene}
+            {banner && (
+                <div ref={bannerBox} class="desk-canvas-banner">
+                    {banner}
                 </div>
-                {under.length > 0 && (
-                    <div class="desk-under" style={{ left: `${-half}px`, top: `${SCENE_H / 2 + 24}px`, width: `${SCENE_W}px` }}>
-                        {under.map((widget) => (
-                            <div key={widget.key} data-widget={widget.key} class="desk-slot">
-                                {render(widget, widgetMenu(widget), gripOf(widget.key))}
-                            </div>
-                        ))}
+            )}
+            {/* Опускание под баннером — своим слоем с плавным ходом: сдвиг и масштаб поля идут без задержки. */}
+            <div class="desk-push" style={push ? { transform: `translateY(${push}px)` } : undefined}>
+                <div ref={plane} class="desk-plane" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>
+                    <div ref={sceneBox} class="desk-scene-spot" style={{ left: `${-half}px`, top: `${top}px`, width: `${SCENE_W}px` }}>
+                        {scene}
                     </div>
-                )}
-                {columns.map(
-                    (list, index) =>
-                        (list.length > 0 || index === 0) && (
-                            <div key={index} class="desk-columns" style={{ left: `${columnX[index]}px`, top: `${top}px`, width: `${WIDTH}px` }}>
-                                {list.map((widget) => (
-                                    <div key={widget.key} data-widget={widget.key} class="desk-slot">
-                                        {render(widget, widgetMenu(widget), gripOf(widget.key))}
-                                    </div>
-                                ))}
-                                {index === 0 && (
-                                    <div class="desk-add-spot" style={addOffset ? { marginTop: `${addOffset}px` } : undefined}>
-                                        {addTile}
-                                    </div>
-                                )}
-                            </div>
-                        ),
-                )}
-                {placed.map((widget) => {
-                    const place = live?.key === widget.key ? live.place : layout.places[widget.key];
-                    return (
-                        <div
-                            key={widget.key}
-                            data-widget={widget.key}
-                            class={`desk-slot desk-placed${live?.key === widget.key ? ' is-moving' : ''}`}
-                            style={{ left: `${place.x}px`, top: `${place.y}px`, width: `${place.w ?? WIDTH}px` }}
-                        >
-                            {render(widget, widgetMenu(widget), gripOf(widget.key))}
-                            {!locked && <span class="desk-resize" aria-hidden="true" onPointerDown={(event) => resize(widget.key)(event as PointerEvent)} />}
+                    {under.length > 0 && (
+                        <div class="desk-under" style={{ left: `${-underWidth / 2}px`, top: `${underWidth === SCENE_W ? SCENE_H / 2 + 24 : top + sceneHeight - UNDER_WIDE_OVERLAP}px`, width: `${underWidth}px` }}>
+                            {under.map((widget) => (
+                                <div
+                                    key={widget.key}
+                                    data-widget={widget.key}
+                                    class="desk-slot"
+                                    style={widget.wide || underWidth === SCENE_W ? undefined : { width: `${SCENE_W}px`, marginInline: 'auto' }}
+                                >
+                                    {render(widget, widgetMenu(widget), gripOf(widget.key))}
+                                </div>
+                            ))}
                         </div>
-                    );
-                })}
+                    )}
+                    {columns.map(
+                        (list, index) =>
+                            (list.length > 0 || index === 0) && (
+                                <div key={index} class="desk-columns" style={{ left: `${columnX[index]}px`, top: `${top}px`, width: `${WIDTH}px` }}>
+                                    {list.map((widget) => (
+                                        <div key={widget.key} data-widget={widget.key} class="desk-slot">
+                                            {render(widget, widgetMenu(widget), gripOf(widget.key))}
+                                        </div>
+                                    ))}
+                                    {index === 0 && (
+                                        <div class="desk-add-spot" style={addOffset ? { marginTop: `${addOffset}px` } : undefined}>
+                                            {addTile}
+                                        </div>
+                                    )}
+                                </div>
+                            ),
+                    )}
+                    {placed.map((widget) => {
+                        const place = live?.key === widget.key ? live.place : layout.places[widget.key];
+                        return (
+                            <div
+                                key={widget.key}
+                                data-widget={widget.key}
+                                class={`desk-slot desk-placed${live?.key === widget.key ? ' is-moving' : ''}`}
+                                style={{ left: `${place.x}px`, top: `${place.y}px`, width: `${place.w ?? WIDTH}px` }}
+                            >
+                                {render(widget, widgetMenu(widget), gripOf(widget.key))}
+                                {!locked && <span class="desk-resize" aria-hidden="true" onPointerDown={(event) => resize(widget.key)(event as PointerEvent)} />}
+                            </div>
+                        );
+                    })}
+                </div>
             </div>
 
-            <div ref={tools} class={`desk-tools${raised ? ' is-raised' : ''}`}>
+            {/* Закреплён — в углу только замок: остальное ряда не видно, но место держит, и замок не прыгает, когда стол
+                открывают; карта над рядом появляется вместе с ними. */}
+            <div ref={tools} class={`desk-tools${raised ? ' is-raised' : ''}${locked ? ' is-locked' : ''}`}>
+                {map && !locked && <MiniMap map={map} onGo={(dx, dy) => setPan((old) => ({ x: old.x - dx, y: old.y - dy }))} />}
                 <div class="desk-zoom">
+                    <button class="desk-zoom-btn desk-tool" aria-label={tr.desk.rearrange} title={tr.desk.rearrange} disabled={locked} onClick={() => actions.reset()}>
+                        <IconGrid size={14} />
+                    </button>
+                    <button class="desk-zoom-btn desk-tool" aria-label={tr.desk.smaller} disabled={locked} onClick={() => zoomAt(zoom - 0.1)}>
+                        <IconMinus size={14} />
+                    </button>
+                    <button class="desk-zoom-level desk-tool" aria-label={tr.desk.zoomReset} disabled={locked} onClick={() => zoomAt(1)}>
+                        {Math.round(zoom * 100)} %
+                    </button>
+                    <button class="desk-zoom-btn desk-tool" aria-label={tr.desk.bigger} disabled={locked} onClick={() => zoomAt(zoom + 0.1)}>
+                        <IconPlus size={14} />
+                    </button>
                     <button
-                        class="desk-zoom-btn"
+                        class="desk-zoom-btn desk-lock"
                         aria-label={tr.desk.lockDesk}
                         aria-pressed={locked}
                         title={locked ? tr.desk.unlockDesk : tr.desk.lockDesk}
@@ -429,20 +510,7 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
                     >
                         {locked ? <IconLock size={14} /> : <IconUnlock size={14} />}
                     </button>
-                    <button class="desk-zoom-btn" aria-label={tr.desk.rearrange} title={tr.desk.rearrange} disabled={locked} onClick={() => actions.reset()}>
-                        <IconGrid size={14} />
-                    </button>
-                    <button class="desk-zoom-btn" aria-label={tr.desk.smaller} disabled={locked} onClick={() => zoomAt(zoom - 0.1)}>
-                        <IconMinus size={14} />
-                    </button>
-                    <button class="desk-zoom-level" aria-label={tr.desk.zoomReset} disabled={locked} onClick={() => zoomAt(1)}>
-                        {Math.round(zoom * 100)} %
-                    </button>
-                    <button class="desk-zoom-btn" aria-label={tr.desk.bigger} disabled={locked} onClick={() => zoomAt(zoom + 0.1)}>
-                        <IconPlus size={14} />
-                    </button>
                 </div>
-                {map && <MiniMap map={map} locked={locked} onGo={(dx, dy) => setPan((old) => ({ x: old.x - dx, y: old.y - dy }))} />}
             </div>
         </div>
     );
@@ -453,17 +521,9 @@ const sameRect = (a: DOMRect, b: DOMRect): boolean =>
 
 /**
  * Мини-карта стола: виджеты и колонка — плашками, окно — рамкой. Нажатие ведёт окно туда: `onGo` — на сколько
- * сдвинуть его в точках экрана. У закреплённого стола карта только показывает.
+ * сдвинуть его в точках экрана. Она есть только у открытого стола.
  */
-function MiniMap({
-    map,
-    locked,
-    onGo,
-}: {
-    map: { items: Array<{ key: string; rect: DOMRect; scene?: boolean }>; view: DOMRect };
-    locked: boolean;
-    onGo: (dx: number, dy: number) => void;
-}) {
+function MiniMap({ map, onGo }: { map: { items: Array<{ key: string; rect: DOMRect; scene?: boolean }>; view: DOMRect }; onGo: (dx: number, dy: number) => void }) {
     const W = 132;
     const H = 84;
     const all = [...map.items.map((item) => item.rect), map.view];
@@ -486,10 +546,8 @@ function MiniMap({
     return (
         <button
             class="desk-map"
-            disabled={locked}
-            aria-label={locked ? tr.desk.mapLocked : hidden ? tr.desk.mapHidden : tr.desk.map}
+            aria-label={hidden ? tr.desk.mapHidden : tr.desk.map}
             onClick={(event) => {
-                if (locked) return;
                 const own = (event.currentTarget as HTMLElement).getBoundingClientRect();
                 // Куда нажали — в точки экрана; окно встаёт серединой туда.
                 const x = left + (event.clientX - own.left - ox) / scale;

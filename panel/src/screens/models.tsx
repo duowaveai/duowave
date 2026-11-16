@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 
+import { CloudSpeechCard } from './cloud-speech';
 import { ApiError, AsrCard, DownloadState, HomeVoice, ModelsView, TtsCard, TtsPending, VoiceNeeds, api, can, isTight, needsOf, problemOf } from '../api';
 import { IconTimer, IconVoice } from '../icons';
 import { Action, Card, CardNote } from '../ui/cards';
@@ -190,7 +191,7 @@ const modelsTabs = (): Array<TabEntry<ModelsTab>> => [
  * или Алиса. Выбор — самой колонки; перенос с компьютером-помощником приносит выбор компьютера. Шлюз постарше
  * маршрута не знает — тогда карточки нет.
  */
-function HomeVoiceChoice() {
+function HomeVoiceChoice({ revision = 0 }: { revision?: number }) {
     const [state, setState] = useState<HomeVoice | null>(null);
     const [busy, setBusy] = useState<HomeVoice['chosen'] | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -209,9 +210,10 @@ function HomeVoiceChoice() {
             alive = false;
             clearInterval(id);
         };
-    }, []);
+    }, [revision]);
 
-    if (!state?.offered) return null;
+    // Без компьютера-помощника выбор есть, когда настроен облачный голос (docs/plans/speaker-alone.md).
+    if (!state?.offered && !state?.cloud) return null;
     const pick = async (voice: HomeVoice['chosen']) => {
         if (busy || voice === state.chosen) return;
         setBusy(voice);
@@ -229,7 +231,11 @@ function HomeVoiceChoice() {
         <section class="card glass py-12 px-16 mb-10" aria-label={tr.models.whoseVoice}>
             <h2 class="t-title-xs m-0 mb-6">{tr.models.whoseVoice}</h2>
             <p class="t-body m-0 mb-10">
-                {state.chosen === 'computer'
+                {state.chosen === 'cloud'
+                    ? state.provider === 'own'
+                        ? tr.models.allByCloud
+                        : tr.models.ourByCloud
+                    : state.chosen === 'computer'
                     ? !state.up
                         ? tr.models.computerDown
                         : state.provider === 'own'
@@ -238,13 +244,23 @@ function HomeVoiceChoice() {
                     : tr.models.aliceAnswers}
             </p>
             <div class="flex flex-wrap gap-8">
-                <Action
-                    on={state.chosen === 'computer'}
-                    label={computer}
-                    busy={busy === 'computer'}
-                    disabled={!isAdmin || (!!busy && busy !== 'computer')}
-                    onClick={() => void pick('computer')}
-                />
+                {state.offered ? (
+                    <Action
+                        on={state.chosen === 'computer'}
+                        label={computer}
+                        busy={busy === 'computer'}
+                        disabled={!isAdmin || (!!busy && busy !== 'computer')}
+                        onClick={() => void pick('computer')}
+                    />
+                ) : (
+                    <Action
+                        on={state.chosen === 'cloud'}
+                        label={tr.models.cloudVoice}
+                        busy={busy === 'cloud'}
+                        disabled={!isAdmin || (!!busy && busy !== 'cloud')}
+                        onClick={() => void pick('cloud')}
+                    />
+                )}
                 <Action
                     tone={state.chosen === 'alice' ? 'yandex' : 'off'}
                     label={tr.models.alice}
@@ -263,14 +279,16 @@ function HomeVoiceChoice() {
 }
 
 /**
- * Шлюз на самой колонке: своих моделей и голосовой лаборатории в нём нет. Голос и распознавание задаются адресами
- * облачных сервисов в .env шлюза; мозг и характер — как обычно, в разделе «Мозг». Пока компьютер даёт колонке свой
- * голос, во вкладке «Голос» — выбор между ним и Алисой (HomeVoiceChoice).
+ * Шлюз на самой колонке: своих моделей и голосовой лаборатории в нём нет. Голос и распознавание — облачные, настраиваются
+ * здесь же (CloudSpeechCard); мозг и характер — как обычно, в разделе «Мозг». Во вкладке «Голос» — выбор между голосом
+ * компьютера (пока он помогает) или облачным и Алисой (HomeVoiceChoice).
  */
 function LocalModelsAbsent({ kind, message }: { kind: Tab; message: string }) {
+    const [revision, setRevision] = useState(0);
     return (
         <>
-            {kind === 'voice' && <HomeVoiceChoice />}
+            {kind === 'voice' && <HomeVoiceChoice revision={revision} />}
+            <CloudSpeechCard part={kind === 'voice' ? 'voice' : 'hearing'} onChanged={() => setRevision((n) => n + 1)} />
             <section class="card glass py-12 px-16" aria-label={kind === 'voice' ? tr.models.tabVoice : tr.models.tabHearing}>
                 <h2 class="t-title-xs m-0 mb-6">
                     {kind === 'voice' ? tr.models.ownVoicesHere : tr.models.ownRecognitionHere}

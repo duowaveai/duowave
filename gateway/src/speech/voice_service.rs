@@ -87,6 +87,9 @@ pub struct VoiceService {
     chosen: Mutex<Chosen>,
     /// The station's home server: our voice from the computer first, then the cloud's (TTS_OWN_URL), then Alice's.
     home: OnceLock<Arc<dyn HomeVoice>>,
+    /// The station's cloud voice as its panel sets it (src/speech/cloud_speech.rs): after the computer's and the
+    /// env's own.
+    cloud: OnceLock<Arc<super::cloud_speech::CloudSpeech>>,
 }
 
 impl VoiceService {
@@ -101,6 +104,7 @@ impl VoiceService {
             events,
             own_speech,
             home: OnceLock::new(),
+            cloud: OnceLock::new(),
         }
     }
 
@@ -109,9 +113,24 @@ impl VoiceService {
         let _ = self.home.set(home);
     }
 
-    /// The engine that speaks our voice now: the home server's while it is up, else ours (TTS_OWN_URL).
+    /// The station's cloud voice (src/speech/cloud_speech.rs).
+    pub fn set_cloud(&self, cloud: Arc<super::cloud_speech::CloudSpeech>) {
+        let _ = self.cloud.set(cloud);
+    }
+
+    /// The engine that speaks our voice now: the home server's while it is up, else ours (TTS_OWN_URL), else the
+    /// station's cloud voice.
     pub fn speaker(&self) -> Option<Arc<OwnSpeech>> {
-        self.home.get().and_then(|home| home.speech()).or_else(|| self.own_speech.clone())
+        self.home
+            .get()
+            .and_then(|home| home.speech())
+            .or_else(|| self.own_speech.clone())
+            .or_else(|| self.cloud_speech())
+    }
+
+    /// The station's cloud voice now, when its panel set one up.
+    pub fn cloud_speech(&self) -> Option<Arc<OwnSpeech>> {
+        self.cloud.get().and_then(|cloud| cloud.speech())
     }
 
     /// The engine a computer speaks with (the talk without a station, src/talk): our voice as chosen — `mixed` is ours
@@ -181,6 +200,28 @@ impl VoiceService {
     pub fn use_home(&self) -> Result<TtsProvider> {
         if !self.has_home() {
             bail!("no home server: the computer does not give this gateway its voice");
+        }
+        let provider = {
+            let mut chosen = self.lock();
+            if chosen.provider != TtsProvider::Own {
+                chosen.provider = TtsProvider::Mixed;
+            }
+            chosen.provider
+        };
+        self.events.emit(GatewayEvent::VoiceChanged {
+            provider: provider.as_str().into(),
+            model_id: None,
+            voice_id: None,
+            actor: None,
+        });
+        Ok(provider)
+    }
+
+    /// The station's cloud voice from the next answer on (its «Голос»): ours speak in it, Yandex's in Alice's unless
+    /// `own` was chosen. Without Yandex («Свой») the cloud voice speaks all.
+    pub fn use_cloud(&self) -> Result<TtsProvider> {
+        if self.cloud_speech().is_none() {
+            bail!("no cloud voice is set up");
         }
         let provider = {
             let mut chosen = self.lock();

@@ -87,6 +87,10 @@ pub struct RequestStep {
     /// The model, the voice or the capability: «gigaam-v3», «claude-haiku-5-5», «Погода».
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub what: Option<String>,
+    /// The app that did this step: its phrase was heard, or the model called its tool (docs/plans/start-desk.md,
+    /// «Поставить на стол?»: the panel offers that app's card). In the steps' JSON, so the journal keeps it as it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -275,6 +279,15 @@ impl RequestHandle {
 
     /// A step begins and the one before ends; the same step again only says more about who does it.
     pub fn step(&self, phase: RequestPhase, by: Option<Place>, what: Option<&str>) {
+        self.step_of(phase, by, what, None);
+    }
+
+    /// The same, done by an app: its phrase was heard or its tool runs. The same step again keeps the app.
+    pub fn app_step(&self, phase: RequestPhase, by: Option<Place>, what: Option<&str>, app: &str) {
+        self.step_of(phase, by, what, Some(app));
+    }
+
+    fn step_of(&self, phase: RequestPhase, by: Option<Place>, what: Option<&str>, app: Option<&str>) {
         self.change(|state, elapsed| {
             let open = state.view.steps.last_mut().filter(|step| step.ms.is_none());
             match open {
@@ -285,6 +298,9 @@ impl RequestHandle {
                     if let Some(what) = what.filter(|w| !w.is_empty()) {
                         open.what = Some(what.to_string());
                     }
+                    if let Some(app) = app {
+                        open.app = Some(app.to_string());
+                    }
                 }
                 _ => {
                     close_step(&mut state.view, elapsed);
@@ -294,6 +310,7 @@ impl RequestHandle {
                         ms: None,
                         by,
                         what: what.filter(|w| !w.is_empty()).map(str::to_string),
+                        app: app.map(str::to_string),
                     });
                 }
             }
@@ -321,6 +338,7 @@ impl RequestHandle {
                 ms: Some(ms),
                 by: Some(by),
                 what: what.filter(|what| !what.is_empty()).map(|what| what.chars().take(200).collect()),
+                app: None,
             };
             state.view.steps.insert(0, step);
             true
@@ -465,7 +483,8 @@ impl RequestHandle {
 
 /// A finished step at `elapsed`, before the step still open.
 pub fn note_step(view: &mut RequestView, phase: RequestPhase, by: Option<Place>, what: &str, elapsed: u64) {
-    let step = RequestStep { phase, at: elapsed, ms: Some(0), by, what: Some(what.chars().take(200).collect()) };
+    let step =
+        RequestStep { phase, at: elapsed, ms: Some(0), by, what: Some(what.chars().take(200).collect()), app: None };
     let open = view.steps.last().is_some_and(|step| step.ms.is_none());
     let at = if open { view.steps.len() - 1 } else { view.steps.len() };
     view.steps.insert(at, step);
@@ -539,7 +558,7 @@ mod tests {
     }
 
     fn step(phase: RequestPhase, at: u64, ms: Option<u64>, by: Option<Place>, what: Option<&str>) -> RequestStep {
-        RequestStep { phase, at, ms, by, what: what.map(str::to_string) }
+        RequestStep { phase, at, ms, by, what: what.map(str::to_string), app: None }
     }
 
     #[test]
@@ -590,6 +609,30 @@ mod tests {
             vec![step(RequestPhase::Recognize, 0, None, Some(Place::Own), Some("gigaam-v3"))]
         );
         assert_eq!(t.handle.phase(), Some(RequestPhase::Recognize));
+    }
+
+    #[test]
+    fn names_the_app_that_did_the_step_and_keeps_it_in_the_journal_json() {
+        let t = trip(Some("какой курс доллара"));
+        // An app's phrase: the app first, then what the step is — the same step, the app stays.
+        t.handle.app_step(RequestPhase::Think, Some(Place::Own), None, "currency");
+        t.handle.step(RequestPhase::Think, Some(Place::Own), Some("Плагины"));
+        let steps = t.handle.snapshot().steps;
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].app.as_deref(), Some("currency"));
+        assert_eq!(steps[0].what.as_deref(), Some("Плагины"));
+        // The journal keeps the steps as JSON: the app goes there and comes back; a step of no app says nothing of it.
+        t.handle.step(RequestPhase::Speak, Some(Place::Own), Some("baya"));
+        let json = serde_json::to_string(&t.handle.snapshot().steps).unwrap();
+        assert!(json.contains(r#""app":"currency""#), "{json}");
+        assert_eq!(json.matches("\"app\"").count(), 1, "{json}");
+        let back: Vec<RequestStep> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back[0].app.as_deref(), Some("currency"));
+        assert_eq!(back[1].app, None);
+        // Steps written before the field read as they were.
+        let old: Vec<RequestStep> =
+            serde_json::from_str(r#"[{"phase":"think","at":0,"ms":5,"by":"own","what":"Погода"}]"#).unwrap();
+        assert_eq!(old[0].app, None);
     }
 
     #[test]

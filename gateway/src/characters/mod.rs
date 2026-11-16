@@ -13,6 +13,7 @@
 //! install, taken again from its reference when the engine's weights are other ones, and switched on through the
 //! models — with what it needs when its engine is not here. The station's build says the voice is the computer's.
 
+pub mod catchphrases;
 pub mod contributes;
 pub mod controller;
 #[cfg(feature = "pc")]

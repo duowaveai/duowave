@@ -2,6 +2,7 @@
 //! gateway and giving it back. The scripts for doing it by hand (`/station/connect.sh`) are served by every build;
 //! the SSH, the mDNS discovery and the panel's wizard only by the PC build (`pc`).
 
+pub mod neighbours;
 pub mod quasar_config;
 pub mod station_scripts;
 

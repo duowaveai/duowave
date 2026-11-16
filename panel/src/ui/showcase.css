@@ -1,0 +1,206 @@
+/* Витрина стола (docs/plans/start-desk.md) — доски «Б · 1–3» холста «Стартовый стол — лаконично»: под сценой ряд из
+   трёх карточек, «Теперь Алиса умнее» — одной карточкой; на телефоне и в узком окне — лентой вбок с точками. Цвета —
+   токены пульта: светлая и тёмная тема, «Минимал» и остальные. Доска игры — тёмная в любой теме: это экран игры. */
+
+.sc { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+.widget-bare:has(.sc) > .widget-bare-menu { display: none; }
+
+.sc-head { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+.sc-label { font-size: 12px; line-height: 16px; font-weight: 500; color: var(--sub); }
+.sc-hide,
+.sc-soft {
+    display: inline-flex;
+    align-items: center;
+    height: 30px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--sub);
+    font: 500 13px/1 var(--font);
+    white-space: nowrap;
+    cursor: pointer;
+}
+.sc-hide { margin-left: auto; height: 28px; }
+.sc-hide:hover,
+.sc-soft:hover { background: var(--hover-bg); color: var(--text); }
+.sc-soft[aria-disabled='true'] { opacity: 0.5; cursor: default; }
+
+.sc-row { display: flex; gap: 20px; align-items: stretch; }
+.sc-card {
+    position: relative;
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px;
+    background: var(--widget-bg);
+    border: 1px solid var(--widget-line);
+    border-radius: 16px;
+    box-shadow: var(--widget-shadow);
+    color: var(--text);
+    animation: sc-land 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.sc-card.is-wide { flex-grow: 1.3; }
+.sc-card-h { display: flex; align-items: center; gap: 8px; font-size: 12px; line-height: 16px; font-weight: 500; color: var(--sub); }
+.sc-card-h.is-strong { color: var(--text); }
+.sc-chip-end { margin-left: auto; }
+
+.sc-art {
+    position: relative;
+    height: 112px;
+    border-radius: 12px;
+    overflow: hidden;
+    background: var(--glass-bg);
+    box-shadow: inset 0 0 0 1px var(--row-line, var(--divider));
+}
+.sc-art.is-list { height: auto; min-height: 112px; padding: 2px 12px; display: flex; flex-direction: column; justify-content: center; }
+.sc-art.is-dim { opacity: 0.55; }
+
+.sc-opt { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--row-line, var(--divider)); font-size: 12px; line-height: 16px; cursor: pointer; }
+.sc-opt:last-child { border-bottom: 0; }
+.sc-opt input { flex: none; margin: 0; accent-color: var(--text); }
+.sc-opt.is-on .sc-opt-title { font-weight: 500; }
+.sc-opt-note { margin-left: auto; color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.sc-cmp { display: flex; justify-content: space-between; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--row-line, var(--divider)); font-size: 12px; line-height: 16px; }
+.sc-cmp:last-child { border-bottom: 0; }
+.sc-who { color: var(--sub); white-space: nowrap; }
+
+.sc-acts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sc-btn {
+    display: inline-flex;
+    align-items: center;
+    height: 34px;
+    padding: 0 14px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--ink-bg);
+    color: var(--ink-fg);
+    font: 500 13px/1 var(--font);
+    white-space: nowrap;
+    cursor: pointer;
+}
+.sc-btn:hover:not([aria-disabled='true']) { background: var(--ink-hi); }
+.sc-btn[aria-disabled='true'] { opacity: 0.5; cursor: default; }
+.sc-note { font-size: 12px; line-height: 16px; color: var(--sub); }
+.sc-note-full { flex-basis: 100%; }
+.sc-problem { margin: 0; font-size: 12px; line-height: 16px; color: var(--bad); }
+.sc-steps { font-size: 12px; line-height: 16px; color: var(--sub); }
+.sc-key {
+    flex: 1 1 140px;
+    min-width: 0;
+    height: 34px;
+    padding: 0 12px;
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    background: var(--widget-bg);
+    color: var(--text);
+    font: 400 13px/1 var(--font);
+}
+
+.sc-say {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 36px;
+    padding: 8px 12px;
+    border: 0;
+    border-radius: 12px;
+    background: var(--glass-bg);
+    box-shadow: inset 0 0 0 1px var(--glass-border);
+    color: var(--text);
+    font: 400 13px/18px var(--font);
+    text-align: left;
+    cursor: pointer;
+}
+.sc-say:hover { background: var(--hover-bg); }
+.sc-say svg { flex: none; color: var(--sub); }
+
+.sc-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--pill-own-bg);
+    color: var(--pill-own-fg);
+    font: 500 11px/16px var(--font);
+    white-space: nowrap;
+}
+.sc-chip.is-lock { align-self: flex-start; height: 36px; padding: 0 12px; background: var(--chip-bg); color: var(--sub); font-size: 12px; }
+.sc-chip.is-busy { align-self: flex-start; background: var(--pill-agent-bg, var(--chip-bg)); color: var(--pill-agent-fg, var(--sub)); }
+
+.sc-bubbles { display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 10px 12px; }
+.sc-bub { max-width: 88%; padding: 6px 10px; border-radius: 12px; font-size: 12px; line-height: 16px; }
+.sc-bub.is-me { align-self: flex-end; background: var(--chip-bg); }
+.sc-bub.is-ai { align-self: flex-start; background: var(--widget-bg); box-shadow: 0 0 0 1px var(--glass-border); }
+.sc-bub b { font-weight: 500; }
+
+.sc-snake {
+    background-color: #0b0f0a;
+    background-image: linear-gradient(rgba(182, 243, 106, 0.07) 1px, transparent 1px), linear-gradient(90deg, rgba(182, 243, 106, 0.07) 1px, transparent 1px);
+    background-size: 12px 12px;
+    box-shadow: none;
+}
+.sc-snake i { position: absolute; width: 10px; height: 10px; border-radius: 3px; background: #b6f36a; box-shadow: 0 0 6px rgba(182, 243, 106, 0.55); }
+.sc-snake i.is-food { border-radius: 50%; background: #ff7a45; box-shadow: 0 0 6px rgba(255, 122, 69, 0.55); }
+
+.sc-make { display: flex; flex-direction: column; justify-content: center; gap: 8px; padding: 12px 14px; }
+.sc-bar { display: block; height: 8px; border-radius: 4px; background: var(--track); }
+.sc-bar.is-big { height: 20px; border-radius: 6px; }
+
+/* «Теперь Алиса умнее» — одна большая карточка вместо ряда. */
+.sc-smarter { padding: 22px 24px; gap: 0; }
+/* Под кольцом орбиты, на шаг ниже: у большой карточки нет строки «С чего начать» над ней. */
+.widget-bare > .sc.sc-smarter { margin-top: 30px; }
+.sc-smarter-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sc-smarter h2 { margin: 0 auto 0 0; font: 300 34px/40px 'Inter Tight', var(--font); letter-spacing: -0.025em; color: var(--text); }
+.sc-lead { margin: 8px 0 0; font-size: 14px; line-height: 20px; color: var(--sub); }
+.sc-say-and-see { display: block; margin-top: 16px; }
+.sc-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); grid-auto-flow: column; gap: 14px; margin-top: 8px; }
+.sc-tile {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 12px 14px;
+    border: 0;
+    border-radius: 12px;
+    background: var(--glass-bg);
+    box-shadow: inset 0 0 0 1px var(--glass-border);
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+.sc-tile:hover { background: var(--hover-bg); }
+.sc-tile-k { display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 16px; color: var(--sub); }
+.sc-tile-p { font-size: 15px; line-height: 21px; }
+
+.sc-dots { display: none; gap: 6px; justify-content: center; }
+.sc-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--glass-border); }
+.sc-dots i.is-on { background: var(--text); }
+
+@keyframes sc-land {
+    from { opacity: 0; transform: translateY(8px) scale(0.98); }
+    to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .sc-card { animation: none; }
+}
+
+/* Телефон и узкое окно (уже 1100 — как у стола): карточки лентой вбок, по одной, с точками под ними. */
+@media (max-width: 1099px) {
+    .sc-row { overflow-x: auto; scroll-snap-type: x mandatory; gap: 12px; padding: 4px 2px 8px; scrollbar-width: none; }
+    .sc-row::-webkit-scrollbar { display: none; }
+    .sc-card { flex: 0 0 min(300px, 86%); scroll-snap-align: start; }
+    .sc-card.is-wide { flex-grow: 0; }
+    .sc-dots { display: flex; }
+    .sc-smarter { padding: 16px; }
+    .sc-smarter h2 { font-size: 28px; line-height: 34px; }
+    .sc-tiles { grid-auto-flow: row; grid-template-columns: 1fr; gap: 8px; }
+    .sc-tile { gap: 2px; padding: 9px 12px; }
+    .sc-tile-p { font-size: 14px; line-height: 20px; }
+}

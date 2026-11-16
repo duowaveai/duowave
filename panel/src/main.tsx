@@ -18,10 +18,13 @@ import './ui/minimal.css';
 import './ui/desk.css';
 import './ui/activity.css';
 import './ui/recall.css';
+// Первые шаги (screens/onboarding.tsx).
+import './ui/onboarding.css';
 // Клавиатура на экране для приложений (sdk/piano-keys.tsx).
 import './ui/piano-keys.css';
 import { registerPlugin } from './shell/registry';
 import { applyTheme } from './shell/theme';
+import { ThemeBackdrop } from './shell/backdrop';
 import core from './builtin';
 import { ConfirmHost } from './ui/confirm';
 import { ScreenPage } from './screen/page';
@@ -46,6 +49,7 @@ function Root() {
         <ScreenPage key={language} id={decodeURIComponent(screen[1])} />
     ) : (
         <Fragment key={language}>
+            <ThemeBackdrop />
             <App />
             <ConfirmHost />
             <AppShareHost />

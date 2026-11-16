@@ -10,7 +10,7 @@ const en: Translation<typeof ru> = {
     nameNeeded: 'Enter your name.',
     welcome: 'Welcome to DuoWave',
     panel: 'Panel',
-    setupSteps: 'Step 1 of 2 — the administrator password: whoever sets it first manages the panel. Step 2 — how you will talk to DuoWave.',
+    setupSteps: 'First the administrator password: whoever sets it first manages the panel. Then where DuoWave will live and what it can do.',
     loginNamed: 'Your name and password — as the administrator entered you.',
     loginPassword: 'Enter the administrator password.',
     setupCode: 'Setup code',

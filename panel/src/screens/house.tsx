@@ -2,7 +2,7 @@ import { useEffect, useState } from 'preact/hooks';
 
 import { Station, UpdateStatus, api, can, problemOf } from '../api';
 import { locale, tr } from '../i18n';
-import { timeAgo } from '../time';
+import { clock, timeAgo } from '../time';
 import { checkIsStale, setUpdateStatus } from '../updates';
 import { ask } from '../ui/confirm';
 import { byMode } from '../words';
@@ -239,11 +239,23 @@ export function Updates() {
                     {status.hint}
                 </p>
             )}
-            {/* Пока ставится — об этом; не поставилось — почему, словами шлюза. */}
-            {status.installing && (
+            {/* Пока ставится — об этом; не поставилось — почему, словами шлюза. На колонке новая версия сначала
+                пробуется из памяти (gateway/src/updates/trial.rs). */}
+            {status.trial ? (
                 <p class="t-caption m-0 mb-8 c-accent-text" role="status">
-                    {tr.house.installing}
+                    {status.trial.phase === 'trying'
+                        ? tr.house.trialTrying(status.trial.version, clock(status.trial.until))
+                        : status.trial.phase === 'waiting'
+                          ? tr.house.trialWaiting(status.trial.version)
+                          : tr.house.trialStuck(status.trial.version, status.trial.message ?? '')}
+                    {status.trial.appsPaused && ` ${tr.house.trialAppsPaused}`}
                 </p>
+            ) : (
+                status.installing && (
+                    <p class="t-caption m-0 mb-8 c-accent-text" role="status">
+                        {tr.house.installing}
+                    </p>
+                )
             )}
             {status.error && !status.installing && (
                 <p class="t-caption m-0 mb-8 c-dot-offline" role="alert">

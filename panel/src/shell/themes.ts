@@ -4,8 +4,30 @@
 // Файл чистый — без DOM и Preact: его читает и vite.config.ts, чтобы вшить тему по умолчанию в index.html. Поэтому подписи
 // здесь русские и без словаря: на язык их переводит пульт по `id` темы (shell.themeNames), см. themeTitle в theme-picker.tsx.
 
+import { SCENES, SceneName } from '../cards/scenes';
+import { Anchors, isHex, isLight, paletteFromAnchors } from './theme-colors';
+
 /** Режим внутри темы: тёмный или светлый. */
 export type Mode = 'dark' | 'light';
+
+/** Слой фона: живая сцена пульта (cards/scenes.ts) и насколько она видна. */
+export interface BackdropLayer {
+    scene: SceneName;
+    /** 0,1–1: 1 — как есть. */
+    opacity: number;
+}
+
+/**
+ * Рисованный фон за столом (THEMES.md, «Фон»): градиент своих цветов (или от `bg`) и до трёх слоёв сцен поверх —
+ * звёзды, сияние, снег… Рисует пульт, тема только называет: тема — данные, кода в ней нет.
+ */
+export interface Backdrop {
+    layers: BackdropLayer[];
+    /** 1–3 цвета градиента под сценами; без них — ровный `bg` режима. */
+    colors?: string[];
+    /** 0–0,8: насколько притушить фон цветом `bg`, чтобы надписи на столе читались. */
+    dim: number;
+}
 
 /**
  * Палитра одного режима: CSS-токены без «--» — те, что читают стили и экраны (bg, text, accent, pill-own-fg…).
@@ -41,6 +63,10 @@ export interface Theme {
     font: string;
     /** Скругления, px: панели и карточки, большие поверхности (шит, боковая панель), плавающая панель вкладок. */
     radius: { panel: number; large: number; bar: number };
+    /** Три цвета режима, из которых достроена палитра (theme-colors.ts); палитра темы — поверх. */
+    colors?: Partial<Record<Mode, Anchors>>;
+    /** Рисованный фон режима; нет — ровный `bg`. */
+    backdrop?: Partial<Record<Mode, Backdrop>>;
 }
 
 /**
@@ -293,22 +319,65 @@ const clamp = (value: unknown, min: number, max: number, fallback: number): numb
 
 const isMode = (value: unknown): value is Mode => value === 'dark' || value === 'light';
 
+/** Три цвета режима: все три — `#rrggbb`, иначе их нет. */
+function anchorsOf(value: unknown): Anchors | null {
+    if (!isRecord(value)) return null;
+    const { bg, text, accent } = value;
+    return isHex(bg) && isHex(text) && isHex(accent) ? { bg, text, accent } : null;
+}
+
+/** Фон режима: `{ scene }` — один слой, `{ layers: [...] }` — до трёх; незнакомые сцены отброшены. */
+function backdropOf(value: unknown): Backdrop | null {
+    if (!isRecord(value)) return null;
+    const given = Array.isArray(value.layers) ? value.layers : typeof value.scene === 'string' ? [{ scene: value.scene, opacity: value.opacity }] : [];
+    const layers: BackdropLayer[] = [];
+    for (const layer of given) {
+        if (!isRecord(layer) || typeof layer.scene !== 'string' || !(SCENES as string[]).includes(layer.scene)) continue;
+        layers.push({ scene: layer.scene as SceneName, opacity: clamp(layer.opacity, 0.1, 1, 1) });
+        if (layers.length === 3) break;
+    }
+    const colors = Array.isArray(value.colors) ? value.colors.filter(isHex).slice(0, 3) : [];
+    if (layers.length === 0 && colors.length === 0) return null;
+    return { layers, ...(colors.length > 0 ? { colors } : {}), dim: clamp(value.dim, 0, 0.8, 0) };
+}
+
 /**
  * Тема из пакета (kind: theme или плагин с contributes.themes) — чужие данные, поэтому каждое поле проверяется, а чего
- * нет, берётся у «Минимала»: палитра пакета ложится поверх его палитры. Материал — всегда «Минимал» (пакет, который
- * просил «Стекло», получает его). Вид — только известный: 'sidebar' или стол (THEMES.md).
+ * нет, берётся у «Минимала». Палитра режима — три цвета (`colors`), достроенные до всех токенов, а без них — «Минимал»
+ * того же режима; `palette` темы ложится поверх. Материал — всегда «Минимал». Вид — только известный: 'sidebar' или
+ * стол (THEMES.md). Фон (`backdrop`) — один на оба режима или свой у каждого (`{ dark, light }`).
  */
 export function normalizeTheme(raw: unknown): Theme | null {
     if (!isRecord(raw)) return null;
     const id = typeof raw.id === 'string' && /^[a-z0-9-]{1,40}$/.test(raw.id) ? raw.id : null;
     const title = typeof raw.title === 'string' ? raw.title.trim().slice(0, 40) : '';
-    if (!id || !title || !isRecord(raw.palette)) return null;
+    const rawColors = isRecord(raw.colors) ? raw.colors : {};
+    const colors: Partial<Record<Mode, Anchors>> = {};
+    for (const mode of ['dark', 'light'] as const) {
+        const anchors = anchorsOf(rawColors[mode]);
+        if (anchors) colors[mode] = anchors;
+    }
+    if (!id || !title || (!isRecord(raw.palette) && !colors.dark && !colors.light)) return null;
     const base = MINIMAL;
+    const rawPalette = isRecord(raw.palette) ? raw.palette : {};
     const modes = isRecord(raw.modes) ? raw.modes : {};
     const notes = isRecord(raw.modeNotes) ? raw.modeNotes : {};
     const radius = isRecord(raw.radius) ? raw.radius : {};
     const modeNotes: Partial<Record<Mode, string>> = {};
     for (const mode of ['dark', 'light'] as const) if (typeof notes[mode] === 'string') modeNotes[mode] = (notes[mode] as string).slice(0, 160);
+    const paletteFor = (mode: Mode): Palette => {
+        const anchors = colors[mode];
+        // Цвета смысла — у «Минимала» того же света, что фон: светлый фон в тёмном режиме — светлые.
+        const derived = anchors ? paletteFromAnchors(anchors, base.palette[isLight(anchors.bg) ? 'light' : 'dark']) : base.palette[mode];
+        return { ...derived, ...paletteOf(rawPalette[mode]) };
+    };
+    const rawBackdrop = isRecord(raw.backdrop) ? raw.backdrop : null;
+    const backdrop: Partial<Record<Mode, Backdrop>> = {};
+    for (const mode of ['dark', 'light'] as const) {
+        const own = rawBackdrop && ('dark' in rawBackdrop || 'light' in rawBackdrop) ? rawBackdrop[mode] : rawBackdrop;
+        const found = backdropOf(own);
+        if (found) backdrop[mode] = found;
+    }
     return {
         id,
         title,
@@ -320,10 +389,7 @@ export function normalizeTheme(raw: unknown): Theme | null {
         modeNotes,
         defaultMode: isMode(raw.defaultMode) ? raw.defaultMode : undefined,
         look: 'minimal',
-        palette: {
-            dark: { ...base.palette.dark, ...paletteOf(raw.palette.dark) },
-            light: { ...base.palette.light, ...paletteOf(raw.palette.light) },
-        },
+        palette: { dark: paletteFor('dark'), light: paletteFor('light') },
         layout: raw.layout === 'sidebar' ? 'sidebar' : 'desk',
         density: clamp(raw.density, 0.8, 1.5, 1),
         font: typeof raw.font === 'string' && raw.font.trim() ? raw.font.slice(0, 200) : base.font,
@@ -332,5 +398,7 @@ export function normalizeTheme(raw: unknown): Theme | null {
             large: clamp(radius.large, 0, 56, base.radius.large),
             bar: clamp(radius.bar, 0, 48, base.radius.bar),
         },
+        ...(colors.dark || colors.light ? { colors } : {}),
+        ...(backdrop.dark || backdrop.light ? { backdrop } : {}),
     };
 }

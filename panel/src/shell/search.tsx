@@ -35,7 +35,7 @@ export function searchPlaces(helper: boolean, onStation: boolean): SearchPlace[]
     const s = tr.shell.search;
     return [
         { title: s.home.title, path: s.home.path, words: s.home.words, place: { section: 'home' } },
-        { title: s.shortcuts.title, path: s.shortcuts.path, words: s.shortcuts.words, place: { section: 'home' } },
+        { title: s.shortcuts.title, path: s.shortcuts.path, words: s.shortcuts.words, place: { section: 'settings', tab: 'look' } },
         // «Работы» (docs/plans/router-and-works.md, решение 17): ячейки в доке нет — виджет на столе, плашка и поиск.
         { title: s.works.title, path: s.works.path, words: s.works.words, place: { section: 'works', tab: '' }, when: () => can('settings.edit') },
         { title: s.folders.title, path: s.folders.path, words: s.folders.words, place: { section: 'folders' }, when: () => can('station.view') },

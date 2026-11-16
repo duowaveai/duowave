@@ -1,5 +1,8 @@
 //! `duowave station …`: the gateway on the station by hand, the same steps the computer's panel takes over SSH.
 //!
+//!   duowave station setup [address] [--yes]
+//!                                         on the computer: DuoWave onto the station over SSH, in one go — found,
+//!                                         looked at, asked, installed, pointed, waited for (setup.rs)
 //!   duowave station install [--port 8790] [--home-server URL --key KEY] [--peer-key KEY] [--managed pc|yam]
 //!                           [--program PATH] [--in-place] [--no-start]
 //!                                         the program into /data, its .env, the service; started, and once it
@@ -20,9 +23,19 @@ use std::io::Read as _;
 use super::station_fs::{InstallOptions, RealSystem, StationFs, Target, DATA};
 
 const USAGE: &str =
-    "duowave station install|point|status|remove|retry|safety|receive-settings|log — see `duowave station help`";
+    "duowave station setup|install|point|status|remove|retry|safety|receive-settings|log — see `duowave station help`";
 
 pub fn command(args: &[String]) -> i32 {
+    // On the computer: DuoWave onto the station over SSH, in one go (the one-line install runs it).
+    if args.first().map(String::as_str) == Some("setup") {
+        #[cfg(feature = "pc")]
+        return super::setup::command(&args[1..]);
+        #[cfg(not(feature = "pc"))]
+        {
+            eprintln!("duowave station setup: on the computer, not on the station");
+            return 2;
+        }
+    }
     let fs = StationFs::real();
     let system = RealSystem;
     let flag = |name: &str| args.iter().any(|arg| arg == name);

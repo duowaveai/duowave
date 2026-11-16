@@ -73,6 +73,9 @@ pub struct YandexAnswer {
     pub streams: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The tracks its `audio_play` brought: title, artist, cover (skills/yandex_now.rs).
+    #[serde(skip)]
+    pub tracks: Vec<crate::skills::yandex_now::YandexTrack>,
 }
 
 impl Default for YandexAnswer {
@@ -89,6 +92,7 @@ impl Default for YandexAnswer {
             heard: None,
             streams: 0,
             error: None,
+            tracks: Vec::new(),
         }
     }
 }
@@ -334,6 +338,7 @@ impl YandexRelay {
                     .collect()
             })
             .unwrap_or_default();
+        state.answer.tracks = crate::skills::yandex_now::tracks_of(response);
         state.answer.ends_dialog =
             state.answer.directives.iter().any(|name| name == "end_dialog_session" || name == "close_dialog");
         let card = card_text(response);

@@ -33,11 +33,41 @@ impl AppPlayState {
     }
 }
 
+/// What an app plays, as it says (`system/player` → `playing`: `title`, `artist`, `cover`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AppTrack {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    /// An http(s) address.
+    pub cover: Option<String>,
+}
+
+impl AppTrack {
+    /// From the letter's fields; None when it names nothing.
+    pub fn from_letter(input: &serde_json::Value) -> Option<AppTrack> {
+        let text = |key: &str| {
+            input
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(|text| text.chars().take(300).collect::<String>())
+        };
+        let cover = text("cover").filter(|url| url.starts_with("https://") || url.starts_with("http://"));
+        let track = AppTrack { title: text("title"), artist: text("artist").or_else(|| text("subtitle")), cover };
+        (track != AppTrack::default()).then_some(track)
+    }
+}
+
 /// An app that plays (or stands paused) on a device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppPlaying {
     pub app: String,
     pub state: AppPlayState,
+    /// What it plays, when it said; kept while the same app goes on.
+    pub track: Option<AppTrack>,
+    /// Unix ms when it started playing.
+    pub since: u64,
 }
 
 /// Who carries a command to an app: the plugin host (links/app_player.rs).
@@ -70,6 +100,11 @@ impl AppPlayback {
         self.playing.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// An app plays on some device now (not one standing paused).
+    pub fn any_playing(&self) -> bool {
+        self.playing().values().any(|playing| playing.state == AppPlayState::Playing)
+    }
+
     /// The app says what it plays on `device`: whether it started playing just now (from paused, stopped, or another
     /// app's playing) — then the station's own player is to be paused.
     pub fn report(&self, device: &str, app: &str, state: Option<AppPlayState>) -> bool {
@@ -83,10 +118,26 @@ impl AppPlayback {
                 false
             }
             Some(state) => {
-                let before = playing.insert(device.to_string(), AppPlaying { app: app.to_string(), state });
+                let now = crate::utils::time::now_ms();
+                let same = playing.get(device).filter(|before| before.app == app).cloned();
+                let entry = AppPlaying {
+                    app: app.to_string(),
+                    state,
+                    track: same.as_ref().and_then(|before| before.track.clone()),
+                    since: same.as_ref().map_or(now, |before| before.since),
+                };
+                let before = playing.insert(device.to_string(), entry);
                 state == AppPlayState::Playing
                     && before.is_none_or(|before| before.app != app || before.state != AppPlayState::Playing)
             }
+        }
+    }
+
+    /// What the app plays on the device, as it said (a new track replaces it; none said keeps the last).
+    pub fn describe(&self, device: &str, app: &str, track: Option<AppTrack>) {
+        let Some(track) = track else { return };
+        if let Some(entry) = self.playing().get_mut(device).filter(|entry| entry.app == app) {
+            entry.track = Some(track);
         }
     }
 

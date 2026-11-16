@@ -120,6 +120,10 @@ async fn run(
     let thinking = || deps.trip.step(RequestPhase::Think, Some(deps.brain.by), Some(&deps.brain.what));
     if let Some(offer) = contributed.filter(|offer| offer.owns(&call.name)) {
         working(Place::Own, &call.name);
+        // An app's tool: the journal names the app on the step (docs/plans/start-desk.md, «Поставить на стол?»).
+        if let Some(app) = offer.app_of(&call.name) {
+            deps.trip.app_step(RequestPhase::Tool, Some(Place::Own), None, app);
+        }
         // No station answers here: a tool that plays or speaks through one has nowhere to send its commands.
         let origin = Some(deps.origin.clone());
         let outcome = offer.run_for(&call, &deps.principal, cancel, None, origin).await;

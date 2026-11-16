@@ -589,7 +589,7 @@ export function PackagesTab() {
     return (
         <>
             {can('connectors.view') && (
-                <section class="card glass card-list" aria-labelledby="packages-h">
+                <section class="card glass card-list card-apps" aria-labelledby="packages-h">
                     <h2 id="packages-h" class="sr-only">
                         {tr.catalog.installedTitle}
                     </h2>

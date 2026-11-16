@@ -1,0 +1,107 @@
+/* Рамка «Первых шагов» (screens/onboarding.tsx) — как окно холста «Онбординг»: шапка 56 px, середина, низ 84 px с
+   полосой шагов и кнопками. Цвета, кнопки, карточки шагов — ui/onboarding-canvas.css (стиль холста 1:1). Здесь —
+   только то, что на холсте было окном фиксированного размера 1280×800: теперь окно во весь пульт и телефон. Экран — под
+   листами (z 40): окна, которые шаг открывает, встают над ним. */
+
+.onb {
+    position: fixed;
+    inset: 0;
+    z-index: 35;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    color: var(--text);
+    font: 400 15px/22px var(--font-ui);
+    -webkit-font-smoothing: antialiased;
+    font-variant-numeric: tabular-nums;
+}
+.onb * { box-sizing: border-box; }
+.onb button { font-family: inherit; }
+.onb a { color: inherit; }
+
+/* ─── Шапка: ДиВи, где живёт, язык, закрыть ───────────────────── */
+.onb-top {
+    flex: none;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 28px;
+    padding-top: env(safe-area-inset-top);
+    border-bottom: 1px solid var(--line-soft);
+}
+.onb .ob-brand { display: flex; align-items: center; gap: 9px; font: 500 15px/1 var(--font-ui); letter-spacing: -0.01em; }
+.onb .ob-where { margin-left: 8px; color: var(--sub); font-size: 13px; }
+.onb .ob-lang { margin-left: auto; display: inline-flex; gap: 2px; padding: 3px; border-radius: var(--radius-pill); background: var(--track); }
+.onb .ob-lang button { height: 26px; padding: 0 11px; display: inline-flex; align-items: center; border: 0; border-radius: var(--radius-pill); background: transparent; color: var(--sub); font: 500 12px/1 var(--font-ui); cursor: pointer; }
+.onb .ob-lang button[aria-pressed='true'] { background: var(--paper); color: var(--text); box-shadow: var(--shadow-tab); }
+.onb .onb-x { margin-left: 6px; cursor: pointer; color: var(--sub); }
+.onb .onb-x:hover { color: var(--text); }
+
+/* ─── Середина: шаг по центру, прокрутка, если не влез ────────── */
+.onb-main { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: flex; padding: 32px 64px; }
+.onb-main > * { margin: auto; }
+.onb-split { width: 100%; max-width: 1152px; display: flex; align-items: center; justify-content: center; gap: 48px; }
+.onb-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
+.onb-opts { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+.onb-row-between { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+/* ─── Низ: полоса шагов слева, кнопки справа ──────────────────── */
+.onb-foot {
+    flex: none;
+    min-height: 84px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 40px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line);
+    background: var(--paper);
+}
+.onb-foot .steps { min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+.onb-step-wrap { display: inline-flex; align-items: center; gap: 4px; }
+.onb .ob-nav { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.onb .onb-next:disabled { opacity: 0.45; cursor: default; }
+.onb-problem { max-width: 320px; color: var(--bad); }
+.onb-dots { display: none; gap: 6px; align-items: center; }
+.onb-dots i { width: 6px; height: 6px; border-radius: 3px; background: var(--line); }
+.onb-dots i.done { background: var(--own); }
+.onb-dots i.now { width: 18px; background: var(--ink); }
+
+/* ─── Уже: подписи шагов короче, две колонки шага — одна под другой ── */
+/* Полоса шагов: подпись — только у текущего, у остальных — номер или галочка (узко или три кнопки справа). */
+.onb-foot.crowded .step:not(.now) { font-size: 0; gap: 0; padding: 0 5px; }
+.onb-foot.crowded .step-gap { width: 8px; }
+@media (max-width: 1100px) {
+    .onb-foot .step:not(.now) { font-size: 0; gap: 0; padding: 0 5px; }
+    .onb-foot .step-gap { width: 8px; }
+}
+@media (max-width: 980px) {
+    .onb-main { padding: 24px 32px; }
+    .onb-split { flex-direction: column; align-items: stretch; gap: 24px; }
+    .onb-col { flex: none; max-width: none !important; }
+    .onb .map { max-width: 440px; margin: 0 auto; }
+}
+
+/* ─── Телефон: как доски «Телефон» — одна колонка, кнопка во всю ширину ── */
+@media (max-width: 760px) {
+    .onb-top { height: 52px; padding: 0 16px; gap: 8px; }
+    .onb .ob-brand { font-size: 14px; }
+    .onb .ob-where { display: none; }
+    .onb-main { padding: 18px 16px 24px; }
+    .onb .h2 { font-size: 28px; }
+    .onb .opt { padding: 13px 14px; }
+    .onb .opt-title { font-size: 15px; line-height: 22px; }
+    .onb .opt-sub { font-size: 13px; line-height: 18px; }
+    .onb .opt-ico { display: none; }
+    .onb-foot { flex-wrap: wrap; gap: 10px; padding: 12px 16px; padding-bottom: calc(18px + env(safe-area-inset-bottom)); }
+    .onb-foot .steps { display: none; }
+    .onb-dots { display: flex; width: 100%; justify-content: center; }
+    .onb .ob-nav { width: 100%; margin: 0; }
+    .onb .ob-nav .onb-next { flex: 1; height: 48px; font-size: 16px; }
+    .onb-problem { width: 100%; max-width: none; order: -1; }
+}
+
+/* Обёртка поля холста (div.field: подпись + .input) — не поле пульта: глобальный .field из glass.css рисовал бы на ней
+   капсулу с рамкой. */
+.onb div.field { padding: 0; border: 0; border-radius: 0; background: none; min-height: 0; }

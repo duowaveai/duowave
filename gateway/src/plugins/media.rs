@@ -7,7 +7,8 @@
 //! household's folders its `content:` rights name (`content`), or an app's own sound (`stream`: its `/stream/<path>`
 //! on localhost, given on by our /media as `/media/apps/<id>/<path>`).
 
-use std::sync::Weak;
+use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
 use serde_json::{json, Value};
@@ -190,11 +191,22 @@ pub struct PluginMediaSource {
     host: Weak<PluginHost>,
     plugin: String,
     spec: MediaSpec,
+    /// Whether its whole library had anything when last asked, and when: an empty one («Своя музыка» with an empty
+    /// folder) is no source — «включи музыку» goes on to Yandex instead of «Музыки пока нет.»
+    /// (docs/plans/speaker-alone.md, stage 2).
+    stock: Arc<Mutex<Option<(bool, Instant)>>>,
 }
+
+/// How long «empty» is taken at its word: then the next request asks the library again (files may have come).
+const STOCK_FRESH: Duration = Duration::from_secs(60);
 
 impl PluginMediaSource {
     pub fn new(host: Weak<PluginHost>, plugin: &str, spec: MediaSpec) -> PluginMediaSource {
-        PluginMediaSource { host, plugin: plugin.to_string(), spec }
+        PluginMediaSource { host, plugin: plugin.to_string(), spec, stock: Arc::new(Mutex::new(None)) }
+    }
+
+    fn note_stock(stock: &Mutex<Option<(bool, Instant)>>, any: bool) {
+        *stock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((any, Instant::now()));
     }
 }
 
@@ -210,11 +222,16 @@ impl MediaSource for PluginMediaSource {
     fn search(&self, query: Option<String>, media_base: Option<String>) -> BoxFuture<'_, Vec<MediaItem>> {
         Box::pin(async move {
             let Some(host) = self.host.upgrade() else { return Vec::new() };
+            let whole = query.as_deref().is_none_or(str::is_empty);
             let input = json!({ "query": query, "limit": MAX_ITEMS });
             match host.call(&self.plugin, &self.spec.handler, input, CallKind::Voice).await {
                 Ok(answer) => {
                     let rights = host.play_rights(&self.plugin);
-                    media_items_with(&self.plugin, self.spec.kind, &answer, media_base.as_deref(), &rights)
+                    let items = media_items_with(&self.plugin, self.spec.kind, &answer, media_base.as_deref(), &rights);
+                    if whole {
+                        PluginMediaSource::note_stock(&self.stock, !items.is_empty());
+                    }
+                    items
                 }
                 // The failure is the plugin's last error already; the next source is asked.
                 Err(_) => Vec::new(),
@@ -222,8 +239,14 @@ impl MediaSource for PluginMediaSource {
         })
     }
 
+    /// Switched on, and its library not found empty a minute ago or less: an empty one yields to the next step of the
+    /// route (Yandex). Only a real request asks the library — nothing is loaded just to look.
     fn available(&self) -> bool {
-        self.host.upgrade().is_some_and(|host| host.is_active(&self.plugin))
+        if !self.host.upgrade().is_some_and(|host| host.is_active(&self.plugin)) {
+            return false;
+        }
+        let stock = *self.stock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        !matches!(stock, Some((false, at)) if at.elapsed() < STOCK_FRESH)
     }
 }
 

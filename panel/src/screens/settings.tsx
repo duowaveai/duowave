@@ -11,7 +11,11 @@ import { BusCard } from '../bus/settings-card';
 import { byMode } from '../words';
 import { tr } from '../i18n';
 import { LanguageCard } from '../i18n/picker';
-import { CountryCard } from './country';
+import { usePanel } from '../shell/context';
+import { useDeskLayout } from '../shell/widgets';
+import { Switch } from '../ui/switch';
+import { useVoiceAction } from '../voice/phrases';
+import { openOnboarding } from './onboarding';
 
 export type SettingsSectionTab = 'access' | 'look';
 
@@ -55,11 +59,59 @@ export function SettingsScreen({
             {shown === 'look' && (
                 <>
                     <LanguageCard />
-                    <CountryCard />
                     <ThemeCard />
+                    <DeskCard />
+                    {can('settings.edit') && <OnboardingCard />}
                 </>
             )}
         </>
+    );
+}
+
+/**
+ * Стол: лента ярлыков (screens/shortcuts.tsx). По умолчанию её нет (владелец, 16.11) — включают только здесь. Хранится в
+ * раскладке стола на шлюзе: одна на все устройства человека, своя у каждой роли. Голосом — «покажи ярлыки» и «спрячь
+ * ярлыки», только пока переключатель на экране (фразы у кнопок, docs/plans/voice-creation.md, принцип 2).
+ */
+function DeskCard() {
+    const panel = usePanel();
+    const [layout, actions] = useDeskLayout(panel.role.role);
+    useVoiceAction([tr.settings.shortcutsBarOnPhrase], () => actions.shortcutsBar(true));
+    useVoiceAction([tr.settings.shortcutsBarOffPhrase], () => actions.shortcutsBar(false));
+    return (
+        <section class="card glass card-list" aria-labelledby="desk-h">
+            <div class="section-head">
+                <h2 id="desk-h" class="t-title-xs m-0">
+                    {tr.settings.deskTitle}
+                </h2>
+            </div>
+            <label class="w-toggle">
+                <span class="flex-1 min-w-0 flex flex-col">
+                    <span class="w-strong">{tr.settings.shortcutsBar}</span>
+                    <span class="w-cap">{tr.settings.shortcutsBarAbout}</span>
+                </span>
+                <Switch on={!!layout.shortcutsBar} label={tr.settings.shortcutsBar} onChange={(on) => actions.shortcutsBar(on)} />
+            </label>
+        </section>
+    );
+}
+
+/** «Пройти первые шаги»: экран первого запуска заново (screens/onboarding.tsx). */
+function OnboardingCard() {
+    return (
+        <section class="card glass card-list" aria-labelledby="onb-again-h">
+            <div class="section-head">
+                <h2 id="onb-again-h" class="t-title-xs m-0">
+                    {tr.onboarding.againTitle}
+                </h2>
+            </div>
+            <p class="w-cap m-0">{tr.onboarding.againAbout}</p>
+            <div>
+                <button class="w-btn w-btn-ink" onClick={openOnboarding}>
+                    {tr.onboarding.againButton}
+                </button>
+            </div>
+        </section>
     );
 }
 

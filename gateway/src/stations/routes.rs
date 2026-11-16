@@ -33,6 +33,7 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/v1/stations/connect", axum::routing::post(connect::start))
         .route("/api/v1/stations/connect/restore", axum::routing::post(connect::restore))
         .route("/api/v1/stations/connect/uninstall", axum::routing::post(connect::uninstall))
+        .route("/api/v1/stations/connect/turn-off", axum::routing::post(connect::turn_off))
         .route("/api/v1/stations/connect/jobs/{id}", get(connect::job));
     router
 }
@@ -185,6 +186,22 @@ mod connect {
         let address = station_address(&body)?;
         let job = app.station_connect.uninstall(&address, caller.actor())?;
         Ok(Api(StatusCode::ACCEPTED, job))
+    }
+
+    /// «Выключить» another mod on the station by its own switch: `{address, id}`, the id from the look's list.
+    pub(super) async fn turn_off(
+        State(app): State<Arc<App>>,
+        caller: Caller,
+        Body(body): Body<Value>,
+    ) -> ApiResult<Value> {
+        caller.permitted(STATIONS_MANAGE)?;
+        let address = station_address(&body)?;
+        let addon = body
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("Не сказано, какой мод выключить.")))?;
+        app.station_connect.turn_off(&address, addon, caller.actor()).await?;
+        Ok(ok(serde_json::json!({ "turnedOff": addon })))
     }
 
     pub(super) async fn job(

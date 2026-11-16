@@ -1,0 +1,35 @@
+/* Первые шаги → «MagicPlace» (screens/onb/store.tsx): раскладка холста MagicPlace (его inline-стили), на узком экране —
+   одной колонкой. Вкладки, плитки, метки — из onboarding-canvas.css. */
+
+.onb .onb-mp { box-sizing: border-box; min-height: 100%; display: flex; gap: 40px; align-items: stretch; padding: 28px 56px; }
+.onb .onb-mp-side { width: 340px; flex: none; display: flex; flex-direction: column; gap: 16px; }
+.onb .onb-mp-eyebrow { margin: 0; display: flex; align-items: center; gap: 10px; }
+.onb .onb-mp-about { font-size: 14px; line-height: 21px; margin: 0; }
+.onb .onb-mp-body { flex: 1; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.onb .onb-mp-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-content: start; }
+.onb .onb-mp-p { margin: 0; }
+.onb .onb-mp-warn { color: var(--out-fg); }
+.onb .onb-mp-bad { color: var(--bad); }
+/* Картинка пакета вместо значка холста. */
+.onb .onb-mp .tile-ico { overflow: hidden; }
+.onb .onb-mp .tile-ico img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.onb .onb-mp .tile .dw-btn:disabled { cursor: default; }
+.onb .onb-mp .tile .dw-btn:disabled:active { transform: none; }
+
+@media (max-width: 1100px) {
+    .onb .onb-mp { gap: 28px; padding: 24px 32px; }
+    .onb .onb-mp-side { width: 280px; }
+}
+
+@media (max-width: 760px) {
+    .onb .onb-mp { flex-direction: column; gap: 20px; padding: 18px 16px; }
+    .onb .onb-mp-side { width: auto; gap: 12px; }
+    .onb .onb-mp-side .h2 { font-size: 28px; }
+    .onb .onb-mp-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Плитка не едет: метка переносится под название, а кнопка — под текст, когда плитке тесно (текст не уже 180 px). */
+.onb .onb-mp .tile { flex-wrap: wrap; }
+.onb .onb-mp .tile-body { min-width: 180px; }
+.onb .onb-mp .tile-t { flex-wrap: wrap; row-gap: 2px; }
+.onb .onb-mp .tile .dw-btn { margin-left: auto; align-self: flex-start; }

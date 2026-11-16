@@ -485,6 +485,8 @@ interface Running {
     started: number;
     last: number;
     drawn: boolean;
+    /** Предел плотности точек холста: карточке — 2, фону во весь экран — 1, чтобы не грел компьютер. */
+    maxDpr: number;
 }
 
 const running = new Set<Running>();
@@ -496,7 +498,7 @@ const still = (): boolean => typeof matchMedia === 'function' && matchMedia('(pr
 function paint(entry: Running, now: number): void {
     const ctx = entry.canvas.getContext('2d');
     if (!ctx) return;
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const dpr = Math.min(entry.maxDpr, window.devicePixelRatio || 1);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const moving = !still();
     const dt = moving && entry.drawn ? Math.min(0.1, (now - entry.last) / 1000) : 0;
@@ -515,14 +517,14 @@ function tick(now: number): void {
     if (running.size > 0) frame = requestAnimationFrame(tick);
 }
 
-/** Сцена на холсте, пока он в документе; вернёт, как её остановить. */
-export function runScene(canvas: HTMLCanvasElement, name: SceneName, seed: number): () => void {
-    const entry: Running = { canvas, state: sceneState(name, 1, 1, seed), visible: true, started: performance.now(), last: 0, drawn: false };
+/** Сцена на холсте, пока он в документе; вернёт, как её остановить. `maxDpr` — предел плотности точек (2). */
+export function runScene(canvas: HTMLCanvasElement, name: SceneName, seed: number, maxDpr = 2): () => void {
+    const entry: Running = { canvas, state: sceneState(name, 1, 1, seed), visible: true, started: performance.now(), last: 0, drawn: false, maxDpr };
     const size = (): void => {
         const rect = canvas.getBoundingClientRect();
         const w = Math.max(1, Math.round(rect.width));
         const h = Math.max(1, Math.round(rect.height));
-        const dpr = Math.min(2, window.devicePixelRatio || 1);
+        const dpr = Math.min(maxDpr, window.devicePixelRatio || 1);
         if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
             canvas.width = Math.round(w * dpr);
             canvas.height = Math.round(h * dpr);

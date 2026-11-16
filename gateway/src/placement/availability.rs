@@ -68,6 +68,9 @@ pub struct AvailabilityService {
     transcode_on_station: std::sync::atomic::AtomicBool,
     /// MIDI keyboards are heard here (src/midi).
     midi: std::sync::atomic::AtomicBool,
+    /// The station's cloud hearing and voice as its panel sets them (src/speech/cloud_speech.rs): read live, over the
+    /// flags of the start.
+    cloud: OnceLock<Arc<crate::speech::cloud_speech::CloudSpeech>>,
     events: EventBus,
     /// The states last told: `availability.changed` only when one changed.
     told: Mutex<Vec<FeatureState>>,
@@ -95,6 +98,7 @@ impl AvailabilityService {
             transcoder: OnceLock::new(),
             transcode_on_station: std::sync::atomic::AtomicBool::new(false),
             midi: std::sync::atomic::AtomicBool::new(false),
+            cloud: OnceLock::new(),
             events,
             told: Mutex::new(Vec::new()),
         }
@@ -110,6 +114,11 @@ impl AvailabilityService {
 
     pub fn set_modes(&self, source: Arc<dyn ModeSource>) {
         let _ = self.modes.set(source);
+    }
+
+    /// The station's cloud hearing and voice: a change in its panel (or a new key) counts at once.
+    pub fn set_cloud(&self, cloud: Arc<crate::speech::cloud_speech::CloudSpeech>) {
+        let _ = self.cloud.set(cloud);
     }
 
     pub fn set_memory(&self, gauge: Arc<crate::plugins::budget::MemoryGauge>) {
@@ -141,8 +150,8 @@ impl AvailabilityService {
             pc_build: cfg!(feature = "pc") && !self.profile.station,
             placement,
             home_server,
-            cloud_asr: self.cloud_asr,
-            cloud_tts: self.cloud_tts,
+            cloud_asr: self.cloud.get().map_or(self.cloud_asr, |cloud| cloud.hears()),
+            cloud_tts: self.cloud.get().map_or(self.cloud_tts, |cloud| cloud.speaks()),
             yandex: self.modes.get().is_none_or(|modes| modes.current() != PanelMode::Own),
             // Memory is short on the station; a computer's is not counted against a feature.
             memory_free_mb: if placement.on_station() { self.memory.get().and_then(|gauge| gauge.get()) } else { None },
@@ -258,7 +267,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::*;
-    use crate::core::availability::{State, OWN_ON_STATION};
+    use crate::core::availability::State;
 
     struct At(Placement);
     impl PlacementSource for At {
@@ -311,9 +320,12 @@ mod tests {
         service.recheck();
         assert!(heard.try_recv().is_err(), "nothing new, nothing told");
 
+        // The station by itself (docs/plans/speaker-alone.md): «Свой» through the cloud's hearing and voice, not without.
         let alone = AvailabilityService::with(Profile { station: true }, true, false, EventBus::new());
-        assert_eq!(alone.check(PanelMode::Own), Err(OWN_ON_STATION.to_string()));
-        assert_eq!(alone.absent(PanelMode::Own), Some(OWN_ON_STATION.to_string()));
+        assert_eq!(alone.check(PanelMode::Own), Err("«Своё» сейчас не включить: нет облачного голоса.".to_string()));
+        assert!(alone.absent(PanelMode::Own).is_some(), "a stored «Свой» without a cloud voice is let go");
+        let both = AvailabilityService::with(Profile { station: true }, true, true, EventBus::new());
+        assert!(both.check(PanelMode::Own).is_ok() && both.absent(PanelMode::Own).is_none());
     }
 
     /// Review G2: the switch knows what the home server does not give — «Свой» without the computer's hearing (no

@@ -77,6 +77,7 @@ impl Connector for MemoryConnector {
 
 fn contribution(tool: LlmTool, read_only: bool, run: ToolRun) -> ToolContribution {
     ToolContribution {
+        app: None,
         tool,
         permission: use_of(CapabilityName::Memory),
         run,

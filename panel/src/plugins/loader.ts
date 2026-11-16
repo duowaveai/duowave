@@ -32,6 +32,19 @@ export function panelSafeMode(): boolean {
 /** Значения настроек плагинов пульта — для useSettings. */
 export const packageSettings = new Map<string, Record<string, unknown>>();
 
+/**
+ * Кто ждёт новых значений настроек (useSettings): пульт дочитывает части пакетов уже после своей перемены, и без
+ * этого окно приложения видело бы сохранённую из него же настройку только со следующей переменой пульта.
+ */
+const settingsListeners = new Set<() => void>();
+
+export function onPackageSettings(listener: () => void): () => void {
+    settingsListeners.add(listener);
+    return () => {
+        settingsListeners.delete(listener);
+    };
+}
+
 /** Что загружено у каждого пакета: модуль, стили, окошко ли, карточки — одной строкой, чтобы сравнить. */
 const loaded = new Map<string, string>();
 const THEMES_ID = 'packages.themes';
@@ -118,9 +131,12 @@ async function syncParts(): Promise<void> {
         return;
     }
     const seen = new Set<string>();
+    let settingsChanged = false;
     for (const part of parts) {
         seen.add(part.id);
-        packageSettings.set(part.id, part.settings ?? {});
+        const values = part.settings ?? {};
+        if (JSON.stringify(packageSettings.get(part.id) ?? null) !== JSON.stringify(values)) settingsChanged = true;
+        packageSettings.set(part.id, values);
         // Язык пульта — в подписи: сменили язык — разведка окошка заново, подписи разделов и виджетов на новом языке.
         const signature = JSON.stringify([language(), part.title, part.module ?? null, part.styles ?? null, part.cards ?? []]);
         if (loaded.get(part.id) === signature) continue;
@@ -143,6 +159,7 @@ async function syncParts(): Promise<void> {
         packageSettings.delete(id);
         unregisterPlugin(pluginKey(id));
     }
+    if (settingsChanged) for (const listener of settingsListeners) listener();
 }
 
 /** Привести пульт в согласие с пакетами шлюза: темы и модули плагинов. */

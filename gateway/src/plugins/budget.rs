@@ -23,7 +23,9 @@
 //!   not kept. An app's program is checked the same way at its start; it is a process of its own, counted by what it
 //!   holds (out of MemAvailable), not by a share.
 //! - Room on the disk is checked at the install: what a package unpacks into and its store, with a reserve kept for the
-//!   gateway's own update (PLUGINS_STORAGE_RESERVE_MB, 15 MB: `.previous` alone is 12).
+//!   gateway's own update — its program's growth and a floor, some 8 MB (`PluginHost::storage_reserve_mb`; the new
+//!   version is tried from memory and takes the old one's place, docs/plans/station-update-space.md), or
+//!   PLUGINS_STORAGE_RESERVE_MB when it is set.
 //! - Under pressure (MemAvailable below the reserve, or the system's own pressure at «warn»): the contexts of plugins
 //!   idle longer than a minute are unloaded and their work in the background waits. At «critical» on the station the
 //!   plugin switched on last among those loaded is switched off (PLUGINS_PRESSURE_ACTION=warn only says so: the

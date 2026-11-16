@@ -224,6 +224,8 @@ pub struct Steps {
     /// stubbed, or the OTA key replaced) — an update from Yandex would take the station's voice back and may close
     /// root —, our copy (mounted, copy, none), and why the last boot left it unmounted («-» when it did not).
     pub facts: String,
+    /// Reading only: what else on the station stands in the way (neighbours.rs).
+    pub neighbours: String,
     pub reboot: &'static str,
     /// The panel's «Удалить DuoWave с колонки»: uninstall.sh on its stdin, without its own reboot.
     pub uninstall: &'static str,
@@ -247,6 +249,7 @@ pub static STEPS: LazyLock<Steps> = LazyLock::new(|| {
         format!("cat {REFUSED} 2>/dev/null || echo -"),
     ]
     .join("; "),
+    neighbours: super::neighbours::script(),
     reboot: "(sleep 1; reboot) >/dev/null 2>&1 &",
     uninstall: "sh -s -- --no-reboot",
     leftovers: format!(
@@ -495,6 +498,7 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
             STEPS.read.clone(),
             STEPS.firmware.clone(),
             STEPS.facts.clone(),
+            STEPS.neighbours.clone(),
             STEPS.leftovers.clone(),
             VOICE_SH.to_string(),
             BOOT_SH.to_string(),

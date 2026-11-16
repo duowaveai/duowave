@@ -28,6 +28,7 @@ use super::llm::{
 use super::persona_service::PersonaService;
 use super::phrase_splitter::PhraseSplitter;
 use super::system_prompt::time_context;
+use crate::characters::catchphrases::{Catchphrases, PhraseAt, Picker};
 use crate::config::{DialogConfig, DialogProvider, ModelProfile};
 use crate::router::{Answerer, Outcome, Reason, Seat, Tally};
 
@@ -273,11 +274,14 @@ struct Speaker<'a> {
     splitter: PhraseSplitter,
     said: Vec<String>,
     kept: Vec<String>,
+    /// A catchphrase said just before the first phrase of the answer — never alone: an answer that fails before its
+    /// first phrase stays the error phrase.
+    opening: Option<String>,
 }
 
 impl<'a> Speaker<'a> {
     fn new(yielder: &'a Yielder<anyhow::Result<String>>) -> Speaker<'a> {
-        Speaker { yielder, splitter: PhraseSplitter::new(), said: Vec::new(), kept: Vec::new() }
+        Speaker { yielder, splitter: PhraseSplitter::new(), said: Vec::new(), kept: Vec::new(), opening: None }
     }
 
     /// The history keeps `fact` in place of what was said since `from` (a length of `kept`).
@@ -299,6 +303,11 @@ impl<'a> Speaker<'a> {
     }
 
     async fn say(&mut self, phrase: String) {
+        if let Some(opening) = self.opening.take() {
+            self.said.push(opening.clone());
+            self.kept.push(opening.clone());
+            self.yielder.send(Ok(opening)).await;
+        }
         self.said.push(phrase.clone());
         self.kept.push(phrase.clone());
         self.yielder.send(Ok(phrase)).await;
@@ -415,7 +424,13 @@ pub struct DialogService {
     now: std::sync::OnceLock<NowSource>,
     /// Where each round's spending goes (the journal's requests, the works).
     usage: std::sync::OnceLock<UsageSink>,
+    /// The chosen character's catchphrases (src/characters/catchphrases.rs) and which answer gets one.
+    catchphrases: std::sync::OnceLock<CatchphraseSource>,
+    picker: Mutex<Picker>,
 }
+
+/// The chosen character's catchphrases as its feed gives them now; none — none.
+pub type CatchphraseSource = Arc<dyn Fn() -> Option<Catchphrases> + Send + Sync>;
 
 /// The block «Сейчас» of a device (src/talk/now.rs), in the character's language; empty when nothing goes on.
 pub type NowSource = Arc<dyn Fn(&str, crate::memory::text::Lang) -> String + Send + Sync>;
@@ -458,6 +473,8 @@ impl DialogService {
             memory: std::sync::OnceLock::new(),
             now: std::sync::OnceLock::new(),
             usage: std::sync::OnceLock::new(),
+            catchphrases: std::sync::OnceLock::new(),
+            picker: Mutex::new(Picker::default()),
         };
         service.announce();
         service
@@ -743,6 +760,22 @@ impl DialogService {
         let _ = self.usage.set(usage);
     }
 
+    /// Where the chosen character's catchphrases come from: its package's feed (src/characters/catchphrases.rs).
+    pub fn attach_catchphrases(&self, source: CatchphraseSource) {
+        let _ = self.catchphrases.set(source);
+    }
+
+    /// A catchphrase for this answer, or none: the chosen character's, now and then (`Picker`). Not for an answer
+    /// with instructions of its own (the workshop's agent) or on an app's seat.
+    fn catchphrase(&self, context: &DialogContext) -> Option<(String, PhraseAt)> {
+        if context.system.as_deref().is_some_and(|system| !system.is_empty()) || context.seat.is_some() {
+            return None;
+        }
+        let phrases = (self.catchphrases.get()?)()?;
+        let mut picker = self.picker.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        picker.pick(&phrases, |n| rand::random_range(0..n.max(1)))
+    }
+
     /// The tally of one answer on `slot`, which closes its deal: on the context's seat (else `seat`), by the context's
     /// reason (else what stands on the seat).
     fn tally(&self, key: &str, context: &DialogContext, slot: &ModelSlot, seat: Seat) -> Arc<Tally> {
@@ -823,6 +856,12 @@ impl DialogService {
         y: &Yielder<anyhow::Result<String>>,
     ) -> anyhow::Result<()> {
         let mut speaker = Speaker::new(y);
+        // The character's catchphrase now and then, word for word: at the start — just before the first phrase; at
+        // the end — after the last, once the answer is whole. Never told to the model.
+        let catchphrase = self.catchphrase(context);
+        if let Some((text, PhraseAt::Start)) = &catchphrase {
+            speaker.opening = Some(text.clone());
+        }
         let toolbox = toolbox.filter(|toolbox| slot.client.tools() && !toolbox.tools.is_empty());
         let base_rounds = toolbox.as_ref().and_then(|toolbox| toolbox.rounds).unwrap_or(DEFAULT_TOOL_ROUNDS);
         let budget = toolbox.as_ref().and_then(|toolbox| toolbox.budget_ms).unwrap_or(DEFAULT_TOOL_BUDGET_MS);
@@ -1040,6 +1079,11 @@ impl DialogService {
             take_inbox(&mut messages, &mut rounds, &mut deadline);
         }
         speaker.flush().await;
+        if let Some((text, PhraseAt::End)) = catchphrase {
+            if !speaker.said.is_empty() {
+                speaker.say(text).await;
+            }
+        }
         let source = context.facts.as_deref().filter(|facts| !facts.is_empty()).map(facts_source);
         self.remember_turn(key, question, &speaker.answer(), source.as_deref());
         Ok(())
@@ -1752,6 +1796,46 @@ pub(crate) mod tests {
         assert_eq!(llm.last()["messages"].as_array().unwrap().len(), 2, "a cancelled answer is not remembered");
     }
 
+    /// The chosen character's catchphrase, word for word, now and then: one at the end after the answer's last
+    /// phrase, one at the start just before its first; never two answers running; never told to the model, kept in
+    /// the history as said; the workshop's agent never has one.
+    #[tokio::test]
+    async fn says_the_characters_catchphrase_before_or_after_its_answer_and_never_to_the_model() {
+        let llm = chat().await;
+        let service = dialog(config(Some(&llm.url)));
+        let given = Arc::new(Mutex::new(Catchphrases {
+            every: 1,
+            lines: vec![("Как пожелаете, сэр.".into(), PhraseAt::End)],
+        }));
+        let source = given.clone();
+        service.attach_catchphrases(Arc::new(move || Some(source.lock().unwrap().clone())));
+        let ask = |question: &str| {
+            service.answer("device-9", question, DialogContext::default(), CancellationToken::new(), None)
+        };
+
+        llm.reply("Свет включён.");
+        assert_eq!(collect(ask("Включи свет")).await, ["Свет включён.", "Как пожелаете, сэр."]);
+        assert!(!llm.last()["messages"][0]["content"].as_str().unwrap().contains("Как пожелаете"));
+        llm.reply("Готово.");
+        assert_eq!(collect(ask("Выключи")).await, ["Готово."], "never two answers running");
+        let history = llm.last()["messages"].as_array().unwrap().clone();
+        assert!(history.iter().any(|message| message["content"] == "Свет включён. Как пожелаете, сэр."), "{history:?}");
+
+        *given.lock().unwrap() =
+            Catchphrases { every: 1, lines: vec![("Вабба-лабба-даб-даб!".into(), PhraseAt::Start)] };
+        llm.reply("Элементарно.");
+        assert_eq!(collect(ask("Как это работает?")).await, ["Вабба-лабба-даб-даб!", "Элементарно."]);
+        llm.reply("Да.");
+        assert_eq!(collect(ask("Правда?")).await, ["Да."]);
+        let history = llm.last()["messages"].as_array().unwrap().clone();
+        assert!(history.iter().any(|message| message["content"] == "Вабба-лабба-даб-даб! Элементарно."));
+
+        llm.reply("Код.");
+        let workshop = DialogContext { system: Some("Пиши код.".into()), ..DialogContext::default() };
+        let said = collect(service.answer("device-9", "Сделай", workshop, CancellationToken::new(), None)).await;
+        assert_eq!(said, ["Код."], "the workshop's agent has no catchphrase");
+    }
+
     #[tokio::test]
     async fn keeps_answers_from_real_data_marked_in_the_history_so_the_model_does_not_doubt_them() {
         let llm = chat().await;
@@ -2166,6 +2250,8 @@ pub(crate) mod tests {
             memory: std::sync::OnceLock::new(),
             now: std::sync::OnceLock::new(),
             usage: std::sync::OnceLock::new(),
+            catchphrases: std::sync::OnceLock::new(),
+            picker: Mutex::new(Picker::default()),
         });
         (llm, primary, service)
     }
@@ -2314,6 +2400,8 @@ pub(crate) mod tests {
             memory: std::sync::OnceLock::new(),
             now: std::sync::OnceLock::new(),
             usage: std::sync::OnceLock::new(),
+            catchphrases: std::sync::OnceLock::new(),
+            picker: Mutex::new(Picker::default()),
         });
         llm.calls(&[("get_news", json!({}))]);
         llm.reply("Ответ.");
@@ -2424,6 +2512,8 @@ pub(crate) mod tests {
             memory: std::sync::OnceLock::new(),
             now: std::sync::OnceLock::new(),
             usage: std::sync::OnceLock::new(),
+            catchphrases: std::sync::OnceLock::new(),
+            picker: Mutex::new(Picker::default()),
         });
         (llm, service)
     }

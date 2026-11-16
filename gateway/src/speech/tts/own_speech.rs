@@ -381,11 +381,18 @@ impl OwnSpeech {
         let env = Arc::ptr_eq(&route, &self.env_route);
         let api_key = if env { config.api_key.clone() } else { None };
         let format = if env { config.format.clone() } else { "wav".to_string() };
+        // Silero and Piper at home skip digits and Latin: numbers go in words, Latin in Russian letters. A cloud's
+        // voice reads them itself, in any language.
+        let plain = without_markup(text);
+        let input = if crate::operations::networks::is_local_url(Some(route.base_url())) {
+            say_numbers(&say_latin(&plain))
+        } else {
+            plain
+        };
         let body = serde_json::json!({
             "model": config.model,
             "voice": config.voice,
-            // Silero skips digits and Latin: numbers go in words, Latin in Russian letters.
-            "input": say_numbers(&say_latin(&without_markup(text))),
+            "input": input,
             "response_format": format,
         });
         let place = route.acquire(cancel).await?;

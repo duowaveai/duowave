@@ -9,12 +9,33 @@ inside that environment only.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
 import numpy as np
 
 ENGINES = ("omnivoice", "cosyvoice3", "voxcpm")
+
+#: A sentence's end for join_short_sentences: a full stop, !, ? or an ellipsis, then whitespace.
+SENTENCE_END = re.compile(r"(?<=[.!?…])\s+")
+
+
+def join_short_sentences(text: str, minimum: int = 20) -> str:
+    """A sentence too short is joined to the next one with a comma — for CosyVoice (synthesize below).
+
+    CosyVoice makes every sentence a piece of its own, and a very short one («Да, сэр.») after a long reference
+    comes out in another timbre: campplus on the Jarvis clone gave 0.38 against 0.81 for the same words as one
+    sentence. 20 characters covers «Да, сэр.», «Конечно.», «Слушаюсь.», «Yes, sir.» and the like.
+    """
+    pieces = [piece for piece in SENTENCE_END.split(text.strip()) if piece.strip()]
+    joined: list[str] = []
+    for piece in pieces:
+        if joined and len(joined[-1].rstrip(".!?… ")) < minimum:
+            joined[-1] = joined[-1].rstrip(".!?… ") + ", " + piece[:1].lower() + piece[1:]
+        else:
+            joined.append(piece)
+    return " ".join(joined)
 
 
 def prepare_environment(runtime: Path) -> None:
@@ -101,7 +122,9 @@ class CosyVoice3Engine:
     def synthesize(self, text: str, voice) -> np.ndarray:
         parts = [
             output["tts_speech"].squeeze().detach().cpu().numpy().astype(np.float32)
-            for output in self.model.inference_zero_shot(text, "", "", zero_shot_spk_id=voice, stream=False)
+            for output in self.model.inference_zero_shot(
+                join_short_sentences(text), "", "", zero_shot_spk_id=voice, stream=False
+            )
         ]
         return np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
 

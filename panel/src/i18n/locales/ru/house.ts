@@ -33,6 +33,12 @@ export default {
     noNewVersions: (ago: string) => `Новых версий нет · проверено ${ago}`,
     notChecked: 'Ещё не проверял.',
     installing: 'Ставится. Шлюз перезапустится и вернётся через несколько секунд.',
+    trialTrying: (version: string, until: string) =>
+        `Версия ${version} пробуется из памяти колонки до ${until}. Упадёт — колонка сама вернётся к прежней.`,
+    trialWaiting: (version: string) =>
+        `Версия ${version} прошла пробу и записана на место прежней: шлюз перезапустится на пару секунд, когда колонка затихнет.`,
+    trialStuck: (version: string, why: string) => `Версия ${version} работает из памяти, но на диск пока не записалась: ${why}`,
+    trialAppsPaused: 'Приложения колонки выключены на время пробы и включатся сами.',
     check: 'проверить',
     installingShort: 'ставится…',
     update: 'обновить',

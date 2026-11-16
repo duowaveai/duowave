@@ -11,6 +11,14 @@ import stationsScreen from './stationsScreen';
 import stationWidgets from './stationWidgets';
 import helperPc from './helperPc';
 import firstRun from './firstRun';
+import onboarding from './onboarding';
+import onbBrain from './onbBrain';
+import showcase from './showcase';
+import deskAsk from './deskAsk';
+import onbCharacter from './onbCharacter';
+import onbConnect from './onbConnect';
+import onbTry from './onbTry';
+import onbStore from './onbStore';
 import stations from './stations';
 import workshop from './workshop';
 import drafts from './drafts';
@@ -55,8 +63,8 @@ import media from './media';
 import share from './share';
 import cloudVoices from './cloudVoices';
 import router from './router';
-import country from './country';
 import egress from './egress';
+import cloudSpeech from './cloudSpeech';
 
 const ru = {
     common,
@@ -69,6 +77,14 @@ const ru = {
     stationWidgets,
     helperPc,
     firstRun,
+    onboarding,
+    onbBrain,
+    showcase,
+    deskAsk,
+    onbCharacter,
+    onbConnect,
+    onbTry,
+    onbStore,
     stations,
     workshop,
     drafts,
@@ -113,8 +129,8 @@ const ru = {
     share,
     cloudVoices,
     router,
-    country,
     egress,
+    cloudSpeech,
 };
 
 export type Messages = typeof ru;

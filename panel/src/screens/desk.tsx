@@ -7,7 +7,6 @@
 import { useEffect, useState } from 'preact/hooks';
 
 import type { PlacedStation } from '../api';
-import { can } from '../api';
 import { IconLaptop } from '../icons';
 import { usePanel } from '../shell/context';
 import { useTheme } from '../shell/theme';
@@ -16,7 +15,6 @@ import { WidgetFrame, WidgetMenu } from '../ui/widget';
 import { settingsPlace } from '../builtin';
 import { ConnectFirstCard } from './connect';
 import { FirstRun } from './first-run';
-import { CountryAsk, useHomeCountry } from './country';
 import { MicFirstCard } from './voice-input';
 import { LocalAsrSetup, localAsrNeedsCard, useLocalAsr } from './local-asr';
 import { Dashboard } from './dashboard';
@@ -28,6 +26,7 @@ import { useDeskDrafts } from '../voice/drafts';
 
 export { AddTile };
 import { RememberedLine } from './recall';
+import { DeskAsk } from './desk-ask';
 import { tr } from '../i18n';
 import { Shortcuts } from './shortcuts';
 
@@ -67,7 +66,15 @@ function Scene({ room }: { room?: number }) {
                 room={room}
             />
             {/* Персонаж только что запомнил что-то голосом или мимоходом: видно сразу, с «Отменить». */}
-            {panel.role.role !== 'helper' && <RememberedLine />}
+            {/* Строки под сценой — своим блоком с отступом снизу: широкий виджет под сценой (витрина) заходит на пустой низ
+                кольца, но не на них. Нет строк — блока нет. */}
+            {panel.role.role !== 'helper' && (
+                <div class="desk-scene-lines">
+                    <RememberedLine />
+                    {/* Второй раз спросили то, на что отвечает приложение со своей карточкой, — «Поставить на стол?». */}
+                    <DeskAsk />
+                </div>
+            )}
             {panel.role.role === 'helper' && (
                 // Макет SpaceHelper: под колонкой — этот компьютер, её помощник.
                 <div class="desk-helper-pc">
@@ -132,17 +139,14 @@ export function DeskScreen() {
     // Слух этого компьютера, пока он готовится или упал: над всем остальным, в любой раскладке.
     const [localAsr, setLocalAsr] = useLocalAsr();
     const setup = localAsrNeedsCard(localAsr) ? <LocalAsrSetup local={localAsr} onChange={setLocalAsr} /> : null;
-    // Флешку воткнули или папку бросили на окно: плитка «Посмотреть?» — над столом, в любой раскладке.
+    // Флешку воткнули или папку бросили на окно: плитка «Посмотреть?» — над столом, в любой раскладке. Страну дома пульт
+    // не спрашивает (владелец, 16.11): её спрашивает в своём окне приложение, которому она нужна («VPN»).
     const offers = useFolderOffers();
-    // Страна дома не выбрана: вопрос над столом, пока тот, кто меняет настройки, не ответит (country.tsx).
-    const [country] = useHomeCountry();
-    const askCountry = country === null && can('settings.edit');
     const banner =
-        panel.banner || setup || offers.length > 0 || askCountry ? (
+        panel.banner || setup || offers.length > 0 ? (
             <>
                 {panel.banner}
                 {setup}
-                {askCountry && <CountryAsk />}
                 <FolderOffers offers={offers} />
             </>
         ) : null;

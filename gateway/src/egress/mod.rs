@@ -33,16 +33,18 @@ use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, OnceLock, RwLock, Weak};
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::config::{Config, DialogProvider};
 use crate::core::events::{Actor, EventBus, GatewayEvent};
+use crate::locale::country;
 use crate::plugins::controller::PluginHost;
 use crate::plugins::manifest::{Manifest, Permission};
 use crate::secrets::SecretsService;
 use crate::settings::definitions::{
-    EGRESS_CONNECTION, EGRESS_CONNECTIONS, EGRESS_CUSTOM, EGRESS_LEARNED, EGRESS_MODE, EGRESS_ON_DOWN, EGRESS_ROUTE,
-    EGRESS_SEEN,
+    EGRESS_CONNECTION, EGRESS_CONNECTIONS, EGRESS_CUSTOM, EGRESS_HOME_DIRECT, EGRESS_LEARNED, EGRESS_MODE,
+    EGRESS_ON_DOWN, EGRESS_ON_DOWN_ALL, EGRESS_PICK, EGRESS_ROUTE, EGRESS_SEEN, HOME_COUNTRY, PACKAGE_SETTINGS,
 };
 use crate::settings::SettingsService;
 use crate::storage::Db;
@@ -52,7 +54,7 @@ use app_entry::Hop;
 use connections::{Connection, Connections};
 use reach::ReachData;
 use registry::{Goer, Sources};
-use rules::{Context, Decision, Learned, Mode, OnDown, Route, RowRule, Why};
+use rules::{Context, Decision, Learned, Mode, OnDown, OnDownAll, Route, RowRule, Why};
 
 /// The bus's participant the connections come to.
 pub const NETWORK: &str = "system/network";
@@ -73,10 +75,58 @@ pub struct Row {
     pub new: bool,
 }
 
+/// «Режим VPN для DuoWave» (the owner's sample of a phone VPN, 16.11): who goes through the server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Pick {
+    /// Everyone (by «напрямую то, что работает из страны дома»).
+    #[default]
+    All,
+    /// Everyone but the rows ticked: their route is `direct`.
+    Except,
+    /// Only the rows ticked: their route is `server` or a connection.
+    Only,
+}
+
+impl Pick {
+    pub fn parse(text: &str) -> Option<Pick> {
+        match text {
+            "all" => Some(Pick::All),
+            "except" => Some(Pick::Except),
+            "only" => Some(Pick::Only),
+            _ => None,
+        }
+    }
+
+    pub fn as_text(self) -> &'static str {
+        match self {
+            Pick::All => "all",
+            Pick::Except => "except",
+            Pick::Only => "only",
+        }
+    }
+}
+
+/// The mode the routes are decided by, from the switch, the pick and «напрямую то, что работает из страны дома».
+pub fn mode_of(on: bool, pick: Pick, home_direct: bool) -> Mode {
+    match (on, pick, home_direct) {
+        (false, _, _) => Mode::Off,
+        (true, Pick::Only, _) => Mode::Only,
+        (true, _, true) => Mode::Blocked,
+        (true, _, false) => Mode::All,
+    }
+}
+
 /// The decisions at one moment.
 #[derive(Debug, Clone, Default)]
 pub struct Table {
     pub mode: Mode,
+    /// «Режим VPN для DuoWave», kept while the switch is off.
+    pub pick: Pick,
+    /// «Открывать напрямую то, что работает из страны дома», kept while the switch is off.
+    pub home_direct: bool,
+    /// «Если VPN не отвечает» for all.
+    pub on_down_all: OnDownAll,
     /// The home's country; None — not asked or «Не скажу».
     pub home: Option<String>,
     pub preferred: Option<String>,
@@ -351,6 +401,8 @@ impl Egress {
         if let Some(own) = &self.config.gateway.tts.own {
             sources.voices.push(("voice:own".into(), crate::tr!("Голос: синтез речи"), own.base_url.clone()));
         }
+        // The station's cloud hearing and voice as its panel sets them (src/speech/cloud_speech.rs).
+        sources.voices.extend(crate::speech::cloud_speech::panel_hosts(&self.settings));
         let mcp: Vec<(String, String, String)> = self
             .db
             .with(|c| {
@@ -405,9 +457,12 @@ impl Egress {
         let goers = registry::gather(&self.sources());
         let reach = ReachData::load(&self.catalog_dir);
         let mode = self.settings.get(&EGRESS_MODE, None).as_deref().and_then(Mode::parse).unwrap_or_default();
-        let home = crate::locale::country::household(&self.settings);
-        let preferred = self.settings.get(&EGRESS_CONNECTION, None);
+        let (pick, home_direct) = self.pick_and_home(mode);
+        let on_down_all =
+            self.settings.get(&EGRESS_ON_DOWN_ALL, None).as_deref().and_then(OnDownAll::parse).unwrap_or_default();
         let connections = self.connections.list();
+        let home = self.home_country(&connections);
+        let preferred = self.settings.get(&EGRESS_CONNECTION, None);
         let any_reported = !connections.is_empty();
         let routes = self.settings.all_for_apps(&EGRESS_ROUTE);
         let on_downs = self.settings.all_for_apps(&EGRESS_ON_DOWN);
@@ -419,6 +474,7 @@ impl Egress {
             connections: &connections,
             preferred: preferred.as_deref(),
             any_reported,
+            on_down: on_down_all,
         };
         let rows = goers
             .into_iter()
@@ -433,7 +489,7 @@ impl Egress {
                 // A fresh gateway has seen nothing: the first look marks all as seen (routes.rs), not «новое» each.
                 let new = seen.as_ref().is_some_and(|seen| !seen.contains(&goer.id));
                 Row {
-                    on_down: rule.on_down.unwrap_or_else(|| OnDown::default_for(goer.section)),
+                    on_down: rule.on_down.unwrap_or_else(|| on_down_all.for_section(goer.section)),
                     on_down_own: rule.on_down.is_some(),
                     route: rule.route,
                     learned: rule.learned,
@@ -445,8 +501,18 @@ impl Egress {
                 }
             })
             .collect();
-        let table =
-            Arc::new(Table { mode, home, preferred, rows, connections, any_reported, reach_updated: reach.updated_at });
+        let table = Arc::new(Table {
+            mode,
+            pick,
+            home_direct,
+            on_down_all,
+            home,
+            preferred,
+            rows,
+            connections,
+            any_reported,
+            reach_updated: reach.updated_at,
+        });
         *self.table.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = table.clone();
         *TABLE.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(table);
     }
@@ -515,13 +581,90 @@ impl Egress {
 
     // The panel's changes (routes.rs): each rebuilds the table at once.
 
+    /// The pick and «напрямую то, что работает из страны дома» as kept; a gateway from before them (only `mode`)
+    /// reads them off the mode and the rows' routes.
+    fn pick_and_home(&self, mode: Mode) -> (Pick, bool) {
+        let pick = self.settings.get(&EGRESS_PICK, None).as_deref().and_then(Pick::parse).unwrap_or_else(|| {
+            if mode == Mode::Only {
+                Pick::Only
+            } else if self.settings.all_for_apps(&EGRESS_ROUTE).values().any(|route| route == "direct") {
+                Pick::Except
+            } else {
+                Pick::All
+            }
+        });
+        let home_direct = self.settings.get(&EGRESS_HOME_DIRECT, None).unwrap_or(mode != Mode::All);
+        (pick, home_direct)
+    }
+
+    /// The mode, as an older panel sets it (three buttons): the pick and «напрямую …» follow it.
     pub fn set_mode(&self, mode: Mode, actor: Option<Actor>) -> Result<(), crate::platform::http::ApiError> {
-        let text = match mode {
-            Mode::Off => "off",
-            Mode::Blocked => "blocked",
-            Mode::All => "all",
+        match mode {
+            Mode::Off => {}
+            Mode::Blocked | Mode::All => {
+                self.settings.set(&EGRESS_HOME_DIRECT, &(mode == Mode::Blocked), actor.clone())?;
+                if self.table().pick == Pick::Only {
+                    self.settings.set(&EGRESS_PICK, &Pick::All.as_text().to_string(), actor.clone())?;
+                }
+            }
+            Mode::Only => self.settings.set(&EGRESS_PICK, &Pick::Only.as_text().to_string(), actor.clone())?,
+        }
+        self.settings.set(&EGRESS_MODE, &mode.as_text().to_string(), actor)?;
+        self.rebuild();
+        Ok(())
+    }
+
+    /// The big switch: on — the mode of the pick and «напрямую …» as kept; off — everything directly.
+    pub fn set_on(&self, on: bool, actor: Option<Actor>) -> Result<(), crate::platform::http::ApiError> {
+        let table = self.table();
+        let mode = mode_of(on, table.pick, table.home_direct);
+        self.settings.set(&EGRESS_MODE, &mode.as_text().to_string(), actor)?;
+        self.rebuild();
+        Ok(())
+    }
+
+    /// «Режим VPN для DuoWave». The ticks of one pick mean the opposite in the other, so they go when it changes:
+    /// `all` — no `direct` and no `server` rows; `except` — no `server` rows; `only` — no `direct` rows. A row's own
+    /// connection (Alice through another country) stays.
+    pub fn set_pick(&self, pick: Pick, actor: Option<Actor>) -> Result<(), crate::platform::http::ApiError> {
+        let gone: &[&str] = match pick {
+            Pick::All => &["direct", "server"],
+            Pick::Except => &["server"],
+            Pick::Only => &["direct"],
         };
-        self.settings.set(&EGRESS_MODE, &text.to_string(), actor)?;
+        for (id, route) in self.settings.all_for_apps(&EGRESS_ROUTE) {
+            if gone.contains(&route.as_str()) {
+                self.settings.set_for_app::<String>(&EGRESS_ROUTE, &id, None, actor.clone())?;
+            }
+        }
+        self.settings.set(&EGRESS_PICK, &pick.as_text().to_string(), actor.clone())?;
+        let table = self.table();
+        let mode = mode_of(table.mode != Mode::Off, pick, table.home_direct);
+        self.settings.set(&EGRESS_MODE, &mode.as_text().to_string(), actor)?;
+        self.rebuild();
+        Ok(())
+    }
+
+    /// «Открывать напрямую то, что работает из страны дома».
+    pub fn set_home_direct(&self, on: bool, actor: Option<Actor>) -> Result<(), crate::platform::http::ApiError> {
+        self.settings.set(&EGRESS_HOME_DIRECT, &on, actor.clone())?;
+        let table = self.table();
+        let mode = mode_of(table.mode != Mode::Off, table.pick, on);
+        self.settings.set(&EGRESS_MODE, &mode.as_text().to_string(), actor)?;
+        self.rebuild();
+        Ok(())
+    }
+
+    /// «Если VPN не отвечает» for all; the rows' own words (an older panel's) go — one setting over all.
+    pub fn set_on_down_all(
+        &self,
+        on_down: OnDownAll,
+        actor: Option<Actor>,
+    ) -> Result<(), crate::platform::http::ApiError> {
+        for (id, _) in self.settings.all_for_apps(&EGRESS_ON_DOWN) {
+            self.settings.set_for_app::<String>(&EGRESS_ON_DOWN, &id, None, actor.clone())?;
+        }
+        self.settings.set(&EGRESS_ON_DOWN_ALL, &on_down.as_text().to_string(), actor)?;
         self.rebuild();
         Ok(())
     }
@@ -602,6 +745,40 @@ impl Egress {
             .map(|package| package.manifest.id.clone())
     }
 
+    /// The app whose answer to «Где ваш дом?» counts: the installed one that gives the connections, else the one that
+    /// reported them (a gateway without its plugins, the tests).
+    fn home_app(&self, connections: &[Connection]) -> Option<String> {
+        self.connections_app().or_else(|| connections.first().map(|one| one.app.clone()))
+    }
+
+    /// The home's country: the app «VPN» asks it in its window and keeps it as its own setting `homeCountry`
+    /// (src/locale/country.rs); `none` («Не скажу») and no answer are both None.
+    fn home_country(&self, connections: &[Connection]) -> Option<String> {
+        let app = self.home_app(connections)?;
+        self.carry_home_country(&app);
+        let stored = self.settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default();
+        let answer = stored.get(&app).and_then(|own| own.get(country::APP_SETTING)).and_then(Value::as_str);
+        country::of_answer(answer)
+    }
+
+    /// An answer gateway 0.13.0 kept for the household (`home_country`, asked by the panel) moves into the app's own
+    /// setting once, so the app does not ask again; the household's setting is gone after it.
+    fn carry_home_country(&self, app: &str) {
+        let Some(legacy) = country::legacy_answer(&self.settings) else { return };
+        let mut stored = self.settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default();
+        let own = stored.entry(app.to_string()).or_default();
+        if !own.contains_key(country::APP_SETTING) {
+            own.insert(country::APP_SETTING.into(), Value::String(legacy));
+            if let Err(error) = self.settings.set(&PACKAGE_SETTINGS, &stored, None) {
+                tracing::warn!(target: "egress", "the home's country stays where it was: {}", error.message);
+                return;
+            }
+        }
+        if let Err(error) = self.settings.forget(&HOME_COUNTRY) {
+            tracing::warn!(target: "egress", "the old home country setting stays: {}", error.message);
+        }
+    }
+
     /// For the panel: the app's own word on what the rows learned, by id.
     pub fn learned(&self) -> BTreeMap<String, Learned> {
         self.settings.all_for_apps(&EGRESS_LEARNED)
@@ -612,7 +789,11 @@ impl Egress {
 fn matters(event: &GatewayEvent) -> bool {
     match event {
         GatewayEvent::SettingsChanged { key, .. } => {
-            !key.starts_with("egress.") || key == "egress.custom" || key == "egress.mode"
+            !key.starts_with("egress.")
+                || matches!(
+                    key.as_str(),
+                    "egress.custom" | "egress.mode" | "egress.pick" | "egress.home_direct" | "egress.on_down_all"
+                )
         }
         _ => {
             let name = event.name();

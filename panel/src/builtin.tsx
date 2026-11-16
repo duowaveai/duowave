@@ -29,6 +29,7 @@ import {
     WorksWidget,
 } from './screens/desk-widgets';
 import { MusicWidget, TimersWidget } from './screens/station-widgets';
+import { ShowcaseWidget } from './screens/showcase';
 import { useOfferedVersion } from './updates';
 import { IconMagicPlace } from './magicplace/icon';
 import { MagicPlaceSection } from './magicplace/section';
@@ -81,9 +82,12 @@ export default definePlugin({
     slots: {
         // Виджеты стола: у шлюза — о колонке и её ответах, у помощника — о том, что он ей даёт.
         'desk.widgets': [
+            // Витрина (docs/plans/start-desk.md): под сценой, шире её — три карточки «скажи — и сделается»; сначала «Сделайте
+            // Алису умнее». Только на новом стартовом столе; попробовали всё или скрыли — уходит.
+            { id: 'showcase', get title() { return tr.showcase.label; }, icon: IconSparkle, Component: ShowcaseWidget, order: 5, size: 'large', bare: true, under: true, wide: true, roles: ['gateway'], start: true, initial: false, hideWhileEmpty: true },
             { id: 'mode', get title() { return tr.core.widgetMode; }, icon: IconSparkle, Component: ModeWidget, order: 10, size: 'large', get source() { return tr.core.sourceStation; }, roles: ['gateway'], available: withStation },
-            { id: 'music', get title() { return tr.core.widgetMusic; }, icon: IconMusic, Component: MusicWidget, order: 12, size: 'large', bare: true, permission: 'station.view', available: withStation },
-            { id: 'timers', get title() { return tr.core.widgetTimers; }, icon: IconTimer, Component: TimersWidget, order: 14, size: 'small', get source() { return tr.core.sourceStation; }, permission: 'station.view', available: withStation },
+            { id: 'music', get title() { return tr.core.widgetMusic; }, icon: IconMusic, Component: MusicWidget, order: 12, start: true, hideWhileEmpty: true, size: 'large', bare: true, permission: 'station.view', available: withStation },
+            { id: 'timers', get title() { return tr.core.widgetTimers; }, icon: IconTimer, Component: TimersWidget, order: 14, start: true, hideWhileEmpty: true, size: 'small', get source() { return tr.core.sourceStation; }, permission: 'station.view', available: withStation },
             { id: 'character', get title() { return tr.core.widgetCharacter; }, Component: NowAnsweringCard, order: 15, size: 'small', bare: true, roles: ['gateway'], permission: 'station.view' },
             // Память: стартовый экран простой — на стол её ставят сами, через «Новый виджет» (владелец, 12.11).
             { id: 'memory', get title() { return tr.core.widgetMemory; }, icon: IconMemory, Component: MemoryWidget, order: 16, size: 'small', get source() { return tr.core.sourceHome; }, roles: ['gateway'], permission: 'memory.view', initial: false },
@@ -91,12 +95,14 @@ export default definePlugin({
             // Сразу на столе не стоит (владелец, 15.11): MagicPlace — ярлык; виджет со строкой новостей — по желанию.
             { id: 'magicplace', get title() { return tr.magicplace.title; }, icon: IconMagicPlace, Component: MagicPlaceWidget, order: 18, size: 'small', bare: true, permission: 'station.view', initial: false },
             // «Работы»: сколько идёт и сколько ждёт ответа, по строке на работу; нажатие — страница «Работы» (решение 17).
-            { id: 'works', get title() { return tr.router.widgetTitle; }, icon: IconList, Component: WorksWidget, order: 19, size: 'large', get source() { return tr.core.sourceHome; }, permission: 'settings.edit' },
-            { id: 'recent', get title() { return tr.core.widgetRecent; }, icon: IconJournal, Component: RecentWidget, order: 20, size: 'large', get source() { return tr.core.sourceHistory; }, permission: 'journal.view' },
-            { id: 'helper-card', get title() { return tr.core.widgetHelperCard; }, icon: IconLaptop, Component: HelperCardWidget, order: 25, size: 'small', get source() { return tr.core.sourceComputer; }, roles: ['gateway'], available: onStation },
+            // Пока работ не было ни одной, его не видно: у новичка пустой виджет — шум (владелец, 16.11), появится сам.
+            { id: 'works', get title() { return tr.router.widgetTitle; }, icon: IconList, Component: WorksWidget, order: 19, start: true, size: 'large', get source() { return tr.core.sourceHome; }, permission: 'settings.edit', hideWhileEmpty: true },
+            // «Последние вопросы»: до первого вопроса не видны — подсказка «спросите что-нибудь» уже есть под колонкой.
+            { id: 'recent', get title() { return tr.core.widgetRecent; }, icon: IconJournal, Component: RecentWidget, order: 20, start: true, size: 'large', get source() { return tr.core.sourceHistory; }, permission: 'journal.view', hideWhileEmpty: true },
+            { id: 'helper-card', get title() { return tr.core.widgetHelperCard; }, icon: IconLaptop, Component: HelperCardWidget, order: 25, start: true, hideWhileEmpty: true, size: 'small', get source() { return tr.core.sourceComputer; }, roles: ['gateway'], available: onStation },
             { id: 'alloc', get title() { return tr.core.widgetAlloc; }, Component: AllocWidget, order: 30, size: 'large', bare: true, roles: ['gateway'], available: withStation },
-            { id: 'unsupported', get title() { return tr.core.widgetUnsupported; }, icon: IconJournal, Component: UnsupportedWidget, order: 40, size: 'large', get source() { return tr.core.sourceHistory; }, roles: ['gateway'], permission: 'journal.view', available: withStation },
-            { id: 'helper', get title() { return tr.core.widgetHelper; }, icon: IconLaptop, Component: HelperWidget, order: 10, size: 'large', get source() { return tr.core.sourceThisComputer; }, roles: ['helper'] },
+            { id: 'unsupported', get title() { return tr.core.widgetUnsupported; }, icon: IconJournal, Component: UnsupportedWidget, order: 40, start: true, hideWhileEmpty: true, size: 'large', get source() { return tr.core.sourceHistory; }, roles: ['gateway'], permission: 'journal.view', available: withStation },
+            { id: 'helper', get title() { return tr.core.widgetHelper; }, icon: IconLaptop, Component: HelperWidget, order: 10, start: true, hideWhileEmpty: true, size: 'large', get source() { return tr.core.sourceThisComputer; }, roles: ['helper'] },
             { id: 'watch', get title() { return tr.core.widgetWatch; }, icon: IconShield, Component: WatchWidget, order: 20, size: 'large', get source() { return tr.core.sourceThisComputer; }, roles: ['helper'], permission: 'station.view' },
             { id: 'workshop', get title() { return tr.core.widgetWorkshop; }, icon: IconCode, Component: WorkshopWidget, order: 30, size: 'large', get source() { return tr.core.sourceThisComputer; }, roles: ['helper'], permission: 'plugins.manage' },
         ],

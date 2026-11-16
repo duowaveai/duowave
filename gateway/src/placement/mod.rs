@@ -21,6 +21,8 @@ pub mod proxy;
 pub mod relay;
 pub mod routes;
 pub mod service;
+#[cfg(feature = "pc")]
+pub mod setup;
 pub mod station_fs;
 pub mod transfer;
 #[cfg(feature = "pc")]

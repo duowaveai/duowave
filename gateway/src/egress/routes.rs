@@ -2,10 +2,13 @@
 //!
 //! - `GET /api/v1/egress` → the simple mode, the home's country, the connections, every row as decided, the person's
 //!   own addresses — whoever sees the apps;
-//! - `PUT /api/v1/egress` `{mode?, preferred?}` — a button, the connection to go through first (`null` — the first
-//!   that answers);
-//! - `PUT /api/v1/egress/rows/{id}` `{route?, onDown?}` — a row's own route (`auto`, `direct`, a connection's id) and
-//!   what it does when its server is down (`wait`, `direct`, `null` — the row's default);
+//! - `PUT /api/v1/egress` `{on?, pick?, homeDirect?, onDownAll?, preferred?, mode?}` — the big switch, «Режим VPN
+//!   для DuoWave» (`all`, `except`, `only`), «Открывать напрямую то, что работает из страны дома», «Если VPN не
+//!   отвечает» for all (`safe`, `wait`, `direct`), the location chosen for all (a connection's id, `null` — the first
+//!   that answers); `mode` — an older panel's three buttons;
+//! - `PUT /api/v1/egress/rows/{id}` `{route?, onDown?}` — a row's own route (`auto`, `direct`, `server` — the location
+//!   chosen for all, a connection's id) and what it does when its server is down (`wait`, `direct`, `null` — the
+//!   setting for all);
 //! - `DELETE /api/v1/egress/rows` — «Вернуть как было»;
 //! - `PUT /api/v1/egress/custom` `{hosts}` — «Свои адреса», the whole list;
 //! - `POST /api/v1/egress/seen` — the rows seen: «новое» goes.
@@ -24,8 +27,9 @@ use crate::core::identity::permissions::{CONNECTORS_VIEW, SETTINGS_EDIT};
 use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller};
 
 use super::registry::custom_host;
-use super::rules::{Mode, OnDown, Route};
+use super::rules::{Mode, OnDown, OnDownAll, Route};
 use super::Egress;
+use super::Pick;
 
 pub fn routes() -> Router<Arc<App>> {
     Router::new()
@@ -73,6 +77,10 @@ pub fn view_of(egress: &Egress) -> Value {
         .collect();
     json!({
         "mode": table.mode,
+        "on": table.mode != Mode::Off,
+        "pick": table.pick,
+        "homeDirect": table.home_direct,
+        "onDownAll": table.on_down_all,
         "home": table.home,
         "preferred": table.preferred,
         "ownRules": egress.has_own_rules(),
@@ -96,8 +104,32 @@ async fn set(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value
         let mode = mode
             .as_str()
             .and_then(Mode::parse)
-            .ok_or_else(|| ApiError::bad_request(crate::tr!("mode: off, blocked или all")))?;
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("mode: off, blocked, all или only")))?;
         app.egress.set_mode(mode, caller.actor())?;
+    }
+    if let Some(pick) = body.get("pick") {
+        let pick = pick
+            .as_str()
+            .and_then(Pick::parse)
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("pick: all, except или only")))?;
+        app.egress.set_pick(pick, caller.actor())?;
+    }
+    if let Some(home_direct) = body.get("homeDirect") {
+        let on =
+            home_direct.as_bool().ok_or_else(|| ApiError::bad_request(crate::tr!("homeDirect: true или false")))?;
+        app.egress.set_home_direct(on, caller.actor())?;
+    }
+    if let Some(on_down) = body.get("onDownAll") {
+        let on_down = on_down
+            .as_str()
+            .and_then(OnDownAll::parse)
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("onDownAll: safe, wait или direct")))?;
+        app.egress.set_on_down_all(on_down, caller.actor())?;
+    }
+    // The switch last: «Вкл» takes the pick and «напрямую …» sent with it.
+    if let Some(on) = body.get("on") {
+        let on = on.as_bool().ok_or_else(|| ApiError::bad_request(crate::tr!("on: true или false")))?;
+        app.egress.set_on(on, caller.actor())?;
     }
     if let Some(preferred) = body.get("preferred") {
         let id = match preferred {

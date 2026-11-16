@@ -205,10 +205,13 @@ pub struct Feature {
 }
 
 const ON_STATION_WITH_SERVER: &[Placement] = &[Placement::StationServer];
+const ON_STATION: &[Placement] = &[Placement::Station, Placement::StationServer];
 
-/// Why «Свой» is not on the station: the switch refuses it with this, the panel says it.
-pub const OWN_ON_STATION: &str = "«Своё» на колонке не включить: без Яндекса слух, голос и модели нужны \
-свои, а для них нужен компьютер с DuoWave. На колонке — «Яндекс» или «Вместе» с облачными подключениями.";
+/// Why «Свой» is not on the station: the switch refuses it with this, the panel says it. Since 16.11 the station
+/// takes «Своё» with a cloud hearing and voice (docs/plans/speaker-alone.md, stage 1): this is said when neither the
+/// computer nor the cloud gives them.
+pub const OWN_ON_STATION: &str = "«Своё» на колонке без Яндекса: нужны облачный слух и облачный голос \
+(«Голос» и «Слух» в настройках колонки, хватит ключа OpenAI) или компьютер-помощник.";
 
 pub const FEATURES: &[Feature] = &[
     Feature {
@@ -237,9 +240,11 @@ pub const FEATURES: &[Feature] = &[
                 runs: Runs::HomeServer,
                 needs: &[Need::At(ON_STATION_WITH_SERVER), Need::HomeServer, Need::OwnParts],
             },
+            // The station by itself: it hears and speaks through the cloud (src/speech/cloud_speech.rs).
+            Way { runs: Runs::Cloud, needs: &[Need::At(ON_STATION), Need::CloudAsr, Need::CloudTts] },
         ],
         absent: OWN_ON_STATION,
-        table: [yes("да"), no("нет: нужен свой сервер"), partial("пока компьютер на связи")],
+        table: [yes("да"), partial("с облачным слухом и голосом"), partial("компьютер → облако")],
     },
     Feature {
         id: "asr.own",
@@ -719,15 +724,23 @@ mod tests {
         }
     }
 
+    /// «Свой» on the station: the computer's while it is up, the cloud's hearing and voice otherwise
+    /// (docs/plans/speaker-alone.md, stage 1); without both nothing hears or speaks, so it is off.
     #[test]
-    fn svoi_is_the_computers_on_the_station_only_with_the_server_up() {
+    fn svoi_on_the_station_is_the_computers_or_the_clouds() {
         let own = feature("mode.own").unwrap();
         assert_eq!(evaluate(own, &at(Placement::Pc)).state, State::Ready);
         let station = evaluate(own, &at(Placement::Station));
-        assert_eq!((station.state, station.reason.as_str()), (State::Off, OWN_ON_STATION));
+        assert_eq!((station.state, station.runs), (State::Ready, Some(Runs::Cloud)), "alone, through the cloud");
+        let mute = evaluate(own, &Context { cloud_tts: false, ..at(Placement::Station) });
+        assert_eq!((mute.state, mute.reason.as_str()), (State::Off, "Нет облачного голоса"));
+        let deaf = evaluate(own, &Context { cloud_asr: false, ..at(Placement::Station) });
+        assert_eq!((deaf.state, deaf.reason.as_str()), (State::Off, "Нет облачного распознавания"));
         let server = Context { home_server: HomeServer::Down, ..at(Placement::StationServer) };
         let down = evaluate(own, &server);
-        assert_eq!((down.state, down.reason.as_str()), (State::Off, "Компьютер не на связи"));
+        assert_eq!((down.state, down.runs), (State::Fallback, Some(Runs::Cloud)), "the computer away: the cloud");
+        let nothing = evaluate(own, &Context { cloud_asr: false, ..server });
+        assert_eq!((nothing.state, nothing.reason.as_str()), (State::Off, "Компьютер не на связи"));
         let up = evaluate(own, &at(Placement::StationServer));
         assert_eq!((up.state, up.runs), (State::Ready, Some(Runs::HomeServer)));
     }
@@ -738,7 +751,8 @@ mod tests {
     fn svoi_on_the_station_needs_the_computers_hearing_and_voice_or_the_clouds() {
         let own = feature("mode.own").unwrap();
         let hearing_off = Some("слух компьютера выключен");
-        let deaf = Context { own_lacks: hearing_off, ..at(Placement::StationServer) };
+        // The computer's hearing off and no cloud for it (src/home_server: `svoi_lacks` says so only then).
+        let deaf = Context { own_lacks: hearing_off, cloud_asr: false, ..at(Placement::StationServer) };
         let state = evaluate(own, &deaf);
         assert_eq!((state.state, state.reason.as_str()), (State::Off, "Слух компьютера выключен"));
         let away = evaluate(own, &Context { home_server: HomeServer::Down, ..deaf });

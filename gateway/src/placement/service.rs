@@ -214,10 +214,10 @@ impl PlacementService {
         }
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(600)).await;
-            if let Ok(program) = std::env::current_exe() {
-                if StationFs::real().settle_update(&program) {
-                    tracing::info!("update: the new version ran ten minutes; the one before is removed");
-                }
+            // The program on the disk: a trial runs from memory, and its way back is not a `.previous`.
+            let fs = StationFs::real();
+            if fs.settle_update(&fs.program_on_disk()) {
+                tracing::info!("update: the new version ran ten minutes; the one before is removed");
             }
         });
     }
@@ -289,6 +289,22 @@ impl PlacementService {
                     "settingsReceivedAt": super::transfer::synced_at(&self.db, "received"),
                     "safety": state.safety,
                     "safetyLast": state.safety_last,
+                    // A trial of a new version from memory now, or the last one that did not make it
+                    // (src/updates/trial.rs): the computer's card says so, and does not offer a failed one by itself.
+                    "update": json!({
+                        "trial": fs.trial().map(|mark| json!({
+                            "version": mark.version,
+                            "since": crate::updates::trial::rfc3339(mark.started),
+                            "until": crate::updates::trial::rfc3339(mark.until()),
+                            "appsPaused": mark.apps_paused,
+                        })),
+                        "trialFailed": fs.trial_failed().map(|failed| json!({
+                            "version": failed.version,
+                            "at": failed.at,
+                            "why": failed.why,
+                            "text": failed.text(),
+                        })),
+                    }),
                 });
                 merge(&mut health, extra);
                 let (device, name) = self.station_self();

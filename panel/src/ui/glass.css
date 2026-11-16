@@ -1027,6 +1027,20 @@ html[data-theme='light'] .switch:disabled { background: rgba(13, 17, 23, 0.07); 
 .connect-command { display: flex; flex-direction: column; gap: 8px; }
 .connect-command textarea { resize: none; min-height: 72px; }
 .connect-warning { color: var(--pill-yandex-fg); }
+/* Что мешает на колонке: список до плана, отдельным блоком. */
+.connect-neighbours { display: flex; flex-direction: column; gap: 8px; }
+/* Каждое — гармошкой: метка и имя в строке, подробности по нажатию. Важное — в тоне предупреждения, чтобы раскрыли. */
+.connect-neighbour { border: 1px solid var(--glass-border); border-radius: 14px; }
+.connect-neighbour > summary { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 9px 12px; cursor: pointer; list-style: none; font-size: 13px; line-height: 18px; }
+.connect-neighbour > summary::-webkit-details-marker { display: none; }
+.connect-neighbour > summary::after { content: '›'; margin-left: auto; opacity: 0.5; transition: transform 0.15s ease; }
+.connect-neighbour[open] > summary::after { transform: rotate(90deg); }
+.connect-neighbour-tag { font-size: 11px; line-height: 16px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--glass-border); opacity: 0.8; }
+.connect-neighbour-body { display: flex; flex-direction: column; gap: 6px; padding: 0 12px 10px; }
+.connect-neighbour-blocks { border-color: var(--pill-yandex-fg); background: var(--pill-yandex-bg); }
+.connect-neighbour-blocks .connect-neighbour-tag { border-color: var(--pill-yandex-fg); color: var(--pill-yandex-fg); font-weight: 700; opacity: 1; }
+.connect-neighbour-off > summary { opacity: 0.65; }
+.connect-neighbour-ask { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 12px; background: var(--strong-bg); }
 /* Длинный шаг переносится, а не уходит за край листа. */
 .connect-step > span:last-child { min-width: 0; overflow-wrap: anywhere; }
 

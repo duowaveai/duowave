@@ -330,6 +330,14 @@ events! {
         #[serde(default, skip_serializing_if = "Option::is_none")] error: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")] actor: Option<Actor>,
     }
+    /// The panel turned another mod off on a station by the mod's own switch (src/stations/connect/neighbours.rs).
+    StationModOff = "station.modOff" {
+        address: String,
+        addon: String,
+        result: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")] error: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")] actor: Option<Actor>,
+    }
     /// One of the station's own clients came or went (station-client/): its microphone bridge, its call client.
     StationChannel = "station.channel" {
         address: String,

@@ -230,6 +230,16 @@ impl SessionRegistry {
         self.lock().active.len()
     }
 
+    /// Nobody is with any station now — none rings, hears words or goes on with a conversation (`busy`) — and no
+    /// station's player plays: a moment the gateway may restart in (src/updates/trial.rs).
+    pub fn quiet(&self) -> bool {
+        let active = self.lock().active.clone();
+        active.iter().all(|session| match session {
+            AnySession::Station(station) => !station.busy() && !station.playing(),
+            _ => true,
+        })
+    }
+
     /// A place for a socket from `address`, counted with the sockets open now and those let through before it, in
     /// one stretch: refused with those counts (in all, from the address) when either limit is reached.
     pub fn reserve(&self, address: &str, per_address: usize, in_all: usize) -> Result<SocketSlot, (usize, usize)> {

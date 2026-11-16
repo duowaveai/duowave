@@ -508,6 +508,15 @@ jobs:
         with:
           name: station
           path: release
+      # The one-line install (scripts/install): its scripts go out with the release, and SHA256SUMS lets them check
+      # the gateway they download before running it (the station's build inside it is checked by its signature).
+      - name: The one-line install and SHA256SUMS
+        run: |
+          cp scripts/install/install.sh scripts/install/install.ps1 release/
+          sed -i "s#duowaveai/duowave#${{ github.repository }}#g" release/install.sh release/install.ps1
+          (cd release && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum | sed 's#  \./.*/#  #; s#  \./#  #') > SHA256SUMS
+          mv SHA256SUMS release/SHA256SUMS
+          grep -E ' duowave-(darwin|linux|windows)-[a-z0-9_]+\.tar\.gz$' release/SHA256SUMS
       # Everything signed is checked once more as it leaves: a file changed between the jobs stops the draft.
       - name: The signatures hold
         run: |

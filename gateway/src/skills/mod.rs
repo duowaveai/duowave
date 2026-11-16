@@ -21,6 +21,7 @@ pub mod smart_home;
 pub mod text;
 pub mod tools;
 pub mod typed_directives;
+pub mod yandex_now;
 
 pub use callbacks::OUR_CALLBACK_PREFIX;
 pub use router::{Continuation, Decision, Resolution, RouteInput, Router, RESTRICTED};

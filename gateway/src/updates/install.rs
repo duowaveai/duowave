@@ -2,12 +2,81 @@
 //! folder, its signature checked, and the program inside it replaces the running one by a rename. The program before
 //! stays beside it as `duowave.previous` — the way back — and the gateway starts again as the new program, in the same
 //! process where the system allows it (exec), so a service manager sees no exit.
+//!
+//! On the station the new program is tried from memory first (`updates::trial`, docs/plans/station-update-space.md):
+//! `unpack_to` puts it in /tmp, `answers_version` asks it its version, and after the trial `move_to_disk` puts it in
+//! the place of the one on the disk — never beside it for long: /data has some 30 MB to spare.
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use sha2::{Digest, Sha256};
 
 /// An update larger than this is not one of ours.
 pub const MAX_DOWNLOAD: usize = 96 * 1024 * 1024;
+
+/// The room on the station's /data an update never takes: Alice and the system write there too, and so does our
+/// database's journal. A /data filled to the last byte breaks Alice, not only us.
+pub const STATION_FLOOR_KB: u64 = 5 * 1024;
+
+/// What the next version of a program this size may add: the gateway grows from release to release (0.7.1 → 0.8.0:
+/// 17.5 → 20.4 MB) — 15 % of it, never under 2 MB.
+pub fn growth_kb(program_bytes: u64) -> u64 {
+    (program_bytes / 1024 * 15 / 100).max(2 * 1024)
+}
+
+/// The room on the station's disk kept for the gateway's own next update while apps are put there: its growth and
+/// the floor. The new version is tried from memory and takes the old one's place (`move_to_disk`), so the update
+/// needs no room for a second program — unless memory is short too, and then it says how much to free.
+pub fn update_reserve_kb(program_bytes: u64) -> u64 {
+    growth_kb(program_bytes) + STATION_FLOOR_KB
+}
+
+/// The size of the program named `name` inside a `.tar.gz`, as its header says: known before a byte of it is written.
+pub fn program_size(archive: &[u8], name: &str) -> Result<u64, String> {
+    let size = with_file(archive, name, |entry| Ok(entry.size()))?
+        .ok_or_else(|| crate::tr!("В архиве нет {name}.", name = name))?;
+    if size < 1024 {
+        return Err("archive: the program in it is empty".into());
+    }
+    Ok(size)
+}
+
+/// What updates left beside the program that nothing uses: the version the station's safety net put aside
+/// (`<name>.failed`, station-client/gateway.sh — 20 MB nobody ever removed), a new program a failure did not get to
+/// remove (`duowave.new`), the temporary file of a copy by hand (`.<name>.new`). Never `.previous`: while it is kept
+/// it is the way back.
+pub fn leftovers(program: &Path) -> Vec<PathBuf> {
+    let name = program.file_name().and_then(|name| name.to_str()).unwrap_or("duowave");
+    vec![
+        program.with_file_name(format!("{name}.failed")),
+        incoming_of(program),
+        program.with_file_name(format!(".{name}.new")),
+    ]
+}
+
+/// The leftovers removed: the bytes freed.
+pub fn remove_leftovers(program: &Path) -> u64 {
+    leftovers(program).iter().map(|path| remove_counted(path)).sum()
+}
+
+/// A file removed: its size, or 0 when there was none.
+pub fn remove_counted(path: &Path) -> u64 {
+    let size = std::fs::symlink_metadata(path).map(|meta| meta.len()).unwrap_or(0);
+    match std::fs::remove_file(path) {
+        Ok(()) => size,
+        Err(_) => 0,
+    }
+}
+
+/// Whether two paths name the same file: /data is a link on the station (to /bkupgrade/data), and the running
+/// program's path comes resolved.
+pub fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
 
 /// The archive at `url`, whole, into memory (the gateway is ~10–30 MB). Over https only, each redirect too
 /// (`feed::secure`).
@@ -154,8 +223,10 @@ pub fn previous_of(current: &Path) -> PathBuf {
 
 /// Puts `program` in place of `current`: written beside it, made executable, then renamed over it, the old one
 /// kept as `<name>.previous`. A rename is atomic: a failure midway leaves one of the two programs in place, never
-/// half of one.
+/// half of one. The `.previous` kept from before goes first: the running program is the way back now, and three
+/// programs never stand on the disk at once.
 pub fn replace(current: &Path, program: &[u8]) -> std::io::Result<PathBuf> {
+    let _ = std::fs::remove_file(previous_of(current));
     let incoming = incoming_of(current);
     std::fs::write(&incoming, program)?;
     swap_in(current, &incoming)
@@ -166,7 +237,11 @@ pub fn replace(current: &Path, program: &[u8]) -> std::io::Result<PathBuf> {
 /// 16 MB program in memory — beside the archive, which came as base64 in JSON — got the station's gateway killed by
 /// the kernel midway, twice on 11.11.2026 (0.4.0 and 0.5.0), and it came back as the old version. Nothing is left
 /// half-written: a failure removes the incoming file and the running program stays.
+///
+/// The `.previous` kept from before goes first, as in `replace`: until 16.11.2026 it went only once the new program
+/// was written, and an update in the first ten minutes after another needed room for three programs.
 pub fn replace_from_archive(current: &Path, archive: &[u8], name: &str) -> Result<PathBuf, String> {
+    let _ = std::fs::remove_file(previous_of(current));
     let incoming = incoming_of(current);
     let on_disk = |error: std::io::Error| format!("{}: {error}", incoming.display());
     let written = with_file(archive, name, |entry| {
@@ -210,6 +285,184 @@ fn swap_in(current: &Path, incoming: &Path) -> std::io::Result<PathBuf> {
         return Err(error);
     }
     Ok(previous)
+}
+
+/// The program named `name` inside a `.tar.gz` written to `target` as it streams out of the archive, made executable:
+/// its size and SHA-256. A failure leaves nothing at `target`.
+pub fn unpack_to(archive: &[u8], name: &str, target: &Path) -> Result<(u64, String), String> {
+    let on_disk = |error: std::io::Error| format!("{}: {error}", target.display());
+    let written = with_file(archive, name, |entry| {
+        let mut file = std::fs::File::create(target).map_err(on_disk)?;
+        let (size, sha) = copy_hashed(entry, &mut file).map_err(|error| crate::tr!("Архив: {error}", error = error))?;
+        file.sync_all().map_err(on_disk)?;
+        Ok((size, sha))
+    });
+    let outcome = match written {
+        Ok(Some((size, sha))) if size >= 1024 => make_executable(target).map(|_| (size, sha)).map_err(on_disk),
+        Ok(Some(_)) => Err("archive: the program in it is empty".to_string()),
+        Ok(None) => Err(crate::tr!("В архиве нет {name}.", name = name)),
+        Err(error) => Err(error),
+    };
+    if outcome.is_err() {
+        let _ = std::fs::remove_file(target);
+    }
+    outcome
+}
+
+/// Why `answers_version` failed: the program could not be run here at all (a /tmp the system will not run programs
+/// from), or it ran and was not the version wanted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotAnswered {
+    NotRun(String),
+    Wrong(String),
+}
+
+impl NotAnswered {
+    pub fn message(&self) -> &str {
+        match self {
+            NotAnswered::NotRun(message) | NotAnswered::Wrong(message) => message,
+        }
+    }
+}
+
+/// Whether the program at `program` runs here and is the version wanted: `<program> version` answers with it within
+/// `wait`. A program that does not start on this machine, or names another version, stops here — before the gateway
+/// becomes it.
+pub fn answers_version(program: &Path, version: &str, wait: Duration) -> Result<(), NotAnswered> {
+    let mut child = std::process::Command::new(program)
+        .arg("version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|error| NotAnswered::NotRun(crate::tr!("новая версия не запускается: {error}", error = error)))?;
+    let deadline = Instant::now() + wait;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(NotAnswered::Wrong(crate::tr!(
+                    "новая версия не назвала себя за {seconds} с",
+                    seconds = wait.as_secs().max(1)
+                )));
+            }
+        }
+    }
+    let mut said = String::new();
+    if let Some(mut out) = child.stdout.take() {
+        let _ = out.read_to_string(&mut said);
+    }
+    let wanted = version.trim_start_matches('v');
+    if said.split_whitespace().any(|word| word.trim_start_matches('v') == wanted) {
+        Ok(())
+    } else {
+        Err(NotAnswered::Wrong(crate::tr!(
+            "новая версия назвалась «{said}», а ждали {wanted}",
+            said = said.trim(),
+            wanted = wanted
+        )))
+    }
+}
+
+/// How the program from memory took its place on the disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Moved {
+    /// There was no room for both: the old one went before the new one was written — the seconds when a power cut
+    /// leaves no program on the disk.
+    pub tight: bool,
+}
+
+/// The program tried from memory (`source`) put in the place of the one on the disk (`program`), checked against
+/// `sha256` there — read back from the disk — before it takes that place. With room for both (`free_kb`, the disk's
+/// free room now, and the floor) it is written beside the old one, which goes only by the rename that puts the new
+/// one whole in its place. Without, the old one goes first — it does not run now, so its room is free at once — and
+/// a power cut in those seconds leaves no program on the disk: the station then boots as the usual Alice (voice.sh)
+/// and the computer puts the gateway back. Whatever fails, nothing half-written keeps the program's name.
+pub fn move_to_disk(source: &Path, program: &Path, sha256: &str, free_kb: Option<u64>) -> Result<Moved, String> {
+    let size = std::fs::metadata(source).map_err(|error| format!("{}: {error}", source.display()))?.len();
+    let need_kb = size.div_ceil(1024) + STATION_FLOOR_KB;
+    let old_kb = std::fs::metadata(program).map(|meta| meta.len().div_ceil(1024)).unwrap_or(0);
+    let free_kb = free_kb.unwrap_or(u64::MAX);
+    let tight = free_kb < need_kb;
+    if tight && free_kb.saturating_add(old_kb) < need_kb {
+        return Err(crate::tr!(
+            "На колонке не хватает места для новой версии: нужно {need} МБ, свободно {free} МБ вместе со старой.",
+            need = need_kb / 1024,
+            free = free_kb.saturating_add(old_kb) / 1024
+        ));
+    }
+    let incoming = incoming_of(program);
+    let _ = std::fs::remove_file(&incoming);
+    if tight {
+        match std::fs::remove_file(program) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("{}: {error}", program.display())),
+        }
+    }
+    let put = || -> Result<(), String> {
+        let on_disk = |error: std::io::Error| format!("{}: {error}", incoming.display());
+        let mut from = std::fs::File::open(source).map_err(|error| format!("{}: {error}", source.display()))?;
+        let mut to = std::fs::File::create(&incoming).map_err(on_disk)?;
+        let (_, written) = copy_hashed(&mut from, &mut to).map_err(on_disk)?;
+        to.sync_all().map_err(on_disk)?;
+        drop(to);
+        let on_flash = sha256_of(&incoming).map_err(on_disk)?;
+        if written != sha256 || on_flash != sha256 {
+            return Err(crate::tr!("Новая версия записалась на диск с ошибкой: её сумма не та."));
+        }
+        make_executable(&incoming).map_err(on_disk)?;
+        std::fs::rename(&incoming, program).map_err(|error| format!("{}: {error}", program.display()))
+    };
+    match put() {
+        Ok(()) => Ok(Moved { tight }),
+        Err(error) => {
+            let _ = std::fs::remove_file(&incoming);
+            Err(error)
+        }
+    }
+}
+
+/// The SHA-256 of a file, lower-case hex, read as it streams.
+pub fn sha256_of(path: &Path) -> std::io::Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    Ok(copy_hashed(&mut file, &mut std::io::sink())?.1)
+}
+
+/// `from` copied into `to`, hashed on the way: the bytes copied and their SHA-256.
+fn copy_hashed(from: &mut impl std::io::Read, to: &mut impl std::io::Write) -> std::io::Result<(u64, String)> {
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut total = 0u64;
+    loop {
+        let read = match from.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        digest.update(&buffer[..read]);
+        to.write_all(&buffer[..read])?;
+        total += read as u64;
+    }
+    to.flush()?;
+    Ok((total, hex::encode(digest.finalize())))
+}
+
+fn make_executable(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
 }
 
 /// Starts the gateway again as the program now at `current`, with the same arguments: on Unix the process becomes the
@@ -315,5 +568,129 @@ mod tests {
         assert!(replace_from_archive(&current, cut, program_name()).is_err(), "an archive cut short");
         assert_eq!(std::fs::read(&current).unwrap(), program);
         assert!(!incoming_of(&current).exists());
+    }
+
+    #[test]
+    fn never_three_programs_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join(program_name());
+        std::fs::write(&current, b"running").unwrap();
+        std::fs::write(previous_of(&current), b"kept from before").unwrap();
+        let program: Vec<u8> = (0..4096u32).map(|n| (n % 7) as u8).collect();
+        // The kept one goes before the new one is written: the running one becomes the way back.
+        let archived = archive(&[(program_name(), &program)]);
+        let previous = replace_from_archive(&current, &archived, program_name()).unwrap();
+        assert_eq!(std::fs::read(&previous).unwrap(), b"running", "the way back is the one that ran");
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+    }
+
+    #[test]
+    fn knows_the_programs_size_before_writing_it() {
+        let program = vec![1u8; 300_000];
+        let folder = format!("duowave-0.13.0/{}", program_name());
+        assert_eq!(
+            program_size(&archive(&[("README.md", b"x"), (&folder, &program)]), program_name()).unwrap(),
+            300_000
+        );
+        assert!(program_size(&archive(&[("other", &program)]), program_name()).is_err());
+        assert!(program_size(&archive(&[(program_name(), b"tiny")]), program_name()).is_err());
+    }
+
+    #[test]
+    fn the_reserve_is_the_growth_and_the_floor() {
+        // 20.4 MB now: 15 % is 3 MB, and the floor 5.
+        let reserve = update_reserve_kb(20_400 * 1024);
+        assert_eq!(reserve, 20_400 * 15 / 100 + STATION_FLOOR_KB);
+        assert_eq!(update_reserve_kb(4 * 1024 * 1024), 2 * 1024 + STATION_FLOOR_KB, "never under 2 MB of growth");
+    }
+
+    #[test]
+    fn leftovers_go_and_the_way_back_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("duowave");
+        std::fs::write(&current, b"running").unwrap();
+        std::fs::write(dir.path().join("duowave.failed"), vec![0u8; 1000]).unwrap();
+        std::fs::write(dir.path().join("duowave.new"), vec![0u8; 200]).unwrap();
+        std::fs::write(dir.path().join(".duowave.new"), vec![0u8; 30]).unwrap();
+        std::fs::write(previous_of(&current), b"way back").unwrap();
+        assert_eq!(remove_leftovers(&current), 1230);
+        assert!(previous_of(&current).exists() && current.exists());
+        assert_eq!(remove_leftovers(&current), 0, "nothing more");
+    }
+
+    #[test]
+    fn unpacks_the_program_to_memory_with_its_sum() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("duowave-0.13.0");
+        let program: Vec<u8> = (0..200_000u32).map(|n| (n % 251) as u8).collect();
+        let (size, sha) = unpack_to(&archive(&[(program_name(), &program)]), program_name(), &target).unwrap();
+        assert_eq!((size, sha.as_str()), (200_000, hex::encode(Sha256::digest(&program)).as_str()));
+        assert_eq!(std::fs::read(&target).unwrap(), program);
+        assert!(unpack_to(&archive(&[(program_name(), b"tiny")]), program_name(), &target).is_err());
+        assert!(!target.exists(), "nothing left of a failure");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn asks_the_new_program_its_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("duowave-9.9.9");
+        std::fs::write(&program, "#!/bin/sh\necho \"duowave 9.9.9\"\n").unwrap();
+        make_executable(&program).unwrap();
+        assert!(answers_version(&program, "v9.9.9", Duration::from_secs(10)).is_ok());
+        assert!(matches!(answers_version(&program, "9.9.10", Duration::from_secs(10)), Err(NotAnswered::Wrong(_))));
+        let silent = dir.path().join("silent");
+        std::fs::write(&silent, "#!/bin/sh\nsleep 5\n").unwrap();
+        make_executable(&silent).unwrap();
+        assert!(matches!(answers_version(&silent, "9.9.9", Duration::from_millis(300)), Err(NotAnswered::Wrong(_))));
+        assert!(matches!(
+            answers_version(&dir.path().join("none"), "9.9.9", Duration::from_secs(1)),
+            Err(NotAnswered::NotRun(_))
+        ));
+    }
+
+    #[test]
+    fn moves_the_program_from_memory_onto_the_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("in-memory");
+        let program = dir.path().join("duowave");
+        let new: Vec<u8> = (0..300_000u32).map(|n| (n % 13) as u8).collect();
+        std::fs::write(&source, &new).unwrap();
+        let sha = hex::encode(Sha256::digest(&new));
+        // Room for both: written beside, the old one goes by the rename.
+        std::fs::write(&program, b"old").unwrap();
+        assert_eq!(move_to_disk(&source, &program, &sha, Some(100 * 1024)).unwrap(), Moved { tight: false });
+        assert_eq!(std::fs::read(&program).unwrap(), new);
+        // Room for the new one only once the old one goes: it goes first.
+        std::fs::write(&program, vec![0u8; 400_000]).unwrap();
+        let free = STATION_FLOOR_KB + 100;
+        assert_eq!(move_to_disk(&source, &program, &sha, Some(free)).unwrap(), Moved { tight: true });
+        assert_eq!(std::fs::read(&program).unwrap(), new);
+        // No room even then: nothing is touched.
+        std::fs::write(&program, b"old").unwrap();
+        assert!(move_to_disk(&source, &program, &sha, Some(10)).is_err());
+        assert_eq!(std::fs::read(&program).unwrap(), b"old");
+        // A sum that is not the program's: the old one stays, nothing half-written keeps its name.
+        assert!(move_to_disk(&source, &program, "0000", Some(100 * 1024)).is_err());
+        assert_eq!(std::fs::read(&program).unwrap(), b"old");
+        assert!(!incoming_of(&program).exists());
+    }
+
+    #[test]
+    fn the_same_file_by_another_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("duowave");
+        std::fs::write(&file, b"x").unwrap();
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("data");
+            std::os::unix::fs::symlink(dir.path(), &link).unwrap();
+            assert!(same_file(&link.join("duowave"), &file), "/data is a link on the station");
+        }
+        assert!(!same_file(&file, &dir.path().join("other")));
     }
 }

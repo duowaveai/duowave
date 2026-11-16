@@ -1,9 +1,9 @@
 // Ярлыки на столе (docs/plans/menu-scheme.md): значок и имя, нажатие открывает приложение — его окно, а без окна —
-// его страницу в «Приложениях». Только открывают: статусы — у виджетов. Сразу стоят MagicPlace и «Папки» (владелец,
-// 15.11); «+ Ярлык» — список приложений с галочками, голосом — «добавь ярлык …», «убери ярлык …». Список живёт в
-// раскладке стола (shell/widgets.ts), раскладка — на шлюзе: ярлыки одни на всех устройствах человека. На широком столе
-// — столбиком у левого края, на месте, когда стол двигают; в ленте — рядом сверху. Некоторые приложения
-// (`SHORTCUT_WHEN_INSTALLED`, AirPlay) ставят свой ярлык сами, когда их поставили, — один раз.
+// его страницу в «Приложениях». Только открывают: статусы — у виджетов. Ленты по умолчанию нет, и ярлыков в ней сразу
+// нет (владелец, 16.11): её включают в «Настройках» → «Оформление» (`shortcutsBar`); «+ Ярлык» — список приложений с
+// галочками, голосом — «добавь ярлык …», «убери ярлык …». Список живёт в раскладке стола (shell/widgets.ts), раскладка
+// — на шлюзе: ярлыки одни на всех устройствах человека. На широком столе — столбиком у левого края, на месте, когда
+// стол двигают; в ленте — рядом сверху.
 
 import { useEffect, useState } from 'preact/hooks';
 
@@ -80,7 +80,14 @@ function sounds(heard: string, title: string): boolean {
     return said.startsWith(stem) || name.startsWith(said);
 }
 
-export function Shortcuts({ layout, actions, place }: { layout: DeskLayout; actions: DeskActions; place: 'column' | 'row' }) {
+type BarProps = { layout: DeskLayout; actions: DeskActions; place: 'column' | 'row' };
+
+/** Лента ярлыков — только когда её включили в настройках; выключена — ни списка приложений, ни голосовых фраз. */
+export function Shortcuts(props: BarProps) {
+    return props.layout.shortcutsBar ? <ShortcutsBar {...props} /> : null;
+}
+
+function ShortcutsBar({ layout, actions, place }: BarProps) {
     const candidates = useShortcutCandidates();
     const [menu, setMenu] = useState(false);
     const list = layout.shortcuts ?? STARTING_SHORTCUTS;

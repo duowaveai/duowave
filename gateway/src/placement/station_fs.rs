@@ -41,6 +41,14 @@ pub const FIRED: &str = "/data/opt/duowave/safety-fired";
 pub const SAFETY_OFF: &str = "/data/opt/duowave/safety-off";
 /// An update was installed: the version before it is `duowave.previous` until the new one has run well.
 pub const UPDATED: &str = "/data/opt/duowave/updated";
+/// The new version tried from memory (src/updates/trial.rs): which, where, since when.
+pub const TRYING: &str = "/data/opt/duowave/trying";
+/// A trial that ended without its move to the disk — the version, when, why — until a later update goes through.
+pub const TRIAL_FAILED: &str = "/data/opt/duowave/trial-failed";
+/// Where the trial's program lives: memory (/tmp is RAM on the station).
+pub const TRIAL_DIR: &str = "/tmp";
+/// This boot's id: a trial's mark from another boot was left before a restart.
+pub const BOOT_ID: &str = "/proc/sys/kernel/random/boot_id";
 /// Who updates the program here: pc (the computer that installed it), yam (the YAM package duowave/gateway).
 pub const MANAGED: &str = "/data/opt/duowave/managed-by";
 /// The settings the computer sent, read by the gateway at its next start (src/placement/transfer.rs): in its state
@@ -424,7 +432,7 @@ impl StationFs {
         } else {
             let target = self.path(BIN);
             std::fs::create_dir_all(target.parent().expect("a folder")).map_err(|error| error.to_string())?;
-            if source != target {
+            if !same_file(&source, &target) {
                 let bytes = std::fs::read(&source).map_err(|error| format!("{}: {error}", source.display()))?;
                 write_atomic(&target, &bytes)?;
                 make_executable(&target);
@@ -624,7 +632,7 @@ impl StationFs {
         let _ = write_atomic(&self.path(UPDATED), format!("{version}\n").as_bytes());
     }
 
-    /// The new version ran well: the one before goes, and its 12 MB with it.
+    /// The new version ran well: the one before goes, and its 20 MB with it.
     pub fn settle_update(&self, program: &Path) -> bool {
         if !self.exists(UPDATED) {
             return false;
@@ -632,6 +640,56 @@ impl StationFs {
         let _ = std::fs::remove_file(crate::updates::install::previous_of(program));
         let _ = std::fs::remove_file(self.path(UPDATED));
         true
+    }
+
+    /// The program the service runs from the disk: the one `gateway-bin` names (the panel's install, a YAM package),
+    /// else the panel's own place. Not the running program's path: a trial runs from memory.
+    pub fn program_on_disk(&self) -> PathBuf {
+        match self.read(BIN_LINK).map(|text| text.trim().to_string()).filter(|text| !text.is_empty()) {
+            Some(program) => self.path(&program),
+            None => self.path(BIN),
+        }
+    }
+
+    /// The new version tried from memory now, as its mark says.
+    pub fn trial(&self) -> Option<crate::updates::trial::Trying> {
+        serde_json::from_str(self.read(TRYING)?.trim()).ok()
+    }
+
+    pub fn set_trial(&self, trying: &crate::updates::trial::Trying) -> Result<(), String> {
+        std::fs::create_dir_all(self.path(DIR)).map_err(|error| error.to_string())?;
+        let text = serde_json::to_string(trying).map_err(|error| error.to_string())?;
+        write_atomic(&self.path(TRYING), format!("{text}\n").as_bytes())
+    }
+
+    pub fn clear_trial(&self) {
+        let _ = std::fs::remove_file(self.path(TRYING));
+    }
+
+    /// The last trial that ended without its move to the disk.
+    pub fn trial_failed(&self) -> Option<crate::updates::trial::TrialFailed> {
+        serde_json::from_str(self.read(TRIAL_FAILED)?.trim()).ok()
+    }
+
+    pub fn set_trial_failed(&self, failed: &crate::updates::trial::TrialFailed) {
+        let _ = std::fs::create_dir_all(self.path(DIR));
+        if let Ok(text) = serde_json::to_string(failed) {
+            let _ = write_atomic(&self.path(TRIAL_FAILED), format!("{text}\n").as_bytes());
+        }
+    }
+
+    pub fn clear_trial_failed(&self) {
+        let _ = std::fs::remove_file(self.path(TRIAL_FAILED));
+    }
+
+    /// Where a trial's program is put: memory.
+    pub fn trial_dir(&self) -> PathBuf {
+        self.path(TRIAL_DIR)
+    }
+
+    /// This boot's id.
+    pub fn boot_id(&self) -> Option<String> {
+        self.read(BOOT_ID).map(|text| text.trim().to_string()).filter(|text| !text.is_empty())
     }
 
     /// Our copy of the config as the station has it now.
@@ -700,6 +758,19 @@ pub fn with_env(text: &str, key: &str, value: &str) -> String {
         lines.push(format!("{key}={value}"));
     }
     lines.join("\n") + "\n"
+}
+
+/// Whether two paths name one file. On the station /data is a link to /bkupgrade/data, so the running program says it
+/// is /bkupgrade/data/opt/duowave/bin/duowave while BIN is /data/…: copied onto itself it needed its 23 MB twice and
+/// ran out of room (live 16.11).
+fn same_file(one: &Path, other: &Path) -> bool {
+    if one == other {
+        return true;
+    }
+    match (std::fs::canonicalize(one), std::fs::canonicalize(other)) {
+        (Ok(one), Ok(other)) => one == other,
+        _ => false,
+    }
 }
 
 /// Written beside and renamed over: a crash midway leaves the old file or the new, never half of one.
@@ -963,6 +1034,20 @@ pub(crate) mod tests {
         let program = dir.path().join("duowave-new");
         std::fs::write(&program, vec![7u8; 2048]).unwrap();
         program
+    }
+
+    /// Live 16.11: /data on the station is a link, so the program and BIN were one file under two names.
+    #[cfg(unix)]
+    #[test]
+    fn knows_one_file_under_two_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("duowave"), "program").unwrap();
+        std::os::unix::fs::symlink(&real, dir.path().join("data")).unwrap();
+        assert!(same_file(&real.join("duowave"), &dir.path().join("data/duowave")));
+        std::fs::write(real.join("other"), "program").unwrap();
+        assert!(!same_file(&real.join("duowave"), &real.join("other")));
     }
 
     #[test]

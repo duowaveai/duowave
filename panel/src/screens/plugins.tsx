@@ -412,7 +412,8 @@ export function InstalledPackageSheet({
     const memory = pluginMemoryLine(view);
     const contributes = view.contributes;
     const section = appSectionOf(view.id);
-    // «Ярлык на столе» (docs/plans/menu-scheme.md): ярлыки — в раскладке стола, она на шлюзе.
+    // «Ярлык на столе» (docs/plans/menu-scheme.md): ярлыки — в раскладке стола, она на шлюзе. Переключатель — только
+    // когда лента ярлыков включена в настройках.
     const [desk, deskDo] = useDeskLayout(panel.role.role);
     const shortcuts = desk.shortcuts ?? STARTING_SHORTCUTS;
     const pinned = shortcuts.includes(view.id);
@@ -452,7 +453,7 @@ export function InstalledPackageSheet({
                     {update && <Action tone="on" label={tr.catalog.update} busy={update.busy} disabled={update.busy} onClick={update.run} />}
                 </div>
             )}
-            {runs && view.enabled && (
+            {runs && view.enabled && desk.shortcutsBar && (
                 <label class="w-toggle">
                     <span class="flex-1 min-w-0 flex flex-col">
                         <span class="w-strong">{tr.desk.shortcutOnDesk}</span>

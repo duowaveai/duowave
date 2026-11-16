@@ -86,7 +86,7 @@ impl Provider for System {
             (SCHEDULE, crate::tr!("Расписание приложений")),
             (SMART_HOME, crate::tr!("Умный дом")),
             (CONTENT, crate::tr!("Музыка и сказки семьи")),
-            (HOME, crate::tr!("Дом: страна, место погоды, ленты новостей")),
+            (HOME, crate::tr!("Дом: место погоды, ленты новостей")),
             (BRAIN, crate::tr!("Модель «Мозга»")),
             (MEMORY, crate::tr!("Память: интересы дома")),
             (HEARING, crate::tr!("Слух: распознать речь в своём файле")),
@@ -133,7 +133,6 @@ impl Provider for System {
             HOME => vec![
                 Handle::new("weather-place", Level::Call).titled(&crate::tr!("город погоды")),
                 Handle::new("news-feeds", Level::Call).titled(&crate::tr!("ленты новостей")),
-                Handle::new("country", Level::Call).titled(&crate::tr!("страна дома")),
             ],
             MEMORY => {
                 vec![Handle::new("interests", Level::Call).titled(&crate::tr!("что дом любит смотреть и читать"))]
@@ -189,7 +188,12 @@ impl Provider for System {
                 (BRAIN, "models") => services.models().await.map_err(failed),
                 (BRAIN, "agent") => services.agent(&id, input.clone()).await.map_err(failed),
                 (PLAYER, "playing") => services
-                    .playing(&id, text("state").unwrap_or_default(), text("device"))
+                    .playing(
+                        &id,
+                        text("state").unwrap_or_default(),
+                        text("device"),
+                        crate::skills::media::app_playback::AppTrack::from_letter(&input),
+                    )
                     .await
                     .map(|device| serde_json::json!({ "device": device }))
                     .map_err(failed),
@@ -207,7 +211,6 @@ impl Provider for System {
                     .map_err(failed),
                 (HOME, "weather-place") => Ok(services.weather_place().map(Value::String).unwrap_or(Value::Null)),
                 (HOME, "news-feeds") => Ok(Value::Array(services.news_feeds())),
-                (HOME, "country") => Ok(serde_json::json!({ "country": services.home_country() })),
                 (NETWORK, "connections") => services.network_connections(&id, input.clone()).map_err(failed),
                 (BRAIN, _) => Err(BusError::Failed(crate::tr!(
                     "модель отвечает словами приложения полем model в ответе на фразу, не письмом"

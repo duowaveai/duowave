@@ -1,0 +1,51 @@
+/* Шаг «Кто думает» первых шагов (screens/onb/brain.tsx): раскладка доски Brain холста «Онбординг» — то, что на доске
+   стоит в style= у <main class="ob-main"> и его детей. Классы холста — в onboarding-canvas.css; здесь только раскладка
+   и узкий экран (колонка, как телефонные доски). Всё под .onb. */
+
+/* Сам <main> доски: колонка, 18px между рядами. Боковые 80px доски = 64px рамки (.onb-main) + 16px здесь; по высоте
+   центрует рамка (margin: auto). Шире доски (1280) не растягиваемся. */
+.onb .ob-brain { display: flex; flex-direction: column; align-items: stretch; gap: 18px; width: 100%; max-width: 1152px; padding: 0 16px; box-sizing: border-box; }
+.onb .ob-brain-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 40px; }
+.onb .ob-brain-head .lead { flex: 0 1 520px; min-width: 0; font-size: 15px; line-height: 1.55; }
+.onb .ob-brain-opts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+
+/* Карточка под выбором: вход, ключ, поиск модели на компьютере. */
+.onb .ob-brain-card { min-height: 84px; display: flex; align-items: center; flex-wrap: wrap; gap: 18px; }
+.onb .ob-brain-card .mark { width: 32px; height: 32px; }
+.onb .ob-brain-card .mark-busy { width: 28px; height: 28px; margin: 2px; }
+.onb .ob-brain-text { flex: 1; min-width: 0; }
+.onb .ob-brain-full { flex: 1 0 100%; min-width: 0; }
+.onb .ob-brain-problem { margin: 0; color: var(--bad); }
+.onb .ob-brain-key { flex: 1; min-width: 200px; }
+.onb .ob-brain-key-btn { align-self: flex-end; }
+.onb .ob-brain-key-note { width: 260px; align-self: flex-end; }
+/* Обёртка поля холста (div.field) — не капсула поля пульта (glass.css .field). */
+.onb .ob-brain div.field { padding: 0; border: 0; border-radius: 0; background: none; min-height: 0; }
+
+/* Шаги входа из пульта (ui/sign-in.tsx): ссылка, код, ошибка — словами холста. */
+.onb .ob-brain-steps .t-caption { font-size: 13px; line-height: 18px; color: var(--sub); }
+.onb .ob-brain-steps .c-accent-text { color: var(--accent-text); }
+.onb .ob-brain-steps .c-dot-offline { color: var(--bad); }
+.onb .ob-brain-steps input.field { display: block; height: 40px; padding: 0 14px; border-radius: var(--radius-inner); border: 1px solid var(--line); background: var(--paper); color: var(--text); font: 400 14px/1 var(--font-ui); }
+.onb .ob-brain-steps input.field:focus { outline: none; border-color: var(--ink); }
+
+/* Низ: «Готовлю слух» слева, серая строка справа. */
+.onb .ob-brain-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.onb .ob-brain-foot > .small { margin-left: auto; }
+.onb .ob-brain-foot .ear { min-width: 0; }
+
+@media (max-width: 760px) {
+    .onb .ob-brain { gap: 14px; padding: 0; }
+    .onb .ob-brain-head { flex-direction: column; align-items: flex-start; gap: 8px; }
+    .onb .ob-brain-head .h2 { font-size: 28px; }
+    .onb .ob-brain-head .lead { flex: none; font-size: 14px; line-height: 20px; }
+    .onb .ob-brain-opts { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+    .onb .ob-brain-card { flex-direction: column; align-items: stretch; gap: 12px; }
+    .onb .ob-brain-card .mark { align-self: flex-start; }
+    .onb .ob-brain-card .dw-btn { width: 100%; }
+    .onb .ob-brain-key { min-width: 0; }
+    .onb .ob-brain-key-btn, .onb .ob-brain-key-note { align-self: stretch; width: auto; }
+    .onb .ob-brain-foot { flex-direction: column; align-items: stretch; gap: 10px; }
+    .onb .ob-brain-foot > .small { margin-left: 0; }
+    .onb .ob-brain-foot .ear { flex-wrap: wrap; border-radius: var(--radius-card); }
+}

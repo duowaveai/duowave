@@ -145,6 +145,9 @@ export function applyTheme(): void {
     // Материал один — «Минимал»; вид — для правил стилей, которым надо знать раскладку.
     root.dataset.look = 'minimal';
     root.dataset.shell = view;
+    // Рисованный фон темы (backdrop.tsx): стол над ним прозрачный (ui/desk.css).
+    if (theme.backdrop?.[mode]) root.dataset.backdrop = 'on';
+    else delete root.dataset.backdrop;
     let style = document.getElementById('theme') as HTMLStyleElement | null;
     if (!style) {
         style = document.createElement('style');

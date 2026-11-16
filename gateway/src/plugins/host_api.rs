@@ -369,10 +369,6 @@ pub trait HostServices: Send + Sync {
     fn weather_place(&self) -> Option<String>;
     /// The news feeds switched on in the panel: `[{url, topic}]`.
     fn news_feeds(&self) -> Vec<Value>;
-    /// The household's country (`system/home` → `country`): an ISO code, None when the household did not say.
-    fn home_country(&self) -> Option<String> {
-        None
-    }
     /// An app's connections to the internet through its own servers (`system/network` → `connections`, src/egress):
     /// all of them now, `{items: [{id, name, country, url, state, current}]}`.
     fn network_connections(&self, caller: &str, input: Value) -> Result<Value, String> {
@@ -387,14 +383,16 @@ pub trait HostServices: Send + Sync {
     }
     /// The app `caller` plays by itself on a station, stands paused or stopped (`system/player` → `playing`): the
     /// device it is kept for. Its start pauses the station's own player; while it plays, the player's voice commands
-    /// go to it.
+    /// go to it. `track`: what it plays, when it says — `title`, `artist`, `cover` (an http(s) address) — for the
+    /// panel's «Музыка».
     fn playing(
         &self,
         caller: &str,
         state: String,
         device: Option<String>,
+        track: Option<crate::skills::media::app_playback::AppTrack>,
     ) -> BoxFuture<'static, Result<String, String>> {
-        let _ = (caller, state, device);
+        let _ = (caller, state, device, track);
         Box::pin(async { Err(crate::tr!("плеера колонки здесь нет")) })
     }
     /// A message to the owner from the plugin `caller` (`system/notify`, plugins/schedule.rs).

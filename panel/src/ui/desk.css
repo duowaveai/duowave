@@ -126,6 +126,14 @@ html[data-theme='dark'] .role-chip-ink { background: #f5f3f1; color: #11100f; }
     background-size: 24px 24px;
     background-attachment: fixed;
 }
+/* Рисованный фон темы (shell/backdrop.tsx) — под всем пультом; стол над ним прозрачный и без точек. */
+.theme-backdrop { position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; }
+.theme-backdrop-layer { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+/* Сцены рисуют светлым; на светлом фоне — тёмным того же оттенка. */
+.theme-backdrop[data-ink='dark'] .theme-backdrop-layer { filter: invert(1) hue-rotate(180deg); }
+.theme-backdrop-dim { position: absolute; inset: 0; }
+html[data-backdrop='on'] .desk-main,
+html[data-backdrop='on'] .desk-canvas { background-color: transparent; background-image: none; }
 .desk-main > .banner-offline { max-width: 560px; margin: 0 auto 16px; }
 
 /* Широкий экран: колонка посередине, виджеты в столбцах по бокам. */
@@ -189,6 +197,12 @@ html[data-theme='dark'] .role-chip-ink { background: #f5f3f1; color: #11100f; }
 html[data-theme='dark'] .desk-add-tile { border-color: #3a3734; }
 
 /* ─── Виджет ───────────────────────────────────────────────────── */
+/* Пустой виджет с `hideWhileEmpty` (ui/widget.tsx) не виден вместе со своим местом: в столбце, в ленте и в сетке ленты
+   без видимых виджетов не остаётся лишнего зазора. */
+.widget[hidden],
+.widget-bare[hidden],
+.desk-slot:has(> [hidden]),
+.desk-feed-grid:not(:has(> :not([hidden]))) { display: none; }
 .widget {
     position: relative;
     background: var(--widget-bg);
@@ -648,9 +662,15 @@ html[data-theme='dark'] .widget.music { background: color-mix(in srgb, var(--mus
 .desk-placed:hover .desk-resize,
 .desk-placed.is-moving .desk-resize { opacity: 1; }
 .desk-canvas-banner { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); z-index: 6; width: min(560px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 10px; }
+/* Поле, опущенное под баннер (desk-canvas.tsx, push): ходит плавно, когда баннер пришёл или ушёл. */
+.desk-push { position: absolute; inset: 0; transition: transform 0.25s ease; }
+@media (prefers-reduced-motion: reduce) { .desk-push { transition: none; } }
 
-/* Замок, масштаб и мини-карта — справа внизу, над полем; ряд масштаба — над картой. */
-.desk-tools { position: absolute; right: 20px; bottom: calc(var(--dock-gap) + env(safe-area-inset-bottom)); z-index: 6; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+/* Замок, масштаб и мини-карта — справа внизу, над полем: ряд с замком в углу — на линии дока, серединой к его середине,
+   карта — над рядом. Закреплённый стол (как он начинается) показывает в углу только замок: «Расставить заново» и
+   масштаб не видны, но держат место — замок не прыгает, когда стол открывают, — а карты нет. */
+.desk-tools { position: absolute; right: 20px; bottom: calc(var(--dock-gap) + (var(--dock-h) - 32px) / 2 + env(safe-area-inset-bottom)); z-index: 6; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.desk-tools.is-locked .desk-tool { visibility: hidden; }
 .desk-zoom { display: flex; align-items: center; gap: 6px; }
 .desk-zoom-btn {
     width: 32px;
@@ -666,10 +686,11 @@ html[data-theme='dark'] .widget.music { background: color-mix(in srgb, var(--mus
 .desk-zoom-btn:hover { background: var(--hover-bg); }
 .desk-zoom-level { min-width: 52px; height: 32px; border-radius: 999px; font-size: 13px; line-height: 18px; color: var(--text); font-variant-numeric: tabular-nums; }
 .desk-zoom-level:hover { background: var(--hover-bg); }
-/* Замок: закреплённый стол — чёрный круг (выбранное в «Минимале» — чернилами). Масштаб, «Расставить заново» и карта тогда
-   не нажимаются, а поле и виджеты не обещают курсором, что их можно тащить. */
-.desk-zoom-btn[aria-pressed='true'] { background: var(--ink-bg); border-color: var(--ink-bg); color: var(--ink-fg); }
-.desk-zoom-btn[aria-pressed='true']:hover { background: var(--ink-hi); border-color: var(--ink-hi); }
+/* Замок: закреплённый стол — обычный тихий круг (так стол живёт всегда), открытый для правки — чёрный (выбранное в
+   «Минимале» — чернилами): видно, что стол сейчас можно двигать, и закрыть его — там же. У закреплённого поле и виджеты
+   не обещают курсором, что их можно тащить. */
+.desk-lock[aria-pressed='false'] { background: var(--ink-bg); border-color: var(--ink-bg); color: var(--ink-fg); }
+.desk-lock[aria-pressed='false']:hover { background: var(--ink-hi); border-color: var(--ink-hi); }
 .desk-zoom-btn:disabled,
 .desk-zoom-level:disabled { opacity: 0.45; cursor: default; }
 .desk-zoom-btn:disabled:hover { background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg); }
@@ -677,20 +698,17 @@ html[data-theme='dark'] .widget.music { background: color-mix(in srgb, var(--mus
 .desk-canvas.is-locked,
 .desk-canvas.is-locked:active { cursor: default; }
 .desk-map { position: relative; width: 132px; height: 84px; border-radius: 12px; background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg); border: 1px solid var(--glass-border); overflow: hidden; cursor: pointer; display: block; }
-.desk-map:disabled { cursor: default; }
 .desk-map-item { position: absolute; border-radius: 2px; background: #e4e0db; }
 html[data-theme='dark'] .desk-map-item { background: #3a3734; }
 .desk-map-item.is-scene { border-radius: 50%; }
 .desk-map-item.is-add { background: transparent; border: 1px dashed #d6d1cb; }
 .desk-map-view { position: absolute; border: 1.5px solid var(--text); border-radius: 6px; }
-/* На 1280 точках и уже мини-карты нет, и ряд масштаба с замком опускается вниз — на линию дока, серединой к его середине,
-   а не висит в воздухе. Где он налез бы на док (desk-canvas.tsx меряет: у помощника «+» — док 623, зазор 12 и круг 52
-   посередине — до ~1160 точек), `is-raised` ставит его над доком, на ту же высоту, что над картой (22 + 84 + 8 =
-   22 + 72 + 20). */
+/* Где ряд налез бы на док (desk-canvas.tsx меряет: у помощника «+» — док 623, зазор 12 и круг 52 посередине — до ~1160
+   точек), `is-raised` ставит его над доком. Ряд меряется целиком, со спрятанными кнопками, — замок не прыгает и тут. */
+.desk-tools.is-raised { bottom: calc(var(--dock-gap) + var(--dock-h) + 20px + env(safe-area-inset-bottom)); }
+/* На 1280 точках и уже мини-карты нет. */
 @media (max-width: 1280px) {
     .desk-map { display: none; }
-    .desk-tools { bottom: calc(var(--dock-gap) + (var(--dock-h) - 32px) / 2 + env(safe-area-inset-bottom)); }
-    .desk-tools.is-raised { bottom: calc(var(--dock-gap) + var(--dock-h) + 20px + env(safe-area-inset-bottom)); }
 }
 
 /* ─── Окно колонки у помощника (shell/station-window.tsx) ──────── */
@@ -959,6 +977,8 @@ html[data-look] .code-editor:focus-within { border-color: var(--text); }
 .apps-make:hover { background: var(--hover-bg); }
 
 /* «Мои» плитками: значок, имя, одна строка состояния. */
+/* Карточка с плитками — ровный отступ со всех сторон: у `card-list` сверху 4px под строки списка, плиткам мало. */
+.card-list.card-apps { padding: calc(16px * var(--density, 1)); }
 .app-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
 .app-tile {
     display: flex;
@@ -1063,6 +1083,10 @@ html[data-look] .code-editor:focus-within { border-color: var(--text); }
 .app-icon.is-warm { background: linear-gradient(150deg, #f6d6c4, #f07a4a 55%, #b4232c); }
 .app-icon.is-cool { background: linear-gradient(150deg, #9fb0c2, #5c6f8c 50%, #2b3448); }
 .app-icon.is-violet { background: linear-gradient(150deg, #b9a6ff, #8b7cff 50%, #5b47d6); }
+/* Логотип встроенного приложения (ui/builtin-logos.tsx): градиент задаёт сам логотип, здесь — блик сверху и тонкий край. */
+.app-icon.is-logo { position: relative; overflow: hidden; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.1); }
+.app-icon.is-logo::after { content: ''; position: absolute; inset: 0; border-radius: inherit; background: radial-gradient(120% 70% at 30% 0%, rgba(255, 255, 255, 0.28), transparent 60%); pointer-events: none; }
+.app-icon.is-logo svg { position: relative; display: block; }
 .app-icon-letter { font-family: 'Inter Tight', Inter, sans-serif; font-weight: 400; font-size: 1.1em; line-height: 1; }
 
 /* Страница компьютера в пульте колонки (screens/helper-pc.tsx, этап 4): фрейм без рамки, а внутри — прозрачно. */

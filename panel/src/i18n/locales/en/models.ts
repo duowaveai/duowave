@@ -38,11 +38,14 @@ const en: Translation<typeof ru> = {
     ourByComputer: 'Our answers are in the computer’s voice, Yandex’s answers in Alice’s voice.',
     aliceAnswers: 'Alice’s voice answers.',
     alice: 'Alice',
+    cloudVoice: 'Cloud voice',
+    allByCloud: 'All answers are in the cloud voice.',
+    ourByCloud: 'Our answers are in the cloud voice, Yandex’s in Alice’s voice. In “Own” — all in the cloud voice.',
 
     ownVoicesHere: 'Own voices live on the computer',
     ownRecognitionHere: 'Own recognition lives on the computer',
-    absentVoiceNote: 'Without the computer’s voice, Alice’s voice answers here. An own voice is cloud synthesis with an OpenAI-compatible /audio/speech: TTS_PROVIDER and TTS_OWN_URL in the gateway’s .env.',
-    absentAsrNote: 'Own recognition here is cloud-based, with an OpenAI-compatible /audio/transcriptions: ASR_BASE_URL and ASR_API_KEY in the gateway’s .env.',
+    absentVoiceNote: 'Own voices live on the computer. Here the cloud voice (set up above) or Alice’s voice answers.',
+    absentAsrNote: 'Own recognition lives on the computer. Here it is the cloud’s (set up above) or Yandex’s hearing.',
 
     readingCatalog: 'Reading the catalog…',
 

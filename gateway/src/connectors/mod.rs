@@ -221,6 +221,14 @@ pub fn host_of(url: &str) -> String {
     }
 }
 
+/// A server answers: a cloud's `GET /models` with its key (it has no /health), a local model server its /health.
+pub async fn probe_with(base_url: &str, key: Option<&str>) -> bool {
+    if !is_local_url(Some(base_url)) {
+        return crate::speech::cloud_speech::check_models(base_url, key).await.is_none();
+    }
+    probe(base_url).await
+}
+
 /// A local model server answers its /health.
 pub async fn probe(base_url: &str) -> bool {
     let base = base_url.trim_end_matches('/');
@@ -320,7 +328,7 @@ pub mod builtin {
                 if !asr.enabled {
                     return ConnectorStatus::off(crate::tr!("своё распознавание не используется"));
                 }
-                if probe(&asr.base_url).await {
+                if probe_with(&asr.base_url, asr.api_key.as_deref()).await {
                     ConnectorStatus::ready(asr.base_url.clone())
                 } else {
                     ConnectorStatus::error(crate::tr!("{url} не отвечает", url = asr.base_url))
@@ -493,14 +501,15 @@ pub mod builtin {
     /// The gateway's voice server (Silero, Piper) or an OpenAI-compatible synthesis.
     pub fn tts(config: &Config, voice: Arc<dyn VoiceInfo>, modes: Arc<dyn ModeSource>) -> Arc<dyn Connector> {
         let url = config.gateway.tts.own.as_ref().map(|own| own.base_url.clone());
+        let key = config.gateway.tts.own.as_ref().and_then(|own| own.api_key.clone());
         let cloud = !is_local_url(url.as_deref());
         let status: StatusFn = Arc::new(move || {
-            let (url, voice, modes) = (url.clone(), voice.clone(), modes.clone());
+            let (url, key, voice, modes) = (url.clone(), key.clone(), voice.clone(), modes.clone());
             async move {
                 let Some(url) = url else {
                     return ConnectorStatus::unset(crate::tr!("свой голосовой сервер не задан"));
                 };
-                if probe(&url).await {
+                if probe_with(&url, key.as_deref()).await {
                     ConnectorStatus::ready(voice.describe(modes.current() != PanelMode::Own))
                 } else {
                     ConnectorStatus::error(crate::tr!("{url} не отвечает", url = url))

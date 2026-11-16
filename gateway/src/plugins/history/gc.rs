@@ -5,7 +5,9 @@
 //! - **By the rules:** the draft's steps of the last `days`, at most `steps` an app; the versions, at most `versions`;
 //!   the data snapshots, at most `data` an app (an older version keeps its record, without its data).
 //! - **Over the budget** the allowances halve, round by round, the marks and the last two versions never.
-//! - **A removed app** keeps its history 30 days, then it goes — unless its draft is still there.
+//! - **A removed app** keeps its history 30 days, then it goes — unless its draft is still there. On the station it goes
+//!   at once (at its removal) when it is elsewhere too: the app came from the catalog, or the computer has all of it
+//!   (the owner's word of 16.11, docs/plans/station-update-space.md: the station's room is not spent on apps gone).
 //! - **Objects** nothing kept points to go; one younger than ten minutes stays (a step being written).
 //! - On the station that sends its history to the computer (`home`), what the computer has is cleaned harder.
 
@@ -228,10 +230,11 @@ impl History {
                 let line = self.line(&app);
                 let draft = self.dev_dir().join(&app).is_dir();
                 let installed = self.store().ref_get(&app, INSTALLED).is_some();
+                let keep_days = self.removed_days(&line);
                 let gone = self
                     .store()
                     .removed_at(&app)
-                    .is_some_and(|at| age_days(&at, now) >= REMOVED_DAYS && !draft && !installed);
+                    .is_some_and(|at| age_days(&at, now) >= keep_days && !draft && !installed);
                 if gone {
                     cleaned.records += line.len();
                     self.store().forget_app(&app);
@@ -295,6 +298,22 @@ impl History {
             );
         }
         cleaned
+    }
+
+    /// How long a removed app's history stays: `REMOVED_DAYS`; on the station none when it is elsewhere too — the app
+    /// came from the catalog, which has its versions, or the computer has every record of it. One's own app that is
+    /// nowhere else keeps its 30 days there too: the history is its only copy.
+    fn removed_days(&self, line: &[(String, Record)]) -> i64 {
+        if !self.on_station() {
+            return REMOVED_DAYS;
+        }
+        let from_catalog = line.iter().any(|(_, record)| record.kind == RecordKind::Catalog);
+        let on_computer = !line.is_empty() && line.iter().all(|(id, _)| self.was_sent(id));
+        if from_catalog || on_computer {
+            0
+        } else {
+            REMOVED_DAYS
+        }
     }
 
     /// A kept record and what it points to: its tree and files, its data (when kept) and its pictures.
@@ -434,5 +453,53 @@ mod tests {
         let stored = serde_json::json!({ "steps": 3 });
         let policy = Policy::of(false, Some(&stored));
         assert_eq!(policy.steps, 3);
+    }
+
+    #[test]
+    fn on_the_station_a_removed_apps_history_goes_at_once_when_it_is_elsewhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let version = |app: &str| {
+            let folder = dir.path().join("packages").join(app).join("1.0.0");
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join("manifest.json"), format!("{{\"id\":\"{app}\"}}")).unwrap();
+            folder
+        };
+        let (radio, mine) = (version("radio"), version("mine"));
+        let open = |name: &str, on_station: bool| {
+            History::open(dir.path().join(name), dir.path().join("dev"), None, std::sync::Arc::new(move || on_station))
+                .unwrap()
+        };
+        let station = open("station", true);
+        station.note_install(
+            "radio",
+            &radio,
+            "1.0.0",
+            RecordKind::Catalog,
+            Author::new(Who::Catalog),
+            false,
+            false,
+            None,
+        );
+        station.note_install("mine", &mine, "1.0.0", RecordKind::Install, Author::new(Who::Hand), false, false, None);
+        station.note_removed("radio", None);
+        station.note_removed("mine", None);
+        let apps = station.store().apps();
+        assert!(!apps.contains(&"radio".to_string()), "from the catalog: its versions are there");
+        assert!(apps.contains(&"mine".to_string()), "one's own and nowhere else: its 30 days");
+        // A computer keeps a removed app's history its 30 days.
+        let computer = open("computer", false);
+        computer.note_install(
+            "radio",
+            &radio,
+            "1.0.0",
+            RecordKind::Catalog,
+            Author::new(Who::Catalog),
+            false,
+            false,
+            None,
+        );
+        computer.note_removed("radio", None);
+        computer.clean();
+        assert!(computer.store().apps().contains(&"radio".to_string()));
     }
 }

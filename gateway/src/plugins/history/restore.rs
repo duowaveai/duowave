@@ -219,6 +219,14 @@ impl History {
             version = Some(placed.0.clone());
             tree = Some(placed.1);
             host.take_version(app, &placed.0, actor.clone()).await?;
+            // On the station only the version in force stays (docs/plans/station-update-space.md, decision 5).
+            if self.on_station() && host.origin_of(app) == crate::plugins::registry::Origin::Catalog {
+                if let Err(error) = crate::plugins::install::remove_other_versions(host.packages_dir(), app, &placed.0)
+                {
+                    tracing::warn!(target: "plugins", "{app}: the other versions are not removed: {error}");
+                }
+                host.rescan();
+            }
         }
         let mut message = Vec::new();
         if what.code() {

@@ -3,6 +3,7 @@
 
 pub mod asr;
 pub mod audio;
+pub mod cloud_speech;
 pub mod endpoint;
 pub mod interim_recognition;
 pub mod listen;

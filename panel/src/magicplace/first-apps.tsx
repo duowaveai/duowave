@@ -23,11 +23,7 @@ export function firstAppsOf(view: CatalogView | null): CatalogEntry[] {
 
 export function FirstAppsSheet({ entries, onClose }: { entries: CatalogEntry[]; onClose: () => void }) {
     const panel = usePanel();
-    const actions = usePackageActions(() => undefined);
     const [done, setDone] = useState<string[]>([]);
-    const install = async (entry: CatalogEntry) => {
-        if (await actions.install(entry)) setDone((all) => [...all, entry.id]);
-    };
     return (
         <Sheet
             title={tr.magicplace.firstTitle}
@@ -51,6 +47,22 @@ export function FirstAppsSheet({ entries, onClose }: { entries: CatalogEntry[]; 
                 </div>
             }
         >
+            <FirstAppsList entries={entries} onInstalled={(id) => setDone((all) => [...all, id])} />
+        </Sheet>
+    );
+}
+
+/** Рекомендованные приложения строками, каждое — «Поставить» одним нажатием (лист выше и шаг «MagicPlace» первых шагов). */
+export function FirstAppsList({ entries, onInstalled }: { entries: CatalogEntry[]; onInstalled?: (id: string) => void }) {
+    const actions = usePackageActions(() => undefined);
+    const [done, setDone] = useState<string[]>([]);
+    const install = async (entry: CatalogEntry) => {
+        if (!(await actions.install(entry))) return;
+        setDone((all) => [...all, entry.id]);
+        onInstalled?.(entry.id);
+    };
+    return (
+        <>
             {entries.map((entry) => {
                 const installed = done.includes(entry.id);
                 const busy = actions.busy[entry.id];
@@ -79,6 +91,6 @@ export function FirstAppsSheet({ entries, onClose }: { entries: CatalogEntry[]; 
                     </div>
                 );
             })}
-        </Sheet>
+        </>
     );
 }

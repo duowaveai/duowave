@@ -605,9 +605,53 @@ export interface HomeVoice {
     up: boolean;
     /** Имя голоса компьютера («Baya»); нет — компьютер не на связи или у голоса только id. */
     voice?: string;
-    chosen: 'computer' | 'alice';
+    /** Облачный голос колонки настроен (`/api/v1/speech/cloud`): без компьютера говорит он. */
+    cloud?: boolean;
+    chosen: 'computer' | 'cloud' | 'alice';
     /** Как говорит голос компьютера: own — и ответы Яндекса им, mixed — только наши. */
     provider: 'own' | 'mixed' | 'yandex' | 'none';
+}
+
+/** Облачный слух и голос колонки (`/api/v1/speech/cloud`, docs/plans/speaker-alone.md). */
+export type CloudService = 'openai' | 'groq' | 'custom' | 'off';
+export type CloudPart = 'hearing' | 'voice';
+
+export interface CloudPartView {
+    service: CloudService;
+    model?: string;
+    voice?: string;
+    url?: string;
+    /** Слышит (говорит) сейчас: настроено и с ключом. */
+    ready: boolean;
+    /** Ключ лежит в сейфе шлюза. */
+    keySet: boolean;
+    /** Ключ общий с «Мозгом» (OpenAI, Groq). */
+    keyShared: boolean;
+    /** Задано в .env шлюза, а не в пульте. */
+    fromEnv: boolean;
+}
+
+export interface CloudSpeechView {
+    /** Шлюз колонки: он слышит и говорит через облако; у компьютера свои модели. */
+    active: boolean;
+    hearing: CloudPartView;
+    voice: CloudPartView;
+    defaults: {
+        openaiHearingModel: string;
+        groqHearingModel: string;
+        openaiVoiceModel: string;
+        openaiVoice: string;
+        openaiVoices: string[];
+    };
+}
+
+export interface CloudSpeechChange {
+    part: CloudPart;
+    service: CloudService;
+    model?: string;
+    voice?: string;
+    url?: string;
+    key?: string;
 }
 
 /** Размещение колонки в /health компьютера. */
@@ -728,6 +772,11 @@ export interface PlacementHealth {
     settingsReceivedAt?: string;
     safety?: boolean;
     safetyLast?: { what: string; at: string };
+    /** Колонка: проба новой версии из памяти сейчас и последняя, что не удалась (`why`: crashed, rebooted). */
+    update?: {
+        trial?: { version: string; since: string; until: string; appsPaused: boolean } | null;
+        trialFailed?: { version: string; at: string; why: string } | null;
+    };
     /** У компьютера: шлюз на колонке, каким его видно. */
     station?: PlacedStation;
     /** Каждая колонка с размещением на этом компьютере. */
@@ -1077,6 +1126,8 @@ export interface RequestStep {
     by?: Place;
     /** Модель, голос или возможность: «gigaam-v3», «claude-haiku-5-5», «Погода». */
     what?: string;
+    /** Приложение, что сделало шаг: услышана его фраза или модель позвала его инструмент. Шлюз постарше не пишет. */
+    app?: string;
 }
 
 /**
@@ -1123,10 +1174,10 @@ export interface TimerView {
     source: 'own' | 'station';
 }
 
-/** Что играет колонка: наш плеер или то, что она сказала о себе (Яндекс). */
+/** Что играет колонка: наш плеер, приложение само (AirPlay, YouTube) или то, что она сказала о себе (Яндекс). */
 export interface NowPlaying {
     device?: string | null;
-    source: 'own' | 'station' | 'none';
+    source: 'own' | 'station' | 'app' | 'none';
     state: 'playing' | 'paused' | 'stopped' | 'idle';
     title?: string;
     subtitle?: string;
@@ -2740,6 +2791,21 @@ export interface VoiceAddresses {
     quic: string;
 }
 
+/**
+ * Чужое на колонке: id известного мода (yajavis, pulsar, quasar-bridge…) или след неизвестного — maind-off,
+ * config-mount, alice-mount, alice-preload, low-memory. blocks — с ним DuoWave не заработает; warns — заработает, но
+ * они могут мешать друг другу. detail — файл, библиотека или свободные мегабайты.
+ */
+export interface StationNeighbour {
+    id: string;
+    severity: 'blocks' | 'warns';
+    detail?: string;
+    /** Выключен своим же выключателем, но стоит: больше не мешает. */
+    off?: boolean;
+    /** Команда самого мода, которой его выключит «Выключить»; нет — кнопки нет. */
+    switch?: string;
+}
+
 /** Первый взгляд на колонку — только чтение. */
 export interface StationCheck {
     address: string;
@@ -2756,6 +2822,10 @@ export interface StationCheck {
      * — шлюз на колонке выключен); none — нет.
      */
     copy?: { copy: 'mounted' | 'copy' | 'none'; refused?: string; refusedAt?: number };
+    /** Что ещё на колонке мешает DuoWave, худшее первым: шлюз только называет, ничего не удаляет. */
+    neighbours?: StationNeighbour[];
+    /** Свободная память колонки, КБ. */
+    memAvailableKb?: number;
     device?: string;
     target?: VoiceAddresses;
     connected?: boolean;
@@ -2796,6 +2866,21 @@ export interface UpdateStatus {
     autoCritical?: boolean;
     /** Что сделать вместо «Обновить», если шлюз не ставит обновление сам. */
     hint?: string;
+    /** На колонке: новая версия пробуется из памяти (gateway/src/updates/trial.rs). */
+    trial?: UpdateTrial;
+}
+
+/**
+ * Проба новой версии на колонке: `trying` — работает из памяти, прежняя на диске — путь назад; `waiting` — уже на диске,
+ * ждёт тихой минуты для перезапуска; `stuck` — не записалась на диск (`message` — почему).
+ */
+export interface UpdateTrial {
+    version: string;
+    since: string;
+    until: string;
+    phase: 'trying' | 'waiting' | 'stuck';
+    appsPaused: boolean;
+    message?: string;
 }
 
 // ─── Память персонажей (gateway/src/memory, docs/plans/memory.md) ───
@@ -3075,12 +3160,10 @@ export const api = {
     /** Язык дома (docs/plans/i18n.md): его читает код приложений и пульт, где человек не выбрал свой. */
     language: () => get<HouseholdLanguage>('/api/v1/language'),
     setLanguage: (language: string) => put<HouseholdLanguage>('/api/v1/language', { language }),
-    /** Страна дома (docs/plans/catalog-regions.md, 3): код ISO, `none` — «Не скажу», null — не спрошено. */
-    homeCountry: () => get<HomeCountry>('/api/v1/home/country'),
-    setHomeCountry: (country: string) => put<HomeCountry>('/api/v1/home/country', { country }),
     /** «Выход в интернет» (docs/plans/own-server.md): кто ходит напрямую, кто через свой сервер. */
     egress: () => get<EgressView>('/api/v1/egress'),
-    setEgress: (change: { mode?: EgressMode; preferred?: string | null }) => put<EgressView>('/api/v1/egress', change),
+    setEgress: (change: { on?: boolean; pick?: EgressPick; homeDirect?: boolean; onDownAll?: EgressOnDownAll; mode?: EgressMode; preferred?: string | null }) =>
+        put<EgressView>('/api/v1/egress', change),
     setEgressRow: (id: string, change: { route?: string | null; onDown?: 'wait' | 'direct' | null }) =>
         put<EgressView>(`/api/v1/egress/rows/${encodeURIComponent(id)}`, change),
     resetEgressRows: () => del<EgressView>('/api/v1/egress/rows'),
@@ -3127,6 +3210,8 @@ export const api = {
             installed: boolean;
             running: boolean;
             disabled: boolean;
+            /** Служба есть, а программы шлюза нет: свет выключили, пока обновление её записывало. */
+            programMissing?: boolean;
             local: boolean;
             fired?: string | null;
             status?: Record<string, unknown> | null;
@@ -3166,7 +3251,7 @@ export const api = {
         get<{ device?: string | null; timers: TimerView[] }>(`/api/v1/station/timers${device ? `?device=${encodeURIComponent(device)}` : ''}`, signal),
     player: (device?: string, signal?: AbortSignal) => get<NowPlaying>(`/api/v1/station/player${device ? `?device=${encodeURIComponent(device)}` : ''}`, signal),
     playerCommand: (action: PlayerCommand, device?: string) =>
-        post<{ pushed: number }>(`/api/v1/station/player/${action}${device ? `?device=${encodeURIComponent(device)}` : ''}`),
+        post<{ pushed: number; said?: string }>(`/api/v1/station/player/${action}${device ? `?device=${encodeURIComponent(device)}` : ''}`),
     stations: () => get<Station[]>('/api/v1/stations'),
     // Журнал запросов: что спрашивали и что ответили, по странице за раз; сколько дней его хранить.
     requests: (query: { limit?: number; before?: string; device?: string } = {}) => {
@@ -3190,6 +3275,8 @@ export const api = {
     connectStation: (address: string, gateway: string) => post<ConnectJob>('/api/v1/stations/connect', { address, gateway }),
     /** previous — «как было» перед последним подключением; yandex — без шлюза, как до любого. */
     restoreStation: (address: string, to: 'previous' | 'yandex' = 'yandex') => post<ConnectJob>('/api/v1/stations/connect/restore', { address, to }),
+    /** «Выключить» чужой мод на колонке его же выключателем; потом пульт смотрит колонку снова. */
+    turnOffStationMod: (address: string, id: string) => post<{ turnedOff: string }>('/api/v1/stations/connect/turn-off', { address, id }),
     uninstallStation: (address: string) => post<ConnectJob>('/api/v1/stations/connect/uninstall', { address }),
     connectJob: (id: string) => get<ConnectJob>(`/api/v1/stations/connect/jobs/${encodeURIComponent(id)}`),
     // Вход
@@ -3258,6 +3345,9 @@ export const api = {
     /** Голос колонки, пока компьютер даёт ей свой (gateway/src/models/home_voice.rs). */
     homeVoice: () => get<HomeVoice>('/api/v1/models/home-voice'),
     setHomeVoice: (voice: HomeVoice['chosen']) => post<HomeVoice>('/api/v1/models/home-voice', { voice }),
+    cloudSpeech: () => get<CloudSpeechView>('/api/v1/speech/cloud'),
+    setCloudSpeech: (change: CloudSpeechChange) => put<CloudSpeechView>('/api/v1/speech/cloud', change),
+    checkCloudSpeech: (part: CloudPart) => post<{ problem?: string }>('/api/v1/speech/cloud/check', { part }),
     activateAsr: (id: string) => post<{ needsRestart: boolean }>('/api/v1/models/asr/activate', { id }),
     /** Распознавание на этом компьютере, лёгким запросом; local: null — распознаёт сервер. */
     localAsr: () => get<{ local: LocalAsr | null }>('/api/v1/models/asr/local'),
@@ -3613,11 +3703,11 @@ export interface HouseholdLanguage {
     language: string | null;
 }
 
-export interface HomeCountry {
-    country: string | null;
-}
-
-export type EgressMode = 'off' | 'blocked' | 'all';
+export type EgressMode = 'off' | 'blocked' | 'all' | 'only';
+/** «Режим VPN для DuoWave»: все, все кроме отмеченных (их маршрут `direct`), только отмеченные (`server` или подключение). */
+export type EgressPick = 'all' | 'except' | 'only';
+/** «Если VPN не отвечает» для всех: безопасно (с ключом ждут, Алиса напрямую), все ждут, все напрямую. */
+export type EgressOnDownAll = 'safe' | 'wait' | 'direct';
 export type EgressSection = 'alice' | 'brain' | 'voice' | 'mcp' | 'apps' | 'own' | 'other';
 
 export interface EgressConnection {
@@ -3636,7 +3726,7 @@ export type EgressDecision =
     | { kind: 'need'; countries: string[]; wait: boolean };
 
 export type EgressWhy =
-    | { kind: 'noConnections' | 'off' | 'all' | 'own' | 'noCountry' | 'homeWorks' | 'noData' }
+    | { kind: 'noConnections' | 'off' | 'all' | 'notChosen' | 'own' | 'noCountry' | 'homeWorks' | 'noData' }
     | { kind: 'catalog'; country: string }
     | { kind: 'learned'; why: string };
 
@@ -3660,6 +3750,12 @@ export interface EgressRow {
 
 export interface EgressView {
     mode: EgressMode;
+    /** Большой переключатель: `mode` не `off`. */
+    on: boolean;
+    pick: EgressPick;
+    /** «Открывать напрямую то, что работает из страны дома». */
+    homeDirect: boolean;
+    onDownAll: EgressOnDownAll;
     home: string | null;
     preferred: string | null;
     ownRules: boolean;

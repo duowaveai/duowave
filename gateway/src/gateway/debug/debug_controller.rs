@@ -243,11 +243,18 @@ async fn player(
 #[derive(Serialize)]
 struct Pushed {
     pushed: usize,
+    /// What Yandex plays: the words its button was said to Alice as («пауза»).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    said: Option<&'static str>,
 }
 
+/// How long a button said to Yandex waits for the station to call back with it.
+const SAID_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The player from the panel: pause, resume, next, previous, stop, like — pushed to the station's live session as
-/// the voice commands would answer them. What Yandex plays while its session is up is refused with the words to say
-/// (the voice command goes to Yandex; the panel cannot send it there).
+/// the voice commands would answer them. What Yandex plays while its session is up: the button's words go to Yandex
+/// as if said aloud (`run_words`, the owner's decision 5 of 16.11, docs/plans/speaker-alone.md) — Yandex holds its
+/// queue.
 async fn player_command(
     State(app): State<Arc<App>>,
     caller: Caller,
@@ -265,12 +272,22 @@ async fn player_command(
         return Err(ApiError::conflict(crate::tr!("Колонка не на связи.")));
     };
     let yandex = app.modes.yandex_allowed() && session.yandex_connected();
+    if let Some(words) = app.skills.yandex_words(&session.device_tag, &action, yandex) {
+        let done = tokio::time::timeout(SAID_WAIT, session.run_words(words.to_string())).await.unwrap_or(false);
+        if !done {
+            return Err(ApiError::conflict(crate::tr!(
+                "Колонка не ответила — скажите ей «Алиса, {words}».",
+                words = words
+            )));
+        }
+        return Ok(ok(Pushed { pushed: 0, said: Some(words) }));
+    }
     let directives = app.skills.player_command(&session.device_tag, &action, yandex).await?;
     let pushed = directives.len();
     for directive in directives {
         session.push(directive);
     }
-    Ok(ok(Pushed { pushed }))
+    Ok(ok(Pushed { pushed, said: None }))
 }
 
 /// Speaks `text` on the station; `latest` picks the station's main connection.

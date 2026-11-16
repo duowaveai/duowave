@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { AccessCatalog, ApiError, CatalogEntry, Health, MovedGateway, SessionSnapshot, Station, UnsupportedEntry, api, can, sessionStore } from './api';
+import { AccessCatalog, ApiError, Health, MovedGateway, SessionSnapshot, Station, UnsupportedEntry, api, can, sessionStore } from './api';
 import { noteAvailability } from './availability';
 import { language, tr } from './i18n';
 import { settingsPlace } from './builtin';
@@ -10,7 +10,7 @@ import { Reach, dotClass, isReachable, reachOf } from './presence';
 import { AuthScreen } from './screens/auth';
 import { SaySheet } from './screens/say';
 import { ConnectSheet } from './screens/connect';
-import { TalkChoiceSheet } from './screens/voice-input';
+import { OPEN_ONBOARDING, Onboarding, onboardingPending } from './screens/onboarding';
 import { SetupBanner, SetupSheet, StationButton, StationsPicker, displayName, needsSetup } from './screens/stations';
 import { DebugState, PanelContext, PanelState } from './shell/context';
 import { Place, hashOf, normalizePlace, parsePlace, writePlace } from './shell/links';
@@ -40,7 +40,6 @@ import { WidgetAgent } from './screens/widget-agent';
 import { noteWorkshopChange } from './voice/drafts';
 import { noteWorkChange } from './voice/works';
 import { CreationFlow } from './voice/flow';
-import { FirstAppsSheet, firstAppsOf } from './magicplace/first-apps';
 import { MagicPlaceFlow, noteMagicPlaceOpen } from './magicplace/open';
 import { STORE_TAB } from './magicplace/section';
 import { noteStoreChange } from './magicplace/state';
@@ -208,36 +207,25 @@ export function App() {
     /** Мастер «Подключить колонку» с главного экрана и сразу после первой настройки (из меню колонок — свой). */
     const [connectOpen, setConnectOpen] = useState(false);
     /**
-     * Первый запуск: пароль задан, шаг 2 — «Как будете говорить с DuoWave?» (docs/plans/mic-mode.md). Ждёт /health:
-     * выбор есть только у шлюза на компьютере, у шлюза на самой колонке шаг 2 — её подключение, как прежде.
+     * Первый запуск: пароль задан — «Первые шаги» во весь пульт (docs/plans/onboarding.md): где живёт DuoWave, колонка
+     * или модель, персонаж, что попробовать сказать, MagicPlace. Ждёт /health: у шлюза на колонке шаги другие. Не
+     * дошли до конца и перезагрузили пульт — шаги открываются снова; пройти заново — «Настройки» → «Оформление».
      */
     const [firstRun, setFirstRun] = useState(false);
-    const [talkChoiceOpen, setTalkChoiceOpen] = useState(false);
-    /**
-     * Шаг 3 первого запуска (docs/plans/magicplace.md): «Первые приложения» — то, что рекомендует каталог и что встанет
-     * здесь, после выбора, как говорить, или подключения колонки. Предложить нечего — листа нет.
-     */
-    const firstSteps = useRef(false);
-    const [firstApps, setFirstApps] = useState<CatalogEntry[] | null>(null);
-    const offerFirstApps = (): void => {
-        if (!firstSteps.current) return;
-        firstSteps.current = false;
-        void api
-            .packagesCatalog()
-            .then((view) => {
-                const offered = firstAppsOf(view);
-                if (offered.length > 0) setFirstApps(offered);
-            })
-            .catch(() => undefined);
-    };
+    const [onboardingOpen, setOnboardingOpen] = useState(false);
     useEffect(() => {
         if (!firstRun || !health) return;
         setFirstRun(false);
-        firstSteps.current = true;
-        if (health.placement?.role !== 'station' && can('station.mode')) setTalkChoiceOpen(true);
-        else if (can('stations.manage')) setConnectOpen(true);
-        else offerFirstApps();
+        if (role.role !== 'helper') setOnboardingOpen(true);
     }, [firstRun, health]);
+    useEffect(() => {
+        const open = () => setOnboardingOpen(true);
+        window.addEventListener(OPEN_ONBOARDING, open);
+        return () => window.removeEventListener(OPEN_ONBOARDING, open);
+    }, []);
+    useEffect(() => {
+        if (auth === 'ok' && !VIA && !OWN_PAGE && onboardingPending()) setOnboardingOpen(true);
+    }, [auth]);
     /** Колонки, которые ждут шлюз на прежнем порту этого компьютера, и та, что переподключают по «Переподключить». */
     const [moved, setMoved] = useState<MovedGateway[]>([]);
     const [reconnect, setReconnect] = useState<MovedGateway | null>(null);
@@ -822,8 +810,8 @@ export function App() {
             {sayOpen && <SaySheet health={health} debug={debug} onClose={() => setSayOpen(false)} />}
             {auth === 'ok' && <CreationFlow />}
             {auth === 'ok' && <MagicPlaceFlow tab={STORE_TAB} />}
-            {firstApps && <FirstAppsSheet entries={firstApps} onClose={() => setFirstApps(null)} />}
             {auth === 'ok' && <ConsentSheet />}
+            {auth === 'ok' && onboardingOpen && !VIA && !OWN_PAGE && <Onboarding onClose={() => setOnboardingOpen(false)} />}
             {pickerOpen && (
                 <StationsPicker
                     stations={stations}
@@ -847,18 +835,6 @@ export function App() {
                     }}
                 />
             )}
-            {talkChoiceOpen && (
-                <TalkChoiceSheet
-                    onClose={() => {
-                        setTalkChoiceOpen(false);
-                        offerFirstApps();
-                    }}
-                    onStation={() => {
-                        setTalkChoiceOpen(false);
-                        if (can('stations.manage')) setConnectOpen(true);
-                    }}
-                />
-            )}
             {(connectOpen || reconnect) && (
                 <ConnectSheet
                     initial={reconnect ? { address: reconnect.address, gateway: reconnect.now } : undefined}
@@ -867,7 +843,6 @@ export function App() {
                         setReconnect(null);
                         void readStations();
                         readMoved();
-                        offerFirstApps();
                     }}
                     onConnected={() => {
                         // Первый запуск (этап 5): имя и вид — позже, плашкой на главной, без отдельного шага.
@@ -875,7 +850,6 @@ export function App() {
                         setReconnect(null);
                         void readStations();
                         readMoved();
-                        offerFirstApps();
                     }}
                     onOpenBrain={() => {
                         setConnectOpen(false);

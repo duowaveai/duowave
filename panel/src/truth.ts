@@ -173,7 +173,8 @@ export function solve(s: Scenario): Solved {
     }
 
     let mode = s.mode;
-    if (mode === 'own' && !pcHelps) {
+    // «Своё» без компьютера держится на облачном слухе и голосе (docs/plans/speaker-alone.md).
+    if (mode === 'own' && !pcHelps && !(s.cloudEar && s.cloudVoice)) {
         mode = 'gateway';
         notes.push(
             s.placement === 'station'

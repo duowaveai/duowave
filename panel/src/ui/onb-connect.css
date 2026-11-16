@@ -1,0 +1,82 @@
+/* Первые шаги → «Колонка» и «Кто отвечает» (screens/onb/speaker.tsx, answer.tsx): раскладка досок Check, Plan,
+   Connecting и Answer (их inline-стили у колонок) и одна колонка на узком экране, как PhoneAnswer. Карточки, отметки,
+   кнопки — из onboarding-canvas.css. */
+
+.onb .onb-cx { box-sizing: border-box; min-height: 100%; display: flex; align-items: center; justify-content: center; padding: 24px 64px; }
+.onb .onb-cx-col { display: flex; flex-direction: column; min-width: 0; }
+.onb .onb-cx-check { gap: 56px; }
+.onb .onb-cx-check .onb-cx-l { flex: 0 1 440px; gap: 18px; }
+.onb .onb-cx-check .onb-cx-r { flex: 0 1 560px; display: block; padding: 10px 24px 14px; }
+.onb .onb-cx-plan, .onb .onb-cx-conn { gap: 48px; }
+.onb .onb-cx-plan .onb-cx-l { flex: 0 1 600px; gap: 14px; }
+.onb .onb-cx-conn .onb-cx-l { flex: 0 1 560px; gap: 16px; }
+.onb .onb-cx-plan .onb-cx-r, .onb .onb-cx-conn .onb-cx-r { flex: 0 1 420px; gap: 14px; }
+.onb .onb-cx-lead { font-size: 15px; line-height: 1.55; }
+.onb .onb-cx-p { margin: 0; }
+.onb .onb-cx-btns { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.onb .onb-cx-chips { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.onb .onb-cx-chips button { border: 0; cursor: pointer; font: inherit; }
+.onb .onb-cx-chips button.on { background: var(--ink); color: var(--on-ink); }
+.onb .onb-cx-addr { display: flex; gap: 8px; }
+.onb .onb-cx-addr .input { height: 40px; min-width: 0; }
+.onb .onb-cx-addr .dw-btn { height: 40px; flex: none; }
+.onb .onb-cx-code { overflow-wrap: anywhere; }
+.onb .onb-cx-bad { color: var(--bad); }
+.onb .onb-cx-warn { color: var(--out-fg); }
+.onb .onb-cx-mark-sm { width: 20px; height: 20px; flex: none; }
+.onb .onb-cx a.small, .onb .onb-cx .small a { color: var(--text); }
+.onb .onb-cx .dw-btn:disabled, .onb .onb-cx .opt:disabled { opacity: .45; pointer-events: none; }
+
+/* Настоящий QR: модулей больше, чем 11 у доски, — мельче и с тихой зоной. */
+.onb .onb-cx-qr { padding: 10px; flex: none; }
+.onb .onb-cx-qr i { width: 3px; height: 3px; }
+
+/* «Кто отвечает» — доска Answer: столбиком, по ширине. */
+.onb .onb-cx-ans { flex-direction: column; align-items: stretch; gap: 16px; padding: 24px 72px; }
+.onb .onb-cx-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 40px; }
+.onb .onb-cx-head .lead { width: 540px; max-width: 100%; font-size: 15px; line-height: 1.55; }
+.onb .onb-cx-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.onb .onb-cx-mode { flex-direction: column; gap: 10px; }
+.onb .onb-cx-mode-top { display: flex; align-items: center; gap: 10px; width: 100%; }
+.onb .onb-cx-mode .radio { margin: 0; }
+.onb .onb-cx-ex { display: flex; flex-direction: column; gap: 6px; width: 100%; padding-top: 8px; border-top: 1px solid var(--line-soft); }
+.onb .onb-cx-ex > span { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; line-height: 18px; }
+.onb .onb-cx-model { display: flex; flex-direction: column; gap: 12px; }
+.onb .onb-cx-model-row { display: flex; align-items: center; gap: 14px; }
+.onb .onb-cx-model-row > .h3 { width: 150px; flex: none; }
+.onb .onb-cx-model-opts { display: flex; gap: 8px; flex: 1; min-width: 0; }
+.onb .onb-cx-model-opts .opt { padding: 10px 14px; align-items: center; }
+.onb .onb-cx-model-opts .radio { margin: 0; }
+.onb .onb-cx-model-opts .opt-title { font-size: 14px; line-height: 20px; }
+.onb .onb-cx-model-opts .opt-sub { font-size: 12px; line-height: 16px; margin: 0; }
+.onb .onb-cx-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.onb .onb-cx-form .input { height: 40px; flex: 1 1 240px; min-width: 0; }
+.onb .onb-cx-form select.input { flex: 0 1 200px; }
+.onb .onb-cx-note { margin: 0; display: flex; gap: 8px; align-items: flex-start; }
+.onb .onb-cx-status { display: flex; align-items: center; gap: 10px; }
+
+@media (max-width: 1100px) {
+    .onb .onb-cx { padding: 24px 32px; }
+    .onb .onb-cx-check, .onb .onb-cx-plan, .onb .onb-cx-conn { gap: 28px; }
+    .onb .onb-cx-ans { padding: 24px 40px; }
+    .onb .onb-cx-model-row { flex-wrap: wrap; }
+    .onb .onb-cx-model-row > .h3 { width: 100%; }
+}
+
+/* Узко — одна колонка, как телефонные доски (PhoneAnswer). */
+@media (max-width: 760px) {
+    .onb .onb-cx, .onb .onb-cx-ans { flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 14px; padding: 18px 16px; }
+    .onb .onb-cx-col { flex: none !important; }
+    .onb .onb-cx .h2 { font-size: 28px; }
+    .onb .onb-cx-head { flex-direction: column; align-items: flex-start; gap: 10px; }
+    .onb .onb-cx-head .lead { width: auto; font-size: 14px; line-height: 20px; }
+    .onb .onb-cx-head .h2 br { display: none; }
+    .onb .onb-cx-modes { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+    .onb .onb-cx-model-opts { flex-direction: column; }
+    .onb .onb-cx-model-row .dw-btn { width: 100%; height: 44px; }
+    .onb .onb-cx-addr { flex-wrap: wrap; }
+}
+
+/* Рисунок колонки на «Проверим колонку» (stations/: рамка 240×200). */
+.onb .onb-cx-art { flex: none; width: 84px; height: 70px; display: block; }
+.onb .onb-cx-art svg { width: 100%; height: 100%; display: block; }

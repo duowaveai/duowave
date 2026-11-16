@@ -1,10 +1,12 @@
 // Рамка виджета на столе (docs/plans/desk.md, макеты docs/design/roles): значок, название, откуда он («колонка»,
 // «журнал», «плагин»), «…» — его меню: убрать со стола, в ленте — раньше или позже, на свободном столе — шире или уже;
 // у закреплённого стола эти пункты видны, но не нажимаются. Виджет, что рисует свою рамку сам (карточка плагина),
-// получает только «…» в углу. Упавший виджет прячется в своей границе ошибок.
+// получает только «…» в углу. Упавший виджет прячется в своей границе ошибок. Виджет с `hideWhileEmpty` не виден вместе
+// с рамкой, пока сам не скажет, что ему есть что показать (`useWidgetEmpty`).
 
 import type { ComponentChildren } from 'preact';
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { createContext } from 'preact';
+import { useContext, useEffect, useRef, useState } from 'preact/hooks';
 
 import { CardLook, inkOf, LookLayers, WidgetPaint } from '../cards/look';
 import { IconDots } from '../icons';
@@ -22,6 +24,18 @@ export interface WidgetMenu {
     narrower?: () => void;
     /** Свободный стол закреплён: пункты раскладки видны, но не нажимаются. */
     locked?: boolean;
+}
+
+/** Рамка виджета с `hideWhileEmpty` слушает, пуст ли он; у остальных рамок слушать некому. */
+const WidgetEmpty = createContext<((empty: boolean) => void) | null>(null);
+
+/**
+ * Виджет говорит рамке, есть ли ему что показать: пуст — рамка не видна (если виджет так объявлен, `hideWhileEmpty`),
+ * есть что — видна. Пока читает — пусть говорит «пуст»: рамка не мелькнёт у новичка, а у остальных появится с данными.
+ */
+export function useWidgetEmpty(empty: boolean): void {
+    const tell = useContext(WidgetEmpty);
+    useEffect(() => tell?.(empty), [tell, empty]);
 }
 
 function Menu({ title, menu }: { title: string; menu: WidgetMenu }) {
@@ -107,14 +121,17 @@ export function WidgetFrame({
     const title = widget.title ?? widget.id;
     // Карточка с видом (look) красит весь виджет вместе с шапкой.
     const [paint, setPaint] = useState<{ app: string; look: CardLook } | null>(null);
+    // Пустой виджет с `hideWhileEmpty` не виден, но отрисован: он читает своё и скажет, когда появится что показать.
+    const [empty, setEmpty] = useState(!!widget.hideWhileEmpty);
+    const hidden = !!widget.hideWhileEmpty && empty;
     const body = (
         <Boundary name={widget.key} fallback={<p class="t-caption m-0">{tr.ui.widgetFailed}</p>}>
-            {children}
+            <WidgetEmpty.Provider value={widget.hideWhileEmpty ? setEmpty : null}>{children}</WidgetEmpty.Provider>
         </Boundary>
     );
     if (widget.bare)
         return (
-            <div class={`widget-bare widget-${widget.size}`} aria-label={title}>
+            <div class={`widget-bare widget-${widget.size}`} aria-label={title} hidden={hidden}>
                 {body}
                 <div class="widget-bare-menu">
                     <Menu title={title} menu={menu} />
@@ -124,7 +141,7 @@ export function WidgetFrame({
         );
     const { icon: Icon } = widget;
     return (
-        <section class={`widget widget-${widget.size}${paint ? ` widget-painted look-ink-${inkOf(paint.look).ink}` : ''}`} aria-label={title}>
+        <section class={`widget widget-${widget.size}${paint ? ` widget-painted look-ink-${inkOf(paint.look).ink}` : ''}`} aria-label={title} hidden={hidden}>
             {paint && <LookLayers app={paint.app} look={paint.look} />}
             {fresh && <span class="widget-fresh">{tr.ui.fresh}</span>}
             <header class={`widget-head${grip ? ' widget-grip' : ''}`} onPointerDown={grip ? (event) => grip(event as PointerEvent) : undefined}>

@@ -145,6 +145,7 @@ impl Connector for ScreenConnector {
         tools()
             .into_iter()
             .map(|(tool, handle, read_only)| ToolContribution {
+                app: None,
                 tool,
                 permission: use_of(CapabilityName::Playback),
                 run: run(&self.screen, handle),

@@ -7,6 +7,12 @@ export default {
     tabAccess: 'Доступ',
     tabLook: 'Оформление',
 
+    deskTitle: 'Стол',
+    shortcutsBar: 'Лента ярлыков',
+    shortcutsBarAbout: 'значки приложений на столе — открывать в одно нажатие',
+    shortcutsBarOnPhrase: 'покажи ярлыки',
+    shortcutsBarOffPhrase: 'спрячь ярлыки',
+
     languageTitle: 'Язык',
     languageLabel: 'Язык пульта',
     languageWhere: 'пульт и приложения',
@@ -89,6 +95,7 @@ export default {
         'station.updated': 'колонка',
         'station.switched': 'голос колонки',
         'station.firmware': 'прошивка колонки обновилась',
+        'station.modOff': 'выключен мод на колонке',
         'safety.fired': 'страховка колонки',
         'language.changed': 'язык дома',
     } as Record<string, string>,

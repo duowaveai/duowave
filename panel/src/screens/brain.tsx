@@ -113,7 +113,11 @@ const parsePick = (value: string): BrainPick | null => {
  * «Мозг»: кто думает над ответами. Сверху — быстрая модель (разговор) и умная (сказки, игры, сложное) из любых
  * добавленных провайдеров, ниже — сами провайдеры со своими ключами. Ключи пульт видит только хвостом.
  */
-export function BrainTab({ spend }: { spend?: preact.ComponentChildren } = {}) {
+/**
+ * `first` — шаг «Кто думает» первых шагов (docs/plans/onboarding.md): сначала провайдеры (вход и ключ), выбор модели —
+ * когда есть из чего выбирать; «Что сейчас знает Мозг» там не нужно.
+ */
+export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChildren; first?: boolean } = {}) {
     const [view, setView] = useState<BrainView | null>(null);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [notes, setNotes] = useState<Record<string, CardNote>>({});
@@ -267,7 +271,7 @@ export function BrainTab({ spend }: { spend?: preact.ComponentChildren } = {}) {
         </>
     );
 
-    return (
+    const choiceCard = (
         <>
             <section class="card glass card-list" aria-label={tr.brain.whoThinks}>
                 <div class="section-head flex items-center justify-between min-h-44 gap-8 flex-wrap">
@@ -365,11 +369,17 @@ export function BrainTab({ spend }: { spend?: preact.ComponentChildren } = {}) {
                 )}
                 {!mayChoose && <p class="t-caption m-0 mt-8">{tr.brain.adminChooses}</p>}
             </section>
+        </>
+    );
+
+    return (
+        <>
+            {!first && choiceCard}
 
             {/* «Расход» (docs/plans/router-and-works.md, этап 6б): сколько стоили модели — рядом с тем, где их выбирают. */}
             {spend}
 
-            {can('station.view') && <NowKnown />}
+            {!first && can('station.view') && <NowKnown />}
 
             <section class="card glass card-list" aria-label={tr.brain.providersLabel}>
                 <div class="flex items-center justify-between min-h-44 gap-8">
@@ -508,20 +518,23 @@ export function BrainTab({ spend }: { spend?: preact.ComponentChildren } = {}) {
                         </Card>
                     );
                 })}
-                <Card
-                    icon={<ProviderIcon />}
-                    title={tr.brain.envTitle}
-                    pills={envAnswers && env.usable ? [{ text: tr.brain.pillAnswers, cls: 'pill-own' }] : []}
-                    description={
-                        env.usable
-                            ? env.models.smart !== env.models.fast
-                                ? tr.brain.envSmart(env.title, env.models.fast, env.models.smart)
-                                : tr.brain.envPlain(env.title, env.models.fast)
-                            : tr.brain.envUnset
-                    }
-                    meta={backup?.provider === 'env' ? tr.brain.envBackup : undefined}
-                    action={null}
-                />
+                {/* Первые шаги: пустой .env новичку ни о чём не говорит. */}
+                {!(first && !env.usable) && (
+                    <Card
+                        icon={<ProviderIcon />}
+                        title={tr.brain.envTitle}
+                        pills={envAnswers && env.usable ? [{ text: tr.brain.pillAnswers, cls: 'pill-own' }] : []}
+                        description={
+                            env.usable
+                                ? env.models.smart !== env.models.fast
+                                    ? tr.brain.envSmart(env.title, env.models.fast, env.models.smart)
+                                    : tr.brain.envPlain(env.title, env.models.fast)
+                                : tr.brain.envUnset
+                        }
+                        meta={backup?.provider === 'env' ? tr.brain.envBackup : undefined}
+                        action={null}
+                    />
+                )}
             </section>
 
             {asking && <AskSheet onClose={() => setAsking(false)} />}
@@ -536,6 +549,7 @@ export function BrainTab({ spend }: { spend?: preact.ComponentChildren } = {}) {
                     }}
                 />
             )}
+            {first && providers.length > 0 && choiceCard}
         </>
     );
 }

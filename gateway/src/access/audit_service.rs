@@ -52,6 +52,7 @@ pub const AUDITED: &[&str] = &[
     "station.updated",
     "station.switched",
     "station.firmware",
+    "station.modOff",
     "homeServer.up",
     "homeServer.down",
     "homeServer.changed",

@@ -3,7 +3,7 @@
 // у шлюза на колонке — его помощник. Регистрируются в слот `desk.widgets` (builtin.tsx) тем же путём, что виджеты
 // плагинов.
 
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { useDevMode } from '../shell/dev';
 
 import { ApiError, DraftView, HelperPart, HelperServed, PlacementView, RequestView, WorkView, api, can, problemOf } from '../api';
@@ -13,6 +13,7 @@ import { useSettledVersion } from '../shell/agent-plaque';
 import { usePanel } from '../shell/context';
 import { timeAgo } from '../time';
 import { Switch } from '../ui/switch';
+import { useWidgetEmpty } from '../ui/widget';
 import { AllocPanel, ModeCard } from './home';
 import { readStationRequests } from './station-widgets';
 import { feltMs, seconds } from './trip';
@@ -94,10 +95,13 @@ export function RecentWidget() {
                     setRefused(refusedByStation(e) ? tr.desk.historyAdminOnly : problemOf(e));
                 }),
     });
-    if (station && refused) return <p class="w-cap m-0">{refused}</p>;
     const list = station
         ? (stationList ?? []).slice(0, 4)
         : panel.feed.requests.filter((request) => !device || request.device === device).slice(0, 4);
+    // Вопросов ещё не было — виджета не видно (hideWhileEmpty): «спросите что-нибудь» уже сказано под колонкой. Отказ
+    // колонки показать журнал — не пустота: виджет так и говорит.
+    useWidgetEmpty(list.length === 0 && !(station && refused));
+    if (station && refused) return <p class="w-cap m-0">{refused}</p>;
     if (list.length === 0) return <p class="w-cap m-0">{byMode(tr.desk.askStation, tr.desk.askDevice)}</p>;
     // У помощника это вопросы колонки — и журнал её: окно колонки, а не журнал компьютера, где их нет.
     const openJournal = () => (station ? panel.go('settings', 'history', undefined, { on: 'station' }) : panel.go('settings', 'history'));
@@ -127,6 +131,8 @@ export function AllocWidget() {
 export function UnsupportedWidget() {
     const panel = usePanel();
     const list = panel.debug.unsupported;
+    // Живой виджет (docs/plans/start-desk.md): появляется, когда есть вопросы без ответа.
+    useWidgetEmpty(list.length === 0);
     if (list.length === 0) return <p class="w-cap m-0">{tr.desk.allSupported}</p>;
     return (
         <div class="w-rows">
@@ -260,6 +266,9 @@ export function HelperWidget() {
     const home = station?.live.health?.placement?.homeServer;
     const without = home?.without ?? [];
     const mayManage = can('stations.manage');
+    // Помощник на столе (docs/plans/start-desk.md): под сценой и так сказано, что компьютер помогает. Виджет — когда
+    // есть что сделать: помощь выключена или колонка его не слышит.
+    useWidgetEmpty(!view || (helping && home?.state !== 'down'));
     const run = (what: string, job: () => Promise<unknown>) => {
         setBusy(what);
         setError(null);
@@ -554,6 +563,12 @@ export function WorksWidget() {
                 .then((list) => !signal.aborted && setLast(list[0] ?? null))
                 .catch(() => undefined),
     });
+    // Работ не было ни одной (ни идущих, ни недавних) — виджета не видно (hideWhileEmpty); с первой работой он появится
+    // сам. Пока читаем — тоже не виден: у новичка он не мелькнёт. Появился — остаётся: работа кончилась, а последняя
+    // законченная ещё читается, — виджет не должен пропасть на это время.
+    const ever = useRef(false);
+    if (works?.length || last) ever.current = true;
+    useWidgetEmpty(!ever.current);
     const all = () => panel.go('works', '');
     const allButton = (
         <div class="w-actions">
@@ -610,6 +625,8 @@ export function WorksWidget() {
 export function HelperCardWidget() {
     const panel = usePanel();
     const home = panel.health?.placement?.homeServer;
+    // Живой виджет (docs/plans/start-desk.md): только когда с помощником беда — выключен или не на связи.
+    useWidgetEmpty(!home?.url || (home.state === 'up' && home.enabled !== false));
     if (!home?.url) return <p class="w-cap m-0">{tr.desk.helperNotHelping}</p>;
     let panelUrl: string | null = null;
     let address: string | null = null;

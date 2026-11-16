@@ -546,6 +546,16 @@ impl StationGateway {
         self.station_peer_api().is_some_and(|api| api < peer::ARCHIVE_SINCE_PEER_API)
     }
 
+    /// The version a trial on the station ended without — the new version fell or hung there, not a power cut —
+    /// as its /health says (src/updates/trial.rs): the computer does not install it by itself again.
+    fn failed_on_trial(&self) -> Option<String> {
+        let live = self.lock();
+        let failed = live.health.as_ref()?.pointer("/placement/update/trialFailed")?;
+        (failed.get("why").and_then(Value::as_str) != Some("rebooted"))
+            .then(|| failed.get("version").and_then(Value::as_str).map(str::to_string))
+            .flatten()
+    }
+
     fn station_revision(&self) -> Option<u64> {
         self.lock().health.as_ref()?.pointer("/placement/settingsRevision")?.as_u64()
     }
@@ -913,6 +923,10 @@ impl StationGateway {
             return;
         }
         let Some(version) = self.update_offer() else { return };
+        // It did not make it through its trial on the station: «Обновить» by hand still may, not this.
+        if self.failed_on_trial().is_some_and(|failed| !crate::updates::feed::is_newer(&version, &failed)) {
+            return;
+        }
         {
             let mut tried = self.auto_tried.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if tried.as_deref() == Some(version.as_str()) {

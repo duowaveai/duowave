@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { ConnectJob, ConnectStepId, FoundStation, StationCheck, api, can, problemOf } from '../api';
+import { ConnectJob, ConnectStepId, FoundStation, StationCheck, StationNeighbour, api, can, problemOf } from '../api';
 import { IconCheck } from '../icons';
 import { tr } from '../i18n';
 import { drawingOf } from '../stations';
@@ -14,8 +14,8 @@ import { CharactersTab } from './characters';
 // два адреса, проверка, перезагрузка, «колонка пришла». Не пришла за 3 минуты — «Вернуть как было». Для тех, кто не
 // пускает шлюз на колонку, — одна команда. Без root и SSH по вики шлюз колонку не подключает.
 
-const WIKI_ROOT = 'https://hackalice.me/start/';
-const WIKI_SSH = 'https://hackalice.me/start/ssh/';
+export const WIKI_ROOT = 'https://hackalice.me/start/';
+export const WIKI_SSH = 'https://hackalice.me/start/ssh/';
 
 const stepLabels = (): Record<ConnectStepId, string> => ({
     copy: tr.connect.stepCopy,
@@ -45,8 +45,8 @@ export function suggestedGateway(): string {
     return home && host !== 'localhost' ? location.host : '';
 }
 
-/** Что пошло не так — словами, с тем, что делать. */
-function problemText(problem: string | undefined): string {
+/** Что пошло не так — словами, с тем, что делать. Берут и первые шаги (screens/onb/speaker.tsx). */
+export function problemText(problem: string | undefined): string {
     switch (problem) {
         case 'no-ssh':
             return tr.connect.problemNoSsh;
@@ -195,12 +195,15 @@ export function ConnectSheet({
     onConnected,
     onOpenBrain,
     initial,
+    bare = false,
 }: {
     onClose: () => void;
     onConnected: (device: string) => void;
     onOpenBrain?: () => void;
     /** Колонка и адрес шлюза заранее: «Переподключить», когда шлюз сменил порт. */
     initial?: { address: string; gateway: string };
+    /** Первые шаги (docs/plans/onboarding.md): персонаж и «готово» — их шаги, мастер кончается подключением. */
+    bare?: boolean;
 }) {
     const [step, setStep] = useState<Step>('find');
     const [found, setFound] = useState<FoundStation[] | null>(null);
@@ -400,6 +403,8 @@ export function ConnectSheet({
     if (step === 'plan' && check) {
         const facts = check.facts;
         const ready = !check.problem && !!facts && !!check.target;
+        const neighbours = check.neighbours ?? [];
+        const blocked = neighbours.some((neighbour) => neighbour.severity === 'blocks');
         return (
             <Sheet
                 title={check.problem ? tr.connect.planCannot : check.connected ? tr.connect.planAlready : tr.connect.planTitle}
@@ -416,7 +421,12 @@ export function ConnectSheet({
                     <div class="dash-actions">
                         {ready && !check.connected && (
                             <button class="dash-done" disabled={busy || !gateway.trim()} onClick={() => void connect()}>
-                                {busy ? tr.connect.connecting : tr.connect.connect}
+                                {busy ? tr.connect.connecting : blocked ? tr.connect.connectAnyway : tr.connect.connect}
+                            </button>
+                        )}
+                        {!check.problem && neighbours.length > 0 && (
+                            <button class="pill pill-off dash-wide" disabled={busy} onClick={() => void read()}>
+                                {busy ? tr.connect.reading : tr.connect.checkAgain}
                             </button>
                         )}
                         {ready && !check.connected && (
@@ -435,6 +445,13 @@ export function ConnectSheet({
                     </div>
                 }
             >
+                {!check.problem && (
+                    <Neighbours
+                        found={neighbours}
+                        address={check.address}
+                        onChanged={() => api.checkStation(check.address, gateway.trim() || undefined).then(setCheck)}
+                    />
+                )}
                 {check.problem ? (
                     <p class="t-meta m-0 c-text">
                         {problemText(check.problem)}{' '}
@@ -596,7 +613,7 @@ export function ConnectSheet({
             dismissable={job?.status !== 'running'}
             footer={
                 job?.status === 'done' && !restoring ? (
-                    <button class="dash-done" onClick={() => setStep('ready')}>
+                    <button class="dash-done" onClick={() => (bare && job.device ? onConnected(job.device) : setStep('ready'))}>
                         {tr.connect.next}
                     </button>
                 ) : job?.status === 'timeout' ? (
@@ -743,5 +760,126 @@ function WayBackSheet({
                 </p>
             )}
         </Sheet>
+    );
+}
+
+/** Слова о чужом на колонке: имя, чем мешает, как выключить его же способом и как включить обратно. */
+interface NeighbourWords {
+    name: string;
+    why: string;
+    off: string;
+    cmd: string;
+    back: string;
+}
+
+/**
+ * Что на колонке может помешать DuoWave — до кнопки «Подключить», как и все предупреждения. Каждое — строкой-гармошкой:
+ * метка и имя видны сразу, чем мешает и как выключить — по нажатию. Важное (с ним DuoWave не заработает) подсвечено,
+ * чтобы его раскрыли. У мода со своим выключателем — «Выключить»: шлюз выполнит команду самого мода (ничего не удаляя)
+ * после «Да», а пульт посмотрит колонку снова. Остальное человек выключает сам.
+ */
+function Neighbours({ found, address, onChanged }: { found: StationNeighbour[]; address: string; onChanged: () => Promise<void> }) {
+    const [asking, setAsking] = useState<string | null>(null);
+    const [working, setWorking] = useState<string | null>(null);
+    const [failed, setFailed] = useState<{ id: string; text: string } | null>(null);
+    if (!found.length) return null;
+    const known = tr.connect.neighbour as Record<string, NeighbourWords | undefined>;
+    const blocking = found.some((neighbour) => neighbour.severity === 'blocks');
+    const turnOff = async (id: string) => {
+        setWorking(id);
+        setFailed(null);
+        try {
+            await api.turnOffStationMod(address, id);
+            setAsking(null);
+            await onChanged();
+        } catch (e) {
+            setFailed({ id, text: problemOf(e) });
+        } finally {
+            setWorking(null);
+        }
+    };
+    return (
+        <div class="connect-neighbours">
+            <p class="t-meta m-0 c-text">
+                <b>{tr.connect.neighboursTitle}</b> · {found.length}
+            </p>
+            {blocking && <p class="t-caption m-0 connect-warning">{tr.connect.neighboursOpen}</p>}
+            {found.map((neighbour) => {
+                const words = known[neighbour.id];
+                const memory = neighbour.id === 'low-memory' ? neighbour.detail : undefined;
+                const blocks = neighbour.severity === 'blocks';
+                // В строке — только имя файла: полный путь внутри.
+                const short = neighbour.detail && !memory ? neighbour.detail.split('/').pop() : undefined;
+                const rowClass = ['connect-neighbour', blocks && 'connect-neighbour-blocks', neighbour.off && 'connect-neighbour-off'].filter(Boolean).join(' ');
+                return (
+                    <details key={`${neighbour.id} ${neighbour.detail ?? ''}`} class={rowClass}>
+                        <summary>
+                            <span class="connect-neighbour-tag">
+                                {neighbour.off ? tr.connect.neighboursOff : blocks ? tr.connect.neighboursBlocks : tr.connect.neighboursWarns}
+                            </span>
+                            <b>{words?.name ?? neighbour.id}</b>
+                            {short && <code>{short}</code>}
+                            {memory && <span class="t-caption">{tr.connect.megabytes(memory)}</span>}
+                        </summary>
+                        <div class="connect-neighbour-body t-meta">
+                            {neighbour.detail && !memory && <code>{neighbour.detail}</code>}
+                            {neighbour.off ? (
+                                <p class="m-0">{tr.connect.offNote}</p>
+                            ) : (
+                                <p class="m-0">{memory ? tr.connect.freeMemory(memory) : words?.why}</p>
+                            )}
+                            {!neighbour.off && words?.off && (
+                                <p class="m-0">
+                                    {words.off}
+                                    {words.cmd && (
+                                        <>
+                                            {' '}
+                                            <code>{words.cmd}</code>
+                                        </>
+                                    )}
+                                </p>
+                            )}
+                            {neighbour.switch && asking !== neighbour.id && (
+                                <div>
+                                    <button class="pill pill-off" disabled={working !== null} onClick={() => setAsking(neighbour.id)}>
+                                        {tr.connect.turnOff}
+                                    </button>
+                                </div>
+                            )}
+                            {neighbour.switch && asking === neighbour.id && (
+                                <div class="connect-neighbour-ask">
+                                    <p class="m-0">{tr.connect.turnOffAsk}</p>
+                                    <code>{neighbour.switch}</code>
+                                    {words?.back && (
+                                        <p class="m-0">
+                                            {tr.connect.turnBack} <code>{words.back}</code>
+                                        </p>
+                                    )}
+                                    <div class="flex gap-8">
+                                        <button class="pill pill-own" disabled={working !== null} onClick={() => void turnOff(neighbour.id)}>
+                                            {working === neighbour.id ? tr.connect.turningOff : tr.connect.turnOffYes}
+                                        </button>
+                                        <button class="pill pill-off" disabled={working !== null} onClick={() => setAsking(null)}>
+                                            {tr.connect.cancel}
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+                            {neighbour.off && words?.back && (
+                                <p class="m-0">
+                                    {tr.connect.turnBack} <code>{words.back}</code>
+                                </p>
+                            )}
+                            {failed?.id === neighbour.id && (
+                                <p role="alert" class="m-0 c-dot-offline">
+                                    {failed.text}
+                                </p>
+                            )}
+                        </div>
+                    </details>
+                );
+            })}
+            <p class="t-caption m-0">{tr.connect.neighboursNote}</p>
+        </div>
     );
 }

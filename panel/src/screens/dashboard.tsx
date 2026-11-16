@@ -518,25 +518,29 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
                         <span class="dash-caption-sub">{captionSub}</span>
                     </div>
 
-                    <button
-                        class="dash-links"
-                        style={{ left: `${scene.width / 2}px`, top: `${scene.linksTop}px` }}
-                        aria-label={`${
-                            sleeping
-                                ? tr.dashboard.linksSleepingRelay
-                                : connectors
-                                  ? tr.dashboard.linksLinked(linked.length, linked.map((entry) => entry.manifest.title).join(', '))
-                                  : tr.dashboard.links
-                        }. ${tr.dashboard.open}`}
-                        onClick={() => setSheet('links')}
-                    >
-                        <span class="dash-sats" aria-hidden="true">
-                            {sats.map((sat) => (
-                                <Satellite key={sat.key} sat={sat} sleeping={sleeping} />
-                            ))}
-                        </span>
-                        <span class={sleeping ? 'c-sub' : 'c-text'}>{linksCaption}</span>
-                    </button>
+                    {/* «Подключено» — когда подключено хоть что-то: «Подключено · 0» и пять серых значков у новичка — шум
+                        (владелец, 16.11). Подключают в «Приложениях» → «Подключения». */}
+                    {linked.length > 0 && (
+                        <button
+                            class="dash-links"
+                            style={{ left: `${scene.width / 2}px`, top: `${scene.linksTop}px` }}
+                            aria-label={`${
+                                sleeping
+                                    ? tr.dashboard.linksSleepingRelay
+                                    : connectors
+                                      ? tr.dashboard.linksLinked(linked.length, linked.map((entry) => entry.manifest.title).join(', '))
+                                      : tr.dashboard.links
+                            }. ${tr.dashboard.open}`}
+                            onClick={() => setSheet('links')}
+                        >
+                            <span class="dash-sats" aria-hidden="true">
+                                {sats.map((sat) => (
+                                    <Satellite key={sat.key} sat={sat} sleeping={sleeping} />
+                                ))}
+                            </span>
+                            <span class={sleeping ? 'c-sub' : 'c-text'}>{linksCaption}</span>
+                        </button>
+                    )}
 
                     {orb && !reduced && (
                         // Шар персонажа: в покое спрятан под кругом голоса, на ответе вылетает из него в кольцо колонки

@@ -67,6 +67,31 @@ fn header(kind: Kind, length: usize) -> Vec<u8> {
     format!("{} {length}\0", kind.tag()).into_bytes()
 }
 
+/// The name a file's content would get as an object, read as it streams: the file stays where it is. Its size too.
+pub fn file_id(path: &Path) -> std::io::Result<(u64, String)> {
+    let size = std::fs::metadata(path)?.len();
+    let mut file = std::fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    digest.update(header(Kind::File, size as usize));
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok((size, hex::encode(digest.finalize())))
+}
+
+/// Where a catalog's version came from (`Store::set_archive`): its archive, to take its files from again.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ArchiveRef {
+    pub url: String,
+    pub sha256: String,
+    pub size: u64,
+}
+
 /// The name an object of this kind and content gets.
 pub fn id_of(kind: Kind, content: &[u8]) -> String {
     let mut digest = Sha256::new();
@@ -148,6 +173,23 @@ impl Store {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// A tree's archive in the catalog: its files kept out of the store (the station's catalog versions) come from it.
+    pub fn set_archive(&self, tree: &str, archive: &ArchiveRef) -> std::io::Result<()> {
+        if !valid_id(tree) {
+            return Ok(());
+        }
+        self.made()?;
+        let text = serde_json::to_vec(archive).map_err(|error| io_error(error.to_string()))?;
+        write_whole(&self.root.join("archives").join(format!("{tree}.json")), &text)
+    }
+
+    pub fn archive(&self, tree: &str) -> Option<ArchiveRef> {
+        if !valid_id(tree) {
+            return None;
+        }
+        serde_json::from_slice(&std::fs::read(self.root.join("archives").join(format!("{tree}.json"))).ok()?).ok()
     }
 
     fn path_of(&self, id: &str) -> PathBuf {

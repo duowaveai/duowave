@@ -13,8 +13,9 @@
 
 pub mod feed;
 pub mod install;
+pub mod trial;
 pub mod verify;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -29,6 +30,7 @@ use crate::app::App;
 use crate::config::Config;
 use crate::core::events::{EventBus, GatewayEvent};
 use crate::core::identity::permissions::{STATION_VIEW, SYSTEM_UPDATE};
+use crate::placement::station_fs::{self, StationFs};
 use crate::platform::http::{ok, ApiError, ApiResult, Caller};
 use crate::utils::time::now_iso;
 
@@ -41,6 +43,17 @@ const BUILT_IN_FEED: Option<&str> = option_env!("DUOWAVE_UPDATE_FEED");
 /// The release feed this gateway reads: UPDATE_FEED_URL, else the one built in.
 pub fn feed_url(config: &Config) -> Option<String> {
     config.updates.feed_url.clone().or(BUILT_IN_FEED.filter(|url| !url.is_empty()).map(str::to_string))
+}
+
+/// What an update on the station asks of the rest of the gateway (src/updates/trial.rs): whether the station is quiet
+/// now, and its apps switched off for a while and back.
+pub trait StationHooks: Send + Sync {
+    /// Nobody talks to the station and nothing plays: the gateway may restart for a moment.
+    fn quiet(&self) -> bool;
+    /// The station's apps switched off for the trial, not as the owner's choice: their memory back. The ids.
+    fn pause_apps(&self) -> BoxFuture<'static, Vec<String>>;
+    /// They may start again.
+    fn resume_apps(&self);
 }
 
 /// Installs a version through whoever manages this gateway: the desktop app's updater.
@@ -96,6 +109,9 @@ pub struct UpdateStatus {
     /// What to do instead, when the gateway cannot install it itself.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+    /// On the station: the new version tried from memory now (src/updates/trial.rs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trial: Option<trial::TrialView>,
 }
 
 #[derive(Default)]
@@ -110,10 +126,9 @@ struct Progress {
     failed: Option<(String, String)>,
     /// The last version announced on the event bus: each is announced once.
     announced: Option<String>,
+    /// On the station: the new version tried from memory now.
+    trial: Option<trial::TrialView>,
 }
-
-/// The station needs this much free in /data for an update: the archive, the program beside the running one.
-pub const STATION_FREE_KB: u64 = 30 * 1024;
 
 pub struct UpdatesService {
     current: String,
@@ -132,6 +147,12 @@ pub struct UpdatesService {
     events: EventBus,
     state: Mutex<Progress>,
     installer: OnceLock<Arc<dyn Installer>>,
+    /// The memory the system and Alice keep (PLUGINS_RESERVE_MB): a trial from memory leaves it.
+    memory_reserve_kb: u64,
+    /// The rest of the gateway, for an update on the station: set once it stands.
+    hooks: OnceLock<Arc<dyn StationHooks>>,
+    /// What this start found of a trial on the station (`set_station`), acted on at `start_on_station`.
+    at_start: Mutex<Option<trial::AtStart>>,
 }
 
 impl UpdatesService {
@@ -169,6 +190,9 @@ impl UpdatesService {
             events,
             state: Mutex::new(Progress::default()),
             installer: OnceLock::new(),
+            memory_reserve_kb: config.plugins.reserve_mb * 1024,
+            hooks: OnceLock::new(),
+            at_start: Mutex::new(None),
         }
     }
 
@@ -183,11 +207,31 @@ impl UpdatesService {
     }
 
     /// The gateway on the station: who updates it (the station's mark: pc, yam, yse), and the station's own checks.
+    /// What this start is to a trial of a new version is read here, before the apps start: the trial with the apps
+    /// switched off does not start them (`holds_apps`).
     pub fn set_station(&self, managed_by: Option<String>) {
         self.station.store(true, std::sync::atomic::Ordering::Relaxed);
         if managed_by.is_some() {
             *self.managed_by.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = managed_by;
         }
+        let fs = StationFs::real();
+        let found = std::env::current_exe().ok().map(|running| {
+            trial::at_start(fs.trial(), &running, &fs.program_on_disk(), &self.current, fs.boot_id().as_deref())
+        });
+        *self.at_start.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = found;
+    }
+
+    pub fn set_station_hooks(&self, hooks: Arc<dyn StationHooks>) {
+        let _ = self.hooks.set(hooks);
+    }
+
+    /// This process is a trial for which the station's apps were switched off: they do not start until the gateway
+    /// restarts from the disk.
+    pub fn holds_apps(&self) -> bool {
+        matches!(
+            self.at_start.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_ref(),
+            Some(trial::AtStart::Trying(mark)) if mark.apps_paused
+        )
     }
 
     fn managed(&self) -> Option<String> {
@@ -207,7 +251,7 @@ impl UpdatesService {
             feed: self.feed_url.is_some(),
             checked_at: state.checked_at.clone(),
             available: state.available.clone(),
-            installing: state.installing,
+            installing: state.installing || state.trial.is_some(),
             error: state
                 .failed
                 .as_ref()
@@ -216,9 +260,10 @@ impl UpdatesService {
                 })
                 .or_else(|| state.error.clone()),
             managed_by: self.managed(),
-            can_install: can_install && state.available.is_some() && !state.installing,
+            can_install: can_install && state.available.is_some() && !state.installing && state.trial.is_none(),
             auto_critical: self.auto_critical && can_install,
             hint,
+            trial: state.trial.clone(),
         }
     }
 
@@ -331,8 +376,9 @@ impl UpdatesService {
         Ok(self.status())
     }
 
-    /// Downloads, checks and puts the new program in place, then starts it.
-    async fn install_here(&self, offer: &Offer, restart: bool) -> Result<(), String> {
+    /// Downloads, checks and puts the new program in place, then starts it. On the station the way of
+    /// `install_on_station`: tried from memory first.
+    async fn install_here(self: &Arc<Self>, offer: &Offer, restart: bool) -> Result<(), String> {
         let asset = offer.asset.as_ref().ok_or_else(|| {
             crate::tr!(
                 "В выпуске {version} нет сборки для {platform}.",
@@ -344,16 +390,32 @@ impl UpdatesService {
         let archive = install::download(&asset.url).await?;
         verify::verify_any(keys, &archive, &asset.signature)?;
         install::check_release(&archive, &self.platform, &offer.version, &self.current())?;
-        std::fs::create_dir_all(&self.downloads).map_err(|error| format!("{}: {error}", self.downloads.display()))?;
-        let _ = std::fs::write(self.downloads.join(format!("duowave-{}.tar.gz", offer.version)), &archive);
+        if self.on_station() && restart {
+            let (service, version) = (self.clone(), offer.version.clone());
+            return tokio::task::spawn_blocking(move || service.install_on_station(&version, &archive))
+                .await
+                .map_err(|error| error.to_string())?
+                .map(|_| ())
+                .map_err(|error| error.message);
+        }
+        // A copy of the archive beside the data, where there is room for it: not on the station.
+        if !self.on_station() {
+            std::fs::create_dir_all(&self.downloads)
+                .map_err(|error| format!("{}: {error}", self.downloads.display()))?;
+            let _ = std::fs::write(self.downloads.join(format!("duowave-{}.tar.gz", offer.version)), &archive);
+        }
         let current = std::env::current_exe().map_err(|error| format!("the running program: {error}"))?;
         if self.on_station() {
-            self.station_room(&current)?;
+            install::remove_leftovers(&current);
+            let room = self.room_on_station(&archive, &current, &current)?;
+            if room.free_kb.unwrap_or(u64::MAX) < room.disk_beside() {
+                return Err(room.no_room_beside());
+            }
         }
         let previous = install::replace_from_archive(&current, &archive, install::program_name())?;
         if self.on_station() {
             // The service's safety net may bring the one before back if this one does not come up.
-            crate::placement::station_fs::StationFs::real().mark_updated(&offer.version);
+            StationFs::real().mark_updated(&offer.version);
         }
         tracing::info!(
             "update {} installed; the one before is {} — starting the new one",
@@ -368,25 +430,40 @@ impl UpdatesService {
         Err(format!("restart: {}", install::restart(&current)))
     }
 
-    /// The station's /data has room for the new program beside the running one.
-    fn station_room(&self, current: &std::path::Path) -> Result<(), String> {
-        let folder = current.parent().unwrap_or(std::path::Path::new("/data"));
-        match crate::placement::station_fs::space_of(folder) {
-            Some(space) if space.free_kb < STATION_FREE_KB => Err(crate::tr!(
-                "На колонке свободно {free} МБ, а обновлению нужно {needed} МБ.",
-                free = space.free_kb / 1024,
-                needed = STATION_FREE_KB / 1024
-            )),
-            _ => Ok(()),
-        }
+    /// The room an update has on the station: the new program's size from the archive, the one on the disk, the
+    /// disk's free room with a kept `.previous` counted in (it goes first), the memory available.
+    fn room_on_station(&self, archive: &[u8], program: &Path, running: &Path) -> Result<trial::Room, String> {
+        let kb = |path: &Path| std::fs::metadata(path).map(|meta| meta.len().div_ceil(1024)).unwrap_or(0);
+        let kept_kb = kb(&install::previous_of(running));
+        let fs = StationFs::real();
+        Ok(trial::Room {
+            new_kb: install::program_size(archive, "duowave")?.div_ceil(1024),
+            old_kb: kb(program),
+            free_kb: station_fs::space_of(program.parent().unwrap_or(Path::new("/data")))
+                .map(|space| space.free_kb + kept_kb),
+            available_kb: station_fs::memory_of(&fs.path("/proc/meminfo"), None).map(|memory| memory.available_kb),
+            reserve_kb: self.memory_reserve_kb,
+        })
+    }
+
+    /// The archives of updates a gateway once kept beside its data: none on the station any more. The bytes freed.
+    fn remove_downloads(&self) -> u64 {
+        std::fs::read_dir(&self.downloads)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_name().to_str().is_some_and(|name| name.ends_with(".tar.gz")))
+            .map(|entry| install::remove_counted(&entry.path()))
+            .sum()
     }
 
     /// The computer sends the station's gateway its update (`POST /api/v1/updates/archive`, the pair's key): the archive
     /// itself, its version and signature beside it. The signature is checked with this gateway's own key, the archive's
     /// release.json too (this platform, the version sent, newer than this one: no way back to an older release from
-    /// here either), room checked, the program streamed into place beside the one before — never whole in memory —
-    /// then the gateway becomes the new program. No internet on the station needed. Blocking: the route runs it off
-    /// the threads that answer requests, so /health keeps answering the station's watchdog meanwhile.
+    /// here either), then it goes the station's way (`install_on_station`): tried from memory, or beside the old
+    /// program — never whole in memory as an archive and a program at once. No internet on the station needed.
+    /// Blocking: the route runs it off the threads that answer requests, so /health keeps answering the station's
+    /// watchdog meanwhile.
     pub fn install_upload(
         self: &Arc<Self>,
         version: &str,
@@ -396,47 +473,291 @@ impl UpdatesService {
         let keys = self.keys.as_ref().map_err(|error| ApiError::conflict(error.clone()))?;
         verify::verify_any(keys, archive, signature).map_err(ApiError::bad_request)?;
         install::check_release(archive, &self.platform, version, &self.current()).map_err(ApiError::bad_request)?;
-        let current = std::env::current_exe().map_err(ApiError::internal)?;
         if self.on_station() {
-            self.station_room(&current).map_err(ApiError::conflict)?;
+            return self.install_on_station(version, archive);
         }
+        let current = std::env::current_exe().map_err(ApiError::internal)?;
         let version = version.trim_start_matches('v').to_string();
-        {
-            let mut state = self.state.lock().unwrap();
-            if state.installing {
-                return Err(ApiError::conflict(crate::tr!("Обновление уже ставится.")));
-            }
-            state.installing = true;
-            state.failed = None;
-        }
+        self.begin_install()?;
         let previous = match install::replace_from_archive(&current, archive, "duowave") {
             Ok(previous) => previous,
-            Err(error) => {
-                let mut state = self.state.lock().unwrap();
-                state.installing = false;
-                state.failed = Some((version, error.clone()));
-                return Err(ApiError::conflict(error));
-            }
+            Err(error) => return Err(self.install_failed(&version, error)),
         };
-        if self.on_station() {
-            crate::placement::station_fs::StationFs::real().mark_updated(&version);
-        }
         tracing::info!("update {version} from the computer installed; the one before is {}", previous.display());
+        self.become_later(current, version, None);
+        Ok(self.status())
+    }
+
+    /// An update on the station (docs/plans/station-update-space.md): the room counted from the program itself, then
+    /// tried from memory — or put beside the old program as before when memory is short and the disk roomy, or tried
+    /// once the station's apps give their memory back; else refused with what to free. Nothing of an update that does
+    /// not go on is left: the program on the disk and the apps stay as they were. Blocking: run off the async threads.
+    pub fn install_on_station(self: &Arc<Self>, version: &str, archive: &[u8]) -> Result<UpdateStatus, ApiError> {
+        let version = version.trim_start_matches('v').to_string();
+        let fs = StationFs::real();
+        let running = std::env::current_exe().map_err(ApiError::internal)?;
+        let program = fs.program_on_disk();
+        if self.state.lock().unwrap().trial.is_some() || !install::same_file(&running, &program) {
+            return Err(ApiError::conflict(crate::tr!("Идёт проба новой версии: следующее обновление — после неё.")));
+        }
+        self.begin_install()?;
+        match self.station_way(&fs, &version, archive, &running, &program) {
+            Ok(()) => Ok(self.status()),
+            Err(error) => Err(self.install_failed(&version, error)),
+        }
+    }
+
+    fn begin_install(&self) -> Result<(), ApiError> {
+        let mut state = self.state.lock().unwrap();
+        if state.installing {
+            return Err(ApiError::conflict(crate::tr!("Обновление уже ставится.")));
+        }
+        state.installing = true;
+        state.failed = None;
+        Ok(())
+    }
+
+    fn install_failed(&self, version: &str, error: String) -> ApiError {
+        let mut state = self.state.lock().unwrap();
+        state.installing = false;
+        state.failed = Some((version.to_string(), error.clone()));
+        ApiError::conflict(error)
+    }
+
+    /// The station's way for this update, taken: see `trial::Room::way`.
+    fn station_way(
+        self: &Arc<Self>,
+        fs: &StationFs,
+        version: &str,
+        archive: &[u8],
+        running: &Path,
+        program: &Path,
+    ) -> Result<(), String> {
+        let freed = install::remove_leftovers(program) + self.remove_downloads();
+        if freed > 0 {
+            tracing::info!("update: {} KB that earlier updates left removed", freed / 1024);
+        }
+        let room = self.room_on_station(archive, program, running)?;
+        let mut paused = false;
+        let way = match room.way() {
+            trial::Way::PauseApps => {
+                let Some(hooks) = self.hooks.get().cloned() else { return Err(room.no_memory()) };
+                let stopped = tokio::runtime::Handle::current().block_on(hooks.pause_apps());
+                tracing::warn!(
+                    "update {version}: memory is short for the trial — the station's apps are off for it: {}",
+                    if stopped.is_empty() { "none was running".to_string() } else { stopped.join(", ") }
+                );
+                paused = true;
+                // An app's memory is back once its program has ended.
+                std::thread::sleep(Duration::from_secs(2));
+                let again = self.room_on_station(archive, program, running)?;
+                if !again.memory_fits() {
+                    hooks.resume_apps();
+                    return Err(again.no_memory());
+                }
+                trial::Way::Trial
+            }
+            way => way,
+        };
+        let outcome = match way {
+            trial::Way::Trial => self.begin_trial(fs, version, archive, program, paused, &room),
+            trial::Way::Beside => self.beside(fs, version, archive, running),
+            _ => Err(room.no_room()),
+        };
+        if outcome.is_err() && paused {
+            if let Some(hooks) = self.hooks.get() {
+                hooks.resume_apps();
+            }
+        }
+        outcome
+    }
+
+    /// As before the trial: the new program written beside the running one, which stays as `.previous` — the safety
+    /// net's way back (station-client/gateway.sh) — until the new one has run ten minutes.
+    fn beside(self: &Arc<Self>, fs: &StationFs, version: &str, archive: &[u8], running: &Path) -> Result<(), String> {
+        let previous = install::replace_from_archive(running, archive, "duowave")?;
+        fs.mark_updated(version);
+        tracing::info!("update {version} installed beside the one before ({})", previous.display());
+        self.become_later(running.to_path_buf(), version.to_string(), None);
+        Ok(())
+    }
+
+    /// The new program into memory, asked its version, its mark written: the gateway becomes it in a moment, and the
+    /// program on the disk stays the way back (src/updates/trial.rs).
+    fn begin_trial(
+        self: &Arc<Self>,
+        fs: &StationFs,
+        version: &str,
+        archive: &[u8],
+        program: &Path,
+        paused: bool,
+        room: &trial::Room,
+    ) -> Result<(), String> {
+        let target = fs.trial_dir().join(format!("duowave-{version}"));
+        let (_, sha256) = install::unpack_to(archive, "duowave", &target)
+            .map_err(|error| crate::tr!("Новая версия не распаковалась в память колонки: {error}", error = error))?;
+        if let Err(problem) = install::answers_version(&target, version, trial::ANSWER_WAIT) {
+            let _ = std::fs::remove_file(&target);
+            return match problem {
+                // Programs are not run from memory here: the update goes beside the old program, if the disk allows.
+                install::NotAnswered::NotRun(why) if room.free_kb.unwrap_or(u64::MAX) >= room.disk_beside() => {
+                    tracing::warn!("update {version}: no trial from memory ({why}) — beside the one before");
+                    self.beside(fs, version, archive, &std::env::current_exe().map_err(|error| error.to_string())?)
+                }
+                problem => Err(crate::tr!("Новая версия не прошла проверку: {why}.", why = problem.message())),
+            };
+        }
+        // The running program is the way back now: the one kept before it, and the mark that named it, go.
+        let _ = std::fs::remove_file(install::previous_of(program));
+        let _ = std::fs::remove_file(fs.path(station_fs::UPDATED));
+        let target = std::fs::canonicalize(&target).unwrap_or(target);
+        let mark = trial::Trying {
+            version: version.to_string(),
+            program: target.clone(),
+            sha256,
+            started: trial::now_seconds(),
+            boot: fs.boot_id(),
+            apps_paused: paused,
+        };
+        if let Err(error) = fs.set_trial(&mark) {
+            let _ = std::fs::remove_file(&target);
+            return Err(error);
+        }
+        fs.clear_trial_failed();
+        tracing::info!(
+            "update {version}: tried from memory for {} minutes; the program on the disk stays the way back",
+            trial::TRIAL.as_secs() / 60
+        );
+        self.become_later(target, version.to_string(), Some(mark));
+        Ok(())
+    }
+
+    /// The answer leaves first, then the gateway becomes `program` (exec). A failed exec of a trial takes its mark and
+    /// its memory back.
+    fn become_later(self: &Arc<Self>, program: PathBuf, version: String, trying: Option<trial::Trying>) {
         let service = self.clone();
-        tokio::spawn(async move {
-            // The answer to the computer leaves first, then the gateway becomes the new program.
+        tokio::runtime::Handle::current().spawn(async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            let error = install::restart(&current);
+            let error = install::restart(&program);
+            if let Some(trying) = trying {
+                let fs = StationFs::real();
+                fs.clear_trial();
+                let _ = std::fs::remove_file(&trying.program);
+                if trying.apps_paused {
+                    if let Some(hooks) = service.hooks.get() {
+                        hooks.resume_apps();
+                    }
+                }
+            }
             let mut state = service.state.lock().unwrap();
             state.installing = false;
             state.failed = Some((version, format!("restart: {error}")));
         });
-        Ok(self.status())
+    }
+
+    /// At the start on the station, once the gateway serves: what an update left is removed, and what a trial left
+    /// is acted on — this process is the trial (watched until it goes onto the disk), or the trial ended without it
+    /// (noted for the panel and the computer, its memory freed).
+    pub fn start_on_station(self: &Arc<Self>) {
+        if !self.on_station() {
+            return;
+        }
+        let fs = StationFs::real();
+        let found = self.at_start.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+        if !matches!(found, Some(trial::AtStart::Trying(_))) {
+            let freed = install::remove_leftovers(&fs.program_on_disk()) + self.remove_downloads();
+            if freed > 0 {
+                tracing::info!(
+                    "update: {} KB that earlier updates left removed (duowave.failed and the like)",
+                    freed / 1024
+                );
+            }
+        }
+        match found {
+            Some(trial::AtStart::Trying(mark)) => {
+                self.state.lock().unwrap().trial = Some(trial::TrialView::of(&mark));
+                self.watch_trial(mark);
+            }
+            Some(trial::AtStart::Ended(mark, why)) => {
+                let failed = trial::TrialFailed { version: mark.version.clone(), at: now_iso(), why: why.to_string() };
+                tracing::warn!("update {}: {}", mark.version, failed.text());
+                let _ = std::fs::remove_file(&mark.program);
+                fs.clear_trial();
+                fs.set_trial_failed(&failed);
+                self.state.lock().unwrap().failed = Some((mark.version.clone(), failed.reason()));
+            }
+            Some(trial::AtStart::Done(mark)) => {
+                let _ = std::fs::remove_file(&mark.program);
+                fs.clear_trial();
+            }
+            Some(trial::AtStart::None) | None => {}
+        }
+    }
+
+    /// The trial watched: after `TRIAL` the new program goes onto the disk in the old one's place (tried again while it
+    /// cannot), then after a quiet minute the gateway restarts from the disk.
+    fn watch_trial(self: &Arc<Self>, mark: trial::Trying) {
+        let service = self.clone();
+        tokio::spawn(async move {
+            let wait = mark.until() - trial::now_seconds();
+            if wait > 0 {
+                tokio::time::sleep(Duration::from_secs(wait as u64)).await;
+            }
+            loop {
+                let program = StationFs::real().program_on_disk();
+                let free =
+                    station_fs::space_of(program.parent().unwrap_or(Path::new("/data"))).map(|space| space.free_kb);
+                let (source, sha256, target) = (mark.program.clone(), mark.sha256.clone(), program.clone());
+                let moved = tokio::task::spawn_blocking(move || install::move_to_disk(&source, &target, &sha256, free))
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(|moved| moved);
+                match moved {
+                    Ok(moved) => {
+                        tracing::info!(
+                            "update {}: ten minutes from memory went well — on the disk now{}",
+                            mark.version,
+                            if moved.tight { " (in the old one's place: no room for both)" } else { "" }
+                        );
+                        break;
+                    }
+                    Err(error) => {
+                        tracing::warn!("update {}: not onto the disk yet: {error}", mark.version);
+                        service.trial_phase("stuck", Some(error));
+                        tokio::time::sleep(trial::RETRY_MOVE).await;
+                    }
+                }
+            }
+            let fs = StationFs::real();
+            fs.clear_trial();
+            fs.clear_trial_failed();
+            // The program runs on from memory; its file there goes, and the memory with it at the restart.
+            let _ = std::fs::remove_file(&mark.program);
+            service.trial_phase("waiting", None);
+            let mut quiet = 0;
+            while quiet < trial::QUIET_LOOKS {
+                tokio::time::sleep(trial::LOOK_EVERY).await;
+                let now = service.hooks.get().is_none_or(|hooks| hooks.quiet());
+                quiet = if now { quiet + 1 } else { 0 };
+            }
+            let program = fs.program_on_disk();
+            tracing::info!("update {}: a quiet minute — the gateway starts from the disk", mark.version);
+            let error = install::restart(&program);
+            tracing::warn!("update {}: the start from the disk failed: {error}", mark.version);
+            service.trial_phase("stuck", Some(format!("restart: {error}")));
+        });
+    }
+
+    fn trial_phase(&self, phase: &'static str, message: Option<String>) {
+        if let Some(trial) = self.state.lock().unwrap().trial.as_mut() {
+            trial.phase = phase;
+            trial.message = message;
+        }
     }
 
     /// From the console (`duowave update`): checks, and installs what is offered without restarting — the service
     /// manager (or the person) starts the new program. Returns what happened, for people.
-    pub async fn update_from_console(&self, check_only: bool) -> Result<String, String> {
+    pub async fn update_from_console(self: &Arc<Self>, check_only: bool) -> Result<String, String> {
         if self.feed_url.is_none() {
             return Err("no feed: set UPDATE_FEED_URL".into());
         }

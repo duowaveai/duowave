@@ -108,7 +108,7 @@ pub struct LanguageView {
 }
 
 pub fn routes() -> Router<Arc<App>> {
-    Router::new().route("/api/v1/language", get(view).put(set)).merge(country::routes())
+    Router::new().route("/api/v1/language", get(view).put(set))
 }
 
 async fn view(State(app): State<Arc<App>>) -> ApiResult<LanguageView> {

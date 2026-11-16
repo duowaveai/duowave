@@ -58,7 +58,7 @@ pub fn check_archive(bytes: &[u8], sha256: &str, size: u64) -> Result<(), String
 
 /// A path of the archive as a path inside the package: relative, no `..`, no root; `./` parts dropped. None: the
 /// archive's own root.
-fn inside(path: &Path) -> Result<Option<PathBuf>, String> {
+pub(crate) fn inside(path: &Path) -> Result<Option<PathBuf>, String> {
     let mut clean = PathBuf::new();
     for component in path.components() {
         match component {

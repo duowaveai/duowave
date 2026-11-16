@@ -35,6 +35,12 @@ const en: Translation<typeof ru> = {
     noNewVersions: (ago) => `No new versions · checked ${ago}`,
     notChecked: 'Not checked yet.',
     installing: 'Installing. The gateway will restart and be back in a few seconds.',
+    trialTrying: (version, until) =>
+        `Version ${version} is being tried from the speaker’s memory until ${until}. If it falls, the speaker goes back to the previous one by itself.`,
+    trialWaiting: (version) =>
+        `Version ${version} passed its trial and took the previous one’s place: the gateway will restart for a couple of seconds once the speaker is quiet.`,
+    trialStuck: (version, why) => `Version ${version} runs from memory but is not on the disk yet: ${why}`,
+    trialAppsPaused: 'The speaker’s apps are off for the trial and will come back on by themselves.',
     check: 'check',
     installingShort: 'installing…',
     update: 'update',

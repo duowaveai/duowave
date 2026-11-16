@@ -96,6 +96,8 @@ pub const LOCAL_SETTINGS: &[&str] = &[
     "tts_own",
     "asr_model",
     "voice_pending",
+    // The station's cloud hearing and voice (src/speech/cloud_speech.rs): the station's own.
+    "cloud_speech",
     // The station's own name and device as the computer knows them: a move brings them (`MOVE_SETS`).
     "station_self",
     // The apps' history: where each gateway keeps its own and how much (plugins/history/gc.rs).

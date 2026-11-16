@@ -46,9 +46,29 @@ use crate::stations::connect::station_shell::{ShellOpener, ShellOptions, Station
 use crate::storage::Db;
 use crate::utils::time::now_iso;
 
-/// Free space a station needs in /data for its gateway: the program (12 MB), its update beside it, the database and
-/// a journal of 10 MB.
+/// The room in /data the one-line setup asks for at its first look, before it takes the build (setup.rs): a move counts
+/// it from the program itself (`needed_kb`).
 pub const NEEDED_KB: u64 = 30 * 1024;
+
+/// What a station needs in /data for its gateway besides the program itself: its database and journal.
+pub const DATA_KB: u64 = 5 * 1024;
+
+/// Free space a station needs in /data for a gateway whose program is `program_bytes`: the program, its database and
+/// journal, and the floor no update takes (`updates::install::STATION_FLOOR_KB`). Its updates need no room for a
+/// second program: they are tried from memory (docs/plans/station-update-space.md).
+pub fn needed_kb(program_bytes: u64) -> u64 {
+    program_bytes.div_ceil(1024) + DATA_KB + crate::updates::install::STATION_FLOOR_KB
+}
+/// Stops a gateway already running on the station, detached from the session (busybox keeps a restart's pipes open).
+fn stop_running() -> String {
+    format!("[ -f {SERVICE} ] && setsid sh {SERVICE} stop </dev/null >/dev/null 2>&1; true")
+}
+
+/// The size of the program already on the station (an earlier move's), in bytes; 0 without one.
+fn replaced_size() -> String {
+    format!("wc -c < {BIN} 2>/dev/null || echo 0")
+}
+
 /// Memory the station should have free for a gateway that holds ~10 MB.
 pub const NEEDED_MEMORY_KB: u64 = 20 * 1024;
 
@@ -385,7 +405,13 @@ impl MovesService {
     }
 
     /// The station looked at: what it is, how much room, where its voice goes. Changes nothing.
-    async fn check(&self, shell: &dyn StationShell, to_station: bool) -> anyhow::Result<VoiceAddresses> {
+    /// `program_bytes`: the program moving onto the station, when `to_station` — the room it needs is `needed_kb`.
+    async fn check(
+        &self,
+        shell: &dyn StationShell,
+        to_station: bool,
+        program_bytes: u64,
+    ) -> anyhow::Result<VoiceAddresses> {
         let config = self.run_ok(shell, &STEPS.read, None).await?;
         let facts = read_config(&config)?;
         if to_station {
@@ -398,11 +424,23 @@ impl MovesService {
             }
             let space = self.run_ok(shell, "df -k /data | tail -n 1", None).await?;
             let free = space.split_whitespace().nth(3).and_then(|kb| kb.parse::<u64>().ok()).unwrap_or(0);
-            if free < NEEDED_KB {
+            let need_kb = needed_kb(program_bytes);
+            // A gateway already there (an earlier move): its program is replaced, so its room comes back — counted as
+            // free. While the new one is written beside it both stand, so the new one alone must fit in what is free
+            // now (live 16.11: 26 MB free and an old 23 MB program in place — refused as «33 МБ нужно»).
+            let replaced = self
+                .run_ok(shell, &replaced_size(), None)
+                .await
+                .ok()
+                .and_then(|size| size.trim().parse::<u64>().ok())
+                .unwrap_or(0)
+                / 1024;
+            let program_kb = program_bytes.div_ceil(1024);
+            if free + replaced < need_kb || free < program_kb {
                 anyhow::bail!(crate::tr!(
                     "В /data свободно {free} МБ, а шлюзу нужно {needed} МБ.",
                     free = free / 1024,
-                    needed = NEEDED_KB / 1024
+                    needed = need_kb.div_ceil(1024)
                 ));
             }
             let memory = self.run_ok(shell, "grep MemAvailable /proc/meminfo", None).await?;
@@ -429,9 +467,10 @@ impl MovesService {
         let watch = self.watch_for(address);
         self.step(id, MoveStep::Check, StepState::Running);
         *shell = Some(self.open(address).await?);
-        let now = self.check(shell.as_deref().unwrap(), true).await?;
+        // The program first: the room the station needs is counted from it.
         let payload = (self.deps.payload)(self.deps.config.clone()).await.map_err(|error| anyhow::anyhow!(error))?;
         let program = payload.program().map_err(|error| anyhow::anyhow!(error))?;
+        let now = self.check(shell.as_deref().unwrap(), true, program.len() as u64).await?;
         self.step(id, MoveStep::Check, StepState::Done);
 
         // The way back, before anything changes: what the firmware's own file says (under our copy, when one is
@@ -473,6 +512,10 @@ impl MovesService {
         }
         let shell_ref = shell.as_deref().unwrap();
         self.run_ok(shell_ref, &format!("mkdir -p {DIR}/bin"), None).await?;
+        // A gateway already running there (an earlier move) stops first: it holds its program's room and the
+        // station's memory while the new one is written and installed (live 16.11: «no answer in 20 s», then «No
+        // space left»). Its voice is not switched yet; the move starts the new one.
+        let _ = shell_ref.run(&stop_running(), None).await;
         shell_ref.upload(BIN, &program).await?;
         self.run_ok(shell_ref, &format!("chmod 755 {BIN}"), None).await?;
         let mut install = format!("{BIN} station install --managed pc --no-start --peer-key {key}");
@@ -615,7 +658,7 @@ impl MovesService {
         let gateway = request.gateway.clone().expect("checked at the start");
         self.step(id, MoveStep::Check, StepState::Running);
         *shell = Some(self.open(address).await?);
-        self.check(shell.as_deref().unwrap(), false).await?;
+        self.check(shell.as_deref().unwrap(), false, 0).await?;
         let ours =
             self.run_ok(shell.as_deref().unwrap(), &format!("[ -x {BIN} ] && echo ours || echo none"), None).await?;
         self.step(id, MoveStep::Check, StepState::Done);
@@ -738,7 +781,7 @@ impl MovesService {
         let watch = self.watch_for(address);
         self.step(id, MoveStep::Check, StepState::Running);
         *shell = Some(self.open(address).await?);
-        let now = self.check(shell.as_deref().unwrap(), false).await?;
+        let now = self.check(shell.as_deref().unwrap(), false, 0).await?;
         let ours =
             self.run_ok(shell.as_deref().unwrap(), &format!("[ -x {BIN} ] && echo ours || echo none"), None).await?;
         self.step(id, MoveStep::Check, StepState::Done);
@@ -859,6 +902,7 @@ impl MovesService {
         let shell = self.open(address).await.map_err(|error| problem_of(&error))?;
         let marks = format!(
             "[ -f {SERVICE} ] && echo installed; [ -f {DIR}/disabled ] && echo disabled; \
+             [ -f {SERVICE} ] && {{ [ -x \"$(cat {DIR}/gateway-bin 2>/dev/null)\" ] || echo program-missing; }}; \
              [ -f {DIR}/safety-fired ] && echo \"fired $(cat {DIR}/safety-fired)\"; \
              grep -q '\"uniProxyUrl\" *: *\"ws://127\\.0\\.0\\.1:' {config} && echo local; \
              [ -f {SERVICE} ] && {SERVICE_COMMAND} status",
@@ -881,6 +925,9 @@ impl MovesService {
             "installed": lines.contains(&"installed"),
             "running": lines.iter().any(|line| line.contains(": running")),
             "disabled": lines.contains(&"disabled"),
+            // The service is there and its program is not: the power went in the seconds an update put the new
+            // version in the old one's place (src/updates/trial.rs). «Попробовать снова» puts it back.
+            "programMissing": lines.contains(&"program-missing"),
             "local": lines.contains(&"local"),
             "fired": fired,
             "status": status.ok().filter(|status| status.code == 0).and_then(|status| serde_json::from_str::<Value>(&status.stdout).ok()),
@@ -900,6 +947,12 @@ impl MovesService {
     pub async fn retry(&self, address: &str) -> Result<(), String> {
         let watch = self.watch_for(address);
         let shell = self.open(address).await.map_err(|error| problem_of(&error))?;
+        // The program itself may be gone: the power went in the seconds an update put the new version in the old
+        // one's place (src/updates/trial.rs). This computer's build of it goes there again.
+        if let Err(error) = self.put_program_back(shell.as_ref()).await {
+            shell.close().await;
+            return Err(error);
+        }
         let started = self
             .run_ok(
                 shell.as_ref(),
@@ -924,6 +977,40 @@ impl MovesService {
         shell.close().await;
         outcome
     }
+
+    /// The station's gateway program, put back when the service names it and it is not there: this computer's build,
+    /// in the panel's own place. One the service runs from elsewhere (a YAM package) is that package's to bring back.
+    async fn put_program_back(&self, shell: &dyn StationShell) -> Result<(), String> {
+        let found = self.run_ok(shell, &program_look(), None).await.map_err(|error| error.to_string())?;
+        let mut lines = found.lines().map(str::trim).filter(|line| !line.is_empty());
+        let named = lines.clone().find(|line| *line != "program-missing").unwrap_or("").to_string();
+        if !lines.any(|line| line == "program-missing") {
+            return Ok(());
+        }
+        if !named.is_empty() && named != BIN {
+            return Err(crate::tr!(
+                "Программы шлюза на колонке нет, а служба запускает её из {named}: поставьте этот пакет снова.",
+                named = named
+            ));
+        }
+        let payload = (self.deps.payload)(self.deps.config.clone()).await?;
+        let program = payload.program()?;
+        tracing::warn!("placement: the station's gateway program is gone — this computer's build goes there again");
+        self.run_ok(shell, &format!("mkdir -p {DIR}/bin"), None).await.map_err(|error| error.to_string())?;
+        shell.upload(BIN, &program).await.map_err(|error| error.to_string())?;
+        self.run_ok(shell, &format!("chmod 755 {BIN} && printf '%s\\n' {BIN} > {DIR}/gateway-bin"), None)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// The program the station's service names, and `program-missing` when it is not there; nothing without the service.
+fn program_look() -> String {
+    format!(
+        "[ -f {SERVICE} ] || exit 0; cat {DIR}/gateway-bin 2>/dev/null; echo; \
+         [ -x \"$(cat {DIR}/gateway-bin 2>/dev/null)\" ] || echo program-missing"
+    )
 }
 
 fn parse_ms(iso: &str) -> u64 {
@@ -1041,9 +1128,17 @@ mod tests {
                     let machine = if self.fs.path("/data/not-aarch64").exists() { "armv7l" } else { "aarch64" };
                     return ok(format!("{machine}\n"));
                 }
-                "df -k /data | tail -n 1" => return ok("/dev/ubi0_5 61000 2000 59000 4% /data\n".into()),
+                "df -k /data | tail -n 1" => {
+                    let free =
+                        std::fs::read_to_string(self.fs.path("/data/free-kb")).unwrap_or_else(|_| "59000".into());
+                    return ok(format!("/dev/ubi0_5 61000 2000 {} 4% /data\n", free.trim()));
+                }
                 "grep MemAvailable /proc/meminfo" => return ok("MemAvailable:      61234 kB\n".into()),
                 _ => {}
+            }
+            if command == replaced_size() {
+                let size = std::fs::metadata(self.fs.path(BIN)).map(|meta| meta.len()).unwrap_or(0);
+                return ok(format!("{size}\n"));
             }
             if command == format!("mkdir -p {DIR}/bin") {
                 std::fs::create_dir_all(self.fs.path(&format!("{DIR}/bin"))).unwrap();
@@ -1055,11 +1150,25 @@ mod tests {
             if command == format!("[ -x {BIN} ] && echo ours || echo none") {
                 return ok(if self.fs.path(BIN).exists() { "ours\n" } else { "none\n" }.into());
             }
+            let named = std::fs::read_to_string(self.fs.path(&format!("{DIR}/gateway-bin")))
+                .map(|text| text.trim().to_string())
+                .unwrap_or_default();
+            let program_missing = self.fs.path(SERVICE).exists() && !self.fs.path(&named).exists();
+            if command == program_look() {
+                if !self.fs.path(SERVICE).exists() {
+                    return ok(String::new());
+                }
+                let missing = if program_missing { "program-missing\n" } else { "" };
+                return ok(format!("{named}\n{missing}"));
+            }
             if command.contains("echo installed") {
                 // «Проверить»: the shell's own account of the service and the safety net's marks.
                 let mut lines = Vec::new();
                 if self.fs.path(SERVICE).exists() {
                     lines.push("installed".to_string());
+                }
+                if program_missing {
+                    lines.push("program-missing".to_string());
                 }
                 if self.fs.path(&format!("{DIR}/disabled")).exists() {
                     lines.push("disabled".to_string());
@@ -1756,6 +1865,33 @@ mod tests {
         let _ = Target::Yandex;
     }
 
+    /// Live 16.11: 26 MB free in /data and an earlier move's 23 MB program in place — the move refused it as «нужно
+    /// 33 МБ», though the program it replaces gives its room back. It counts now; without one, short room still refuses.
+    #[tokio::test]
+    async fn counts_the_program_it_replaces_as_room() {
+        let request = MoveRequest {
+            to: MoveTo::Station,
+            address: "127.0.0.1".into(),
+            gateway: None,
+            settings_home: SettingsHome::Station,
+            remove: false,
+        };
+        let (computer, station) = setup().await;
+        std::fs::write(station.fs.path("/data/free-kb"), "6000").unwrap();
+        let short = computer.moves.start(request.clone(), None).unwrap();
+        let short = finished(&computer.moves, &short.id).await;
+        assert_eq!(short.status, MoveStatus::Failed);
+        assert!(short.error.as_deref().unwrap_or_default().contains("свободно 5 МБ"), "{:?}", short.error);
+        assert_eq!(station.fs.voice().unwrap().url, YANDEX_URL, "nothing changed");
+
+        // An old program of 5 MB in place: 6 MB free and 5 MB coming back are room enough.
+        std::fs::create_dir_all(station.fs.path(&format!("{DIR}/bin"))).unwrap();
+        std::fs::write(station.fs.path(BIN), vec![0u8; 5_000_000]).unwrap();
+        let job = computer.moves.start(request, None).unwrap();
+        let job = finished(&computer.moves, &job.id).await;
+        assert_eq!(states(&job)[0], (MoveStep::Check, StepState::Done), "{:?}", job.error);
+    }
+
     #[tokio::test]
     async fn tells_what_happened_by_the_shell_when_the_program_is_the_broken_part_and_tries_again() {
         let (computer, station) = setup().await;
@@ -1791,5 +1927,39 @@ mod tests {
         computer.moves.retry("127.0.0.1").await.unwrap();
         assert!(!station.fs.path(&format!("{DIR}/disabled")).exists());
         assert!(station.status().local);
+    }
+
+    #[tokio::test]
+    async fn a_program_the_power_cut_took_goes_back_with_the_retry() {
+        let (computer, station) = setup().await;
+        let job = computer
+            .moves
+            .start(
+                MoveRequest {
+                    to: MoveTo::Station,
+                    address: "127.0.0.1".into(),
+                    gateway: None,
+                    settings_home: SettingsHome::Station,
+                    remove: false,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(finished(&computer.moves, &job.id).await.status, MoveStatus::Done);
+        let installed = std::fs::read(station.fs.path(BIN)).unwrap();
+        // The power went in the seconds an update put the new version in the old one's place: no program on the
+        // disk; at boot the voice went where it went before the gateway.
+        std::fs::remove_file(station.fs.path(BIN)).unwrap();
+        station.fs.point(&crate::placement::station_fs::Target::Previous, false, &station.system).unwrap();
+        station.started.store(false, Ordering::Relaxed);
+        let seen = computer.moves.inspect("127.0.0.1").await.unwrap();
+        assert_eq!(seen["programMissing"], true);
+
+        computer.moves.retry("127.0.0.1").await.unwrap();
+        assert_eq!(std::fs::read(station.fs.path(BIN)).unwrap(), installed, "the computer's build is back");
+        assert!(station.started.load(Ordering::Relaxed));
+        assert!(station.status().local);
+        let seen = computer.moves.inspect("127.0.0.1").await.unwrap();
+        assert_eq!(seen["programMissing"], false);
     }
 }

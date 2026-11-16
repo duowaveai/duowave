@@ -153,6 +153,8 @@ pub struct App {
     pub placement: Arc<PlacementService>,
     /// What works where, now (src/placement/availability.rs): the panels and the mode switch ask it.
     pub availability: Arc<AvailabilityService>,
+    /// The station's cloud hearing and voice as the panel sets them (src/speech/cloud_speech.rs).
+    pub cloud_speech: Arc<crate::speech::cloud_speech::CloudSpeech>,
     /// The station's home server (src/home_server): the computer it leans on, while it is up.
     pub home_server: Arc<crate::home_server::HomeServerService>,
     /// The computer's watches over the stations' gateways (one per station with a placement of its own), and the
@@ -193,6 +195,8 @@ impl App {
         // The old deals and their days cleaned: now and daily.
         self.router.start();
         self.updates.spawn_checks();
+        // On the station: what an update left, and a trial of a new version from memory (src/updates/trial.rs).
+        self.updates.start_on_station();
         // The reminders' scheduler and the routes' listener.
         self.skills.start();
         // The plugins' idle unloading and the events they follow; their schedules' tick.
@@ -350,6 +354,18 @@ impl App {
         ));
         let availability = AvailabilityService::new(&config, profile, events.clone());
         availability.set_placement(placement.clone());
+        // The station's cloud hearing and voice as the panel sets them (src/speech/cloud_speech.rs): read on every use.
+        let cloud_speech = Arc::new(crate::speech::cloud_speech::CloudSpeech::new(
+            settings.clone(),
+            secrets.clone(),
+            config.speech.asr.clone(),
+            config.gateway.tts.own.clone(),
+            profile.station,
+        ));
+        if profile.station {
+            availability.set_cloud(cloud_speech.clone());
+            voice.set_cloud(cloud_speech.clone());
+        }
         // The station's home server: its state feeds what works where and /health; our voice goes through it first.
         let home_server = crate::home_server::HomeServerService::new(
             config.clone(),
@@ -360,6 +376,7 @@ impl App {
         availability.set_home_server(home_server.clone());
         placement.set_home_server(home_server.clone());
         if profile.station {
+            home_server.set_cloud(cloud_speech.clone());
             voice.set_home(home_server.clone());
         }
         let mode_service = Arc::new(ModeService::new(
@@ -375,6 +392,30 @@ impl App {
         availability.set_modes(modes.clone());
         // The gateway's own switch out of «Свой» and back, as its home server goes and comes.
         home_server.set_modes(mode_service.clone());
+        // The station by itself in «Свой» on the cloud's hearing and voice: one gone (off in its panel, the key
+        // removed) — «Свой» gives way to «Шлюз» rather than stay deaf or mute (docs/plans/speaker-alone.md).
+        if profile.station && tokio::runtime::Handle::try_current().is_ok() {
+            let (modes, registry) = (mode_service.clone(), availability.clone());
+            events.on("cloud-svoi", move |event| {
+                let crate::core::events::GatewayEvent::AvailabilityChanged { features } = &*event else { return };
+                // With a home server its watch leaves and brings back «Свой» itself (src/home_server).
+                let alone = registry.context().placement == crate::core::availability::Placement::Station;
+                let own = modes.current() == crate::settings::definitions::PanelMode::Own;
+                if !alone || !own || !features.iter().any(|id| id == "mode.own") {
+                    return;
+                }
+                let Some(state) = registry.get("mode.own").filter(|state| !state.on()) else { return };
+                match modes.leave_by_itself(
+                    crate::settings::definitions::PanelMode::Own,
+                    crate::settings::definitions::PanelMode::Gateway,
+                    &state.reason,
+                ) {
+                    Ok(true) => tracing::warn!("mode: «Свой» → «Шлюз» by itself: {}", state.reason),
+                    Ok(false) => {}
+                    Err(error) => tracing::warn!("mode: «Свой» not left: {}", error.message),
+                }
+            });
+        }
         availability.start(&events);
         let requests = RequestsService::new(db.clone(), events.clone(), settings.clone(), modes.clone());
         requests.start();
@@ -469,7 +510,7 @@ impl App {
         };
         // On the station recognition goes the computer's way first, then the cloud's (src/home_server/chain.rs).
         let speech = if profile.station {
-            let chain = crate::home_server::chain::station_recognizer(&config.speech.asr, home_server.clone());
+            let chain = crate::home_server::chain::station_recognizer(cloud_speech.clone(), home_server.clone());
             SpeechService::with_recognizer(config.speech.clone(), Some(Arc::new(chain)))
         } else {
             #[cfg(feature = "pc")]
@@ -1059,6 +1100,16 @@ impl App {
         }
         let characters = CharactersService::new(db.clone(), events.clone(), personas.clone(), plugins.clone());
         memory.attach_characters(characters.clone());
+        // The chosen character's catchphrases, from the feed its package came from (src/characters/catchphrases.rs):
+        // said now and then by the dialog, word for word.
+        {
+            let (catalog, personas) = (Arc::downgrade(&catalog), personas.clone());
+            dialog.attach_catchphrases(Arc::new(move || {
+                let chosen = personas.chosen()?.preset_id?;
+                let (package, character) = chosen.split_once(':')?;
+                catalog.upgrade()?.catchphrases(package, character)
+            }));
+        }
         #[cfg(feature = "pc")]
         characters.link_voices(crate::characters::voices::CharacterVoices::new(
             voice_lab.clone(),
@@ -1261,6 +1312,17 @@ impl App {
         // The Yandex connector reads the station link's sessions.
         connectors.set_station_sessions(station_sessions.clone());
 
+        // An update on the station (src/updates/trial.rs): whether the station is quiet now, its apps switched off for a
+        // trial's memory and back. A trial that switched them off holds them from its start.
+        updates.set_station_hooks(Arc::new(StationUpdateHooks {
+            sessions: Arc::downgrade(&station_sessions),
+            apps: skills.app_playback.clone(),
+            plugins: Arc::downgrade(&plugins),
+        }));
+        if updates.holds_apps() {
+            plugins.hold_apps(true);
+        }
+
         // ── The links end here. ──
 
         let watch = Arc::new(crate::plugins::watch::WatchPages::new(
@@ -1335,6 +1397,7 @@ impl App {
             calls,
             placement,
             availability,
+            cloud_speech,
             home_server,
             #[cfg(feature = "pc")]
             station_gateway,
@@ -1393,6 +1456,7 @@ pub fn router(app: Arc<App>) -> Router {
         .merge(crate::access::routes())
         .merge(crate::requests::routes())
         .merge(crate::live::routes())
+        .merge(crate::speech::cloud_speech::routes())
         .merge(crate::health_status::routes())
         .merge(crate::panel::routes())
         .merge(crate::connectors::routes())
@@ -1506,4 +1570,33 @@ pub async fn shutdown_signal() {
         _ = terminate => {},
     }
     tracing::info!("shutting down");
+}
+
+/// What an update on the station asks of the rest of the gateway (src/updates/trial.rs).
+struct StationUpdateHooks {
+    sessions: std::sync::Weak<SessionRegistry>,
+    apps: Arc<crate::skills::media::app_playback::AppPlayback>,
+    plugins: std::sync::Weak<PluginHost>,
+}
+
+impl crate::updates::StationHooks for StationUpdateHooks {
+    fn quiet(&self) -> bool {
+        self.sessions.upgrade().is_none_or(|sessions| sessions.quiet()) && !self.apps.any_playing()
+    }
+
+    fn pause_apps(&self) -> futures::future::BoxFuture<'static, Vec<String>> {
+        let plugins = self.plugins.upgrade();
+        Box::pin(async move {
+            match plugins {
+                Some(plugins) => plugins.pause_apps().await,
+                None => Vec::new(),
+            }
+        })
+    }
+
+    fn resume_apps(&self) {
+        if let Some(plugins) = self.plugins.upgrade() {
+            plugins.hold_apps(false);
+        }
+    }
 }

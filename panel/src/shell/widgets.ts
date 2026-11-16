@@ -17,7 +17,7 @@ export type WidgetSize = 'small' | 'large';
 
 export interface DeskWidget extends PlacedContribution {
     size: WidgetSize;
-    /** Стоит на столе сразу, пока человек его не убрал. */
+    /** Стоял сразу на прежнем стартовом столе: так и стоит у столов, которые меняли до нового набора (`oldDesk`). */
     initial: boolean;
 }
 
@@ -42,8 +42,11 @@ export interface DeskLayout {
     /** Масштаб стола и его сдвиг. */
     zoom?: number;
     pan?: { x: number; y: number };
-    /** Стол закреплён: свободный стол не сдвигается и не масштабируется, виджеты не двигаются и не тянутся. */
-    locked?: boolean;
+    /**
+     * Стол открыт для правки (`false`): свободный стол сдвигается и масштабируется, виджеты двигаются и тянутся. Нет поля —
+     * стол закреплён: так он и начинается (владелец, 16.11), и в углу тогда только замок.
+     */
+    locked?: false;
     /**
      * Только что сели на стол из «Примерки» (docs/plans/voice-creation.md, «Посадка»): виджет → когда, мс от эпохи. Сутки
      * у такого виджета метка «новый».
@@ -51,24 +54,35 @@ export interface DeskLayout {
     fresh?: Record<string, number>;
     /**
      * Ярлыки на столе (docs/plans/menu-scheme.md): приложения, что открываются в одно нажатие, по порядку. Нет поля —
-     * стартовые: MagicPlace и «Папки». Раскладка хранится на шлюзе — ярлыки одни на всех устройствах человека.
+     * ни одного (владелец, 16.11). Раскладка хранится на шлюзе — ярлыки одни на всех устройствах человека.
      */
     shortcuts?: string[];
+    /**
+     * Лента ярлыков на столе включена (владелец, 16.11): по умолчанию её нет, включают только в «Настройках» →
+     * «Оформление». Выключена — ни ленты, ни «+ Ярлык», ни голосовых «добавь ярлык»; список `shortcuts` сохраняется.
+     */
+    shortcutsBar?: boolean;
     /**
      * Приложения, чей ярлык стол уже ставил сам, когда их поставили (`SHORTCUT_WHEN_INSTALLED`): второй раз не ставит —
      * убранный человеком ярлык не возвращается.
      */
     offered?: string[];
+    /**
+     * Стол живёт по новому стартовому набору (docs/plans/start-desk.md, 16.11): сцена, витрина и живые виджеты. Нет
+     * отметки у стола, который меняли раньше, — у него стоит всё, что стояло сразу тогда (`DeskWidget.initial`): убранное
+     * не появляется, стоявшее не пропадает. Свежий и сброшенный стол — по новому набору; любая его правка ставит отметку.
+     */
+    start?: 2;
 }
 
-/** Ярлыки чистого стола: магазин и «Папки» (владелец, 15.11). */
-export const STARTING_SHORTCUTS = ['magicplace', 'folders'];
+/** Ярлыки чистого стола: ни одного (владелец, 16.11; было — магазин и «Папки»). */
+export const STARTING_SHORTCUTS: string[] = [];
 
 /**
- * Приложения, у которых ярлык появляется на столе сам, как только они поставлены и включены, — один раз (владелец,
- * 15.11): AirPlay — у него нет окна и виджета, а колонку в телефоне ищут, не открывая пульт.
+ * Приложения, у которых ярлык появляется на столе сам, как только они поставлены и включены, — один раз. Пусто
+ * (владелец, 16.11): ярлыки ставит только человек; было — AirPlay.
  */
-export const SHORTCUT_WHEN_INSTALLED = ['airplay'];
+export const SHORTCUT_WHEN_INSTALLED: string[] = [];
 
 /** Метка «новый» у севшего на стол виджета держится сутки. */
 export const FRESH_MS = 24 * 60 * 60 * 1000;
@@ -125,14 +139,25 @@ function parse(raw: unknown): DeskLayout | null {
         order: list(value.order),
         zoom: finite(value.zoom) && value.zoom >= 0.4 && value.zoom <= 2 ? value.zoom : undefined,
         pan: pan && finite(pan.x) && finite(pan.y) ? { x: pan.x, y: pan.y } : undefined,
-        locked: value.locked === true || undefined,
+        // Закреплён — как сначала, поэтому хранится только «открыт»; прежнее `true` — то же, что нет поля.
+        locked: value.locked === false ? false : undefined,
         fresh: Object.keys(fresh).length ? fresh : undefined,
         shortcuts: Array.isArray(value.shortcuts) ? [...new Set(list(value.shortcuts))] : undefined,
         offered: Array.isArray(value.offered) ? [...new Set(list(value.offered))] : undefined,
+        shortcutsBar: value.shortcutsBar === true || undefined,
+        start: value.start === 2 ? 2 : undefined,
     };
 }
 
-/** Стартовый стол: ничего не убрано, не поставлено и не переставлено, вид — как сначала, не закреплён. */
+/**
+ * Стол по прежнему стартовому набору: его меняли до нового (docs/plans/start-desk.md) — на нём нет отметки `start: 2`.
+ * Нетронутый стол — по новому набору, с отметкой или без.
+ */
+export function oldDesk(layout: DeskLayout): boolean {
+    return layout.start !== 2 && !starting(layout);
+}
+
+/** Стартовый стол: ничего не убрано, не поставлено и не переставлено, вид — как сначала, закреплён. Отметка набора не в счёт. */
 function starting(layout: DeskLayout): boolean {
     return (
         layout.hidden.length === 0 &&
@@ -141,9 +166,10 @@ function starting(layout: DeskLayout): boolean {
         layout.order.length === 0 &&
         layout.zoom === undefined &&
         layout.pan === undefined &&
-        !layout.locked &&
+        layout.locked === undefined &&
         layout.shortcuts === undefined &&
-        layout.offered === undefined
+        layout.offered === undefined &&
+        !layout.shortcutsBar
     );
 }
 
@@ -433,8 +459,15 @@ if (typeof window !== 'undefined') {
     });
 }
 
-/** Правка стола: сразу — на экран и в копию браузера, потом — на шлюз. */
-function update(role: Role, change: (layout: DeskLayout) => DeskLayout, delay = SAVE_AFTER): void {
+/**
+ * Правка стола: сразу — на экран и в копию браузера, потом — на шлюз. Правка стола по новому стартовому набору ставит
+ * ему отметку `start: 2`: иначе изменённый стол без неё жил бы по прежнему набору.
+ */
+function update(role: Role, edit: (layout: DeskLayout) => DeskLayout, delay = SAVE_AFTER): void {
+    const change = (layout: DeskLayout): DeskLayout => {
+        const next = edit(layout);
+        return next.start === 2 || oldDesk(layout) || same(next, layout) ? next : { ...next, start: 2 };
+    };
     const before = deskLayout(role);
     const next = change(before);
     if (same(next, before)) return;
@@ -453,10 +486,14 @@ function update(role: Role, change: (layout: DeskLayout) => DeskLayout, delay = 
     pull(role);
 }
 
-/** Стоит ли виджет на столе. */
+/**
+ * Стоит ли виджет на столе: убранный — нет, поставленный — да; остальные — по стартовому набору стола: прежнему у
+ * столов, которые меняли раньше, новому (только встроенные с `start`) — у остальных.
+ */
 export function onDesk(widget: DeskWidget, layout: DeskLayout): boolean {
     if (layout.hidden.includes(widget.key)) return false;
-    return widget.initial || layout.added.includes(widget.key);
+    if (layout.added.includes(widget.key)) return true;
+    return oldDesk(layout) ? widget.initial : widget.plugin === 'core' && !!widget.start;
 }
 
 export interface DeskActions {
@@ -480,6 +517,8 @@ export interface DeskActions {
     land: (id: string, place?: WidgetPlace) => void;
     /** Ярлыки стола — весь список по порядку (docs/plans/menu-scheme.md). На шлюз — сразу. */
     shortcuts: (list: string[]) => void;
+    /** Включить ленту ярлыков на столе или выключить («Настройки» → «Оформление»). На шлюз — сразу. */
+    shortcutsBar: (on: boolean) => void;
     /** Ярлык поставленного приложения из `SHORTCUT_WHEN_INSTALLED` — в конец списка, и отметка, что он уже был. На шлюз — сразу. */
     offer: (id: string) => void;
 }
@@ -510,7 +549,7 @@ export function deskActions(role: Role): DeskActions {
                 return { ...layout, order };
             }),
         view: (zoom, pan) => change((layout) => ({ ...layout, zoom, pan })),
-        lock: (on) => change((layout) => ({ ...layout, locked: on || undefined }), 0),
+        lock: (on) => change((layout) => ({ ...layout, locked: on ? undefined : false }), 0),
         reset: () => change((layout) => ({ ...layout, places: {}, order: [], zoom: undefined, pan: undefined }), 0),
         land: (id, place) =>
             change(
@@ -530,6 +569,7 @@ export function deskActions(role: Role): DeskActions {
                 const same = unique.length === STARTING_SHORTCUTS.length && unique.every((id, at) => id === STARTING_SHORTCUTS[at]);
                 return { ...layout, shortcuts: same ? undefined : unique };
             }, 0),
+        shortcutsBar: (on) => change((layout) => ({ ...layout, shortcutsBar: on || undefined }), 0),
         offer: (id) =>
             change((layout) => {
                 if (layout.offered?.includes(id)) return layout;
@@ -575,9 +615,11 @@ export function useWidgets(role: Role, health: Health | null): DeskWidget[] {
 /** Виджеты на столе по порядку: переставленные руками — как их поставили, остальные — по порядку вкладов. */
 export function orderedOnDesk(widgets: DeskWidget[], layout: DeskLayout): DeskWidget[] {
     const shown = widgets.filter((widget) => onDesk(widget, layout));
+    // Не переставленные руками — по порядку вкладов, но те, что прячутся, пока пусты (`hideWhileEmpty`), — после
+    // остальных: появившись, такой встаёт в конец своего столбца или ленты и никого не сдвигает.
     const rank = (widget: DeskWidget): number => {
         const at = layout.order.indexOf(widget.key);
-        return at >= 0 ? at : layout.order.length + shown.indexOf(widget);
+        return at >= 0 ? at : layout.order.length + (widget.hideWhileEmpty ? shown.length : 0) + shown.indexOf(widget);
     };
     return [...shown].sort((a, b) => rank(a) - rank(b));
 }

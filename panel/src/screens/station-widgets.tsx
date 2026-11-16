@@ -14,6 +14,7 @@ import { locale, tr } from '../i18n';
 import { usePoll } from '../poll';
 import { usePanel } from '../shell/context';
 import { useMediaUrl } from '../ui/media';
+import { useWidgetEmpty } from '../ui/widget';
 
 /**
  * Перечитать: раз в `every` мс, с каждым законченным вопросом колонки и по переменам на шлюзе — не чаще раза в
@@ -52,7 +53,7 @@ const readPlayer = (device: string | undefined, station: string | undefined, sig
 
 const playerCommand = (action: PlayerCommand, device?: string, station?: string) =>
     station
-        ? stationCall<{ pushed: number }>(station, 'POST', `/api/v1/station/player/${action}`, {})
+        ? stationCall<{ pushed: number; said?: string }>(station, 'POST', `/api/v1/station/player/${action}`, {})
         : api.playerCommand(action, device);
 
 /** Последние вопросы колонки у помощника: её журнал через проход (у шлюза — живой канал, desk-widgets.tsx). */
@@ -95,6 +96,8 @@ export function TimersWidget() {
     const [view, , copyAt] = useStationRead(readTimers, 15_000);
     const timers = view?.timers ?? [];
     useTick(timers.length > 0 && copyAt === null);
+    // Живой виджет (docs/plans/start-desk.md): на столе, пока идёт таймер, — потом уходит сам.
+    useWidgetEmpty(timers.length === 0);
     if (!view) return <p class="w-cap m-0">{tr.stationWidgets.reading}</p>;
     if (timers.length === 0)
         return (
@@ -217,6 +220,8 @@ export function MusicWidget() {
     const live = playing && copyAt === null;
     useTick(live);
     const title = now?.title;
+    // Живой виджет (docs/plans/start-desk.md): на столе, пока есть что играет, — потом уходит сам.
+    useWidgetEmpty(!now || !title || now.source === 'none');
     if (!now || !title || now.source === 'none')
         return (
             <section class="widget music" aria-label={tr.stationWidgets.music}>
@@ -235,9 +240,11 @@ export function MusicWidget() {
             </section>
         );
     const hash = hashOf(title);
-    const radio = now.kind === 'FmRadio' || !now.durationMs;
     // Живое радио (наше или Яндекса): на паузу его не поставить — только остановить; ▶ потом включает снова.
     const onAir = now.kind === 'FmRadio';
+    // Без длины дорожки волны нет. Радио — только настоящее радио: песня Яндекса без длины (живая проверка 16.11)
+    // остаётся песней — с сердечком и «играет 1:23», не «в эфире N мин».
+    const radio = onAir || !now.durationMs;
     const position = (now.positionMs ?? 0) + (live ? Date.now() - read : 0);
     const length = now.durationMs ?? 0;
     const bars = barsOf(title, 52);
@@ -250,7 +257,11 @@ export function MusicWidget() {
         setError(null);
         setNote(null);
         void playerCommand(action, panel.current?.device, station)
-            .then(() => window.setTimeout(reread, 1500))
+            // Музыкой Яндекса кнопка управляет словами Алисе («пауза»): видно, что сказано.
+            .then((answer) => {
+                if (answer?.said) setNote(tr.stationWidgets.saidToAlice(answer.said));
+                window.setTimeout(reread, 1500);
+            })
             // 409 — шлюз не берёт это кнопкой («Это играет Яндекс… скажите колонке «Алиса, дальше»»): подсказка, не беда.
             .catch((e) => (e instanceof ApiError && e.status === 409 ? setNote(problemOf(e)) : setError(problemOf(e))))
             .finally(() => setBusy(null));
@@ -271,7 +282,7 @@ export function MusicWidget() {
                     <p class="music-title">{title}</p>
                     {now.subtitle && <p class="w-cap m-0 w-text">{now.subtitle}</p>}
                 </div>
-                {now.source === 'own' && !radio && mayControl && (
+                {(now.source === 'own' || now.source === 'station') && !onAir && mayControl && (
                     <button class="music-ctl self-start" aria-label={tr.stationWidgets.like} disabled={busy !== null || away} onClick={() => command('like')}>
                         <IconHeart size={18} />
                     </button>
@@ -279,7 +290,15 @@ export function MusicWidget() {
             </div>
             {radio ? (
                 <p class="w-cap m-0">
-                    {now.since ? tr.stationWidgets.onAir(minutesSince(now.since, copyAt ?? Date.now())) : now.source === 'station' ? tr.stationWidgets.yandexPlays : tr.stationWidgets.onAirNow}
+                    {now.source === 'app'
+                        ? tr.stationWidgets.appPlays
+                        : !onAir && now.positionMs !== undefined
+                          ? tr.stationWidgets.playingFor(clockOf(position / 1000))
+                          : now.since
+                          ? tr.stationWidgets.onAir(minutesSince(now.since, copyAt ?? Date.now()))
+                          : now.source === 'station'
+                            ? tr.stationWidgets.yandexPlays
+                            : tr.stationWidgets.onAirNow}
                 </p>
             ) : (
                 <div>

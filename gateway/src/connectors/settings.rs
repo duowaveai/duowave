@@ -493,11 +493,6 @@ impl ConnectorSettings {
         self.snapshot().weather.location.as_deref().and_then(filled)
     }
 
-    /// The household's country (src/locale/country.rs); None when it did not say.
-    pub fn home_country(&self) -> Option<String> {
-        crate::locale::country::household(&self.settings)
-    }
-
     /// The news feeds switched on.
     pub fn news_feeds(&self) -> Vec<NewsFeedEntry> {
         self.snapshot().news.feeds.into_iter().filter(|feed| feed.enabled).collect()

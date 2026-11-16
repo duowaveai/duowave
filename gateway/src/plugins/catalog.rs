@@ -297,6 +297,8 @@ pub struct Feed {
     /// Packages of other feeds the catalog looked at and recommends, each by its archive's hash (`recommends`,
     /// docs/plans/magicplace.md): taken from the main feed only.
     pub recommends: Vec<Pin>,
+    /// Its characters' catchphrases (`phrases`, src/characters/catchphrases.rs): of the packages installed from it.
+    pub phrases: crate::characters::catchphrases::FeedPhrases,
 }
 
 /// A package of another feed the catalog looked at: that feed's address, the package's id, its archive's sha256.
@@ -359,6 +361,7 @@ impl Feed {
             feeds: Vec::new(),
             hidden: Default::default(),
             recommends: Vec::new(),
+            phrases: Default::default(),
         }
     }
 
@@ -733,6 +736,10 @@ pub fn parse_feed(text: &str, base: &url::Url) -> Result<Feed, String> {
             None => feed.skipped.push(crate::tr!("recommends: id пакета, sha256 архива и адрес ленты (если есть)")),
         }
     }
+    // Its characters' catchphrases: said by the packages installed from this very feed.
+    let (phrases, left) = crate::characters::catchphrases::parse(value.get("phrases"));
+    feed.phrases = phrases;
+    feed.skipped.extend(left);
     Ok(feed)
 }
 
@@ -1281,6 +1288,27 @@ impl PackageCatalog {
     /// The last good copies, read again: the main feed's (its signature checked again) and the extra feeds' after it.
     fn copy(&self, url: &url::Url) -> Option<Feed> {
         self.merged(url).map(|(feed, _)| feed)
+    }
+
+    /// A character's catchphrases as the feed its package came from gives them in its last good copy here
+    /// (`phrases`): none for a package put by hand or hidden, or when that feed has none for it — a feed adds, changes
+    /// or drops them without a new version of the package.
+    pub fn catchphrases(
+        &self,
+        package: &str,
+        character: &str,
+    ) -> Option<crate::characters::catchphrases::Catchphrases> {
+        let main = self.url()?.ok()?;
+        let choice = registry::choices(&self.db).remove(package)?;
+        if choice.source != registry::SOURCE_CATALOG || choice.hidden {
+            return None;
+        }
+        let feed = match choice.feed {
+            Some(feed) => feed_url(&feed).ok()?,
+            None => main.clone(),
+        };
+        let text = if feed == main { text_in(&self.dir, &main) } else { text_in(&self.extra_dir(&feed), &feed) }?;
+        parse_feed(&text, &feed).ok()?.phrases.remove(package)?.remove(character)
     }
 
     /// Whether the main feed's copy names an extra feed without a copy here that was not read since the gateway
@@ -2206,9 +2234,21 @@ impl PackageCatalog {
                 kind2 = placed.kind.as_str()
             )));
         }
-        // The version in the app's history (docs/plans/package-history.md), with the plugin's data just before it.
+        // Vouched for: the feed says so (an extra one's only when the main allows), and code only from a signed main.
+        // Noted before the history: on the station a catalog's version is kept there without its big files.
+        let signed = feed.signed && entry.extra.is_none();
+        let vouched = entry.verified && (signed || !matches!(entry.kind, PackageKind::Plugin | PackageKind::App));
+        registry::set_installed(
+            &self.db,
+            id,
+            registry::SOURCE_CATALOG,
+            vouched,
+            actor.as_ref().map(|actor| actor.name.as_str()),
+        )?;
+        // The version in the app's history (docs/plans/package-history.md), with the plugin's data just before it;
+        // on the station with the archive it came from, where its big files are taken from again.
         if let Some(history) = self.host.history() {
-            history.note_install(
+            let record = history.note_install(
                 id,
                 &placed.dir,
                 &version,
@@ -2222,33 +2262,36 @@ impl PackageCatalog {
                 false,
                 None,
             );
-        }
-        // An update: the version before stays to fall back on (a rollback, a new one that does not start); older
-        // ones leave once the new one is in place — they are in the history.
-        if installed.is_some() {
-            if let Err(error) = install::keep_versions(&root, id, 2) {
-                tracing::warn!(target: "plugins", "{id}: the older versions are not removed: {error}");
+            if let Some(record) = record.filter(|_| self.host.on_station()) {
+                let archive = super::history::store::ArchiveRef {
+                    url: archive.url.to_string(),
+                    sha256: archive.sha256.clone(),
+                    size: archive.size,
+                };
+                history.remember_archive(&record, &archive);
             }
         }
-        // Vouched for: the feed says so (an extra one's only when the main allows), and code only from a signed main.
-        let signed = feed.signed && entry.extra.is_none();
-        let vouched = entry.verified && (signed || !matches!(entry.kind, PackageKind::Plugin | PackageKind::App));
-        registry::set_installed(
-            &self.db,
-            id,
-            registry::SOURCE_CATALOG,
-            vouched,
-            actor.as_ref().map(|actor| actor.name.as_str()),
-        )?;
         // Only the feed it came from may hide it.
         let from = entry.extra.as_ref().map(|extra| extra.url.clone());
         if let Some(from) = from.or_else(|| self.url().and_then(Result::ok)) {
             registry::set_feed(&self.db, id, from.as_str())?;
         }
         // A plugin that is on takes the new version: it starts beside the old one, which stays if it does not.
+        let mut started = true;
         if installed.is_some() && self.host.is_active(id) {
             if let Err(error) = self.host.reload(id, actor.clone()).await {
+                started = false;
                 tracing::warn!(target: "plugins", "{id}: the update does not start, the version before runs: {}", error.message);
+            }
+        }
+        // An update: on a computer the version before stays to fall back on (a rollback, a new one that does not
+        // start); older ones leave — they are in the history. On the station only the version in force stays once the
+        // new one has started (docs/plans/station-update-space.md, decision 5): the one before comes back from the
+        // computer or the catalog when it is wanted (history/restore.rs); a new one that does not start keeps it.
+        if installed.is_some() {
+            let keep = if self.host.on_station() && started { 1 } else { 2 };
+            if let Err(error) = install::keep_versions(&root, id, keep) {
+                tracing::warn!(target: "plugins", "{id}: the older versions are not removed: {error}");
             }
         }
         self.host.rescan();
@@ -2590,7 +2633,7 @@ pub mod tests {
             dev_dir: dir.path().join("packages-dev"),
             catalog_key: key,
             reserve_mb: 40,
-            storage_reserve_mb: 15,
+            storage_reserve_mb: Some(15),
             pressure_action: crate::plugins::budget::PressureAction::Disable,
             bundled: false,
             schedules: true,
@@ -2778,6 +2821,60 @@ pub mod tests {
         assert!(!off.configured && off.problem.unwrap().contains("PACKAGES_FEED_URL=off"));
         let http = self::fixture(FeedSource::Url("http://duowave.app/c.json".into()), Placement::Pc);
         assert!(http.catalog.view(false).await.problem.unwrap().contains("только по HTTPS"));
+    }
+
+    #[tokio::test]
+    async fn on_the_station_one_version_stays_and_the_one_before_comes_back_from_the_catalog() {
+        use crate::plugins::history::{store, Author, History, RecordKind, What, Who};
+        use crate::plugins::install::tests::{archive, Item};
+        let site = site().await;
+        // A program of its own is the big file of an app: 400 KB here, 10 MB for AirPlay.
+        let big: Vec<u8> = (0..400_000u32).map(|n| (n % 251) as u8).collect();
+        let package = |version: &str| {
+            let text = character_manifest("arthur", version).to_string();
+            archive(&[
+                Item::File("manifest.json", text.as_bytes()),
+                Item::Dir("assets/"),
+                Item::File("assets/avatar.webp", b"RIFF\0\0\0\0WEBPVP8 "),
+                Item::File("assets/big.bin", &big),
+            ])
+        };
+        site.publish(&[(arthur("1.2.0"), package("1.2.0"))]);
+        let fixture = fixture(FeedSource::Url(site.url.clone()), Placement::Station);
+        let dir = tempfile::tempdir().unwrap();
+        let history =
+            History::open(dir.path().join("history"), dir.path().join("dev"), None, Arc::new(|| true)).unwrap();
+        history.set_host(&fixture.host);
+        fixture.host.set_history(history.clone());
+        fixture.catalog.install("arthur", None, false, None).await.unwrap();
+        site.publish(&[(arthur("1.2.0"), package("1.2.0")), (arthur("1.3.0"), package("1.3.0"))]);
+        fixture.catalog.view(true).await;
+        fixture.catalog.install("arthur", None, true, None).await.unwrap();
+        // Only the version in force stays on the station.
+        assert!(fixture.root.join("arthur/1.3.0").is_dir());
+        assert!(!fixture.root.join("arthur/1.2.0").exists(), "the one before is not kept on the station");
+        // Its history keeps the small files, not the big one: the catalog's archive has it.
+        let big_id = store::id_of(store::Kind::File, &big);
+        assert!(!history.store().has(&big_id));
+        let before = history
+            .line("arthur")
+            .into_iter()
+            .find(|(_, record)| record.kind == RecordKind::Catalog && record.version.as_deref() == Some("1.2.0"))
+            .map(|(id, _)| id)
+            .unwrap();
+        let tree = history.record(&before).unwrap().tree;
+        assert!(history.file_at(&tree, "manifest.json").is_some());
+
+        // A step back: the big file comes from the catalog's archive again, the version is put back, and only it stays.
+        history.ensure_local(&before).await;
+        assert!(history.store().has(&big_id));
+        let report = history
+            .restore_installed("arthur", &before, What::Code, false, Author::new(Who::Hand), None)
+            .await
+            .unwrap();
+        assert!(report.restored, "{}", report.message);
+        assert_eq!(std::fs::read(fixture.root.join("arthur/1.2.0/assets/big.bin")).unwrap(), big);
+        assert!(!fixture.root.join("arthur/1.3.0").exists(), "only the version in force on the station");
     }
 
     #[tokio::test]
@@ -3623,6 +3720,48 @@ pub mod tests {
         own.publish(&[character("jarvis", "1.1.0"), character("friday", "1.0.0")]);
         let jarvis = of(&catalog.view(true).await, "jarvis");
         assert!(!jarvis.recommended && !jarvis.verified, "{jarvis:?}");
+    }
+
+    /// A character's catchphrases come from the feed its package was installed from, as its copy here has them now:
+    /// that feed changes or drops them without a new version; another feed's phrases for the package are not its.
+    #[tokio::test]
+    async fn a_characters_catchphrases_come_from_the_feed_it_was_installed_from_as_it_has_them_now() {
+        use crate::characters::catchphrases::PhraseAt;
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        own.publish(&[character("jarvis", "1.0.0")]);
+        let with_phrases = |site: &Site, phrases: Value| {
+            let mut feed: Value = serde_json::from_str(&lock(&site.feed)).unwrap();
+            feed["phrases"] = phrases;
+            *lock(&site.feed) = feed.to_string();
+        };
+        with_phrases(&own, json!({ "jarvis": { "jarvis": { "every": 2, "lines": ["Как пожелаете, сэр."] } } }));
+        with_phrases(
+            &main,
+            json!({
+                "jarvis": { "jarvis": { "lines": ["Чужая фраза."] } },
+                "arthur": { "arthur": { "lines": [{ "text": "Слушаю.", "at": "start" }] } }
+            }),
+        );
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+        catalog.add_source(&own.url, None).await.unwrap();
+        assert_eq!(catalog.catchphrases("jarvis", "jarvis"), None, "not installed");
+        catalog.install("jarvis", None, false, None).await.unwrap();
+        catalog.install("arthur", None, false, None).await.unwrap();
+        let jarvis = catalog.catchphrases("jarvis", "jarvis").unwrap();
+        assert_eq!(
+            (jarvis.every, jarvis.lines),
+            (2, vec![("Как пожелаете, сэр.".to_string(), PhraseAt::End)]),
+            "its own source's, not the main feed's"
+        );
+        assert_eq!(catalog.catchphrases("arthur", "arthur").unwrap().lines, [("Слушаю.".to_string(), PhraseAt::Start)]);
+        assert_eq!(catalog.catchphrases("jarvis", "friday"), None);
+
+        // The feed drops them: gone once it is read again, the package's version the same.
+        with_phrases(&own, json!({}));
+        catalog.view(true).await;
+        assert_eq!(catalog.catchphrases("jarvis", "jarvis"), None);
     }
 
     #[tokio::test]

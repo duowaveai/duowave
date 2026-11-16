@@ -254,7 +254,7 @@ pub fn tools(with_draft: bool) -> Vec<LlmTool> {
         },
         LlmTool {
             name: "docs".into(),
-            description: "Справочник: authoring — манифест, Host API, шина, лимиты; station — что умеет колонка; cards — карточки виджетов, их вид (сцены, цвета, фото) и когда нужно окошко; panel — SDK пульта (panel.js, окошко); game — образец красивого окошка-игры («Неоновая змейка» целиком); themes — контракт темы.".into(),
+            description: "Справочник: authoring — манифест, Host API, шина, лимиты; station — что умеет колонка; cards — карточки виджетов, их вид (сцены, цвета, фото) и когда нужно окошко; panel — SDK пульта (panel.js, окошко); game — образец красивого окошка-игры («Неоновая змейка» целиком); themes — контракт темы: три цвета режима, фон из сцен пульта, палитра.".into(),
             parameters: schema(json!({ "topic": { "type": "string", "enum": ["authoring", "station", "cards", "panel", "game", "themes"] } }), &["topic"]),
         },
     ];

@@ -253,10 +253,6 @@ impl HostServices for PluginServices {
         self.connectors.weather_place()
     }
 
-    fn home_country(&self) -> Option<String> {
-        self.connectors.home_country()
-    }
-
     fn network_connections(&self, caller: &str, input: Value) -> Result<Value, String> {
         let egress =
             self.egress.get().and_then(Weak::upgrade).ok_or_else(|| crate::tr!("выход в интернет ещё не готов"))?;
@@ -789,9 +785,10 @@ impl HostServices for PluginServices {
         caller: &str,
         state: String,
         device: Option<String>,
+        track: Option<crate::skills::media::app_playback::AppTrack>,
     ) -> BoxFuture<'static, Result<String, String>> {
         let answer = match self.skills.upgrade() {
-            Some(skills) => skills.app_playing(caller, state.trim(), device.as_deref()),
+            Some(skills) => skills.app_playing_track(caller, state.trim(), device.as_deref(), track),
             None => Err(crate::tr!("плеера колонки здесь нет")),
         };
         Box::pin(async move { answer })

@@ -46,7 +46,7 @@ const en: Translation<typeof ru> = {
         cantYet: { title: 'Not supported yet', path: 'Apps', words: 'teach can\'t do didn\'t understand skill make' },
         connections: { title: 'Connections', path: 'Apps', words: 'connectors connections telegram smart home home assistant calls news weather' },
         mcp: { title: 'Programs (MCP)', path: 'Apps → Connections', words: 'mcp programs tools agent server' },
-        shortcuts: { title: 'Shortcuts', path: 'Home', words: 'shortcut shortcuts add shortcut desk quick open pin' },
+        shortcuts: { title: 'Shortcuts', path: 'Settings → Appearance', words: 'shortcut shortcuts shortcuts bar add shortcut desk quick open pin' },
         works: { title: 'Works', path: 'Home', words: 'works jobs what goes on progress queue waiting asking background tasks tools agent workshop model' },
         folders: { title: 'Folders', path: 'Apps', words: 'folders files photos videos documents usb drive home folder' },
         catalog: { title: 'MagicPlace', path: 'Apps', words: 'magicplace store catalog market apps characters themes add skill app plugin install update updates' },

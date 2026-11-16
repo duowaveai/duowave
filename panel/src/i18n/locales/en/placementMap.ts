@@ -17,7 +17,7 @@ const en: Translation<typeof ru> = {
     homeSubStation: 'just the speaker — the computer can be turned off',
     captionStation: 'The gateway runs on the speaker itself. Alice or the cloud hears and speaks, your pick; a cloud model thinks.',
     homeSubTogether: 'speaker and computer together',
-    captionTogether: 'While the computer is online, hearing and voice run on it. When it sleeps, the cloud or Alice takes over, so the speaker never goes silent.',
+    captionTogether: 'While the computer is on, it recognises speech and speaks the answers. When it is off, the cloud or Alice does it, so the speaker never goes silent.',
     capEar: 'Hearing',
     capVoice: 'Voice',
     capConn: 'Connections',

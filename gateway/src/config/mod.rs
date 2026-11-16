@@ -64,8 +64,10 @@ pub struct PluginsConfig {
     /// PLUGINS_RESERVE_MB: the memory kept for the system and Alice, out of the plugins' budget (docs/plans/plugins.md,
     /// «Бюджет»; 40 MB until it is measured under load — the owner's open decision 2).
     pub reserve_mb: u64,
-    /// PLUGINS_STORAGE_RESERVE_MB: the room on the disk kept for the gateway's own update (`.previous` is 12 MB).
-    pub storage_reserve_mb: u64,
+    /// PLUGINS_STORAGE_RESERVE_MB: the room on the disk kept for the gateway's own update. Not set — counted from the
+    /// gateway's program (`PluginHost::storage_reserve_mb`: its growth and a floor, some 8 MB; the new version is tried
+    /// from memory and takes the old one's place, docs/plans/station-update-space.md).
+    pub storage_reserve_mb: Option<u64>,
     /// PLUGINS_PRESSURE_ACTION: `disable` (default: the plugin switched on last goes off at «critical» on the station)
     /// or `warn` (only the log and the panel) — the owner's open decision 3.
     pub pressure_action: crate::plugins::budget::PressureAction,
@@ -927,7 +929,9 @@ fn build(env: &Env) -> Config {
                 .or_else(|| Some(crate::plugins::catalog::BUILT_IN_KEYS.to_string()))
                 .filter(|keys| !keys.trim().is_empty()),
             reserve_mb: env.integer("PLUGINS_RESERVE_MB", 40),
-            storage_reserve_mb: env.integer("PLUGINS_STORAGE_RESERVE_MB", 15),
+            storage_reserve_mb: env
+                .get("PLUGINS_STORAGE_RESERVE_MB")
+                .and_then(|value| value.trim().parse::<u64>().ok()),
             pressure_action: env
                 .optional("PLUGINS_PRESSURE_ACTION")
                 .and_then(|action| crate::plugins::budget::PressureAction::parse(&action))
