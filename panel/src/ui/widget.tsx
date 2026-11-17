@@ -110,7 +110,11 @@ export function PopMenu({ label, menuLabel = label, note, items }: { label: stri
     );
 }
 
-/** The widget's «⋯»: earlier, later, wider, narrower — those its place has — and «Убрать со стола»; a locked desk greys them. */
+/**
+ * The widget's «⋯»: earlier, later, wider, narrower — those its place has — and «Убрать со стола». A locked desk greys
+ * the moves only: the lock keeps places, and taking a widget away is asked for in so many words (owner 17.11: «не
+ * удаляются виджеты» on a locked desk).
+ */
 function Menu({ title, menu }: { title: string; menu: WidgetMenu }) {
     const items: PopItem[] = [];
     const all = [
@@ -120,7 +124,7 @@ function Menu({ title, menu }: { title: string; menu: WidgetMenu }) {
         [tr.ui.narrower, menu.narrower],
         [tr.ui.removeFromDesk, menu.hide],
     ] as const;
-    for (const [label, act] of all) if (act) items.push({ label, act, disabled: menu.locked });
+    for (const [label, act] of all) if (act) items.push({ label, act, disabled: menu.locked && act !== menu.hide });
     return <PopMenu label={tr.ui.widgetMore(title)} menuLabel={tr.ui.widgetMenuLabel(title, !!menu.locked)} note={menu.locked ? tr.ui.deskLocked : undefined} items={items} />;
 }
 

@@ -22,6 +22,8 @@ const en: Translation<typeof ru> = {
     installTitle: (version) => `Install version ${version}?`,
     installTextStation: 'The gateway will restart, and the speaker will reconnect on its own.',
     installTextDevice: 'The gateway will restart, and the panel will wait for it on its own.',
+    installTextFromComputer: 'The computer that runs the speaker will install it: it takes a copy of the settings, tries the new version from RAM and restarts the gateway. The speaker reconnects on its own.',
+    fromComputerStarted: 'The computer is installing the new version on the speaker — about a minute.',
     installOk: 'Install',
     updates: 'Updates',
     version: (version) => `version ${version}`,

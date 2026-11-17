@@ -1,8 +1,0 @@
-{
-  "name": "duowave-youtube",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "description": "Приложение DuoWave «YouTube»: поиск и микс через InnerTube, звук через yt-dlp и ffmpeg. Без зависимостей.",
-  "scripts": { "test": "node --test test/" }
-}

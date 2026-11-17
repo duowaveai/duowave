@@ -6,6 +6,7 @@ import { clock, timeAgo } from '../time';
 import { checkIsStale, setUpdateStatus } from '../updates';
 import { ask } from '../ui/confirm';
 import { byMode } from '../words';
+import { VIA } from '../via';
 
 // Карточки прежнего «Дома»: колонки, которым отвечаем, и обновления DuoWave. Теперь они в «Настройки» → «Колонка» и
 // «Обновления и копии» (screens/places.tsx); подключения и MCP — в «Навыках».
@@ -116,7 +117,8 @@ export function Stations() {
  * право (system.update), и только по своему согласию; шлюз в приложении, Docker или Home Assistant обновляет тот,
  * кто им управляет, — тогда здесь подсказка вместо кнопки. Шлюз на Node этого раздела не знает: раздел молчит.
  */
-export function Updates() {
+/** `title` — своё имя карточки: в пульте Турбо это «Этот компьютер», рядом с карточкой колонки. */
+export function Updates({ title }: { title?: string } = {}) {
     const [status, setShown] = useState<UpdateStatus | null>(null);
     const [checking, setChecking] = useState(false);
     const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
@@ -196,11 +198,33 @@ export function Updates() {
         }
     };
     const offer = status.available;
+    // Шлюз колонки обновляет компьютер, который её ведёт (owner 17.11: «обновление есть, а кнопки нет»). В окне колонки
+    // через компьютер (`?via=`) кнопка просит компьютер прямо отсюда; без прохода — подсказка шлюза, где это сделать.
+    const fromComputer = !!(VIA && offer && !status.canInstall && !status.installing && !status.trial);
+    const installFromComputer = async () => {
+        if (!offer || !VIA) return;
+        const yes = await ask({
+            title: tr.house.installTitle(offer.version),
+            text: tr.house.installTextFromComputer,
+            ok: tr.house.installOk,
+        });
+        if (!yes) return;
+        setBusy(true);
+        setMessage(null);
+        try {
+            await api.updateStationFromComputer(VIA);
+            setMessage({ ok: true, text: tr.house.fromComputerStarted });
+        } catch (e) {
+            setMessage({ ok: false, text: problemOf(e) });
+        } finally {
+            setBusy(false);
+        }
+    };
     return (
         <section class="card glass card-list" aria-labelledby="updates-h">
             <div class="section-head">
                 <h2 id="updates-h" class="t-title-xs m-0">
-                    {tr.house.updates}
+                    {title ?? tr.house.updates}
                 </h2>
                 <span class="t-meta">{tr.house.version(status.current)}</span>
             </div>
@@ -234,7 +258,7 @@ export function Updates() {
                           : tr.house.notChecked}
                 </p>
             )}
-            {status.hint && offer && (
+            {status.hint && offer && !fromComputer && (
                 <p class="t-caption m-0 mb-8">
                     {status.hint}
                 </p>
@@ -286,6 +310,11 @@ export function Updates() {
                             onClick={() => void install()}
                         >
                             {status.installing ? tr.house.installingShort : tr.house.update}
+                        </button>
+                    )}
+                    {fromComputer && offer && (
+                        <button class="pill pill-own pill-btn" disabled={busy} onClick={() => void installFromComputer()}>
+                            {busy ? tr.house.installingShort : tr.desk.updateTo(offer.version)}
                         </button>
                     )}
                 </div>

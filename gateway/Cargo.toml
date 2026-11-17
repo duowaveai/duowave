@@ -24,8 +24,8 @@ default = ["pc", "wasm"]
 # Everything that builds from source: the station connect over SSH, local model servers, the voice lab, calls.
 # MCP servers as programs on this computer (npx, uvx) too.
 pc = ["rmcp/transport-async-rw", "dep:libc", "dep:russh", "dep:if-addrs", "dep:socket2", "dep:ring"]
-# The build for the station itself: none of the PC parts.
-station = []
+# The build for the station itself: none of the PC parts; mimalloc in place of musl's allocator (src/main.rs).
+station = ["dep:mimalloc", "dep:libmimalloc-sys"]
 # Recognition on this computer itself (src/speech/asr/local): GigaAM, Parakeet and Whisper as GGUF through
 # transcribe.cpp, in a worker process of this same program. The desktop app's build; transcribe.cpp compiles from C++
 # source, so the build needs cmake and a C++ toolchain (docs/plans/speech-servers.md).
@@ -46,6 +46,10 @@ livekit = ["pc", "dep:livekit"]
 midi = ["dep:midir", "dep:midly", "dep:coremidi", "dep:core-foundation"]
 
 [dependencies]
+# The station's allocator (feature `station`, src/main.rs): musl's mallocng kept the heap broken up by bursts of
+# requests and never gave it back (16.11.2026); mimalloc, purging at once, stays flat. `extended`: its options.
+mimalloc = { version = "0.1.52", default-features = false, optional = true }
+libmimalloc-sys = { version = "0.1.49", features = ["extended"], optional = true }
 aes-gcm = "0.11.1"
 anyhow = "1.0.104"
 async-trait = "0.1.92"

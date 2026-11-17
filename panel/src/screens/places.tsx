@@ -26,7 +26,7 @@ import { usePanel, useSectionTab } from '../shell/context';
 import { setDevMode, setHiddenDevOptions, tapDev, useDevMode, useHiddenDevOptions } from '../shell/dev';
 import { Switch } from '../ui/switch';
 import { useOfferedVersion } from '../updates';
-import { WatchWidget } from './desk-widgets';
+import { WatchWidget, useStationOffer } from './desk-widgets';
 import { HelpersPage } from './helpers';
 import { Stations, Updates } from './house';
 import { SetupSheet } from './stations';
@@ -207,16 +207,24 @@ function LookPage() {
     return <SettingsScreen catalog={panel.catalog} tab="look" onTab={() => undefined} onSignOut={panel.signOut} bare />;
 }
 
+/**
+ * «Обновления и копии». В пульте Турбо колонка — первой (owner 17.11): её шлюз обновляет этот компьютер, и новая версия
+ * для неё — именно здесь; ниже — версия самого компьютера, под своим именем, чтобы «Новых версий нет» не спорило с ней.
+ */
 function UpdatesPage() {
     const panel = usePanel();
+    const homeName = useHomeStationName();
+    const turbo = panel.role.role === 'helper' && can('station.view');
+    const name = panel.role.station?.name ?? homeName;
     return (
         <>
-            <Updates />
-            {panel.role.role === 'helper' && can('station.view') && (
-                <Card id="copies" title={tr.places.copiesTitle}>
+            {turbo && (
+                <Card id="copies" title={name ? tr.core.tabStation(name) : tr.core.tabStationNoName}>
+                    <p class="w-cap m-0">{tr.places.stationUpdatesLead}</p>
                     <WatchWidget />
                 </Card>
             )}
+            <Updates title={turbo ? tr.core.tabThisComputer : undefined} />
         </>
     );
 }
@@ -350,7 +358,8 @@ function settingsPages(role: string, offered: boolean): SettingsPage[] {
 /** «Настройки»: список страниц и открытая страница. */
 export function SettingsSection() {
     const panel = usePanel();
-    const offered = !!useOfferedVersion();
+    const stationOffer = useStationOffer(panel.role.role === 'helper');
+    const offered = !!useOfferedVersion() || !!stationOffer;
     // Список перерисовывается, когда меняется «Как говорить»: страница колонки становится страницей микрофона.
     useOnComputer();
     const [page, setPage] = useSectionTab<string>('settings', 'station');

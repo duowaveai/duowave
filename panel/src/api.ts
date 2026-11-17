@@ -3585,6 +3585,9 @@ export const api = {
         post<unknown>(forStation('/api/v1/placement/auto-update', station), { on }),
     updateStationGateway: (station?: string) =>
         post<{ updating: boolean }>(forStation('/api/v1/placement/update-station', station)),
+    /** Из окна колонки (`?via=`): попросить компьютер, который её ведёт, обновить её шлюз — мимо прохода. */
+    updateStationFromComputer: (station: string) =>
+        ownCall<{ updating: boolean }>('POST', forStation('/api/v1/placement/update-station', station), {}),
     inspectStation: (station?: string) =>
         post<{
             installed: boolean;

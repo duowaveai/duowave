@@ -210,6 +210,30 @@ export function usePlacementView(): [PlacementView | null, () => Promise<void>] 
     return [placement, readPlacement];
 }
 
+/**
+ * Новая версия для колонки, которую обновляет этот компьютер (пульт Турбо, owner 17.11): точка у «Настроек» и у
+ * «Обновлений и копий» — как у собственной версии, иначе о ней не узнать, не зайдя туда. `on` — только в пульте Турбо:
+ * в других пультах размещение не читается ради точки.
+ */
+export function useStationOffer(on: boolean): string | null {
+    const panel = usePanel();
+    const [, rerender] = useState(0);
+    useEffect(() => {
+        if (!on) return;
+        const update = () => rerender((n) => n + 1);
+        placementListeners.add(update);
+        if (Date.now() - placementAt > 30_000) readPlacementSoon();
+        const id = window.setInterval(() => Date.now() - placementAt >= 60_000 && void readPlacement(), 30_000);
+        return () => {
+            placementListeners.delete(update);
+            window.clearInterval(id);
+        };
+    }, [on]);
+    if (!on || !can('system.update')) return null;
+    const station = stationOf(placement, panel.current?.device);
+    return station?.update && !station.live.updating ? station.update : null;
+}
+
 /** Какая-нибудь колонка сейчас обновляется с этого компьютера. */
 function anyUpdating(): boolean {
     return !!placement && [placement.station, ...(placement.stations ?? [])].some((entry) => entry?.live.updating);

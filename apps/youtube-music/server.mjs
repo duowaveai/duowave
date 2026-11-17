@@ -1,4 +1,4 @@
-// YouTube — приложение на Node для компьютера (docs/plans/speaker-alone.md, этап 3; docs/plugins/apps/youtube.md).
+// YouTube — приложение на Node для компьютера (docs/plans/speaker-alone.md, этап 3; docs/plugins/apps/youtube-music.md).
 // «Включи с ютуба Кино, группа крови»: поиск и микс «похожее» — открытым API сайта (lib/innertube.mjs), звук — yt-dlp
 // и ffmpeg в MP3 (lib/audio.mjs), колонке — `/stream/<id>.mp3` через шлюз. Очередь — плеер шлюза: «дальше», «пауза»,
 // «продолжи» — встроенные команды, «что играет» шлюз отвечает по названию трека, «добавь в очередь» — поле `add`.
@@ -265,7 +265,7 @@ const server = http.createServer(async (request, response) => {
         response.writeHead(200).end('ok');
         return;
     }
-    // Звук колонке: шлюз пересылает сюда `/media/apps/youtube/<id>.mp3`, токена у колонки нет.
+    // Звук колонке: шлюз пересылает сюда `/media/apps/youtube-music/<id>.mp3`, токена у колонки нет.
     const sound = /^\/stream\/([A-Za-z0-9_-]{11})\.mp3$/.exec(url.pathname);
     if ((request.method === 'GET' || request.method === 'HEAD') && sound) {
         await audio.serve(request, response, sound[1]).catch((error) => {

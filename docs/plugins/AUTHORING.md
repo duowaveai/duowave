@@ -1039,7 +1039,7 @@ API: `GET /api/v1/packages/<id>/history`, `…/history/compare?from=&to=`, `GET|
   подключение без письма 90 с считается неотвечающим. Такая программа `HTTPS_PROXY` не получает.
 - **Пример** — `duowave-echo-app` (`gateway/src/bin/echo_app.rs`): только стандартная библиотека, всё перечисленное
   выше. Набросок Spotify — [`apps/spotify.md`](apps/spotify.md); свой звук очередью плеера — YouTube
-  ([`apps/youtube.md`](apps/youtube.md)).
+  ([`apps/youtube-music.md`](apps/youtube-music.md)).
 
 В каталоге у приложения архив под каждую платформу (`platforms`); нет нашей — приложение серое с причиной. Значок —
 `"icon": "avatar.webp"` (квадратная WebP или PNG в `assets/`): каталог делает из него превью, его показывают

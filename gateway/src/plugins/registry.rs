@@ -2,13 +2,13 @@
 //! the admin's choices in the database (table `packages`: on or off, the version that last started well, where the
 //! package came from — the catalog or by hand — whether the catalog vouched for it, the feed it came from and whether
 //! that feed hides it: docs/plans/custom-feeds.md).
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rusqlite::params;
 
-use super::manifest::{self, valid_id, Manifest};
+use super::manifest::{self, valid_id, Manifest, ManifestError};
 use crate::utils::time::now_iso;
 
 /// A manifest bigger than this is not read; code bigger than this is not loaded.
@@ -90,7 +90,7 @@ pub fn read_package(dir: &Path, id: &str, version: &str) -> Candidate {
         Ok(text) => text,
         Err(error) => return broken(vec![crate::tr!("manifest.json не читается: {error}", error = error)]),
     };
-    let manifest = match manifest::parse(&text) {
+    let manifest = match parsed(&file, text) {
         Ok(manifest) => manifest,
         Err(error) => return broken(error.problems),
     };
@@ -118,7 +118,41 @@ pub fn read_package(dir: &Path, id: &str, version: &str) -> Candidate {
     if !problems.is_empty() {
         return broken(problems);
     }
-    Candidate::Ready(Arc::new(Package { dir: dir.to_path_buf(), manifest: Arc::new(manifest) }))
+    Candidate::Ready(Arc::new(Package { dir: dir.to_path_buf(), manifest }))
+}
+
+/// The manifests parsed before, by file: the text read then and what it gave. A rescan comes with every look at the
+/// panel's lists (characters, packages, the catalog — a panel looks every 15 s, its widgets at once), and parsing
+/// compiles a regex for every phrase of a plugin: on the station (musl's mallocng) those compilations, a dozen at
+/// once, left the heap broken up — 16 at a time took the gateway from 14 to 56 MB (16.11.2026). A manifest whose text
+/// is the same is not parsed again: its Manifest is shared.
+type Parsed = HashMap<PathBuf, (String, Arc<Manifest>)>;
+
+fn parsed_cache() -> &'static Mutex<Parsed> {
+    static PARSED: OnceLock<Mutex<Parsed>> = OnceLock::new();
+    PARSED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The manifest of this text, parsed now or before.
+fn parsed(file: &Path, text: String) -> Result<Arc<Manifest>, ManifestError> {
+    {
+        let cache = parsed_cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((known, manifest)) = cache.get(file) {
+            if *known == text {
+                return Ok(manifest.clone());
+            }
+        }
+    }
+    let manifest = Arc::new(manifest::parse(&text)?);
+    let mut cache = parsed_cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.insert(file.to_path_buf(), (text, manifest.clone()));
+    Ok(manifest)
+}
+
+/// The cached manifests under `root` that this scan did not find: their folders are gone.
+fn forget_gone(root: &Path, found: &HashSet<PathBuf>) {
+    let mut cache = parsed_cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.retain(|file, _| !file.starts_with(root) || found.contains(file));
 }
 
 fn names(dir: &Path) -> Vec<String> {
@@ -144,6 +178,7 @@ pub fn newest_ready(found: &[Candidate]) -> Option<Arc<Package>> {
 /// Every plugin in the folder by id, its versions newest first; a folder that is no plugin's id is left out.
 pub fn scan(root: &Path) -> BTreeMap<String, Vec<Candidate>> {
     let mut found = BTreeMap::new();
+    let mut manifests = HashSet::new();
     for id in names(root) {
         if !valid_id(&id) {
             tracing::warn!(target: "plugins", "{}: «{id}» is no package's id, left out", root.display());
@@ -151,7 +186,11 @@ pub fn scan(root: &Path) -> BTreeMap<String, Vec<Candidate>> {
         }
         let mut versions: Vec<Candidate> = names(&root.join(&id))
             .into_iter()
-            .map(|version| read_package(&root.join(&id).join(&version), &id, &version))
+            .map(|version| {
+                let dir = root.join(&id).join(&version);
+                manifests.insert(dir.join("manifest.json"));
+                read_package(&dir, &id, &version)
+            })
             .collect();
         // Newest first; a folder that is no version at all last.
         versions.sort_by_key(|candidate| std::cmp::Reverse(candidate.order()));
@@ -159,6 +198,7 @@ pub fn scan(root: &Path) -> BTreeMap<String, Vec<Candidate>> {
             found.insert(id, versions);
         }
     }
+    forget_gone(root, &manifests);
     found
 }
 
@@ -397,6 +437,29 @@ pub mod tests {
             matches!(&found["weather"][0], Candidate::Broken { problems, .. } if problems[0].contains("не совпадает с папкой"))
         );
         assert!(scan(&dir.path().join("nothing")).is_empty());
+    }
+
+    /// A rescan parses a manifest again only when its text changed: the same text gives the same Manifest, an edit a
+    /// new one, a broken edit its problems; a folder gone leaves the cache.
+    #[test]
+    fn a_rescan_parses_only_a_changed_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = write_package(dir.path(), &manifest("radio", "1.0.0"), Some("export const x = 1;"));
+        let first = newest_ready(&scan(dir.path())["radio"]).unwrap();
+        let again = newest_ready(&scan(dir.path())["radio"]).unwrap();
+        assert!(Arc::ptr_eq(&first.manifest, &again.manifest), "the same text is not parsed again");
+        let mut edited = manifest("radio", "1.0.0");
+        edited["title"] = json!("Радио");
+        std::fs::write(radio.join("manifest.json"), edited.to_string()).unwrap();
+        let changed = newest_ready(&scan(dir.path())["radio"]).unwrap();
+        assert_eq!(changed.manifest.title_in(&[]), "Радио");
+        std::fs::write(radio.join("manifest.json"), "{").unwrap();
+        assert!(matches!(&scan(dir.path())["radio"][0], Candidate::Broken { .. }));
+        let file = radio.join("manifest.json");
+        assert!(parsed_cache().lock().unwrap().contains_key(&file), "the last good text stays until the folder goes");
+        std::fs::remove_dir_all(dir.path().join("radio")).unwrap();
+        assert!(scan(dir.path()).is_empty());
+        assert!(!parsed_cache().lock().unwrap().contains_key(&file));
     }
 
     #[test]

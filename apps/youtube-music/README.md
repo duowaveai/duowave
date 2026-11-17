@@ -1,10 +1,10 @@
-# YouTube — приложение DuoWave на Node
+# YouTube Music — приложение DuoWave на Node
 
 Музыка с YouTube на колонке: поиск и микс через InnerTube, звук через yt-dlp и ffmpeg в MP3. Работает на компьютере.
-Подробно — [`docs/plugins/apps/youtube.md`](../../docs/plugins/apps/youtube.md).
+Подробно — [`docs/plugins/apps/youtube-music.md`](../../docs/plugins/apps/youtube-music.md).
 
 ```
-duowave plugin install apps/youtube   # поставить в свой шлюз
+duowave plugin install apps/youtube-music   # поставить в свой шлюз
 node --test test/                     # проверки без сети
 ```
 

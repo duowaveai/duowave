@@ -89,7 +89,7 @@ export function TurboDesk() {
                         return (
                             <div key={client.id} class={`turbo-gw${online ? '' : ' is-off'}`}>
                                 <span class="turbo-gw-icon" aria-hidden="true">
-                                    <IconLaptop size={18} />
+                                    {client.station ? <IconSpeaker size={18} /> : <IconLaptop size={18} />}
                                 </span>
                                 <span class="turbo-gw-text">
                                     <b>{names}</b>

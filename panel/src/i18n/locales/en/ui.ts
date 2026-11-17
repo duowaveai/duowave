@@ -120,7 +120,7 @@ const en: Translation<typeof ru> = {
     hideUntilNext: 'Hide until the next version',
     widgetMore: (title: string) => `Widget “${title}”: more`,
     widgetMenuLabel: (title: string, locked: boolean) => `Widget “${title}”${locked ? ': desk is locked' : ''}`,
-    deskLocked: 'Desk is locked',
+    deskLocked: 'Desk is locked: place and width stay',
     moveEarlier: 'Earlier',
     moveLater: 'Later',
     wider: 'Wider',

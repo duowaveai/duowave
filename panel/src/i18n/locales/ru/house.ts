@@ -20,6 +20,8 @@ export default {
     installTitle: (version: string) => `Поставить версию ${version}?`,
     installTextStation: 'Шлюз перезапустится, колонка переподключится сама.',
     installTextDevice: 'Шлюз перезапустится, пульт подождёт его сам.',
+    installTextFromComputer: 'Её поставит компьютер, который ведёт колонку: снимет копию настроек, попробует новую версию из ОЗУ и перезапустит шлюз. Колонка переподключится сама.',
+    fromComputerStarted: 'Компьютер ставит новую версию на колонку — это около минуты.',
     installOk: 'Поставить',
     updates: 'Обновления',
     version: (version: string) => `версия ${version}`,

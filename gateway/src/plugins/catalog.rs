@@ -19,7 +19,7 @@
 //!
 //! Own sources (docs/plans/custom-feeds.md): feeds the admin adds here by a link, after a warning — read after the
 //! main feed's, kept in `packages-catalog/sources.json` (up to 4), vouched for and given code only by the main feed's
-//! pin of the very archive (the YouTube app of a separate feed, docs/plugins/apps/youtube.md). One that answers 404
+//! pin of the very archive (the YouTube app of a separate feed, docs/plugins/apps/youtube-music.md). One that answers 404
 //! or 410 is closed: its copy goes and what was installed from it is hidden.
 //!
 //! A feed may say a package is `hidden`: it is not listed or installed, and the installed one that came from that very

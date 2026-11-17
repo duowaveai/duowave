@@ -131,6 +131,16 @@ html[data-role='helper'] .dock {
     --glass-border: var(--helper-line);
     --pill-agent-fg: #c4b5fd;
 }
+/* Меню из тёмной строки (аватар) берёт её светлый текст и тёмные линии, а фон меню оставался светлым — текст
+   пропадал (owner 17.11). В рамке Турбо меню тёмное, как сама строка. */
+html[data-role='helper'] .desk-top .menu {
+    --menu-bg: #1c1b19;
+    --strong-border: var(--helper-line);
+    --strong-hi: transparent;
+    background: #1c1b19;
+    border-color: var(--helper-line);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
 
 /* Капсулы строки: режим, связь с помощником или шлюзом. Тёмная — помощник (тёмное = помощник везде). */
 .role-chip {
@@ -1170,6 +1180,8 @@ html[data-look] .code-editor:focus-within { border-color: var(--text); }
     pointer-events: none;
 }
 .desk-shortcuts.is-column::-webkit-scrollbar { display: none; }
+/* Открытое меню «+ Ярлык» выходит за столбик: прокрутка столбика обрезала его, и «+» казался мёртвым (owner 17.11). */
+.desk-shortcuts.is-column:has(.desk-shortcut-menu) { overflow: visible; }
 .desk-shortcuts.is-column > * { pointer-events: auto; }
 .desk-shortcuts.is-row { flex-wrap: wrap; justify-content: flex-start; }
 .desk-shortcut {

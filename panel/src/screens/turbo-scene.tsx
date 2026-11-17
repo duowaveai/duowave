@@ -80,7 +80,7 @@ export function TurboBody({ turbo, onOpen, title: named, sub: told, state: shown
                             return (
                                 <span key={ability.id} class={`turbo-chip${taken || (turbo.up && !skipped && ability.ready) ? '' : ' is-idle'}`}>
                                     <ChipIcon size={15} />
-                                    {abilityTitle(ability.id)}
+                                    {abilityTitle(ability.id, true)}
                                     {what && <em>{what}</em>}
                                 </span>
                             );

@@ -118,7 +118,7 @@ export default {
     hideUntilNext: 'Скрыть до следующей версии',
     widgetMore: (title: string) => `Виджет «${title}»: ещё`,
     widgetMenuLabel: (title: string, locked: boolean) => `Виджет «${title}»${locked ? ': стол закреплён' : ''}`,
-    deskLocked: 'Стол закреплён',
+    deskLocked: 'Стол закреплён: место и ширина не меняются',
     moveEarlier: 'Раньше',
     moveLater: 'Позже',
     wider: 'Шире',

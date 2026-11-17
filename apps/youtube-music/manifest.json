@@ -5,9 +5,10 @@
   "node": {
     "entry": "server.mjs"
   },
-  "id": "youtube",
-  "version": "0.1.0",
-  "title": "YouTube",
+  "id": "youtube-music",
+  "version": "0.1.1",
+  "title": "YouTube Music",
+  "icon": "avatar.webp",
   "license": "Apache-2.0",
   "description": "Музыка с YouTube на колонке: «включи с ютуба Кино, группа крови», «добавь в очередь …», дальше — похожее из микса YouTube. Работает на компьютере: звук берёт yt-dlp (скачивается сам и сам обновляется), ffmpeg делает из него MP3. В России YouTube заблокирован — нужен VPN на компьютере.",
   "api": "^2",
@@ -37,7 +38,7 @@
   ],
   "locales": {
     "en": {
-      "title": "YouTube",
+      "title": "YouTube Music",
       "description": "Music from YouTube on the speaker: “play Kino Blood Type from YouTube”, “add … to the queue”, then similar songs from YouTube’s mix. Runs on the computer: yt-dlp takes the sound (downloads and updates itself), ffmpeg makes MP3 of it. Where YouTube is blocked, the computer needs a VPN.",
       "intents": {
         "playPhrase": [
@@ -142,7 +143,7 @@
     ],
     "media": [
       {
-        "id": "youtube",
+        "id": "youtube-music",
         "kind": "music",
         "handler": "source"
       }

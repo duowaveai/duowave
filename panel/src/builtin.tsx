@@ -17,7 +17,8 @@ import { FittingSection } from './screens/fitting';
 import { WorksSection } from './screens/works';
 import { EgressScreen } from './screens/egress';
 import { FoldersSection } from './screens/folders';
-import { AllocWidget, ModeWidget, RecentWidget, UnsupportedWidget, WatchWidget, WorkshopWidget, WorksWidget } from './screens/desk-widgets';
+import { AllocWidget, ModeWidget, RecentWidget, UnsupportedWidget, WatchWidget, WorkshopWidget, WorksWidget, useStationOffer } from './screens/desk-widgets';
+import { usePanel } from './shell/context';
 import { MusicWidget, TimersWidget } from './screens/station-widgets';
 import { ShowcaseWidget } from './screens/showcase';
 import { useOfferedVersion } from './updates';
@@ -30,7 +31,9 @@ export { settingsPlace } from './screens/places';
 
 /** Точка у «Настроек»: шлюз нашёл новую версию (её страница — «Обновления и копии»). */
 function UpdateDot() {
-    return useOfferedVersion() ? <span class="badge-dot" role="img" aria-label={tr.core.newGatewayVersion} /> : null;
+    const turbo = usePanel().role.role === 'helper';
+    const station = useStationOffer(turbo);
+    return useOfferedVersion() || station ? <span class="badge-dot" role="img" aria-label={tr.core.newGatewayVersion} /> : null;
 }
 
 /**

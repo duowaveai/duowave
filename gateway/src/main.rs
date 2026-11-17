@@ -18,7 +18,42 @@
 //!                                                             a station for our calls (PC build)
 //!   duowave livekit-token --name "Мама" [--days 30]           a LiveKit room access for an app (PC build)
 
+/// The station's memory (Lite 2: ~120 MB free and no swap). musl's own allocator (mallocng) never gave back what a
+/// burst left broken up: the panel's lists, a dozen requests at once from the computer, took the gateway from 15 to
+/// 57 MB in an hour (16.11.2026), and the apps' budget is what is left. mimalloc, told to purge freed pages at once and
+/// not to commit its arenas ahead, stayed at ~19 MB under the same requests in a container with the station's build
+/// and data. Only in the station's build for the station: a PC keeps its system's allocator.
+#[cfg(all(feature = "station", target_env = "musl"))]
+#[global_allocator]
+static MEMORY: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// mimalloc v3's options by number (include/mimalloc.h, `mi_option_e`): the crate names only the older ones.
+#[cfg(all(feature = "station", target_env = "musl"))]
+mod station_memory {
+    const ARENA_EAGER_COMMIT: libmimalloc_sys::mi_option_t = 4;
+    const PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
+
+    /// Freed pages go back to the system at once (the default waits 10 ms, ×10 for arenas), and an arena is committed
+    /// as it is used. What was there before, for the log: MIMALLOC_* in the environment shows here.
+    pub fn tune() -> (i64, i64) {
+        // SAFETY: plain option setters of the allocator, before any thread of ours.
+        unsafe {
+            let before = (
+                libmimalloc_sys::mi_option_get(PURGE_DELAY) as i64,
+                libmimalloc_sys::mi_option_get(ARENA_EAGER_COMMIT) as i64,
+            );
+            libmimalloc_sys::mi_option_set(PURGE_DELAY, 0);
+            libmimalloc_sys::mi_option_set(ARENA_EAGER_COMMIT, 0);
+            before
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
+    #[cfg(all(feature = "station", target_env = "musl"))]
+    let memory_was = station_memory::tune();
+    #[cfg(not(all(feature = "station", target_env = "musl")))]
+    let memory_was = ();
     // A recognition worker of this program's own gateway (src/speech/asr/local): nothing else starts in it.
     #[cfg(feature = "local-asr")]
     if duowave::speech::asr::local::is_worker_invocation() {
@@ -30,7 +65,7 @@ fn main() -> anyhow::Result<()> {
             println!("duowave {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        "serve" => serve(),
+        "serve" => serve(memory_was),
         "health" => health(),
         "update" => update(std::env::args().any(|arg| arg == "--check")),
         "station" => {
@@ -55,8 +90,21 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn serve() -> anyhow::Result<()> {
+#[cfg(all(feature = "station", target_env = "musl"))]
+type MemoryWas = (i64, i64);
+#[cfg(not(all(feature = "station", target_env = "musl")))]
+type MemoryWas = ();
+
+fn serve(memory_was: MemoryWas) -> anyhow::Result<()> {
     duowave::init_logging(None);
+    #[cfg(all(feature = "station", target_env = "musl"))]
+    tracing::info!(
+        "memory: mimalloc, freed pages back at once (purge delay {} → 0 ms, arena eager commit {} → 0)",
+        memory_was.0,
+        memory_was.1
+    );
+    #[cfg(not(all(feature = "station", target_env = "musl")))]
+    let () = memory_was;
     // One process-wide TLS provider: ring, the same on the station and on a PC.
     let _ = rustls::crypto::ring::default_provider().install_default();
     let env = duowave::config::Env::from_process();
