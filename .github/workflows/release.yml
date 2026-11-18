@@ -194,11 +194,10 @@ jobs:
         include:
           - { os: ubuntu-latest, key: duowave-linux-x86_64, target: x86_64-unknown-linux-musl, zig: true, args: --release, out: release }
           - { os: ubuntu-latest, key: duowave-linux-aarch64, target: aarch64-unknown-linux-musl, zig: true, args: --release, out: release }
-          # Both Macs on the Apple Silicon runner: GitHub gave no macos-15-intel machine to v0.16.0 twice (18.11.2026,
-          # «not acquired by Runner»), and an arm64 Mac builds x86_64-apple-darwin as well. (09–10.11 it was the other
-          # way round: no arm64 runners, both on Intel.)
-          - { os: macos-15, key: duowave-darwin-aarch64, target: aarch64-apple-darwin, zig: false, args: --release, out: release }
-          - { os: macos-15, key: duowave-darwin-x86_64, target: x86_64-apple-darwin, zig: false, args: --release, out: release }
+          # Apple Silicon on the Intel Mac: GitHub had no macOS arm64 runners to give (capacity, 09–10.11.2026), and an
+          # Intel Mac builds aarch64-apple-darwin as well.
+          - { os: macos-15-intel, key: duowave-darwin-aarch64, target: aarch64-apple-darwin, zig: false, args: --release, out: release }
+          - { os: macos-15-intel, key: duowave-darwin-x86_64, target: x86_64-apple-darwin, zig: false, args: --release, out: release }
           - { os: windows-latest, key: duowave-windows-x86_64, target: x86_64-pc-windows-msvc, zig: false, args: --release, out: release }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
@@ -271,12 +270,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Both Macs on the Apple Silicon runner, each with its target named: GitHub gave no macos-15-intel machine to
-          # v0.16.0 twice (18.11.2026). The Intel app names x86_64-apple-darwin, so its files are x86_64 and not the
-          # runner's own arm64. `name` keeps the two Macs' artifacts and caches apart (the old names, so nothing after
-          # this job changes).
-          - { os: macos-15, name: macos-aarch64, target: aarch64-apple-darwin }
-          - { os: macos-15, name: macos-15-intel, target: x86_64-apple-darwin }   # Intel
+          # Apple Silicon built on the Intel Mac (target aarch64-apple-darwin): GitHub had no macOS arm64 runners to
+          # give (capacity, 09–10.11.2026). `name` keeps the two Macs' artifacts and caches apart.
+          - { os: macos-15-intel, name: macos-aarch64, target: aarch64-apple-darwin }
+          - { os: macos-15-intel, name: macos-15-intel }   # Intel
           - { os: windows-latest, name: windows-latest }
           - { os: ubuntu-22.04, name: ubuntu-22.04 }
           - { os: ubuntu-24.04-arm, name: ubuntu-24.04-arm }
@@ -396,7 +393,7 @@ jobs:
         run: |
           bundle=$BUNDLE
           case "${{ runner.os }}" in macOS) os=darwin ;; Windows) os=windows ;; *) os=linux ;; esac
-          # The processor the app is for: the named target's (both Macs name theirs), else the machine's.
+          # The processor the app is for: the named target's (Apple Silicon built on the Intel Mac), else the machine's.
           target='${{ matrix.target }}'
           case "${target:-${{ runner.arch }}}" in aarch64-*|ARM64) arch=aarch64 ;; *) arch=x86_64 ;; esac
           mkdir -p updater
