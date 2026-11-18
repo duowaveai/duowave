@@ -761,7 +761,7 @@ pub(crate) mod tests {
         provider(&app, "ollama", &ollama.url);
         let body = status(&app).await;
         assert_eq!(old_fields(&body), old(true, true, json!("piper/ru_RU-irina-medium"), true));
-        assert_eq!(body["contract"]["version"], 1);
+        assert_eq!(body["contract"]["version"], crate::helpers::contract::VERSION);
         // The status says besides that this computer speaks the link while it helps (stage 7).
         let mut said = body["contract"].clone();
         assert_eq!(said.as_object_mut().unwrap().remove("link"), Some(json!(crate::helpers::link::VERSION)));
@@ -991,7 +991,7 @@ pub(crate) mod tests {
             (SELF, "Этот компьютер", true, HelperKind::Home, HelperState::Up)
         );
         assert!(me.enabled && me.allowed && me.without.is_empty() && me.url.is_none() && me.key.is_none());
-        assert_eq!(me.contract, Some(1));
+        assert_eq!(me.contract, Some(crate::helpers::contract::VERSION));
         assert_eq!(me.helper.as_ref().map(|helper| helper.id.clone()), app.identity.gateway().map(|me| me.id));
         assert_eq!(me.abilities, app.builtin.contract().abilities);
         let health = app.helpers.health();

@@ -403,3 +403,64 @@ async fn rights_approved_with_the_install_ask_nothing_and_a_standing_danger_is_a
     bus.forget(&a(), None);
     assert!(bus.links.all().is_empty() && bus.links.dangers().is_empty());
 }
+
+/// Clean-path check 18.11, item 13: the station's microphone came to the bus after the wake word was installed, so no
+/// «всегда» was written at the install. The install's exact link stands for it: the app is not asked again; a wider
+/// pattern still gives no «всегда», and the owner's own word on the handle still rules.
+#[tokio::test]
+async fn a_standing_danger_that_came_after_the_install_is_always_by_its_install_link() {
+    let (bus, _) = bus();
+    let (mic, other) = (Address::parse("system/mic").unwrap(), Address::parse("system/other").unwrap());
+    let rights = vec![(Level::Call, Pattern::exact(&mic)), (Level::Call, Pattern::parse("system/*").unwrap())];
+    // Installed before the microphone's provider is there: links, no «всегда».
+    assert_eq!(bus.approve_install(&a(), &rights, None).unwrap(), 2);
+    assert!(bus.links.dangers().is_empty());
+    bus.register(Arc::new(Mic));
+    bus.call(Trail::app("a"), a(), mic.clone(), "open", json!({}), vec![]).await.unwrap();
+    assert!(matches!(
+        bus.call(Trail::app("a"), a(), mic, "wipe", json!({}), vec![]).await,
+        Err(BusError::NeedsYes { .. })
+    ));
+    assert!(matches!(
+        bus.call(Trail::app("a"), a(), other, "open", json!({}), vec![]).await,
+        Err(BusError::NeedsYes { .. })
+    ));
+}
+
+/// Clean-path check 18.11, item 17: the owner's «да» to a standing danger (the wake word's microphone) is for good — it
+/// outlives a restart of the gateway (a new bus over the same database). A danger for one act is still one act.
+#[tokio::test]
+async fn a_yes_to_a_standing_danger_outlives_a_restart() {
+    let db = Arc::new(Db::open(None).unwrap());
+    let events = EventBus::new();
+    let settings = Arc::new(SettingsService::new(db.clone(), events.clone()));
+    let start = || {
+        let bus =
+            Bus::new(BusDeps { db: db.clone(), settings: settings.clone(), events: events.clone(), keep_lines: 1000 });
+        bus.register(Toy::new());
+        bus.register(Arc::new(Mic));
+        bus
+    };
+    let mic = Address::parse("system/mic").unwrap();
+    let bus = start();
+    bus.links
+        .grant(Link::new(Pattern::exact(&a()), Pattern::exact(&mic), Level::Call, LinkSource::Answer), None)
+        .unwrap();
+    for handle in ["open", "wipe"] {
+        let Err(BusError::NeedsYes { id, .. }) =
+            bus.call(Trail::app("a"), a(), mic.clone(), handle, json!({}), vec![]).await
+        else {
+            panic!("{handle}: a danger asks first")
+        };
+        bus.answer(&id, true, None).unwrap().unwrap();
+    }
+    bus.call(Trail::app("a"), a(), mic.clone(), "open", json!({}), vec![]).await.unwrap();
+
+    let again = start();
+    again.call(Trail::app("a"), a(), mic.clone(), "open", json!({}), vec![]).await.unwrap();
+    again.call(Trail::app("a"), a(), mic.clone(), "open", json!({}), vec![]).await.unwrap();
+    assert!(matches!(
+        again.call(Trail::app("a"), a(), mic, "wipe", json!({}), vec![]).await,
+        Err(BusError::NeedsYes { .. })
+    ));
+}

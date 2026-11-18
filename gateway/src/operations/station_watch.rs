@@ -103,7 +103,7 @@ impl StationWatch {
                 let address = address.clone();
                 tokio::spawn(async move {
                     me.alert(&crate::tr!(
-                        "Новая колонка с адреса {address} просит подключиться к шлюзу. Разрешить — в пульте, раздел «Колонки».",
+                        "Новая колонка с адреса {address} просит подключиться к центру. Разрешить — в пульте, раздел «Колонки».",
                         address = address
                     ))
                     .await;
@@ -160,7 +160,7 @@ impl StationWatch {
         let mut seen = self.seen();
         if connected {
             seen.last_seen = now;
-            return std::mem::take(&mut seen.alerted).then(|| crate::tr!("Колонка снова на связи со шлюзом."));
+            return std::mem::take(&mut seen.alerted).then(|| crate::tr!("Колонка снова на связи с центром."));
         }
         // The clock not set yet (a station's boot): nothing counted. Set now while the watch's last look was before:
         // the count starts now.
@@ -179,7 +179,7 @@ impl StationWatch {
         seen.alerted = true;
         let minutes = (now.saturating_sub(seen.last_seen) as f64 / 60_000.0).round() as u64;
         Some(crate::tr!(
-            "Колонка не подключена к шлюзу {minutes} мин. Голоса у неё нет; вернуть к Яндексу: scripts/station-voice.sh yandex.",
+            "Колонка не подключена к центру {minutes} мин. Голоса у неё нет; вернуть к Яндексу: scripts/station-voice.sh yandex.",
             minutes = minutes
         ))
     }
@@ -311,10 +311,10 @@ mod tests {
         watch.check(start + 61_000).await;
         watch.check(start + 120_000).await;
         assert_eq!(sent.lock().unwrap().len(), 1);
-        assert!(sent.lock().unwrap()[0].contains("не подключена к шлюзу 1 мин"), "{:?}", sent.lock().unwrap());
+        assert!(sent.lock().unwrap()[0].contains("не подключена к центру 1 мин"), "{:?}", sent.lock().unwrap());
         *sessions.0.lock().unwrap() = 1;
         watch.check(start + 130_000).await;
-        assert_eq!(sent.lock().unwrap()[1], "Колонка снова на связи со шлюзом.");
+        assert_eq!(sent.lock().unwrap()[1], "Колонка снова на связи с центром.");
         assert!(watch.status().connected);
     }
 
@@ -376,7 +376,7 @@ mod tests {
         *sessions.0.lock().unwrap() = 1;
         let back = tokio::time::timeout(Duration::from_secs(5), watch.check(start + 70_000)).await;
         assert!(back.is_ok());
-        assert_eq!(sent.lock().unwrap()[1], "Колонка снова на связи со шлюзом.");
+        assert_eq!(sent.lock().unwrap()[1], "Колонка снова на связи с центром.");
         server.abort();
     }
 
@@ -402,7 +402,7 @@ mod tests {
         assert!(sent.lock().unwrap().is_empty(), "the clock is set now: the count starts");
         watch.check(start + 61_000).await;
         assert_eq!(sent.lock().unwrap().len(), 1);
-        assert!(sent.lock().unwrap()[0].contains("не подключена к шлюзу 1 мин"), "{:?}", sent.lock().unwrap());
+        assert!(sent.lock().unwrap()[0].contains("не подключена к центру 1 мин"), "{:?}", sent.lock().unwrap());
     }
 
     /// Live, 10.11: the computer told «Колонка не подключена к шлюзу 5 мин… вернуть к Яндексу» while the station talked

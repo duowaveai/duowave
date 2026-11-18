@@ -218,7 +218,7 @@ fn yes(device: Device, imprint_device: Device, slow: bool) -> Verdict {
 pub fn verdict(engine: &EngineSpec, platform: &PlatformInfo) -> Verdict {
     if platform.docker {
         return no(crate::tr!(
-            "Шлюз запущен в Docker: модели голоса нужно ставить рядом с ним — пока не поддерживается."
+            "DuoWave запущен в Docker: модели голоса нужно ставить рядом с ним — пока не поддерживается."
         ));
     }
     if platform.ram_mb < 8_000 {

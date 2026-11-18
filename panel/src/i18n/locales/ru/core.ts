@@ -73,7 +73,7 @@ export default {
     },
 
     // builtin.tsx
-    newGatewayVersion: 'новая версия шлюза',
+    newGatewayVersion: 'новая версия DuoWave',
     sectionHome: 'Главная',
     sectionCharacter: 'Персонаж',
     sectionApps: 'Приложения',
@@ -104,19 +104,9 @@ export default {
     helperStationAlone: 'колонка работает сама',
     helperOffline: 'Турбо уснуло',
     // «Где я»: вкладки устройств дома в верхней строке (shell/device-tabs.tsx).
-    tabsLabel: 'Устройства дома',
     tabStation: (name: string) => `Колонка «${name}»`,
     tabStationNoName: 'Колонка',
     tabThisComputer: 'Этот компьютер',
-    tagGateway: 'шлюз',
-    tagTurbo: 'Турбо',
-    tagGatewayTurbo: 'шлюз + Турбо',
-    tagAsleep: 'спит',
-    tabOpen: (name: string) => `Открыть пульт: ${name}`,
-    hereLead: 'Вы в пульте',
-    hereStation: 'колонки',
-    hereComputer: 'компьютера',
-    hereTurbo: '— он Турбо и сам не отвечает',
     workshop: 'Мастерская',
     statusNoAnswer: 'не отвечает',
     statusNoStation: 'колонка не подключена',
@@ -129,7 +119,7 @@ export default {
 
     // recorder.ts
     micNeedsSecure:
-        'Микрофон браузер даёт только на самом компьютере со шлюзом (localhost) или по HTTPS. Здесь можно добавить файл: запишите отрывок диктофоном и загрузите.',
+        'Микрофон браузер даёт только на самом компьютере с DuoWave (localhost) или по HTTPS. Здесь можно добавить файл: запишите отрывок диктофоном и загрузите.',
     micUnsupported: 'Этот браузер не умеет записывать звук. Добавьте файл с диктофона.',
     micNumbered: (n: number) => `Микрофон ${n}`,
     fileUnreadable: 'Не получилось прочитать файл: нужен звук — m4a, mp3, wav.',

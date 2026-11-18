@@ -123,8 +123,8 @@ async fn activate_tts(State(app): State<Arc<App>>, caller: Caller, Body(body): B
 /// Forgets the voice waiting for its model or file.
 async fn forget_pending(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
     caller.permitted(MODELS_MANAGE)?;
-    app.models.clear_pending(caller.actor());
-    Ok(ok(json!({ "forgotten": true })))
+    let stopped = app.models.cancel_pending(caller.actor()).await;
+    Ok(ok(json!({ "forgotten": true, "stopped": stopped })))
 }
 
 /// Notes the recognition model by its card id; serves after the recognition server's restart.

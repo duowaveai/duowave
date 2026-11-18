@@ -19,7 +19,7 @@ use super::system_prompt::{
 use crate::config::DialogConfig;
 use crate::core::events::{Actor, EventBus, GatewayEvent};
 use crate::platform::http::ApiError;
-use crate::settings::definitions::{Persona, PERSONA};
+use crate::settings::definitions::{Persona, PERSONA, ROOMS};
 use crate::settings::SettingsService;
 use crate::storage::Db;
 use crate::utils::time::now_iso;
@@ -138,6 +138,25 @@ impl PersonaService {
             },
         };
         SystemPrompt { text: build_computer_prompt(&text), problem: None }
+    }
+
+    /// The prompt in a device's room (docs/plans/home-and-devices.md, «Комнаты»): its room's character when it has one
+    /// — «Бублик» in the nursery —, else the home's. The memory and the people stay the home's either way.
+    pub fn system_prompt_in(&self, device: Option<&str>, channel: Channel) -> SystemPrompt {
+        let room = device.and_then(|device| self.settings.get(&ROOMS, None)?.remove(device)?.persona);
+        let Some(persona) = room else { return self.system_prompt_for(None, channel) };
+        let text = if persona.preset_id.as_deref().is_some_and(is_package_character) {
+            if channel == Channel::Station {
+                build_character_prompt(&persona.text)
+            } else {
+                build_computer_prompt(&persona.text)
+            }
+        } else if channel == Channel::Station {
+            build_system_prompt(&persona.text)
+        } else {
+            build_computer_prompt(&persona.text)
+        };
+        SystemPrompt { text, problem: None }
     }
 
     /// Whether the household talks by the computer's microphone: the built-in character then goes by that talk's name
@@ -351,6 +370,26 @@ mod tests {
         let events = EventBus::new();
         let settings = Arc::new(SettingsService::new(db.clone(), events.clone()));
         PersonaService::new(&config, db, settings, events).unwrap()
+    }
+
+    #[test]
+    fn a_room_with_its_own_character_answers_as_it_and_the_others_as_the_home() {
+        let personas = service(None);
+        personas.set(&body(json!({"text": "Ты — Артур, дворецкий."})), None).unwrap();
+        let mut rooms = std::collections::BTreeMap::new();
+        rooms.insert(
+            "nursery".to_string(),
+            crate::settings::definitions::RoomSetting {
+                character: Some("bublik".into()),
+                persona: Some(Persona::plain(Some("bublik".into()), "Ты — Бублик, весёлый пёс.".into())),
+                ..Default::default()
+            },
+        );
+        personas.settings.set(&ROOMS, &rooms, None).unwrap();
+        assert!(personas.system_prompt_in(Some("nursery"), Channel::Station).text.contains("Бублик"));
+        let kitchen = personas.system_prompt_in(Some("kitchen"), Channel::Station).text;
+        assert!(kitchen.contains("Артур") && !kitchen.contains("Бублик"), "the home's elsewhere");
+        assert!(personas.system_prompt_in(None, Channel::Computer).text.contains("Артур"));
     }
 
     fn body(value: serde_json::Value) -> Map<String, Value> {

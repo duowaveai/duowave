@@ -83,7 +83,7 @@ async fn setup(State(app): State<Arc<App>>, caller: Caller, Body(body): Input) -
             Err(SetupRefused::Throttled { wait_ms }) => return Err(too_many_tries(wait_ms)),
             Err(SetupRefused::WrongCode) => {
                 return Err(ApiError::forbidden(crate::tr!(
-                    "Нужен код настройки — он в журнале шлюза (logs/duowave.log)."
+                    "Нужен код настройки — он в журнале DuoWave (logs/duowave.log)."
                 )))
             }
         }
@@ -382,7 +382,7 @@ mod tests {
         let (status, body) =
             call(&app, phone, "POST", "/api/v1/auth/setup", json!({"password": "admin-password-1"})).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
-        assert_eq!(body["message"], "Нужен код настройки — он в журнале шлюза (logs/duowave.log).");
+        assert_eq!(body["message"], "Нужен код настройки — он в журнале DuoWave (logs/duowave.log).");
         let (status, body) = call(&app, "8.8.8.8", "POST", "/api/v1/auth/setup", json!({"password": "x"})).await;
         assert_eq!((status, body["message"].as_str()), (StatusCode::FORBIDDEN, Some("Только из домашней сети.")));
 

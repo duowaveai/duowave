@@ -45,3 +45,59 @@
 .onb .face .onb-ch-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .onb .face.onb-ch-has-img::after { content: ''; position: absolute; inset: 0; background: linear-gradient(180deg, transparent 40%, rgba(0, 0, 0, 0.55)); }
 .onb .face.onb-ch-has-img .face-line { position: relative; z-index: 1; }
+
+/* «Есть приглашение?» (screens/onb/invite.tsx, п. 42): строка со ссылкой, предупреждение, демо-карточки. */
+.onb .onb-inv { display: flex; flex-direction: column; gap: 12px; }
+.onb .onb-inv-ask { align-self: flex-start; padding: 0; border: 0; background: none; color: var(--sub); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.onb .onb-inv-ask:hover { color: var(--text); }
+.onb .onb-inv-row { display: flex; align-items: center; gap: 10px; }
+.onb .onb-inv-row .input { flex: 1; min-width: 0; height: 40px; }
+.onb .onb-inv-warn { justify-content: space-between; padding: 10px 14px; border-radius: var(--radius-inner); background: var(--out-bg); color: var(--out-fg); }
+.onb .onb-inv-buttons { display: inline-flex; gap: 8px; flex: none; }
+.onb .onb-inv-chip { flex: none; padding: 2px 8px; border-radius: var(--radius-pill); background: var(--out-bg); color: var(--out-fg); font: 500 11px/16px var(--font-ui); }
+.onb .onb-inv-actions { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; }
+.onb .onb-inv-actions .listen { margin: 0; }
+.onb .onb-inv-actions .dw-btn { flex: 1; min-width: 0; justify-content: center; }
+/* «Послушать» значком: круглая кнопка ряда; имя — одной строкой с многоточием (п. 57). */
+.onb .onb-inv-actions .onb-inv-listen { flex: none; width: 36px; height: 36px; padding: 0; justify-content: center; }
+.onb .onb-inv-card .pcard-name { min-width: 0; }
+.onb .onb-inv-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.onb .onb-inv .dw-btn:disabled { opacity: .45; cursor: default; pointer-events: none; }
+.onb .onb-inv-card .pcard-pick:disabled .face { opacity: .6; }
+@media (max-width: 760px) {
+    .onb .onb-inv-row { flex-direction: column; align-items: stretch; }
+    .onb .onb-inv-buttons { justify-content: flex-end; }
+}
+
+/* Встроенная Алиса: её знак (ui/media.tsx VoiceMark) в углу лица, как ДиВи — свои глаза (п. 44). */
+.onb .onb-ch-mark { position: absolute; top: 12px; right: 12px; width: 48px; height: 48px; }
+.onb .onb-ch-mark .char-mark { display: block; width: 100%; height: 100%; }
+@media (max-width: 760px) {
+    .onb .onb-ch-mark { width: 40px; height: 40px; top: 10px; right: 10px; }
+}
+.onb .onb-ch-has-mark .face-line { padding-right: 52px; }
+/* Демо-карточки разной высоты (описание, «Послушать»): кнопки — к низу карточки. */
+.onb .onb-inv-card { display: flex; flex-direction: column; }
+.onb .onb-inv-card .onb-inv-actions { margin-top: auto; }
+
+/* Блок «Демо-персонажи для теста» (пп. 53, 58): над карточками шага, рамкой, с заголовком и парой строк; «Дальше» без
+   решения — подсвечен. */
+.onb .onb-inv-block { padding: 18px 20px; border-radius: var(--radius-card, 18px); background: var(--card); border: 1px solid var(--line); transition: border-color .2s, box-shadow .2s; }
+.onb .onb-inv-block.is-nudged { border-color: var(--out); box-shadow: 0 0 0 4px var(--out-bg); }
+.onb .onb-inv-block-head { display: flex; flex-direction: column; gap: 4px; }
+.onb .onb-inv-block-title { margin: 0; font: 500 20px/26px var(--font-display, var(--font-ui)); letter-spacing: -.01em; color: var(--text); }
+.onb .onb-inv-card-ask { display: flex; flex-direction: column; gap: 12px; }
+/* Ход в строке: та же крутилка, что в шагах «Колонки» (.mark-busy), поменьше. */
+.onb .onb-inv-spin { display: inline-block; width: 14px; height: 14px; margin: 0 6px -2px 0; border-width: 2px; }
+
+/* Колонка выбрана и подключена, а DuoWave на неё не перенесён (п. 61): честная строка и «Перенести сейчас». */
+.onb .onb-ch-notcentre { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-radius: var(--radius-inner); background: var(--out-bg); color: var(--out-fg); }
+.onb .onb-ch-notcentre .dw-btn { flex: none; }
+@media (max-width: 760px) {
+    .onb .onb-ch-notcentre { flex-direction: column; align-items: stretch; }
+}
+.onb .onb-ch-notcentre.is-moving { margin: 0; }
+.onb .onb-ch-notcentre.is-moving .onb-inv-spin { margin-right: 8px; vertical-align: -2px; }
+.onb .onb-ch-notcentre > .small { flex: 1; min-width: 0; }
+/* Выбран, пока колонка не центр (п. 63): ждёт её — отмечен рамкой. */
+.onb .onb-inv-card.is-chosen { box-shadow: inset 0 0 0 1px var(--bar-own); }

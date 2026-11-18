@@ -265,6 +265,12 @@ pub struct VoiceLabService {
     routes: Mutex<HashMap<EngineId, Arc<SpeechRoute>>>,
     restarted_at: Mutex<HashMap<EngineId, Instant>>,
     speech: OnceLock<Arc<dyn OwnSpeech>>,
+    /// Where imprint.py hears the words of a take when recognition runs inside this program (ASR_PROVIDER=local, the
+    /// desktop app): this gateway on the loopback, set when it listens. Nobody listens on ASR_BASE_URL then.
+    local_base: OnceLock<String>,
+    /// The key in the loopback path of that recognition (`/api/v1/voice-lab/asr/<key>/v1`): imprint.py sends no
+    /// sign-in, so the path itself is the pass — random per run of the gateway, only for this computer.
+    asr_key: String,
 }
 
 impl VoiceLabService {
@@ -342,7 +348,47 @@ impl VoiceLabService {
             routes: Mutex::new(HashMap::new()),
             restarted_at: Mutex::new(HashMap::new()),
             speech: OnceLock::new(),
+            local_base: OnceLock::new(),
+            asr_key: crate::utils::ids::uuid().replace('-', ""),
         })
+    }
+
+    /// The gateway listens on this port of the loopback: imprint.py reaches recognition inside this program there.
+    pub fn set_local_port(&self, port: u16) {
+        let _ = self.local_base.set(format!("http://127.0.0.1:{port}"));
+    }
+
+    #[cfg(test)]
+    pub fn asr_key_for_tests(&self) -> String {
+        self.asr_key.clone()
+    }
+
+    /// Whether `key` is the pass of the loopback recognition (controller.rs).
+    pub fn asr_key_is(&self, key: &str) -> bool {
+        !key.is_empty() && key == self.asr_key
+    }
+
+    /// The OpenAI-compatible recognition imprint.py asks the words of a take: inside this program — this gateway's
+    /// loopback route with its key (clean-path check 18.11, item 38: ASR_BASE_URL was handed over while nothing
+    /// listened there, «Connection refused»); else the recognition server, which must be on this computer.
+    fn imprint_asr_url(&self) -> Result<String, ApiError> {
+        if self.asr.local.is_some() {
+            return self
+                .local_base
+                .get()
+                .map(|base| format!("{base}/api/v1/voice-lab/asr/{}/v1", self.asr_key))
+                .ok_or_else(|| {
+                    ApiError::unavailable(crate::tr!(
+                        "Распознавание этого компьютера ещё не готово — попробуйте через минуту."
+                    ))
+                });
+        }
+        if !self.asr.enabled || !local_url(&self.asr.base_url) {
+            return Err(ApiError::bad_request(crate::tr!(
+                "Для отпечатка нужно своё распознавание на этом компьютере: слова образца не отправляются в облако."
+            )));
+        }
+        Ok(self.asr.base_url.clone())
     }
 
     /// At start: the folders, half-taken imprints swept, this computer checked in the background.
@@ -480,6 +526,7 @@ impl VoiceLabService {
                     server_dir,
                     bench_models: bench,
                     env: child_env(),
+                    watch: super::engine_installer::WATCH,
                 };
                 let ready = install_engine(&context, &plan).await?;
                 events.emit(GatewayEvent::VoiceEngineInstalled {
@@ -688,11 +735,10 @@ impl VoiceLabService {
         anyway: bool,
         actor: Option<Actor>,
     ) -> Result<JobState, ApiError> {
-        if matches!(source, ImprintSource::Takes(_)) && (!self.asr.enabled || !local_url(&self.asr.base_url)) {
-            return Err(ApiError::bad_request(crate::tr!(
-                "Для отпечатка нужно своё распознавание на этом компьютере: слова образца не отправляются в облако."
-            )));
-        }
+        let asr_url = match &source {
+            ImprintSource::Takes(_) => Some(self.imprint_asr_url()?),
+            ImprintSource::Reference { .. } => None,
+        };
         let fits = verdict(spec, &info);
         let device = fits.imprint_device.unwrap_or(Device::Cpu);
         let key = format!("{}/imprint/{}", spec.id, device.as_str());
@@ -716,7 +762,7 @@ impl VoiceLabService {
                 args.extend(files.iter().map(|file| text(file)));
                 args.extend([
                     "--asr-url".into(),
-                    self.asr.base_url.clone(),
+                    asr_url.clone().unwrap_or_default(),
                     "--asr-model".into(),
                     self.asr.model.clone(),
                 ]);
@@ -757,6 +803,7 @@ impl VoiceLabService {
                     anyway,
                     percent: Some((1.0, 99.0)),
                     labels: IMPRINT_LABELS,
+                    cancel: None,
                 };
                 let outcome: JobOutcome = async {
                     // imprint.py makes the voice's folders with the default modes: under a root that is the owner's.
@@ -879,6 +926,17 @@ impl VoiceLabService {
         let spec = spec(engine);
         let info = self.platform(false).await;
         (spec.weights_mb + PACKAGES_MB, spec.disk_mb.of(flavour(&info)))
+    }
+
+    /// Free room on the disk where the engines are installed, MB.
+    pub fn free_disk_mb(&self) -> u64 {
+        self.probe.get().free_disk_mb(&self.runtime_dir)
+    }
+
+    /// The memory a voice's server may take now without pressing the household's, MB: the pool less the reserve.
+    pub async fn free_memory_mb(&self) -> u64 {
+        let snapshot = self.memory.snapshot().await;
+        snapshot.pool_mb.saturating_sub(reserve_mb(snapshot.total_mb, self.config.reserve_mb))
     }
 
     /// The own voices as the models' cards need them, with their engine's server state.
@@ -1203,6 +1261,8 @@ pub(crate) mod testing {
     pub struct Memory {
         pub free_mb: AtomicU64,
         pub pressure_level: AtomicU64,
+        /// Free room on its disk, MB: 80 GB until a test says otherwise.
+        pub free_disk_mb: AtomicU64,
     }
 
     /// An Apple Silicon Mac, as detection and the memory sampling would see it.
@@ -1255,7 +1315,7 @@ pub(crate) mod testing {
             (14, None)
         }
         fn free_disk_mb(&self, _path: &Path) -> u64 {
-            80_000
+            self.memory.free_disk_mb.load(Ordering::SeqCst)
         }
         fn home(&self) -> PathBuf {
             PathBuf::from("/Users/owner")
@@ -1378,7 +1438,11 @@ echo "{\"stage\":\"done\",\"percent\":100,\"peakMb\":2100,\"rtf\":1.2,\"refSecon
         let mut config = Config::load(&env).expect("the test's configuration");
         config.voice_lab.server_dir = root.join("clone-server");
         let app = App::build(config).unwrap();
-        let memory = Arc::new(Memory { free_mb: AtomicU64::new(16_384), pressure_level: AtomicU64::new(1) });
+        let memory = Arc::new(Memory {
+            free_mb: AtomicU64::new(16_384),
+            pressure_level: AtomicU64::new(1),
+            free_disk_mb: AtomicU64::new(80_000),
+        });
         app.voice_lab.use_probe(Arc::new(FakeMac { memory: memory.clone() }));
         app.voice_lab.start();
         Lab { _dir: dir, app, memory, clone_url, server }
@@ -1389,6 +1453,7 @@ echo "{\"stage\":\"done\",\"percent\":100,\"peakMb\":2100,\"rtf\":1.2,\"refSecon
 mod tests {
     use super::testing::lab;
     use super::*;
+    use crate::config::Env;
     use crate::voice_lab::voice_store::tests::reading;
 
     async fn imprinted(lab: &Arc<VoiceLabService>) -> String {
@@ -1402,6 +1467,51 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("the imprint did not finish");
+    }
+
+    /// Clean-path check 18.11, item 38: recognition inside this program (the desktop app) — imprint.py hears the words
+    /// through this gateway's loopback route with its key, not at ASR_BASE_URL where nobody listens; before the gateway
+    /// listens there is no such route yet; a recognition server elsewhere is refused as before.
+    #[tokio::test]
+    async fn an_imprint_hears_through_the_gateway_when_recognition_runs_inside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().to_string_lossy().into_owned();
+        let env = Env::from_pairs([
+            ("STATE_DIR", String::new()),
+            ("DATA_DIR", data.clone()),
+            ("ASR_BASE_URL", "http://127.0.0.1:8090/v1".into()),
+        ]);
+        let mut config = Config::for_tests(&env);
+        config.speech.asr.local =
+            Some(crate::config::LocalAsrConfig { dir: dir.path().join("speech"), mirror: None, gpu: false });
+        let lab = VoiceLabService::new(&config, EventBus::new());
+        assert_eq!(
+            lab.imprint_asr_url().unwrap_err().status,
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "not listening yet"
+        );
+        lab.set_local_port(7780);
+        let url = lab.imprint_asr_url().unwrap();
+        let key =
+            url.strip_prefix("http://127.0.0.1:7780/api/v1/voice-lab/asr/").and_then(|rest| rest.strip_suffix("/v1"));
+        assert!(key.is_some_and(|key| lab.asr_key_is(key) && key.len() >= 32), "{url}");
+        assert!(!lab.asr_key_is("") && !lab.asr_key_is("guess"));
+
+        config.speech.asr.local = None;
+        config.speech.asr.base_url = "https://asr.example.com/v1".into();
+        let elsewhere = VoiceLabService::new(&config, EventBus::new());
+        assert_eq!(
+            elsewhere.imprint_asr_url().unwrap_err().status,
+            axum::http::StatusCode::BAD_REQUEST,
+            "not into the cloud"
+        );
+        config.speech.asr.base_url = "http://127.0.0.1:8090/v1".into();
+        let server = VoiceLabService::new(&config, EventBus::new());
+        assert_eq!(
+            server.imprint_asr_url().unwrap(),
+            "http://127.0.0.1:8090/v1",
+            "a recognition server of this computer"
+        );
     }
 
     #[tokio::test]

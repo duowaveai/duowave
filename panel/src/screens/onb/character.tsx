@@ -7,13 +7,17 @@
 // — голос и его модель, на колонке — характер.
 
 import { useEffect, useRef, useState } from 'preact/hooks';
+import type { InstallProgress } from '../../magicplace/wizard-state';
 
 import { CharacterView, CharactersView, api, can, isTight, needsOf, problemOf, stationCall } from '../../api';
 import { stopAudio, useAudio } from '../../audio';
 import { tr } from '../../i18n';
 import { usePanel } from '../../shell/context';
-import { useMediaUrl } from '../../ui/media';
+import { VoiceMark, markOf, useMediaUrl } from '../../ui/media';
 import { useNeedsFlow } from '../../ui/needs';
+import { installProgress, onInstallProgress, showInstallWizard } from '../../magicplace/wizard-state';
+import { Invite } from './invite';
+import { linkActive, linkNow, moveNow, useSpeakerLink } from './speaker';
 import { useOnboarding } from './nav';
 import '../../ui/onb-character.css';
 
@@ -47,6 +51,8 @@ const isDivi = (character: CharacterView): boolean => character.builtin && (char
 /** Лицо карточки: ДиВи — фирменное; цвет персонажа, если он близок к одному из лиц; иначе — по кругу. */
 function faceOf(character: CharacterView, at: number): Face {
     if (isDivi(character)) return 'face-divi';
+    // Встроенная Алиса — её знак, волна на фиолетовом (как её аватар везде в пульте, п. 44).
+    if (markOf(character) === 'voice') return 'face-violet';
     const tone = hueOf(character.color);
     if (tone) {
         if (tone.sat < 0.18) return 'face-cool';
@@ -72,9 +78,97 @@ function shown(view: CharactersView): CharacterView[] {
 
 type Note = { text: string; tone?: 'warn' | 'bad' } | null;
 
+/**
+ * Перенос DuoWave на колонку ещё идёт (шаг «Колонка» первых шагов его начал, п. 44): центр поднимается, его каталога
+ * и персонажей ещё нет — шаг ждёт, а не показывает карточки, собранные не там. Смотрит, пока перенос идёт; закончился —
+ * false, и шаг перечитывает всё.
+ */
+function useMoving(kick = 0): boolean {
+    const [moving, setMoving] = useState(false);
+    useEffect(() => {
+        let alive = true;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const look = async (): Promise<void> => {
+            const view = await api.placement().catch(() => null);
+            if (!alive) return;
+            const running = view?.job?.status === 'running';
+            setMoving(running);
+            if (running) timer = setTimeout(() => void look(), 1500);
+        };
+        void look();
+        return () => {
+            alive = false;
+            if (timer) clearTimeout(timer);
+        };
+    }, [kick]);
+    return moving;
+}
+
+/** Свёрнутая установка персонажа (мастер п. 40): её ход — тот же, что на пилюле у дока (п. 45). */
+function useInstalling(): InstallProgress | null {
+    const [now, setNow] = useState<InstallProgress | null>(installProgress);
+    useEffect(() => onInstallProgress(() => setNow(installProgress())), []);
+    return now;
+}
+
+/** Карточка установки, пока мастер свёрнут: имя, ход («модель 37 %» или «2 из 5»); нажатие разворачивает мастер. */
+function InstallingCard({ progress }: { progress: InstallProgress }) {
+    const t = tr.onbCharacter;
+    const name = progress.title.replace(/\s*\([^)]*\)\s*$/, '').trim() || progress.title;
+    const how = progress.detail ?? t.installingSteps(progress.done, progress.total);
+    return (
+        <div class="pcard is-busy onb-ch-installing">
+            <button type="button" class="pcard-pick" aria-label={t.installingOpen(name)} onClick={showInstallWizard}>
+                <span class={`face face-cool${progress.image ? ' onb-ch-has-img' : ''}`}>
+                    <FaceImage src={progress.image} />
+                    <span class="face-line">{t.installingFace}</span>
+                </span>
+                <span class="pcard-name">
+                    {name}
+                    <span class="mark mark-busy onb-inv-spin" aria-hidden="true" />
+                </span>
+                <span class="pcard-about">{t.installing(how)}</span>
+            </button>
+        </div>
+    );
+}
+
 export function CharacterStep() {
-    const { wake } = useOnboarding();
+    const { wake, choice, goTo } = useOnboarding();
     const panel = usePanel();
+    /** «Перенести сейчас» нажали: смотреть перенос заново. */
+    const [kick, setKick] = useState(0);
+    const transferring = useMoving(kick);
+    // Путь с колонкой выбран, а центром она ещё не стала (не подключена, перенос не начался): персонажи и приглашение
+    // легли бы на этот компьютер, а не к центру — шаг ждёт и здесь (п. 58).
+    const centreReady = panel.role.role === 'helper' || panel.health?.placement?.role === 'station';
+    const awaitingCentre = choice !== 'computer' && !centreReady;
+    // Перенос идёт — ждём его (центр поднимается). Колонка выбрана, а переноса нет — шаг не пустой (п. 61): Алиса и
+    // персонажи этого компьютера видны, приглашение тут же (своё и персонажи переедут с переносом, c28c4266), а сверху —
+    // честно, что колонка ещё не центр, и «Перенести сейчас».
+    // Ход подключения, начатый на шаге «Колонка» (п. 62): пульт ведёт его и здесь (после перезагрузки пульта его
+    // продолжают первые шаги, resumeLink в onboarding.tsx).
+    const live = useSpeakerLink();
+    const linking = linkActive(live);
+    const moving = transferring || linking;
+    // Ход стоит: колонка не пришла, подключение не вышло, перенос прервался — дорога к шагу «Колонка», там видно что.
+    const stuck = awaitingCentre && !moving && (live?.phase === 'timeout' || live?.phase === 'failed' || !!live?.moveError);
+    const [moveNote, setMoveNote] = useState<string | null>(null);
+    const [moveBusy, setMoveBusy] = useState(false);
+    const startNow = async (): Promise<void> => {
+        setMoveBusy(true);
+        setMoveNote(null);
+        try {
+            const started = await moveNow(choice === 'station' ? 'station' : 'stationServer');
+            if (!started) setMoveNote(tr.onbCharacter.moveNoStation);
+            else setKick((n) => n + 1);
+        } catch (e) {
+            setMoveNote(problemOf(e));
+        } finally {
+            setMoveBusy(false);
+        }
+    };
+    const installing = useInstalling();
     const stationKey = panel.role.role === 'helper' ? panel.role.station?.key : undefined;
     const audio = useAudio();
     const [view, setView] = useState<CharactersView | null>(null);
@@ -131,9 +225,23 @@ export function CharacterStep() {
         };
     }, []);
 
+    // Перенос закончился — персонажи и выбор заново (п. 44); свёрнутая установка сделала шаг — тоже: она могла выбрать
+    // персонажа, и шаг отмечает выбранного, а не прежнего (п. 45).
+    const settled = useRef(moving);
+    useEffect(() => {
+        if (settled.current && !moving) void read().then((next) => next?.active?.id && setSelected(next.active.id));
+        settled.current = moving;
+    }, [moving]);
+    const stepsDone = installing ? `${installing.done}/${installing.finished}` : '';
+    useEffect(() => {
+        if (installing?.kind !== 'character' || installing.done === 0) return;
+        void read().then((next) => next?.active?.id && setSelected(next.active.id));
+    }, [stepsDone]);
+
     const askModel = (character: CharacterView, wanted: NonNullable<CharacterView['voice']['needs']>): void =>
         needs.open({
             who: character.title,
+            homeVoice: { character: character.id },
             needs: wanted,
             fallback: character.voice.fallback?.title,
             retry: async ({ install, anyway }) => {
@@ -191,12 +299,16 @@ export function CharacterStep() {
         }
         // Фразы нет: звук другой карточки останавливаем и «звучим» как холст — или гасим, если нажали второй раз.
         if (playing.current?.startsWith(SOUND)) stopAudio();
+        // Алиса — голос самой колонки, записи её голоса у нас нет и быть не может: честно, как её послушать (п. 44).
+        if (markOf(character) === 'voice') return setNote({ text: tr.onbCharacter.aliceListen });
         if (fake === character.id) return setFake(null);
         setFake(character.id);
         timer.current = setTimeout(() => setFake(null), FAKE_MS);
     };
 
     const list = view ? shown(view) : [];
+    /** Свёрнутая установка персонажа: своей карточкой, пока его нет в списке, а встал — ходом на его карточке. */
+    const going = installing && installing.kind === 'character' && installing.hidden && !installing.finished ? installing : null;
     let others = 0;
     const footNote: Note = note ?? (mayEdit ? null : { text: tr.onbCharacter.onlyEditors });
 
@@ -211,6 +323,48 @@ export function CharacterStep() {
                 <p class="lead">{tr.onbCharacter.lead}</p>
             </div>
 
+            {/* Демо по приглашению (п. 42, 58) — отдельным блоком над карточками; перестанем раздавать ссылку — убрать эту
+                строку и invite.tsx. */}
+            {/* Всегда, и пока колонка настраивается (п. 63): ленту читает этот компьютер, выбор ждёт центр. */}
+            <Invite
+                key={stationKey ?? 'own'}
+                station={stationKey}
+                defer={awaitingCentre}
+                centreProblem={stuck}
+                onInstalled={() => void read().then((next) => next?.active?.id && setSelected(next.active.id))}
+            />
+
+            {awaitingCentre && !moving && (
+                <div class="onb-ch-notcentre" role="status">
+                    <span class="small">
+                        {moveNote ?? (stuck ? (live?.moveError || tr.onbCharacter.stationStuck) : tr.onbCharacter.stationNotCentre)}
+                    </span>
+                    {goTo && (stuck || moveNote === tr.onbCharacter.moveNoStation) && (
+                        <button type="button" class="dw-btn dw-btn-sm dw-btn-light" onClick={() => goTo('speaker')}>
+                            {tr.onbCharacter.toSpeaker}
+                        </button>
+                    )}
+                    <button type="button" class="dw-btn dw-btn-sm dw-btn-dark" disabled={moveBusy} aria-busy={moveBusy || undefined} onClick={() => void startNow()}>
+                        {tr.onbCharacter.moveNow}
+                    </button>
+                </div>
+            )}
+
+            {/* Перенос идёт: ход строкой сверху, карточки на месте (п. 61: Алиса видна всегда). */}
+            {moving && (
+                <div class="onb-ch-notcentre is-moving" role="status">
+                    <span class="small">
+                        <span class="mark mark-busy onb-inv-spin" aria-hidden="true" />
+                        {linkNow(live) ? tr.onbCharacter.stationNow(linkNow(live) as string) : tr.onbCharacter.stationSettingUp}
+                    </span>
+                    {goTo && live && (
+                        <button type="button" class="dw-btn dw-btn-sm dw-btn-light" onClick={() => goTo('speaker')}>
+                            {tr.onbCharacter.toSpeaker}
+                        </button>
+                    )}
+                </div>
+            )}
+
             {!view ? (
                 <p class="small onb-ch-p" role={error ? 'alert' : 'status'}>
                     {error ?? tr.onbCharacter.reading}
@@ -219,6 +373,7 @@ export function CharacterStep() {
                 <p class="small onb-ch-p">{tr.onbCharacter.none}</p>
             ) : (
                 <div class="onb-ch-grid">
+                    {going && !list.some((character) => character.package?.id === going.id) && <InstallingCard progress={going} />}
                     {list.map((character) => {
                         const face = faceOf(character, isDivi(character) ? 0 : others++);
                         const on = selected === character.id;
@@ -233,11 +388,16 @@ export function CharacterStep() {
                                     disabled={!mayEdit || !!character.problem}
                                     onClick={() => void pick(character)}
                                 >
-                                    <span class={`face ${face}${character.avatar ? ' onb-ch-has-img' : ''}`}>
+                                    <span class={`face ${face}${character.avatar ? ' onb-ch-has-img' : markOf(character) === 'voice' ? ' onb-ch-has-mark' : ''}`}>
                                         <FaceImage src={character.avatar} />
                                         <span class="face-line">
                                             {sample?.text ? tr.onbCharacter.quoted(sample.text) : character.description}
                                         </span>
+                                        {!character.avatar && markOf(character) === 'voice' && (
+                                            <span class="onb-ch-mark" aria-hidden="true">
+                                                <VoiceMark />
+                                            </span>
+                                        )}
                                         {face === 'face-divi' && (
                                             <span class="divi blink onb-ch-divi">
                                                 <svg viewBox="0 0 256 256" aria-hidden="true">
@@ -250,8 +410,17 @@ export function CharacterStep() {
                                         {character.title}
                                         <span class="radio" />
                                     </span>
-                                    <span class="pcard-about">{character.description}</span>
+                                    <span class="pcard-about">
+                                        {going && character.package?.id === going.id
+                                            ? tr.onbCharacter.installing(going.detail ?? tr.onbCharacter.installingSteps(going.done, going.total))
+                                            : character.description}
+                                    </span>
                                 </button>
+                                {going && character.package?.id === going.id && (
+                                    <button type="button" class="listen" onClick={showInstallWizard}>
+                                        {tr.onbCharacter.installingShow}
+                                    </button>
+                                )}
                                 <button
                                     type="button"
                                     class="listen"
@@ -283,6 +452,7 @@ export function CharacterStep() {
                     })}
                 </div>
             )}
+
 
             <div class="onb-ch-foot">
                 <span class="onb-ch-more">

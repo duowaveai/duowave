@@ -25,7 +25,7 @@ export default {
     editorPlaceholder: (assistant: string) => `Например: «Ты — ${assistant}, но отвечаешь как старый морской волк…»`,
     save: 'сохранить',
     basisLine: (basis: string) => `Основа — «${basis}». `,
-    speechRules: 'Правила речи (коротко, без списков и эмодзи) шлюз добавит сам.',
+    speechRules: 'Правила речи (коротко, без списков и эмодзи) добавятся сами.',
     spokenThis: 'Говорит этим характером.',
     spokenYours: 'Говорит вашим характером.',
     readingPersona: 'Читаем характер…',

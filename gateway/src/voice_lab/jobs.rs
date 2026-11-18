@@ -79,6 +79,9 @@ pub enum JobReason {
     Swap,
     Stopped,
     Error,
+    /// The step was taken down from outside (`RunOptions::cancel`: a download standing still) — its caller starts it
+    /// again; the job itself goes on.
+    Stalled,
 }
 
 impl JobReason {
@@ -89,6 +92,7 @@ impl JobReason {
             JobReason::Swap => "swap",
             JobReason::Stopped => "stopped",
             JobReason::Error => "error",
+            JobReason::Stalled => "stalled",
         }
     }
 }
@@ -146,6 +150,9 @@ pub struct RunOptions {
     pub percent: Option<(f64, f64)>,
     /// Human labels of the stage ids the program prints.
     pub labels: &'static [(&'static str, &'static str)],
+    /// Cancelled — the program is taken down, the job goes on, the error's reason is `Stalled` (a download that stands
+    /// still is started again by its caller, engine_installer.rs).
+    pub cancel: Option<CancellationToken>,
 }
 
 /// A step that failed: what to tell, and why when a program or the guard said why.
@@ -186,7 +193,7 @@ impl std::fmt::Display for JobError {
 /// What the panel is told of work that panicked: the panic itself (its text may carry a value of the environment) is
 /// in the gateway's log, where the panic hook printed it.
 pub(crate) fn panicked() -> String {
-    crate::tr!("Сбой в шлюзе — подробности в его журнале.")
+    crate::tr!("Сбой в DuoWave — подробности в его журнале.")
 }
 
 /// What a job's work returns: its result for the panel, or nothing.
@@ -536,6 +543,8 @@ impl JobContext {
         let mut spawn_error: Option<String> = None;
         let mut lines_done = false;
         let mut abort_seen = false;
+        let cancel = options.cancel.clone();
+        let mut cancel_seen = false;
 
         let kill =
             |reason: JobReason, stop_reason: &mut Option<JobReason>, kill_at: &mut Option<tokio::time::Instant>| {
@@ -570,6 +579,10 @@ impl JobContext {
                     abort_seen = true;
                     let reason = job.state().reason.unwrap_or(JobReason::Stopped);
                     kill(reason, &mut stop_reason, &mut kill_at);
+                }
+                _ = async { cancel.as_ref().expect("guarded").cancelled().await }, if cancel.is_some() && !cancel_seen => {
+                    cancel_seen = true;
+                    kill(JobReason::Stalled, &mut stop_reason, &mut kill_at);
                 }
                 _ = async { watch.as_mut().map(|(_, ticker, _)| ticker).expect("guarded").tick().await },
                     if watch.is_some() && status.is_none() => {
@@ -621,6 +634,10 @@ impl JobContext {
             let code = code.map(|code| code.to_string()).unwrap_or_else(|| "null".into());
             job.log(&format!("программа сделала дело и упала на выходе (код {code})"));
             return Ok(last_json);
+        }
+        // Taken down from outside, not by the owner or the guard: its caller decides (starts it again).
+        if stop_reason == Some(JobReason::Stalled) && !job.abort.is_cancelled() {
+            return Err(JobError::because(crate::tr!("скачивание стоит"), JobReason::Stalled));
         }
         let reason = stop_reason.or(child_error.as_ref().map(|(_, reason)| *reason)).unwrap_or(JobReason::Error);
         let state = job.state().clone();

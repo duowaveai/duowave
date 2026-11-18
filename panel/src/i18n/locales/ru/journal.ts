@@ -6,7 +6,7 @@ export default {
     keepMonth: 'Месяц',
     keepYear: 'Год',
     keepDays: (days: number) => `${days} дн.`,
-    noSessions: 'Шлюз не отдал сессии — попробуйте позже.',
+    noSessions: 'Центр не отдал сессии — попробуйте позже.',
 
     stationTitle: 'Колонка',
     disconnected: (ago: string) => `отключилась ${ago}`,

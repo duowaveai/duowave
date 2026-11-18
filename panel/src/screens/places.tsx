@@ -6,7 +6,7 @@
 import { ComponentChildren, FunctionComponent } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 
-import { api, can, problemOf, type CatalogView } from '../api';
+import { api, can, problemOf, type CatalogView, type HomeDevice } from '../api';
 import { ask } from '../ui/confirm';
 import { tr } from '../i18n';
 import {
@@ -26,8 +26,10 @@ import { usePanel, useSectionTab } from '../shell/context';
 import { setDevMode, setHiddenDevOptions, tapDev, useDevMode, useHiddenDevOptions } from '../shell/dev';
 import { Switch } from '../ui/switch';
 import { useOfferedVersion } from '../updates';
-import { WatchWidget, useStationOffer } from './desk-widgets';
-import { HelpersPage } from './helpers';
+import { ModeWidget, WatchWidget, useStationOffer } from './desk-widgets';
+import { AwayPage } from './helpers';
+import { DevicesPage } from './devices';
+import { RoomCard } from './room-card';
 import { Stations, Updates } from './house';
 import { SetupSheet } from './stations';
 import { TOP_VIA } from '../via';
@@ -69,7 +71,7 @@ interface SettingsPage {
     /** Точка в списке: там что-то ждёт (новая версия). */
     dot?: boolean;
     /** Группа списка (docs/plans/menu-scheme.md): устройство, доступ и вид, система. */
-    group: 'device' | 'access' | 'system';
+    group: 'home' | 'access' | 'system';
     Page: FunctionComponent;
 }
 
@@ -88,63 +90,76 @@ function Card({ id, title, children }: { id: string; title: string; children: Co
 }
 
 /**
- * «Колонка»: как говорить с DuoWave, её имя и вид, какие колонки слушаем, слух, где работает DuoWave и её память.
- * «Кто отвечает» (режим) — в «Доме» (решение владельца 16.11): там же, где Турбо и что будет без него. В режиме «Микрофон» (docs/plans/mic-mode.md) страница — «Микрофон»: тот же выбор, готовность, «Слух» и
- * проверка микрофона; о колонке на ней ничего.
+ * Части страницы устройства (docs/plans/home-and-devices.md, этап 1), бывшая страница «Колонка». «Комната» колонки — её
+ * имя и вид, кто отвечает и путь к Яндексу; «Устройство» — где работает DuoWave, память колонки, обновления; у
+ * компьютера-центра «Этот компьютер» — как говорить с DuoWave, его микрофон и слух.
  */
-function StationPage() {
+export function StationRoom({ device, centre }: { device: HomeDevice; centre: boolean }) {
     const panel = usePanel();
-    // Имя и вид — тот же лист, что при первой настройке: прежде его нельзя было открыть снова.
     const [naming, setNaming] = useState(false);
-    const current = panel.current;
-    const computer = useOnComputer();
     const choiceHere = useTalkChoiceHere() && can('station.view');
-    // Одно имя колонки (владелец 16.11): в окне колонки на компьютере — имя из его списка.
     const homeName = useHomeStationName();
-    if (computer)
-        return (
-            <>
-                <Card id="talk" title={tr.places.talkTitle}>
-                    <TalkChoice />
-                </Card>
-                <Card id="ready" title={tr.places.readyTitle}>
-                    <Readiness />
-                </Card>
-                <ModelsScreen tab="recognition" onTab={() => undefined} bare />
-                <Card id="mic-check" title={tr.places.micTitle}>
-                    <MicCheck />
-                </Card>
-                <Card id="talk-key" title={tr.voiceInput.keyTitle}>
-                    <TalkKeyChoice />
-                </Card>
-            </>
-        );
+    const station = (panel.stations ?? []).find((entry) => entry.device === device.device) ?? (centre ? panel.current : null);
     return (
         <>
-            {choiceHere && (
-                <Card id="talk" title={tr.places.talkTitle}>
-                    <TalkChoice />
-                </Card>
-            )}
-            {current && can('stations.manage') && (
+            <p class="w-cap m-0">{tr.devices.roomLead}</p>
+            {station && can('stations.manage') && (
                 <Card id="name" title={tr.places.nameTitle}>
                     <div class="w-row">
                         <span class="flex-1 min-w-0 flex flex-col">
-                            <span class="w-strong">«{homeName ?? current.name}»</span>
+                            <span class="w-strong">«{(centre ? homeName : undefined) ?? station.name}»</span>
                             <span class="w-cap">{tr.places.nameAbout}</span>
                         </span>
                         <button class="w-btn" onClick={() => setNaming(true)}>
                             {tr.places.change}
                         </button>
                     </div>
-                    {naming && <SetupSheet station={current} onClose={() => setNaming(false)} onChanged={() => undefined} onLater={() => setNaming(false)} />}
+                    {naming && <SetupSheet station={station} onClose={() => setNaming(false)} onChanged={() => undefined} onLater={() => setNaming(false)} />}
                 </Card>
             )}
-            {can('station.view') && <Stations />}
-            <ModelsScreen tab="recognition" onTab={() => undefined} bare />
+            {centre && can('station.view') && (
+                <Card id="mode" title={tr.helpers.modeRow}>
+                    <ModeWidget />
+                </Card>
+            )}
+            {device.device && can('station.view') && <RoomCard device={device.device} centre={centre} />}
+            {centre && choiceHere && (
+                <Card id="talk" title={tr.places.talkTitle}>
+                    <TalkChoice />
+                </Card>
+            )}
+            {centre && can('station.mode') && panel.health?.panelMode !== 'relay' && <BackToYandex />}
+        </>
+    );
+}
+
+export function StationDevice() {
+    return (
+        <>
+            <p class="w-cap m-0">{tr.devices.deviceLead}</p>
             {can('station.view') && <PlacementCard />}
             {can('station.view') && <StationMemoryCard />}
-            {can('station.mode') && panel.health?.panelMode !== 'relay' && <BackToYandex />}
+            {can('station.view') && <Updates />}
+        </>
+    );
+}
+
+export function ComputerMic() {
+    return (
+        <>
+            <Card id="talk" title={tr.places.talkTitle}>
+                <TalkChoice />
+            </Card>
+            <Card id="ready" title={tr.places.readyTitle}>
+                <Readiness />
+            </Card>
+            <ModelsScreen tab="recognition" onTab={() => undefined} bare />
+            <Card id="mic-check" title={tr.places.micTitle}>
+                <MicCheck />
+            </Card>
+            <Card id="talk-key" title={tr.voiceInput.keyTitle}>
+                <TalkKeyChoice />
+            </Card>
         </>
     );
 }
@@ -318,31 +333,18 @@ function HiddenDevOptions() {
 }
 
 const GROUP_TITLES = (): Record<SettingsPage['group'], string> => ({
-    device: tr.places.groupDevice,
+    home: tr.devices.groupHome,
     access: tr.places.groupAccess,
     system: tr.places.groupSystem,
 });
 
-function settingsPages(role: string, offered: boolean): SettingsPage[] {
+function settingsPages(offered: boolean): SettingsPage[] {
     return [
-        // Адрес страницы прежний (`#/settings/station`); в режиме «Микрофон» она — о микрофоне.
-        onComputer()
-            ? { id: 'station', title: tr.places.pageMic, sub: tr.places.pageMicSub, icon: IconMic, group: 'device' as const, Page: StationPage }
-            : { id: 'station', title: tr.places.pageStation, sub: tr.places.pageStationSub, icon: IconSpeaker, group: 'device' as const, Page: StationPage },
-        // «Дом» (решение владельца 16.11) — одна страница вместо «Помощников» и «Этого компьютера»: у шлюза — он, его
-        // Турбо и что будет без них; у пульта Турбо — его силы и кому он помогает. Адрес прежний (`#/settings/helpers`).
-        ...(can('connectors.view') || TOP_VIA || role === 'helper'
-            ? [
-                  {
-                      id: 'helpers',
-                      title: tr.helpers.pageTitle,
-                      sub: role === 'helper' && !TOP_VIA ? tr.helpers.pageSubTurbo : tr.helpers.pageSub,
-                      icon: IconHome,
-                      group: 'device' as const,
-                      Page: HelpersPage,
-                  },
-              ]
-            : []),
+        // «Дом» (docs/plans/home-and-devices.md, этап 1): устройства дома — центр, колонки и Турбо, у каждого — своя
+        // страница; «Что уходит из дома» — регулятор и что будет, если Турбо уснёт. Прежние «Колонка» и «Дом»
+        // (`#/settings/station`, `#/settings/helpers`) ведут сюда.
+        { id: 'devices', title: tr.devices.pageTitle, sub: tr.devices.pageSub, icon: IconHome, group: 'home', Page: DevicesPage },
+        ...(can('connectors.view') ? [{ id: 'away', title: tr.devices.awayTitle, sub: tr.devices.awaySub, icon: IconGlobe, group: 'home' as const, Page: AwayPage }] : []),
         { id: 'access', title: tr.places.pageAccess, sub: tr.places.pageAccessSub, icon: IconKey, group: 'access', Page: AccessPage },
         { id: 'look', title: tr.places.pageLook, sub: tr.places.pageLookSub, icon: IconPalette, group: 'access', Page: LookPage },
         ...(can('station.view')
@@ -362,13 +364,13 @@ export function SettingsSection() {
     const offered = !!useOfferedVersion() || !!stationOffer;
     // Список перерисовывается, когда меняется «Как говорить»: страница колонки становится страницей микрофона.
     useOnComputer();
-    const [page, setPage] = useSectionTab<string>('settings', 'station');
+    const [page, setPage] = useSectionTab<string>('settings', 'devices');
     // Телефон: сначала список; ссылка на страницу (`#/settings/updates`, поиск) открывает её сразу. Док ведёт сюда без
     // вкладки в адресе — тогда список.
     const [listed, setListed] = useState(() => !/^#\/settings\/[^/?]/.test(location.hash));
-    const pages = settingsPages(panel.role.role, offered);
-    // Прежние «Этот компьютер» и «Где работает DuoWave» (`#/settings/helper`, `#/settings/placement`) — теперь «Дом».
-    const wanted = page === 'helper' || page === 'placement' ? 'helpers' : page;
+    const pages = settingsPages(offered);
+    // Прежние «Колонка», «Дом», «Этот компьютер» и «Где работает DuoWave» — теперь «Устройства».
+    const wanted = ['station', 'helpers', 'helper', 'placement'].includes(page) ? 'devices' : page;
     const shown = pages.find((entry) => entry.id === wanted) ?? pages[0];
     // Скрытые возможности разработчика: восемь нажатий подряд на «Для разработчиков» — строку списка или заголовок
     // открытой страницы (на телефоне список прячется после первого). Последние четыре — с подсказкой, сколько ещё.

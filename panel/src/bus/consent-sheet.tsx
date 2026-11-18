@@ -70,13 +70,17 @@ export function ConsentSheet() {
                     </button>
                     <button class="btn btn-main" disabled={!!busy} aria-busy={busy === 'yes' || undefined} onClick={() => void answer(true)}>
                         {spin('yes')}
-                        {once ? tr.bus.allowOnce : tr.bus.allow}
+                        {once && !question.standing ? tr.bus.allowOnce : tr.bus.allow}
                     </button>
                 </>
             }
         >
             <p class="win-lead">{tr.bus.wants(question.fromTitle, question.what)}</p>
-            {once && question.danger && <p class="win-callout m-0">{tr.bus.dangerNote(DANGER_TITLES[question.danger] ?? question.danger)}</p>}
+            {once && question.danger && (
+                <p class="win-callout m-0">
+                    {(question.standing ? tr.bus.standingNote : tr.bus.dangerNote)(DANGER_TITLES[question.danger] ?? question.danger)}
+                </p>
+            )}
             {question.root && <p class="win-note">{tr.bus.startedBy(question.root)}</p>}
             <p class="win-note">{once ? tr.bus.answerOnce : tr.bus.answerRemembered}</p>
             {error && (

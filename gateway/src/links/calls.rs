@@ -463,7 +463,7 @@ mod tests {
             sent[0],
             json!({
                 "chat_id": "7",
-                "text": "Колонка не подключена к шлюзу 2 мин. Голоса у неё нет; вернуть к Яндексу: scripts/station-voice.sh yandex."
+                "text": "Колонка не подключена к центру 2 мин. Голоса у неё нет; вернуть к Яндексу: scripts/station-voice.sh yandex."
             })
         );
         assert_eq!(sent[1]["chat_id"], "42");

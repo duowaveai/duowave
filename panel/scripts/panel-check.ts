@@ -12,12 +12,14 @@ import { fileURLToPath } from 'node:url';
 
 import type { BrainView, ProviderView } from '../src/api.ts';
 import { paintedAround } from '../src/shell/backdrop-around.ts';
-import { helpsSomeone, whereAmI } from '../src/shell/role.ts';
+import { repairedLayout } from '../src/shell/desk-repair.ts';
+import { helpsSomeone } from '../src/shell/role.ts';
+import { dotOf, placeDevice, thisDeviceOf, viewsOf } from '../src/home-model.ts';
 import type { PlacementHealth } from '../src/api.ts';
 import { awayBackup, awayBehind } from '../src/screens/onb/brain-home.ts';
 import { NO_BACKUP, backupIdle, backupOf, backupShown, blankBackups, pickValue } from '../src/screens/brain-backup.ts';
 import { fallLine, fallOf, turboOf } from '../src/screens/turbo-model.ts';
-import type { HelperView, HelpersView } from '../src/api.ts';
+import type { HelperView, HelpersView, HomeDevice, HomeDevices } from '../src/api.ts';
 
 const checks: Array<[string, () => void]> = [];
 const check = (name: string, run: () => void): void => void checks.push([name, run]);
@@ -198,36 +200,54 @@ check('keep_awake_shows_only_while_this_computer_helps_someone', () => {
 
 // ─── «Где я»: device tabs in the top bar (owner's decision 16.11, point 2) ───────────────────────────────────────────
 
-check('the_device_tabs_say_whose_panel_it_is_and_lead_to_the_other_in_one_click', () => {
-    const station = { key: 'dev-1', name: 'Кухня', placement: 'stationServer' as const, address: '192.0.2.5', reachable: true };
-    const onStation: PlacementHealth = {
-        role: 'station',
-        placement: 'stationServer',
-        name: 'Кухня',
-        peerApi: 3,
-        helpers: { away: 'any', list: [{ id: 'mac', name: 'MacBook', kind: 'home', enabled: true, state: 'up', abilities: ['hearing'] }] },
-    };
-    const onComputer: PlacementHealth = { role: 'pc', placement: 'pc', peerApi: 3, stations: [station] };
-    // The station's panel in the computer's window: the station pressed, «Этот компьютер · Турбо» one click away —
-    // «Дом» to «Дом», anything else to the computer's desk.
-    const via = whereAmI({ placement: onStation, role: { role: 'gateway', helping: true }, via: 'dev-1', computer: false, path: '/panel/', hash: '#/settings/helpers', current: 'Кухня' });
-    expect(via.here === 'station' && via.tabs.length === 2 && via.tabs[0].on && via.tabs[0].tag === 'gateway', 'the station’s tab is pressed');
-    expect(via.tabs[1].href === '/panel/?local#/settings/helpers' && via.tabs[1].tag === 'turbo', 'the computer’s own panel, «Дом» kept');
-    const fromDesk = whereAmI({ placement: onStation, role: { role: 'gateway', helping: true }, via: 'dev-1', computer: false, path: '/panel/', hash: '#/character/brain' });
-    expect(fromDesk.tabs[1].href === '/panel/?local', 'any other place leads to the computer’s desk');
-    // The computer's own panel: each station it places, then the computer pressed.
-    const own = whereAmI({ placement: onComputer, role: { role: 'helper', helping: true, station }, computer: false, path: '/panel/', hash: '' });
-    expect(own.here === 'computer' && own.tabs.length === 2 && own.tabs[1].on && own.tabs[1].tag === 'turbo', 'the computer’s tab is pressed');
-    expect(own.tabs[0].href === '/panel/?via=dev-1' && own.tabs[0].name === 'Кухня', 'the station’s panel through the computer');
-    // A station opened in a browser: its Турбо shown, no address to go to; asleep — so said.
-    const direct = whereAmI({ placement: onStation, role: { role: 'gateway', helping: true }, computer: false, path: '/panel/', hash: '' });
-    expect(direct.tabs.length === 2 && direct.tabs[1].tag === 'turbo' && !direct.tabs[1].href, 'its Турбо without a link');
-    const asleep = { ...onStation, helpers: { away: 'any' as const, list: [{ ...onStation.helpers!.list[0], state: 'down' as const }] } };
-    expect(whereAmI({ placement: asleep, role: { role: 'gateway', helping: true }, computer: false, path: '/', hash: '' }).tabs[1].tag === 'asleep', 'an asleep Турбо');
-    // «Микрофон»: one tab, the computer with its built-in Турбо.
-    const mic: PlacementHealth = { role: 'pc', placement: 'pc', peerApi: 3, helpers: { away: 'home', list: [{ id: 'self', name: 'Этот компьютер', kind: 'home', builtin: true, enabled: true, state: 'self', abilities: ['hearing'] }] } };
-    const alone = whereAmI({ placement: mic, role: { role: 'gateway', helping: false }, computer: true, path: '/', hash: '' });
-    expect(alone.tabs.length === 1 && alone.tabs[0].tag === 'gatewayTurbo' && alone.here === 'computer', 'one tab: gateway + Турбо');
+check('the_home_bar_knows_which_device_this_is_and_each_device_has_its_own_tabs', () => {
+    const kitchen: HomeDevice = { id: 'station:d1', kind: 'station', name: 'Кухня', roles: ['centre'], hears: true, state: 'online', copy: false, itself: true, gatewayId: 'g-st', device: 'd1' };
+    const bedroom: HomeDevice = { id: 'station:d2', kind: 'station', name: 'Спальня', roles: [], hears: true, state: 'reconnecting', copy: false, device: 'd2' };
+    const mac: HomeDevice = { id: 'turbo:mac', kind: 'computer', name: 'Кабинет', roles: ['turbo'], hears: true, state: 'asleep', copy: false, gatewayId: 'g-mac', order: 1 };
+    const server: HomeDevice = { id: 'turbo:srv', kind: 'server', name: 'Сервер', roles: ['turbo'], hears: false, state: 'offline', copy: false, order: 2 };
+    const home: HomeDevices = { home: { name: 'Дом' }, centre: kitchen.id, devices: [kitchen, bedroom, mac, server] };
+    // In the computer's window the home's panel comes through the pass: «this» is the computer, by its gateway's id,
+    // never the centre that answered; before its own /health is read — none.
+    expect(thisDeviceOf(home, 'g-mac', true)?.id === 'turbo:mac', 'the computer finds itself');
+    expect(thisDeviceOf(home, null, true) === undefined, 'nothing until its own id is read');
+    // Opened at the centre itself (the app's window on a computer that is the centre): the one that answered; in a
+    // phone's browser no device is «this».
+    expect(thisDeviceOf(home, 'g-st', false, true)?.id === kitchen.id && thisDeviceOf(home, undefined, false, true)?.id === kitchen.id, 'the centre');
+    expect(thisDeviceOf(home, 'g-st', false, false) === undefined, 'a phone is none of them');
+    // The app's window on the Турбо computer itself (local, no pass): the list comes from the centre, its row first and
+    // «itself» — the computer is still found by its own gateway's id, not the centre.
+    expect(thisDeviceOf(home, 'g-mac', false, true)?.id === 'turbo:mac', 'the Турбо finds itself in its own window');
+    // The tabs of a device page by its roles (the canvas 17.11).
+    expect(viewsOf(kitchen, false).join() === 'overview,room,device', 'a centre speaker');
+    expect(viewsOf(bedroom, false).join() === 'overview,room', 'a speaker that only hears');
+    expect(viewsOf(mac, true).join() === 'overview,computer,homes,device', 'this computer');
+    expect(viewsOf(mac, false).join() === 'overview,device', 'another computer: its own things are read at it');
+    expect(viewsOf(server, false).join() === 'overview,device', 'a server');
+    // The dots: online green, reconnecting yellow, asleep and offline grey.
+    expect(dotOf(kitchen) === 'ok' && dotOf(bedroom) === 'warn' && dotOf(mac) === 'off' && dotOf(server) === 'off', 'the dots');
+});
+
+check('a_package_names_the_device_of_the_home_it_will_run_on', () => {
+    const kitchen: HomeDevice = { id: 'station:d1', kind: 'station', name: 'Кухня', roles: ['centre'], hears: true, state: 'online', copy: false };
+    const mac: HomeDevice = { id: 'turbo:mac', kind: 'computer', name: 'Кабинет', roles: ['turbo'], hears: true, state: 'asleep', copy: false };
+    const both: HomeDevices = { home: { name: 'Дом' }, centre: kitchen.id, devices: [kitchen, mac] };
+    expect(placeDevice('gateway', both).device?.id === kitchen.id, 'a plugin runs at the centre');
+    expect(placeDevice('computer', both).device?.id === mac.id, 'an app for a computer runs on the Турбо');
+    expect(placeDevice('station', both).device?.id === kitchen.id, 'an app for a speaker runs on the centre speaker');
+    expect(placeDevice('network', both).network === true, 'a service out there');
+    const alone: HomeDevices = { ...both, devices: [kitchen] };
+    expect(placeDevice('computer', alone).missing === 'computer', 'no computer: so said');
+    const pc: HomeDevice = { ...mac, id: 'gateway:g', roles: ['centre', 'turbo'] };
+    const mic: HomeDevices = { home: { name: 'Дом' }, centre: pc.id, devices: [pc] };
+    expect(placeDevice('computer', mic).device?.id === pc.id && placeDevice('station', mic).missing === 'station', 'a computer alone');
+});
+
+check('no_device_tabs_and_no_frame_by_role_remain', () => {
+    const files = sources(join(ROOT, 'src')).map((path) => [relative(ROOT, path), readFileSync(path, 'utf8')] as const);
+    for (const [path, text] of files) {
+        expect(!/\bDeviceTabs\b|\bwhereAmI\b|\bapplyRole\b/.test(text), `${path}: the device tabs are gone (one panel)`);
+    }
+    expect(!/data-role='helper'/.test(source('src/ui/desk.css')), 'no dark frame for the Турбо panel');
 });
 
 // ─── «Если Турбо уснёт»: what stands in for its hearing and voice (owner's decision 16.11, point 3) ────────────────
@@ -320,6 +340,23 @@ check('the_backup_tells_let_the_gateway_choose_from_not_needed', () => {
     const brain = source('src/screens/brain.tsx');
     expect(/blankBackups\(choice\)\.map/.test(brain), '«Запасная» takes its items without a model from blankBackups');
     expect(/backupIdle\(/.test(brain) && /tr\.brain\.backupGatewayIdle/.test(brain), 'the idle line is on the page');
+});
+
+check('a_widget_landed_under_its_package_main_goes_to_the_tile_the_desk_draws', () => {
+    // Item 47: «На стол» by voice and by its button put `package.<id>.main`; the app's card on the desk is `.card.main`.
+    const layout = { v: 1 as const, hidden: [], added: ['package.neon-snake.tile', 'package.btc.main'], places: { 'package.btc.main': { x: 10, y: 20 } }, order: [], fresh: { 'package.btc.main': 1 } };
+    const widgets = [{ key: 'package.neon-snake.tile' }, { key: 'package.btc.card.main' }];
+    const fixed = repairedLayout(layout, widgets);
+    expect(fixed !== null, 'repaired');
+    expect(fixed.added.join() === 'package.neon-snake.tile,package.btc.card.main', `added: ${fixed.added.join()}`);
+    expect(fixed.places['package.btc.card.main']?.x === 10 && !fixed.places['package.btc.main'], 'its place goes with it');
+    expect(fixed.fresh?.['package.btc.card.main'] === 1, 'still «новый»');
+    expect(repairedLayout(fixed, widgets) === null, 'nothing more to repair');
+    // Its real tile placed already (from «Добавить виджет»): the stray key is left, the real one not doubled.
+    const both = { ...layout, added: ['package.btc.main', 'package.btc.card.main'] };
+    expect(repairedLayout(both, widgets) === null, 'the real tile is already there');
+    // A package whose tile really is `main` is left as it is.
+    expect(repairedLayout(layout, [{ key: 'package.btc.main' }]) === null, 'a real main stays');
 });
 
 let failed = 0;

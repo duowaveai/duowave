@@ -27,7 +27,7 @@ use crate::core::availability::Placement;
 use crate::core::identity::home::GatewayView;
 use crate::core::identity::permissions::{SETTINGS_EDIT, STATIONS_MANAGE, STATION_VIEW, USERS_MANAGE};
 use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller};
-use crate::settings::definitions::{GatewayState, SettingsHome};
+use crate::settings::definitions::GatewayState;
 
 /// A settings package and a sealed one are small (tens of KB), a few MB at most with many people and servers.
 const BODY_LIMIT: usize = 8 * 1024 * 1024;
@@ -36,7 +36,6 @@ pub fn router() -> Router<Arc<App>> {
     let router = Router::new()
         .route("/api/v1/availability", get(availability))
         .route("/api/v1/placement", get(view))
-        .route("/api/v1/placement/settings-home", post(settings_home))
         .route("/api/v1/placement/safety", post(safety))
         .route("/api/v1/placement/give-back", post(give_back))
         .route("/api/v1/placement/point-local", post(point_local))
@@ -48,8 +47,6 @@ pub fn router() -> Router<Arc<App>> {
     let router = router
         .route("/api/v1/placement/move", post(pc::start_move))
         .route("/api/v1/placement/move/{id}", get(pc::move_job))
-        .route("/api/v1/placement/backup", post(pc::backup))
-        .route("/api/v1/placement/restore", post(pc::restore))
         .route("/api/v1/placement/auto-update", post(pc::auto_update))
         .route("/api/v1/placement/update-station", post(pc::update_station))
         .route("/api/v1/placement/inspect", post(pc::inspect))
@@ -61,117 +58,6 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/v1/placement/helper", post(pc::helper))
         .route("/api/v1/placement/retry", post(pc::retry));
     router.layer(DefaultBodyLimit::max(BODY_LIMIT))
-}
-
-/// The settings a station's panel changes. When they live on the computer, the station works on the last copy it was
-/// sent and these are read-only here: a change would be overwritten by the next one (section 10). The helper's pass
-/// on the computer refuses the same (src/placement/proxy.rs).
-pub(crate) const SETTINGS_PATHS: &[&str] = &[
-    "/api/v1/station/routes",
-    "/api/v1/brain",
-    "/api/v1/persona",
-    // A character chosen is the persona (`dialog_persona`); the characters' table travels whole.
-    "/api/v1/characters",
-    "/api/v1/connectors",
-    "/api/v1/mcp",
-    "/api/v1/users",
-    "/api/v1/api-keys",
-    "/api/v1/household",
-    "/api/v1/stations",
-    "/api/v1/access",
-    // The helpers and the regulator travel (schema 4) — but the station's own door to its computer (below).
-    "/api/v1/helpers",
-];
-
-/// Single routes outside those paths that write what the computer sends: the journal's days (`requests_keep_days`),
-/// the catalog switch (`packages_catalog`), the workshop's model (`workshop.agent`), one's own password and «Выйти
-/// везде» (their row in `users`, which travels whole: the next sending would bring the old password back, and the
-/// sessions ended with it), the first admin (`users` too), the code of a sign-in pasted into the panel (it brings a
-/// provider's key, among the travelling secrets; the sign-in itself begins under /api/v1/brain), and the debug API's
-/// twin of the routes.
-const ALSO_SENT_OVER: &[&str] = &[
-    "/api/v1/oauth/complete",
-    "/api/v1/requests/keep",
-    "/api/v1/packages/catalog",
-    "/api/v1/workshop/agent",
-    "/api/v1/auth/password",
-    "/api/v1/auth/logout-everywhere",
-    "/api/v1/auth/setup",
-    "/debug/routes",
-];
-
-/// The calls under the settings' paths that write nothing: «Спросить мозг», a connector's «Проверить» (its result is
-/// kept in memory), a news feed looked at before it is added, an MCP tool tried. A provider's «Проверить» and its
-/// models are not among them: they write the models and the check on its row (`llm_providers`, which travels).
-fn writes_nothing(segments: &[&str]) -> bool {
-    matches!(
-        segments,
-        ["api", "v1", "brain", "ask"]
-            | ["api", "v1", "connectors", _, "check"]
-            | ["api", "v1", "connectors", "news", "preview"]
-            | ["api", "v1", "mcp", "servers", _, "tools", _, "try"]
-            | ["api", "v1", "helpers", _, "check"]
-    )
-}
-
-/// The station's own entry of the helpers, the pair's door `home-computer`: each gateway's own, kept by the package's
-/// rules (transfer.rs, `OWN_PARTS`), so the computer's sending never overwrites it.
-fn own_part(segments: &[&str]) -> bool {
-    matches!(segments, ["api", "v1", "helpers", crate::helpers::HOME_COMPUTER])
-}
-
-/// Whether a change at this path is one the computer's next sending overwrites (transfer.rs: every setting but each
-/// side's own, the tables of `TABLES`, the travelling secrets): the station's settings (`SETTINGS_PATHS`), the single
-/// routes of `ALSO_SENT_OVER` and a plugin's settings (`/api/v1/packages/<id>/settings`). Not a plugin's call, the
-/// player, the workshop's drafts — nothing of theirs travels — nor the mode, the station's own (`MOVE_ONLY`).
-pub(crate) fn sent_over(path: &str) -> bool {
-    let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
-    if writes_nothing(&segments) || own_part(&segments) {
-        return false;
-    }
-    SETTINGS_PATHS.iter().any(|prefix| path.starts_with(prefix))
-        || ALSO_SENT_OVER.contains(&path)
-        || matches!(segments.as_slice(), ["api", "v1", "packages", id, "settings"] if !id.is_empty())
-}
-
-pub fn read_only() -> String {
-    crate::tr!("Настройки этой колонки хранятся на компьютере: меняйте их в пульте компьютера, он пришлёт их колонке.")
-}
-
-/// The same, said in the station's window on the computer (the helper's pass, src/placement/proxy.rs): there is the
-/// button that brings the settings back to the station.
-pub fn settings_on_pc() -> String {
-    crate::tr!("Настройки этой колонки пока хранятся на компьютере и уходят на неё отсюда: правка в её окне пропала бы при следующей отправке. Сначала верните их на колонку: «Настройки» → «Колонка» → «Вернуть настройки на колонку».")
-}
-
-/// Refuses a change of the settings on the station while they live on the computer; the computer's own pushes pass,
-/// a person's change through its pass does not — the next push would overwrite it.
-pub async fn guard(
-    State(app): State<Arc<App>>,
-    request: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    use axum::http::Method;
-    use axum::response::IntoResponse;
-    let changing = !matches!(*request.method(), Method::GET | Method::HEAD | Method::OPTIONS);
-    if changing
-        && app.placement.role() == Role::Station
-        && sent_over(request.uri().path())
-        && app.placement.state().settings_home == SettingsHome::Pc
-    {
-        let (mut parts, body) = request.into_parts();
-        let caller = <Caller as axum::extract::FromRequestParts<Arc<App>>>::from_request_parts(&mut parts, &app).await;
-        match caller {
-            Ok(caller) if super::peer::from_peer(&caller, app.placement.peer_key()) => {
-                if super::peer::through_pass(&caller) {
-                    return ApiError::conflict(settings_on_pc()).into_response();
-                }
-            }
-            _ => return ApiError::conflict(read_only()).into_response(),
-        }
-        return next.run(axum::extract::Request::from_parts(parts, body)).await;
-    }
-    next.run(request).await
 }
 
 /// The station gives its pair's key to its admin, from the home network: the computer that knows the admin's password
@@ -194,7 +80,7 @@ async fn pair(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
         )));
     }
     if app.placement.role() != Role::Station {
-        return Err(ApiError::conflict(crate::tr!("Ключ пары отдаёт шлюз колонки, а это компьютер.")));
+        return Err(ApiError::conflict(crate::tr!("Ключ пары отдаёт колонка, а это компьютер.")));
     }
     let key = app.placement.pair_key()?;
     tracing::info!(target: "placement", "pair: the key given to a computer from {}", caller.source);
@@ -247,9 +133,9 @@ struct Pick {
 
 #[cfg(feature = "pc")]
 fn chosen(app: &App, pick: &Pick) -> Result<Arc<super::watch::StationGateway>, ApiError> {
-    app.station_gateway
-        .pick(pick.station.as_deref())
-        .ok_or_else(|| ApiError::conflict(crate::tr!("Какая колонка? У нескольких свои шлюзы — укажите её (station).")))
+    app.station_gateway.pick(pick.station.as_deref()).ok_or_else(|| {
+        ApiError::conflict(crate::tr!("Какая колонка? Центр есть на нескольких — укажите её (station)."))
+    })
 }
 
 #[cfg_attr(not(feature = "pc"), allow(unused_variables))]
@@ -285,39 +171,6 @@ async fn view(State(app): State<Arc<App>>, caller: Caller, Query(pick): Query<Pi
     }))
 }
 
-fn home_of(body: &Value) -> Result<SettingsHome, ApiError> {
-    match body.get("home").and_then(Value::as_str) {
-        Some("station") => Ok(SettingsHome::Station),
-        Some("pc") => Ok(SettingsHome::Pc),
-        _ => Err(ApiError::bad_request(crate::tr!("home: station или pc"))),
-    }
-}
-
-/// Where the main settings live. The station's gateway keeps the choice in its record (the computer tells it); the
-/// computer keeps it in its record of the station and tells the station.
-#[cfg_attr(not(feature = "pc"), allow(unused_variables))]
-async fn settings_home(
-    State(app): State<Arc<App>>,
-    caller: Caller,
-    Query(pick): Query<Pick>,
-    Body(body): Body<Value>,
-) -> ApiResult<Value> {
-    let home = home_of(&body)?;
-    match app.placement.role() {
-        Role::Station => {
-            super::peer::peer_or_permitted(&caller, app.placement.peer_key(), SETTINGS_EDIT)?;
-            let state = app.placement.set_settings_home(home, caller.actor())?;
-            Ok(created(json!({ "state": state })))
-        }
-        Role::Pc => {
-            caller.permitted(STATIONS_MANAGE)?;
-            #[cfg(feature = "pc")]
-            chosen(&app, &pick)?.set_settings_home(home, caller.actor()).await.map_err(ApiError::conflict)?;
-            Ok(created(json!({ "home": body["home"] })))
-        }
-    }
-}
-
 /// The safety net on or off: on the station itself; from the computer, told to the station.
 #[cfg_attr(not(feature = "pc"), allow(unused_variables))]
 async fn safety(
@@ -341,7 +194,7 @@ async fn safety(
             {
                 let client = chosen(&app, &pick)?
                     .client()
-                    .ok_or_else(|| ApiError::conflict(crate::tr!("Шлюз не на колонке.")))?;
+                    .ok_or_else(|| ApiError::conflict(crate::tr!("Центр не на колонке.")))?;
                 client.post("/api/v1/placement/safety", json!({ "on": on })).await.map_err(ApiError::unavailable)?;
             }
             Ok(created(json!({ "on": on })))
@@ -351,7 +204,7 @@ async fn safety(
 
 fn on_station(app: &App) -> Result<(), ApiError> {
     if app.placement.role() != Role::Station {
-        return Err(ApiError::conflict(crate::tr!("Это делает шлюз на самой колонке.")));
+        return Err(ApiError::conflict(crate::tr!("Это делает центр на самой колонке.")));
     }
     Ok(())
 }
@@ -462,17 +315,15 @@ async fn import(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Va
     let bundle: Bundle = if peer {
         transfer::open(&body, app.placement.peer_key().unwrap_or_default()).map_err(ApiError::bad_request)?
     } else {
-        serde_json::from_value(body).map_err(|_| ApiError::bad_request(crate::tr!("Это не набор настроек шлюза.")))?
+        serde_json::from_value(body).map_err(|_| ApiError::bad_request(crate::tr!("Это не набор настроек DuoWave.")))?
     };
     if bundle.format != transfer::FORMAT || bundle.schema > transfer::SCHEMA {
         return Err(ApiError::bad_request(transfer::NOT_FOR_THIS_GATEWAY));
     }
-    let dir = app
-        .config
-        .skills
-        .state_dir
-        .clone()
-        .ok_or_else(|| ApiError::conflict(crate::tr!("У этого шлюза нет папки данных: настройки не сохранить.")))?;
+    let dir =
+        app.config.skills.state_dir.clone().ok_or_else(|| {
+            ApiError::conflict(crate::tr!("У DuoWave здесь нет папки данных: настройки не сохранить."))
+        })?;
     if peer {
         transfer::note_sync(&app.db, "received");
     }
@@ -528,10 +379,8 @@ mod pc {
             }
             None => None,
         };
-        let settings_home = match body.get("settingsHome") {
-            None | Some(Value::Null) => SettingsHome::Station,
-            Some(_) => home_of(&json!({ "home": body["settingsHome"] }))?,
-        };
+        // The home's settings live at its centre, never on a computer (docs/plans/home-and-devices.md, stage 3).
+        let settings_home = crate::settings::definitions::SettingsHome::Station;
         let request = MoveRequest {
             to,
             address,
@@ -549,27 +398,6 @@ mod pc {
     ) -> ApiResult<MoveJob> {
         caller.permitted(STATION_VIEW)?;
         Ok(ok(app.moves.job(&id)?))
-    }
-
-    pub async fn backup(State(app): State<Arc<App>>, caller: Caller, Query(pick): Query<Pick>) -> ApiResult<Value> {
-        caller.permitted(STATIONS_MANAGE)?;
-        let entry = chosen(&app, &pick)?.backup_now().await.map_err(ApiError::unavailable)?;
-        Ok(created(json!({ "backup": entry })))
-    }
-
-    pub async fn restore(
-        State(app): State<Arc<App>>,
-        caller: Caller,
-        Query(pick): Query<Pick>,
-        Body(body): Body<Value>,
-    ) -> ApiResult<Value> {
-        caller.permitted(STATIONS_MANAGE)?;
-        let id = body
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ApiError::bad_request(crate::tr!("id: какая копия")))?;
-        chosen(&app, &pick)?.restore(id, caller.actor()).await.map_err(ApiError::unavailable)?;
-        Ok(created(json!({ "restored": id })))
     }
 
     pub async fn auto_update(
@@ -601,7 +429,7 @@ mod pc {
         chosen(app, pick)?
             .record()
             .map(|record| record.address)
-            .ok_or_else(|| ApiError::conflict(crate::tr!("Шлюз не на колонке.")))
+            .ok_or_else(|| ApiError::conflict(crate::tr!("Центр не на колонке.")))
     }
 
     /// «Что случилось»: the station's own account, over SSH.
@@ -626,7 +454,7 @@ mod pc {
             _ => return Err(ApiError::bad_request(crate::tr!("to: local или yandex"))),
         };
         let client =
-            chosen(&app, &pick)?.client().ok_or_else(|| ApiError::conflict(crate::tr!("Шлюз не на колонке.")))?;
+            chosen(&app, &pick)?.client().ok_or_else(|| ApiError::conflict(crate::tr!("Центр не на колонке.")))?;
         let answer = client.post(path, json!({})).await.map_err(ApiError::unavailable)?;
         Ok(created(answer))
     }
@@ -644,7 +472,7 @@ mod pc {
             body.get("port").and_then(Value::as_u64).filter(|port| (1..=65535).contains(port)).unwrap_or(8790) as u16;
         let key = body.get("key").and_then(Value::as_str).map(str::trim).unwrap_or("");
         if key.len() < 16 {
-            return Err(ApiError::bad_request(crate::tr!("key: ключ пары — PEER_KEY из .env шлюза на колонке")));
+            return Err(ApiError::bad_request(crate::tr!("key: ключ пары — PEER_KEY из .env DuoWave на колонке")));
         }
         let view = app.station_gateway.link(&address, port, key, caller.actor()).await.map_err(ApiError::conflict)?;
         Ok(created(serde_json::to_value(view)?))
@@ -679,7 +507,7 @@ mod pc {
             .timeout(std::time::Duration::from_secs(15))
             .send()
             .await
-            .map_err(|_| ApiError::unavailable(crate::tr!("Шлюз колонки не отвечает по этому адресу.")))?;
+            .map_err(|_| ApiError::unavailable(crate::tr!("DuoWave на колонке не отвечает по этому адресу.")))?;
         let status = login.status();
         let answer: Value = login.json().await.unwrap_or(Value::Null);
         if !status.is_success() {
@@ -700,7 +528,7 @@ mod pc {
             .timeout(std::time::Duration::from_secs(15))
             .send()
             .await
-            .map_err(|_| ApiError::unavailable(crate::tr!("Шлюз колонки не отвечает по этому адресу.")))?;
+            .map_err(|_| ApiError::unavailable(crate::tr!("DuoWave на колонке не отвечает по этому адресу.")))?;
         let ok_pair = paired.status().is_success();
         let answer: Value = paired.json().await.unwrap_or(Value::Null);
         let Some(key) = answer.pointer("/message/key").and_then(Value::as_str).filter(|_| ok_pair) else {
@@ -708,7 +536,7 @@ mod pc {
                 .get("message")
                 .and_then(Value::as_str)
                 .map(str::to_string)
-                .unwrap_or_else(|| crate::tr!("шлюз колонки постарше: обновите его"));
+                .unwrap_or_else(|| crate::tr!("DuoWave на колонке постарше: обновите его"));
             return Err(ApiError::conflict(crate::tr!("Ключ пары колонка не отдала: {said}", said = said)));
         };
         let view = app.station_gateway.link(&address, port, key, caller.actor()).await.map_err(ApiError::conflict)?;
@@ -918,43 +746,6 @@ mod tests {
         assert_eq!(send(&app, "POST", pair_uri, &through, json!({})).await.0, StatusCode::FORBIDDEN);
     }
 
-    #[tokio::test]
-    async fn while_its_settings_live_on_the_computer_a_change_through_the_pass_is_refused_here_too() {
-        let app = station(&[("PEER_KEY", PAIR)]);
-        app.placement.set_settings_home(SettingsHome::Pc, None).unwrap();
-        let pair = format!("Bearer {PAIR}");
-        let routes = json!({ "routes": { "weather": "yandex" } });
-        let through = [("authorization", pair.as_str()), (HELPER_PERSON, "Мама"), (HELPER_ROLE, "admin")];
-        let (status, body) = send(&app, "PUT", "/api/v1/station/routes", &through, routes.clone()).await;
-        assert_eq!((status, body["message"].as_str()), (StatusCode::CONFLICT, Some(settings_on_pc().as_str())));
-        // The computer's own call with the key is not stopped here: its route asks for its right itself.
-        let own = [("authorization", pair.as_str())];
-        let (status, body) = send(&app, "PUT", "/api/v1/station/routes", &own, routes).await;
-        assert_ne!(status, StatusCode::CONFLICT, "{body}");
-        // A plugin's settings travel too; its call does not: the widget reads on.
-        let settings = json!({ "settings": { "ics": "https://calendar.example/basic.ics" } });
-        let (status, body) = send(&app, "PUT", "/api/v1/packages/calendar/settings", &through, settings).await;
-        assert_eq!((status, body["message"].as_str()), (StatusCode::CONFLICT, Some(settings_on_pc().as_str())));
-        // (Here the plugin is off: its route answers so itself, the guard does not stop the call.)
-        let (_, body) = send(&app, "POST", "/api/v1/packages/calendar/call/today", &through, json!({})).await;
-        assert_eq!(body["message"].as_str(), Some("Приложение calendar выключено."), "{body}");
-
-        // Review G1: a character chosen is the persona, which travels; the mode is the station's own and goes on.
-        let (status, body) = send(&app, "POST", "/api/v1/characters/alice/choose", &through, json!({})).await;
-        assert_eq!((status, body["message"].as_str()), (StatusCode::CONFLICT, Some(settings_on_pc().as_str())));
-        let gateway = json!({ "mode": "gateway" });
-        let (status, body) = send(&app, "POST", "/api/v1/station/mode", &through, gateway.clone()).await;
-        assert_eq!(status, StatusCode::CREATED, "{body}");
-        // The station's own panel: the journal's days travel, the mode does not.
-        let admin = app.access.auth.setup("admin-password-1", "Мама", "test").await.unwrap().unwrap().token;
-        let admin = format!("Bearer {admin}");
-        let own = [("authorization", admin.as_str())];
-        let (status, body) = send(&app, "PUT", "/api/v1/requests/keep", &own, json!({ "days": 7 })).await;
-        assert_eq!((status, body["message"].as_str()), (StatusCode::CONFLICT, Some(read_only().as_str())));
-        let (status, body) = send(&app, "POST", "/api/v1/station/mode", &own, gateway).await;
-        assert_eq!(status, StatusCode::CREATED, "{body}");
-    }
-
     /// A package that needs a newer schema than this gateway knows is refused here, before anything is kept and
     /// before the gateway starts again — as every build's route since it came refuses one, in these words: a station of
     /// an earlier build so refuses a routine sending of schema 2 that reaches it all the same (transfer.rs), and the
@@ -974,70 +765,5 @@ mod tests {
         assert_eq!((status, body["message"].as_str()), (StatusCode::BAD_REQUEST, refused), "{body}");
         assert!(!transfer::incoming_file(dir.path()).exists(), "nothing kept for the next start");
         assert_eq!(transfer::synced_at(&app.db, "received"), None, "nor noted as received");
-    }
-
-    #[test]
-    fn the_computers_sending_overwrites_the_stations_settings_and_its_plugins_not_their_calls_nor_the_player() {
-        for path in [
-            "/api/v1/brain",
-            "/api/v1/station/routes",
-            "/debug/routes",
-            "/api/v1/users/u1",
-            "/api/v1/packages/calendar/settings",
-            // Review G1: what else the next sending brings back — the persona of a character chosen, the journal's
-            // days, the catalog switch, the workshop's model, one's own password and sessions, the first admin.
-            "/api/v1/characters/alice/choose",
-            "/api/v1/requests/keep",
-            "/api/v1/packages/catalog",
-            "/api/v1/workshop/agent",
-            "/api/v1/auth/password",
-            "/api/v1/auth/logout-everywhere",
-            "/api/v1/auth/setup",
-            // A provider's check writes its models and the check on its row; a reconnect, the tools it found.
-            "/api/v1/brain/providers/p1/check",
-            "/api/v1/brain/providers/p1/models",
-            "/api/v1/mcp/servers/notes/reconnect",
-            // A provider's sign-in: begun under /api/v1/brain, finished with a pasted code that brings its key.
-            "/api/v1/brain/providers/p1/signin",
-            "/api/v1/oauth/complete",
-        ] {
-            assert!(sent_over(path), "{path}");
-        }
-        for path in [
-            "/api/v1/packages/calendar/call/today",
-            "/api/v1/station/player/pause",
-            "/api/v1/workshop/drafts/d1/install",
-            "/api/v1/packages/calendar",
-            "/api/v1/packages//settings",
-            // The mode is the station's own: the routine sending leaves it (transfer::MOVE_ONLY).
-            "/api/v1/station/mode",
-            "/api/v1/station/mode/keep",
-            // Under the settings' paths, what writes nothing.
-            "/api/v1/brain/ask",
-            "/api/v1/connectors/weather/check",
-            "/api/v1/connectors/news/preview",
-            "/api/v1/mcp/servers/notes/tools/search/try",
-            // A sign-in, the desk: nothing of theirs travels.
-            "/api/v1/auth/login",
-            "/api/v1/desk/helper",
-            // The gateway's own name: a station whose settings live on the computer is renamed too.
-            "/api/v1/gateway/self",
-        ] {
-            assert!(!sent_over(path), "{path}");
-        }
-    }
-
-    /// The helpers' list and the regulator travel with the computer's package; the station's own door to its computer
-    /// does not, and a look writes nothing that travels.
-    #[test]
-    fn the_stations_own_computer_entry_stays_its_own_while_the_computer_keeps_its_settings() {
-        for path in ["/api/v1/helpers", "/api/v1/helpers/order", "/api/v1/helpers/away", "/api/v1/helpers/own-1"] {
-            assert!(sent_over(path), "{path}");
-        }
-        for path in
-            ["/api/v1/helpers/home-computer", "/api/v1/helpers/own-1/check", "/api/v1/helpers/home-computer/check"]
-        {
-            assert!(!sent_over(path), "{path}");
-        }
     }
 }

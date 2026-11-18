@@ -125,6 +125,8 @@ pub struct Entry {
     pub description: Option<String>,
     pub api: String,
     pub runs: Vec<Placement>,
+    /// `prefer: home` from the feed: on a station with a Турбо, it runs there (docs/plans/home-and-devices.md, 5б).
+    pub prefer_home: bool,
     pub min_gateway: Option<semver::Version>,
     pub url: url::Url,
     pub sha256: String,
@@ -648,6 +650,7 @@ fn entry(value: &Value, base: &url::Url) -> Result<Entry, String> {
         description,
         api,
         runs,
+        prefer_home: text("prefer") == Some("home"),
         min_gateway,
         url,
         sha256,
@@ -724,7 +727,7 @@ pub fn parse_feed(text: &str, base: &url::Url) -> Result<Feed, String> {
         Some(FEED_FORMAT) => {}
         Some(other) => {
             return Err(crate::tr!(
-                "format {other}: этот шлюз читает каталог версии {FEED_FORMAT}",
+                "format {other}: эта версия DuoWave читает каталог версии {FEED_FORMAT}",
                 other = other,
                 FEED_FORMAT = FEED_FORMAT
             ))
@@ -944,6 +947,21 @@ pub fn entry_state(
     signed: bool,
     free_mb: Option<u64>,
 ) -> (EntryState, Option<String>) {
+    entry_state_at(entry, installed, placement, signed, free_mb, false)
+}
+
+/// The same, with a Турбо of the home that gives the apps (`turbo_apps`, docs/plans/home-and-devices.md, stage 5б): on
+/// a station, the home's centre, an app for a computer is installed as its face — its phrases, window and widget here,
+/// its code on the Турбо, installed there over the link.
+pub fn entry_state_at(
+    entry: &Entry,
+    installed: Option<&semver::Version>,
+    placement: Placement,
+    signed: bool,
+    free_mb: Option<u64>,
+    turbo_apps: bool,
+) -> (EntryState, Option<String>) {
+    let face = is_face(entry, placement, turbo_apps);
     if !signed_kind_allowed(entry, signed) {
         // What is installed stays installed; a new version of code waits for a signed feed or our look at it.
         let why = match &entry.extra {
@@ -961,6 +979,7 @@ pub fn entry_state(
         };
     }
     if entry.kind == PackageKind::App
+        && !face
         && !entry.platforms.is_empty()
         && !entry.platforms.contains_key(&super::manifest::platform())
     {
@@ -969,7 +988,7 @@ pub fn entry_state(
             Some(crate::tr!("нет сборки под эту платформу ({platform})", platform = super::manifest::platform())),
         );
     }
-    if placement.on_station() && matches!(entry.kind, PackageKind::Plugin | PackageKind::App) {
+    if placement.on_station() && !face && matches!(entry.kind, PackageKind::Plugin | PackageKind::App) {
         if let (Some(need), Some(free)) = (entry.memory_mb, free_mb) {
             if need > free && installed.is_none() {
                 return (
@@ -986,18 +1005,16 @@ pub fn entry_state(
     let gateway = semver::Version::parse(crate::VERSION).unwrap_or_else(|_| semver::Version::new(0, 0, 0));
     // The Host API is code's: a character or a theme is data, any version of it reads.
     let coded = matches!(entry.kind, PackageKind::Plugin | PackageKind::App);
-    let why = if coded && !semver::VersionReq::parse(&entry.api).is_ok_and(|requirement| requirement.matches(&HOST_API))
-    {
-        Some(crate::tr!("нужен Host API {api}, а у шлюза {HOST_API}", api = entry.api, HOST_API = HOST_API))
-    } else if !entry.runs.contains(&placement) {
-        Some(crate::tr!("не работает здесь: размещение «{placement}»", placement = placement.title_text()))
-    } else {
-        entry
-            .min_gateway
-            .as_ref()
-            .filter(|min| **min > gateway)
-            .map(|min| crate::tr!("нужен шлюз {min} или новее, а этот — {gateway}", min = min, gateway = gateway))
-    };
+    let why =
+        if coded && !semver::VersionReq::parse(&entry.api).is_ok_and(|requirement| requirement.matches(&HOST_API)) {
+            Some(crate::tr!("нужен Host API {api}, а у DuoWave {HOST_API}", api = entry.api, HOST_API = HOST_API))
+        } else if !super::manifest::fits(&entry.runs, placement) && !face {
+            Some(crate::tr!("не работает здесь: размещение «{placement}»", placement = placement.title_text()))
+        } else {
+            entry.min_gateway.as_ref().filter(|min| **min > gateway).map(|min| {
+                crate::tr!("нужен DuoWave {min} или новее, а здесь — {gateway}", min = min, gateway = gateway)
+            })
+        };
     if let Some(why) = why {
         return (EntryState::Incompatible, Some(why));
     }
@@ -1006,6 +1023,16 @@ pub fn entry_state(
         Some(_) => (EntryState::Installed, None),
         None => (EntryState::Available, None),
     }
+}
+
+/// An app installed here as its face only, its code on the home's Турбо (stage 5б): on a station with a Турбо that
+/// gives the apps, an app for a computer that does not run on the station itself.
+pub fn is_face(entry: &Entry, placement: Placement, turbo_apps: bool) -> bool {
+    turbo_apps
+        && placement.on_station()
+        && entry.kind == PackageKind::App
+        && !super::manifest::fits(&entry.runs, placement)
+        && entry.runs.contains(&Placement::Pc)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1051,6 +1078,9 @@ pub struct CatalogEntryView {
     pub faces: Vec<String>,
     /// …where it works: `gateway`, `computer`, `network`; None for a character or a theme…
     pub place: Option<&'static str>,
+    /// …and whether on a station with a Турбо it runs there (`prefer: home`)…
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub prefer_home: bool,
     /// …the catalog recommends it…
     pub recommended: bool,
     /// …when it came into the catalog…
@@ -1188,11 +1218,15 @@ pub struct CatalogDeps {
     /// internet of its own (stage 9, «через Mac»). The station checks the feed's signature and the archives' hashes
     /// itself.
     pub home: Option<Arc<dyn super::controller::HomeLink>>,
+    /// The home's Турбо that gives the apps (docs/plans/home-and-devices.md, stage 5б): an app for a computer is
+    /// installed here as its face and its code there, over the link.
+    pub apps: Option<Arc<dyn super::controller::HomeLink>>,
 }
 
 pub struct PackageCatalog {
     source: FeedSource,
     home: Option<Arc<dyn super::controller::HomeLink>>,
+    apps: Option<Arc<dyn super::controller::HomeLink>>,
     /// The catalog's signing keys: code installs only from a feed one of them signed; none, no code.
     keys: Vec<minisign_verify::PublicKey>,
     dir: PathBuf,
@@ -1245,6 +1279,7 @@ impl PackageCatalog {
         Arc::new(PackageCatalog {
             source,
             home: deps.home.clone(),
+            apps: deps.apps.clone(),
             keys,
             dir: deps.config.catalog_dir.clone(),
             host: deps.host,
@@ -1985,6 +2020,7 @@ impl PackageCatalog {
         let placement = (self.placement)();
         let signed = feed.as_ref().is_some_and(|feed| feed.signed);
         let free_mb = self.host.free_memory_mb();
+        let turbo_apps = self.turbo_apps();
         let installed: BTreeMap<String, semver::Version> = self
             .host
             .installed_all()
@@ -2007,7 +2043,7 @@ impl PackageCatalog {
                     .filter(|entry| !entry.unlisted || show_hidden || installed.contains_key(&entry.id))
                     .map(|entry| {
                         let mine = installed.get(&entry.id);
-                        let (state, reason) = entry_state(entry, mine, placement, signed, free_mb);
+                        let (state, reason) = entry_state_at(entry, mine, placement, signed, free_mb, turbo_apps);
                         let dir = self.preview_dir(entry);
                         let base = format!("/api/v1/packages/catalog/{}/preview", entry.id);
                         // The version in the address: a new version is a new address, the panel's cache can't
@@ -2062,6 +2098,7 @@ impl PackageCatalog {
                                 && matches!(entry.kind, PackageKind::Plugin | PackageKind::App),
                             faces: entry.faces.clone(),
                             place: entry.place(),
+                            prefer_home: entry.prefer_home,
                             recommended: entry.recommended,
                             added_at: entry.added_at.clone(),
                             texts: entry
@@ -2207,6 +2244,16 @@ impl PackageCatalog {
         Some((id, installed))
     }
 
+    /// A Турбо of the home gives the apps (on the line or not): an app for a computer is installed here as its face.
+    pub fn turbo_apps(&self) -> bool {
+        self.apps.as_ref().is_some_and(|apps| apps.offered())
+    }
+
+    /// The Турбо that gives the apps, on the line: its address and the key to it.
+    pub fn turbo_up(&self) -> Option<(String, String)> {
+        self.apps.as_ref().and_then(|apps| apps.up())
+    }
+
     /// The package from the feed: downloaded, checked against its size and hash, installed. `update` takes the newest
     /// version over the installed one and removes the older ones once the new one is in place.
     pub async fn install(
@@ -2250,8 +2297,14 @@ impl PackageCatalog {
                 None if again => feed.find(id, None).cloned().ok_or_else(not_found)?,
                 None => return Err(not_found()),
             };
-            let (state, reason) =
-                entry_state(&entry, installed.as_ref(), (self.placement)(), feed.signed, self.host.free_memory_mb());
+            let (state, reason) = entry_state_at(
+                &entry,
+                installed.as_ref(),
+                (self.placement)(),
+                feed.signed,
+                self.host.free_memory_mb(),
+                self.turbo_apps(),
+            );
             match state {
                 EntryState::NeedsSignature | EntryState::Incompatible => {
                     return Err(ApiError::conflict(reason.unwrap_or_default()));
@@ -2271,8 +2324,11 @@ impl PackageCatalog {
                 }
                 _ => {}
             }
-            // Room on the disk (on the station): the archive unpacked, roughly twice its size, and the reserve.
-            if let Err(why) = self.host.room_for(entry.archive().size.div_ceil(1_048_576) * 2) {
+            // Room on the disk (on the station), before the download, for what is sure to be needed: a new package
+            // at least its archive (its files are no smaller packed), an update only the reserve — most of it may be
+            // the same as the version installed. What it needs in truth is counted once the archive is here.
+            let least = if installed.is_some() { 0 } else { entry.archive().size / 1_048_576 };
+            if let Err(why) = self.host.room_for(least) {
                 return Err(ApiError::conflict(crate::tr!("Не поставить: {why}.", why = why)));
             }
             match self.download(&entry.archive().url, MAX_ARCHIVE, ARCHIVE_TIMEOUT).await {
@@ -2298,11 +2354,31 @@ impl PackageCatalog {
         let archive = entry.archive();
         let root = self.host.packages_dir().to_path_buf();
         let version = entry.version.to_string();
+        // The room on the disk, counted from the archive in memory: the files that are not the same as the installed
+        // version's (same path, size and bytes) — those it has are hard-linked, not written — and the reserve.
+        // An update of an app whose program did not change takes next to nothing (the clean-path check, 18.11).
+        let previous = installed.as_ref().map(|installed| root.join(id).join(installed.to_string()));
+        let previous = previous.filter(|dir| dir.is_dir());
+        let (bytes, beside) = {
+            let (sha256, size) = (archive.sha256.clone(), archive.size);
+            tokio::task::spawn_blocking(move || {
+                install::check_archive(&bytes, &sha256, size)?;
+                let beside = install::beside(&bytes, previous.as_deref())?;
+                Ok::<_, String>((bytes, beside))
+            })
+            .await
+            .map_err(ApiError::internal)?
+            .map_err(|error| ApiError::bad_request(crate::tr!("Не поставлено: {error}.", error = error)))?
+        };
+        if let Err(why) = self.host.room_for(beside.changed_mb()) {
+            return Err(ApiError::conflict(crate::tr!("Не поставить: {why}.", why = why)));
+        }
         let placed = {
             let (root, id, version, sha256) = (root.clone(), entry.id.clone(), version.clone(), archive.sha256.clone());
             let size = archive.size;
             tokio::task::spawn_blocking(move || {
-                install::install_archive(&root, &bytes, Expected { id: &id, version: &version, sha256: &sha256, size })
+                let expected = Expected { id: &id, version: &version, sha256: &sha256, size };
+                install::install_archive_beside(&root, &bytes, expected, Some(&beside))
             })
             .await
             .map_err(ApiError::internal)?
@@ -2393,6 +2469,87 @@ impl PackageCatalog {
         let change = if installed.is_some() { "updated" } else { "installed" };
         tracing::info!(target: "plugins", "{id} {version}: {change} from the catalog");
         self.host.announce(id, change, Some(version), actor);
+        self.host.view_one(id).await
+    }
+
+    /// A character's package as the home's centre has it (clean-path check 18.11, item 40): its archive at the address
+    /// the centre's signed feed gives, with that feed's hash — not this computer's feed, which may lack that version.
+    /// The hash must match, or nothing is installed. Only a character (data, no code) is taken this way. A voice of no
+    /// known origin (`voiceOrigin: unknown`) only when `vouched` — the computer's own home asked (items 41, 41б: over
+    /// its link, or the station's plain entry with the key made for it): the centre names only a character installed there, and it installs such a voice only from a source its
+    /// administrator added (the rule of `install` above), so the decision is the home's, made already. Anyone else —
+    /// a person at this computer, a script — gets the catalog's rule: refused.
+    #[cfg(feature = "pc")]
+    pub async fn install_from_centre(
+        &self,
+        id: &str,
+        version: &str,
+        url: &str,
+        sha256: &str,
+        vouched: bool,
+        actor: Option<Actor>,
+    ) -> Result<PackageView, ApiError> {
+        let address = url::Url::parse(url)
+            .ok()
+            .filter(|address| matches!(address.scheme(), "http" | "https"))
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("archive.url: адрес http(s) архива пакета")))?;
+        if semver::Version::parse(version).is_err() || !valid_id(id) {
+            return Err(ApiError::bad_request(format!("package: {id} {version}")));
+        }
+        self.host.rescan();
+        let installed = self.host.installed(id).map(|package| package.manifest.version.clone());
+        let _turn = self.installing.lock().await;
+        let bytes = install::fetch(address.as_str(), MAX_ARCHIVE, ARCHIVE_TIMEOUT)
+            .await
+            .map_err(|failed| ApiError::bad_gateway(crate::tr!("Не скачалось: {error}", error = failed.message)))?;
+        if !hex::encode(sha2::Sha256::digest(&bytes)).eq_ignore_ascii_case(sha256.trim()) {
+            return Err(ApiError::bad_request(crate::tr!(
+                "Не поставлено: архив «{id}» от центра не совпал по sha256 — он подменён или испорчен.",
+                id = id
+            )));
+        }
+        let root = self.host.packages_dir().to_path_buf();
+        let previous = installed.as_ref().map(|installed| root.join(id).join(installed.to_string()));
+        let previous = previous.filter(|dir| dir.is_dir());
+        let placed = {
+            let (root, id, version, sha256) = (root.clone(), id.to_string(), version.to_string(), sha256.to_string());
+            tokio::task::spawn_blocking(move || {
+                let beside = install::beside(&bytes, previous.as_deref())?;
+                let expected = Expected { id: &id, version: &version, sha256: &sha256, size: bytes.len() as u64 };
+                install::install_archive_beside(&root, &bytes, expected, Some(&beside))
+            })
+            .await
+            .map_err(ApiError::internal)?
+            .map_err(|error| ApiError::bad_request(crate::tr!("Не поставлено: {error}.", error = error)))?
+        };
+        let refused = if placed.kind != PackageKind::Character {
+            Some(crate::tr!("Не поставлено: от центра так ставятся только персонажи."))
+        } else if !vouched && unknown_voice(&placed.dir) {
+            Some(crate::tr!("Не поставлено: у «{id}» голос неизвестного происхождения (voiceOrigin unknown).", id = id))
+        } else {
+            None
+        };
+        if let Some(refused) = refused {
+            let _ = std::fs::remove_dir_all(&placed.dir);
+            self.host.rescan();
+            return Err(ApiError::bad_request(refused));
+        }
+        registry::set_installed(
+            &self.db,
+            id,
+            registry::SOURCE_CATALOG,
+            false,
+            actor.as_ref().map(|a| a.name.as_str()),
+        )?;
+        if installed.is_some() {
+            if let Err(error) = install::keep_versions(&root, id, 2) {
+                tracing::warn!(target: "plugins", "{id}: the older versions are not removed: {error}");
+            }
+        }
+        self.host.rescan();
+        let change = if installed.is_some() { "updated" } else { "installed" };
+        tracing::info!(target: "plugins", "{id} {version}: {change} from the centre's archive");
+        self.host.announce(id, change, Some(version.to_string()), actor);
         self.host.view_one(id).await
     }
 
@@ -2522,7 +2679,7 @@ impl PackageCatalog {
             return Err(ApiError::conflict(format!(
                 "{}{}",
                 crate::tr!(
-                    "«{id}» — {word} приложение: оно обновляется вместе со шлюзом и не удаляется.",
+                    "«{id}» — {word} приложение: оно обновляется вместе с DuoWave и не удаляется.",
                     id = id,
                     word = origin.word()
                 ),
@@ -2721,6 +2878,17 @@ pub mod tests {
         key: Option<String>,
         home: Option<Arc<dyn crate::plugins::controller::HomeLink>>,
     ) -> Fixture {
+        fixture_on(source, placement, key, home, crate::plugins::budget::fake::plenty())
+    }
+
+    /// The same on a machine of the test's own: its memory and the room on its disk as the test sets them.
+    pub fn fixture_on(
+        source: FeedSource,
+        placement: Placement,
+        key: Option<String>,
+        home: Option<Arc<dyn crate::plugins::controller::HomeLink>>,
+        memory: Arc<crate::plugins::budget::fake::FixedMemory>,
+    ) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let db = Arc::new(Db::memory());
         let events = EventBus::new();
@@ -2750,7 +2918,7 @@ pub mod tests {
             media: MediaSources::new(Vec::new()),
             placement: Arc::new(move || placement),
             runtime: Arc::new(QuickJs),
-            memory: crate::plugins::budget::fake::plenty(),
+            memory,
             gauge: Default::default(),
             bundled: Vec::new(),
             player: None,
@@ -2770,7 +2938,8 @@ pub mod tests {
                 settings: settings.clone(),
                 events: events.clone(),
                 placement: Arc::new(move || placement),
-                home,
+                home: home.clone(),
+                apps: home,
             },
             source,
         );
@@ -2878,7 +3047,7 @@ pub mod tests {
         newer.min_gateway = Some(semver::Version::new(99, 0, 0));
         let (state, why) = entry_state(&newer, None, Placement::Pc, false, None);
         assert_eq!(state, EntryState::Incompatible);
-        assert!(why.unwrap().starts_with("нужен шлюз 99.0.0"));
+        assert!(why.unwrap().starts_with("нужен DuoWave 99.0.0"));
         let mut pc_only = character.clone();
         pc_only.runs = vec![Placement::Pc];
         assert!(entry_state(&pc_only, None, Placement::Station, false, None).1.unwrap().contains("На колонке"));
@@ -2889,6 +3058,39 @@ pub mod tests {
         let mut old_character = character;
         old_character.api = "^1".into();
         assert_eq!(entry_state(&old_character, None, Placement::Pc, false, None).0, EntryState::Available);
+    }
+
+    /// An app for the station only (`runs: ["station"]`: AirPlay, VPN) on a station with its Турбо (`stationServer`):
+    /// the station still — it installs there, with or without a Турбо that gives the apps, never as a face; the
+    /// station's memory is still asked; a computer still refuses it.
+    #[test]
+    fn an_app_for_the_station_installs_on_a_station_with_its_turbo() {
+        let base = url::Url::parse("https://duowave.app/catalog.json").unwrap();
+        let airplay = entry(
+            &json!({
+                "id": "airplay", "kind": "app", "version": "0.3.0", "title": "AirPlay", "api": "^2", "runs": ["station"],
+                "budget": { "memoryMb": 12 },
+                "url": "packages/airplay-0.3.0.vgp", "sha256": "a".repeat(64), "size": 10
+            }),
+            &base,
+        )
+        .unwrap();
+        assert_eq!(airplay.place(), Some("station"), "MagicPlace signs it «На колонке» whoever helps the station");
+        for turbo_apps in [false, true] {
+            assert!(!is_face(&airplay, Placement::StationServer, turbo_apps), "its code runs on the station itself");
+            let state = entry_state_at(&airplay, None, Placement::StationServer, true, Some(40), turbo_apps);
+            assert_eq!(state, (EntryState::Available, None), "turbo_apps: {turbo_apps}");
+            let installed = semver::Version::new(0, 2, 0);
+            let state =
+                entry_state_at(&airplay, Some(&installed), Placement::StationServer, true, Some(40), turbo_apps);
+            assert_eq!(state.0, EntryState::Update, "an installed one keeps its updates");
+        }
+        let (state, why) = entry_state(&airplay, None, Placement::StationServer, true, Some(8));
+        assert_eq!(state, EntryState::Incompatible);
+        assert!(why.unwrap().contains("не хватит ОЗУ"), "the station's memory is asked as on a plain station");
+        let (state, why) = entry_state(&airplay, None, Placement::Pc, true, None);
+        assert_eq!(state, EntryState::Incompatible);
+        assert!(why.unwrap().contains("На компьютере"), "a computer is not a station");
     }
 
     #[tokio::test]
@@ -2998,6 +3200,10 @@ pub mod tests {
         let tree = history.record(&before).unwrap().tree;
         assert!(history.file_at(&tree, "manifest.json").is_some());
 
+        // The app's own data beside its versions: no version, it outlives them all.
+        std::fs::create_dir_all(fixture.root.join("arthur/.data")).unwrap();
+        std::fs::write(fixture.root.join("arthur/.data/connections.json"), b"{}").unwrap();
+
         // A step back: the big file comes from the catalog's archive again, the version is put back, and only it stays.
         history.ensure_local(&before).await;
         assert!(history.store().has(&big_id));
@@ -3008,6 +3214,77 @@ pub mod tests {
         assert!(report.restored, "{}", report.message);
         assert_eq!(std::fs::read(fixture.root.join("arthur/1.2.0/assets/big.bin")).unwrap(), big);
         assert!(!fixture.root.join("arthur/1.3.0").exists(), "only the version in force on the station");
+        assert_eq!(
+            std::fs::read(fixture.root.join("arthur/.data/connections.json")).unwrap(),
+            b"{}",
+            "the app's data is no version: the step back keeps it"
+        );
+    }
+
+    /// An update whose program is the same as the installed one's (the VPN own-server 0.1.3 → 0.1.4 on a Lite 2,
+    /// the clean-path check 18.11: only the manifest changed) needs room on the disk for what changed alone: the same
+    /// file is a hard link to the installed version's, not written again. Packed twice over, as the check before the
+    /// download counted it, it would not fit. One that changed its program is refused on the same disk with the true
+    /// numbers, and nothing of it is left.
+    #[tokio::test]
+    async fn an_update_with_the_same_program_fits_on_a_tight_station_disk() {
+        use crate::plugins::budget::fake::FixedMemory;
+        use crate::plugins::install::tests::{archive, noise, Item};
+        let site = site().await;
+        let program = noise(2 * 1024 * 1024, 7);
+        let package = |version: &str, program: &[u8]| {
+            let text = character_manifest("arthur", version).to_string();
+            archive(&[
+                Item::File("manifest.json", text.as_bytes()),
+                Item::Dir("assets/"),
+                Item::File("assets/avatar.webp", b"RIFF\0\0\0\0WEBPVP8 "),
+                Item::File("assets/program", program),
+            ])
+        };
+        // 18 MB free, 15 of them the reserve: room for 3 MB, the first install's 2 MB and a little.
+        let now = *crate::plugins::budget::fake::plenty().now.lock().unwrap();
+        let memory = Arc::new(FixedMemory { now: Mutex::new(now), disk_mb: Some(18) });
+        let fixture = fixture_on(FeedSource::Url(site.url.clone()), Placement::Station, None, None, memory);
+        site.publish(&[(arthur("1.2.0"), package("1.2.0", &program[..]))]);
+        fixture.catalog.install("arthur", None, false, None).await.unwrap();
+        #[cfg(unix)]
+        let inode = {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(fixture.root.join("arthur/1.2.0/assets/program")).unwrap().ino()
+        };
+
+        let same = package("1.3.0", &program[..]);
+        assert!(same.len() as u64 > 2 * 1024 * 1024, "packed twice over it is 6 MB: 21 with the reserve");
+        site.publish(&[(arthur("1.3.0"), same)]);
+        fixture.catalog.view(true).await;
+        let view = fixture.catalog.install("arthur", None, true, None).await.unwrap();
+        assert_eq!(view.version.as_deref(), Some("1.3.0"));
+        let new = fixture.root.join("arthur/1.3.0/assets/program");
+        assert_eq!(std::fs::read(&new).unwrap(), program);
+        assert!(!fixture.root.join("arthur/1.2.0").exists(), "only the version in force on the station");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(std::fs::metadata(&new).unwrap().ino(), inode, "the installed version's file, linked");
+        }
+
+        // A new program of 3 MB: 4 MB to write with the manifest, 19 with the reserve — refused after the download.
+        let bigger = noise(3 * 1024 * 1024, 8);
+        site.publish(&[(arthur("1.4.0"), package("1.4.0", &bigger[..]))]);
+        fixture.catalog.view(true).await;
+        let refused = fixture.catalog.install("arthur", None, true, None).await.unwrap_err();
+        assert_eq!(refused.status, StatusCode::CONFLICT);
+        assert!(refused.message.contains("нужно 4 МБ и ещё 15 МБ"), "{}", refused.message);
+        assert!(refused.message.contains("свободно 18"), "{}", refused.message);
+        assert!(!fixture.root.join("arthur/1.4.0").exists());
+        assert_eq!(std::fs::read(&new).unwrap(), program, "the version in force stays as it was");
+        let hidden: Vec<_> = std::fs::read_dir(&fixture.root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".partial-") || name.starts_with(".old-"))
+            .collect();
+        assert!(hidden.is_empty(), "nothing unpacked aside: {hidden:?}");
     }
 
     #[tokio::test]
@@ -4020,6 +4297,27 @@ pub mod tests {
         with_phrases(&own, json!({}));
         catalog.view(true).await;
         assert_eq!(catalog.catchphrases("jarvis", "jarvis"), None);
+    }
+
+    /// Item 44: an own source's character shows its face and its phrases — the view names them and the route
+    /// serves them, at once after the source is added and on a later read.
+    #[tokio::test]
+    async fn an_own_sources_previews_are_listed_and_served() {
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        own.publish(&[unknown_voice_character("jarvis-demo", "1.0.0")]);
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+        catalog.view(false).await;
+        let view = catalog.add_source(&own.url, None).await.unwrap();
+        let demo = view.packages.iter().find(|entry| entry.id == "jarvis-demo").unwrap();
+        assert_eq!(demo.preview.image.as_deref(), Some("/api/v1/packages/catalog/jarvis-demo/preview/image?v=1.0.0"));
+        assert_eq!(demo.preview.samples.len(), 1);
+        catalog.preview("jarvis-demo", "image").await.expect("its face");
+        catalog.preview("jarvis-demo", "1").await.expect("its phrase");
+        let again = catalog.view(true).await;
+        assert!(again.packages.iter().any(|entry| entry.id == "jarvis-demo" && entry.preview.image.is_some()));
+        catalog.preview("jarvis-demo", "image").await.expect("its face on a later read");
     }
 
     #[tokio::test]

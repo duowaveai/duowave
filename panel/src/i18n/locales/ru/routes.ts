@@ -12,7 +12,7 @@ export default {
     noteOwnYandex: 'сначала наш, незнакомое подхватит Яндекс',
     noteYandex: 'отдаём Яндексу целиком',
     noteOff: 'никто: просьба попадёт в «Пока не умеем»',
-    waitingGateway: 'Ждём шлюз…',
+    waitingGateway: 'Ждём центр…',
     search: 'Поиск',
     searchLabel: 'Поиск по возможностям',
     changeSuffix: ', изменить',

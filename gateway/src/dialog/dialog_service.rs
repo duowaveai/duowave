@@ -230,6 +230,9 @@ pub struct DialogContext {
     pub seat: Option<Seat>,
     /// Why this model, for its deal: the conversation's rule by the phrase; none — what stands on the seat.
     pub reason: Option<Reason>,
+    /// The device that asked: its room's character answers, when its room has one (docs/plans/home-and-devices.md,
+    /// «Комнаты»).
+    pub device: Option<String>,
 }
 
 /// Who answered an exchange that is remembered without the model's words.
@@ -1216,7 +1219,7 @@ impl DialogService {
         context: &DialogContext,
         offer: Option<&Offer>,
     ) -> LlmRequest {
-        let prompt = self.personas.system_prompt_for(None, context.channel);
+        let prompt = self.personas.system_prompt_in(context.device.as_deref(), context.channel);
         {
             let mut known = self.prompt_problem.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if *known != prompt.problem {

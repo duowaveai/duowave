@@ -43,8 +43,8 @@ import { TOP_VIA, VIA } from '../via';
 import { onComputer } from '../voice-input';
 import { byMode } from '../words';
 import { BackupChoice } from './brain';
-import { HelperCardWidget, ModeWidget } from './desk-widgets';
-import { GatewayNameSheet, HelperComputer, HelperSide, NameSheet } from './helper-pc';
+import { HelperCardWidget } from './desk-widgets';
+import { GatewayNameSheet, HelperComputer, HelperSide, NameSheet, TurboPowers } from './helper-pc';
 import { fallOf, turboOf } from './turbo-model';
 
 /** A card of «Дом»: its title, a role pill («шлюз», «работает»), a quiet line after the title; `turbo` — the Турбо's violet edge. */
@@ -97,8 +97,20 @@ export function HelpersPage() {
     return <GatewayHome />;
 }
 
+/**
+ * The centre's page parts (docs/plans/home-and-devices.md, stage 1): «Обзор» — its card, its Турбо in their order with
+ * their switches, «Где сейчас»; «Что уходит из дома» — «Если Турбо уснёт» and the regulator, a page of its own in «Дом».
+ */
+export function CentreOverview() {
+    return <GatewayHome part="overview" />;
+}
+
+export function AwayPage() {
+    return <GatewayHome part="away" />;
+}
+
 /** The gateway's «Дом»: on a speaker with its own gateway, on a computer that is the gateway, in the station's window. */
-function GatewayHome() {
+function GatewayHome({ part = 'all' }: { part?: 'all' | 'overview' | 'away' } = {}) {
     const panel = usePanel();
     const dev = useDevMode();
     const { view, older, error } = useHelpers();
@@ -107,8 +119,6 @@ function GatewayHome() {
     const [open, setOpen] = useState<Open | null>(null);
     const placement = panel.health?.placement;
     const station = placement?.role === 'station';
-    // A speaker whose settings the computer keeps: the list is changed there; its own «Компьютер дома» stays here.
-    const readOnly = station && placement?.settingsHome === 'pc';
     const manage = can('connectors.manage');
     // The station's window: this computer's own side is one card, whatever the station answers — a 0.13.0 station (no
     // list), one away or still being read — so the computer's own «Дом» is one click away on every computer.
@@ -117,21 +127,21 @@ function GatewayHome() {
     if (older)
         return (
             <>
-                <GatewayCard />
+                {part !== 'away' && <GatewayCard />}
                 <OlderGateway />
-                {computer && <ThisComputerCard />}
+                {part === 'all' && computer && <ThisComputerCard />}
             </>
         );
     if (!view)
         return (
             <>
-                <GatewayCard />
+                {part !== 'away' && <GatewayCard />}
                 <Card id="list" title={tr.helpers.listTitle}>
                     <p class="w-cap m-0" role={error ? 'alert' : undefined}>
                         {error ?? tr.helpers.reading}
                     </p>
                 </Card>
-                {computer && <ThisComputerCard />}
+                {part === 'all' && computer && <ThisComputerCard />}
             </>
         );
 
@@ -174,19 +184,12 @@ function GatewayHome() {
     const give = (helper: HelperView, ability: Ability, on: boolean): Promise<void> =>
         run(() => api.updateHelper(helper.id, { without: on ? helper.without.filter((entry) => entry !== ability) : [...helper.without, ability] }));
     const name = view.gateway?.name ?? panel.health?.gateway?.name;
+    const overview = part !== 'away';
+    const away = part !== 'overview';
     return (
         <>
-            <GatewayCard name={name} onRename={can('settings.edit') && name ? () => setOpen({ kind: 'gateway', name }) : undefined} />
-            <Card id="list" title={tr.helpers.listTitle} turbo>
-                {readOnly && <p class="w-cap m-0 c-pill-yandex-fg">{tr.helpers.readOnly}</p>}
-                {/* In the computer's window the way back is one click away: the computer's own «Дом», its watch card open. */}
-                {readOnly && TOP_VIA && (
-                    <div class="w-actions">
-                        <a class="w-btn" href={`${location.pathname}?local&sheet=placement#/settings/helpers`}>
-                            {tr.helpers.readOnlyOpen}
-                        </a>
-                    </div>
-                )}
+            {overview && <GatewayCard name={name} onRename={can('settings.edit') && name ? () => setOpen({ kind: 'gateway', name }) : undefined} />}
+            {overview && <Card id="list" title={tr.helpers.listTitle} turbo>
                 {view.helpers.length > 0 ? (
                     <div class="w-rows">
                         {view.helpers.map((helper) => {
@@ -200,7 +203,7 @@ function GatewayHome() {
                                     canUp={at > 0}
                                     canDown={at >= 0 && at < stored.length - 1}
                                     manage={manage}
-                                    readOnly={!!readOnly}
+                                    readOnly={false}
                                     busy={busy}
                                     onMove={(by) => move(helper.id, by)}
                                     onAct={(what) => void act(helper, what)}
@@ -219,27 +222,27 @@ function GatewayHome() {
                 <p class="w-cap m-0">{byMode(tr.helpers.listAbout, tr.helpers.listAboutComputer)}</p>
                 {manage && (
                     <div class="w-actions">
-                        <button class="w-btn w-btn-ink" disabled={!!readOnly || busy} onClick={() => setOpen({ kind: 'add' })}>
+                        <button class="w-btn w-btn-ink" disabled={busy} onClick={() => setOpen({ kind: 'add' })}>
                             {tr.helpers.add}
                         </button>
                     </div>
                 )}
                 <NoteLine note={note} at="list" />
-            </Card>
-            <FallCard view={view} station={station}>
+            </Card>}
+            {away && <FallCard view={view} station={station}>
                 <AwayChoice
                     away={view.away}
-                    disabled={!manage || !!readOnly || busy}
+                    disabled={!manage || busy}
                     onPick={(away) => void run(() => api.setAway(away), 'away')}
                 />
                 <NoteLine note={note} at="away" />
                 {!manage && <p class="w-cap m-0">{tr.helpers.awayAdminOnly}</p>}
                 {!onComputer() && <p class="w-cap m-0">{tr.helpers.awayYandex}</p>}
-            </FallCard>
-            <Card id="where" title={tr.helpers.whereTitle}>
+            </FallCard>}
+            {overview && <Card id="where" title={tr.helpers.whereTitle}>
                 <WhereList view={view} rows={dev && view.now.some((row) => row.ability === 'catalog') ? [...WHERE_ROWS, 'catalog'] : WHERE_ROWS} station={station} />
-            </Card>
-            {computer ? <ThisComputerCard /> : placement && !station && <HelperSide />}
+            </Card>}
+            {part === 'all' && (computer ? <ThisComputerCard /> : placement && !station && <HelperSide />)}
             {open?.kind === 'add' && (
                 <AddHelperSheet repair={open.repair} listed={view.helpers} onClose={() => setOpen(null)} onDone={(text) => setNote({ at: 'list', ok: true, text })} />
             )}
@@ -274,12 +277,6 @@ function GatewayCard({ name, onRename }: { name?: string; onRename?: () => void 
     return (
         <Card id="gateway" title={title} pill={tr.helpers.roleGateway}>
             <p class="w-cap m-0">{lead}</p>
-            {!mic && can('station.view') && (
-                <div class="flex flex-col gap-6">
-                    <span class="w-strong">{tr.helpers.modeRow}</span>
-                    <ModeWidget />
-                </div>
-            )}
             {name && (
                 <div class="w-row helpers-gateway">
                     <span class="flex-1 min-w-0 flex flex-col">
@@ -299,7 +296,7 @@ function GatewayCard({ name, onRename }: { name?: string; onRename?: () => void 
                         <span class="w-strong">{station ? tr.helpers.gatewayOnStation : tr.helpers.gatewayOnComputer}</span>
                         <span class="w-cap">{station ? tr.helpers.gatewayOnStationSub : tr.helpers.gatewayOnComputerSub}</span>
                     </span>
-                    <button class="w-btn" onClick={() => panel.go('settings', 'station')}>
+                    <button class="w-btn" onClick={() => panel.openItem('settings', 'devices', panel.link.item ?? null, { view: 'device' })}>
                         {tr.helpers.move}
                     </button>
                 </div>
@@ -378,45 +375,18 @@ function FallCard({ view, station, children }: { view: HelpersView; station: boo
 }
 
 /** The Турбо's own «Дом» — a computer that only helps: «Мои силы» (what it gives, ready or not) and «Кому помогаю». */
-function TurboHome() {
+export function TurboHome() {
     const panel = usePanel();
-    const { view, error } = useHelpers();
-    const builtin = view?.helpers.find((helper) => helper.builtin);
-    const powers = (builtin?.abilities ?? []).filter((ability) => ability.id in ABILITY_ICONS);
     return (
         <>
             <p class="w-cap m-0">{tr.helpers.homeLeadTurbo}</p>
-            <Card id="powers" title={tr.helpers.powersTitle} pill={tr.helpers.roleTurboWorks} turbo>
-                {powers.length === 0 ? (
-                    <p class="w-cap m-0 wrap-anywhere" role={!view && error ? 'alert' : undefined}>
-                        {view ? tr.helpers.powersNone : (error ?? tr.helpers.reading)}
-                    </p>
-                ) : (
-                    <div class="w-rows">
-                        {powers.map((ability) => {
-                            const Icon = ABILITY_ICONS[ability.id];
-                            const details = ability.details;
-                            const about = [details?.model, details?.voice, details?.languages?.join(', ')].filter(Boolean).join(' · ') || abilityAbout(ability.id);
-                            return (
-                                <div key={ability.id} class="w-row">
-                                    <Icon size={16} />
-                                    <span class="flex-1 min-w-0 flex flex-col">
-                                        <span class="w-strong">{abilityTitle(ability.id)}</span>
-                                        <span class="w-cap wrap-anywhere">{about}</span>
-                                    </span>
-                                    <span class={`pill ${ability.ready ? 'pill-own' : 'pill-off'}`}>{ability.ready ? tr.helpers.powersReady : tr.helpers.powersNotReady}</span>
-                                </div>
-                            );
-                        })}
-                    </div>
-                )}
-            </Card>
+            <TurboPowers />
             <HelperComputer home />
             {can('station.view') && (
                 <Card id="become" title={tr.helpers.becomeGateway}>
                     <div class="w-row">
                         <span class="flex-1 min-w-0 w-cap">{tr.helpers.becomeGatewaySub}</span>
-                        <button class="w-btn" onClick={() => panel.go('settings', 'station')}>
+                        <button class="w-btn" onClick={() => panel.go('settings', 'devices')}>
                             {tr.helpers.move}
                         </button>
                     </div>
@@ -843,7 +813,7 @@ async function readQrPhoto(file: File): Promise<string | null> {
  * the pair's door, which keeps the row as it is and looks at the computer at once; no key typed — the stored one
  * stays. `listed` — the list as shown, for the row `matched` names; `onDone` — the words for the page.
  */
-function AddHelperSheet({
+export function AddHelperSheet({
     repair,
     listed,
     onClose,

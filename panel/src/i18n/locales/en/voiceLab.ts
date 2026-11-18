@@ -100,12 +100,13 @@ const en: Translation<typeof ru> = {
     nameLabel: 'Voice name',
     memory: 'Memory',
     memoryFree: (free: string, total: string) => `${free} of ${total} GB free`,
-    memoryNoteSpeaker: (need: string, reserve: string) => `The print needs about ${need} GB, and the gateway keeps another ${reserve} GB for the speaker. If the Mac starts swapping memory to disk, the calculation stops by itself — the speaker comes first.`,
-    memoryNoteVoice: (need: string, reserve: string) => `The print needs about ${need} GB, and the gateway keeps another ${reserve} GB for conversation. If the Mac starts swapping memory to disk, the calculation stops by itself — conversation comes first.`,
+    memoryNoteSpeaker: (need: string, reserve: string) => `The print needs about ${need} GB, and DuoWave keeps another ${reserve} GB for the speaker. If the Mac starts swapping memory to disk, the calculation stops by itself — the speaker comes first.`,
+    memoryNoteVoice: (need: string, reserve: string) => `The print needs about ${need} GB, and DuoWave keeps another ${reserve} GB for conversation. If the Mac starts swapping memory to disk, the calculation stops by itself — conversation comes first.`,
     askAnyway: (text: string) => `${text} Take it anyway?`,
     imprintAbout: (title: string) => `The ${title} model will find the best 5–8 seconds of speech in your recordings and take a print from them — about a minute. Then it will say three test phrases in your voice.`,
     imprintAnyway: 'Take it anyway',
     imprint: 'Take the print',
+    imprinting: (percent: number | null) => (percent === null ? 'Taking the imprint…' : `Taking the imprint… ${Math.round(percent)} %`),
 };
 
 export default en;

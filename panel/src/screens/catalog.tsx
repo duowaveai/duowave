@@ -4,10 +4,13 @@
 // Каталог сам ничего не ставит и не обновляет: только кнопка человека с правом на этот вид (шлюз всё равно проверяет
 // каждое действие сам).
 
+import { OtherDevicesApps } from './home-apps';
 import { useEffect, useState } from 'preact/hooks';
 
-import { ApiError, CatalogEntry, CatalogSource, CatalogView, PackageKind, PackageOrigin, PackageView, PackagesView, VoiceLabEngine, api, can, problemOf, sessionStore } from '../api';
+import { ApiError, CatalogEntry, CatalogSource, CatalogView, HomeVoicePlan, PackageKind, PackageOrigin, PackageView, PackagesView, VoiceLabEngine, api, can, installApi, problemOf, sessionStore } from '../api';
 import { IconPackage } from '../icons';
+import { busChanged } from '../bus/state';
+import { openInstallWizard, unfinishedInstall } from '../magicplace/wizard-state';
 import { tr } from '../i18n';
 import { useLinkedItem, usePanel } from '../shell/context';
 import { timeAgo } from '../time';
@@ -15,6 +18,7 @@ import { AppIcon } from '../ui/app-icon';
 import { Action, CardNote } from '../ui/cards';
 import { PlayButton, useMediaUrl } from '../ui/media';
 import { needsSize } from '../ui/needs';
+import { defaultEngine, planGb, usableEngines } from '../ui/voice-plan';
 import { InstalledPackageSheet, LaterLine, SchedulesSwitchLine } from './plugins';
 import { rightWords } from '../plugins/rights';
 import { panelSafeMode } from '../plugins/loader';
@@ -84,8 +88,10 @@ export interface CatalogState {
 }
 
 /** Каталог пакетов с состоянием каждого; перечитывается, когда шлюз говорит о переменах (packages.changed). */
-export function useCatalog(): CatalogState {
+/** `station` — каталог центра дома через проход помощника (первые шаги на компьютере-помощнике, п. 46). */
+export function useCatalog(station?: string): CatalogState {
     const panel = usePanel();
+    const api = installApi(station);
     const [view, setView] = useState<CatalogView | null>(null);
     const [absent, setAbsent] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -105,7 +111,7 @@ export function useCatalog(): CatalogState {
     };
     useEffect(() => {
         if (!absent) void reload();
-    }, [panel.version]);
+    }, [panel.version, station]);
     return { view, absent, error, refreshing, reload, setView };
 }
 
@@ -159,7 +165,7 @@ export function rightsLines(entry: CatalogEntry): string[] {
 }
 
 /** Права на шине (`call:system/mic`, `see:files/*`) — их пульт спрашивает при установке, одним вопросом. */
-function busRights(entry: CatalogEntry): string[] {
+export function busRights(entry: CatalogEntry): string[] {
     return (entry.permissions ?? []).filter((right) => /^(see|listen|call|edit):/.test(right));
 }
 
@@ -180,8 +186,23 @@ function installText(entry: CatalogEntry, why?: string | null): string {
         .join(' ');
 }
 
-/** «Нужна модель OmniVoice — на диске ~4 ГБ (можно и без неё)». */
-function needsLines(entry: CatalogEntry): string[] {
+/**
+ * «Нужна модель OmniVoice — на диске ~4 ГБ (можно и без неё)». Есть план голоса от Турбо (п. 40) — модель и размер
+ * берутся из него, как в мастере установки: одно число на одну модель, а не каталожное рядом с Турбовым.
+ */
+function needsLines(entry: CatalogEntry, plan?: HomeVoicePlan | null): string[] {
+    // Не помещается ни одна — всё равно число Турбо (советуемой), не каталожное: мастер покажет то же.
+    const list = usableEngines(plan);
+    const picked = list.find((engine) => engine.id === defaultEngine(plan)) ?? list.find((engine) => engine.recommended) ?? list[0];
+    const engines = (entry.needs ?? []).filter((need) => need.kind === 'engine');
+    if (picked && engines.length > 0) {
+        // Число — тем же счётом, что в мастере (planGb), а уже стоящая модель — без числа: качать нечего.
+        const line =
+            picked.state === 'ready'
+                ? `${tr.wizard.engineOnReady(picked.title)}.`
+                : tr.catalog.needLine(tr.catalog.needVoiceModel(picked.title), tr.ui.sizeGb(planGb(picked.totalMb ?? picked.diskMb)), engines.some((need) => !!need.optional));
+        return [line, ...needsLines({ ...entry, needs: (entry.needs ?? []).filter((need) => need.kind !== 'engine') })];
+    }
     return (entry.needs ?? []).map((need) => {
         const size = needsSize(need);
         const what = need.kind === 'engine' ? tr.catalog.needVoiceModel(need.title ?? need.id) : tr.catalog.needFile(need.title ?? need.id);
@@ -205,7 +226,19 @@ export interface PackageActions {
 }
 
 /** Поставить, обновить, удалить: у каждого пакета своя занятость и свой итог; после — перечитать экран. */
-export function usePackageActions(onChanged: () => void): PackageActions {
+/**
+ * Приложение только что поставили или включили: его программа стартует и в первые секунды тянется к тому, что
+ * попросила (сеть, плеер). Если «да» не дали с установкой (её делал не администратор дома или окно колонки открыто
+ * через компьютер), шлюз спрашивает, а лист «да» узнаёт о вопросе по живому каналу. Канал мог не донести (окно колонки
+ * `?via=`) — лист перечитывает вопросы сам, чтобы «да» было видно сразу (проверка начисто 18.11, п. 8).
+ */
+function soonAsked(): void {
+    for (const after of [2000, 5000, 10_000]) window.setTimeout(busChanged, after);
+}
+
+/** `station` — ставит, включает, обновляет и удаляет у центра дома через проход помощника (п. 46). */
+export function usePackageActions(onChanged: () => void, station?: string): PackageActions {
+    const api = installApi(station);
     const [busy, setBusy] = useState<Record<string, string>>({});
     const [notes, setNotes] = useState<Record<string, CardNote>>({});
     const say = (id: string, note: CardNote) => setNotes((all) => ({ ...all, [id]: note }));
@@ -231,13 +264,26 @@ export function usePackageActions(onChanged: () => void): PackageActions {
         }
     };
     const install = async (entry: CatalogEntry, approved = false): Promise<boolean> => {
+        // «Установить» человека — мастер (magicplace/wizard.tsx): что поставится и какие права одним вопросом, потом
+        // шаги до «Скажите: …». Без мастера на экране (его нет только в тестах) — прежний вопрос.
+        if (!approved) {
+            const done = await openInstallWizard(entry, onChanged, false, station);
+            if (done !== null) {
+                if (done) soonAsked();
+                onChanged();
+                return done;
+            }
+        }
         const rights = busRights(entry).length > 0;
         if (rights && !approved && !(await ask({ title: tr.catalog.installTitle(entry.title), text: installText(entry), ok: tr.catalog.pairOk })))
             return false;
         const done = await run(entry.id, 'install', () => api.installPackage(entry.id, entry.version, true, rights), (view) =>
             view.enabled ? tr.catalog.installedOnNote : tr.catalog.installedNote,
         );
-        if (done) await offerPairs(entry, install, say);
+        if (done) {
+            soonAsked();
+            await offerPairs(entry, install, say);
+        }
         return done;
     };
     return {
@@ -245,7 +291,11 @@ export function usePackageActions(onChanged: () => void): PackageActions {
         notes,
         say,
         install,
-        switchOn: (entry) => run(entry.id, 'on', () => api.enablePackage(entry.id), tr.catalog.switchedOnNote),
+        switchOn: async (entry) => {
+            const done = await run(entry.id, 'on', () => api.enablePackage(entry.id), tr.catalog.switchedOnNote);
+            if (done) soonAsked();
+            return done;
+        },
         update: (id) => run(id, 'update', () => api.updatePackage(id), tr.catalog.updatedNote),
         remove: async (id, title, kind) => {
             const what = kind === 'character' ? tr.catalog.removeCharacterWhat : tr.catalog.removeWhat;
@@ -422,7 +472,18 @@ export function CatalogEntrySheet({
     const blocked = isBlocked(entry) && !installed;
     const rights = entry.permissions ?? [];
     const words = rightsLines(entry);
-    const needs = needsLines(entry);
+    // Персонаж: размер модели — из плана Турбо через центр, тот же, что покажет мастер. Плана нет — каталожный.
+    const [voicePlan, setVoicePlan] = useState<HomeVoicePlan | null>(null);
+    useEffect(() => {
+        if (entry.kind !== 'character' || !(entry.needs ?? []).some((need) => need.kind === 'engine') || !can('station.view')) return;
+        let alive = true;
+        void api
+            .homeVoicePlan({ package: entry.id })
+            .then((fresh) => alive && setVoicePlan(fresh.plan ? fresh : null))
+            .catch(() => undefined);
+        return () => void (alive = false);
+    }, [entry.id]);
+    const needs = needsLines(entry, voicePlan);
     const spin = (what: string) => busy === what && <span class="spinner spinner-sm" aria-hidden="true" />;
     const footer = !manage ? (
         open ? (
@@ -453,6 +514,18 @@ export function CatalogEntrySheet({
             <button class="btn btn-main" disabled={!!busy} aria-busy={busy === 'update' || undefined} onClick={() => void actions.update(entry.id, entry.title)}>
                 {spin('update')}
                 {cap(tr.catalog.update)}
+            </button>
+        </>
+    ) : unfinishedInstall(entry.id) ? (
+        // Мастер установки закрыли посреди: продолжить — мастер покажет, где остановились.
+        <>
+            {open && (
+                <button class="btn btn-plain" onClick={open.go}>
+                    {open.label}
+                </button>
+            )}
+            <button class="btn btn-main" onClick={() => void openInstallWizard(entry, undefined, true)}>
+                {tr.wizard.resume}
             </button>
         </>
     ) : open ? (
@@ -732,9 +805,12 @@ const ORIGIN_ORDER: Record<OriginFilter, number> = { user: 0, catalog: 1, bundle
  * каталога. Сам каталог — MagicPlace.
  */
 /** Одна строка состояния плитки «Моих»: ошибка, новая версия, ждёт ключ — или как работает. */
-function tileStatus(entry: PackageView, fromCatalog: CatalogEntry | undefined): { text: string; tone: 'ok' | 'off' | 'bad' | 'new' | 'wait' } {
+function tileStatus(entry: PackageView, fromCatalog: CatalogEntry | undefined, station: boolean): { text: string; tone: 'ok' | 'off' | 'bad' | 'new' | 'wait' } {
     const kindOf = entry.kind ?? 'plugin';
     const runs = kindOf === 'plugin' || kindOf === 'app';
+    // Только для компьютера, а стоит у центра на колонке (встроенные «Папки»): не ошибка — здесь ему просто не место
+    // (проверка начисто 18.11, п. 10). Шлюз пишет «не работает здесь…» в `problem`; плитка говорит, где оно работает.
+    if (entry.problem && station && elsewhere(entry.runs)) return { text: tr.catalog.kindApp, tone: 'off' };
     if (entry.problem) return { text: tr.skills.stateProblem, tone: 'bad' };
     if (fromCatalog?.state === 'update') return { text: tr.catalog.pillNewVersion, tone: 'new' };
     if ((entry.waits?.length ?? 0) > 0) return { text: tr.core.waitsKey, tone: 'wait' };
@@ -743,6 +819,9 @@ function tileStatus(entry: PackageView, fromCatalog: CatalogEntry | undefined): 
     if (entry.state === 'error') return { text: tr.catalog.stateError, tone: 'bad' };
     return { text: pluginStates()[entry.state]?.text ?? tr.catalog.stateReady, tone: entry.state === 'off' || entry.state === 'safeMode' ? 'off' : 'ok' };
 }
+
+/** Приложение только для компьютера: ни колонки, ни шлюза на колонке среди мест, где оно работает. */
+const elsewhere = (runs?: string[] | null): boolean => !!runs && runs.length > 0 && runs.every((place) => place === 'pc');
 
 export function PackagesTab() {
     const panel = usePanel();
@@ -848,7 +927,7 @@ export function PackagesTab() {
                         {listed.map((entry) => {
                             const kindOf = entry.kind ?? 'plugin';
                             const fromCatalog = byId.get(entry.id);
-                            const status = tileStatus(entry, fromCatalog);
+                            const status = tileStatus(entry, fromCatalog, installed?.placement === 'station' || installed?.placement === 'stationServer');
                             return (
                                 <button key={entry.id} class="app-tile" onClick={() => linked.open(entry.id)}>
                                     <AppIcon id={entry.id} title={entry.title} image={fromCatalog?.preview?.image} />
@@ -869,6 +948,8 @@ export function PackagesTab() {
                     )}
                 </section>
             )}
+            {/* Один список дома (docs/plans/home-and-devices.md, этап 5а): что стоит у Турбо дома. */}
+            {can('station.view') && <OtherDevicesApps />}
 
             {opened && installed?.packages.find((entry) => entry.id === opened) && (
                 <InstalledPackageSheet

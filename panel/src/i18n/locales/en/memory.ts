@@ -17,7 +17,7 @@ const en: Translation<typeof ru> = {
     actionWarn: ' Under heavy pressure apps are not turned off — you only get a warning.',
     actionOff: ' Under heavy pressure the last enabled of the loaded apps turns itself off.',
     disk: (free: number, packages: number, reserve: number) =>
-        `Storage: ${free} MB free, apps take ${packages} MB, ${reserve} MB is reserved for the gateway update.`,
+        `Storage: ${free} MB free, apps take ${packages} MB, ${reserve} MB is reserved for the DuoWave update.`,
     pictures: (used: string, limit: string | null) => `App pictures: ${used} MB${limit ? ` of ${limit}` : ''}.`,
     lineMemory: (used: string, budget: number) => `memory ${used} of ${budget} MB`,
     lineBudget: (budget: number) => `memory budget ${budget} MB`,

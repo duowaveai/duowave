@@ -223,7 +223,10 @@ fn approve_rights(app: &App, caller: &Caller, id: &str, actor: Option<Actor>) {
     if caller.zone_at_least(Zone::Home).is_err() || caller.permitted(PLUGINS_MANAGE).is_err() {
         return;
     }
-    let Some(package) = app.plugins.package(id) else { return };
+    // The version in place, switched on or not: the install approves before it switches on (`install` above), and the
+    // version in force (`package`) is none until then — the «да» was dropped without a word (clean-path check 18.11,
+    // items 8, 13, 23: the wake word asked for each right again after «Поставить всё»).
+    let Some(package) = app.plugins.installed(id) else { return };
     let rights: Vec<_> = package
         .manifest
         .permissions
@@ -843,5 +846,33 @@ mod tests {
         assert!(app.characters.character("arthur:arthur").is_none());
         let image = preview(State(app.clone()), member(), Path(("arthur".into(), "image".into()))).await.unwrap();
         assert_eq!(image.headers()[header::CONTENT_TYPE], "image/webp");
+    }
+
+    /// Clean-path check 18.11, item 23: the rights approved with an install become links although the package is not
+    /// switched on yet — the install approves them before it switches on.
+    #[tokio::test]
+    async fn the_rights_approved_with_an_install_are_given_before_the_package_is_switched_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let packages = dir.path().join("packages");
+        let mut manifest = crate::plugins::registry::tests::manifest("word", "1.0.0");
+        manifest["permissions"] = json!(["call:system/voice"]);
+        crate::plugins::registry::tests::write_package(&packages, &manifest, Some("export function f() { return 1; }"));
+        let env = Env::from_pairs([
+            ("STATE_DIR", String::new()),
+            ("PACKAGES_DIR", packages.to_string_lossy().into_owned()),
+            ("DATA_DIR", dir.path().join("data").to_string_lossy().into_owned()),
+            ("PLUGINS_BUNDLED", "false".into()),
+        ]);
+        let app = crate::app::App::build(Config::for_tests(&env)).unwrap();
+        app.plugins.rescan();
+        assert!(app.plugins.installed("word").is_some() && app.plugins.package("word").is_none(), "in place, off");
+        let admin = Caller::local(app.clone(), Some(user_principal("u1", "Админ", Role::Admin, None)));
+        approve_rights(&app, &admin, "word", None);
+        let links = app.bus.links.all();
+        assert!(
+            links.iter().any(|link| link.source == crate::bus::links::LinkSource::Install
+                && link.to == crate::bus::address::Pattern::parse("system/voice").unwrap()),
+            "{links:?}"
+        );
     }
 }

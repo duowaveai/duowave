@@ -81,11 +81,13 @@ import { DONE_MS, liveTripOf } from './trip';
 import { MODE_TITLES, Solved, Who } from '../truth';
 import { WhoThree } from './placement-map';
 import { tr } from '../i18n';
+import { devMode } from '../shell/dev';
 import { byMode } from '../words';
 import { useHelpers } from '../helpers';
 import { backupPlace } from './brain-backup';
 import { fallLine, turboOf } from './turbo-model';
 import { AsleepLine, FallLine, TurboBody, TurboSlot } from './turbo-scene';
+import { HomeStrip } from './home-scene';
 
 /** How far the stage's glow reaches past its core («Минимал»): what the blur(60px) spread was. */
 const GLOW_REACH = 110;
@@ -167,6 +169,8 @@ interface Props {
     room?: number;
     /** В «Дом»: блок Турбо и пустое место для него ведут туда. */
     onOpenHome?: () => void;
+    /** Страница Турбо-компьютера, где ставятся его голоса: карточка Турбо без голоса ведёт туда (п. 31). */
+    onOpenTurbo?: (helperId: string) => void;
 }
 
 let probe: HTMLDivElement | null = null;
@@ -231,13 +235,15 @@ function useTalkStage(): 'listen' | 'speak' | null {
     return listening ? 'listen' : speaking ? 'speak' : null;
 }
 
-export function Dashboard({ health, session, drawing, online, trip, skew = 0, version = 0, onOpenSettings, onOpenHouse, whoOpen, onToggleWho, room, onOpenHome }: Props) {
+export function Dashboard({ health, session, drawing, online, trip, skew = 0, version = 0, onOpenSettings, onOpenHouse, whoOpen, onToggleWho, room, onOpenHome, onOpenTurbo }: Props) {
     const mode: PanelMode = health?.panelMode ?? (health?.mode === 'relay' ? 'relay' : 'gateway');
     const computer = useOnComputer();
     // Турбо и «где сейчас»: кто на деле слышит, думает и говорит, и второе тело сцены (решение владельца 16.11).
     const helpers = useHelpers();
     const talkStage = useTalkStage();
     const [models, setModels] = useState<ModelsView | null>(null);
+    const [modelsFailed, setModelsFailed] = useState(false);
+    const [modelsAbsent, setModelsAbsent] = useState(false);
     // На колонке слух и голос — по списку шлюза: у компьютера, в облаке, у Яндекса.
     const availability = useAvailability();
     const [persona, setPersona] = useState<PersonaInfo | null>(null);
@@ -269,19 +275,24 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
         loading.current = true;
         try {
             const [freshModels, freshPersona, freshConnectors, freshBrain, freshCharacters] = await Promise.all([
-                can('station.view') ? api.models().catch(() => null) : null,
-                can('station.view') ? api.persona().catch(() => null) : null,
+                // Не дольше 10 с: на колонке через проход компьютера запрос, бывало, висел — окно «Говорит» держало
+                // заглушки вечно (проверка начисто 18.11, п. 27). Не дождались — «не прочитались», как при ошибке.
+                can('station.view')
+                    ? within(api.models(), MODELS_WAIT_MS).catch((e: unknown) => (e instanceof ApiError && e.status === 501 ? ABSENT : undefined))
+                    : null,
+                can('station.view') ? within(api.persona(), MODELS_WAIT_MS).catch(() => null) : null,
                 can('connectors.view')
-                    ? api
-                          .connectors()
+                    ? within(api.connectors(), MODELS_WAIT_MS)
                           .then((list) => list.connectors)
                           .catch(() => null)
                     : null,
-                can('connectors.view') ? api.brain().catch(() => null) : null,
-                wantCharacters.current && can('station.view') ? api.characters().catch(() => null) : null,
+                can('connectors.view') ? within(api.brain(), MODELS_WAIT_MS).catch(() => null) : null,
+                wantCharacters.current && can('station.view') ? within(api.characters(), MODELS_WAIT_MS).catch(() => null) : null,
             ]);
             if (!alive.current) return;
-            if (freshModels) setModels(freshModels);
+            if (freshModels && freshModels !== ABSENT) setModels(freshModels);
+            setModelsFailed(freshModels === undefined);
+            setModelsAbsent(freshModels === ABSENT);
             if (freshPersona) setPersona(freshPersona);
             if (freshConnectors) setConnectors(freshConnectors);
             if (freshBrain) setBrainView(freshBrain);
@@ -339,6 +350,8 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
         brain: brainView?.status ?? health?.brain,
         brainView,
         models,
+        modelsFailed,
+        modelsAbsent,
         persona,
         connectors,
         availability,
@@ -432,7 +445,11 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
     const station = health?.placement?.role === 'station';
     const turbo = turboOf(helpers.view);
     const openHome = onOpenHome ?? (() => undefined);
-    const side = turbo ? <TurboBody turbo={turbo} onOpen={openHome} /> : station && helpers.view ? <TurboSlot onAdd={openHome} /> : null;
+    // Турбо, у которого голос не готов: карточка ведёт прямо на его страницу, где голос ставится (проверка начисто
+    // 18.11, п. 31: «Говорит — не готово», а куда идти — не видно).
+    const voiceMissing = !!turbo && !turbo.builtin && turbo.abilities.some((ability) => ability.id === 'voice' && !ability.ready);
+    const openTurbo = turbo && voiceMissing && onOpenTurbo ? () => onOpenTurbo(turbo.helper.id) : openHome;
+    const side = turbo ? <TurboBody turbo={turbo} onOpen={openTurbo} /> : station && helpers.view ? <TurboSlot onAdd={openHome} /> : null;
     const cloudOn = (id: string): boolean =>
         connectors?.some((entry) => entry.manifest.id === id && entry.manifest.cloud && (entry.status.state === 'ready' || entry.status.state === 'configured')) ?? false;
     const backup = brainView ? backupPlace(brainView) : null;
@@ -608,6 +625,9 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
             </div>
             {side}
             </div>
+            {/* Дом целиком (docs/plans/home-and-devices.md, этап 1): колонки, что слышат для центра, Алиса и облака,
+                приложения, легенда цветов. */}
+            <HomeStrip alice={station && mode !== 'own'} clouds={cloudOn('asr') || cloudOn('tts')} />
             {fall && <FallLine items={fall.items} modeFalls={fall.modeFalls} backup={backup ?? undefined} />}
 
             {sheet && sheet !== 'links' && (
@@ -729,6 +749,11 @@ interface Spec {
     choices: Choice[];
     /** Вместо выбора, пока данных нет. */
     empty?: string;
+    /**
+     * Вместо выбора, когда данных и не будет: не прочитались или их здесь нет — словами, а не серыми строками (те
+     * означают «читаю», проверка начисто 18.11, п. 27).
+     */
+    instead?: string;
     notes: string[];
     links: Array<{ label: string; open: () => void }>;
 }
@@ -829,7 +854,7 @@ function brainSpec(context: SpecContext): Spec {
                 },
                 alice,
             ],
-            notes: [!mayRoute && !relay ? adminOnly() : '', health?.dialog ? tr.dashboard.gatewayNote(health.dialog) : ''].filter(Boolean),
+            notes: [!mayRoute && !relay ? adminOnly() : '', devMode() && health?.dialog ? tr.dashboard.gatewayNote(health.dialog) : ''].filter(Boolean),
             links: sheetLink('think', context),
         };
     }
@@ -889,7 +914,7 @@ function brainSpec(context: SpecContext): Spec {
         notes: [
             !mayChoose && !relay ? adminOnly() : '',
             models.length ? '' : tr.dashboard.noProviders,
-            health?.dialog ? tr.dashboard.gatewayNote(health.dialog) : '',
+            devMode() && health?.dialog ? tr.dashboard.gatewayNote(health.dialog) : '',
         ].filter(Boolean),
         links: [...sheetLink('think', context), { label: tr.dashboard.openCharacter, open: () => openSettings('character') }, { label: tr.dashboard.providersAndModels, open: () => openSettings('brain') }],
     };
@@ -1055,12 +1080,36 @@ function earSpec({ data, nodes, health, openSettings }: SpecContext): Spec {
         about: relay ? tr.dashboard.earAboutRelay : tr.dashboard.earAbout,
         choices,
         empty: view ? undefined : tr.dashboard.readingModels,
-        notes: [view && !mayModels && !relay ? adminOnly() : '', health?.speech?.asr ? tr.dashboard.gatewayNote(health.speech.asr) : ''].filter(Boolean),
+        instead: view ? undefined : data.modelsAbsent ? tr.dashboard.hearingOnComputer : data.modelsFailed ? tr.dashboard.hearingUnread : undefined,
+        notes: [view && !mayModels && !relay ? adminOnly() : '', devMode() && health?.speech?.asr ? tr.dashboard.gatewayNote(health.speech.asr) : ''].filter(Boolean),
         links: [{ label: tr.dashboard.allRecognitionModels, open: () => openSettings('recognition') }],
     };
 }
 
 /** Голос: сверху голос Алисы, под ним свои голоса (отпечатки), дальше скачанные; скачать новые — на экране «Голос». */
+/** Ответ «своих моделей здесь нет» (501): шлюз на колонке. */
+const ABSENT = Symbol('absent');
+
+/** Сколько окна ждут голоса и слух центра. */
+const MODELS_WAIT_MS = 10_000;
+
+/** Обещание с пределом ожидания: не дождались — отказ. */
+function within<T>(promise: Promise<T>, ms: number): Promise<T> {
+    return new Promise((resolve, reject) => {
+        const timer = window.setTimeout(() => reject(new Error('timeout')), ms);
+        promise.then(
+            (value) => {
+                window.clearTimeout(timer);
+                resolve(value);
+            },
+            (error: unknown) => {
+                window.clearTimeout(timer);
+                reject(error);
+            },
+        );
+    });
+}
+
 function voiceSpec(context: SpecContext): Spec {
     const { data, nodes, health, openSettings } = context;
     const view = data.models;
@@ -1114,11 +1163,12 @@ function voiceSpec(context: SpecContext): Spec {
         about: relay ? tr.dashboard.voiceAboutRelay : byMode(tr.dashboard.voiceAboutStation, tr.dashboard.voiceAboutDevice),
         choices,
         empty: view ? undefined : tr.dashboard.readingVoices,
+        instead: view ? undefined : data.modelsAbsent ? tr.dashboard.voicesOnComputer : data.modelsFailed ? tr.dashboard.voicesUnread : undefined,
         notes: [
             view && !view.ownVoiceServer ? byMode(tr.dashboard.noOwnVoiceServerStation, tr.dashboard.noOwnVoiceServerDevice) : '',
             view?.ownVoiceServer && !own ? tr.dashboard.noOwnVoices : '',
             view && !mayModels && !relay ? adminOnly() : '',
-            health?.tts ? tr.dashboard.gatewayNote(health.tts) : '',
+            devMode() && health?.tts ? tr.dashboard.gatewayNote(health.tts) : '',
         ].filter(Boolean),
         links: [...sheetLink('persona', context), { label: tr.dashboard.openCharacter, open: () => openSettings('character') }, { label: tr.dashboard.downloadMoreVoices, open: () => openSettings('voice') }],
     };
@@ -1195,7 +1245,11 @@ function ChoiceSheet({ spec, onClose, onApplied }: { spec: Spec; onClose: () => 
             }
         >
             <p class="win-lead">{spec.about}</p>
-            {spec.empty ? (
+            {spec.instead ? (
+                <p class="win-text m-0" role="status">
+                    {spec.instead}
+                </p>
+            ) : spec.empty ? (
                 <SkeletonRows rows={3} label={spec.empty} />
             ) : (
                 <div role="radiogroup" aria-label={spec.title} class="flex flex-col">
@@ -1240,18 +1294,26 @@ function ChoiceSheet({ spec, onClose, onApplied }: { spec: Spec; onClose: () => 
                     {note}
                 </p>
             ))}
-            <GoRows links={spec.links} />
+            <GoRows links={spec.links} onGo={onClose} />
         </Sheet>
     );
 }
 
 /** Where else this is set: rows that lead there («Провайдеры и модели», «Все подключения»). */
-function GoRows({ links }: { links: Spec['links'] }) {
+function GoRows({ links, onGo }: { links: Spec['links']; onGo: () => void }) {
     if (links.length === 0) return null;
     return (
         <div class="win-group">
             {links.map((link) => (
-                <button key={link.label} class="win-row win-choice text-left" onClick={link.open}>
+                // Переход из окна закрывает окно: страница открывалась позади него (проверка начисто 18.11, п. 27).
+                <button
+                    key={link.label}
+                    class="win-row win-choice text-left"
+                    onClick={() => {
+                        onGo();
+                        link.open();
+                    }}
+                >
                     <span class="win-row-main">
                         <span class="win-row-t">{link.label}</span>
                     </span>
@@ -1329,7 +1391,7 @@ function LinksSheet({
                     </div>
                 )
             )}
-            {allowed && <GoRows links={[{ label: tr.dashboard.allLinks, open: () => onOpenHouse() }]} />}
+            {allowed && <GoRows links={[{ label: tr.dashboard.allLinks, open: () => onOpenHouse() }]} onGo={onClose} />}
         </Sheet>
     );
 }

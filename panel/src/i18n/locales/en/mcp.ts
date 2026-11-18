@@ -45,16 +45,16 @@ const en: Translation<typeof ru> = {
     oauthNote: 'After “Connect”, press “Sign in” in the server sheet: the service’s page opens, and you sign in yourself.',
     firstRunDownload: (pkg: string, runner: string) => `The first run downloads ${pkg} through ${runner} — a few megabytes, once.`,
     modelNoteField: 'Hint for the model: why this server is in the home',
-    secretsNote: 'Keys are stored encrypted in the gateway. You turn on the tools that change data yourself.',
+    secretsNote: 'Keys are stored encrypted in the hub. You turn on the tools that change data yourself.',
 
-    programAbout: 'An MCP server the gateway will start on this Mac',
+    programAbout: 'An MCP server DuoWave will start on this Mac',
     fieldName: 'Name',
     programNamePlaceholder: 'For example, Files',
     fieldCommand: 'Command',
     fieldArgs: 'Arguments separated by spaces',
     fieldEnv: 'Variables, one per line: NAME=value',
     programWarning:
-        'The gateway runs this command on the Mac as is, without a shell, in its own folder and with only these variables. Connect only programs you trust.',
+        'DuoWave runs this command on the Mac as is, without a shell, in its own folder and with only these variables. Connect only programs you trust.',
 
     addressAbout: 'An MCP server on the network',
     addressNamePlaceholder: 'For example, My server',

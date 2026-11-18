@@ -5,7 +5,7 @@
 import { tr } from '../i18n';
 import { usePanel } from '../shell/context';
 import { isInstalled } from '../screens/catalog';
-import { goesHere, isNew } from './filters';
+import { goesHere, isNew, recommendedHere, shownAlone } from './filters';
 import { MagicPlaceMark } from './icon';
 import { useStoreView } from './state';
 
@@ -27,9 +27,9 @@ export function MagicPlaceWidget() {
     const view = useStoreView();
     const packages = view?.packages ?? [];
     const updates = packages.filter((entry) => entry.state === 'update').length;
-    const offered = packages.filter((entry) => !isInstalled(entry) && goesHere(entry));
+    const offered = packages.filter((entry) => !isInstalled(entry) && goesHere(entry) && shownAlone(entry));
     const fresh = offered.find((entry) => isNew(entry));
-    const recommended = offered.find((entry) => entry.recommended);
+    const recommended = offered.find(recommendedHere);
     const line = updates > 0
         ? tr.magicplace.widgetUpdates(updates)
         : fresh

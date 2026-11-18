@@ -313,9 +313,19 @@ async fn upgrade(State(app): State<Arc<App>>, caller: Caller, upgrade: WebSocket
     }
     let sessions = app.sessions.clone();
     let handshake = Handshake { headers: caller.headers.clone(), remote_address: address };
-    upgrade
-        .max_message_size(MAX_MESSAGE)
-        .on_upgrade(move |socket| async move { sessions.serve(socket, handshake, slot).await })
+    let ear_app = app.clone();
+    upgrade.max_message_size(MAX_MESSAGE).on_upgrade(move |socket| async move {
+        // An ear of the home's centre (docs/plans/home-and-devices.md, stage 4): the station's voice goes on to the
+        // centre; the centre away — answered here, from the home's copy.
+        if crate::home::ear::centre(&ear_app).is_some() {
+            if let Some(centre) = crate::home::ear::dial(&ear_app, &handshake.headers).await {
+                drop(slot);
+                crate::home::ear::bridge(socket, centre).await;
+                return;
+            }
+        }
+        sessions.serve(socket, handshake, slot).await
+    })
 }
 
 #[cfg(test)]

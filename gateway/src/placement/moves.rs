@@ -275,7 +275,10 @@ impl MovesService {
         self.audit(&job.id, "started", actor.clone());
         let me = self.clone();
         let id = job.id.clone();
-        tokio::spawn(async move { me.run(id, request, actor).await });
+        // The language of whoever started it goes with the move: its notes in it, and a station without a household
+        // language gets it (`to_station`).
+        let language = crate::locale::of_request();
+        tokio::spawn(crate::locale::with_language(language, async move { me.run(id, request, actor).await }));
         Ok(job)
     }
 
@@ -287,9 +290,14 @@ impl MovesService {
         }
     }
 
+    /// One more thing the household should know: added to what the move said already, not over it (a port taken and
+    /// a character left behind are both said).
     fn note(&self, id: &str, note: &str) {
         if let Some(job) = self.jobs().get_mut(id) {
-            job.note = Some(note.to_string());
+            job.note = Some(match job.note.take() {
+                Some(said) if !said.is_empty() && said != note => format!("{said} {note}"),
+                _ => note.to_string(),
+            });
         }
     }
 
@@ -438,7 +446,7 @@ impl MovesService {
             let program_kb = program_bytes.div_ceil(1024);
             if free + replaced < need_kb || free < program_kb {
                 anyhow::bail!(crate::tr!(
-                    "В /data свободно {free} МБ, а шлюзу нужно {needed} МБ.",
+                    "В /data свободно {free} МБ, а DuoWave нужно {needed} МБ.",
                     free = free / 1024,
                     needed = need_kb.div_ceil(1024)
                 ));
@@ -447,7 +455,7 @@ impl MovesService {
             let available = memory.split_whitespace().nth(1).and_then(|kb| kb.parse::<u64>().ok()).unwrap_or(u64::MAX);
             if available < NEEDED_MEMORY_KB {
                 anyhow::bail!(crate::tr!(
-                    "У колонки свободно {free} МБ ОЗУ, а шлюзу нужно {needed} МБ.",
+                    "У колонки свободно {free} МБ ОЗУ, а DuoWave нужно {needed} МБ.",
                     free = available / 1024,
                     needed = NEEDED_MEMORY_KB / 1024
                 ));
@@ -534,7 +542,7 @@ impl MovesService {
             self.note(
                 id,
                 &crate::tr!(
-                    "Порт {busy} на колонке занят: шлюз слушает {port}.",
+                    "Порт {busy} на колонке занят: DuoWave слушает {port}.",
                     busy = super::station_fs::DEFAULT_PORT,
                     port = port
                 ),
@@ -561,6 +569,14 @@ impl MovesService {
                 },
             );
         bundle.settings.insert("gateway_mode".into(), json!({ "mode": mode.as_str() }));
+        // The household's language: this computer's when set (it travels with the settings), else the language of whoever
+        // moves it — a station without one speaks English (clean-path check 18.11, items 48 and 50: «Home computer» in a
+        // Russian panel, a widget made by voice in Russian answering in English with an American date).
+        if !bundle.settings.contains_key("language") {
+            if let Some(language) = crate::locale::of_request().or_else(crate::locale::text::household_now) {
+                bundle.settings.insert("language".into(), json!(language));
+            }
+        }
         // The plugins' switches and their data go with the gateway: they live where it runs (transfer.rs), and the
         // station takes them for the packages it has too (live, 10.11: «Список покупок» was off there, its list here).
         bundle.plugins = Some(transfer::plugins(&self.deps.db)?);
@@ -581,6 +597,42 @@ impl MovesService {
             );
         }
         bundle.pictures = Some(fit);
+        // The computer's own sources and its characters (carry.rs, item 43): a character chosen before the station was
+        // set up stands at the centre too — as many as fit what the program left in /data, the chosen one first. What
+        // does not fit stays here, and the move says so.
+        let free = self
+            .run_ok(shell_ref, "df -k /data | tail -n 1", None)
+            .await
+            .ok()
+            .and_then(|line| line.split_whitespace().nth(3)?.parse::<u64>().ok());
+        let room = free.map(|free| free.saturating_sub(DATA_KB + crate::updates::install::STATION_FLOOR_KB));
+        let chosen = self
+            .deps
+            .settings
+            .get(&crate::settings::definitions::PERSONA, None)
+            .and_then(|persona| persona.preset_id)
+            .and_then(|preset| preset.split(':').next().map(str::to_string));
+        let gathered = super::carry::gather(
+            &self.deps.config.plugins.packages_dir,
+            &self.deps.config.plugins.catalog_dir,
+            &self.deps.db,
+            chosen.as_deref(),
+            room,
+        );
+        for (title, kb) in &gathered.left {
+            self.note(
+                id,
+                &crate::tr!(
+                    "Персонаж «{title}» на колонку не поместился: ему нужно {need} МБ, а места там {room} МБ. Он остался на компьютере — освободите место на колонке и поставьте его там из «Каталога».",
+                    title = title,
+                    need = format!("{:.1}", *kb as f64 / 1024.0),
+                    room = format!("{:.1}", room.unwrap_or(0) as f64 / 1024.0)
+                ),
+            );
+        }
+        if !gathered.carried.sources.is_empty() || !gathered.carried.packages.is_empty() {
+            bundle.carried = Some(gathered.carried);
+        }
         // With this computer as its server the station speaks this computer's voice as this computer does — in
         // «Шлюз» too (live, 10.11: Alice's voice there, the station's own choice was «yandex»).
         if request.to == MoveTo::StationServer {
@@ -600,7 +652,7 @@ impl MovesService {
         let client = PeerClient::new(address, port, &key);
         self.wait(self.deps.timing.start_ms, || async { client.health().await.is_ok() })
             .await
-            .ok_or_else(|| anyhow::anyhow!(crate::tr!("Шлюз на колонке не запустился: duowave station log.")))?;
+            .ok_or_else(|| anyhow::anyhow!(crate::tr!("DuoWave на колонке не запустился: duowave station log.")))?;
         if request.to == MoveTo::Station && home.is_some() {
             // Alone: the computer stays known, the station does not lean on it.
             client.post("/api/v1/home-server/link", json!({ "enabled": false })).await.map_err(|error| {
@@ -636,7 +688,7 @@ impl MovesService {
             })
             .await;
         if arrived.is_none() {
-            anyhow::bail!(crate::tr!("Колонка не вернулась к своему шлюзу за 3 минуты: где она сейчас — «Настройки» → «Колонка» → «Где работает DuoWave»."));
+            anyhow::bail!(crate::tr!("Колонка не вернулась к своему центру за 3 минуты: где она сейчас — «Настройки» → «Колонка» → «Где работает DuoWave»."));
         }
         // Where the main settings live from now: the station's gateway is told (it keeps them, or takes them).
         let home = if request.settings_home == SettingsHome::Pc { "pc" } else { "station" };
@@ -680,7 +732,7 @@ impl MovesService {
                     self.deps.config.skills.state_dir.clone().ok_or_else(|| anyhow::anyhow!("no state folder"))?;
                 std::fs::write(transfer::incoming_file(&dir), serde_json::to_vec(&bundle)?)?;
                 restart = true;
-                self.note(id, &crate::tr!("Настройки взяты с колонки: шлюз перезапустится на них."));
+                self.note(id, &crate::tr!("Настройки взяты с колонки: DuoWave перезапустится на них."));
                 self.step(id, MoveStep::Settings, StepState::Done);
             }
             (Some(SettingsHome::Pc), Some(client)) => {
@@ -695,7 +747,7 @@ impl MovesService {
                         restart = true;
                         self.note(
                             id,
-                            &crate::tr!("Приложения и их данные взяты с колонки: шлюз перезапустится на них."),
+                            &crate::tr!("Приложения и их данные взяты с колонки: DuoWave перезапустится на них."),
                         );
                         self.step(id, MoveStep::Settings, StepState::Done);
                     }
@@ -735,7 +787,7 @@ impl MovesService {
         self.step(id, MoveStep::Arrive, StepState::Running);
         let device = self.await_arrival(receiver, address).await;
         if device.is_none() {
-            anyhow::bail!(crate::tr!("колонка не пришла к этому шлюзу за 3 минуты"));
+            anyhow::bail!(crate::tr!("колонка не пришла к этому центру за 3 минуты"));
         }
         self.step(id, MoveStep::Arrive, StepState::Done);
 
@@ -917,7 +969,7 @@ impl MovesService {
         let fired = lines.iter().find_map(|line| line.strip_prefix("fired ")).map(|what| {
             match what.split_whitespace().next() {
                 Some("previous-version") => crate::tr!("новая версия не поднялась — вернулась прежняя"),
-                Some("previous-address") => crate::tr!("шлюз не поднимался — колонка вернулась к прежнему адресу"),
+                Some("previous-address") => crate::tr!("DuoWave не поднимался — колонка вернулась к прежнему адресу"),
                 _ => what.to_string(),
             }
         });
@@ -962,10 +1014,10 @@ impl MovesService {
             .await;
         let outcome = async {
             started.map_err(|error| error.to_string())?;
-            let client = watch.client().ok_or(crate::tr!("шлюз не на колонке"))?;
+            let client = watch.client().ok_or(crate::tr!("центр не на колонке"))?;
             self.wait(self.deps.timing.start_ms, || async { client.health().await.is_ok() }).await.ok_or(
                 crate::tr!(
-                    "шлюз на колонке снова не запустился: что с ним — «Настройки» → «Колонка» → «Где работает DuoWave»"
+                    "DuoWave на колонке снова не запустился: смотрите «Настройки» → «Колонка» → «Где работает DuoWave»"
                 ),
             )?;
             self.run_ok(shell.as_ref(), &format!("{BIN} station point local --reboot"), None)
@@ -989,7 +1041,7 @@ impl MovesService {
         }
         if !named.is_empty() && named != BIN {
             return Err(crate::tr!(
-                "Программы шлюза на колонке нет, а служба запускает её из {named}: поставьте этот пакет снова.",
+                "Программы DuoWave на колонке нет, а служба запускает её из {named}: поставьте этот пакет снова.",
                 named = named
             ));
         }
@@ -1760,6 +1812,94 @@ mod tests {
         assert!(received.plugins.is_some(), "the plugins go along all the same");
     }
 
+    /// Item 43: a character chosen on the computer before the station was set up — from an own source (an
+    /// invitation's demo) — stands at the centre after the move: the own source joins the station's, the package is
+    /// installed there from the computer's archive (its hash checked), its registry row keeps the feed, and the choice
+    /// travels with the settings. A character that does not fit the room the program left stays here and the move says
+    /// so.
+    #[tokio::test]
+    async fn the_move_carries_the_characters_from_an_own_source_and_says_what_did_not_fit() {
+        use crate::plugins::install::tests::{archive, character_manifest, expected, noise, vgp, Item};
+        let data = tempfile::tempdir().unwrap();
+        let (computer, station) = setup_with(&[("DATA_DIR", &data.path().to_string_lossy())]).await;
+        let deps = &computer.moves.deps;
+        let (root, catalog) = (deps.config.plugins.packages_dir.clone(), deps.config.plugins.catalog_dir.clone());
+        let feed = "https://demo.example/invite/catalog.json";
+        std::fs::create_dir_all(&catalog).unwrap();
+        std::fs::write(
+            catalog.join("sources.json"),
+            json!([{ "url": feed, "addedAt": "2026-11-18T10:00:00Z" }]).to_string(),
+        )
+        .unwrap();
+        let arthur = vgp(&character_manifest("arthur", "1.2.0"));
+        let mut sha = String::new();
+        crate::plugins::install::install_archive(&root, &arthur, expected("arthur", "1.2.0", &arthur, &mut sha))
+            .unwrap();
+        crate::plugins::registry::set_installed(&deps.db, "arthur", "catalog", false, None).unwrap();
+        crate::plugins::registry::set_feed(&deps.db, "arthur", feed).unwrap();
+        let mut manifest = character_manifest("big", "1.0.0");
+        manifest["title"] = json!("Большой");
+        let text = manifest.to_string();
+        let sample = noise(2 * 1024 * 1024, 7);
+        let big = archive(&[
+            Item::File("manifest.json", text.as_bytes()),
+            Item::Dir("assets/"),
+            Item::File("assets/voice.ogg", &sample),
+        ]);
+        let mut sha = String::new();
+        crate::plugins::install::install_archive(&root, &big, expected("big", "1.0.0", &big, &mut sha)).unwrap();
+        crate::plugins::registry::set_installed(&deps.db, "big", "catalog", true, None).unwrap();
+        let persona = crate::settings::definitions::Persona {
+            preset_id: Some("arthur:arthur".into()),
+            text: "Ты — Артур, дворецкий.".into(),
+            base: None,
+            tones: None,
+        };
+        deps.settings.set(&crate::settings::definitions::PERSONA, &persona, None).unwrap();
+        // Room for one megabyte of packages besides the program, its data and the floor.
+        let free = DATA_KB + crate::updates::install::STATION_FLOOR_KB + 1024;
+        std::fs::write(station.fs.path("/data/free-kb"), free.to_string()).unwrap();
+
+        let job = computer.moves.start(station_server(Some("192.0.2.10:3000"), SettingsHome::Station), None).unwrap();
+        let job = finished(&computer.moves, &job.id).await;
+        assert_eq!(job.status, MoveStatus::Done, "{:?}", job.error);
+        assert!(
+            job.note.as_deref().is_some_and(|note| note.contains("«Большой» на колонку не поместился")),
+            "what stayed behind is said: {:?}",
+            job.note
+        );
+        let received: transfer::Bundle =
+            serde_json::from_str(&station.received.lock().unwrap().clone().unwrap()).unwrap();
+        let carried = received.carried.clone().expect("the computer's characters and sources");
+        assert_eq!(carried.sources, vec![json!({ "url": feed, "addedAt": "2026-11-18T10:00:00Z" })]);
+        assert_eq!(carried.packages.iter().map(|package| package.id.as_str()).collect::<Vec<_>>(), vec!["arthur"]);
+        assert_eq!(received.settings["dialog_persona"]["presetId"], json!("arthur:arthur"), "the choice travels");
+
+        // The station's gateway at its first start: the package and the source are there before anything reads them.
+        let there = tempfile::tempdir().unwrap();
+        let (station_root, station_catalog) = (there.path().join("packages"), there.path().join("packages-catalog"));
+        let station_db = Db::memory();
+        let state = there.path().join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(transfer::incoming_file(&state), serde_json::to_vec(&received).unwrap()).unwrap();
+        assert_eq!(transfer::take_carried(&state, &station_root, &station_catalog, &station_db), 1);
+        assert!(station_root.join("arthur").join("1.2.0").join("manifest.json").is_file());
+        let row = crate::plugins::registry::choices(&station_db).remove("arthur").expect("its registry row");
+        assert_eq!((row.source.as_str(), row.feed.as_deref()), ("catalog", Some(feed)));
+        let sources: Value =
+            serde_json::from_str(&std::fs::read_to_string(station_catalog.join("sources.json")).unwrap()).unwrap();
+        assert_eq!(sources[0]["url"], json!(feed));
+        assert_eq!(transfer::take_carried(&state, &station_root, &station_catalog, &station_db), 0, "installed once");
+
+        // A forged archive is refused: nothing of it on the station.
+        let mut forged = received.clone();
+        let package = &mut forged.carried.as_mut().unwrap().packages[0];
+        package.id = "rick".into();
+        std::fs::write(transfer::incoming_file(&state), serde_json::to_vec(&forged).unwrap()).unwrap();
+        assert_eq!(transfer::take_carried(&state, &station_root, &station_catalog, &station_db), 0);
+        assert!(!station_root.join("rick").exists());
+    }
+
     /// Live, 10.11 (and 08.11): the move back revoked the station's key to its home server and the station's settings
     /// applied at the restart brought it back; the station's plugins' data stayed on it. The move back takes the
     /// plugins' state with the settings, and the key stays revoked.
@@ -1920,7 +2060,7 @@ mod tests {
             (seen["installed"].as_bool(), seen["disabled"].as_bool(), seen["local"].as_bool()),
             (Some(true), Some(true), Some(false))
         );
-        assert_eq!(seen["fired"], "шлюз не поднимался — колонка вернулась к прежнему адресу");
+        assert_eq!(seen["fired"], "DuoWave не поднимался — колонка вернулась к прежнему адресу");
         assert!(seen["log"].as_str().unwrap().contains("safety net"));
 
         // «Попробовать снова»: the mark goes by the shell, the service starts, the voice comes back to the gateway.

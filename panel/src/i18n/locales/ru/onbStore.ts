@@ -30,6 +30,7 @@ export default {
     switchOn: 'Включить',
     make: 'Сделать',
     chipRecommended: 'рекомендуем',
+    wordLine: (word: string) => `Слово: «${word}»`,
     chipSoon: 'скоро',
     chipHave: 'есть',
     chipExample: 'пример',

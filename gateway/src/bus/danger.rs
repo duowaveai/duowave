@@ -95,7 +95,7 @@ fn anyone() -> String {
 }
 
 impl DangerWord {
-    fn covers(&self, target: &str, handle: &str, caller: &str) -> bool {
+    pub fn covers(&self, target: &str, handle: &str, caller: &str) -> bool {
         let (whose, what) = self.target.rsplit_once(':').unwrap_or((self.target.as_str(), "*"));
         whose == target && (what == "*" || what == handle) && (self.caller == "*" || self.caller == caller)
     }

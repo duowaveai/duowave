@@ -14,8 +14,8 @@
 //! - contract.rs — the abilities, the contract's versions, and a helper's `/home/v1/status` read as one.
 //! - remote.rs — a helper of the list as this gateway reaches it: the look at its status every 15 s, its bot's
 //!   contacts, its clients for hearing and voice.
-//! - legacy.rs — the old «Домашний сервер» (`connector_home_server`) as the entry `home-computer`, and the pair's door
-//!   (`/api/v1/home-server*`), for one more version.
+//! - door.rs — the pair's door: the entry `home-computer` as the install's .env and the computer's routes
+//!   (`/api/v1/home-server*`) set it.
 //! - models.rs — the helpers with a model, as «Мозг» reads them.
 //! - builtin.rs (the computer's build) — the built-in helper: the computer's heavy part behind the same contract,
 //!   which `/home/v1` answers through and a computer that is not in the station role takes its own parts from.
@@ -28,7 +28,7 @@
 #[cfg(feature = "pc")]
 pub mod clients;
 pub mod contract;
-pub mod legacy;
+pub mod door;
 pub mod link;
 #[cfg(feature = "pc")]
 pub mod link_serve;
@@ -182,6 +182,13 @@ fn sorted(abilities: impl IntoIterator<Item = Ability>) -> Vec<Ability> {
 
 /// The pair's door: the entry the old «Домашний сервер» became (legacy.rs), each gateway's own (it never travels).
 pub const HOME_COMPUTER: &str = "home-computer";
+
+/// Whether a home computer's name is still the default one, in any language it was written in: «Компьютер дома» is
+/// the source, its English is what a gateway without the household's language wrote (item 48).
+fn default_name(name: &str) -> bool {
+    let name = name.trim();
+    name == "Компьютер дома" || name == "Home computer" || name == crate::tr!("Компьютер дома")
+}
 /// Words of `/api/v1/helpers/<word>` beside `{id}`: never an id. `self` is the built-in helper's row (stage 6).
 pub const RESERVED: [&str; 5] = ["order", "away", "key", "clients", "self"];
 /// The built-in helper's id (builtin.rs): its row in the list as the panel sees it, its model servers in «Мозг» and
@@ -757,7 +764,7 @@ impl Helpers {
                 remote.mark_itself();
             }
             if !named.is_empty() {
-                self.note_helper_id(remote.id(), remote.url(), &named);
+                self.note_helper_id(remote.id(), remote.url(), &named, &status.contract.helper.name);
             }
         }
         let changed = remote.seen(&outcome);
@@ -801,19 +808,30 @@ impl Helpers {
     }
 
     /// The id a look found at an entry, kept in it — one write, only when it changes, only while its address is the
-    /// one looked at.
-    fn note_helper_id(&self, id: &str, url: &str, named: &str) {
-        let noted =
-            |entry: &HelperSetting| entry.id == id && entry.url == url && entry.helper_id.as_deref() == Some(named);
+    /// one looked at. The home's computer still under its default name («Компьютер дома», which a station whose
+    /// household language was not set yet wrote as «Home computer») takes the name the computer gives itself
+    /// (clean-path check 18.11, item 48: «Турбо · Home computer» in a Russian panel, «Мак» in the workshop).
+    fn note_helper_id(&self, id: &str, url: &str, named: &str, own_name: &str) {
+        let own_name = own_name.trim();
+        let renamed = |entry: &HelperSetting| {
+            entry.id == HOME_COMPUTER && !own_name.is_empty() && default_name(&entry.name) && entry.name != own_name
+        };
+        let noted = |entry: &HelperSetting| {
+            entry.id == id && entry.url == url && entry.helper_id.as_deref() == Some(named) && !renamed(entry)
+        };
         if self.snap().list.iter().any(noted) {
             return;
         }
         let written = self.write(None, |list| {
             let Some(entry) = list.iter_mut().find(|entry| entry.id == id && entry.url == url) else { return Ok(None) };
-            if entry.helper_id.as_deref() == Some(named) {
+            let rename = renamed(entry);
+            if entry.helper_id.as_deref() == Some(named) && !rename {
                 return Ok(None);
             }
             entry.helper_id = Some(named.to_string());
+            if rename {
+                entry.name = own_name.to_string();
+            }
             Ok(Some(()))
         });
         if let Err(error) = written {
@@ -1228,10 +1246,6 @@ impl Helpers {
     fn changed(&self, id: Option<&str>, change: &str, actor: Option<Actor>) {
         self.prune();
         self.links();
-        let door = id.is_none_or(|id| id == HOME_COMPUTER);
-        if door {
-            legacy::mirror(&self.settings, &self.secrets, self.entry(HOME_COMPUTER).as_ref());
-        }
         self.events.emit(GatewayEvent::HelpersChanged {
             id: id.map(str::to_string),
             change: change.to_string(),
@@ -1281,7 +1295,7 @@ impl Helpers {
         let status = remote.look().await.map_err(ApiError::bad_gateway)?;
         let named = status.contract.helper.id.clone();
         if !named.is_empty() && self.me().as_deref() == Some(named.as_str()) {
-            return Err(ApiError::conflict(crate::tr!("Это сам этот шлюз: себя в Турбо не добавляют.")));
+            return Err(ApiError::conflict(crate::tr!("Это сам этот центр: себя в Турбо не добавляют.")));
         }
         let mut draft = draft;
         draft.helper_id = (!named.is_empty()).then_some(named);
@@ -1356,7 +1370,7 @@ impl Helpers {
                 return Err(ApiError::bad_gateway(crate::tr!("По этому адресу не Турбо DuoWave.")));
             }
             if me.as_deref() == Some(helper.id.as_str()) {
-                return Err(ApiError::conflict(crate::tr!("Это сам этот шлюз: себя в Турбо не добавляют.")));
+                return Err(ApiError::conflict(crate::tr!("Это сам этот центр: себя в Турбо не добавляют.")));
             }
             if let Some(replace) = replace.as_deref() {
                 let entry = snap.list.iter().find(|entry| entry.id == replace).ok_or_else(no_such_helper)?;
@@ -1755,7 +1769,7 @@ impl Helpers {
             "state": state,
             "since": remote.as_ref().and_then(|remote| remote.since()),
             "error": remote.as_ref().and_then(|remote| remote.error()).map(|error| crate::core::tx_dyn(&error)),
-            "without": legacy::to_legacy(&entry.without),
+            "without": door::to_legacy(&entry.without),
         }))
     }
 }

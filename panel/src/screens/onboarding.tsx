@@ -16,10 +16,12 @@ import { AnswerStep } from './onb/answer';
 import { BrainStep } from './onb/brain';
 import { CharacterStep } from './onb/character';
 import { Choice, OnboardingContext, StepNav, StepNavContext } from './onb/nav';
-import { SpeakerStep } from './onb/speaker';
+import { SpeakerStep, resumeLink } from './onb/speaker';
+import { steerInvite } from './onb/invite-state';
 import { StoreStep } from './onb/store';
 import { TryStep } from './onb/try';
 import { TOP_VIA, VIA } from '../via';
+import { InstallPill } from '../magicplace/wizard';
 import '../ui/onboarding-canvas.css';
 
 type StepId = 'where' | 'brain' | 'speaker' | 'answer' | 'character' | 'try' | 'store';
@@ -135,6 +137,14 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
     const [nav, setNav] = useState<StepNav | null>(null);
     const main = useRef<HTMLElement>(null);
 
+    // Подключение и перенос колонки ведёт пульт (screens/onb/speaker.tsx), а не шлюз: уход со шага их не останавливает,
+    // а перезагрузка пульта (шлюз перезапустился) теряла — продолжаем по метке, на каком бы шаге ни были (п. 62).
+    useEffect(() => void resumeLink().catch(() => undefined), []);
+    // Приглашение ведут первые шаги, а не шаг «Персонаж» (п. 64): где читать набор — у центра (ключ колонки у
+    // помощника), пока колонка не центр — у этого компьютера; сменилось — догружаем у нового без нового ввода.
+    const inviteHome = (panel.role.role === 'helper' ? panel.role.station?.key : undefined) ?? 'own';
+    useEffect(() => steerInvite(inviteHome), [inviteHome]);
+
     // Шаги открыты — пульт помнит это сразу, ещё до «Дальше» (см. Saved).
     useEffect(() => {
         if (!recalled<Saved>(KEY)) remember(KEY, { choice, step, picked: false } satisfies Saved);
@@ -204,7 +214,15 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
     const labels = [tr.onboarding.steps.password, ...steps.map((id) => tr.onboarding.steps[id])];
     const where = onStation ? tr.onboarding.whereStation : choice === 'computer' && step !== 'where' ? tr.onboarding.whereComputer : '';
     return (
-        <OnboardingContext.Provider value={{ choice, wake, next: forward, leave: (section) => (finish(), section && panel.go(section)) }}>
+        <OnboardingContext.Provider
+            value={{
+                choice,
+                wake,
+                next: forward,
+                leave: (section) => (finish(), section && panel.go(section)),
+                goTo: (to) => steps.includes(to as StepId) && go(to as StepId),
+            }}
+        >
             <StepNavContext.Provider value={setNav}>
                 <div class="onb" role="dialog" aria-modal="true" aria-label={tr.onboarding.title}>
                     <header class="onb-top">
@@ -213,6 +231,8 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                             DuoWave
                         </span>
                         {where && <span class="ob-where">· {where}</span>}
+                        {/* Свёрнутая установка (мастер п. 40): дока в первых шагах нет — её ход здесь, по нажатию мастер (п. 55). */}
+                        <InstallPill place="onb" />
                         <div class="ob-lang" role="group" aria-label={tr.settings.languageLabel}>
                             {LANGUAGES.map((language) => (
                                 <button key={language.code} type="button" lang={language.code} aria-pressed={current === language.code} onClick={() => void setLanguage(language.code)}>
@@ -295,7 +315,14 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                                         {nav.secondary.label}
                                     </button>
                                 )}
-                                <button type="button" class="dw-btn dw-btn-lg dw-btn-accent onb-next" disabled={busy || !!nav?.disabled} onClick={() => void next()}>
+                                <button
+                                    type="button"
+                                    class="dw-btn dw-btn-lg dw-btn-accent onb-next"
+                                    disabled={busy || !!nav?.disabled || !!nav?.busy}
+                                    aria-busy={nav?.busy || undefined}
+                                    onClick={() => void next()}
+                                >
+                                    {nav?.busy && <span class="mark mark-busy onb-next-spin" aria-hidden="true" />}
                                     {nav?.label ?? (index === steps.length - 1 ? tr.onboarding.toDesk : tr.onboarding.next)}
                                 </button>
                             </nav>
@@ -514,6 +541,7 @@ function WhereStep({ choice, scan, onPick }: { choice: Choice; scan: Scan; onPic
                     )}
                     {option('station', t.choiceStation, t.choiceStationSub, <Ico name="speakerOnly" size="lg" />)}
                 </div>
+                <HomeFound scan={scan} choice={choice} />
                 {choice !== 'computer' && (
                     <p class="small" style={{ margin: 0 }}>
                         {t.rootNote}{' '}
@@ -556,6 +584,44 @@ function WhereStep({ choice, scan, onPick }: { choice: Choice; scan: Scan; onPic
                     {choice === 'computer' ? t.changeLaterComputer : t.changeLater}
                 </p>
             </section>
+        </div>
+    );
+}
+
+/**
+ * «Что есть в доме» (docs/plans/home-and-devices.md, этап 6): найденные устройства с ролями — колонка, на которой центр
+ * уже работает, колонка, что станет центром, этот компьютер — Турбо или центр, пока он один; невозможное — с причиной
+ * («нужен root»: SSH на колонке закрыт).
+ */
+function HomeFound({ scan, choice }: { scan: Scan; choice: Choice }) {
+    const t = tr.onboarding;
+    if (!scan.done) return null;
+    const centre = new Set(scan.withGateway.map((station) => station.address));
+    const rows = scan.found.slice(0, 4).map((station) => {
+        const role = centre.has(station.address) ? t.deviceCentreHere : station.ssh === null ? t.needsRoot : t.deviceCanCentre;
+        return { key: station.address, name: nameOf(station), role, warn: station.ssh === null && !centre.has(station.address) };
+    });
+    rows.push({
+        key: 'this-computer',
+        name: t.deviceThisComputer,
+        role: choice === 'computer' ? t.deviceCentreAlone : t.deviceTurbo,
+        warn: false,
+    });
+    return (
+        <div class="onb-found" aria-label={t.yourDevices}>
+            <span class="small">{t.yourDevices}</span>
+            <ul class="checks">
+                {rows.map((row) => (
+                    <li key={row.key}>
+                        <span class={`mark ${row.warn ? 'mark-warn' : 'mark-ok'}`}>
+                            <Ico name={row.warn ? 'warn' : 'check'} size="sm" />
+                        </span>
+                        <span class="s">
+                            <b>{row.name}</b> — {row.role}
+                        </span>
+                    </li>
+                ))}
+            </ul>
         </div>
     );
 }

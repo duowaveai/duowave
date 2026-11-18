@@ -398,6 +398,23 @@ events! {
         change: String,
         #[serde(default, skip_serializing_if = "Option::is_none")] actor: Option<Actor>,
     }
+    /// This gateway took a new revision of the home's copy (src/home/copy.rs): the services that keep their own view of
+    /// the settings read them again; the panel reads what it shows.
+    HomeCopied = "home.copied" {
+        revision: u64,
+    }
+    /// A room of the home changed (src/home/rooms.rs): its mode, volume or who answers there. `fields` — what changed;
+    /// a new mode reconnects that station into it.
+    RoomChanged = "home.room.changed" {
+        device: String,
+        fields: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")] actor: Option<Actor>,
+    }
+    /// The devices of the home moved (src/home/devices.rs): a station came or went, a Turbo woke or slept, the
+    /// list changed. `reason` — the first event of the burst.
+    HomeDevicesChanged = "home.devices.changed" {
+        reason: String,
+    }
     /// A helper answers again (its look).
     HelperUp = "helpers.up" {
         id: String,

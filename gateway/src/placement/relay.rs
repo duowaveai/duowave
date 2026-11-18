@@ -108,6 +108,8 @@ pub struct StationRelay {
     hub: Weak<LiveHub>,
     running: Mutex<BTreeMap<String, Running>>,
     kept: Mutex<BTreeMap<String, Kept>>,
+    /// The stations whose watch looks again in a moment (`look_soon`).
+    soon: Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl StationRelay {
@@ -120,6 +122,7 @@ impl StationRelay {
             hub: Arc::downgrade(hub),
             running: Mutex::new(BTreeMap::new()),
             kept: Mutex::new(BTreeMap::new()),
+            soon: Mutex::new(std::collections::BTreeSet::new()),
         });
         hub.set_stations(relay.clone());
         let weak = Arc::downgrade(&relay);
@@ -222,10 +225,10 @@ impl StationRelay {
         };
         let status = response.status();
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            return Outcome::Refused(format!("шлюз колонки не принял ключ пары ({})", status.as_u16()));
+            return Outcome::Refused(format!("колонка не приняла ключ пары ({})", status.as_u16()));
         }
         if !status.is_success() {
-            return Outcome::Failed(format!("шлюз колонки ответил {}", status.as_u16()));
+            return Outcome::Failed(format!("колонка ответила {}", status.as_u16()));
         }
         let mut buffer: Vec<u8> = Vec::new();
         loop {
@@ -278,9 +281,29 @@ impl StationRelay {
                 _ => {}
             }
         }
+        if kind == "changed" && home_news(message.get("name").and_then(Value::as_str).unwrap_or_default()) {
+            self.look_soon(key);
+        }
         if let Some(hub) = self.hub.upgrade() {
             hub.relay(key, Some(&message));
         }
+    }
+
+    /// The centre changed something of the home: the watch looks at it in a moment, and the home's copy here follows
+    /// within seconds, not at the next 30-s look (docs/plans/home-and-devices.md, stage 3). One look per burst.
+    fn look_soon(&self, key: &str) {
+        if !lock(&self.soon).insert(key.to_string()) {
+            return;
+        }
+        let Some(me) = self.me.upgrade() else { return };
+        let key = key.to_string();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            lock(&me.soon).remove(&key);
+            if let Some(watch) = me.stations.find(&key) {
+                watch.poll().await;
+            }
+        });
     }
 
     /// The station's channel is lost: its state goes, and the panels hear it.
@@ -327,13 +350,36 @@ impl Drop for StationRelay {
     }
 }
 
+/// The station's news that change what the home's copy holds.
+fn home_news(name: &str) -> bool {
+    matches!(
+        name,
+        "settings.changed"
+            | "persona.changed"
+            | "brain.changed"
+            | "mcp.changed"
+            | "connector.changed"
+            | "routes.changed"
+            | "voice.changed"
+            | "mode.changed"
+            | "station.updated"
+            | "helpers.changed"
+            | "home.room.changed"
+            | "memory.changed"
+    )
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn describe(error: &reqwest::Error) -> String {
     if error.is_timeout() {
-        "шлюз колонки не ответил вовремя".into()
+        "колонка не ответила вовремя".into()
     } else if error.is_connect() {
-        "шлюз колонки не отвечает".into()
+        "колонка не отвечает".into()
     } else {
-        format!("шлюз колонки: {error}")
+        format!("колонка: {error}")
     }
 }
 

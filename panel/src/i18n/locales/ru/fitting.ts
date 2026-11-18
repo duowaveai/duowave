@@ -67,7 +67,7 @@ export default {
     groupPrivateRest: ' — только руками',
     optionalSuffix: ' · можно без него',
     micOffWhileKey: 'Микрофон выключен, пока открыт ключ',
-    staysInGateway: 'Остаётся в шлюзе у вас дома',
+    staysInGateway: 'Остаётся в центре у вас дома',
     agentCantSee: 'Агент и облако его не видят',
     allowed: 'Что ему можно',
     youApprove: 'одобряете вы',

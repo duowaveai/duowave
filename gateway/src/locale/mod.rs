@@ -73,6 +73,11 @@ pub async fn request_language(request: Request, next: Next) -> Response {
     REQUEST.scope(language, next.run(request)).await
 }
 
+/// Work started by a request and run on its own task (a move to the station): the request's language goes with it.
+pub async fn with_language<F: std::future::Future>(language: Option<String>, work: F) -> F::Output {
+    REQUEST.scope(language, work).await
+}
+
 /// The language of the request being answered, if it said one.
 pub fn of_request() -> Option<String> {
     REQUEST.try_with(Clone::clone).ok().flatten()

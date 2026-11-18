@@ -9,7 +9,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { useHelpers } from '../helpers';
 import { usePanel } from '../shell/context';
 import { useTheme } from '../shell/theme';
-import { DeskWidget, isFresh, orderedOnDesk, useDeskLayout, useWidgets } from '../shell/widgets';
+import { DeskWidget, isFresh, orderedOnDesk, repairedLayout, useDeskLayout, useWidgets } from '../shell/widgets';
 import { WidgetFrame, WidgetMenu } from '../ui/widget';
 import { settingsPlace } from '../builtin';
 import { ConnectFirstCard } from './connect';
@@ -81,6 +81,7 @@ function Scene({ room }: { room?: number }) {
                 onToggleWho={toggleWho}
                 room={room}
                 onOpenHome={() => panel.go('settings', 'helpers')}
+                onOpenTurbo={(id) => panel.go('settings', 'devices', `turbo:${id}`, { view: 'computer' })}
             />
             {/* Персонаж только что запомнил что-то голосом или мимоходом: видно сразу, с «Отменить». */}
             {/* Строки под сценой — своим блоком с отступом снизу: широкий виджет под сценой (витрина) заходит на пустой низ
@@ -146,7 +147,12 @@ export function DeskScreen() {
                 <FolderOffers offers={offers} />
             </>
         ) : null;
-    const ordered = orderedOnDesk(widgets, layout);
+    // Плитка, положенная под ключом, которого стол не рисует (п. 47), — на настоящую плитку пакета, и это сохраняется.
+    const repaired = repairedLayout(layout, widgets);
+    useEffect(() => {
+        if (repaired) actions.repair(widgets);
+    }, [repaired !== null]);
+    const ordered = orderedOnDesk(widgets, repaired ?? layout);
     // Место справа от колонки для второго тела: Турбо, пустое место для него у колонки, стол пульта Турбо.
     const helpers = useHelpers();
     const sceneExtra =

@@ -29,13 +29,12 @@ use crate::core::identity::permissions::STATION_VIEW;
 use crate::core::identity::principal::{Principal, PrincipalKind};
 use crate::core::identity::roles::Role;
 use crate::platform::http::{ApiError, Caller, Zone};
-use crate::settings::definitions::SettingsHome;
 use crate::utils::time::now_ms;
 
 /// The header a copy carries: when the station answered it, unix ms.
 pub const COPY_AT: &str = "x-duowave-copy-at";
 /// Who on the computer made the change (for the station's history), and their role (for their rights there).
-use super::peer::{HELPER_PERSON, HELPER_ROLE};
+use super::peer::{HELPER_PERSON, HELPER_PERSON_ID, HELPER_ROLE};
 /// A body to pass on: the panel's requests are small; a voice take or a package is the largest.
 const BODY_LIMIT: usize = 32 * 1024 * 1024;
 /// The station answers in the home network fast, or it is away.
@@ -87,6 +86,20 @@ fn plugin_call(rest: &str) -> bool {
         ["api", "v1", "packages", id, "call", function] => !id.is_empty() && !function.is_empty(),
         _ => false,
     }
+}
+
+/// A phrase said to the home (docs/plans/home-and-devices.md, stage 1): the computer's microphone talks to the home's
+/// centre through this pass — `api/v1/listen` (the sound, piece by piece), `api/v1/talk` and `api/v1/talk/speech` (the
+/// phrase and its answer). Saying something is not a change of the station's settings: anyone at home who may see it
+/// may speak, and the station checks the person's own right to talk with their role.
+fn speaking(rest: &str) -> bool {
+    matches!(rest, "api/v1/listen" | "api/v1/talk" | "api/v1/talk/speech")
+}
+
+/// What is the person's own at the centre, not the station's settings (stage 2): their desk and what the panel
+/// remembers about them. Anyone at home who may see the home writes their own.
+fn own_row(rest: &str) -> bool {
+    matches!(rest, "api/v1/desk/gateway" | "api/v1/panel/state")
 }
 
 /// A path that stays where it says, before the whitelist reads it: no empty segment, no «.» or «..» — nor their
@@ -188,6 +201,14 @@ fn keep_newest(dir: &FsPath, kept: usize) {
     }
 }
 
+/// A change kept for the centre while it is away.
+fn queued(name: &str) -> String {
+    crate::tr!(
+        "«{name}» сейчас не на связи: правка сохранена здесь и дойдёт до центра, когда он вернётся.",
+        name = name
+    )
+}
+
 fn away(name: &str) -> String {
     crate::tr!("Колонка «{name}» не на связи: изменения можно сделать, когда она вернётся.", name = name)
 }
@@ -210,7 +231,7 @@ async fn pass(
     // to see the station; a change — an admin here. On the station they have their role's rights (HELPER_ROLE), no
     // more. A plugin's call is a reading: the station checks its right with that role.
     let principal = if reading && public_file(&rest) { None } else { Some(caller.permitted(STATION_VIEW)?.clone()) };
-    let changing = !reading && !(method == Method::POST && plugin_call(&rest));
+    let changing = !reading && !(method == Method::POST && (plugin_call(&rest) || speaking(&rest))) && !own_row(&rest);
     if changing && principal.as_ref().and_then(|principal| principal.role) != Some(Role::Admin) {
         return Err(ApiError::forbidden(crate::tr!("Править настройки колонки отсюда может администратор.")));
     }
@@ -222,16 +243,6 @@ async fn pass(
         return Err(ApiError::not_found(crate::tr!("Такой колонки у этого компьютера нет.")));
     };
     let record = gateway.record();
-    // Its settings live here and go to it from here: a change of them made in its window would be overwritten by the
-    // next sending — they go back to the station first. That is every change `routes::sent_over` names, the workshop's
-    // model among them. What does not travel goes on: a plugin's call, the player, the workshop's drafts, the mode (the
-    // station's own: only a move brings the computer's), «Спросить мозг» and the checks that write nothing.
-    if changing
-        && super::routes::sent_over(&format!("/{rest}"))
-        && record.as_ref().is_some_and(|record| record.settings_home == SettingsHome::Pc)
-    {
-        return Err(ApiError::conflict(super::routes::settings_on_pc()));
-    }
     let Some(peer) = gateway.client() else {
         return Err(ApiError::conflict(crate::tr!("Колонка не связана с этим компьютером: нет ключа пары.")));
     };
@@ -263,7 +274,16 @@ async fn pass(
             .bearer_auth(peer.key())
             .header(HELPER_PERSON, principal.name.chars().filter(|c| !c.is_control()).collect::<String>())
             .header(HELPER_ROLE, role.as_str());
+        // A person's own id — never a key's: the centre keeps their desk and panel memory under it.
+        if principal.kind == PrincipalKind::User {
+            request = request.header(
+                HELPER_PERSON_ID,
+                principal.id.chars().filter(|c| c.is_ascii_graphic()).take(64).collect::<String>(),
+            );
+        }
     }
+    // The change as it came: kept for the centre when it is away (src/home/queue.rs).
+    let kept_body = body.clone();
     if changing || !body.is_empty() {
         request = request.body(body);
     }
@@ -287,6 +307,31 @@ async fn pass(
                     "Колонка «{name}» не ответила вовремя — попробуйте ещё раз.",
                     name = name
                 )));
+            }
+            // A change while the home's centre is away waits for it here (docs/plans/home-and-devices.md, stage 3): it
+            // goes in order when the centre is back, under the person who made it.
+            if changing {
+                if let (Some(principal), Some(role)) = (&principal, role) {
+                    let content_type = headers.get(header::CONTENT_TYPE).and_then(|value| value.to_str().ok());
+                    let change = crate::home::queue::Change {
+                        method: method.as_str(),
+                        path: &path,
+                        content_type,
+                        body: &kept_body,
+                        person: &principal.name,
+                        person_id: (principal.kind == PrincipalKind::User).then_some(principal.id.as_str()),
+                        role: role.as_str(),
+                    };
+                    return match crate::home::queue::keep(&app.db, &change) {
+                        Ok(_) => Ok((
+                            StatusCode::ACCEPTED,
+                            [(header::CONTENT_TYPE, "application/json")],
+                            serde_json::json!({ "message": queued(&name), "queued": true }).to_string(),
+                        )
+                            .into_response()),
+                        Err(why) => Err(ApiError::unavailable(why)),
+                    };
+                }
             }
             return Err(ApiError::unavailable(away(&name)));
         }
@@ -325,7 +370,7 @@ async fn pass(
     let bytes = response
         .bytes()
         .await
-        .map_err(|error| ApiError::bad_gateway(crate::tr!("Шлюз колонки оборвал ответ: {error}", error = error)))?;
+        .map_err(|error| ApiError::bad_gateway(crate::tr!("Колонка оборвала ответ: {error}", error = error)))?;
     let worth = status.is_success() && content_type.starts_with("application/json") && bytes.len() < COPY_LIMIT;
     if let (Some(path), true) = (copy.as_ref(), worth) {
         write_copy(
@@ -381,7 +426,7 @@ mod tests {
     use crate::config::{Config, Env};
     use crate::core::availability::Placement;
     use crate::core::identity::principal::user_principal;
-    use crate::settings::definitions::StationPlacement;
+    use crate::settings::definitions::{SettingsHome, StationPlacement};
 
     #[test]
     fn passes_the_panels_api_its_health_plugins_previews_and_media_only() {
@@ -408,6 +453,16 @@ mod tests {
             "api/v1/workshop/drafts/d1/call/list",
         ] {
             assert!(!plugin_call(rest), "{rest}");
+        }
+    }
+
+    #[test]
+    fn a_phrase_said_to_the_home_is_not_a_change() {
+        for rest in ["api/v1/listen", "api/v1/talk", "api/v1/talk/speech"] {
+            assert!(speaking(rest), "{rest}");
+        }
+        for rest in ["api/v1/talk/input", "api/v1/talk/now", "api/v1/listen/model", "api/v1/brain"] {
+            assert!(!speaking(rest), "{rest}");
         }
     }
 
@@ -649,21 +704,6 @@ mod tests {
         assert_eq!(body["message"], "Такой колонки у этого компьютера нет.");
         assert_eq!(asked.lock().unwrap().len(), before);
 
-        // While its settings live here, a change made in its window would be overwritten: refused, said why.
-        assert_eq!(send(&app, home, "PUT", "/station/h:kitchen/api/v1/brain", &admin).await.0, StatusCode::OK);
-        watch.set_record(Some(&kitchen(port, SettingsHome::Pc)), None).unwrap();
-        let (status, _, body) = send(&app, home, "PUT", "/station/h:kitchen/api/v1/brain", &admin).await;
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(body["message"], crate::placement::routes::settings_on_pc());
-        assert!(body["message"].as_str().unwrap().contains("«Вернуть настройки на колонку»"));
-        assert_eq!(asked.lock().unwrap().iter().filter(|asked| asked.starts_with("PUT")).count(), 1);
-        assert_eq!(send(&app, home, "GET", journal, &member).await.0, StatusCode::OK, "reading goes on");
-        // A plugin's settings travel too: refused. What does not travel goes on — a plugin's call (its widgets read
-        // with it, a member's too: the station checks its right with the member's role), the player.
-        let why = crate::placement::routes::settings_on_pc();
-        let (settings, on_pc) = ("/station/h:kitchen/api/v1/packages/calendar/settings", Some(why.as_str()));
-        let (status, _, body) = send(&app, home, "PUT", settings, &admin).await;
-        assert_eq!((status, body["message"].as_str()), (StatusCode::CONFLICT, on_pc));
         let call = "/station/h:kitchen/api/v1/packages/calendar/call/today";
         let (status, _, body) = send(&app, home, "POST", call, &member).await;
         assert_eq!((status, body["message"]["role"].as_str()), (StatusCode::OK, Some("member")), "{body}");
@@ -671,16 +711,10 @@ mod tests {
         let pause = "/station/h:kitchen/api/v1/station/player/pause";
         assert_eq!(send(&app, home, "POST", pause, &admin).await.0, StatusCode::OK);
         assert_eq!(send(&app, home, "POST", pause, &member).await.0, StatusCode::FORBIDDEN, "a change: the admin's");
-        // Review G1: a character chosen, the journal's days, the catalog, the workshop's model travel too; the mode
-        // is the station's own, and what writes nothing goes on.
-        for (method, rest) in [
-            ("POST", "api/v1/characters/alice/choose"),
-            ("PUT", "api/v1/requests/keep"),
-            ("PUT", "api/v1/packages/catalog"),
-            ("PUT", "api/v1/workshop/agent"),
-        ] {
+        // The home's settings live at the station, never here: a change in its window goes to it as any other.
+        for (method, rest) in [("PUT", "api/v1/brain"), ("PUT", "api/v1/packages/calendar/settings")] {
             let (status, _, body) = send(&app, home, method, &format!("/station/h:kitchen/{rest}"), &admin).await;
-            assert_eq!((status, body["message"].as_str()), (StatusCode::CONFLICT, on_pc), "{rest}");
+            assert_eq!(status, StatusCode::OK, "{rest}: {body}");
         }
         for rest in ["api/v1/station/mode", "api/v1/brain/ask", "api/v1/connectors/weather/check"] {
             let (status, _, body) = send(&app, home, "POST", &format!("/station/h:kitchen/{rest}"), &admin).await;

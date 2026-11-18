@@ -144,7 +144,7 @@ export default {
     outcomeStopped: 'остановлена',
     outcomeLimit: 'упёрлась в лимит',
     // «Где»
-    whereGateway: 'Шлюз',
+    whereGateway: 'Центр',
     whereGatewayPc: 'этот компьютер',
     whereGatewayStation: 'колонка',
     whereAsked: 'Где попросили',

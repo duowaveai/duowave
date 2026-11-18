@@ -31,6 +31,7 @@ const en: Translation<typeof ru> = {
     switchOn: 'Turn on',
     make: 'Make',
     chipRecommended: 'recommended',
+    wordLine: (word: string) => `Word: “${word}”`,
     chipSoon: 'soon',
     chipHave: 'available',
     chipExample: 'example',

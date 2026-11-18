@@ -36,6 +36,10 @@ pub struct Question {
     pub grant: Pattern,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub danger: Option<Danger>,
+    /// A standing danger (a microphone that hears the room): the «да» is for good, not for this one act — the panel
+    /// says so instead of «только если ждёте этого сейчас» (clean-path check 18.11, item 24).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub standing: bool,
     /// For people: «Утреннее шоу», «Календарь».
     pub from_title: String,
     pub to_title: String,
@@ -60,6 +64,7 @@ impl Question {
             handle: handle.to_string(),
             level,
             danger: None,
+            standing: false,
             from_title: String::new(),
             to_title: String::new(),
             what: String::new(),

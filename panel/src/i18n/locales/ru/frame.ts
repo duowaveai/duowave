@@ -3,7 +3,7 @@
 export default {
     appCrashedLog: 'Окошко: приложение упало',
     appCrashed: 'Окошко приложения упало:',
-    moduleNotHere: 'модуль не с этого шлюза',
+    moduleNotHere: 'модуль не из этого центра',
     noPlugin: 'модуль не отдаёт плагин: export default definePlugin({…})',
     noPart: (part: string) => `у приложения нет «${part}»`,
     failed: 'не вышло',

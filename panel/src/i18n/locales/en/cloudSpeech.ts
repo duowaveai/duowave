@@ -28,7 +28,7 @@ const en: Translation<typeof ru> = {
     works: 'It works.',
     ready: 'works',
     notReady: 'not set up',
-    fromEnv: 'Set in the gateway’s .env. Save it here to manage it from the panel.',
+    fromEnv: 'Set in DuoWave’s .env. Save it here to manage it from the panel.',
     onStation: 'The key is kept on the speaker.',
     adminOnly: 'Only an administrator can set it up.',
     whereKey: 'Where to get a key',

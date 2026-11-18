@@ -55,14 +55,14 @@ impl PlaybackNews {
 
     /// The note in the request's journal.
     pub fn note(self, title: &str, via_gateway: bool) -> String {
-        let way = if via_gateway { " (через шлюз)" } else { "" };
+        let way = if via_gateway { " (через центр)" } else { "" };
         match self {
             PlaybackNews::Started => format!("колонка начала играть: {title}{way}"),
             PlaybackNews::Stopped => format!("колонка остановила: {title}"),
             PlaybackNews::Finished => format!("доиграло: {title}"),
             PlaybackNews::Failed => format!("колонка не смогла играть: {title}{way}"),
             PlaybackNews::Silent { seconds, retrying: true } => {
-                format!("колонка молчит {seconds} с: {title} — пробую через шлюз")
+                format!("колонка молчит {seconds} с: {title} — пробую через центр")
             }
             PlaybackNews::Silent { seconds, retrying: false } => format!("колонка молчит {seconds} с: {title}{way}"),
         }
@@ -413,7 +413,7 @@ mod tests {
         player.play("kitchen", vec![item("jazz", "https://jazz.example/jazz-128.mp3")], 0, 0);
         let silent = player.current("kitchen").unwrap().1.play_id;
         tokio::time::sleep(Duration::from_millis(60)).await;
-        assert!(heard.0.lock().unwrap().last().unwrap().1.contains("молчит 1 с: jazz — пробую через шлюз"));
+        assert!(heard.0.lock().unwrap().last().unwrap().1.contains("молчит 1 с: jazz — пробую через центр"));
         assert_eq!(pushed.0.lock().unwrap().as_slice(), [("kitchen".to_string(), "vgw_media_retry".to_string())]);
         assert_eq!(player.current("kitchen").unwrap().0.url, "http://192.0.2.10/media/stream/t1");
         let again = watch.retried("kitchen", &silent).expect("the station's callback gets the item anew");
@@ -422,7 +422,7 @@ mod tests {
 
         // Through the gateway too silent: told, no third way.
         tokio::time::sleep(Duration::from_millis(60)).await;
-        assert!(heard.0.lock().unwrap().last().unwrap().1.ends_with("молчит 1 с: jazz (через шлюз)"));
+        assert!(heard.0.lock().unwrap().last().unwrap().1.ends_with("молчит 1 с: jazz (через центр)"));
         assert_eq!(pushed.0.lock().unwrap().len(), 1);
 
         // An AAC stream where it cannot be transcoded: silent, and the plugin will hear it, nothing pushed.

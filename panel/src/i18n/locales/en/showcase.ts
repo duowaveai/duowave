@@ -54,6 +54,10 @@ const en: Translation<typeof ru> = {
 
     talk: 'Talk',
     talkMe: 'Alice, how are you?',
+    talkWith: (word: string) => `${word}, how are you?`,
+    makeWith: (word: string) => `${word}, make a widget with the bitcoin rate`,
+    answers: (name: string) => `${name} answers`,
+    voiceComing: (name: string) => `Alice’s voice answers meanwhile — ${name}’s voice switches on by itself.`,
     talkMeComputer: 'How are you?',
     talkReply: 'Great. Shall we play or make something?',
     talkSay: 'how are you?',

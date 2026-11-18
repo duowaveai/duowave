@@ -18,6 +18,13 @@ export class ApiError extends Error {
     }
 }
 
+/** Правка ждёт центр: компьютер отдаст её, когда центр вернётся. */
+export class QueuedChange extends ApiError {
+    constructor(body: string) {
+        super(202, body);
+    }
+}
+
 /** Что сказал шлюз в теле ошибки: `{ message: '…' }`; не JSON или без слов — null. */
 function gatewayMessage(body: string): string | null {
     try {
@@ -120,6 +127,9 @@ async function call<T>(method: string, path: string, body?: unknown, signal?: Ab
     });
     if (VIA && response.status !== 503) noteAnswer(response.headers.get('x-duowave-copy-at'));
     if (!response.ok) throw new ApiError(response.status, await response.text().catch(() => ''));
+    // Центр не на связи: компьютер сохранил правку и отдаст её центру, когда тот вернётся (docs/plans/home-and-devices.md,
+    // этап 3). Экран показывает эти слова там же, где показал бы отказ, — правка не потеряна, но и не сделана.
+    if (response.status === 202 && VIA) throw new QueuedChange(await response.text().catch(() => ''));
     if (response.status === 204) return undefined as T;
     const envelope = (await response.json()) as { message: T | null };
     return envelope.message as T;
@@ -634,11 +644,62 @@ export interface StationPlacementRecord {
 }
 
 /** Голос колонки, пока компьютер даёт ей свой (`/api/v1/models/home-voice`). */
+/** Модель голоса персонажа на компьютере-Турбо (п. 40; договор — side-session-notes/…/voice-plan-contract.md). */
+export interface VoicePlanEngine {
+    id: CloneEngineId;
+    title: string;
+    /** Как голос встанет под неё: готовый снимок из пакета, отпечаток с образца, никак. */
+    way: 'snapshot' | 'reference' | 'none';
+    supported: boolean;
+    reason?: string | null;
+    state: 'ready' | 'installing' | 'missing' | 'unsupported';
+    percent?: number | null;
+    doneMb?: number | null;
+    totalMb?: number | null;
+    diskMb: number;
+    freeDiskMb?: number | null;
+    diskFits?: boolean;
+    ramMb: number;
+    freeRamMb?: number | null;
+    ramFits?: boolean;
+    device?: 'mps' | 'cuda' | 'cpu';
+    recommended?: boolean;
+}
+
+/** План голоса персонажа от Турбо: модели, выбранная, запасной голос, ход. */
+export interface VoicePlan {
+    engines: VoicePlanEngine[];
+    chosen?: string | null;
+    fallback?: { cardId: string; title: string; installed: boolean; sizeMb?: number | null } | null;
+    progress?: {
+        stage: 'model' | 'voice';
+        engine: string;
+        percent?: number | null;
+        doneMb?: number | null;
+        totalMb?: number | null;
+        /** Словами: мегабайты и скорость скачивания, «скачивание стояло — повторяю» (п. 66). */
+        detail?: string | null;
+    } | null;
+    voiceOn: boolean;
+    computer?: string | null;
+    /** Модель для этого плана не встала — словами («Hugging Face не отвечает — …»), п. 66–67. */
+    failed?: string | null;
+}
+
+/** Голос персонажа глазами центра: Турбо, его план (null — не на связи, нет или старый), выбор центра. */
+export interface HomeVoicePlan {
+    turbo: { id: string; name: string; up: boolean } | null;
+    plan: VoicePlan | null;
+    chosen: string | null;
+}
+
 export interface HomeVoice {
     /** Компьютер помогает колонке, и голос он даёт («Этот компьютер» → «Даю»). */
     offered: boolean;
-    /** Компьютер на связи. */
+    /** Компьютер даёт голос сейчас. */
     up: boolean;
+    /** Компьютер на связи, даже если его голос ещё не готов (шлюз постарше не присылает — тогда как `up`). */
+    reached?: boolean;
     /** Имя голоса компьютера («Baya»); нет — компьютер не на связи или у голоса только id. */
     voice?: string;
     /** Облачный голос колонки настроен (`/api/v1/speech/cloud`): без компьютера говорит он. */
@@ -728,10 +789,10 @@ export interface StationGatewayView {
     compatible: boolean;
     update?: string;
     payload: { source: 'builtIn' | 'file' | 'feed' | 'none'; version: string; note: string };
-    backups: Array<{ id: string; at: string; revision: number; size: number }>;
+    /** Когда этот компьютер последний раз взял копию дома у центра (docs/plans/home-and-devices.md, этап 3). */
+    copiedAt?: string;
     warnings: Array<{ kind: 'silent' | 'voiceAway' | 'safety'; text: string }>;
     copyStale: boolean;
-    stationBehind: boolean;
 }
 
 export type MoveTo = 'station' | 'stationServer' | 'pc' | 'yandex';
@@ -845,6 +906,73 @@ export interface HelperBrief {
     abilities: Ability[];
     /** Регулятор его пускает; шлюз этапа 3 поля не присылает (пульт судит по месту, shell/role.ts). */
     allowed?: boolean;
+}
+
+/**
+ * Устройство дома (docs/plans/home-and-devices.md, этап 1; gateway/src/home/devices.rs): центр, колонки, что слышат
+ * для него, и Турбо. Роли — «Центр» и «Турбо»; без роли — только слышит. Слово «ухо» людям не показывается.
+ */
+export type HomeDeviceKind = 'station' | 'computer' | 'server' | 'cloud';
+export type HomeDeviceRole = 'centre' | 'turbo';
+export type HomeDeviceState = 'online' | 'reconnecting' | 'asleep' | 'offline' | 'off' | 'unknown';
+
+export interface HomeDevice {
+    id: string;
+    kind: HomeDeviceKind;
+    name: string;
+    roles: HomeDeviceRole[];
+    /** Дом слушает через его микрофон: значок «слышит». */
+    hears: boolean;
+    state: HomeDeviceState;
+    /** Есть копия дома: ответит сам, пока центр недоступен (этап 3). */
+    copy: boolean;
+    /** Центр, который ответил на этот запрос. */
+    itself?: boolean;
+    since?: string;
+    lastSeen?: string;
+    device?: string;
+    model?: string;
+    /** Id шлюза устройства: компьютер находит себя в списке по нему (/health `gateway.id`). */
+    gatewayId?: string;
+    order?: number;
+    enabled?: boolean;
+    kept?: boolean;
+    /** Турбо говорит более старым договором, чем центр: новое (установка по связи, голос персонажа) ждёт обновления. */
+    older?: boolean;
+}
+
+/** Комната дома (этап 2): что в ней своё — режим Алисы, громкость, кто отвечает; нет — как во всём доме. */
+export interface HomeRoom {
+    mode?: PanelMode | null;
+    volume?: number | null;
+    character?: string | null;
+}
+
+/** Пакет в одном списке «Установлено» дома (этап 5а): где он работает — устройство дома. */
+export interface HomeAppPlace {
+    device: string;
+    name: string;
+    kind: HomeDeviceKind;
+    /** Список этого устройства прочитан сейчас; нет — спит, не пускают или не ответил (`why`). */
+    reached: boolean;
+    why?: string;
+}
+
+export interface HomeApp {
+    id: string;
+    version?: string | null;
+    title: string;
+    kind?: PackageKind | null;
+    runtime?: string | null;
+    enabled: boolean;
+    state: string;
+    place: HomeAppPlace;
+}
+
+export interface HomeDevices {
+    home: { id?: string; name: string };
+    centre: string;
+    devices: HomeDevice[];
 }
 
 /** Ключ подключения, который показывает этот компьютер (только администратору). */
@@ -1395,9 +1523,25 @@ export interface TalkTurn {
     fresh?: boolean;
 }
 
+/**
+ * Разговор с домом из окна дома на компьютере (docs/plans/home-and-devices.md, этап 3): фраза идёт центру через
+ * проход, а центра нет на связи (проход ответил 503 или не ответил) — компьютер отвечает сам, по своей копии дома: тот
+ * же персонаж и та же память, новое догонит центр. Вне окна дома — как есть.
+ */
+async function homeFetch(path: string, init: RequestInit): Promise<Response> {
+    if (!VIA) return fetch(path, init);
+    try {
+        const response = await fetch(gw(path), init);
+        if (response.status !== 503) return response;
+    } catch (error) {
+        if (init.signal?.aborted) throw error;
+    }
+    return fetch(path, init);
+}
+
 /** Фраза уходит «Мозгу»; события ответа приходят по мере того, как он пишется; abort — оборвать ответ. */
 export async function talk(turn: TalkTurn, onEvent: (event: TalkEvent) => void, signal?: AbortSignal): Promise<void> {
-    const response = await fetch(gw('/api/v1/talk'), {
+    const response = await homeFetch('/api/v1/talk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...authHeaders() },
         body: JSON.stringify(turn),
@@ -1408,7 +1552,7 @@ export async function talk(turn: TalkTurn, onEvent: (event: TalkEvent) => void, 
 
 /** Фраза ответа своим голосом дома: WAV для динамиков компьютера. */
 export async function talkSpeech(text: string, signal?: AbortSignal): Promise<Blob> {
-    const response = await fetch(gw('/api/v1/talk/speech'), {
+    const response = await homeFetch('/api/v1/talk/speech', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ text }),
@@ -1710,6 +1854,8 @@ export interface TtsPending {
     /** Чего ждёт: модели (engine), файла голоса (file) или снимка голоса (imprint). */
     waitFor?: { kind: 'engine' | 'file' | 'imprint' | string; id: string } | null;
     progress?: number;
+    /** Что идёт сейчас словами: «Скачиваю веса модели · 603 из ~2 300 МБ · 1,2 МБ/с» (п. 66). */
+    detail?: string | null;
     reason?: string | null;
     needs?: VoiceNeeds | null;
     since?: string;
@@ -2134,6 +2280,8 @@ export interface BusQuestion {
     level: BusLevel;
     grant: string;
     danger?: string;
+    /** Опасное, но «да» на него насовсем (микрофон, что слышит комнату): лист не говорит «только если ждёте сейчас». */
+    standing?: boolean;
     fromTitle: string;
     toTitle: string;
     what: string;
@@ -2802,6 +2950,8 @@ export interface CatalogEntry {
     faces?: CatalogFace[];
     /** Где работает: в шлюзе, на компьютере, в сети; у персонажа и темы — нет. */
     place?: CatalogPlace | null;
+    /** `prefer: home` в ленте: на колонке с Турбо работает у Турбо (docs/plans/home-and-devices.md, этап 5б). */
+    preferHome?: boolean;
     /** Рекомендуем мы (только главная лента и наши). */
     recommended?: boolean;
     /** Когда появился в каталоге (ISO): ряд «Новое». */
@@ -3574,12 +3724,6 @@ export const api = {
         remove?: boolean;
     }) => post<MoveJob>('/api/v1/placement/move', body),
     moveJob: (id: string) => get<MoveJob>(`/api/v1/placement/move/${encodeURIComponent(id)}`),
-    backupStation: (station?: string) =>
-        post<{ backup: StationGatewayView['backups'][number] }>(forStation('/api/v1/placement/backup', station)),
-    restoreStationSettings: (id: string, station?: string) =>
-        post<{ restored: string }>(forStation('/api/v1/placement/restore', station), { id }),
-    setSettingsHome: (home: 'station' | 'pc', station?: string) =>
-        post<unknown>(forStation('/api/v1/placement/settings-home', station), { home }),
     setSafety: (on: boolean, station?: string) => post<unknown>(forStation('/api/v1/placement/safety', station), { on }),
     setStationAutoUpdate: (on: boolean, station?: string) =>
         post<unknown>(forStation('/api/v1/placement/auto-update', station), { on }),
@@ -3631,6 +3775,17 @@ export const api = {
         post<StationGatewayView>(forStation('/api/v1/placement/helper', station), { on }),
     // Помощники (docs/plans/home-and-helpers.md, блок 1): список, порядок, регулятор, «Где сейчас»; у компьютера — ключ
     // подключения и кому он помогает. Каждая перемена списка отвечает всем списком. Шлюз 0.11 отвечает 404.
+    homeDevices: (signal?: AbortSignal) => get<HomeDevices>('/api/v1/home/devices', signal),
+    homeRooms: (signal?: AbortSignal) => get<{ rooms: Record<string, HomeRoom> }>('/api/v1/rooms', signal),
+    setHomeRoom: (device: string, change: Partial<Record<keyof HomeRoom, unknown>>) =>
+        put<HomeRoom & { device: string }>(`/api/v1/rooms/${encodeURIComponent(device)}`, change),
+    /** Второе устройство дома как ухо центра (этап 4): его центр, перейти в ухо, снова своим центром. */
+    homeEar: (signal?: AbortSignal) => get<{ earOf: { address: string; port: number; name?: string; since: string } | null; copiedRevision?: number | null }>('/api/v1/home/ear', signal),
+    setHomeEar: (centre: { address: string; port?: number; key: string; name?: string }) => put<unknown>('/api/v1/home/ear', centre),
+    leaveHomeEar: () => del<unknown>('/api/v1/home/ear'),
+    /** «Сделать центром»: у центра — эта колонка становится центром, а он — её ухом. */
+    makeCentre: (device: string) => post<{ centre: { address: string; port: number } }>('/api/v1/home/centre', { device }),
+    homeApps: (signal?: AbortSignal) => get<{ apps: HomeApp[]; places: HomeAppPlace[] }>('/api/v1/home/apps', signal),
     helpers: (signal?: AbortSignal) => get<HelpersView>('/api/v1/helpers', signal),
     /**
      * Что даёт помощник по этому адресу и ключу — до сохранения: ничего не записано, ключ подключения не потрачен.
@@ -3755,9 +3910,15 @@ export const api = {
             ...(install ? { install: true } : {}),
         }),
     /** Забыть отложенный выбор голоса: модель доставится, но голос сам не включится. */
-    cancelTtsPending: () => del<unknown>('/api/v1/models/tts/pending'),
+    /** Забыть отложенный голос; `stopped` — шлюз снял и задание, которого он ждал (скачивание модели, п. 68). */
+    cancelTtsPending: () => del<{ forgotten?: boolean; stopped?: boolean } | null>('/api/v1/models/tts/pending'),
     /** Голос колонки, пока компьютер даёт ей свой (gateway/src/models/home_voice.rs). */
     homeVoice: () => get<HomeVoice>('/api/v1/models/home-voice'),
+    /** План голоса персонажа на Турбо (центр спрашивает его по связи дома); старый центр — 404. */
+    homeVoicePlan: (of: { character?: string; package?: string }) =>
+        get<HomeVoicePlan>(`/api/v1/home/voice?${new URLSearchParams(of.character ? { character: of.character } : { package: of.package ?? '' })}`),
+    /** Выбрать модель голоса персонажа на Турбо (по персонажу или по пакету, пока он не встал): центр помнит выбор. */
+    setHomeVoiceEngine: (of: { character?: string; package?: string }, engine: string) => put<HomeVoicePlan>('/api/v1/home/voice', { ...of, engine }),
     setHomeVoice: (voice: HomeVoice['chosen']) => post<HomeVoice>('/api/v1/models/home-voice', { voice }),
     cloudSpeech: () => get<CloudSpeechView>('/api/v1/speech/cloud'),
     setCloudSpeech: (change: CloudSpeechChange) => put<CloudSpeechView>('/api/v1/speech/cloud', change),
@@ -3777,7 +3938,7 @@ export const api = {
      * (`thought`; шлюз постарше его не присылает).
      */
     listen: (wav: Blob, piece = 1) =>
-        fetch(gw(`/api/v1/listen?piece=${piece}`), {
+        homeFetch(`/api/v1/listen?piece=${piece}`, {
             method: 'POST',
             headers: { ...authHeaders(), 'Content-Type': 'audio/wav' },
             body: wav,
@@ -4144,6 +4305,60 @@ export const api = {
     media: (url: string) =>
         url.startsWith('/') && !url.startsWith('//') ? fetchAudio(url) : Promise.reject(new ApiError(400, tr.common.notFromGateway)),
 };
+
+/** Адрес шлюза колонки через проход помощника: картинка или звук её каталога (`/station/<колонка>/…`). */
+export function stationPath(station: string, path: string): string {
+    return `/station/${encodeURIComponent(station)}${path}`;
+}
+
+/**
+ * Вызовы установки пакета — у своего шлюза или, на компьютере-помощнике, у центра дома через проход (проверка начисто
+ * 18.11, п. 42): персонаж из приглашения ставится у центра, а Турбо берёт его у центра сам (п. 40–41). Мастер установки
+ * (magicplace/wizard.tsx) и приглашение первых шагов (screens/onb/invite.tsx) зовут только эти; остальное — свой шлюз.
+ */
+export function installApi(station?: string | null) {
+    if (!station) return { ...api, mediaPath: (path: string) => path };
+    const at = <T>(method: string, path: string, body?: unknown) => stationCall<T>(station, method, path, body);
+    return {
+        ...api,
+        mediaPath: (path: string) => (path.startsWith('/') && !path.startsWith('//') ? stationPath(station, path) : path),
+        characters: () => at<CharactersView>('GET', '/api/v1/characters'),
+        chooseCharacter: (id: string, input: ChooseInput = {}) => at<ChooseResult>('POST', `/api/v1/characters/${encodeURIComponent(id)}/choose`, input),
+        packages: () => at<PackagesView>('GET', '/api/v1/packages'),
+        packagesResources: () => at<PackagesResources>('GET', '/api/v1/packages/resources'),
+        enablePackage: (id: string) => at<PackageView>('POST', `/api/v1/packages/${encodeURIComponent(id)}/enable`),
+        updatePackage: (id: string) => at<PackageView>('POST', `/api/v1/packages/${encodeURIComponent(id)}/update`),
+        removePackage: (id: string) => at<{ deleted?: boolean; said?: string }>('DELETE', `/api/v1/packages/${encodeURIComponent(id)}`),
+        packagesCatalog: (refresh = false) => at<CatalogView>('GET', `/api/v1/packages/catalog${refresh ? '?refresh=1' : ''}`),
+        // Колонка не на связи — проход помощника не отказывает, а кладёт правку в очередь дома (202, «дойдёт до центра»)
+        // и отправит её сам (п. 58): это не «добавлено» — `{ queued: true }`, и повторять самим не надо.
+        addPackageSource: async (url: string): Promise<CatalogView | { queued: true }> => {
+            const response = await fetch(stationPath(station, '/api/v1/packages/sources'), {
+                method: 'POST',
+                headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...authHeaders() },
+                body: JSON.stringify({ url, understood: true }),
+            });
+            if (!response.ok) throw new ApiError(response.status, await response.text().catch(() => ''));
+            if (response.status === 202) return { queued: true };
+            return ((await response.json()) as { message: CatalogView }).message;
+        },
+        installPackage: (id: string, version?: string, on = false, rights = false) =>
+            at<PackageView>('POST', `/api/v1/packages/${encodeURIComponent(id)}/install`, {
+                ...(version ? { version } : {}),
+                ...(on ? { on } : {}),
+                ...(rights ? { rights } : {}),
+            }),
+        homeVoice: () => at<HomeVoice>('GET', '/api/v1/models/home-voice'),
+        setHomeVoice: (voice: HomeVoice['chosen']) => at<HomeVoice>('POST', '/api/v1/models/home-voice', { voice }),
+        homeVoicePlan: (of: { character?: string; package?: string }) =>
+            at<HomeVoicePlan>('GET', `/api/v1/home/voice?${new URLSearchParams(of.character ? { character: of.character } : { package: of.package ?? '' })}`),
+        setHomeVoiceEngine: (of: { character?: string; package?: string }, engine: string) =>
+            at<HomeVoicePlan>('PUT', '/api/v1/home/voice', { ...of, engine }),
+    };
+}
+
+/** Набор вызовов установки (installApi). */
+export type InstallApi = ReturnType<typeof installApi>;
 
 /** Язык дома на шлюзе: `null` — не задан (пульт берёт язык системы). */
 export interface HouseholdLanguage {

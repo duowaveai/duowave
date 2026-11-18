@@ -3,8 +3,10 @@
 // же логикой, что у первых шагов, screens/brain-connect.ts); ИИ есть, а колонка в «Как раньше» — «Включить «Вместе»».
 // Змейка играет кнопкой и до того: ей ИИ не нужен. ИИ подключили здесь — «Вместе» включается сразу (владелец, 16.11),
 // рядом «Отменить», и одна большая карточка «Теперь Алиса умнее» с тремя фразами. Фразу можно сказать или нажать —
-// нажатие уходит в разговор, как сказанная (answerTo). Попробовали всё — витрина уходит сама; «Скрыть витрину» убирает
-// её как виджет (вернуть — из «+ Новый виджет»). Что попробовали — в памяти пульта у каждого человека (ключ `showcase`).
+// нажатие уходит в разговор, как сказанная (answerTo). Попробовали всё — витрина уходит сама. Встал на стол первый свой
+// виджет — сделанный или змейка «Оставить на столе» — витрина тоже уходит (решение владельца 18.11, проверка начисто:
+// своё на столе — витрина своё дело сделала, и стол не тесный): так же, как «Скрыть витрину», — как виджет, один раз;
+// вернуть — из «+ Новый виджет». Что попробовали — в памяти пульта у каждого человека (ключ `showcase`).
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
@@ -13,13 +15,15 @@ import { tr } from '../i18n';
 import { usePanel } from '../shell/context';
 import { recalled, remember, useRecalled } from '../shell/memory';
 import { useSlot } from '../shell/slot';
-import { deskActions } from '../shell/widgets';
+import { deskActions, useDeskLayout } from '../shell/widgets';
 import { useWidgetEmpty } from '../ui/widget';
 import { onComputer } from '../voice-input';
 import { useDeskDrafts } from '../voice/drafts';
 import { answerTo } from '../voice/speak';
 import { PATHS, Path, useBrainConnect } from './brain-connect';
 import { appSectionOf } from './plugins';
+import { useCallWord } from './call-word';
+import { installProgress, onInstallProgress } from '../magicplace/wizard-state';
 import '../ui/showcase.css';
 
 type Card = 'talk' | 'play' | 'make';
@@ -33,6 +37,8 @@ interface Memo {
     undo?: PanelMode;
     /** Кем подключили ИИ — для «✓ OpenRouter подключён». */
     title?: string;
+    /** Витрина ушла сама, когда на стол встал первый свой виджет: второй раз не уходит (её вернули из «+»). */
+    left?: boolean;
 }
 
 const KEY = 'showcase';
@@ -97,11 +103,19 @@ export function ShowcaseWidget() {
     const [busy, setBusy] = useState(false);
     const [problem, setProblem] = useState<string | null>(null);
     const [name, setName] = useState<string | null>(null);
+    /** Голос выбранного персонажа ещё ставится (модель качается): пока отвечает голос Алисы (п. 55). */
+    const [voiceComing, setVoiceComing] = useState(false);
+    const word = useCallWord();
+    const [installing, setInstalling] = useState(installProgress);
+    useEffect(() => onInstallProgress(() => setInstalling(installProgress())), []);
     const [at, setAt] = useState(0);
     // Приложения пульта приходят позже стола: перерисоваться, когда змейка появится или уйдёт.
     useSlot('desk.widgets');
     const snake = appSectionOf(SNAKE);
-    const { tile: draft } = useDeskDrafts();
+    const { tile: draft, landed } = useDeskDrafts();
+    const [layout, actions] = useDeskLayout(panel.role.role);
+    /** Свой виджет на столе: сделанный (сел из «Примерки» или черновик уже на столе) или оставленная змейка. */
+    const own = landed || layout.added.some((key) => key.startsWith('package.'));
     const mayChoose = can('models.manage');
 
     useEffect(() => {
@@ -123,13 +137,15 @@ export function ShowcaseWidget() {
             .then((view) => {
                 if (!alive) return;
                 const id = view.active?.id;
-                setName((id ? view.characters.find((entry) => entry.id === id)?.title : undefined) ?? null);
+                const active = id ? view.characters.find((entry) => entry.id === id) : undefined;
+                setName(active?.title ?? null);
+                setVoiceComing(!!active && !active.builtin && active.voice.state === 'installing');
             })
             .catch(() => undefined);
         return () => {
             alive = false;
         };
-    }, [panel.version]);
+    }, [panel.version, installing?.done, installing?.finished]);
 
     const tried = new Set<Card>(memo.tried ?? []);
     const mark = (card: Card): void => {
@@ -207,6 +223,12 @@ export function ShowcaseWidget() {
         save({ snake: 'kept' });
     };
     const hide = (): void => deskActions(panel.role.role).hide(SHOWCASE);
+    // Первый свой виджет на столе — витрина уходит, один раз.
+    useEffect(() => {
+        if (!own || recalled<Memo>(KEY)?.left) return;
+        save({ left: true });
+        actions.hide(SHOWCASE);
+    }, [own]);
 
     const cards: Card[] = snake ? ['talk', 'play', 'make'] : ['talk', 'make'];
     const finished = cards.every((card) => tried.has(card)) && (!snake || !!memo.snake);
@@ -218,8 +240,12 @@ export function ShowcaseWidget() {
     if (empty) return null;
 
     const locked = phase === 'brain' || phase === 'switch';
-    const talkMe = computer ? t.talkMeComputer : t.talkMe;
-    const makeMe = computer ? t.makeMeComputer : t.makeMe;
+    // Слово, которое на деле зовёт (п. 54): стоит приложение-слово — его; нет — прежнее.
+    const talkMe = word ? t.talkWith(word) : computer ? t.talkMeComputer : t.talkMe;
+    const makeMe = word ? t.makeWith(word) : computer ? t.makeMeComputer : t.makeMe;
+    /** Имя того, кто ответит, без пометки «(демо)». */
+    const who = name ? name.replace(/\s*\([^)]*\)\s*$/, '').trim() || name : null;
+    const voiceNote = (voiceComing || (installing && !installing.finished && installing.kind === 'character')) && who;
     const failed = problem && (
         <p class="sc-problem" role="alert">
             {problem}
@@ -412,6 +438,8 @@ export function ShowcaseWidget() {
                 <button type="button" class="sc-say" title={t.pressNote} onClick={() => say(t.talkSay, 'talk')}>
                     <Wave />«{talkMe}»
                 </button>
+                {who && <span class="sc-who">{t.answers(who)}</span>}
+                {voiceNote && <span class="sc-who">{t.voiceComing(who)}</span>}
             </section>
         );
 

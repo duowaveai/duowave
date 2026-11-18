@@ -2,11 +2,13 @@
 // персонажи, свои голоса, Piper и Silero: сколько скачать, сколько займёт, сколько ждать, «Скачать и включить» и
 // «Пока говорить голосом …». Тут же — метки состояния голоса для карточек и плиток.
 
-import { useState } from 'preact/hooks';
+import type { ComponentChildren } from 'preact';
+import { useRef, useState } from 'preact/hooks';
 
-import type { CharacterVoice, TtsCard, VoiceNeeds } from '../api';
+import type { CharacterVoice, HomeVoicePlan, TtsCard, VoiceNeeds } from '../api';
 import { api, isTight, problemOf } from '../api';
 import { Sheet } from './sheet';
+import { EnginePicker, defaultEngine, fitsDisk, usableEngines } from './voice-plan';
 import { formatNumber, tr } from '../i18n';
 
 /** «60 МБ», «3,1 ГБ», «10 ГБ». */
@@ -79,12 +81,16 @@ export interface NeedsProps {
     onFallback?: () => void;
     /** Свой голос другой модели: переснять из записей под ту, что стоит. */
     onReimprint?: (engine: string) => void;
+    /** Выбор модели на компьютере-Турбо (п. 40) — под текстом, до кнопок. */
+    picker?: ComponentChildren;
+    /** Ставить нечего: ни одна модель не помещается на диск компьютера — «Скачать и включить» не нажать. */
+    blocked?: boolean;
 }
 
 /** «Скачать и включить» (памяти впритык — «Включить всё равно»): главное действие; `main` — лайм, в нижней полосе окна. */
-function InstallButton({ busy = null, tight, onInstall, main }: Pick<NeedsProps, 'busy' | 'tight' | 'onInstall'> & { main: boolean }) {
+function InstallButton({ busy = null, tight, onInstall, main, blocked }: Pick<NeedsProps, 'busy' | 'tight' | 'onInstall' | 'blocked'> & { main: boolean }) {
     return (
-        <button type="button" class={`btn ${main ? 'btn-main' : 'btn-plain'}`} disabled={busy !== null} aria-busy={busy === 'install' || undefined} onClick={onInstall}>
+        <button type="button" class={`btn ${main ? 'btn-main' : 'btn-plain'}`} disabled={busy !== null || !!blocked} aria-busy={busy === 'install' || undefined} onClick={onInstall}>
             {busy === 'install' && <span class="spinner spinner-sm" aria-hidden="true" />}
             {tight ? tr.ui.enableAnyway : tr.ui.downloadAndEnable}
         </button>
@@ -95,7 +101,7 @@ function InstallButton({ busy = null, tight, onInstall, main }: Pick<NeedsProps,
  * Содержимое окна: что нужно, сколько, и что можно сделать. Мастер своего голоса рисует его у себя, внутри своего
  * окна (`inline`: и «Скачать и включить» здесь же); окно «нужна модель» ставит его в нижнюю полосу.
  */
-export function NeedsBody({ needs, fallback, busy = null, error, tight, onInstall, onFallback, onReimprint, inline = true }: NeedsProps & { inline?: boolean }) {
+export function NeedsBody({ needs, fallback, busy = null, error, tight, onInstall, onFallback, onReimprint, picker, blocked, inline = true }: NeedsProps & { inline?: boolean }) {
     const alternatives = onReimprint ? (needs.alternatives ?? []).filter((entry) => entry.kind === 'reimprint') : [];
     const waiting = busy !== null;
     const spin = (what: NeedsBusy) => busy === what && <span class="spinner spinner-sm" aria-hidden="true" />;
@@ -107,6 +113,7 @@ export function NeedsBody({ needs, fallback, busy = null, error, tight, onInstal
                 {needs.kind === 'file' ? tr.ui.willEnableFile : tr.ui.willEnableModel}
                 {fallback ? ` ${tr.ui.meanwhileSpeaks(fallback)}` : ''}
             </p>
+            {picker}
             {tight && (
                 <p class="win-callout m-0" role="status">
                     {tight}
@@ -119,7 +126,7 @@ export function NeedsBody({ needs, fallback, busy = null, error, tight, onInstal
             )}
             {(inline || others) && (
                 <div class="flex flex-wrap gap-8">
-                    {inline && <InstallButton busy={busy} tight={tight} onInstall={onInstall} main={false} />}
+                    {inline && <InstallButton busy={busy} tight={tight} onInstall={onInstall} main={false} blocked={blocked} />}
                     {alternatives.map((entry) => (
                         <button
                             key={entry.engine}
@@ -158,7 +165,7 @@ export function NeedsDialog({ who, onClose, ...props }: NeedsProps & { who: stri
                     <button type="button" class="btn btn-plain" onClick={onClose}>
                         {tr.ui.notNow}
                     </button>
-                    <InstallButton busy={props.busy} tight={props.tight} onInstall={props.onInstall} main />
+                    <InstallButton busy={props.busy} tight={props.tight} onInstall={props.onInstall} main blocked={props.blocked} />
                 </>
             }
         >
@@ -180,6 +187,12 @@ export interface NeedsAsk {
     retry: (options: { install: boolean; anyway: boolean }) => Promise<unknown>;
     /** «Пока говорить голосом …»: что сделать (выбрать без модели); нет — просто закрыть окно. */
     onFallback?: () => Promise<unknown> | void;
+    /**
+     * Голос персонажа на компьютере-Турбо (п. 40): центр спрашивает у Турбо план, окно показывает тот же выбор модели,
+     * что мастер установки; «Скачать и включить» сначала говорит центру выбранную модель. Центр старый или Турбо нет —
+     * окно как раньше.
+     */
+    homeVoice?: { character?: string; package?: string };
 }
 
 /**
@@ -191,11 +204,33 @@ export function useNeedsFlow(onDone: (message: string) => void) {
     const [busy, setBusy] = useState<NeedsBusy>(null);
     const [error, setError] = useState<string | null>(null);
     const [tight, setTight] = useState<string | null>(null);
+    const [plan, setPlan] = useState<HomeVoicePlan | null>(null);
+    const [engine, setEngine] = useState<string | null>(null);
+    /** Выбор модели — в ref: retry окна собран при открытии, а модель меняют потом. */
+    const chosen = useRef<string | null>(null);
+    const pick = (next: string | null): void => {
+        chosen.current = next;
+        setEngine(next);
+    };
 
     const open = (next: NeedsAsk): void => {
         setAsk(next);
         setError(null);
         setTight(null);
+        setPlan(null);
+        pick(null);
+        if (next.homeVoice)
+            void api
+                .homeVoicePlan(next.homeVoice)
+                .then((fresh) => {
+                    setPlan(fresh.plan ? fresh : null);
+                    pick(fresh.plan ? defaultEngine(fresh) : null);
+                })
+                .catch(() => undefined);
+    };
+    /** Выбранная модель — центру, до самой установки (он помнит и передаст Турбо, и вернувшемуся тоже). */
+    const tellEngine = async (): Promise<void> => {
+        if (ask?.homeVoice && plan?.plan && chosen.current) await api.setHomeVoiceEngine(ask.homeVoice, chosen.current);
     };
     const close = (): void => setAsk(null);
     const run = async (what: NeedsBusy, action: () => Promise<unknown> | void, done: string): Promise<void> => {
@@ -214,8 +249,14 @@ export function useNeedsFlow(onDone: (message: string) => void) {
         }
     };
 
-    const props: NeedsProps | null = ask && {
-        needs: ask.needs,
+    // Выбрали другую модель Турбо — окно говорит о ней: её имя в шапке, её размер в строке «Скачать …».
+    const picked = usableEngines(plan).find((entry) => entry.id === engine);
+    const needs: VoiceNeeds | null =
+        ask && picked && ask.needs.kind === 'engine'
+            ? { ...ask.needs, id: picked.id, title: picked.title, downloadMb: picked.state === 'ready' ? undefined : (picked.totalMb ?? picked.diskMb), diskMb: picked.diskMb, minutes: undefined }
+            : (ask?.needs ?? null);
+    const props: NeedsProps | null = ask && needs && {
+        needs,
         fallback: ask.fallback,
         busy,
         error,
@@ -223,7 +264,10 @@ export function useNeedsFlow(onDone: (message: string) => void) {
         onInstall: () =>
             void run(
                 'install',
-                () => ask.retry({ install: true, anyway: tight !== null }),
+                async () => {
+                    await tellEngine();
+                    return ask.retry({ install: true, anyway: tight !== null });
+                },
                 tight !== null
                     ? tr.ui.enablingAnyway
                     : ask.needs.kind === 'file'
@@ -235,6 +279,8 @@ export function useNeedsFlow(onDone: (message: string) => void) {
             ? (engine: string) =>
                   void run('reimprint', () => api.reimprintVoice(ask.ownId!, engine), tr.ui.reimprinting)
             : undefined,
+        picker: plan ? <EnginePicker plan={plan} engine={engine} onSelect={pick} /> : undefined,
+        blocked: !!plan && !(picked && fitsDisk(picked)),
     };
     return {
         open,

@@ -117,7 +117,7 @@ const en: Translation<typeof ru> = {
     historyAbout: 'Who changed what: settings, people, speakers and sign-ins.',
     historyAboutComputer: 'Who changed what: settings, people and sign-ins.',
     historySheetAbout: 'Who changed what, newest first',
-    askingGateway: 'Asking the gateway…',
+    askingGateway: 'Asking the hub…',
     nothingChanged: 'Nothing has changed yet.',
 
     passwordChanged: 'Password changed: sign in again on your other devices.',

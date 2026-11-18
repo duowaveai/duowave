@@ -7,7 +7,7 @@ import { Action, Card, CardNote } from '../ui/cards';
 import { Dropdown } from '../ui/dropdown';
 import { Progress, needsWhat, useNeedsFlow, voicePill } from '../ui/needs';
 import { SectionTabs, TabEntry } from '../ui/tabs';
-import { OwnVoiceRows, OwnVoicesHeader, VoiceWizard } from './voice-lab';
+import { OwnVoiceRows, OwnVoicesHeader, VoiceWizard, voiceWizardOpen } from './voice-lab';
 import { VoiceProviders } from './voice-providers';
 import { languageName, localAsrLine, localAsrPercent } from './local-asr';
 import { ask } from '../ui/confirm';
@@ -15,6 +15,7 @@ import { onComputer } from '../voice-input';
 import { byMode } from '../words';
 import { tr } from '../i18n';
 import { usePanel } from '../shell/context';
+import { useHomeDevices } from '../home-devices';
 
 export type ModelsTab = 'voice' | 'recognition';
 type Tab = ModelsTab;
@@ -100,7 +101,20 @@ function DownloadBar({ download }: { download: DownloadState }) {
  * Голос, который ждёт свою модель или файл («Скачать и включить»): ставится, памяти впритык — «всё равно?», не
  * вышло — ещё раз. «Отменить» забывает отложенный выбор (DELETE /api/v1/models/tts/pending).
  */
-function PendingVoice({ pending, title, isAdmin, onChanged }: { pending: TtsPending; title: string; isAdmin: boolean; onChanged: () => void }) {
+function PendingVoice({
+    pending,
+    title,
+    isAdmin,
+    onChanged,
+    onCanceled,
+}: {
+    pending: TtsPending;
+    title: string;
+    isAdmin: boolean;
+    onChanged: () => void;
+    /** «Отменить» прошло: окно говорит «отменено» (п. 68), хотя ждущего голоса уже нет. */
+    onCanceled: (stopped: boolean) => void;
+}) {
     const [busy, setBusy] = useState<'cancel' | 'anyway' | 'retry' | null>(null);
     const [error, setError] = useState<string | null>(null);
     const run = async (what: 'cancel' | 'anyway' | 'retry', action: () => Promise<unknown>) => {
@@ -133,19 +147,25 @@ function PendingVoice({ pending, title, isAdmin, onChanged }: { pending: TtsPend
                         {tr.models.pendingTight(title, pending.reason ?? '')}
                     </span>
                 ) : pending.state === 'failed' ? (
-                    <span class="t-body-sm c-dot-offline" role="alert">
-                        {tr.models.pendingFailed(
-                            kind === 'file' ? tr.models.verbDownload : kind === 'imprint' ? tr.models.verbImprint : tr.models.verbInstall,
-                            what,
-                            pending.reason ?? '',
-                        )}
-                    </span>
+                    <>
+                        <span class="t-body-sm c-dot-offline" role="alert">
+                            {tr.models.pendingFailed(
+                                kind === 'file' ? tr.models.verbDownload : kind === 'imprint' ? tr.models.verbImprint : tr.models.verbInstall,
+                                what,
+                                pending.reason ?? '',
+                            )}
+                        </span>
+                        {/* Последняя строка программы (huggingface: «Fetching 13 files: 92%…») — подробностью, не словами (п. 68). */}
+                        {pending.detail && <span class="t-caption">{pending.detail}</span>}
+                    </>
                 ) : (
                     <>
                         <span class="t-body-sm">
                             {kind === 'file' ? tr.models.pendingDownloading(what, title) : tr.models.pendingInstalling(what, title)}
                         </span>
                         {pending.progress !== undefined && <Progress percent={pending.progress} label={tr.models.installProgress(title)} />}
+                        {/* Мегабайты и скорость (п. 66): видно, идёт ли, а не только процент. */}
+                        {pending.detail && <span class="t-caption">{pending.detail}</span>}
                     </>
                 )}
                 {error && (
@@ -173,7 +193,14 @@ function PendingVoice({ pending, title, isAdmin, onChanged }: { pending: TtsPend
                                 onClick={() => void run('retry', () => api.activateTts(pending.modelId, voiceId, false, true))}
                             />
                         )}
-                        <Action label={tr.models.cancelUpper} busy={busy === 'cancel'} disabled={!!busy} onClick={() => void run('cancel', () => api.cancelTtsPending())} />
+                        <Action label={tr.models.cancelUpper} busy={busy === 'cancel'} disabled={!!busy} onClick={() =>
+                                void run('cancel', async () => {
+                                    // Шлюз снимает и задание, которого ждал голос (скачивание модели), — ждёт, пока его программа уйдёт.
+                                    const answer = await api.cancelTtsPending();
+                                    onCanceled(!!answer?.stopped);
+                                })
+                            }
+                        />
                     </div>
                 )}
             </div>
@@ -238,7 +265,9 @@ function HomeVoiceChoice({ revision = 0 }: { revision?: number }) {
                         : tr.models.ourByCloud
                     : state.chosen === 'computer'
                     ? !state.up
-                        ? tr.models.computerDown
+                        ? state.reached
+                            ? tr.models.computerNoVoiceHere
+                            : tr.models.computerDown
                         : state.provider === 'own'
                           ? tr.models.allByComputer
                           : tr.models.ourByComputer
@@ -284,8 +313,15 @@ function HomeVoiceChoice({ revision = 0 }: { revision?: number }) {
  * здесь же (CloudSpeechCard); мозг и характер — как обычно, в разделе «Мозг». Во вкладке «Голос» — выбор между голосом
  * компьютера (пока он помогает) или облачным и Алисой (HomeVoiceChoice).
  */
-function LocalModelsAbsent({ kind, message }: { kind: Tab; message: string }) {
+function LocalModelsAbsent({ kind }: { kind: Tab; message: string }) {
     const [revision, setRevision] = useState(0);
+    const panel = usePanel();
+    const devices = useHomeDevices();
+    // Голоса и слух Турбо выбираются на его странице «Этот компьютер» (проверка начисто 18.11, п. 28: «Настройки» →
+    // «Голос» здесь вели на эту же страницу, а «в этой сборке (для колонки)» людям ничего не говорит).
+    const turbo = devices.view?.devices.find((device) => device.kind === 'computer' && device.roles.includes('turbo'));
+    const openComputer = (): void =>
+        turbo ? panel.go('settings', 'devices', turbo.id, { view: 'computer' }) : panel.go('settings', 'devices');
     return (
         <>
             {kind === 'voice' && <HomeVoiceChoice revision={revision} />}
@@ -294,14 +330,10 @@ function LocalModelsAbsent({ kind, message }: { kind: Tab; message: string }) {
                 <h2 class="t-title-xs m-0 mb-6">
                     {kind === 'voice' ? tr.models.ownVoicesHere : tr.models.ownRecognitionHere}
                 </h2>
-                <p class="t-body m-0 mb-6">
-                    {message}
+                <p class="t-body m-0 mb-10">
+                    {kind === 'voice' ? tr.models.absentVoiceNote : tr.models.absentAsrNote}
                 </p>
-                <p class="t-caption m-0">
-                    {kind === 'voice'
-                        ? tr.models.absentVoiceNote
-                        : tr.models.absentAsrNote}
-                </p>
+                <Action label={kind === 'voice' ? tr.models.openComputerVoices : tr.models.openComputerHearing} onClick={openComputer} />
             </section>
         </>
     );
@@ -322,13 +354,20 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
     const [browse, setBrowse] = useState(false);
     /** «Посмотреть ещё модели» в «Распознавании». */
     const [browseAsr, setBrowseAsr] = useState(false);
-    const [wizard, setWizard] = useState(false);
+    // Мастер «Свой голос» был открыт до пересборки страницы — открыт и сейчас (voice-lab.tsx, п. 36).
+    const [wizard, setWizard] = useState(voiceWizardOpen);
     /** Свой голос, которому шлюз ответил «памяти впритык»: следующее «выбрать» включает его всё равно. */
     const [tightFor, setTightFor] = useState<string | null>(null);
     const isAdmin = can('models.manage');
     const [loadError, setLoadError] = useState<string | null>(null);
     /** Шлюз без своих моделей (сборка для колонки отвечает 501): вместо карточек — пояснение. */
     const [absent, setAbsent] = useState<string | null>(null);
+    /** «Отменить» у ждущего голоса прошло (п. 68): строка «отменено», пока не появится новый ждущий. */
+    const [canceled, setCanceled] = useState<{ title: string; stopped: boolean } | null>(null);
+    const waits = !!view?.ttsPending;
+    useEffect(() => {
+        if (waits) setCanceled(null);
+    }, [waits]);
 
     useEffect(() => {
         let alive = true;
@@ -897,7 +936,22 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                 </>
             ) : (
                 <>
-                    {pending && <PendingVoice pending={pending} title={pendingTitle} isAdmin={isAdmin} onChanged={refreshView} />}
+                    {pending && (
+                        <PendingVoice
+                            pending={pending}
+                            title={pendingTitle}
+                            isAdmin={isAdmin}
+                            onChanged={refreshView}
+                            onCanceled={(stopped) => setCanceled({ title: pendingTitle, stopped })}
+                        />
+                    )}
+                    {!pending && canceled && (
+                        <section class="card glass card-list" role="status">
+                            <div class="pending-row">
+                                <span class="t-body-sm">{canceled.stopped ? tr.models.canceledStopped(canceled.title) : tr.models.canceled(canceled.title)}</span>
+                            </div>
+                        </section>
+                    )}
                     {view.ttsManaged && ['installing', 'starting', 'failed'].includes(view.ttsManaged.phase) && (
                         // Сервер своего голоса, который держит приложение: ставится, запускается или упал.
                         <section class="card glass card-list" aria-label={tr.models.ownVoiceServerLabel}>

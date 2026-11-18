@@ -1,6 +1,6 @@
 /* Стол, док, окна и виджеты — вид «Стол и док» (docs/plans/desk.md, макеты docs/design/roles: SpaceGateway,
-   SpaceHelper, WindowBrain, WindowWorkshop, PhoneSpace). Цвета — токены темы «Минимал»; рамка по роли —
-   html[data-role]: у шлюза белая (как страница), у помощника тёмная #11100F. Подключается после minimal.css.
+   SpaceHelper, WindowBrain, WindowWorkshop, PhoneSpace). Цвета — токены темы «Минимал»; пульт один, рамка одна
+   (docs/plans/home-and-devices.md, этап 1). Подключается после minimal.css.
 
    Слои, снизу вверх: стол — окно раздела 15 — подложка «Ещё» 17 — док 18 — верхняя строка 20 — меню «Ещё» 21 — окно
    на телефоне 25 (во весь экран, поверх дока) — «+», «Колонки», разделы на телефоне 30 — шиты 40 — вопросы ask() 50.
@@ -74,73 +74,47 @@ html[data-theme='dark'] {
 .desk-top-short .status-dot { flex: none; }
 .desk-top-short svg { flex: none; }
 
-/* «Где я» (решение владельца 16.11): вкладки устройств дома — сегменты на тёплой дорожке, нажатая — белая капсула;
-   «Турбо» у вкладки — фиолетом. Рядом — «Вы в пульте колонки». */
-.dev-tabs { display: inline-flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px; background: var(--track); min-width: 0; flex: 0 1 auto; }
-.dev-tab {
+/* Строка дома (docs/plans/home-and-devices.md, этап 1): «Дом» и устройства — капсулы на тёплой дорожке, у каждой —
+   метка роли («Центр» — лайм, «Турбо» — фиолет) и точка связи. Нажатие ведёт на страницу устройства. Пульт один:
+   рамка по роли пульта ушла. */
+.home-bar { display: inline-flex; align-items: center; gap: 8px; min-width: 0; flex: 0 1 auto; }
+.home-bar-name { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; line-height: 18px; font-weight: 600; color: var(--text); white-space: nowrap; flex: none; }
+.home-chips { display: inline-flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px; background: var(--track); min-width: 0; flex: 0 1 auto; overflow-x: auto; scrollbar-width: none; }
+.home-chips::-webkit-scrollbar { display: none; }
+.home-chip {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
+    gap: 6px;
     height: 30px;
-    padding: 0 12px 0 10px;
+    padding: 0 10px 0 9px;
+    border: 0;
     border-radius: 999px;
+    background: transparent;
     color: var(--sub);
     font: inherit;
     font-size: 13px;
     line-height: 1;
     font-weight: 500;
     white-space: nowrap;
-    text-decoration: none;
     min-width: 0;
-    flex: 0 1 auto;
+    flex: 0 0 auto;
+    cursor: pointer;
 }
-a.dev-tab:hover { color: var(--text); background: var(--hover-bg); }
-.dev-tab.is-on { background: var(--seg-on-bg, var(--strong-bg)); color: var(--text); box-shadow: var(--seg-shadow, 0 1px 3px rgba(0, 0, 0, 0.08)); }
-.dev-tab.is-off { opacity: 0.6; }
-.dev-tab svg { flex: none; }
-.dev-tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.dev-tab-tag { font-size: 11px; font-weight: 400; color: var(--sub); }
-.dev-tab-tag.is-turbo { color: var(--pill-agent-fg); }
-.dev-tab .status-dot { flex: none; }
-button.dev-tab svg:last-child { width: 14px; height: 14px; }
-.dev-here { font-size: 13px; line-height: 18px; color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.dev-here b { color: var(--text); font-weight: 500; }
-.dev-tabs.is-short { max-width: 100%; }
-.dev-tabs.is-short .dev-tab { padding: 0 10px 0 8px; gap: 5px; max-width: 30vw; }
-/* Телефон: нажатая вкладка — с именем целиком, сколько влезет; другие уступают; три и больше — только значком. */
-.dev-tabs.is-short .dev-tab.is-on { flex-shrink: 0; max-width: 46vw; }
-.dev-tabs.is-short:has(> :nth-child(3)) .dev-tab:not(.is-on) { padding: 0 9px; }
-.dev-tabs.is-short:has(> :nth-child(3)) .dev-tab:not(.is-on) .dev-tab-name { display: none; }
-@media (max-width: 1100px) { .desk-top-line .dev-here { display: none; } }
-
-/* Пульт Турбо (компьютер, что только помогает): рамка тёмная — верхняя строка и док (доска HelperDesk). */
-html[data-role='helper'] .desk-top,
-html[data-role='helper'] .dock {
-    background: var(--helper-bg);
-    border-color: var(--helper-line);
-    color: var(--helper-text);
-    --text: var(--helper-text);
-    --sub: var(--helper-sub);
-    --track: var(--helper-chip);
-    --chip-bg: var(--helper-chip);
-    --hover-bg: #262422;
-    --seg-on-bg: #3a3835;
-    --seg-shadow: none;
-    --strong-bg: #1c1b19;
-    --label-bg: #262422;
-    --glass-border: var(--helper-line);
-    --pill-agent-fg: #c4b5fd;
-}
-/* Меню из тёмной строки (аватар) берёт её светлый текст и тёмные линии, а фон меню оставался светлым — текст
-   пропадал (owner 17.11). В рамке Турбо меню тёмное, как сама строка. */
-html[data-role='helper'] .desk-top .menu {
-    --menu-bg: #1c1b19;
-    --strong-border: var(--helper-line);
-    --strong-hi: transparent;
-    background: #1c1b19;
-    border-color: var(--helper-line);
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
-}
+.home-chip:hover { color: var(--text); background: var(--hover-bg); }
+.home-chip.is-this { background: var(--seg-on-bg, var(--strong-bg)); color: var(--text); box-shadow: var(--seg-shadow, 0 1px 3px rgba(0, 0, 0, 0.08)); }
+.home-chip.is-off { opacity: 0.6; }
+.home-chip svg { flex: none; }
+.home-chip-name { min-width: 0; max-width: 18ch; overflow: hidden; text-overflow: ellipsis; }
+.home-role { font-size: 11px; line-height: 16px; font-weight: 500; padding: 0 6px; border-radius: 999px; flex: none; }
+.home-role.is-centre { background: rgba(163, 230, 53, 0.22); color: var(--text); }
+.home-role.is-turbo { background: rgba(139, 124, 255, 0.16); color: var(--pill-agent-fg); }
+.home-chip .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--bar-off); }
+.home-chip .dot-ok { background: #65a30d; }
+.home-chip .dot-warn { background: #f59e0b; }
+.home-hears { color: var(--sub); }
+.home-bar.is-short .home-bar-name { display: none; }
+.home-bar.is-short .home-role { display: none; }
+.home-bar.is-short .home-chip-name { max-width: 12ch; }
 
 /* Капсулы строки: режим, связь с помощником или шлюзом. Тёмная — помощник (тёмное = помощник везде). */
 .role-chip {
@@ -1250,9 +1224,16 @@ html[data-look] .code-editor:focus-within { border-color: var(--text); }
 
 /* Страница компьютера в пульте колонки (screens/helper-pc.tsx, этап 4): фрейм без рамки, а внутри — прозрачно. */
 .own-frame { display: block; width: 100%; height: min(72dvh, 760px); min-height: 420px; border: 0; background: transparent; color-scheme: normal; }
+/* Окно внутри страницы компьютера открыто — фрейм во весь пульт, над его окнами (слой шитов, DESIGN.md: 40). */
+.own-frame.is-covering { position: fixed; inset: 0; width: 100vw; height: 100dvh; min-height: 0; z-index: 40; }
+html.own-covering .desk-window { z-index: 40; animation: none; transform: none; }
 html.own-page,
 html.own-page body { background: transparent !important; }
 .own-page-body { display: flex; flex-direction: column; gap: 12px; padding: 2px 2px 24px; }
+/* Окно компьютера открыто, фрейм растянут на весь пульт (OwnFrame): страница стоит на прежнем месте прежней ширины,
+   прокрутка — её. */
+html.own-held body { overflow: hidden; }
+html.own-held .own-page-body { position: fixed; left: var(--own-left); top: var(--own-top); width: var(--own-w); height: var(--own-h); overflow: auto; box-sizing: border-box; clip-path: var(--own-clip, none); }
 
 /* Первый запуск, шаг 4 (screens/connect.tsx): пульт на телефоне — адрес этого компьютера в домашней сети. */
 .connect-phone { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border-radius: 14px; box-shadow: 0 0 0 1px var(--glass-border); }
@@ -1769,3 +1750,34 @@ html[data-theme='dark'] .draft-slot { border-color: #3a3734; }
 .fall-row > svg { flex: none; margin-top: 2px; color: var(--sub); }
 .fall-row .field { width: 100%; }
 .key-text { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+
+/* Полоса дома под сценой (docs/plans/home-and-devices.md, этап 1): колонки, что слышат для центра, плашки вне дома,
+   «Приложения», легенда цветов. Лайм — центр, фиолет — Турбо, янтарь — облака и Яндекс, серый — спит. */
+.home-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px auto 0; max-width: 960px; padding: 0 16px; }
+.home-ear { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--line, rgba(0,0,0,0.08)); border-radius: 14px; background: var(--card-bg, transparent); color: var(--text); font: inherit; cursor: pointer; text-align: left; }
+.home-ear:hover { background: var(--hover-bg); }
+.home-ear.is-off { opacity: 0.65; }
+.home-ear-text { display: flex; flex-direction: column; min-width: 0; }
+.home-ear-text b { font-size: 13px; line-height: 18px; font-weight: 500; }
+.home-ear-text span { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; line-height: 16px; color: var(--sub); }
+.home-ear .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--bar-off); flex: none; }
+.home-ear .dot-ok { background: #65a30d; }
+.home-ear .dot-warn { background: #f59e0b; }
+.home-plaque { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 999px; font-size: 12px; font-weight: 500; border: 0; font-family: inherit; }
+.home-plaque.is-out { background: rgba(245, 158, 11, 0.14); color: var(--text); }
+.home-plaque.is-out i { width: 8px; height: 8px; border-radius: 50%; background: #f59e0b; }
+.home-plaque.is-apps { background: var(--track); color: var(--text); cursor: pointer; }
+.home-plaque.is-apps:hover { background: var(--hover-bg); }
+.home-legend { display: inline-flex; flex-wrap: wrap; gap: 10px; margin-left: auto; font-size: 11px; color: var(--sub); }
+.home-legend span { display: inline-flex; align-items: center; gap: 4px; }
+.home-legend i { width: 8px; height: 8px; border-radius: 50%; }
+.home-legend i.is-centre { background: #a3e635; }
+.home-legend i.is-turbo { background: #8b7cff; }
+.home-legend i.is-out { background: #f59e0b; }
+.home-legend i.is-asleep { background: var(--bar-off); }
+@media (max-width: 640px) { .home-legend { margin-left: 0; } }
+.set-back.is-shown { display: inline-flex; }
+.device-row { width: 100%; text-align: left; }
+/* Выбор ждёт колонку (п. 63): не кнопка, только ход. */
+span.waiting-pill { display: inline-flex; align-items: center; cursor: default; }
+span.waiting-pill:hover { border-color: var(--glass-border); }

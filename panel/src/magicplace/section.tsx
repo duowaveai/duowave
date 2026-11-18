@@ -52,6 +52,9 @@ import {
     kindTitle,
     passes,
     placeFilters,
+    recommendedHere,
+    shownAlone,
+    wordOfEntry,
     placeOfEntry,
     placeTitle,
     stateFilters,
@@ -59,6 +62,7 @@ import {
     stateTitle,
 } from './filters';
 import { MagicPlaceMark } from './icon';
+import { PlacePill } from '../screens/home-apps';
 import { AppsTabs } from '../screens/apps-tabs';
 import { matchesQuery } from './search';
 import { StoreSettings } from './settings';
@@ -142,7 +146,8 @@ function Pills({ entry, engines }: { entry: CatalogEntry; engines: Engines }) {
     return (
         <>
             <span class="pill pill-off">{placeOf(entry.kind, entry.runtime, entry.runs)}</span>
-            {entry.recommended && !isInstalled(entry) && <span class="pill pill-own">{tr.magicplace.recommendedPill}</span>}
+            <PlacePill entry={entry} />
+            {recommendedHere(entry) && !isInstalled(entry) && <span class="pill pill-own">{tr.magicplace.recommendedPill}</span>}
             {isNew(entry) && !isInstalled(entry) && <span class="pill pill-agent">{tr.magicplace.newPill}</span>}
             {entry.unlisted && <span class="pill pill-off">{tr.magicplace.hiddenPill}</span>}
             {entryPills(entry, engines).map((pill) => (
@@ -155,7 +160,20 @@ function Pills({ entry, engines }: { entry: CatalogEntry; engines: Engines }) {
 }
 
 /** Строка списка: картинка, название с метками, строка описания; нажатие — окно пакета. */
-function StoreRow({ entry, actions, engines, onOpen }: { entry: CatalogEntry; actions: PackageActions; engines: Engines; onOpen: (id: string) => void }) {
+function StoreRow({
+    entry,
+    actions,
+    engines,
+    onOpen,
+    word,
+}: {
+    entry: CatalogEntry;
+    actions: PackageActions;
+    engines: Engines;
+    onOpen: (id: string) => void;
+    /** Своё слово персонажа (п. 65): ставится с ним, отдельно в «Приложениях» его нет. */
+    word?: string | null;
+}) {
     const panel = usePanel();
     return (
         <div class={`pkg-row${isBlocked(entry) && !isInstalled(entry) ? ' is-dim' : ''}`}>
@@ -167,6 +185,7 @@ function StoreRow({ entry, actions, engines, onOpen }: { entry: CatalogEntry; ac
                         <Pills entry={entry} engines={engines} />
                     </span>
                     {entry.description && <span class="t-caption mp-line">{entry.description}</span>}
+                    {word && <span class="t-caption">{tr.magicplace.wordLine(word)}</span>}
                     {entry.reason && !isInstalled(entry) && <span class="t-caption">{entry.reason}</span>}
                 </button>
                 <div class="pkg-actions">
@@ -300,7 +319,9 @@ export function MagicPlaceSection() {
 
     const view = catalog.view;
     const open = catalogOpen(view);
-    const all = (view?.packages ?? []).filter((entry) => open || isInstalled(entry));
+    // Слова-активаторы — не отдельные приложения (п. 65): их ставит мастер вместе с персонажем.
+    const all = (view?.packages ?? []).filter((entry) => (open || isInstalled(entry)) && shownAlone(entry));
+    const wordOf = (entry: CatalogEntry): string | null => (entry.kind === 'character' ? wordOfEntry(entry, view?.packages ?? []) : null);
     const searched = all.filter((entry) => matchesQuery(entry, query, filterWords(entry)));
     const found = searched.filter((entry) => passes(entry, filters));
     const here = found.filter(goesHere);
@@ -308,9 +329,11 @@ export function MagicPlaceSection() {
     const browsing = !query.trim() && !filtering(filters);
     const updates = all.filter((entry) => entry.state === 'update');
     const waiting = all.filter((entry) => !!entry.waits && isInstalled(entry));
-    const recommended = all.filter((entry) => entry.recommended && !isInstalled(entry) && goesHere(entry));
+    // Поставленное остаётся в «Рекомендуем» и «Новое» — с «Открыть» на своём месте, а не пропадает из ряда (владелец,
+    // проверка начисто 18.11, п. 11): только что поставил — тут же и открыл.
+    const recommended = all.filter((entry) => recommendedHere(entry) && goesHere(entry));
     const fresh = all
-        .filter((entry) => isNew(entry) && !isInstalled(entry) && goesHere(entry))
+        .filter((entry) => isNew(entry) && goesHere(entry))
         .sort((a, b) => (b.addedAt ?? '').localeCompare(a.addedAt ?? ''));
     const linkedEntry = linked.item ? view?.packages.find((entry) => entry.id === linked.item) : undefined;
     const status = catalogStatus(catalog);
@@ -407,13 +430,13 @@ export function MagicPlaceSection() {
                 </div>
                 <FiltersBar entries={searched} filters={filters} onFilters={setFilters} />
                 {here.map((entry) => (
-                    <StoreRow key={entry.id} entry={entry} actions={actions} engines={engines} onOpen={linked.open} />
+                    <StoreRow key={entry.id} entry={entry} actions={actions} engines={engines} onOpen={linked.open} word={wordOf(entry)} />
                 ))}
                 {blocked.length > 0 &&
                     (showBlocked ? (
                         <>
                             {blocked.map((entry) => (
-                                <StoreRow key={entry.id} entry={entry} actions={actions} engines={engines} onOpen={linked.open} />
+                                <StoreRow key={entry.id} entry={entry} actions={actions} engines={engines} onOpen={linked.open} word={wordOf(entry)} />
                             ))}
                             <button class="mp-more" onClick={() => setShowBlocked(false)}>
                                 {tr.magicplace.blockedHide}

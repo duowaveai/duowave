@@ -12,6 +12,7 @@ import type { ComponentChildren } from 'preact';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 import { tr } from '../../i18n';
+import { useCallWord } from '../call-word';
 import { useOnboarding, useStepNav } from './nav';
 
 import '../../ui/onb-try.css';
@@ -81,7 +82,9 @@ export function TryStep() {
     const { wake } = useOnboarding();
     const station = wake === 'station';
     const t = tr.onbTry;
-    const name = t.wake[wake];
+    // Слово, которое на деле зовёт (п. 54): стоит приложение-слово — его, иначе прежнее «Алиса» / «ДиВи».
+    const word = useCallWord();
+    const name = (station && word) || t.wake[wake];
     const ask = (text: string) => t.ask(name, text);
 
     // Показ: какая фраза и какой ход

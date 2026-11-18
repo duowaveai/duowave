@@ -1204,8 +1204,12 @@ impl PluginHost {
         let began = Instant::now();
         // On a station a plugin that prefers home runs at the helper that gives the apps (src/helpers: the pair's
         // computer or another) while one is up; with none up, here if it fits.
+        let here = (self.placement)();
+        // An app whose face is here and code on the home's Турбо (docs/plans/home-and-devices.md, stage 5б): its every
+        // call goes there, never here.
+        let face = plugin.active().is_some_and(|package| package.manifest.face_at(here));
         let home = self.home.as_ref().filter(|_| {
-            (self.placement)().on_station() && plugin.active().is_some_and(|package| package.manifest.prefer_home)
+            here.on_station() && plugin.active().is_some_and(|package| package.manifest.prefer_home || face)
         });
         let away = home.is_some_and(|home| home.offered());
         if let Some(home) = home {
@@ -1236,6 +1240,12 @@ impl PluginHost {
                     ),
                 }
             }
+        }
+        if face {
+            return Err(PluginError::Unavailable(crate::tr!(
+                "«{id}» работает на Турбо дома, а его сейчас нет на связи",
+                id = plugin.active().map(|package| package.manifest.title.clone()).unwrap_or_else(|| id.to_string())
+            )));
         }
         let result = match self.instance(&plugin).await {
             Ok(instance) => instance.call(function, input, kind).await,
@@ -1317,8 +1327,12 @@ impl PluginHost {
             (state.active.clone().filter(|_| state.enabled), state.good.clone())
         };
         let package = package.ok_or_else(|| PluginError::Unavailable(crate::tr!("приложение выключено")))?;
+        // A face: its code never starts here (docs/plans/home-and-devices.md, stage 5б).
+        if package.manifest.face_at((self.placement)()) {
+            return Err(PluginError::Unavailable(crate::tr!("приложение работает на Турбо дома")));
+        }
         if self.apps_held.load(Ordering::Relaxed) && is_program(&package.manifest) {
-            return Err(PluginError::Unavailable(crate::tr!("приложение на паузе, пока шлюз пробует новую версию")));
+            return Err(PluginError::Unavailable(crate::tr!("приложение на паузе, пока DuoWave пробует новую версию")));
         }
         let version = package.version();
         if let Some(loaded) = slot.as_ref() {
@@ -1407,7 +1421,7 @@ impl PluginHost {
         let asleep: Vec<String> = self.sleeping().into_iter().map(|(id, _)| id).collect();
         for plugin in self.list() {
             let Some(package) = plugin.active() else { continue };
-            if !package.manifest.resident || !package.manifest.runs.contains(&here) || asleep.contains(&plugin.id) {
+            if !package.manifest.resident || !package.manifest.runs_at(here) || asleep.contains(&plugin.id) {
                 continue;
             }
             // Loaded, or loading now (its slot is held).
@@ -1891,6 +1905,10 @@ impl PluginHost {
     /// Whether a plugin's calls go to a helper now: it prefers home, this is a station, and a helper that gives the
     /// apps is up.
     fn runs_at_home(&self, package: &Package) -> bool {
+        // A face here: its code is the Турбо's, whether it is up or not (docs/plans/home-and-devices.md, stage 5б).
+        if package.manifest.face_at((self.placement)()) {
+            return true;
+        }
         package.manifest.prefer_home
             && (self.placement)().on_station()
             && self.home.as_ref().and_then(|home| home.up()).is_some()
@@ -1910,7 +1928,7 @@ impl PluginHost {
         let plugin = self.known(id)?;
         let origin = Origin::of(&plugin.state().source);
         if origin == Origin::System {
-            return Err(ApiError::conflict(crate::tr!("Системное приложение не копируют: оно часть шлюза.")));
+            return Err(ApiError::conflict(crate::tr!("Системное приложение не копируют: оно часть DuoWave.")));
         }
         let package = registry::newest_ready(&plugin.state().found)
             .ok_or_else(|| ApiError::bad_request(crate::tr!("У {id} нет версии, которая читается.", id = id)))?;
@@ -2203,7 +2221,7 @@ impl PluginHost {
         let origin = Origin::of(&plugin.state().source);
         if !origin.removable() {
             return Err(ApiError::conflict(crate::tr!(
-                "«{id}» — {word} приложение: его версия — версия шлюза.",
+                "«{id}» — {word} приложение: его версия — версия DuoWave.",
                 id = id,
                 word = origin.word()
             )));
@@ -2563,13 +2581,11 @@ impl PluginHost {
             (state.source.clone(), state.verified)
         };
         let origin = Origin::of(&source);
-        let runs_at = package.as_ref().filter(|package| package.manifest.prefer_home).map(|package| {
-            if self.runs_at_home(package) {
-                "home"
-            } else {
-                "here"
-            }
-        });
+        // A face (stage 5б) runs at home always: its code is the Турбо's.
+        let runs_at = package
+            .as_ref()
+            .filter(|package| package.manifest.prefer_home || package.manifest.face_at((self.placement)()))
+            .map(|package| if self.runs_at_home(package) { "home" } else { "here" });
         let panel_part = |file: &str| {
             package
                 .as_ref()
@@ -3425,7 +3441,7 @@ mod tests {
         let scheme = failure(host.call("strict", "reach", json!({"url": "file:///etc/passwd"}), CallKind::Voice).await);
         assert!(scheme.contains("только http и https"), "{scheme}");
         let speech = failure(host.call("strict", "speak", json!({"text": "Привет"}), CallKind::Background).await);
-        assert!(speech.contains("служб шлюза здесь нет"), "a letter needs the bus: {speech}");
+        assert!(speech.contains("служб DuoWave здесь нет"), "a letter needs the bus: {speech}");
         let view = host.view_one("strict").await.unwrap();
         assert_eq!(view.errors, 4);
         assert!(view.last_error.unwrap().message.starts_with("speak: "), "the last error names the function");
@@ -3477,6 +3493,31 @@ mod tests {
         assert!(refused.message.contains("На колонке"), "{}", refused.message);
         let view = host.view_one("echo").await.unwrap();
         assert!(view.versions[0].problems[0].contains("не работает здесь"));
+    }
+
+    /// `runs: ["station"]` (AirPlay, VPN) on a station with its Турбо (`stationServer`): the station still — it
+    /// switches on and runs here, on the station, not at the Турбо; a computer refuses it.
+    #[tokio::test]
+    async fn switches_on_what_is_for_the_station_on_a_station_with_its_turbo() {
+        let mut station_only = echo("1.0.0");
+        station_only["runs"] = json!(["station"]);
+        for placement in [Placement::Station, Placement::StationServer] {
+            let dir = tempfile::tempdir().unwrap();
+            write_package(dir.path(), &station_only, Some(CODE));
+            let host = host_on(dir.path(), Arc::new(Db::memory()), false, placement).host;
+            host.enable("echo", None).await.unwrap();
+            let call = host.call("echo", "say", json!({"word": "а"}), CallKind::Voice).await;
+            assert_eq!(said(call), "а (1)", "{placement:?}");
+            let view = host.view_one("echo").await.unwrap();
+            // No `runs_at`: neither a face nor `prefer: home` — nothing of it goes to the Турбо.
+            assert_eq!((view.state, view.runs_at), ("loaded", None), "{placement:?}");
+            assert!(view.versions[0].problems.is_empty(), "{placement:?}: {:?}", view.versions[0].problems);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write_package(dir.path(), &station_only, Some(CODE));
+        let host = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Pc).host;
+        let refused = host.enable("echo", None).await.unwrap_err();
+        assert!(refused.message.contains("На компьютере"), "{}", refused.message);
     }
 
     #[tokio::test]

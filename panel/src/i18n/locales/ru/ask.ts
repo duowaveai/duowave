@@ -6,7 +6,7 @@ export default {
     aboutComputer: 'тот же разговор, что голосом, — текстом и со всеми подключёнными серверами',
     metaModel: 'модель',
     meta: (model: string, provider: string, tools: number) => `${model}${provider ? ` · ${provider}` : ''} · инструментов MCP: ${tools}`,
-    unreachable: 'Шлюз недоступен — попробуйте ещё раз.',
+    unreachable: 'Центр недоступен — попробуйте ещё раз.',
     questionLabel: 'Вопрос',
     placeholder: 'Например: что у нас на сегодня в Todoist?',
     ask: 'Спросить',

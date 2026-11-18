@@ -153,7 +153,9 @@ impl Store {
     pub fn open(root: PathBuf) -> std::io::Result<Store> {
         match std::fs::read_to_string(root.join("format")) {
             Ok(text) if text.trim() == FORMAT => {}
-            Ok(text) => return Err(io_error(format!("история формата {}, а шлюз знает {FORMAT}", text.trim()))),
+            Ok(text) => {
+                return Err(io_error(format!("история формата {}, а эта версия DuoWave знает {FORMAT}", text.trim())))
+            }
             Err(_) if root.join("objects").is_dir() => {
                 return Err(io_error("в папке истории нет файла format"));
             }

@@ -45,8 +45,12 @@ const en: Translation<typeof ru> = {
     homeAskAction: 'Choose the country',
     recent: 'Recent',
     noApp: 'Install the “VPN” app from MagicPlace: it connects your servers.',
+    appOffTitle: 'VPN is off',
+    appOffAbout: 'Your subscriptions and settings are still here. Turn the VPN on and it works as before.',
+    appOffTurnOn: 'Turn the VPN on',
+    appOffAdmin: 'A home admin can turn the VPN on.',
     openMagicPlace: 'Open MagicPlace',
-    noYes: 'The gateway does not let the VPN in yet: allow “VPN → Gateway network” in “Links”. Until then everything goes directly.',
+    noYes: 'The hub does not let the VPN in yet: allow “VPN → Hub network” in “Links”. Until then everything goes directly.',
     openLinks: 'Open “Links”',
 
     search: 'Search',

@@ -426,10 +426,10 @@ impl StationConnectService {
     /// after it; the change goes to «Кто что менял».
     pub async fn turn_off(&self, address: &str, addon: &str, actor: Option<Actor>) -> Result<(), ApiError> {
         let Some(command) = neighbours::turn_off_command(addon) else {
-            return Err(ApiError::bad_request(crate::tr!("Этот мод шлюз выключать не умеет.")));
+            return Err(ApiError::bad_request(crate::tr!("Этот мод DuoWave выключать не умеет.")));
         };
         let Some(link) = self.link(address)? else {
-            return Err(ApiError::conflict(crate::tr!("Сначала проверьте колонку: шлюз её ещё не видел.")));
+            return Err(ApiError::conflict(crate::tr!("Сначала проверьте колонку: DuoWave её ещё не видел.")));
         };
         let shell = self
             .opener

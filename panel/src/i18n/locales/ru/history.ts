@@ -6,7 +6,7 @@ export default {
     whoVoice: 'голосом',
     whoMcp: 'Claude Code',
     whoCatalog: 'каталог',
-    whoSystem: 'шлюз',
+    whoSystem: 'центр',
     whoAgentVoice: 'агент, по просьбе голосом',
 
     kindStep: 'шаг',

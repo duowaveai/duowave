@@ -774,7 +774,7 @@ impl HostServices for PluginServices {
 
     fn mic(&self, caller: &str) -> Result<Value, String> {
         let activator =
-            self.activator.get().ok_or_else(|| crate::tr!("микрофон колонки слышит только шлюз на самой колонке"))?;
+            self.activator.get().ok_or_else(|| crate::tr!("микрофон колонки слышит только центр на самой колонке"))?;
         tracing::info!(target: "plugins", "{caller}: opens the station's microphone");
         activator.mic()
     }
@@ -790,7 +790,8 @@ impl HostServices for PluginServices {
             .unwrap_or_default();
         let caller = caller.to_string();
         Box::pin(async move {
-            let activator = activator.ok_or_else(|| crate::tr!("будить колонку может только шлюз на самой колонке"))?;
+            let activator =
+                activator.ok_or_else(|| crate::tr!("будить колонку может только центр на самой колонке"))?;
             activator.wake(&caller, &words, &input).await
         })
     }

@@ -8,9 +8,9 @@
 import type { ComponentChildren } from 'preact';
 import { useState } from 'preact/hooks';
 
-import type { CatalogEntry } from '../../api';
+import { CatalogEntry, installApi } from '../../api';
 import { tr, useLanguage } from '../../i18n';
-import { goesHere, kindOf } from '../../magicplace/filters';
+import { goesHere, kindOf, placeTitle, recommendedHere, shownAlone, wordOfEntry } from '../../magicplace/filters';
 import { downloadLines } from '../../magicplace/section';
 import { usePanel } from '../../shell/context';
 import { useMediaUrl } from '../../ui/media';
@@ -89,24 +89,30 @@ const CHAR_CYCLE = ['g-cool', 'g-violet', 'g-warm', 'g-black', 'g-warm', 'g-viol
 
 const glyphOf = (title: string): string => Array.from(title.trim())[0]?.toUpperCase() ?? '•';
 
-/** Пакет годится в первые шаги: встанет здесь, не скрыт лентой (или уже стоит). */
-const visible = (entry: CatalogEntry): boolean => goesHere(entry) && (!entry.unlisted || isInstalled(entry));
+/** Пакет годится в первые шаги: встанет здесь, не скрыт лентой (или уже стоит), не слово-активатор (п. 65: оно — с персонажем). */
+const visible = (entry: CatalogEntry): boolean => goesHere(entry) && shownAlone(entry) && (!entry.unlisted || isInstalled(entry));
 
 /** Рекомендованное — первым, остальное — как в ленте. */
-const byRecommended = (list: CatalogEntry[]): CatalogEntry[] => [
-    ...list.filter((entry) => entry.recommended),
-    ...list.filter((entry) => !entry.recommended),
-];
+const byRecommended = (list: CatalogEntry[]): CatalogEntry[] => [...list.filter(recommendedHere), ...list.filter((entry) => !recommendedHere(entry))];
 
 export function StoreStep() {
     const lang = useLanguage();
     const panel = usePanel();
     const { leave } = useOnboarding();
-    const catalog = useCatalog();
-    const actions = usePackageActions(() => void catalog.reload());
+    // У компьютера-помощника приложения дома ставятся у центра, через проход: его каталог, его «Поставить» (п. 46).
+    const station = panel.role.role === 'helper' ? panel.role.station?.key : undefined;
+    const catalog = useCatalog(station);
+    const actions = usePackageActions(() => void catalog.reload(), station);
+    const media = installApi(station).mediaPath;
     const [tab, setTab] = useState<TabId>('apps');
 
-    useStepNav({ secondary: { label: tr.onbStore.open, onClick: () => leave('magicplace') } }, [lang]);
+    // У помощника MagicPlace дома — центра: его окно через проход, где видны и приложения для колонки (п. 46).
+    const openStore = (): void => {
+        if (!station) return leave('magicplace');
+        leave();
+        panel.go('magicplace', undefined, undefined, { on: 'station' });
+    };
+    useStepNav({ secondary: { label: tr.onbStore.open, onClick: openStore } }, [lang, station]);
 
     /** Уйти с первых шагов в раздел пульта (и на его вкладку). */
     const goTo = (section: string, sub?: string, item?: string): void => {
@@ -138,12 +144,13 @@ export function StoreStep() {
         const look = entry.kind === 'character' ? undefined : APP_LOOKS.find(([pattern]) => pattern.test(words));
         const installed = isInstalled(entry);
         const manage = canManage(entry.kind);
+        const word = entry.kind === 'character' ? wordOfEntry(entry, catalog.view?.packages ?? []) : null;
         const busy = actions.busy[entry.id];
         const runs = entry.runs ?? [];
         const chip =
             entry.state === 'update'
                 ? { text: tr.onbStore.chipUpdate, cls: 'chip-agent' }
-                : entry.recommended && !installed
+                : recommendedHere(entry) && !installed
                   ? { text: tr.onbStore.chipRecommended, cls: 'chip-lime' }
                   : runs.includes('pc') && runs.includes('station')
                     ? { text: tr.onbStore.chipBoth, cls: '' }
@@ -176,11 +183,17 @@ export function StoreStep() {
             key: entry.id,
             title: entry.title,
             sub: entry.description ?? '',
-            lines: installed ? [] : downloadLines(entry),
+            // Где работает: на колонке, на компьютере, в сети — центр у помощника и есть колонка.
+            lines: [
+                // Своё слово персонажа (п. 65): ставится с ним, отдельной плитки у слова нет.
+                ...(word ? [tr.onbStore.wordLine(word)] : []),
+                ...(entry.place ? [placeTitle(entry.place === 'gateway' && station ? 'station' : entry.place)] : []),
+                ...(installed ? [] : downloadLines(entry)),
+            ],
             ico: look ? look[2] : (entry.kind === 'character' ? CHAR_CYCLE : APP_CYCLE)[at % 6],
             icon: look?.[1],
             glyph: look ? undefined : glyphOf(entry.title),
-            image: entry.preview?.image,
+            image: entry.preview?.image ? media(entry.preview.image) : null,
             chip,
             button,
             note,

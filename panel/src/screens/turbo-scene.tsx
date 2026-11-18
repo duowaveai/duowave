@@ -71,7 +71,9 @@ export function TurboBody({ turbo, onOpen, title: named, sub: told, state: shown
                             const skipped = helper.without.includes(ability.id);
                             const details = ability.details;
                             const what = !ability.ready
-                                ? tr.dashboard.turboNotReady
+                                ? ability.id === 'voice' && !turbo.builtin
+                                    ? tr.dashboard.turboVoiceInstall
+                                    : tr.dashboard.turboNotReady
                                 : skipped
                                   ? tr.dashboard.turboNotTaken
                                   : ability.id === 'voice'

@@ -56,6 +56,29 @@ fn is_misheard_alice(word: &str, wake_words: &[String]) -> bool {
         && ALICE_HEARD_AS.is_match(&normalize(word))
 }
 
+/// The station's own wake words: they match only as written ([`is_wake_word`]), never by a likeness.
+const STATION_WORDS: [&str; 2] = ["алиса", "яндекс"];
+
+/// For likeness: «дж» heard as «ж» and back.
+fn sounded(word: &str) -> String {
+    word.replace("дж", "ж")
+}
+
+/// The first word misheard as an activator's own word (src/activator): «Джаросин, …» for «Джарвис» (clean-path check
+/// 18.11, item 20). The request's audio starts at the word, so its first word is the word by construction; it is
+/// dropped when it begins like one of the activator's words — four letters or more alike — and is about as long. The
+/// station's «Алиса» and «Яндекс» are never matched so: «Аличе», «Янтарь» stay.
+fn is_misheard_activator(word: &str, wake_words: &[String]) -> bool {
+    let word = normalize(word);
+    let length = word.chars().count();
+    let alike = |a: &str, b: &str| a.chars().zip(b.chars()).take_while(|(a, b)| a == b).count();
+    wake_words.iter().filter(|wake| !STATION_WORDS.contains(&wake.as_str())).any(|wake| {
+        let same = alike(&word, wake).max(alike(&sounded(&word), &sounded(wake)));
+        let wake_length = wake.chars().count();
+        same >= 4 && length + 3 >= wake_length && length <= wake_length + 3
+    })
+}
+
 fn ends_phrase(word: &str) -> bool {
     word.ends_with([',', '.', '!', '?', '…'])
 }
@@ -108,7 +131,8 @@ pub fn read_transcript(raw: &str, wake_words: &[String]) -> Transcript {
     let words: Vec<String> = raw.split(is_js_space).filter(|word| !word.is_empty()).map(str::to_string).collect();
     let wake: Vec<String> = wake_words.iter().map(|word| normalize(word)).filter(|word| !word.is_empty()).collect();
     let found = words.iter().take(3).position(|word| is_wake_word(&normalize(word), &wake));
-    let index = if found.is_none() && words.len() > 1 && is_misheard_alice(&words[0], &wake) { Some(0) } else { found };
+    let misheard = |word: &String| is_misheard_alice(word, &wake) || is_misheard_activator(word, &wake);
+    let index = if found.is_none() && words.len() > 1 && misheard(&words[0]) { Some(0) } else { found };
     let said = match index {
         Some(index) => words[index + 1..].to_vec(),
         None => words.clone(),
@@ -199,5 +223,14 @@ mod tests {
     fn does_not_treat_short_words_that_merely_start_like_a_wake_word_as_one() {
         assert_eq!(clean_transcript("али баба", &["али".to_string()]), "баба");
         assert_eq!(clean_transcript("алиби есть", &wake()), "алиби есть");
+    }
+
+    #[test]
+    fn drops_an_activators_word_misheard_at_the_start_but_not_a_command_word() {
+        let words = vec!["алиса".to_string(), "джарвис".to_string()];
+        assert_eq!(clean_transcript("Джаросин, включи VPN", &words), "Включи VPN");
+        assert_eq!(clean_transcript("Жарвис включи свет", &words), "Включи свет");
+        assert_eq!(clean_transcript("Джаз включи", &words), "Джаз включи", "three letters alike are no word");
+        assert_eq!(clean_transcript("Аличе, привет", &wake()), "Аличе, привет", "the station's words only as written");
     }
 }

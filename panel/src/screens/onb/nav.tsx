@@ -13,6 +13,8 @@ export interface StepNav {
     label?: string;
     /** Кнопка заперта (ждём ответа, не выбрано нужное). */
     disabled?: boolean;
+    /** Шаг занят (грузит то, что просили на нём): кнопка заперта и с крутилкой. */
+    busy?: boolean;
     /**
      * Своё по нажатию. false — остаться на шаге (шаг сам сменил подэкран); иначе рамка идёт к следующему шагу.
      * Ошибка — рамка покажет её строкой над кнопками и останется.
@@ -34,6 +36,8 @@ export interface Onboarding {
     next: () => void;
     /** Закрыть первые шаги и открыть раздел пульта (MagicPlace и т. п.). */
     leave: (section?: string) => void;
+    /** Перейти на шаг первых шагов (`speaker` — «Колонка»); такого шага на этом пути нет — ничего. */
+    goTo?: (step: string) => void;
 }
 
 export const OnboardingContext = createContext<Onboarding>({ choice: 'computer', wake: 'computer', next: () => undefined, leave: () => undefined });

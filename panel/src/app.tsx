@@ -20,8 +20,9 @@ import { SearchPalette, SearchPlace, searchPlaces, useSearchKey, useTalkKey } fr
 import { timeAgo } from './time';
 import { SectionDef, useSections } from './shell/sections';
 import { Nav, NavEntry, OpenWindow, TopLine } from './shell/shell';
-import { applyRole, ownName, roleOf, RoleInfo, whereAmI } from './shell/role';
-import { DeviceTabs, HereLine } from './shell/device-tabs';
+import { ownName, roleOf, RoleInfo } from './shell/role';
+import { HomeBar } from './shell/home-bar';
+import { noteHomeDevicesNews } from './home-devices';
 import { useHomeStationName } from './station-name';
 import { shellFor } from './shell/shells';
 import { Boundary, Slot } from './shell/slot';
@@ -33,6 +34,9 @@ import { readUpdateStatus, useOfferedUpdate } from './updates';
 import { syncPackages } from './plugins/loader';
 import { notePackageChange, runtimeOnly } from './plugins/versions';
 import { ConsentSheet } from './bus/consent-sheet';
+import { InstallWizard } from './magicplace/wizard';
+import { PendingInstallRunner } from './magicplace/pending-install';
+import { SettlingRunner } from './magicplace/settling';
 import { noteBusChange } from './bus/state';
 import { noteFoldersChange } from './folders/state';
 import { noteHelperKey, noteHelpersNews } from './helpers';
@@ -277,6 +281,8 @@ export function App() {
         noteHelperKey(name, change);
         // Помощник пришёл, ушёл, список сменился: «Помощники» перечитывают его и сразу после своего ответа (helpers.ts).
         noteHelpersNews(name);
+        // Устройства дома: строка вверху, «Устройства», сцена стола перечитывают список (home-devices.ts).
+        noteHomeDevicesNews(name);
         // Черновики мастерской: плитка на столе, «Готово» на полосе, «Примерка» по просьбе колонки (voice/drafts.ts).
         if (name === 'workshop.changed' || name === 'hello') noteWorkshopChange(subject, change);
         // Работы разговора: «Готово…» на полосе и голосом компьютера, заметки на плитке (voice/works.ts).
@@ -564,8 +570,6 @@ export function App() {
         setAuth('login');
         navigate({ section: 'home', query: {} }, true);
     };
-    // Пульт колонки в окне помощника — пульт шлюза: белая рамка (via.ts).
-    useEffect(() => applyRole(VIA ? 'gateway' : role.role), [role.role]);
     // Этап 4: компьютер помогает колонке — его окно и есть её пульт. Весь пульт идёт к колонке через проход компьютера;
     // своё у компьютера — «Настройки» → «Этот компьютер». `?local` оставляет пульт компьютера (разработчику).
     // Пока идут «Первые шаги» — открыты или не дошли до конца, — пульт остаётся здесь: компьютер становится помощником
@@ -678,33 +682,11 @@ export function App() {
     const activeNav = activeKey(link, role);
     const onNav = (entry: NavEntry): void => go(entry.section, entry.tab, undefined, entry.station ? { on: 'station' } : {});
     const name = computer ? 'DuoWave' : (homeName ?? ownName(health, role) ?? displayName(current, drawing));
-    // Верхняя строка — «где я» (решение владельца 16.11): вкладки устройств дома, нажатая — чей это пульт («Колонка
-    // «Кухня» · шлюз | Этот компьютер · Турбо»), строка «Вы в пульте колонки» и состояние. У шлюза на компьютере с
-    // колонками нажатая вкладка открывает выбор колонки. В пульте Турбо состояния нет: он сам не отвечает.
-    const where = whereAmI({
-        placement: health?.placement,
-        role,
-        via: TOP_VIA ? VIA : null,
-        computer,
-        path: location.pathname,
-        hash: location.hash,
-        current: computer ? undefined : name,
-    });
-    const turboPanel = role.role === 'helper' && !VIA;
-    const line = (
-        <>
-            <DeviceTabs where={where} picking={pickerOpen} onPick={() => setPickerOpen(true)} />
-            <HereLine where={where} turbo={turboPanel && role.helping} />
-            {!turboPanel && (
-                <span class="desk-top-state">
-                    <span aria-hidden="true" class={dotClass(reach)} />
-                    {status}
-                </span>
-            )}
-        </>
-    );
-    // Телефон: те же вкладки — значок и короткое имя, у нажатой — точка связи.
-    const short = <DeviceTabs where={where} short dot={turboPanel ? undefined : dotClass(reach)} picking={pickerOpen} onPick={() => setPickerOpen(true)} />;
+    // Верхняя строка — дом и его устройства (docs/plans/home-and-devices.md, этап 1): пульт один, откуда ни открой;
+    // вкладок устройств и рамки по роли нет. Капсула ведёт на страницу устройства.
+    const line = <HomeBar />;
+    // Телефон: те же капсулы — имя и точка.
+    const short = <HomeBar short />;
     const top: TopLine = { role: role.role, line, narrow: short };
     const places: SearchPlace[] = searchPlaces(role.role === 'helper', health?.placement?.role === 'station');
     const pickPlace = (entry: SearchPlace): void => {
@@ -821,6 +803,9 @@ export function App() {
             {sayOpen && <SaySheet health={health} debug={debug} onClose={() => setSayOpen(false)} />}
             {auth === 'ok' && <CreationFlow />}
             {auth === 'ok' && <MagicPlaceFlow tab={STORE_TAB} />}
+            {auth === 'ok' && <InstallWizard />}
+            {auth === 'ok' && <PendingInstallRunner />}
+            {auth === 'ok' && <SettlingRunner />}
             {auth === 'ok' && <ConsentSheet />}
             {auth === 'ok' && onboardingOpen && !VIA && !OWN_PAGE && <Onboarding onClose={closeOnboarding} />}
             {pickerOpen && (

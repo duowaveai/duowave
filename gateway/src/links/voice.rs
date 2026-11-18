@@ -193,8 +193,23 @@ impl OwnVoices for LabVoices {
             engine: job.engine.clone(),
             running: job.state == JobRunState::Running,
             percent: job.percent,
+            label: job.label.clone(),
+            last_line: job.log.last().cloned(),
             failed: job.error.filter(|_| job.state != JobRunState::Done),
         })
+    }
+
+    fn stop_job(&self, kind: &str, engine: &str) -> bool {
+        match self.0.job() {
+            Some(job)
+                if job.state == JobRunState::Running
+                    && job.kind.as_str() == kind
+                    && (engine.is_empty() || job.engine == engine) =>
+            {
+                self.0.stop_job()
+            }
+            _ => false,
+        }
     }
 
     fn voice_engine(&self, id: &str) -> Option<String> {

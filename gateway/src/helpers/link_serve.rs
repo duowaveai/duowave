@@ -579,7 +579,7 @@ pub async fn bind(app: &Arc<App>, main: &TcpListener) -> Option<LinkListener> {
         Err(error) => {
             tracing::warn!("link: port {port} is not free: {error}");
             server.set_problem(crate::tr!(
-                "Порт связи {port} занят: другие шлюзы пока не подключатся к этому компьютеру. Освободите порт или задайте LINK_PORT в .env.",
+                "Порт связи {port} занят: другие дома пока не подключатся к этому компьютеру. Освободите порт или задайте LINK_PORT в .env.",
                 port = port
             ));
             None

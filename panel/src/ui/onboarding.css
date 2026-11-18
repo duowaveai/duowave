@@ -105,3 +105,12 @@
 /* Обёртка поля холста (div.field: подпись + .input) — не поле пульта: глобальный .field из glass.css рисовал бы на ней
    капсулу с рамкой. */
 .onb div.field { padding: 0; border: 0; border-radius: 0; background: none; min-height: 0; }
+
+/* Пилюля свёрнутой установки в шапке (п. 55): слева от языков, языки — сразу за ней. */
+.onb .waiting-pill-onb { margin-left: auto; max-width: 46vw; overflow: hidden; text-overflow: ellipsis; }
+.onb .waiting-pill-onb + .ob-lang { margin-left: 10px; }
+@media (max-width: 760px) {
+    .onb .waiting-pill-onb { max-width: 40vw; min-height: 28px; padding: 0 10px; font-size: 12px; }
+}
+/* «Дальше» занят: шаг грузит то, что просили на нём (п. 60) — крутилка первых шагов в кнопке. */
+.onb .onb-next-spin { display: inline-block; width: 14px; height: 14px; margin-right: 8px; border-width: 2px; vertical-align: -2px; }

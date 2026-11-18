@@ -16,7 +16,7 @@ import { registerPlugin, unregisterPlugin } from '../shell/registry';
 import type { SlotContribution } from '../shell/slot';
 import { setTheme, useTheme } from '../shell/theme';
 import { normalizeTheme } from '../shell/themes';
-import { deskActions } from '../shell/widgets';
+import { deskActions, useWidgets } from '../shell/widgets';
 import { ask } from '../ui/confirm';
 import { PermissionLines } from '../ui/rights-lines';
 import { SettingInput } from '../ui/settings-fields';
@@ -67,6 +67,7 @@ export function FittingSection() {
 function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean }) {
     const panel = usePanel();
     const role = panel.role.role;
+    const deskWidgets = useWidgets(role, panel.health);
     const cloud = useAgentPlace();
     const { theme } = useTheme();
     const [draft, setDraft] = useState<DraftView | null>(null);
@@ -153,7 +154,11 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
     const land = (report: InstallReport) => {
         if (!draft || !plan) return;
         if (draft.meta.kind === 'widget') {
-            const key = `package.${id}.${widget?.id ?? 'main'}`;
+            // Ключ той плитки, которую стол рисует (п. 47): примерка её знает — её; нет — плитка пакета на столе; ещё нет
+            // и её — `main`, и стол переведёт запись на настоящую плитку, когда она появится (shell/widgets.ts repairedLayout).
+            const key = widget
+                ? `package.${id}.${widget.id}`
+                : (deskWidgets.find((entry) => entry.key.startsWith(`package.${id}.`))?.key ?? `package.${id}.main`);
             const spot = placeOnCanvas(document.querySelector('.draft-tile, .draft-slot'));
             deskActions(role).land(key, spot ? { ...spot, w: WIDTHS[width] } : undefined);
         }

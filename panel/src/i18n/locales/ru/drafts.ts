@@ -30,7 +30,7 @@ export default {
     unchangedNote: 'Ничего не поменялось: агент закончил, не тронув черновик. Скажите, что сделать.',
     unchangedShort: 'ничего не поменялось',
     editing: (text: string) => `Правка: ${text}`,
-    interruptedNote: 'Прервано: шлюз перезапустился, пока агент работал. Можно продолжить.',
+    interruptedNote: 'Прервано: DuoWave перезапустился, пока агент работал. Можно продолжить.',
     interruptedShort: 'прервано',
     goOn: 'Продолжить',
     goOnWords: 'Доделай начатое и проверь, что всё работает.',
@@ -54,7 +54,7 @@ export default {
 
     // draft-preview
     callFailed: (fn: string) => `${fn} не отработала`,
-    codeChanged: 'panel.js поменялся, пока шлюз отвечал, — нажмите «Показать заново».',
+    codeChanged: 'panel.js поменялся, пока центр отвечал, — нажмите «Показать заново».',
     noDeskWidget: 'В черновике нет виджета стола (слот desk.widgets).',
     loadingWidget: 'Загружаю виджет…',
 

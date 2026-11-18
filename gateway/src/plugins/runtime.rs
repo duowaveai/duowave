@@ -187,7 +187,7 @@ pub fn engine_for(
             Ok((Arc::new(super::wasm::Wasm), code))
         }
         #[cfg(not(feature = "wasm"))]
-        Runtime::Wasm => Err(PluginError::Load(crate::tr!("в этой сборке шлюза нет WebAssembly (фича wasm)"))),
+        Runtime::Wasm => Err(PluginError::Load(crate::tr!("в этой сборке DuoWave нет WebAssembly (фича wasm)"))),
         Runtime::Mcp => Ok((Arc::new(super::mcp_runtime::McpRuntime), code)),
         // An app: its program under the supervisor (src/apps).
         Runtime::Process | Runtime::Node => Ok((process.clone(), code)),

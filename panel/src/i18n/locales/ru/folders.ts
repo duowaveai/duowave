@@ -26,7 +26,7 @@ export default {
     loadError: (error: string) => `Папки: ${error}`,
     homeTitle: 'Домашняя папка DuoWave',
     homeVisible: 'Обычная папка на этом компьютере — её видно в Finder. Голос, агент и приложения работают только в ней.',
-    homeHidden: 'Папка DuoWave в данных шлюза. Голос, агент и приложения работают только в ней.',
+    homeHidden: 'Папка DuoWave в данных центра. Голос, агент и приложения работают только в ней.',
     revealInFinder: 'Показать в Finder',
     seenBy: (who: string) => `видят ${who}`,
     notHere: 'сейчас нет на месте',

@@ -13,7 +13,7 @@ const en: Translation<typeof ru> = {
     noAnswer: 'The speaker did not respond — it may be busy right now. Try again.',
     noSession: 'No live session with the speaker.',
     failed: 'That did not work — try again.',
-    cannotSpeak: 'The speaker is connected, but the gateway cannot speak for it (relay mode or no voice rights).',
+    cannotSpeak: 'The speaker is connected, but the hub cannot speak for it (relay mode or no voice rights).',
     needSession: 'A live session with the speaker is needed: say “Alice” and try again.',
 };
 

@@ -1463,7 +1463,7 @@ async fn hears_the_emergency_words_before_the_routes_and_the_model_and_lets_yand
     );
     let response = station.wait_for(response_to("req-rescue"), 8000).await;
     let speech = at(&response, "event.aliceResponse.voiceResponse.outputSpeech.text").as_str().unwrap().to_string();
-    assert!(speech.contains("режим Яндекса"), "{speech}");
+    assert!(speech.contains("режим «Алиса»"), "{speech}");
     // Once the station has said it, the mode is «Яндекс»: the station reconnects into the relay.
     let mut mode = Value::Null;
     for _ in 0..150 {

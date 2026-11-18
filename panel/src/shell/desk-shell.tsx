@@ -10,6 +10,7 @@ import { IconMic, IconMicOff } from '../icons';
 import { onMic, micOn } from '../voice/mic';
 import { useMicHeld, useVoiceAction } from '../voice/phrases';
 import { VoiceStrip } from '../voice/strip';
+import { InstallPill } from '../magicplace/wizard';
 import { WaitingPill } from '../voice/waiting';
 import { DuoWaveMark } from '../ui/duowave';
 import { AgentPlaque } from './agent-plaque';
@@ -105,6 +106,8 @@ export function DeskShell({ nav, active, onNav, top, actions, talk, notice, desk
                     ))}
                 </nav>
                 <WaitingPill place="dock" />
+                {/* Мастер установки свёрнут — его ход (magicplace/wizard.tsx). */}
+                <InstallPill place="dock" />
             </div>
         </div>
     );

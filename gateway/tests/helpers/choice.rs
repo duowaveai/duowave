@@ -362,7 +362,7 @@ async fn a_new_computer_answers_its_contract_to_a_station() {
     let added = message(station.post("/api/v1/helpers").header(header, auth).json(&body), StatusCode::CREATED).await;
     let helper = &added["helpers"][0];
     let me = pc.app.identity.gateway().unwrap();
-    assert_eq!(helper["contract"].as_u64(), Some(1));
+    assert_eq!(helper["contract"].as_u64(), Some(u64::from(duowave::helpers::contract::VERSION)));
     assert_eq!(
         (helper["helper"]["id"].as_str(), helper["helper"]["name"].as_str()),
         (Some(me.id.as_str()), Some(me.name.as_str()))
@@ -410,6 +410,11 @@ async fn the_pc_switch_puts_the_computer_into_the_stations_list_through_the_old_
     let watch = pc.app.station_gateway.watch("at:127.0.0.1");
     watch.set_record(Some(&record), None).unwrap();
     watch.poll().await;
+    // The computer took the home's copy (docs/plans/home-and-devices.md, stage 3): its people are the home's now —
+    // the station's admin signs in here with the home's password; its own access keys stayed.
+    let _ = pc_admin;
+    let login = pc.post("/api/v1/auth/login").json(&json!({"password": "helpers-admin-password"}));
+    let (name, pc_admin) = bearer(message(login, StatusCode::OK).await["token"].as_str().expect("a token"));
     let switch = pc.post("/api/v1/placement/helper").header(name, pc_admin).json(&json!({"on": true}));
     message(switch, StatusCode::CREATED).await;
     // The computer's address as it tells the station (its home network's, when it has one; this one else).

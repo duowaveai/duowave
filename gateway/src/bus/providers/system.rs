@@ -73,7 +73,7 @@ impl System {
 fn caller(letter: &Letter) -> Result<String, BusError> {
     match (letter.from.kind(), letter.from.name()) {
         (address::APP, Some(id)) => Ok(id.to_string()),
-        _ => Err(BusError::Denied(crate::tr!("службы шлюза работают для приложений"))),
+        _ => Err(BusError::Denied(crate::tr!("службы DuoWave работают для приложений"))),
     }
 }
 
@@ -96,7 +96,7 @@ impl Provider for System {
             (MEMORY, crate::tr!("Память: интересы дома")),
             (HEARING, crate::tr!("Слух: распознать речь в своём файле")),
             (PUBLISH, crate::tr!("Публикация: Telegram, страница «смотри и выбирай», страницы площадок")),
-            (NETWORK, crate::tr!("Сеть шлюза: выход в интернет через ваши серверы")),
+            (NETWORK, crate::tr!("Сеть центра: выход в интернет через ваши серверы")),
             (MIC, crate::tr!("Микрофон колонки: слышит комнату всё время")),
             (ACTIVATOR, crate::tr!("Слово-активатор: начать разговор с колонкой")),
         ]
@@ -147,7 +147,7 @@ impl Provider for System {
             HEARING => vec![Handle::new("recognize", Level::Call)
                 .titled(&crate::tr!("распознать речь в своём файле: слова со временем"))],
             NETWORK => vec![Handle::new("connections", Level::Call)
-                .titled(&crate::tr!("дать шлюзу свои подключения: через них он ходит в интернет по вашим правилам"))],
+                .titled(&crate::tr!("дать центру свои подключения: через них он ходит в интернет по вашим правилам"))],
             MIC => vec![Handle::new("open", Level::Call)
                 .titled(&crate::tr!("слушать микрофон колонки: узнать, где его звук"))
                 .dangerous(Some(crate::bus::danger::Danger::Camera))
@@ -157,8 +157,8 @@ impl Provider for System {
             PUBLISH => vec![
                 Handle::new("publishers", Level::Call)
                     .titled(&crate::tr!("кто может отправить: что берёт, нужно ли подключение")),
-                Handle::new("telegram", Level::Call).titled(&crate::tr!("отправить ролик в Telegram ботом шлюза")),
-                Handle::new("watch", Level::Call).titled(&crate::tr!("страница «смотри и выбирай» на шлюзе")),
+                Handle::new("telegram", Level::Call).titled(&crate::tr!("отправить ролик в Telegram своим ботом")),
+                Handle::new("watch", Level::Call).titled(&crate::tr!("страница «смотри и выбирай» в DuoWave")),
             ],
             BRAIN => vec![
                 Handle::new("speak", Level::Call).titled(&crate::tr!("ответить моделью словами приложения")),
@@ -177,7 +177,7 @@ impl Provider for System {
     fn call(&self, letter: Letter) -> BoxFuture<'static, Result<Value, BusError>> {
         let services = self.services();
         Box::pin(async move {
-            let services = services.ok_or_else(|| BusError::Failed(crate::tr!("службы шлюза ещё не готовы")))?;
+            let services = services.ok_or_else(|| BusError::Failed(crate::tr!("службы DuoWave ещё не готовы")))?;
             let id = caller(&letter)?;
             let input = letter.input;
             let text = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_string);

@@ -231,6 +231,29 @@ impl CharactersService {
         self.voices.get().cloned()
     }
 
+    /// On a Турбо (clean-path check 18.11, item 40): the model a character's voice would go with here — `wanted`, the
+    /// one its centre named, else this computer's pick — and its fallback voice.
+    #[cfg(feature = "pc")]
+    pub async fn turbo_choice(
+        &self,
+        character: &Character,
+        wanted: Option<&str>,
+    ) -> (Option<String>, Option<FallbackView>) {
+        match self.voices() {
+            Some(voices) => voices.turbo_choice(character, wanted).await,
+            None => (None, None),
+        }
+    }
+
+    /// On a Турбо: the model its centre named for a character's voice is kept, and the voice goes with it.
+    #[cfg(feature = "pc")]
+    pub fn name_engine(&self, character: &str, engine: &str) -> Result<(), ApiError> {
+        match self.voices() {
+            Some(voices) => voices.name_engine(character, engine),
+            None => Ok(()),
+        }
+    }
+
     /// The packages followed: their characters synced whenever one comes, goes or is updated.
     pub fn start(self: &Arc<Self>) {
         self.sync();
@@ -261,6 +284,11 @@ impl CharactersService {
     /// A package's character by its full id, checked.
     pub fn character(&self, id: &str) -> Option<Character> {
         self.known().into_iter().filter_map(Result::ok).find(|character| character.id == id)
+    }
+
+    /// The first character of an installed package, checked.
+    pub fn of_package(&self, package: &str) -> Option<Character> {
+        self.known().into_iter().filter_map(Result::ok).find(|character| character.package == package)
     }
 
     /// The installed packages' characters read again: the table follows them (rows of packages gone go), and their
@@ -545,6 +573,30 @@ impl CharactersService {
         self.personas.choose(persona, actor)?;
         let character = self.builtin_views().into_iter().find(|view| view.id == id).unwrap_or_else(|| unreachable!());
         Ok(ChooseAnswer { character, voice: ChosenVoice { state: VoiceState::None, needs: None, pending: None } })
+    }
+
+    /// A character's words as a room's «Кто отвечает здесь» keeps them (docs/plans/home-and-devices.md, «Комнаты»):
+    /// a package's character with its tones as its package sets them, a card of the built-in ones as it is. Its voice
+    /// stays the home's.
+    pub fn persona_for(&self, id: &str) -> Result<Persona, ApiError> {
+        if let Some(character) = self.character(id) {
+            return Ok(persona_of(&character, None));
+        }
+        let card = persona_presets().into_iter().find(|preset| preset.id == id);
+        let Some(card) = card else {
+            return Err(ApiError::not_found(crate::tr!("Нет персонажа {id}.", id = id)));
+        };
+        if card.id == ALICE {
+            let positions = alice_positions(None);
+            let text = alice_text(Some(&positions));
+            return Ok(Persona {
+                preset_id: Some(card.id.clone()),
+                text: text.clone(),
+                base: Some(text),
+                tones: Some(positions),
+            });
+        }
+        Ok(Persona { preset_id: Some(card.id.clone()), text: card.text.clone(), base: Some(card.text), tones: None })
     }
 
     /// The voice as it is, untouched: what the character's would need.

@@ -618,7 +618,7 @@ fn keep_gateways(gateways: &mut BTreeMap<String, Live>) {
 }
 
 fn no_such_client() -> ApiError {
-    ApiError::not_found(crate::tr!("Нет такого шлюза среди тех, кому помогает этот компьютер."))
+    ApiError::not_found(crate::tr!("Нет такого дома среди тех, кому помогает этот компьютер."))
 }
 
 #[cfg(test)]

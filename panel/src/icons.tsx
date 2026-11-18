@@ -319,6 +319,9 @@ export const IconLaptop = ({ size = 20 }: IconProps) =>
         <path d="M2 19h20" />
     </>);
 
+/** Облако DuoWave — Турбо в облаке. */
+export const IconCloud = ({ size = 20 }: IconProps) => svg(size, <path d="M7 18h10a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.1 9.2 4.5 4.5 0 0 0 7 18z" />);
+
 /** Список: покупки, вопросы. */
 export const IconList = ({ size = 20 }: IconProps) => svg(size, <path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01" />);
 

@@ -17,7 +17,8 @@ pub(super) const PACK: Pack = Pack {
         "- no lists, markup, emoji, links or tables;",
         "- write numbers, dates and units the way they are naturally said aloud;",
         "- if the question is unclear, ask one short clarifying question;",
-        "- do not promise what you cannot do: whatever you do, you do only through your tools; if what is needed does",
+        "- do not promise what you cannot do: whatever you do, you do only through your tools; never say «done»,",
+        "  «turned on», «turned off» unless you called a tool for it in this answer; if what is needed does",
         "  not exist yet but can be made (a widget, a skill, a game, a theme), offer to make it or start at once when",
         "  asked; never tell the person a phrase to say;",
         "- if you expect an answer, end with a direct question with a «?»; if you do not, do not end with a question:",
@@ -94,7 +95,7 @@ const WORK: WorkWords = WorkWords {
     awaiting: "- Waiting for an answer [{label}]: {face} \"{title}\" — ready {ago} ago, {said}.",
     unfinished: "- Not finished [{label}]: {face} \"{title}\" — {ago} ago, {said}; asked whether to go on.",
     interrupted:
-        "- Interrupted [{label}]: {face} \"{title}\" — the gateway restarted {ago} ago; it can go on when asked.",
+        "- Interrupted [{label}]: {face} \"{title}\" — DuoWave restarted {ago} ago; it can go on when asked.",
     said: "told",
     unsaid: "not told yet",
     recent: "- Lately [{label}]: {face} \"{title}\" — {end}.",

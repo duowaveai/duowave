@@ -356,3 +356,6 @@ html:not([data-theme='light']) .onb .g-black { background: #000; box-shadow: 0 0
 .onb .dw-btn-accent:hover { background: var(--accent-hi); box-shadow: var(--shadow-accent-hi); }
 .onb .dw-btn-light { background: var(--surface); color: var(--text); box-shadow: var(--shadow-ring), 0 1px 2px rgba(0,0,0,.05); }
 .onb .dw-btn-dark { background: var(--ink-btn); color: var(--on-ink-btn); }
+
+/* «Что есть в доме» (docs/plans/home-and-devices.md, этап 6): найденные устройства с ролями под выбором центра. */
+.onb-found { display: flex; flex-direction: column; gap: 6px; }

@@ -1131,6 +1131,38 @@ pub const HELPERS: SettingDefinition<Vec<crate::helpers::HelperSetting>> = Setti
     parse: crate::helpers::parse_helpers,
 };
 
+/// A room of the home (docs/plans/home-and-devices.md, «Комнаты», stage 2): what may differ in one device's room —
+/// Alice's mode, the volume, who answers here; none — as in the whole home. The name and the room are the device's
+/// own (its record in `stations`). Kept at the centre, by device.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomSetting {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<PanelMode>,
+    /// 0–10, as the station's own scale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume: Option<u8>,
+    /// The character who answers here, by id; its words as they were when chosen (like the home's `dialog_persona`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persona: Option<Persona>,
+}
+
+impl RoomSetting {
+    pub fn is_empty(&self) -> bool {
+        self.mode.is_none() && self.volume.is_none() && self.character.is_none()
+    }
+}
+
+pub const ROOMS: SettingDefinition<BTreeMap<String, RoomSetting>> = SettingDefinition {
+    key: "device_rooms",
+    scope: SettingScope::Global,
+    description: "Комнаты",
+    sensitive: false,
+    parse: |value| serde_json::from_value(value.clone()).ok(),
+};
+
 /// «Что может уходить из дома» (src/helpers): «Только дома», «Дом и моё облако», «Любые облака» (the default). Travels
 /// with the settings package.
 pub const AWAY: SettingDefinition<crate::helpers::Away> = SettingDefinition {
@@ -1351,6 +1383,40 @@ pub const HARNESS_PATHS: SettingDefinition<BTreeMap<String, String>> = SettingDe
     key: "harness_paths",
     scope: SettingScope::Global,
     description: "Где программы агентов",
+    sensitive: false,
+    parse: as_string_record,
+};
+
+/// The home's character was chosen with a voice of its own (clean-path check 18.11, item 70): once that voice is up on
+/// the Турбо, the centre switches its «Голос» to the computer's by itself — unless the owner chose a voice by hand
+/// after. `{"character": <id>, "armed": "1"|"0"}`: armed when the home's character changes to one with a package;
+/// disarmed by the switch or by the owner's own choice (src/models/home_voice.rs).
+pub const HOME_VOICE_FOLLOW: SettingDefinition<BTreeMap<String, String>> = SettingDefinition {
+    key: "home_voice_follow",
+    scope: SettingScope::Global,
+    description: "Голос персонажа включается сам, когда встал на Турбо",
+    sensitive: false,
+    parse: as_string_record,
+};
+
+/// The model the home's character speaks with on its Турбо, as the owner chose it at the centre (clean-path check
+/// 18.11, item 40): by the character's id, or by its package's id when chosen before the package was installed. The
+/// home's: it travels with the home.
+pub const HOME_VOICE_ENGINES: SettingDefinition<BTreeMap<String, String>> = SettingDefinition {
+    key: "home_voice_engines",
+    scope: SettingScope::Global,
+    description: "Модель голоса персонажа на Турбо",
+    sensitive: false,
+    parse: as_string_record,
+};
+
+/// On a Турбо: the model its centre named for a character's voice, by the character's id — the voice goes with it
+/// instead of the one this computer would pick. The Турбо's own.
+#[cfg(feature = "pc")]
+pub const TURBO_VOICE_ENGINES: SettingDefinition<BTreeMap<String, String>> = SettingDefinition {
+    key: "turbo_voice_engines",
+    scope: SettingScope::Global,
+    description: "Модель голоса персонажа, названная центром",
     sensitive: false,
     parse: as_string_record,
 };

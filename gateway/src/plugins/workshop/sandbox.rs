@@ -609,7 +609,7 @@ pub fn code_warnings(source: &str) -> Vec<String> {
     let lower = source.to_ascii_lowercase();
     if lower.contains(".aac") || lower.contains("aacp") {
         warnings.push(
-            crate::tr!("AAC колонка не играет: шлюз перекодирует его в MP3 на компьютере, на колонке — только с флагом MEDIA_TRANSCODE_ON_STATION. Лучше MP3 или HLS."),
+            crate::tr!("AAC колонка не играет: DuoWave перекодирует его в MP3 на компьютере, на колонке — только с флагом MEDIA_TRANSCODE_ON_STATION. Лучше MP3 или HLS."),
         );
     }
     if source.contains("setTimeout") || source.contains("setInterval") {
@@ -719,7 +719,7 @@ pub fn station_warnings(folder: &Path) -> Vec<String> {
     if !pictures || manifest.prefer_home {
         return Vec::new();
     }
-    vec![crate::tr!("Шлюз на колонке, а памяти там мало: картинка — до 1 МБ, все картинки плагинов — до 5 МБ. Лучше \"prefer\": \"home\" — тогда картинки живут на компьютере.")]
+    vec![crate::tr!("Центр на колонке, а памяти там мало: картинка — до 1 МБ, все картинки плагинов — до 5 МБ. Лучше \"prefer\": \"home\" — тогда картинки живут на компьютере.")]
 }
 
 /// What a link of an item says about the station.
@@ -733,7 +733,7 @@ fn link_warnings(play: &[PlayView]) -> Vec<String> {
         let path = item.url.split(['?', '#']).next().unwrap_or_default().to_ascii_lowercase();
         if path.ends_with(".aac") || path.ends_with(".aacp") {
             warnings.push(crate::tr!(
-                "«{item}»: AAC — колонка не играет, шлюз перекодирует только на компьютере.",
+                "«{item}»: AAC — колонка не играет, DuoWave перекодирует только на компьютере.",
                 item = item.title
             ));
         }
@@ -813,7 +813,7 @@ fn engine(
         #[cfg(not(feature = "wasm"))]
         Runtime::Wasm => {
             let _ = folder;
-            Err(crate::tr!("в этой сборке шлюза нет WebAssembly"))
+            Err(crate::tr!("в этой сборке DuoWave нет WebAssembly"))
         }
         Runtime::Mcp => Ok((Arc::new(crate::plugins::mcp_runtime::McpRuntime), code)),
         Runtime::Process | Runtime::Node => {
@@ -936,7 +936,7 @@ pub async fn check(folder: &Path, id: &str, handle: Option<tokio::runtime::Handl
         && manifest.runs.iter().any(|placement| *placement != crate::core::availability::Placement::Pc)
     {
         report.warnings.push(crate::tr!(
-            "MIDI-клавиатура есть только у шлюза на компьютере: на колонке приложение будет работать без неё."
+            "MIDI-клавиатура есть только у DuoWave на компьютере: на колонке приложение будет работать без неё."
         ));
     }
     // Before the «да» the tile and «Примерка» show the example: a draft that reaches the network needs one.

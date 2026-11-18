@@ -251,6 +251,11 @@ interface Vpn {
     call: <T = unknown>(fn: string, input?: unknown) => Promise<T>;
     reload: () => void;
     mayEdit: boolean;
+    /**
+     * Приложение VPN стоит, но выключено (его выключил надзор или человек): подключения и подписки на месте, только
+     * программа не идёт. Окно говорит «VPN выключен» и включает его, а не «Нет подписки» (проверка начисто 18.11, п. 18).
+     */
+    appOff: boolean;
 }
 
 function useVpn(): { vpn: Vpn | null; problem: string | null; setProblem: (text: string | null) => void } {
@@ -259,6 +264,7 @@ function useVpn(): { vpn: Vpn | null; problem: string | null; setProblem: (text:
     const [statusProblem, setStatusProblem] = useState<string | null>(null);
     const [problem, setProblem] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+    const [appOff, setAppOff] = useState(false);
     const [tick, setTick] = useState(0);
     const reload = useCallback(() => setTick((now) => now + 1), []);
     useEffect(() => {
@@ -273,8 +279,17 @@ function useVpn(): { vpn: Vpn | null; problem: string | null; setProblem: (text:
                             if (!alive) return;
                             setStatus(next);
                             setStatusProblem(null);
+                            setAppOff(false);
                         },
-                        (error) => alive && setStatusProblem(errorText(error)),
+                        (error) => {
+                            if (!alive) return;
+                            setStatusProblem(errorText(error));
+                            // Не ответило — выключено ли оно: тогда это не «нет подписки», а «VPN выключен».
+                            api.packages().then(
+                                (list) => alive && setAppOff(list.packages.find((entry) => entry.id === answer.app)?.enabled === false),
+                                () => undefined,
+                            );
+                        },
                     );
                 else setStatus(null);
             },
@@ -308,7 +323,7 @@ function useVpn(): { vpn: Vpn | null; problem: string | null; setProblem: (text:
     const app = view?.app ?? null;
     const call = useCallback(<T,>(fn: string, input: unknown = {}) => api.callPackage<T>(app ?? 'own-server', fn, input), [app]);
     if (!view) return { vpn: null, problem, setProblem };
-    return { vpn: { view, status, statusProblem, busy, change, call, reload, mayEdit: can('settings.edit') }, problem, setProblem };
+    return { vpn: { view, status, statusProblem, busy, change, call, reload, mayEdit: can('settings.edit'), appOff }, problem, setProblem };
 }
 
 /** Подключение, через которое идут «все»: выбранное, иначе первое, что отвечает. */
@@ -1088,6 +1103,7 @@ export function EgressScreen() {
                 <p class="vpn-note vpn-card-pad">{problem ?? tr.egress.loading}</p>
             </section>
         );
+    if (vpn.appOff) return <AppOff vpn={vpn} problem={problem} />;
     const tabs = [
         { id: 'home' as const, label: tr.egress.tabHome, icon: <IconPower /> },
         { id: 'places' as const, label: tr.egress.tabPlaces, icon: <IconSpark /> },
@@ -1107,6 +1123,45 @@ export function EgressScreen() {
             {tab === 'settings' && <SettingsTab vpn={vpn} />}
             {tab === 'subs' && <SubsTab vpn={vpn} />}
         </div>
+    );
+}
+
+/**
+ * Приложение VPN выключено: одна карточка — «VPN выключен», подписки на месте, одна кнопка включает приложение. Без
+ * вкладок: без программы ни места, ни подписки не поменять, а «Нет подписки» пугало, будто подписка пропала.
+ */
+function AppOff({ vpn, problem }: { vpn: Vpn; problem: string | null }) {
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const may = can('plugins.manage');
+    const on = async (): Promise<void> => {
+        if (!vpn.view.app) return;
+        setBusy(true);
+        setError(null);
+        try {
+            await api.enablePackage(vpn.view.app);
+            vpn.reload();
+        } catch (e) {
+            setError(problemOf(e));
+        } finally {
+            setBusy(false);
+        }
+    };
+    return (
+        <section class="card glass vpn-hero vpn-hero-off vpn-off-card" aria-live="polite">
+            <p class="vpn-state-title">{tr.egress.appOffTitle}</p>
+            <p class="vpn-note m-0">{tr.egress.appOffAbout}</p>
+            {may ? (
+                <Action label={tr.egress.appOffTurnOn} tone="on" busy={busy} onClick={() => void on()} />
+            ) : (
+                <p class="vpn-note m-0">{tr.egress.appOffAdmin}</p>
+            )}
+            {(error ?? problem) && (
+                <p class="vpn-note c-dot-offline m-0" role="alert">
+                    {error ?? problem}
+                </p>
+            )}
+        </section>
     );
 }
 

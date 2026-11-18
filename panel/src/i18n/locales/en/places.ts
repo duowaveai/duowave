@@ -23,7 +23,7 @@ const en: Translation<typeof ru> = {
     backBusy: 'Giving back…',
 
     copiesTitle: 'Backups and safety net',
-    stationUpdatesLead: 'This computer updates the speaker’s gateway: its new version is installed here, with “Update to …”. Its settings copy is taken here too.',
+    stationUpdatesLead: 'This computer updates the speaker: its new version is installed here, with “Update to …”. Its settings copy is taken here too.',
 
     devTitle: 'For developers',
     workshop: 'Workshop',

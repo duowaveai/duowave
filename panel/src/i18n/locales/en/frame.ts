@@ -6,7 +6,7 @@ import type ru from '../ru/frame';
 const en: Translation<typeof ru> = {
     appCrashedLog: 'Window: the app crashed',
     appCrashed: 'The app’s window crashed:',
-    moduleNotHere: 'the module is not from this gateway',
+    moduleNotHere: 'the module is not from this hub',
     noPlugin: 'the module exports no plugin: export default definePlugin({…})',
     noPart: (part: string) => `the app has no “${part}”`,
     failed: 'it did not work',

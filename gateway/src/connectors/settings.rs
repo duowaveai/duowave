@@ -104,6 +104,11 @@ impl ConnectorId {
         if !self.calls() {
             return true;
         }
+        // Telegram is the home's connection (docs/plans/home-and-devices.md, stage 2): a station that is the centre
+        // keeps its token and contacts, and its Турбо runs the bot (src/home/telegram.rs).
+        if self == ConnectorId::Telegram {
+            return true;
+        }
         if !cfg!(feature = "pc") {
             return false;
         }
@@ -461,6 +466,34 @@ impl ConnectorSettings {
         })
     }
 
+    /// The stored connectors read again: the home's copy (src/home/copy.rs) wrote them under this service.
+    pub fn read_again(&self) {
+        self.reload();
+    }
+
+    /// The home's Telegram as the centre hands it to its Турбо: on or off, the contacts, where alerts go, the token.
+    pub fn telegram_for_turbo(&self) -> (TelegramSetting, Option<String>) {
+        (self.snapshot().telegram, self.secrets.get(TELEGRAM_TOKEN))
+    }
+
+    /// The home's Telegram as its centre hands it (stage 2): this Турбо's bot runs with it. Stored whole, announced
+    /// as any change — the bot starts again with it.
+    pub fn take_home_telegram(&self, setting: &TelegramSetting, token: Option<&str>) -> Result<(), ApiError> {
+        let guard = lock(&self.mutation);
+        self.settings.set(&CONNECTOR_TELEGRAM, setting, None)?;
+        self.secrets.set(TELEGRAM_TOKEN, token.map(str::trim).filter(|token| !token.is_empty()))?;
+        self.reload();
+        lock(&self.checks).remove(&ConnectorId::Telegram);
+        drop(guard);
+        self.events.emit(GatewayEvent::ConnectorChanged {
+            connector: ConnectorId::Telegram.as_str().into(),
+            fields: vec!["home".into()],
+            actor: None,
+        });
+        self.changed(ConnectorId::Telegram);
+        Ok(())
+    }
+
     pub fn livekit(&self) -> Option<LiveKitConfig> {
         let livekit = self.snapshot().livekit;
         let url = filled(&livekit.url).filter(|_| livekit.enabled)?;
@@ -768,7 +801,7 @@ impl ConnectorSettings {
                     livekit.enabled = enabled;
                 }
                 if let Some(url) =
-                    input.url("url", crate::tr!("Адрес LiveKit для шлюза"), &["ws", "wss", "http", "https"])?
+                    input.url("url", crate::tr!("Адрес сервера LiveKit"), &["ws", "wss", "http", "https"])?
                 {
                     livekit.url = url;
                 }

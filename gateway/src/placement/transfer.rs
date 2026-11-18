@@ -144,6 +144,13 @@ pub const LOCAL_SETTINGS: &[&str] = &[
     "harness_claude_path",
     "harness_claude_auth",
     "harness_paths",
+    // The home's copy (src/home/copy.rs): who holds one, at the centre; this holder's own marks.
+    "home_copies",
+    "home_copy",
+    // An ear's centre (src/home/ear.rs): each device's own.
+    "home_ear",
+    // The model a Турбо's centre named for a character's voice (src/home_server/voice_plan.rs): the Турбо's own.
+    "turbo_voice_engines",
 ];
 
 /// Of each side's own settings (`LOCAL_SETTINGS`), what a schema brought: an import of an earlier schema does not know
@@ -223,6 +230,11 @@ pub struct Bundle {
     /// what it misses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pictures: Option<Vec<Picture>>,
+    /// The computer's own sources and installed characters (carry.rs, item 43): only a move to the station carries
+    /// them, and the station's gateway installs them at its first start (`take_carried`); a build before it passes
+    /// them by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried: Option<super::carry::Carried>,
 }
 
 /// One plugin's picture on its way: its bytes in base64.
@@ -487,6 +499,7 @@ pub fn export(db: &Db, secrets: &SecretsService, from: &str) -> rusqlite::Result
         secrets,
         plugins: None,
         pictures: None,
+        carried: None,
     })
 }
 
@@ -825,12 +838,91 @@ pub fn their_own(mut bundle: Bundle, theirs: &Bundle, schema: u32) -> Bundle {
 /// pair's door `home-computer` and its pin (`OWN_PARTS`) — stays at its place, and so does its key
 /// (`STAYING_SECRETS`). One transaction for the database; the secrets after it.
 pub fn import(db: &Db, secrets: &SecretsService, bundle: &Bundle, station: bool) -> Result<Imported, String> {
+    import_keeping(db, secrets, bundle, station, Keep::default())
+}
+
+/// What an import leaves as it is here (the home's copy, docs/plans/home-and-devices.md, stage 3).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Keep<'a> {
+    /// Tables of `TABLES` left whole: a copy holder keeps its own access keys — the ones its centre reaches it as Турбо
+    /// with.
+    pub tables: &'a [&'a str],
+    /// This device's own things among the home's: its own models — providers at its own address that are no helper's,
+    /// the model it gives the home as Турбо (helpers/builtin.rs, `route`) — and its own programs (MCP servers over
+    /// stdio), each with its secrets. A choice of model that pointed at the centre's model of this device (a helper's
+    /// row) is this device's own model here, so it answers with it while the centre is away. A centre's provider at a
+    /// local address is the centre's own machine, not this one: left out here.
+    pub own: bool,
+    /// The Telegram bot this device runs stays as it is (`connector_telegram` and its token): the home has none yet and
+    /// did not take this one.
+    pub telegram: bool,
+}
+
+/// A table's rows as objects by column, in their order.
+fn rows_of(connection: &rusqlite::Connection, table: &str) -> rusqlite::Result<Vec<Map<String, Value>>> {
+    let names = columns(connection, table)?;
+    let mut statement = connection.prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))?;
+    let rows = statement
+        .query_map([], |row| {
+            let mut object = Map::new();
+            for (index, name) in names.iter().enumerate() {
+                object.insert(name.clone(), sql_to_json(row.get::<_, SqlValue>(index)?));
+            }
+            Ok(object)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// A provider row at a local address that is no helper's: a model of the machine it was made on.
+fn local_model(row: &Map<String, Value>) -> bool {
+    !at_home_server(row)
+        && row
+            .get("base_url")
+            .and_then(Value::as_str)
+            .is_some_and(|url| crate::operations::networks::is_local_url(Some(url)))
+}
+
+/// An MCP server that is a program on the machine it was made on.
+fn own_program(row: &Map<String, Value>) -> bool {
+    row.get("transport").and_then(Value::as_str) == Some("stdio")
+}
+
+/// This device's own rows (`Keep::own`): its local models and its programs, by table.
+fn own_rows(db: &Db) -> rusqlite::Result<Vec<(&'static str, Map<String, Value>)>> {
+    db.with(|connection| {
+        let mut own = Vec::new();
+        for row in rows_of(connection, "llm_providers")? {
+            if local_model(&row) {
+                own.push(("llm_providers", row));
+            }
+        }
+        for row in rows_of(connection, "mcp_servers")? {
+            if own_program(&row) {
+                own.push(("mcp_servers", row));
+            }
+        }
+        Ok(own)
+    })
+}
+
+/// The settings and the secret of the Telegram bot a device runs.
+const TELEGRAM_SETTING: &str = "connector_telegram";
+const TELEGRAM_SECRET: &str = "connector:telegram:token";
+
+pub fn import_keeping(
+    db: &Db,
+    secrets: &SecretsService,
+    bundle: &Bundle,
+    station: bool,
+    keep: Keep<'_>,
+) -> Result<Imported, String> {
     if bundle.format != FORMAT {
-        return Err(crate::tr!("это не набор настроек шлюза"));
+        return Err(crate::tr!("это не набор настроек DuoWave"));
     }
     if bundle.schema > SCHEMA {
         return Err(crate::tr!(
-            "Набор настроек новее этого шлюза (схема {schema}): сначала обновите шлюз.",
+            "Набор настроек новее этой версии DuoWave (схема {schema}): сначала обновите DuoWave.",
             schema = bundle.schema
         ));
     }
@@ -849,8 +941,27 @@ pub fn import(db: &Db, secrets: &SecretsService, bundle: &Bundle, station: bool)
             .filter_map(|row| row.get("id").and_then(Value::as_str).map(str::to_string))
             .collect()
     };
-    let own = own_model(&providers.iter().copied().filter(|row| !at_home_server(row)).collect::<Vec<_>>());
+    // This device's own rows, read before anything is cleared (`Keep::own`).
+    let mine: Vec<(&'static str, Map<String, Value>)> = if keep.own {
+        own_rows(db).map_err(|error| crate::tr!("База DuoWave: {error}", error = error))?
+    } else {
+        Vec::new()
+    };
+    let mine_ids: Vec<(&'static str, String)> =
+        mine.iter().filter_map(|(table, row)| Some((*table, row.get("id")?.as_str()?.to_string()))).collect();
+    let own = if keep.own {
+        own_model(&mine.iter().filter(|(table, _)| *table == "llm_providers").map(|(_, row)| row).collect::<Vec<_>>())
+    } else {
+        own_model(&providers.iter().copied().filter(|row| !at_home_server(row)).collect::<Vec<_>>())
+    };
     let kept_secret = |id: &str| !left_out.iter().any(|provider| id.starts_with(&format!("llm:{provider}:")));
+    // This device's own secrets: its models' and its programs' keys, and its bot's token when it stays.
+    let own_secret = |id: &str| {
+        mine_ids.iter().any(|(table, row)| {
+            let prefix = if *table == "llm_providers" { "llm" } else { "mcp" };
+            id.starts_with(&format!("{prefix}:{row}:"))
+        }) || (keep.telegram && id == TELEGRAM_SECRET)
+    };
     // What the package's writer did not know (`SINCE`): this gateway's own stays, absent or not in the package.
     let unknown_setting = |key: &str| setting_since(key) > bundle.carries;
     let unknown_secret = |id: &str| secret_since(id) > bundle.carries;
@@ -864,6 +975,9 @@ pub fn import(db: &Db, secrets: &SecretsService, bundle: &Bundle, station: bool)
             .collect::<rusqlite::Result<_>>()?;
         // People last cleared first: their settings go with them.
         for table in TABLES.iter().rev() {
+            if keep.tables.contains(table) {
+                continue;
+            }
             if *table == "app_settings" {
                 // What this side learned of its own network stays (`LOCAL_APP_SETTINGS`).
                 let local = LOCAL_APP_SETTINGS.iter().map(|key| format!("'{key}'")).collect::<Vec<_>>().join(", ");
@@ -873,6 +987,9 @@ pub fn import(db: &Db, secrets: &SecretsService, bundle: &Bundle, station: bool)
             transaction.execute(&format!("DELETE FROM {table}"), [])?;
         }
         for table in TABLES {
+            if keep.tables.contains(table) {
+                continue;
+            }
             let known = columns(transaction, table)?;
             let mut written = 0;
             for row in bundle.tables.get(*table).map(Vec::as_slice).unwrap_or_default() {
@@ -890,6 +1007,11 @@ pub fn import(db: &Db, secrets: &SecretsService, bundle: &Bundle, station: bool)
                     imported.skipped += 1;
                     continue;
                 }
+                // The centre's model at a local address is the centre's own machine, never this one.
+                if keep.own && *table == "llm_providers" && local_model(row) {
+                    imported.skipped += 1;
+                    continue;
+                }
                 let names: Vec<&String> = row.keys().filter(|name| known.contains(name)).collect();
                 if names.is_empty() {
                     continue;
@@ -902,6 +1024,18 @@ pub fn import(db: &Db, secrets: &SecretsService, bundle: &Bundle, station: bool)
                     rusqlite::params_from_iter(values),
                 )?;
                 written += 1;
+            }
+            // This device's own rows, back as they were.
+            for (_, row) in mine.iter().filter(|(own_table, _)| own_table == table) {
+                let names: Vec<&String> = row.keys().filter(|name| known.contains(name)).collect();
+                let placeholders =
+                    (1..=names.len()).map(|index| format!("?{index}")).collect::<Vec<_>>().join(", ");
+                let list = names.iter().map(|name| name.as_str()).collect::<Vec<_>>().join(", ");
+                let values: Vec<SqlValue> = names.iter().map(|name| json_to_sql(&row[*name])).collect();
+                transaction.execute(
+                    &format!("INSERT OR IGNORE INTO {table} ({list}) VALUES ({placeholders})"),
+                    rusqlite::params_from_iter(values),
+                )?;
             }
             imported.rows.insert(table.to_string(), written);
         }
@@ -928,14 +1062,19 @@ pub fn import(db: &Db, secrets: &SecretsService, bundle: &Bundle, station: bool)
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for key in stored {
-            let kept =
-                LOCAL_SETTINGS.contains(&key.as_str()) || MOVE_ONLY.contains(&key.as_str()) || unknown_setting(&key);
+            let kept = LOCAL_SETTINGS.contains(&key.as_str())
+                || MOVE_ONLY.contains(&key.as_str())
+                || unknown_setting(&key)
+                || (keep.telegram && key == TELEGRAM_SETTING);
             if !kept && !incoming.contains_key(&key) {
                 transaction.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
             }
         }
         for (key, value) in &incoming {
             if (LOCAL_SETTINGS.contains(&key.as_str()) && !MOVE_SETS.contains(&key.as_str())) || unknown_setting(key) {
+                continue;
+            }
+            if keep.telegram && key == TELEGRAM_SETTING {
                 continue;
             }
             let Some(value) = pick_again(key, value, &left_out, own.as_deref()) else {
@@ -954,14 +1093,18 @@ pub fn import(db: &Db, secrets: &SecretsService, bundle: &Bundle, station: bool)
         }
         Ok(())
     })
-    .map_err(|error| crate::tr!("База шлюза: {error}", error = error))?;
+    .map_err(|error| crate::tr!("База DuoWave: {error}", error = error))?;
     for id in secrets.ids("") {
-        if travels(&id) && !unknown_secret(&id) && !(bundle.secrets.contains_key(&id) && kept_secret(&id)) {
+        if travels(&id)
+            && !unknown_secret(&id)
+            && !own_secret(&id)
+            && !(bundle.secrets.contains_key(&id) && kept_secret(&id))
+        {
             secrets.delete(&id).map_err(|error| error.message)?;
         }
     }
     for (id, value) in &bundle.secrets {
-        if travels(id) && !unknown_secret(id) && kept_secret(id) {
+        if travels(id) && !unknown_secret(id) && kept_secret(id) && !own_secret(id) {
             secrets.set(id, Some(value)).map_err(|error| error.message)?;
             imported.secrets += 1;
         }
@@ -998,7 +1141,7 @@ pub struct PluginsPackage {
 /// The plugins' state of a package alone, applied in a transaction of its own.
 pub fn import_plugins(db: &Db, plugins: &BTreeMap<String, PluginState>) -> Result<usize, String> {
     db.transaction(|transaction| apply_plugins(transaction, plugins))
-        .map_err(|error| crate::tr!("База шлюза: {error}", error = error))
+        .map_err(|error| crate::tr!("База DuoWave: {error}", error = error))
 }
 
 /// What the other gateway of the pair left for this one's start (a package of settings, the plugins' state of a move
@@ -1114,6 +1257,16 @@ pub fn copy_database(db: &Db) -> Result<Option<PathBuf>, String> {
     super::station_fs::restrict(&copy);
     tracing::info!("settings: the database copied before the package: {}", copy.display());
     Ok(Some(copy))
+}
+
+/// What a move to the station carried besides the settings (carry.rs), installed at the gateway's start before the
+/// package is applied: the own sources and the characters, each archive's hash checked. How many packages it installed.
+pub fn take_carried(state_dir: &Path, packages_root: &Path, catalog_dir: &Path, db: &Db) -> usize {
+    let carried = std::fs::read(incoming_file(state_dir))
+        .ok()
+        .and_then(|text| serde_json::from_slice::<Bundle>(&text).ok())
+        .and_then(|bundle| bundle.carried);
+    carried.map_or(0, |carried| super::carry::take(&carried, packages_root, catalog_dir, db))
 }
 
 pub fn incoming_file(state_dir: &Path) -> PathBuf {
@@ -1247,7 +1400,7 @@ pub(crate) fn earlier_import(stored: &mut BTreeMap<String, Value>, bundle: &Bund
     let own = |key: &str| key != "voice_pending" && LOCAL_SETTINGS.contains(&key);
     if bundle.schema > 1 {
         return Err(crate::tr!(
-            "Набор настроек новее этого шлюза (схема {schema}): сначала обновите шлюз.",
+            "Набор настроек новее этой версии DuoWave (схема {schema}): сначала обновите DuoWave.",
             schema = bundle.schema
         ));
     }
@@ -1470,7 +1623,7 @@ mod tests {
         ]);
         let mut refused = station.clone();
         let error = earlier_import(&mut refused, &sent).unwrap_err();
-        assert!(error.contains("сначала обновите шлюз"), "{error}");
+        assert!(error.contains("сначала обновите DuoWave"), "{error}");
         assert_eq!(refused, station, "nothing applied: its mode and its waiting voice stay");
 
         let mut erased = station.clone();
@@ -2340,6 +2493,112 @@ mod tests {
         let (other, other_secrets, _) = gateway();
         let imported = import(&other, &other_secrets, &theirs, false).unwrap();
         assert_eq!((imported.rows["llm_providers"], imported.skipped), (3, 1));
+    }
+
+    /// The home's copy on a computer (docs/plans/home-and-devices.md, stage 3): the home's settings come, and what is
+    /// this computer's own stays — its model at its own address (the one it gives the home as Турбо) with its key, its
+    /// MCP program, its access keys; the home's choice «думает Турбо» is this computer's own model here; a model the
+    /// centre keeps at the centre's own local address is left out. Its bot stays only while the home has none.
+    #[test]
+    fn the_home_copy_keeps_this_computers_own_model_program_and_bot() {
+        let (station, station_secrets, _) = gateway();
+        provider(
+            &station,
+            "openrouter",
+            "openai",
+            "OpenRouter",
+            "https://openrouter.ai/api/v1",
+            "2026-11-01T00:00:00Z",
+        );
+        station_secrets.set("llm:openrouter:key", Some("router-not-a-real-key")).unwrap();
+        provider(&station, "station-local", "openai", "На колонке", "http://127.0.0.1:8080/v1", "2026-11-01T00:00:00Z");
+        let options = json!({ "helper": "home-computer", "reach": "home" }).to_string();
+        station
+            .with(|c| {
+                c.execute(
+                    "INSERT INTO llm_providers (id, preset, kind, title, base_url, options, created_at, updated_at)
+                     VALUES ('helper-home-computer', 'helper', 'openai', 'Турбо', 'http://192.0.2.20:7780/home/v1/llm', ?1,
+                     '2026-11-15T00:00:00Z', '2026-11-15T00:00:00Z')",
+                    params![options],
+                )
+            })
+            .unwrap();
+        let mcp = |db: &Db, id: &str, transport: &str| {
+            db.with(|c| {
+                c.execute(
+                    "INSERT INTO mcp_servers (id, title, transport, config, created_at, updated_at) VALUES (?1, ?1, ?2, '{}', 'now', 'now')",
+                    params![id, transport],
+                )
+            })
+            .unwrap();
+        };
+        mcp(&station, "notion", "http");
+        station_secrets.set("mcp:notion:token", Some("notion-not-a-real-key")).unwrap();
+        let brain = json!({
+            "fast": { "provider": "helper-home-computer", "model": "qwen" },
+            "smart": { "provider": "openrouter", "model": "claude" }
+        });
+        station
+            .with(|c| {
+                c.execute(
+                    "INSERT INTO settings (key, value, is_default, updated_at) VALUES ('brain', ?1, 0, 'now')",
+                    params![brain.to_string()],
+                )
+            })
+            .unwrap();
+        let theirs = export(&station, &station_secrets, "station").unwrap();
+
+        let (pc, pc_secrets, pc_settings) = gateway();
+        provider(&pc, "lmstudio", "openai", "LM Studio", "http://127.0.0.1:1234/v1", "2026-11-02T00:00:00Z");
+        pc_secrets.set("llm:lmstudio:key", Some("lm-not-a-real-key")).unwrap();
+        mcp(&pc, "files", "stdio");
+        pc_secrets.set("mcp:files:token", Some("files-not-a-real-key")).unwrap();
+        pc.with(|c| {
+            c.execute(
+                "INSERT INTO settings (key, value, is_default, updated_at) VALUES ('connector_telegram', ?1, 0, 'now')",
+                params![json!({ "enabled": true, "contacts": [{ "name": "мама", "to": "111" }] }).to_string()],
+            )
+        })
+        .unwrap();
+        pc_secrets.set("connector:telegram:token", Some("123:not-a-real-token")).unwrap();
+
+        let keep = Keep { tables: &["api_keys"], own: true, telegram: true };
+        import_keeping(&pc, &pc_secrets, &theirs, false, keep).unwrap();
+        let ids = |db: &Db, table: &str| -> Vec<String> {
+            db.with(|c| {
+                c.prepare(&format!("SELECT id FROM {table} ORDER BY id"))?.query_map([], |row| row.get(0))?.collect()
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            ids(&pc, "llm_providers"),
+            ["lmstudio", "openrouter"],
+            "its own model stays, the centre's local one does not come"
+        );
+        assert_eq!(pc_secrets.get("llm:lmstudio:key").as_deref(), Some("lm-not-a-real-key"));
+        assert_eq!(pc_secrets.get("llm:openrouter:key").as_deref(), Some("router-not-a-real-key"));
+        assert_eq!(ids(&pc, "mcp_servers"), ["files", "notion"], "its program stays beside the home's connection");
+        assert_eq!(pc_secrets.get("mcp:files:token").as_deref(), Some("files-not-a-real-key"));
+        assert_eq!(
+            pc_settings.raw("brain"),
+            Some(json!({
+                "fast": { "provider": "lmstudio", "model": "qwen" },
+                "smart": { "provider": "openrouter", "model": "claude" }
+            })),
+            "«думает Турбо» is this computer's own model here"
+        );
+        assert!(pc_settings.raw("connector_telegram").is_some());
+        assert_eq!(
+            pc_secrets.get("connector:telegram:token").as_deref(),
+            Some("123:not-a-real-token"),
+            "the bot stays"
+        );
+
+        // The home has a bot of its own (or took this one): the home's settings win, this one goes.
+        let keep = Keep { tables: &["api_keys"], own: true, telegram: false };
+        import_keeping(&pc, &pc_secrets, &theirs, false, keep).unwrap();
+        assert_eq!(pc_secrets.get("connector:telegram:token"), None);
+        assert_eq!(ids(&pc, "llm_providers"), ["lmstudio", "openrouter"], "the next copy keeps it the same");
     }
 
     /// Live, 10.11: the copy before a package was 4 KB — under WAL the main file alone holds little of the database.

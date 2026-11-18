@@ -10,7 +10,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 
-import { ConnectJob, FoundStation, MoveJob, MoveTo, StationCheck, StationNeighbour, api, can, problemOf } from '../../api';
+import { ApiError, ConnectJob, FoundStation, MoveJob, MoveTo, StationCheck, StationNeighbour, api, can, problemOf } from '../../api';
 import { tr } from '../../i18n';
 import { drawingOf } from '../../stations';
 import { encodeQr } from '../../ui/qr';
@@ -53,7 +53,12 @@ export interface SpeakerLink {
     panelUrl?: string;
     startedAt: number;
     waitUntil?: number;
+    /** Сколько раз перенос начинали заново, потеряв его задачу (перезапуск шлюза, п. 62). */
+    retries?: number;
 }
+
+/** Задачу переноса потеряли (шлюз перезапустился) — начать заново столько раз, дальше «перенос прервался». */
+const MOVE_RETRIES = 2;
 
 let link: SpeakerLink | null = null;
 /** Поколение: новое подключение отменяет ответы старого опроса. */
@@ -68,7 +73,52 @@ function notify() {
 function update(at: number, patch: Partial<SpeakerLink>) {
     if (!link || at !== generation) return;
     link = { ...link, ...patch };
+    keepMark(link);
     notify();
+}
+
+/**
+ * Метка начатого подключения — в памяти вкладки (п. 62): шлюз перезапустился, пульт перезагрузился, и ход терялся —
+ * перенос не начинался, пока снова не открыть шаг «Колонка». С меткой ход продолжается сам (`resumeLink`). Кончилось
+ * (готово, вернули как было) — метки нет.
+ */
+const MARK = 'onb-speaker-link';
+/** Метка старше — не продолжаем: это было давно, не в этих шагах. */
+const MARK_MS = 30 * 60_000;
+
+function keepMark(now: SpeakerLink | null): void {
+    try {
+        if (now && now.to && now.phase !== 'done' && now.phase !== 'restored' && now.phase !== 'failed')
+            sessionStorage.setItem(MARK, JSON.stringify({ address: now.address, name: now.name, to: now.to, at: now.startedAt }));
+        else sessionStorage.removeItem(MARK);
+    } catch {
+        // приватное окно — продолжить после перезагрузки не выйдет, только и всего
+    }
+}
+
+/**
+ * Продолжить подключение после перезагрузки пульта (п. 62): перенос уже идёт на шлюзе — смотреть его; DuoWave уже на
+ * колонке — готово; колонка на связи, а переноса нет — начать его. Метки нет или ход и так идёт — ничего.
+ */
+export async function resumeLink(): Promise<void> {
+    if (link) return;
+    let mark: { address: string; name: string; to: MoveTo; at: number } | null = null;
+    try {
+        mark = JSON.parse(sessionStorage.getItem(MARK) ?? 'null');
+    } catch {
+        mark = null;
+    }
+    if (!mark || Date.now() - mark.at > MARK_MS) return;
+    const view = await api.placement().catch(() => null);
+    if (!view || link) return;
+    if (view.job?.status === 'running') return adoptMove(mark.address, mark.name, view.job);
+    const record = view.station?.record;
+    if (record && record.placement === mark.to) {
+        adoptDone(mark.address, mark.name, mark.to, record.port);
+        keepMark(null);
+        return;
+    }
+    await moveNow(mark.to);
 }
 
 function schedule(at: number, ms: number) {
@@ -120,7 +170,18 @@ async function tick(at: number) {
     if (!now || at !== generation) return;
     try {
         if (now.phase === 'connecting' && now.connect) {
-            const job = await api.connectJob(now.connect.id);
+            let job: ConnectJob;
+            try {
+                job = await api.connectJob(now.connect.id);
+            } catch (e) {
+                // Шлюз перезапустился посреди подключения (п. 61: «Кто отвечает» в 12:27:00) — его задача пропала, и опрос
+                // крутил её вечно, а до переноса не доходило. Колонку теперь ждём по её связи: пришла — перенос.
+                if (e instanceof ApiError && e.status === 404) {
+                    update(at, { phase: 'waiting', waitUntil: Date.now() + WAIT_MORE_MS });
+                    return schedule(at, 1000);
+                }
+                throw e;
+            }
             if (job.status === 'running') {
                 update(at, { connect: job });
                 return schedule(at, 1200);
@@ -133,7 +194,28 @@ async function tick(at: number) {
             return update(at, { connect: job, phase: 'failed', error: problemText(job.error) + (job.copy ? tr.connect.ourCopy(job.copy) : '') });
         }
         if (now.phase === 'moving' && now.move) {
-            const job = await api.moveJob(now.move.id);
+            let job: MoveJob;
+            try {
+                job = await api.moveJob(now.move.id);
+            } catch (e) {
+                // Та же пропажа задачи переноса: где DuoWave сейчас — по записи шлюза.
+                // Не перенесён — ждём колонку на связи с этим шлюзом и начинаем перенос заново (п. 62): он сам доходит до
+                // конца, нажимать «Перенести сейчас» не нужно. Два раза не вышло — говорим, что прервался.
+                if (e instanceof ApiError && e.status === 404) {
+                    const view = await api.placement().catch(() => null);
+                    const record = view?.station?.record;
+                    if (record && record.placement === now.to) return update(at, { phase: 'done', panelUrl: panelUrlOf(record.address, record.port) });
+                    if (view?.job?.status === 'running') {
+                        update(at, { move: view.job });
+                        return schedule(at, 1500);
+                    }
+                    const retries = (now.retries ?? 0) + 1;
+                    if (retries > MOVE_RETRIES) return update(at, { phase: 'done', moveError: tr.onbCharacter.moveLost });
+                    update(at, { phase: 'waiting', move: null, retries, startedAt: Date.now(), waitUntil: Date.now() + WAIT_MORE_MS });
+                    return schedule(at, 1000);
+                }
+                throw e;
+            }
             update(at, { move: job });
             if (job.status === 'running') return schedule(at, 1500);
             if (job.status === 'failed') return update(at, { phase: 'done', moveError: job.error ?? '' });
@@ -145,7 +227,7 @@ async function tick(at: number) {
             const stations = await api.stations();
             const came = stations.some((station) => station.lastAddress === now.address && Date.parse(station.lastSeen) >= now.startedAt);
             if (came) {
-                update(at, { arrivedLate: true });
+                if (!now.retries) update(at, { arrivedLate: true });
                 return void startMove(at);
             }
             if (Date.now() > (now.waitUntil ?? 0)) return update(at, { phase: 'timeout' });
@@ -180,6 +262,7 @@ async function startLink(input: { address: string; name: string; gateway: string
         arrivedLate: false,
         startedAt: Date.now(),
     };
+    keepMark(link);
     notify();
     if (input.connected) return void startMove(at);
     try {
@@ -212,12 +295,67 @@ function adoptDone(address: string, name: string, to: MoveTo, port?: number) {
     notify();
 }
 
+/**
+ * Что сейчас идёт, словами — для шага «Персонаж» (п. 62): «голос колонки — к DuoWave (перезагрузка, около минуты)».
+ * Те же строки, что у доски шага «Колонка». Ничего не идёт — null.
+ */
+export function linkNow(state: SpeakerLink | null): string | null {
+    if (!state || !linkActive(state)) return null;
+    const t = tr.onbConnect;
+    const say = (title: string, sub: string) => {
+        // «Голос колонки» → «голос колонки», а имя («DuoWave», в первом слове есть ещё заглавная) — как есть (п. 63).
+        const head = /^\p{Lu}\p{Ll}*(?=[\s,—]|$)/u.test(title) ? title[0].toLocaleLowerCase() + title.slice(1) : title;
+        return `${head} (${sub})`;
+    };
+    if (state.phase === 'restoring') return t.restoring;
+    if (state.phase === 'waiting') return t.rebooting;
+    if (state.phase === 'moving') {
+        const step = state.move?.steps.find((one) => one.state === 'running')?.id;
+        if (step === 'settings' || step === 'point') return say(t.stepVoice, t.stepVoiceSub);
+        if (step === 'arrive') return t.rebooting;
+        return say(t.stepInstall, t.stepInstallSub);
+    }
+    const step = state.connect?.steps.find((one) => one.state === 'running')?.id;
+    if (step === 'copy' || step === 'remove') return say(t.stepBack, t.stepBackSub);
+    if (step === 'reboot' || step === 'arrive') return t.rebooting;
+    return state.to ? say(t.stepLink, t.stepLinkSub) : say(t.stepVoicePc, t.stepVoicePcSub);
+}
+
 /** Перенос уже идёт на шлюзе — смотрим его. */
 function adoptMove(address: string, name: string, job: MoveJob) {
     const at = ++generation;
     link = { address, name, to: job.to, phase: 'moving', connect: null, move: job, restore: null, wasConnected: true, arrivedLate: false, startedAt: Date.now() };
     notify();
     schedule(at, 1500);
+}
+
+/**
+ * «Перенести сейчас» с шага «Персонаж» (п. 61): колонка подключена и на связи, а перенос так и не начался. Начать его
+ * тем же путём, что после «Подключить». Колонки на связи нет — false.
+ */
+export async function moveNow(to: MoveTo): Promise<boolean> {
+    const stations = await api.stations();
+    const fresh = stations
+        .filter((station) => station.status === 'approved' && station.lastAddress && Date.now() - Date.parse(station.lastSeen) < 2 * 60_000)
+        .sort((a, b) => Date.parse(b.lastSeen) - Date.parse(a.lastSeen))[0];
+    if (!fresh?.lastAddress) return false;
+    const at = ++generation;
+    window.clearTimeout(timer);
+    link = {
+        address: fresh.lastAddress,
+        name: fresh.name,
+        to,
+        phase: 'moving',
+        connect: null,
+        move: null,
+        restore: null,
+        wasConnected: true,
+        arrivedLate: false,
+        startedAt: Date.now(),
+    };
+    notify();
+    void startMove(at);
+    return true;
 }
 
 /** «Подождать ещё»: ещё 3 минуты смотрим, не пришла ли колонка. */

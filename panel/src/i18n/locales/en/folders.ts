@@ -28,7 +28,7 @@ const en: Translation<typeof ru> = {
     loadError: (error: string) => `Folders: ${error}`,
     homeTitle: 'DuoWave home folder',
     homeVisible: 'A regular folder on this computer, visible in Finder. Voice, the agent and apps work only inside it.',
-    homeHidden: 'The DuoWave folder in the gateway data. Voice, the agent and apps work only inside it.',
+    homeHidden: 'The DuoWave folder in the hub data. Voice, the agent and apps work only inside it.',
     revealInFinder: 'Show in Finder',
     seenBy: (who: string) => `visible to ${who}`,
     notHere: 'not in place right now',

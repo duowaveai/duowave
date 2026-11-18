@@ -8,7 +8,7 @@ const en: Translation<typeof ru> = {
     keepMonth: 'A month',
     keepYear: 'A year',
     keepDays: (days: number) => `${days} d`,
-    noSessions: 'The gateway did not return sessions — try again later.',
+    noSessions: 'The hub did not return sessions — try again later.',
 
     stationTitle: 'Speaker',
     disconnected: (ago: string) => `disconnected ${ago}`,

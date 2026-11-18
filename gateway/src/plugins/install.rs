@@ -4,6 +4,12 @@
 //! folder, regular files and folders only, within the limits below; its manifest must read as a package and name the
 //! id and version expected; then the folder is renamed into `PACKAGES_DIR/<id>/<version>/`. Whatever fails on the
 //! way, nothing of it is left behind: the registry never sees half a package. Removing is the folder of every version.
+//!
+//! An update is unpacked beside the version installed (`beside`): a file the same as that version's at the same path
+//! — same size, same bytes — is a hard link to it, not written again, so the disk takes only what changed. On the
+//! station that is what lets an app of 14 MB on a /data of 15 MB update when only its manifest changed (the
+//! clean-path check, 18.11).
+use std::collections::BTreeSet;
 use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
@@ -72,8 +78,106 @@ pub(crate) fn inside(path: &Path) -> Result<Option<PathBuf>, String> {
     Ok((!clean.as_os_str().is_empty()).then_some(clean))
 }
 
-/// Unpacks a tar.gz into `into` (made here): regular files and folders only, inside it, within the limits.
-pub fn unpack(bytes: &[u8], into: &Path) -> Result<(), String> {
+/// What an archive's files are beside the version installed: what of them the disk would take, and which of them
+/// that version has already.
+#[derive(Debug, Clone, Default)]
+pub struct Beside {
+    /// The version installed, its folder: none for a first install.
+    pub dir: Option<PathBuf>,
+    /// The bytes of the files that are new or not the same as the installed version's: what unpacking writes.
+    pub changed_bytes: u64,
+    /// The files (paths inside the package) the same as the installed version's at the same path, size and bytes:
+    /// hard-linked to them, they take nothing of the disk.
+    pub same: BTreeSet<PathBuf>,
+}
+
+impl Beside {
+    /// What unpacking takes of the disk, in MB rounded up.
+    pub fn changed_mb(&self) -> u64 {
+        self.changed_bytes.div_ceil(1024 * 1024)
+    }
+
+    /// The installed version's file to link for this one, when it is the same and still there as it was compared.
+    fn link_for(&self, relative: &Path, size: u64) -> Option<PathBuf> {
+        let old = self.dir.as_ref()?.join(relative);
+        let meta = std::fs::symlink_metadata(&old).ok()?;
+        (self.same.contains(relative) && meta.is_file() && meta.len() == size).then_some(old)
+    }
+}
+
+/// Reads `entry` to its end, at most `limit` bytes and one more: how many bytes it held, and whether they are those
+/// of the regular file `old` byte for byte (false when there is no such file).
+fn read_against(entry: &mut impl std::io::Read, old: Option<&Path>, limit: u64) -> std::io::Result<(u64, bool)> {
+    let mut old = old
+        .filter(|path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file()))
+        .and_then(|path| std::fs::File::open(path).ok());
+    let mut same = old.is_some();
+    let (mut chunk, mut theirs) = (vec![0u8; 64 * 1024], vec![0u8; 64 * 1024]);
+    let mut limited = entry.take(limit + 1);
+    let mut count = 0u64;
+    loop {
+        let read = limited.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        count += read as u64;
+        if let (true, Some(file)) = (same, old.as_mut()) {
+            same = file.read_exact(&mut theirs[..read]).is_ok() && theirs[..read] == chunk[..read];
+        }
+    }
+    // The old file ends where the entry does.
+    if let (true, Some(file)) = (same, old.as_mut()) {
+        same = file.read(&mut theirs[..1])? == 0;
+    }
+    Ok((count, same))
+}
+
+/// The archive's files beside the version installed in `previous` (none: a first install): the bytes unpacking
+/// would write and the files it would link instead — compared byte for byte as they are read, nothing written. The
+/// archive is in memory already; this is what the room on the disk is counted by, before anything is unpacked.
+/// Within the same limits as `unpack`; what `unpack` refuses besides is left to it.
+pub fn beside(bytes: &[u8], previous: Option<&Path>) -> Result<Beside, String> {
+    let broken = |error: std::io::Error| crate::tr!("архив не читается: {error}", error = error);
+    let mut result = Beside { dir: previous.map(Path::to_path_buf), ..Beside::default() };
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(bytes));
+    let (mut entries, mut total) = (0usize, 0u64);
+    for entry in archive.entries().map_err(broken)? {
+        let mut entry = entry.map_err(broken)?;
+        let kind = entry.header().entry_type();
+        if kind == tar::EntryType::XGlobalHeader {
+            continue;
+        }
+        entries += 1;
+        if entries > MAX_FILES * 2 {
+            return Err(crate::tr!("в архиве больше {max} файлов", max = MAX_FILES));
+        }
+        if !matches!(kind, tar::EntryType::Regular | tar::EntryType::Continuous) {
+            continue;
+        }
+        let path = entry.path().map_err(broken)?.into_owned();
+        let Some(relative) = inside(&path)? else { continue };
+        let old = previous.map(|dir| dir.join(&relative));
+        // A file of another size is not the same: not even read against it.
+        let old = old.filter(|old| std::fs::metadata(old).is_ok_and(|meta| meta.len() == entry.size()));
+        let (read, same) = read_against(&mut entry, old.as_deref(), MAX_UNPACKED - total).map_err(broken)?;
+        total += read;
+        if total > MAX_UNPACKED {
+            return Err(crate::tr!("распакованное приложение больше {max} МБ", max = MAX_UNPACKED / 1024 / 1024));
+        }
+        if same {
+            result.same.insert(relative);
+        } else {
+            result.changed_bytes += read;
+        }
+    }
+    Ok(result)
+}
+
+/// Unpacks a tar.gz into `into` (made here): regular files and folders only, inside it, within the limits. Beside
+/// the version installed (`previous`, counted by `beside`), a file the same as its own is a hard link to it — the
+/// same filesystem, both under PACKAGES_DIR — and written as any other when the link cannot be made. Whatever reads
+/// the files afterwards (the hash of an app's build, `apps::supervisor::checked_build`) reads the same bytes.
+pub fn unpack(bytes: &[u8], into: &Path, previous: Option<&Beside>) -> Result<(), String> {
     let broken = |error: std::io::Error| crate::tr!("архив не читается: {error}", error = error);
     std::fs::create_dir_all(into).map_err(|error| format!("{}: {error}", into.display()))?;
     let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(bytes));
@@ -107,6 +211,24 @@ pub fn unpack(bytes: &[u8], into: &Path) -> Result<(), String> {
                 }
                 if let Some(parent) = target.parent() {
                     std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+                }
+                // The same as the installed version's: linked, its bytes left unread (the archive skips them).
+                if let Some(old) = previous.and_then(|previous| previous.link_for(&relative, entry.size())) {
+                    match std::fs::hard_link(&old, &target) {
+                        Ok(()) => {
+                            total += entry.size();
+                            if total > MAX_UNPACKED {
+                                return Err(crate::tr!(
+                                    "распакованное приложение больше {max} МБ",
+                                    max = MAX_UNPACKED / 1024 / 1024
+                                ));
+                            }
+                            continue;
+                        }
+                        Err(error) => {
+                            tracing::debug!(target: "plugins", "«{}» is written, not linked: {error}", relative.display());
+                        }
+                    }
                 }
                 let mut file = std::fs::OpenOptions::new()
                     .write(true)
@@ -150,6 +272,17 @@ fn remove_dir(dir: &Path) -> std::io::Result<()> {
 /// The archive into PACKAGES_DIR as `<id>/<version>/`: checked, unpacked aside, read, renamed into place. The same
 /// version already there is replaced only once the new one has read whole.
 pub fn install_archive(root: &Path, bytes: &[u8], expected: Expected<'_>) -> Result<Installed, String> {
+    install_archive_beside(root, bytes, expected, None)
+}
+
+/// The same beside the version installed (`beside`, counted before the room on the disk was asked): the files it has
+/// already are hard links to its own.
+pub fn install_archive_beside(
+    root: &Path,
+    bytes: &[u8],
+    expected: Expected<'_>,
+    previous: Option<&Beside>,
+) -> Result<Installed, String> {
     if !valid_id(expected.id) || semver::Version::parse(expected.version).is_err() {
         return Err(crate::tr!("не то приложение: {id} {version}", id = expected.id, version = expected.version));
     }
@@ -158,7 +291,7 @@ pub fn install_archive(root: &Path, bytes: &[u8], expected: Expected<'_>) -> Res
     let partial = root.join(format!(".partial-{}-{}", expected.id, expected.version));
     remove_dir(&partial).map_err(|error| format!("{}: {error}", partial.display()))?;
     let placed = (|| {
-        unpack(bytes, &partial)?;
+        unpack(bytes, &partial, previous)?;
         let package = match registry::read_package(&partial, expected.id, expected.version) {
             Candidate::Ready(package) => package,
             Candidate::Broken { problems, .. } => {
@@ -200,13 +333,19 @@ pub fn install_archive(root: &Path, bytes: &[u8], expected: Expected<'_>) -> Res
     placed
 }
 
-/// Every version of a package but `keep`: an update's old ones, once the new one is in place.
+/// Every version of a package but `keep`: an update's old ones, once the new one is in place. Only versions: a
+/// folder whose name is not one — the app's own data `<id>/.data` (a VPN's connections), any dot folder — stays.
 pub fn remove_other_versions(root: &Path, id: &str, keep: &str) -> std::io::Result<()> {
     if !valid_id(id) {
         return Ok(());
     }
     for entry in std::fs::read_dir(root.join(id))?.flatten() {
-        if entry.file_name().to_str() != Some(keep) && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name == keep || name.starts_with('.') || semver::Version::parse(name).is_err() {
+            continue;
+        }
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
             std::fs::remove_dir_all(entry.path())?;
         }
     }
@@ -338,6 +477,19 @@ pub mod tests {
         ])
     }
 
+    /// Bytes that do not pack, as an app's program nearly does not: `len` of them, the same for the same `seed`.
+    pub fn noise(len: usize, seed: u64) -> Vec<u8> {
+        let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state >> 24) as u8
+            })
+            .collect()
+    }
+
     pub fn expected<'a>(id: &'a str, version: &'a str, bytes: &[u8], sha: &'a mut String) -> Expected<'a> {
         *sha = hex::encode(Sha256::digest(bytes));
         Expected { id, version, sha256: sha, size: bytes.len() as u64 }
@@ -377,6 +529,73 @@ pub mod tests {
         remove_package(root.path(), "arthur").unwrap();
         assert!(registry::scan(root.path()).is_empty());
         assert!(remove_package(root.path(), "../etc").is_err());
+    }
+
+    /// An update beside the version installed: the files the same as its own (path, size, bytes) are hard links to
+    /// them and are not counted; one of the same size with other bytes, and the manifest, are written and counted.
+    #[test]
+    fn an_update_links_the_files_it_has_already_and_counts_only_the_rest() {
+        let root = tempfile::tempdir().unwrap();
+        let program = noise(300_000, 1);
+        let mut other = program.clone();
+        other[299_999] ^= 1;
+        let package = |version: &str, tail: &[u8]| {
+            let text = character_manifest("arthur", version).to_string();
+            archive(&[
+                Item::File("manifest.json", text.as_bytes()),
+                Item::Dir("assets/"),
+                Item::File("assets/program", &program),
+                Item::File("assets/tail", tail),
+            ])
+        };
+        let mut sha = String::new();
+        let first = package("1.2.0", &program[..]);
+        install_archive(root.path(), &first, expected("arthur", "1.2.0", &first, &mut sha)).unwrap();
+        let old = root.path().join("arthur/1.2.0");
+
+        let fresh = beside(&first, None).unwrap();
+        assert!(fresh.same.is_empty());
+        assert!(fresh.changed_bytes > 2 * 300_000, "a first install writes every file");
+
+        let update = package("1.3.0", &other[..]);
+        let counted = beside(&update, Some(&old)).unwrap();
+        assert_eq!(counted.same, BTreeSet::from([PathBuf::from("assets/program")]));
+        let manifest = character_manifest("arthur", "1.3.0").to_string().len() as u64;
+        assert_eq!(counted.changed_bytes, manifest + 300_000, "the manifest and the changed tail");
+        assert_eq!(counted.changed_mb(), 1);
+
+        install_archive_beside(root.path(), &update, expected("arthur", "1.3.0", &update, &mut sha), Some(&counted))
+            .unwrap();
+        let new = root.path().join("arthur/1.3.0");
+        assert_eq!(std::fs::read(new.join("assets/program")).unwrap(), program);
+        assert_eq!(std::fs::read(new.join("assets/tail")).unwrap(), other);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let inode = |path: PathBuf| std::fs::metadata(path).unwrap().ino();
+            assert_eq!(inode(new.join("assets/program")), inode(old.join("assets/program")), "linked");
+            assert_ne!(inode(new.join("assets/tail")), inode(old.join("assets/tail")), "written");
+        }
+        // The old version gone, the link holds its bytes.
+        remove_other_versions(root.path(), "arthur", "1.3.0").unwrap();
+        assert_eq!(std::fs::read(new.join("assets/program")).unwrap(), program);
+        assert!(leftovers(root.path()).is_empty(), "{:?}", leftovers(root.path()));
+    }
+
+    /// The other versions go; the app's own data beside them (`.data`: a VPN's connections) and whatever is not a
+    /// version stay.
+    #[test]
+    fn removing_the_other_versions_keeps_the_apps_data() {
+        let root = tempfile::tempdir().unwrap();
+        let app = root.path().join("own-server");
+        for dir in ["0.1.3", "0.1.4", ".data/connections", "notes"] {
+            std::fs::create_dir_all(app.join(dir)).unwrap();
+        }
+        std::fs::write(app.join(".data/connections/home.json"), b"{}").unwrap();
+        remove_other_versions(root.path(), "own-server", "0.1.4").unwrap();
+        assert!(!app.join("0.1.3").exists());
+        assert!(app.join("0.1.4").is_dir() && app.join("notes").is_dir());
+        assert_eq!(std::fs::read(app.join(".data/connections/home.json")).unwrap(), b"{}");
     }
 
     #[test]

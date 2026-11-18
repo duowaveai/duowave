@@ -3,8 +3,10 @@
 // перетаскиванием фона и колесом, масштаб — кнопками, ⌘/Ctrl + колесом (щипок на тачпаде); мини-карта показывает,
 // что есть за краем, и ведёт туда. Ещё не переставленные виджеты стоят столбцами по сторонам от колонки. Колесо над
 // списком в виджете, который ещё есть куда листать, листает его, а не поле.
-// Замок в углу закрепляет стол: поле не едет и не масштабируется, виджеты не двигаются и не тянутся, пункты раскладки в
-// их меню не нажимаются. Стол начинается закреплённым, и тогда в углу только замок; открыли — рядом появляются
+// Замок в углу закрепляет раскладку: виджеты не двигаются и не тянутся, поле не масштабируется и не тащится мышью, пункты
+// раскладки в меню виджетов не нажимаются. Смотреть стол колесом и тачпадом можно и у закреплённого (проверка начисто
+// 18.11: витрина была видна наполовину, а вниз не листалось); такой сдвиг не хранится — открыли стол снова, он как
+// сначала. Стол начинается закреплённым, и тогда в углу только замок; открыли — рядом появляются
 // «Расставить заново», масштаб и мини-карта. Места, масштаб, сдвиг и замок — в раскладке стола: её хранит шлюз, свою у
 // каждой роли (shell/widgets.ts). Плашки над столом (баннер: «Готовлю слух», флешка…) опускают поле, пока видны: сцена
 // стоит под ними, а не за ними.
@@ -35,6 +37,13 @@ const UNDER_WIDE = 908;
  */
 const UNDER_WIDE_OVERLAP = 16;
 const GAP = 60;
+/** Между столбцами виджетов одной стороны и между виджетом и витриной под сценой. */
+const COLUMN_GAP = 40;
+const ROW_GAP = 16;
+/** Сколько точек виджет занимает, пока его не измерили. */
+const GUESS_H = 200;
+/** Мельче этого стол сам не уменьшается, чтобы сцена с витриной влезли над доком. */
+const MIN_FIT = 0.7;
 /** Между баннером и сценой под ним, точек экрана. */
 const BANNER_GAP = 16;
 
@@ -49,13 +58,17 @@ const START: Point = { x: 0, y: -40 };
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
 /**
- * Сдвиг поля, пока его не трогали, когда под колонкой стоит виджет (`under`, «Лента»): колонка поднимается, насколько
- * позволяет место над ней (до 24 точек от верха поля, не выше 240), — чтобы виджет под ней было видно сразу, а не одну
- * его шапку. `height` — высота поля.
+ * Вид поля, пока его не трогали, когда под колонкой стоит виджет (`under`: витрина, «Лента»): колонка поднимается к
+ * верху поля (24 точки от него, не выше чем на 240), а если виджет под ней и тогда не влезает над доком — стол
+ * уменьшается, но не мельче MIN_FIT. Так виджет под колонкой виден весь сразу: у закреплённого стола (как он
+ * начинается) иначе до его низа не добраться было бы. `height` — высота поля, `room` — сколько точек экрана от верха
+ * поля до дока, `head` — где может начаться сцена (ниже баннера), `need` — от верха сцены до низа виджета под ней,
+ * точки стола.
  */
-function startOf(withUnder: boolean, height: number): Point {
-    if (!withUnder) return START;
-    return { x: 0, y: Math.round(clamp(SCENE_H / 2 + 24 - height / 2, -240, START.y)) };
+function startOf(withUnder: boolean, height: number, room: number, head: number, need: number): { pan: Point; zoom: number } {
+    if (!withUnder || need <= 0) return { pan: START, zoom: 1 };
+    const zoom = clamp(Math.floor(((room - head) / need) * 100) / 100, MIN_FIT, 1);
+    return { pan: { x: 0, y: Math.round(Math.max(-240, 24 - height / 2 + (SCENE_H / 2) * zoom)) }, zoom };
 }
 
 /** Мерило открытого свободного стола: где элемент на нём (точка поля и ширина). Нет стола — null. */
@@ -123,11 +136,20 @@ interface Props {
 export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, render, sceneExtra = 0 }: Props) {
     const box = useRef<HTMLDivElement>(null);
     const plane = useRef<HTMLDivElement>(null);
-    const [zoom, setZoom] = useState(layout.zoom ?? 1);
+    const top = -SCENE_H / 2;
     const withUnder = widgets.some((widget) => widget.under && !layout.places[widget.key]);
     /** С чего стол начинается, пока его не двигали: от него же «вид как сначала» не сохраняется. */
-    const startPan = useRef<Point>(startOf(withUnder, window.innerHeight - 64));
+    const startPan = useRef<Point>(startOf(false, 0, 0, 0, 0).pan);
+    const startZoom = useRef(1);
+    const [zoom, setZoom] = useState(layout.zoom ?? startZoom.current);
     const [pan, setPan] = useState<Point>(layout.pan ?? startPan.current);
+    /** Поле сдвинули в этот раз (колесом — и у закреплённого стола): вид как сначала его уже не возвращает. */
+    const touched = useRef(false);
+    /** Высоты виджетов в столбцах и места «Новый виджет» (точки стола): по ним виджеты расходятся по столбцам. 0 — не виден. */
+    const [heights, setHeights] = useState<Record<string, number>>({});
+    /** Высота виджетов под сценой (витрины), точки стола. */
+    const underBox = useRef<HTMLDivElement>(null);
+    const [underHeight, setUnderHeight] = useState(0);
     /** Виджет, который тащат или растягивают сейчас: его место — здесь, пока не отпустили. */
     const [live, setLive] = useState<{ key: string; place: WidgetPlace } | null>(null);
     const [map, setMap] = useState<{ items: Array<{ key: string; rect: DOMRect; scene?: boolean }>; view: DOMRect } | null>(null);
@@ -201,7 +223,7 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
             return;
         }
         const measure = () => {
-            const sceneTop = outer.clientHeight / 2 + startPan.current.y - (SCENE_H / 2) * (layout.zoom ?? 1);
+            const sceneTop = outer.clientHeight / 2 + startPan.current.y - (SCENE_H / 2) * (layout.zoom ?? startZoom.current);
             setPush(Math.max(0, Math.round(node.offsetTop + node.offsetHeight + BANNER_GAP - sceneTop)));
         };
         measure();
@@ -209,25 +231,46 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
         sizes.observe(node);
         sizes.observe(outer);
         return () => sizes.disconnect();
-    }, [!!banner, layout.zoom, withUnder]);
+    }, [!!banner, layout.zoom, withUnder, underHeight, sceneHeight]);
 
     // Масштаб и сдвиг — в раскладку, когда человек остановился. Вид как сначала там не нужен: стартовый стол шлюз не хранит.
+    // У закреплённого стола сдвиг колесом — только посмотреть: он не хранится.
     useEffect(() => {
+        if (locked) return;
         const id = window.setTimeout(() => {
             const saved = layout.pan ?? startPan.current;
-            if (zoom !== (layout.zoom ?? 1) || pan.x !== saved.x || pan.y !== saved.y) actions.view(zoom, pan);
+            if (zoom !== (layout.zoom ?? startZoom.current) || pan.x !== saved.x || pan.y !== saved.y) actions.view(zoom, pan);
         }, 400);
         return () => window.clearTimeout(id);
-    }, [zoom, pan.x, pan.y]);
+    }, [zoom, pan.x, pan.y, locked]);
     // Вид из раскладки: «Расставить заново» вернуло его к началу или стол пришёл со шлюза (его двигали в другом браузере).
-    // Виджет под колонкой пришёл позже стола (окошко приложения грузится само) — начало стола пересчитывается.
-    useEffect(() => {
-        const zoomTo = layout.zoom ?? 1;
-        if (!layout.pan) startPan.current = startOf(withUnder, box.current?.clientHeight ?? window.innerHeight - 64);
-        const panTo = layout.pan ?? startPan.current;
-        if (zoomTo !== view.current.zoom) setZoom(zoomTo);
-        if (panTo.x !== view.current.pan.x || panTo.y !== view.current.pan.y) setPan(panTo);
-    }, [layout.zoom, layout.pan?.x, layout.pan?.y, withUnder]);
+    // Виджет под колонкой пришёл позже стола (окошко приложения грузится само), вырос или окно поменялось — начало стола
+    // пересчитывается; нетронутый в этот раз стол встаёт в новое начало.
+    const underTop = (wide: boolean) => (wide ? top + sceneHeight - UNDER_WIDE_OVERLAP : SCENE_H / 2 + 24);
+    const underWide = widgets.some((widget) => widget.under && widget.wide && !layout.places[widget.key]);
+    useLayoutEffect(() => {
+        const settle = () => {
+            const outer = box.current;
+            if (!outer) return;
+            const rect = outer.getBoundingClientRect();
+            const dock = document.querySelector('.dock-wrap > *')?.getBoundingClientRect();
+            const room = (dock && dock.height > 0 ? Math.min(rect.height, dock.top - rect.top) : rect.height) - 12;
+            const node = bannerBox.current;
+            const head = Math.max(24, node ? node.offsetTop + node.offsetHeight + BANNER_GAP : 0);
+            const need = underHeight > 0 ? underTop(underWide) + underHeight - top : 0;
+            const start = startOf(withUnder, outer.clientHeight, room, head, need);
+            startPan.current = start.pan;
+            startZoom.current = start.zoom;
+            const fresh = !layout.pan && layout.zoom === undefined && !touched.current;
+            const zoomTo = layout.zoom ?? (fresh || !layout.pan ? start.zoom : view.current.zoom);
+            const panTo = layout.pan ?? (fresh ? start.pan : view.current.pan);
+            if (zoomTo !== view.current.zoom) setZoom(zoomTo);
+            if (panTo.x !== view.current.pan.x || panTo.y !== view.current.pan.y) setPan(panTo);
+        };
+        settle();
+        window.addEventListener('resize', settle);
+        return () => window.removeEventListener('resize', settle);
+    }, [layout.zoom, layout.pan?.x, layout.pan?.y, withUnder, underWide, underHeight, sceneHeight, !!banner]);
 
     /** Точка экрана → точка стола. */
     const toPlane = (clientX: number, clientY: number): Point => {
@@ -257,12 +300,14 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
         const cx = clientX ?? rect.left + rect.width / 2;
         const cy = clientY ?? rect.top + rect.height / 2;
         const point = toPlane(cx, cy);
+        touched.current = true;
         setZoom(target);
         setPan({ x: cx - rect.left - rect.width / 2 - point.x * target, y: cy - rect.top - rect.height / 2 - view.current.push - point.y * target });
     };
 
     // Колесо: сдвиг поля; с ⌘/Ctrl (и щипок тачпада) — масштаб у курсора. Над списком, которому есть куда листаться, —
-    // сам список. Закреплённый стол стоит, а ⌘/Ctrl + колесо не масштабирует и страницу.
+    // сам список. Закреплённый стол колесом сдвигается (посмотреть), но не масштабируется — и ⌘/Ctrl + колесо не
+    // масштабирует страницу.
     useEffect(() => {
         const node = box.current;
         if (!node) return;
@@ -272,9 +317,12 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
             const zooming = event.ctrlKey || event.metaKey;
             if (!zooming && scrollsItself(target, node, event.deltaX, event.deltaY)) return;
             event.preventDefault();
-            if (lockedNow.current) return;
-            if (zooming) zoomAt(view.current.zoom * Math.exp(-event.deltaY * 0.0025), event.clientX, event.clientY);
-            else setPan((old) => ({ x: old.x - event.deltaX, y: old.y - event.deltaY }));
+            if (zooming) {
+                if (!lockedNow.current) zoomAt(view.current.zoom * Math.exp(-event.deltaY * 0.0025), event.clientX, event.clientY);
+                return;
+            }
+            touched.current = true;
+            setPan((old) => ({ x: old.x - event.deltaX, y: old.y - event.deltaY }));
         };
         node.addEventListener('wheel', onWheel, { passive: false });
         return () => node.removeEventListener('wheel', onWheel);
@@ -291,7 +339,8 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
             if (!x && !y) return;
             node.scrollLeft = 0;
             node.scrollTop = 0;
-            if (!lockedNow.current) setPan((old) => ({ x: old.x - x, y: old.y - y }));
+            touched.current = true;
+            setPan((old) => ({ x: old.x - x, y: old.y - y }));
         };
         node.addEventListener('scroll', onScroll);
         return () => node.removeEventListener('scroll', onScroll);
@@ -302,6 +351,7 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
         if (locked || event.button !== 0) return;
         if ((event.target as HTMLElement).closest('.widget, .widget-bare, .desk-scene, .desk-add-tile, .desk-zoom, .desk-map, .desk-columns > *, button, a, input')) return;
         const from = view.current.pan;
+        touched.current = true;
         drag(
             event,
             (dx, dy) => setPan({ x: from.x + dx, y: from.y + dy }),
@@ -372,18 +422,18 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
     // Под сценой — во всю её ширину — виджеты, что просят встать там (`under`), пока их не передвинули руками.
     const under = widgets.filter((widget) => widget.under && !layout.places[widget.key] && live?.key !== widget.key);
     const flowing = widgets.filter((widget) => !widget.under && !layout.places[widget.key] && live?.key !== widget.key);
-    // Столбцы по сторонам от колонки: по очереди слева и справа, при многих — второй справа.
-    const columns: DeskWidget[][] = [[], [], []];
-    flowing.forEach((widget, index) => {
-        const many = flowing.length > 6;
-        columns[many ? [0, 1, 2][index % 3] : index % 2].push(widget);
-    });
-    // Как в макете (SpaceGateway): слева столбец в 60 точках от колонки, справа два — второй подрезан краем окна,
-    // чтобы было видно, что там ещё есть.
     const half = SCENE_W / 2;
     const underWidth = under.some((widget) => widget.wide) ? UNDER_WIDE : SCENE_W;
-    const columnX = [-half - GAP - WIDTH, half + sceneExtra + GAP, half + sceneExtra + GAP + WIDTH + 40];
-    const top = -SCENE_H / 2;
+    const columns = columnsOf(flowing, {
+        heights,
+        // Как в макете (SpaceGateway): слева столбец в 60 точках от колонки, справа — за Турбо; дальше — вторые.
+        xs: [-half - GAP - WIDTH, half + sceneExtra + GAP, -half - GAP - 2 * WIDTH - COLUMN_GAP, half + sceneExtra + GAP + WIDTH + COLUMN_GAP],
+        top,
+        under: under.length > 0 && underHeight > 0 ? { top: underTop(underWidth !== SCENE_W), half: underWidth / 2 } : null,
+        sight: (box.current?.clientWidth ?? window.innerWidth) / 2 / startZoom.current,
+        // Низ видного — над доком (около 96 точек экрана).
+        bottom: ((box.current?.clientHeight ?? window.innerHeight) / 2 - push - startPan.current.y - 96) / startZoom.current,
+    });
 
     // Мини-карта: что на столе и где окно, — после каждой отрисовки, по местам в DOM. И «Новый виджет» — ниже тех
     // поставленных виджетов, что встали на его место (черновик сел там, где стояла его плитка).
@@ -420,6 +470,35 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
         );
     });
 
+    // Высоты виджетов в столбцах и места «Новый виджет» — для раскладки по столбцам; высота витрины — для начала стола.
+    // Виджет меняет высоту сам (пришли данные, пустой стал видимым) — следим за каждым.
+    useLayoutEffect(() => {
+        const node = plane.current;
+        if (!node) return;
+        const measure = () => {
+            const measured: Record<string, number> = {};
+            const spot = node.querySelector<HTMLElement>('.desk-add-spot');
+            if (spot) measured[ADD] = spot.offsetHeight;
+            setHeights((old) => {
+                // Виджет, переехавший в другой столбец, рождается там заново и на миг пуст: его место — по последней
+                // высоте, иначе он прыгал бы обратно и снова пустел.
+                for (const slot of node.querySelectorAll<HTMLElement>('.desk-columns > [data-widget]')) {
+                    const key = slot.dataset.widget ?? '';
+                    measured[key] = slot.offsetHeight || old[key] || 0;
+                }
+                return Object.keys(measured).length === Object.keys(old).length && Object.entries(measured).every(([key, value]) => Math.abs((old[key] ?? -9) - value) < 2)
+                    ? old
+                    : measured;
+            });
+            const below = underBox.current?.offsetHeight ?? 0;
+            setUnderHeight((old) => (Math.abs(below - old) > 1 ? below : old));
+        };
+        measure();
+        const sizes = new ResizeObserver(measure);
+        for (const slot of node.querySelectorAll('.desk-columns > [data-widget], .desk-columns > [data-widget] > *, .desk-add-spot > *, .desk-under')) sizes.observe(slot);
+        return () => sizes.disconnect();
+    });
+
     const widgetMenu = (widget: DeskWidget): WidgetMenu => ({
         hide: () => actions.hide(widget.key),
         wider: () => widen(widget.key, 60),
@@ -442,7 +521,7 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
                         {scene}
                     </div>
                     {under.length > 0 && (
-                        <div class="desk-under" style={{ left: `${-underWidth / 2}px`, top: `${underWidth === SCENE_W ? SCENE_H / 2 + 24 : top + sceneHeight - UNDER_WIDE_OVERLAP}px`, width: `${underWidth}px` }}>
+                        <div ref={underBox} class="desk-under" style={{ left: `${-underWidth / 2}px`, top: `${underWidth === SCENE_W ? SCENE_H / 2 + 24 : top + sceneHeight - UNDER_WIDE_OVERLAP}px`, width: `${underWidth}px` }}>
                             {under.map((widget) => (
                                 <div
                                     key={widget.key}
@@ -456,9 +535,9 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
                         </div>
                     )}
                     {columns.map(
-                        (list, index) =>
+                        ({ x, list }, index) =>
                             (list.length > 0 || index === 0) && (
-                                <div key={index} class="desk-columns" style={{ left: `${columnX[index]}px`, top: `${top}px`, width: `${WIDTH}px` }}>
+                                <div key={index} class="desk-columns" style={{ left: `${x}px`, top: `${top}px`, width: `${WIDTH}px` }}>
                                     {list.map((widget) => (
                                         <div key={widget.key} data-widget={widget.key} class="desk-slot">
                                             {render(widget, widgetMenu(widget), gripOf(widget.key))}
@@ -519,6 +598,58 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
             </div>
         </div>
     );
+}
+
+/** Ключ места «Новый виджет» в высотах столбцов. */
+const ADD = ' add';
+
+interface ColumnsInput {
+    heights: Record<string, number>;
+    /** Левые края столбцов: ближний слева, ближний справа, дальний слева, дальний справа. */
+    xs: number[];
+    top: number;
+    /** Широкий виджет под сценой: где начинается и полуширина. Столбец, что заходит на него, кончается над ним. */
+    under: { top: number; half: number } | null;
+    /** Полуширина и низ того, что видно в начале стола, точки стола. */
+    sight: number;
+    bottom: number;
+}
+
+/**
+ * Виджеты, которые не переставляли, — по столбцам у колонки (проверка начисто 18.11: «Работы» и «Последние вопросы»
+ * уходили за правый край, а левый столбец — с «Новый виджет» — ложился на витрину). Каждый встаёт туда, где он
+ * влезает: сначала в столбец, видный в начале стола целиком (не за краем окна и не ниже дока), из таких — в самый
+ * короткий; не влез ни в один видный — в более короткий из ближних, потом в дальний. Столбец, что заходит на витрину под сценой,
+ * кончается над ней; в ближнем левом снизу всегда остаётся место «Новый виджет». Невидимые (пустые с hideWhileEmpty)
+ * места не занимают.
+ */
+function columnsOf(flowing: DeskWidget[], input: ColumnsInput): Array<{ x: number; list: DeskWidget[] }> {
+    const { heights, xs, top, under, sight, bottom } = input;
+    const add = heights[ADD] ?? 0;
+    const columns = xs.map((x, index) => {
+        const crosses = !!under && x < under.half && x + WIDTH > -under.half;
+        // Над витриной — с зазором; у ближнего левого — ещё и место «Новый виджет» под виджетами.
+        const floor = (crosses && under ? under.top - COLUMN_GAP / 2 : Infinity) - (index === 0 ? add + ROW_GAP : 0);
+        return { x, list: [] as DeskWidget[], end: top, floor, seen: x >= -sight && x + WIDTH <= sight, near: index < 2 };
+    });
+    for (const widget of flowing) {
+        const height = heights[widget.key];
+        if (height === 0) {
+            columns[0].list.push(widget);
+            continue;
+        }
+        const need = height ?? GUESS_H;
+        const fits = columns.filter((column) => column.end + need <= column.floor);
+        const seen = fits.filter((column) => column.seen && column.end + need <= bottom - (column === columns[0] ? add + ROW_GAP : 0));
+        const pick =
+            [...seen].sort((a, b) => a.end - b.end)[0] ??
+            fits.filter((column) => column.near).sort((a, b) => a.end - b.end)[0] ??
+            [...fits].sort((a, b) => a.end - b.end)[0] ??
+            columns[2];
+        pick.list.push(widget);
+        pick.end += need + ROW_GAP;
+    }
+    return columns;
 }
 
 const sameRect = (a: DOMRect, b: DOMRect): boolean =>

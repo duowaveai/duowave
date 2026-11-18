@@ -155,6 +155,14 @@ impl SessionRegistry {
                     registry.drop_all("mode switch");
                 }
             }
+            // A room's own mode: only its station reconnects into it (docs/plans/home-and-devices.md, «Комнаты»).
+            if let GatewayEvent::RoomChanged { device, fields, .. } = &*event {
+                if fields.iter().any(|field| field == "mode") {
+                    if let Some(registry) = me.upgrade() {
+                        registry.drop_device(device, "room mode switch");
+                    }
+                }
+            }
         });
         tracing::info!(target: "uniproxy", "station voice endpoint: ws://<host>:<port>{}", self.deps.config.uniproxy_path);
     }
@@ -166,7 +174,9 @@ impl SessionRegistry {
 
     /// A station's socket, upgraded: its session in the mode the gateway has now, until it closes.
     pub async fn serve(self: Arc<Self>, socket: WebSocket, handshake: Handshake, slot: SocketSlot) {
-        let (session, end) = match self.modes.session_kind() {
+        // The session by the mode of the station's room (docs/plans/home-and-devices.md, «Комнаты»).
+        let device = super::device_tag::device_tag_of(&handshake.headers, self.deps.config.recorder.redact);
+        let (session, end) = match self.modes.session_kind_for(Some(&device)) {
             SessionKind::Relay => {
                 let deps = RelayDeps {
                     codec: self.deps.codec.clone(),
@@ -222,6 +232,14 @@ impl SessionRegistry {
     pub fn drop_all(&self, reason: &str) {
         let active = self.lock().active.clone();
         for session in active {
+            session.close_socket(1000, reason);
+        }
+    }
+
+    /// Closes one device's sessions: it opens the next by itself, in its room's mode.
+    pub fn drop_device(&self, device: &str, reason: &str) {
+        let active = self.lock().active.clone();
+        for session in active.iter().filter(|session| session.device_tag() == device) {
             session.close_socket(1000, reason);
         }
     }
@@ -333,7 +351,7 @@ impl crate::activator::WakeStation for RegistrySpeaker {
         match self.0.upgrade().and_then(|registry| registry.local_station()) {
             Some(station) => station.wake_by_activator(wake, starter),
             None => async {
-                crate::activator::WakeOutcome::Failed(crate::tr!("колонка не подключена к этому шлюзу"))
+                crate::activator::WakeOutcome::Failed(crate::tr!("колонка не подключена к этому центру"))
             }
             .boxed(),
         }

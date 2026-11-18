@@ -143,9 +143,9 @@ async fn send(target: &Target, body: &Value) -> Result<(), Failure> {
         .await;
     let response = match answer {
         Ok(response) => response,
-        Err(error) if error.is_timeout() => return Err(Failure::Again("шлюз колонки не ответил вовремя".into())),
-        Err(error) if error.is_connect() => return Err(Failure::Again("шлюз колонки не отвечает".into())),
-        Err(error) => return Err(Failure::Again(format!("шлюз колонки: {}", error.without_url()))),
+        Err(error) if error.is_timeout() => return Err(Failure::Again("колонка не ответила вовремя".into())),
+        Err(error) if error.is_connect() => return Err(Failure::Again("колонка не отвечает".into())),
+        Err(error) => return Err(Failure::Again(format!("колонка: {}", error.without_url()))),
     };
     let status = response.status();
     if status.is_success() {
@@ -153,9 +153,9 @@ async fn send(target: &Target, body: &Value) -> Result<(), Failure> {
     }
     let said: Value = response.json().await.unwrap_or(Value::Null);
     let message = said.get("message").and_then(Value::as_str).unwrap_or_default();
-    let why = format!("шлюз колонки ответил {}: {message}", status.as_u16());
+    let why = format!("колонка ответила {}: {message}", status.as_u16());
     match status.as_u16() {
-        404 => Err(Failure::Final(format!("шлюз колонки старше и не принимает сообщения ({})", status.as_u16()))),
+        404 => Err(Failure::Final(format!("DuoWave на колонке старше и не принимает сообщения ({})", status.as_u16()))),
         400..=499 if status.as_u16() != 408 && status.as_u16() != 429 => Err(Failure::Final(why)),
         _ => Err(Failure::Again(why)),
     }

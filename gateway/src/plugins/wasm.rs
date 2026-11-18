@@ -169,7 +169,7 @@ fn linker(engine: &Engine) -> Result<Linker<State>, wasmi::Error> {
             let answer = match wait(&caller.data().handle, future) {
                 Some(Ok(value)) => serde_json::json!({ "value": value }),
                 Some(Err(why)) => serde_json::json!({ "error": why }),
-                None => serde_json::json!({ "error": crate::tr!("шлюз недоступен") }),
+                None => serde_json::json!({ "error": crate::tr!("DuoWave недоступен") }),
             };
             give(&mut caller, &answer)
         },

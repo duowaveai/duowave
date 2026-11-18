@@ -20,6 +20,7 @@ pub mod egress;
 pub mod gateway;
 pub mod health_status;
 pub mod helpers;
+pub mod home;
 pub mod home_server;
 pub mod links;
 pub mod live;

@@ -14,7 +14,7 @@ const en: Translation<typeof ru> = {
     noteOwnYandex: 'ours first; Yandex picks up what it does not know',
     noteYandex: 'handed to Yandex entirely',
     noteOff: 'nobody: the request lands in “Not supported yet”',
-    waitingGateway: 'Waiting for the gateway…',
+    waitingGateway: 'Waiting for the hub…',
     search: 'Search',
     searchLabel: 'Search capabilities',
     changeSuffix: ', change',

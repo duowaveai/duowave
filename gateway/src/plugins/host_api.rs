@@ -379,14 +379,14 @@ pub trait HostServices: Send + Sync {
     /// src/activator): `{port, channel, rate}`.
     fn mic(&self, caller: &str) -> Result<Value, String> {
         let _ = caller;
-        Err(crate::tr!("микрофон колонки слышит только шлюз на самой колонке"))
+        Err(crate::tr!("микрофон колонки слышит только центр на самой колонке"))
     }
     /// The app `caller` heard a word of its own (`system/activator` → `wake`, src/activator): the station is woken as
     /// by its button, its request starting with the sound before the word — `{started, reason?}`.
     fn wake(&self, caller: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
         let _ = (caller, input);
         Box::pin(async {
-            Err(crate::tr!("будить колонку может только шлюз на самой колонке"))
+            Err(crate::tr!("будить колонку может только центр на самой колонке"))
         })
     }
     /// Said aloud by a station without a request, for the plugin `caller` (`system/voice`): whether it was said —
@@ -773,7 +773,7 @@ impl HostApi for PluginHostApi {
         // The trail of the call this runs in: the engine's thread holds it while the call goes (src/bus/trail.rs).
         let trail = crate::bus::trail::current();
         Box::pin(async move {
-            let services = services.ok_or_else(|| crate::tr!("служб шлюза здесь нет"))?;
+            let services = services.ok_or_else(|| crate::tr!("служб DuoWave здесь нет"))?;
             if name == "folders.download" {
                 let url = input.get("url").and_then(Value::as_str).unwrap_or_default().to_string();
                 if url.is_empty() {

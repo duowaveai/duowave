@@ -18,7 +18,8 @@ use crate::core::events::Actor;
 use crate::models::models_service::{engine_needs, Chosen, EngineState, VoiceRequest, OWN_PREFIX};
 use crate::models::{ModelsService, OwnVoices};
 use crate::platform::http::ApiError;
-use crate::settings::definitions::VoiceRecipe;
+use crate::settings::definitions::{VoiceRecipe, TURBO_VOICE_ENGINES};
+use crate::settings::SettingsService;
 use crate::utils::time::now_iso;
 use crate::voice_lab::clone_engines::{same_revision, spec, EngineId};
 use crate::voice_lab::VoiceLabService;
@@ -36,11 +37,65 @@ pub struct CharacterVoices {
     models: Arc<ModelsService>,
     /// The voice lab as the models see it: the engines' states in one language.
     own: Arc<dyn OwnVoices>,
+    /// Where the model a Турбо's centre named for a character is kept (`TURBO_VOICE_ENGINES`).
+    settings: Arc<SettingsService>,
 }
 
 impl CharacterVoices {
-    pub fn new(lab: Arc<VoiceLabService>, models: Arc<ModelsService>, own: Arc<dyn OwnVoices>) -> Arc<CharacterVoices> {
-        Arc::new(CharacterVoices { lab, models, own })
+    pub fn new(
+        lab: Arc<VoiceLabService>,
+        models: Arc<ModelsService>,
+        own: Arc<dyn OwnVoices>,
+        settings: Arc<SettingsService>,
+    ) -> Arc<CharacterVoices> {
+        Arc::new(CharacterVoices { lab, models, own, settings })
+    }
+
+    /// The model the centre named for this character's voice here (clean-path check 18.11, item 40), if any.
+    pub fn named_engine(&self, character: &str) -> Option<String> {
+        self.settings.get(&TURBO_VOICE_ENGINES, None)?.remove(character)
+    }
+
+    /// Keeps the model the centre named for a character's voice: its voice goes with it from now on.
+    pub fn name_engine(&self, character: &str, engine: &str) -> Result<(), ApiError> {
+        let mut named = self.settings.get(&TURBO_VOICE_ENGINES, None).unwrap_or_default();
+        if named.get(character).map(String::as_str) == Some(engine) {
+            return Ok(());
+        }
+        named.insert(character.to_string(), engine.to_string());
+        self.settings.set(&TURBO_VOICE_ENGINES, &named, None)
+    }
+
+    /// For a Турбо's plan: the model its voice would go with here (`wanted` first — the centre's word —, then the one
+    /// the centre named before, then its own pick) and its fallback voice.
+    pub async fn turbo_choice(
+        &self,
+        character: &Character,
+        wanted: Option<&str>,
+    ) -> (Option<String>, Option<FallbackView>) {
+        let engines = self.own.engines().await;
+        let engine = wanted
+            .and_then(|wanted| self.usable(character, &engines, wanted))
+            .or_else(|| self.pick(character, &engines))
+            .map(|(engine, _)| engine.id.clone());
+        (engine, self.fallback(character).await)
+    }
+
+    /// An engine by its id when the character's voice can go with it here: it runs here, and the package has a
+    /// snapshot for it, or a reference to take one, or the voice is made already. Whether the voice is made.
+    fn usable<'a>(
+        &self,
+        character: &Character,
+        engines: &'a [EngineState],
+        id: &str,
+    ) -> Option<(&'a EngineState, bool)> {
+        let engine = engines.iter().find(|engine| engine.id == id && engine.status != "unsupported")?;
+        if !self.fits(engine) {
+            return None;
+        }
+        let made = self.lab.store.voice(&voice_id(character, &engine.id)).is_some();
+        let possible = made || character.voices.contains_key(&engine.id) || character.reference.is_some();
+        possible.then_some((engine, made))
     }
 
     /// The revision of an engine's weights here: the installed one's, else the one this gateway installs.
@@ -193,7 +248,19 @@ impl CharacterVoices {
 
     /// The engine a character's voice goes with here, and how it stands: one with a voice ready first, then one
     /// installed that can take it from the reference, then one being installed, then one to install.
+    /// Whether an engine has room here: installed or coming already, or its install fits on the disk — one that does
+    /// not is never downloaded (clean-path check 18.11, item 40).
+    fn fits(&self, engine: &EngineState) -> bool {
+        engine.status != "missing" || engine.disk_mb <= self.lab.free_disk_mb()
+    }
+
+    /// The model the centre named for it goes first, when it can (clean-path check 18.11, item 40). A model to install
+    /// that does not fit on the disk is not picked.
     fn pick<'a>(&self, character: &Character, engines: &'a [EngineState]) -> Option<(&'a EngineState, bool)> {
+        if let Some(named) = self.named_engine(&character.id).and_then(|named| self.usable(character, engines, &named))
+        {
+            return Some(named);
+        }
         let usable = |engine: &EngineState| {
             let made = self.lab.store.voice(&voice_id(character, &engine.id)).is_some();
             let snapshot = character.voices.contains_key(&engine.id);
@@ -202,7 +269,7 @@ impl CharacterVoices {
         let order = |status: &str, made_only: bool| {
             engines.iter().find(|engine| {
                 let (made, possible) = usable(engine);
-                engine.status == status && if made_only { made } else { possible }
+                engine.status == status && self.fits(engine) && if made_only { made } else { possible }
             })
         };
         order("ready", true)
@@ -213,7 +280,9 @@ impl CharacterVoices {
                 // To install: one the package has a snapshot for first.
                 engines
                     .iter()
-                    .find(|engine| engine.status == "missing" && character.voices.contains_key(&engine.id))
+                    .find(|engine| {
+                        engine.status == "missing" && self.fits(engine) && character.voices.contains_key(&engine.id)
+                    })
                     .or_else(|| order("missing", false))
                     .map(|engine| (engine, usable(engine).0))
             })
@@ -232,9 +301,13 @@ impl CharacterVoices {
         }
         let engines = self.own.engines().await;
         let Some((engine, _made)) = self.pick(character, &engines) else {
-            let reason = engines.iter().find_map(|engine| engine.reason.clone()).unwrap_or_else(|| {
-                crate::tr!("Голос этого персонажа здесь не зазвучит: ни одна его модель тут не работает.")
-            });
+            let no_room = engines.iter().any(|engine| engine.status == "missing" && !self.fits(engine));
+            let room =
+                no_room.then(|| crate::tr!("Модели голоса этого персонажа не помещаются на диск этого компьютера."));
+            let reason =
+                room.or_else(|| engines.iter().find_map(|engine| engine.reason.clone())).unwrap_or_else(|| {
+                    crate::tr!("Голос этого персонажа здесь не зазвучит: ни одна его модель тут не работает.")
+                });
             let state = if fallback.is_some() { VoiceState::Fallback } else { VoiceState::Unsupported };
             return VoiceView { state, fallback, reason: Some(reason), ..VoiceView::none() };
         };

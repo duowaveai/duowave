@@ -6,6 +6,7 @@ import { IconMic, IconPlus, IconVoice } from '../icons';
 import { fileToWav, MAX_TAKE_SECONDS, microphones, Recorder, recordingSupport } from '../recorder';
 import { Action, Card, CardNote } from '../ui/cards';
 import { Progress, useNeedsFlow, voicePill } from '../ui/needs';
+import { EngineRow, JobBar } from '../ui/voice-plan';
 import { Sheet, SkeletonRows, WinSection } from '../ui/sheet';
 import { ask } from '../ui/confirm';
 import { formatNumber, tr } from '../i18n';
@@ -33,24 +34,6 @@ const verdicts = (): Record<VoiceLabTake['verdict'], { text: string; tone: 'pill
     noisy: { text: tr.voiceLab.verdictNoisy, tone: 'pill-yandex', hint: tr.voiceLab.hintNoisy },
     clipped: { text: tr.voiceLab.verdictClipped, tone: 'pill-yandex', hint: tr.voiceLab.hintClipped },
 });
-
-/** Полоса прогресса задачи: этап, процент, память. */
-function JobBar({ label, percent, memoryMb }: { label: string; percent: number; memoryMb?: number }) {
-    return (
-        <div class="flex flex-col gap-6">
-            <div class="flex items-center gap-10">
-                <div role="progressbar" aria-label={label} aria-valuenow={percent} class="flex-1 h-8 r-pill bg-track overflow-hidden">
-                    <div class="progress-fill" style={{ width: `${Math.max(3, percent)}%`, transition: 'width .4s' }} />
-                </div>
-                <span class="win-row-s c-text flex-none">{percent}%</span>
-            </div>
-            <span class="win-row-s">
-                {label}
-                {memoryMb !== undefined ? tr.voiceLab.jobMemory(gb(memoryMb)) : ''}
-            </span>
-        </div>
-    );
-}
 
 function Problem({ text }: { text?: string | null }) {
     if (!text) return null;
@@ -227,13 +210,57 @@ export function OwnVoiceRows({
 type Step = 1 | 2 | 3;
 
 /** Мастер «Свой голос»: модель → запись → отпечаток. */
-export function VoiceWizard({ onClose }: { onClose: () => void }) {
+/**
+ * Мастер «Свой голос» открыт и его шаг — в памяти вкладки: страница вокруг пересобралась (фрейм страницы компьютера,
+ * перечитанный раздел) — мастер открывается снова на том же шаге, а не пропадает посреди (проверка начисто 18.11,
+ * п. 36: после «Дальше» окно исчезло, голос не начал создаваться). Дубли и движок — на компьютере, они и так целы.
+ */
+const WIZARD_KEY = 'voice-wizard-step';
+
+export function voiceWizardOpen(): boolean {
+    try {
+        return sessionStorage.getItem(WIZARD_KEY) !== null;
+    } catch {
+        return false;
+    }
+}
+
+function rememberStep(step: Step | null): void {
+    try {
+        if (step === null) sessionStorage.removeItem(WIZARD_KEY);
+        else sessionStorage.setItem(WIZARD_KEY, String(step));
+    } catch {
+        // приватное окно: мастер живёт, пока открыт
+    }
+}
+
+function rememberedStep(): Step {
+    try {
+        const step = Number(sessionStorage.getItem(WIZARD_KEY));
+        return step === 2 || step === 3 ? step : 1;
+    } catch {
+        return 1;
+    }
+}
+
+export function VoiceWizard({ onClose: close }: { onClose: () => void }) {
     const [lab, setLab] = useState<VoiceLabView | null>(null);
     const [loadError, setLoadError] = useState<string | null>(null);
-    const [step, setStep] = useState<Step>(1);
+    const [step, setStepNow] = useState<Step>(rememberedStep);
+    const setStep = (next: Step): void => {
+        rememberStep(next);
+        setStepNow(next);
+    };
+    useEffect(() => rememberStep(step), []);
+    const onClose = (): void => {
+        rememberStep(null);
+        close();
+    };
     const [engine, setEngine] = useState<CloneEngineId | null>(null);
     const [problem, setProblem] = useState<string | null>(null);
     const [working, setWorking] = useState<string | null>(null);
+    /** Главное действие шага 3 — внизу окна: снять отпечаток, включить голос, «Готово» (п. 37). */
+    const [primary, setPrimary] = useState<Primary | null>(null);
 
     const refresh = async () => {
         try {
@@ -314,7 +341,14 @@ export function VoiceWizard({ onClose }: { onClose: () => void }) {
                     {tr.voiceLab.next}
                 </button>
             )}
-            {step === 3 && (
+            {step === 3 && primary && !primary.done && (
+                <button class="btn btn-main" disabled={primary.disabled || primary.busy} aria-busy={primary.busy || undefined} onClick={primary.run}>
+                    {primary.busy && <span class="spinner spinner-sm" aria-hidden="true" />}
+                    {primary.label}
+                </button>
+            )}
+            {/* «Готово» — только когда голос снят и включён (или шагу нечего снимать: лаборатория не здесь). */}
+            {step === 3 && (primary ? primary.done : !lab?.available) && (
                 <button class="btn btn-main" onClick={onClose}>
                     {tr.voiceLab.done}
                 </button>
@@ -352,7 +386,7 @@ export function VoiceWizard({ onClose }: { onClose: () => void }) {
             ) : step === 2 ? (
                 <RecordStep lab={lab} refresh={refresh} />
             ) : (
-                <ImprintStep lab={lab} engine={engine!} working={working} act={act} />
+                <ImprintStep lab={lab} engine={engine!} working={working} act={act} setPrimary={setPrimary} />
             )}
             <Problem text={problem} />
         </Sheet>
@@ -360,6 +394,19 @@ export function VoiceWizard({ onClose }: { onClose: () => void }) {
 }
 
 type Act = (what: string, run: () => Promise<unknown>) => Promise<void>;
+
+/**
+ * Главная кнопка внизу шага 3 (проверка начисто 18.11, п. 37: зелёная «Готово» закрывала окно, а отпечаток снимала
+ * только кнопка в теле): пока голоса нет — «Снять отпечаток» («Снять всё равно» при тесной памяти), пока снимается —
+ * ход, снят — «Включить этот голос», включён — `done`, и тогда «Готово».
+ */
+interface Primary {
+    label: string;
+    run: () => void;
+    busy?: boolean;
+    disabled?: boolean;
+    done?: boolean;
+}
 
 /** Чего ждёт кнопка, пока идёт другая задача: одна тяжёлая задача за раз. */
 function waitFor(lab: VoiceLabView, job: NonNullable<VoiceLabView['job']>): string {
@@ -405,24 +452,18 @@ function EngineStep({
                         const installing = job?.kind === 'install' && job.engine === entry.id && job.state === 'running';
                         const failed = job?.kind === 'install' && job.engine === entry.id && job.state !== 'running' && job.state !== 'done';
                         return (
-                            <div
+                            <EngineRow
                                 key={entry.id}
-                                role="radio"
-                                aria-checked={selected}
-                                aria-disabled={entry.status === 'unsupported'}
-                                tabIndex={entry.status === 'unsupported' ? -1 : 0}
-                                class={`win-row is-col win-choice${selected ? ' is-on' : ''}${entry.status === 'unsupported' ? ' cursor-default opacity-55' : ''}`}
-                                onClick={() => entry.status !== 'unsupported' && setEngine(entry.id)}
-                                onKeyDown={(event) => (event.key === ' ' || event.key === 'Enter') && entry.status !== 'unsupported' && setEngine(entry.id)}
+                                title={entry.title}
+                                recommended={entry.recommended}
+                                license={entry.license}
+                                about={entry.about}
+                                status={status(entry)}
+                                selected={selected}
+                                disabled={entry.status === 'unsupported'}
+                                onSelect={() => setEngine(entry.id)}
+                                progress={installing && job ? { label: job.label, percent: job.percent } : undefined}
                             >
-                                <div class="flex items-center gap-8 flex-wrap">
-                                    <span class="win-row-t">{entry.title}</span>
-                                    {entry.recommended && <span class="pill pill-agent">{tr.voiceLab.recommended}</span>}
-                                    <span class="win-chip">{entry.license}</span>
-                                </div>
-                                <span class="win-row-s">{entry.about}</span>
-                                {status(entry) && <span class="win-row-s c-text">{status(entry)}</span>}
-                                {installing && job && <JobBar label={job.label} percent={job.percent} />}
                                 {installing && job?.log.length ? (
                                     <code class="win-note opacity-70 nowrap overflow-hidden text-ellipsis">
                                         {job.log[job.log.length - 1]}
@@ -445,7 +486,7 @@ function EngineStep({
                                         <Action label={tr.voiceLab.stopJob} onClick={() => void act('stop', () => api.stopVoiceJob())} />
                                     </div>
                                 )}
-                            </div>
+                            </EngineRow>
                         );
                     })}
                 </div>
@@ -625,7 +666,19 @@ function RecordStep({ lab, refresh }: { lab: VoiceLabView; refresh: () => Promis
     );
 }
 
-function ImprintStep({ lab, engine, working, act }: { lab: VoiceLabView; engine: CloneEngineId; working: string | null; act: Act }) {
+function ImprintStep({
+    lab,
+    engine,
+    working,
+    act,
+    setPrimary,
+}: {
+    lab: VoiceLabView;
+    engine: CloneEngineId;
+    working: string | null;
+    act: Act;
+    setPrimary: (primary: Primary | null) => void;
+}) {
     const audio = useAudio();
     const [name, setName] = useState(tr.voiceLab.defaultName);
     const memory = lab.memory;
@@ -697,6 +750,34 @@ function ImprintStep({ lab, engine, working, act }: { lab: VoiceLabView; engine:
         }
     };
 
+    const running = job?.state === 'running';
+    const otherRunning = !running && lab.job?.state === 'running';
+    const primary: Primary = voice
+        ? enabling === 'done'
+            ? { label: tr.voiceLab.done, run: () => undefined, done: true }
+            : {
+                  label: enabling === 'busy' ? tr.voiceLab.loadingModel : voiceTight ? tr.voiceLab.enableAnyway : tr.voiceLab.enableVoice,
+                  busy: enabling === 'busy',
+                  disabled: !!needs.body,
+                  run: () => void enable(),
+              }
+        : running
+          ? { label: tr.voiceLab.imprinting(job?.percent ?? null), run: () => undefined, busy: true }
+          : {
+                label: working === 'imprint' ? tr.voiceLab.starting : anyway ? tr.voiceLab.imprintAnyway : tr.voiceLab.imprint,
+                busy: working === 'imprint',
+                disabled: otherRunning,
+                run: () => void start(),
+            };
+    // Кнопка внизу окна — та же, что решает здесь: по ключу её состояния, а не каждый кадр.
+    const primaryKey = `${primary.label}|${primary.busy}|${primary.disabled}|${primary.done}|${name}|${anyway}|${voiceTight}`;
+    const latest = useRef(primary);
+    latest.current = primary;
+    useEffect(() => {
+        setPrimary({ ...latest.current, run: () => latest.current.run() });
+    }, [primaryKey]);
+    useEffect(() => () => setPrimary(null), []);
+
     if (voice)
         return (
             <>
@@ -722,15 +803,7 @@ function ImprintStep({ lab, engine, working, act }: { lab: VoiceLabView; engine:
                     </p>
                 ) : needs.body ? (
                     <div class="flex flex-col gap-12">{needs.body}</div>
-                ) : (
-                    <div>
-                        <Action
-                            label={enabling === 'busy' ? tr.voiceLab.loadingModel : voiceTight ? tr.voiceLab.enableAnyway : tr.voiceLab.enableVoice}
-                            busy={enabling === 'busy'}
-                            onClick={() => void enable()}
-                        />
-                    </div>
-                )}
+                ) : null}
                 {enabling === 'busy' && <p class="win-note">{tr.voiceLab.modelLoading}</p>}
                 <Warning text={voiceTight && enabling !== 'busy' ? tr.voiceLab.voiceNotEnabled(voiceTight) : null} />
                 <Problem text={problem} />
@@ -781,14 +854,6 @@ function ImprintStep({ lab, engine, working, act }: { lab: VoiceLabView; engine:
                     )}
                     <p class="win-text m-0">{tr.voiceLab.imprintAbout(title)}</p>
                     {lab.job?.state === 'running' && <p class="win-note">{waitFor(lab, lab.job)}</p>}
-                    <div>
-                        <Action
-                            label={working === 'imprint' ? tr.voiceLab.starting : anyway ? tr.voiceLab.imprintAnyway : tr.voiceLab.imprint}
-                            busy={working === 'imprint'}
-                            disabled={lab.job?.state === 'running'}
-                            onClick={() => void start()}
-                        />
-                    </div>
                 </>
             )}
         </>

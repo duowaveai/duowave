@@ -249,7 +249,7 @@ pub(crate) fn station_gated(
     let identity = Arc::new(Identity::new(settings.clone(), secrets.clone(), db.clone(), kind, events.clone()));
     identity.ensure().unwrap();
     store(&settings, &secrets);
-    legacy::at_start(&config, &settings, &secrets);
+    door::at_start(&config, &settings, &secrets);
     if own {
         settings.set(&MODE, &ModeSetting { mode: PanelMode::Own }, None).unwrap();
     }
@@ -711,6 +711,36 @@ async fn svoi_stays_without_the_helpers_hearing_when_an_allowed_cloud_hears_and_
     assert_eq!((pc.modes.current(), pc.helpers.svoi_lacks()), (PanelMode::Own, None));
 }
 
+/// Item 48: the home's computer under the default name a station wrote before it knew the household's language
+/// («Home computer») takes the name the computer gives itself at the first look; a name the owner gave stays.
+#[tokio::test]
+async fn the_home_computer_under_its_default_name_takes_the_name_it_gives_itself() {
+    let station = station(&[]);
+    let computer = stand(contract("mac-1", ALL)).await;
+    station.put(HOME_COMPUTER, &computer.url, HelperKind::Home);
+    station
+        .helpers
+        .write(None, |list| {
+            list.iter_mut().find(|entry| entry.id == HOME_COMPUTER).unwrap().name = "Home computer".into();
+            Ok(Some(()))
+        })
+        .unwrap();
+    station.helpers.check(HOME_COMPUTER).await.unwrap();
+    let entry = station.helpers.entry(HOME_COMPUTER).unwrap();
+    assert_eq!((entry.name.as_str(), entry.helper_id.as_deref()), ("Турбо mac-1", Some("mac-1")));
+
+    // A name of the owner's own is never replaced.
+    station
+        .helpers
+        .write(None, |list| {
+            list.iter_mut().find(|entry| entry.id == HOME_COMPUTER).unwrap().name = "Кабинет".into();
+            Ok(Some(()))
+        })
+        .unwrap();
+    station.helpers.check(HOME_COMPUTER).await.unwrap();
+    assert_eq!(station.helpers.entry(HOME_COMPUTER).unwrap().name, "Кабинет");
+}
+
 #[tokio::test]
 async fn a_gateway_knows_itself_and_never_looks_at_itself() {
     let station = station(&[]);
@@ -1058,7 +1088,7 @@ async fn adding_checks_the_contract_first_and_stores_nothing_on_a_wrong_key_or_i
         .await
         .unwrap_err();
     assert_eq!(refused.status, StatusCode::CONFLICT);
-    assert!(refused.message.contains("сам этот шлюз"), "{}", refused.message);
+    assert!(refused.message.contains("сам этот центр"), "{}", refused.message);
     assert_eq!(station.helpers.list().len(), 1);
 
     // Nothing answering is no helper either; a dry run stores nothing.
@@ -1244,7 +1274,7 @@ async fn the_pairing_check_refuses_this_gateway_the_pairs_door_and_a_listed_help
     let me = station.helpers.me().unwrap();
     assert_eq!(
         words(check(&helper(&me), &pin("b"))),
-        Err((409, "Это сам этот шлюз: себя в Турбо не добавляют.".into()))
+        Err((409, "Это сам этот центр: себя в Турбо не добавляют.".into()))
     );
     assert_eq!(
         words(check(&helper("the-computer"), &pin("b"))),

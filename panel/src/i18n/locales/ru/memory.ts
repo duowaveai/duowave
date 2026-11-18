@@ -15,7 +15,7 @@ export default {
     actionWarn: ' Под сильным давлением приложения не выключаются — только предупреждение.',
     actionOff: ' Под сильным давлением последнее включённое из загруженных приложений выключится само.',
     disk: (free: number, packages: number, reserve: number) =>
-        `Память: свободно ${free} МБ, приложения занимают ${packages} МБ, ${reserve} МБ — запас на обновление шлюза.`,
+        `Память: свободно ${free} МБ, приложения занимают ${packages} МБ, ${reserve} МБ — запас на обновление DuoWave.`,
     pictures: (used: string, limit: string | null) => `Картинки приложений: ${used} МБ${limit ? ` из ${limit}` : ''}.`,
     lineMemory: (used: string, budget: number) => `ОЗУ ${used} из ${budget} МБ`,
     lineBudget: (budget: number) => `бюджет ОЗУ ${budget} МБ`,

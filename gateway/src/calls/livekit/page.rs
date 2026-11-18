@@ -128,7 +128,7 @@ if ($('saved').value) $('join').onclick().catch((error) => status('Не подк
 
 /// Without the bridge in this build the station is not in the room: the page says so above everything else.
 const NO_BRIDGE: &str =
-    "<p class=\"notice\">Мост LiveKit не входит в эту сборку шлюза: колонки в комнате нет, звонок на \
+    "<p class=\"notice\">Мост LiveKit не входит в эту сборку DuoWave: колонки в комнате нет, звонок на \
                          неё не пройдёт.</p>\n";
 
 /// The page with the gateway's own LiveKit server written in (JSON-escaped, `<` too, so it cannot end the script).

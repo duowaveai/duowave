@@ -10,6 +10,7 @@ import { IconLaptop, IconMenu, IconMic, IconMicOff } from '../icons';
 import { micOn, onMic } from '../voice/mic';
 import { useMicHeld } from '../voice/phrases';
 import { VoiceStrip } from '../voice/strip';
+import { InstallPill } from '../magicplace/wizard';
 import { WaitingPill } from '../voice/waiting';
 import { DuoWaveLogo, DuoWaveMark, PoweredBy } from '../ui/duowave';
 import { useDialogFocus } from '../ui/sheet';
@@ -109,6 +110,8 @@ export function SidebarShell({ nav, active, onNav, top, station, actions, talk, 
                         {listening ? tr.shell.listening : tr.shell.say}
                     </button>
                     <WaitingPill place="side" />
+                    {/* Мастер установки свёрнут — его ход (magicplace/wizard.tsx). */}
+                    <InstallPill place="side" />
                     <NavList nav={nav} active={active} onNav={go} />
                     <div class="side-foot">{actions}</div>
                 </aside>

@@ -69,7 +69,7 @@ const en: Translation<typeof ru> = {
     groupPrivateRest: ' — by hand only',
     optionalSuffix: ' · optional',
     micOffWhileKey: 'The microphone is off while a key is open',
-    staysInGateway: 'Stays in the gateway at your home',
+    staysInGateway: 'Stays in the hub at your home',
     agentCantSee: 'The agent and the cloud can’t see it',
     allowed: 'What it may do',
     youApprove: 'you approve',

@@ -223,7 +223,7 @@ pub fn count(memory: Option<MemoryNow>, reserve_mb: u64, plugins: &[PluginShare]
 /// What the panel says under the bar: what is in use now and how much more can be loaded.
 pub fn note(count: &Count, measured: bool, pressure: Pressure) -> String {
     if !measured {
-        return crate::tr!("Сколько ОЗУ свободно, шлюз здесь сказать не может.");
+        return crate::tr!("Сколько ОЗУ свободно, DuoWave здесь сказать не может.");
     }
     let used = match count.loaded {
         0 => crate::tr!("Сейчас ни одно приложение не загружено."),
@@ -303,7 +303,7 @@ pub fn no_room(need_mb: u64, free_mb: Option<u64>, reserve_mb: u64) -> Option<St
     let free = free_mb?;
     (need_mb + reserve_mb > free).then(|| {
         crate::tr!(
-            "не хватит памяти: нужно {need_mb} МБ и ещё {reserve_mb} МБ про запас на обновление шлюза, свободно {free}",
+            "не хватит памяти: нужно {need_mb} МБ и ещё {reserve_mb} МБ про запас на обновление DuoWave, свободно {free}",
             need_mb = need_mb,
             reserve_mb = reserve_mb,
             free = free

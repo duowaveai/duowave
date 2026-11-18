@@ -10,14 +10,14 @@ import { tr } from '../i18n';
 import { usePanel } from '../shell/context';
 import { Sheet } from '../ui/sheet';
 import { NoteLine, PackageThumb, canManage, isInstalled, usePackageActions } from '../screens/catalog';
-import { goesHere } from './filters';
+import { goesHere, recommendedHere, shownAlone } from './filters';
 import { MagicPlaceMark } from './icon';
 import { downloadLines } from './section';
 
 /** Что предложить в первом запуске: рекомендованное, что встанет здесь, ещё не стоит и что этот вход может поставить. */
 export function firstAppsOf(view: CatalogView | null): CatalogEntry[] {
     if (!view || !view.configured || !view.enabled || view.offline) return [];
-    return view.packages.filter((entry) => entry.recommended && !isInstalled(entry) && goesHere(entry) && canManage(entry.kind));
+    return view.packages.filter((entry) => recommendedHere(entry) && shownAlone(entry) && !isInstalled(entry) && goesHere(entry) && canManage(entry.kind));
 }
 
 export function FirstAppsSheet({ entries, onClose }: { entries: CatalogEntry[]; onClose: () => void }) {

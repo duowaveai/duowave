@@ -11,6 +11,7 @@
 //! - `app_entry` — the gateway's entry for the apps' programs (`HTTPS_PROXY`) and the refusal of a call whose server
 //!   is down.
 //! - `routes` — the panel's screen «Выход в интернет».
+//! - `tools` — the VPN's switch for the brain: «включи VPN», «выключи VPN», «VPN включён?».
 //!
 //! Where a decision applies: every reqwest client (`utils::http::client_builder`, `proxy_for` on each new connection),
 //! Alice's talk with Yandex (`gateway/yandex/yandex_session.rs`, `alice`), the apps' programs (`apps/supervisor.rs`,
@@ -26,6 +27,7 @@ pub mod reach;
 pub mod registry;
 pub mod routes;
 pub mod rules;
+pub mod tools;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -334,7 +336,7 @@ impl Egress {
         let me = Arc::downgrade(self);
         let decide: app_entry::Decide = Arc::new(move |user, password, host| match me.upgrade() {
             Some(egress) => egress.entry_hop(user, password, host),
-            None => Hop::Refuse(crate::tr!("шлюз останавливается")),
+            None => Hop::Refuse(crate::tr!("DuoWave останавливается")),
         });
         let me = Arc::downgrade(self);
         let failed: app_entry::Failed = Arc::new(move |user, host, why| {

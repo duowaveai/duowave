@@ -1,15 +1,17 @@
 // Виджеты стола (docs/plans/desk.md): вклады в слот `desk.widgets` — встроенные (builtin.tsx) и из плагинов — и
 // карточки `home.cards`, которые встают на стол большими, в своей рамке. Что стоит на столе, где и какой ширины, вид
 // поля и закреплён ли стол — стол человека, свой у каждой роли (шлюз, помощник). Его хранит шлюз
-// (`/api/v1/desk/<роль>`, gateway/src/panel/desk.rs): другой браузер и другой компьютер открывают тот же стол. Этот
-// браузер держит его копию (`desk-layout-<роль>`): стол открывается сразу и живёт и без шлюза — без связи, у ключа API,
-// в окне колонки (via.ts). Ничего не хранится — стартовый стол: встроенные виджеты по порядку вкладов.
+// (`/api/v1/desk/<роль>`, gateway/src/panel/desk.rs): другой браузер и другой компьютер открывают тот же стол. Стол
+// дома — у центра (docs/plans/home-and-devices.md, этап 2): окно дома на компьютере (`?via=`) пишет его центру через
+// проход, под id человека, — на компьютере и на телефоне стол один. Браузер держит только копию для первой отрисовки
+// (`desk-layout-<роль>[@<центр>]`); без связи и у ключа API стол живёт в ней. Ничего не хранится — стартовый стол.
 
 import { useEffect, useState } from 'preact/hooks';
 
 import { ApiError, api, sessionStore } from '../api';
 import type { Health, KeptDesk } from '../api';
 import { VIA, gw } from '../via';
+import { repairedLayout } from './desk-repair';
 import type { Role } from './role';
 import { PlacedContribution, useSlot } from './slot';
 
@@ -94,8 +96,8 @@ export function isFresh(layout: DeskLayout, key: string, now = Date.now()): bool
 }
 
 const EMPTY: DeskLayout = { v: 1, hidden: [], added: [], places: {}, order: [] };
-const layoutKey = (role: Role): string => `desk-layout-${role}`;
-const markKey = (role: Role): string => `desk-kept-${role}`;
+const layoutKey = (role: Role): string => `desk-layout-${role}${VIA ? `@${VIA}` : ''}`;
+const markKey = (role: Role): string => `desk-kept-${role}${VIA ? `@${VIA}` : ''}`;
 /** Правки подряд (тащат виджет, листают поле) уходят на шлюз одной записью — когда человек остановился. */
 const SAVE_AFTER = 600;
 
@@ -259,9 +261,8 @@ interface Sync {
 
 const syncs = new Map<Role, Sync>();
 
-/** Сверка для этого входа; null — стол живёт только в этом браузере (окно колонки у помощника, вход не выполнен). */
+/** Сверка для этого входа; null — стол живёт только в этом браузере (вход не выполнен). */
 function syncOf(role: Role): Sync | null {
-    if (VIA) return null;
     const token = sessionStore.get()?.token;
     if (!token) return null;
     let sync = syncs.get(role);
@@ -521,7 +522,12 @@ export interface DeskActions {
     shortcutsBar: (on: boolean) => void;
     /** Ярлык поставленного приложения из `SHORTCUT_WHEN_INSTALLED` — в конец списка, и отметка, что он уже был. На шлюз — сразу. */
     offer: (id: string) => void;
+    /** Раскладка, починенная целиком (repairedLayout). На шлюз — сразу. */
+    repair: (widgets: DeskWidget[]) => void;
 }
+
+
+export { repairedLayout };
 
 export function deskActions(role: Role): DeskActions {
     const change = (next: (layout: DeskLayout) => DeskLayout, delay?: number) => update(role, next, delay);
@@ -570,6 +576,7 @@ export function deskActions(role: Role): DeskActions {
                 return { ...layout, shortcuts: same ? undefined : unique };
             }, 0),
         shortcutsBar: (on) => change((layout) => ({ ...layout, shortcutsBar: on || undefined }), 0),
+        repair: (widgets) => change((layout) => repairedLayout(layout, widgets) ?? layout, 0),
         offer: (id) =>
             change((layout) => {
                 if (layout.offered?.includes(id)) return layout;

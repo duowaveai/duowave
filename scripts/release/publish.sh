@@ -30,7 +30,7 @@ trap 'rm -rf "$(dirname "$TREE")"' EXIT
 DRAFT= sh "$ROOT/scripts/release/snapshot.sh" "$TREE"   # never a draft: placeholders stop it
 
 # The tree replaces what the public repository had: files removed here go there too.
-rsync -a --delete --exclude /.git "$TREE/" "$PUBLIC/"
+rsync -a --checksum --delete --exclude /.git "$TREE/" "$PUBLIC/"   # by content: a same-size file changed in the same second would be skipped
 
 cd "$PUBLIC"
 git add -A

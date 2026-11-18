@@ -115,7 +115,7 @@ export default {
     historyAbout: 'Кто что менял: настройки, люди, колонки и входы.',
     historyAboutComputer: 'Кто что менял: настройки, люди и входы.',
     historySheetAbout: 'Кто что менял, новые сверху',
-    askingGateway: 'Спрашиваем шлюз…',
+    askingGateway: 'Спрашиваем центр…',
     nothingChanged: 'Пока ничего не меняли.',
 
     passwordChanged: 'Пароль сменён: на других устройствах войдите заново.',

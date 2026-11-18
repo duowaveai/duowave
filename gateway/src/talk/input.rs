@@ -17,7 +17,7 @@ pub const ONLY_OWN: &str =
     "В режиме «Микрофон» — только «Ваш ИИ»: сначала выберите «Через колонку с Алисой» в «Настройках».";
 
 /// The station's own gateway has no microphone of a computer.
-pub const NOT_HERE: &str = "Микрофон компьютера выбирается у шлюза на компьютере.";
+pub const NOT_HERE: &str = "Микрофон компьютера выбирают на самом компьютере.";
 
 pub fn current(settings: &SettingsService) -> VoiceInput {
     settings.get(&VOICE_INPUT, None).unwrap_or_default()

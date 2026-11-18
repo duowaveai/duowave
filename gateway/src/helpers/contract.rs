@@ -19,8 +19,11 @@ use serde_json::{Map, Value};
 
 use crate::core::identity::home::clean_name;
 
-/// The contract's version this gateway speaks.
-pub const VERSION: u32 = 1;
+/// The contract's version this gateway speaks. 2 (docs/plans/home-and-devices.md): the home's character and its voice
+/// (`/home/v1/character`), the home's Telegram (`/home/v1/messenger/bot`), an app's code installed over the link
+/// (`/home/v1/plugins/install`) and every package listed with its kind and state (`/home/v1/plugins`). A helper of
+/// version 1 still gives its abilities; what came with 2 waits for it: «Турбо другой версии — обновите оба».
+pub const VERSION: u32 = 2;
 /// The longest helper id a contract may name: a gateway's id is a UUID.
 const ID_MAX: usize = 64;
 

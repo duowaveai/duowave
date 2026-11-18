@@ -100,7 +100,7 @@ const en: Translation<typeof ru> = {
     panelMoves: 'The panel moves with DuoWave:',
     panelMovesAfter: '— it opens from a phone and from this computer.',
     panelStays: 'This window stays the panel: settings are edited right on the speaker, and the computer keeps a copy.',
-    otherGateway: (url: string) => `The speaker voice now goes to another gateway (${url}). Connecting redirects it here.`,
+    otherGateway: (url: string) => `The speaker voice now goes to another hub (${url}). Connecting redirects it here.`,
     connectingTitle: (name: string) => (name ? `Connecting the speaker "${name}"` : 'Connecting the speaker'),
     movingTitle: 'Moving DuoWave onto the speaker',
     doneTitle: 'Done: the speaker is connected',

@@ -33,7 +33,7 @@ const en: Translation<typeof ru> = {
     unchangedNote: 'Nothing changed: the agent finished without touching the draft. Say what should be done.',
     unchangedShort: 'nothing changed',
     editing: (text: string) => `Change: ${text}`,
-    interruptedNote: 'Interrupted: the gateway restarted while the agent worked. It can go on.',
+    interruptedNote: 'Interrupted: DuoWave restarted while the agent worked. It can go on.',
     interruptedShort: 'interrupted',
     goOn: 'Go on',
     goOnWords: 'Finish what was started and check that it all works.',
@@ -57,7 +57,7 @@ const en: Translation<typeof ru> = {
 
     // draft-preview
     callFailed: (fn: string) => `${fn} failed`,
-    codeChanged: 'panel.js changed while the gateway was answering — press “Show again”.',
+    codeChanged: 'panel.js changed while the hub was answering — press “Show again”.',
     noDeskWidget: 'The draft has no desk widget (the desk.widgets slot).',
     loadingWidget: 'Loading the widget…',
 

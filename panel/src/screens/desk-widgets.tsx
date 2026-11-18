@@ -276,7 +276,8 @@ export function Watch({ onOpen, opened = false }: { onOpen?: () => void; opened?
     const station = stationOf(view, panel.current?.device);
     if (!station) return <p class="w-cap m-0">{view ? tr.desk.noOwnGateway : tr.desk.reading}</p>;
     const health = station.live.health?.placement;
-    const last = station.backups[0];
+    // The home's copy here (docs/plans/home-and-devices.md, stage 3): taken at each change of the centre.
+    const copied = station.copiedAt;
     const memory = health?.memory;
     const mayManage = can('stations.manage');
     const updating = station.live.updating;
@@ -296,7 +297,7 @@ export function Watch({ onOpen, opened = false }: { onOpen?: () => void; opened?
             <div class="w-rows">
                 <div class="w-row">
                     <span class="w-text">{tr.desk.settingsCopy}</span>
-                    <span class="w-cap">{last ? `${copyDay(last.at)} ✓` : tr.desk.none}</span>
+                    <span class="w-cap">{copied ? `${copyDay(copied)} ✓` : tr.desk.none}</span>
                 </div>
                 <div class="w-row">
                     <span class="w-text">{tr.desk.updates}</span>
@@ -319,11 +320,6 @@ export function Watch({ onOpen, opened = false }: { onOpen?: () => void; opened?
                 </p>
             ))}
             <div class="w-actions">
-                {mayManage && station.live.reachable && (
-                    <button class="w-btn" disabled={busy !== null} onClick={() => act('copy', () => api.backupStation(station.key), tr.desk.copyTaken)}>
-                        {busy === 'copy' ? tr.desk.takingCopy : tr.desk.takeCopy}
-                    </button>
-                )}
                 {mayManage && station.update && (
                     <button
                         class="w-btn w-btn-ink"

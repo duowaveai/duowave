@@ -153,7 +153,7 @@ impl Activator {
     /// `system/mic` → `open`.
     pub fn mic(&self) -> Result<Value, String> {
         if !self.on_station {
-            return Err(crate::tr!("микрофон колонки слышит только шлюз на самой колонке"));
+            return Err(crate::tr!("микрофон колонки слышит только центр на самой колонке"));
         }
         Ok(json!({ "port": self.ports.audio, "channel": aliced::MIC_CHANNEL, "rate": SAMPLE_RATE }))
     }
@@ -161,7 +161,7 @@ impl Activator {
     /// `system/activator` → `wake`, for the app `app` with these words of its manifest.
     pub async fn wake(&self, app: &str, words: &[ActivatorSpec], input: &Value) -> Result<Value, String> {
         let Some(aliced) = self.aliced else {
-            return Err(crate::tr!("будить колонку может только шлюз на самой колонке"));
+            return Err(crate::tr!("будить колонку может только центр на самой колонке"));
         };
         let wake = read_wake(app, words, input, crate::utils::time::now_ms() as i64)?;
         let starter: Starter = Arc::new(move || Box::pin(aliced::start_conversation(aliced)));
@@ -320,7 +320,7 @@ mod tests {
         let activator = Activator::new(false, station.clone());
         let now = crate::utils::time::now_ms() as i64;
         let error = activator.wake("words", &[word()], &json!({ "word": "otto", "atMs": now })).await.unwrap_err();
-        assert!(error.contains("только шлюз на самой колонке"), "{error}");
+        assert!(error.contains("только центр на самой колонке"), "{error}");
         assert!(activator.mic().is_err());
         assert!(station.0.lock().unwrap().is_empty());
     }

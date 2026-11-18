@@ -84,7 +84,7 @@ const en: Translation<typeof ru> = {
     usedPercent: (share: string) => `${share} % used`,
     outTitle: 'What leaves the home',
     outText:
-        'Memory itself sends nothing out: the gateway keeps the entries, and the conversation goes where it always did — to the “Brain” model. Conversation review, search by meaning and reflection come in later stages, and this will show who gets what.',
+        'Memory itself sends nothing out: the hub keeps the entries, and the conversation goes where it always did — to the “Brain” model. Conversation review, search by meaning and reflection come in later stages, and this will show who gets what.',
 
     newTitle: 'New',
     wholeHouse: 'The whole home',
@@ -150,7 +150,7 @@ const en: Translation<typeof ru> = {
     saidHouseComputer: 'a voice, the person was not recognized',
     saidUser: 'a person signed in to the panel',
     saidContact: 'a Telegram contact',
-    saidGateway: 'the gateway',
+    saidGateway: 'the hub',
     inPrompt: 'In the prompt',
     pinnedAlways: 'always — pinned',
     byImportance: 'by importance and freshness',

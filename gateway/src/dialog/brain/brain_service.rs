@@ -506,7 +506,7 @@ impl BrainService {
             .and_then(preset_of)
             .ok_or_else(|| ApiError::bad_request(crate::tr!("Неизвестный провайдер.")))?;
         if preset.id == HELPER_PRESET {
-            return Err(ApiError::bad_request(crate::tr!("Модель Турбо шлюз добавляет сам.")));
+            return Err(ApiError::bad_request(crate::tr!("Модель Турбо появляется здесь сама.")));
         }
         let base_url = address(preset, input.get("baseUrl"))?;
         let title = Some(text(input.get("title"), 60)).filter(|title| !title.is_empty()).unwrap_or(preset.title.into());
@@ -613,7 +613,7 @@ impl BrainService {
             let gateways_pick = answering(&choice.backup) && choice.backup_by == Some(BackupBy::Gateway);
             if answering(&choice.backup) && !gateways_pick {
                 return Err(ApiError::conflict(crate::tr!(
-                    "Этот провайдер — запасная модель. Сначала выберите в «Запасной» другую модель, «пусть выберет шлюз» или «не нужна»."
+                    "Этот провайдер — запасная модель. Сначала выберите в «Запасной» другую модель, «пусть выберет центр» или «не нужна»."
                 )));
             }
             let flow = self.stored_row(id)?.and_then(|row| token_flow(&row.preset));
@@ -2194,7 +2194,7 @@ impl BrainService {
                 .map(|row| title_of(row, seen))
                 .unwrap_or_else(|| pick.provider.clone());
             let text = crate::tr!(
-                "Запасную модель шлюз выбрал сам: {model} ({provider}). Она отвечает, когда основная не на связи. Это облако по вашему ключу: ответы могут стоить денег, а папки без галочки «Модель может читать имена и файлы» модель теперь не читает.",
+                "Запасную модель центр выбрал сам: {model} ({provider}). Она отвечает, когда основная не на связи. Это облако по вашему ключу: ответы могут стоить денег, а папки без галочки «Модель может читать имена и файлы» модель теперь не читает.",
                 model = pick.model,
                 provider = provider
             );
@@ -2212,7 +2212,7 @@ impl BrainService {
                 )
             } else {
                 crate::tr!(
-                    "Основная модель бывает не на связи, а запасной нет, и шлюзу не из чего выбрать её самому: нужен ключ облака, чью быструю модель он знает по имени (Claude, OpenAI, Gemini…). Выберите «Запасную» сами — иначе в это время мозг только скажет, что модели нет."
+                    "Основная модель бывает не на связи, а запасной нет, и центру не из чего выбрать её самому: нужен ключ облака, чью быструю модель он знает по имени (Claude, OpenAI, Gemini…). Выберите «Запасную» сами — иначе в это время мозг только скажет, что модели нет."
                 )
             };
             return Some(BrainNote { kind: "backupNeeded", text });
@@ -3522,7 +3522,7 @@ pub(crate) mod tests {
         choose(&brain, json!({"backup": {"provider": next.provider, "model": next.model}}));
         let refused = brain.remove(&next.provider, None).unwrap_err();
         assert_eq!(refused.status, axum::http::StatusCode::CONFLICT);
-        assert!(refused.message.contains("«пусть выберет шлюз»"), "{}", refused.message);
+        assert!(refused.message.contains("«пусть выберет центр»"), "{}", refused.message);
         assert!(brain.view().choice.backup.is_some());
     }
 
@@ -3730,7 +3730,7 @@ pub(crate) mod tests {
         );
         assert!(!row.cloud && row.local, "at home");
         let added = brain.add(&input(json!({"preset": "helper"})), None).unwrap_err();
-        assert_eq!((added.status.as_u16(), added.message.as_str()), (400, "Модель Турбо шлюз добавляет сам."));
+        assert_eq!((added.status.as_u16(), added.message.as_str()), (400, "Модель Турбо появляется здесь сама."));
         let renamed = brain.update(&row.id, &input(json!({"title": "Моя"})), None).unwrap_err();
         assert_eq!(renamed.status.as_u16(), 409);
         assert!(renamed.message.contains("«Дом»"), "{}", renamed.message);

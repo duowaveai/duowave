@@ -286,7 +286,7 @@ impl Bus {
         if let Some(principal_like) = PEOPLE.iter().find(|kind| **kind == address.kind()) {
             return match *principal_like {
                 address::HOME => crate::tr!("Дом"),
-                address::GATEWAY => crate::tr!("Шлюз"),
+                address::GATEWAY => crate::tr!("Центр"),
                 _ => address.to_string(),
             };
         }
@@ -313,8 +313,26 @@ impl Bus {
         if !handle.admits(trail.root.principal()) {
             return Err(BusError::NotFound(to.to_string()));
         }
-        let (danger, always) =
-            danger_of(handle.danger, &self.links.dangers(), participant.address.as_str(), &handle.name, from.as_str());
+        let words = self.links.dangers();
+        let (danger, mut always) =
+            danger_of(handle.danger, &words, participant.address.as_str(), &handle.name, from.as_str());
+        // An admin's «да» to the package's rights at its install is «всегда» for its standing dangers
+        // (`approve_install`). A participant that came to the bus after the install (the station's microphone, its
+        // wake word — clean-path check 18.11, item 13) had no mark written then: the install's link stands for it, so
+        // the app is not asked a second time, piece by piece. The owner's own word on the handle, if any, still rules.
+        if danger.is_some()
+            && !always
+            && handle.standing
+            && !words.iter().any(|word| word.covers(participant.address.as_str(), &handle.name, from.as_str()))
+            && self.links.all().iter().any(|link| {
+                link.source == links::LinkSource::Install
+                    && link.from == Pattern::exact(from)
+                    && link.to == Pattern::exact(to)
+                    && link.level >= handle.level
+            })
+        {
+            always = true;
+        }
         let confirmed = danger.is_some() && self.consent.has_once(from, to, &handle.name);
         let facts = Facts {
             need: handle.level,
@@ -414,6 +432,7 @@ impl Bus {
             question.grant = Pattern::below(to);
         }
         question.danger = decision.danger;
+        question.standing = decision.danger.is_some() && decision.handle.standing;
         question.from_title = self.title_of(from);
         question.to_title = decision.participant.title.clone();
         let doing = decision.handle.title.clone().unwrap_or_else(|| decision.handle.name.clone());
@@ -633,6 +652,33 @@ impl Bus {
     /// A person's answer to a question: «да» to the phone's kind becomes a link; to a dangerous action, one use.
     pub fn answer(&self, id: &str, yes: bool, actor: Option<Actor>) -> Result<Option<Question>, ApiError> {
         let Some(question) = self.consent.answer(id, yes) else { return Ok(None) };
+        // A «да» to a standing danger (the station's microphone, its wake word) is for good, as at the install
+        // (`approve_install`): written as the owner's «всегда» word and a link, so it outlives a restart of the gateway.
+        // Before, it lived only as one act in memory, and after a restart the app asked again (clean-path check 18.11,
+        // item 17). A danger for one act stays one act.
+        if yes && question.kind == AskKind::Once && self.standing(&question.to, &question.handle) {
+            let target = format!("{}:{}", question.to, question.handle);
+            let mark = self
+                .links
+                .dangers()
+                .into_iter()
+                .find(|word| word.target == target && word.caller == question.from.as_str())
+                .and_then(|word| word.mark);
+            self.links.say_danger(
+                danger::DangerWord { target, caller: question.from.to_string(), always: true, mark },
+                actor.clone(),
+            )?;
+            if self.reach(&question.from, &question.to) < question.level {
+                let mut link = Link::new(
+                    Pattern::exact(&question.from),
+                    question.grant.clone(),
+                    question.level,
+                    LinkSource::Answer,
+                );
+                link.by = actor.as_ref().map(|actor| actor.name.clone());
+                self.links.grant(link, actor.clone())?;
+            }
+        }
         if question.kind == AskKind::Remember {
             // What it has now, by links or its older rights: a «да» never lowers it, a «нет» keeps it as it is.
             let had = self.reach(&question.from, &question.to);
@@ -661,6 +707,11 @@ impl Bus {
             actor,
         });
         Ok(Some(question))
+    }
+
+    /// Whether a handle's «да» is for good (`Handle::standing`): a microphone that hears the room all the time.
+    fn standing(&self, to: &Address, handle: &str) -> bool {
+        self.provider(to.kind()).and_then(|provider| provider.handle(to, handle)).is_some_and(|handle| handle.standing)
     }
 
     /// Tells the panel the links, modes or words changed.

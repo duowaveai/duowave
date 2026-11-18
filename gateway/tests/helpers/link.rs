@@ -783,7 +783,7 @@ async fn another_home_gets_the_muscles_until_the_owner_gives_more() {
     let contacts = || station.get(&format!("/via/{entry}/home/v1/messenger/contacts")).bearer_auth(&token);
     let (status, body) = send(contacts()).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert_eq!(body["message"], "Это Турбо не даёт этого вашим шлюзам.");
+    assert_eq!(body["message"], "Это Турбо не даёт этого вашему дому.");
 
     // The owner gives this home the messages too: the computer answers for its bot (none set up here).
     let (header, auth) = &pc_admin;
@@ -1132,7 +1132,7 @@ async fn a_computer_never_pairs_with_itself_and_an_entry_that_names_it_is_itself
     let (status, body) = add(&pc, &pc_admin, json!({ "url": url, "key": key })).await;
     assert_eq!(
         (status, body["message"].as_str()),
-        (StatusCode::CONFLICT, Some("Это сам этот шлюз: себя в Турбо не добавляют.")),
+        (StatusCode::CONFLICT, Some("Это сам этот центр: себя в Турбо не добавляют.")),
         "{body}"
     );
     assert!(pc.app.helpers.list().is_empty() && pc.app.clients.view(&[]).is_empty(), "nothing stored, no client");

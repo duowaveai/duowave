@@ -22,6 +22,9 @@ pub const HELPER_PERSON: &str = "x-duowave-helper";
 /// beside the pair's key: «Помощник» has that role's rights there, and without it a member's (platform/http/caller.rs).
 /// The computer's own calls carry none: they ask with the pair's key itself (`from_peer`), not with a role's rights.
 pub const HELPER_ROLE: &str = "x-duowave-helper-role";
+/// Who at the computer, by their id in the home (docs/plans/home-and-devices.md, stage 2): the pass names the person so
+/// that the centre keeps their own desk and panel memory, the same on every device of the home.
+pub const HELPER_PERSON_ID: &str = "x-duowave-helper-id";
 
 /// The secret a station's own pair key is kept under on the computer: each station gives its own
 /// (`POST /api/v1/placement/pair`), and linking a second one leaves the first one's as it is.
@@ -127,6 +130,21 @@ impl PeerClient {
         self.call(reqwest::Method::POST, "/api/v1/transfer", Some(sealed), Duration::from_secs(30)).await.map(|_| ())
     }
 
+    /// A reading of the station's API with the pair's key: the home's devices for a computer that is its Turbo
+    /// (src/home/devices.rs).
+    pub async fn get(&self, path: &str) -> Result<Value, String> {
+        self.call(reqwest::Method::GET, path, None, Duration::from_secs(5)).await
+    }
+
+    /// A longer reading: the home's memory for its copy (src/home/copy.rs).
+    pub async fn get_long(&self, path: &str) -> Result<Value, String> {
+        self.call(reqwest::Method::GET, path, None, Duration::from_secs(60)).await
+    }
+
+    pub async fn put(&self, path: &str, body: Value) -> Result<Value, String> {
+        self.call(reqwest::Method::PUT, path, Some(body), Duration::from_secs(60)).await
+    }
+
     pub async fn post(&self, path: &str, body: Value) -> Result<Value, String> {
         self.call(reqwest::Method::POST, path, Some(body), Duration::from_secs(30)).await
     }
@@ -166,7 +184,7 @@ pub const ARCHIVE_SINCE_PEER_API: u64 = 2;
 
 /// Said of a station's gateway too old to take an update from the computer that way.
 pub fn old_station() -> String {
-    crate::tr!("Шлюз на колонке старше 0.5.1: такое обновление с компьютера он не примет. Поставьте новую версию на колонку вручную — дальше она будет обновляться отсюда.")
+    crate::tr!("DuoWave на колонке старше 0.5.1: такое обновление с компьютера он не примет. Поставьте новую версию на колонку вручную — дальше она будет обновляться отсюда.")
 }
 
 /// A station's answer, unwrapped from the API's envelope ({message, code}); a failure as the station said it.
@@ -177,7 +195,7 @@ async fn answer(response: reqwest::Response) -> Result<Value, String> {
     if !status.is_success() {
         let message = value.get("message").and_then(Value::as_str).unwrap_or(text.as_str());
         return Err(crate::tr!(
-            "Шлюз колонки: {status} {message}",
+            "Колонка: {status} {message}",
             status = status.as_u16(),
             message = message.chars().take(200).collect::<String>()
         ));
@@ -187,14 +205,14 @@ async fn answer(response: reqwest::Response) -> Result<Value, String> {
 
 fn describe(error: &reqwest::Error) -> String {
     if error.is_timeout() {
-        crate::tr!("шлюз колонки не ответил вовремя")
+        crate::tr!("колонка не ответила вовремя")
     } else if error.is_connect() {
-        crate::tr!("шлюз колонки не отвечает")
+        crate::tr!("колонка не отвечает")
     } else if error.is_request() || error.is_body() {
         // Cut off midway: the station's gateway went away under the request (restarted, or killed for memory).
-        crate::tr!("связь со шлюзом колонки оборвалась на полпути")
+        crate::tr!("связь с колонкой оборвалась на полпути")
     } else {
-        crate::tr!("Шлюз колонки: {error}", error = error)
+        crate::tr!("Колонка: {error}", error = error)
     }
 }
 

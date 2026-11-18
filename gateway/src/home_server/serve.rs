@@ -38,6 +38,7 @@ use crate::helpers::contract::{Ability, Contract};
 use crate::helpers::OwnParts;
 use crate::operations::networks::is_local_url;
 use crate::platform::http::{ApiError, Caller, Zone};
+use crate::speech::asr::local::supervisor::LocalAsr;
 
 /// A minute of speech as WAV is ~2 MB; a request with history for the model, less.
 const BODY_LIMIT: usize = 16 * 1024 * 1024;
@@ -55,6 +56,10 @@ pub fn router() -> Router<Arc<App>> {
         .route("/home/v1/llm/models", get(llm_models))
         .route("/home/v1/models", get(llm_models))
         .route("/home/v1/plugins", get(plugins))
+        .route("/home/v1/plugins/install", post(plugin_install))
+        .route("/home/v1/character", post(character))
+        .route("/home/v1/character/plan", post(character_plan))
+        .route("/home/v1/messenger/bot", post(messenger_bot))
         .route("/home/v1/catalog", get(catalog))
         .route("/home/v1/catalog/file", get(catalog_file))
         .route("/home/v1/plugins/{id}/call", post(plugin_call))
@@ -132,7 +137,7 @@ fn allowed(caller: &Caller, needs: Needs) -> Result<(), ApiError> {
             let given = app.clients.gives(&link.client, ability)
                 && (ability != Ability::Voice || link.own_home || voice_for_others(app));
             if !given {
-                return Err(ApiError::forbidden(crate::tr!("Это Турбо не даёт этого вашим шлюзам.")));
+                return Err(ApiError::forbidden(crate::tr!("Это Турбо не даёт этого вашему дому.")));
             }
         }
     } else {
@@ -184,17 +189,155 @@ async fn catalog_file(
     Ok(bytes.into_response())
 }
 
-/// The plugins on here and their versions: what the station may hand over.
+/// The packages on here (docs/plans/home-and-devices.md, stage 5а): each with its version, title, kind, engine and
+/// state — the home's one list «Установлено» shows them with this Турбо's name as their place. `ready` — on and
+/// running (what the station may hand over).
 async fn plugins(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
     allowed(&caller, Needs::Ability(Ability::Apps))?;
     let view = app.plugins.view().await;
-    let on: Vec<Value> = view
+    let all: Vec<Value> = view
         .packages
         .iter()
-        .filter(|package| package.enabled && package.state != "error")
-        .map(|package| json!({ "id": package.id, "version": package.version }))
+        .map(|package| {
+            json!({
+                "id": package.id,
+                "version": package.version,
+                "title": package.title,
+                "kind": package.kind,
+                "runtime": package.runtime,
+                "enabled": package.enabled,
+                "state": package.state,
+                "ready": package.enabled && package.state != "error",
+            })
+        })
         .collect();
-    Ok(axum::Json(json!({ "plugins": on })).into_response())
+    Ok(axum::Json(json!({ "plugins": all })).into_response())
+}
+
+/// Only the computer's own home names the character it speaks as, or asks how its voice would stand here.
+fn own_home_only(caller: &Caller) -> Result<(), ApiError> {
+    allowed(caller, Needs::Ability(Ability::Voice))?;
+    if caller.link().is_some_and(|link| !link.own_home) {
+        return Err(ApiError::forbidden(crate::tr!("Голос персонажа меняет только свой дом этого компьютера.")));
+    }
+    Ok(())
+}
+
+/// Whether the caller speaks for this computer's own home (clean-path check 18.11, items 41 and 41б): its link with
+/// the home's proof, or — the station's plain entry, which calls this computer by address, not over the link — an API
+/// key with `home.models` from the home network: the key this computer's administrator made for the home's gateway
+/// (a key client shows in «Помогаю» as the own home). A person's sign-in, whatever their role, is not the home.
+fn speaks_for_own_home(caller: &Caller) -> bool {
+    match caller.link() {
+        Some(link) => link.own_home,
+        None => {
+            caller.zone_at_least(Zone::Home).is_ok()
+                && caller.principal().is_some_and(|principal| {
+                    principal.kind == crate::core::identity::principal::PrincipalKind::ApiKey
+                        && crate::core::identity::can(Some(principal), HOME_MODELS)
+                })
+        }
+    }
+}
+
+/// The home's character (docs/plans/home-and-devices.md, stage 2): its voice is part of it, and this Турбо speaks for
+/// the home. The centre names the character it chose (`id`, and its package by id and version from the signed feed):
+/// a package not here is installed — from `archive` (`{url, sha256}`, the address and hash the centre's own signed feed
+/// gives, checked here) when the centre sends one, else from this computer's catalog —, the character chosen here
+/// with its voice — so the station speaks it through `/home/v1/tts`. `engine`, the model the owner chose at the centre
+/// (clean-path check 18.11, item 40), is kept for the character and its voice goes with it instead of this computer's
+/// pick. Only the computer's own home: another home gets a stock voice only.
+async fn character(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
+    own_home_only(&caller)?;
+    let request: Value = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::bad_request("JSON: {id, package: {id, version}, engine, archive}".to_string()))?;
+    let id = request.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+    if id.is_empty() {
+        return Err(ApiError::bad_request("id".to_string()));
+    }
+    if let Some(engine) = request.get("engine").and_then(Value::as_str) {
+        if crate::voice_lab::clone_engines::EngineId::parse(engine).is_none() {
+            return Err(ApiError::bad_request(crate::tr!("Нет такой модели голоса: {engine}.", engine = engine)));
+        }
+        // A model that does not fit on the disk here is never downloaded, nor kept.
+        super::voice_plan::check_room(&app, engine).await?;
+        app.characters.name_engine(&id, engine)?;
+    }
+    if let Some(package) = request.get("package").and_then(|package| package.get("id")).and_then(Value::as_str) {
+        let version = request.get("package").and_then(|package| package.get("version")).and_then(Value::as_str);
+        let here = app.plugins.installed(package).map(|installed| installed.manifest.version.to_string());
+        if here.is_none() || (version.is_some() && here.as_deref() != version) {
+            let archive = request.get("archive").and_then(|archive| {
+                Some((archive.get("url")?.as_str()?.to_string(), archive.get("sha256")?.as_str()?.to_string()))
+            });
+            match (archive, version) {
+                (Some((url, sha256)), Some(version)) => {
+                    // The home's own centre vouches for the package's voice (items 41, 41б).
+                    let vouched = speaks_for_own_home(&caller);
+                    app.catalog.install_from_centre(package, version, &url, &sha256, vouched, None).await?;
+                }
+                (Some(_), None) => return Err(ApiError::bad_request("archive: package.version".to_string())),
+                (None, _) => {
+                    app.catalog.install(package, version, here.is_some(), None).await?;
+                }
+            }
+        }
+    }
+    let body = crate::characters::ChooseBody { voice: Some(true), install: true, ..Default::default() };
+    let answer = app.characters.choose(&id, body, true, None).await?;
+    Ok(axum::Json(json!({ "character": id, "voice": answer.voice })).into_response())
+}
+
+/// How the character's voice would stand on this computer (clean-path check 18.11, item 40): the plan the centre's
+/// panel shows before and while the voice comes (voice_plan.rs). Only the computer's own home.
+async fn character_plan(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
+    own_home_only(&caller)?;
+    let request: super::voice_plan::PlanRequest = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::bad_request("JSON: {id, package: {id, version}, voices, reference}".to_string()))?;
+    if request.id.is_empty() {
+        return Err(ApiError::bad_request("id".to_string()));
+    }
+    Ok(axum::Json(super::voice_plan::plan(&app, &request).await).into_response())
+}
+
+/// The home's Telegram (docs/plans/home-and-devices.md, stage 2): the centre keeps the token and the contacts, this
+/// Турбо runs the bot with them (`{enabled, contacts, alertChat, token}`). Only the computer's own home.
+async fn messenger_bot(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
+    allowed(&caller, Needs::Ability(Ability::Messages))?;
+    if caller.link().is_some_and(|link| !link.own_home) {
+        return Err(ApiError::forbidden(crate::tr!("Бот Telegram этого компьютера настраивает только его свой дом.")));
+    }
+    let request: Value = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::bad_request("JSON: {enabled, contacts, alertChat, token}".to_string()))?;
+    let setting: crate::settings::definitions::TelegramSetting =
+        serde_json::from_value(request.clone()).map_err(|error| ApiError::bad_request(format!("Telegram: {error}")))?;
+    let token = request.get("token").and_then(Value::as_str);
+    app.connector_settings.take_home_telegram(&setting, token)?;
+    Ok(axum::Json(json!({ "enabled": setting.enabled, "contacts": setting.contacts.len() })).into_response())
+}
+
+/// An app's code for the home (docs/plans/home-and-devices.md, stage 5б): the centre installed its face and asks this
+/// Турбо for the code — by id and version from this computer's own signed feed (its catalog checks the signature and
+/// the archive's hash), installed or updated to that version and switched on. The centre checked the person's right;
+/// only the computer's own home asks this, another home never installs anything here.
+async fn plugin_install(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
+    allowed(&caller, Needs::Ability(Ability::Apps))?;
+    if caller.link().is_some_and(|link| !link.own_home) {
+        return Err(ApiError::forbidden(crate::tr!("Чужой дом ничего не ставит на этот компьютер.")));
+    }
+    let request: Value =
+        serde_json::from_slice(&body).map_err(|_| ApiError::bad_request("JSON: {id, version}".to_string()))?;
+    let id = request.get("id").and_then(Value::as_str).unwrap_or_default();
+    let version = request.get("version").and_then(Value::as_str);
+    if id.is_empty() {
+        return Err(ApiError::bad_request("id".to_string()));
+    }
+    let here = app.plugins.installed(id).map(|installed| installed.manifest.version.to_string());
+    if here.as_deref() != version || here.is_none() {
+        app.catalog.install(id, version, here.is_some(), None).await?;
+    }
+    let view = app.plugins.enable(id, None).await?;
+    Ok(axum::Json(json!({ "id": id, "version": view.version, "state": view.state })).into_response())
 }
 
 /// A call of a plugin of this computer for the station: its function, its input, how long it may take.
@@ -508,24 +651,9 @@ async fn transcribe(
     let (base, key) = match hearing {
         Hearing::Server(base, key) => (base, key),
         Hearing::Local(local) => {
-            // The engine hears here: the WAV out of the form, the text back as an OpenAI-compatible server says it.
-            let parts = form_parts(&headers, &body);
-            let file = parts
-                .into_iter()
-                .find(|(name, _)| name == "file")
-                .ok_or_else(|| ApiError::bad_request(crate::tr!("file: звук WAV")))?
-                .1;
-            let wav = crate::speech::audio::pcm::decode_wav(&file)
-                .map_err(|error| ApiError::bad_request(format!("file: {error}")))?;
-            let text =
-                local.recognize(&wav.pcm, wav.sample_rate, &CancellationToken::new()).await.map_err(|error| {
-                    ApiError::new(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        crate::tr!("Распознавание этого компьютера: {error}", error = format!("{error:#}")),
-                    )
-                })?;
+            let answer = recognize_here(&local, &headers, &body).await?;
             served(&caller, 0, Ability::Hearing, started);
-            return Ok(axum::Json(json!({ "text": text })).into_response());
+            return Ok(answer);
         }
     };
     let wait = Duration::from_millis(app.config.speech.asr.timeout_ms.max(5000));
@@ -542,6 +670,31 @@ async fn transcribe(
         served(&caller, 0, Ability::Hearing, started);
     }
     Ok(answer)
+}
+
+/// Recognition inside this program, as an OpenAI-compatible server answers it: the WAV out of the form, `{text}` back.
+/// The home's `/home/v1/asr/audio/transcriptions` and the voice lab's loopback route for imprint.py
+/// (voice_lab/controller.rs) both hear so.
+pub(crate) async fn recognize_here(
+    local: &Arc<LocalAsr>,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Result<Response, ApiError> {
+    let parts = form_parts(headers, body);
+    let file = parts
+        .into_iter()
+        .find(|(name, _)| name == "file")
+        .ok_or_else(|| ApiError::bad_request(crate::tr!("file: звук WAV")))?
+        .1;
+    let wav = crate::speech::audio::pcm::decode_wav(&file)
+        .map_err(|error| ApiError::bad_request(format!("file: {error}")))?;
+    let text = local.recognize(&wav.pcm, wav.sample_rate, &CancellationToken::new()).await.map_err(|error| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            crate::tr!("Распознавание этого компьютера: {error}", error = format!("{error:#}")),
+        )
+    })?;
+    Ok(axum::Json(json!({ "text": text })).into_response())
 }
 
 async fn asr_models(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
@@ -712,7 +865,7 @@ mod tests {
         assert_eq!(body["voice"], "piper/ru_RU-irina-medium");
 
         // And what it gives as a helper, by the contract.
-        assert_eq!(body["contract"]["version"], 1);
+        assert_eq!(body["contract"]["version"], crate::helpers::contract::VERSION);
         let read = HelperStatus::read(&body).unwrap();
         assert_eq!(read.program.as_deref(), Some(crate::VERSION));
         let contract = &read.contract;
@@ -931,6 +1084,303 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn only_the_computers_own_home_names_the_character_it_speaks_as() {
+        // A stock voice that another home may hear: still, only the own home changes whose voice it is.
+        let app = computer(&[
+            ("TTS_OWN_URL", "http://127.0.0.1:9/v1"),
+            ("TTS_OWN_MODEL", "piper"),
+            ("TTS_OWN_VOICE", "ru_RU-irina-medium"),
+        ]);
+        let character = json!({ "id": "butler:arthur" });
+        let other = client(&app, false);
+        let (status, body) = over_link(&app, "POST", "/home/v1/character", &other, false, character.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        let own = client(&app, true);
+        let (status, body) = over_link(&app, "POST", "/home/v1/character", &own, true, character).await;
+        // No such character here and no package named: it says so, it is not refused.
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        let (status, _) = over_link(&app, "POST", "/home/v1/character", &own, true, json!({})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// Clean-path check 18.11, item 40: the centre asks how the character's voice would stand here before it is
+    /// installed — every model with how its voice comes (snapshot, reference), its state, room and memory against
+    /// what is free, the model it would go with; the model the centre names is kept and the plan reports it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_turbo_answers_the_plan_of_the_characters_voice_and_keeps_the_model_the_centre_names() {
+        let lab = crate::voice_lab::service::testing::lab().await;
+        let app = &lab.app;
+        const PLAN: &str = "/home/v1/character/plan";
+        let asked = json!({
+            "id": "arthur:arthur", "package": { "id": "arthur", "version": "1.2.0" },
+            "voices": ["omnivoice", "cosyvoice3"], "reference": true, "title": "Артур", "gender": "male",
+            "fallbackVoice": "piper-denis"
+        });
+        let other = client(app, false);
+        let (status, _) = over_link(app, "POST", PLAN, &other, false, asked.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "another home never sees it");
+        let own = client(app, true);
+        let (status, plan) = over_link(app, "POST", PLAN, &own, true, asked.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{plan}");
+        let engines = plan["engines"].as_array().unwrap();
+        let ids: Vec<&str> = engines.iter().map(|engine| engine["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["omnivoice", "cosyvoice3", "voxcpm"]);
+        let omnivoice = &engines[0];
+        assert_eq!(
+            (&omnivoice["way"], &omnivoice["state"], &omnivoice["supported"], &omnivoice["device"]),
+            (&json!("snapshot"), &json!("ready"), &json!(true), &json!("mps")),
+            "{omnivoice}"
+        );
+        assert_eq!(omnivoice["recommended"], true);
+        assert_eq!((&omnivoice["percent"], &omnivoice["doneMb"]), (&Value::Null, &Value::Null), "nothing coming");
+        assert_eq!(omnivoice["totalMb"], 3_110 + crate::voice_lab::clone_engines::PACKAGES_MB);
+        assert_eq!((&omnivoice["freeDiskMb"], &omnivoice["diskFits"]), (&json!(80_000), &json!(true)));
+        let (ram, free) = (omnivoice["ramMb"].as_u64().unwrap(), omnivoice["freeRamMb"].as_u64().unwrap());
+        assert!(ram > 0 && free > 0, "{omnivoice}");
+        assert_eq!(omnivoice["ramFits"], free >= ram);
+        let cosy = &engines[1];
+        assert_eq!((&cosy["way"], &cosy["state"]), (&json!("snapshot"), &json!("missing")), "{cosy}");
+        assert_eq!(cosy["diskFits"], cosy["freeDiskMb"].as_u64() >= cosy["diskMb"].as_u64());
+        assert_eq!(engines[2]["way"], "reference", "no snapshot for it: taken from the reference");
+        // The model installed here with its snapshot: this computer's pick.
+        assert_eq!(plan["chosen"], "omnivoice");
+        assert_eq!((&plan["progress"], &plan["voiceOn"]), (&Value::Null, &json!(false)));
+        assert_eq!(plan["computer"], app.identity.gateway().unwrap().name);
+        assert!(plan.get("fallback").is_some(), "{plan}");
+
+        // The centre's owner wants CosyVoice: the plan asked with it says so.
+        let mut wanted = asked.clone();
+        wanted["engine"] = json!("cosyvoice3");
+        let (_, plan) = over_link(app, "POST", PLAN, &own, true, wanted).await;
+        assert_eq!(plan["chosen"], "cosyvoice3");
+
+        // Named with the character: kept here — the next plan, asked without it, goes with it (the character is not
+        // installed here, so the choice itself says so).
+        let named = json!({ "id": "arthur:arthur", "engine": "cosyvoice3" });
+        let (status, _) = over_link(app, "POST", "/home/v1/character", &own, true, named).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (_, plan) = over_link(app, "POST", PLAN, &own, true, asked.clone()).await;
+        assert_eq!(plan["chosen"], "cosyvoice3", "{plan}");
+        let unknown = json!({ "id": "arthur:arthur", "engine": "f5tts" });
+        let (status, _) = over_link(app, "POST", "/home/v1/character", &own, true, unknown).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // A model the character has no voice for (no snapshot, no reference) is not taken.
+        let bare = json!({ "id": "arthur:arthur", "voices": ["omnivoice"], "reference": false });
+        let (_, plan) = over_link(app, "POST", PLAN, &own, true, bare).await;
+        assert_eq!(plan["chosen"], "omnivoice", "{plan}");
+    }
+
+    /// A model that does not fit on this computer's disk is never downloaded: the plan does not choose it (none at all
+    /// when nothing fits), the centre naming it is refused and nothing kept, and a character whose models do not fit
+    /// gets its fallback voice with no install started.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_model_that_does_not_fit_on_the_disk_is_never_chosen_nor_downloaded() {
+        use std::sync::atomic::Ordering;
+        let lab = crate::voice_lab::service::testing::lab().await;
+        let app = &lab.app;
+        // 8 GB free: OmniVoice is installed; CosyVoice (10.5 GB) and VoxCPM (9.5 GB) would not fit.
+        lab.memory.free_disk_mb.store(8_000, Ordering::SeqCst);
+        const PLAN: &str = "/home/v1/character/plan";
+        let own = client(app, true);
+        let asked = json!({
+            "id": "arthur:arthur", "package": { "id": "arthur", "version": "1.2.0" },
+            "voices": ["omnivoice", "cosyvoice3"], "reference": true, "engine": "cosyvoice3"
+        });
+        let (status, plan) = over_link(app, "POST", PLAN, &own, true, asked).await;
+        assert_eq!(status, StatusCode::OK, "{plan}");
+        let fits: Vec<(&str, bool)> = plan["engines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|engine| (engine["id"].as_str().unwrap(), engine["diskFits"].as_bool().unwrap()))
+            .collect();
+        assert_eq!(fits, [("omnivoice", true), ("cosyvoice3", false), ("voxcpm", false)]);
+        assert_eq!(plan["chosen"], "omnivoice", "the wanted one does not fit: the one that does");
+        // Only CosyVoice has the character's voice: nothing fits, nothing chosen.
+        let only_cosy = json!({ "id": "arthur:arthur", "voices": ["cosyvoice3"], "reference": false });
+        let (_, plan) = over_link(app, "POST", PLAN, &own, true, only_cosy).await;
+        assert_eq!(plan["chosen"], Value::Null, "{plan}");
+
+        // The centre names CosyVoice: refused in plain words, nothing kept.
+        let named = json!({ "id": "arthur:arthur", "engine": "cosyvoice3" });
+        let (status, body) = over_link(app, "POST", "/home/v1/character", &own, true, named).await;
+        assert_eq!(status, StatusCode::INSUFFICIENT_STORAGE, "{body}");
+        let message = body["message"].as_str().unwrap();
+        assert!(
+            message.starts_with("Модель ") && message.contains("не поместится: нужно 10 ГБ, свободно 7,8 ГБ"),
+            "{message}"
+        );
+        assert!(app.settings.get(&crate::settings::definitions::TURBO_VOICE_ENGINES, None).is_none());
+
+        // A character whose only model does not fit, told with no model: chosen with no download.
+        let mut cosy_only = crate::characters::contributes::tests::arthur_manifest("1.2.0");
+        let character = &mut cosy_only["contributes"]["characters"][0];
+        character["voices"] = json!({ "cosyvoice3": { "file": "voices/cosyvoice3.pt", "model": "074ca6dc" } });
+        character.as_object_mut().unwrap().remove("ref");
+        crate::characters::contributes::tests::write_arthur(&app.config.plugins.packages_dir, &cosy_only);
+        app.characters.sync();
+        let (status, body) =
+            over_link(app, "POST", "/home/v1/character", &own, true, json!({ "id": "arthur:arthur" })).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_ne!(body["voice"]["state"], "installing", "{body}");
+        assert!(body["voice"]["pending"].is_null(), "{body}");
+        assert!(app.voice_lab.job().is_none(), "no model download started");
+        assert_eq!(app.personas.chosen().unwrap().preset_id.as_deref(), Some("arthur:arthur"));
+    }
+
+    /// The centre's package comes with its archive's address and hash from the centre's signed feed: a hash that does
+    /// not match installs nothing; the one that matches installs it, without this computer's own feed.
+    #[tokio::test]
+    async fn the_package_from_the_centre_installs_only_when_its_sha256_matches() {
+        use crate::plugins::install::tests::{character_manifest, vgp};
+        use sha2::Digest;
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().to_str().unwrap();
+        let app = computer(&[("DATA_DIR", data), ("PLUGINS_BUNDLED", "false"), ("PACKAGES_FEED_URL", "off")]);
+        let site = crate::plugins::catalog::tests::site().await;
+        let archive = vgp(&character_manifest("arthur", "1.2.0"));
+        site.publish(&[(crate::plugins::catalog::tests::arthur("1.2.0"), archive.clone())]);
+        let url = site.url.replace("catalog.json", "packages/arthur-1.2.0.vgp");
+        let sha256 = hex::encode(sha2::Sha256::digest(&archive));
+        let own = client(&app, true);
+        let told = |sha256: &str| {
+            json!({
+                "id": "arthur:arthur", "package": { "id": "arthur", "version": "1.2.0" },
+                "archive": { "url": url, "sha256": sha256 }
+            })
+        };
+        let wrong = "0".repeat(64);
+        let (status, body) = over_link(&app, "POST", "/home/v1/character", &own, true, told(&wrong)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            body["message"],
+            "Не поставлено: архив «arthur» от центра не совпал по sha256 — он подменён или испорчен."
+        );
+        assert!(app.plugins.installed("arthur").is_none(), "nothing installed");
+        assert!(!app.config.plugins.packages_dir.join("arthur").join("1.2.0").exists());
+
+        let (status, body) = over_link(&app, "POST", "/home/v1/character", &own, true, told(&sha256)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let installed = app.plugins.installed("arthur").expect("installed from the centre's archive");
+        assert_eq!(installed.manifest.version.to_string(), "1.2.0");
+        assert_eq!(app.personas.chosen().unwrap().preset_id.as_deref(), Some("arthur:arthur"));
+    }
+
+    /// Item 41: the home's own centre names a character it installed from its own source with a voice of no known
+    /// origin — this Турбо takes it; another home is refused before anything, a caller other than the home's link gets
+    /// the catalog's rule, and a package that is not a character is never taken this way.
+    #[tokio::test]
+    async fn the_centres_character_with_a_voice_of_unknown_origin_installs_only_for_its_own_home() {
+        use crate::plugins::install::tests::{character_manifest, vgp};
+        use sha2::Digest;
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().to_str().unwrap();
+        let app = computer(&[("DATA_DIR", data), ("PLUGINS_BUNDLED", "false"), ("PACKAGES_FEED_URL", "off")]);
+        let site = crate::plugins::catalog::tests::site().await;
+        let mut manifest = character_manifest("arthur", "1.2.0");
+        manifest["contributes"]["characters"][0]["voiceOrigin"] = json!("unknown");
+        let archive = vgp(&manifest);
+        let mut theme = character_manifest("arthur", "1.3.0");
+        theme["kind"] = json!("theme");
+        let not_character = vgp(&theme);
+        site.publish(&[
+            (crate::plugins::catalog::tests::arthur("1.2.0"), archive.clone()),
+            (crate::plugins::catalog::tests::arthur("1.3.0"), not_character.clone()),
+        ]);
+        let url = |version: &str| site.url.replace("catalog.json", &format!("packages/arthur-{version}.vgp"));
+        let sha256 = hex::encode(sha2::Sha256::digest(&archive));
+        let told = json!({
+            "id": "arthur:arthur", "package": { "id": "arthur", "version": "1.2.0" },
+            "archive": { "url": url("1.2.0"), "sha256": sha256 }
+        });
+
+        let other = client(&app, false);
+        let (status, body) = over_link(&app, "POST", "/home/v1/character", &other, false, told.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(app.plugins.installed("arthur").is_none(), "another home installs nothing");
+
+        // Not the home's link (a person at this computer, a script): the catalog's rule stands.
+        let refused = app.catalog.install_from_centre("arthur", "1.2.0", &url("1.2.0"), &sha256, false, None).await;
+        let refused = refused.expect_err("an unknown voice without the home's word");
+        assert!(refused.message.contains("voiceOrigin unknown"), "{}", refused.message);
+        assert!(app.plugins.installed("arthur").is_none());
+        assert!(!app.config.plugins.packages_dir.join("arthur").join("1.2.0").exists(), "nothing left on the disk");
+
+        let own = client(&app, true);
+        let (status, body) = over_link(&app, "POST", "/home/v1/character", &own, true, told).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let installed = app.plugins.installed("arthur").expect("installed from the centre's archive");
+        assert_eq!(installed.manifest.version.to_string(), "1.2.0");
+        assert_eq!(app.personas.chosen().unwrap().preset_id.as_deref(), Some("arthur:arthur"));
+
+        // Not a character: never taken from the centre's archive, even for the own home.
+        let theme = json!({
+            "id": "arthur:arthur", "package": { "id": "arthur", "version": "1.3.0" },
+            "archive": { "url": url("1.3.0"), "sha256": hex::encode(sha2::Sha256::digest(&not_character)) }
+        });
+        let (status, body) = over_link(&app, "POST", "/home/v1/character", &own, true, theme).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            app.plugins.installed("arthur").unwrap().manifest.version.to_string(),
+            "1.2.0",
+            "the character stays"
+        );
+    }
+
+    /// Item 41б: the station calls this computer by address, not over the link — from the home network, with the key
+    /// made for it (`home.models`). That is the home too: the character with a voice of unknown origin is taken; a key
+    /// without the help's right never gets that far.
+    #[tokio::test]
+    async fn the_station_by_address_with_the_homes_key_is_the_home_for_the_centres_character() {
+        use crate::plugins::install::tests::{character_manifest, vgp};
+        use sha2::Digest;
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().to_str().unwrap();
+        let app = computer(&[("DATA_DIR", data), ("PLUGINS_BUNDLED", "false"), ("PACKAGES_FEED_URL", "off")]);
+        let site = crate::plugins::catalog::tests::site().await;
+        let mut manifest = character_manifest("arthur", "1.2.0");
+        manifest["contributes"]["characters"][0]["voiceOrigin"] = json!("unknown");
+        let archive = vgp(&manifest);
+        site.publish(&[(crate::plugins::catalog::tests::arthur("1.2.0"), archive.clone())]);
+        let told = json!({
+            "id": "arthur:arthur", "package": { "id": "arthur", "version": "1.2.0" },
+            "archive": {
+                "url": site.url.replace("catalog.json", "packages/arthur-1.2.0.vgp"),
+                "sha256": hex::encode(sha2::Sha256::digest(&archive))
+            }
+        });
+
+        let stranger = key(&app, &["station.view"]);
+        let (status, body) = send(&app, "POST", "/home/v1/character", Some(&stranger), told.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(app.plugins.installed("arthur").is_none(), "a key without the help's right installs nothing");
+
+        let station = key(&app, &[HOME_MODELS]);
+        let (status, body) = send(&app, "POST", "/home/v1/character", Some(&station), told).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let installed = app.plugins.installed("arthur").expect("installed from the centre's archive");
+        assert_eq!(installed.manifest.version.to_string(), "1.2.0");
+        assert_eq!(app.personas.chosen().unwrap().preset_id.as_deref(), Some("arthur:arthur"));
+    }
+
+    #[tokio::test]
+    async fn only_the_computers_own_home_installs_an_apps_code_here() {
+        let app = computer(&[]);
+        let install = json!({ "id": "feed", "version": "0.4.0" });
+        let other = client(&app, false);
+        let (status, body) = over_link(&app, "POST", "/home/v1/plugins/install", &other, false, install.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        let own = client(&app, true);
+        let (status, body) = over_link(&app, "POST", "/home/v1/plugins/install", &own, true, install).await;
+        // No catalog in a test: the install itself says so — the home was let through.
+        assert_ne!(status, StatusCode::FORBIDDEN, "{body}");
+        let (status, _) = over_link(&app, "POST", "/home/v1/plugins/install", &own, true, json!({})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn another_home_hears_nothing_of_the_owners_own_voice() {
         let speech = json!({ "input": "Привет" });
         // The owner's voice at a cloud address: never another home's.
@@ -946,7 +1396,7 @@ mod tests {
         let (status, body) = over_link(&app, "POST", "/home/v1/tts/audio/speech", &other, false, speech.clone()).await;
         assert_eq!(
             (status, body["message"].as_str()),
-            (StatusCode::FORBIDDEN, Some("Это Турбо не даёт этого вашим шлюзам."))
+            (StatusCode::FORBIDDEN, Some("Это Турбо не даёт этого вашему дому."))
         );
         // Its own home hears it.
         let own = client(&app, true);
@@ -1028,7 +1478,7 @@ mod tests {
         for (method, uri) in routes {
             let (status, body) = over_link(&app, method, uri, &nothing, false, json!({})).await;
             assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {body}");
-            assert_eq!(body["message"], "Это Турбо не даёт этого вашим шлюзам.", "{method} {uri}");
+            assert_eq!(body["message"], "Это Турбо не даёт этого вашему дому.", "{method} {uri}");
         }
         // The status only says what it gives: nothing.
         let (status, body) = over_link(&app, "GET", STATUS, &nothing, false, Value::Null).await;

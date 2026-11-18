@@ -120,7 +120,7 @@ impl PlacementService {
             return Ok(key.to_string());
         }
         if !self.profile.station {
-            return Err(ApiError::conflict(crate::tr!("Ключ пары отдаёт шлюз колонки, а это компьютер.")));
+            return Err(ApiError::conflict(crate::tr!("Ключ пары отдаёт колонка, а это компьютер.")));
         }
         let key = super::peer::new_key();
         self.secrets.set(MADE_PEER_SECRET, Some(&key))?;
@@ -227,6 +227,37 @@ impl PlacementService {
         });
     }
 
+    /// The revision is counted anew at the next ask: something that travels may have changed (the home's copy on a
+    /// computer takes a new one within seconds, docs/plans/home-and-devices.md, stage 3).
+    pub fn forget_revision(&self) {
+        *self.revision.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    /// Forgets the counted revision after any change but the busy ones of requests and presence.
+    pub fn watch_revision(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        self.events.on("placement.revision", move |event| {
+            let name = event.name();
+            let busy = name.starts_with("request.")
+                || matches!(
+                    name,
+                    "station.presence"
+                        | "station.channel"
+                        | "station.state"
+                        | "tasks.changed"
+                        | "workshop.changed"
+                        | "works.run"
+                        | "home.devices.changed"
+                        | "router.deal"
+                );
+            if !busy {
+                if let Some(service) = weak.upgrade() {
+                    service.forget_revision();
+                }
+            }
+        });
+    }
+
     /// The settings revision: grows with each change of what travels.
     pub fn settings_revision(&self) -> Option<u64> {
         let mut cached = self.revision.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -315,6 +346,10 @@ impl PlacementService {
                 merge(&mut health, extra);
                 let (device, name) = self.station_self();
                 merge(&mut health, json!({ "device": device, "name": name }));
+                // An ear of the home's centre (src/home/ear.rs): its computer follows the centre.
+                if let Some(ear) = self.settings.get(&crate::home::ear::HOME_EAR, None) {
+                    merge(&mut health, json!({ "earOf": { "address": ear.address, "port": ear.port } }));
+                }
             }
             Role::Pc => {
                 #[cfg(feature = "pc")]

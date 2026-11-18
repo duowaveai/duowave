@@ -8,6 +8,7 @@
 
 pub mod availability;
 pub mod backup;
+pub mod carry;
 pub mod cli;
 #[cfg(feature = "pc")]
 pub mod messages;

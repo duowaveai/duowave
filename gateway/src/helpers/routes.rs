@@ -312,7 +312,7 @@ mod helping {
     }
 
     fn not_here() -> ApiError {
-        ApiError::not_found(crate::tr!("Этот шлюз не помогает другим: он в роли колонки."))
+        ApiError::not_found(crate::tr!("Этот центр не помогает другим домам: он не Турбо."))
     }
 
     /// The key only to an admin person signed in with a password: never a key, never the pair's pass.

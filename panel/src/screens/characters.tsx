@@ -17,6 +17,7 @@ import {
     ModelsView,
     PersonaInfo,
     api,
+    installApi,
     can,
     isTight,
     needsOf,
@@ -145,7 +146,11 @@ function Tile({
 export function CharactersTab() {
     const panel = usePanel();
     const linked = useLinkedItem('character', 'characters');
-    const catalog = useCatalog();
+    // У компьютера-помощника персонажи дома ставятся у центра (п. 49, как MagicPlace и первые шаги): его каталог,
+    // его картинки, его мастер установки — персонаж, слово, модель голоса, права.
+    const station = panel.role.role === 'helper' ? panel.role.station?.key : undefined;
+    const catalog = useCatalog(station);
+    const media = installApi(station).mediaPath;
     const engines = useEngines();
     const [view, setView] = useState<CharactersView | null>(null);
     const [absent, setAbsent] = useState(false);
@@ -174,7 +179,7 @@ export function CharactersTab() {
         void readPersona();
         void catalog.reload();
     };
-    const actions = usePackageActions(changed);
+    const actions = usePackageActions(changed, station);
 
     useEffect(() => {
         void read();
@@ -210,7 +215,11 @@ export function CharactersTab() {
     const active = view.active;
     const entries = (catalog.view?.packages ?? []).filter((entry) => entry.kind === 'character');
     const entryOf = (character: CharacterView) => (character.package ? entries.find((entry) => entry.id === character.package!.id) : undefined);
-    const offered = catalogOpen(catalog.view) ? entries.filter((entry) => !isInstalled(entry)) : [];
+    // Скрытые лентой (`unlisted`) — только со скрытой опцией разработчика, как в MagicPlace и первых шагах (п. 51);
+    // `hidden` шлюз не присылает вовсе, поставленный — среди своих персонажей выше.
+    const offered = catalogOpen(catalog.view)
+        ? entries.filter((entry) => !isInstalled(entry) && (!entry.unlisted || !!catalog.view?.showHidden))
+        : [];
     const status = catalogStatus(catalog);
     const ownSpeaks = !!active && active.id === null;
 
@@ -304,8 +313,8 @@ export function CharactersTab() {
                                         id={`catalog:${entry.id}`}
                                         title={entry.title}
                                         line={entry.description ?? ''}
-                                        avatar={entry.preview?.image}
-                                        sample={entry.preview?.samples?.[0]}
+                                        avatar={entry.preview?.image ? media(entry.preview.image) : null}
+                                        sample={entry.preview?.samples?.[0] ? media(entry.preview.samples[0]) : undefined}
                                         pills={entryPills(entry, engines).slice(0, 2)}
                                         dim={isBlocked(entry)}
                                         onOpen={() => linked.open(entry.id)}
@@ -452,6 +461,7 @@ function CharacterSheet({
         if (!wanted) return;
         needs.open({
             who: character.title,
+            homeVoice: { character: character.id },
             needs: wanted,
             fallback: character.voice.fallback?.title,
             retry: ({ install, anyway }) => api.chooseCharacter(character.id, { tones, install, anyway }),
@@ -481,6 +491,7 @@ function CharacterSheet({
                 setNote({ notice: tr.characters.spokenReserveNeeds });
                 needs.open({
                     who: character.title,
+                    homeVoice: { character: character.id },
                     needs: wanted,
                     fallback: character.voice.fallback?.title,
                     retry: ({ install, anyway }) => api.chooseCharacter(character.id, { tones, install, anyway }),
@@ -495,6 +506,7 @@ function CharacterSheet({
             else if (wanted && mayVoice)
                 needs.open({
                     who: character.title,
+                    homeVoice: { character: character.id },
                     needs: wanted,
                     fallback: character.voice.fallback?.title,
                     retry: ({ install, anyway }) => api.chooseCharacter(character.id, { tones, install, anyway }),

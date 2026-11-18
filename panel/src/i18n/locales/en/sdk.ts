@@ -13,11 +13,11 @@ const en: Translation<typeof ru> = {
     keyboard: 'Keyboard',
 
     // midi.ts
-    noBrowserMidi: 'This window has no browser MIDI (the DuoWave app, Safari): the gateway on the computer listens to the keyboard.',
+    noBrowserMidi: 'This window has no browser MIDI (the DuoWave app, Safari): the computer itself listens to the keyboard.',
     httpNoMidi: 'The browser does not give MIDI to a page at the home address (http): open the panel on the computer with the keyboard.',
     exampleKeyboard: 'Example: an on-screen keyboard. Your own keyboard connects after “yes”.',
-    gatewayNoKeyboardBrowser: 'The gateway has no keyboard. Is the keyboard on this device? Connect it through the browser.',
-    gatewayNoKeyboard: 'The gateway has no keyboard.',
+    gatewayNoKeyboardBrowser: 'The hub has no keyboard. Is the keyboard on this device? Connect it through the browser.',
+    gatewayNoKeyboard: 'The hub has no keyboard.',
     plugKeyboardBrowser: 'Plug the keyboard into the computer running DuoWave (USB). Is the keyboard on this device? Connect it through the browser.',
     plugKeyboard: 'Plug the keyboard into the computer running DuoWave (USB).',
     midiDenied: 'The browser did not allow MIDI: the permission is in the site settings (the lock icon in the address bar).',

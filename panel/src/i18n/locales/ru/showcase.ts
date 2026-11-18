@@ -53,6 +53,10 @@ export default {
 
     talk: 'Поговорите',
     talkMe: 'Алиса, как дела?',
+    talkWith: (word: string) => `${word}, как дела?`,
+    makeWith: (word: string) => `${word}, сделай виджет с курсом биткоина`,
+    answers: (name: string) => `Ответит ${name}`,
+    voiceComing: (name: string) => `Пока отвечает голос Алисы — голос «${name}» включится сам.`,
     talkMeComputer: 'Как дела?',
     talkReply: 'Отлично. Сыграем или что-нибудь сделаем?',
     talkSay: 'как дела?',

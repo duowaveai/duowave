@@ -522,7 +522,7 @@ pub mod builtin {
                 "tts",
                 ConnectorKind::Tts,
                 "Свой голос",
-                "Голосовой сервер шлюза (Silero, Piper) или OpenAI-совместимый синтез.",
+                "Голосовой сервер DuoWave (Silero, Piper) или OpenAI-совместимый синтез.",
                 cloud,
                 &["TTS_PROVIDER", "TTS_OWN_URL", "TTS_OWN_MODEL", "TTS_OWN_VOICE"],
                 &[],

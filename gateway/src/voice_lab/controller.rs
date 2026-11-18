@@ -38,6 +38,36 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/v1/voice-lab/voices/{id}/samples/{n}", get(sample))
         .route("/api/v1/voice-lab/voices/{id}", patch(rename).delete(remove))
         .route("/api/v1/voice-lab/voices/{id}/reimprint", post(reimprint))
+        // imprint.py's recognition when it runs inside this program: loopback, by the gateway's key.
+        .route(
+            "/api/v1/voice-lab/asr/{key}/v1/audio/transcriptions",
+            post(imprint_asr).layer(axum::extract::DefaultBodyLimit::max(IMPRINT_ASR_LIMIT)),
+        )
+}
+
+/// A reference clip for the words: tens of seconds of 16 kHz mono WAV are a megabyte or two.
+const IMPRINT_ASR_LIMIT: usize = 16 * 1024 * 1024;
+
+/// The words of a take for imprint.py (service.rs `imprint_asr_url`) when recognition runs inside this program
+/// (ASR_PROVIDER=local, the desktop app): only from this computer and only with the gateway's key in the path — the
+/// script sends no sign-in — and heard by the same engine as the home's recognition (home_server/serve.rs). Anything
+/// else is not there.
+async fn imprint_asr(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path(key): Path<String>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Response, ApiError> {
+    if caller.zone != Zone::Local || !app.voice_lab.asr_key_is(&key) {
+        return Err(ApiError::not_found("Not Found"));
+    }
+    match app.builtin.hearing() {
+        Some(crate::helpers::builtin::Hearing::Local(local)) => {
+            crate::home_server::serve::recognize_here(local, &headers, &body).await
+        }
+        _ => Err(ApiError::unavailable(crate::tr!("На этом компьютере нет своего распознавания."))),
+    }
 }
 
 /// How long an upload may stand still: a phone that left the Wi-Fi mid-take without a word frees its request, its
@@ -475,6 +505,32 @@ mod tests {
         assert_eq!((&job["state"], &job["limitMb"]), (&json!("done"), &json!(3_623)));
         lab.memory.free_mb.store(16_384, Ordering::SeqCst);
         assert_eq!(answer(stop(state(&lab), admin(&lab)).await), (StatusCode::CREATED, json!({ "stopped": false })));
+    }
+
+    /// imprint.py's loopback recognition (item 38): only from this computer and only with the gateway's key; this test
+    /// gateway hears through a server, not inside itself, so the right call is told there is no own recognition.
+    #[tokio::test]
+    async fn the_imprints_recognition_route_is_this_computers_and_needs_the_key() {
+        let lab = lab().await;
+        let key = lab.app.voice_lab.asr_key_for_tests();
+        let call = |caller: Caller, key: &str| {
+            imprint_asr(
+                State(lab.app.clone()),
+                caller,
+                Path(key.to_string()),
+                axum::http::HeaderMap::new(),
+                Default::default(),
+            )
+        };
+        let status = |result: Result<Response, ApiError>| match result {
+            Ok(response) => response.status(),
+            Err(error) => error.status,
+        };
+        assert_eq!(status(call(Caller::local(lab.app.clone(), None), "guess").await), StatusCode::NOT_FOUND);
+        let mut outside = Caller::local(lab.app.clone(), None);
+        outside.zone = Zone::Remote;
+        assert_eq!(status(call(outside, &key).await), StatusCode::NOT_FOUND, "not from another computer");
+        assert_eq!(status(call(Caller::local(lab.app.clone(), None), &key).await), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]

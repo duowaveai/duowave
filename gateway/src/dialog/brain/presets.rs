@@ -326,7 +326,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
     ProviderPreset {
         id: "custom-anthropic",
         title: "Свой, Anthropic-совместимый",
-        description: "Прокси или шлюз с API Anthropic.",
+        description: "Прокси или свой сервер с API Anthropic.",
         kind: ProviderKind::Anthropic,
         editable_url: true,
         order: 13,
@@ -336,7 +336,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
     ProviderPreset {
         id: HELPER_PRESET,
         title: "Модель Турбо",
-        description: "Модель, которую даёт Турбо: шлюз добавляет её сам.",
+        description: "Модель, которую даёт Турбо: она появляется здесь сама.",
         needs_key: false,
         brand: Some("helper"),
         order: 99,

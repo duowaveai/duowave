@@ -12,10 +12,10 @@ use crate::config::Env;
 use crate::locale::country::NONE;
 use crate::settings::definitions::{HOME_COUNTRY, PACKAGE_SETTINGS};
 
-static TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(super) static TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The published table back to none when a test ends, however it ends: other tests' HTTP calls go directly.
-struct Fresh;
+pub(super) struct Fresh;
 
 impl Drop for Fresh {
     fn drop(&mut self) {
@@ -23,7 +23,7 @@ impl Drop for Fresh {
     }
 }
 
-fn egress(pairs: &[(&str, &str)]) -> (Arc<Egress>, Arc<SettingsService>, tempfile::TempDir) {
+pub(super) fn egress(pairs: &[(&str, &str)]) -> (Arc<Egress>, Arc<SettingsService>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let catalog = dir.path().join("catalog");
     std::fs::create_dir_all(&catalog).unwrap();
@@ -78,7 +78,7 @@ async fn stand_in(asked: Arc<Mutex<Vec<String>>>) -> u16 {
     port
 }
 
-fn letter(port: u16, up: bool) -> Value {
+pub(super) fn letter(port: u16, up: bool) -> Value {
     json!({ "items": [{
         "id": "nl", "name": "Мой VPN", "country": "NL", "url": format!("http://127.0.0.1:{port}"),
         "state": if up { "up" } else { "down" }, "current": "🇳🇱 Амстердам",

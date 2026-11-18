@@ -72,7 +72,7 @@ const en: Translation<typeof ru> = {
     },
 
     // builtin.tsx
-    newGatewayVersion: 'new gateway version',
+    newGatewayVersion: 'new DuoWave version',
     sectionHome: 'Home',
     sectionCharacter: 'Character',
     sectionApps: 'Apps',
@@ -102,19 +102,9 @@ const en: Translation<typeof ru> = {
     helperHelping: 'Turbo online',
     helperStationAlone: 'speaker works on its own',
     helperOffline: 'Turbo is asleep',
-    tabsLabel: 'Devices at home',
     tabStation: (name: string) => `Speaker “${name}”`,
     tabStationNoName: 'Speaker',
     tabThisComputer: 'This computer',
-    tagGateway: 'gateway',
-    tagTurbo: 'Turbo',
-    tagGatewayTurbo: 'gateway + Turbo',
-    tagAsleep: 'asleep',
-    tabOpen: (name: string) => `Open the panel: ${name}`,
-    hereLead: 'You are in the panel of',
-    hereStation: 'the speaker',
-    hereComputer: 'the computer',
-    hereTurbo: '— it is a Turbo and does not answer itself',
     workshop: 'Workshop',
     statusNoAnswer: 'not responding',
     statusNoStation: 'speaker not connected',
@@ -127,7 +117,7 @@ const en: Translation<typeof ru> = {
 
     // recorder.ts
     micNeedsSecure:
-        'The browser gives the microphone only on the gateway computer itself (localhost) or over HTTPS. You can add a file here instead: record a clip with a voice recorder and upload it.',
+        'The browser gives the microphone only on the DuoWave computer itself (localhost) or over HTTPS. You can add a file here instead: record a clip with a voice recorder and upload it.',
     micUnsupported: 'This browser cannot record sound. Add a file from a voice recorder.',
     micNumbered: (n: number) => `Microphone ${n}`,
     fileUnreadable: 'Could not read the file: it needs to be audio — m4a, mp3, wav.',

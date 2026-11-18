@@ -64,7 +64,7 @@ impl Ports for Absent {
 
 /// Why a build has no MIDI: said to people.
 pub fn not_in_build() -> String {
-    crate::tr!("В этой сборке шлюза MIDI нет: клавиатуру слышит приложение DuoWave на компьютере (Mac, Windows, Linux) и программа duowave для Mac и Windows.")
+    crate::tr!("В этой сборке DuoWave MIDI нет: клавиатуру слышит приложение DuoWave на компьютере (Mac, Windows, Linux) и программа duowave для Mac и Windows.")
 }
 
 /// The ports this build has: midir's with the feature `midi`, none without it.

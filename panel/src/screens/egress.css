@@ -565,3 +565,6 @@
     .vpn-facts dt { padding-top: 0; }
     .vpn-state-title { font-size: 22px; line-height: 28px; }
 }
+
+/* VPN выключен (приложение не идёт): одна карточка с кнопкой «Включить VPN», по центру. */
+.vpn-off-card { align-items: center; text-align: center; gap: 12px; }

@@ -659,6 +659,7 @@ mod tests {
             signed: true,
             faces: vec!["widget".into()],
             place: Some("computer"),
+            prefer_home: false,
             recommended: true,
             added_at: None,
             texts: Vec::new(),

@@ -3,7 +3,7 @@
 export default {
     passwordShort: 'Пароль — хотя бы 8 символов.',
     passwordsDiffer: 'Пароли не совпадают.',
-    codeNeeded: 'Введите код настройки из журнала шлюза.',
+    codeNeeded: 'Введите код настройки из журнала DuoWave.',
     nameNeeded: 'Введите имя.',
     welcome: 'Добро пожаловать в DuoWave',
     panel: 'Пульт',
@@ -11,7 +11,7 @@ export default {
     loginNamed: 'Имя и пароль — как администратор вас записал.',
     loginPassword: 'Введите пароль администратора.',
     setupCode: 'Код настройки',
-    setupCodeHint: 'Строка «первая настройка пульта» в журнале шлюза: на Mac — logs/duowave.log, в Docker — docker compose logs gateway.',
+    setupCodeHint: 'Строка «первая настройка пульта» в журнале DuoWave: на Mac — logs/duowave.log, в Docker — docker compose logs gateway.',
     name: 'Имя',
     adminPassword: 'Пароль администратора',
     password: 'Пароль',
@@ -20,7 +20,7 @@ export default {
     wait: 'Секунду…',
     saveAndEnter: 'Сохранить и войти',
     enter: 'Войти',
-    setupNoteCode: 'Вы настраиваете не с компьютера шлюза, поэтому нужен код. Пароль хранится в базе шлюза в виде хэша.',
-    setupNote: 'Пароль хранится в базе шлюза в виде хэша. Людей и их права добавите потом: «Настройки» → «Люди и доступ».',
+    setupNoteCode: 'Вы настраиваете не с того компьютера, где стоит DuoWave, поэтому нужен код. Пароль хранится в базе DuoWave в виде хэша.',
+    setupNote: 'Пароль хранится в базе DuoWave в виде хэша. Людей и их права добавите потом: «Настройки» → «Люди и доступ».',
     loginNote: 'Пульт запомнит это устройство на месяц.',
 };

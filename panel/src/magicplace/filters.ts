@@ -26,6 +26,37 @@ const FACES: CatalogFace[] = ['widget', 'skill', 'window'];
 const PLACES: CatalogPlace[] = ['gateway', 'computer', 'station', 'network'];
 const STATES: StateFilter[] = ['installed', 'available', 'update'];
 
+/** Право слова-активатора: колонка откликается на своё слово («Слово «Джарвис»»). */
+export const ACTIVATOR = 'call:system/activator';
+
+/**
+ * Слово-активатор (проверка начисто 18.11, п. 65; владелец: «активаторы как приложения — нет»). Ставится парой к своему
+ * персонажу — мастер берёт его `companions`, — и в «Приложениях» отдельной плиткой не показывается: ни в магазине, ни на
+ * шаге MagicPlace первых шагов. Его приколка по хешу в главном каталоге — «доверяем коду», не совет людям.
+ */
+export function isCallWord(entry: Pick<CatalogEntry, 'permissions'>): boolean {
+    return (entry.permissions ?? []).includes(ACTIVATOR);
+}
+
+/** Показывать пакет в магазине отдельно: всё, кроме слов-активаторов. */
+export function shownAlone(entry: CatalogEntry): boolean {
+    return !isCallWord(entry);
+}
+
+/** «Рекомендуем» у пакета: совет каталога, а не приколка слова, без которой его код не поставить. */
+export function recommendedHere(entry: CatalogEntry): boolean {
+    return !!entry.recommended && !isCallWord(entry);
+}
+
+/** Своё слово персонажа — у его пары-слова, из названия: «Слово «Санчес» (демо)» → «Санчес». Нет — null. */
+export function wordOfEntry(entry: CatalogEntry, packages: CatalogEntry[]): string | null {
+    for (const pair of entry.companions ?? []) {
+        const word = packages.find((item) => item.id === pair.id);
+        if (word && isCallWord(word)) return /«([^»]+)»/.exec(word.title)?.[1] ?? null;
+    }
+    return null;
+}
+
 /** Вид пакета для людей: плагин и приложение — оба «приложение». */
 export function kindOf(entry: CatalogEntry): KindFilter {
     return entry.kind === 'character' ? 'character' : entry.kind === 'theme' ? 'theme' : entry.kind === 'agent' ? 'agent' : 'app';

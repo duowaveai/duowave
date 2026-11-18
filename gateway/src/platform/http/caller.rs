@@ -99,7 +99,7 @@ impl FromRequestParts<Arc<App>> for Caller {
 /// «Помощник» — the computer's gateway with the pair's key, named with the person at the computer when the pass says
 /// who it is. Its rights are that person's role's, as the pass says it (`HELPER_ROLE`; an unknown one is the least, a
 /// guest); without a role — the computer's own calls, which ask with the key itself — a member's, never an admin's.
-fn helper_principal(person: Option<&str>, role: Option<&str>) -> Principal {
+fn helper_principal(person: Option<&str>, role: Option<&str>, id: Option<&str>) -> Principal {
     use crate::core::identity::roles::{normalize_role, Role};
     let person: String = person.unwrap_or("").chars().filter(|c| !c.is_control()).take(40).collect();
     let name =
@@ -107,7 +107,9 @@ fn helper_principal(person: Option<&str>, role: Option<&str>) -> Principal {
     let role = role.map(|role| normalize_role(role.trim())).unwrap_or(Role::Member);
     Principal {
         kind: crate::core::identity::principal::PrincipalKind::User,
-        id: "helper".into(),
+        // The person by their id in the home when the pass names one the home knows (docs/plans/home-and-devices.md,
+        // stage 2): their desk and panel memory are theirs on every device; else the one shared row of the computer.
+        id: id.map(str::to_string).unwrap_or_else(|| "helper".into()),
         name,
         role: Some(role),
         grants: role.info().grants,
@@ -170,6 +172,16 @@ impl Caller {
                 return Ok(Some(helper_principal(
                     header(crate::placement::peer::HELPER_PERSON),
                     header(crate::placement::peer::HELPER_ROLE),
+                    header(crate::placement::peer::HELPER_PERSON_ID).map(str::trim).filter(|id| {
+                        !id.is_empty()
+                            && id.len() <= 64
+                            && id.bytes().all(|byte| byte.is_ascii_graphic())
+                            && crate::access::users_repository::UsersRepository::new(self.app.db.clone())
+                                .by_id(id)
+                                .ok()
+                                .flatten()
+                                .is_some()
+                    }),
                 )));
             }
             self.app.access.try_authenticate(self.authorization.as_deref())
@@ -302,6 +314,24 @@ mod tests {
         }
         assert_eq!(get(&app, "/api/v1/availability", &me(Some("member"))).await.0, StatusCode::OK);
         assert_eq!(get(&app, "/api/v1/availability", &me(Some("guest"))).await.0, StatusCode::FORBIDDEN);
+
+        // The person's own id names them only when this home knows it (docs/plans/home-and-devices.md, stage 2): their
+        // desk and panel memory are theirs everywhere; an id the home does not know is the computer's shared row.
+        let input: serde_json::Map<String, Value> =
+            serde_json::from_value(serde_json::json!({ "name": "Аня", "role": "member" })).unwrap();
+        let anya = app.access.users.create(&input, None).await.unwrap();
+        let named = |id: &'static str| {
+            vec![
+                ("authorization", pair.as_str()),
+                (HELPER_ROLE, "member"),
+                (crate::placement::peer::HELPER_PERSON_ID, id),
+            ]
+        };
+        let anya_id: &'static str = Box::leak(anya.id.clone().into_boxed_str());
+        let (_, body) = get(&app, "/api/v1/auth/me", &named(anya_id)).await;
+        assert_eq!(body["message"]["id"], anya.id, "a person of the home");
+        let (_, body) = get(&app, "/api/v1/auth/me", &named("someone-else")).await;
+        assert_eq!(body["message"]["id"], "helper", "a stranger's id is no one's");
 
         // The role counts only beside the pair's key.
         let alone = [(HELPER_ROLE, "admin"), (HELPER_PERSON, "Мама")];

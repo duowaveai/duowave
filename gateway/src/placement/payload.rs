@@ -66,7 +66,7 @@ pub fn info(config: &Config) -> PayloadInfo {
         return PayloadInfo {
             source: PayloadSource::BuiltIn,
             version,
-            note: crate::tr!("Сборка для колонки {version} встроена в этот шлюз.", version = version),
+            note: crate::tr!("Сборка для колонки {version} встроена в DuoWave на этом компьютере.", version = version),
         };
     }
     if let Some(file) = &config.placement.station_payload_file {
@@ -80,12 +80,12 @@ pub fn info(config: &Config) -> PayloadInfo {
         Some(_) => PayloadInfo {
             source: PayloadSource::Feed,
             version,
-            note: crate::tr!("Сборку для колонки {version} шлюз скачает из выпуска и проверит её подпись.", version = version),
+            note: crate::tr!("Сборку для колонки {version} DuoWave скачает из выпуска и проверит её подпись.", version = version),
         },
         None => PayloadInfo {
             source: PayloadSource::None,
             version,
-            note: crate::tr!("В этой сборке шлюза нет сборки для колонки, и лента выпусков не задана: укажите файл STATION_PAYLOAD_FILE или поставьте выпуск."),
+            note: crate::tr!("В этой сборке DuoWave нет сборки для колонки, и лента выпусков не задана: укажите файл STATION_PAYLOAD_FILE или поставьте выпуск."),
         },
     }
 }

@@ -186,17 +186,14 @@ async fn setup(config: &Config, address: &str, shell: &dyn StationShell, yes: bo
         "{}",
         match facts.points_to {
             PointsTo::Yandex => crate::tr!("Голос сейчас идёт к Яндексу."),
-            PointsTo::Gateway => crate::tr!("Голос сейчас идёт на шлюз: {url}", url = facts.addresses.url.clone()),
+            PointsTo::Gateway => crate::tr!("Голос сейчас идёт на {url}", url = facts.addresses.url.clone()),
             PointsTo::Other => crate::tr!("Голос сейчас идёт не к Яндексу: {url}", url = facts.addresses.url.clone()),
         }
     );
     if !installed.trim().is_empty() {
         println!(
             "{}",
-            crate::tr!(
-                "DuoWave уже стоит ({version}): поставлю поверх, данные шлюза останутся.",
-                version = installed.trim()
-            )
+            crate::tr!("DuoWave уже стоит ({version}): поставлю поверх, данные останутся.", version = installed.trim())
         );
     }
 
@@ -206,14 +203,14 @@ async fn setup(config: &Config, address: &str, shell: &dyn StationShell, yes: bo
     }
     if let Some(free) = free_kb.filter(|free| *free < NEEDED_KB) {
         return Err(Stop(crate::tr!(
-            "В /data свободно {free} МБ, а шлюзу нужно {needed} МБ.",
+            "В /data свободно {free} МБ, а DuoWave нужно {needed} МБ.",
             free = free / 1024,
             needed = NEEDED_KB / 1024
         )));
     }
     if let Some(free) = memory.filter(|free| *free < NEEDED_MEMORY_KB) {
         return Err(Stop(crate::tr!(
-            "У колонки свободно {free} МБ ОЗУ, а шлюзу нужно {needed} МБ.",
+            "У колонки свободно {free} МБ ОЗУ, а DuoWave нужно {needed} МБ.",
             free = free / 1024,
             needed = NEEDED_MEMORY_KB / 1024
         )));
@@ -301,7 +298,7 @@ async fn setup(config: &Config, address: &str, shell: &dyn StationShell, yes: bo
     run_ok(shell, &format!("chmod 755 {BIN}")).await?;
     done();
 
-    step(&crate::tr!("Ставлю шлюз на колонке и запускаю"));
+    step(&crate::tr!("Ставлю DuoWave на колонку и запускаю"));
     run_ok(shell, &format!("{BIN} station install --no-start")).await?;
     let status: Value =
         serde_json::from_str(&run_ok(shell, &format!("{BIN} station status --json")).await?).unwrap_or(Value::Null);
@@ -309,13 +306,13 @@ async fn setup(config: &Config, address: &str, shell: &dyn StationShell, yes: bo
     run_ok(shell, &format!("{SERVICE_COMMAND} start")).await?;
     if !wait(60, || async { health(address, port).await.is_some() }).await {
         return Err(Stop(crate::tr!(
-            "Шлюз на колонке не запустился. Что случилось — на колонке: {bin} station log",
+            "DuoWave на колонке не запустился. Что случилось — на колонке: {bin} station log",
             bin = BIN
         )));
     }
     done();
 
-    step(&crate::tr!("Направляю голос колонки на её шлюз и перезагружаю"));
+    step(&crate::tr!("Направляю голос колонки на DuoWave и перезагружаю"));
     run_ok(shell, &format!("{BIN} station point local --reboot")).await?;
     done();
     Ok(Some(port))
@@ -345,7 +342,7 @@ async fn arrive(address: &str, port: u16) {
         println!(
             "{}",
             crate::tr!(
-                "Колонка ещё не вернулась к своему шлюзу. Подождите минуту и откройте http://{address}:{port}/ . Не открывается — вернуть Яндекс: ssh -p 2222 root@{address} sh {restore}",
+                "Колонка ещё не вернулась к своему центру. Подождите минуту и откройте http://{address}:{port}/ . Не открывается — вернуть Яндекс: ssh -p 2222 root@{address} sh {restore}",
                 address = address,
                 port = port,
                 restore = RESTORE_SCRIPT

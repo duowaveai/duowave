@@ -51,7 +51,7 @@ const SAVED_EVERY_MS: u64 = 5_000;
 const WATCH_EVERY: Duration = Duration::from_secs(5);
 
 fn restarted() -> String {
-    crate::tr!("Шлюз перезапустился, пока задача шла.")
+    crate::tr!("DuoWave перезапустился, пока задача шла.")
 }
 fn forgotten() -> String {
     crate::tr!("Приложение удалено.")

@@ -5,11 +5,11 @@
 // напрямую, поэтому в пульте колонки стоит фреймом без рамки (`?own=helper`, `?own=workshop`). Колонка не отвечает —
 // страница всё равно работает.
 
-import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { ApiError, api, can, problemOf, sessionStore } from '../api';
 import type { Ability, ClientView, GatewayView, HelperKeyView, HelperPart, HelperServed, PlacedStation, StationGatewayView } from '../api';
-import { ABILITIES, ABILITY_ICONS, abilityTitle, connectionText, readHelpers, useHelperKeyTurn, useHelpers } from '../helpers';
+import { ABILITIES, ABILITY_ICONS, abilityAbout, abilityTitle, connectionText, readHelpers, useHelperKeyTurn, useHelpers } from '../helpers';
 import { tr } from '../i18n';
 import { usePoll } from '../poll';
 import { usePanel } from '../shell/context';
@@ -32,14 +32,65 @@ import { PlacementCard } from './placement';
 import { seconds } from './trip';
 import { WorkshopScreen } from './workshop';
 
-/** Страница компьютера внутри фрейма: «helper» — «Этот компьютер», «workshop» — мастерская. */
+/**
+ * Страница компьютера внутри фрейма: «helper» — всё своё у компьютера, «computer» — вкладка «Этот компьютер» его
+ * страницы в «Устройствах» (силы, модели, присмотр), «homes» — «Другие дома» (кому он помогает, ключ), «workshop» —
+ * мастерская (docs/plans/home-and-devices.md, этап 1).
+ */
 export function OwnPage({ page }: { page: string }) {
     // Фрейм сливается со страницей: прозрачный фон, без полей окна.
     useEffect(() => {
         document.documentElement.classList.add('own-page');
         return () => document.documentElement.classList.remove('own-page');
     }, []);
-    return <div class="own-page-body">{page === 'workshop' ? <WorkshopScreen /> : <HelperComputer />}</div>;
+    const body =
+        page === 'workshop' ? <WorkshopScreen /> : page === 'homes' ? <HelperSide gives={false} /> : page === 'computer' ? <ThisComputer /> : <HelperComputer />;
+    return <div class="own-page-body">{body}</div>;
+}
+
+/** «Мои силы»: что этот компьютер даёт дому как Турбо — готово или нет. */
+export function TurboPowers() {
+    const { view, error } = useHelpers();
+    const builtin = view?.helpers.find((helper) => helper.builtin);
+    const powers = (builtin?.abilities ?? []).filter((ability) => ability.id in ABILITY_ICONS);
+    return (
+        <Card id="powers" title={tr.helpers.powersTitle}>
+            {powers.length === 0 ? (
+                <p class="w-cap m-0 wrap-anywhere" role={!view && error ? 'alert' : undefined}>
+                    {view ? tr.helpers.powersNone : (error ?? tr.helpers.reading)}
+                </p>
+            ) : (
+                <div class="w-rows">
+                    {powers.map((ability) => {
+                        const Icon = ABILITY_ICONS[ability.id];
+                        const details = ability.details;
+                        const about = [details?.model, details?.voice, details?.languages?.join(', ')].filter(Boolean).join(' · ') || abilityAbout(ability.id);
+                        return (
+                            <div key={ability.id} class="w-row">
+                                <Icon size={16} />
+                                <span class="flex-1 min-w-0 flex flex-col">
+                                    <span class="w-strong">{abilityTitle(ability.id)}</span>
+                                    <span class="w-cap wrap-anywhere">{about}</span>
+                                </span>
+                                <span class={`pill ${ability.ready ? 'pill-own' : 'pill-off'}`}>{ability.ready ? tr.helpers.powersReady : tr.helpers.powersNotReady}</span>
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+        </Card>
+    );
+}
+
+/** «Этот компьютер» на странице устройства: его силы, «не давать спать», модели слуха и голоса, присмотр за колонкой. */
+export function ThisComputer() {
+    return (
+        <>
+            <TurboPowers />
+            <KeepAwake />
+            <HelperComputer home side={false} />
+        </>
+    );
 }
 
 function Card({ id, title, children }: { id: string; title: string; children: preact.ComponentChildren }) {
@@ -62,7 +113,7 @@ const isAdmin = (): boolean => sessionStore.get()?.role === 'admin';
  * (из «Помощников» колонки, чьи настройки ещё на компьютере) присмотр открыт и стоит первым: там «Вернуть настройки на
  * колонку».
  */
-export function HelperComputer({ home = false }: { home?: boolean } = {}) {
+export function HelperComputer({ home = false, side = true }: { home?: boolean; side?: boolean } = {}) {
     // «Открыть» у присмотра: всё о размещении — здесь же, глазами компьютера (копии, перенос, что случилось).
     const [first] = useState(() => new URLSearchParams(location.search).get('sheet') === 'placement');
     const [placement, setPlacement] = useState(first);
@@ -78,7 +129,7 @@ export function HelperComputer({ home = false }: { home?: boolean } = {}) {
         <>
             {first && watch}
             {/* In «Дом» its powers stand in a card of their own above: here — who it helps. Updates have their page. */}
-            <HelperSide gives={!home} />
+            {side && <HelperSide gives={!home} />}
             {!first && watch}
             {!home && <Updates />}
             {/* Слух и голос — по одному разделу (холст «Окна DuoWave», 17.11): без строк-ссылок «… на этом компьютере»,
@@ -820,6 +871,83 @@ export function KeySheet({ onClose }: { onClose: () => void }) {
 }
 
 /** Фрейм страницы компьютера в пульте колонки: без рамки, высотой с окно, прокрутка — внутри; `sheet` — что открыть сразу. */
-export function OwnFrame({ page, title, sheet }: { page: 'helper' | 'workshop'; title: string; sheet?: string }) {
-    return <iframe class="own-frame" src={`${location.pathname}?own=${page}${sheet ? `&sheet=${encodeURIComponent(sheet)}` : ''}`} title={title} />;
+export function OwnFrame({ page, title, sheet }: { page: 'helper' | 'workshop' | 'computer' | 'homes'; title: string; sheet?: string }) {
+    // Окно внутри страницы компьютера («Свой голос», мастерская) — во весь пульт: пока оно открыто, фрейм растягивается
+    // на всё окно, а не жмёт окно в свои рамки (проверка начисто 18.11, п. 35). Источник тот же — смотрим прямо в него.
+    const frame = useRef<HTMLIFrameElement>(null);
+    const [covering, setCovering] = useState(false);
+    useEffect(() => {
+        const node = frame.current;
+        if (!node) return;
+        let watch: MutationObserver | null = null;
+        const attach = (): void => {
+            watch?.disconnect();
+            const body = node.contentDocument?.body;
+            if (!body) return;
+            let held = false;
+            const check = (): void => {
+                const open = !!body.querySelector(':scope > .sheet-backdrop');
+                const inner = node.contentDocument?.documentElement;
+                // На весь пульт — только затемнение и окно: сама страница внутри фрейма остаётся там, где была, своей
+                // ширины (проверка начисто 18.11, п. 39: растягивалась вместе с фреймом, подписи разъезжались к краям).
+                if (open && !held && inner) {
+                    const place = node.getBoundingClientRect();
+                    const scrolled = node.contentWindow?.scrollY ?? 0;
+                    inner.style.setProperty('--own-left', `${place.left}px`);
+                    inner.style.setProperty('--own-top', `${place.top}px`);
+                    inner.style.setProperty('--own-w', `${place.width}px`);
+                    inner.style.setProperty('--own-h', `${place.height}px`);
+                    // Видна была только часть фрейма — внутри прокрутки окна раздела: так и остаётся.
+                    let seen = { top: 0, left: 0, bottom: innerHeight, right: innerWidth };
+                    for (let up = node.parentElement; up; up = up.parentElement) {
+                        if (!/auto|scroll|hidden/.test(getComputedStyle(up).overflowY)) continue;
+                        const box = up.getBoundingClientRect();
+                        seen = {
+                            top: Math.max(seen.top, box.top),
+                            left: Math.max(seen.left, box.left),
+                            bottom: Math.min(seen.bottom, box.bottom),
+                            right: Math.min(seen.right, box.right),
+                        };
+                    }
+                    const cut = (value: number): string => `${Math.max(0, Math.round(value))}px`;
+                    inner.style.setProperty(
+                        '--own-clip',
+                        `inset(${cut(seen.top - place.top)} ${cut(place.right - seen.right)} ${cut(place.bottom - seen.bottom)} ${cut(seen.left - place.left)})`,
+                    );
+                    inner.classList.add('own-held');
+                    const page = node.contentDocument?.querySelector('.own-page-body');
+                    if (page) page.scrollTop = scrolled;
+                    held = true;
+                } else if (!open && held && inner) {
+                    const page = node.contentDocument?.querySelector('.own-page-body');
+                    const scrolled = page?.scrollTop ?? 0;
+                    inner.classList.remove('own-held');
+                    node.contentWindow?.scrollTo(0, scrolled);
+                    held = false;
+                }
+                setCovering(open);
+                // Окно раздела, в котором стоит фрейм, — свой слой (15): растянутый фрейм остался бы под доком и
+                // строкой. Пока окно компьютера открыто, слой окна раздела — над ними.
+                document.documentElement.classList.toggle('own-covering', open);
+            };
+            watch = new MutationObserver(check);
+            watch.observe(body, { childList: true });
+            check();
+        };
+        node.addEventListener('load', attach);
+        attach();
+        return () => {
+            node.removeEventListener('load', attach);
+            watch?.disconnect();
+            document.documentElement.classList.remove('own-covering');
+        };
+    }, []);
+    return (
+        <iframe
+            ref={frame}
+            class={`own-frame${covering ? ' is-covering' : ''}`}
+            src={`${location.pathname}?own=${page}${sheet ? `&sheet=${encodeURIComponent(sheet)}` : ''}`}
+            title={title}
+        />
+    );
 }

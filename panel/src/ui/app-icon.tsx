@@ -5,6 +5,7 @@
 
 import { IconMagicPlace, MagicPlaceMark } from '../magicplace/icon';
 import { BuiltinLogo, hasBuiltinLogo } from './builtin-logos';
+import { useMediaUrl } from './media';
 import { registeredPlugins } from '../shell/registry';
 import type { Icon } from '../shell/sections';
 
@@ -23,10 +24,14 @@ export function appIconOf(id: string): Icon | undefined {
 }
 
 export function AppIcon({ id, title, image, icon, size = 44 }: { id: string; title: string; image?: string | null; icon?: Icon; size?: number }) {
+    // Картинка шлюза — через ключ входа и шлюз, у которого она лежит (окно колонки `?via=`), как превью каталога: голый
+    // `<img src>` шёл на шлюз этого компьютера без ключа — у приложений колонки был битый значок (проверка 18.11, п. 9).
+    // Пока грузится или не загрузилась — значок как без картинки.
+    const src = useMediaUrl(image);
     // MagicPlace — встроенный магазин, не пакет: его знак всегда свой, розовый.
     if (id === 'magicplace' || icon === IconMagicPlace) return <MagicPlaceMark size={size} />;
     const style = { width: `${size}px`, height: `${size}px` };
-    if (image) return <img class="app-icon is-image" src={image} alt="" style={style} />;
+    if (src) return <img class="app-icon is-image" src={src} alt="" style={style} />;
     if (hasBuiltinLogo(id)) return <BuiltinLogo id={id} size={size} />;
     const Glyph = icon ?? appIconOf(id);
     return (

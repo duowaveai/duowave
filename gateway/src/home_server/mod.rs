@@ -13,6 +13,8 @@ pub mod chain;
 pub mod messenger;
 #[cfg(feature = "pc")]
 pub mod serve;
+#[cfg(feature = "pc")]
+pub mod voice_plan;
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -20,14 +22,13 @@ use serde::Serialize;
 use crate::core::availability::HomeServer;
 use crate::core::events::Actor;
 use crate::helpers::contract::Ability;
-use crate::helpers::{legacy, DoorInput, Helpers, HOME_COMPUTER};
+use crate::helpers::{door, DoorInput, Helpers, HOME_COMPUTER};
 use crate::platform::http::ApiError;
 use crate::secrets::SecretMask;
 use crate::settings::definitions::HomeServerSetting;
 use crate::speech::asr::speech_recognizer::SpeechRecognizer;
 use crate::speech::tts::own_speech::OwnSpeech;
 
-pub use crate::helpers::legacy::KEY_SECRET;
 pub use crate::helpers::remote::Messenger;
 pub use crate::helpers::{AWAY, BACK, CHECK_EVERY, DOWN_AFTER, GIVEN, NO_HEARING, NO_VOICE, RETURN_AFTER};
 
@@ -74,7 +75,7 @@ impl HomeServerService {
     /// The computer's address as the station knows it, whether it leans on it or not.
     pub fn known(&self) -> Option<HomeServerSetting> {
         let entry = self.helpers.entry(HOME_COMPUTER)?;
-        Some(HomeServerSetting { url: entry.url, enabled: entry.enabled, without: legacy::to_legacy(&entry.without) })
+        Some(HomeServerSetting { url: entry.url, enabled: entry.enabled, without: door::to_legacy(&entry.without) })
     }
 
     /// The address and the key, when the connection is set up and on («ПК помогает колонке»).
@@ -217,7 +218,7 @@ pub fn check_parts(
     brain: &crate::dialog::brain::BrainService,
     without: &[String],
 ) -> Result<(), ApiError> {
-    if model_kept(&home.helpers, brain, HOME_COMPUTER, &legacy::to_abilities(without)) {
+    if model_kept(&home.helpers, brain, HOME_COMPUTER, &door::to_abilities(without)) {
         return Err(ApiError::conflict(model_answers()));
     }
     Ok(())
@@ -370,8 +371,8 @@ mod tests {
         let page = check_model_kept(&station.helpers, &brain, HOME_COMPUTER, &[Ability::Model]).unwrap_err();
         assert_eq!(
             (page.status.as_u16(), page.message.as_str()),
-            (409, "Модель Турбо «Компьютер дома» сейчас отвечает в «Мозге» — сначала выберите там другую модель."),
-            "the new page's «Не брать у него: модель» too, naming the helper"
+            (409, "Модель Турбо «Турбо a» сейчас отвечает в «Мозге» — сначала выберите там другую модель."),
+            "the new page's «Не брать у него: модель» too, naming the helper (as it names itself, item 48)"
         );
         assert!(check_model_kept(&station.helpers, &brain, "home-b", &[Ability::Model]).is_ok(), "another helper's");
 

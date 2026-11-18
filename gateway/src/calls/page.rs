@@ -97,7 +97,7 @@ $('hangup').onclick = () => socket.send(JSON.stringify({ type: 'hangup', callId:
 "##;
 
 /// Without WebRTC in this build a browser cannot carry a call's sound: the page says so above everything else.
-const NO_WEBRTC: &str = "<p class=\"notice\">Звонок из браузера (WebRTC) не входит в эту сборку шлюза: страница \
+const NO_WEBRTC: &str = "<p class=\"notice\">Звонок из браузера (WebRTC) не входит в эту сборку DuoWave: страница \
                          покажет, кто на связи, но разговора не будет.</p>\n";
 
 /// The page, with the notice when this build has no WebRTC.

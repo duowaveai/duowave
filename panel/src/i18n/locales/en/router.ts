@@ -141,7 +141,7 @@ const en: Translation<typeof ru> = {
     outcomeStopped: 'stopped',
     outcomeLimit: 'hit a limit',
     // «Where»
-    whereGateway: 'Gateway',
+    whereGateway: 'Hub',
     whereGatewayPc: 'this computer',
     whereGatewayStation: 'the speaker',
     whereAsked: 'Asked on',

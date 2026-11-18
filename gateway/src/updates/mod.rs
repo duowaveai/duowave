@@ -275,20 +275,20 @@ impl UpdatesService {
             Some("pc") => (
                 false,
                 Some(
-                    crate::tr!("Шлюз на колонке обновляет компьютер, который его поставил: в его пульте «Настройки» → «Обновления и копии» → «Обновить до …»."),
+                    crate::tr!("DuoWave на колонке обновляет компьютер, который его поставил: в его пульте «Настройки» → «Обновления и копии» → «Обновить до …»."),
                 ),
             ),
             Some("yam") => (
                 false,
                 Some(
-                    crate::tr!("Шлюз поставлен через YAM: обновите его на колонке — yam install duowave/gateway@<версия>."),
+                    crate::tr!("DuoWave поставлен через YAM: обновите его на колонке — yam install duowave/gateway@<версия>."),
                 ),
             ),
-            Some("yse") => (false, Some(crate::tr!("Шлюз поставлен через yse: обновите его — yse upgrade duowave."))),
+            Some("yse") => (false, Some(crate::tr!("DuoWave поставлен через yse: обновите его — yse upgrade duowave."))),
             Some("docker") => (false, Some(crate::tr!("Обновите образ: docker compose pull && docker compose up -d"))),
             Some("home-assistant") => (false, Some(crate::tr!("Обновите дополнение в Home Assistant."))),
             Some("desktop") => (false, Some(crate::tr!("Обновите приложение из меню в трее."))),
-            Some(other) => (false, Some(crate::tr!("Шлюзом управляет {other}: обновите его там.", other = other))),
+            Some(other) => (false, Some(crate::tr!("Этим DuoWave управляет {other}: обновите его там.", other = other))),
             None if self.keys.is_err() => (false, Some(crate::tr!("Нет ключа подписи обновлений: установка выключена."))),
             None => (true, None),
         }

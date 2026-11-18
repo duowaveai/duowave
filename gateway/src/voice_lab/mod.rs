@@ -50,7 +50,7 @@ mod station {
     use crate::platform::http::ApiError;
 
     pub fn not_in_this_build_text() -> String {
-        crate::tr!("Голосовой лаборатории нет в этой сборке: свои голоса делаются в шлюзе на компьютере.")
+        crate::tr!("Голосовой лаборатории нет в этой сборке: свои голоса делаются в DuoWave на компьютере.")
     }
 
     pub fn router() -> Router<Arc<App>> {

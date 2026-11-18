@@ -8,7 +8,7 @@ const en: Translation<typeof ru> = {
     aboutComputer: 'the same conversation as by voice, as text and with all connected servers',
     metaModel: 'model',
     meta: (model: string, provider: string, tools: number) => `${model}${provider ? ` · ${provider}` : ''} · MCP tools: ${tools}`,
-    unreachable: 'The gateway is unreachable — try again.',
+    unreachable: 'The hub is unreachable — try again.',
     questionLabel: 'Question',
     placeholder: 'For example: what do we have today in Todoist?',
     ask: 'Ask',

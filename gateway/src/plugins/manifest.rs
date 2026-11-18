@@ -458,6 +458,11 @@ pub fn news_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-' | '_'))
 }
 
+/// Whether a package's `runs` fit a placement: named, or a station with its Турбо for an app for the station.
+pub fn fits(runs: &[Placement], placement: Placement) -> bool {
+    runs.contains(&placement) || (placement == Placement::StationServer && runs.contains(&Placement::Station))
+}
+
 #[derive(Debug, Clone)]
 pub struct Manifest {
     /// `plugin` when the manifest does not say.
@@ -840,9 +845,25 @@ impl Manifest {
             .collect()
     }
 
-    /// Why it cannot run here, if it cannot: the placement is not among its `runs`.
+    /// Whether it runs at this placement itself: `runs` names it — and a station with its Турбо (`stationServer`) is
+    /// a station still, so an app for the station runs there too (AirPlay, VPN; docs/plans/home-and-devices.md, 5б).
+    pub fn runs_at(&self, placement: Placement) -> bool {
+        fits(&self.runs, placement)
+    }
+
+    /// Its face here, its code elsewhere (docs/plans/home-and-devices.md, stage 5б): on a station, the centre of the
+    /// home, an app that runs on a computer — its phrases, tools, window, widget and schedules are the centre's, every
+    /// call goes to the home's Турбо that gives the apps, and nothing of its code runs here.
+    pub fn face_at(&self, placement: Placement) -> bool {
+        self.kind == PackageKind::App
+            && placement.on_station()
+            && !self.runs_at(placement)
+            && self.runs.contains(&Placement::Pc)
+    }
+
+    /// Why it cannot run here, if it cannot: the placement is not among its `runs`, and it is no face either.
     pub fn incompatible_with(&self, placement: Placement) -> Option<String> {
-        (!self.runs.contains(&placement)).then(|| {
+        (!self.runs_at(placement) && !self.face_at(placement)).then(|| {
             let runs: Vec<&str> = self.runs.iter().map(|runs| runs.as_str()).collect();
             crate::tr!(
                 "не работает здесь: размещение «{placement}» ({placement2}), а приложение — для {runs}",
@@ -986,7 +1007,7 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
     match root.get("schema").and_then(Value::as_u64) {
         Some(MANIFEST_SCHEMA) => {}
         Some(other) => problems.push(crate::tr!(
-            "schema {other}: этот шлюз понимает манифесты версии {MANIFEST_SCHEMA}",
+            "schema {other}: эта версия DuoWave понимает манифесты версии {MANIFEST_SCHEMA}",
             other = other,
             MANIFEST_SCHEMA = MANIFEST_SCHEMA
         )),
@@ -1030,8 +1051,8 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
     let coded = matches!(kind, PackageKind::Plugin | PackageKind::App);
     match semver::VersionReq::parse(&api) {
         Ok(requirement) if requirement.matches(&HOST_API) || !coded => {}
-        Ok(_) if api.starts_with("^1") || api.starts_with("1") || api.starts_with(">=1") => problems.push(crate::tr!("приложение для Host API 1 ({api}), а у шлюза {HOST_API}: переделайте его в мастерской («api»: «^2», права — связи шины) или удалите", api = api, HOST_API = HOST_API)),
-        Ok(_) => problems.push(crate::tr!("нужен Host API {api}, а у шлюза {host_api}", api = api, host_api = HOST_API)),
+        Ok(_) if api.starts_with("^1") || api.starts_with("1") || api.starts_with(">=1") => problems.push(crate::tr!("приложение для Host API 1 ({api}), а у DuoWave {HOST_API}: переделайте его в мастерской («api»: «^2», права — связи шины) или удалите", api = api, HOST_API = HOST_API)),
+        Ok(_) => problems.push(crate::tr!("нужен Host API {api}, а у DuoWave {host_api}", api = api, host_api = HOST_API)),
         Err(_) => problems.push(crate::tr!("api: требование к версии Host API, например «^2»")),
     }
     let runtime = match text("runtime") {
@@ -1069,7 +1090,7 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
     }
     if kind == PackageKind::App && !matches!(runtime, Runtime::Process | Runtime::Node) {
         problems.push(crate::tr!(
-            "приложение — это runtime «process» (своя сборка под каждую систему) или «node» (скрипт на Node шлюза)"
+            "приложение — это runtime «process» (своя сборка под каждую систему) или «node» (скрипт на Node внутри DuoWave)"
         ));
     }
     let node_entry = (runtime == Runtime::Node).then(|| {
@@ -1114,7 +1135,7 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
         _ => problems.push(crate::tr!("runs: список размещений, где плагин работает (pc, station, stationServer)")),
     }
     if runtime == Runtime::Node && runs.iter().any(|placement| *placement != Placement::Pc) {
-        problems.push("runs: Node есть только у шлюза на компьютере — у приложения на Node только pc".into());
+        problems.push("runs: Node есть только у DuoWave на компьютере — у приложения на Node только pc".into());
     }
 
     let data_version = match root.get("dataVersion") {
@@ -2093,7 +2114,7 @@ mod tests {
     #[test]
     fn refuses_another_host_api_or_a_placement_it_does_not_name_with_the_reason() {
         let newer = problems(with(radio(), "/api", json!("^3")));
-        assert_eq!(newer, [format!("нужен Host API ^3, а у шлюза {HOST_API}")]);
+        assert_eq!(newer, [format!("нужен Host API ^3, а у DuoWave {HOST_API}")]);
         // An app for Host API 1 is told what to do with it.
         let older = problems(with(radio(), "/api", json!("^1.1")));
         assert!(older[0].contains("Host API 1") && older[0].contains("переделайте"), "{older:?}");
@@ -2108,7 +2129,10 @@ mod tests {
         let why = pc_only.incompatible_with(Placement::Station).unwrap();
         assert!(why.contains("На колонке") && why.contains("pc"), "{why}");
         assert!(pc_only.incompatible_with(Placement::Pc).is_none());
-        assert_eq!(problems(with(radio(), "/schema", json!(2))), ["schema 2: этот шлюз понимает манифесты версии 1"]);
+        assert_eq!(
+            problems(with(radio(), "/schema", json!(2))),
+            ["schema 2: эта версия DuoWave понимает манифесты версии 1"]
+        );
         let mut wasm = radio();
         wasm["runtime"] = json!("wasm");
         assert_eq!(check(&wasm).unwrap().runtime, Runtime::Wasm);
@@ -2120,6 +2144,21 @@ mod tests {
         assert_eq!(problems(mcp.clone())[0], "mcp.url: адрес MCP-сервера (https://…)");
         mcp["mcp"] = json!({ "url": "https://weather.example/mcp" });
         assert_eq!(check(&mcp).unwrap().mcp_url.as_deref(), Some("https://weather.example/mcp"));
+    }
+
+    #[test]
+    fn an_app_for_the_station_runs_on_one_with_its_turbo_and_an_app_for_a_computer_is_a_face_there() {
+        let station_only = check(&with(radio(), "/runs", json!(["station"]))).unwrap();
+        assert!(station_only.runs_at(Placement::StationServer), "a station with its Турбо is a station still");
+        assert!(station_only.incompatible_with(Placement::StationServer).is_none());
+        assert!(!station_only.runs_at(Placement::Pc));
+        let pc_plugin = check(&with(radio(), "/runs", json!(["pc"]))).unwrap();
+        assert!(!pc_plugin.face_at(Placement::Station), "a plugin for a computer stays refused on a station");
+        let mut pc_app = pc_plugin.clone();
+        pc_app.kind = PackageKind::App;
+        assert!(pc_app.face_at(Placement::Station) && pc_app.face_at(Placement::StationServer));
+        assert!(pc_app.incompatible_with(Placement::Station).is_none(), "its face is installed on the centre");
+        assert!(!pc_app.face_at(Placement::Pc) && pc_app.runs_at(Placement::Pc));
     }
 
     #[test]
@@ -2248,7 +2287,7 @@ mod tests {
         app["runs"] = json!(["pc", "station"]);
         assert_eq!(
             problems(app.clone()),
-            ["runs: Node есть только у шлюза на компьютере — у приложения на Node только pc"]
+            ["runs: Node есть только у DuoWave на компьютере — у приложения на Node только pc"]
         );
         let mut plugin = radio();
         plugin["runtime"] = json!("node");

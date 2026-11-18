@@ -25,7 +25,7 @@ const en: Translation<typeof ru> = {
     editorPlaceholder: (assistant) => `For example: “You are ${assistant}, but you answer like an old sea wolf…”`,
     save: 'save',
     basisLine: (basis) => `Based on “${basis}”. `,
-    speechRules: 'The gateway adds the speech rules itself (short, no lists or emoji).',
+    speechRules: 'The speech rules (short, no lists or emoji) are added by themselves.',
     spokenThis: 'Speaking with this personality.',
     spokenYours: 'Speaking with your personality.',
     readingPersona: 'Reading the personality…',

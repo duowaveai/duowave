@@ -8,7 +8,7 @@ const en: Translation<typeof ru> = {
     whoVoice: 'by voice',
     whoMcp: 'Claude Code',
     whoCatalog: 'catalog',
-    whoSystem: 'gateway',
+    whoSystem: 'hub',
     whoAgentVoice: 'agent, asked by voice',
 
     kindStep: 'step',

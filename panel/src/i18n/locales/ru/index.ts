@@ -11,10 +11,12 @@ import stationsScreen from './stationsScreen';
 import stationWidgets from './stationWidgets';
 import helperPc from './helperPc';
 import helpers from './helpers';
+import devices from './devices';
 import firstRun from './firstRun';
 import onboarding from './onboarding';
 import onbBrain from './onbBrain';
 import showcase from './showcase';
+import wizard from './wizard';
 import deskAsk from './deskAsk';
 import onbCharacter from './onbCharacter';
 import onbConnect from './onbConnect';
@@ -78,10 +80,12 @@ const ru = {
     stationWidgets,
     helperPc,
     helpers,
+    devices,
     firstRun,
     onboarding,
     onbBrain,
     showcase,
+    wizard,
     deskAsk,
     onbCharacter,
     onbConnect,

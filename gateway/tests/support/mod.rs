@@ -95,7 +95,13 @@ impl Gateway {
     }
 
     async fn serve(dir: tempfile::TempDir, vars: Vec<(String, String)>) -> Gateway {
-        let mut env = Env::from_pairs(BASE.iter().copied()).with("DATA_DIR", &dir.path().to_string_lossy());
+        // The port first: the gateway says it to others (an ear tells its centre where it listens), never the
+        // default one a gateway of this computer may be listening on.
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("a free port");
+        let port = listener.local_addr().expect("a bound address").port();
+        let mut env = Env::from_pairs(BASE.iter().copied())
+            .with("DATA_DIR", &dir.path().to_string_lossy())
+            .with("PORT", &port.to_string());
         for (key, value) in &vars {
             env = env.with(key, value);
         }
@@ -109,8 +115,6 @@ impl Gateway {
         }));
         // As the program does: what runs before the first request (the stations' listeners, the catalog, …).
         app.start().await.expect("the gateway starts");
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("a free port");
-        let port = listener.local_addr().expect("a bound address").port();
         let (stop, stopped) = oneshot::channel::<()>();
         let server = tokio::spawn(app::serve(app.clone(), listener, async move {
             let _ = stopped.await;

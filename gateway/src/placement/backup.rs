@@ -57,7 +57,7 @@ impl Backups {
     }
 
     fn dir(&self) -> Result<&Path, String> {
-        self.dir.as_deref().ok_or_else(|| crate::tr!("копии настроек некуда сохранить: у шлюза нет папки данных"))
+        self.dir.as_deref().ok_or_else(|| crate::tr!("копии настроек некуда сохранить: у DuoWave нет папки данных"))
     }
 
     /// Keeps a sealed package and lets the oldest beyond ten go.

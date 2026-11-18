@@ -201,8 +201,22 @@ impl App {
         // the journal retention.
         self.stations.start();
         self.presence.start();
+        // The devices of the home: the panel's top line hears when they move.
+        crate::home::watch(&self.events);
+        // The home's character and its voice: the Турбо that speaks hears it (stage 2).
+        crate::home::character::watch(self);
+        // The character's voice up on the Турбо: the station switches to the computer's voice by itself (item 70).
+        crate::models::home_voice::watch_follow(self);
+        crate::home::telegram::watch(self);
+        crate::home::copy::watch(self);
+        // The apps' faces here, their code on the Турбо (stage 5б).
+        crate::home::apps::watch(self);
+        // A second station as the centre's ear: its copy of the home (stage 4).
+        crate::home::ear::start(self);
         // Where the gateway runs: the safety net's news on the station, the watch over the station's gateway here.
         self.placement.start();
+        // The settings revision counted anew after a change: the home's copy follows within seconds.
+        self.placement.watch_revision();
         // The built-in helper follows what it declares; the helpers' tick looks at its model servers.
         #[cfg(feature = "pc")]
         self.builtin.start();
@@ -331,6 +345,13 @@ impl App {
         if let Some(dir) = state_dir.as_deref() {
             let station = crate::core::build::Profile::for_role(config.placement.role.as_deref()).station;
             let pictures = crate::plugins::files::root_of(&config.data_dir);
+            // A move's characters and own sources first (placement/carry.rs, item 43): the package is applied after.
+            crate::placement::transfer::take_carried(
+                dir,
+                &config.plugins.packages_dir,
+                &config.plugins.catalog_dir,
+                &db,
+            );
             crate::placement::transfer::apply_incoming(dir, &db, &secrets, station, Some(&pictures));
         }
         let settings = Arc::new(SettingsService::new(db.clone(), events.clone()));
@@ -367,7 +388,7 @@ impl App {
         };
         // The old «Домашний сервер» into the helpers' list (and back, for a rollback): before anything reads the
         // placement.
-        crate::helpers::legacy::at_start(&config, &settings, &secrets);
+        crate::helpers::door::at_start(&config, &settings, &secrets);
         // «Выход в интернет» (src/egress): its routes are read by every HTTP client; decided before anything goes out.
         let egress =
             crate::egress::Egress::new(config.clone(), db.clone(), settings.clone(), secrets.clone(), events.clone());
@@ -1263,6 +1284,7 @@ impl App {
                 events: events.clone(),
                 placement: Arc::new(move || availability.placement()),
                 home: Some(helpers.link_for(crate::helpers::contract::Ability::Catalog)),
+                apps: Some(helpers.link_for(crate::helpers::contract::Ability::Apps)),
             })
         };
         // MagicPlace by voice (src/talk/store.rs, docs/plans/magicplace.md): it installs from this catalog under the
@@ -1288,6 +1310,7 @@ impl App {
             voice_lab.clone(),
             models.clone(),
             Arc::new(links::voice::LabVoices(voice_lab.clone())),
+            settings.clone(),
         ));
 
         // The connectors (connectors.module.ts): every built-in in the Node order, the model's over the dialog, our
@@ -1319,6 +1342,11 @@ impl App {
         }
         // The screen's windows for the model: which are open, keep, close, pause (src/screen/tools.rs).
         if let Err(error) = connectors.register(Arc::new(crate::screen::tools::ScreenConnector::new(&screen))) {
+            tracing::error!("{error}");
+        }
+        // The VPN's switch for the brain: `vpn_on`, `vpn_off`, `vpn_status`, while the app «VPN» is installed
+        // (src/egress/tools.rs).
+        if let Err(error) = connectors.register(Arc::new(crate::egress::tools::VpnConnector::new(&egress))) {
             tracing::error!("{error}");
         }
 
@@ -1460,9 +1488,9 @@ impl App {
                 if let crate::core::events::GatewayEvent::SafetyFired { what, .. } = &*event {
                     let text = match what.as_str() {
                         "previous-version" => {
-                            "Страховка: новая версия шлюза на колонке не поднялась — вернулась прежняя."
+                            "Страховка: новая версия DuoWave на колонке не поднялась — вернулась прежняя."
                         }
-                        _ => "Страховка: шлюз на колонке не поднимался — колонка вернулась к прежнему адресу.",
+                        _ => "Страховка: DuoWave на колонке не поднимался — колонка вернулась к прежнему адресу.",
                     };
                     let watch = watch.clone();
                     tokio::spawn(async move { watch.tell(text).await });
@@ -1703,6 +1731,7 @@ pub fn router(app: Arc<App>) -> Router {
         .merge(crate::placement::router())
         .merge(crate::home_server::router())
         .merge(crate::helpers::routes::router())
+        .merge(crate::home::routes())
         // The bridge of this gateway's own clients to its linked helpers (src/helpers/link.rs).
         .merge(crate::helpers::link::via_routes())
         .merge(crate::voice_lab::router());
@@ -1720,8 +1749,8 @@ pub fn router(app: Arc<App>) -> Router {
         // After every route: a path that exists with another method is Express's 404 too, not 405.
         .method_not_allowed_fallback(not_found)
         .with_state(app.clone())
-        // On the station, while its settings live on the computer, they are read-only here (src/placement).
-        .layer(axum::middleware::from_fn_with_state(app.clone(), crate::placement::routes::guard))
+        // An ear of the home's centre (src/home/ear.rs, stage 4): the home is edited at the centre, not here.
+        .layer(axum::middleware::from_fn_with_state(app.clone(), crate::home::ear::guard))
         .layer(axum::middleware::from_fn(error_bodies))
         // The language of the request (`Accept-Language`): the views of the apps answer in it (src/locale).
         .layer(axum::middleware::from_fn(crate::locale::request_language))
@@ -1752,6 +1781,9 @@ pub async fn serve(
     if let Ok(address) = listener.local_addr() {
         app.plugins.set_gateway_url(format!("http://127.0.0.1:{}", address.port()));
         app.helpers.set_local_port(address.port());
+        // imprint.py hears the words of a take through this gateway when recognition is inside it.
+        #[cfg(feature = "pc")]
+        app.voice_lab.set_local_port(address.port());
     }
     #[cfg(feature = "pc")]
     crate::helpers::link_serve::raise_open_files();

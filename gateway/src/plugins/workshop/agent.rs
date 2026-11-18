@@ -497,9 +497,18 @@ pub fn instructions(workshop: &Workshop, draft: &str) -> String {
         Err(_) => format!("Черновика «{draft}» ещё нет."),
     };
     let placement = workshop.host().placement_now();
+    // The household's language (item 50: a widget asked for in Russian came out in English, its date American): the
+    // texts people see are written in it first, the dates and numbers in its format; none set — the request's.
+    let household = crate::locale::household(workshop.host().settings());
+    let language = match household.as_deref() {
+        Some(code) => format!("Язык дома — «{code}»"),
+        None => "Язык дома не задан — бери язык просьбы".to_string(),
+    };
     format!(
-        "{}\n\n## Сейчас\n\n{now} Шлюз работает: {} ({}). Отвечай на языке просьбы, коротко и по делу: что сделал, что проверил, \
-что дальше. Код показывай только если об этом просят — он в черновике.",
+        "{}\n\n## Сейчас\n\n{now} Шлюз работает: {} ({}). {language}: на нём название, описание и все тексты для людей \
+(первым в `languages`), английский — вторым; даты, время и числа — через `Intl` на языке дома (`host.i18n.locale`, \
+`useLocale()`), не в американском виде. Отвечай на языке просьбы, коротко и по делу: что сделал, что проверил, что \
+дальше. Код показывай только если об этом просят — он в черновике.",
         skill_text(),
         placement.title(),
         placement.as_str()

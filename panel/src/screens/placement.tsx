@@ -63,7 +63,6 @@ export function PlacementCard() {
     const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
     const [busy, setBusy] = useState<string | null>(null);
     const [choosing, setChoosing] = useState(false);
-    const [copies, setCopies] = useState(false);
     const [inspected, setInspected] = useState<Inspected | null>(null);
     const [job, setJob] = useState<MoveJob | null>(null);
     const [linking, setLinking] = useState(false);
@@ -141,7 +140,6 @@ export function PlacementCard() {
                         act={act}
                         mayManage={mayManage}
                         onChoose={() => setChoosing(true)}
-                        onCopies={() => setCopies(true)}
                         onInspect={() =>
                             void act('inspect', async () => {
                                 setInspected(await api.inspectStation());
@@ -171,17 +169,6 @@ export function PlacementCard() {
                         setJob(started);
                         setChoosing(false);
                     }}
-                />
-            )}
-            {copies && view.station && (
-                <CopiesSheet
-                    station={view.station}
-                    busy={busy}
-                    onClose={() => setCopies(false)}
-                    onRestore={(id) =>
-                        act('restore', () => api.restoreStationSettings(id), tr.placement.copySent)
-                    }
-                    onBackup={() => act('backup', () => api.backupStation(), tr.placement.copyBackedUp)}
                 />
             )}
             {inspected && <InspectSheet inspected={inspected} onClose={() => setInspected(null)} />}
@@ -222,7 +209,6 @@ function ComputerSide({
     act,
     mayManage,
     onChoose,
-    onCopies,
     onInspect,
     onLink,
     onUnlink,
@@ -232,7 +218,6 @@ function ComputerSide({
     act: Act;
     mayManage: boolean;
     onChoose: () => void;
-    onCopies: () => void;
     onInspect: () => void;
     onLink: () => void;
     onUnlink: () => void;
@@ -326,7 +311,7 @@ function ComputerSide({
                 </a>
                 {mayManage && <Action label={tr.placement.change} onClick={onChoose} />}
             </Row>
-            <SettingsLine view={view} busy={busy} act={act} mayManage={mayManage} onCopies={onCopies} />
+            <SettingsLine view={view} />
             <div class="flex flex-col gap-6">
                 {update ? (
                     <Row>
@@ -394,61 +379,20 @@ function ComputerSide({
  * окнах, а здесь держит копии. Выбора «на колонке / на компьютере» больше нет; колонка, чьи настройки пока на
  * компьютере (так было прежде), возвращает их на колонку одной кнопкой.
  */
-function SettingsLine({
-    view,
-    busy,
-    act,
-    mayManage,
-    onCopies,
-}: {
-    view: PlacementView;
-    busy: string | null;
-    act: Act;
-    mayManage: boolean;
-    onCopies: () => void;
-}) {
+function SettingsLine({ view }: { view: PlacementView }) {
     const station = view.station!;
-    const record = station.record!;
-    const latest = station.backups[0];
     const live = station.live;
-    if (record.settingsHome === 'pc')
-        return (
-            <div class="flex flex-col gap-6">
-                <Line tone="warn">
-                    {tr.placement.settingsOnPc}
-                </Line>
-                {live.syncError && <Line tone="error">{live.syncError}</Line>}
-                {mayManage && (
-                    <Row>
-                        <Action
-                            label={tr.placement.settingsToStation}
-                            busy={busy === 'home'}
-                            onClick={() =>
-                                void ask({
-                                    title: tr.placement.settingsAskTitle,
-                                    text: tr.placement.settingsAskText,
-                                    ok: tr.placement.settingsAskOk,
-                                }).then((yes) => yes && void act('home', () => api.setSettingsHome('station')))
-                            }
-                        />
-                    </Row>
-                )}
-            </div>
-        );
+    // The home's copy (docs/plans/home-and-devices.md, stage 3): this computer takes it at each change of the centre.
+    const copied = station.copiedAt;
     const text = station.copyStale
-        ? latest
-            ? tr.placement.settingsStale(clock(latest.at))
+        ? copied
+            ? tr.placement.settingsStale(clock(copied))
             : tr.placement.settingsNoCopy
-        : tr.placement.settingsFresh(latest ? timeAgo(latest.at) : '—');
+        : tr.placement.settingsFresh(copied ? timeAgo(copied) : '—');
     return (
         <div class="flex flex-col gap-6">
             <Line tone={station.copyStale ? 'warn' : undefined}>{text}</Line>
             {live.syncError && <Line tone="error">{live.syncError}</Line>}
-            {mayManage && (
-                <Row>
-                    <Action label={tr.placement.copies} onClick={onCopies} />
-                </Row>
-            )}
         </div>
     );
 }
@@ -488,11 +432,7 @@ function StationSide({
                 <StationHelper mayManage={can('connectors.manage')} onChanged={() => void act('helperRead', async () => undefined)} />
             )}
             <Line>
-                {view.state.settingsHome === 'pc'
-                    ? `${tr.placement.settingsComeFromPc}${health.settingsReceivedAt ? tr.placement.settingsReceived(timeAgo(health.settingsReceivedAt)) : ''}`
-                    : health.settingsCopiedAt
-                      ? tr.placement.settingsCopiedAt(timeAgo(health.settingsCopiedAt))
-                      : tr.placement.settingsNotCopied}
+                {health.settingsCopiedAt ? tr.placement.settingsCopiedAt(timeAgo(health.settingsCopiedAt)) : tr.placement.settingsNotCopied}
             </Line>
             <Line>{managed}</Line>
             {view.state.safetyLast && (
@@ -1219,60 +1159,6 @@ export function LinkSheet({ onClose, onLinked, initialAddress }: { onClose: () =
                 <p role="alert" class="win-callout m-0">
                     {error}
                 </p>
-            )}
-        </Sheet>
-    );
-}
-
-function CopiesSheet({
-    station,
-    busy,
-    onClose,
-    onRestore,
-    onBackup,
-}: {
-    station: StationGatewayView;
-    /** Что делает карточка: «backup» — копия берётся. */
-    busy: string | null;
-    onClose: () => void;
-    onRestore: (id: string) => Promise<void>;
-    onBackup: () => Promise<void>;
-}) {
-    const taking = busy === 'backup';
-    return (
-        <Sheet
-            title={tr.placement.copiesTitle}
-            onClose={onClose}
-            footer={
-                <button class="btn btn-main" disabled={taking} aria-busy={taking || undefined} onClick={() => void onBackup()}>
-                    {taking && <span class="spinner spinner-sm" aria-hidden="true" />}
-                    {tr.placement.takeCopy}
-                </button>
-            }
-        >
-            <p class="win-lead">{tr.placement.copiesAbout}</p>
-            {station.backups.length ? (
-                <WinSection group>
-                    {station.backups.map((copy) => (
-                        <WinRow key={copy.id} title={clock(copy.at)} sub={tr.placement.copySub(copy.revision, tr.placement.kb(Math.max(1, Math.round(copy.size / 1024))))}>
-                            <button
-                                class="btn btn-plain btn-sm"
-                                onClick={async () => {
-                                    const yes = await ask({
-                                        title: tr.placement.restoreAskTitle(clock(copy.at)),
-                                        text: tr.placement.restoreAskText,
-                                        ok: tr.placement.restoreAskOk,
-                                    });
-                                    if (yes) void onRestore(copy.id);
-                                }}
-                            >
-                                {tr.placement.restore}
-                            </button>
-                        </WinRow>
-                    ))}
-                </WinSection>
-            ) : (
-                <p class="win-callout is-calm m-0">{tr.placement.noCopies}</p>
             )}
         </Sheet>
     );

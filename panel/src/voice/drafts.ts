@@ -40,6 +40,8 @@ export interface DeskDrafts {
     more: number;
     /** Перечитать сейчас (после своего действия). */
     reload: () => void;
+    /** Сделанный виджет уже стоит на столе (черновик `installed`): первый свой — витрина уходит (screens/showcase.tsx). */
+    landed: boolean;
 }
 
 /** Пока агент работает — перечитывать так часто, даже если живой канал молчит. */
@@ -66,7 +68,8 @@ export function useDeskDrafts(): DeskDrafts {
             }),
     });
     const { tile, more } = deskDrafts(drafts);
-    return { tile, more, reload };
+    const landed = drafts.some((draft) => draft.meta.stage === 'installed' && draft.meta.kind === 'widget');
+    return { tile, more, reload, landed };
 }
 
 /** Где работает агент мастерской: модель в облаке (янтарь) или дома. null — не знаем. */

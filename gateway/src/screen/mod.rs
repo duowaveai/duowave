@@ -195,7 +195,7 @@ impl Screen {
             return Err(crate::tr!("показывать нечего"));
         }
         if let Some(stranger) = contents.iter().find(|content| !self.knows(&content.file)) {
-            return Err(crate::tr!("«{title}»: такой ссылки шлюз не давал.", title = stranger.title));
+            return Err(crate::tr!("«{title}»: такой ссылки DuoWave не давал.", title = stranger.title));
         }
         let opened = {
             let mut windows = locked(&self.windows);

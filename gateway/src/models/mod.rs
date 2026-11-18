@@ -37,7 +37,7 @@ mod station {
     use crate::platform::http::ApiError;
 
     pub fn not_in_this_build_text() -> String {
-        crate::tr!("Свои модели — только в сборке шлюза для компьютера: в этой сборке (для колонки) их нет.")
+        crate::tr!("Свои модели — только в DuoWave для компьютера: в этой сборке (для колонки) их нет.")
     }
 
     /// `/api/v1/models` and everything under it: 501 in the envelope — but the computer's voice for the station's

@@ -314,7 +314,7 @@ impl Identity {
     pub fn rename(&self, name: Option<&str>, actor: Option<Actor>) -> Result<GatewayView, ApiError> {
         let name = name.map(clean_name).filter(|name| !name.is_empty());
         if name.as_ref().is_some_and(|name| name.chars().count() > NAME_MAX) {
-            return Err(ApiError::bad_request(crate::tr!("Имя шлюза — не длиннее {max} знаков.", max = NAME_MAX)));
+            return Err(ApiError::bad_request(crate::tr!("Имя — не длиннее {max} знаков.", max = NAME_MAX)));
         }
         let me = GatewaySelf { name, ..self.me()? };
         self.settings.set(&GATEWAY_SELF, &me, actor.clone())?;

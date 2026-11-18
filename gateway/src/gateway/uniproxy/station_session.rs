@@ -1192,10 +1192,12 @@ impl StationSession {
         .boxed()
     }
 
-    /// The word asked at `asked_at_ms` still waits for its request, and nothing listens yet.
+    /// The word asked at `asked_at_ms` still waits for its request, nothing listens yet, and no request began since it
+    /// asked (one that went to Yandex whole takes no word, but it is the station listening all the same).
     fn waits_for(&self, asked_at_ms: u64) -> bool {
         let inner = self.lock();
         inner.pending_wake.as_ref().is_some_and(|pending| pending.asked_at_ms == asked_at_ms)
+            && inner.last_voice_at_ms < asked_at_ms
             && !inner.voice_requests.iter().any(|voice| voice.state == super::voice_request::VoiceState::Listening)
     }
 
@@ -1614,6 +1616,9 @@ impl StationSession {
                 // goes to Yandex whole, voice and all, as in «Яндекс» — closed with an empty answer, the station fell
                 // silent (live, 07.11).
                 if !self.deps.speech.recognition_enabled() && inner.yandex.is_some() {
+                    // A request begun all the same: an activator's word waiting for one must not ask the station again
+                    // (`waits_for`) — a second press into a listening Alice cut the first (clean-path check 18.11, 21).
+                    inner.last_voice_at_ms = now_ms();
                     return self.voice_to_yandex(inner, header, request, frame);
                 }
                 self.start_voice(inner, header, request);
@@ -2427,7 +2432,7 @@ impl StationSession {
                 "Аварийный возврат: отдаю колонку Яндексу и перезагружаю её. Через минуту она заговорит как обычная Алиса."
             }
             (Rescue::GiveBack, false) => "Отсюда вернуть колонку не получится: это делают в пульте — «Вернуть к Яндексу».",
-            (Rescue::YandexMode, _) => "Перевожу шлюз в режим Яндекса: дальше отвечает Яндекс, как до шлюза. Вернуть — в пульте.",
+            (Rescue::YandexMode, _) => "Перевожу колонку в режим «Алиса»: дальше отвечает Яндекс, как до DuoWave. Вернуть — в пульте.",
         };
         self.record(
             EventDirection::Note,
@@ -2715,6 +2720,7 @@ impl StationSession {
                 model: None,
                 // A spoken answer: a few sentences (docs/plans/audio-interface.md, decision 14).
                 max_tokens: Some(crate::dialog::SPEECH_MAX_TOKENS),
+                device: Some(self.device_tag.clone()),
                 ..DialogContext::default()
             };
             return self.deps.dialog.answer(&self.device_tag, text, context, answer.token(), None);
@@ -2758,6 +2764,8 @@ impl StationSession {
             profile: Some(profile),
             // A spoken answer: a few sentences (docs/plans/audio-interface.md, decision 14).
             max_tokens: Some(crate::dialog::SPEECH_MAX_TOKENS),
+            // Who answers in this station's room (docs/plans/home-and-devices.md, «Комнаты»).
+            device: Some(self.device_tag.clone()),
             // Why the rule gave this model, for the deal (src/router).
             reason: Some(crate::skills::quick_commands::profile_reason(text, profile)),
             ..DialogContext::default()
@@ -2833,6 +2841,8 @@ impl StationSession {
             model: None,
             // A spoken answer: a few sentences (docs/plans/audio-interface.md, decision 14).
             max_tokens: Some(crate::dialog::SPEECH_MAX_TOKENS),
+            // Who answers in this station's room (docs/plans/home-and-devices.md, «Комнаты»).
+            device: Some(self.device_tag.clone()),
             // Why the rule gave this model, for the deal (src/router).
             reason: Some(crate::skills::quick_commands::profile_reason(text, profile)),
             ..DialogContext::default()
@@ -2993,6 +3003,8 @@ impl StationSession {
             model: None,
             // A spoken answer: a few sentences (docs/plans/audio-interface.md, decision 14).
             max_tokens: Some(crate::dialog::SPEECH_MAX_TOKENS),
+            // Who answers in this station's room (docs/plans/home-and-devices.md, «Комнаты»).
+            device: Some(self.device_tag.clone()),
             // Why the rule gave this model, for the deal (src/router).
             reason: Some(crate::skills::quick_commands::profile_reason(text, profile)),
             ..DialogContext::default()
@@ -3306,7 +3318,7 @@ impl StationSession {
 
     /// The provider in force for this answer: the panel's choice, with «Свой» keeping Alice's voice out.
     fn tts_provider(&self) -> TtsProvider {
-        self.deps.voice.provider(self.deps.modes.yandex_allowed())
+        self.deps.voice.provider(self.deps.modes.yandex_allowed_for(Some(&self.device_tag)))
     }
 
     fn note_unsupported(&self, text: &str, capability: CapabilityName, reason: &str) {
@@ -3382,7 +3394,7 @@ impl StationSession {
             directives: Vec::new(),
             whisper: config.whisper_reply && inner.whispered.as_deref() == Some(r#ref),
             // Yandex's markup means nothing to other engines.
-            markup: self.deps.voice.markup(self.deps.modes.yandex_allowed()),
+            markup: self.deps.voice.markup(self.deps.modes.yandex_allowed_for(Some(&self.device_tag))),
             wait_max_ms: self.deps.config.answer_wait_max_ms,
             deferrable: true,
         }
@@ -3419,13 +3431,14 @@ impl StationSession {
 
     /// Whether requests can go to Yandex now: our session with it is up.
     fn yandex_available(&self, inner: &Inner) -> bool {
-        self.deps.modes.yandex_allowed() && inner.yandex.as_ref().is_some_and(|yandex| yandex.connected())
+        self.deps.modes.yandex_allowed_for(Some(&self.device_tag))
+            && inner.yandex.as_ref().is_some_and(|yandex| yandex.connected())
     }
 
     /// Pushes, speech and the Yandex route need our session; it opens with the station's SynchronizeState.
     fn open_yandex(&self, inner: &mut Inner) {
         let Some(synchronize_state) = inner.synchronize_state.clone() else { return };
-        if inner.yandex.is_some() || !self.deps.modes.yandex_allowed() {
+        if inner.yandex.is_some() || !self.deps.modes.yandex_allowed_for(Some(&self.device_tag)) {
             return;
         }
         let config = &self.deps.config;
@@ -3623,7 +3636,7 @@ impl StationSession {
     /// our router decides who answers — or hears and answers it, as before. Only in «Вместе» with the switch on; the
     /// frame is the station's with the wait asked for. A frame that cannot be marked goes as it was.
     fn ask_to_wait(&self, message_id: &str, frame: Bytes) -> (Bytes, bool) {
-        if !self.deps.modes.yandex_ear() || !self.deps.modes.yandex_allowed() {
+        if !self.deps.modes.yandex_ear() || !self.deps.modes.yandex_allowed_for(Some(&self.device_tag)) {
             return (frame, false);
         }
         match wait_for_approval(&frame) {

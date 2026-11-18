@@ -1,0 +1,518 @@
+//! The home's character and its voice (docs/plans/home-and-devices.md, stage 2): the voice is part of the character,
+//! and the character is the home's — chosen at the centre, from any panel. The centre speaks through the Турбо that
+//! gives the voice (`/home/v1/tts`); so whenever its character changes, and whenever that Турбо comes back, the centre
+//! names the character to it (`POST /home/v1/character`, src/home_server/serve.rs): the Турбо installs the
+//! character's package by id and version when it lacks it — from the archive the centre's signed feed names, checked
+//! by its hash there, else from its own feed — and speaks with its voice from then on.
+//! A character of the built-in ones (Алиса's positions) has no voice of its own: nothing is sent.
+//!
+//! The model of that voice (clean-path check 18.11, item 40): `GET /api/v1/home/voice?character=<id>` (or
+//! `?package=<id>` before the package is installed here) asks the Турбо how each model would stand there
+//! (`POST /home/v1/character/plan`); `PUT /api/v1/home/voice` keeps the owner's choice here (`home_voice_engines`, by
+//! the character, or by its package before it is installed) and names it to the Турбо — now, and each time it comes
+//! back.
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::extract::{Query, State};
+use axum::routing::get;
+use axum::Router;
+use serde_json::{json, Value};
+
+use crate::app::App;
+use crate::characters::contributes::KNOWN_ENGINES;
+use crate::characters::Character;
+use crate::core::identity::permissions::{MODELS_MANAGE, STATION_VIEW};
+use crate::helpers::contract::Ability;
+use crate::helpers::remote::RemoteHelper;
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller};
+use crate::settings::definitions::{HOME_VOICE_ENGINES, PERSONA};
+
+/// The events after which the Турбо hears the character again.
+fn tells(name: &str) -> bool {
+    matches!(name, "persona.changed" | "helpers.up" | "helpers.changed")
+}
+
+/// Starts telling the voice's Турбо the home's character.
+pub fn watch(app: &Arc<App>) {
+    let weak = Arc::downgrade(app);
+    app.events.on("home.character", move |event| {
+        if !tells(event.name()) {
+            return;
+        }
+        let Some(app) = weak.upgrade() else { return };
+        tokio::spawn(async move {
+            // A burst (the list read again, a pairing) settles first.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if let Err(error) = tell(&app).await {
+                tracing::info!(target: "home", "the character to the Турбо: {error}");
+            }
+        });
+    });
+}
+
+/// The model the owner chose for a character's voice: by the character, else by its package (chosen before it was
+/// installed).
+pub fn chosen_engine(app: &App, character: &str, package: &str) -> Option<String> {
+    let chosen = app.settings.get(&HOME_VOICE_ENGINES, None)?;
+    chosen.get(character).or_else(|| chosen.get(package)).cloned()
+}
+
+/// The character as the Турбо should hear it: its id and package, and the model chosen for its voice; none — a
+/// built-in one.
+pub fn of_home(app: &App) -> Option<Value> {
+    let id = app.settings.get(&PERSONA, None)?.preset_id?;
+    let character = app.characters.character(&id)?;
+    let mut told = json!({ "id": character.id, "package": { "id": character.package, "version": character.version } });
+    if let Some(engine) = chosen_engine(app, &character.id, &character.package) {
+        told["engine"] = json!(engine);
+    }
+    Some(told)
+}
+
+/// Where the centre's signed feed has this version of a package: its address and hash (`{url, sha256, size}`); none
+/// when the feed is not read here or does not have it.
+async fn archive_of(app: &App, package: &str, version: &str) -> Option<Value> {
+    let feed = app.catalog.feed(false).await?;
+    let entry = feed.find(package, Some(version))?;
+    Some(json!({ "url": entry.url.as_str(), "sha256": entry.sha256, "size": entry.size }))
+}
+
+/// The Турбо that gives the voice: the one the voice goes to now, else one on the line — its voice ready or not.
+fn voice_turbo(app: &App) -> Option<Arc<RemoteHelper>> {
+    app.helpers
+        .pick_remote(Ability::Voice)
+        .or_else(|| app.helpers.offering(Ability::Voice).into_iter().find(|helper| helper.up()))
+}
+
+/// Names the home's character to the Турбо that gives the voice, if there is one on the line — its voice ready or
+/// not: a Турбо without a voice yet is the one that must hear it most, it installs the character's voice then (clean-path
+/// check 18.11, item 12: the Mac was on the line without a voice and was never told, so the home spoke Alice's voice).
+/// With the model chosen for its voice and where the centre's feed has its package.
+pub async fn tell(app: &App) -> Result<(), String> {
+    let Some(mut character) = of_home(app) else { return Ok(()) };
+    let Some(remote) = voice_turbo(app) else { return Ok(()) };
+    let package = (character["package"]["id"].as_str(), character["package"]["version"].as_str());
+    if let (Some(package), Some(version)) = package {
+        if let Some(archive) = archive_of(app, package, version).await {
+            character["archive"] = archive;
+        }
+    }
+    let response = crate::utils::http::client()
+        .post(format!("{}/home/v1/character", remote.base().trim_end_matches('/')))
+        .bearer_auth(remote.credential())
+        .json(&character)
+        // Its package may be downloaded first.
+        .timeout(Duration::from_secs(120))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text: String = response.text().await.unwrap_or_default().chars().take(200).collect();
+        return Err(format!("HTTP {status}: {text}"));
+    }
+    tracing::info!(target: "home", "the Турбо speaks as {}", character["id"]);
+    Ok(())
+}
+
+/// Gigabytes as people read them: «10», «5,5», «0,8».
+fn gb(mb: u64) -> String {
+    let gb = mb as f64 / 1024.0;
+    if gb >= 10.0 {
+        format!("{gb:.0}")
+    } else {
+        format!("{gb:.1}").trim_end_matches(".0").replace('.', ",")
+    }
+}
+
+/// A voice model that would not fit on the Турбо's disk (clean-path check 18.11, item 40): never downloaded.
+pub fn no_room(model: &str, need_mb: u64, free_mb: u64) -> ApiError {
+    ApiError::new(
+        axum::http::StatusCode::INSUFFICIENT_STORAGE,
+        crate::tr!(
+            "Модель {model} не поместится: нужно {need} ГБ, свободно {free} ГБ.",
+            model = model,
+            need = gb(need_mb),
+            free = gb(free_mb)
+        ),
+    )
+}
+
+pub fn routes() -> Router<Arc<App>> {
+    Router::new().route("/api/v1/home/voice", get(voice).put(choose))
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct Which {
+    #[serde(default)]
+    character: Option<String>,
+    #[serde(default)]
+    package: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct Choice {
+    #[serde(default)]
+    character: Option<String>,
+    #[serde(default)]
+    package: Option<String>,
+    #[serde(default)]
+    engine: String,
+}
+
+/// What the Турбо's plan needs of an installed character.
+fn plan_request(character: &Character, engine: Option<String>) -> Value {
+    json!({
+        "id": character.id,
+        "package": { "id": character.package, "version": character.version },
+        "voices": character.voices.keys().collect::<Vec<_>>(),
+        "reference": character.reference.is_some(),
+        "title": character.title,
+        "gender": character.gender,
+        "fallbackVoice": character.fallback_voice,
+        "engine": engine,
+    })
+}
+
+/// The plan's request and the owner's choice for a character, or for a package of the catalog not installed here yet:
+/// its models from the feed's `needs` of kind `engine`, a reference taken as there.
+async fn asked(app: &App, which: &Which) -> Result<(Value, Option<String>), ApiError> {
+    let character = match (&which.character, &which.package) {
+        (Some(id), _) => Some(
+            app.characters
+                .character(id)
+                .ok_or_else(|| ApiError::not_found(crate::tr!("Нет персонажа {id}.", id = id)))?,
+        ),
+        (None, Some(package)) => app.characters.of_package(package),
+        (None, None) => return Err(ApiError::bad_request("character или package".to_string())),
+    };
+    if let Some(character) = character {
+        let chosen = chosen_engine(app, &character.id, &character.package);
+        return Ok((plan_request(&character, chosen.clone()), chosen));
+    }
+    let package = which.package.clone().unwrap_or_default();
+    let feed = app.catalog.feed(false).await;
+    let entry = feed
+        .as_ref()
+        .and_then(|feed| feed.find(&package, None))
+        .ok_or_else(|| ApiError::not_found(crate::tr!("В каталоге нет «{id}».", id = package)))?;
+    let voices: Vec<&str> = entry
+        .needs
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|need| need.get("kind").and_then(Value::as_str) == Some("engine"))
+        .filter_map(|need| need.get("id").and_then(Value::as_str))
+        .filter(|engine| KNOWN_ENGINES.contains(engine))
+        .collect();
+    let chosen = chosen_engine(app, &package, &package);
+    let request = json!({
+        "id": package,
+        "package": { "id": package, "version": entry.version.to_string() },
+        "voices": voices,
+        "reference": true,
+        "title": entry.title,
+        "engine": chosen,
+    });
+    Ok((request, chosen))
+}
+
+/// The Турбо's plan; none while it is away or when it does not know the plan (an older one: 404).
+async fn plan_of(remote: &RemoteHelper, request: &Value) -> Option<Value> {
+    let response = crate::utils::http::client()
+        .post(format!("{}/home/v1/character/plan", remote.base().trim_end_matches('/')))
+        .bearer_auth(remote.credential())
+        .json(request)
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|error| tracing::info!(target: "home", "the voice's plan from the Турбо: {error}"))
+        .ok()?;
+    if !response.status().is_success() {
+        tracing::info!(target: "home", "the voice's plan from the Турбо: HTTP {}", response.status());
+        return None;
+    }
+    response.json::<Value>().await.ok()
+}
+
+/// `{turbo: {id, name, up} | null, plan: VoicePlan | null, chosen}`.
+async fn answer(app: &App, which: &Which) -> Result<Value, ApiError> {
+    let (request, chosen) = asked(app, which).await?;
+    let remote = voice_turbo(app).or_else(|| app.helpers.offering(Ability::Voice).into_iter().next());
+    let Some(remote) = remote else {
+        return Ok(json!({ "turbo": null, "plan": null, "chosen": chosen }));
+    };
+    let up = remote.up();
+    let name = app.helpers.views().into_iter().find(|view| view.id == remote.id()).map(|view| view.name);
+    let plan = if up { plan_of(&remote, &request).await } else { None };
+    Ok(json!({
+        "turbo": { "id": remote.id(), "name": name.unwrap_or_else(|| remote.id().to_string()), "up": up },
+        "plan": plan,
+        "chosen": chosen,
+    }))
+}
+
+async fn voice(State(app): State<Arc<App>>, caller: Caller, Query(which): Query<Which>) -> ApiResult<Value> {
+    caller.permitted(STATION_VIEW)?;
+    Ok(ok(answer(&app, &which).await?))
+}
+
+/// The owner's model for a character's voice (or a package's, before it is installed): kept here and named to the
+/// Турбо at once, in the background — its package may be downloaded there first.
+async fn choose(State(app): State<Arc<App>>, caller: Caller, Body(choice): Body<Choice>) -> ApiResult<Value> {
+    caller.permitted(MODELS_MANAGE)?;
+    if !KNOWN_ENGINES.contains(&choice.engine.as_str()) {
+        return Err(ApiError::bad_request(crate::tr!(
+            "engine: одна из моделей голоса — {engines}.",
+            engines = KNOWN_ENGINES.join(", ")
+        )));
+    }
+    let key = match (&choice.character, &choice.package) {
+        (Some(id), _) => id.clone(),
+        (None, Some(package)) if crate::plugins::manifest::valid_id(package) => package.clone(),
+        _ => return Err(ApiError::bad_request("character или package".to_string())),
+    };
+    let which = Which { character: choice.character.clone(), package: choice.package.clone() };
+    let (request, _) = asked(&app, &which).await?;
+    // A model that would not fit on the Турбо's disk is refused, and not kept: its plan says so while it is on the line.
+    if let Some(remote) = voice_turbo(&app).filter(|remote| remote.up()) {
+        if let Some(plan) = plan_of(&remote, &request).await {
+            let row = plan["engines"].as_array().into_iter().flatten().find(|row| row["id"] == choice.engine.as_str());
+            if let Some(row) = row.filter(|row| row["diskFits"] == false) {
+                let number = |name: &str| row[name].as_u64().unwrap_or_default();
+                let title = row["title"].as_str().unwrap_or(&choice.engine);
+                return Err(no_room(title, number("diskMb"), number("freeDiskMb")));
+            }
+        }
+    }
+    let mut chosen = app.settings.get(&HOME_VOICE_ENGINES, None).unwrap_or_default();
+    chosen.insert(key, choice.engine.clone());
+    app.settings.set(&HOME_VOICE_ENGINES, &chosen, caller.actor())?;
+    let told = app.clone();
+    tokio::spawn(async move {
+        if let Err(error) = tell(&told).await {
+            tracing::info!(target: "home", "the voice's model to the Турбо: {error}");
+        }
+    });
+    Ok(ok(answer(&app, &which).await?))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use axum::body::Body as HttpBody;
+    use axum::extract::ConnectInfo;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::post;
+    use http_body_util::BodyExt;
+    use serde_json::Map;
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::characters::contributes::tests::{arthur_manifest, write_arthur};
+    use crate::config::{Config, Env};
+    use crate::helpers::tests::{contract, KEY};
+    use crate::helpers::{AddInput, HelperKind};
+
+    /// The Турбо as the centre reaches it: its status, the plan it answers (404 — an older one), what it was told.
+    #[derive(Default)]
+    struct Turbo {
+        url: String,
+        old: std::sync::atomic::AtomicBool,
+        asked: Mutex<Vec<Value>>,
+        told: Mutex<Vec<Value>>,
+    }
+
+    async fn turbo() -> Arc<Turbo> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let turbo = Arc::new(Turbo { url: format!("http://{}", listener.local_addr().unwrap()), ..Turbo::default() });
+        let (plans, tells) = (turbo.clone(), turbo.clone());
+        let router = Router::new()
+            .route("/home/v1/status", get(|| async { axum::Json(contract("mac", &[("voice", false)])) }))
+            .route(
+                "/home/v1/character/plan",
+                post(move |axum::Json(body): axum::Json<Value>| {
+                    let turbo = plans.clone();
+                    async move {
+                        if turbo.old.load(std::sync::atomic::Ordering::SeqCst) {
+                            return Err(StatusCode::NOT_FOUND);
+                        }
+                        let chosen = body["engine"].clone();
+                        turbo.asked.lock().unwrap().push(body);
+                        // CosyVoice does not fit on its disk.
+                        let engines = json!([
+                            { "id": "omnivoice", "title": "OmniVoice", "diskMb": 5_600, "freeDiskMb": 8_000, "diskFits": true },
+                            { "id": "cosyvoice3", "title": "CosyVoice 3", "diskMb": 10_500, "freeDiskMb": 8_000, "diskFits": false },
+                            { "id": "voxcpm", "title": "VoxCPM", "diskMb": 0, "freeDiskMb": 8_000, "diskFits": true }
+                        ]);
+                        Ok(axum::Json(json!({ "engines": engines, "chosen": chosen, "voiceOn": false, "computer": "Mac" })))
+                    }
+                }),
+            )
+            .route(
+                "/home/v1/character",
+                post(move |axum::Json(body): axum::Json<Value>| {
+                    let turbo = tells.clone();
+                    async move {
+                        turbo.told.lock().unwrap().push(body.clone());
+                        axum::Json(json!({ "character": body["id"] }))
+                    }
+                }),
+            );
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        turbo
+    }
+
+    /// The centre (a station's gateway) with Артур installed and chosen, its Турбо on the line; its feed when given.
+    async fn centre(dir: &std::path::Path, feed: Option<&str>) -> (Arc<App>, Arc<Turbo>) {
+        let text = |sub: &str| dir.join(sub).to_string_lossy().into_owned();
+        let env = Env::from_pairs([
+            ("STATE_DIR", String::new()),
+            ("DATA_DIR", text("data")),
+            ("PACKAGES_DIR", text("packages")),
+            ("PLUGINS_BUNDLED", "false".into()),
+            ("DUOWAVE_ROLE", "station".into()),
+            ("PACKAGES_FEED_URL", feed.unwrap_or("off").into()),
+        ]);
+        let app = App::build(Config::for_tests(&env)).unwrap();
+        write_arthur(&app.config.plugins.packages_dir, &arthur_manifest("1.2.0"));
+        let body = crate::characters::ChooseBody { voice: Some(false), ..Default::default() };
+        app.characters.choose("arthur:arthur", body, false, None).await.unwrap();
+        let turbo = turbo().await;
+        let add =
+            AddInput { url: turbo.url.clone(), key: KEY.into(), kind: Some(HelperKind::Own), ..AddInput::default() };
+        app.helpers.add(add, None).await.unwrap();
+        (app, turbo)
+    }
+
+    fn key(app: &App, grants: &[&str]) -> String {
+        let input = Map::from_iter([("name".into(), json!("Пульт")), ("grants".into(), json!(grants))]);
+        format!("Bearer {}", app.access.keys.create(&input, None).unwrap().secret)
+    }
+
+    async fn send(app: &Arc<App>, method: &str, uri: &str, key: &str, body: Value) -> (StatusCode, Value) {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("authorization", key);
+        let mut request = request.body(HttpBody::from(body.to_string())).unwrap();
+        request.extensions_mut().insert(ConnectInfo(std::net::SocketAddr::new("192.168.1.20".parse().unwrap(), 5000)));
+        let response = crate::app::router(app.clone()).oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        // The gateway's wrapper: `{code, message}`, the answer in `message`.
+        let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, body["message"].clone())
+    }
+
+    /// What the Турбо was told last, once it has been told.
+    async fn told(turbo: &Turbo, count: usize) -> Value {
+        for _ in 0..100 {
+            if let Some(last) = turbo.told.lock().unwrap().get(count - 1).cloned() {
+                return last;
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        panic!("the Турбо was not told");
+    }
+
+    /// Clean-path check 18.11, item 40: the panel reads the Турбо's plan through the centre with the character's
+    /// models; the owner's choice is kept at the centre (by the character, or by the package before it is installed),
+    /// named to the Турбо at once and again whenever it is told (`helpers.up`); an older Турбо has no plan.
+    #[tokio::test]
+    async fn the_centre_asks_the_turbos_plan_and_names_the_chosen_model_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, turbo) = centre(dir.path(), None).await;
+        let (viewer, owner) = (key(&app, &["station.view"]), key(&app, &["station.view", "models.manage"]));
+
+        let (status, view) =
+            send(&app, "GET", "/api/v1/home/voice?character=arthur:arthur", &viewer, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{view}");
+        assert_eq!(view["turbo"]["up"], true, "{view}");
+        assert_eq!((&view["plan"]["computer"], &view["chosen"]), (&json!("Mac"), &Value::Null));
+        let asked = turbo.asked.lock().unwrap()[0].clone();
+        assert_eq!(asked["id"], "arthur:arthur");
+        assert_eq!(asked["package"], json!({ "id": "arthur", "version": "1.2.0" }));
+        assert_eq!(asked["voices"], json!(["cosyvoice3", "omnivoice"]));
+        assert_eq!((&asked["reference"], &asked["gender"]), (&json!(true), &json!("male")));
+        assert_eq!(asked["fallbackVoice"], "piper-denis");
+
+        // Choosing takes the right to the voices.
+        let choice = json!({ "character": "arthur:arthur", "engine": "voxcpm" });
+        let (status, _) = send(&app, "PUT", "/api/v1/home/voice", &viewer, choice.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let wrong = json!({ "character": "arthur:arthur", "engine": "f5tts" });
+        let (status, _) = send(&app, "PUT", "/api/v1/home/voice", &owner, wrong).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // A model that does not fit on the Турбо's disk: refused, not kept, nothing told.
+        let big = json!({ "character": "arthur:arthur", "engine": "cosyvoice3" });
+        let (status, refused) = send(&app, "PUT", "/api/v1/home/voice", &owner, big).await;
+        assert_eq!(status, StatusCode::INSUFFICIENT_STORAGE);
+        assert_eq!(refused, "Модель CosyVoice 3 не поместится: нужно 10 ГБ, свободно 7,8 ГБ.");
+        assert!(app.settings.get(&HOME_VOICE_ENGINES, None).is_none());
+        let (status, view) = send(&app, "PUT", "/api/v1/home/voice", &owner, choice).await;
+        assert_eq!(status, StatusCode::OK, "{view}");
+        assert_eq!((&view["chosen"], &view["plan"]["chosen"]), (&json!("voxcpm"), &json!("voxcpm")));
+        // Named to the Турбо at once; no feed here, so no archive.
+        let first = told(&turbo, 1).await;
+        assert_eq!((&first["id"], &first["engine"]), (&json!("arthur:arthur"), &json!("voxcpm")));
+        assert!(first.get("archive").is_none(), "{first}");
+        assert_eq!(turbo.told.lock().unwrap().len(), 1, "the refused one was never told");
+        // The Турбо back on the line is told the same.
+        tell(&app).await.unwrap();
+        assert_eq!(told(&turbo, 2).await["engine"], "voxcpm");
+
+        // An older Турбо: no plan, the panel goes as before.
+        turbo.old.store(true, std::sync::atomic::Ordering::SeqCst);
+        let (_, view) = send(&app, "GET", "/api/v1/home/voice?character=arthur:arthur", &viewer, Value::Null).await;
+        assert_eq!(
+            (&view["plan"], &view["chosen"], &view["turbo"]["up"]),
+            (&Value::Null, &json!("voxcpm"), &json!(true))
+        );
+    }
+
+    /// Before the package is installed at the centre: its plan from the feed's entry, the choice kept by the package and
+    /// named with the character once it is installed — with the archive the centre's feed names for that version.
+    #[tokio::test]
+    async fn a_choice_made_before_the_install_goes_with_the_character_and_its_archive() {
+        use crate::plugins::catalog::tests::{arthur, site};
+        use crate::plugins::install::tests::{character_manifest, vgp};
+        use sha2::Digest;
+        let site = site().await;
+        let mut jarvis = arthur("1.0.0");
+        jarvis["id"] = json!("jarvis");
+        jarvis["needs"] = json!([
+            { "kind": "engine", "id": "omnivoice" }, { "kind": "engine", "id": "f5tts" }, { "kind": "memory", "mb": 10 }
+        ]);
+        let archive = vgp(&character_manifest("arthur", "1.2.0"));
+        site.publish(&[(jarvis, b"jarvis archive".to_vec()), (arthur("1.2.0"), archive.clone())]);
+        let dir = tempfile::tempdir().unwrap();
+        let (app, turbo) = centre(dir.path(), Some(&site.url)).await;
+        let owner = key(&app, &["station.view", "models.manage"]);
+
+        let (status, view) = send(&app, "GET", "/api/v1/home/voice?package=jarvis", &owner, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{view}");
+        let asked = turbo.asked.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(asked["package"], json!({ "id": "jarvis", "version": "1.0.0" }));
+        assert_eq!((&asked["voices"], &asked["reference"]), (&json!(["omnivoice"]), &json!(true)));
+        let (status, _) = send(&app, "GET", "/api/v1/home/voice?package=nobody", &owner, Value::Null).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Arthur's package chosen by the package: its installed character goes with it, with the feed's archive.
+        let choice = json!({ "package": "arthur", "engine": "omnivoice" });
+        let (status, view) = send(&app, "PUT", "/api/v1/home/voice", &owner, choice).await;
+        assert_eq!((status, &view["chosen"]), (StatusCode::OK, &json!("omnivoice")), "{view}");
+        let first = told(&turbo, 1).await;
+        assert_eq!((&first["id"], &first["engine"]), (&json!("arthur:arthur"), &json!("omnivoice")));
+        assert_eq!(first["archive"]["url"], site.url.replace("catalog.json", "packages/arthur-1.2.0.vgp"));
+        assert_eq!(first["archive"]["sha256"], hex::encode(sha2::Sha256::digest(&archive)));
+        // The character's own choice goes before its package's.
+        let mut chosen = app.settings.get(&HOME_VOICE_ENGINES, None).unwrap();
+        chosen.insert("arthur:arthur".into(), "voxcpm".into());
+        app.settings.set(&HOME_VOICE_ENGINES, &chosen, None).unwrap();
+        assert_eq!(of_home(&app).unwrap()["engine"], "voxcpm");
+    }
+}

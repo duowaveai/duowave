@@ -209,7 +209,7 @@ impl LaterSkill {
             for command in due {
                 if now - command.at > LATE_MS {
                     let text = format!(
-                        "Отложенная команда «{}» не выполнена: опоздала на {} мин — шлюз не работал или колонка была занята.",
+                        "Отложенная команда «{}» не выполнена: опоздала на {} мин — DuoWave не работал или колонка была занята.",
                         command.command,
                         (now - command.at) / MINUTE_MS
                     );

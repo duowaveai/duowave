@@ -14,7 +14,7 @@ use crate::core::events::{Actor, EventBus, GatewayEvent};
 use crate::platform::http::ApiError;
 use crate::requests::ModeSource;
 use crate::settings::definitions::{
-    AutoSwitch, GatewayState, ModeBy, ModeSetting, PanelMode, GATEWAY_STATE, MODE, YANDEX_EAR,
+    AutoSwitch, GatewayState, ModeBy, ModeSetting, PanelMode, GATEWAY_STATE, MODE, ROOMS, YANDEX_EAR,
 };
 use crate::settings::SettingsService;
 use crate::speech::voice_service::Whose;
@@ -154,16 +154,37 @@ impl ModeService {
 
     /// Which session a connecting station gets: relayed to Yandex, or answered by us.
     pub fn session_kind(&self) -> SessionKind {
-        if self.current() == PanelMode::Relay {
+        self.session_kind_for(None)
+    }
+
+    /// Whether anything may go to Yandex: not in «Свой».
+    pub fn yandex_allowed(&self) -> bool {
+        self.current() != PanelMode::Own
+    }
+
+    /// The mode in a device's room (docs/plans/home-and-devices.md, «Комнаты»): its own when its room has one, else
+    /// the home's. Under the computer's microphone lock («Свой» only) a room's own does not count.
+    pub fn current_for(&self, device: Option<&str>) -> PanelMode {
+        let home = self.current();
+        if self.locked() {
+            return home;
+        }
+        let room = device.and_then(|device| self.settings.get(&ROOMS, None)?.remove(device)?.mode);
+        room.filter(|mode| self.gate.check(*mode).is_ok()).unwrap_or(home)
+    }
+
+    /// The session a connecting station gets by its room's mode.
+    pub fn session_kind_for(&self, device: Option<&str>) -> SessionKind {
+        if self.current_for(device) == PanelMode::Relay {
             SessionKind::Relay
         } else {
             SessionKind::Gateway
         }
     }
 
-    /// Whether anything may go to Yandex: not in «Свой».
-    pub fn yandex_allowed(&self) -> bool {
-        self.current() != PanelMode::Own
+    /// Whether anything of this device's requests may go to Yandex: not in «Свой» of its room.
+    pub fn yandex_allowed_for(&self, device: Option<&str>) -> bool {
+        self.current_for(device) != PanelMode::Own
     }
 
     /// The panel's switch: `to` as the body gave it, anything but one of the three refused. A person's choice ends
@@ -190,6 +211,11 @@ impl ModeService {
     /// Whether a mode has a way here now: what the way back from the microphone asks before it returns one.
     pub fn possible(&self, mode: PanelMode) -> bool {
         self.gate.check(mode).is_ok()
+    }
+
+    /// Whether a room may take this mode now, and why not: the same way as the home's switch.
+    pub fn possible_now(&self, mode: PanelMode) -> Result<(), String> {
+        self.gate.check(mode)
     }
 
     /// «Своё» for the microphone, when the mode in force is another (the start, a setting written past the switch).
@@ -266,6 +292,8 @@ impl ModeSource for ModeService {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::config::{Config, Env, TtsProvider};
     use crate::core::build::Profile;
@@ -292,6 +320,22 @@ mod tests {
             voice,
             events,
         )
+    }
+
+    #[test]
+    fn a_rooms_own_mode_counts_for_its_station_only() {
+        let (modes, _voice, _events) = build("yandex", true);
+        let mut rooms = BTreeMap::new();
+        rooms.insert(
+            "nursery".to_string(),
+            crate::settings::definitions::RoomSetting { mode: Some(PanelMode::Relay), ..Default::default() },
+        );
+        modes.settings.set(&ROOMS, &rooms, None).unwrap();
+        assert_eq!(modes.current_for(Some("nursery")), PanelMode::Relay, "«Алиса» in the nursery");
+        assert_eq!(modes.session_kind_for(Some("nursery")), SessionKind::Relay);
+        assert_eq!(modes.current_for(Some("kitchen")), PanelMode::Gateway, "the home's elsewhere");
+        assert_eq!(modes.current_for(None), PanelMode::Gateway);
+        assert!(modes.yandex_allowed_for(Some("nursery")) && modes.yandex_allowed_for(Some("kitchen")));
     }
 
     #[tokio::test]

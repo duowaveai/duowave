@@ -214,7 +214,7 @@ impl Publisher for Watch {
             runs: "any",
             from: "apps",
             url: None,
-            about: crate::tr!("страница на этом шлюзе: ролик и развилка, голоса ①/② приходят обратно, 30 дней"),
+            about: crate::tr!("своя страница: ролик и развилка, голоса ①/② приходят обратно, 30 дней"),
         }
     }
 
@@ -264,7 +264,7 @@ impl Publisher for Telegram {
         let ready = self.bot.enabled();
         PublisherCard {
             id: "telegram".into(),
-            title: crate::tr!("В Telegram ботом шлюза"),
+            title: crate::tr!("В Telegram своим ботом"),
             kind: Kind::Direct,
             accepts: vec!["video"],
             ready,

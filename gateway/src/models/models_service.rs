@@ -185,6 +185,9 @@ pub struct EngineState {
     pub disk_mb: u64,
 }
 
+/// «Отменить» waits for the stopped job this long: the job's grace (TERM, then KILL) and a little more.
+const CANCEL_WAIT: Duration = Duration::from_secs(8);
+
 /// The voice lab's job, running or the last one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LabJob {
@@ -193,6 +196,10 @@ pub struct LabJob {
     pub engine: String,
     pub running: bool,
     pub percent: u32,
+    /// What it does now, in words: «Скачиваю веса модели · 603 из ~2 300 МБ · 1,2 МБ/с» (п. 66).
+    pub label: String,
+    /// Its log's last line (a program's own, e.g. huggingface's «Fetching 13 files: 92%…»): details under the words.
+    pub last_line: Option<String>,
     /// Why it failed or was stopped.
     pub failed: Option<String>,
 }
@@ -227,6 +234,9 @@ pub trait OwnVoices: Send + Sync {
     fn imprint(&self, recipe: VoiceRecipe, anyway: bool, actor: Option<Actor>) -> BoxFuture<'_, Result<(), ApiError>>;
     /// The voice lab's job running, else its last one.
     fn job(&self) -> Option<LabJob>;
+    /// Stops the lab's running job when it is this one (`kind`: install, imprint; `engine` empty — any): its program
+    /// taken down, TERM then KILL (п. 68: «Отменить» forgot the choice, and the hung download lived on). false — none such.
+    fn stop_job(&self, kind: &str, engine: &str) -> bool;
     /// An own voice's engine; None: no such voice.
     fn voice_engine(&self, id: &str) -> Option<String>;
 }
@@ -422,6 +432,9 @@ pub struct PendingView {
     /// waiting, tight (memory: it waits for the owner's «всё равно?»), failed.
     pub state: String,
     pub progress: Option<u32>,
+    /// What the install does now, in words — the download's megabytes and speed, «скачивание стояло — повторяю» (п. 66).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     pub reason: Option<String>,
     pub since: String,
 }
@@ -1326,7 +1339,7 @@ impl ModelsService {
     pub async fn choose(self: &Arc<Self>, request: VoiceRequest, actor: Option<Actor>) -> Result<Chosen, ApiError> {
         let body = &request.body;
         let voice = self.links.voice.clone().ok_or_else(|| {
-            ApiError::unavailable(crate::tr!("Синтез речи ещё не подключён к этому шлюзу — голос не переключить."))
+            ApiError::unavailable(crate::tr!("Синтез речи здесь ещё не подключён — голос не переключить."))
         })?;
         if body.get("modelId").and_then(Value::as_str) == Some("yandex") {
             // Alice speaks: the app's own voice server gives its memory back.
@@ -1567,6 +1580,31 @@ impl ModelsService {
         self.settings.get(&VOICE_PENDING, None).map(|pending| pending.model_id)
     }
 
+    /// The owner's «Отменить» (`DELETE /api/v1/models/tts/pending`): the voice lab's job the pending voice waits for is
+    /// stopped — its program gone, not left downloading (п. 68), — and the choice forgotten. Waits for the job to end
+    /// (TERM, then KILL after the grace), so «Скачать и включить» right after starts a new job, not the dying one.
+    /// true — a job was stopped.
+    pub async fn cancel_pending(&self, actor: Option<Actor>) -> bool {
+        let stopped = match (self.settings.get(&VOICE_PENDING, None), self.links.own_voices.as_ref()) {
+            (Some(pending), Some(lab)) => match pending.wait_for.kind.as_str() {
+                "engine" if pending.wait_for.id != RUNTIME_ID => lab.stop_job("install", &pending.wait_for.id),
+                "imprint" => lab.stop_job("imprint", ""),
+                _ => false,
+            },
+            _ => false,
+        };
+        self.clear_pending(actor);
+        if stopped {
+            if let Some(lab) = self.links.own_voices.as_ref() {
+                let until = tokio::time::Instant::now() + CANCEL_WAIT;
+                while lab.job().is_some_and(|job| job.running) && tokio::time::Instant::now() < until {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }
+        }
+        stopped
+    }
+
     /// Forgets the pending voice: another was chosen, or the owner said no (`DELETE /api/v1/models/tts/pending`).
     pub fn clear_pending(&self, actor: Option<Actor>) {
         if self.settings.get(&VOICE_PENDING, None).is_none() {
@@ -1599,7 +1637,17 @@ impl ModelsService {
                 .map(|job| job.percent),
             _ => job.filter(|job| job.running && job.kind == "imprint").map(|job| job.percent),
         };
-        Some(pending_view(&pending, progress))
+        // Going — its words (megabytes, speed); failed — the program's last line under the words (п. 68).
+        let install = job.filter(|job| {
+            job.kind == "install" && pending.wait_for.kind == "engine" && job.engine == pending.wait_for.id
+        });
+        let detail = match install {
+            Some(job) if job.running => Some(job.label.clone()),
+            Some(job) if pending.state == "failed" => job.last_line.clone(),
+            _ => None,
+        }
+        .filter(|line| !line.is_empty());
+        Some(PendingView { detail, ..pending_view(&pending, progress) })
     }
 
     /// The pending voice, looked at again after an install, a download or an imprint ended: what it waited for is
@@ -1753,6 +1801,16 @@ impl ModelsService {
         }?;
         let installed = self.files.installed(&record.id, record.file.as_deref());
         Some((record.title, installed))
+    }
+
+    /// A voice card's file size, MB, as the catalog writes it («60 МБ»); None when it does not say.
+    pub fn voice_card_mb(&self, id: &str) -> Option<u64> {
+        let cached = lock(&self.models).clone();
+        let record = match cached {
+            Some(models) => models.iter().find(|record| record.id == id).cloned(),
+            None => self.catalog.list_voice_models().ok()?.into_iter().find(|record| record.id == id),
+        }?;
+        file_needs(&record).download_mb
     }
 
     /// Notes the recognition model by its card's id (the model string still resolves); it serves after the server
@@ -2373,6 +2431,7 @@ fn pending_view(pending: &VoicePending, progress: Option<u32>) -> PendingView {
         wait_for: pending.wait_for.clone(),
         state: pending.state.clone(),
         progress,
+        detail: None,
         reason: pending.reason.clone(),
         since: pending.since.clone(),
     }
@@ -2553,6 +2612,8 @@ mod tests {
         imprints: Mutex<Vec<String>>,
         /// The imprints that came out: voices from now on.
         made: Mutex<Vec<String>>,
+        /// The jobs «Отменить» stopped: `kind:engine`.
+        stops: Mutex<Vec<String>>,
     }
 
     impl FakeLab {
@@ -2645,6 +2706,11 @@ mod tests {
 
         fn job(&self) -> Option<LabJob> {
             None
+        }
+
+        fn stop_job(&self, kind: &str, engine: &str) -> bool {
+            lock(&self.stops).push(format!("{kind}:{engine}"));
+            true
         }
 
         fn voice_engine(&self, id: &str) -> Option<String> {
@@ -3337,8 +3403,10 @@ mod tests {
         assert!(pending(&shop).is_none(), "another voice chosen");
         lab.omnivoice("missing");
         shop.shop.choose(wait(), None).await.unwrap();
-        shop.shop.clear_pending(None);
+        // «Отменить» (п. 68): the install the voice waits for is stopped too, not left downloading.
+        assert!(shop.shop.cancel_pending(None).await);
         assert!(pending(&shop).is_none(), "the owner's «не надо»");
+        assert_eq!(lock(&lab.stops).clone(), ["install:omnivoice"]);
         // The install ended without the engine: the pending voice says it failed.
         lab.omnivoice("missing");
         shop.shop.choose(wait(), None).await.unwrap();

@@ -56,7 +56,7 @@ impl Words for BrainWords {
     ) -> BoxFuture<'static, Result<Value, BusError>> {
         let (dialog, plugins, bus) = (self.dialog.upgrade(), self.plugins.upgrade(), self.bus.upgrade());
         Box::pin(async move {
-            let gone = || BusError::Failed(crate::tr!("шлюз останавливается"));
+            let gone = || BusError::Failed(crate::tr!("DuoWave останавливается"));
             let (dialog, plugins, bus) = (dialog.ok_or_else(gone)?, plugins.ok_or_else(gone)?, bus.ok_or_else(gone)?);
             if !dialog.enabled() {
                 return Err(BusError::Failed(crate::tr!("отвечать словами некому: модель «Мозга» не выбрана")));

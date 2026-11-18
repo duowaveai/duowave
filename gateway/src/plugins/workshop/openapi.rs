@@ -214,7 +214,7 @@ pub fn draft_from(id: &str, title: Option<&str>, document: &str) -> Result<Vec<(
         .collect();
     let mut settings = Vec::new();
     if key.is_some() {
-        settings.push(json!({ "key": "apiKey", "type": "string", "title": "Ключ API", "description": "Выдаёт сервис; хранится в настройках шлюза, не в коде" }));
+        settings.push(json!({ "key": "apiKey", "type": "string", "title": "Ключ API", "description": "Выдаёт сервис; хранится в центре, не в коде" }));
     }
     let manifest = json!({
         "schema": 1,

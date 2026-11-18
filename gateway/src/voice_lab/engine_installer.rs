@@ -8,11 +8,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
+use tokio_util::sync::CancellationToken;
 
 use super::clone_engines::{flavour, verdict, EngineId, EngineSpec, Flavour};
-use super::jobs::{JobContext, JobError, RunOptions};
-use super::js::{self, gb};
+use super::jobs::{JobContext, JobError, JobReason, RunOptions};
+use super::js;
 use super::platform::{GpuKind, OsName, PlatformInfo};
 use crate::utils::time::now_iso;
 
@@ -48,40 +49,191 @@ pub fn folder_bytes(dir: &Path) -> u64 {
     total
 }
 
+/// How a download is watched: it stands still this long (no byte added to its folder) — it is taken down and started
+/// again, so many times; then the job fails in words (п. 66: the CDN hung at 603 MB for minutes, and nothing noticed).
+#[derive(Debug, Clone, Copy)]
+pub struct Watch {
+    pub stall_after: Duration,
+    pub retries: u32,
+    pub period: Duration,
+}
+
+pub const WATCH: Watch = Watch { stall_after: Duration::from_secs(60), retries: 3, period: Duration::from_secs(2) };
+
+/// Partial files of a download that a new start will not continue: huggingface_hub 2.x writes each into
+/// `<etag>.<8 hex>.incomplete`, its own per process, and a new process starts the file again. Older ones (0.3x,
+/// CosyVoice's) write `<etag>.incomplete` and continue it — those stay. Taken away before a new start: gigabytes.
+pub fn drop_dead_partials(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    let mut freed = 0;
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else { continue };
+        let path = entry.path();
+        if kind.is_dir() {
+            freed += drop_dead_partials(&path);
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(stem) = name.strip_suffix(".incomplete") else { continue };
+        let own =
+            stem.rsplit_once('.').is_some_and(|(_, tag)| tag.len() == 8 && tag.bytes().all(|b| b.is_ascii_hexdigit()));
+        if own {
+            let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+            if std::fs::remove_file(&path).is_ok() {
+                freed += size;
+            }
+        }
+    }
+    freed
+}
+
+/// A whole number with its thousands apart, as Russian writes it: 2300 → «2 300».
+fn thousands(value: i64) -> String {
+    let digits = value.abs().to_string();
+    let mut out = String::new();
+    for (at, digit) in digits.chars().enumerate() {
+        if at > 0 && (digits.len() - at).is_multiple_of(3) {
+            out.push('\u{a0}');
+        }
+        out.push(digit);
+    }
+    if value < 0 {
+        out.insert(0, '-');
+    }
+    out
+}
+
+/// Empties a folder but for the named entries in it; no folder — nothing to do.
+fn clear_except(dir: &Path, keep: &[&str]) -> std::io::Result<()> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    for entry in entries.flatten() {
+        if keep.iter().any(|name| entry.file_name() == *name) {
+            continue;
+        }
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            std::fs::remove_dir_all(&path)?;
+        } else {
+            std::fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
+}
+
+/// «603 из ~2 300 МБ · 1,2 МБ/с»: how much there is, of how much, and how fast it comes now.
+pub fn download_line(done_bytes: u64, expected_mb: u64, bytes_per_second: f64) -> String {
+    let done = js::round_i64(done_bytes as f64 / 1_048_576.0);
+    let speed = if bytes_per_second >= 1_048_576.0 {
+        let tenths = js::round(bytes_per_second / 1_048_576.0 * 10.0) / 10.0;
+        crate::tr!("{speed} МБ/с", speed = format!("{tenths:.1}").replace('.', ","))
+    } else {
+        crate::tr!("{speed} КБ/с", speed = js::round_i64(bytes_per_second / 1024.0))
+    };
+    crate::tr!(
+        "{done} из ~{total} МБ · {speed}",
+        done = thousands(done),
+        total = thousands(expected_mb as i64),
+        speed = speed
+    )
+}
+
 /// A long download, seen by the size of its folder against the size it will have: the weights are gigabytes, and a
-/// bar standing still for minutes looks like a hang. «Скачиваю веса модели · 1,2 из ~3,0 ГБ».
-async fn sized_download<T>(
+/// bar standing still for minutes looks like a hang. «Скачиваю веса модели · 603 из ~2 300 МБ · 1,2 МБ/с». Standing
+/// still `stall_after` — the program is taken down and started again (finished files stay; a 2.x partial is dropped,
+/// it would not be continued); after `retries` — the job fails: «Hugging Face не отвечает — проверьте сеть или VPN».
+async fn watched_download<F, Fut>(
     context: &JobContext,
     dir: &Path,
     expected_mb: u64,
     label: &str,
     (from, to): (f64, f64),
-    run: impl std::future::Future<Output = T>,
-) -> T {
-    let show = || {
-        let mb = folder_bytes(dir) as f64 / 1_048_576.0;
-        let done = (mb / expected_mb as f64).min(1.0);
-        context.stage(
-            "weights",
-            &crate::tr!(
-                "{label} · {done} из ~{total} ГБ",
-                label = label,
-                done = gb(mb),
-                total = gb(expected_mb as f64)
-            ),
-            Some(from + (to - from) * done),
-        );
-    };
-    show();
-    let period = Duration::from_secs(2);
-    let mut timer = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
-    tokio::pin!(run);
-    loop {
-        tokio::select! {
-            result = &mut run => return result,
-            _ = timer.tick() => show(),
+    watch: Watch,
+    run: F,
+) -> Result<Map<String, Value>, JobError>
+where
+    F: Fn(CancellationToken, u32) -> Fut,
+    Fut: std::future::Future<Output = Result<Map<String, Value>, JobError>>,
+{
+    // Partials an earlier job left (stopped, failed): a new start would not continue them.
+    drop_dead_partials(dir);
+    for attempt in 0..=watch.retries {
+        if attempt > 0 {
+            let freed = drop_dead_partials(dir);
+            context.log(&format!(
+                "скачивание стояло {} с — повторяю ({attempt} из {}), убрано недокачанного {} МБ",
+                watch.stall_after.as_secs(),
+                watch.retries,
+                freed / 1_048_576
+            ));
+        }
+        let head = if attempt == 0 {
+            label.to_string()
+        } else {
+            crate::tr!(
+                "Скачивание стояло — повторяю ({attempt} из {retries})",
+                attempt = attempt,
+                retries = watch.retries
+            )
+        };
+        let show = |bytes: u64, speed: f64| {
+            let done = (bytes as f64 / 1_048_576.0 / expected_mb.max(1) as f64).min(1.0);
+            context.stage(
+                "weights",
+                &format!("{head} · {}", download_line(bytes, expected_mb, speed)),
+                Some(from + (to - from) * done),
+            );
+        };
+        let token = CancellationToken::new();
+        let program = run(token.clone(), attempt);
+        tokio::pin!(program);
+        let started = tokio::time::Instant::now();
+        let mut top = folder_bytes(dir);
+        let mut grown_at = started;
+        // Speed over the last ten seconds: one slow tick does not read as a hang.
+        let mut samples: std::collections::VecDeque<(tokio::time::Instant, u64)> = [(started, top)].into();
+        show(top, 0.0);
+        let mut timer = tokio::time::interval_at(started + watch.period, watch.period);
+        let outcome = loop {
+            tokio::select! {
+                result = &mut program => break result,
+                _ = timer.tick() => {
+                    let now = tokio::time::Instant::now();
+                    let bytes = folder_bytes(dir);
+                    if bytes > top {
+                        top = bytes;
+                        grown_at = now;
+                    }
+                    samples.push_back((now, bytes));
+                    while samples.len() > 2 && now - samples[0].0 > Duration::from_secs(10) {
+                        samples.pop_front();
+                    }
+                    let (first_at, first) = samples[0];
+                    let seconds = (now - first_at).as_secs_f64();
+                    let speed = if seconds > 0.0 { bytes.saturating_sub(first) as f64 / seconds } else { 0.0 };
+                    show(bytes, speed);
+                    if now - grown_at >= watch.stall_after && !token.is_cancelled() {
+                        token.cancel();
+                    }
+                }
+            }
+        };
+        match outcome {
+            Err(error) if error.reason == Some(JobReason::Stalled) => continue,
+            // The program fell (the network, the CDN): words for the owner; its own last line («Fetching 13 files:
+            // 92%…») stays in the log, the panel shows it under them (п. 68).
+            Err(error) if matches!(error.reason, None | Some(JobReason::Error)) => {
+                context.log(&error.message);
+                return Err(crate::tr!("модель не скачалась — проверьте сеть или VPN и попробуйте снова.").into());
+            }
+            other => return other,
         }
     }
+    Err(crate::tr!("Hugging Face не отвечает — проверьте сеть или VPN: скачивание модели стояло, повторы не помогли.")
+        .into())
 }
 
 /// The environment's Python, where uv puts it on each system.
@@ -219,6 +371,8 @@ pub struct InstallPlan {
     /// The bench's models folder, when this computer has one.
     pub bench_models: Option<PathBuf>,
     pub env: HashMap<String, String>,
+    /// How the weights' download is watched (WATCH; tests — seconds).
+    pub watch: Watch,
 }
 
 /// A path as a program's argument.
@@ -270,12 +424,11 @@ pub async fn install_engine(context: &JobContext, plan: &InstallPlan) -> Result<
         .into());
     }
 
-    // A failed install leaves a folder without ready.json: it starts over.
-    match std::fs::remove_dir_all(&target) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.to_string().into()),
-    }
+    // A failed or stopped install leaves a folder without ready.json: it starts over — but the weights fetched so far
+    // stay (п. 68: «Отменить» и снова — and gigabytes from zero): the environment is made anew, the download skips
+    // the files it has. A copy from the bench takes all anew (its folders go in whole).
+    let keep: &[&str] = if copy_from.is_none() { &["hf-cache", "pretrained"] } else { &[] };
+    clear_except(&target, keep).map_err(|error| error.to_string())?;
     std::fs::create_dir_all(&target).map_err(|error| error.to_string())?;
     let mut env = plan.env.clone();
     env.insert("HF_HOME".into(), arg(&target.join("hf-cache")));
@@ -357,13 +510,24 @@ pub async fn install_engine(context: &JobContext, plan: &InstallPlan) -> Result<
             args.push(arg(&weights_dir));
         }
         let watched = if cosy { weights_dir.clone() } else { target.join("hf-cache") };
-        sized_download(
+        watched_download(
             context,
             &watched,
             engine.weights_mb,
             &crate::tr!("Скачиваю веса модели"),
             (60.0, 88.0),
-            context.run(&python, &args, with_env()),
+            plan.watch,
+            |cancel, attempt| {
+                let mut options = RunOptions { cancel: Some(cancel), ..with_env() };
+                // Started again after standing still: over plain HTTPS, not Xet — there huggingface_hub itself gives
+                // up on 10 s of silence and continues the file from where it was (Range), within the one program.
+                if attempt > 0 {
+                    if let Some(env) = options.env.as_mut() {
+                        env.insert("HF_HUB_DISABLE_XET".into(), "1".into());
+                    }
+                }
+                context.run(&python, &args, options)
+            },
         )
         .await?;
         InstallSource::Download
@@ -440,7 +604,7 @@ mod tests {
     }
 
     async fn finished(jobs: &JobRunner) -> JobState {
-        for _ in 0..400 {
+        for _ in 0..1_200 {
             if !jobs.busy() {
                 break;
             }
@@ -519,6 +683,7 @@ mod tests {
             server_dir: root.path().join("clone-server"),
             bench_models: None,
             env: std::env::var("PATH").ok().map(|path| ("PATH".to_string(), path)).into_iter().collect(),
+            watch: WATCH,
         };
         let state = install(plan).await;
         assert_eq!(state.state, JobRunState::Done, "{state:?}");
@@ -554,6 +719,7 @@ mod tests {
             server_dir: root.path().join("clone-server"),
             bench_models: Some(bench),
             env: HashMap::new(),
+            watch: WATCH,
         };
         let state = install(plan).await;
         assert_eq!(state.state, JobRunState::Done, "{state:?}");
@@ -562,6 +728,142 @@ mod tests {
         let ready: ReadyInfo =
             serde_json::from_str(&std::fs::read_to_string(target.join("ready.json")).unwrap()).unwrap();
         assert_eq!(ready.source, InstallSource::Bench);
+    }
+
+    /// A uv whose Python is `python`: it makes the environment, the Python answers the check and fetches the weights
+    /// its own way.
+    #[cfg(unix)]
+    fn plan_with_python(root: &Path, python: &str, watch: Watch) -> InstallPlan {
+        let uv = root.join("bin").join("uv");
+        let python = python.replace('\'', "'\\''");
+        executable(
+            &uv,
+            &format!(
+                "#!/bin/sh\nif [ \"$1\" = venv ]; then mkdir -p \"$4/bin\"; printf '%s' '{python}' > \"$4/bin/python\"; chmod 755 \
+                 \"$4/bin/python\"; fi\n"
+            ),
+        );
+        InstallPlan {
+            engine: spec(EngineId::Omnivoice),
+            platform: mac(Some(uv.to_string_lossy().into_owned())),
+            runtime_dir: root.join("runtime"),
+            server_dir: root.join("clone-server"),
+            bench_models: None,
+            env: std::env::var("PATH").ok().map(|path| ("PATH".to_string(), path)).into_iter().collect(),
+            watch,
+        }
+    }
+
+    /// The weights' fetch of a hanging CDN: each start brings a little into its own `.<8 hex>.incomplete` (as
+    /// huggingface_hub 2.x does) and then stands still; from the `good`-th start on it finishes. `starts` counts them.
+    #[cfg(unix)]
+    fn hanging_python(good: u32) -> String {
+        format!(
+            "#!/bin/sh\ncase \"$2\" in\n*snapshot_download*)\n  mkdir -p \"$HF_HOME\"; n=$(cat \"$HF_HOME/../starts\" 2>/dev/null || echo 0); n=$((n+1)); echo $n > \
+             \"$HF_HOME/../starts\"\n  mkdir -p \"$HF_HOME/hub/blobs\"\n  if [ $n -ge {good} ]; then head -c 4096 /dev/zero > \"$HF_HOME/hub/blobs/w\"; \
+             exit 0; fi\n  head -c 2048 /dev/zero > \"$HF_HOME/hub/blobs/w.0a1b2c3$n.incomplete\"\n  exec sleep 30;;\n\
+             *'import json, torch'*) echo '{{\"stage\":\"done\",\"device\":\"mps\",\"torch\":\"2.8.0\"}}';;\nesac\n"
+        )
+    }
+
+    // Long enough that a busy test run still starts the fake fetch before it counts as standing still.
+    const QUICK: Watch =
+        Watch { stall_after: Duration::from_millis(2_000), retries: 3, period: Duration::from_millis(100) };
+
+    /// п. 66: the download stood still at 603 MB for minutes, the bar on 72 %, and nothing noticed. Now: standing still
+    /// — taken down and started again; the dead partial is dropped (2.x would not continue it), what finished stays.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_download_standing_still_is_started_again_and_its_dead_partial_dropped() {
+        let root = tempfile::tempdir().unwrap();
+        let state = install(plan_with_python(root.path(), &hanging_python(2), QUICK)).await;
+        assert_eq!(state.state, JobRunState::Done, "{state:?}");
+        let target = root.path().join("runtime").join("omnivoice");
+        assert_eq!(std::fs::read_to_string(target.join("starts")).unwrap().trim(), "2", "one stall, one start again");
+        let blobs = target.join("hf-cache").join("hub").join("blobs");
+        assert!(blobs.join("w").exists());
+        assert!(!blobs.join("w.0a1b2c31.incomplete").exists(), "the dead partial of the first start is gone");
+        assert!(state.log.iter().any(|line| line.contains("скачивание стояло")), "{:?}", state.log);
+    }
+
+    /// Standing still every time: after three starts again — in words, the job failed (the panel offers «Повторить»).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_download_that_keeps_standing_still_fails_in_words_after_three_tries() {
+        let root = tempfile::tempdir().unwrap();
+        let state = install(plan_with_python(root.path(), &hanging_python(99), QUICK)).await;
+        assert_eq!(state.state, JobRunState::Error, "{state:?}");
+        assert!(state.error.as_deref().unwrap_or("").starts_with("Hugging Face не отвечает"), "{state:?}");
+        let target = root.path().join("runtime").join("omnivoice");
+        let starts: u32 = std::fs::read_to_string(target.join("starts")).unwrap().trim().parse().unwrap();
+        assert!((2..=4).contains(&starts), "the first and three again (a busy run may not start one): {starts}");
+        let again = state.log.iter().filter(|line| line.contains("повторяю")).count();
+        assert_eq!(again, 3, "{:?}", state.log);
+        assert_ne!(state.reason, Some(JobReason::Stalled), "the stall stays inside the install");
+    }
+
+    /// п. 68: «Отменить» left a hung download living (TERM did not take it, KILL did). Now the stop takes the job's
+    /// program down — TERM, and KILL after the grace when TERM is ignored — and the job ends stopped.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stop_takes_down_a_hung_download_that_ignores_term_and_the_job_ends_stopped() {
+        let root = tempfile::tempdir().unwrap();
+        let hung = "#!/bin/sh\ncase \"$2\" in\n*snapshot_download*) mkdir -p \"$HF_HOME\"; echo $$ > \"$HF_HOME/../pid\"; trap '' TERM; \
+                    exec sleep 60;;\nesac\n";
+        let slow = Watch { stall_after: Duration::from_secs(60), retries: 3, period: Duration::from_millis(100) };
+        let plan = plan_with_python(root.path(), hung, slow);
+        let jobs = runner();
+        jobs.start(
+            JobKind::Install,
+            "omnivoice",
+            move |context| async move {
+                install_engine(&context, &plan).await?;
+                Ok(None)
+            },
+            None,
+        )
+        .unwrap();
+        let pid_file = root.path().join("runtime").join("omnivoice").join("pid");
+        for _ in 0..400 {
+            if pid_file.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let pid = std::fs::read_to_string(&pid_file).unwrap().trim().to_string();
+        assert!(jobs.stop());
+        let state = finished(&jobs).await;
+        assert_eq!(state.state, JobRunState::Stopped, "{state:?}");
+        let alive = std::process::Command::new("kill").args(["-0", &pid]).status().unwrap().success();
+        assert!(!alive, "the download's program is gone");
+    }
+
+    #[test]
+    fn a_new_start_keeps_the_weights_fetched_so_far_and_empties_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("hf-cache").join("hub")).unwrap();
+        std::fs::write(dir.path().join("hf-cache").join("hub").join("w"), "w").unwrap();
+        std::fs::create_dir_all(dir.path().join("env").join("bin")).unwrap();
+        std::fs::write(dir.path().join("ready.json"), "{}").unwrap();
+        clear_except(dir.path(), &["hf-cache", "pretrained"]).unwrap();
+        assert!(dir.path().join("hf-cache").join("hub").join("w").exists());
+        assert!(!dir.path().join("env").exists() && !dir.path().join("ready.json").exists());
+        clear_except(&dir.path().join("nothing"), &[]).unwrap();
+    }
+
+    #[test]
+    fn drops_only_the_partials_a_new_start_would_not_continue_and_says_the_download_in_megabytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = dir.path().join("blobs");
+        std::fs::create_dir_all(&blobs).unwrap();
+        std::fs::write(blobs.join("e1.0a1b2c3d.incomplete"), vec![0u8; 1000]).unwrap();
+        // 0.3x's own partial (CosyVoice): it is continued on the next start — stays.
+        std::fs::write(blobs.join("e2.incomplete"), vec![0u8; 500]).unwrap();
+        std::fs::write(blobs.join("model.safetensors"), vec![0u8; 300]).unwrap();
+        assert_eq!(drop_dead_partials(dir.path()), 1000);
+        assert!(blobs.join("e2.incomplete").exists() && blobs.join("model.safetensors").exists());
+        assert_eq!(download_line(603 * 1_048_576, 2_300, 0.0), "603 из ~2\u{a0}300 МБ · 0 КБ/с");
+        assert_eq!(download_line(1_048_576, 2_300, 1.25 * 1_048_576.0), "1 из ~2\u{a0}300 МБ · 1,3 МБ/с");
     }
 
     #[tokio::test]
@@ -574,6 +876,7 @@ mod tests {
             server_dir: root.path().join("clone-server"),
             bench_models: None,
             env: HashMap::new(),
+            watch: WATCH,
         };
         let without_uv = install(plan(mac(None))).await;
         assert_eq!(without_uv.state, JobRunState::Error);

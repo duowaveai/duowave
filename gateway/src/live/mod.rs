@@ -86,6 +86,10 @@ pub const RELAYED: &[&str] = &[
     "helpers.changed",
     "helpers.up",
     "helpers.down",
+    // The devices of the home (src/home): the line at the top of the panel reads them again.
+    "home.devices.changed",
+    "home.room.changed",
+    "home.copied",
     // Who this computer helps over the link, and its connection key changed.
     "helpers.clients",
     "helpers.key",

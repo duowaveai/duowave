@@ -25,6 +25,8 @@ const en: Translation<typeof ru> = {
     enableAnyway: 'Turn on anyway',
     tryAgain: 'Try again',
     cancelUpper: 'Cancel',
+    canceled: (title: string) => `Canceled: “${title}” no longer waits.`,
+    canceledStopped: (title: string) => `Canceled: the model download for “${title}” is stopped.`,
 
     tabVoice: 'Voice',
     tabHearing: 'Hearing',
@@ -44,8 +46,11 @@ const en: Translation<typeof ru> = {
 
     ownVoicesHere: 'Own voices live on the computer',
     ownRecognitionHere: 'Own recognition lives on the computer',
-    absentVoiceNote: 'Own voices live on the computer. Here the cloud voice (set up above) or Alice’s voice answers.',
-    absentAsrNote: 'Own recognition lives on the computer. Here it is the cloud’s (set up above) or Yandex’s hearing.',
+    absentVoiceNote: 'Own voices install on the Turbo computer and sound through the speaker. Without it the cloud voice (set up above) or Alice’s voice answers.',
+    absentAsrNote: 'Own recognition installs on the Turbo computer. Without it — the cloud’s (set up above) or Yandex’s hearing.',
+    openComputerVoices: 'Open the computer’s voices',
+    openComputerHearing: 'Open the computer’s hearing',
+    computerNoVoiceHere: 'The computer is online, but it has no voice yet — Alice’s voice answers. To install one — “Open the computer’s voices” below.',
 
     readingCatalog: 'Reading the catalog…',
 

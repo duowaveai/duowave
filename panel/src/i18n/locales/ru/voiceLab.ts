@@ -104,10 +104,11 @@ export default {
     nameLabel: 'Имя голоса',
     memory: 'ОЗУ',
     memoryFree: (free: string, total: string) => `свободно ${free} из ${total} ГБ`,
-    memoryNoteSpeaker: (need: string, reserve: string) => `Отпечатку нужно около ${need} ГБ, ещё ${reserve} ГБ шлюз держит для колонки. Если Мак начнёт подкачку с диска, расчёт остановится сам — колонка важнее.`,
-    memoryNoteVoice: (need: string, reserve: string) => `Отпечатку нужно около ${need} ГБ, ещё ${reserve} ГБ шлюз держит для разговора. Если Мак начнёт подкачку с диска, расчёт остановится сам — разговор важнее.`,
+    memoryNoteSpeaker: (need: string, reserve: string) => `Отпечатку нужно около ${need} ГБ, ещё ${reserve} ГБ DuoWave держит для колонки. Если Мак начнёт подкачку с диска, расчёт остановится сам — колонка важнее.`,
+    memoryNoteVoice: (need: string, reserve: string) => `Отпечатку нужно около ${need} ГБ, ещё ${reserve} ГБ DuoWave держит для разговора. Если Мак начнёт подкачку с диска, расчёт остановится сам — разговор важнее.`,
     askAnyway: (text: string) => `${text} Снять всё равно?`,
     imprintAbout: (title: string) => `Модель ${title} найдёт в ваших записях лучшие 5–8 секунд речи и снимет с них отпечаток — около минуты. Потом скажет три пробные фразы вашим голосом.`,
     imprintAnyway: 'Снять всё равно',
     imprint: 'Снять отпечаток',
+    imprinting: (percent: number | null) => (percent === null ? 'Снимаю отпечаток…' : `Снимаю отпечаток… ${Math.round(percent)} %`),
 };

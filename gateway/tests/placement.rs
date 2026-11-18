@@ -126,9 +126,13 @@ async fn the_station_leans_on_the_computer_and_the_computer_keeps_a_copy_of_its_
     let watch = pc.app.station_gateway.watch("at:127.0.0.1");
     watch.set_record(Some(&record), None).unwrap();
     watch.poll().await;
+    // The home's copy (docs/plans/home-and-devices.md, stage 3): the computer's people are the home's now — the
+    // station's admin signs in here with the home's password; the computer's own access keys stayed.
+    let login = pc.post("/api/v1/auth/login").json(&json!({"password": "pair-station-password"}));
+    let (_, pc_admin) = bearer(message(login, StatusCode::OK).await["token"].as_str().expect("a token"));
     let seen = watch.view();
     assert!(seen.live.reachable && seen.compatible, "{:?}", seen.live.error);
-    assert_eq!(seen.backups.len(), 1, "the station's settings, a copy on the computer");
+    assert!(seen.copied_at.is_some(), "the home's copy on the computer: {:?}", seen.live.sync_error);
     let placement = message(pc.get("/api/v1/placement").header(name.clone(), pc_admin.clone()), StatusCode::OK).await;
     assert_eq!(placement["station"]["live"]["reachable"], true);
     assert_eq!(placement["station"]["live"]["health"]["placement"]["homeServer"]["state"], "up");
@@ -140,50 +144,20 @@ async fn the_station_leans_on_the_computer_and_the_computer_keeps_a_copy_of_its_
         send(station.get("/api/v1/transfer").header(name.clone(), "Bearer not-the-pairs-key-at-all-0000")).await;
     assert!(status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN, "{status}");
 
-    // The settings live on the computer from now: the station's own panel does not change them; the computer may.
-    message(
-        pc.post("/api/v1/placement/settings-home").header(name.clone(), pc_admin.clone()).json(&json!({"home": "pc"})),
-        StatusCode::CREATED,
-    )
-    .await;
-    assert_eq!(station.app.placement.state().settings_home, SettingsHome::Pc);
-    let (status, body) = send(
-        station
-            .put("/api/v1/station/routes")
-            .header(name.clone(), station_admin.clone())
-            .json(&json!({"routes": {"weather": "yandex"}})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert!(body["message"].as_str().unwrap().contains("пульте компьютера"));
-    // Review G1: a character chosen and the journal's days travel too; the mode is the station's own and goes on.
-    let changes = [
-        (station.post("/api/v1/characters/alice/choose"), json!({})),
-        (station.put("/api/v1/requests/keep"), json!({"days": 7})),
-    ];
-    for (request, body) in changes {
-        let (status, answer) = send(request.header(name.clone(), station_admin.clone()).json(&body)).await;
-        assert_eq!(status, StatusCode::CONFLICT, "{answer}");
-    }
-    let mode = station.post("/api/v1/station/mode").header(name.clone(), station_admin.clone());
-    let (status, body) = send(mode.json(&json!({"mode": "gateway"}))).await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
-
-    // «Вернуть настройки на колонку»: an edit of the computer not sent yet goes first — the routine package, the
-    // station's /health says it knows schema 2 — and waits there for its next start; only then do the settings live on
-    // the station again.
+    // The home's settings live at the station, the centre: its own panel changes them, and the computer's copy
+    // follows at its next look — no package goes to the station, nothing starts again there.
     let before = restarts.load(Ordering::SeqCst);
-    pc.app.settings.set(&KEEP_REQUESTS, &9, None).unwrap();
-    let back = pc.post("/api/v1/placement/settings-home").header(name.clone(), pc_admin.clone());
-    message(back.json(&json!({"home": "station"})), StatusCode::CREATED).await;
-    let state = station.app.config.skills.state_dir.clone().expect("the station's state folder");
-    let kept = std::fs::read(transfer::incoming_file(&state)).expect("kept for its next start");
-    let kept: transfer::Bundle = serde_json::from_slice(&kept).unwrap();
-    assert_eq!((kept.schema, &kept.settings["requests_keep_days"]), (transfer::SCHEMA, &json!(9)));
-    assert!(!kept.settings.contains_key("gateway_mode"), "the station's mode is its own");
-    assert!(restarts.load(Ordering::SeqCst) > before, "it would start again on it");
+    let (status, body) = send(
+        station.put("/api/v1/requests/keep").header(name.clone(), station_admin.clone()).json(&json!({"days": 9})),
+    )
+    .await;
+    assert!(status.is_success(), "{body}");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    watch.poll().await;
+    assert_eq!(pc.app.settings.get(&KEEP_REQUESTS, None), Some(9), "{:?}", watch.live().sync_error);
+    assert_eq!(restarts.load(Ordering::SeqCst), before, "nothing sent to the station");
     assert_eq!(station.app.placement.state().settings_home, SettingsHome::Station);
-    assert_eq!(watch.record().unwrap().settings_home, SettingsHome::Station);
+    let _ = (&pc_admin, transfer::SCHEMA);
     let _ = Arc::strong_count(&pc.app);
     station.stop().await;
     pc.stop().await;
