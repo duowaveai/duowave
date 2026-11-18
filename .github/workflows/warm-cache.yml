@@ -52,8 +52,8 @@ jobs:
         include:
           - { os: ubuntu-latest, key: duowave-linux-x86_64, target: x86_64-unknown-linux-musl, zig: true }
           - { os: ubuntu-latest, key: duowave-linux-aarch64, target: aarch64-unknown-linux-musl, zig: true }
-          - { os: macos-15-intel, key: duowave-darwin-aarch64, target: aarch64-apple-darwin, zig: false }
-          - { os: macos-15-intel, key: duowave-darwin-x86_64, target: x86_64-apple-darwin, zig: false }
+          - { os: macos-15, key: duowave-darwin-aarch64, target: aarch64-apple-darwin, zig: false }
+          - { os: macos-15, key: duowave-darwin-x86_64, target: x86_64-apple-darwin, zig: false }
           - { os: windows-latest, key: duowave-windows-x86_64, target: x86_64-pc-windows-msvc, zig: false }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
@@ -85,8 +85,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-15-intel, name: macos-aarch64, target: aarch64-apple-darwin }
-          - { os: macos-15-intel, name: macos-15-intel }
+          - { os: macos-15, name: macos-aarch64, target: aarch64-apple-darwin }
+          - { os: macos-15, name: macos-15-intel, target: x86_64-apple-darwin }   # Intel, as in release.yml
           - { os: windows-latest, name: windows-latest }
           - { os: ubuntu-22.04, name: ubuntu-22.04 }
           - { os: ubuntu-24.04-arm, name: ubuntu-24.04-arm }
