@@ -233,7 +233,11 @@ impl TalkLayer {
             });
         }
         let work = self.launch(work)?;
-        Ok(fill(self.started_words(work.device()), &[("title", &in_sentence(&work.title))]))
+        let said = fill(self.started_words(work.device()), &[("title", &in_sentence(&work.title))]);
+        // «Что-то ещё добавить?» is the device's question: «нет, не надо» answers it, it does not stop the work.
+        let asked = Pending { question: Some(said.clone()), ..Pending::default() };
+        self.asked.ask_with(work.device(), &work.id, Kind::Extra, asked);
+        Ok(said)
     }
 
     /// The work a `thing` names on a device: a label of the block («р3», «[w3]», «3»), a title, or — named not at

@@ -61,6 +61,13 @@ pub fn sift(app: &App, text: &str, device: &str) -> Sift {
     let rules = TalkRules::new(layer);
     let normalized = crate::skills::text::normalize(text);
     let reads = layer.reader().is_some_and(|reader| reader.ready());
+    // «Нет, не надо» to «Что-то ещё добавить?» closes the window silently: nothing to add, the work goes on (20.11).
+    if layer.asked.open(device).is_some_and(|question| question.kind == Kind::Extra)
+        && super::ready::extra_answer(super::pack::of(layer.lang(device)), &normalized)
+            == Some(super::ready::Answer::No)
+    {
+        return Sift::Close;
+    }
     // The answer to the device's question first — a work's, else MagicPlace's («Поставить «Ленту»?»): «нет» to it is
     // its answer; to «Что-то ещё добавить?» it closes the window.
     if let Some(heard) = rules.answer_on(&normalized, device) {

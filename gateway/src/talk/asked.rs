@@ -65,6 +65,9 @@ pub enum Kind {
     /// «Лимит … кончился до …: подождать или остановить?»: a work in a folder waits for a plan's limit; silence waits
     /// too (docs/plans/router-and-works.md, 9).
     Wait,
+    /// «Делаю: … Что-то ещё добавить?»: a new work asks for more words. «Нет, не надо» is «nothing to add» — the work
+    /// goes on; only words of stopping stop it, anything else goes into the work (owner 20.11).
+    Extra,
 }
 
 /// What was asked for before the question, done once it is answered: the wish of «Поправить … или новую?», the change

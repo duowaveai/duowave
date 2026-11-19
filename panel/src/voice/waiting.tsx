@@ -49,7 +49,7 @@ function useWaiting(): [WorkView[], () => Promise<WorkView[]>] {
 }
 
 /** Пилюля «Ждёт вас · N» рядом со «Сказать». */
-export function WaitingPill({ place }: { place: 'dock' | 'side' }) {
+export function WaitingPill({ place }: { place: 'top' | 'side' }) {
     const panel = usePanel();
     const [works, reload] = useWaiting();
     const next = useRef(0);
@@ -65,8 +65,18 @@ export function WaitingPill({ place }: { place: 'dock' | 'side' }) {
         if (page) panel.go(page.section, page.tab, page.item);
     };
     return (
-        <button type="button" class={`waiting-pill waiting-pill-${place}`} title={tr.voice.waitingTitle} onClick={() => void show()}>
-            {tr.voice.waitingPill(works.length)}
+        <button
+            type="button"
+            class={`waiting-pill waiting-pill-${place}`}
+            title={tr.voice.waitingTitle}
+            aria-label={tr.voice.waitingPill(works.length)}
+            onClick={() => void show()}
+        >
+            {/* На телефоне вверху — кружок с числом (ui/desk.css): полная надпись не влезает рядом с домом и поиском. */}
+            <span class="waiting-pill-text">{tr.voice.waitingPill(works.length)}</span>
+            <span class="waiting-pill-count" aria-hidden="true">
+                {works.length}
+            </span>
         </button>
     );
 }

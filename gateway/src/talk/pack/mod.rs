@@ -397,6 +397,15 @@ pub struct AnswerWords {
     pub edit: &'static [&'static str],
     /// To «Какую: … или …?»: the first, the second, the third, the last named.
     pub choices: [&'static str; 4],
+    /// To «Что-то ещё добавить?»: the words a «nothing to add» is made of — «нет», «не надо», «ничего», «так оставь»,
+    /// «продолжай». A phrase of these words only lets the work go on.
+    pub enough: &'static [&'static str],
+    /// To «Что-то ещё добавить?»: the words of stopping (found in the phrase) — «останови», «отмени», «не делай».
+    pub halt: &'static [&'static str],
+    /// To «Что-то ещё добавить?»: a lone «да» — the person has something to add and is asked what.
+    pub add_yes: &'static [&'static str],
+    /// To «Что-то ещё добавить?»: words that only open an addition («да, …», «нет, …») and are left out of it.
+    pub lead: &'static [&'static str],
 }
 
 /// A duration said aloud: the number, then the unit in its form for that number (`plural`).
@@ -415,6 +424,10 @@ pub struct SayWords {
     pub started_first: &'static str,
     /// `{text}`: words added to the work going on.
     pub noted: &'static str,
+    /// To «Что-то ещё добавить?» — a lone «да»: what to add.
+    pub extra_what: &'static str,
+    /// To «Что-то ещё добавить?» — «нет, не надо»: nothing to add, the work goes on.
+    pub going_on: &'static str,
     /// `{title} {version}`: a new version of a finished thing began — which thing, which version: «непонятно, правит ли
     /// она предыдущую» (live 14.11).
     pub again: &'static str,

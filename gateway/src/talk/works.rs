@@ -933,4 +933,51 @@ mod many {
         let asked = layer.add(typed(), "покрупнее", None, false).await.unwrap_err();
         assert!(matches!(asked, crate::talk::work_tools::Refusal::Which(ref things) if things.len() == 5), "{asked:?}");
     }
+
+    /// 20.11: «Делаю: … Что-то ещё добавить?» is the device's question. «Нет, не надо» answers it — the work goes on;
+    /// a lone «да» asks what; «и ещё…» goes into the work; «как там» stays a question about it; only «останови» stops.
+    #[tokio::test]
+    async fn the_answer_no_to_anything_else_lets_the_work_go_on_and_only_a_stop_stops_it() {
+        use crate::talk::asked::Kind;
+        use crate::talk::origin::COMPUTER;
+        use crate::talk::rules::{Heard, TalkRules};
+
+        let layer = TalkLayer::new(None, EventBus::new());
+        let keeper = Arc::new(Keeper::default());
+        layer.add_executor(keeper.clone());
+        let rules = TalkRules::new(&layer);
+        let typed = || Origin::computer(Activator::Answer);
+        let said = layer.start(typed(), "сделай часы", None, Some("Часы"), true).unwrap();
+        assert!(said.ends_with("Что-то ещё добавить?"), "{said}");
+        let id = layer.works().all(None, None)[0].id.clone();
+        assert_eq!(layer.asked.open(COMPUTER).map(|question| question.kind), Some(Kind::Extra));
+        let answer = |text: &str| rules.answer_on(&crate::skills::text::normalize(text), COMPUTER);
+
+        for no in ["Нет, не надо", "Нет, не надо ничего больше добавлять", "Ничего", "Так оставь"]
+        {
+            layer.asked.ask(COMPUTER, &id, Kind::Extra, false);
+            let heard = answer(no).expect(no);
+            assert_eq!(rules.act(heard, typed()).await.as_deref(), Some("Хорошо, продолжаю."), "{no}");
+            assert!(layer.works().get(&id).is_some_and(|work| work.going()), "{no}: the work goes on");
+        }
+        assert!(keeper.added.lock().unwrap().is_empty(), "nothing was added");
+
+        layer.asked.ask(COMPUTER, &id, Kind::Extra, false);
+        assert_eq!(rules.act(answer("Да").unwrap(), typed()).await.as_deref(), Some("Что добавить?"));
+        assert_eq!(layer.asked.open(COMPUTER).map(|question| question.kind), Some(Kind::Extra), "asked again");
+        let heard = answer("И ещё секундную стрелку").expect("an addition");
+        assert_eq!(rules.act(heard, typed()).await.as_deref(), Some("Добавлю: секундную стрелку."));
+        assert_eq!(keeper.added.lock().unwrap().len(), 1);
+        // Other words — a wish, talk in the room — are not the answer: the reader tells them apart.
+        layer.asked.ask(COMPUTER, &id, Kind::Extra, false);
+        assert_eq!(answer("А что на ужин?"), None);
+        assert_eq!(answer("Да, сделай фон синим"), None);
+
+        layer.asked.ask(COMPUTER, &id, Kind::Extra, false);
+        assert_eq!(answer("Как там?"), None, "a question about the work is not the answer");
+        assert!(!matches!(answer("Останови"), Some(Heard::Answer { answer: crate::talk::ready::Answer::No, .. })));
+        let said = rules.act(answer("Останови").unwrap(), typed()).await.unwrap_or_default();
+        // The executor was asked to stop; its report ends the record.
+        assert!(said.starts_with("Остановлено"), "{said}");
+    }
 }

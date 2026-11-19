@@ -28,7 +28,7 @@ const en: Translation<typeof ru> = {
     search: {
         home: { title: 'Home', path: '', words: 'desk speaker widgets home main screen' },
         newWidget: { title: 'New widget', path: 'Home', words: 'add widget tile plus' },
-        sayText: { title: 'Text to the speaker…', path: 'Home', words: 'say speak through the speaker read aloud text to speaker' },
+        sayText: { title: 'Say a text…', path: 'Settings → Voice', words: 'say speak through the speaker read aloud dictate text to speaker in the character voice alice' },
         character: { title: 'Character', path: '', words: 'characters who answers alice arthur mila own character' },
         allCharacters: { title: 'All characters', path: 'Character', words: 'choose another character character catalog' },
         voice: { title: 'Voice', path: 'Character', words: 'voice speech tts silero piper voices' },

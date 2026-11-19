@@ -198,6 +198,8 @@ const WORK: WorkWords = WorkWords {
     say: SayWords {
         started: "Making it: {title}. About a minute. Anything else to add?",
         started_first: "Making it: {title}. About a minute. You can add details as it goes. Anything else to add?",
+        extra_what: "What should I add?",
+        going_on: "All right, carrying on.",
         noted: "Will add: {text}.",
         again: "Changing \"{title}\": version {version}. I'll say when it is ready.",
         working: "In work for {since}: {doing}.",
@@ -312,6 +314,20 @@ const WORK: WorkWords = WorkWords {
                 "^(?:(?:the )?third(?: one)?|three|3)$",
                 "^(?:(?:the )?last(?: one)?|the latest(?: one)?|the one being made)$",
             ],
+            enough: &[
+                "no", "nope", "nah", "nothing", "else", "more", "thanks", "thank", "you", "that", "that's", "s", "is",
+                "it", "all", "fine", "good", "ok", "okay", "keep", "going", "go", "on", "ahead", "don", "t", "do",
+                "not", "need", "to", "add", "anything", "just", "enough", "carry", "continue", "as", "leave", "well",
+                "so", "i", "think", "we", "re", "are", "done", "great", "perfect", "this", "alright", "right",
+                "never", "mind", "it's", "its", "there", "now", "sure", "for", "nothing's",
+            ],
+            halt: &[
+                "(?:^|\\s)(?:stop|cancel|abort|quit)(?:\\s|$)",
+                "(?:^|\\s)changed my mind(?:\\s|$)",
+                "^(?:no )?(?:don t|do not) (?:make|build|do|create)(?: (?:it|this|that|the \\w+))?$",
+            ],
+            add_yes: &["^(?:yes|yeah|yep|sure|i do|yes please)$"],
+            lead: &["yes", "yeah", "no", "well", "and"],
         },
     },
 };

@@ -1,10 +1,14 @@
 // Выбор темы, режима и вида: что выбрано, применение к странице, память в этом браузере. Сами темы — данные (themes.ts),
 // приходят через реестр (definePlugin). Вид — стол и док или боковая панель — выбирается отдельно от темы
 // (docs/plans/desk.md). Первую отрисовку до скриптов делает index.html: он читает тот же выбор.
+// Тема — человека (владелец, 20.11: поставил в браузере, а в приложении пришлось ставить заново): выбранная тема ещё и
+// в памяти пульта на шлюзе (shell/memory.ts, по человеку), и все его окна — браузер, приложение, телефон — берут её.
+// У разных людей тема своя. Светлая или тёмная — у устройства: своя у каждого, по умолчанию «Авто», как у системы.
 
 import { useEffect, useState } from 'preact/hooks';
 
 import { TOP_VIA, VIA } from '../via';
+import { onPanelMemory, recalled, remember } from './memory';
 import { onRegistryChange, registeredPlugins } from './registry';
 import { DEFAULT_THEME, Mode, Theme, activeCss } from './themes';
 
@@ -16,6 +20,8 @@ const LEGACY_KEY = 'glass-theme';
 const CSS_KEY = 'panel-theme-css';
 /** Вид пульта: 'desk' — стол и док, 'sidebar' — боковая панель. */
 const VIEW_KEY = 'panel-view';
+/** Ключ темы человека в памяти пульта на шлюзе: id темы. */
+const SHARED_KEY = 'theme';
 
 export type View = 'desk' | 'sidebar';
 
@@ -180,8 +186,23 @@ function choose(next: Choice): void {
     changed();
 }
 
-/** Другая тема — в том же режиме, что на экране: смена темы не перекидывает из светлого в тёмный. */
-export const setTheme = (id: string): void => choose({ id, mode: choice.mode ?? modeOf(currentTheme()) });
+/** Временная тема: примерка (`fitting-`) или мастерская (`preview-`) — только в этом окне, в память человека не идёт. */
+const isTrial = (id: string | null): boolean => !!id && (id.startsWith('fitting-') || id.startsWith('preview-'));
+
+/**
+ * Окно колонки рамкой в пульте компьютера (via.ts) красится выбором компьютера и ничего не помнит (см. applyTheme) —
+ * за темой человека оно не ходит и её не пишет.
+ */
+const SHARES = !(VIA && !TOP_VIA);
+
+/**
+ * Другая тема. Режим остаётся, какой у этого устройства: выбранный здесь или «Авто». Настоящая тема (не примерка) —
+ * ещё и в память человека: другие его окна возьмут её.
+ */
+export const setTheme = (id: string): void => {
+    choose({ id, mode: choice.mode });
+    if (SHARES && !isTrial(id)) remember(SHARED_KEY, id);
+};
 export const setMode = (mode: ModePick): void => choose({ ...choice, mode });
 export const setView = (next: View): void => {
     view = next;
@@ -208,6 +229,19 @@ try {
 } catch {
     // без окна (тесты) следить не за чем
 }
+
+// Тему поменяли в другом окне этого человека (или память пришла со шлюза при входе и при возвращении на вкладку):
+// эта страница берёт её, а режим оставляет свой. Пока здесь примеряют тему — примерка не сбивается: тема человека
+// встанет, когда примерку закроют (она возвращает тему, что была до неё).
+function followPerson(): void {
+    if (!SHARES || isTrial(choice.id)) return;
+    const id = recalled<unknown>(SHARED_KEY);
+    if (typeof id !== 'string' || !id || id in RETIRED || isTrial(id) || id === choice.id) return;
+    choice = { ...choice, id };
+    changed();
+}
+followPerson();
+onPanelMemory(followPerson);
 
 // «Авто»: система перешла из светлого в тёмный (вечер, ночной режим) — страница следом, без перезагрузки.
 // Событие смены приходит не везде (окно в фоне, встроенный WebKit) — поэтому ещё сверка, когда в окно вернулись.

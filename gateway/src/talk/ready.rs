@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use super::asked::{Kind, ANSWER_FOR};
+use super::asked::{Kind, Pending, ANSWER_FOR};
 use super::executor::{ByVoice, Put};
 use super::layer::TalkLayer;
 use super::origin::{Origin, COMPUTER};
@@ -95,6 +95,32 @@ pub fn answer_of(pack: &Pack, normalized: &str) -> Option<Answer> {
         let found = regex::Regex::new(pattern).ok()?.captures(text)?;
         Some(Answer::Redo { text: found.name("text")?.as_str().trim().to_string() })
     })
+}
+
+/// The answer to «Что-то ещё добавить?» (owner 20.11): a «нет» in any words — «нет, не надо», «ничего», «так оставь»,
+/// «продолжай» — is «nothing to add», the work goes on (`No`); only words of stopping stop it (`Drop`); a lone «да»
+/// asks what (`Yes`); anything else is the addition (`Redo`), without its «да, …». None — nothing said.
+pub fn extra_answer(pack: &Pack, normalized: &str) -> Option<Answer> {
+    let answers = &pack.work.rules.answers;
+    let text = normalized.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let found = |patterns: &[&str]| {
+        patterns.iter().any(|pattern| regex::Regex::new(pattern).is_ok_and(|rule| rule.is_match(text)))
+    };
+    if found(answers.halt) {
+        return Some(Answer::Drop);
+    }
+    if found(answers.add_yes) {
+        return Some(Answer::Yes);
+    }
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.iter().all(|word| answers.enough.contains(word)) {
+        return Some(Answer::No);
+    }
+    let lead = words.iter().take_while(|word| answers.lead.contains(word)).count();
+    Some(Answer::Redo { text: words[lead..].join(" ") })
 }
 
 /// What is said of a thing put on the desk, and whether it is there.
@@ -416,6 +442,21 @@ impl TalkLayer {
                 return more.unwrap_or_else(|| words.no_more.to_string());
             }
             (Kind::More, _) => return pack.work.background.fine.to_string(),
+            // «Что-то ещё добавить?»: only a stop stops; «нет, не надо» lets the work go on; the rest goes into it.
+            (Kind::Extra, Answer::Drop) => {
+                let label = format!("{}{id}", pack.work.label);
+                return self.act(&origin, "stop", Some(&label)).await.unwrap_or_else(refused);
+            }
+            (Kind::Extra, Answer::Yes) => {
+                let asked = Pending { question: Some(say.extra_what.to_string()), ..Pending::default() };
+                self.asked.ask_with(&device, id, Kind::Extra, asked);
+                return say.extra_what.to_string();
+            }
+            (Kind::Extra, Answer::Redo { text }) => {
+                let label = format!("{}{id}", pack.work.label);
+                return self.add(origin, &text, Some(&label), false).await.unwrap_or_else(refused);
+            }
+            (Kind::Extra, _) => return say.going_on.to_string(),
             // A plan's limit holds a work in a folder: «подождать» — it waits and goes on by itself; «остановить».
             (Kind::Wait, Answer::No | Answer::Drop) => {
                 let label = format!("{}{id}", pack.work.label);
@@ -603,6 +644,78 @@ mod tests {
         assert_eq!(answer_of(en, "yes"), Some(Answer::Yes));
         assert_eq!(answer_of(en, "try it on"), Some(Answer::Fit));
         assert_eq!(answer_of(en, "what is the weather"), None);
+    }
+
+    /// 20.11: to «Что-то ещё добавить?» a «нет» in any words is «nothing to add» — the work goes on; it stops only on
+    /// words of stopping; anything else is the addition.
+    #[test]
+    fn to_anything_else_a_no_in_any_words_lets_the_work_go_on_and_only_a_stop_stops_it() {
+        let read = |lang: Lang, text: &str| extra_answer(pack::of(lang), &crate::skills::text::normalize(text));
+        for no in [
+            "Нет.",
+            "Нет, не надо.",
+            "Не надо",
+            "Нет, не надо ничего больше добавлять",
+            "Ничего",
+            "Больше ничего не надо",
+            "Ничего не добавляй",
+            "Всё",
+            "Всё, хватит",
+            "Так оставь",
+            "Пусть будет так",
+            "Нет, спасибо",
+            "Продолжай",
+            "Нет, делай дальше",
+            "Больше ничего не надо делать",
+        ] {
+            assert_eq!(read(Lang::Ru, no), Some(Answer::No), "{no}");
+        }
+        for stop in [
+            "Останови",
+            "Отмени",
+            "Нет, отмени виджет",
+            "Стоп",
+            "Прекрати",
+            "Не делай",
+            "Нет, не делай виджет",
+            "Не надо делать",
+            "Хватит делать",
+            "Я передумал",
+        ] {
+            assert_eq!(read(Lang::Ru, stop), Some(Answer::Drop), "{stop}");
+        }
+        assert_eq!(read(Lang::Ru, "Да"), Some(Answer::Yes));
+        assert_eq!(read(Lang::Ru, "Добавь"), Some(Answer::Yes));
+        assert_eq!(read(Lang::Ru, "Да, сделай фон синим"), Some(Answer::Redo { text: "сделай фон синим".into() }));
+        assert_eq!(
+            read(Lang::Ru, "Нет, но пусть будет секундная стрелка"),
+            Some(Answer::Redo { text: "но пусть будет секундная стрелка".into() })
+        );
+        assert_eq!(read(Lang::Ru, "И ещё будильник"), Some(Answer::Redo { text: "и еще будильник".into() }));
+        assert_eq!(read(Lang::Ru, ""), None);
+
+        for no in [
+            "No",
+            "No, thanks",
+            "Nothing",
+            "Nothing else",
+            "No, don't add anything",
+            "That's all",
+            "That's it",
+            "No need",
+            "Keep going",
+            "It's fine",
+        ] {
+            assert_eq!(read(Lang::En, no), Some(Answer::No), "{no}");
+        }
+        for stop in ["Stop", "Cancel it", "No, stop it", "Don't make it", "Do not build it", "I changed my mind"] {
+            assert_eq!(read(Lang::En, stop), Some(Answer::Drop), "{stop}");
+        }
+        assert_eq!(read(Lang::En, "Yes"), Some(Answer::Yes));
+        assert_eq!(
+            read(Lang::En, "Yes, make the background blue"),
+            Some(Answer::Redo { text: "make the background blue".into() })
+        );
     }
 }
 

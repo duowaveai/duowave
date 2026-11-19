@@ -70,6 +70,10 @@ export function DeskShell({ nav, active, onNav, top, actions, talk, notice, desk
                 {top.narrow && <span class="desk-top-narrow">{top.narrow}</span>}
                 <div class="desk-top-end">
                     <AgentPlaque place="top" />
+                    {/* «Ждёт вас», ход установки, «Голос ждёт» — вверху у поиска (владелец, 20.11): док внизу — только
+                        разделы и микрофон. */}
+                    <WaitingPill place="top" />
+                    <InstallPill place="top" />
                     {actions}
                     <span class="desk-top-clock" aria-label={tr.shell.timeLabel(clock)}>
                         {clock}
@@ -91,8 +95,9 @@ export function DeskShell({ nav, active, onNav, top, actions, talk, notice, desk
                     {nav.left.map((entry) => (
                         <Cell key={entry.key} entry={entry} active={active === entry.key} onNav={onNav} />
                     ))}
-                    {/* У пульта Турбо разговора нет (решение владельца 16.11): компьютер только помогает, отвечает шлюз. */}
-                    {top.role !== 'helper' && <button
+                    {/* Микрофон посередине дока во всех ролях (владелец, 20.11): с 0.16 микрофон Турбо говорит с центром
+                        дома — прежнее «у пульта Турбо разговора нет» (16.11) отменено. */}
+                    <button
                         aria-label={held ? tr.shell.micHeld : listening ? tr.shell.endPhrase : tr.shell.say}
                         aria-pressed={listening}
                         class={`talk-btn dock-talk${listening ? ' is-listening' : ''}${held ? ' is-held' : ''}`}
@@ -100,14 +105,11 @@ export function DeskShell({ nav, active, onNav, top, actions, talk, notice, desk
                         onClick={talk.onTalk}
                     >
                         {held ? <IconMicOff size={22} /> : <IconMic size={22} />}
-                    </button>}
+                    </button>
                     {nav.right.map((entry) => (
                         <Cell key={entry.key} entry={entry} active={active === entry.key} onNav={onNav} />
                     ))}
                 </nav>
-                <WaitingPill place="dock" />
-                {/* Мастер установки свёрнут — его ход (magicplace/wizard.tsx). */}
-                <InstallPill place="dock" />
             </div>
         </div>
     );

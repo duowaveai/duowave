@@ -1,7 +1,8 @@
 // Что пульт помнит о человеке (docs/plans/menu-scheme.md): где открыты «Папки», включён ли слой разработчика. Дом этого —
 // шлюз (`/api/v1/panel/state`, gateway/src/panel/state.rs): телефон и компьютер одного человека видят одно и то же.
 // Копия в браузере — чтобы пульт при запуске сразу был таким, каким его оставили, и чтобы помнить без входа (приватное
-// окно, ключ). Что принадлежит устройству — тема, язык, микрофон — сюда не попадает.
+// окно, ключ). Тема — тоже человека (shell/theme.ts, ключ `theme`). Что принадлежит устройству — светлая или тёмная, вид,
+// язык, микрофон — сюда не попадает.
 
 import { useEffect, useState } from 'preact/hooks';
 
@@ -17,6 +18,12 @@ const COPY = VIA ? `panel-memory@${VIA}` : 'panel-memory';
 const SAVE_AFTER = 800;
 
 type Memory = Record<string, unknown>;
+
+/**
+ * Ключи, которые копия этого браузера не несёт на шлюз сама: у разных людей они разные. Вошёл другой человек, а его тема
+ * ещё не записана, — тема прежнего из копии ему не достаётся (shell/theme.ts).
+ */
+const OWN_TO_PERSON = new Set(['theme']);
 
 let memory: Memory = (() => {
     try {
@@ -100,7 +107,7 @@ export async function loadPanelMemory(): Promise<void> {
     } catch {
         return;
     }
-    const onlyHere = Object.fromEntries(Object.entries(memory).filter(([key]) => !(key in kept)));
+    const onlyHere = Object.fromEntries(Object.entries(memory).filter(([key]) => !(key in kept) && !OWN_TO_PERSON.has(key)));
     memory = { ...kept, ...onlyHere, ...pending };
     keepCopy();
     notify();

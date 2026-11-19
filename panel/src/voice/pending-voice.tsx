@@ -300,7 +300,7 @@ export function WaitingCard() {
 }
 
 /** Пилюля у дока: голос ждёт ответа — «Паша Техник ждёт вашего решения»; нажатие — окно с вопросом. */
-export function VoiceWaitingPill({ place }: { place: 'dock' | 'side' | 'onb' }) {
+export function VoiceWaitingPill({ place }: { place: 'top' | 'side' | 'onb' }) {
     const waiting = useVoiceWaiting();
     const pending = waiting?.pending;
     if (!pending || !asksOwner(pending)) return null;

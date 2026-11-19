@@ -43,8 +43,9 @@ export function searchPlaces(helper: boolean, onStation: boolean): SearchPlace[]
         { title: s.workFolders.title, path: s.workFolders.path, words: s.workFolders.words, place: { section: 'works', tab: 'folders' }, when: () => can('settings.edit') },
         { title: s.folders.title, path: s.folders.path, words: s.folders.words, place: { section: 'folders' }, when: () => can('station.view') },
         { title: s.newWidget.title, path: s.newWidget.path, words: s.newWidget.words, act: 'add' },
-        // «Сказать» в доке — микрофон пульта (docs/plans/voice-creation.md, решение 1); текст, который колонка произнесёт, — здесь.
-        { title: s.sayText.title, path: s.sayText.path, words: s.sayText.words, act: 'say', when: () => can('station.say') && !onComputer() },
+        // «Сказать» в доке — микрофон пульта (docs/plans/voice-creation.md, решение 1); свой текст голосом персонажа или
+        // Алисой — здесь (владелец, 20.11): на колонке, а без неё — на компьютере.
+        { title: s.sayText.title, path: s.sayText.path, words: s.sayText.words, act: 'say', when: () => can('station.say') || onComputer() },
 
         { title: s.character.title, path: s.character.path, words: s.character.words, place: { section: 'character', tab: 'page' } },
         { title: s.allCharacters.title, path: s.allCharacters.path, words: s.allCharacters.words, place: { section: 'character', tab: 'characters' } },

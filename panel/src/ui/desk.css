@@ -1479,10 +1479,17 @@ html[data-theme='dark'] .voice-strip { box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4
     white-space: nowrap;
 }
 .waiting-pill:hover { border-color: var(--bar-own); }
-/* Телефон: в одном ряду с доком пилюля отнимала у него место — «Настройки» уезжали за край. Она встаёт над доком. */
+/* Вверху у поиска (владелец, 20.11): в рост кнопок шапки; длинный ход установки обрезается, а не теснит поиск. */
+.waiting-pill-top { min-height: 32px; height: 32px; display: inline-flex; align-items: center; max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+.waiting-pill-count { display: none; }
 @media (max-width: 640px) {
-    .dock-wrap { flex-direction: column; gap: 6px; }
-    .waiting-pill-dock { order: -1; min-height: 28px; padding: 0 12px; font-size: 12px; }
+    .desk-top-narrow { flex: 1 1 auto; overflow: hidden; }
+    .desk-top-end { flex: none; }
+    .waiting-pill-top { height: 28px; min-height: 28px; padding: 0 10px; font-size: 12px; max-width: 34vw; }
+    /* «Ждёт вас» — кружок с числом цветом «своего»: заметен, но не теснит дом и поиск. */
+    .waiting-pill-top:has(.waiting-pill-count) { width: 28px; padding: 0; justify-content: center; background: var(--bar-own); border-color: transparent; color: #141414; font-weight: 600; }
+    .waiting-pill-top .waiting-pill-text { display: none; }
+    .waiting-pill-top .waiting-pill-count { display: inline; }
 }
 .waiting-pill-side { align-self: flex-start; margin-top: 6px; }
 /* Голос ждёт решения владельца (voice/pending-voice.tsx): та же пилюля, с точкой «требует внимания». */
@@ -1888,3 +1895,7 @@ span.waiting-pill:hover { border-color: var(--glass-border); }
    Полоса дома и значок «Поток запросов» стоят под кольцом: отступ снизу, чтобы витрина не ложилась на них. */
 .desk-scene-spot .home-strip,
 .desk-scene-spot .home-notes { margin-bottom: 16px; }
+
+/* «Сказать» (screens/say.tsx): поле своего текста — растёт по высоте, не по ширине. */
+.say-text { width: 100%; min-height: 72px; resize: vertical; font: inherit; color: var(--text); line-height: 1.4; }
+.seg button:disabled { opacity: 0.45; cursor: default; }

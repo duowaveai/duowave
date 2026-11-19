@@ -2,8 +2,9 @@
 //! developer layer is on — kept on the gateway, so the phone and the computer of the same person show the same.
 //! Kept like the desk (desk.rs): a row of the `state` table, `panel` / `<person>`, one JSON object up to 16 KB whose
 //! keys the panel owns (shell/memory.ts). A change names only its keys: `PATCH {"folders": {...}}` keeps the rest,
-//! `null` drops a key. A key has no memory of its own, as it has no desk. What belongs to a device — the theme, the
-//! language, the microphone — stays in the browser.
+//! `null` drops a key. A key has no memory of its own, as it has no desk. The chosen theme is the person's too (`theme`,
+//! shell/theme.ts). What belongs to a device — light or dark, the view, the language, the microphone — stays in the
+//! browser.
 
 use std::sync::Arc;
 

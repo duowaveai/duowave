@@ -208,6 +208,24 @@ impl SayOutcome {
     }
 }
 
+/// Whose voice says a typed phrase (the panel's «Сказать», owner 20.11): the character's — our engine — or Alice's —
+/// Yandex's synthesis through the station's own credentials. Without a choice the phrase is said as the speech is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SayVoice {
+    Own,
+    Alice,
+}
+
+impl SayVoice {
+    pub fn parse(text: &str) -> Option<SayVoice> {
+        match text {
+            "own" | "character" => Some(SayVoice::Own),
+            "alice" | "yandex" => Some(SayVoice::Alice),
+            _ => None,
+        }
+    }
+}
+
 /// The silent check of the speech session (the debug API's /tts).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1017,8 +1035,31 @@ impl StationSession {
     /// left, so the station hears the whole speech, its stream closes and its trip ends. A caller that stops waiting
     /// (a closed panel tab, a client's timeout) only misses the outcome.
     pub async fn say(self: &Arc<Self>, text: String, clip: Option<AudioClip>) -> SayOutcome {
+        self.say_in(text, clip, None).await
+    }
+
+    /// Whether a typed phrase can be said in that voice now; Err — why not, in plain words.
+    pub fn can_say_in(&self, voice: SayVoice) -> Result<(), String> {
+        match voice {
+            SayVoice::Own if self.deps.voice.speaker().is_none() => {
+                Err(crate::tr!("Своего голоса сейчас нет: включите его в «Голосе» — или скажите голосом Алисы."))
+            }
+            SayVoice::Alice if self.lock().yandex.is_none() => Err(crate::tr!(
+                "Голос Алисы пока недоступен: колонка ещё не передала ключи речи. Скажите ей «Алиса» и попробуйте снова."
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// The same in a voice chosen for this phrase (the panel's «Сказать»); None — as the speech is set.
+    pub async fn say_in(
+        self: &Arc<Self>,
+        text: String,
+        clip: Option<AudioClip>,
+        voice: Option<SayVoice>,
+    ) -> SayOutcome {
         let session = self.clone();
-        match tokio::spawn(async move { session.speak(text, clip).await }).await {
+        match tokio::spawn(async move { session.speak(text, clip, voice).await }).await {
             Ok(outcome) => outcome,
             Err(error) => {
                 tracing::error!(target: "session", "Session {}: the speech failed: {error}", tag8(&self.id));
@@ -1027,7 +1068,7 @@ impl StationSession {
         }
     }
 
-    async fn speak(self: Arc<Self>, text: String, clip: Option<AudioClip>) -> SayOutcome {
+    async fn speak(self: Arc<Self>, text: String, clip: Option<AudioClip>, voice: Option<SayVoice>) -> SayOutcome {
         let label = match &clip {
             Some(clip) => format!("say \"{text}\" + {}", clip.label),
             None => format!("say \"{text}\""),
@@ -1043,7 +1084,7 @@ impl StationSession {
                 options.hold_response_ms = 0;
                 // Said through our push already (a reminder, a deferred answer): past the wait it stops.
                 options.deferrable = false;
-                self.start_answer(inner, options)
+                self.start_answer_in(inner, options, voice)
             })
             .await;
         let Some(answer) = answer else { return SayOutcome::Failed };
@@ -4248,13 +4289,27 @@ impl StationSession {
     // ---------------------------------------------------------------- answers
 
     /// One voice at a time: a new answer stops the one being spoken.
-    fn start_answer(&self, inner: &mut Inner, mut options: SpokenAnswerOptions) -> Arc<SpokenAnswer> {
+    fn start_answer(&self, inner: &mut Inner, options: SpokenAnswerOptions) -> Arc<SpokenAnswer> {
+        self.start_answer_in(inner, options, None)
+    }
+
+    /// The same, in a voice chosen for this answer; None — as the speech is set.
+    fn start_answer_in(
+        &self,
+        inner: &mut Inner,
+        mut options: SpokenAnswerOptions,
+        voice: Option<SayVoice>,
+    ) -> Arc<SpokenAnswer> {
         if let Some(answer) = &inner.answer {
             answer.cancel("superseded");
         }
         options.wait_max_ms = self.deps.config.answer_wait_max_ms;
         let follows = options.response.is_some();
-        let answer = SpokenAnswer::new(options, self.link(), self.synthesizer(inner));
+        let synthesize = match voice {
+            None => self.synthesizer(inner),
+            Some(voice) => self.synthesizer_in(inner, voice),
+        };
+        let answer = SpokenAnswer::new(options, self.link(), synthesize);
         inner.answer = Some(answer.clone());
         if follows {
             inner.follow_up = Some(FollowUp::Answer(answer.clone()));
@@ -4504,27 +4559,7 @@ impl StationSession {
         let provider = self.tts_provider();
         if matches!(provider, TtsProvider::Mixed | TtsProvider::Own) {
             return match self.deps.voice.speaker() {
-                Some(own) => Arc::new(move |text: String, cancel: CancellationToken| {
-                    let own = own.clone();
-                    async move {
-                        // A phrase that begins with a ready one (src/speech/tts/phrase_cache.rs): its sound at once,
-                        // the rest synthesized after it, on the same stream.
-                        if let Some((head, rest)) = own.head(&text) {
-                            let first = futures::stream::once(async move { Ok::<Bytes, anyhow::Error>(head) });
-                            if rest.trim().is_empty() {
-                                return Ok(Synthesis { format: "audio/opus".into(), audio: first.boxed() });
-                            }
-                            let tail = futures::stream::once(async move {
-                                own.synthesize(&rest, &cancel).await.map(|spoken| spoken.audio)
-                            });
-                            return Ok(Synthesis { format: "audio/opus".into(), audio: first.chain(tail).boxed() });
-                        }
-                        let spoken = own.synthesize(&text, &cancel).await?;
-                        let audio = futures::stream::once(async move { Ok::<Bytes, anyhow::Error>(spoken.audio) });
-                        Ok(Synthesis { format: spoken.format, audio: audio.boxed() })
-                    }
-                    .boxed()
-                }),
+                Some(own) => own_synthesizer(own),
                 None => {
                     let reason = format!("TTS_PROVIDER={} without TTS_OWN_URL", provider.as_str());
                     failing(reason)
@@ -4540,6 +4575,19 @@ impl StationSession {
         } else {
             "no SynchronizeState from the station yet: no credentials for Yandex speech".into()
         })
+    }
+
+    /// Speech in the voice chosen for one phrase (the panel's «Сказать»): ours or Alice's, whatever TTS_PROVIDER says —
+    /// the person chose it for this phrase; `can_say_in` told them before if it is not there.
+    fn synthesizer_in(&self, inner: &Inner, voice: SayVoice) -> Synthesize {
+        match (voice, self.deps.voice.speaker(), inner.yandex.clone()) {
+            (SayVoice::Own, Some(own), _) => own_synthesizer(own),
+            (SayVoice::Alice, _, Some(yandex)) => {
+                Arc::new(move |text: String, cancel: CancellationToken| yandex.synthesize(&text, &cancel))
+            }
+            (SayVoice::Own, None, _) => failing("no own voice to say it in".into()),
+            (SayVoice::Alice, _, None) => failing("no SynchronizeState from the station yet: no Yandex speech".into()),
+        }
     }
 
     /// Yandex's speech in our voice (TTS_PROVIDER=own): its response went to the station as it came, its stream
@@ -5032,6 +5080,31 @@ fn extra_wake_words(voice: &VoiceRequest) -> Vec<String> {
 }
 
 /// A synthesis that cannot be: every phrase fails with the reason.
+/// Our engine's speech: a phrase that begins with a ready one (src/speech/tts/phrase_cache.rs) has its sound at once,
+/// the rest synthesized after it, on the same stream.
+fn own_synthesizer(own: Arc<crate::speech::tts::own_speech::OwnSpeech>) -> Synthesize {
+    Arc::new(move |text: String, cancel: CancellationToken| {
+        let own = own.clone();
+        async move {
+            if let Some((head, rest)) = own.head(&text) {
+                let first = futures::stream::once(async move { Ok::<Bytes, anyhow::Error>(head) });
+                if rest.trim().is_empty() {
+                    return Ok(Synthesis { format: "audio/opus".into(), audio: first.boxed() });
+                }
+                let tail =
+                    futures::stream::once(
+                        async move { own.synthesize(&rest, &cancel).await.map(|spoken| spoken.audio) },
+                    );
+                return Ok(Synthesis { format: "audio/opus".into(), audio: first.chain(tail).boxed() });
+            }
+            let spoken = own.synthesize(&text, &cancel).await?;
+            let audio = futures::stream::once(async move { Ok::<Bytes, anyhow::Error>(spoken.audio) });
+            Ok(Synthesis { format: spoken.format, audio: audio.boxed() })
+        }
+        .boxed()
+    })
+}
+
 fn failing(reason: String) -> Synthesize {
     Arc::new(move |_text: String, _cancel: CancellationToken| -> BoxFuture<'static, anyhow::Result<Synthesis>> {
         let reason = reason.clone();
@@ -5047,6 +5120,16 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::config::{Config, Env};
+
+    /// The panel's «Сказать» names the voice of one phrase: the character's or Alice's; anything else is no voice.
+    #[test]
+    fn a_typed_phrase_names_the_characters_voice_or_alices() {
+        assert_eq!(SayVoice::parse("own"), Some(SayVoice::Own));
+        assert_eq!(SayVoice::parse("character"), Some(SayVoice::Own));
+        assert_eq!(SayVoice::parse("alice"), Some(SayVoice::Alice));
+        assert_eq!(SayVoice::parse("yandex"), Some(SayVoice::Alice));
+        assert_eq!(SayVoice::parse("loud"), None);
+    }
 
     /// The review's deadlock: a sessions poll (`snapshot`) asked our Yandex session whether it was up while it held
     /// the journal, and our Yandex session journals under its own state (`open`, `dispatch`, the heartbeat). Here

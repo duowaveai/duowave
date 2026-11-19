@@ -17,6 +17,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
+use super::asked::Kind;
 use super::layer::TalkLayer;
 use super::origin::Origin;
 use super::pack;
@@ -100,7 +101,7 @@ its short name.
 - add — they add to a thing or want it changed. Words for a thing being made go into that same work; a thing that is \
 ready or already on the desk gets a new version. Size, colours, beauty, layout are changes of the thing too.
 - status — how a thing goes, whether it is ready («как там виджет?», «делаешь?»). show — open it to try on. desk — put \
-it on the desk. details — what was done. stop — stop its work.
+it on the desk. details — what was done. stop — stop its work: only when they ask in so many words to stop, cancel or not make it («останови», «отмени», «не делай»); a «нет» or «не надо» alone is never stop.
 - open — open the workshop. close — leave the workshop, in any words («выйди из режима мастерской», «хватит \
 мастерской»).
 - answer — the answer to the question waiting for one (below), in `answer`.
@@ -237,6 +238,13 @@ impl TalkLayer {
                 Some(asked) => text.push_str(&format!("\nA question waits for its answer: «{asked}».")),
                 None => text.push_str("\nA question about a work waits for its answer."),
             }
+            if question.kind == Kind::Extra {
+                text.push_str(
+                    "\nIt asks whether to add anything to the thing being made: «нет», «не надо», «ничего», «так \
+                     оставь» are `answer` no — the work goes on; something to add is add; stop only in words of \
+                     stopping.",
+                );
+            }
         }
         text
     }
@@ -247,6 +255,17 @@ impl TalkLayer {
             |value: Option<String>| value.map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
         let thing = filled(reading.thing);
         let text = filled(reading.text).unwrap_or_else(|| phrase.trim().to_string());
+        // To «Что-то ещё добавить?» a model's «stop» stands only on words of stopping: «нет, не надо» is the answer
+        // «nothing to add» (owner 20.11).
+        if reading.act == Act::Stop {
+            if let Some(question) = self.asked.open(device).filter(|question| question.kind == Kind::Extra) {
+                let normalized = crate::skills::text::normalize(phrase);
+                let answer = super::ready::extra_answer(pack::of(self.lang(device)), &normalized)?;
+                if answer != Answer::Drop {
+                    return Some(Heard::Answer { work: question.work, question: Kind::Extra, again: false, answer });
+                }
+            }
+        }
         Some(match reading.act {
             Act::New => Heard::Start {
                 face: filled(reading.face).as_deref().and_then(Face::parse),

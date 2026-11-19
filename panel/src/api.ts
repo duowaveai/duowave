@@ -3841,7 +3841,8 @@ export const api = {
     helperClients: (signal?: AbortSignal) => get<{ clients: ClientView[] }>('/api/v1/helpers/clients', signal),
     setClientGives: (id: string, gives: Ability[]) => put<{ clients: ClientView[] }>(`/api/v1/helpers/clients/${encodeURIComponent(id)}`, { gives }),
     removeClient: (id: string) => del<{ clients: ClientView[] }>(`/api/v1/helpers/clients/${encodeURIComponent(id)}`),
-    say: (text: string) => post<{ outcome: string }>('/api/v1/station/sessions/latest/say', { text }),
+    /** Сказать текст колонкой: `voice` — голосом персонажа (`own`) или Алисы; без него — как настроена речь. */
+    say: (text: string, voice?: 'own' | 'alice') => post<{ outcome: string }>('/api/v1/station/sessions/latest/say', { text, voice }),
     timers: (device?: string, signal?: AbortSignal) =>
         get<{ device?: string | null; timers: TimerView[] }>(`/api/v1/station/timers${device ? `?device=${encodeURIComponent(device)}` : ''}`, signal),
     player: (device?: string, signal?: AbortSignal) => get<NowPlaying>(`/api/v1/station/player${device ? `?device=${encodeURIComponent(device)}` : ''}`, signal),

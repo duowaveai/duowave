@@ -21,6 +21,7 @@ import { WaitingCard } from '../voice/pending-voice';
 import { aliceOnly, chooseWord, removeWords, useCallWords } from './call-words';
 import { OwnFrame } from './helper-pc';
 import { HomeVoiceChoice, ModelsScreen } from './models';
+import { SayField } from './say';
 
 function Card({ id, title, sub, children }: { id: string; title: string; sub?: string; children: preact.ComponentChildren }) {
     return (
@@ -195,6 +196,10 @@ export function VoicePage() {
             <p class="w-cap m-0">{tr.voiceHome.voiceLead}</p>
             <WaitingCard />
             <NowSpeaking />
+            {/* «Сказать» (владелец, 20.11): свой текст голосом персонажа или Алисой — колонкой, без неё компьютером. */}
+            <Card id="say" title={tr.say.cardTitle} sub={tr.say.cardSub}>
+                <SayField />
+            </Card>
             <HomeVoiceChoice />
             <CharacterVoiceModel />
             <ComputerModels kind="voice" />

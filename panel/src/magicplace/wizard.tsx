@@ -616,7 +616,7 @@ function StepMark({ state }: { state: StepState }) {
  * Пилюля хода установки рядом с доком (как «Ждёт вас»): мастер свёрнут — «Ставлю «Джарвис» · 3 из 5», готово —
  * «Готово: «Джарвис»»; нажатие разворачивает мастер. Видна с любого экрана (проверка начисто 18.11, п. 26).
  */
-export function InstallPill({ place }: { place: 'dock' | 'side' | 'onb' }) {
+export function InstallPill({ place }: { place: 'top' | 'side' | 'onb' }) {
     const [, rerender] = useState(0);
     useEffect(() => onInstallProgress(() => rerender((n) => n + 1)), []);
     const progress = installProgress();

@@ -17,7 +17,7 @@ use crate::core::identity::permissions::{JOURNAL_VIEW, ROUTES_EDIT, STATION_MODE
 use crate::gateway::mode::ModeView;
 use crate::gateway::observability::session_recorder::SessionEventRecord;
 use crate::gateway::uniproxy::session_registry::AnySession;
-use crate::gateway::uniproxy::station_session::{SessionSnapshot, StationSession};
+use crate::gateway::uniproxy::station_session::{SayVoice, SessionSnapshot, StationSession};
 use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Zone};
 use crate::skills::skill_stats::UnsupportedEntry;
 use crate::skills::skills_service::{RoutesSetting, RoutesUpdate};
@@ -300,7 +300,15 @@ async fn say(
 ) -> ApiResult<Said> {
     caller.permitted(STATION_SAY)?;
     let (session, text) = speaking(&app, &caller, &uri, &id, &body)?;
-    Ok(created(Said { outcome: session.say(text, None).await.as_str() }))
+    // «Сказать» in the panel (owner 20.11): the character's voice or Alice's for this phrase; none — as speech is set.
+    let voice = match body.get("voice").and_then(Value::as_str) {
+        None => None,
+        Some(name) => Some(SayVoice::parse(name).ok_or_else(|| ApiError::field("voice", "own | alice"))?),
+    };
+    if let Some(voice) = voice {
+        session.can_say_in(voice).map_err(ApiError::conflict)?;
+    }
+    Ok(created(Said { outcome: session.say_in(text, None, voice).await.as_str() }))
 }
 
 /// Synthesizes `text` through Yandex without playing it: checks the speech session silently.

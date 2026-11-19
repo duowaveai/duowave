@@ -324,7 +324,22 @@ impl TalkRules {
             let heard = layer.store.answer_of(device, pack, &words_of(normalized))?;
             return Some(Heard::Store { heard });
         };
-        let answer = super::ready::answer_of(pack, &words_of(normalized))?;
+        let words = words_of(normalized);
+        if question.kind == super::asked::Kind::Extra {
+            // «Что-то ещё добавить?»: «и ещё…», «как там», «покажи» stay what they are; «нет, не надо» lets the work go
+            // on, words of stopping stop it, a lone «да» asks what (owner 20.11).
+            match self.hear(&words, device) {
+                // «И ещё …»: the rules' addition, without its «и ещё».
+                Some(heard @ Heard::Add { .. }) => return Some(heard),
+                Some(Heard::Status { .. } | Heard::Details | Heard::Show { .. } | Heard::Desk { .. }) => return None,
+                _ => {}
+            }
+            // Other words — a wish or talk in the room — are the reader's to tell apart, as before the question.
+            let answer = super::ready::extra_answer(pack, &words)
+                .filter(|answer| !matches!(answer, super::ready::Answer::Redo { .. }))?;
+            return Some(Heard::Answer { work: question.work, question: question.kind, again: false, answer });
+        }
+        let answer = super::ready::answer_of(pack, &words)?;
         Some(Heard::Answer { work: question.work, question: question.kind, again: question.again, answer })
     }
 

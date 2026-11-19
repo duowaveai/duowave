@@ -447,5 +447,7 @@
  "Колонка не ответила за 3 секунды: она включена и в той же сети?": "The speaker did not answer in 3 seconds: is it on, and on the same network?",
  "Колонка на связи, но SSH на ней не запущен.": "The speaker answers, but SSH is not running on it.",
  "Код первой настройки панели: {code} — панель спросит его вместе с паролем.": "The panel's first-setup code: {code} — the panel asks for it with the password.",
- "Панель спросит код первой настройки — он в журнале колонки: ssh -p 2222 root@{address} \"grep 'первая настройка' {log} | tail -n 1\"": "The panel will ask for the first-setup code — it is in the speaker's log: ssh -p 2222 root@{address} \"grep 'первая настройка' {log} | tail -n 1\""
+ "Панель спросит код первой настройки — он в журнале колонки: ssh -p 2222 root@{address} \"grep 'первая настройка' {log} | tail -n 1\"": "The panel will ask for the first-setup code — it is in the speaker's log: ssh -p 2222 root@{address} \"grep 'первая настройка' {log} | tail -n 1\"",
+ "Своего голоса сейчас нет: включите его в «Голосе» — или скажите голосом Алисы.": "There is no voice of your own right now: turn it on in “Voice”, or say it in Alice’s voice.",
+ "Голос Алисы пока недоступен: колонка ещё не передала ключи речи. Скажите ей «Алиса» и попробуйте снова.": "Alice’s voice is not available yet: the speaker has not passed on its speech keys. Say “Alice” to it and try again."
 }
