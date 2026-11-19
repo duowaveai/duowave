@@ -15,6 +15,7 @@ export function AuthScreen({
     mode,
     accounts,
     needsCode = false,
+    station = false,
     onDone,
 }: {
     mode: 'setup' | 'login';
@@ -22,6 +23,8 @@ export function AuthScreen({
     accounts: number;
     /** Первая настройка не с этого компьютера: нужен код из журнала шлюза. */
     needsCode?: boolean;
+    /** Шлюз на колонке: где взять код — у установщика, а не в журнале Mac. */
+    station?: boolean;
     onDone: () => void;
 }) {
     const [name, setName] = useState('');
@@ -84,7 +87,7 @@ export function AuthScreen({
                 {mode === 'setup' && needsCode && (
                     <Field
                         label={tr.auth.setupCode}
-                        hint={tr.auth.setupCodeHint}
+                        hint={station ? tr.auth.setupCodeHintStation(location.hostname) : tr.auth.setupCodeHint}
                     >
                         <input
                             value={code}

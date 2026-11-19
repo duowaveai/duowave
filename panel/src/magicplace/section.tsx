@@ -30,6 +30,7 @@ import {
     feedLines,
     isBlocked,
     isInstalled,
+    onStationOnly,
     placeOf,
     useCatalog,
     useEngines,
@@ -141,11 +142,20 @@ export function PrimaryButton({ entry, actions, open }: { entry: CatalogEntry; a
     return <Action tone="on" label={tr.magicplace.install} busy={busy === 'install'} disabled={!!busy} onClick={() => void actions.install(entry)} />;
 }
 
+/**
+ * Цвет метки места — по той же примете, что её слова (`placeOf`): приложение только для колонки — обводкой, приложение
+ * компьютера (Турбо) — фиолетом, как Турбо на столе; сеть, персонаж, тема — серым.
+ */
+function placePill(entry: CatalogEntry): string {
+    if (entry.runtime === 'mcp' || (entry.runtime !== 'process' && entry.kind !== 'app')) return 'pill-off';
+    return onStationOnly(entry.runs) ? 'pill-station' : 'pill-agent';
+}
+
 /** Метки пакета в списке: рекомендуем, новое и прежние метки каталога (источник, подпись, состояние). */
 function Pills({ entry, engines }: { entry: CatalogEntry; engines: Engines }) {
     return (
         <>
-            <span class="pill pill-off">{placeOf(entry.kind, entry.runtime, entry.runs)}</span>
+            <span class={`pill ${placePill(entry)}`}>{placeOf(entry.kind, entry.runtime, entry.runs)}</span>
             <PlacePill entry={entry} />
             {recommendedHere(entry) && !isInstalled(entry) && <span class="pill pill-own">{tr.magicplace.recommendedPill}</span>}
             {isNew(entry) && !isInstalled(entry) && <span class="pill pill-agent">{tr.magicplace.newPill}</span>}
@@ -213,8 +223,9 @@ function Shelf({ id, title, entries, actions, onOpen }: { id: string; title: str
                         <button class="mp-tile-open" onClick={() => onOpen(entry.id)}>
                             <PackageThumb url={entry.preview?.image} />
                             <span class="mp-tile-title">{entry.title}</span>
+                            {/* Где работает — наверху, меткой (замечание 17 теста 19.11), а не строкой под описанием. */}
+                            <span class={`pill ${placePill(entry)} self-start`}>{placeOf(entry.kind, entry.runtime, entry.runs)}</span>
                             {entry.description && <span class="mp-tile-line">{entry.description}</span>}
-                            <span class="t-caption">{placeOf(entry.kind, entry.runtime, entry.runs)}</span>
                         </button>
                         <div class="mp-tile-actions">
                             <PrimaryButton entry={entry} actions={actions} open={openTarget(entry, panel.go)} />

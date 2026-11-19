@@ -3,7 +3,7 @@
 export default {
     passwordShort: 'Пароль — хотя бы 8 символов.',
     passwordsDiffer: 'Пароли не совпадают.',
-    codeNeeded: 'Введите код настройки из журнала DuoWave.',
+    codeNeeded: 'Введите код настройки: его показал установщик или журнал DuoWave.',
     nameNeeded: 'Введите имя.',
     welcome: 'Добро пожаловать в DuoWave',
     panel: 'Пульт',
@@ -12,6 +12,8 @@ export default {
     loginPassword: 'Введите пароль администратора.',
     setupCode: 'Код настройки',
     setupCodeHint: 'Строка «первая настройка пульта» в журнале DuoWave: на Mac — logs/duowave.log, в Docker — docker compose logs gateway.',
+    setupCodeHintStation: (address: string) =>
+        `Его показал установщик в конце установки на колонку. Потерян — в Терминале компьютера: ssh -p 2222 root@${address} "grep 'первая настройка' /data/opt/duowave/gateway/gateway.log | tail -n 1"`,
     name: 'Имя',
     adminPassword: 'Пароль администратора',
     password: 'Пароль',

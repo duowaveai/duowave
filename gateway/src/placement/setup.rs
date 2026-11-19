@@ -16,9 +16,9 @@ use serde_json::Value;
 
 use super::moves::{NEEDED_KB, NEEDED_MEMORY_KB};
 use super::payload;
-use super::station_fs::{BIN, DEFAULT_PORT, DIR, SERVICE_COMMAND};
+use super::station_fs::{BIN, DATA, DEFAULT_PORT, DIR, SERVICE_COMMAND};
 use crate::config::Config;
-use crate::stations::connect::discovery::discover_stations;
+use crate::stations::connect::discovery::{discover_stations, why_unreached, Unreached};
 use crate::stations::connect::neighbours::{self, Neighbour, Severity};
 use crate::stations::connect::quasar_config::{read_config, PointsTo};
 use crate::stations::connect::station_connect::problem_of;
@@ -89,12 +89,24 @@ async fn run(args: &[String]) -> Result<(), Stop> {
     let ssh = &config.gateway.station_ssh;
     let opener = RusshOpener;
     if opener.banner(&address, ssh.port).await.is_none() {
-        return Err(Stop(crate::tr!(
+        // Why: the connect's own answer (test 19.11, remark 18) — on macOS a program kept off the home network looks
+        // like a speaker without SSH, and the way out is not the wiki but a switch in the system settings.
+        let why = match why_unreached(&address, ssh.port, 3000).await {
+            Some(Unreached::NoRoute) if cfg!(target_os = "macos") => crate::tr!(
+                "Колонка не отвечает: она выключена, в другой сети — или macOS не дала этой программе доступ к домашней сети. Проверьте: «Системные настройки» → «Конфиденциальность и безопасность» → «Локальная сеть» — включите Терминал (или приложение, из которого запускали), либо запустите команду в приложении «Терминал»."
+            ),
+            Some(Unreached::NoRoute) => crate::tr!("До колонки нет пути из этой сети: она включена и в той же сети, что этот компьютер?"),
+            Some(Unreached::Timeout) => crate::tr!("Колонка не ответила за 3 секунды: она включена и в той же сети?"),
+            Some(Unreached::Refused) => crate::tr!("Колонка на связи, но SSH на ней не запущен."),
+            Some(Unreached::Other) | None => String::new(),
+        };
+        let head = crate::tr!(
             "На {address} не отвечает SSH (порт {port}). Нужна колонка с root и SSH — как их получить: {wiki}",
             address = address,
             port = ssh.port,
             wiki = WIKI
-        )));
+        );
+        return Err(Stop(if why.is_empty() { head } else { format!("{why}\n{head}") }));
     }
     println!("{}", crate::tr!("Вхожу на колонку {address} по SSH…", address = address));
     let options = ShellOptions {
@@ -104,12 +116,14 @@ async fn run(args: &[String]) -> Result<(), Stop> {
         trust: None,
         timeout_ms: None,
     };
-    let shell = opener.open(&address, options).await.map_err(|error| Stop(said_of(&problem_of(&error))))?;
+    let shell = opener.open(&address, options.clone()).await.map_err(|error| Stop(said_of(&problem_of(&error))))?;
     let result = setup(&config, &address, shell.as_ref(), yes).await;
     shell.close().await;
     let port = result?;
     if let Some(port) = port {
-        arrive(&address, port).await;
+        if arrive(&address, port).await {
+            setup_code(&address, port, &opener, options).await;
+        }
     }
     Ok(())
 }
@@ -319,7 +333,8 @@ async fn setup(config: &Config, address: &str, shell: &dyn StationShell, yes: bo
 }
 
 /// After the reboot: the station back, its voice at its own gateway. Not back in 3 minutes — said, with the way back.
-async fn arrive(address: &str, port: u16) {
+/// True when it is back.
+async fn arrive(address: &str, port: u16) -> bool {
     step(&crate::tr!("Жду, пока колонка вернётся (до 3 минут)"));
     tokio::time::sleep(Duration::from_secs(15)).await;
     let came = wait(180, || async {
@@ -337,6 +352,7 @@ async fn arrive(address: &str, port: u16) {
             )
         );
         println!("{}", crate::tr!("Компьютер больше не нужен."));
+        true
     } else {
         println!();
         println!(
@@ -348,7 +364,52 @@ async fn arrive(address: &str, port: u16) {
                 restore = RESTORE_SCRIPT
             )
         );
+        false
     }
+}
+
+/// The panel's first-run code (test 19.11, remark 19): the speaker's panel asks it of anyone not on the speaker itself,
+/// and it lives only in the speaker's log — a person without SSH could not get it. The gateway makes a new one at every
+/// start, so it is read after the reboot, from the same SSH; a panel with its password set already asks none.
+async fn setup_code(address: &str, port: u16, opener: &RusshOpener, options: ShellOptions) {
+    let state = async {
+        let client = reqwest::Client::builder().timeout(Duration::from_secs(3)).build().ok()?;
+        let body: Value =
+            client.get(format!("http://{address}:{port}/api/v1/auth/state")).send().await.ok()?.json().await.ok()?;
+        body.pointer("/message/configured").and_then(Value::as_bool)
+    };
+    if state.await != Some(false) {
+        return;
+    }
+    let read = async {
+        let shell = opener.open(address, options).await.ok()?;
+        let line = shell.run(&format!("grep 'первая настройка пульта' {DATA}/gateway.log | tail -n 1"), None).await;
+        shell.close().await;
+        code_in(&line.ok()?.stdout)
+    };
+    match read.await {
+        Some(code) => println!(
+            "{}",
+            crate::tr!("Код первой настройки панели: {code} — панель спросит его вместе с паролем.", code = code)
+        ),
+        None => println!(
+            "{}",
+            crate::tr!(
+                "Панель спросит код первой настройки — он в журнале колонки: ssh -p 2222 root@{address} \"grep 'первая настройка' {log} | tail -n 1\"",
+                address = address,
+                log = format!("{DATA}/gateway.log")
+            )
+        ),
+    }
+}
+
+/// The code `1234-5678` in a log line, if there is one.
+fn code_in(text: &str) -> Option<String> {
+    text.split(|c: char| !(c.is_ascii_digit() || c == '-'))
+        .find(|word| {
+            word.len() == 9 && word.as_bytes()[4] == b'-' && word.chars().filter(char::is_ascii_digit).count() == 8
+        })
+        .map(str::to_string)
 }
 
 fn print_neighbour(neighbour: &Neighbour) {

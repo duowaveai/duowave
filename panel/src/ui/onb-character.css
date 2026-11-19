@@ -108,3 +108,13 @@
 }
 /* Выбран, пока колонка не центр (п. 63): ждёт её — отмечен рамкой. */
 .onb .onb-inv-card.is-chosen { box-shadow: inset 0 0 0 1px var(--bar-own); }
+
+/* Невысокое окно (Mac-приложение на ноутбуке): шаг плотнее, чтобы влезал без прокрутки (замечание 16 теста 19.11). */
+@media (max-height: 940px) and (min-width: 761px) {
+    .onb .onb-ch { gap: 14px; padding-top: 8px; padding-bottom: 8px; }
+    .onb .onb-inv-block { padding: 14px 18px; }
+}
+@media (max-height: 820px) and (min-width: 761px) {
+    .onb .onb-ch { gap: 10px; padding-top: 2px; padding-bottom: 2px; }
+    .onb .onb-ch-grid { gap: 8px; }
+}

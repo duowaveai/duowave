@@ -53,6 +53,8 @@ interface TileModel {
     glyph?: string;
     image?: string | null;
     chip?: { text: string; cls: string };
+    /** Где работает — меткой рядом с названием (замечание 17 теста 19.11): компьютер (Турбо) или колонка. */
+    place?: { text: string; cls: string };
     button?: { label: string; light?: boolean; disabled?: boolean; onClick?: () => void };
     note?: { text: string; bad?: boolean };
 }
@@ -155,13 +157,18 @@ export function StoreStep() {
             key: entry.id,
             title: entry.title,
             sub: entry.description ?? '',
-            // Где работает: на колонке, на компьютере, в сети — центр у помощника и есть колонка.
             lines: [
                 // Своё слово персонажа (п. 65): ставится с ним, отдельной плитки у слова нет.
                 ...(word ? [tr.onbStore.wordLine(word)] : []),
-                ...(entry.place ? [placeTitle(entry.place === 'gateway' && station ? 'station' : entry.place)] : []),
                 ...(installed ? [] : downloadLines(entry)),
             ],
+            // Где работает: на колонке, на компьютере, в сети — центр у помощника и есть колонка. Наверху, меткой.
+            place: entry.place
+                ? (() => {
+                      const where = entry.place === 'gateway' && station ? 'station' : entry.place;
+                      return { text: placeTitle(where), cls: where === 'station' ? 'chip-station' : where === 'computer' ? 'chip-agent' : '' };
+                  })()
+                : undefined,
             ico: (entry.kind === 'character' ? CHAR_CYCLE : APP_CYCLE)[at % 6],
             glyph: glyphOf(entry.title),
             image: entry.preview?.image ? media(entry.preview.image) : null,
@@ -295,6 +302,7 @@ function Tile({ tile }: { tile: TileModel }) {
             <span class="tile-body">
                 <span class="tile-t">
                     {tile.title}
+                    {tile.place && <span class={`chip${tile.place.cls ? ` ${tile.place.cls}` : ''}`}>{tile.place.text}</span>}
                     {tile.chip && <span class={`chip${tile.chip.cls ? ` ${tile.chip.cls}` : ''}`}>{tile.chip.text}</span>}
                 </span>
                 <span class="tile-s">{tile.sub}</span>

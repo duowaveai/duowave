@@ -6,7 +6,7 @@ import type ru from '../ru/auth';
 const en: Translation<typeof ru> = {
     passwordShort: 'The password needs at least 8 characters.',
     passwordsDiffer: 'The passwords do not match.',
-    codeNeeded: 'Enter the setup code from the DuoWave log.',
+    codeNeeded: 'Enter the setup code: the installer or the DuoWave log showed it.',
     nameNeeded: 'Enter your name.',
     welcome: 'Welcome to DuoWave',
     panel: 'Panel',
@@ -15,6 +15,8 @@ const en: Translation<typeof ru> = {
     loginPassword: 'Enter the administrator password.',
     setupCode: 'Setup code',
     setupCodeHint: 'The “first panel setup” line in the DuoWave log: on a Mac — logs/duowave.log, in Docker — docker compose logs gateway.',
+    setupCodeHintStation: (address: string) =>
+        `The installer showed it at the end of installing on the speaker. Lost it — in the computer's Terminal: ssh -p 2222 root@${address} "grep 'первая настройка' /data/opt/duowave/gateway/gateway.log | tail -n 1"`,
     name: 'Name',
     adminPassword: 'Administrator password',
     password: 'Password',

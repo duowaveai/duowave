@@ -725,6 +725,7 @@
   "role: admin, member или guest": "role: admin, member or guest",
   "Слишком много попыток — подождите {minutes} мин.": "Too many attempts — wait {minutes} min.",
   "Нужен код настройки — он в журнале DuoWave (logs/duowave.log).": "A setup code is needed — it is in DuoWave's log (logs/duowave.log).",
+  "Нужен код настройки — его показал установщик в конце установки на колонку.": "A setup code is needed — the installer showed it at the end of installing on the speaker.",
   "Администратор уже задан — войдите с его паролем.": "An administrator is already set — sign in with their password.",
   "Вход вне дома выключен (PANEL_REMOTE).": "Signing in from outside the home is off (PANEL_REMOTE).",
   "Неверное имя или пароль.": "Wrong name or password.",

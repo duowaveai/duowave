@@ -17,6 +17,9 @@
 
 /* Сцена: рамка с сеткой держит пропорцию, внутри — холст 744×620, сжатый под ширину */
 .onb .ot .ot-box.stage { flex: 1; min-width: 0; height: auto; align-self: flex-start; aspect-ratio: 744 / 620; }
+/* Сцена не выше середины рамки (окно минус шапка 56, низ 84 и отступы): широкое окно растило её по ширине выше экрана, и
+   шаг прокручивался, хотя всё влезало (замечание 16 теста 19.11). Масштаб сцены идёт за шириной (try.tsx). */
+.onb .ot:not(.narrow) .ot-box.stage { max-width: calc((100dvh - 56px - 84px - 48px) * 744 / 620); }
 .onb .ot .ot-c { position: absolute; left: 0; top: 0; width: 744px; height: 620px; transform-origin: 0 0; transform: scale(var(--ot-k, 1)); }
 
 /* Узко (телефон): фразы сверху, сцена меньше, под ней — то же словами */

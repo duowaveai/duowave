@@ -3875,7 +3875,7 @@ export const api = {
     uninstallStation: (address: string) => post<ConnectJob>('/api/v1/stations/connect/uninstall', { address }),
     connectJob: (id: string) => get<ConnectJob>(`/api/v1/stations/connect/jobs/${encodeURIComponent(id)}`),
     // Вход
-    panelState: () => get<{ configured: boolean; accounts: number; needsCode: boolean }>('/api/v1/auth/state'),
+    panelState: () => get<{ configured: boolean; accounts: number; needsCode: boolean; station?: boolean }>('/api/v1/auth/state'),
     setup: (password: string, code?: string) => post<{ token: string; user: PanelUser }>('/api/v1/auth/setup', { password, code }),
     login: (name: string | undefined, password: string) =>
         post<{ token: string; user: PanelUser }>('/api/v1/auth/login', { name, password }),

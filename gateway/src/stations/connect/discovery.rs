@@ -263,6 +263,44 @@ fn banner_software(text: &str, complete: bool) -> Option<String> {
     (terminated || complete).then(|| software.chars().take(60).collect())
 }
 
+/// Why nothing answered at address:port, as the connect itself said it (test 19.11, remark 18: the one-command install
+/// said «No SSH answers» while the speaker's SSH was up — macOS kept the freshly downloaded program off the home
+/// network, and every reason looked the same).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unreached {
+    /// No answer in time: the speaker is off, elsewhere, or a firewall drops it.
+    Timeout,
+    /// It answered «closed»: the speaker is there, nothing listens on the port.
+    Refused,
+    /// «No route to host», «network unreachable», «permission denied»: the address is not reachable from here — on
+    /// macOS also what Local Network privacy gives a program it has not let onto the home network.
+    NoRoute,
+    /// Anything else.
+    Other,
+}
+
+/// What the connect to address:port says, or None when it connects.
+pub async fn why_unreached(address: &str, port: u16, ms: u64) -> Option<Unreached> {
+    match timeout(Duration::from_millis(ms), TcpStream::connect((address, port))).await {
+        Err(_) => Some(Unreached::Timeout),
+        Ok(Ok(_)) => None,
+        Ok(Err(error)) => Some(unreached_of(&error)),
+    }
+}
+
+/// The kind of a connect's error. The raw codes are macOS's and Linux's for the same: EPERM 1, EACCES 13, and
+/// EHOSTUNREACH / ENETUNREACH (65 / 51 on macOS, 113 / 101 on Linux).
+fn unreached_of(error: &std::io::Error) -> Unreached {
+    use std::io::ErrorKind;
+    match error.kind() {
+        ErrorKind::ConnectionRefused => Unreached::Refused,
+        ErrorKind::TimedOut => Unreached::Timeout,
+        ErrorKind::HostUnreachable | ErrorKind::NetworkUnreachable | ErrorKind::PermissionDenied => Unreached::NoRoute,
+        _ if matches!(error.raw_os_error(), Some(1 | 13 | 51 | 65 | 101 | 113)) => Unreached::NoRoute,
+        _ => Unreached::Other,
+    }
+}
+
 /// The SSH banner's software (`dropbear_2022.83`) at address:port, or None when nothing SSH answers in `ms`.
 pub async fn ssh_banner(address: &str, port: u16, ms: u64) -> Option<String> {
     let idle = Duration::from_millis(ms);
@@ -291,6 +329,28 @@ mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
+
+    #[test]
+    fn a_connect_error_says_why_nothing_answered() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(unreached_of(&Error::from(ErrorKind::ConnectionRefused)), Unreached::Refused);
+        assert_eq!(unreached_of(&Error::from(ErrorKind::HostUnreachable)), Unreached::NoRoute);
+        // macOS's «No route to host» as the OS gives it, and a program kept off the local network.
+        assert_eq!(unreached_of(&Error::from_raw_os_error(65)), Unreached::NoRoute);
+        assert_eq!(unreached_of(&Error::from(ErrorKind::PermissionDenied)), Unreached::NoRoute);
+        assert_eq!(unreached_of(&Error::other("odd")), Unreached::Other);
+    }
+
+    #[tokio::test]
+    async fn a_closed_port_is_refused_and_an_open_one_connects() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let open = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert_eq!(why_unreached("127.0.0.1", open, 2000).await, Some(Unreached::Refused));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert_eq!(why_unreached("127.0.0.1", port, 2000).await, None);
+    }
 
     /// A DNS name in wire format, without compression.
     fn name(text: &str) -> Vec<u8> {

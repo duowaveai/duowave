@@ -46,6 +46,34 @@
 .onb-opts { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
 .onb-row-between { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 
+/* ─── Невысокое окно: середина плотнее ─────────────────────────── */
+/* Окно Mac-приложения — 80 % экрана: на ноутбуке это 750–860 px в высоту, и шаги «Где живёт», «Персонаж»,
+   «Попробовать» прокручивались, хотя почти влезали (замечание 16 теста 19.11, владелец: «чуть компактнее контент в
+   середине, чтобы минимально скролла было; если уж не влезло — тогда скролл»). Шапка и низ с кнопками — всегда на месте:
+   прокручивается только середина. */
+@media (max-height: 940px) {
+    .onb .onb-main { padding-top: 16px; padding-bottom: 16px; }
+    .onb .onb-main .h2 { font-size: 28px; }
+    .onb .onb-main .lead { font-size: 15px; line-height: 1.5; }
+    .onb .onb-main .opt { padding: 12px 16px; gap: 12px; }
+    .onb .onb-main .opt-ico { width: 36px; height: 36px; }
+    .onb .onb-main .opt-sub { font-size: 13px; line-height: 18px; }
+    .onb .onb-main .onb-opts { gap: 8px; }
+    .onb .onb-main .map { max-height: 30vh; }
+}
+/* Совсем невысокое (80 % экрана ноутбука 13–14″, ~785 px): ещё плотнее; не влезло — прокручивается середина. */
+@media (max-height: 820px) {
+    .onb .onb-main { padding-top: 4px; padding-bottom: 4px; }
+    .onb .onb-main .h2 { font-size: 24px; }
+    .onb .onb-main .lead { font-size: 14px !important; line-height: 1.4 !important; }
+    .onb .onb-main .onb-col { gap: 10px !important; }
+    .onb .onb-main .opt { padding: 10px 14px; }
+    .onb .onb-main .opt-title { font-size: 15px; line-height: 20px; }
+    .onb .onb-main .opt-sub { font-size: 12px; line-height: 16px; }
+    .onb .onb-main .scan { min-height: 32px; padding: 6px 14px; }
+    .onb .onb-main .small { font-size: 12px; line-height: 16px; }
+}
+
 /* ─── Низ: полоса шагов слева, кнопки справа ──────────────────── */
 .onb-foot {
     flex: none;

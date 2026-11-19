@@ -63,13 +63,21 @@ struct PanelState {
     configured: bool,
     accounts: usize,
     needs_code: bool,
+    /// The gateway on a speaker: the panel's hint for the first-run code says where it is there — the installer showed
+    /// it at its end (test 19.11, remark 19), not «logs/duowave.log» of a Mac.
+    station: bool,
 }
 
 /// Show the wizard, the login screen, or straight in.
 async fn state(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<PanelState> {
     let auth = &app.access.auth;
     let configured = auth.configured()?;
-    Ok(ok(PanelState { configured, accounts: auth.accounts()?, needs_code: !configured && caller.zone != Zone::Local }))
+    Ok(ok(PanelState {
+        configured,
+        accounts: auth.accounts()?,
+        needs_code: !configured && caller.zone != Zone::Local,
+        station: cfg!(feature = "station"),
+    }))
 }
 
 /// The wizard: the first password makes the admin. Only while nobody exists, only from home; from another device
@@ -82,9 +90,11 @@ async fn setup(State(app): State<Arc<App>>, caller: Caller, Body(body): Input) -
             Ok(()) => {}
             Err(SetupRefused::Throttled { wait_ms }) => return Err(too_many_tries(wait_ms)),
             Err(SetupRefused::WrongCode) => {
-                return Err(ApiError::forbidden(crate::tr!(
-                    "Нужен код настройки — он в журнале DuoWave (logs/duowave.log)."
-                )))
+                return Err(ApiError::forbidden(if cfg!(feature = "station") {
+                    crate::tr!("Нужен код настройки — его показал установщик в конце установки на колонку.")
+                } else {
+                    crate::tr!("Нужен код настройки — он в журнале DuoWave (logs/duowave.log).")
+                }))
             }
         }
     }
@@ -378,7 +388,10 @@ mod tests {
         let app = App::build(Config::for_tests(&Env::from_pairs([("STATE_DIR", "")]))).unwrap();
         let phone = "192.168.1.20";
         let (_, state) = call(&app, phone, "GET", "/api/v1/auth/state", Value::Null).await;
-        assert_eq!(state["message"], json!({"configured": false, "accounts": 0, "needsCode": true}));
+        assert_eq!(
+            state["message"],
+            json!({"configured": false, "accounts": 0, "needsCode": true, "station": cfg!(feature = "station")})
+        );
         let (status, body) =
             call(&app, phone, "POST", "/api/v1/auth/setup", json!({"password": "admin-password-1"})).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
@@ -392,7 +405,10 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED, "{body}");
         assert_eq!(body["message"]["user"]["name"], "Мама");
         let (_, state) = call(&app, phone, "GET", "/api/v1/auth/state", Value::Null).await;
-        assert_eq!(state["message"], json!({"configured": true, "accounts": 1, "needsCode": false}));
+        assert_eq!(
+            state["message"],
+            json!({"configured": true, "accounts": 1, "needsCode": false, "station": cfg!(feature = "station")})
+        );
 
         // From outside the home the panel answers only with PANEL_REMOTE; its first question is open.
         let (status, body) = call(&app, "8.8.8.8", "POST", "/api/v1/auth/login", json!({"password": "x"})).await;

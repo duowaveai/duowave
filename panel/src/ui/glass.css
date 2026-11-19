@@ -133,6 +133,8 @@ textarea.field {
 .pill-yandex { background: var(--pill-yandex-bg); color: var(--pill-yandex-fg); }
 .pill-agent { background: var(--pill-agent-bg); color: var(--pill-agent-fg); }
 .pill-off { background: var(--pill-off-bg); color: var(--pill-off-fg); }
+/* Где работает приложение — на колонке (MagicPlace, замечание 17 теста 19.11): обводкой, своим видом рядом с фиолетом Турбо. */
+.pill-station { background: transparent; color: var(--text); box-shadow: inset 0 0 0 1px var(--strong-border); }
 /* Беда — единственный коралл: «нет связи». */
 .pill-error { background: rgba(255, 138, 128, 0.16); color: var(--dot-offline); }
 

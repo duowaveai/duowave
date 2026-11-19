@@ -193,6 +193,8 @@ export function App() {
     const [auth, setAuth] = useState<'loading' | 'setup' | 'login' | 'ok'>('loading');
     const [accounts, setAccounts] = useState(1);
     const [needsCode, setNeedsCode] = useState(false);
+    /** Шлюз на колонке: код первой настройки показал установщик (замечание 19 теста 19.11). */
+    const [onStationGateway, setOnStationGateway] = useState(false);
     const [health, setHealth] = useState<Health | null>(null);
     const [offline, setOffline] = useState(false);
     const [debug, setDebug] = useState<DebugState>({ sessions: null, unsupported: [], error: null });
@@ -346,6 +348,7 @@ export function App() {
                 const state = await api.panelState();
                 setAccounts(state.accounts);
                 setNeedsCode(state.needsCode);
+                setOnStationGateway(!!state.station);
                 if (!state.configured) return setAuth('setup');
             } catch {
                 return setAuth('ok'); // шлюз молчит — панель покажет баннер недоступности
@@ -600,6 +603,7 @@ export function App() {
                 mode={auth}
                 accounts={accounts}
                 needsCode={needsCode}
+                station={onStationGateway}
                 onDone={() => {
                     // После первой настройки — шаг 2: как говорить с DuoWave (колонка — дальше её подключение).
                     const first = auth === 'setup';

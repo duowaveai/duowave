@@ -55,7 +55,7 @@ async fn makes_the_first_password_the_admin_once_from_this_computer_without_a_co
     let gateway = Gateway::start(ENV).await;
     assert_eq!(
         message(gateway.get("/api/v1/auth/state"), StatusCode::OK).await,
-        json!({"configured": false, "accounts": 0, "needsCode": false})
+        json!({"configured": false, "accounts": 0, "needsCode": false, "station": cfg!(feature = "station")})
     );
     assert_eq!(
         status(gateway.post("/api/v1/auth/setup").json(&json!({"password": "short"}))).await,
@@ -80,7 +80,7 @@ async fn makes_the_first_password_the_admin_once_from_this_computer_without_a_co
     assert_eq!((me["kind"].as_str(), me["role"].as_str()), (Some("user"), Some("admin")));
     assert_eq!(
         message(gateway.get("/api/v1/auth/state"), StatusCode::OK).await,
-        json!({"configured": true, "accounts": 1, "needsCode": false})
+        json!({"configured": true, "accounts": 1, "needsCode": false, "station": cfg!(feature = "station")})
     );
 }
 
