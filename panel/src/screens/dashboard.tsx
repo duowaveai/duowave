@@ -1,4 +1,5 @@
 import { FunctionComponent } from 'preact';
+import { createPortal } from 'preact/compat';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import {
@@ -21,8 +22,11 @@ import {
 } from '../api';
 import { executorOf, withFirst } from '../executor';
 import {
+    IconBolt,
+    IconChat,
     IconCheck,
     IconChevronRight,
+    IconClose,
     IconEar,
     IconGauge,
     IconHome,
@@ -87,7 +91,16 @@ import { useHelpers } from '../helpers';
 import { backupPlace } from './brain-backup';
 import { fallLine, turboOf } from './turbo-model';
 import { AsleepLine, FallLine, TurboBody, TurboSlot } from './turbo-scene';
-import { HomeStrip } from './home-scene';
+import { FoldedNotes, HomeStrip, NOTES_FOLDED } from './home-scene';
+import { useDeskFloat } from './desk-canvas';
+import { remember, useRecalled } from '../shell/memory';
+import { CallWord, aliceOnly, chooseWord, removeWords, useCallWords } from './call-words';
+
+/**
+ * Карточка Турбо закрыта крестиком (баг-лист 19.11): на свободном столе она висит поверх, у правого края, и мешала
+ * виджетам; закрыли — у колонки справа точка-молния, нажали — карточка снова. Помнит пульт (память пульта у шлюза).
+ */
+const TURBO_HIDDEN = 'desk-turbo-hidden';
 
 /** How far the stage's glow reaches past its core («Минимал»): what the blur(60px) spread was. */
 const GLOW_REACH = 110;
@@ -171,6 +184,11 @@ interface Props {
     onOpenHome?: () => void;
     /** Страница Турбо-компьютера, где ставятся его голоса: карточка Турбо без голоса ведёт туда (п. 31). */
     onOpenTurbo?: (helperId: string) => void;
+    /**
+     * Подписи под колонкой (Алиса, «Приложения», цвета, «Если Турбо уснёт») свёрнуты в значок «Поток запросов» (баг-лист
+     * 19.11): на свободном столе, когда на нём свои виджеты, — им нужно место. Нажали — раскрываются поверх стола.
+     */
+    notesFolded?: boolean;
 }
 
 let probe: HTMLDivElement | null = null;
@@ -235,8 +253,11 @@ function useTalkStage(): 'listen' | 'speak' | null {
     return listening ? 'listen' : speaking ? 'speak' : null;
 }
 
-export function Dashboard({ health, session, drawing, online, trip, skew = 0, version = 0, onOpenSettings, onOpenHouse, whoOpen, onToggleWho, room, onOpenHome, onOpenTurbo }: Props) {
+export function Dashboard({ health, session, drawing, online, trip, skew = 0, version = 0, onOpenSettings, onOpenHouse, whoOpen, onToggleWho, room, onOpenHome, onOpenTurbo, notesFolded }: Props) {
     const mode: PanelMode = health?.panelMode ?? (health?.mode === 'relay' ? 'relay' : 'gateway');
+    /** Свободный стол: карточка Турбо висит над ним, а не стоит рядом с колонкой. */
+    const floatHost = useDeskFloat();
+    const turboHidden = useRecalled<boolean>(TURBO_HIDDEN) === true;
     const computer = useOnComputer();
     // Турбо и «где сейчас»: кто на деле слышит, думает и говорит, и второе тело сцены (решение владельца 16.11).
     const helpers = useHelpers();
@@ -251,7 +272,13 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
     const [brainView, setBrainView] = useState<BrainView | null>(null);
     const [characters, setCharacters] = useState<CharactersView | null>(null);
     const [stage, setStage] = useState<TripStage>('idle');
-    const [sheet, setSheet] = useState<NodeKey | 'links' | null>(null);
+    const [sheet, setSheet] = useState<NodeKey | 'links' | 'words' | null>(null);
+    // Слова-активаторы у «Слышит» (замечание 11 теста 19.11): выбрать слово, «Только Алиса», убрать все — как молния
+    // Турбо у «Говорит». Только у колонки: у компьютера в режиме «Микрофон» своё слово «ДиВи».
+    const callWords = useCallWords();
+    const panel = usePanel();
+    const wordsShown = !computer && can('plugins.manage');
+    const wordOn = callWords.words?.find((word) => word.enabled);
     const [, setTick] = useState(0);
     // Материал один — «Минимал» (docs/plans/desk.md): свечение, полёт персонажа, выезд новой модели — всегда.
     const minimal = true;
@@ -464,12 +491,22 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
         backup: !!backup && backup.helper !== turbo?.helper.id && !(backup.cloud && away !== 'any'),
     });
     const asleep = turbo && !turbo.builtin && !turbo.up && turbo.helper.allowed !== false;
+    // На свободном столе второе тело не стоит рядом с колонкой, а висит поверх стола у правого края: места у виджетов
+    // не берёт, закрывается крестиком; закрыто — у колонки точка-молния.
+    const floating = !!floatHost && !!side;
+    const fold = !!floatHost && !!notesFolded;
+    const notes = (folded: boolean) => (
+        <>
+            <HomeStrip alice={station && mode !== 'own'} clouds={cloudOn('asr') || cloudOn('tts')} onFold={floatHost && !folded ? () => remember(NOTES_FOLDED, true) : undefined} />
+            {fall && <FallLine items={fall.items} modeFalls={fall.modeFalls} backup={backup ?? undefined} />}
+        </>
+    );
 
     return (
         <>
             {asleep && <AsleepLine turbo={turbo} station={station} />}
             <TruthStrip nodes={nodes} truth={truth} mode={mode} open={whoOpen} onToggle={onToggleWho} />
-            <div class={`dash-pair${side ? ' has-side' : ''}`}>
+            <div class={`dash-pair${side && !floating ? ' has-side' : ''}`}>
             <div ref={box} class="dash-stage" style={{ height: `${Math.round(scene.height * scene.scale)}px` }}>
                 <div
                     class="dash-board"
@@ -621,16 +658,57 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
                             onOpen={() => setSheet(key)}
                         />
                     ))}
+                    {wordsShown && (
+                        <button
+                            class={`dash-word-dot${wordOn ? '' : ' is-off'}`}
+                            style={{ left: `${scene.nodes.ear.x - CIRCLE / 2 - 42}px`, top: `${scene.nodes.ear.y - 14}px` }}
+                            aria-label={tr.dashboard.wordsOpen(wordOn?.word ?? tr.wizard.alice)}
+                            title={tr.dashboard.wordsOpen(wordOn?.word ?? tr.wizard.alice)}
+                            onClick={() => setSheet('words')}
+                        >
+                            <IconChat size={14} />
+                        </button>
+                    )}
+                    {floating && turboHidden && (
+                        <button
+                            class={`dash-turbo-dot${turbo ? (turbo.up || turbo.builtin ? '' : ' is-off') : ' is-empty'}`}
+                            style={{ left: `${scene.nodes.voice.x + CIRCLE / 2 + 14}px`, top: `${scene.nodes.voice.y - 14}px` }}
+                            aria-label={tr.desk.turboShow}
+                            title={tr.desk.turboShow}
+                            onClick={() => remember(TURBO_HIDDEN, undefined)}
+                        >
+                            <IconBolt size={14} />
+                        </button>
+                    )}
                 </div>
             </div>
-            {side}
+            {!floating && side}
             </div>
+            {floating &&
+                !turboHidden &&
+                floatHost &&
+                createPortal(
+                    <div class="desk-float-card">
+                        <button class="desk-float-close" aria-label={tr.desk.turboHide} title={tr.desk.turboHide} onClick={() => remember(TURBO_HIDDEN, true)}>
+                            <IconClose size={14} />
+                        </button>
+                        {side}
+                    </div>,
+                    floatHost,
+                )}
             {/* Дом целиком (docs/plans/home-and-devices.md, этап 1): колонки, что слышат для центра, Алиса и облака,
-                приложения, легенда цветов. */}
-            <HomeStrip alice={station && mode !== 'own'} clouds={cloudOn('asr') || cloudOn('tts')} />
-            {fall && <FallLine items={fall.items} modeFalls={fall.modeFalls} backup={backup ?? undefined} />}
+                приложения, легенда цветов; под ними — что встанет вместо Турбо, если он уснёт. Свёрнуто — значок. */}
+            {fold ? <FoldedNotes>{notes(true)}</FoldedNotes> : notes(false)}
 
-            {sheet && sheet !== 'links' && (
+            {sheet === 'words' && (
+                <ChoiceSheet
+                    key="words"
+                    spec={wordsSpec(callWords.words, callWords.station, () => panel.go('magicplace', 'store', undefined, { kind: 'word' }))}
+                    onClose={() => setSheet(null)}
+                    onApplied={callWords.reload}
+                />
+            )}
+            {sheet && sheet !== 'links' && sheet !== 'words' && (
                 <ChoiceSheet key={sheet} spec={specFor(sheet, context)} onClose={() => setSheet(null)} onApplied={() => void reload()} />
             )}
             {sheet === 'links' && (
@@ -724,6 +802,53 @@ function Satellite({ sat, sleeping }: { sat: SatView; sleeping: boolean }) {
 }
 
 // ─── Шиты узлов ──────────────────────────────────────────────────────────
+
+/**
+ * Шит слов-активаторов (замечание 11 теста 19.11): слова, что стоят, — слушает одно; «Только Алиса» — все выключены
+ * (ОЗУ колонки свободна, файлы остаются); «Убрать все слова» — стереть с колонки, с вопросом. Нет слов — в магазин.
+ */
+function wordsSpec(words: CallWord[] | null, station: string | undefined, find: () => void): Spec {
+    const t = tr.dashboard;
+    const list = words ?? [];
+    const on = list.find((word) => word.enabled);
+    return {
+        key: 'ear',
+        tone: 'own',
+        title: t.wordsTitle,
+        about: t.wordsAbout,
+        empty: words === null ? t.wordsReading : undefined,
+        choices: [
+            ...list.map((word): Choice => ({
+                id: word.id,
+                name: `«${word.word}»`,
+                sub: word.enabled ? t.wordListening : t.wordOff,
+                on: word.enabled,
+                apply: async () => (await chooseWord(station, list, word.id), t.wordChosen(word.word)),
+            })),
+            {
+                id: 'alice',
+                name: t.wordAliceOnly(tr.wizard.alice),
+                sub: t.wordAliceOnlySub,
+                on: !on,
+                apply: async () => (await aliceOnly(station, list), t.wordAliceChosen(tr.wizard.alice)),
+            },
+            ...(list.length
+                ? [
+                      {
+                          id: 'remove',
+                          name: t.wordsRemove,
+                          sub: t.wordsRemoveSub,
+                          on: false,
+                          confirm: t.wordsRemoveConfirm,
+                          apply: async () => (await removeWords(station, list), t.wordsRemoved),
+                      } satisfies Choice,
+                  ]
+                : []),
+        ],
+        notes: [],
+        links: [{ label: t.wordsFind, open: find }],
+    };
+}
 
 /** Строка выбора в шите узла. */
 interface Choice {

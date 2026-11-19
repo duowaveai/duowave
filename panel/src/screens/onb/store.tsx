@@ -1,8 +1,10 @@
 // Первые шаги → «MagicPlace» (холст «Онбординг»: MagicPlace, MagicPlaceStation). Слева — что такое MagicPlace, справа —
 // вкладки Приложения · Персонажи · Голоса · Характеры с плитками. Приложения и персонажи — из настоящего каталога
 // (GET /api/v1/packages/catalog), «Поставить» ставит пакет (usePackageActions, как в MagicPlace). Голосов и характеров
-// в каталоге нет, а пустая вкладка каталога — тоже: тогда плитки холста только для вида, с меткой «пример» («скоро»),
-// без кнопки. «Сделать» ведёт туда, где это делают: мастерская, лаборатория голосов, свой характер.
+// в каталоге нет: там плитки только для вида, с меткой «пример», без кнопки. Приложения и персонажи — только из каталога,
+// по его записям (id, название, описание, картинка, где работает): ни названий, ни описаний конкретных пакетов в коде и
+// текстах пульта (замечание 14 теста 19.11, владелец: «магазин на первых шагах должен только по id работать»).
+// «Сделать» ведёт туда, где это делают: мастерская, лаборатория голосов, свой характер.
 // «Открыть MagicPlace» — вторая кнопка внизу рамки.
 
 import type { ComponentChildren } from 'preact';
@@ -21,7 +23,7 @@ import '../../ui/onb-store.css';
 type TabId = 'apps' | 'chars' | 'voices' | 'manners';
 const TABS: TabId[] = ['apps', 'chars', 'voices', 'manners'];
 
-type IconName = 'Shield' | 'Air' | 'Note' | 'Film' | 'Game' | 'Wave' | 'Smile' | 'Plus';
+type IconName = 'Wave' | 'Smile' | 'Plus';
 type Example = keyof typeof tr.onbStore.examples;
 
 /** Сколько пакетов каталога показать на вкладке; остальное — в MagicPlace. */
@@ -30,27 +32,6 @@ const SHOW_CHARS = 6;
 
 /** Значки плиток холста (24×24, обводка — .ico). */
 const ICONS: Record<IconName, ComponentChildren> = {
-    Shield: <path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z" />,
-    Air: (
-        <>
-            <path d="M6 17H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1h-2" />
-            <path d="M12 15l5 6H7z" />
-        </>
-    ),
-    Note: (
-        <>
-            <path d="M9 18V5l11-2v13" />
-            <circle cx="6" cy="18" r="3" />
-            <circle cx="17" cy="16" r="3" />
-        </>
-    ),
-    Film: (
-        <>
-            <rect x="3" y="4" width="18" height="16" rx="2" />
-            <path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4" />
-        </>
-    ),
-    Game: <path d="M6 9h12a4 4 0 0 1 4 4v1a3 3 0 0 1-5.3 1.9L15 14H9l-1.7 1.9A3 3 0 0 1 2 14v-1a4 4 0 0 1 4-4z" />,
     Wave: <path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" />,
     Smile: (
         <>
@@ -76,14 +57,7 @@ interface TileModel {
     note?: { text: string; bad?: boolean };
 }
 
-/** Значок и цвет приложения каталога: известные — как на холсте, прочие — буква и цвет по кругу. */
-const APP_LOOKS: Array<[RegExp, IconName, string]> = [
-    [/vpn/, 'Shield', 'g-black'],
-    [/airplay/, 'Air', 'g-cool'],
-    [/youtube|music|музык/, 'Note', 'g-red'],
-    [/feed|lenta|лента/, 'Film', 'g-violet'],
-    [/snake|змейк/, 'Game', 'g-lime'],
-];
+/** Цвет плитки пакета каталога — по кругу; значок — его картинка из каталога, иначе первая буква названия. */
 const APP_CYCLE = ['g-cool', 'g-violet', 'g-warm', 'g-black', 'g-teal', 'g-lime'];
 const CHAR_CYCLE = ['g-cool', 'g-violet', 'g-warm', 'g-black', 'g-warm', 'g-violet'];
 
@@ -140,8 +114,6 @@ export function StoreStep() {
 
     /** Плитка пакета каталога: метка по состоянию, кнопка — поставить, обновить, включить или «Стоит ✓». */
     const entryTile = (entry: CatalogEntry, at: number): TileModel => {
-        const words = `${entry.id} ${entry.title}`.toLowerCase();
-        const look = entry.kind === 'character' ? undefined : APP_LOOKS.find(([pattern]) => pattern.test(words));
         const installed = isInstalled(entry);
         const manage = canManage(entry.kind);
         const word = entry.kind === 'character' ? wordOfEntry(entry, catalog.view?.packages ?? []) : null;
@@ -190,9 +162,8 @@ export function StoreStep() {
                 ...(entry.place ? [placeTitle(entry.place === 'gateway' && station ? 'station' : entry.place)] : []),
                 ...(installed ? [] : downloadLines(entry)),
             ],
-            ico: look ? look[2] : (entry.kind === 'character' ? CHAR_CYCLE : APP_CYCLE)[at % 6],
-            icon: look?.[1],
-            glyph: look ? undefined : glyphOf(entry.title),
+            ico: (entry.kind === 'character' ? CHAR_CYCLE : APP_CYCLE)[at % 6],
+            glyph: glyphOf(entry.title),
             image: entry.preview?.image ? media(entry.preview.image) : null,
             chip,
             button,
@@ -209,36 +180,13 @@ export function StoreStep() {
     let tiles: TileModel[];
     let more = 0;
     if (tab === 'apps') {
-        const ownTile = make('own', () => goTo('skills', 'workshop'));
-        if (apps.length > 0) {
-            more = Math.max(0, apps.length - SHOW);
-            // «Скоро» холста остаётся, пока такого приложения нет в каталоге.
-            const soon = apps.some((entry) => /youtube/i.test(`${entry.id} ${entry.title}`))
-                ? []
-                : [example('ytm', 'g-red', { icon: 'Note' }, tr.onbStore.chipSoon)];
-            tiles = [...apps.slice(0, SHOW).map(entryTile), ...soon, ownTile];
-        } else
-            tiles = [
-                example('vpn', 'g-black', { icon: 'Shield' }, tr.onbStore.chipHave, 'chip-lime'),
-                example('airplay', 'g-cool', { icon: 'Air' }, tr.onbStore.chipHave, 'chip-lime'),
-                example('ytm', 'g-red', { icon: 'Note' }, tr.onbStore.chipSoon),
-                example('feed', 'g-violet', { icon: 'Film' }),
-                example('snake', 'g-lime', { icon: 'Game' }),
-                ownTile,
-            ];
+        // Только каталог: что в нём есть — то и плитки; нет каталога — «Сделать своё» и строка, почему пусто.
+        more = Math.max(0, apps.length - SHOW);
+        tiles = [...apps.slice(0, SHOW).map(entryTile), make('own', () => goTo('skills', 'workshop'))];
     } else if (tab === 'chars') {
-        if (chars.length > 0) {
-            more = Math.max(0, chars.length - SHOW_CHARS);
-            tiles = chars.slice(0, SHOW_CHARS).map(entryTile);
-        } else
-            tiles = (['jarvis', 'arthur', 'bublik', 'kovcheg', 'palych', 'glados'] as const).map((id, at) =>
-                example(id, CHAR_CYCLE[at], { glyph: glyphOf(examples[id].t) }),
-            );
-    } else if (tab === 'voices')
-        tiles = [
-            ...(['vJarvis', 'vKovcheg', 'vPalych', 'vEn'] as const).map((id) => example(id, 'g-teal', { icon: 'Wave' })),
-            make('vOwn', () => goTo('character', 'voice')),
-        ];
+        more = Math.max(0, chars.length - SHOW_CHARS);
+        tiles = chars.slice(0, SHOW_CHARS).map(entryTile);
+    } else if (tab === 'voices') tiles = [example('vEn', 'g-teal', { icon: 'Wave' }), make('vOwn', () => goTo('character', 'voice'))];
     else
         tiles = [
             example('mShort', 'g-lime', { icon: 'Smile' }),
@@ -305,6 +253,11 @@ export function StoreStep() {
                 {fromCatalog && status && (
                     <p class={`small onb-mp-p${status.tone === 'warning' ? ' onb-mp-warn' : ''}`} role="status">
                         {status.text}
+                    </p>
+                )}
+                {fromCatalog && !loading && !status && (tab === 'apps' ? apps : chars).length === 0 && (
+                    <p class="small onb-mp-p" role="status">
+                        {tab === 'apps' ? tr.onbStore.noApps : tr.onbStore.noChars}
                     </p>
                 )}
                 {fromCatalog && loading ? (

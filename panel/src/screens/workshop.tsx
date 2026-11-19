@@ -35,7 +35,9 @@ import { POLL_MS, aboutOf, askToStop, doingWords, elapsed, shortText, toolWords,
 import { useLinkedItem, usePanel } from '../shell/context';
 import { mayLeave, useLeaveGuard } from '../shell/leave';
 import { PanelPlugin, onRegistryChange, registerPlugin, registeredPlugins, unregisterPlugin } from '../shell/registry';
-import { setTheme, useTheme } from '../shell/theme';
+import { currentTheme, setTheme, useTheme } from '../shell/theme';
+// Поставили примеренную тему — выбор переходит на неё (слушает перемены мастерской).
+import '../shell/theme-apply';
 import { Theme, normalizeTheme } from '../shell/themes';
 import { deskActions } from '../shell/widgets';
 import { timeAgo } from '../time';
@@ -1341,11 +1343,12 @@ function Workbench({ id, onClose, onListChanged }: { id: string; onClose: () => 
         const timer = window.setTimeout(() => void readDraft(), Math.max(1000, wait));
         return () => window.clearTimeout(timer);
     }, [draft?.trial?.until]);
-    // Примерка уходит вместе с мастерской.
+    // Примерка уходит вместе с мастерской: прежняя тема на место, если на пульте всё ещё примерка. Тему поставили —
+    // выбор уже на настоящей (shell/theme-apply.ts), её не трогать.
     useEffect(() => () => {
         if (previewing) {
+            if (currentTheme().id.startsWith('preview-')) setTheme(previewing);
             unregisterPlugin(PREVIEW);
-            setTheme(previewing);
         }
     }, [previewing]);
     // Несохранённое в файле: закрыть окно, уйти в другой раздел или к черновикам — сначала вопрос (shell/leave.ts).

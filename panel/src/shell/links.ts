@@ -41,8 +41,8 @@ function moved(section: string, tab: string | undefined, item: string | undefine
             if (tab === 'characters' && item && 'install' in query) return ['magicplace', 'store', item];
             return ['character', tab === 'characters' || tab === 'brain' ? tab : undefined, tab ? item : undefined];
         case 'models':
-            // Распознавание — это слух колонки: «Настройки» → «Колонка».
-            if (tab === 'recognition') return ['settings', 'station', undefined];
+            // Распознавание — это слух: «Настройки» → «Слух» (проверка начисто 19.11).
+            if (tab === 'recognition') return ['settings', 'hearing', undefined];
             return ['character', 'voice', tab ? item : undefined];
         case 'house':
             // Каталог стал магазином MagicPlace (docs/plans/magicplace.md); пакет с `?install` — тоже оттуда.

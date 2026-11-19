@@ -19,7 +19,7 @@
 //!
 //! Own sources (docs/plans/custom-feeds.md): feeds the admin adds here by a link, after a warning — read after the
 //! main feed's, kept in `packages-catalog/sources.json` (up to 4), vouched for and given code only by the main feed's
-//! pin of the very archive (the YouTube app of a separate feed, docs/plugins/apps/youtube-music.md). One that answers 404
+//! pin of the very archive (the YouTube app of a separate feed, docs/plugins/apps/youtube-turbo.md). One that answers 404
 //! or 410 is closed: its copy goes and what was installed from it is hidden.
 //!
 //! A feed may say a package is `hidden`: it is not listed or installed, and the installed one that came from that very
@@ -2351,6 +2351,21 @@ impl PackageCatalog {
                 }
             }
         };
+        self.place(feed.signed, entry, bytes, installed, actor).await
+    }
+
+    /// A feed's package whose archive is here, put in place: checked against its size and hash, its kind and its voice,
+    /// noted as the catalog's (vouched for as `signed` and the entry say), in the history, and a plugin that is on
+    /// moved to it. `installed` — the version that was here before. The caller holds `installing`.
+    async fn place(
+        &self,
+        signed: bool,
+        entry: Entry,
+        bytes: Vec<u8>,
+        installed: Option<semver::Version>,
+        actor: Option<Actor>,
+    ) -> Result<PackageView, ApiError> {
+        let id = entry.id.as_str();
         let archive = entry.archive();
         let root = self.host.packages_dir().to_path_buf();
         let version = entry.version.to_string();
@@ -2404,8 +2419,8 @@ impl PackageCatalog {
         // Vouched for: the feed says so (an extra one's only when the main allows), and code only from a signed main.
         // Noted before the history: on the station a catalog's version is kept there without its big files.
         let signed = match entry.kind {
-            PackageKind::Agent => feed.signed && entry.extra.is_none(),
-            _ => code_allowed(&entry, feed.signed),
+            PackageKind::Agent => signed && entry.extra.is_none(),
+            _ => code_allowed(&entry, signed),
         };
         let vouched = entry.verified
             && (signed || !matches!(entry.kind, PackageKind::Plugin | PackageKind::App | PackageKind::Agent));
@@ -2470,6 +2485,102 @@ impl PackageCatalog {
         tracing::info!(target: "plugins", "{id} {version}: {change} from the catalog");
         self.host.announce(id, change, Some(version), actor);
         self.host.view_one(id).await
+    }
+
+    /// An app the home's centre runs as a face, from a feed this computer does not read (clean-path check 19.11: YouTube
+    /// came to the station from a demo feed its admin added there; the Mac's catalog had no such entry, so its code was
+    /// never installed and every call failed). The centre names the feed (`feed`); this computer reads it once, takes
+    /// the entry of that version for its own platform, and installs it only when its own signed main feed pinned that
+    /// very archive by its hash (`recommends`) — what we looked at, whatever the centre says. Nothing else is taken this
+    /// way: an unpinned package of an own source stays the decision of this computer's administrator.
+    #[cfg(feature = "pc")]
+    pub async fn install_pinned_from(
+        &self,
+        id: &str,
+        version: Option<&str>,
+        feed: &str,
+        actor: Option<Actor>,
+    ) -> Result<PackageView, ApiError> {
+        if !matches!(self.source, FeedSource::Url(_)) {
+            return Err(ApiError::conflict(crate::tr!("Каталог не настроен — ставить неоткуда.")));
+        }
+        if !self.enabled() {
+            return Err(ApiError::conflict(crate::tr!(
+                "Каталог выключен в настройках: включите его, чтобы ставить приложения."
+            )));
+        }
+        let url = feed_url(feed.trim()).map_err(ApiError::bad_request)?;
+        let main = self.feed(false).await.ok_or_else(|| {
+            ApiError::unavailable(
+                lock(&self.status).problem.clone().unwrap_or_else(|| crate::tr!("Каталог недоступен.")),
+            )
+        })?;
+        let not_pinned = || {
+            ApiError::forbidden(crate::tr!(
+                "Не поставлено: каталог этого компьютера не проверял «{id}» из ленты центра — код из неё здесь не ставится.",
+                id = id
+            ))
+        };
+        let pins: Vec<&Pin> = main
+            .recommends
+            .iter()
+            .filter(|pin| pin.id == id && pin.feed.as_ref().is_none_or(|pinned| *pinned == url))
+            .collect();
+        if !main.signed || pins.is_empty() {
+            return Err(not_pinned());
+        }
+        self.host.rescan();
+        let installed = self.host.installed(id).map(|package| package.manifest.version.clone());
+        let _turn = self.installing.lock().await;
+        let text = install::download(url.as_str(), MAX_FEED, FEED_TIMEOUT).await.map_err(|error| {
+            ApiError::bad_gateway(crate::tr!("Лента центра не прочиталась: {error}", error = error))
+        })?;
+        let text = String::from_utf8(text)
+            .map_err(|_| ApiError::bad_gateway(crate::tr!("Лента центра не прочиталась: не текст")))?;
+        let other = parse_feed(&text, &url).map_err(|problem| {
+            ApiError::bad_gateway(crate::tr!("Лента центра не прочиталась: {problem}", problem = problem))
+        })?;
+        let mut entry = other.find(id, version).cloned().ok_or_else(|| match version {
+            Some(version) => {
+                ApiError::not_found(crate::tr!("В ленте центра нет {id} {version}.", id = id, version = version))
+            }
+            None => ApiError::not_found(crate::tr!("В ленте центра нет «{id}».", id = id)),
+        })?;
+        // As an extra feed's package the main one pinned (`Feed::take`): that very archive — this machine's — or none.
+        let archive = entry.archive();
+        if !pins.iter().any(|pin| pin.is(&url, &entry.id, &archive.sha256)) {
+            return Err(not_pinned());
+        }
+        let publisher = entry.publisher.clone().unwrap_or_else(|| "home".into());
+        entry.extra = Some(ExtraFeed { url, title: publisher.clone(), publisher, verified: true, own: false });
+        (entry.recommended, entry.verified, entry.pinned) = (true, true, true);
+        let (state, reason) = entry_state_at(
+            &entry,
+            installed.as_ref(),
+            (self.placement)(),
+            main.signed,
+            self.host.free_memory_mb(),
+            self.turbo_apps(),
+        );
+        match state {
+            EntryState::NeedsSignature | EntryState::Incompatible => {
+                return Err(ApiError::conflict(reason.unwrap_or_default()));
+            }
+            EntryState::Installed if installed.as_ref() == Some(&entry.version) => {
+                return self.host.view_one(id).await;
+            }
+            _ => {}
+        }
+        let least = if installed.is_some() { 0 } else { archive.size / 1_048_576 };
+        if let Err(why) = self.host.room_for(least) {
+            return Err(ApiError::conflict(crate::tr!("Не поставить: {why}.", why = why)));
+        }
+        let bytes = self
+            .download(&archive.url, MAX_ARCHIVE, ARCHIVE_TIMEOUT)
+            .await
+            .map_err(|failed| ApiError::bad_gateway(crate::tr!("Не скачалось: {error}", error = failed.message)))?;
+        tracing::info!(target: "plugins", "{id} {}: from the centre's feed, pinned by this catalog", entry.version);
+        self.place(main.signed, entry, bytes, installed, actor).await
     }
 
     /// A character's package as the home's centre has it (clean-path check 18.11, item 40): its archive at the address
@@ -2632,10 +2743,14 @@ impl PackageCatalog {
         {
             let _turn = self.reading.lock().await;
             let mut sources = self.sources();
-            if !sources.iter().any(|source| source.url == url.as_str()) {
-                sources.push(OwnSource { url: url.to_string(), added_at: now_iso() });
-                self.write_sources(&sources)?;
+            // Another add of the same link went first while this one checked the feed (two at once: a change from the
+            // home's queue and the panel's own, test 19.11): it is there and read — not wiped and read again, which on
+            // a station kept the catalog locked another minute.
+            if sources.iter().any(|source| source.url == url.as_str()) {
+                return Err(ApiError::conflict(crate::tr!("Этот источник уже добавлен.")));
             }
+            sources.push(OwnSource { url: url.to_string(), added_at: now_iso() });
+            self.write_sources(&sources)?;
             let who = actor.as_ref().map_or("—", |actor| actor.name.as_str());
             tracing::info!(target: "plugins", "packages catalog: own source added — {url} (by {who})");
             let extra = own_feed(&url);
@@ -2646,6 +2761,10 @@ impl PackageCatalog {
                 self.announce(&feed);
             }
         }
+        // Its packages are in the catalog now: every open panel reads it again (magicplace/state.ts) — a panel that read
+        // the catalog while this add held it (a station's pass answers such a read with its last copy) is not left
+        // with the old one until «Проверить сейчас» (test 19.11, remark 8).
+        self.events.emit(GatewayEvent::PackagesCatalog { updates: Vec::new() });
         Ok(self.view(false).await)
     }
 
@@ -3611,7 +3730,7 @@ pub mod tests {
     }
 
     /// A plugin's `.vgp`: its manifest and its code.
-    fn plugin_vgp(manifest: &Value, code: &str) -> Vec<u8> {
+    pub fn plugin_vgp(manifest: &Value, code: &str) -> Vec<u8> {
         let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default()));
         for (path, bytes) in
             [("manifest.json", manifest.to_string().into_bytes()), ("backend.js", code.as_bytes().to_vec())]
@@ -3789,6 +3908,82 @@ pub mod tests {
         let unsigned = fixture_keyed(FeedSource::Url(main.url.clone()), Placement::Pc, Some(keys.pk.to_base64()));
         let view = unsigned.catalog.add_source(&own.url, None).await.unwrap();
         assert_eq!(of(&view, "tube").state, EntryState::NeedsSignature);
+    }
+
+    /// The clean-path check of 19.11: YouTube came to the station from a demo feed its admin added there; the Mac, its
+    /// Турбо, does not read that feed, so «поставь его код» found nothing and the app never ran. The centre now names
+    /// the feed; the Турбо reads it once and installs from it only what its own signed main feed pinned by hash — not
+    /// an unpinned package of the same feed, not another archive under the pinned id, nothing when its main feed's
+    /// signature does not hold.
+    #[cfg(feature = "pc")]
+    #[tokio::test]
+    async fn the_turbo_installs_a_faces_code_from_the_centres_feed_only_as_its_own_catalog_pinned_it() {
+        let keys = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let (main, demo) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        let app = |id: &str, version: &str| {
+            let manifest = json!({
+                "schema": 1, "kind": "plugin", "id": id, "version": version, "title": id, "api": "^2",
+                "runs": ["pc"], "permissions": [],
+                "contributes": { "intents": [{ "phrases": [format!("скажи {id}")], "handler": "say" }] }
+            });
+            let mut entry = arthur(version);
+            entry["id"] = json!(id);
+            entry["kind"] = json!("plugin");
+            entry["runs"] = json!(["pc"]);
+            entry["budget"] = json!({ "memoryMb": 4 });
+            (entry, plugin_vgp(&manifest, "export function say() { return 'да'; }"))
+        };
+        demo.publish(&[app("tube", "1.0.0"), app("moon", "1.0.0")]);
+        let looked_at = {
+            let feed: Value = serde_json::from_str(&lock(&demo.feed)).unwrap();
+            feed["packages"][0]["sha256"].as_str().unwrap().to_string()
+        };
+        let sign_main = || {
+            let mut feed: Value = serde_json::from_str(&lock(&main.feed)).unwrap();
+            feed["recommends"] = json!([{ "id": "tube", "sha256": looked_at }]);
+            let text = feed.to_string();
+            let signature = minisign::sign(Some(&keys.pk), &keys.sk, std::io::Cursor::new(text.as_bytes()), None, None)
+                .unwrap()
+                .to_string();
+            *lock(&main.feed) = text;
+            lock(&main.files).insert("catalog.json.minisig".into(), signature.into_bytes());
+        };
+        sign_main();
+        let turbo = fixture_keyed(FeedSource::Url(main.url.clone()), Placement::Pc, Some(keys.pk.to_base64()));
+        let catalog = &turbo.catalog;
+        // Its own catalog has no such package: what the Турбо answered the centre before.
+        assert_eq!(
+            catalog.install("tube", Some("1.0.0"), false, None).await.unwrap_err().status,
+            StatusCode::NOT_FOUND
+        );
+
+        let installed = catalog.install_pinned_from("tube", Some("1.0.0"), &demo.url, None).await.unwrap();
+        assert_eq!((installed.origin, installed.verified), (crate::plugins::registry::Origin::Catalog, true));
+        assert_eq!(turbo.host.installed("tube").unwrap().manifest.version.to_string(), "1.0.0");
+        // Asked again for the version it has: nothing to do, no error.
+        assert!(catalog.install_pinned_from("tube", Some("1.0.0"), &demo.url, None).await.is_ok());
+
+        // Not pinned: never code, whatever the centre says.
+        let moon = catalog.install_pinned_from("moon", Some("1.0.0"), &demo.url, None).await.unwrap_err();
+        assert_eq!(moon.status, StatusCode::FORBIDDEN, "{}", moon.message);
+        assert!(moon.message.contains("не проверял «moon»"), "{}", moon.message);
+        assert!(turbo.host.installed("moon").is_none());
+
+        // Another archive under the pinned id is not what we looked at.
+        demo.publish(&[app("tube", "1.1.0"), app("moon", "1.0.0")]);
+        let newer = catalog.install_pinned_from("tube", Some("1.1.0"), &demo.url, None).await.unwrap_err();
+        assert_eq!(newer.status, StatusCode::FORBIDDEN);
+        assert_eq!(turbo.host.installed("tube").unwrap().manifest.version.to_string(), "1.0.0");
+
+        // The main feed's signature does not hold: its pins vouch for nothing.
+        demo.publish(&[app("tube", "1.0.0")]);
+        sign_main();
+        *lock(&main.feed) = format!("{} ", lock(&main.feed));
+        let unsigned = fixture_keyed(FeedSource::Url(main.url.clone()), Placement::Pc, Some(keys.pk.to_base64()));
+        let refused = unsigned.catalog.install_pinned_from("tube", Some("1.0.0"), &demo.url, None).await.unwrap_err();
+        assert_eq!(refused.status, StatusCode::FORBIDDEN);
+        assert!(unsigned.host.installed("tube").is_none());
     }
 
     #[tokio::test]

@@ -69,6 +69,7 @@ import cloudVoices from './cloudVoices';
 import router from './router';
 import egress from './egress';
 import cloudSpeech from './cloudSpeech';
+import voiceHome from './voiceHome';
 
 const en: Translation<Messages> = {
     common,
@@ -138,6 +139,7 @@ const en: Translation<Messages> = {
     router,
     egress,
     cloudSpeech,
+    voiceHome,
 };
 
 export default en;

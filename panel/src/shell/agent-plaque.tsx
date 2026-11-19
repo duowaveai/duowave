@@ -12,11 +12,12 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { AgentActivity, AgentJob, AgentStep, ApiError, api, can, problemOf, stationCall, stationRead } from '../api';
 import { IconClose } from '../icons';
 import { onStationChange } from '../live';
-import { useAgentPlace } from '../voice/drafts';
+import { onWorkshopChange, useAgentPlace } from '../voice/drafts';
 import { usePoll } from '../poll';
 import { ask } from '../ui/confirm';
 import { VIA } from '../via';
 import { usePanel } from './context';
+import { DECIDED_CHANGES, endedStillShown } from './plaque-model';
 import { tr } from '../i18n';
 
 /** Закончившая работа видна на плашке столько — как её отдаёт шлюз (activity.rs, SHOWN_AFTER_MS). */
@@ -287,6 +288,17 @@ export function AgentPlaque({ place }: { place: 'top' | 'side' }) {
     const busyThere = !!there?.jobs.some((job) => job.busy);
     // Где агент (docs/plans/voice-creation.md): модель в облаке — янтарь, дома — своё; это же пишет полоса голоса.
     const cloud = useAgentPlace();
+    // О своих черновиках, о которых уже решили (поставили, в черновики, удалили), — когда, по нашим часам: их «Готово»
+    // уходит с плашки сразу (shell/plaque-model.ts).
+    const [decided, setDecided] = useState<Map<string, number>>(() => new Map());
+    useEffect(
+        () =>
+            onWorkshopChange((draft, change) => {
+                if (!draft || !DECIDED_CHANGES.includes(change)) return;
+                setDecided((before) => new Map(before).set(draft, Date.now()));
+            }),
+        [],
+    );
 
     // Своя мастерская: сразу и с каждой переменой (каждый шаг агента — `workshop.changed`), пока агент работает — ещё
     // и раз в две секунды: живой канал мог оборваться. Без наложений: пока идёт чтение, нового нет (poll.ts).
@@ -345,7 +357,11 @@ export function AgentPlaque({ place }: { place: 'top' | 'side' }) {
     }, [trouble]);
 
     const entries: PlaqueJob[] = [
-        ...(own ? own.jobs.map((job) => ({ job, whose: 'own' as const, offset: own.offset })) : []),
+        ...(own
+            ? own.jobs
+                  .filter((job) => job.busy || endedStillShown(job.ended, own.offset, decided.get(job.draft)))
+                  .map((job) => ({ job, whose: 'own' as const, offset: own.offset }))
+            : []),
         ...(there && there.station === asked ? there.jobs.map((job) => ({ job, whose: 'station' as const, offset: there.offset })) : []),
     ];
     // Время шагов — по часам их шлюза (`now` его ответа): у компьютера и колонки часы свои.

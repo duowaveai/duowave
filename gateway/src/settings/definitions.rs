@@ -391,9 +391,31 @@ pub struct VoicePending {
     pub state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Tight memory as numbers: `reason` is written again from them whenever it is read, in the reader's language
+    /// (clean-path check 19.11: a reason kept in the words of the moment it was found read «ОЗУ впритык: Memory is
+    /// tight: …» in a Russian panel).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryTight>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipe: Option<VoiceRecipe>,
     pub since: String,
+}
+
+/// Why a heavy start waits on the owner's «всё равно», as numbers (MB) — its words are written when they are read
+/// (voice_lab/memory_policy.rs, `words`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum MemoryTight {
+    /// The system is short of memory already.
+    Pressure,
+    /// It pages in from the disk now.
+    Swap,
+    /// Short of video memory.
+    Video { free_mb: u64, need_mb: u64 },
+    /// Room for it, but not beside what is kept for the household.
+    Reserve { free_mb: u64, need_mb: u64, reserve_mb: u64 },
+    /// No room for it at all: the computer will page.
+    Short { free_mb: u64, need_mb: u64 },
 }
 
 pub const VOICE_PENDING: SettingDefinition<VoicePending> = SettingDefinition {

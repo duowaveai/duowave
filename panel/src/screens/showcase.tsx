@@ -243,6 +243,7 @@ export function ShowcaseWidget() {
     // Слово, которое на деле зовёт (п. 54): стоит приложение-слово — его; нет — прежнее.
     const talkMe = word ? t.talkWith(word) : computer ? t.talkMeComputer : t.talkMe;
     const makeMe = word ? t.makeWith(word) : computer ? t.makeMeComputer : t.makeMe;
+    const playMe = word ? t.playWith(word) : computer ? t.playMeComputer : t.playMe;
     /** Имя того, кто ответит, без пометки «(демо)». */
     const who = name ? name.replace(/\s*\([^)]*\)\s*$/, '').trim() || name : null;
     const voiceNote = (voiceComing || (installing && !installing.finished && installing.kind === 'character')) && who;
@@ -467,6 +468,19 @@ export function ShowcaseWidget() {
                     </button>
                 </div>
             ) : null}
+            {/* Змейка сделана голосом — и своя игра так же (замечание 4 теста 19.11). Фраза — в разговор, как сказанная;
+                карточку «сыграли» она не отмечает: это просьба сделать новую, а не игра в змейку. */}
+            {!locked && (
+                <button
+                    type="button"
+                    class="sc-say"
+                    title={t.pressNote}
+                    onClick={() => answerTo({ text: t.playSay, via: 'text' }, undefined, computer)}
+                >
+                    <Wave />«{playMe}»
+                </button>
+            )}
+            <span class="sc-who">{t.playMade}</span>
         </section>
     );
 

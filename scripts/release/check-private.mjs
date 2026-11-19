@@ -26,8 +26,8 @@ const GENERAL = [
     ['a Google key', /\bAIza[0-9A-Za-z_-]{35}\b/],
     ['a Telegram bot token', /\b\d{8,10}:AA[A-Za-z0-9_-]{33}\b/],
     // A home folder names its person; the usual placeholders and CI's are fine, and so is the home server's API
-    // (/home/v1, gateway/src/home_server).
-    ['a home folder', /(?:\/Users|\/home)\/(?!(?:node|runner|user|owner|pi|v1|<[^>]+>|\$USER|\$\{USER\})\/)[a-z][\w.-]*\//],
+    // (/home/v1, gateway/src/home_server) and the gateway's own `/api/v1/home/…` (the home's voice waiting, 19.11).
+    ['a home folder', /(?:\/Users|(?<!\/api\/v1)\/home)\/(?!(?:node|runner|user|owner|pi|v1|<[^>]+>|\$USER|\$\{USER\})\/)[a-z][\w.-]*\//],
 ];
 
 /**

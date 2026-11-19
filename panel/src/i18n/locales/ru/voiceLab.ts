@@ -31,6 +31,8 @@ export default {
     stop: '■ стоп',
     play: '▶ проба',
     speaksNow: 'говорит сейчас',
+    retakeFor: (model: string) => `Переснять для ${model} из ваших записей`,
+    recordAgain: 'Записать заново',
     activateAnyway: 'включить всё равно',
     choose: 'выбрать',
     installing: (title: string) => `Установка: ${title}`,

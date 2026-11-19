@@ -42,6 +42,8 @@ export interface DeskDrafts {
     reload: () => void;
     /** Сделанный виджет уже стоит на столе (черновик `installed`): первый свой — витрина уходит (screens/showcase.tsx). */
     landed: boolean;
+    /** Поставленные черновики (`installed`) — виджеты, игры, приложения: их плитки садятся на стол, если их там нет (shell/desk-repair.ts, landingsOf). */
+    installed: string[];
 }
 
 /** Пока агент работает — перечитывать так часто, даже если живой канал молчит. */
@@ -68,8 +70,10 @@ export function useDeskDrafts(): DeskDrafts {
             }),
     });
     const { tile, more } = deskDrafts(drafts);
-    const landed = drafts.some((draft) => draft.meta.stage === 'installed' && draft.meta.kind === 'widget');
-    return { tile, more, reload, landed };
+    // Любая поставленная вещь, не только виджет: игра «на стол» голосом тоже садится плиткой (замечание 6 теста 19.11);
+    // у чего плитки нет (навык), landingsOf и так не ставит.
+    const installed = drafts.filter((draft) => draft.meta.stage === 'installed').map((draft) => draft.id);
+    return { tile, more, reload, landed: installed.length > 0, installed };
 }
 
 /** Где работает агент мастерской: модель в облаке (янтарь) или дома. null — не знаем. */

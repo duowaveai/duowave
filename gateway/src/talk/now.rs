@@ -31,7 +31,7 @@ pub struct Sources<'a> {
     pub works: &'a [Work],
     /// What the executor is at on a work going on.
     pub doing: &'a dyn Fn(&Work) -> Option<Doing>,
-    /// The titles of the apps on the desk.
+    /// The apps that are on, as the block names them («Погода [weather]», «YouTube [youtube] — на Турбо»).
     pub desk: &'a [String],
     /// The workshop's door is open on this device.
     pub door: bool,
@@ -213,7 +213,7 @@ pub fn block(pack: &Pack, sources: &Sources) -> String {
     text
 }
 
-/// «На столе: Погода, Дела, Курс валют… (12)» within `room` tokens; None when nothing is there or nothing fits.
+/// «Включены приложения: Погода, Дела, Курс валют… (12)» within `room` tokens; None when none is on or nothing fits.
 fn desk_line(pack: &Pack, desk: &[String], room: usize) -> Option<String> {
     let words = pack.work;
     if desk.is_empty() {
@@ -321,7 +321,7 @@ mod tests {
              слов…»; «+ и ещё кнопку, чтобы слушать произношение».\n\
              - Ждёт ответа [р2]: навык «Учитель на MIDI-клавиатуре» — готово 9 мин назад, сказано.\n\
              - Недавно [р1]: виджет «Полив» — на столе.\n\
-             - На столе: Погода, Дела, Курс валют.\n\
+             - Включены приложения: Погода, Дела, Курс валют.\n\
              - Мастерская открыта."
         );
         assert!(tokens(&text) <= BUDGET);

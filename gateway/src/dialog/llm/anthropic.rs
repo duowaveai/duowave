@@ -653,6 +653,7 @@ impl Message {
             tool_calls: calls,
             native: Some(Value::Array(self.content)),
             usage: Some(usage),
+            out_of_tokens,
         })
     }
 }

@@ -14,8 +14,8 @@ import { IconLock, IconMicOff, IconPlay } from '../icons';
 import { usePanel } from '../shell/context';
 import { registerPlugin, unregisterPlugin } from '../shell/registry';
 import type { SlotContribution } from '../shell/slot';
-import { setTheme, useTheme } from '../shell/theme';
-import { normalizeTheme } from '../shell/themes';
+import { currentTheme, setTheme, useTheme } from '../shell/theme';
+import { draftTheme, takeDraftTheme } from '../shell/theme-apply';
 import { deskActions, useWidgets } from '../shell/widgets';
 import { ask } from '../ui/confirm';
 import { PermissionLines } from '../ui/rights-lines';
@@ -88,6 +88,8 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
     const [redoOpen, setRedoOpen] = useState(redo);
     const [redoWords, setRedoWords] = useState('');
     const [themeBefore, setThemeBefore] = useState<string | null>(null);
+    /** Примеренная тема: её временный id и тема до неё — для уборки, когда окно закрывают. */
+    const trial = useRef<{ id: string; before: string } | null>(null);
     const [version, setVersion] = useState(0);
     const keyField = useRef<HTMLDivElement>(null);
     const askedYes = useRef(false);
@@ -122,10 +124,14 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
         if (!draft || !draft.files.some((file) => file.path === 'panel.js')) return;
         void trustedCode(id).then((known) => known ?? trustOwnDraft(id)).then(setCode);
     }, [draft?.meta.updated]);
-    // Тема на примерке уходит вместе с окном. «Готово…» на полосе своё сказало: окно открыто.
+    // Тема на примерке уходит вместе с окном: закрыли, не поставив, — прежняя тема на месте (а не тема по умолчанию:
+    // выбор оставался на временной, которой больше нет). Поставили — выбор уже на настоящей (shell/theme-apply.ts).
+    // «Готово…» на полосе своё сказало: окно открыто.
     useEffect(() => {
         if (stripNow()?.kind === 'ready') hideStrip();
         return () => {
+            const tried = trial.current;
+            if (tried && currentTheme().id === tried.id) setTheme(tried.before);
             unregisterPlugin(THEME_TRY);
         };
     }, []);
@@ -182,6 +188,11 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
                 return;
             }
             if (!enable && report.package?.enabled) await api.disablePackage(id).catch(() => undefined);
+            // Тему поставили — она и на пульте, примеряли её или нет: «Включить» у темы значит «пусть будет она».
+            if (draft?.meta.kind === 'theme' && enable && (await takeDraftTheme(id))) {
+                trial.current = null;
+                setThemeBefore(null);
+            }
             land(report);
         });
 
@@ -237,18 +248,21 @@ function Fitting({ id, yes, redo }: { id: string; yes: boolean; redo: boolean })
         );
     const tryTheme = () =>
         act('theme', async () => {
-            const found = normalizeTheme(JSON.parse((await api.readDraftFile(id, 'manifest.json')).content)?.contributes?.themes?.[0]);
+            const found = await draftTheme(id);
             if (!found) throw new Error(tr.fitting.noThemeInManifest);
             const before = themeBefore ?? theme.id;
             registerPlugin({ id: THEME_TRY, themes: [{ ...found, id: `fitting-${found.id}`, title: tr.fitting.themeTryTitle(found.title) }] });
             setTheme(`fitting-${found.id}`);
             setThemeBefore(before);
+            trial.current = { id: `fitting-${found.id}`, before };
         });
     const untryTheme = () => {
         if (!themeBefore) return;
-        unregisterPlugin(THEME_TRY);
+        // Прежняя — до снятия временной: иначе между ними мигнёт тема по умолчанию.
         setTheme(themeBefore);
+        unregisterPlugin(THEME_TRY);
         setThemeBefore(null);
+        trial.current = null;
     };
 
     // Что на кнопках — то и говорите. «Одобрить и поставить» и поле ключа голосу недоступны.

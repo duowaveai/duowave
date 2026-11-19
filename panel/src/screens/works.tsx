@@ -17,6 +17,7 @@ import { formatDate, formatNumber, tr } from '../i18n';
 import { usePoll } from '../poll';
 import { elapsed, useSecondTick } from '../shell/agent-plaque';
 import { usePanel } from '../shell/context';
+import { takeThemeWhenInstalled } from '../shell/theme-apply';
 import { timeAgo } from '../time';
 import { WorkPage } from './work';
 
@@ -237,6 +238,8 @@ export function AnswerButtons({ work, onAnswered }: { work: WorkView; onAnswered
     const answer = (choice: WorkAnswer) => {
         setBusy(choice);
         setSaid(null);
+        // «Применить» / «Включить» у темы: поставленная — сразу на пульте (shell/theme-apply.ts).
+        if (choice === 'yes' && work.face === 'theme' && work.target) takeThemeWhenInstalled(work.target);
         api.workAnswer(work.id, choice)
             .then((reply) => onAnswered(tr.router.answered(reply.said)))
             .catch((e) => {

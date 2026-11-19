@@ -82,7 +82,8 @@ function scoped(id: string, plugin: PanelPlugin): PanelPlugin {
     };
 }
 
-async function syncThemes(): Promise<void> {
+/** Перечитать темы пакетов сейчас: поставленная тема на пульте сразу, не дожидаясь перемены пакетов (shell/theme-apply.ts). */
+export async function syncThemes(): Promise<void> {
     try {
         const { themes } = await api.packageThemes();
         const list = themes.map((entry) => normalizeTheme(entry.theme)).filter((theme) => theme !== null);

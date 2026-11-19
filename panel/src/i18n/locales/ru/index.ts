@@ -68,6 +68,7 @@ import cloudVoices from './cloudVoices';
 import router from './router';
 import egress from './egress';
 import cloudSpeech from './cloudSpeech';
+import voiceHome from './voiceHome';
 
 const ru = {
     common,
@@ -137,6 +138,7 @@ const ru = {
     router,
     egress,
     cloudSpeech,
+    voiceHome,
 };
 
 export type Messages = typeof ru;

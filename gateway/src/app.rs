@@ -245,6 +245,17 @@ impl App {
         // The apps' long tasks: a cancel nobody answered, an app that fell silent, results kept long enough.
         self.tasks.watch();
         self.schedules.start();
+        // An app came into force: its first data rhythm runs now, not at the next tick (plugins/schedule.rs, `soon`).
+        let schedules = Arc::downgrade(&self.schedules);
+        self.events.on("plugins.schedules", move |event| {
+            if let crate::core::events::GatewayEvent::PackagesChanged { change, .. } = event.as_ref() {
+                if crate::plugins::schedule::Scheduler::brings_into_force(change) {
+                    if let Some(schedules) = schedules.upgrade() {
+                        schedules.soon();
+                    }
+                }
+            }
+        });
         // The keyboards: the system's news of them first (a Mac), then the list and the keeper of idle ports.
         self.midi.start();
         // The bus follows the settings and the apps removed; the folders' `tmp/` and bin are cleaned every hour.
@@ -1106,10 +1117,22 @@ impl App {
             let host = Arc::downgrade(&plugins);
             talk.set_desk(Arc::new(move || {
                 let Some(host) = host.upgrade() else { return Vec::new() };
+                let here = host.placement_now();
+                // Apps and plugins only: a character, a theme, a voice is not something to ask for its data.
                 host.visible_all()
                     .iter()
+                    .filter(|package| {
+                        matches!(
+                            package.manifest.kind,
+                            crate::plugins::manifest::PackageKind::App | crate::plugins::manifest::PackageKind::Plugin
+                        )
+                    })
                     .filter(|package| host.is_active(&package.manifest.id))
-                    .map(|package| (package.manifest.id.clone(), package.manifest.title.clone()))
+                    .map(|package| crate::talk::layer::DeskApp {
+                        id: package.manifest.id.clone(),
+                        title: package.manifest.title.clone(),
+                        turbo: package.manifest.face_at(here),
+                    })
                     .collect()
             }));
             let layer = Arc::downgrade(&talk);

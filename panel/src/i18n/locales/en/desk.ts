@@ -17,6 +17,8 @@ const en: Translation<typeof ru> = {
     lockDesk: 'Lock the desk',
     unlockDesk: 'Unlock the desk',
     rearrange: 'Rearrange',
+    turboShow: 'Show the Turbo card',
+    turboHide: 'Hide the Turbo card — the dot by the speaker brings it back',
     smaller: 'Smaller',
     zoomReset: 'Zoom 100 %',
     bigger: 'Bigger',

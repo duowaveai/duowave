@@ -54,8 +54,29 @@ function Warning({ text }: { text?: string | null }) {
     );
 }
 
-/** Шапка панели «Свой голос»: что это, и «Создать» — мастер отпечатка. Под ней — снятые здесь голоса. */
-export function OwnVoicesHeader({ isAdmin, hasOwn, onAdd }: { isAdmin: boolean; hasOwn: boolean; onAdd: () => void }) {
+/**
+ * Шапка панели «Свой голос»: что это, и «Создать» — мастер отпечатка. Под ней — снятые здесь голоса. `hero` — в пункте
+ * «Голос» (проверка начисто 19.11: «свой голос — фишка мощная»): крупно, с большой кнопкой, а не плашкой сбоку.
+ */
+export function OwnVoicesHeader({ isAdmin, hasOwn, onAdd, hero = false }: { isAdmin: boolean; hasOwn: boolean; onAdd: () => void; hero?: boolean }) {
+    if (hero)
+        return (
+            <div class="flex flex-col gap-10 pb-6">
+                <h2 class="t-title-xs m-0 inline-flex items-center gap-8">
+                    <IconVoice size={18} />
+                    {tr.voiceLab.ownVoice}
+                </h2>
+                <p class="t-body m-0">{hasOwn ? tr.voiceLab.hasOwnAbout : byMode(tr.voiceLab.noOwnAboutSpeaker, tr.voiceLab.noOwnAboutVoice)}</p>
+                {isAdmin && (
+                    <div>
+                        <button class="w-btn w-btn-ink inline-flex items-center gap-6" onClick={onAdd}>
+                            <IconPlus size={14} />
+                            {tr.voiceHome.onbOwnCreate}
+                        </button>
+                    </div>
+                )}
+            </div>
+        );
     return (
         <>
             <div class="flex items-center justify-between min-h-44 gap-8">
@@ -88,6 +109,8 @@ export function OwnVoiceRows({
     onActivate,
     tightFor,
     onChanged,
+    fixed = false,
+    onRecord,
 }: {
     cards: TtsCard[];
     isAdmin: boolean;
@@ -97,6 +120,10 @@ export function OwnVoiceRows({
     /** Голос, которому шлюз ответил «памяти впритык»: его кнопка — «включить всё равно». */
     tightFor?: string | null;
     onChanged: () => void;
+    /** Голоса персонажей: ставятся и убираются вместе с персонажем — ни переименовать, ни удалить здесь. */
+    fixed?: boolean;
+    /** «Записать заново»: открыть мастер своего голоса. */
+    onRecord?: () => void;
 }) {
     const audio = useAudio();
     const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
@@ -110,6 +137,22 @@ export function OwnVoiceRows({
             onChanged();
         } catch (error) {
             setProblems((all) => ({ ...all, [card.id]: problemOf(error) }));
+        }
+    };
+    /** «Переснять для <модель> из ваших записей» (замечание 11 теста 19.11): новый голос рядом, из тех же записей. */
+    const [retaking, setRetaking] = useState<string | null>(null);
+    const [retaken, setRetaken] = useState<Record<string, string>>({});
+    const retake = async (card: TtsCard, engine: string) => {
+        if (!card.own) return;
+        setRetaking(`${card.id}:${engine}`);
+        try {
+            await api.reimprintVoice(card.own.id, engine);
+            setRetaken((all) => ({ ...all, [card.id]: tr.ui.reimprinting }));
+            onChanged();
+        } catch (error) {
+            setProblems((all) => ({ ...all, [card.id]: problemOf(error) }));
+        } finally {
+            setRetaking(null);
         }
     };
     const remove = async (card: TtsCard) => {
@@ -167,7 +210,22 @@ export function OwnVoiceRows({
                     >
                         {card.state === 'installing' && card.progress !== undefined && <Progress percent={card.progress} label={tr.voiceLab.installing(card.title)} />}
                         {card.reason && card.state !== 'ready' && <span class="t-caption">{card.reason}</span>}
-                        {isAdmin && own && !editing && (
+                        {isAdmin && own && !fixed && (own.retake?.length || own.retakeNone) && (
+                            <div class="flex gap-8 flex-wrap items-center">
+                                {(own.retake ?? []).map((other) => (
+                                    <Action
+                                        key={other.engine}
+                                        label={tr.voiceLab.retakeFor(other.title)}
+                                        busy={retaking === `${card.id}:${other.engine}`}
+                                        onClick={() => void retake(card, other.engine)}
+                                    />
+                                ))}
+                                {own.retakeNone && <span class="t-caption">{own.retakeNone}</span>}
+                                {own.retakeNone && onRecord && <Action label={tr.voiceLab.recordAgain} onClick={onRecord} />}
+                            </div>
+                        )}
+                        {retaken[card.id] && <span class="t-caption">{retaken[card.id]}</span>}
+                        {isAdmin && own && !fixed && !editing && (
                             <div class="flex gap-12">
                                 <button class="t-caption cursor-pointer underline" onClick={() => setRenaming({ id: own.id, name: card.title })}>
                                     {tr.voiceLab.rename}

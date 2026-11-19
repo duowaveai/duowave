@@ -2,15 +2,27 @@
 // слышат для центра («Колонка «Спальня» · слышит · копия дома»), плашки тех, кто работает вне дома, — Алиса и облака по
 // ключам, — узел «Приложения» и легенда цветов: лайм — центр, фиолет — Турбо, янтарь — облака и Яндекс, серый — спит.
 // Сам центр и Турбо — на сцене выше (колонка с орбитой и блок Турбо).
+//
+// На свободном столе со своими виджетами полоса и строка «Если Турбо уснёт» сворачиваются в значок «Поток запросов» под
+// колонкой (баг-лист 19.11: «висят мёртвым грузом, хочется расположиться виджетами»): нажали — раскрываются поверх
+// стола, ещё раз или мимо — свернулись. Свернуть можно и самому, крестиком в конце полосы; «Не сворачивать» в
+// раскрытом — снова как сначала. Выбор помнит пульт.
+
+import type { ComponentChildren } from 'preact';
+import { useEffect, useRef, useState } from 'preact/hooks';
 
 import type { HomeDevice } from '../api';
 import { deviceDot, deviceStateWords, useHomeDevices } from '../home-devices';
 import { tr } from '../i18n';
-import { IconCloud, IconEar, IconPackage, IconSpeaker } from '../icons';
+import { IconClose, IconCloud, IconEar, IconPackage, IconSpeaker } from '../icons';
 import { usePanel } from '../shell/context';
 import { openDevice } from '../shell/home-bar';
+import { remember } from '../shell/memory';
 
-export function HomeStrip({ alice, clouds }: { alice: boolean; clouds: boolean }) {
+/** Память пульта: `true` — подписи свёрнуты руками, `false` — «Не сворачивать», нет — сами (свои виджеты на столе). */
+export const NOTES_FOLDED = 'desk-notes-folded';
+
+export function HomeStrip({ alice, clouds, onFold }: { alice: boolean; clouds: boolean; onFold?: () => void }) {
     const panel = usePanel();
     const { view } = useHomeDevices();
     const ears: HomeDevice[] = (view?.devices ?? []).filter((device) => device.kind === 'station' && !device.roles.includes('centre'));
@@ -63,6 +75,60 @@ export function HomeStrip({ alice, clouds }: { alice: boolean; clouds: boolean }
                     {tr.devices.legendAsleep}
                 </span>
             </span>
+            {onFold && (
+                <button type="button" class="home-fold" aria-label={tr.devices.notesFold} title={tr.devices.notesFold} onClick={onFold}>
+                    <IconClose size={12} />
+                </button>
+            )}
+        </div>
+    );
+}
+
+/** Свёрнутые подписи дома: значок «Поток запросов» под колонкой; нажали — раскрываются поверх стола. */
+export function FoldedNotes({ children }: { children: ComponentChildren }) {
+    const t = tr.devices;
+    const [open, setOpen] = useState(false);
+    const box = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        if (!open) return;
+        const away = (event: PointerEvent) => {
+            if (!box.current?.contains(event.target as Node)) setOpen(false);
+        };
+        const key = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') setOpen(false);
+        };
+        document.addEventListener('pointerdown', away, true);
+        document.addEventListener('keydown', key);
+        return () => {
+            document.removeEventListener('pointerdown', away, true);
+            document.removeEventListener('keydown', key);
+        };
+    }, [open]);
+    return (
+        <div ref={box} class={`home-notes${open ? ' is-open' : ''}`}>
+            <button type="button" class="home-notes-chip" aria-expanded={open} aria-label={open ? t.notesHide : t.notesShow} onClick={() => setOpen(!open)}>
+                <span class="home-notes-dots" aria-hidden="true">
+                    <i class="is-centre" />
+                    <i class="is-turbo" />
+                    <i class="is-out" />
+                </span>
+                {t.notes}
+            </button>
+            {open && (
+                <div class="home-notes-pop">
+                    {children}
+                    <button
+                        type="button"
+                        class="truth-more home-notes-keep"
+                        onClick={() => {
+                            remember(NOTES_FOLDED, false);
+                            setOpen(false);
+                        }}
+                    >
+                        {t.notesKeep}
+                    </button>
+                </div>
+            )}
         </div>
     );
 }

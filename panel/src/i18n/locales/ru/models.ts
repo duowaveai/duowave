@@ -12,7 +12,9 @@ export default {
     whatVoice: 'голос',
     whatImprint: 'снимок голоса',
     whatModel: 'модель',
-    pendingTight: (title: string, reason: string) => `Всё встало, но ОЗУ впритык${reason ? `: ${reason}` : '.'} Включить «${title}» всё равно?`,
+    // Причина — от шлюза целиком («ОЗУ впритык: свободно 6,8 ГБ, …» на языке пульта): своё «ОЗУ впритык» перед ней
+    // повторяло её (проверка начисто 19.11).
+    pendingTight: (title: string, reason: string) => (reason ? `Всё встало. ${reason} Включить «${title}» всё равно?` : `Всё встало, но ОЗУ впритык. Включить «${title}» всё равно?`),
     verbDownload: 'скачать',
     verbImprint: 'снять',
     verbInstall: 'поставить',
@@ -120,6 +122,9 @@ export default {
 
     ownVoiceServerLabel: 'Сервер своего голоса',
     ownVoiceTitle: 'Свой голос',
+    characterVoicesTitle: 'Голоса персонажей',
+    ownOnTop: (own: string, character: string) => `Сейчас звучит ваш голос «${own}» — вместо голоса «${character}».`,
+    backToCharacter: 'Вернуть голос персонажа',
     installing: 'ставлю',
     startingServer: 'запускаю сервер голоса…',
     serverNotWorking: 'сервер голоса не работает',

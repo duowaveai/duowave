@@ -546,6 +546,20 @@ impl Works {
             .find(|work| work.executor == executor && work.target.as_deref() == Some(target))
     }
 
+    /// All the works of an executor's thing, the newest first.
+    pub fn of_thing(&self, executor: &str, target: &str) -> Vec<Work> {
+        self.all(None, None)
+            .into_iter()
+            .filter(|work| work.executor == executor && work.target.as_deref() == Some(target))
+            .collect()
+    }
+
+    /// The newest work going on an executor's thing — not the newest work of it, if going: a newer record that ended
+    /// would hide an older one still going, and the run's end would never reach it (live 19.11).
+    pub fn going_on(&self, executor: &str, target: &str) -> Option<Work> {
+        self.of_thing(executor, target).into_iter().find(Work::going)
+    }
+
     /// How many go on now.
     pub fn going(&self) -> usize {
         self.list().iter().filter(|work| work.going()).count()

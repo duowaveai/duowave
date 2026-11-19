@@ -315,10 +315,17 @@ impl TalkLayer {
             Found::One(work) => {
                 let executor =
                     self.executor(&work.executor).ok_or_else(|| Refusal::Failed("its executor is gone".into()))?;
-                if work.going() && executor.add(&work, text) {
+                // Words for a thing in work go to the work going on it: the one named, or a newer version of the same
+                // thing already going — another record next to it would be a twin whose end goes nowhere (19.11).
+                let going = if work.going() {
+                    Some(work.clone())
+                } else {
+                    work.target.as_deref().and_then(|target| self.works.going_on(&work.executor, target))
+                };
+                if let Some(going) = going.filter(|going| executor.add(going, text)) {
                     let note = super::works::note_of(text, origin.clone(), now_ms());
-                    if let Some(work) = self.works.update(&work.id, |work| work.notes.push(note)) {
-                        self.told(&work, "note");
+                    if let Some(going) = self.works.update(&going.id, |going| going.notes.push(note)) {
+                        self.told(&going, "note");
                     }
                     return Ok(fill(say.noted, &[("text", &in_sentence(text))]));
                 }
@@ -353,6 +360,7 @@ impl TalkLayer {
             origin,
             again: true,
         });
+        self.supersede(&work);
         if busy {
             self.enqueue(&work, None);
             return Ok(fill(say.queued_next, &[("title", &work.title)]));
@@ -456,6 +464,16 @@ impl TalkLayer {
                 fill(say.stopped, &[("title", &title)])
             }
             "stop" if executor.stop(&work) => fill(say.stopped, &[("title", &title)]),
+            // Going in its record, while its executor is at nothing on it: its run ended and the end never reached
+            // the record (19.11: «уже не в работе», and the work still «идёт»). The person's «Остановить» ends it here.
+            "stop" if work.going() => {
+                if let Some(work) = self.works.update(&work.id, |work| work.state = WorkState::Stopped) {
+                    tracing::info!(target: "talk", "work {}: stopped, its executor was at nothing on it", work.id);
+                    self.run_queue();
+                    self.told(&work, "stopped");
+                }
+                fill(say.stopped, &[("title", &title)])
+            }
             // A work in a folder that ended — cut by a restart, stopped, not finished — goes on in the agent's session.
             "continue" if work.kind == super::works::FOLDER && !work.going() && !work.state.queued() => {
                 let words = &pack::of(self.lang(device)).work.folder;

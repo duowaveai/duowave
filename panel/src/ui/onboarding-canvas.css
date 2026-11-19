@@ -359,3 +359,6 @@ html:not([data-theme='light']) .onb .g-black { background: #000; box-shadow: 0 0
 
 /* «Что есть в доме» (docs/plans/home-and-devices.md, этап 6): найденные устройства с ролями под выбором центра. */
 .onb-found { display: flex; flex-direction: column; gap: 6px; }
+
+/* «Пройти заново» поверх настроенного дома (замечание 10 теста 19.11): строка над шагом. */
+.onb .onb-again { margin: 0 0 12px; color: var(--sub); }

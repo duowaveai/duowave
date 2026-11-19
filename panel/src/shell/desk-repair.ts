@@ -33,3 +33,22 @@ export function repairedLayout(layout: DeskLayout, widgets: Pick<DeskWidget, 'ke
     };
 }
 
+
+/**
+ * Виджеты, что поставили голосом мимо «Примерки» (проверка начисто 19.11, «Fresh Hip-Hop & Rap»): «да» или «на стол» в
+ * ответ на «Готово. На стол или примерить?» ставит приложение на шлюзе (talk/workshop.rs, `End::Desk`), и шлюз говорит
+ * «На столе.», но раскладку стола держит пульт — плитка на стол не садилась, а голос считал её там. Черновик любого
+ * вида — виджет, игра, приложение (замечание 6 теста 19.11), — уже поставленный (`installed`), чьей плитки нет ни среди
+ * поставленных, ни среди убранных, садится на стол — один раз: убранный человеком не возвращается. Только плитка,
+ * которую стол уже рисует: пока часть приложения не загрузилась, ждать её, а не класть ключ, которого стол не знает.
+ */
+export function landingsOf(installed: string[], layout: Pick<DeskLayout, 'added' | 'hidden'>, widgets: Pick<DeskWidget, 'key'>[]): string[] {
+    const keys: string[] = [];
+    for (const id of installed) {
+        const own = (key: string): boolean => key.startsWith(`package.${id}.`);
+        if (layout.added.some(own) || layout.hidden.some(own)) continue;
+        const tile = widgets.find((widget) => own(widget.key));
+        if (tile && !keys.includes(tile.key)) keys.push(tile.key);
+    }
+    return keys;
+}

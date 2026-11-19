@@ -324,7 +324,11 @@ async fn an_addition_goes_into_the_work_going_on_and_a_change_of_a_ready_thing_i
     );
     assert_eq!(all[1]["target"].as_str(), Some(draft.as_str()));
     assert_eq!(gateway.app.workshop.drafts().len(), 1, "still one draft");
-    assert_eq!(gateway.app.workshop.card(&draft).asked, "слова покрупнее");
+    // The draft keeps the new words with the first wish it was made for (8c504303: «Переделай» carries it).
+    assert_eq!(
+        gateway.app.workshop.card(&draft).asked,
+        "слова покрупнее\n\nРаньше об этой вещи просили: «испанские слова дня»"
+    );
     gateway.stop().await;
 }
 

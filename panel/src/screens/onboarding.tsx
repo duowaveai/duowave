@@ -10,6 +10,7 @@ import { FoundStation, api, can, problemOf, stationCall } from '../api';
 import { LANGUAGES, setLanguage, tr, useLanguage } from '../i18n';
 import { usePanel } from '../shell/context';
 import { flushPanelMemory, recalled, remember } from '../shell/memory';
+import { OnbRecord, RECORD, closeRecord, openRecord, patchRecord, readRecord } from './onb/record';
 import { Boundary } from '../shell/slot';
 import { noteVoiceInput } from '../voice-input';
 import { AnswerStep } from './onb/answer';
@@ -20,25 +21,37 @@ import { SpeakerStep, resumeLink } from './onb/speaker';
 import { steerInvite } from './onb/invite-state';
 import { StoreStep } from './onb/store';
 import { TryStep } from './onb/try';
-import { TOP_VIA, VIA } from '../via';
+import { ONBOARDING, TOP_VIA, VIA } from '../via';
 import { InstallPill } from '../magicplace/wizard';
 import '../ui/onboarding-canvas.css';
 
 type StepId = 'where' | 'brain' | 'speaker' | 'answer' | 'character' | 'try' | 'store';
 
 /**
- * Что помнит память пульта: выбор и шаг. Нет записи — первые шаги пройдены или закрыты. Запись появляется с первого
- * экрана: смена языка пересоздаёт пульт (main.tsx), и шаги открываются снова по ней. `picked: false` — место выбрал
- * поиск колонок, не человек (запись постарше без поля — выбрал человек).
+ * Запись первых шагов (onb/record.ts): выбор, шаг, пройденные шаги и хвосты. Нет записи — шаги пройдены или закрыты.
+ * Запись появляется с первого экрана: смена языка пересоздаёт пульт (main.tsx), перезапуск приложения или шлюза — и
+ * шаги открываются снова по ней, на том же шаге. `picked: false` — место выбрал не человек, а пульт (запись постарше
+ * без поля — выбрал человек): такой выбор не держим, по умолчанию — «колонка + Турбо» (замечание 1 теста 19.11).
  */
-interface Saved {
+interface Saved extends OnbRecord {
     choice: Choice;
     step: StepId;
-    picked?: boolean;
 }
-const KEY = 'onboarding';
+const KEY = RECORD;
 
 const WIKI_ROOT = 'https://hackalice.me/start/';
+
+/**
+ * «Пройти заново» поверх настроенного дома (замечание 10 теста 19.11): место — каким оно есть (колонка у этого
+ * компьютера — «колонка + Турбо», иначе «этот компьютер»), и отмечено, что уже сделано: место, колонка подключена,
+ * мозг выбран. Данные дома не трогаются; каждый шаг показывает своё как есть, поменять можно, а можно «Дальше».
+ */
+function againStart(panel: ReturnType<typeof usePanel>): { choice: Choice; done: StepId[]; picked: boolean } {
+    const linked = panel.role.role === 'helper' || (panel.health?.placement?.stations ?? []).length > 0;
+    const thinks = !!panel.health?.brain && panel.health.brain.provider !== 'none' && panel.health.brain.provider !== 'echo';
+    const done: StepId[] = ['where', ...(linked ? (['speaker', 'answer'] as StepId[]) : []), ...(thinks ? (['brain'] as StepId[]) : [])];
+    return { choice: linked ? 'stationPc' : 'computer', done, picked: true };
+}
 
 /** Шаги по выбору. Шлюз на самой колонке (пульт открыт на ней): где жить — уже решено. */
 function stepsOf(choice: Choice, onStation: boolean): StepId[] {
@@ -53,11 +66,15 @@ function stepsOf(choice: Choice, onStation: boolean): StepId[] {
  */
 export const OPEN_ONBOARDING = 'duowave:onboarding';
 export function openOnboarding(): void {
+    // Окно колонки: шаги ведёт пульт компьютера — адрес `?onboarding` там и значит «пройти заново» (см. Onboarding).
     if (VIA) {
         const top = TOP_VIA ? window : (window.top ?? window);
         top.location.assign(`${location.pathname}?onboarding`);
         return;
     }
+    // «Пройти заново» (замечание 10 теста 19.11): поверх того, что уже есть, — дом не трогается, сделанное отмечено.
+    // Шаги не закончены (запись есть) — открываются как были.
+    if (!readRecord()) remember(KEY, { again: true } as Partial<Saved>);
     window.dispatchEvent(new Event(OPEN_ONBOARDING));
 }
 
@@ -128,8 +145,15 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
     const current = useLanguage();
     const onStation = panel.health?.placement?.role === 'station';
     const saved = recalled<Saved>(KEY);
-    const [choice, setChoice] = useState<Choice>(saved?.choice ?? 'stationPc');
-    const [picked, setPicked] = useState(!!saved && saved.picked !== false);
+    // «Пройти заново»: дом уже есть — место такое, какое оно на деле, и отмечено, что уже сделано (`againStart`).
+    // Адрес `?onboarding` (просьба окна колонки «Пройти первые шаги») без начатых шагов — то же «заново».
+    const again = (saved?.again && !saved.choice) || (ONBOARDING && !saved) ? againStart(panel) : null;
+    // По умолчанию — «Центр — колонка, компьютер — Турбо», найдена колонка или нет: дом задуман вокруг колонки, а без
+    // найденной шаг «Колонка» даёт ввести её адрес. Держим только выбор человека.
+    const [choice, setChoice] = useState<Choice>(
+        again ? again.choice : saved?.choice && saved.picked !== false ? saved.choice : 'stationPc',
+    );
+    const [done, setDone] = useState<string[]>(again?.done ?? saved?.done ?? []);
     const steps = stepsOf(choice, onStation);
     const [step, setStep] = useState<StepId>(saved && steps.includes(saved.step) ? saved.step : steps[0]);
     const [busy, setBusy] = useState(false);
@@ -140,38 +164,33 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
     // Подключение и перенос колонки ведёт пульт (screens/onb/speaker.tsx), а не шлюз: уход со шага их не останавливает,
     // а перезагрузка пульта (шлюз перезапустился) теряла — продолжаем по метке, на каком бы шаге ни были (п. 62).
     useEffect(() => void resumeLink().catch(() => undefined), []);
-    // Приглашение ведут первые шаги, а не шаг «Персонаж» (п. 64): где читать набор — у центра (ключ колонки у
-    // помощника), пока колонка не центр — у этого компьютера; сменилось — догружаем у нового без нового ввода.
-    const inviteHome = (panel.role.role === 'helper' ? panel.role.station?.key : undefined) ?? 'own';
-    useEffect(() => steerInvite(inviteHome), [inviteHome]);
+    // Приглашение ведут первые шаги, а не шаг «Персонаж» (п. 64): набор читает этот компьютер — персонажи видны сразу;
+    // центр-колонка (ключ колонки у помощника) получает его в фоне, «колонка догонит» (замечание 3 теста 19.11).
+    const inviteCentre = (panel.role.role === 'helper' ? panel.role.station?.key : undefined) ?? null;
+    useEffect(() => steerInvite('own', inviteCentre), [inviteCentre]);
 
-    // Шаги открыты — пульт помнит это сразу, ещё до «Дальше» (см. Saved).
+    // Шаги открыты — пульт помнит это сразу, ещё до «Дальше» (см. Saved). «Пройти заново» — место выбрано по дому.
     useEffect(() => {
-        if (!recalled<Saved>(KEY)) remember(KEY, { choice, step, picked: false } satisfies Saved);
+        if (again) remember(KEY, { ...saved, ...again, step, again: true } satisfies Saved);
+        else openRecord({ choice, step, picked: false });
     }, []);
 
-    // Колонки дома: поиск начинается сразу и заранее выбирает вариант.
+    // Колонки дома: поиск начинается сразу; выбор он не меняет (см. выше).
     const scan = useScan(!onStation);
-    useEffect(() => {
-        if (picked || !scan.done) return;
-        // У компьютера уже есть шлюз колонки (помогает ей или отвечает ей): поиск в сети мог её не увидеть, но дом —
-        // с колонкой, и «Дальше» с «Только компьютер» перевёл бы разговор с неё на микрофон.
-        const linked = panel.role.role === 'helper' || (panel.health?.placement?.stations ?? []).length > 0;
-        const found = scan.found.length > 0 || linked ? 'stationPc' : 'computer';
-        setChoice(found);
-        remember(KEY, { choice: found, step, picked: false } satisfies Saved);
-    }, [scan.done]);
 
     const index = Math.max(0, steps.indexOf(step));
     const go = (next: StepId) => {
+        // Пройденный «Дальше» шаг — в запись: после перезапуска полоса шагов показывает его ✓.
+        const passed = steps.indexOf(next) > index && !done.includes(step) ? [...done, step] : done;
         setStep(next);
+        setDone(passed);
         setProblem(null);
         setNav(null);
-        remember(KEY, { choice, step: next } satisfies Saved);
+        patchRecord({ choice, step: next, picked: undefined, done: passed });
         main.current?.scrollTo({ top: 0 });
     };
     const finish = () => {
-        remember(KEY, undefined);
+        closeRecord();
         // Сразу на шлюз, не через паузу: перезагрузка сразу после × иначе вернула бы шаги.
         void flushPanelMemory();
         // Колонка могла получить запись шагов от пульта компьютера (до отдельных копий памяти, shell/memory.ts): шаги
@@ -246,6 +265,11 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                     </header>
 
                     <main class="onb-main" ref={main}>
+                        {(saved?.again || again) && index === 0 && (
+                            <p class="small onb-again" role="status">
+                                {tr.onboarding.againLead}
+                            </p>
+                        )}
                         {/* Встроенная часть упала (нет поля в ответе шлюза) — шаг говорит об этом, «Дальше» работает. */}
                         <Boundary key={step} name={`onboarding.${step}`} fallback={<p class="card small">{tr.onboarding.stepFailed}</p>}>
                             {helperShown ? (
@@ -256,8 +280,7 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                                     scan={scan}
                                     onPick={(value) => {
                                         setChoice(value);
-                                        setPicked(true);
-                                        remember(KEY, { choice: value, step } satisfies Saved);
+                                        patchRecord({ choice: value, step, picked: undefined });
                                     }}
                                 />
                             ) : step === 'brain' ? (
@@ -281,12 +304,16 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                             <div class="steps" aria-label={tr.onboarding.title}>
                                 {labels.map((label, at) => {
                                     const n = at - 1;
-                                    const done = at === 0 || n < index;
+                                    // Пройденный — до текущего или отмеченный в записи (после перезапуска, «Пройти заново»).
+                                    const passed = at === 0 || n < index || (n >= 0 && done.includes(steps[n]));
                                     const now = n === index;
                                     return (
                                         <span key={label} class="onb-step-wrap">
-                                            <span class={`step${done ? ' done' : now ? ' now' : ''}`} aria-current={now ? 'step' : undefined}>
-                                                <i>{done ? '✓' : at + 1}</i>
+                                            <span
+                                                class={`step${passed && !now ? ' done' : now ? ' now' : ''}`}
+                                                aria-current={now ? 'step' : undefined}
+                                            >
+                                                <i>{passed && !now ? '✓' : at + 1}</i>
                                                 {label}
                                             </span>
                                             {at < labels.length - 1 && <span class="step-gap" />}
@@ -537,7 +564,7 @@ function WhereStep({ choice, scan, onPick }: { choice: Choice; scan: Scan; onPic
                             <Ico name="laptop" />
                         </>,
                         true,
-                        first ? t.recommended : undefined,
+                        t.recommended,
                     )}
                     {option('station', t.choiceStation, t.choiceStationSub, <Ico name="speakerOnly" size="lg" />)}
                 </div>

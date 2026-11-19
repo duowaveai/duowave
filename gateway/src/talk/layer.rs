@@ -13,8 +13,18 @@ use crate::memory::text::Lang;
 use crate::storage::Db;
 use crate::utils::time::now_ms;
 
-/// The apps on the desk, for the block: their ids and titles — «Погода [weather]», so a thing is named by its id.
-pub type Desk = Arc<dyn Fn() -> Vec<(String, String)> + Send + Sync>;
+/// The apps that are on, for the block: their ids and titles — «Погода [weather]», so a thing is named by its id —,
+/// and whether each runs on the home's Турбо.
+pub type Desk = Arc<dyn Fn() -> Vec<DeskApp> + Send + Sync>;
+
+/// An app that is on, as the block names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeskApp {
+    pub id: String,
+    pub title: String,
+    /// Its code runs on the home's Турбо (a face here, docs/plans/home-and-devices.md, stage 5б).
+    pub turbo: bool,
+}
 
 /// The language a device's character speaks: its pack's words for the phrases and the block.
 pub type Langs = Arc<dyn Fn(&str) -> Lang + Send + Sync>;
@@ -65,6 +75,10 @@ pub struct TalkLayer {
 
 /// A device's conversation is remembered this long after its work last changed.
 pub const REMEMBERED_MS: u64 = 30 * 60_000;
+
+/// A work going in its record and untouched this long, its executor at nothing on it, is settled as interrupted: the
+/// time a run takes to show itself after its work began, with room to spare.
+pub const SETTLE_AFTER_MS: u64 = 60_000;
 
 impl TalkLayer {
     /// The layer over the works the table keeps: what went on when the gateway stopped is interrupted.
@@ -354,6 +368,31 @@ impl TalkLayer {
         }
     }
 
+    /// The works going on in their records whose executor has been at nothing on their thing for a minute: their run
+    /// ended and the end was lost on the way. They are interrupted now — a work that ended never stays «идёт» (19.11:
+    /// «Bitcoin rate · начинает · идёт 21 мин» twenty minutes after its run). Read with the works, so what the page and
+    /// «Ждёт вас» show is what is. An executor that cannot tell (`running` is None) is believed.
+    pub fn settle(&self) {
+        self.settle_at(now_ms());
+    }
+
+    fn settle_at(&self, now: u64) {
+        for work in self.works.all(None, None) {
+            if !work.going() || now.saturating_sub(work.updated_at) < SETTLE_AFTER_MS {
+                continue;
+            }
+            let Some(executor) = self.executor(&work.executor) else { continue };
+            if executor.running(&work) != Some(false) {
+                continue;
+            }
+            if let Some(work) = self.works.update(&work.id, |work| work.state = WorkState::Interrupted) {
+                tracing::warn!(target: "talk", "work {}: going in its record, its executor at nothing on it: interrupted", work.id);
+                self.run_queue();
+                self.told(&work, "interrupted");
+            }
+        }
+    }
+
     /// The reader of the phrases about the works, once the dialog stands.
     pub fn set_reader(&self, reader: Arc<super::reader::Reader>) {
         let _ = self.reader.set(reader);
@@ -500,7 +539,24 @@ impl TalkLayer {
         match report {
             Report::Working(began) => self.began(executor, began),
             Report::Ended { target, state, line, title } => {
-                let Some(work) = self.works.of_target(executor, &target).filter(|work| work.going()) else { return };
+                // A thing has one run at a time: when it ends, no work on it goes on. The newest one going takes the
+                // end; an older one still going on the same thing — its words went into this run, or its own end once
+                // reached a newer record — ends with it, quietly. On 19.11 such a twin hung «идёт» for twenty minutes
+                // after its run had ended, and «Остановить» could not end it.
+                let going: Vec<Work> = self.works.of_thing(executor, &target).into_iter().filter(Work::going).collect();
+                let Some((work, twins)) = going.split_first() else { return };
+                for twin in twins {
+                    let closed = self.works.update(&twin.id, |twin| {
+                        twin.state = state;
+                        if let Some(title) = &title {
+                            twin.title = title.clone();
+                        }
+                    });
+                    if let Some(twin) = closed {
+                        tracing::info!(target: "talk", "work {}: its thing {target} ended its run with work {}", twin.id, work.id);
+                        self.told(&twin, "closed");
+                    }
+                }
                 let changed = self.works.update(&work.id, |work| {
                     work.state = state;
                     if let Some(line) = line {
@@ -522,7 +578,7 @@ impl TalkLayer {
                 }
             }
             Report::Read { target } => {
-                let Some(work) = self.works.of_target(executor, &target).filter(|work| work.going()) else { return };
+                let Some(work) = self.works.going_on(executor, &target) else { return };
                 let now = now_ms();
                 let changed = self.works.update(&work.id, |work| {
                     for note in work.notes.iter_mut().filter(|note| note.read_at.is_none()) {
@@ -534,17 +590,25 @@ impl TalkLayer {
                 }
             }
             Report::Decided { target, end } => {
-                let Some(work) = self.works.of_target(executor, &target) else { return };
-                let changed = self.works.update(&work.id, |work| {
-                    let line = work.result.take().map(|result| result.line).unwrap_or_default();
-                    work.result = Some(WorkResult { line, end: Some(end), ..WorkResult::default() });
-                    work.question = None;
-                    if !work.going() {
-                        work.state = WorkState::Done;
+                // What became of the thing answers every work of it that waits: the newest one, and an older version
+                // still asking «Доделать?» or «На стол?» — on 19.11 one such stayed «Ждёт вас · 1» after the thing
+                // was on the desk, with nothing to show behind it.
+                let works = self.works.of_thing(executor, &target);
+                for (at, work) in works.iter().enumerate() {
+                    if at > 0 && !work.awaiting() {
+                        continue;
                     }
-                });
-                if let Some(work) = changed {
-                    self.told(&work, "decided");
+                    let changed = self.works.update(&work.id, |work| {
+                        let line = work.result.take().map(|result| result.line).unwrap_or_default();
+                        work.result = Some(WorkResult { line, end: Some(end), ..WorkResult::default() });
+                        work.question = None;
+                        if !work.going() {
+                            work.state = WorkState::Done;
+                        }
+                    });
+                    if let Some(work) = changed {
+                        self.told(&work, "decided");
+                    }
                 }
             }
         }
@@ -558,7 +622,7 @@ impl TalkLayer {
             .as_deref()
             .and_then(|id| self.works.get(id))
             .filter(|work| work.going())
-            .or_else(|| self.works.of_target(executor, &began.target).filter(|work| work.going()));
+            .or_else(|| self.works.going_on(executor, &began.target));
         if let Some(work) = known {
             let target = began.target.clone();
             if let Some(work) = self.works.update(&work.id, |work| {
@@ -582,13 +646,29 @@ impl TalkLayer {
             origin: began.origin,
             again,
         });
+        self.supersede(&work);
         self.told(&work, "started");
+    }
+
+    /// A new version of a thing began: the questions its older works still ask («Доделать?», «На стол или
+    /// примерить?») are answered by it — they leave «Ждёт вас». On 19.11 «Доделать» began the new version, and the old
+    /// «не доделано» kept asking with nothing behind it.
+    pub(super) fn supersede(&self, newer: &Work) {
+        let Some(target) = newer.target.as_deref() else { return };
+        for older in self.works.of_thing(&newer.executor, target) {
+            if older.id == newer.id || older.question.is_none() || !older.awaiting() {
+                continue;
+            }
+            if let Some(older) = self.works.update(&older.id, |older| older.question = None) {
+                self.told(&older, "answered");
+            }
+        }
     }
 
     /// A round of the model on an executor's thing (the workshop's agent on its draft): what it spent, summed into the
     /// work going on with it.
     pub fn spent(&self, executor: &str, target: &str, usage: &crate::dialog::llm::LlmUsage) {
-        let Some(work) = self.works.of_target(executor, target).filter(|work| work.going()) else { return };
+        let Some(work) = self.works.going_on(executor, target) else { return };
         self.works.update(&work.id, |work| {
             work.tokens.input += usage.input;
             work.tokens.output += usage.output;
@@ -608,13 +688,17 @@ impl TalkLayer {
     pub fn now(&self, device: &str, lang: Lang) -> String {
         let works = self.works.all(Some(device), None);
         let doing = |work: &Work| self.executor(&work.executor).and_then(|executor| executor.status(work));
+        let words = pack::of(lang).work;
         let desk: Vec<String> = self
             .desk
             .get()
             .map(|desk| desk())
             .unwrap_or_default()
             .into_iter()
-            .map(|(id, title)| format!("{title} [{id}]"))
+            .map(|app| {
+                let turbo = if app.turbo { words.turbo } else { "" };
+                format!("{} [{}]{turbo}", app.title, app.id)
+            })
             .collect();
         let door = self.door.is_open(device);
         let sources = Sources { works: &works, doing: &doing, desk: &desk, door, now: now_ms() };
@@ -639,6 +723,26 @@ mod tests {
             ("VOICE_LAB_DIR", text("voice-lab")),
             ("TTS_MODELS_DIR", text("voices")),
         ])
+    }
+
+    /// The clean-path check of 19.11: the block said «На столе: …» of every package that was on, and the brain told
+    /// the person a widget was on their desk while nobody saw it there. It names the apps that are on — no claim of
+    /// where their widgets stand — and the ones whose code runs on the Турбо, so a call that waits for it is no surprise.
+    #[test]
+    fn the_block_names_the_apps_that_are_on_and_which_run_on_the_turbo() {
+        let layer = super::TalkLayer::new(None, crate::core::events::EventBus::new());
+        layer.set_desk(std::sync::Arc::new(|| {
+            vec![
+                super::DeskApp { id: "weather".into(), title: "Погода".into(), turbo: false },
+                super::DeskApp { id: "youtube".into(), title: "YouTube".into(), turbo: true },
+            ]
+        }));
+        layer.door.open("kitchen");
+        let ru = layer.now("kitchen", crate::memory::text::Lang::Ru);
+        assert!(ru.contains("- Включены приложения: Погода [weather], YouTube [youtube] — на Турбо."), "{ru}");
+        assert!(!ru.contains("На столе"), "{ru}");
+        let en = layer.now("kitchen", crate::memory::text::Lang::En);
+        assert!(en.contains("- Apps switched on: Погода [weather], YouTube [youtube] — on the Turbo."), "{en}");
     }
 
     /// A run of the agent is a work whoever started it; a restart while it goes on interrupts the work and the card —
@@ -734,5 +838,135 @@ mod tests {
         layer.said_on(&weather.id, "kitchen");
         layer.ended_asking(&weather.id, Outcome::Declined);
         assert!(!layer.waiting().iter().any(|work| work.id == weather.id), "declined: it does not wait for the person");
+    }
+
+    /// The hand check of 19.11 on the layer: a run's end reaches every work going on its thing, «Остановить» ends a
+    /// work its executor is no longer at, a work whose run ended unheard is settled, and what became of a thing — or
+    /// its new version — answers the questions of its older works, so «Ждёт вас» counts only what really waits.
+    mod hand_check_1911 {
+        use std::sync::Arc;
+
+        use crate::core::events::EventBus;
+        use crate::talk::asked::Kind;
+        use crate::talk::executor::{fake::Shelf, Presence, Report};
+        use crate::talk::layer::{TalkLayer, SETTLE_AFTER_MS};
+        use crate::talk::origin::{Activator, Origin};
+        use crate::talk::works::{End, NewWork, Question, Work, WorkResult, WorkState, APP};
+        use crate::utils::time::now_ms;
+
+        fn layer() -> (Arc<TalkLayer>, Arc<Shelf>) {
+            let layer = TalkLayer::new(None, EventBus::new());
+            let shelf = Shelf::with(&[("btc", "Bitcoin rate", Presence::Draft)]);
+            layer.add_executor(shelf.clone());
+            (layer, shelf)
+        }
+
+        /// A work of the thing `btc` as the panel's «Доделать» makes it: going until its run ends.
+        fn going(layer: &TalkLayer) -> Work {
+            layer.works.create(NewWork {
+                kind: APP,
+                face: None,
+                executor: "workshop".into(),
+                target: Some("btc".into()),
+                title: "Bitcoin rate".into(),
+                brief: "Доделай начатое и проверь, что всё работает.".into(),
+                origin: Origin::computer(Activator::Text),
+                again: true,
+            })
+        }
+
+        /// A work of `btc` that ended «не доделано» and asks «Доделать?».
+        fn unfinished(layer: &TalkLayer) -> Work {
+            let work = going(layer);
+            layer
+                .works
+                .update(&work.id, |work| {
+                    work.state = WorkState::Unfinished;
+                    let line = "Bitcoin rate: не доделано. Доделать?".to_string();
+                    work.result = Some(WorkResult { line: line.clone(), end: None, ..WorkResult::default() });
+                    work.question = Some(Question::new(line, 0, Kind::Unfinished));
+                })
+                .unwrap()
+        }
+
+        fn state(layer: &TalkLayer, work: &Work) -> WorkState {
+            layer.works.get(&work.id).unwrap().state
+        }
+
+        #[tokio::test]
+        async fn a_run_that_ends_ends_every_work_going_on_its_thing() {
+            let (layer, _) = layer();
+            let older = going(&layer);
+            std::thread::sleep(std::time::Duration::from_millis(3));
+            let newer = going(&layer);
+            let ended = Report::Ended { target: "btc".into(), state: WorkState::Ready, line: None, title: None };
+            layer.heard("workshop", ended);
+            assert_eq!(state(&layer, &newer), WorkState::Ready, "the newest going takes the end");
+            assert_eq!(state(&layer, &older), WorkState::Ready, "its twin ends with it, not «идёт» forever");
+            assert_eq!(layer.works.going(), 0);
+
+            // A newer record that ended no longer hides an older one still going: the next run's end finds it.
+            let left = going(&layer);
+            std::thread::sleep(std::time::Duration::from_millis(3));
+            let done = going(&layer);
+            layer.works.update(&done.id, |work| work.state = WorkState::Failed);
+            let ended = Report::Ended { target: "btc".into(), state: WorkState::Unfinished, line: None, title: None };
+            layer.heard("workshop", ended);
+            assert_eq!(state(&layer, &left), WorkState::Unfinished, "the end reached the work going");
+            assert_eq!(state(&layer, &done), WorkState::Failed, "the ended one is left as it was");
+        }
+
+        #[tokio::test]
+        async fn stop_ends_a_work_its_executor_is_no_longer_at() {
+            let (layer, _) = layer();
+            let work = going(&layer);
+            let label = format!("р{}", work.id);
+            let said = layer.act(&Origin::computer(Activator::Text), "stop", Some(&label)).await.unwrap();
+            assert!(!said.contains("уже не в работе"), "{said}");
+            assert_eq!(state(&layer, &work), WorkState::Stopped);
+            assert!(layer.works.get(&work.id).unwrap().ended_at.is_some());
+            let again = layer.act(&Origin::computer(Activator::Text), "stop", Some(&label)).await.unwrap();
+            assert!(again.contains("уже не в работе"), "stopped already: {again}");
+        }
+
+        #[tokio::test]
+        async fn a_work_whose_run_ended_unheard_is_settled_and_one_at_work_is_not() {
+            let (layer, shelf) = layer();
+            let work = going(&layer);
+            let later = now_ms() + SETTLE_AFTER_MS + 1000;
+            layer.settle_at(later);
+            assert_eq!(state(&layer, &work), WorkState::Working, "the executor cannot tell: the record is believed");
+            shelf.at.lock().unwrap().insert("btc".into(), true);
+            layer.settle_at(later);
+            assert_eq!(state(&layer, &work), WorkState::Working, "at work on it: going");
+            shelf.at.lock().unwrap().insert("btc".into(), false);
+            layer.settle_at(now_ms());
+            assert_eq!(state(&layer, &work), WorkState::Working, "just begun: its run may not show yet");
+            layer.settle_at(later);
+            assert_eq!(state(&layer, &work), WorkState::Interrupted, "at nothing on it for a minute: not «идёт»");
+        }
+
+        #[tokio::test]
+        async fn a_new_version_answers_the_old_question_and_the_desk_answers_them_all() {
+            let (layer, _) = layer();
+            let old = unfinished(&layer);
+            assert_eq!(layer.waiting().len(), 1, "«Доделать?» waits");
+            std::thread::sleep(std::time::Duration::from_millis(3));
+            let label = format!("р{}", old.id);
+            layer.add(Origin::computer(Activator::Text), "Доделай начатое.", Some(&label), false).await.unwrap();
+            assert!(layer.waiting().is_empty(), "«Доделать» began the new version: the old one no longer waits");
+            assert_eq!(layer.works.going(), 1);
+
+            // An older version asking, a newer one put on the desk: the desk answers both.
+            let (layer, _) = self::layer();
+            let older = unfinished(&layer);
+            std::thread::sleep(std::time::Duration::from_millis(3));
+            let newer = going(&layer);
+            layer.works.update(&newer.id, |work| work.state = WorkState::Ready);
+            layer.heard("workshop", Report::Decided { target: "btc".into(), end: End::Desk });
+            assert!(layer.waiting().is_empty(), "nothing behind «Ждёт вас»");
+            let older = layer.works.get(&older.id).unwrap();
+            assert_eq!((older.state, older.result.and_then(|result| result.end)), (WorkState::Done, Some(End::Desk)));
+        }
     }
 }

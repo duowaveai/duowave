@@ -1,12 +1,15 @@
 // Строка дома (docs/plans/home-and-devices.md, этап 1; холст 17.11, доска «Главная»): вверху пульта — «Дом» и его
 // устройства капсулами: имя, метка роли («Центр», «Турбо»), точка связи. Вкладок устройств больше нет: пульт один, откуда
-// ни открой, — а нажатие на капсулу ведёт на страницу устройства («Настройки → Дом → Устройства»). Капсула устройства, на
-// котором открыт пульт, светлая. На телефоне — только капсулы: имя и точка.
+// ни открой, — а нажатие на капсулу ведёт на страницу устройства («Настройки → Дом → Устройства»). Светлая капсула —
+// устройство, чья страница открыта: строка и страница выбирают одно и то же в обе стороны (владелец, 19.11: на странице
+// «Гостиная», а светлым оставался Mac). Страница устройства не открыта — светлое то, на котором открыт пульт. На
+// телефоне — только капсулы: имя и точка.
 
 import { FunctionComponent } from 'preact';
 
 import type { HomeDevice } from '../api';
 import { deviceDot, deviceStateWords, useHomeDevices, useThisDevice } from '../home-devices';
+import { chosenDevice } from '../home-model';
 import { tr } from '../i18n';
 import { IconCloud, IconLaptop, IconServer, IconSpeaker } from '../icons';
 import { usePanel } from './context';
@@ -24,6 +27,7 @@ export function HomeBar({ short = false }: { short?: boolean }) {
     const panel = usePanel();
     const { view } = useHomeDevices();
     const mine = useThisDevice(view, panel.health);
+    const chosen = view ? chosenDevice(panel.link, view.devices.map((device) => device.id), mine?.id) : undefined;
     const name = view?.home.name || tr.devices.homeName;
     if (!view) return <span class={`home-bar${short ? ' is-short' : ''}`}><span class="home-bar-name">{name}</span></span>;
     return (
@@ -39,7 +43,8 @@ export function HomeBar({ short = false }: { short?: boolean }) {
                         <button
                             key={device.id}
                             type="button"
-                            class={`home-chip${mine?.id === device.id ? ' is-this' : ''}${device.state === 'off' ? ' is-off' : ''}`}
+                            class={`home-chip${chosen === device.id ? ' is-this' : ''}${device.state === 'off' ? ' is-off' : ''}`}
+                            aria-current={chosen === device.id ? 'true' : undefined}
                             aria-label={`${tr.devices.open(device.name)} · ${state}`}
                             title={state}
                             onClick={() => openDevice(panel.go, device)}

@@ -21,6 +21,7 @@ export default {
     kindApps: 'Приложения',
     kindThemes: 'Темы',
     kindAgents: 'Агенты',
+    kindWords: 'Слова',
     // Карточка агента (docs/plans/router-and-works.md, 7б)
     agentCardOnly: 'Установка ставит только карточку: программу агента вы ставите сами, DuoWave её не скачивает и не запускает.',
     agentInstall: (name: string) => `Поставьте программу ${name} командой в терминале:`,

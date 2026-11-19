@@ -140,7 +140,9 @@ pub fn no_room(model: &str, need_mb: u64, free_mb: u64) -> ApiError {
 }
 
 pub fn routes() -> Router<Arc<App>> {
-    Router::new().route("/api/v1/home/voice", get(voice).put(choose))
+    Router::new()
+        .route("/api/v1/home/voice", get(voice).put(choose))
+        .route("/api/v1/home/voice/pending", get(pending).post(answer_pending))
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -159,6 +161,94 @@ struct Choice {
     package: Option<String>,
     #[serde(default)]
     engine: String,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct Answer {
+    #[serde(default)]
+    answer: String,
+}
+
+/// A request to the Турбо in the language of whoever asked here: its words (a plan's failure, a pending voice's
+/// reason) come back in it.
+fn to_turbo(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    match crate::locale::text::language_now() {
+        Some(language) => request.header(reqwest::header::ACCEPT_LANGUAGE, language),
+        None => request,
+    }
+}
+
+/// What the Турбо says waits there (`GET /home/v1/voice/pending`); none while it is away, or an older one (404).
+async fn waiting_at(remote: &RemoteHelper) -> Option<Value> {
+    let request = crate::utils::http::client()
+        .get(format!("{}/home/v1/voice/pending", remote.base().trim_end_matches('/')))
+        .bearer_auth(remote.credential())
+        .timeout(Duration::from_secs(10));
+    let response = to_turbo(request)
+        .send()
+        .await
+        .map_err(|error| tracing::debug!(target: "home", "the waiting voice from the Турбо: {error}"))
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let answer = response.json::<Value>().await.ok()?;
+    Some(answer["pending"].clone()).filter(|pending| !pending.is_null())
+}
+
+/// The voice waiting for the owner, wherever it waits (clean-path check 19.11: «Голос ждёт» lived only on the
+/// computer's own page): this gateway's own (a computer that is the home's centre), else the voice's Турбо's —
+/// `{turbo: {id, name, up} | null, pending: {…, title, character?} | null}`.
+async fn waiting(app: &App) -> Value {
+    #[cfg(feature = "pc")]
+    if let Some(pending) = crate::home_server::voice_plan::waiting(app) {
+        return json!({ "turbo": null, "pending": pending });
+    }
+    let remote = voice_turbo(app).or_else(|| app.helpers.offering(Ability::Voice).into_iter().next());
+    let Some(remote) = remote else {
+        return json!({ "turbo": null, "pending": null });
+    };
+    let up = remote.up();
+    let name = app.helpers.views().into_iter().find(|view| view.id == remote.id()).map(|view| view.name);
+    let pending = if up { waiting_at(&remote).await } else { None };
+    json!({
+        "turbo": { "id": remote.id(), "name": name.unwrap_or_else(|| remote.id().to_string()), "up": up },
+        "pending": pending,
+    })
+}
+
+async fn pending(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+    caller.permitted(STATION_VIEW)?;
+    Ok(ok(waiting(&app).await))
+}
+
+/// The owner's answer to the waiting voice — `{"answer": "anyway" | "retry" | "cancel"}` — here, or passed to the
+/// Турбо where it waits; then what waits now.
+async fn answer_pending(State(app): State<Arc<App>>, caller: Caller, Body(answer): Body<Answer>) -> ApiResult<Value> {
+    caller.permitted(MODELS_MANAGE)?;
+    #[cfg(feature = "pc")]
+    if app.models.pending().is_some() {
+        crate::home_server::voice_plan::answer(&app, &answer.answer, caller.actor()).await?;
+        return Ok(ok(waiting(&app).await));
+    }
+    let Some(remote) = voice_turbo(&app).filter(|remote| remote.up()) else {
+        return Err(ApiError::conflict(crate::tr!("Компьютер с голосом не на связи — ответить ему пока нельзя.")));
+    };
+    let request = crate::utils::http::client()
+        .post(format!("{}/home/v1/voice/pending", remote.base().trim_end_matches('/')))
+        .bearer_auth(remote.credential())
+        .json(&json!({ "answer": answer.answer }))
+        // «Отменить» waits there for the stopped download's program to go.
+        .timeout(Duration::from_secs(30));
+    let response = to_turbo(request).send().await.map_err(|error| ApiError::bad_gateway(error.to_string()))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body: Value = response.json().await.unwrap_or_default();
+        let message = body["message"].as_str().map(str::to_string).unwrap_or_else(|| format!("HTTP {status}"));
+        let status = axum::http::StatusCode::from_u16(status.as_u16()).unwrap_or(axum::http::StatusCode::BAD_GATEWAY);
+        return Err(ApiError::new(status, message));
+    }
+    Ok(ok(waiting(&app).await))
 }
 
 /// What the Турбо's plan needs of an installed character.
@@ -220,11 +310,12 @@ async fn asked(app: &App, which: &Which) -> Result<(Value, Option<String>), ApiE
 
 /// The Турбо's plan; none while it is away or when it does not know the plan (an older one: 404).
 async fn plan_of(remote: &RemoteHelper, request: &Value) -> Option<Value> {
-    let response = crate::utils::http::client()
+    let request = crate::utils::http::client()
         .post(format!("{}/home/v1/character/plan", remote.base().trim_end_matches('/')))
         .bearer_auth(remote.credential())
         .json(request)
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(15));
+    let response = to_turbo(request)
         .send()
         .await
         .map_err(|error| tracing::info!(target: "home", "the voice's plan from the Турбо: {error}"))
@@ -316,19 +407,24 @@ mod tests {
     use crate::helpers::tests::{contract, KEY};
     use crate::helpers::{AddInput, HelperKind};
 
-    /// The Турбо as the centre reaches it: its status, the plan it answers (404 — an older one), what it was told.
+    /// The Турбо as the centre reaches it: its status, the plan it answers (404 — an older one), what it was told; the
+    /// voice waiting there, the owner's answers it took and the languages it was asked in.
     #[derive(Default)]
     struct Turbo {
         url: String,
         old: std::sync::atomic::AtomicBool,
         asked: Mutex<Vec<Value>>,
         told: Mutex<Vec<Value>>,
+        waiting: Mutex<Value>,
+        answers: Mutex<Vec<Value>>,
+        languages: Mutex<Vec<Option<String>>>,
     }
 
     async fn turbo() -> Arc<Turbo> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let turbo = Arc::new(Turbo { url: format!("http://{}", listener.local_addr().unwrap()), ..Turbo::default() });
         let (plans, tells) = (turbo.clone(), turbo.clone());
+        let (looks, answers) = (turbo.clone(), turbo.clone());
         let router = Router::new()
             .route("/home/v1/status", get(|| async { axum::Json(contract("mac", &[("voice", false)])) }))
             .route(
@@ -360,6 +456,30 @@ mod tests {
                         axum::Json(json!({ "character": body["id"] }))
                     }
                 }),
+            )
+            .route(
+                "/home/v1/voice/pending",
+                get(move |headers: axum::http::HeaderMap| {
+                    let turbo = looks.clone();
+                    async move {
+                        let language = headers.get("accept-language").and_then(|value| value.to_str().ok());
+                        turbo.languages.lock().unwrap().push(language.map(str::to_string));
+                        axum::Json(json!({ "pending": turbo.waiting.lock().unwrap().clone(), "computer": "Mac" }))
+                    }
+                })
+                .post(move |axum::Json(body): axum::Json<Value>| {
+                    let turbo = answers.clone();
+                    async move {
+                        turbo.answers.lock().unwrap().push(body);
+                        let mut waiting = turbo.waiting.lock().unwrap();
+                        if waiting.is_null() {
+                            let refused = json!({ "code": "conflict", "message": "Голос уже не ждёт." });
+                            return Err((StatusCode::CONFLICT, axum::Json(refused)));
+                        }
+                        *waiting = Value::Null;
+                        Ok(axum::Json(json!({ "pending": null, "computer": "Mac" })))
+                    }
+                }),
             );
         tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         turbo
@@ -367,6 +487,16 @@ mod tests {
 
     /// The centre (a station's gateway) with Артур installed and chosen, its Турбо on the line; its feed when given.
     async fn centre(dir: &std::path::Path, feed: Option<&str>) -> (Arc<App>, Arc<Turbo>) {
+        let app = station(dir, feed).await;
+        let turbo = turbo().await;
+        let add =
+            AddInput { url: turbo.url.clone(), key: KEY.into(), kind: Some(HelperKind::Own), ..AddInput::default() };
+        app.helpers.add(add, None).await.unwrap();
+        (app, turbo)
+    }
+
+    /// A station's gateway with Артур installed and chosen, no Турбо in its home yet; its feed when given.
+    async fn station(dir: &std::path::Path, feed: Option<&str>) -> Arc<App> {
         let text = |sub: &str| dir.join(sub).to_string_lossy().into_owned();
         let env = Env::from_pairs([
             ("STATE_DIR", String::new()),
@@ -380,11 +510,7 @@ mod tests {
         write_arthur(&app.config.plugins.packages_dir, &arthur_manifest("1.2.0"));
         let body = crate::characters::ChooseBody { voice: Some(false), ..Default::default() };
         app.characters.choose("arthur:arthur", body, false, None).await.unwrap();
-        let turbo = turbo().await;
-        let add =
-            AddInput { url: turbo.url.clone(), key: KEY.into(), kind: Some(HelperKind::Own), ..AddInput::default() };
-        app.helpers.add(add, None).await.unwrap();
-        (app, turbo)
+        app
     }
 
     fn key(app: &App, grants: &[&str]) -> String {
@@ -393,11 +519,26 @@ mod tests {
     }
 
     async fn send(app: &Arc<App>, method: &str, uri: &str, key: &str, body: Value) -> (StatusCode, Value) {
-        let request = Request::builder()
+        send_in(app, method, uri, key, body, None).await
+    }
+
+    /// [`send`] from a panel in a language (`Accept-Language`).
+    async fn send_in(
+        app: &Arc<App>,
+        method: &str,
+        uri: &str,
+        key: &str,
+        body: Value,
+        language: Option<&str>,
+    ) -> (StatusCode, Value) {
+        let mut request = Request::builder()
             .method(method)
             .uri(uri)
             .header("content-type", "application/json")
             .header("authorization", key);
+        if let Some(language) = language {
+            request = request.header("accept-language", language);
+        }
         let mut request = request.body(HttpBody::from(body.to_string())).unwrap();
         request.extensions_mut().insert(ConnectInfo(std::net::SocketAddr::new("192.168.1.20".parse().unwrap(), 5000)));
         let response = crate::app::router(app.clone()).oneshot(request).await.unwrap();
@@ -514,5 +655,84 @@ mod tests {
         chosen.insert("arthur:arthur".into(), "voxcpm".into());
         app.settings.set(&HOME_VOICE_ENGINES, &chosen, None).unwrap();
         assert_eq!(of_home(&app).unwrap()["engine"], "voxcpm");
+    }
+
+    /// Clean-path check 19.11: «Голос ждёт» lived only on the computer's own page. The centre shows any panel of the
+    /// home the voice waiting on its Турбо (`GET /api/v1/home/voice/pending`, asked in the panel's language so the
+    /// reason comes back in it) and passes the owner's answer there (`POST`, with the right to the voices); the Турбо's
+    /// refusal comes back in its words. A computer that is the centre answers its own waiting voice itself. With no
+    /// Турбо nothing waits, and an answer has nowhere to go.
+    #[tokio::test]
+    async fn the_centre_shows_the_voice_waiting_on_its_turbo_and_passes_the_owners_answer_there() {
+        const PENDING: &str = "/api/v1/home/voice/pending";
+        let dir = tempfile::tempdir().unwrap();
+        let (app, turbo) = centre(dir.path(), None).await;
+        let (viewer, owner) = (key(&app, &["station.view"]), key(&app, &["station.view", "models.manage"]));
+
+        let (status, view) = send(&app, "GET", PENDING, &viewer, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{view}");
+        // The Турбо by its entry here and its own name.
+        let entry = app.helpers.views().into_iter().next().unwrap().id;
+        assert_eq!((&view["turbo"]["id"], &view["turbo"]["up"]), (&json!(entry), &json!(true)), "{view}");
+        assert_eq!(view["turbo"]["name"], "Турбо mac", "{view}");
+        assert_eq!(view["pending"], Value::Null, "nothing waits there: {view}");
+
+        // A voice waits on the Турбо: seen through the centre, the Турбо asked in the panel's language.
+        let waiting = json!({
+            "modelId": "own:c-arthur-arthur-omnivoice", "state": "tight", "title": "Артур",
+            "memory": { "kind": "short", "freeMb": 2048, "needMb": 5120 },
+            "reason": "Memory is low: 2,0 GB is free, but about 5,0 GB is needed"
+        });
+        *turbo.waiting.lock().unwrap() = waiting.clone();
+        let (status, view) = send_in(&app, "GET", PENDING, &viewer, Value::Null, Some("en-GB,en;q=0.9")).await;
+        assert_eq!((status, &view["pending"]), (StatusCode::OK, &waiting), "{view}");
+        assert_eq!(turbo.languages.lock().unwrap().last().cloned().flatten().as_deref(), Some("en"));
+
+        // The answer takes the right to the voices; it goes to the Турбо, and what waits now comes back.
+        let (status, _) = send(&app, "POST", PENDING, &viewer, json!({ "answer": "anyway" })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(turbo.answers.lock().unwrap().is_empty(), "a viewer's answer never reaches the Турбо");
+        let (status, view) = send(&app, "POST", PENDING, &owner, json!({ "answer": "anyway" })).await;
+        assert_eq!((status, &view["pending"]), (StatusCode::OK, &Value::Null), "{view}");
+        assert_eq!(view["turbo"]["id"], json!(entry), "{view}");
+        assert_eq!(turbo.answers.lock().unwrap().clone(), [json!({ "answer": "anyway" })]);
+        // The Турбо refuses — nothing waits there any more: its status, its words.
+        let (status, refused) = send(&app, "POST", PENDING, &owner, json!({ "answer": "cancel" })).await;
+        assert_eq!((status, &refused), (StatusCode::CONFLICT, &json!("Голос уже не ждёт.")));
+
+        // A computer as the home's centre: the voice waiting on it is its own, answered here and not passed on.
+        #[cfg(feature = "pc")]
+        {
+            use crate::settings::definitions::{PendingWait, VoicePending, VOICE_PENDING};
+            let own = VoicePending {
+                model_id: "piper-denis".into(),
+                voice_id: None,
+                wait_for: PendingWait { kind: "file".into(), id: "piper-denis".into() },
+                anyway: false,
+                state: "failed".into(),
+                reason: Some("файл голоса не скачался".into()),
+                memory: None,
+                recipe: None,
+                since: "2026-11-19T10:00:00Z".into(),
+            };
+            app.settings.set(&VOICE_PENDING, &own, None).unwrap();
+            let (_, view) = send(&app, "GET", PENDING, &viewer, Value::Null).await;
+            assert_eq!((&view["turbo"], &view["pending"]["modelId"]), (&Value::Null, &json!("piper-denis")), "{view}");
+            assert_eq!(view["pending"]["reason"], "файл голоса не скачался");
+            let (status, view) = send(&app, "POST", PENDING, &owner, json!({ "answer": "cancel" })).await;
+            assert_eq!((status, &view["pending"]), (StatusCode::OK, &Value::Null), "{view}");
+            assert!(app.models.pending().is_none(), "forgotten here");
+            assert_eq!(turbo.answers.lock().unwrap().len(), 2, "the centre's own voice is not the Турбо's");
+        }
+
+        // No Турбо in the home: nothing waits, an answer has nowhere to go.
+        let lone = tempfile::tempdir().unwrap();
+        let app = station(lone.path(), None).await;
+        let owner = key(&app, &["station.view", "models.manage"]);
+        let (status, view) = send(&app, "GET", PENDING, &owner, Value::Null).await;
+        assert_eq!((status, &view), (StatusCode::OK, &json!({ "turbo": null, "pending": null })));
+        let (status, refused) = send_in(&app, "POST", PENDING, &owner, json!({ "answer": "anyway" }), Some("ru")).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+        assert_eq!(refused, "Компьютер с голосом не на связи — ответить ему пока нельзя.");
     }
 }

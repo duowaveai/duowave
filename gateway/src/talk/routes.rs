@@ -186,6 +186,8 @@ async fn works(
     Query(query): Query<HashMap<String, String>>,
 ) -> ApiResult<Vec<WorkItem>> {
     caller.permitted(&use_of(CapabilityName::Plugins))?;
+    // A work whose run ended without its end reaching the record is settled before it is shown.
+    app.talk.settle();
     let shelf = Shelf::new(&app, &caller);
     if query.get("waiting").is_some_and(|waiting| waiting == "1" || waiting == "true") {
         return Ok(ok(app.talk.waiting().into_iter().map(|work| shelf.item(work)).collect()));
@@ -225,6 +227,7 @@ async fn works(
 
 async fn work(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<WorkItem> {
     caller.permitted(&use_of(CapabilityName::Plugins))?;
+    app.talk.settle();
     let work = app.talk.works().get(&id).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))?;
     Ok(ok(Shelf::new(&app, &caller).item(work)))
 }

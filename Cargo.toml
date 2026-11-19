@@ -4,11 +4,12 @@ resolver = "2"
 members = ["gateway"]
 # yam: YAM's own repository, checked out there by the release to pack the station's package (release.yml,
 # yam-registry.yml) — a package of its own, not a member. apps/own-server: the «VPN» app's program with shoes inside,
-# a project of its own so that shoes' dependencies never reach the gateway's builds.
-exclude = ["desktop/src-tauri", "yam", "apps/own-server"]
+# a project of its own so that shoes' dependencies never reach the gateway's builds; apps/youtube-lite: «YouTube
+# Music» on the station, a small program of its own in the same way.
+exclude = ["desktop/src-tauri", "yam", "apps/own-server", "apps/youtube-lite"]
 
 [workspace.package]
-version = "0.16.0"
+version = "0.16.1"
 edition = "2021"
 license = "Apache-2.0"
 publish = false

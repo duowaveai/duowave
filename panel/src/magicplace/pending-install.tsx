@@ -23,6 +23,8 @@ export interface PendingInstall {
     at: number;
     /** Что идёт, когда центр готов: добавляю набор у центра, читаю его там. */
     step?: 'adding' | 'reading';
+    /** Колонка молчит или не прочла набор дольше `READ_LIMIT_MS`: повтор идёт сам, реже, — «поставлю, как ответит». */
+    late?: boolean;
     /** Не вышло — словами; выбор при этом остаётся. */
     problem?: string;
 }
@@ -30,8 +32,10 @@ export interface PendingInstall {
 const KEY = 'install-pending';
 /** Центр молчит (поднимается после переноса) — повтор через столько. */
 const RETRY_MS = 4000;
-/** Ленту у центра ждём не дольше: дальше — словами, выбор остаётся. */
+/** Столько ждём колонку часто; дальше — реже и со словами «поставлю, как ответит», но сами (замечание 3 теста 19.11). */
 const READ_LIMIT_MS = 3 * 60_000;
+/** Повтор, когда колонка молчит дольше `READ_LIMIT_MS`. */
+const LATE_RETRY_MS = 15_000;
 
 let pending: PendingInstall | null = (() => {
     try {
@@ -92,6 +96,40 @@ export const centreAway = (e: unknown): boolean =>
 
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 
+/** Разбудить ожидание доставки: «Попробовать сейчас». */
+let wake: (() => void) | null = null;
+/** Пауза доставки, которую «Попробовать сейчас» обрывает. */
+const nap = (ms: number) =>
+    new Promise<void>((done) => {
+        const id = setTimeout(() => ((wake = null), done()), ms);
+        wake = () => (clearTimeout(id), (wake = null), done());
+    });
+
+/** Добавления, что идут сейчас: та же ссылка у того же центра — один запрос, а не два. */
+const adding = new Map<string, Promise<unknown>>();
+
+/**
+ * Свой источник у центра (`station` — ключ колонки у помощника; без него — свой шлюз), один запрос на ссылку и центр
+ * сразу: приглашение (screens/onb/invite-state.ts) и доставка выбора ниже добавляют одну и ту же ссылку, а колонка
+ * сразу после установки отвечает на добавление минуту и дольше — второй такой же запрос она прочла бы набор заново
+ * (замечание 3 теста 19.11). Уже добавлен (409) — тоже готово. Очередь дома (202) — правка дойдёт сама.
+ */
+export async function addSourceAt(station: string | undefined, url: string): Promise<void> {
+    const key = `${station ?? 'own'} ${url}`;
+    let going = adding.get(key);
+    if (!going) {
+        going = installApi(station)
+            .addPackageSource(url)
+            .catch((e: unknown) => {
+                if (e instanceof ApiError && e.status === 409 && /уже добавлен|already added/i.test(e.message)) return;
+                throw e;
+            })
+            .finally(() => adding.delete(key));
+        adding.set(key, going);
+    }
+    await going;
+}
+
 /** Идёт ли уже доставка (одна на пульт). */
 let running = false;
 
@@ -104,19 +142,23 @@ async function land(station: string | undefined): Promise<void> {
     const at = installApi(station);
     const started = Date.now();
     const still = () => pending?.id === chosen.id && pending.at === chosen.at;
+    // Колонка молчит или долго читает набор — не сдаёмся: дальше реже и со словами, выбор догоняет её сам.
+    const late = (): boolean => {
+        const over = Date.now() - started > READ_LIMIT_MS;
+        if (over && !pending?.late) patch({ late: true });
+        return over;
+    };
     try {
-        patch({ step: 'adding', problem: undefined });
+        patch({ step: 'adding', problem: undefined, late: false });
         for (;;) {
             if (!still()) return;
             try {
                 // Очередь дома (202) — правка дойдёт сама; дальше всё равно ждём персонажа в каталоге центра.
-                await at.addPackageSource(chosen.url);
+                await addSourceAt(station, chosen.url);
                 break;
             } catch (e) {
-                if (e instanceof ApiError && e.status === 409 && /уже добавлен|already added/i.test(e.message)) break;
-                if (!centreAway(e)) return patch({ step: undefined, problem: t.pendingAddFailed(problemOf(e)) });
-                if (Date.now() - started > READ_LIMIT_MS) return patch({ step: undefined, problem: t.pendingAway });
-                await sleep(RETRY_MS);
+                if (!centreAway(e)) return patch({ step: undefined, late: false, problem: t.pendingAddFailed(problemOf(e)) });
+                await nap(late() ? LATE_RETRY_MS : RETRY_MS);
             }
         }
         patch({ step: 'reading' });
@@ -126,8 +168,7 @@ async function land(station: string | undefined): Promise<void> {
             const view = await at.packagesCatalog().catch(() => null);
             entry = view?.packages.find((item) => item.id === chosen.id);
             if (entry) break;
-            if (Date.now() - started > READ_LIMIT_MS) return patch({ step: undefined, problem: t.pendingNotRead });
-            await sleep(2500);
+            await nap(late() ? LATE_RETRY_MS : 2500);
         }
         if (!still()) return;
         // Уже стоит у центра (перенос взял его с собой) — ставить нечего.
@@ -155,7 +196,8 @@ export function PendingInstallRunner() {
     return null;
 }
 
-/** «Ещё раз» после слов о неудаче: снова к центру. */
+/** «Ещё раз» после отказа — снова к центру; «Попробовать сейчас», пока ждём колонку, — не дожидаясь паузы. */
 export function retryPending(): void {
-    patch({ problem: undefined, step: undefined });
+    if (pending?.late && !pending.problem) return void wake?.();
+    patch({ problem: undefined, step: undefined, late: false });
 }

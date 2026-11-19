@@ -27,8 +27,8 @@ use crate::config::{Config, TtsProvider, UniproxyMode};
 use crate::core::events::{Actor, EventBus, GatewayEvent};
 use crate::platform::http::ApiError;
 use crate::settings::definitions::{
-    PanelMode, PendingWait, VoicePending, VoiceRecipe, ASR_MODEL, LANGUAGE, MODE, VOICE_CHOICE, VOICE_PENDING,
-    VOICE_PROVIDER,
+    MemoryTight, PanelMode, PendingWait, VoicePending, VoiceRecipe, ASR_MODEL, LANGUAGE, MODE, VOICE_CHOICE,
+    VOICE_PENDING, VOICE_PROVIDER,
 };
 use crate::settings::SettingsService;
 use crate::speech::asr::local::catalog as local_catalog;
@@ -296,6 +296,47 @@ pub struct OwnDetails {
     pub samples: usize,
     pub engine_title: String,
     pub serving: bool,
+    /// Other models of own voices installed here it can be imprinted for from its own recordings, in about a
+    /// minute and without a new recording — offered always, not only when its own model is gone (test 19.11,
+    /// remark 11). A model it already has a twin for (a voice of the same name made with it) is not offered.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub retake: Vec<Retake>,
+    /// Another model is here, but its recordings did not keep what a new imprint needs: say so, record anew.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retake_none: Option<String>,
+}
+
+/// A model an own voice can be imprinted for from its recordings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Retake {
+    pub engine: String,
+    pub title: String,
+}
+
+/// What an own voice can be re-taken for here (`OwnDetails::retake`): the ready models of own voices other than its
+/// own and those its twins of the same name already use; or, when it keeps nothing to imprint from, why not.
+fn retakes(voice: &OwnVoiceCard, voices: &[OwnVoiceCard], engines: &[EngineState]) -> (Vec<Retake>, Option<String>) {
+    if voice.origin.as_deref() == Some("package") {
+        return (Vec::new(), None);
+    }
+    let twins: Vec<&str> =
+        voices.iter().filter(|other| other.name == voice.name).map(|other| other.engine.as_str()).collect();
+    let others: Vec<Retake> = engines
+        .iter()
+        .filter(|engine| engine.status == "ready" && !twins.contains(&engine.id.as_str()))
+        .map(|engine| Retake { engine: engine.id.clone(), title: engine.title.clone() })
+        .collect();
+    if others.is_empty() || voice.reimprint {
+        return (if voice.reimprint { others } else { Vec::new() }, None);
+    }
+    let names: Vec<&str> = others.iter().map(|other| other.title.as_str()).collect();
+    (
+        Vec::new(),
+        Some(crate::tr!(
+            "Для {models} этот голос не переснять: записи не сохранились. Запишите голос заново.",
+            models = names.join(", ")
+        )),
+    )
 }
 
 /// A voice card as the panel sees it: the catalog row with the world laid over it.
@@ -435,7 +476,11 @@ pub struct PendingView {
     /// What the install does now, in words — the download's megabytes and speed, «скачивание стояло — повторяю» (п. 66).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Why; tight memory — written from `memory` in the reader's language.
     pub reason: Option<String>,
+    /// Tight memory as numbers (MB): the panel may write it its own way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryTight>,
     pub since: String,
 }
 
@@ -467,8 +512,10 @@ impl VoiceRequest {
     }
 }
 
-/// What a choice came to: the voice speaks from the next answer, or it is pending until what it needs is there.
+/// What a choice came to: the voice speaks from the next answer, or it is pending until what it needs is there. An
+/// answer of one choice, never kept: its size (the pending voice's tight memory as numbers) does not matter.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Chosen {
     Active(Activated),
     Pending(PendingView),
@@ -1021,6 +1068,7 @@ impl ModelsService {
                 let id = format!("{OWN_PREFIX}{}", voice.id);
                 let (state, progress, reason, needs) = engine_state(voice, &engines, job.as_ref());
                 let character = voice.origin.as_deref() == Some("package");
+                let (retake, retake_none) = retakes(voice, &own_voices, &engines);
                 TtsCard {
                     id: id.clone(),
                     engine: voice.engine.clone(),
@@ -1033,6 +1081,8 @@ impl ModelsService {
                         samples: voice.samples,
                         engine_title: voice.engine_title.clone(),
                         serving: voice.serving,
+                        retake,
+                        retake_none,
                     }),
                     title: voice.name.clone(),
                     description: if character {
@@ -1567,12 +1617,21 @@ impl ModelsService {
             anyway,
             state: "waiting".into(),
             reason: None,
+            memory: None,
             recipe,
             since: now_iso(),
         };
         self.settings.set(&VOICE_PENDING, &pending, actor)?;
         tracing::info!("tts: {} waits for its {} {}", pending.model_id, pending.wait_for.kind, pending.wait_for.id);
         Ok(pending_view(&pending, None))
+    }
+
+    /// The pending voice as the panel sees it, without the catalog: the home's centre asks it often
+    /// (`/home/v1/voice/pending`, so that a voice waiting for the owner is seen from any panel).
+    pub fn pending(&self) -> Option<PendingView> {
+        let job = self.links.own_voices.as_ref().and_then(|lab| lab.job());
+        let downloads: Vec<DownloadState> = lock(&self.downloads).iter().map(|download| download.state()).collect();
+        self.pending_view(job.as_ref(), &downloads)
     }
 
     /// The card of the voice waiting for its engine or file, if one waits.
@@ -1777,6 +1836,11 @@ impl ModelsService {
         if error.status == axum::http::StatusCode::PRECONDITION_REQUIRED {
             pending.state = "tight".into();
             pending.reason = Some(error.message.clone());
+            pending.memory = error
+                .errors
+                .as_ref()
+                .and_then(|errors| errors.get("memory"))
+                .and_then(|memory| serde_json::from_value(memory.clone()).ok());
             tracing::info!("tts: the pending {} waits for «всё равно»: {}", pending.model_id, error.message);
             let _ = self.settings.set(&VOICE_PENDING, &pending, None);
         } else {
@@ -1788,6 +1852,7 @@ impl ModelsService {
         tracing::warn!("tts: the pending {} is not switched on: {why}", pending.model_id);
         pending.state = "failed".into();
         pending.reason = Some(why);
+        pending.memory = None;
         let _ = self.settings.set(&VOICE_PENDING, &pending, None);
     }
 
@@ -2425,6 +2490,9 @@ fn needed(needs: &VoiceNeeds, installing: bool) -> ApiError {
 }
 
 fn pending_view(pending: &VoicePending, progress: Option<u32>) -> PendingView {
+    // Tight memory is said from its numbers, in the language of whoever reads now — not in the words of the moment it
+    // was found (clean-path check 19.11).
+    let memory = pending.memory.filter(|_| pending.state == "tight");
     PendingView {
         model_id: pending.model_id.clone(),
         voice_id: pending.voice_id.clone(),
@@ -2432,7 +2500,8 @@ fn pending_view(pending: &VoicePending, progress: Option<u32>) -> PendingView {
         state: pending.state.clone(),
         progress,
         detail: None,
-        reason: pending.reason.clone(),
+        reason: memory.as_ref().map(crate::voice_lab::memory_policy::words).or_else(|| pending.reason.clone()),
+        memory,
         since: pending.since.clone(),
     }
 }
@@ -2468,6 +2537,52 @@ fn engine_state(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_own_voice_offers_a_retake_for_every_other_model_here_and_says_why_when_it_cannot() {
+        let voice = |id: &str, name: &str, engine: &str, reimprint: bool, origin: Option<&str>| OwnVoiceCard {
+            id: id.into(),
+            name: name.into(),
+            engine: engine.into(),
+            engine_title: engine.into(),
+            engine_license: String::new(),
+            created_at: "2026-11-19T10:00:00.000Z".into(),
+            ref_seconds: Some(60.0),
+            samples: 3,
+            ready: true,
+            serving: true,
+            reimprint,
+            origin: origin.map(str::to_string),
+        };
+        let engine = |id: &str, status: &str| EngineState {
+            id: id.into(),
+            title: id.to_uppercase(),
+            status: status.into(),
+            reason: None,
+            download_mb: 0,
+            disk_mb: 0,
+        };
+        let engines = [engine("f5", "ready"), engine("cosyvoice3", "ready"), engine("omnivoice", "missing")];
+        let mine = voice("v1", "Мой", "f5", true, None);
+        let (retake, none) = retakes(&mine, std::slice::from_ref(&mine), &engines);
+        assert_eq!(
+            retake.iter().map(|r| r.engine.as_str()).collect::<Vec<_>>(),
+            ["cosyvoice3"],
+            "only another ready model"
+        );
+        assert!(none.is_none());
+        // A twin of the same name already made with that model: nothing more to offer.
+        let twin = voice("v2", "Мой", "cosyvoice3", true, None);
+        let (retake, _) = retakes(&mine, &[mine.clone(), twin], &engines);
+        assert!(retake.is_empty());
+        // Nothing kept to imprint from: said why.
+        let bare = voice("v3", "Старый", "f5", false, None);
+        let (retake, none) = retakes(&bare, std::slice::from_ref(&bare), &engines);
+        assert!(retake.is_empty() && none.is_some_and(|why| why.contains("COSYVOICE3")));
+        // A character's voice is the character's: no retake offered.
+        let character = voice("c-p-x-f5", "Лена", "f5", true, Some("package"));
+        assert_eq!(retakes(&character, std::slice::from_ref(&character), &engines), (Vec::new(), None));
+    }
+
     use super::*;
     use std::path::{Path, PathBuf};
 
@@ -3298,7 +3413,9 @@ mod tests {
         assert_eq!(json["description"], "Ваш голос · OmniVoice · отпечаток от 6 ноября");
         assert_eq!(
             json["own"],
-            json!({"id": "v1", "createdAt": "2026-11-06T10:00:00.000Z", "refSeconds": 12.5, "samples": 1, "engineTitle": "OmniVoice", "serving": true})
+            json!({"id": "v1", "createdAt": "2026-11-06T10:00:00.000Z", "refSeconds": 12.5, "samples": 1, "engineTitle": "OmniVoice", "serving": true,
+                   "retake": [{"engine": "cosyvoice3", "title": "CosyVoice 3"}]}),
+            "another model is here: a retake from its recordings is offered"
         );
         assert_eq!((card.installed, card.active), (true, false));
 

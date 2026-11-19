@@ -1933,6 +1933,14 @@ impl crate::plugins::controller::HomeLink for AbilityLink {
     fn offered(&self) -> bool {
         self.helpers.upgrade().is_some_and(|helpers| matches!(helpers.offer(self.ability), Some(Giver::Helper(_))))
     }
+
+    fn name(&self) -> Option<String> {
+        now::giver_name(&*self.helpers.upgrade()?, self.ability)
+    }
+
+    fn why_not(&self) -> Option<String> {
+        now::why_not(&*self.helpers.upgrade()?, self.ability)
+    }
 }
 
 /// `/health`: the old `homeServer` of the pair's door, and the helpers.

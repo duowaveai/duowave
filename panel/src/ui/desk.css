@@ -666,17 +666,17 @@ html[data-theme='dark'] .widget.music { background: color-mix(in srgb, var(--mus
 .desk-canvas:active { cursor: grabbing; }
 .desk-plane { position: absolute; left: 50%; top: 50%; width: 0; height: 0; transform-origin: 0 0; cursor: default; }
 .desk-scene-spot { position: absolute; }
-.desk-columns { position: absolute; display: flex; flex-direction: column; gap: 16px; }
+/* «Новый виджет» — своим местом на поле: там, где встанет следующий виджет (screens/desk-places.ts). */
+.desk-plane > .desk-add-spot { position: absolute; }
 /* Под сценой — виджеты, что просят встать там (`under`, «Лента»): во всю ширину сцены. */
 .desk-under { position: absolute; display: flex; flex-direction: column; gap: 16px; will-change: opacity; }
 .desk-slot { position: relative; }
 .desk-placed { position: absolute; }
-/* Столбцы и поставленные виджеты — всегда своим слоем. В окне приложения (WebKit) столбцы у колонки прыгали вниз на
+/* Виджеты на поле — всегда своим слоем. В окне приложения (WebKit) столбцы у колонки прыгали вниз на
    долю точки и обратно, пока на сцене горели слух и голос (владелец, 11.11, масштаб стола 86 %): похоже, движок то
    выносит столбец в отдельный слой, то возвращает, и при дробном масштабе тот встаёт на пиксели иначе. Слой, который
    не меняется, не прыгает. Подсказка — opacity, а не transform: слой с will-change: transform Chrome не перерисовывает
    при смене масштаба стола, и текст в нём мылится. */
-.desk-columns,
 .desk-placed { will-change: opacity; }
 /* Свой слой — своё наложение: виджет с открытым меню встаёт над соседями, чтобы меню не ушло под них. */
 .desk-placed:has(.widget-menu) { z-index: 16; }
@@ -703,6 +703,10 @@ html[data-theme='dark'] .widget.music { background: color-mix(in srgb, var(--mus
 }
 .desk-placed:hover .desk-resize,
 .desk-placed.is-moving .desk-resize { opacity: 1; }
+/* Поверх стола у правого края — то, что не на поле и места у виджетов не берёт (карточка Турбо, screens/dashboard.tsx). */
+.desk-float { position: absolute; top: 16px; right: 20px; z-index: 7; display: flex; flex-direction: column; align-items: flex-end; gap: 10px; pointer-events: none; }
+.desk-float:empty { display: none; }
+.desk-float > * { pointer-events: auto; }
 .desk-canvas-banner { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); z-index: 6; width: min(560px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 10px; }
 /* Поле, опущенное под баннер (desk-canvas.tsx, push): ходит плавно, когда баннер пришёл или ушёл. */
 .desk-push { position: absolute; inset: 0; transition: transform 0.25s ease; }
@@ -1481,6 +1485,8 @@ html[data-theme='dark'] .voice-strip { box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4
     .waiting-pill-dock { order: -1; min-height: 28px; padding: 0 12px; font-size: 12px; }
 }
 .waiting-pill-side { align-self: flex-start; margin-top: 6px; }
+/* Голос ждёт решения владельца (voice/pending-voice.tsx): та же пилюля, с точкой «требует внимания». */
+.waiting-pill.is-attention { display: inline-flex; align-items: center; gap: 8px; border-color: var(--dot-offline); }
 .dock-talk.is-listening::after { content: ''; position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--bar-own); animation: talk-ping 1.3s ease-out infinite; pointer-events: none; }
 html[data-look='minimal'] .talk-btn.is-held:disabled { background: var(--chip-bg); color: var(--sub); box-shadow: none; opacity: 1; }
 
@@ -1781,3 +1787,104 @@ html[data-theme='dark'] .draft-slot { border-color: #3a3734; }
 /* Выбор ждёт колонку (п. 63): не кнопка, только ход. */
 span.waiting-pill { display: inline-flex; align-items: center; cursor: default; }
 span.waiting-pill:hover { border-color: var(--glass-border); }
+
+/* ─── Карточка Турбо поверх стола, точка у колонки, свёрнутые подписи (баг-лист 19.11) ─── */
+/* На свободном столе карточка Турбо не стоит рядом с колонкой, а висит у правого края поверх поля: места у виджетов не
+   берёт, не двигается с полем. Крестик в углу закрывает; закрыта — у колонки справа точка-молния. */
+.desk-float-card { position: relative; width: 340px; max-width: calc(100vw - 40px); }
+.desk-float-card .turbo-side { max-width: none; }
+.desk-float-card .turbo-link { display: none; }
+.desk-float-card .turbo-slot { background: var(--bg); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12); }
+.desk-float-close {
+    position: absolute;
+    top: -8px;
+    right: -8px;
+    z-index: 1;
+    width: 24px;
+    height: 24px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--strong-bg);
+    color: var(--text);
+    box-shadow: 0 0 0 1px var(--glass-border), 0 2px 8px rgba(0, 0, 0, 0.18);
+    cursor: pointer;
+}
+.desk-float-close:hover { background: var(--hover-bg); }
+.desk-float-close:focus-visible { outline: 2px solid var(--bar-agent); outline-offset: 2px; }
+.dash-turbo-dot {
+    position: absolute;
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--helper-bg);
+    color: #c4bcff;
+    box-shadow: 0 0 0 1.5px var(--bar-agent), 0 6px 18px rgba(91, 33, 182, 0.3);
+    cursor: pointer;
+}
+.dash-turbo-dot.is-off,
+.dash-turbo-dot.is-empty { background: var(--strong-bg); color: var(--sub); box-shadow: 0 0 0 1.5px var(--bar-off); }
+.dash-turbo-dot.is-empty { box-shadow: none; outline: 1.5px dashed var(--bar-off); }
+.dash-turbo-dot:hover { transform: scale(1.08); }
+.dash-turbo-dot:focus-visible { outline: 2px solid var(--bar-agent); outline-offset: 3px; }
+/* Слова-активаторы у «Слышит» (замечание 11 теста 19.11): включено слово — лайм, только Алиса — серый. */
+.dash-word-dot {
+    position: absolute;
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--strong-bg);
+    color: var(--text);
+    box-shadow: 0 0 0 1.5px var(--bar-own, #b6f36a);
+    cursor: pointer;
+}
+.dash-word-dot.is-off { color: var(--sub); box-shadow: 0 0 0 1.5px var(--bar-off); }
+.dash-word-dot:hover { transform: scale(1.08); }
+.dash-word-dot:focus-visible { outline: 2px solid var(--bar-off); outline-offset: 3px; }
+
+/* Подписи под колонкой свёрнуты: значок «Поток запросов»; нажали — полоса и «Если Турбо уснёт» поверх стола, под значком. */
+.home-fold { width: 22px; height: 22px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--sub); cursor: pointer; }
+.home-fold:hover { background: var(--hover-bg); color: var(--text); }
+.home-notes { position: relative; display: flex; justify-content: center; margin: 6px auto 0; }
+.home-notes-chip { display: inline-flex; align-items: center; gap: 8px; height: 28px; padding: 0 12px; border: 0; border-radius: 999px; background: var(--track); color: var(--text); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; }
+.home-notes-chip:hover,
+.home-notes.is-open .home-notes-chip { background: var(--hover-bg); }
+.home-notes-dots { display: inline-flex; gap: 3px; }
+.home-notes-dots i { width: 7px; height: 7px; border-radius: 50%; }
+.home-notes-dots i.is-centre { background: #a3e635; }
+.home-notes-dots i.is-turbo { background: #8b7cff; }
+.home-notes-dots i.is-out { background: #f59e0b; }
+.home-notes-pop {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 17;
+    width: max-content;
+    max-width: 720px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 8px 10px;
+    border-radius: 16px;
+    background: var(--bg);
+    box-shadow: 0 0 0 1px var(--glass-border), 0 14px 40px rgba(0, 0, 0, 0.18);
+}
+.desk-scene-spot .home-notes-pop .home-strip { margin: 0; }
+.home-notes-pop .turbo-fall { margin: 0 auto; }
+.home-notes-keep { font-size: 12px; font-weight: 500; color: var(--sub); }
+/* Витрина под сценой заходит на её низ на 16 точек (UNDER_WIDE_OVERLAP, screens/desk-canvas.tsx) — на пустой низ кольца.
+   Полоса дома и значок «Поток запросов» стоят под кольцом: отступ снизу, чтобы витрина не ложилась на них. */
+.desk-scene-spot .home-strip,
+.desk-scene-spot .home-notes { margin-bottom: 16px; }

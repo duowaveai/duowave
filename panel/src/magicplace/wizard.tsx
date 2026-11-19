@@ -28,6 +28,7 @@ import {
 } from './wizard-state';
 import { usePendingInstall } from './pending-install';
 import { settleVoice, settlingLine, showSettling, useSettling } from './settling';
+import { VoiceWaitingPill, useVoiceAttention } from '../voice/pending-voice';
 import { isCallWord } from './filters';
 
 /**
@@ -621,7 +622,10 @@ export function InstallPill({ place }: { place: 'dock' | 'side' | 'onb' }) {
     const progress = installProgress();
     const waiting = usePendingInstall();
     const settling = useSettling();
+    const voiceAsks = useVoiceAttention();
     const t = tr.wizard;
+    // Голос ждёт ответа владельца (проверка начисто 19.11): вопрос важнее хода — «… ждёт вашего решения».
+    if (voiceAsks && (!progress || progress.hidden)) return <VoiceWaitingPill place={place} />;
     // Персонаж стоит, голос ещё ставится (п. 67): мастер кончил или закрыт — пилюля говорит ход, нажатие — окно хода.
     if (settling && (!progress || (progress.hidden && progress.finished)))
         return (

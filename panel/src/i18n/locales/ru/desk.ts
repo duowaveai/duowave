@@ -16,6 +16,8 @@ export default {
     lockDesk: 'Закрепить стол',
     unlockDesk: 'Открепить стол',
     rearrange: 'Расставить заново',
+    turboShow: 'Показать карточку Турбо',
+    turboHide: 'Скрыть карточку Турбо — вернуть её можно точкой у колонки',
     smaller: 'Мельче',
     zoomReset: 'Масштаб 100 %',
     bigger: 'Крупнее',

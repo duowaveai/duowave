@@ -1657,3 +1657,45 @@ async fn a_linked_helpers_bot_found_or_gone_through_the_bridge_is_news() {
     assert_eq!(contract_news(&mut heard), 1, "its bot gone");
     assert_eq!(messages(), (State::Off, "У Турбо не настроен бот Telegram".to_string()));
 }
+
+/// The clean-path check of 19.11: an app on the Турбо was said to be «off» whatever stopped it. The helpers say why no
+/// one gives an ability now, by the helper's name: asleep (off the line), not giving it to this home, not taken from it
+/// («Не брать у него…»), switched off — or that the home has none; nothing while one gives it. And who gives it.
+#[tokio::test]
+async fn the_helpers_say_by_name_why_nobody_gives_an_ability_now() {
+    use super::now::{giver_name, why_not};
+    let station = station(&[]);
+    assert_eq!(why_not(&station.helpers, Ability::Apps).as_deref(), Some("в доме нет Турбо, который это даёт"));
+
+    let mac = stand(contract("mac", ALL)).await;
+    station.put("mac", &mac.url, HelperKind::Home);
+    looks(&station, 1).await;
+    assert_eq!(why_not(&station.helpers, Ability::Apps), None, "on the line and giving");
+    assert_eq!(giver_name(&station.helpers, Ability::Apps).as_deref(), Some("Турбо mac"));
+
+    mac.set_away(true);
+    looks(&station, 2).await;
+    assert_eq!(
+        why_not(&station.helpers, Ability::Apps).as_deref(),
+        Some("Турбо mac не на связи — спит, выключен или без сети")
+    );
+    assert_eq!(giver_name(&station.helpers, Ability::Apps), None);
+
+    // On the line, giving this home no apps.
+    mac.set_away(false);
+    let no_apps: Vec<(&str, bool)> = ALL.iter().copied().filter(|(id, _)| *id != "apps").collect();
+    *mac.status.lock().unwrap() = contract("mac", &no_apps);
+    looks(&station, 1).await;
+    assert_eq!(why_not(&station.helpers, Ability::Apps).as_deref(), Some("Турбо mac не даёт этого вашему дому"));
+
+    *mac.status.lock().unwrap() = contract("mac", ALL);
+    station.change("mac", Change { without: Some(vec![Ability::Apps]), ..Change::default() });
+    looks(&station, 1).await;
+    assert_eq!(
+        why_not(&station.helpers, Ability::Apps).as_deref(),
+        Some("у Турбо mac это не берётся («Не брать у него…»)")
+    );
+
+    station.change("mac", Change { enabled: Some(false), without: Some(Vec::new()), ..Change::default() });
+    assert_eq!(why_not(&station.helpers, Ability::Apps).as_deref(), Some("Турбо mac выключен в «Доме»"));
+}

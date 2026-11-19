@@ -1,8 +1,10 @@
 // Свободный стол (docs/plans/desk.md, этап 3; макеты SpaceGateway, SpaceHelper): поле без краёв, колонка — в начале
 // координат, виджеты — где их поставили. Виджет перетаскивают за шапку и растягивают за угол; поле сдвигают
 // перетаскиванием фона и колесом, масштаб — кнопками, ⌘/Ctrl + колесом (щипок на тачпаде); мини-карта показывает,
-// что есть за краем, и ведёт туда. Ещё не переставленные виджеты стоят столбцами по сторонам от колонки. Колесо над
-// списком в виджете, который ещё есть куда листать, листает его, а не поле.
+// что есть за краем, и ведёт туда. У каждого виджета своё место (desk-places.ts): новый встаёт на первое свободное у
+// колонки — столбцами по сторонам — и дальше его держит. Колесо над списком в виджете, который ещё есть куда листать,
+// листает его, а не поле. Над полем, у правого края, — то, что висит поверх стола и места на нём не берёт (DeskFloat:
+// карточка Турбо).
 // Замок в углу закрепляет раскладку: виджеты не двигаются и не тянутся, поле не масштабируется и не тащится мышью, пункты
 // раскладки в меню виджетов не нажимаются. Смотреть стол колесом и тачпадом можно и у закреплённого (проверка начисто
 // 18.11: витрина была видна наполовину, а вниз не листалось); такой сдвиг не хранится — открыли стол снова, он как
@@ -11,13 +13,15 @@
 // каждой роли (shell/widgets.ts). Плашки над столом (баннер: «Готовлю слух», флешка…) опускают поле, пока видны: сцена
 // стоит под ними, а не за ними.
 
+import { createContext } from 'preact';
 import type { ComponentChildren } from 'preact';
-import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useContext, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 import { IconGrid, IconLock, IconMinus, IconPlus, IconUnlock } from '../icons';
 import { DeskActions, DeskLayout, DeskWidget, WidgetPlace } from '../shell/widgets';
 import type { WidgetMenu } from '../ui/widget';
 import { tr } from '../i18n';
+import { Laid, Rect, arrange, pushApart, underTop } from './desk-places';
 
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 1.6;
@@ -40,7 +44,10 @@ const GAP = 60;
 /** Между столбцами виджетов одной стороны и между виджетом и витриной под сценой. */
 const COLUMN_GAP = 40;
 const ROW_GAP = 16;
-/** Сколько точек виджет занимает, пока его не измерили. */
+/**
+ * Сколько точек виджет занимает, пока его не измерили; и не меньше этого ему ищут место: только что открытый виджет
+ * бывает ниже, чем станет (данные ещё идут), — в узкую щель он не встаёт, чтобы, дорастая, не толкать соседа.
+ */
 const GUESS_H = 200;
 /** Мельче этого стол сам не уменьшается, чтобы сцена с витриной влезли над доком. */
 const MIN_FIT = 0.7;
@@ -50,6 +57,16 @@ const BANNER_GAP = 16;
 interface Point {
     x: number;
     y: number;
+}
+
+/**
+ * Место над полем у правого края — для того, что висит поверх стола (карточка Турбо): оно не на столе, не двигается с
+ * полем и места у виджетов не берёт. Нет свободного стола (лента, столбец) — null: сцена рисует своё у себя.
+ */
+const DeskFloat = createContext<HTMLElement | null>(null);
+
+export function useDeskFloat(): HTMLElement | null {
+    return useContext(DeskFloat);
 }
 
 /** Сдвиг поля, пока его не трогали: колонка чуть выше середины окна. */
@@ -145,16 +162,42 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
     const [pan, setPan] = useState<Point>(layout.pan ?? startPan.current);
     /** Поле сдвинули в этот раз (колесом — и у закреплённого стола): вид как сначала его уже не возвращает. */
     const touched = useRef(false);
-    /** Высоты виджетов в столбцах и места «Новый виджет» (точки стола): по ним виджеты расходятся по столбцам. 0 — не виден. */
+    /** Высоты виджетов и места «Новый виджет» (точки стола): по ним ищется свободное место. 0 — не виден. */
     const [heights, setHeights] = useState<Record<string, number>>({});
+    /** Место над полем для того, что висит поверх (DeskFloat), и где оно сейчас: от правого верхнего угла поля, точки экрана. */
+    const [floatHost, setFloatHost] = useState<HTMLDivElement | null>(null);
+    const [floatBox, setFloatBox] = useState<{ right: number; top: number; w: number; h: number } | null>(null);
+    useLayoutEffect(() => {
+        if (!floatHost) return;
+        const measure = () => {
+            const outer = box.current;
+            const next =
+                floatHost.childElementCount > 0 && outer
+                    ? {
+                          right: outer.clientWidth - floatHost.offsetLeft - floatHost.offsetWidth,
+                          top: floatHost.offsetTop,
+                          w: floatHost.offsetWidth,
+                          h: floatHost.offsetHeight,
+                      }
+                    : null;
+            setFloatBox((old) => (JSON.stringify(old) === JSON.stringify(next) ? old : next));
+        };
+        measure();
+        const sizes = new ResizeObserver(measure);
+        sizes.observe(floatHost);
+        const parts = new MutationObserver(measure);
+        parts.observe(floatHost, { childList: true });
+        return () => {
+            sizes.disconnect();
+            parts.disconnect();
+        };
+    }, [floatHost]);
     /** Высота виджетов под сценой (витрины), точки стола. */
     const underBox = useRef<HTMLDivElement>(null);
     const [underHeight, setUnderHeight] = useState(0);
     /** Виджет, который тащат или растягивают сейчас: его место — здесь, пока не отпустили. */
     const [live, setLive] = useState<{ key: string; place: WidgetPlace } | null>(null);
     const [map, setMap] = useState<{ items: Array<{ key: string; rect: DOMRect; scene?: boolean }>; view: DOMRect } | null>(null);
-    /** «Новый виджет» под севшими на его место виджетами (docs/plans/voice-creation.md, «Посадка»): на сколько ниже, точки поля. */
-    const [addOffset, setAddOffset] = useState(0);
     /**
      * На сколько поле опущено под баннером, точек экрана. Мерится по столу как сначала (стартовый сдвиг, сохранённый
      * масштаб): у нетронутого стола сцена — сразу под баннером; у сдвинутого всё поле опускается на то же, пока баннер
@@ -246,8 +289,23 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
     // Вид из раскладки: «Расставить заново» вернуло его к началу или стол пришёл со шлюза (его двигали в другом браузере).
     // Виджет под колонкой пришёл позже стола (окошко приложения грузится само), вырос или окно поменялось — начало стола
     // пересчитывается; нетронутый в этот раз стол встаёт в новое начало.
-    const underTop = (wide: boolean) => (wide ? top + sceneHeight - UNDER_WIDE_OVERLAP : SCENE_H / 2 + 24);
-    const underWide = widgets.some((widget) => widget.under && widget.wide && !layout.places[widget.key]);
+    const half = SCENE_W / 2;
+    // Под сценой — во всю её ширину — виджеты, что просят встать там (`under`), пока их не передвинули руками; у
+    // остальных — свои места (desk-places.ts).
+    const under = widgets.filter((widget) => widget.under && !layout.places[widget.key] && live?.key !== widget.key);
+    const rest = widgets.filter((widget) => !under.includes(widget));
+    const underWide = under.some((widget) => widget.wide);
+    const underWidth = underWide ? UNDER_WIDE : SCENE_W;
+    const laid: Laid[] = rest.map((widget) => ({
+        key: widget.key,
+        place: live?.key === widget.key ? live.place : layout.places[widget.key],
+        height: heights[widget.key],
+    }));
+    /** Видные виджеты со своим местом, точки стола. */
+    const shownRects = laid.flatMap((entry) =>
+        entry.place && entry.height ? [{ key: entry.key, x: entry.place.x, y: entry.place.y, w: entry.place.w ?? WIDTH, h: entry.height }] : [],
+    );
+    const underAt = underTop(underWide ? top + sceneHeight - UNDER_WIDE_OVERLAP : SCENE_H / 2 + 24, underWidth / 2, shownRects, COLUMN_GAP / 2);
     useLayoutEffect(() => {
         const settle = () => {
             const outer = box.current;
@@ -257,7 +315,7 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
             const room = (dock && dock.height > 0 ? Math.min(rect.height, dock.top - rect.top) : rect.height) - 12;
             const node = bannerBox.current;
             const head = Math.max(24, node ? node.offsetTop + node.offsetHeight + BANNER_GAP : 0);
-            const need = underHeight > 0 ? underTop(underWide) + underHeight - top : 0;
+            const need = underHeight > 0 ? underAt + underHeight - top : 0;
             const start = startOf(withUnder, outer.clientHeight, room, head, need);
             startPan.current = start.pan;
             startZoom.current = start.zoom;
@@ -270,7 +328,7 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
         settle();
         window.addEventListener('resize', settle);
         return () => window.removeEventListener('resize', settle);
-    }, [layout.zoom, layout.pan?.x, layout.pan?.y, withUnder, underWide, underHeight, sceneHeight, !!banner]);
+    }, [layout.zoom, layout.pan?.x, layout.pan?.y, withUnder, underWide, underHeight, underAt, sceneHeight, !!banner]);
 
     /** Точка экрана → точка стола. */
     const toPlane = (clientX: number, clientY: number): Point => {
@@ -349,7 +407,7 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
     // Фон тащат — поле едет.
     const onBackground = (event: PointerEvent) => {
         if (locked || event.button !== 0) return;
-        if ((event.target as HTMLElement).closest('.widget, .widget-bare, .desk-scene, .desk-add-tile, .desk-zoom, .desk-map, .desk-columns > *, button, a, input')) return;
+        if ((event.target as HTMLElement).closest('.widget, .widget-bare, .desk-scene, .desk-add-tile, .desk-zoom, .desk-map, .desk-float, .desk-slot, button, a, input')) return;
         const from = view.current.pan;
         touched.current = true;
         drag(
@@ -418,42 +476,70 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
         actions.place(key, { ...start, x: Math.round(start.x), y: Math.round(start.y), w: Math.round(clamp((start.w ?? WIDTH) + step, MIN_W, MAX_W)) });
     };
 
-    const placed = widgets.filter((widget) => layout.places[widget.key] || live?.key === widget.key);
-    // Под сценой — во всю её ширину — виджеты, что просят встать там (`under`), пока их не передвинули руками.
-    const under = widgets.filter((widget) => widget.under && !layout.places[widget.key] && live?.key !== widget.key);
-    const flowing = widgets.filter((widget) => !widget.under && !layout.places[widget.key] && live?.key !== widget.key);
-    const half = SCENE_W / 2;
-    const underWidth = under.some((widget) => widget.wide) ? UNDER_WIDE : SCENE_W;
-    const columns = columnsOf(flowing, {
-        heights,
-        // Как в макете (SpaceGateway): слева столбец в 60 точках от колонки, справа — за Турбо; дальше — вторые.
-        xs: [-half - GAP - WIDTH, half + sceneExtra + GAP, -half - GAP - 2 * WIDTH - COLUMN_GAP, half + sceneExtra + GAP + WIDTH + COLUMN_GAP],
+    /** Где «Новый виджет» стоял в прошлый раз: там и стоит, пока свободно (desk-places.ts, `keep`). */
+    const addAt = useRef<{ x: number; y: number } | null>(null);
+    // Новый виджет — на первое свободное место, в том порядке, что раньше вставали столбцы (макет SpaceGateway): слева в
+    // 60 точках от колонки, справа — за ней; дальше — вторые столбцы. Сначала — туда, где его видно в начале стола (в
+    // окне и над доком); не видно нигде — в дальние столбцы сверху.
+    const clientW = box.current?.clientWidth ?? window.innerWidth;
+    const clientH = box.current?.clientHeight ?? window.innerHeight;
+    const showcase: Rect | null = under.length > 0 && underHeight > 0 ? { x: -underWidth / 2, y: underAt, w: underWidth, h: underHeight } : null;
+    const arranged = arrange(laid, [{ x: -half, y: top, w: SCENE_W + sceneExtra, h: sceneHeight }, ...(showcase ? [showcase] : [])], {
+        columns: [-half - GAP - WIDTH, half + sceneExtra + GAP, -half - GAP - 2 * WIDTH - COLUMN_GAP, half + sceneExtra + GAP + WIDTH + COLUMN_GAP],
+        width: WIDTH,
         top,
-        under: under.length > 0 && underHeight > 0 ? { top: underTop(underWidth !== SCENE_W), half: underWidth / 2 } : null,
-        sight: (box.current?.clientWidth ?? window.innerWidth) / 2 / startZoom.current,
-        // Низ видного — над доком (около 96 точек экрана).
-        bottom: ((box.current?.clientHeight ?? window.innerHeight) / 2 - push - startPan.current.y - 96) / startZoom.current,
+        gap: ROW_GAP,
+        sight: {
+            left: -clientW / 2 / startZoom.current,
+            right: clientW / 2 / startZoom.current,
+            // Низ видного — над доком (около 96 точек экрана).
+            bottom: (clientH / 2 - push - startPan.current.y - 96) / startZoom.current,
+        },
+        guess: GUESS_H,
+        addHeight: heights[ADD] ?? GUESS_H,
+        keep: addAt.current,
+        // Карточка Турбо над полем — в точках стола, как стол начинается: под неё новые не встают (под ней их не видно),
+        // а уже стоящие там не двигаются — карточку закрывают крестиком.
+        cover: floatBox && {
+            x: (clientW / 2 - floatBox.right - floatBox.w - 16 - startPan.current.x) / startZoom.current,
+            y: (floatBox.top - clientH / 2 - push - startPan.current.y) / startZoom.current,
+            w: (floatBox.w + 32) / startZoom.current,
+            h: (floatBox.h + 16) / startZoom.current,
+        },
     });
 
-    // Мини-карта: что на столе и где окно, — после каждой отрисовки, по местам в DOM. И «Новый виджет» — ниже тех
-    // поставленных виджетов, что встали на его место (черновик сел там, где стояла его плитка).
+    // Новые места — в раскладку: дальше виджет держит своё. Вырос и лёг на соседа (или на витрину) — кто ниже, отходит
+    // вниз. Пока виджет тащат, никто не двигается: отпустили — тогда.
+    /**
+     * Кому стол уже дал место сам: второй раз — только после «Расставить заново». Страховка от спора за место: две
+     * раскладки разом (вторая вкладка, окно, подменённое на ходу) не перекладывают виджет друг у друга без конца.
+     */
+    const gave = useRef(new Set<string>());
+    useLayoutEffect(() => {
+        // Где стоит «Новый виджет» — запоминаем, когда новых без места нет: место, что плитка показывала до них, и
+        // займёт первый из новых (черновик садится туда, где стояла его плитка).
+        if (laid.every((entry) => entry.place || entry.height === 0)) addAt.current = arranged.add;
+        // Пока виджет тащат, стол не виден или ещё без размера (окно свёрнуто) — ничего не двигаем и мест не даём.
+        if (live || document.visibilityState === 'hidden' || clientW < 320 || clientH < 240) return;
+        for (const key of gave.current) if (!rest.some((widget) => widget.key === key)) gave.current.delete(key);
+        const next: Record<string, WidgetPlace> = {};
+        for (const [key, spot] of Object.entries(arranged.fresh)) {
+            if (gave.current.has(key)) continue;
+            gave.current.add(key);
+            next[key] = spot;
+        }
+        for (const [key, spot] of Object.entries(pushApart(shownRects, showcase ? [showcase] : [], ROW_GAP))) {
+            const place = layout.places[key];
+            if (place) next[key] = { ...place, ...spot };
+        }
+        if (Object.keys(next).length > 0) actions.places(next);
+    });
+
+    // Мини-карта: что на столе и где окно, — после каждой отрисовки, по местам в DOM.
     useLayoutEffect(() => {
         const node = plane.current;
         const outer = box.current;
         if (!node || !outer) return;
-        const spot = node.querySelector<HTMLElement>('.desk-add-spot');
-        if (spot) {
-            const zoom = view.current.zoom;
-            const rect = spot.getBoundingClientRect();
-            const top = rect.top - addOffset * zoom;
-            let need = 0;
-            for (const placed of node.querySelectorAll<HTMLElement>('.desk-placed')) {
-                const other = placed.getBoundingClientRect();
-                const across = other.left < rect.right && other.right > rect.left;
-                if (across && other.bottom > top && other.top < top + rect.height + addOffset * zoom) need = Math.max(need, (other.bottom - top) / zoom + 16);
-            }
-            if (Math.abs(need - addOffset) > 1) setAddOffset(Math.round(need));
-        }
         // Невидимые (пустой виджет с hideWhileEmpty) — не на карте: их место пусто, а нулевая рамка растянула бы карту.
         const items = [...node.querySelectorAll<HTMLElement>('[data-widget], .desk-scene, .desk-add-tile')]
             .map((element) => ({
@@ -470,32 +556,27 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
         );
     });
 
-    // Высоты виджетов в столбцах и места «Новый виджет» — для раскладки по столбцам; высота витрины — для начала стола.
-    // Виджет меняет высоту сам (пришли данные, пустой стал видимым) — следим за каждым.
+    // Высоты виджетов и места «Новый виджет» — для свободных мест; высота витрины — для начала стола. Виджет меняет
+    // высоту сам (пришли данные, пустой стал видимым) — следим за каждым. Спрятанный, пока пуст, — 0.
     useLayoutEffect(() => {
         const node = plane.current;
         if (!node) return;
         const measure = () => {
             const measured: Record<string, number> = {};
-            const spot = node.querySelector<HTMLElement>('.desk-add-spot');
+            const spot = node.querySelector<HTMLElement>(':scope > .desk-add-spot');
             if (spot) measured[ADD] = spot.offsetHeight;
-            setHeights((old) => {
-                // Виджет, переехавший в другой столбец, рождается там заново и на миг пуст: его место — по последней
-                // высоте, иначе он прыгал бы обратно и снова пустел.
-                for (const slot of node.querySelectorAll<HTMLElement>('.desk-columns > [data-widget]')) {
-                    const key = slot.dataset.widget ?? '';
-                    measured[key] = slot.offsetHeight || old[key] || 0;
-                }
-                return Object.keys(measured).length === Object.keys(old).length && Object.entries(measured).every(([key, value]) => Math.abs((old[key] ?? -9) - value) < 2)
+            for (const slot of node.querySelectorAll<HTMLElement>(':scope > .desk-slot[data-widget]')) measured[slot.dataset.widget ?? ''] = slot.offsetHeight;
+            setHeights((old) =>
+                Object.keys(measured).length === Object.keys(old).length && Object.entries(measured).every(([key, value]) => Math.abs((old[key] ?? -9) - value) < 2)
                     ? old
-                    : measured;
-            });
+                    : measured,
+            );
             const below = underBox.current?.offsetHeight ?? 0;
             setUnderHeight((old) => (Math.abs(below - old) > 1 ? below : old));
         };
         measure();
         const sizes = new ResizeObserver(measure);
-        for (const slot of node.querySelectorAll('.desk-columns > [data-widget], .desk-columns > [data-widget] > *, .desk-add-spot > *, .desk-under')) sizes.observe(slot);
+        for (const slot of node.querySelectorAll(':scope > .desk-slot, :scope > .desk-slot > *, :scope > .desk-add-spot > *, .desk-under')) sizes.observe(slot);
         return () => sizes.disconnect();
     });
 
@@ -514,14 +595,17 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
                     {banner}
                 </div>
             )}
+            {/* Что висит поверх стола у правого края (карточка Турбо): сцена кладёт его сюда сама (useDeskFloat). */}
+            <div ref={setFloatHost} class="desk-float" />
             {/* Опускание под баннером — своим слоем с плавным ходом: сдвиг и масштаб поля идут без задержки. */}
+            <DeskFloat.Provider value={floatHost}>
             <div class="desk-push" style={push ? { transform: `translateY(${push}px)` } : undefined}>
                 <div ref={plane} class="desk-plane" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>
                     <div ref={sceneBox} class="desk-scene-spot" style={{ left: `${-half}px`, top: `${top}px`, width: `${SCENE_W + sceneExtra}px` }}>
                         {scene}
                     </div>
                     {under.length > 0 && (
-                        <div ref={underBox} class="desk-under" style={{ left: `${-underWidth / 2}px`, top: `${underWidth === SCENE_W ? SCENE_H / 2 + 24 : top + sceneHeight - UNDER_WIDE_OVERLAP}px`, width: `${underWidth}px` }}>
+                        <div ref={underBox} class="desk-under" style={{ left: `${-underWidth / 2}px`, top: `${underAt}px`, width: `${underWidth}px` }}>
                             {under.map((widget) => (
                                 <div
                                     key={widget.key}
@@ -534,46 +618,43 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
                             ))}
                         </div>
                     )}
-                    {columns.map(
-                        ({ x, list }, index) =>
-                            (list.length > 0 || index === 0) && (
-                                <div key={index} class="desk-columns" style={{ left: `${x}px`, top: `${top}px`, width: `${WIDTH}px` }}>
-                                    {list.map((widget) => (
-                                        <div key={widget.key} data-widget={widget.key} class="desk-slot">
-                                            {render(widget, widgetMenu(widget), gripOf(widget.key))}
-                                        </div>
-                                    ))}
-                                    {index === 0 && (
-                                        <div class="desk-add-spot" style={addOffset ? { marginTop: `${addOffset}px` } : undefined}>
-                                            {addTile}
-                                        </div>
-                                    )}
-                                </div>
-                            ),
-                    )}
-                    {placed.map((widget) => {
-                        const place = live?.key === widget.key ? live.place : layout.places[widget.key];
+                    {rest.map((widget) => {
+                        const spot = arranged.spots[widget.key];
                         return (
                             <div
                                 key={widget.key}
                                 data-widget={widget.key}
                                 class={`desk-slot desk-placed${live?.key === widget.key ? ' is-moving' : ''}`}
-                                style={{ left: `${place.x}px`, top: `${place.y}px`, width: `${place.w ?? WIDTH}px` }}
+                                style={{ left: `${spot?.x ?? -half}px`, top: `${spot?.y ?? top}px`, width: `${spot?.w ?? WIDTH}px` }}
                             >
                                 {render(widget, widgetMenu(widget), gripOf(widget.key))}
                                 {!locked && <span class="desk-resize" aria-hidden="true" onPointerDown={(event) => resize(widget.key)(event as PointerEvent)} />}
                             </div>
                         );
                     })}
+                    {/* «Новый виджет» — там, где встанет следующий (docs/plans/voice-creation.md: вещь рождается там, где будет стоять). */}
+                    <div class="desk-add-spot" style={{ left: `${arranged.add.x}px`, top: `${arranged.add.y}px`, width: `${WIDTH}px` }}>
+                        {addTile}
+                    </div>
                 </div>
             </div>
+            </DeskFloat.Provider>
 
             {/* Закреплён — в углу только замок: остальное ряда не видно, но место держит, и замок не прыгает, когда стол
                 открывают; карта над рядом появляется вместе с ними. */}
             <div ref={tools} class={`desk-tools${raised ? ' is-raised' : ''}${locked ? ' is-locked' : ''}`}>
                 {map && !locked && <MiniMap map={map} onGo={(dx, dy) => setPan((old) => ({ x: old.x - dx, y: old.y - dy }))} />}
                 <div class="desk-zoom">
-                    <button class="desk-zoom-btn desk-tool" aria-label={tr.desk.rearrange} title={tr.desk.rearrange} disabled={locked} onClick={() => actions.reset()}>
+                    <button
+                        class="desk-zoom-btn desk-tool"
+                        aria-label={tr.desk.rearrange}
+                        title={tr.desk.rearrange}
+                        disabled={locked}
+                        onClick={() => {
+                            gave.current.clear();
+                            actions.reset();
+                        }}
+                    >
                         <IconGrid size={14} />
                     </button>
                     <button class="desk-zoom-btn desk-tool" aria-label={tr.desk.smaller} disabled={locked} onClick={() => zoomAt(zoom - 0.1)}>
@@ -602,55 +683,6 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
 
 /** Ключ места «Новый виджет» в высотах столбцов. */
 const ADD = ' add';
-
-interface ColumnsInput {
-    heights: Record<string, number>;
-    /** Левые края столбцов: ближний слева, ближний справа, дальний слева, дальний справа. */
-    xs: number[];
-    top: number;
-    /** Широкий виджет под сценой: где начинается и полуширина. Столбец, что заходит на него, кончается над ним. */
-    under: { top: number; half: number } | null;
-    /** Полуширина и низ того, что видно в начале стола, точки стола. */
-    sight: number;
-    bottom: number;
-}
-
-/**
- * Виджеты, которые не переставляли, — по столбцам у колонки (проверка начисто 18.11: «Работы» и «Последние вопросы»
- * уходили за правый край, а левый столбец — с «Новый виджет» — ложился на витрину). Каждый встаёт туда, где он
- * влезает: сначала в столбец, видный в начале стола целиком (не за краем окна и не ниже дока), из таких — в самый
- * короткий; не влез ни в один видный — в более короткий из ближних, потом в дальний. Столбец, что заходит на витрину под сценой,
- * кончается над ней; в ближнем левом снизу всегда остаётся место «Новый виджет». Невидимые (пустые с hideWhileEmpty)
- * места не занимают.
- */
-function columnsOf(flowing: DeskWidget[], input: ColumnsInput): Array<{ x: number; list: DeskWidget[] }> {
-    const { heights, xs, top, under, sight, bottom } = input;
-    const add = heights[ADD] ?? 0;
-    const columns = xs.map((x, index) => {
-        const crosses = !!under && x < under.half && x + WIDTH > -under.half;
-        // Над витриной — с зазором; у ближнего левого — ещё и место «Новый виджет» под виджетами.
-        const floor = (crosses && under ? under.top - COLUMN_GAP / 2 : Infinity) - (index === 0 ? add + ROW_GAP : 0);
-        return { x, list: [] as DeskWidget[], end: top, floor, seen: x >= -sight && x + WIDTH <= sight, near: index < 2 };
-    });
-    for (const widget of flowing) {
-        const height = heights[widget.key];
-        if (height === 0) {
-            columns[0].list.push(widget);
-            continue;
-        }
-        const need = height ?? GUESS_H;
-        const fits = columns.filter((column) => column.end + need <= column.floor);
-        const seen = fits.filter((column) => column.seen && column.end + need <= bottom - (column === columns[0] ? add + ROW_GAP : 0));
-        const pick =
-            [...seen].sort((a, b) => a.end - b.end)[0] ??
-            fits.filter((column) => column.near).sort((a, b) => a.end - b.end)[0] ??
-            [...fits].sort((a, b) => a.end - b.end)[0] ??
-            columns[2];
-        pick.list.push(widget);
-        pick.end += need + ROW_GAP;
-    }
-    return columns;
-}
 
 const sameRect = (a: DOMRect, b: DOMRect): boolean =>
     Math.abs(a.left - b.left) < 0.5 && Math.abs(a.top - b.top) < 0.5 && Math.abs(a.width - b.width) < 0.5 && Math.abs(a.height - b.height) < 0.5;

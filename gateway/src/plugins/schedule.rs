@@ -189,6 +189,10 @@ pub struct Job {
     pub pending: Option<(String, i64)>,
     #[serde(default)]
     pub last: Option<LastRun>,
+    /// The first run of a data rhythm (`warms`), not run yet: it comes due at once, and its speech and message are
+    /// not carried out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub warm: bool,
 }
 
 impl Job {
@@ -207,7 +211,17 @@ impl Job {
             failures: 0,
             pending: None,
             last: None,
+            warm: false,
         }
+    }
+
+    /// A rhythm of a manifest just seen (the app installed, or a version that brings it): one that keeps the app's data
+    /// — every so many minutes, by its function — runs once at once (`warm`), not at its first time. Its window of the
+    /// day starts at 08:00: an app put on the desk at night showed nothing till morning, its card read an empty `kv`
+    /// (check 19.11: «0 recent tracks», «Bitcoin» loading). A rhythm at a time of day (a briefing at 7:30) waits for it.
+    fn first(spec: &ScheduleSpec) -> Job {
+        let warm = matches!(spec.when, When::Every { .. }) && spec.then.handler.is_some();
+        Job { warm, ..Job::of(spec) }
     }
 
     fn repeats(&self) -> bool {
@@ -402,6 +416,7 @@ fn task_of(input: &Value, now: i64, zone: Tz, permissions: &[Permission]) -> Res
             failures: 0,
             pending: None,
             last: None,
+            warm: false,
         }),
         _ => Err(problems.join("; ")),
     }
@@ -601,6 +616,8 @@ pub struct Scheduler {
     /// The plugins that were on at the last tick: one back on counts its rhythms from now.
     active: Mutex<HashSet<String>>,
     ticking: AtomicBool,
+    /// A tick before its time: an app came into force (`soon`), its first data rhythm should not wait.
+    soon: Arc<tokio::sync::Notify>,
     stop: CancellationToken,
 }
 
@@ -655,6 +672,7 @@ impl Scheduler {
             edit: Mutex::new(()),
             active: Mutex::new(HashSet::new()),
             ticking: AtomicBool::new(false),
+            soon: Arc::new(tokio::sync::Notify::new()),
             stop: CancellationToken::new(),
         }
         .switched()
@@ -847,6 +865,8 @@ impl Scheduler {
         let jobs: Vec<Job> = jobs
             .into_iter()
             .filter_map(|mut job| {
+                // A step back of the data is not an install: its rhythms keep their times.
+                job.warm = false;
                 if job.repeats() {
                     if let Some(host) = &host {
                         job.next_ms = next_after(&job.when, now, zone, &|key| Scheduler::setting(host, plugin, key));
@@ -870,13 +890,14 @@ impl Scheduler {
     /// The tick every 15 s until `stop`; inside the runtime.
     pub fn start(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let me = Arc::downgrade(self);
-        let stop = self.stop.clone();
+        let (stop, soon) = (self.stop.clone(), self.soon.clone());
         tokio::spawn(async move {
             let mut ticks = tokio::time::interval(TICK);
             loop {
                 tokio::select! {
                     _ = stop.cancelled() => break,
                     _ = ticks.tick() => {}
+                    _ = soon.notified() => {}
                 }
                 let Some(scheduler) = me.upgrade() else { break };
                 scheduler.tick().await;
@@ -886,6 +907,17 @@ impl Scheduler {
 
     pub fn stop(&self) {
         self.stop.cancel();
+    }
+
+    /// An app was installed, switched on or updated: the next tick now, not in up to 15 s — its first data rhythm
+    /// (`Job::first`) fills what its card shows while the person still looks at the desk.
+    pub fn soon(&self) {
+        self.soon.notify_one();
+    }
+
+    /// The package news that bring an app into force: after them, a tick at once (`soon`).
+    pub fn brings_into_force(change: &str) -> bool {
+        matches!(change, "installed" | "enabled" | "reloaded")
     }
 
     /// The station's zone: as it says it now, else the last it said, else the gateway's default.
@@ -974,11 +1006,16 @@ impl Scheduler {
                             (spec.when.clone(), spec.then.clone(), spec.title.clone(), None);
                     }
                     Some(_) => {}
-                    None => jobs.push(Job::of(spec)),
+                    None => jobs.push(Job::first(spec)),
                 }
             }
-            for job in jobs.iter_mut().filter(|job| job.repeats() && (woke || job.next_ms.is_none())) {
-                job.next_ms = next_after(&job.when, now, zone, &|key| Scheduler::setting(&host, &plugin, key));
+            for job in jobs.iter_mut().filter(|job| job.repeats()) {
+                if job.warm {
+                    // Its first run is now, whatever its window: the app's data, as soon as it is in force.
+                    job.next_ms.get_or_insert(now);
+                } else if woke || job.next_ms.is_none() {
+                    job.next_ms = next_after(&job.when, now, zone, &|key| Scheduler::setting(&host, &plugin, key));
+                }
             }
             if jobs != before {
                 self.jobs.set(&plugin, jobs);
@@ -1111,7 +1148,9 @@ impl Scheduler {
             return;
         }
         let Some(due) = job.next_ms.filter(|due| *due <= now) else { return };
-        let late = now - due;
+        // The first run of a data rhythm (`Job::first`) is never late, and runs once: a failure waits for its time.
+        let warm = std::mem::take(&mut job.warm);
+        let late = if warm { 0 } else { now - due };
         // A repeat counts on from now: a slow call or a stop never runs it twice, and what it missed is not caught up.
         job.next_ms = if job.repeats() {
             next_after(&job.when, now, zone, &|key| Scheduler::setting(host, plugin, key))
@@ -1165,8 +1204,12 @@ impl Scheduler {
             None => (job.then.say.clone(), job.then.notify.clone()),
         };
         let ms = began.elapsed().as_millis();
-        let (said, notice) = said;
+        // The first run only fills the app's data: what it would say at its time is not said at night on install.
+        let (said, notice) = if warm { (None, None) } else { said };
         let mut outcome = vec![crate::tr!("ответил за {ms} мс", ms = ms)];
+        if warm {
+            outcome.insert(0, crate::tr!("первый прогон после установки"));
+        }
         let mut warn = false;
         // A message to the owner first: it goes now whatever the station does.
         if let Some(notice) = notice {
@@ -1656,6 +1699,70 @@ mod tests {
             Some(json!({ "spec": { "once": "2026-11-13T08:10" }, "rest": "выключить чайник" }))
         );
         assert_eq!(spec("привет"), None);
+    }
+
+    /// Check 19.11: a widget put on the desk at night showed «0 recent tracks» and «Bitcoin» loading — its card reads
+    /// `kv`, and the rhythm that fills it waited for 08:00. A data rhythm (every, by a function) runs once as soon as the
+    /// app is in force, quietly; a rhythm at a time of day waits for it; a restart or a second tick runs nothing again.
+    #[tokio::test]
+    async fn an_app_just_in_force_fills_its_data_at_once_and_quietly() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = json!({
+            "schema": 1, "id": "rates", "version": "1.0.0", "title": "Курсы", "api": "^2", "runs": ["pc"],
+            "permissions": ["call:system/schedule", "call:system/voice", "call:system/notify"],
+            "contributes": { "schedules": [
+                // The default window, 08:00–22:00: at night its first time is the morning.
+                { "id": "refresh", "every": "60m", "handler": "refresh" },
+                { "id": "morning", "at": "07:30", "handler": "morning" }
+            ] }
+        });
+        let code = r#"
+            export function refresh() {
+                host.kv.set("rates", { btc: 63155 });
+                return { say: "Курс обновлён", notify: "Курс обновлён" };
+            }
+            export function morning() { return { say: "Доброе утро" }; }
+            export function read() { return host.kv.get("rates") ?? null; }
+        "#;
+        crate::plugins::registry::tests::write_package(&dir.path().join("packages"), &manifest, Some(code));
+        let (scheduler, station, host, owner) = with_owner(dir.path()).await;
+        host.enable("rates", None).await.unwrap();
+        let before = now_ms() as i64;
+        scheduler.tick().await;
+        let jobs = scheduler.jobs("rates");
+        let refresh = jobs.iter().find(|job| job.id == "refresh").unwrap();
+        let morning = jobs.iter().find(|job| job.id == "morning").unwrap();
+        // The data is there at once, nothing said or sent, and it counts on from now.
+        let data = host.call("rates", "read", json!({}), CallKind::Tool).await.unwrap();
+        assert_eq!(data, json!({ "btc": 63155 }));
+        assert!(station.said.lock().unwrap().is_empty(), "the first run says nothing");
+        assert!(owner.told.lock().unwrap().is_empty(), "the first run sends nothing");
+        let last = refresh.last.clone().unwrap();
+        assert!(last.outcome.starts_with("первый прогон после установки"), "{last:?}");
+        assert!(!refresh.warm && refresh.next_ms.is_some_and(|next| next > before), "{refresh:?}");
+        // A time of day waits for its time; the other app's rhythms too.
+        assert!(morning.last.is_none() && !morning.warm, "{morning:?}");
+        assert!(scheduler.jobs("repeat").iter().all(|job| job.last.is_none() && !job.warm));
+        // Another tick: not again.
+        scheduler.tick().await;
+        assert_eq!(scheduler.jobs("rates").iter().find(|job| job.id == "refresh").unwrap().last, Some(last));
+        // Kept as it was: a restart is not an install.
+        assert!(!serde_json::to_string(&scheduler.jobs("rates")).unwrap().contains("warm"));
+        // A version that brings a new data rhythm: that one runs at once, the one known already does not.
+        let job = Job::first(&ScheduleSpec {
+            id: "news".into(),
+            title: "Новости".into(),
+            when: When::Every { minutes: 30, from: "08:00".into(), to: "22:00".into() },
+            then: Then { handler: Some("refresh".into()), say: None, notify: None },
+        });
+        assert!(job.warm);
+        let ready = Job::first(&ScheduleSpec {
+            id: "water".into(),
+            title: "Вода".into(),
+            when: When::Every { minutes: 30, from: "08:00".into(), to: "22:00".into() },
+            then: Then { handler: None, say: Some("Пора попить воды".into()), notify: None },
+        });
+        assert!(!ready.warm, "a ready answer has no data to fill");
     }
 
     #[tokio::test]

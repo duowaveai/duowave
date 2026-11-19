@@ -277,6 +277,56 @@ pub async fn plan(app: &App, request: &PlanRequest) -> VoicePlan {
     }
 }
 
+/// The voice waiting on this computer, as any panel of the home shows it (clean-path check 19.11: «Голос ждёт» lived
+/// only on the computer's own page, and nobody saw it while the character was settling): the models' pending voice
+/// with its name and the character it speaks for — `{…PendingView, title, character?, package?}`; none — nothing waits.
+pub fn waiting(app: &App) -> Option<serde_json::Value> {
+    let pending = app.models.pending()?;
+    let character = app.characters.of_voice(&pending.model_id);
+    let title = character
+        .as_ref()
+        .map(|character| character.title.clone())
+        .or_else(|| pending.model_id.strip_prefix(OWN_PREFIX).and_then(|id| app.voice_lab.voice_name(id)))
+        .or_else(|| app.models.voice_card(&pending.model_id).map(|(title, _)| title))
+        .unwrap_or_else(|| pending.model_id.clone());
+    let mut view = serde_json::to_value(&pending).ok()?;
+    view["title"] = serde_json::json!(title);
+    if let Some(character) = character {
+        view["character"] = serde_json::json!(character.id);
+        view["package"] = serde_json::json!(character.package);
+    }
+    Some(view)
+}
+
+/// The owner's answer to the waiting voice: `anyway` — switch it on although memory is tight, `retry` — what it waited
+/// for failed, try again (downloading what it needs), `cancel` — forget it and stop what it waits for. As the panel's
+/// own buttons on the computer do (`POST /api/v1/models/tts/activate`, `DELETE /api/v1/models/tts/pending`).
+pub async fn answer(app: &App, answer: &str, actor: Option<crate::core::events::Actor>) -> Result<(), ApiError> {
+    let Some(pending) = app.models.pending() else {
+        return Err(ApiError::conflict(crate::tr!("Голос уже не ждёт.")));
+    };
+    let mut body = serde_json::json!({ "modelId": pending.model_id });
+    if let Some(voice) = &pending.voice_id {
+        body["voiceId"] = serde_json::json!(voice);
+    }
+    let request = crate::models::models_service::VoiceRequest::of(&body);
+    match answer {
+        "anyway" => {
+            let request = crate::models::models_service::VoiceRequest { anyway: true, ..request };
+            app.models.choose(request, actor).await?;
+        }
+        "retry" => {
+            let request = crate::models::models_service::VoiceRequest { install: true, ..request };
+            app.models.choose(request, actor).await?;
+        }
+        "cancel" => {
+            app.models.cancel_pending(actor).await;
+        }
+        _ => return Err(ApiError::bad_request(r#"answer: "anyway", "retry" или "cancel""#.to_string())),
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

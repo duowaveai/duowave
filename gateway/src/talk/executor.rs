@@ -72,6 +72,9 @@ pub struct Facts {
     pub ready: bool,
     /// Its last run changed nothing: «ничего не поменялось», not «не доделано».
     pub unchanged: bool,
+    /// Its last run failed so: the model's error as the log has it (a key out of money, a key refused). The station
+    /// names a plain cause in its «не получилось» (19.11: OpenAI's 429 «no credits» was only «подробности в пульте»).
+    pub failure: Option<String>,
 }
 
 /// What became of a thing put where the person said.
@@ -170,6 +173,10 @@ pub trait Executor: Send + Sync {
     fn put<'a>(&'a self, work: &'a Work, end: End, by: ByVoice) -> BoxFuture<'a, Result<Put, String>>;
     /// Stops the work; false when nothing went on.
     fn stop(&self, work: &Work) -> bool;
+    /// Whether it is at the work's thing now; None when it cannot tell (the layer then believes the record).
+    fn running(&self, _work: &Work) -> Option<bool> {
+        None
+    }
     /// Whether its thing of this id is there — the layer checks by the id, never by a name (TalkLayer::recheck).
     fn presence(&self, _target: &str) -> Presence {
         Presence::Unknown
@@ -193,6 +200,8 @@ pub mod fake {
         /// The things by their ids: their titles and where they are.
         pub things: Mutex<HashMap<String, (String, Presence)>>,
         pub started: Mutex<Vec<String>>,
+        /// Whether it is at a thing now, by its id; a thing not here — it cannot tell.
+        pub at: Mutex<HashMap<String, bool>>,
     }
 
     impl Shelf {
@@ -259,6 +268,9 @@ pub mod fake {
         }
         fn presence(&self, target: &str) -> Presence {
             self.things.lock().unwrap().get(target).map_or(Presence::Gone, |(_, presence)| *presence)
+        }
+        fn running(&self, work: &Work) -> Option<bool> {
+            self.at.lock().unwrap().get(work.target.as_deref()?).copied()
         }
     }
 }

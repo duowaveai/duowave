@@ -219,7 +219,7 @@ const modelsTabs = (): Array<TabEntry<ModelsTab>> => [
  * или Алиса. Выбор — самой колонки; перенос с компьютером-помощником приносит выбор компьютера. Шлюз постарше
  * маршрута не знает — тогда карточки нет.
  */
-function HomeVoiceChoice({ revision = 0 }: { revision?: number }) {
+export function HomeVoiceChoice({ revision = 0 }: { revision?: number }) {
     const [state, setState] = useState<HomeVoice | null>(null);
     const [busy, setBusy] = useState<HomeVoice['chosen'] | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -313,7 +313,7 @@ function HomeVoiceChoice({ revision = 0 }: { revision?: number }) {
  * здесь же (CloudSpeechCard); мозг и характер — как обычно, в разделе «Мозг». Во вкладке «Голос» — выбор между голосом
  * компьютера (пока он помогает) или облачным и Алисой (HomeVoiceChoice).
  */
-function LocalModelsAbsent({ kind }: { kind: Tab; message: string }) {
+function LocalModelsAbsent({ kind, page = false }: { kind: Tab; message: string; page?: boolean }) {
     const [revision, setRevision] = useState(0);
     const panel = usePanel();
     const devices = useHomeDevices();
@@ -322,25 +322,32 @@ function LocalModelsAbsent({ kind }: { kind: Tab; message: string }) {
     const turbo = devices.view?.devices.find((device) => device.kind === 'computer' && device.roles.includes('turbo'));
     const openComputer = (): void =>
         turbo ? panel.go('settings', 'devices', turbo.id, { view: 'computer' }) : panel.go('settings', 'devices');
+    // В пунктах «Голос» и «Слух» (`page`) выбор «чей голос» стоит выше, а ссылка «Открыть голоса компьютера» вела бы
+    // по кругу: пульт колонки открыт не на компьютере — свой голос и модели записываются там.
     return (
         <>
-            {kind === 'voice' && <HomeVoiceChoice revision={revision} />}
+            {kind === 'voice' && !page && <HomeVoiceChoice revision={revision} />}
             <CloudSpeechCard part={kind === 'voice' ? 'voice' : 'hearing'} onChanged={() => setRevision((n) => n + 1)} />
             <section class="card glass py-12 px-16" aria-label={kind === 'voice' ? tr.models.tabVoice : tr.models.tabHearing}>
                 <h2 class="t-title-xs m-0 mb-6">
                     {kind === 'voice' ? tr.models.ownVoicesHere : tr.models.ownRecognitionHere}
                 </h2>
-                <p class="t-body m-0 mb-10">
+                <p class={`t-body m-0${page ? '' : ' mb-10'}`}>
                     {kind === 'voice' ? tr.models.absentVoiceNote : tr.models.absentAsrNote}
+                    {page && kind === 'voice' ? ` ${tr.voiceHome.ownHereOnly}` : ''}
                 </p>
-                <Action label={kind === 'voice' ? tr.models.openComputerVoices : tr.models.openComputerHearing} onClick={openComputer} />
+                {!page && <Action label={kind === 'voice' ? tr.models.openComputerVoices : tr.models.openComputerHearing} onClick={openComputer} />}
             </section>
         </>
     );
 }
 
-/** `bare` — без своих вкладок: голос стоит в «Персонаже», слух — в «Настройки» → «Колонка» (docs/plans/panel-rebuild.md). */
-export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onTab: (tab: ModelsTab) => void; bare?: boolean }) {
+/**
+ * `bare` — без своих вкладок: голос стоит в «Персонаже», слух — в «Настройки» → «Колонка» (docs/plans/panel-rebuild.md).
+ * `page` — в пунктах «Настроек» «Голос» и «Слух» (screens/voice-home.tsx, проверка начисто 19.11): «Голос ждёт» и «Чей
+ * голос отвечает» стоят там выше, а «Свой голос» — первым и крупно.
+ */
+export function ModelsScreen({ tab, onTab, bare = false, page = false }: { tab: ModelsTab; onTab: (tab: ModelsTab) => void; bare?: boolean; page?: boolean }) {
     const [view, setView] = useState<ModelsView | null>(null);
     // Пульт Турбо (компьютер, что только помогает): режим колонки к его слуху не относится.
     const turboPanel = usePanel().role.role === 'helper';
@@ -365,6 +372,22 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
     /** «Отменить» у ждущего голоса прошло (п. 68): строка «отменено», пока не появится новый ждущий. */
     const [canceled, setCanceled] = useState<{ title: string; stopped: boolean } | null>(null);
     const waits = !!view?.ttsPending;
+    /** Кто отвечает сейчас и карточка его голоса: для «Вернуть голос персонажа». */
+    const [speaker, setSpeaker] = useState<{ title: string; cardId: string } | null>(null);
+    const activeTts = view?.ttsActive.modelId;
+    useEffect(() => {
+        let alive = true;
+        void api
+            .characters()
+            .then((characters) => {
+                const now = characters.characters.find((character) => character.id === characters.active?.id);
+                if (alive) setSpeaker(now?.voice.cardId ? { title: now.title, cardId: now.voice.cardId } : null);
+            })
+            .catch(() => undefined);
+        return () => {
+            alive = false;
+        };
+    }, [activeTts]);
     useEffect(() => {
         if (waits) setCanceled(null);
     }, [waits]);
@@ -611,7 +634,7 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                         }}
                     />
                 )}
-                <LocalModelsAbsent kind={tab} message={absent} />
+                <LocalModelsAbsent kind={tab} message={absent} page={page} />
             </>
         );
     }
@@ -640,6 +663,9 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
     // рекомендованные и уже скачанные, а весь открытый реестр — по «Посмотреть ещё голоса», с фильтрами и прокруткой.
     const yandexCard = onComputer() ? undefined : view.tts.find((card) => card.engine === 'yandex');
     const ownCards = view.tts.filter((card) => card.group === 'own');
+    // Голоса персонажей — тоже голоса, их можно поставить (замечание 11 теста 19.11: записал свой — и не вернуть голос
+    // персонажа, его в списке не было). Шлюз присылает их с группой «character».
+    const characterCards = view.tts.filter((card) => card.group === 'character');
     const recommendedCards = view.tts.filter((card) => card.source === 'builtin');
     const downloadedCards = view.tts.filter((card) => card.source === 'registry' && card.installed);
     const registryRest = view.tts.filter((card) => card.source === 'registry' && !card.installed);
@@ -824,6 +850,56 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
     const neededAsr = local?.needs ? view.asr.find((card) => card.model === local.needs) : undefined;
     const otherAsr = asrCards.filter((card) => !advised(card) && !currentAsr.includes(card));
 
+    // Голос того, кто отвечает сейчас, и звучит ли вместо него свой: тогда — «Вернуть голос персонажа» одной кнопкой.
+    const speakerCard = characterCards.find((card) => card.id === speaker?.cardId);
+    const onTop = ownCards.find((card) => card.active);
+    const characterVoices = characterCards.length > 0 && (
+        <section class="card glass card-list" aria-label={tr.models.characterVoicesTitle}>
+            <div class="card-head">
+                <h2 class="t-title-xs m-0">{tr.models.characterVoicesTitle}</h2>
+            </div>
+            {onTop && speakerCard && speaker && (
+                <div class="pending-row" role="status">
+                    <span class="t-body-sm flex-1">{tr.models.ownOnTop(onTop.title, speaker.title)}</span>
+                    {isAdmin && (
+                        <Action
+                            tone="on"
+                            label={tr.models.backToCharacter}
+                            busy={busy[speakerCard.id]}
+                            onClick={() => void activateTts(speakerCard.id, speakerCard.id)}
+                        />
+                    )}
+                </div>
+            )}
+            <OwnVoiceRows
+                cards={characterCards}
+                isAdmin={isAdmin}
+                notes={notes}
+                busy={busy}
+                onActivate={(cardId) => void activateTts(cardId, cardId)}
+                tightFor={tightFor}
+                onChanged={refreshView}
+                fixed
+            />
+        </section>
+    );
+    // «Свой голос»: в пункте «Голос» — первым и крупно (проверка начисто 19.11), на странице компьютера — после голоса Алисы.
+    const ownVoices = (
+        <section class="card glass card-list" aria-label={tr.models.ownVoiceTitle}>
+            <OwnVoicesHeader isAdmin={isAdmin} hasOwn={ownCards.length > 0} onAdd={() => setWizard(true)} hero={page} />
+            <OwnVoiceRows
+                cards={ownCards}
+                isAdmin={isAdmin}
+                notes={notes}
+                busy={busy}
+                onActivate={(cardId) => void activateTts(cardId, cardId)}
+                tightFor={tightFor}
+                onChanged={refreshView}
+                onRecord={() => setWizard(true)}
+            />
+        </section>
+    );
+
     // Языки, какие есть в каталоге: русский и английский первыми, дальше по количеству голосов.
     const languageCounts = new Map<string, number>();
     for (const card of view.tts) {
@@ -936,7 +1012,9 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                 </>
             ) : (
                 <>
-                    {pending && (
+                    {page && characterVoices}
+                    {page && ownVoices}
+                    {pending && !page && (
                         <PendingVoice
                             pending={pending}
                             title={pendingTitle}
@@ -945,7 +1023,7 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                             onCanceled={(stopped) => setCanceled({ title: pendingTitle, stopped })}
                         />
                     )}
-                    {!pending && canceled && (
+                    {!pending && !page && canceled && (
                         <section class="card glass card-list" role="status">
                             <div class="pending-row">
                                 <span class="t-body-sm">{canceled.stopped ? tr.models.canceledStopped(canceled.title) : tr.models.canceled(canceled.title)}</span>
@@ -1013,18 +1091,8 @@ export function ModelsScreen({ tab, onTab, bare = false }: { tab: ModelsTab; onT
                             </p>
                         )}
                     </section>
-                    <section class="card glass card-list" aria-label={tr.models.ownVoiceTitle}>
-                        <OwnVoicesHeader isAdmin={isAdmin} hasOwn={ownCards.length > 0} onAdd={() => setWizard(true)} />
-                        <OwnVoiceRows
-                            cards={ownCards}
-                            isAdmin={isAdmin}
-                            notes={notes}
-                            busy={busy}
-                            onActivate={(cardId) => void activateTts(cardId, cardId)}
-                            tightFor={tightFor}
-                            onChanged={refreshView}
-                        />
-                    </section>
+                    {!page && characterVoices}
+                    {!page && ownVoices}
                     <section class="card glass card-list" aria-label={tr.models.readyVoices}>
                         <div class="card-head">
                             <h2 class="t-title-xs m-0">

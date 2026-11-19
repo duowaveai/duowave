@@ -183,8 +183,11 @@ pub struct WorkWords {
     /// `{label} {face} {title} {end}`.
     pub recent: &'static str,
     pub ends: EndWords,
-    /// `{list}`: the apps on the desk.
+    /// `{list}`: the apps that are on — installed and switched on; where their widgets stand on a screen the block
+    /// does not know (clean-path check 19.11: «на столе» was taken for «I see it on my desk»).
     pub desk: &'static str,
+    /// After an app's name: its code runs on the home's Турбо, so it answers while the Турбо is on the line.
+    pub turbo: &'static str,
     /// `{n}`: how many are on the desk when the list is cut.
     pub more: &'static str,
     pub door: &'static str,
@@ -478,16 +481,28 @@ pub struct SayWords {
     pub hosts: &'static str,
     /// The question after a new thing is ready.
     pub desk_or_fit: &'static str,
+    /// The question after a new theme is ready: a theme is applied, not put on the desk.
+    pub theme_or_fit: &'static str,
     /// `{title}`: the run ended half-way.
     pub unfinished_line: &'static str,
     /// `{title}`: it did not work out.
     pub failed_line: &'static str,
+    /// `{title} {why}`: it did not work out for a plain cause the person can fix (one of the `why_*` below).
+    pub failed_why_line: &'static str,
+    /// The brain's key ran out of money (a 402, «insufficient_quota», «no credits»).
+    pub why_money: &'static str,
+    /// The brain hit its rate limit (a 429 without a word of money).
+    pub why_rate: &'static str,
+    /// The brain's key was refused or is missing (a 401, a 403).
+    pub why_key: &'static str,
     /// `{title} {text}`: a new version of a thing on the desk — then «На столе.» when it went there at once, or the
     /// question `apply` when it asks for more.
     pub changed: &'static str,
     pub apply: &'static str,
     /// On the desk; on the desk but it waits for `{needs}` to be filled in — the panel's window open, or not.
     pub on_desk: &'static str,
+    /// A theme put in by «да» / «применить»: the panel applies it (shell/theme-apply.ts).
+    pub theme_on: &'static str,
     pub on_desk_needs_open: &'static str,
     pub on_desk_needs_tile: &'static str,
     /// Rights only the panel approves: its window is open, or the tile waits.
@@ -644,6 +659,7 @@ mod tests {
                 ("say.waiting", work.say.waiting, &["title"]),
                 ("queued", work.queued, &["face", "label", "title"]),
                 ("say.failed_line", work.say.failed_line, &["title"]),
+                ("say.failed_why_line", work.say.failed_why_line, &["title", "why"]),
                 ("say.changed", work.say.changed, &["text", "title"]),
                 ("say.on_desk_needs_open", work.say.on_desk_needs_open, &["needs"]),
                 ("say.on_desk_needs_tile", work.say.on_desk_needs_tile, &["needs"]),

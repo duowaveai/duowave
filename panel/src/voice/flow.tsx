@@ -10,13 +10,17 @@ import { WorkView, api, can } from '../api';
 import { tr } from '../i18n';
 import { usePanel } from '../shell/context';
 import { ask } from '../ui/confirm';
+import { takeDraftTheme } from '../shell/theme-apply';
 import { announceReady, failed } from './creation';
 import { onWorkshopChange } from './drafts';
 import { listenFor, micOn, onMic } from './mic';
 import { answering, onAnswering, sayAloud } from './speak';
-import { showStrip } from './strip';
+import { hideStrip, showStrip, stripNow } from './strip';
 import { setWorkShower } from './waiting';
 import { SAID_ON, askedHere, onWorkChange, readWork, speaksHere, workHead } from './works';
+
+/** Перемены работы, после которых её вопрос отвечен (gateway talk/layer.rs, ready.rs, works.rs `told`). */
+const ANSWERED_ON = ['answered', 'declined', 'decided', 'removed', 'closed'];
 
 /** Сколько пульт слушает ответ на «Готово», если работа — его. */
 export const ANSWER_SECONDS = 6;
@@ -64,22 +68,45 @@ export function CreationFlow() {
     useEffect(() => {
         if (!can('plugins.manage')) return;
         return onWorkChange((id, change) => {
+            if (id && change === 'decided') void themeOn(id);
+            if (id && ANSWERED_ON.includes(change) && stripNow()?.work === id) return void settle(id);
             if (!id || !SAID_ON.includes(change)) return;
             void readWork(id).then((work) => work && announce(work));
         });
     }, []);
-    // «Ждёт вас»: работа показывается на полосе с кнопками ответа, без голоса.
+    // «Ждёт вас»: работа показывается на полосе с кнопками ответа, без голоса. Не показалась — пилюля откроет её страницу.
     useEffect(() => {
-        setWorkShower((work) => void announce(work, true));
+        setWorkShower((work) => announce(work, true));
         return () => setWorkShower(null);
     }, []);
     /**
-     * Строка итога работы на полосе — и голосом, когда это работа этого компьютера в режиме «Микрофон». `quiet` — только
-     * полоса («Ждёт вас»).
+     * Тему «применили» голосом («да», «применить» на «Применить тему или пока примерить?»): шлюз ставит её пакет, а
+     * выбор темы — у пульта; без этого голос говорил «На столе», а тема не менялась (замечание 7 теста 19.11).
      */
-    const announce = async (work: WorkView, quiet = false): Promise<void> => {
+    const themeOn = async (id: string): Promise<void> => {
+        const work = await readWork(id);
+        if (work?.face === 'theme' && work.result?.end === 'desk' && work.target) await takeDraftTheme(work.target).catch(() => false);
+    };
+    /**
+     * На вопрос полосы ответили — голосом, кнопкой здесь или на другом устройстве: вопрос с кнопками уходит, чтобы его
+     * не ответили второй раз (замечание 5 теста 19.11: «на стол» голосом поставило виджет, а «на стол» на полосе осталось).
+     * Общее правило для всех полос, что спрашивают о работе (`work` в сообщении). На столе — итог строкой шлюза.
+     */
+    const settle = async (id: string): Promise<void> => {
+        const work = await readWork(id);
+        if (stripNow()?.work !== id) return;
+        if (work?.question && !work.question.outcome) return; // ещё ждёт ответа — это не ответ
+        const line = work?.result?.end === 'desk' ? work.result.line : '';
+        if (line) showStrip({ kind: 'done', head: tr.voice.done, text: line }, 8000);
+        else hideStrip();
+    };
+    /**
+     * Строка итога работы на полосе — и голосом, когда это работа этого компьютера в режиме «Микрофон». `quiet` — только
+     * полоса («Ждёт вас»). true — полоса показана.
+     */
+    const announce = async (work: WorkView, quiet = false): Promise<boolean> => {
         const line = work.result?.line;
-        if (!line) return;
+        if (!line) return false;
         const go = latest.current.go;
         const draft = work.target;
         if (work.kind === 'tool' || work.kind === 'task') {
@@ -95,8 +122,9 @@ export function CreationFlow() {
         } else if (work.state === 'failed' || work.state === 'done' || !draft) {
             showStrip({ kind: work.state === 'done' ? 'done' : 'note', head: workHead(work), text: line }, 10_000);
         } else {
+            // Черновика уже нет (удалили, его вещь поставили и убрали): показывать нечего.
             const view = await api.workshopDraft(draft).catch(() => null);
-            if (!view) return;
+            if (!view) return false;
             const voice = !quiet && speaksHere(work) && askedHere(work) && !!work.question;
             announceReady(
                 view,
@@ -113,9 +141,10 @@ export function CreationFlow() {
                 voice ? ANSWER_SECONDS : 0,
                 line,
                 workHead(work),
+                work.id,
             );
         }
-        if (quiet || !speaksHere(work) || !askedHere(work)) return;
+        if (quiet || !speaksHere(work) || !askedHere(work)) return true;
         // Компьютер говорит «Готово…» сам, но не перебивает: ждёт, пока пульт не слушает и не говорит. Договорил —
         // шлюз открывает вопрос, пульт слушает ответ.
         const turn = saying.then(async () => {
@@ -128,6 +157,7 @@ export function CreationFlow() {
         });
         saying = turn.catch(() => undefined);
         await turn;
+        return true;
     };
     return null;
 }

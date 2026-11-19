@@ -13,9 +13,10 @@
 //!   desk «ждёт ключ» with the panel's window open; «примерить», «нет», «в черновики», «подробнее», «переделай…»,
 //!   «удали» → «Удалить черновик?». What the pack cannot read is not the question's.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use super::asked::{Kind, ANSWER_FOR};
@@ -24,7 +25,7 @@ use super::layer::TalkLayer;
 use super::origin::{Origin, COMPUTER};
 use super::pack::{self, fill, Pack};
 use super::work_tools::{in_sentence, Refusal};
-use super::works::{End, Outcome, Question, Work, WorkResult, WorkState};
+use super::works::{End, Face, Outcome, Question, Work, WorkResult, WorkState};
 use crate::core::events::GatewayEvent;
 use crate::core::requests::{RequestKind, RequestStatus};
 use crate::utils::time::now_ms;
@@ -97,8 +98,37 @@ pub fn answer_of(pack: &Pack, normalized: &str) -> Option<Answer> {
 }
 
 /// What is said of a thing put on the desk, and whether it is there.
-fn desk_words(say: &super::pack::SayWords, put: Put) -> (String, bool) {
+/// What became of the thing, in the pack's words. A theme on the desk is a theme applied: the panel applies it on the
+/// work's «decided» (voice/flow.tsx), so «На столе» would be the wrong word (test 19.11, remark 7).
+/// A failed run's cause in words the person can act on, when the model's error names one: money, a rate limit, a key.
+/// Anything else stays «подробности в пульте».
+fn failure_why<'a>(error: &str, say: &'a super::pack::SayWords) -> Option<&'a str> {
+    if MONEY.is_match(error) {
+        Some(say.why_money)
+    } else if RATE.is_match(error) {
+        Some(say.why_rate)
+    } else if KEY.is_match(error) {
+        Some(say.why_key)
+    } else {
+        None
+    }
+}
+
+/// The model's error says its key is out of money: OpenAI's 429 «insufficient_quota», a 402, «no credits».
+static MONEY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b402\b|insufficient|no credits|credit balance|billing|quota").expect("a valid pattern")
+});
+/// A rate limit, money apart (checked after `MONEY`).
+static RATE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b429\b|rate.?limit|too many requests").expect("a valid pattern"));
+/// The key refused or missing.
+static KEY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b40[13]\b|no api key|invalid.{0,10}api.?key|unauthori[sz]ed").expect("a valid pattern")
+});
+
+fn desk_words(say: &super::pack::SayWords, put: Put, theme: bool) -> (String, bool) {
     match put {
+        Put::OnDesk { needs, .. } if needs.is_empty() && theme => (say.theme_on.to_string(), true),
         Put::OnDesk { needs, .. } if needs.is_empty() => (say.on_desk.to_string(), true),
         Put::OnDesk { needs, open } => {
             let needs: Vec<String> = needs.iter().map(|need| in_sentence(need)).collect();
@@ -138,7 +168,14 @@ impl TalkLayer {
         }
         let planned = self.planned.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&work.id);
         let (line, kind, end) = match work.state {
-            WorkState::Failed => (fill(say.failed_line, &[("title", &title)]), None, None),
+            WorkState::Failed => {
+                let why = executor.facts(&work).await.failure.as_deref().and_then(|error| failure_why(error, say));
+                let line = match why {
+                    Some(why) => fill(say.failed_why_line, &[("title", &title), ("why", why)]),
+                    None => fill(say.failed_line, &[("title", &title)]),
+                };
+                (line, None, None)
+            }
             // A run that changed nothing is no «не доделано» either: what to do is asked, the next phrase says it.
             WorkState::Unfinished if executor.facts(&work).await.unchanged => {
                 (fill(say.unchanged_line, &[("title", &title)]), None, None)
@@ -150,7 +187,7 @@ impl TalkLayer {
                 let ready = fill(say.ready_line, &[("title", &title)]);
                 match executor.put(&work, End::Desk, by).await {
                     Ok(put) => {
-                        let (words, on_desk) = desk_words(say, put);
+                        let (words, on_desk) = desk_words(say, put, work.face == Some(Face::Theme));
                         (format!("{ready} {words}"), None, on_desk.then_some(End::Desk))
                     }
                     Err(why) => (format!("{ready} {}", fill(say.failed, &[("why", &why)])), None, None),
@@ -180,7 +217,8 @@ impl TalkLayer {
                         "{}{}{hosts}{}",
                         fill(say.ready_line, &[("title", &title)]),
                         (say.needs)(&facts.needs),
-                        say.desk_or_fit
+                        // A theme is applied, not put on the desk: its own question (test 19.11, remark 7).
+                        if work.face == Some(Face::Theme) { say.theme_or_fit } else { say.desk_or_fit }
                     );
                     (line, Some(Kind::Ready), None)
                 }
@@ -347,7 +385,7 @@ impl TalkLayer {
         let executor = self.executor(&work.executor).ok_or_else(|| Refusal::Failed("its executor is gone".into()))?;
         let by = ByVoice { device: origin.device.clone(), who: origin.who.clone() };
         let put = executor.put(work, End::Desk, by).await.map_err(Refusal::Failed)?;
-        Ok(desk_words(say, put).0)
+        Ok(desk_words(say, put, work.face == Some(Face::Theme)).0)
     }
 
     /// The answer to the device's question.
@@ -525,6 +563,25 @@ impl TalkLayer {
 mod tests {
     use super::*;
     use crate::memory::text::Lang;
+
+    /// 19.11: OpenAI's «no credits» made a game «не получилось. Подробности в пульте» — the cause is said now.
+    #[test]
+    fn names_a_failures_plain_cause_money_a_limit_a_key_and_nothing_else() {
+        let say = &pack::of(Lang::Ru).work.say;
+        let openai = r#"HTTP 429: { "error": { "message": "You have no credits remaining.", "type": "insufficient_quota", "code": "credit_balance_exhausted" } }"#;
+        assert_eq!(failure_why(openai, say), Some(say.why_money));
+        assert_eq!(
+            failure_why("429 rate_limit_error: Number of request tokens has exceeded your limit", say),
+            Some(say.why_rate)
+        );
+        assert_eq!(failure_why("401 invalid x-api-key", say), Some(say.why_key));
+        assert_eq!(failure_why("no API key: add it to the provider in the panel", say), Some(say.why_key));
+        assert_eq!(failure_why("Anthropic stream broke: 14029 tokens", say), None);
+        assert_eq!(
+            fill(say.failed_why_line, &[("title", "Новая игра"), ("why", say.why_money)]),
+            "Новая игра: не получилось — на ключе «Мозга» кончились деньги. Подробности в пульте."
+        );
+    }
 
     #[test]
     fn reads_the_answers_to_the_question_and_lets_go_of_the_rest() {

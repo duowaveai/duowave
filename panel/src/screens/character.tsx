@@ -5,14 +5,28 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { BrainView, CharactersView, ConnectorView, LlmEffort, ModelsView, PersonaInfo, api, can, problemOf } from '../api';
-import { IconChevronLeft, IconChevronRight, IconMemory, IconSmile, IconSparkle, IconVoice } from '../icons';
+import {
+    BrainView,
+    CatalogView,
+    CharactersView,
+    ConnectorView,
+    LlmEffort,
+    ModelsView,
+    PersonaInfo,
+    api,
+    can,
+    installApi,
+    problemOf,
+} from '../api';
+import { IconChat, IconChevronLeft, IconChevronRight, IconMemory, IconSmile, IconSparkle, IconVoice } from '../icons';
+import { isCallWord } from '../magicplace/filters';
 import { useLinkedItem, usePanel, useSectionTab } from '../shell/context';
 import { Avatar, PlayButton, markOf } from '../ui/media';
 import { BrainTab } from './brain';
+import { aliceOnly, chooseWord, useCallWords } from './call-words';
 import { CharactersTab } from './characters';
 import { DashData, THINKING, Thinking, WHERE, nodesOf, thinkingOf, toneClass } from './dash-model';
-import { ModelsScreen } from './models';
+import { VoicePage } from './voice-home';
 import { MemoryScreen } from './recall';
 import { SpendPage, SpendRow } from './spend';
 import { tr } from '../i18n';
@@ -52,7 +66,8 @@ function Deeper({ tab, onBack }: { tab: Exclude<CharacterTab, 'page'>; onBack: (
                 {tr.characters.characterWord}
             </button>
             {tab === 'characters' && <CharactersTab />}
-            {tab === 'voice' && <ModelsScreen tab="voice" onTab={() => undefined} bare />}
+            {/* Тот же «Голос», что в «Настройках» (проверка начисто 19.11): кто говорит, модель, свой голос. */}
+            {tab === 'voice' && <VoicePage />}
             {tab === 'brain' && <BrainTab spend={can('settings.edit') && <SpendRow onOpen={() => brainItem.open('spend')} />} />}
             {tab === 'memory' && can('memory.view') && <MemoryScreen />}
         </>
@@ -122,6 +137,17 @@ function CharacterPage({ onOpen }: { onOpen: (tab: CharacterTab) => void }) {
     };
     useEffect(read, [panel.version]);
 
+    // Слово персонажа (замечание 11 теста 19.11): его пара-слово из каталога (`companions`), стоит ли оно и слушает ли.
+    const callWords = useCallWords();
+    const [catalog, setCatalog] = useState<CatalogView | null>(null);
+    useEffect(() => {
+        if (!can('station.view')) return;
+        void installApi(callWords.station)
+            .packagesCatalog()
+            .then((fresh) => alive.current && setCatalog(fresh))
+            .catch(() => undefined);
+    }, [callWords.station, panel.version]);
+
     const health = panel.health;
     // Режим «Микрофон»: голос и мозг — компьютера, а не Яндекса (как на столе).
     const computer = useOnComputer();
@@ -155,6 +181,23 @@ function CharacterPage({ onOpen }: { onOpen: (tab: CharacterTab) => void }) {
             const next = Object.fromEntries(tones.map((tone) => [tone.id, tone.id === id ? at : toneAt(tone.id, tone.default)]));
             await api.chooseCharacter(character.id, { tones: next, voice: false });
             return tr.characters.mannerApplied;
+        });
+
+    const pairWord = (() => {
+        const entry = character?.package ? catalog?.packages.find((item) => item.id === character.package?.id) : undefined;
+        const ids = (entry?.companions ?? []).map((pair) => pair.id);
+        const known = catalog?.packages.find((item) => ids.includes(item.id) && isCallWord(item));
+        return known ? { id: known.id, word: /«([^»]+)»/.exec(known.title)?.[1] ?? known.title } : null;
+    })();
+    const word = pairWord ? callWords.words?.find((entry) => entry.id === pairWord.id) : undefined;
+    const findWord = (): void => panel.go('magicplace', 'store', undefined, { kind: 'word' });
+    const setWord = (on: boolean) =>
+        word &&
+        void act(`word:${word.id}`, async () => {
+            if (on) await chooseWord(callWords.station, callWords.words ?? [], word.id);
+            else await aliceOnly(callWords.station, [word]);
+            callWords.reload();
+            return on ? tr.characters.wordOnNow(word.word) : tr.characters.wordOffNow;
         });
 
     // Мозг: глубина выбирается у Claude из пульта; у других моделей — только видно, какая модель.
@@ -227,6 +270,36 @@ function CharacterPage({ onOpen }: { onOpen: (tab: CharacterTab) => void }) {
                         </div>
                     )}
                 </Row>
+                {!relay && !computer && (
+                    <Row
+                        icon={IconChat}
+                        title={tr.characters.word}
+                        value={word ? `«${word.word}»` : undefined}
+                        sub={
+                            word
+                                ? word.enabled
+                                    ? tr.characters.wordListening
+                                    : tr.characters.wordOff
+                                : pairWord
+                                  ? tr.characters.wordNotInstalled(pairWord.word)
+                                  : tr.characters.wordNone
+                        }
+                    >
+                        {can('plugins.manage') && (
+                            <div class="flex gap-8 flex-wrap">
+                                {word ? (
+                                    <button class="w-btn" disabled={busy !== null} onClick={() => setWord(!word.enabled)}>
+                                        {word.enabled ? tr.characters.wordTurnOff : tr.characters.wordTurnOn}
+                                    </button>
+                                ) : (
+                                    <button class="w-btn" onClick={findWord}>
+                                        {tr.characters.wordFind}
+                                    </button>
+                                )}
+                            </div>
+                        )}
+                    </Row>
+                )}
                 <Row
                     icon={IconSparkle}
                     title={tr.characters.brain}

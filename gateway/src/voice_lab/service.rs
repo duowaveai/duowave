@@ -201,8 +201,13 @@ const LOCAL_HOSTS: &[&str] = &["127.0.0.1", "localhost", "::1", "[::1]"];
 
 /// Short of room beside the household's reserve: the owner may start anyway (the panel asks «всё равно?» and sends
 /// `anyway`). 428: the request needs the owner's consent first.
-fn tight_memory(reason: String) -> ApiError {
-    ApiError::new(StatusCode::PRECONDITION_REQUIRED, reason)
+/// The warning's numbers ride in the error's `errors` (`{state: "tight", memory}`): a voice switched on later keeps them
+/// (models' `voice_pending.memory`) and writes the words again for whoever reads them.
+fn tight_memory(admission: &Admission) -> ApiError {
+    let reason = admission.reason.clone().unwrap_or_else(|| crate::tr!("ОЗУ впритык."));
+    let mut error = ApiError::new(StatusCode::PRECONDITION_REQUIRED, reason);
+    error.errors = admission.tight.map(|tight| json!({ "state": "tight", "memory": tight }));
+    error
 }
 
 /// The gateway's environment minus its keys, as the model servers get it (models' server_env), and what Python needs
@@ -939,6 +944,11 @@ impl VoiceLabService {
         snapshot.pool_mb.saturating_sub(reserve_mb(snapshot.total_mb, self.config.reserve_mb))
     }
 
+    /// An own voice's name by its id (a character's voice: the character's title).
+    pub fn voice_name(&self, id: &str) -> Option<String> {
+        self.store.voices().into_iter().find(|voice| voice.id == id).map(|voice| voice.name)
+    }
+
     /// The own voices as the models' cards need them, with their engine's server state.
     pub async fn voices_for_cards(&self) -> Vec<OwnVoiceCard> {
         let mut states = HashMap::new();
@@ -1231,9 +1241,7 @@ impl VoiceLabService {
 /// A warning stops the start unless the owner said «всё равно».
 fn admitted(admission: &Admission, anyway: bool) -> Result<(), ApiError> {
     match admission.verdict {
-        AdmissionVerdict::Tight if !anyway => {
-            Err(tight_memory(admission.reason.clone().unwrap_or_else(|| crate::tr!("ОЗУ впритык."))))
-        }
+        AdmissionVerdict::Tight if !anyway => Err(tight_memory(admission)),
         _ => Ok(()),
     }
 }

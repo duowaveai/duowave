@@ -219,6 +219,21 @@ const en: Translation<typeof ru> = {
     whoAnswersNow: 'Who is answering now',
     collapse: 'collapse',
     more: 'more',
+    wordsOpen: (word: string) => `Wake word: “${word}” — choose`,
+    wordsTitle: 'Wake word',
+    wordsAbout: 'The word the speaker answers to. One listens at a time: choose another and the previous one goes off, freeing the speaker’s RAM.',
+    wordsReading: 'Reading the words…',
+    wordListening: 'listening',
+    wordOff: 'off — takes no RAM',
+    wordChosen: (word: string) => `The speaker answers to “${word}”.`,
+    wordAliceOnly: (word: string) => `Only “${word}”`,
+    wordAliceOnlySub: 'all words off, the speaker as out of the box',
+    wordAliceChosen: (word: string) => `The speaker answers to “${word}”.`,
+    wordsRemove: 'Remove all words',
+    wordsRemoveSub: 'wipe them from the speaker — free RAM and storage',
+    wordsRemoveConfirm: 'The words are wiped from the speaker. They can come back from the store.',
+    wordsRemoved: 'The words are removed from the speaker.',
+    wordsFind: 'Find a word in the store',
 };
 
 export default en;

@@ -31,6 +31,8 @@ const en: Translation<typeof ru> = {
     stop: '■ stop',
     play: '▶ listen',
     speaksNow: 'speaking now',
+    retakeFor: (model: string) => `Re-take for ${model} from your recordings`,
+    recordAgain: 'Record again',
     activateAnyway: 'turn on anyway',
     choose: 'choose',
     installing: (title: string) => `Installing: ${title}`,

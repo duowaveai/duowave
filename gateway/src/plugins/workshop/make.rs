@@ -109,6 +109,24 @@ pub const FOLDERS_ELSEWHERE: &str =
 pub const MIDI_ELSEWHERE: &str =
     "Учителю нужен компьютер с DuoWave: клавиатура подключается к нему. Попросите в пульте на компьютере.";
 
+/// How an earlier wish rides with new words on the same draft.
+const EARLIER: &str = "\n\nРаньше об этой вещи просили: ";
+
+/// New words on a draft with the wish it was made for: «Переделай» alone says nothing of what the thing is, and the
+/// agent's conversation is not always there to say it (19.11: a run that ended with no words left none, and «Переделай»
+/// of a «Portal 2D» game made a quiz of the template). The first wish is kept, not every «переделай» before.
+fn with_earlier(words: &str, before: &str) -> String {
+    let before = before.trim();
+    if before.is_empty() || before == words.trim() || words.contains(EARLIER.trim()) {
+        return words.to_string();
+    }
+    let earlier = match before.split_once(EARLIER.trim()) {
+        Some((_, earlier)) => earlier.trim().to_string(),
+        None => format!("«{before}»"),
+    };
+    format!("{words}{EARLIER}{earlier}")
+}
+
 /// What `make` started: the draft, its face and its title for now (the agent may rename it). `noted`: the agent
 /// already worked on the draft — the words went to that work («вдогонку»), nothing new began.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -224,7 +242,7 @@ impl Workshop {
         who: Option<String>,
         work: Option<&str>,
     ) -> Result<Made, ApiError> {
-        let words: String = words.trim().chars().take(4000).collect();
+        let mut words: String = words.trim().chars().take(4000).collect();
         let dialog = self.dialog.get().cloned().filter(|dialog| dialog.enabled()).ok_or_else(|| {
             ApiError::conflict(crate::tr!("Модель не выбрана: добавьте провайдера в «Персонаж» → «Мозг»."))
         })?;
@@ -239,6 +257,7 @@ impl Workshop {
                     tracing::info!(target: "plugins", "workshop: words added to the work on {id}");
                     return Ok(Made { draft: id.to_string(), kind: view.meta.kind, title, noted: true });
                 }
+                words = with_earlier(&words, &self.card(id).asked);
                 (id.to_string(), view.meta.kind, title)
             }
             None => {
@@ -369,6 +388,19 @@ struct Launch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_words_on_a_draft_carry_the_first_wish_once() {
+        let once = with_earlier("Переделай", "сделай игру portal 2d, пару уровней");
+        assert_eq!(once, "Переделай\n\nРаньше об этой вещи просили: «сделай игру portal 2d, пару уровней»");
+        // Another «переделай» keeps the first wish, not the chain.
+        assert_eq!(
+            with_earlier("Крупнее", &once),
+            "Крупнее\n\nРаньше об этой вещи просили: «сделай игру portal 2d, пару уровней»"
+        );
+        assert_eq!(with_earlier("Переделай", ""), "Переделай");
+        assert_eq!(with_earlier("Переделай", "Переделай"), "Переделай");
+    }
 
     #[test]
     fn reads_one_request_for_the_station_and_the_panel() {

@@ -140,6 +140,11 @@ pub struct AssistantTurn {
     pub native: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<LlmUsage>,
+    /// The turn stopped at its output limit before it called anything: its words or its thinking were cut short.
+    /// Rounds that know what to do about it (the workshop agent's, `ToolBox::cut_answer_note`) go on and tell the
+    /// model; anywhere else the turn ends the answer as it is, a spoken one too.
+    #[serde(skip)]
+    pub out_of_tokens: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

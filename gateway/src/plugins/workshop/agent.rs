@@ -100,6 +100,13 @@ fn cut_note(cut: &ToolCallCut) -> String {
     )
 }
 
+/// What the agent hears when its turn ran out of tokens before it called anything: it thought the whole thing through
+/// or wrote the code in its words, and nothing was written (19.11, a game: 16 000 tokens, no file).
+const CUT_ANSWER: &str = "Шлюз: твой прошлый ответ оборвался на пределе длины раньше, чем ты вызвал хоть один \
+инструмент, — ничего не записано. Не продумывай всю работу разом и не пиши код в ответе: сразу записывай файлы \
+инструментами, частями — первый кусок write_file, следующие append_file, по 100–200 строк за вызов. Начни с \
+простого рабочего варианта, потом улучшай.";
+
 /// The skill without its front matter (the lines between the first two `---`).
 pub fn skill_text() -> &'static str {
     SKILL
@@ -619,6 +626,7 @@ pub fn work(
     toolbox.budget_ms = Some(BUDGET_MS);
     toolbox.round_ms = Some(round_ms(max_tokens));
     toolbox.cut_note = Some(cut_note);
+    toolbox.cut_answer_note = Some(CUT_ANSWER);
     // A file written in parts: the pieces of one turn go in their order.
     toolbox.in_order = true;
     // Long work outlives a network that blinks: a step the connection broke (14.11, «Anthropic stream broke … Operation

@@ -14,7 +14,7 @@ const en: Translation<typeof ru> = {
     whatVoice: 'the voice',
     whatImprint: 'the voice snapshot',
     whatModel: 'the model',
-    pendingTight: (title: string, reason: string) => `Everything is in place, but memory is tight${reason ? `: ${reason}` : '.'} Turn on “${title}” anyway?`,
+    pendingTight: (title: string, reason: string) => (reason ? `Everything is in place. ${reason} Turn on “${title}” anyway?` : `Everything is in place, but memory is tight. Turn on “${title}” anyway?`),
     verbDownload: 'download',
     verbImprint: 'take',
     verbInstall: 'install',
@@ -122,6 +122,9 @@ const en: Translation<typeof ru> = {
 
     ownVoiceServerLabel: 'Own voice server',
     ownVoiceTitle: 'Own voice',
+    characterVoicesTitle: 'Characters’ voices',
+    ownOnTop: (own: string, character: string) => `Your voice “${own}” is speaking now — instead of “${character}”’s.`,
+    backToCharacter: 'Back to the character’s voice',
     installing: 'installing',
     startingServer: 'starting the voice server…',
     serverNotWorking: 'the voice server is not working',

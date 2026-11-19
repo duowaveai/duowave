@@ -19,6 +19,7 @@ export default {
     chipFit: 'примерить',
     chipDesk: 'на стол',
     chipEnable: 'включить',
+    chipApply: 'применить',
     chipRedo: 'переделай…',
     chipPark: 'в черновики',
     chipDrop: 'не надо',

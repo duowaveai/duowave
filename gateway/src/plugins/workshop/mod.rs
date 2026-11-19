@@ -497,6 +497,13 @@ impl Workshop {
             Ok(report) => report.ok,
             Err(_) => false,
         };
+        // The card was kept again while the check went (a new run began on the draft, it was parked, stopped): that
+        // decides, not this check — written over, the new run's «работает» became «готово» of the old one, and the
+        // new run's work never ended (19.11).
+        if self.kept_card(id).map(|kept| kept.updated) != Some(card.updated) {
+            tracing::info!(target: "plugins", "workshop: {id} changed while its last run was checked: the check is not kept");
+            return;
+        }
         card.stage = if passed && !limited && changed { Stage::Ready } else { Stage::Unfinished };
         card.unchanged = !changed;
         if !passed || limited || !changed {
@@ -506,6 +513,23 @@ impl Workshop {
         if let Err(error) = self.keep_card(id, card, Some(change)) {
             tracing::warn!(target: "plugins", "workshop: the card of {id} is not kept: {}", error.message);
         }
+    }
+
+    /// «Остановить»: the agent's run on the draft stops; a card that still says the agent works with no run going (its
+    /// end was lost, its check never came back) says «остановлено» now. False when nothing went on.
+    pub fn stop(&self, id: &str) -> bool {
+        if self.activity.stop(id) {
+            return true;
+        }
+        let Some(card) = self.kept_card(id).filter(|card| card.stage == Stage::Working) else { return false };
+        tracing::info!(target: "plugins", "workshop: {id} said «работает» with no run going: stopped");
+        self.keep_card(id, DraftMeta { stage: Stage::Stopped, ..card }, Some("stopped")).is_ok()
+    }
+
+    /// Whether the agent is at the draft: its run goes on, or the run ended and the gateway still checks what it made.
+    pub fn working(&self, id: &str) -> bool {
+        self.activity.log(id, u64::MAX).is_some_and(|(job, _)| job.busy)
+            || self.kept_card(id).is_some_and(|card| card.stage == Stage::Working)
     }
 
     /// «В черновики»: the draft waits in the workshop, off the desk; the agent's work on it, if any, stops.
@@ -1291,5 +1315,62 @@ mod tests {
         ] {
             assert!(draft_path(bad).is_err(), "{bad}");
         }
+    }
+
+    fn env(dir: &std::path::Path) -> crate::config::Env {
+        let text = |sub: &str| dir.join(sub).to_string_lossy().into_owned();
+        crate::config::Env::from_pairs([
+            ("STATE_DIR", text("state")),
+            ("DIALOG_PROVIDER", "echo".into()),
+            ("PACKAGES_DIR", text("packages")),
+            ("DATA_DIR", text("data")),
+            ("VOICE_LAB_DIR", text("voice-lab")),
+            ("TTS_MODELS_DIR", text("voices")),
+        ])
+    }
+
+    /// The check after a run keeps its verdict only on the card it began with: a new run begun on the draft, or the
+    /// draft parked or stopped while it went, decides instead — on 19.11 the old run's «готово» was written over the
+    /// new run's «работает», and the new run's work never ended. A card that says «работает» with no run going stops
+    /// on «Остановить», and the agent is no longer «at» the draft.
+    #[tokio::test]
+    async fn the_check_after_a_run_keeps_its_verdict_only_on_the_card_it_began_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = crate::app::App::build(crate::config::Config::for_tests(&env(dir.path()))).unwrap();
+        let workshop = app.workshop.clone();
+        workshop.create("widget-1", Some("widget"), Some("Часы"), None).unwrap();
+        let card = DraftMeta {
+            by: activity::By::Panel,
+            who: None,
+            asked: "сделай виджет: часы".into(),
+            kind: Face::Widget,
+            stage: Stage::Working,
+            updated: 0,
+            note: None,
+            kept: true,
+            work: None,
+            unchanged: false,
+        };
+        workshop.keep_card("widget-1", card, Some("made")).unwrap();
+        let at_end = workshop.kept_card("widget-1").unwrap();
+        // A new run began while the last one was checked: its card is kept anew.
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        workshop.keep_card("widget-1", DraftMeta { asked: "доделай".into(), ..at_end.clone() }, Some("made")).unwrap();
+        workshop.checked_after_run("widget-1", at_end, false, true).await;
+        let kept = workshop.kept_card("widget-1").unwrap();
+        assert_eq!((kept.stage, kept.asked.as_str()), (Stage::Working, "доделай"), "the new run's card stands");
+
+        // Nothing came after it: the check decides.
+        workshop.checked_after_run("widget-1", kept, false, true).await;
+        assert!(matches!(workshop.card("widget-1").stage, Stage::Ready | Stage::Unfinished));
+
+        // «работает» with no run going: «Остановить» stops it.
+        let working = DraftMeta { stage: Stage::Working, ..workshop.card("widget-1") };
+        workshop.keep_card("widget-1", working, None).unwrap();
+        assert!(workshop.working("widget-1"), "the card says the agent works");
+        assert!(workshop.stop("widget-1"));
+        assert_eq!(workshop.card("widget-1").stage, Stage::Stopped);
+        assert!(!workshop.working("widget-1"));
+        assert!(!workshop.stop("widget-1"), "nothing goes on now");
     }
 }

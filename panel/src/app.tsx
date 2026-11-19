@@ -37,6 +37,7 @@ import { ConsentSheet } from './bus/consent-sheet';
 import { InstallWizard } from './magicplace/wizard';
 import { PendingInstallRunner } from './magicplace/pending-install';
 import { SettlingRunner } from './magicplace/settling';
+import { VoiceWaitingRunner } from './voice/pending-voice';
 import { noteBusChange } from './bus/state';
 import { noteFoldersChange } from './folders/state';
 import { noteHelperKey, noteHelpersNews } from './helpers';
@@ -561,8 +562,15 @@ export function App() {
         // Пустая вкладка — раздел как есть, без запомненной (док открывает «Настройки» списком на телефоне).
         const remembered = tab === '' ? undefined : tabs[tabKey(named.section, query)];
         const place: Place = { section: named.section, tab: named.tab ?? remembered, item: named.tab ? named.item : undefined, query };
-        if (!leaving()) return navigate(place);
-        void mayLeave().then((ok) => ok && navigate(place));
+        // Пустая вкладка и забывает запомненную: иначе раздел строился бы по ней же (link.tab) — «Все работы» открывали
+        // последнюю открытую работу, а не список (замечание 6 теста 19.11).
+        const key = tabKey(named.section, query);
+        const arrive = (): void => {
+            if (tab === '') setTabs((old) => (key in old ? Object.fromEntries(Object.entries(old).filter(([name]) => name !== key)) : old));
+            navigate(place);
+        };
+        if (!leaving()) return arrive();
+        void mayLeave().then((ok) => ok && arrive());
     };
     const openHouse = (connector?: string): void => go('skills', 'connectors', connector);
     const signOut = (): void => {
@@ -806,6 +814,8 @@ export function App() {
             {auth === 'ok' && <InstallWizard />}
             {auth === 'ok' && <PendingInstallRunner />}
             {auth === 'ok' && <SettlingRunner />}
+            {/* Голос ждёт решения владельца — вопрос с любого экрана (voice/pending-voice.tsx). */}
+            {auth === 'ok' && <VoiceWaitingRunner />}
             {auth === 'ok' && <ConsentSheet />}
             {auth === 'ok' && onboardingOpen && !VIA && !OWN_PAGE && <Onboarding onClose={closeOnboarding} />}
             {pickerOpen && (

@@ -110,6 +110,11 @@ html[data-look] .win-title { font-size: 26px; line-height: 30px; overflow-wrap: 
     padding: 4px 24px calc(24px + env(safe-area-inset-bottom));
 }
 .win:has(> .win-foot) .win-body { padding-bottom: 24px; }
+/* Тело прокручивается, а не сжимает то, что в нём (замечание 12 теста 19.11: в «Добавить провайдера» список со
+   `overflow: hidden` ужимался до высоты окна, строки — вместе с ним: текст налезал, низ обрезан, прокрутки не было).
+   :where — без веса: элемент, которому нужен свой flex, задаёт его как прежде. */
+:where(.win-body) > *,
+:where(.win-group) > * { flex-shrink: 0; }
 .win-text, .t-body { font-size: 14px; line-height: 21px; color: var(--sub); }
 .win-foot {
     flex: none;

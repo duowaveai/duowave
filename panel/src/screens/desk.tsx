@@ -6,10 +6,11 @@
 
 import { useEffect, useState } from 'preact/hooks';
 
-import { useHelpers } from '../helpers';
 import { usePanel } from '../shell/context';
+import { useRecalled } from '../shell/memory';
 import { useTheme } from '../shell/theme';
 import { DeskWidget, isFresh, orderedOnDesk, repairedLayout, useDeskLayout, useWidgets } from '../shell/widgets';
+import { landingsOf } from '../shell/desk-repair';
 import { WidgetFrame, WidgetMenu } from '../ui/widget';
 import { settingsPlace } from '../builtin';
 import { ConnectFirstCard } from './connect';
@@ -18,13 +19,13 @@ import { MicFirstCard } from './voice-input';
 import { LocalAsrSetup, localAsrNeedsCard, useLocalAsr } from './local-asr';
 import { Dashboard } from './dashboard';
 import { DeskCanvas } from './desk-canvas';
-import { turboOf } from './turbo-model';
 import { TurboDesk } from './turbo-desk';
+import { NOTES_FOLDED } from './home-scene';
 import { VIA } from '../via';
 import { useWhoOpen } from './desk-widgets';
 import { AddTile, DraftTile } from './draft-tile';
 import { FolderOffers, useFolderOffers } from './folder-offers';
-import { useDeskDrafts } from '../voice/drafts';
+import { DeskDrafts, useDeskDrafts } from '../voice/drafts';
 
 export { AddTile };
 import { RememberedLine } from './recall';
@@ -50,13 +51,14 @@ export function useMedia(query: string): boolean {
 const turboPanel = (role: string): boolean => role === 'helper' && !VIA;
 
 /**
- * Второе тело сцены рядом со шлюзом (решение владельца 16.11): Турбо или пустое место для него — сцене на свободном
- * столе нужно места на него справа. Столько точек ему.
+ * Стол пульта Турбо (его тело — в сцене, справа от «Здесь не разговаривают»): сцене на свободном столе нужно места на
+ * него справа. Столько точек ему. Карточка Турбо рядом со шлюзом места не берёт: она висит поверх стола (баг-лист
+ * 19.11, dashboard.tsx).
  */
 const TURBO_W = 360;
 
-/** Сцена колонки — середина стола. `room` — её высота, без неё — до низа экрана. */
-function Scene({ room }: { room?: number }) {
+/** Сцена колонки — середина стола. `room` — её высота, без неё — до низа экрана; `notesFolded` — подписи свёрнуты. */
+function Scene({ room, notesFolded }: { room?: number; notesFolded?: boolean }) {
     const panel = usePanel();
     const [whoOpen, toggleWho] = useWhoOpen();
     if (turboPanel(panel.role.role))
@@ -82,6 +84,7 @@ function Scene({ room }: { room?: number }) {
                 room={room}
                 onOpenHome={() => panel.go('settings', 'helpers')}
                 onOpenTurbo={(id) => panel.go('settings', 'devices', `turbo:${id}`, { view: 'computer' })}
+                notesFolded={notesFolded}
             />
             {/* Персонаж только что запомнил что-то голосом или мимоходом: видно сразу, с «Отменить». */}
             {/* Строки под сценой — своим блоком с отступом снизу: широкий виджет под сценой (витрина) заходит на пустой низ
@@ -101,8 +104,8 @@ function Scene({ room }: { room?: number }) {
  * Место «Новый виджет» (docs/plans/voice-creation.md): черновик, над которым агент работает или который ждёт на
  * примерке, стоит плиткой здесь — вещь рождается там, где будет стоять, — а «Новый виджет» сдвигается ниже.
  */
-function Making({ onAdd }: { onAdd: () => void }) {
-    const { tile, more } = useDeskDrafts();
+function Making({ drafts, onAdd }: { drafts: DeskDrafts; onAdd: () => void }) {
+    const { tile, more } = drafts;
     return (
         <>
             {tile && <DraftTile key={tile.id} draft={tile} more={more} />}
@@ -112,8 +115,8 @@ function Making({ onAdd }: { onAdd: () => void }) {
 }
 
 /** Плитка-черновик первой в ленте телефона. */
-function FeedDraft() {
-    const { tile, more } = useDeskDrafts();
+function FeedDraft({ drafts }: { drafts: DeskDrafts }) {
+    const { tile, more } = drafts;
     return tile ? <DraftTile key={tile.id} draft={tile} more={more} /> : null;
 }
 
@@ -152,11 +155,19 @@ export function DeskScreen() {
     useEffect(() => {
         if (repaired) actions.repair(widgets);
     }, [repaired !== null]);
+    // Виджет, поставленный голосом мимо «Примерки» (шлюз сказал «На столе.»), садится на стол, как только стол его рисует.
+    const drafts = useDeskDrafts();
+    const landings = landingsOf(drafts.installed, repaired ?? layout, widgets);
+    useEffect(() => {
+        for (const key of landings) actions.land(key);
+    }, [landings.join()]);
     const ordered = orderedOnDesk(widgets, repaired ?? layout);
-    // Место справа от колонки для второго тела: Турбо, пустое место для него у колонки, стол пульта Турбо.
-    const helpers = useHelpers();
-    const sceneExtra =
-        turboPanel(role) || turboOf(helpers.view) || (panel.health?.placement?.role === 'station' && helpers.view) ? TURBO_W : 0;
+    // Место справа от колонки — только столу пульта Турбо: карточка Турбо у шлюза висит поверх стола.
+    const sceneExtra = turboPanel(role) ? TURBO_W : 0;
+    // Подписи под колонкой сворачиваются, когда на столе свои виджеты (поставили сами или убрали стартовые): место —
+    // виджетам. Свернуть самому и «Не сворачивать» — память пульта.
+    const notesChoice = useRecalled<boolean>(NOTES_FOLDED);
+    const notesFolded = notesChoice ?? (layout.added.length > 0 || layout.hidden.length > 0);
     // Без колонки столу нечего показать: режимы и орбита были бы о колонке, которой нет. Виджеты «под сценой» —
     // приложения этого компьютера («Лента») — стоят и здесь, под первыми шагами: им колонка не нужна.
     if (panel.noStation)
@@ -209,7 +220,7 @@ export function DeskScreen() {
             <div class="desk-feed">
                 {banner}
                 <Shortcuts layout={layout} actions={actions} place="row" />
-                <FeedDraft />
+                <FeedDraft drafts={drafts} />
                 {above.length > 0 && <div class="desk-feed-grid">{above.map((widget) => tile(widget, true))}</div>}
                 <Scene room={420} />
                 <div class="desk-feed-grid">
@@ -230,8 +241,8 @@ export function DeskScreen() {
             sceneExtra={sceneExtra}
             layout={layout}
             actions={actions}
-            scene={<Scene room={460} />}
-            addTile={<Making onAdd={panel.openAdd} />}
+            scene={<Scene room={460} notesFolded={notesFolded} />}
+            addTile={<Making drafts={drafts} onAdd={panel.openAdd} />}
             banner={banner}
             render={(widget, menu, grip) => <WidgetOnDesk widget={widget} menu={menu} grip={grip} fresh={isFresh(layout, widget.key)} />}
             />

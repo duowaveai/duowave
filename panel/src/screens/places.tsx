@@ -12,6 +12,7 @@ import { tr } from '../i18n';
 import {
     IconChevronLeft,
     IconChevronRight,
+    IconEar,
     IconGlobe,
     IconHome,
     IconJournal,
@@ -21,6 +22,7 @@ import {
     IconShield,
     IconSpeaker,
     IconTerminal,
+    IconVoice,
 } from '../icons';
 import { usePanel, useSectionTab } from '../shell/context';
 import { setDevMode, setHiddenDevOptions, tapDev, useDevMode, useHiddenDevOptions } from '../shell/dev';
@@ -37,7 +39,9 @@ import { useHomeStationName } from '../station-name';
 import { JournalScreen } from './journal';
 import { StationMemoryCard } from './memory';
 import type { SettingsTab } from './mind';
-import { ModelsScreen } from './models';
+import { HearingPage, VoicePage } from './voice-home';
+import { VoiceHearingBrief } from './voice-brief';
+import { useVoiceAttention } from '../voice/pending-voice';
 import { EgressScreen } from './egress';
 import { PlacementCard } from './placement';
 import { SettingsScreen } from './settings';
@@ -52,7 +56,7 @@ export const settingsPlace = (place: SettingsTab): [string, string] => {
         case 'routes':
             return ['skills', 'routes'];
         case 'recognition':
-            return ['settings', 'station'];
+            return ['settings', 'hearing'];
         case 'character':
             return ['character', 'page'];
         default:
@@ -68,8 +72,10 @@ interface SettingsPage {
     /** Строка под именем в списке: что там. */
     sub: string;
     icon: Icon;
-    /** Точка в списке: там что-то ждёт (новая версия). */
+    /** Точка в списке: там что-то ждёт (новая версия, голос ждёт решения). */
     dot?: boolean;
+    /** Что значит точка — для читалки экрана. */
+    dotLabel?: string;
     /** Группа списка (docs/plans/menu-scheme.md): устройство, доступ и вид, система. */
     group: 'home' | 'access' | 'system';
     Page: FunctionComponent;
@@ -153,7 +159,8 @@ export function ComputerMic() {
             <Card id="ready" title={tr.places.readyTitle}>
                 <Readiness />
             </Card>
-            <ModelsScreen tab="recognition" onTab={() => undefined} bare />
+            {/* Модели слуха и голоса — в своих пунктах «Настроек» (проверка начисто 19.11); здесь — кратко со ссылками. */}
+            {can('models.manage') && <VoiceHearingBrief />}
             <Card id="mic-check" title={tr.places.micTitle}>
                 <MicCheck />
             </Card>
@@ -338,12 +345,20 @@ const GROUP_TITLES = (): Record<SettingsPage['group'], string> => ({
     system: tr.places.groupSystem,
 });
 
-function settingsPages(offered: boolean): SettingsPage[] {
+function settingsPages(offered: boolean, voiceAsks: boolean): SettingsPage[] {
     return [
         // «Дом» (docs/plans/home-and-devices.md, этап 1): устройства дома — центр, колонки и Турбо, у каждого — своя
         // страница; «Что уходит из дома» — регулятор и что будет, если Турбо уснёт. Прежние «Колонка» и «Дом»
         // (`#/settings/station`, `#/settings/helpers`) ведут сюда.
         { id: 'devices', title: tr.devices.pageTitle, sub: tr.devices.pageSub, icon: IconHome, group: 'home', Page: DevicesPage },
+        // «Голос» и «Слух» — свои пункты (проверка начисто 19.11): выбор голоса и моделей не прячется в странице
+        // компьютера. Точка у «Голоса» — голос ждёт решения владельца (voice/pending-voice.tsx).
+        ...(can('station.view')
+            ? [
+                  { id: 'voice', title: tr.voiceHome.pageVoice, sub: tr.voiceHome.pageVoiceSub, icon: IconVoice, dot: voiceAsks, dotLabel: tr.voiceHome.waitDot, group: 'home' as const, Page: VoicePage },
+                  { id: 'hearing', title: tr.voiceHome.pageHearing, sub: tr.voiceHome.pageHearingSub, icon: IconEar, group: 'home' as const, Page: HearingPage },
+              ]
+            : []),
         ...(can('connectors.view') ? [{ id: 'away', title: tr.devices.awayTitle, sub: tr.devices.awaySub, icon: IconGlobe, group: 'home' as const, Page: AwayPage }] : []),
         { id: 'access', title: tr.places.pageAccess, sub: tr.places.pageAccessSub, icon: IconKey, group: 'access', Page: AccessPage },
         { id: 'look', title: tr.places.pageLook, sub: tr.places.pageLookSub, icon: IconPalette, group: 'access', Page: LookPage },
@@ -368,7 +383,8 @@ export function SettingsSection() {
     // Телефон: сначала список; ссылка на страницу (`#/settings/updates`, поиск) открывает её сразу. Док ведёт сюда без
     // вкладки в адресе — тогда список.
     const [listed, setListed] = useState(() => !/^#\/settings\/[^/?]/.test(location.hash));
-    const pages = settingsPages(offered);
+    const voiceAsks = useVoiceAttention();
+    const pages = settingsPages(offered, voiceAsks);
     // Прежние «Колонка», «Дом», «Этот компьютер» и «Где работает DuoWave» — теперь «Устройства».
     const wanted = ['station', 'helpers', 'helper', 'placement'].includes(page) ? 'devices' : page;
     const shown = pages.find((entry) => entry.id === wanted) ?? pages[0];
@@ -407,7 +423,7 @@ export function SettingsSection() {
                                 <b>{entry.title}</b>
                                 <span class="w-cap">{entry.id === 'dev' && devHint ? devHint : entry.sub}</span>
                             </span>
-                            {entry.dot && <span class="badge-dot" role="img" aria-label={tr.places.newVersion} />}
+                            {entry.dot && <span class="badge-dot" role="img" aria-label={entry.dotLabel ?? tr.places.newVersion} />}
                             <IconChevronRight size={16} />
                         </button>,
                     ];

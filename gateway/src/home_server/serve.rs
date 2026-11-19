@@ -59,6 +59,7 @@ pub fn router() -> Router<Arc<App>> {
         .route("/home/v1/plugins/install", post(plugin_install))
         .route("/home/v1/character", post(character))
         .route("/home/v1/character/plan", post(character_plan))
+        .route("/home/v1/voice/pending", get(voice_pending).post(voice_pending_answer))
         .route("/home/v1/messenger/bot", post(messenger_bot))
         .route("/home/v1/catalog", get(catalog))
         .route("/home/v1/catalog/file", get(catalog_file))
@@ -283,9 +284,19 @@ async fn character(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> 
             }
         }
     }
-    let body = crate::characters::ChooseBody { voice: Some(true), install: true, ..Default::default() };
+    // The owner's own voice put on top of the character's (test 19.11, remark 11) stays when the centre names the same
+    // character again — on every persona save and every reconnect of this computer it does. Another character comes
+    // with its own voice, as decided on 17.11; «Вернуть голос персонажа» in «Голос» takes the character's back.
+    let on_top = app.models.chosen_voice().is_some_and(|chosen| own_on_top(&chosen.model_id));
+    let same = app.characters.active_id().as_deref() == Some(id.as_str());
+    let body = crate::characters::ChooseBody { voice: Some(!(on_top && same)), install: true, ..Default::default() };
     let answer = app.characters.choose(&id, body, true, None).await?;
     Ok(axum::Json(json!({ "character": id, "voice": answer.voice })).into_response())
+}
+
+/// An own voice of the voice lab that is no character's (`own:<id>`, not `own:c-…`): the owner's own recording.
+fn own_on_top(model_id: &str) -> bool {
+    model_id.strip_prefix(crate::models::models_service::OWN_PREFIX).is_some_and(|id| !id.starts_with("c-"))
 }
 
 /// How the character's voice would stand on this computer (clean-path check 18.11, item 40): the plan the centre's
@@ -298,6 +309,30 @@ async fn character_plan(State(app): State<Arc<App>>, caller: Caller, body: Bytes
         return Err(ApiError::bad_request("id".to_string()));
     }
     Ok(axum::Json(super::voice_plan::plan(&app, &request).await).into_response())
+}
+
+/// The voice waiting on this computer (voice_plan.rs, `waiting`): `{pending: … | null, computer}`. Only its own home.
+async fn voice_pending(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
+    own_home_only(&caller)?;
+    Ok(axum::Json(waiting_answer(&app)).into_response())
+}
+
+/// The owner's answer to the waiting voice, from the home's centre: `{"answer": "anyway" | "retry" | "cancel"}` →
+/// what waits now. Only its own home.
+async fn voice_pending_answer(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
+    own_home_only(&caller)?;
+    let request: Value = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::bad_request(r#"JSON: {"answer": "anyway" | "retry" | "cancel"}"#.to_string()))?;
+    let answer = request.get("answer").and_then(Value::as_str).unwrap_or_default();
+    super::voice_plan::answer(&app, answer, caller.actor()).await?;
+    Ok(axum::Json(waiting_answer(&app)).into_response())
+}
+
+fn waiting_answer(app: &App) -> Value {
+    json!({
+        "pending": super::voice_plan::waiting(app),
+        "computer": app.identity.gateway().map(|me| me.name).unwrap_or_default(),
+    })
 }
 
 /// The home's Telegram (docs/plans/home-and-devices.md, stage 2): the centre keeps the token and the contacts, this
@@ -334,7 +369,16 @@ async fn plugin_install(State(app): State<Arc<App>>, caller: Caller, body: Bytes
     }
     let here = app.plugins.installed(id).map(|installed| installed.manifest.version.to_string());
     if here.as_deref() != version || here.is_none() {
-        app.catalog.install(id, version, here.is_some(), None).await?;
+        match app.catalog.install(id, version, here.is_some(), None).await {
+            Ok(_) => {}
+            // Not in this computer's catalog: the feed the centre has it from (clean-path check 19.11, YouTube from a
+            // demo feed the station's admin added), taken only as this catalog pinned it.
+            Err(error) if error.status == StatusCode::NOT_FOUND => {
+                let Some(feed) = request.get("feed").and_then(Value::as_str) else { return Err(error) };
+                app.catalog.install_pinned_from(id, version, feed, None).await?;
+            }
+            Err(error) => return Err(error),
+        }
     }
     let view = app.plugins.enable(id, None).await?;
     Ok(axum::Json(json!({ "id": id, "version": view.version, "state": view.state })).into_response())
@@ -777,6 +821,13 @@ async fn llm_models(State(app): State<Arc<App>>, caller: Caller) -> Result<Respo
 #[cfg(test)]
 mod tests {
     #[test]
+    fn only_the_owners_own_recording_counts_as_a_voice_on_top() {
+        assert!(super::own_on_top("own:v-mine"));
+        assert!(!super::own_on_top("own:c-p-0a1b2c3d4e5f-lena-f5"), "a character's voice is not on top of itself");
+        assert!(!super::own_on_top("silero-ru"), "a ready-made voice is chosen, not put on top");
+    }
+
+    #[test]
     fn the_form_an_openai_client_sends_comes_apart_by_name() {
         let body = b"--XyZ\r\nContent-Disposition: form-data; name=\"file\"; filename=\"speech.wav\"\r\nContent-Type: audio/wav\r\n\r\nRIFF\x00\x01\r\n--XyZ\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nhome\r\n--XyZ--\r\n";
         let mut headers = axum::http::HeaderMap::new();
@@ -1055,8 +1106,24 @@ mod tests {
         own_home: bool,
         body: Value,
     ) -> (StatusCode, Value) {
+        over_link_in(app, method, uri, client, own_home, body, None).await
+    }
+
+    /// [`over_link`] asked in a language (`Accept-Language`, as the centre passes its asker's on).
+    async fn over_link_in(
+        app: &Arc<App>,
+        method: &str,
+        uri: &str,
+        client: &str,
+        own_home: bool,
+        body: Value,
+        language: Option<&str>,
+    ) -> (StatusCode, Value) {
         let mut request = Request::builder().method(method).uri(uri).header("content-type", "application/json");
         request = request.header("authorization", "Bearer anything");
+        if let Some(language) = language {
+            request = request.header("accept-language", language);
+        }
         let mut request = request.body(HttpBody::from(body.to_string())).unwrap();
         request.extensions_mut().insert(ConnectInfo(SocketAddr::new("127.0.0.1".parse().unwrap(), 5000)));
         request.extensions_mut().insert(crate::platform::http::LinkOrigin {
@@ -1101,6 +1168,74 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
         let (status, _) = over_link(&app, "POST", "/home/v1/character", &own, true, json!({})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// Clean-path check 19.11: «Голос ждёт» lived only on the computer's own page. The voice waiting here is shown to
+    /// the home's centre (`GET /home/v1/voice/pending`) with its name and tight memory as numbers, its reason written
+    /// from them in the asker's language — not the words of the moment it was found —, and the owner's answer is taken
+    /// from there (`POST`); only by this computer's own home.
+    #[tokio::test]
+    async fn the_turbo_shows_its_waiting_voice_to_its_own_home_and_takes_the_owners_answer() {
+        use crate::settings::definitions::{MemoryTight, PendingWait, VoicePending, VOICE_PENDING};
+        const PENDING: &str = "/home/v1/voice/pending";
+        let app = computer(&[
+            ("TTS_OWN_URL", "http://127.0.0.1:9/v1"),
+            ("TTS_OWN_MODEL", "piper"),
+            ("TTS_OWN_VOICE", "ru_RU-irina-medium"),
+        ]);
+        let other = client(&app, false);
+        let (status, body) = over_link(&app, "GET", PENDING, &other, false, Value::Null).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "another home never sees it: {body}");
+        let own = client(&app, true);
+        let (status, body) = over_link(&app, "GET", PENDING, &own, true, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["pending"], Value::Null, "nothing waits: {body}");
+        assert!(body["computer"].is_string(), "{body}");
+
+        // A voice waits for the owner's «всё равно»: memory is short. Its old reason was kept in other words.
+        let waiting = VoicePending {
+            model_id: "piper-denis".into(),
+            voice_id: None,
+            wait_for: PendingWait { kind: "file".into(), id: "piper-denis".into() },
+            anyway: false,
+            state: "tight".into(),
+            reason: Some("ОЗУ впритык: Memory is tight: …".into()),
+            memory: Some(MemoryTight::Short { free_mb: 2048, need_mb: 5120 }),
+            recipe: None,
+            since: "2026-11-19T10:00:00Z".into(),
+        };
+        app.settings.set(&VOICE_PENDING, &waiting, None).unwrap();
+        let (status, body) = over_link_in(&app, "GET", PENDING, &own, true, Value::Null, Some("ru")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let pending = &body["pending"];
+        assert_eq!((&pending["modelId"], &pending["state"]), (&json!("piper-denis"), &json!("tight")), "{body}");
+        assert!(pending["title"].as_str().is_some_and(|title| !title.is_empty()), "{pending}");
+        assert_eq!(pending["memory"], json!({ "kind": "short", "freeMb": 2048, "needMb": 5120 }));
+        assert_eq!(
+            pending["reason"],
+            "ОЗУ мало: свободно 2,0 ГБ, а нужно около 5,0 ГБ — Мак начнёт подкачку с диска, колонка будет подтормаживать."
+        );
+        // Asked in English (a panel in English at the centre): the same numbers in its words.
+        let (_, body) = over_link_in(&app, "GET", PENDING, &own, true, Value::Null, Some("en")).await;
+        let reason = body["pending"]["reason"].as_str().unwrap_or_default();
+        assert!(reason.starts_with("Memory is low: 2,0 GB is free, but about 5,0 GB is needed"), "{body}");
+
+        // The owner's answer: never another home's; an unknown one is refused; «cancel» forgets the voice.
+        let (status, _) = over_link(&app, "POST", PENDING, &other, false, json!({ "answer": "cancel" })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(app.models.pending().is_some(), "another home's answer changes nothing");
+        let (status, _) = over_link(&app, "POST", PENDING, &own, true, json!({ "answer": "maybe" })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = over_link(&app, "POST", PENDING, &own, true, json!("cancel")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "not the answer's form");
+        assert!(app.models.pending().is_some());
+        let (status, body) = over_link(&app, "POST", PENDING, &own, true, json!({ "answer": "cancel" })).await;
+        assert_eq!((status, &body["pending"]), (StatusCode::OK, &Value::Null), "{body}");
+        assert!(app.models.pending().is_none());
+        // Nothing waits any more: an answer says so.
+        let (status, body) =
+            over_link_in(&app, "POST", PENDING, &own, true, json!({ "answer": "anyway" }), Some("ru")).await;
+        assert_eq!((status, body["message"].as_str()), (StatusCode::CONFLICT, Some("Голос уже не ждёт.")), "{body}");
     }
 
     /// Clean-path check 18.11, item 40: the centre asks how the character's voice would stand here before it is
@@ -1378,6 +1513,69 @@ mod tests {
         assert_ne!(status, StatusCode::FORBIDDEN, "{body}");
         let (status, _) = over_link(&app, "POST", "/home/v1/plugins/install", &own, true, json!({})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// The clean-path check of 19.11: the station asked the Mac for YouTube's code by id, YouTube came from a demo feed
+    /// only the station reads, and the Mac answered «not in the catalog» — so the app never ran there. The centre now
+    /// names the feed: the Турбо installs and switches on what its own signed main feed pinned, and nothing else.
+    #[tokio::test]
+    async fn the_centre_names_the_feed_of_a_faces_code_and_the_turbo_installs_only_what_it_pinned() {
+        use crate::plugins::catalog::tests::{arthur, plugin_vgp, site};
+        let keys = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let (main, demo) = (site().await, site().await);
+        main.publish(&[]);
+        let app_of = |id: &str| {
+            let manifest = json!({
+                "schema": 1, "kind": "plugin", "id": id, "version": "1.0.0", "title": id, "api": "^2",
+                "runs": ["pc"], "permissions": [],
+                "contributes": { "intents": [{ "phrases": [format!("включи {id}")], "handler": "play" }] }
+            });
+            let mut entry = arthur("1.0.0");
+            (entry["id"], entry["kind"], entry["runs"]) = (json!(id), json!("plugin"), json!(["pc"]));
+            entry["budget"] = json!({ "memoryMb": 4 });
+            (entry, plugin_vgp(&manifest, "export function play() { return 'играю'; }"))
+        };
+        demo.publish(&[app_of("tube"), app_of("moon")]);
+        let pinned: Value = serde_json::from_str(&demo.feed.lock().unwrap()).unwrap();
+        let mut feed: Value = serde_json::from_str(&main.feed.lock().unwrap()).unwrap();
+        feed["recommends"] = json!([{ "id": "tube", "sha256": pinned["packages"][0]["sha256"] }]);
+        let text = feed.to_string();
+        let signature =
+            minisign::sign(Some(&keys.pk), &keys.sk, std::io::Cursor::new(text.as_bytes()), None, None).unwrap();
+        *main.feed.lock().unwrap() = text;
+        main.files.lock().unwrap().insert("catalog.json.minisig".into(), signature.to_string().into_bytes());
+
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().to_str().unwrap();
+        let key = keys.pk.to_base64();
+        let app = computer(&[
+            ("DATA_DIR", data),
+            ("PLUGINS_BUNDLED", "false"),
+            ("PACKAGES_FEED_URL", main.url.as_str()),
+            ("PACKAGES_PUBKEY", key.as_str()),
+        ]);
+        let own = client(&app, true);
+        let install = |id: &str, feed: Option<&str>| {
+            let mut body = json!({ "id": id, "version": "1.0.0" });
+            if let Some(feed) = feed {
+                body["feed"] = json!(feed);
+            }
+            body
+        };
+        // As before: by id alone, this computer's catalog has no such package.
+        let (status, body) =
+            over_link(&app, "POST", "/home/v1/plugins/install", &own, true, install("tube", None)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        // With the centre's feed: installed and switched on — the station's calls find it now.
+        let (status, body) =
+            over_link(&app, "POST", "/home/v1/plugins/install", &own, true, install("tube", Some(&demo.url))).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(app.plugins.is_active("tube"), "{body}");
+        // Not pinned: refused, nothing installed.
+        let (status, body) =
+            over_link(&app, "POST", "/home/v1/plugins/install", &own, true, install("moon", Some(&demo.url))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(app.plugins.installed("moon").is_none());
     }
 
     #[tokio::test]

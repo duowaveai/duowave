@@ -263,7 +263,9 @@ async fn pass(
         role.filter(|_| method == Method::GET).and_then(|role| copy_path(&app, &key, role, &rest, query.as_deref()));
 
     let mut request = client().request(method.clone(), url);
-    for name in [header::CONTENT_TYPE, header::ACCEPT, header::RANGE] {
+    // The panel's language too: the station answers its words in it, as to its own panel (test 19.11, remark 12: «Добавить
+    // провайдера» showed the providers in English in a Russian panel — the station fell back to its own language).
+    for name in [header::CONTENT_TYPE, header::ACCEPT, header::RANGE, header::ACCEPT_LANGUAGE] {
         if let Some(value) = headers.get(&name) {
             request = request.header(name, value);
         }
@@ -570,6 +572,7 @@ mod tests {
                     "role": header(HELPER_ROLE),
                     "person": header(HELPER_PERSON),
                     "key": header("authorization"),
+                    "language": header("accept-language"),
                 }}))
             }
         };
@@ -597,7 +600,12 @@ mod tests {
     /// A request to the computer's gateway as it comes from `from`, signed with `token` (none: an empty one).
     async fn send(app: &Arc<App>, from: &str, method: &str, uri: &str, token: &str) -> (StatusCode, HeaderMap, Value) {
         let body = if method == "GET" || method == "HEAD" { String::new() } else { "{}".into() };
-        let mut request = Request::builder().method(method).uri(uri).header("content-type", "application/json");
+        // The panel always says its language: the station answers its words in it (test 19.11, remark 12).
+        let mut request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("accept-language", "ru");
         if !token.is_empty() {
             request = request.header("authorization", format!("Bearer {token}"));
         }
@@ -677,7 +685,10 @@ mod tests {
         // Each person reaches the station with their own role: a member stays a member there.
         let (status, _, body) = send(&app, home, "GET", journal, &member).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["message"], json!({"role": "member", "person": "Аня", "key": format!("Bearer {PAIR}")}));
+        assert_eq!(
+            body["message"],
+            json!({"role": "member", "person": "Аня", "key": format!("Bearer {PAIR}"), "language": "ru"})
+        );
         let (_, _, body) = send(&app, home, "GET", journal, &admin).await;
         assert_eq!(
             (body["message"]["role"].as_str(), body["message"]["person"].as_str()),
@@ -729,7 +740,7 @@ mod tests {
         ] {
             let (status, headers, body) = send(&app, home, "GET", uri, "").await;
             assert_eq!(status, StatusCode::OK, "{uri}: {body}");
-            assert_eq!(body["message"], json!({"role": "", "person": "", "key": ""}), "{uri}");
+            assert_eq!(body["message"], json!({"role": "", "person": "", "key": "", "language": "ru"}), "{uri}");
             // The app's window (a frame of no origin) imports it across origins: the allowance passes too.
             assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*", "{uri}");
             assert_eq!(send(&app, home, "HEAD", uri, "").await.0, StatusCode::OK, "{uri}");

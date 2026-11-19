@@ -177,30 +177,55 @@ pub async fn sync_faces(app: &App) -> Result<usize, String> {
                 .collect()
         })
         .unwrap_or_default();
+    let feed = app.catalog.feed(false).await;
     let mut sent = 0;
     for (id, version) in faces {
         let current = there.iter().find(|(there, _, _)| *there == id);
         if current.is_some_and(|(_, theirs, on)| *on && newer_or_same(theirs, &version)) {
+            app.plugins.note_turbo(&id, None);
             continue;
         }
         let answer = crate::utils::http::client()
             .post(format!("{base}/home/v1/plugins/install"))
             .bearer_auth(&key)
-            .json(&json!({ "id": id, "version": version }))
+            .json(&install_body(&id, &version, feed.as_ref()))
             .timeout(Duration::from_secs(300))
             .send()
             .await
             .map_err(|error| error.to_string())?;
         if answer.status().is_success() {
             tracing::info!(target: "home", "{id} {version}: its code installed on the Турбо");
+            app.plugins.note_turbo(&id, None);
             sent += 1;
         } else {
             let status = answer.status();
-            let text: String = answer.text().await.unwrap_or_default().chars().take(200).collect();
+            let text: String = answer.text().await.unwrap_or_default().chars().take(400).collect();
             tracing::warn!(target: "home", "{id} {version}: the Турбо did not install it: {status} {text}");
+            app.plugins.note_turbo(&id, Some(refusal(status.as_u16(), &text)));
         }
     }
     Ok(sent)
+}
+
+/// What the Турбо is asked to install: the face's id and version, and — when the centre has it from a feed other than
+/// its main one (an own source the admin added, the demo feed) — that feed's address: the Турбо's catalog may not read
+/// it, and installs from it only what its own signed main feed pinned (clean-path check 19.11, YouTube).
+fn install_body(id: &str, version: &str, feed: Option<&crate::plugins::catalog::Feed>) -> Value {
+    let mut body = json!({ "id": id, "version": version });
+    let entry = feed.and_then(|feed| feed.find(id, Some(version)));
+    if let Some(extra) = entry.and_then(|entry| entry.extra.as_ref()) {
+        body["feed"] = json!(extra.url.as_str());
+    }
+    body
+}
+
+/// The Турбо's refusal in its own words (`{message}` of its answer), else its status.
+fn refusal(status: u16, text: &str) -> String {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|body| body.get("message").and_then(Value::as_str).map(str::to_string))
+        .filter(|message| !message.trim().is_empty())
+        .unwrap_or_else(|| crate::tr!("Турбо не поставил его код (HTTP {status})", status = status))
 }
 
 fn newer_or_same(theirs: &str, ours: &str) -> bool {
@@ -238,4 +263,49 @@ pub fn watch(app: &Arc<App>) {
             busy.store(false, std::sync::atomic::Ordering::SeqCst);
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugins::catalog::{parse_feed, ExtraFeed};
+
+    /// The clean-path check of 19.11: YouTube came to the station from a demo feed; asked by id alone, the Mac looked
+    /// in its own catalog and found nothing. A face from another feed goes to the Турбо with that feed's address; one
+    /// of the main feed, or one the feed does not know, by id and version as before.
+    #[test]
+    fn the_turbo_is_told_the_feed_a_faces_code_comes_from() {
+        let base = url::Url::parse("https://demo.example/catalog.json").unwrap();
+        let entry = |id: &str| {
+            json!({
+                "id": id, "kind": "app", "version": "0.1.0", "title": id, "api": "^2", "runs": ["pc"],
+                "url": format!("packages/{id}-0.1.0.vgp"), "sha256": "a".repeat(64), "size": 10
+            })
+        };
+        let text = json!({ "format": 1, "packages": [entry("youtube"), entry("feed")] }).to_string();
+        let mut feed = parse_feed(&text, &base).unwrap();
+        feed.packages[0].extra = Some(ExtraFeed {
+            url: base.clone(),
+            publisher: "demo".into(),
+            title: "Демо".into(),
+            verified: false,
+            own: true,
+        });
+        assert_eq!(
+            install_body("youtube", "0.1.0", Some(&feed)),
+            json!({ "id": "youtube", "version": "0.1.0", "feed": "https://demo.example/catalog.json" })
+        );
+        assert_eq!(install_body("feed", "0.1.0", Some(&feed)), json!({ "id": "feed", "version": "0.1.0" }));
+        assert_eq!(install_body("youtube", "0.2.0", Some(&feed)), json!({ "id": "youtube", "version": "0.2.0" }));
+        assert_eq!(install_body("youtube", "0.1.0", None), json!({ "id": "youtube", "version": "0.1.0" }));
+    }
+
+    /// What the Турбо said when it did not install a face's code is kept in its words: the face says it when called.
+    #[test]
+    fn the_turbos_refusal_is_kept_in_its_words() {
+        let said = json!({ "code": 403, "message": "Не поставлено: каталог этого компьютера не проверял «youtube»." });
+        assert_eq!(refusal(403, &said.to_string()), "Не поставлено: каталог этого компьютера не проверял «youtube».");
+        assert_eq!(refusal(502, "Bad Gateway"), "Турбо не поставил его код (HTTP 502)");
+        assert_eq!(refusal(500, r#"{"message": " "}"#), "Турбо не поставил его код (HTTP 500)");
+    }
 }

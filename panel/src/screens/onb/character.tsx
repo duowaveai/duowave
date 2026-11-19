@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import type { InstallProgress } from '../../magicplace/wizard-state';
 
 import { CharacterView, CharactersView, api, can, isTight, needsOf, problemOf, stationCall } from '../../api';
+import { VoiceWizard } from '../voice-lab';
 import { stopAudio, useAudio } from '../../audio';
 import { tr } from '../../i18n';
 import { usePanel } from '../../shell/context';
@@ -187,6 +188,24 @@ export function CharacterStep() {
     const mayVoice = can('models.manage');
     /** Что колонка не приняла, пока ставилась модель голоса: окно модели закончит — скажем вместе. */
     const missed = useRef<string | null>(null);
+    /** Мастер «Свой голос» открыт — с предложения под карточками, когда выбрана стандартная Алиса. */
+    const [ownWizard, setOwnWizard] = useState(false);
+
+    /**
+     * Мастер «Свой голос» закрыт: голос снят и включён на этом компьютере — колонка переходит на голос компьютера, иначе
+     * она так и отвечала бы Алисой (её выбор «чей голос» остаётся за ней). Не включён — ничего не трогаем.
+     */
+    const ownVoiceDone = async (): Promise<void> => {
+        setOwnWizard(false);
+        try {
+            const active = (await api.models()).ttsActive.modelId;
+            if (!active.startsWith('own:') || active.startsWith('own:c-')) return;
+            if (stationKey) await stationCall(stationKey, 'POST', '/api/v1/models/home-voice', { voice: 'computer' });
+            setNote({ text: tr.voiceHome.onbOwnOn });
+        } catch (e) {
+            setNote({ text: tr.voiceHome.onbOwnStationMissed(problemOf(e)), tone: 'warn' });
+        }
+    };
 
     /** Характер — и колонке, когда DuoWave на ней; не вышло — строка, что сказать. */
     const toStation = async (character: CharacterView): Promise<string | null> => {
@@ -307,6 +326,8 @@ export function CharacterStep() {
     };
 
     const list = view ? shown(view) : [];
+    // Выбрана стандартная (встроенная) — Алиса или ДиВи: рядом — «или ваш голос» (проверка начисто 19.11).
+    const standard = list.find((character) => character.id === selected)?.builtin ?? false;
     /** Свёрнутая установка персонажа: своей карточкой, пока его нет в списке, а встал — ходом на его карточке. */
     const going = installing && installing.kind === 'character' && installing.hidden && !installing.finished ? installing : null;
     let others = 0;
@@ -325,10 +346,11 @@ export function CharacterStep() {
 
             {/* Демо по приглашению (п. 42, 58) — отдельным блоком над карточками; перестанем раздавать ссылку — убрать эту
                 строку и invite.tsx. */}
-            {/* Всегда, и пока колонка настраивается (п. 63): ленту читает этот компьютер, выбор ждёт центр. */}
+            {/* Всегда, и пока колонка настраивается (п. 63): ленту читает этот компьютер, выбор ждёт центр. И когда колонка
+                уже центр — тоже этот компьютер: персонажи сразу, колонка догонит в фоне (замечание 3 теста 19.11). */}
             <Invite
                 key={stationKey ?? 'own'}
-                station={stationKey}
+                centre={stationKey}
                 defer={awaitingCentre}
                 centreProblem={stuck}
                 onInstalled={() => void read().then((next) => next?.active?.id && setSelected(next.active.id))}
@@ -453,6 +475,17 @@ export function CharacterStep() {
                 </div>
             )}
 
+            {standard && mayVoice && !awaitingCentre && (
+                <div class="onb-ch-own">
+                    <span class="onb-ch-own-text">
+                        <b>{tr.voiceHome.onbOwnTitle}</b>
+                        <span class="small">{tr.voiceHome.onbOwnAbout}</span>
+                    </span>
+                    <button type="button" class="dw-btn dw-btn-sm dw-btn-dark" onClick={() => setOwnWizard(true)}>
+                        {tr.voiceHome.onbOwnCreate}
+                    </button>
+                </div>
+            )}
 
             <div class="onb-ch-foot">
                 <span class="onb-ch-more">
@@ -471,6 +504,7 @@ export function CharacterStep() {
                 )}
             </div>
             {needs.dialog}
+            {ownWizard && <VoiceWizard onClose={() => void ownVoiceDone()} />}
         </div>
     );
 }

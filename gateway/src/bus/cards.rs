@@ -305,9 +305,31 @@ pub fn functions(card: &Value) -> Vec<String> {
 /// A card said aloud: its own `say`, or what it shows in a few sentences (the station without a screen, «что на
 /// карточке»). Never longer than a short answer.
 pub fn speech(title: &str, card: &Value) -> String {
-    if let Some(say) = card.get("say").and_then(Value::as_str).filter(|say| !say.trim().is_empty()) {
-        return say.trim().to_string();
+    if let Some(say) = own_words(card) {
+        return say.to_string();
     }
+    shown(title, card, 5, 600)
+}
+
+/// A card for «Мозг» to answer from (its tool `app_card`, clean-path check 19.11: «какие новинки?» about an app was
+/// answered «смотрите на столе»): its own phrase, when it has one, and what it shows — the number, the caption, up to
+/// ten rows, the tiles —, so a question about the data is answered with the data.
+pub fn for_model(title: &str, card: &Value) -> String {
+    let data = shown(title, card, 10, 1500);
+    match own_words(card) {
+        Some(say) => format!("{say}\n{data}"),
+        None => data,
+    }
+}
+
+/// The card's own phrase for the voice (`say`), when it has one.
+fn own_words(card: &Value) -> Option<&str> {
+    card.get("say").and_then(Value::as_str).map(str::trim).filter(|say| !say.is_empty())
+}
+
+/// What a card shows, in sentences: the title with the number and its change, the caption, `rows` rows at most (or
+/// what it says when it has none), the tiles; `max` characters at most.
+fn shown(title: &str, card: &Value, rows: usize, max: usize) -> String {
     fn text(value: Option<&Value>) -> Option<&str> {
         value.and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty())
     }
@@ -328,7 +350,7 @@ pub fn speech(title: &str, card: &Value) -> String {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .take(5)
+        .take(rows)
         .filter_map(|row| {
             let words = text(row.get("text"))?;
             let mut line = match text(row.get("time")) {
@@ -338,7 +360,9 @@ pub fn speech(title: &str, card: &Value) -> String {
             if let Some(value) = text(row.get("value")) {
                 line = format!("{line} — {value}");
             }
-            if row.get("mark").and_then(Value::as_bool) == Some(true) {
+            // `mark: "done"` (docs/plugins/cards.md); `true` as the first cards had it.
+            let mark = row.get("mark");
+            if mark.and_then(Value::as_bool) == Some(true) || mark.and_then(Value::as_str) == Some("done") {
                 line = format!("{line}, готово");
             }
             Some(line)
@@ -361,7 +385,7 @@ pub fn speech(title: &str, card: &Value) -> String {
         parts.push(tiles.join(", "));
     }
     let spoken = parts.join(". ");
-    spoken.chars().take(600).collect()
+    spoken.chars().take(max).collect()
 }
 
 /// A card as the panel takes it: an object, or `{card: …}` around one.
@@ -468,5 +492,25 @@ mod tests {
             "Доллар стоит девяносто два рубля"
         );
         assert_eq!(unwrap(json!({"card": {"big": "1"}})), json!({"big": "1"}));
+    }
+
+    /// «Мозг» answers from a card (clean-path check 19.11): the app's own phrase and what the card shows, up to ten
+    /// rows — a question about the data gets the data, not «look at the desk». A row marked `done`, as the guide says,
+    /// is read as done.
+    #[test]
+    fn a_card_for_the_model_keeps_its_own_words_and_its_data() {
+        let rows: Vec<Value> = (1..=12).map(|n| json!({"text": format!("Трек {n}")})).collect();
+        let card = json!({"big": "12", "cap": "новых треков", "rows": rows, "say": "Двенадцать новых треков."});
+        let read = for_model("Fresh Hip-Hop & Rap", &card);
+        assert!(
+            read.starts_with("Двенадцать новых треков.\nFresh Hip-Hop & Rap: 12. новых треков. Трек 1; "),
+            "{read}"
+        );
+        assert!(read.contains("Трек 10") && !read.contains("Трек 11"), "ten rows at most: {read}");
+        assert_eq!(speech("Fresh Hip-Hop & Rap", &card), "Двенадцать новых треков.", "aloud: its own words");
+        let empty = json!({"big": "0", "cap": "recent tracks", "empty": "Новинок пока нет"});
+        assert_eq!(for_model("Fresh Hip-Hop & Rap", &empty), "Fresh Hip-Hop & Rap: 0. recent tracks. Новинок пока нет");
+        let done = json!({"rows": [{"text": "Позвонить", "mark": "done"}, {"text": "Купить хлеб", "mark": "on"}]});
+        assert_eq!(speech("Дела", &done), "Дела. Позвонить, готово; Купить хлеб");
     }
 }

@@ -182,6 +182,49 @@ fn built_in(problem: Option<String>) -> Road {
     }
 }
 
+/// Why no helper gives the ability now, for people and for «Мозг» (clean-path check 19.11: an app on the Турбо was
+/// said to be «off» whatever stopped it): what stops the first helper that would — switched off, «Не брать у него…»,
+/// the regulator, no key, off the line (asleep, off or without a network), not ready —, or that the home has none
+/// that gives it. None when one gives it now.
+pub fn why_not(helpers: &Helpers, ability: Ability) -> Option<String> {
+    let snap = helpers.snap();
+    // What stops the first helper that would give it; else the first that is on the line and does not.
+    let (mut first, mut refuses) = (None, None);
+    for entry in snap.list.iter().filter(|entry| !helpers.is_self(entry) && helpers.twin_of(entry, &snap).is_none()) {
+        let problem = if !entry.enabled {
+            crate::tr!("{name} выключен в «Доме»", name = entry.name)
+        } else {
+            let Some(remote) = helpers.remote(entry) else {
+                first.get_or_insert_with(|| crate::tr!("у {name} нет ключа", name = entry.name));
+                continue;
+            };
+            if !remote.declares(ability) {
+                refuses.get_or_insert_with(|| crate::tr!("{name} не даёт этого вашему дому", name = entry.name));
+                continue;
+            }
+            if entry.without.contains(&ability) {
+                crate::tr!("у {name} это не берётся («Не брать у него…»)", name = entry.name)
+            } else if !snap.away.lets(reach_of(entry)) {
+                crate::tr!("Регулятор не пускает: {name}", name = entry.name)
+            } else if !remote.up() {
+                crate::tr!("{name} не на связи — спит, выключен или без сети", name = entry.name)
+            } else if !remote.gives(ability) {
+                crate::tr!("{name} пока не готов", name = entry.name)
+            } else {
+                return None;
+            }
+        };
+        first.get_or_insert(problem);
+    }
+    Some(first.or(refuses).unwrap_or_else(|| crate::tr!("в доме нет Турбо, который это даёт")))
+}
+
+/// The name of the helper that gives the ability now, as people see it in the list («Mac»).
+pub fn giver_name(helpers: &Helpers, ability: Ability) -> Option<String> {
+    let remote = helpers.pick_remote(ability)?;
+    helpers.entry(remote.id()).map(|entry| entry.name)
+}
+
 /// The helpers that could give the ability, in order, each with what stops it now: switched on, not this gateway,
 /// not the same as an earlier one on the line, not switched off for it, keyed, declaring it. A sticky one (the
 /// history) has only its first.

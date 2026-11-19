@@ -8,13 +8,13 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { CatalogEntry, CatalogView, api, can, installApi, sessionStore } from '../../api';
+import { CatalogEntry, CatalogView, api, can, installApi, sessionStore, stationRead } from '../../api';
 import { useAudio } from '../../audio';
 import { tr } from '../../i18n';
 import { installProgress, onInstallProgress, openInstallWizard } from '../../magicplace/wizard-state';
 import { choosePending, dropPending, retryPending, usePendingInstall } from '../../magicplace/pending-install';
 import { wordOfEntry } from '../../magicplace/filters';
-import { acceptInvite, askInvite, cancelInvite, inviteProblem, setDraft, skipInvite, useInvite } from './invite-state';
+import { acceptInvite, askInvite, cancelInvite, inviteProblem, retryCentre, setDraft, skipInvite, useInvite } from './invite-state';
 import { useStepNav } from './nav';
 import { useMediaUrl } from '../../ui/media';
 
@@ -59,19 +59,25 @@ function Face({ src }: { src?: string | null }) {
  * установка — у центра дома через проход; без него — у своего шлюза. `onInstalled` — шаг перечитывает своих персонажей.
  * `defer` — путь с колонкой, а она ещё не центр (настраивается, п. 63): ленту читает этот компьютер, «Поставить» только
  * запоминает выбор, поставит его мастер у центра, как тот будет готов (magicplace/pending-install.tsx). `centreProblem` —
- * перенос не вышел: выбор остаётся, словами сказано, что ждёт.
+ * перенос не вышел: выбор остаётся, словами сказано, что ждёт. `centre` — колонка уже центр (ключ у помощника), а
+ * набор всё равно читает этот компьютер — персонажи видны сразу; выбор и набор колонке доносятся в фоне, «колонка
+ * догонит» (замечание 3 теста 19.11); кто уже стоит у неё — не показан.
  */
 export function Invite({
     station,
+    centre,
     onInstalled,
-    defer = false,
+    defer: later = false,
     centreProblem = false,
 }: {
     station?: string;
+    centre?: string;
     onInstalled: () => void;
     defer?: boolean;
     centreProblem?: boolean;
 }) {
+    // У центра-колонки «Поставить» тоже запоминает выбор: ставит его мастер у колонки, когда она прочтёт набор.
+    const defer = later || !!centre;
     const t = tr.onbCharacter;
     const at = installApi(station);
     const audio = useAudio();
@@ -138,6 +144,24 @@ export function Invite({
     /** Что ставит мастер сейчас: его «Поставить» тут не нужна — шаг показывает его карточкой хода (character.tsx). */
     const [installingId, setInstallingId] = useState<string | undefined>(() => installProgress()?.id);
     useEffect(() => onInstallProgress(() => setInstallingId(installProgress()?.id)), []);
+    /** Что уже стоит у центра-колонки: набор читает этот компьютер, и без этого поставленные там снова звали бы «Поставить». */
+    const [atCentre, setAtCentre] = useState<Set<string>>(new Set());
+    useEffect(() => {
+        if (!centre) return;
+        let live = true;
+        // Копия от прохода годится: что было поставлено, то и стоит.
+        void stationRead<CatalogView>(centre, '/api/v1/packages/catalog')
+            .then(({ value }) => {
+                const there = (value?.packages ?? []).filter(
+                    (entry) => !!entry.installed || entry.state === 'installed' || entry.state === 'update',
+                );
+                if (live) setAtCentre(new Set(there.map((entry) => entry.id)));
+            })
+            .catch(() => undefined);
+        return () => {
+            live = false;
+        };
+    }, [centre, installingId, waiting?.id, invite.centre]);
     /** Лента, откуда пакет: свой источник с тем же названием; он один — он; нет — принятая ссылка. */
     const feedOf = (entry: CatalogEntry): string | null =>
         own.find((feed) => feed.title === entry.source)?.url ?? (own.length === 1 ? own[0].url : (invite.url ?? null));
@@ -164,16 +188,22 @@ export function Invite({
     };
 
     // Выбор, что ждёт центр, — своей карточкой; центр готов — персонаж ставится сам, его «Поставить» тут не нужна.
-    const demos = demosOf(view).filter((entry) => entry.id !== installingId && (defer || entry.id !== waiting?.id));
+    const demos = demosOf(view).filter(
+        (entry) => entry.id !== installingId && !atCentre.has(entry.id) && (defer || entry.id !== waiting?.id),
+    );
     const waitingNote = !waiting
         ? ''
         : waiting.problem
           ? waiting.problem
-          : waiting.step
+          : waiting.late
+            ? t.pendingLate
+            : waiting.step
             ? t.pendingPreparing
             : centreProblem
               ? t.pendingMoveFailed
-              : t.pendingCard;
+              : centre
+                ? t.pendingCatchUp
+                : t.pendingCard;
     // Ссылка принята и в работе: добавляю / читаю — «Дальше» крутится (п. 60); дом молчит — ссылка принята, догрузим
     // сами, «Дальше» свободна.
     const loading = stage === 'accepted' || stage === 'adding' || stage === 'reading';
@@ -210,7 +240,15 @@ export function Invite({
                 <div class="onb-inv-block-head">
                     <h2 class="onb-inv-block-title">{t.inviteCardTitle}</h2>
                     <p class={`small onb-ch-p${nudged ? ' onb-ch-warn' : ''}`}>
-                        {nudged ? t.inviteChooseFirst : demos.length > 0 ? (defer ? t.inviteBlockDemosLater : t.inviteBlockDemos) : t.inviteCardLead}
+                        {nudged
+                            ? t.inviteChooseFirst
+                            : demos.length > 0
+                              ? centre
+                                  ? t.inviteBlockDemosCatchUp
+                                  : defer
+                                    ? t.inviteBlockDemosLater
+                                    : t.inviteBlockDemos
+                              : t.inviteCardLead}
                     </p>
                 </div>
             )}
@@ -232,9 +270,9 @@ export function Invite({
                                 <span class={`pcard-about${waiting.problem ? ' onb-ch-bad' : ''}`}>{waitingNote}</span>
                             </div>
                             <div class="onb-inv-actions">
-                                {waiting.problem && (
+                                {(waiting.problem || waiting.late) && (
                                     <button type="button" class="dw-btn dw-btn-sm dw-btn-dark" onClick={retryPending}>
-                                        {t.pendingRetry}
+                                        {waiting.problem ? t.pendingRetry : t.pendingTryNow}
                                     </button>
                                 )}
                                 <button type="button" class="dw-btn dw-btn-sm dw-btn-light" onClick={dropPending}>
@@ -306,9 +344,16 @@ export function Invite({
                                         </button>
                                     )}
                                     {chosen ? (
-                                        <button type="button" class="dw-btn dw-btn-sm dw-btn-light" onClick={dropPending}>
-                                            {t.pendingDrop}
-                                        </button>
+                                        <>
+                                            {(waiting?.problem || waiting?.late) && (
+                                                <button type="button" class="dw-btn dw-btn-sm dw-btn-dark" onClick={retryPending}>
+                                                    {waiting.problem ? t.pendingRetry : t.pendingTryNow}
+                                                </button>
+                                            )}
+                                            <button type="button" class="dw-btn dw-btn-sm dw-btn-light" onClick={dropPending}>
+                                                {t.pendingDrop}
+                                            </button>
+                                        </>
                                     ) : (
                                         <button type="button" class="dw-btn dw-btn-sm dw-btn-dark" disabled={tight} onClick={() => void install(entry)}>
                                             {t.inviteInstallShort}
@@ -406,6 +451,26 @@ export function Invite({
                 <p class="small onb-ch-p" role="status">
                     {demos.length ? t.inviteAdded(demos.length) : t.inviteEmpty}
                 </p>
+            )}
+            {centre && stage === 'shown' && invite.centreAt === centre && invite.centre && invite.centre !== 'sent' && (
+                // Набор уходит к колонке в фоне: видно, что идёт, «Дальше» не ждёт.
+                <div class="onb-inv-row onb-inv-warn" role="status">
+                    <span class={`small${invite.centre === 'failed' ? ' onb-ch-bad' : ''}`}>
+                        {invite.centre === 'sending' && <span class="mark mark-busy onb-inv-spin" aria-hidden="true" />}
+                        {invite.centre === 'failed'
+                            ? t.inviteCentreFailed(invite.centreProblem ?? '')
+                            : invite.centre === 'away'
+                              ? t.inviteCentreAway
+                              : t.inviteCentreSending}
+                    </span>
+                    {invite.centre === 'failed' && (
+                        <span class="onb-inv-buttons">
+                            <button type="button" class="dw-btn dw-btn-sm dw-btn-dark" onClick={retryCentre}>
+                                {t.pendingRetry}
+                            </button>
+                        </span>
+                    )}
+                </div>
             )}
         </div>
     );

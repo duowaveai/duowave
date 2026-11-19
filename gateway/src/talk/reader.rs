@@ -81,7 +81,7 @@ pub fn read_tool() -> LlmTool {
                     "type": "string",
                     "enum": ["new", "add", "status", "show", "desk", "details", "stop", "open", "close", "answer", "noise", "talk"]
                 },
-                "thing": { "type": "string", "description": "The thing it is about, by its id as «Сейчас» shows it: a work's label ([р3]) or an app's id on the desk ([weather]); its name only when it has neither; leave it out for the thing talked about last." },
+                "thing": { "type": "string", "description": "The thing it is about, by its id as «Сейчас» shows it: a work's label ([р3]) or the id of an app that is on ([weather]); its name only when it has neither; leave it out for the thing talked about last." },
                 "text": { "type": "string", "description": "new: the whole wish in the person's words, with what the conversation added; add: what to add or change." },
                 "title": { "type": "string", "description": "new: the thing's short name, one to four words, a noun phrase («Курс доллара», «Часы с секундами») — never the request itself." },
                 "face": { "type": "string", "enum": ["widget", "skill", "game", "theme"], "description": "new: what it becomes; a widget when the person did not say." },

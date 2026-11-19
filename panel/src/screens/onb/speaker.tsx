@@ -18,6 +18,7 @@ import { WIKI_SSH, problemText, suggestedGateway } from '../connect';
 import { useOnboarding, useStepNav } from './nav';
 import '../../ui/onboarding-canvas.css';
 import '../../ui/onb-connect.css';
+import { LinkMark, patchRecord, readRecord } from './record';
 
 /** Сколько места нужно DuoWave на колонке (доска: «около 20 МБ»), КБ. */
 const ROOM_KB = 20 * 1024;
@@ -87,9 +88,12 @@ const MARK = 'onb-speaker-link';
 const MARK_MS = 30 * 60_000;
 
 function keepMark(now: SpeakerLink | null): void {
+    const going = now && now.to && now.phase !== 'done' && now.phase !== 'restored' && now.phase !== 'failed';
+    const mark: LinkMark | null = going ? { address: now.address, name: now.name, to: now.to as LinkMark['to'], at: now.startedAt } : null;
+    // В запись первых шагов (замечание 10 теста 19.11): ход переживает и перезапуск приложения, не только перезагрузку.
+    patchRecord({ link: mark });
     try {
-        if (now && now.to && now.phase !== 'done' && now.phase !== 'restored' && now.phase !== 'failed')
-            sessionStorage.setItem(MARK, JSON.stringify({ address: now.address, name: now.name, to: now.to, at: now.startedAt }));
+        if (mark) sessionStorage.setItem(MARK, JSON.stringify(mark));
         else sessionStorage.removeItem(MARK);
     } catch {
         // приватное окно — продолжить после перезагрузки не выйдет, только и всего
@@ -102,9 +106,9 @@ function keepMark(now: SpeakerLink | null): void {
  */
 export async function resumeLink(): Promise<void> {
     if (link) return;
-    let mark: { address: string; name: string; to: MoveTo; at: number } | null = null;
+    let mark: { address: string; name: string; to: MoveTo; at: number } | null = readRecord()?.link ?? null;
     try {
-        mark = JSON.parse(sessionStorage.getItem(MARK) ?? 'null');
+        mark ??= JSON.parse(sessionStorage.getItem(MARK) ?? 'null');
     } catch {
         mark = null;
     }

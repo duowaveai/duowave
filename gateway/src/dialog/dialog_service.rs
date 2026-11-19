@@ -159,6 +159,11 @@ pub struct ToolBox {
     /// What the model is told when its turn ran out of tokens in a tool call (a whole file did not fit): the rounds
     /// go on with it, `MAX_CUTS` times at most. Without it such a turn fails the answer.
     pub cut_note: Option<fn(&ToolCallCut) -> String>,
+    /// What the model is told when its turn ran out of tokens before it called anything (its thinking or its words
+    /// took the whole answer): the rounds go on with it, within the same `MAX_CUTS`. Without it such a turn ends the
+    /// answer as it is — and a run that wrote nothing ended silently (19.11, a game «Portal 2D»: 16 000 tokens, no
+    /// file, «ничего не поменялось»).
+    pub cut_answer_note: Option<&'static str>,
     /// A turn's calls run one after another, in the turn's order, instead of at once: they change the same files (the
     /// workshop's: a piece appended after the piece written).
     pub in_order: bool,
@@ -196,6 +201,7 @@ impl ToolBox {
             instructions: None,
             safe_after_taint: None,
             cut_note: None,
+            cut_answer_note: None,
             in_order: false,
             retries: 0,
             inbox: None,
@@ -1038,6 +1044,29 @@ impl DialogService {
                     // About to end: words added on the way go on in this same answer. The turn's calls, if any, did
                     // not run: only its words stay.
                     speaker.flush().await;
+                    let out_of_tokens = ended.as_ref().is_some_and(|turn| turn.out_of_tokens);
+                    // The limit cut the turn before any call: the model hears it and goes on — the cut turn is
+                    // dropped, as a cut call's is. Past `MAX_CUTS` (or on the last round) the run ends half-way.
+                    if out_of_tokens {
+                        match toolbox.cut_answer_note.filter(|_| !last && cuts < MAX_CUTS) {
+                            Some(note) => {
+                                cuts += 1;
+                                tracing::info!(
+                                    target: "dialog",
+                                    "{}: the turn ran out of tokens before any call: the model goes on, told to write in parts",
+                                    slot.model
+                                );
+                                messages.push(LlmMessage::User(note.to_string()));
+                                continue;
+                            }
+                            None if toolbox.cut_answer_note.is_some() => {
+                                if let Some(limited) = toolbox.limited.as_ref() {
+                                    limited.store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
+                            }
+                            None => {}
+                        }
+                    }
                     let content = ended.map(|turn| turn.content).unwrap_or_default();
                     let mut next = messages.clone();
                     if !content.trim().is_empty() {
@@ -2915,6 +2944,54 @@ pub(crate) mod tests {
             .as_ref()
             .is_err_and(|error| error.to_string() == "Claude ran out of tokens in a tool call"));
         assert_eq!(llm.requests.lock().unwrap().len(), 1);
+    }
+
+    /// 19.11, a game «Portal 2D» on GLM: a turn spent its whole limit before any call (thinking, or the code in words)
+    /// and the answer ended with nothing written. With `cut_answer_note` the model hears it and goes on; past
+    /// `MAX_CUTS` the run ends marked as cut by its limits («не доделано»); without the note nothing changes.
+    #[tokio::test]
+    async fn a_turn_out_of_tokens_before_any_call_goes_on_with_the_note_and_ends_limited_past_the_cuts() {
+        let spent = || {
+            vec![Ok(LlmEvent::Turn(AssistantTurn {
+                content: "Думаю, как устроить уровни…".into(),
+                out_of_tokens: true,
+                ..AssistantTurn::default()
+            }))]
+        };
+        let toolbox = |note_words: Option<&'static str>, limited: &Arc<std::sync::atomic::AtomicBool>| {
+            let mut toolbox = writer(Some(note));
+            toolbox.cut_answer_note = note_words;
+            toolbox.limited = Some(limited.clone());
+            toolbox
+        };
+
+        let (llm, service) = scripted(Box::new(move |n, _| match n {
+            0 => spent(),
+            _ => words("Записала частями."),
+        }));
+        let limited = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let said = collect(answer_with(&service, toolbox(Some("Пиши файлы сразу, частями."), &limited))).await;
+        assert_eq!(said.last().map(String::as_str), Some("Записала частями."));
+        let requests = llm.requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(last_user(&requests[1]), Some("Пиши файлы сразу, частями."));
+        assert!(!limited.load(std::sync::atomic::Ordering::Relaxed));
+
+        // A model that keeps running out: MAX_CUTS notes, then the answer ends, cut by its limits.
+        let (llm, service) = scripted(Box::new(move |_, _| spent()));
+        let limited = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let got: Vec<anyhow::Result<String>> =
+            answer_with(&service, toolbox(Some("Пиши частями."), &limited)).collect().await;
+        assert!(got.iter().all(|phrase| phrase.is_ok()));
+        assert_eq!(llm.requests.lock().unwrap().len(), 1 + MAX_CUTS);
+        assert!(limited.load(std::sync::atomic::Ordering::Relaxed));
+
+        // Without the note the turn ends the answer as it always did.
+        let (llm, service) = scripted(Box::new(move |_, _| spent()));
+        let limited = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        collect(answer_with(&service, toolbox(None, &limited))).await;
+        assert_eq!(llm.requests.lock().unwrap().len(), 1);
+        assert!(!limited.load(std::sync::atomic::Ordering::Relaxed));
     }
 
     fn broken() -> anyhow::Result<LlmEvent> {

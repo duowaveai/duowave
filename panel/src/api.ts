@@ -686,6 +686,19 @@ export interface VoicePlan {
     failed?: string | null;
 }
 
+/**
+ * Голос, который ждёт, глазами дома (`GET /api/v1/home/voice/pending`, проверка начисто 19.11): ждущий голос центра
+ * или Турбо, что даёт голос, — с именем и персонажем, за которого он говорит. `turbo: null` — голос ждёт на самом центре
+ * (компьютер — центр) или компьютера с голосом нет; `pending: null` — ничего не ждёт (или Турбо не на связи).
+ */
+export interface HomeVoiceWaiting {
+    turbo: { id: string; name: string; up: boolean } | null;
+    pending: (TtsPending & { title: string; character?: string | null; package?: string | null }) | null;
+}
+
+/** Ответ владельца ждущему голосу: включить при ОЗУ впритык, повторить не вышедшее, забыть. */
+export type HomeVoiceAnswer = 'anyway' | 'retry' | 'cancel';
+
 /** Голос персонажа глазами центра: Турбо, его план (null — не на связи, нет или старый), выбор центра. */
 export interface HomeVoicePlan {
     turbo: { id: string; name: string; up: boolean } | null;
@@ -1786,12 +1799,23 @@ export interface ManagedTts {
 export interface TtsCard {
     id: string;
     engine: 'yandex' | 'silero' | 'piper' | CloneEngineId;
-    /** own — свой голос (отпечаток, «Свои голоса»): в списке сразу после рекомендованных. */
-    group?: 'own';
+    /** own — свой голос (отпечаток, «Свои голоса»); character — голос персонажа (ставится вместе с ним). */
+    group?: 'own' | 'character';
     /** builtin — рекомендованная карточка витрины; registry — открытый реестр Piper. */
     source?: 'builtin' | 'registry';
     /** Про свой голос: его id в лаборатории, когда снят, образец, пробы, отвечает ли его сервер. */
-    own?: { id: string; createdAt: string; refSeconds?: number; samples: number; engineTitle: string; serving: boolean };
+    own?: {
+        id: string;
+        createdAt: string;
+        refSeconds?: number;
+        samples: number;
+        engineTitle: string;
+        serving: boolean;
+        /** Другие модели здесь, под которые его можно переснять из его же записей (без новой записи, ~минута). */
+        retake?: Array<{ engine: string; title: string }>;
+        /** Другая модель есть, а переснять не из чего — почему; тогда записать заново. */
+        retakeNone?: string;
+    };
     title: string;
     description: string;
     badge?: string;
@@ -1857,6 +1881,8 @@ export interface TtsPending {
     /** Что идёт сейчас словами: «Скачиваю веса модели · 603 из ~2 300 МБ · 1,2 МБ/с» (п. 66). */
     detail?: string | null;
     reason?: string | null;
+    /** ОЗУ впритык числами (МБ): `reason` шлюз пишет из них на языке пульта. */
+    memory?: { kind: 'pressure' | 'swap' | 'video' | 'reserve' | 'short'; freeMb?: number; needMb?: number; reserveMb?: number } | null;
     needs?: VoiceNeeds | null;
     since?: string;
 }
@@ -3920,6 +3946,10 @@ export const api = {
     /** Выбрать модель голоса персонажа на Турбо (по персонажу или по пакету, пока он не встал): центр помнит выбор. */
     setHomeVoiceEngine: (of: { character?: string; package?: string }, engine: string) => put<HomeVoicePlan>('/api/v1/home/voice', { ...of, engine }),
     setHomeVoice: (voice: HomeVoice['chosen']) => post<HomeVoice>('/api/v1/models/home-voice', { voice }),
+    /** Голос, который ждёт: у центра или у Турбо, что даёт голос (центр спрашивает его сам). Старый центр — 404. */
+    homeVoiceWaiting: (signal?: AbortSignal) => get<HomeVoiceWaiting>('/api/v1/home/voice/pending', signal),
+    /** Ответ ждущему голосу — там, где он ждёт; в ответе — что ждёт теперь. */
+    answerHomeVoiceWaiting: (answer: HomeVoiceAnswer) => post<HomeVoiceWaiting>('/api/v1/home/voice/pending', { answer }),
     cloudSpeech: () => get<CloudSpeechView>('/api/v1/speech/cloud'),
     setCloudSpeech: (change: CloudSpeechChange) => put<CloudSpeechView>('/api/v1/speech/cloud', change),
     checkCloudSpeech: (part: CloudPart) => post<{ problem?: string }>('/api/v1/speech/cloud/check', { part }),
@@ -4327,6 +4357,7 @@ export function installApi(station?: string | null) {
         packages: () => at<PackagesView>('GET', '/api/v1/packages'),
         packagesResources: () => at<PackagesResources>('GET', '/api/v1/packages/resources'),
         enablePackage: (id: string) => at<PackageView>('POST', `/api/v1/packages/${encodeURIComponent(id)}/enable`),
+        disablePackage: (id: string) => at<PackageView>('POST', `/api/v1/packages/${encodeURIComponent(id)}/disable`),
         updatePackage: (id: string) => at<PackageView>('POST', `/api/v1/packages/${encodeURIComponent(id)}/update`),
         removePackage: (id: string) => at<{ deleted?: boolean; said?: string }>('DELETE', `/api/v1/packages/${encodeURIComponent(id)}`),
         packagesCatalog: (refresh = false) => at<CatalogView>('GET', `/api/v1/packages/catalog${refresh ? '?refresh=1' : ''}`),

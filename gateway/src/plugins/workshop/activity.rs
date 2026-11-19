@@ -435,6 +435,14 @@ impl Activity {
     }
 
     /// A draft's work and its steps after `after` (0 — all that is kept); None when the agent never worked on it.
+    /// Why the draft's last run failed, as its log keeps it; none when it did not fail (or the gateway restarted since).
+    pub fn failure(&self, draft: &str) -> Option<String> {
+        let entries = self.entries();
+        let entry = entries.get(draft)?;
+        entry.ended?;
+        entry.log.back().filter(|step| step.kind == StepKind::Failed).map(|step| step.text.clone())
+    }
+
     pub fn log(&self, draft: &str, after: u64) -> Option<(Job, Vec<Step>)> {
         let entries = self.entries();
         let entry = entries.get(draft)?;

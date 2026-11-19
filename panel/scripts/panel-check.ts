@@ -12,14 +12,18 @@ import { fileURLToPath } from 'node:url';
 
 import type { BrainView, ProviderView } from '../src/api.ts';
 import { paintedAround } from '../src/shell/backdrop-around.ts';
-import { repairedLayout } from '../src/shell/desk-repair.ts';
+import { landingsOf, repairedLayout } from '../src/shell/desk-repair.ts';
 import { helpsSomeone } from '../src/shell/role.ts';
-import { dotOf, placeDevice, thisDeviceOf, viewsOf } from '../src/home-model.ts';
+import { chosenDevice, dotOf, placeDevice, thisDeviceOf, viewsOf } from '../src/home-model.ts';
+import { endedStillShown } from '../src/shell/plaque-model.ts';
+import { waitPage, waitShownOn } from '../src/voice/waiting-model.ts';
+import type { WorkView } from '../src/api.ts';
 import type { PlacementHealth } from '../src/api.ts';
 import { awayBackup, awayBehind } from '../src/screens/onb/brain-home.ts';
 import { NO_BACKUP, backupIdle, backupOf, backupShown, blankBackups, pickValue } from '../src/screens/brain-backup.ts';
 import { fallLine, fallOf, turboOf } from '../src/screens/turbo-model.ts';
 import type { HelperView, HelpersView, HomeDevice, HomeDevices } from '../src/api.ts';
+import { type Laid, type Rect, arrange, overlaps, pushApart, underTop } from '../src/screens/desk-places.ts';
 
 const checks: Array<[string, () => void]> = [];
 const check = (name: string, run: () => void): void => void checks.push([name, run]);
@@ -357,6 +361,163 @@ check('a_widget_landed_under_its_package_main_goes_to_the_tile_the_desk_draws', 
     expect(repairedLayout(both, widgets) === null, 'the real tile is already there');
     // A package whose tile really is `main` is left as it is.
     expect(repairedLayout(layout, [{ key: 'package.btc.main' }]) === null, 'a real main stays');
+});
+
+// Group Б of the owner's bug list of 19.11: widgets jumped left and right when one was put on the desk or taken off,
+// and one hid under another. The desk as desk-canvas.tsx draws it: scene in the middle, columns 60 points from it.
+const DESK = {
+    columns: [-640, 340, -980, 680],
+    width: 300,
+    top: -260,
+    gap: 16,
+    sight: { left: -1250, right: 1250, bottom: 600 },
+    guess: 200,
+    addHeight: 140,
+};
+const SCENE: Rect = { x: -280, y: -260, w: 560, h: 456 };
+/** Lay out, then keep what the desk gave: places as the layout would store them. */
+function laidOut(widgets: Laid[], fixed: Rect[] = [SCENE]): { places: Record<string, { x: number; y: number; w?: number; h?: number }>; add: { x: number; y: number } } {
+    const done = arrange(widgets, fixed, DESK);
+    const places = Object.fromEntries(widgets.flatMap((widget) => (widget.place ? [[widget.key, widget.place]] : [])));
+    return { places: { ...places, ...done.fresh }, add: done.add };
+}
+const rectsOf = (places: Record<string, { x: number; y: number; w?: number }>, heights: Record<string, number>): Array<Rect & { key: string }> =>
+    Object.entries(places)
+        .filter(([key]) => (heights[key] ?? 0) > 0)
+        .map(([key, place]) => ({ key, x: place.x, y: place.y, w: place.w ?? 300, h: heights[key] }));
+function apart(rects: Rect[], what: string): void {
+    for (const [i, a] of rects.entries()) for (const b of rects.slice(i + 1)) expect(!overlaps(a, b), `${what}: ${JSON.stringify(a)} lies on ${JSON.stringify(b)}`);
+}
+
+check('a_widget_put_on_the_desk_or_taken_off_moves_no_other', () => {
+    const heights: Record<string, number> = { btc: 470, radio: 200, notes: 260 };
+    const first = laidOut(Object.keys(heights).map((key) => ({ key, height: heights[key] })));
+    expect(Object.keys(first.places).length === 3, 'each got a place');
+    apart([SCENE, ...rectsOf(first.places, heights)], 'first layout');
+    // Bitcoin and the radio stand at the speaker, left and right, from the top — as the columns stood.
+    expect(first.places.btc.x === -640 && first.places.btc.y === -260, `btc at ${JSON.stringify(first.places.btc)}`);
+    // Put a new one on: the others stay where they were.
+    heights.weather = 180;
+    const more = laidOut([...Object.keys(first.places).map((key) => ({ key, place: first.places[key], height: heights[key] })), { key: 'weather', height: 180 }]);
+    for (const key of Object.keys(first.places)) expect(JSON.stringify(more.places[key]) === JSON.stringify(first.places[key]), `${key} moved when weather came`);
+    apart([SCENE, ...rectsOf(more.places, heights)], 'with weather');
+    // Take the radio off (its place goes with it): the others stay; «Новый виджет» shows where the next one goes.
+    const { radio: _gone, ...left } = more.places;
+    void _gone;
+    const less = laidOut(Object.keys(left).map((key) => ({ key, place: left[key], height: heights[key] })));
+    for (const key of Object.keys(left)) expect(JSON.stringify(less.places[key]) === JSON.stringify(left[key]), `${key} moved when the radio left`);
+    apart([SCENE, ...rectsOf(less.places, heights), { ...less.add, w: 300, h: 140 }], '«Новый виджет» on a free place');
+    // A widget that is still loading (measured, but short) does not squeeze into a narrow gap it would outgrow.
+    const gap = laidOut([{ key: 'a', place: { x: -640, y: -260 }, height: 100 }, { key: 'b', place: { x: -640, y: -40 }, height: 300 }, { key: 'new', height: 60 }]);
+    expect(!(gap.places.new.x === -640 && gap.places.new.y < -40), `the newcomer went into a gap of 104: ${JSON.stringify(gap.places.new)}`);
+});
+
+check('the_new_widget_tile_stays_and_the_new_widget_lands_on_it', () => {
+    // «Новый виджет» stands where the next widget will go; it does not jump when a place higher up frees, and the new
+    // widget (a draft landed from the workshop) takes exactly its place.
+    const kept = { x: 340, y: -260 };
+    const widgets: Laid[] = [{ key: 'btc', place: { x: -640, y: -260 }, height: 300 }];
+    expect(JSON.stringify(arrange(widgets, [SCENE], { ...DESK, keep: kept }).add) === JSON.stringify(kept), 'the tile stays');
+    const landed = arrange([...widgets, { key: 'snake', height: 260 }], [SCENE], { ...DESK, keep: kept });
+    expect(JSON.stringify(landed.fresh.snake) === JSON.stringify({ x: 340, y: -260, w: 300, h: 260 }), `landed at ${JSON.stringify(landed.fresh.snake)}`);
+    // Something hangs over the desk there (the Turbo card): nothing new goes under it.
+    const covered = arrange(widgets, [SCENE], { ...DESK, cover: { x: 300, y: -400, w: 700, h: 300 } });
+    expect(covered.add.y >= -100 + 16 || covered.add.x < 300, `the tile went under the card: ${JSON.stringify(covered.add)}`);
+});
+
+check('a_widget_that_shows_up_later_never_lies_on_another', () => {
+    // Fresh Hip-Hop & Rap landed while the music widget hid (nothing played); then the music began.
+    const heights: Record<string, number> = { music: 0, hiphop: 160 };
+    const landed = laidOut([{ key: 'music', height: 0 }, { key: 'hiphop', height: 160 }]);
+    expect(!landed.places.music, 'a hidden widget takes no place yet');
+    heights.music = 200;
+    const played = laidOut([{ key: 'music', height: 200 }, { key: 'hiphop', place: landed.places.hiphop, height: 160 }]);
+    expect(JSON.stringify(played.places.hiphop) === JSON.stringify(landed.places.hiphop), 'Fresh Hip-Hop stays');
+    apart([SCENE, ...rectsOf(played.places, heights)], 'music came');
+    // The music stops (hidden again): its place is held, a new widget does not go there.
+    heights.music = 0;
+    const kept = laidOut([{ key: 'music', place: played.places.music, height: 0 }, { key: 'hiphop', place: played.places.hiphop, height: 160 }, { key: 'clock', height: 150 }]);
+    apart([SCENE, { ...played.places.music, w: 300, h: played.places.music.h ?? 0 }, ...rectsOf(kept.places, { hiphop: 160, clock: 150 })], 'the place of the hidden music');
+    // An old desk where one already lies on another (the owner's screenshot): the lower one moves down, under it.
+    const moved = pushApart([{ key: 'music', x: -640, y: -260, w: 300, h: 200 }, { key: 'hiphop', x: -640, y: -250, w: 300, h: 160 }], [], 16);
+    expect(!moved.music && moved.hiphop?.y === -44, `moved: ${JSON.stringify(moved)}`);
+});
+
+check('a_widget_that_grows_moves_down_only_the_one_it_lies_on', () => {
+    const places = { btc: { x: -640, y: -260 }, notes: { x: -640, y: 30 }, far: { x: -980, y: -260 }, right: { x: 340, y: -260 } };
+    // Bitcoin's data came: 270 → 470 points; it now lies on «notes» below it, not on the others.
+    const moved = pushApart(rectsOf(places, { btc: 470, notes: 200, far: 300, right: 300 }), [], 16);
+    expect(JSON.stringify(Object.keys(moved)) === '["notes"]' && moved.notes.y === 226, `moved: ${JSON.stringify(moved)}`);
+    // The showcase under the scene stands under the widgets that begin above its spot and reach into it.
+    expect(underTop(250, 454, [{ x: -640, y: -260, w: 300, h: 560 }], 20) === 320, 'under the near column');
+    expect(underTop(250, 454, [{ x: -980, y: -260, w: 300, h: 900 }], 20) === 250, 'a far column is not in its way');
+});
+
+check('a_widget_put_on_the_desk_by_voice_past_the_fitting_lands_on_the_desk', () => {
+    // Check 19.11: «да» to «Готово. На стол или примерить?» installed the app on the gateway, which said «На столе.», but
+    // the desk is the panel's — no tile sat there.
+    const widgets = [{ key: 'package.hiphop.card.main' }, { key: 'package.btc.card.main' }, { key: 'core.memory' }];
+    const layout = { added: ['package.btc.card.main'], hidden: [] as string[] };
+    const keys = landingsOf(['hiphop', 'btc'], layout, widgets);
+    expect(keys.join() === 'package.hiphop.card.main', `lands the one not there: ${keys.join()}`);
+    // Taken off the desk by the person: it stays off.
+    expect(landingsOf(['hiphop'], { added: [], hidden: ['package.hiphop.card.main'] }, widgets).length === 0, 'taken off — not back');
+    // Landed by the fitting under `main` (repairedLayout moves it): not landed twice.
+    expect(landingsOf(['hiphop'], { added: ['package.hiphop.main'], hidden: [] }, widgets).length === 0, 'landed already under main');
+    // The app's part not loaded yet: wait for the tile, no key the desk does not know.
+    expect(landingsOf(['fresh'], { added: [], hidden: [] }, widgets).length === 0, 'no tile yet — nothing');
+    const desk = source('src/screens/desk.tsx');
+    expect(/landingsOf\(drafts\.installed/.test(desk) && /actions\.land\(key\)/.test(desk), 'the desk lands them');
+});
+
+// ─── Hand check 19.11: the header follows the device page, «Ждёт вас» always opens what waits, the plaque's «Готово» ──
+
+check('the_home_bar_lights_the_device_whose_page_is_open_and_else_this_one', () => {
+    const ids = ['hall', 'mac'];
+    const at = (section: string, tab?: string, item?: string) => ({ section, tab, item });
+    expect(chosenDevice(at('settings', 'devices', 'hall'), ids, 'mac') === 'hall', 'the page of «Гостиная» open: it is lit, not this Mac');
+    expect(chosenDevice(at('settings', 'devices', 'mac'), ids, 'mac') === 'mac', 'back to the Mac: the Mac');
+    expect(chosenDevice(at('settings', 'devices'), ids, 'mac') === 'mac', 'the list of devices: this device');
+    expect(chosenDevice(at('home'), ids, 'mac') === 'mac', 'elsewhere: this device');
+    expect(chosenDevice(at('settings', 'devices', 'gone'), ids, 'mac') === 'mac', 'a device not in the home: this device');
+    expect(chosenDevice(at('skills', 'devices', 'hall'), ids, undefined) === undefined, 'another section with the same tab is not the page');
+    const bar = source('src/shell/home-bar.tsx');
+    expect(/chosenDevice\(panel\.link/.test(bar) && !/mine\?\.id === device\.id/.test(bar), 'the bar lights the chosen device, not only this one');
+});
+
+check('a_work_waiting_is_shown_on_the_strip_only_when_the_strip_can_and_else_its_page_opens', () => {
+    const work = (fields: Partial<WorkView>) => ({ kind: 'app', target: 'btc', result: { line: 'Bitcoin rate: готово.' }, ...fields }) as WorkView;
+    expect(waitShownOn(work({ question: { text: '', until: 0, kind: 'ready' } })) === 'strip', '«Готово» with its draft: the strip');
+    expect(waitShownOn(work({ question: { text: '', until: 0, kind: 'unfinished' } })) === 'page', '«Доделать?» has its own buttons: the page');
+    expect(waitShownOn(work({ question: { text: '', until: 0, kind: 'apply' } })) === 'page', '«Применить?»: the page');
+    expect(waitShownOn(work({ result: undefined, question: { text: '', until: 0, kind: 'ready' } })) === 'page', 'no line to show: the page');
+    expect(waitShownOn(work({ target: undefined, question: { text: '', until: 0, kind: 'ready' } })) === 'page', 'no draft: the page');
+    expect(waitShownOn(work({ kind: 'tool', target: undefined, question: { text: '', until: 0, kind: 'more' } })) === 'strip', 'a tool’s result: the strip');
+    expect(waitPage({ id: '7', target: 'btc' }, true)?.section === 'works' && waitPage({ id: '7', target: 'btc' }, true)?.tab === '7', 'the admin: the work in «Работы»');
+    expect(waitPage({ id: '7', target: 'btc' }, false)?.item === 'btc', 'no «Работы»: the draft in the workshop');
+    expect(waitPage({ id: '7' }, false) === null, 'nothing to open without either');
+    const pill = source('src/voice/waiting.tsx');
+    expect(/await reload\(\)/.test(pill), 'a press reads the list afresh: the number and what is behind it are one');
+    expect(/panel\.go\(page\.section/.test(pill), 'what the strip cannot show opens its page');
+});
+
+check('the_plaque_drops_a_done_job_once_its_thing_is_decided', () => {
+    // The gateway’s clock is 1000 ms ahead of ours: the job ended at 51000 there, 50000 here.
+    expect(endedStillShown(51_000, 1000, undefined), 'nothing decided: «Готово» stays its minute and a half');
+    expect(!endedStillShown(51_000, 1000, 50_500), 'installed after it ended: off the plaque');
+    expect(endedStillShown(51_000, 1000, 49_000), 'decided before this run ended: this run’s end is news');
+    const plaque = source('src/shell/agent-plaque.tsx');
+    expect(/endedStillShown\(job\.ended, own\.offset, decided\.get\(job\.draft\)\)/.test(plaque), 'the plaque filters its own jobs');
+});
+
+check('an_applied_theme_is_the_theme_the_panel_keeps', () => {
+    const fitting = source('src/screens/fitting.tsx');
+    expect(/takeDraftTheme\(id\)/.test(fitting), '«Включить» on a theme takes it onto the panel');
+    expect(/currentTheme\(\)\.id === tried\.id\) setTheme\(tried\.before\)/.test(fitting), 'closed without applying: the theme before it, not the default');
+    const workshop = source('src/screens/workshop.tsx');
+    expect(/currentTheme\(\)\.id\.startsWith\('preview-'\)\) setTheme\(previewing\)/.test(workshop), 'the workshop gives back only a try-on still shown');
+    const works = source('src/screens/works.tsx');
+    expect(/takeThemeWhenInstalled\(work\.target\)/.test(works), '«Применить» in «Работы» takes the theme once installed');
 });
 
 let failed = 0;

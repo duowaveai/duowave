@@ -111,6 +111,7 @@
   "Идёт отпечаток — дубли пока нельзя трогать.": "An imprint is in progress — the takes cannot be touched yet.",
   "Нет образца голоса или его слов — снять отпечаток не из чего.": "There is no voice sample or its words — nothing to take an imprint from.",
   "У голоса не сохранились ни образец, ни записи — переснять не из чего.": "The voice has neither a sample nor recordings saved — nothing to re-record from.",
+  "Для {models} этот голос не переснять: записи не сохранились. Запишите голос заново.": "This voice cannot be re-recorded for {models}: its recordings were not kept. Record the voice again.",
   "Распознавание этого компьютера ещё не готово — попробуйте через минуту.": "This computer's speech recognition is not ready yet — try again in a minute.",
   "Для отпечатка нужно своё распознавание на этом компьютере: слова образца не отправляются в облако.": "An imprint needs own recognition on this computer: the sample's words are not sent to the cloud.",
   "Имя не может быть пустым.": "The name cannot be empty.",
@@ -1028,5 +1029,13 @@
   "{done} из ~{total} МБ · {speed}": "{done} of ~{total} MB · {speed}",
   "Скачивание стояло — повторяю ({attempt} из {retries})": "The download stood still — trying again ({attempt} of {retries})",
   "Hugging Face не отвечает — проверьте сеть или VPN: скачивание модели стояло, повторы не помогли.": "Hugging Face is not answering — check the network or VPN: the model download stood still, and trying again did not help.",
-  "модель не скачалась — проверьте сеть или VPN и попробуйте снова.": "the model did not download — check the network or VPN and try again."
+  "модель не скачалась — проверьте сеть или VPN и попробуйте снова.": "the model did not download — check the network or VPN and try again.",
+  "Голос уже не ждёт.": "The voice is not waiting any more.",
+  "Компьютер с голосом не на связи — ответить ему пока нельзя.": "The computer with the voice is offline — it cannot be answered yet.",
+  "{name} выключен в «Доме»": "{name} is switched off in “Home”",
+  "у {name} нет ключа": "{name} has no key",
+  "{name} не даёт этого вашему дому": "{name} does not give this to your home",
+  "у {name} это не берётся («Не брать у него…»)": "this is not taken from {name} (“Don’t take from it…”)",
+  "{name} не на связи — спит, выключен или без сети": "{name} is not on the line — asleep, off or without a network",
+  "в доме нет Турбо, который это даёт": "the home has no Turbo that gives this"
 }

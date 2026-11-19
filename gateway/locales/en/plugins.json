@@ -648,6 +648,7 @@
  "{FAILURES} ошибок подряд: {error}": "{FAILURES} errors in a row: {error}",
  "ошибка: {error}": "error: {error}",
  "ответил за {ms} мс": "answered in {ms} ms",
+ "первый прогон после установки": "the first run after the install",
  "не прислано: {why}": "not sent: {why}",
  "прислал «{notice}»": "sent “{notice}”",
  "не сказано: {result}": "not said: {result}",
@@ -904,5 +905,18 @@
  "Не поставлено: архив «{id}» от центра не совпал по sha256 — он подменён или испорчен.": "Not installed: the archive of “{id}” from the centre does not match its sha256 — it was replaced or damaged.",
  "archive.url: адрес http(s) архива пакета": "archive.url: the http(s) address of the package’s archive",
  "Не поставлено: от центра так ставятся только персонажи.": "Not installed: only characters are installed this way from the centre.",
- "Не поставлено: у «{id}» голос неизвестного происхождения (voiceOrigin unknown).": "Not installed: the voice of “{id}” is of unknown origin (voiceOrigin unknown)."
+ "Не поставлено: у «{id}» голос неизвестного происхождения (voiceOrigin unknown).": "Not installed: the voice of “{id}” is of unknown origin (voiceOrigin unknown).",
+ "{function}: {why}": "{function}: {why}",
+ "«{title}» работает на Турбо (компьютере дома), а его сейчас не позвать: {why}.": "“{title}” runs on the Turbo (the home’s computer), and it cannot be reached now: {why}.",
+ "«{title}» не стоит на Турбо «{name}» (он на связи): {why}": "“{title}” is not installed on the Turbo “{name}” (it is on the line): {why}",
+ "«{title}» ещё не стоит на Турбо «{name}» (он на связи): ставлю его туда — попробуйте через минуту.": "“{title}” is not installed on the Turbo “{name}” yet (it is on the line): installing it there — try again in a minute.",
+ "Турбо «{name}» на связи, но «{title}» там не ответило: {why}": "The Turbo “{name}” is on the line, but “{title}” did not answer there: {why}",
+ "нет включённого приложения с карточкой «{id}»": "no app that is on shows a card “{id}”",
+ "Не поставлено: каталог этого компьютера не проверял «{id}» из ленты центра — код из неё здесь не ставится.": "Not installed: this computer’s catalog has not checked “{id}” from the centre’s feed — code from it is not installed here.",
+ "Лента центра не прочиталась: {error}": "The centre’s feed did not read: {error}",
+ "Лента центра не прочиталась: не текст": "The centre’s feed did not read: not text",
+ "Лента центра не прочиталась: {problem}": "The centre’s feed did not read: {problem}",
+ "В ленте центра нет {id} {version}.": "The centre’s feed has no {id} {version}.",
+ "В ленте центра нет «{id}».": "The centre’s feed has no “{id}”.",
+ "Турбо не поставил его код (HTTP {status})": "The Turbo did not install its code (HTTP {status})"
 }

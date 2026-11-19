@@ -38,6 +38,11 @@ export interface StripMessage {
     level?: number;
     /** Ждём ответа столько секунд (кольцо у микрофона). */
     wait?: number;
+    /**
+     * Работа, о которой полоса спрашивает (voice/flow.tsx): ответ на неё любым путём — голосом, кнопкой, с другого
+     * устройства — снимает вопрос с полосы (замечание 5 теста 19.11).
+     */
+    work?: string;
 }
 
 type Listener = (message: StripMessage | null) => void;

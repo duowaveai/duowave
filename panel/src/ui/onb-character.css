@@ -99,5 +99,12 @@
 .onb .onb-ch-notcentre.is-moving { margin: 0; }
 .onb .onb-ch-notcentre.is-moving .onb-inv-spin { margin-right: 8px; vertical-align: -2px; }
 .onb .onb-ch-notcentre > .small { flex: 1; min-width: 0; }
+/* Выбрана стандартная Алиса — «или ваш голос» (проверка начисто 19.11): строка-предложение и вход в мастер «Свой голос». */
+.onb .onb-ch-own { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; border-radius: var(--radius-card, 18px); background: var(--card); border: 1px solid var(--line); }
+.onb .onb-ch-own-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.onb .onb-ch-own .dw-btn { flex: none; }
+@media (max-width: 760px) {
+    .onb .onb-ch-own { flex-direction: column; align-items: stretch; }
+}
 /* Выбран, пока колонка не центр (п. 63): ждёт её — отмечен рамкой. */
 .onb .onb-inv-card.is-chosen { box-shadow: inset 0 0 0 1px var(--bar-own); }

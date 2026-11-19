@@ -1,0 +1,83 @@
+// Тексты «Настройки» → «Голос» и «Слух» (screens/voice-home.tsx) и «Голос ждёт» с любого экрана (voice/pending-voice.tsx;
+// проверка начисто 19.11). Русский — исходный словарь; английский — тот же набор ключей.
+
+export default {
+    pageVoice: 'Голос',
+    pageVoiceSub: 'Кто говорит, модель, свой голос',
+    pageHearing: 'Слух',
+    pageHearingSub: 'Чем слушаем, модель, слово',
+
+    voiceLead: 'Чьим голосом отвечает дом, на какой модели он звучит и как сделать свой.',
+    hearingLead: 'Кто слышит вопросы, на какой модели и на какое слово откликается колонка.',
+
+    waitTitle: 'Голос ждёт',
+    waitPill: (name: string) => `${name} ждёт вашего решения`,
+    waitPillFailed: (name: string) => `${name}: голос не встал`,
+    waitDot: 'Голос ждёт вашего решения',
+    waitOn: (computer: string) => `на «${computer}»`,
+    waitMeanwhile: 'Пока вы не ответите, говорит прежний голос.',
+    waitLater: 'Решить позже',
+    waitAdminOnly: 'Ответить может администратор.',
+
+    nowTitle: 'Сейчас говорит',
+    nowAlice: 'Голос Алисы — говорит сама колонка.',
+    nowCloud: 'Облачный голос.',
+    nowNone: 'Своего голоса нет — отвечает голос Алисы.',
+    nowVoice: (voice: string, where: string) => `«${voice}» — ${where}`,
+    nowWhere: (computer: string) => `на «${computer}»`,
+    nowHere: 'на этом компьютере',
+    nowComputer: (computer: string) => `Голос компьютера «${computer}»`,
+    nowModel: (model: string) => `модель ${model}`,
+    nowCharacter: 'голос персонажа',
+
+    modelTitle: (name: string) => `Голос «${name}»`,
+    modelSub: (computer: string) => `на какой модели он звучит на «${computer}»`,
+    modelNow: (engine: string, state: string) => `Сейчас: ${engine} — ${state}`,
+    modelApply: (engine: string) => `Перевести на ${engine}`,
+    modelApplied: 'Выбор сохранён: модель поставится на компьютере, голос переключится сам.',
+    modelAway: 'Компьютер с голосом не на связи — модель можно выбрать, когда он вернётся.',
+    modelNone: 'На компьютере нет модели, на которой этот голос может звучать: говорит запасной.',
+
+    ownHereOnly: 'Свой голос записывается на компьютере-Турбо: откройте DuoWave на нём — «Настройки» → «Голос».',
+
+    computerVoices: 'Голоса компьютера',
+    computerHearing: 'Слух компьютера',
+
+    hearNowTitle: 'Сейчас слушает',
+    hearYandex: 'Яндекс — колонка слушает сама, как из коробки.',
+    hearCloud: 'Облачное распознавание.',
+    hearNone: 'Своего слуха нет — слушает Яндекс.',
+    hearModel: (model: string, where: string) => `${model} — ${where}`,
+    hearComputer: (where: string) => `Компьютер — ${where}`,
+    hearLanguages: (list: string) => `языки: ${list}`,
+
+    wordTitle: 'Слово-активатор',
+    wordIs: (word: string) => `Колонка откликается на «${word}».`,
+    wordDefault: (word: string) => `Колонка откликается на «${word}» — как из коробки.`,
+    wordAbout: 'Своё слово приходит вместе с персонажем. Слов пока нет — найдите в магазине.',
+    wordAboutMany: 'Слушает одно слово: включите другое — прежнее выключится. Выключенное не занимает ОЗУ колонки.',
+    wordAliceOnly: (word: string) => `Только «${word}»`,
+    wordListening: 'слушает',
+    wordOff: 'выключено',
+    wordTurnOn: 'Включить',
+    wordTurnOff: 'Выключить',
+    wordFind: 'Найти слово',
+    wordRemoveAll: 'Убрать все слова',
+    wordRemoveAllTitle: 'Убрать все слова?',
+    wordRemoveAllText: 'Слова сотрутся с колонки — освободятся и ОЗУ, и память. Колонка будет откликаться на «Алиса». Вернуть можно из магазина.',
+    wordOpen: 'Выбрать персонажа',
+
+    briefTitle: 'Голос и слух',
+    briefLead: 'Модели голоса и слуха этого компьютера — в своих пунктах «Настроек».',
+    briefVoice: 'Голос',
+    briefHearing: 'Слух',
+    briefVoiceAbout: 'кто говорит, модель, свой голос',
+    briefHearingAbout: 'модель распознавания',
+    briefOpen: 'Открыть',
+
+    onbOwnTitle: 'Или — ваш голос',
+    onbOwnAbout: 'Колонка может отвечать вашим голосом: прочитайте вслух минуту текста, голос готов за минуту.',
+    onbOwnCreate: 'Создать свой голос',
+    onbOwnOn: 'Готово: колонка говорит вашим голосом.',
+    onbOwnStationMissed: (problem: string) => `Голос готов, но колонка не переключилась: ${problem}. Переключите её в «Настройки» → «Голос».`,
+};

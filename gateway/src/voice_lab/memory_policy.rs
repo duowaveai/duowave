@@ -15,6 +15,7 @@ use serde::Serialize;
 
 use super::js::{gb, round};
 use super::system_memory::{MemorySnapshot, Pressure};
+pub use crate::settings::definitions::MemoryTight as Tight;
 
 const GB: u64 = 1024;
 
@@ -58,6 +59,33 @@ pub struct Admission {
     pub ceiling_mb: u64,
     /// The refusal or the warning, in the owner's words.
     pub reason: Option<String>,
+    /// The warning as numbers: a pending voice keeps these, not the words, and writes them again for each reader.
+    pub tight: Option<Tight>,
+}
+
+/// The warning in the reader's language (now: `tr!` takes the request's), from its numbers.
+pub fn words(tight: &Tight) -> String {
+    let gb = |mb: u64| gb(mb as f64);
+    match *tight {
+        Tight::Pressure => crate::tr!("Системе уже не хватает ОЗУ — лучше подождать или закрыть тяжёлые программы."),
+        Tight::Swap => crate::tr!("Компьютеру сейчас не хватает ОЗУ, идёт подкачка с диска — лучше подождать минуту."),
+        Tight::Video { free_mb, need_mb } => crate::tr!(
+            "Видеопамяти свободно {free} ГБ, а нужно около {need} ГБ.",
+            free = gb(free_mb),
+            need = gb(need_mb)
+        ),
+        Tight::Reserve { free_mb, need_mb, reserve_mb } => crate::tr!(
+            "ОЗУ впритык: свободно {free} ГБ, нужно около {need} ГБ, а {reserve} ГБ держу для колонки — она может подтормаживать.",
+            free = gb(free_mb),
+            need = gb(need_mb),
+            reserve = gb(reserve_mb)
+        ),
+        Tight::Short { free_mb, need_mb } => crate::tr!(
+            "ОЗУ мало: свободно {free} ГБ, а нужно около {need} ГБ — Мак начнёт подкачку с диска, колонка будет подтормаживать.",
+            free = gb(free_mb),
+            need = gb(need_mb)
+        ),
+    }
 }
 
 /// Paging in faster than this: the system is already short.
@@ -65,55 +93,33 @@ pub const START_SWAP_MBPS: f64 = 2.0;
 
 /// Whether a program may start now, or the warning in the owner's words the start waits on.
 pub fn admit(snapshot: &MemorySnapshot, reserve: u64, need: u64, video_need_mb: Option<u64>) -> Admission {
-    let verdict = |verdict: AdmissionVerdict, reason: Option<String>| Admission {
-        verdict,
+    let verdict = |tight: Option<Tight>| Admission {
+        verdict: if tight.is_some() { AdmissionVerdict::Tight } else { AdmissionVerdict::Go },
         need_mb: need,
         ceiling_mb: ceiling_mb(need),
-        reason,
+        reason: tight.as_ref().map(words),
+        tight,
     };
     if snapshot.pressure != Pressure::Normal {
-        return verdict(
-            AdmissionVerdict::Tight,
-            Some(crate::tr!("Системе уже не хватает ОЗУ — лучше подождать или закрыть тяжёлые программы.")),
-        );
+        return verdict(Some(Tight::Pressure));
     }
     if snapshot.swap_in_mbps.unwrap_or(0.0) > START_SWAP_MBPS {
-        return verdict(
-            AdmissionVerdict::Tight,
-            Some(crate::tr!("Компьютеру сейчас не хватает ОЗУ, идёт подкачка с диска — лучше подождать минуту.")),
-        );
+        return verdict(Some(Tight::Swap));
     }
     if let (Some(video), Some(free)) = (video_need_mb, snapshot.vram_free_mb) {
         if free < video as f64 {
-            return verdict(
-                AdmissionVerdict::Tight,
-                Some(crate::tr!(
-                    "Видеопамяти свободно {free} ГБ, а нужно около {need} ГБ.",
-                    free = gb(free),
-                    need = gb(video as f64)
-                )),
-            );
+            return verdict(Some(Tight::Video { free_mb: round(free).max(0.0) as u64, need_mb: video }));
         }
     }
-    let pool = snapshot.pool_mb as f64;
-    if pool - reserve as f64 >= need as f64 {
-        return verdict(AdmissionVerdict::Go, None);
+    let pool = snapshot.pool_mb;
+    if pool as f64 - reserve as f64 >= need as f64 {
+        return verdict(None);
     }
-    let reason = if snapshot.pool_mb >= need {
-        crate::tr!(
-            "ОЗУ впритык: свободно {free} ГБ, нужно около {need} ГБ, а {reserve} ГБ держу для колонки — она может подтормаживать.",
-            free = gb(pool),
-            need = gb(need as f64),
-            reserve = gb(reserve as f64)
-        )
+    if pool >= need {
+        verdict(Some(Tight::Reserve { free_mb: pool, need_mb: need, reserve_mb: reserve }))
     } else {
-        crate::tr!(
-            "ОЗУ мало: свободно {free} ГБ, а нужно около {need} ГБ — Мак начнёт подкачку с диска, колонка будет подтормаживать.",
-            free = gb(pool),
-            need = gb(need as f64)
-        )
-    };
-    verdict(AdmissionVerdict::Tight, Some(reason))
+        verdict(Some(Tight::Short { free_mb: pool, need_mb: need }))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -250,7 +256,7 @@ mod tests {
     fn starts_when_the_program_fits_beside_the_households_reserve_under_its_ceiling() {
         assert_eq!(
             admit(&snapshot(11_400), 2_212, 6_500, None),
-            Admission { verdict: AdmissionVerdict::Go, need_mb: 6_500, ceiling_mb: 9_750, reason: None }
+            Admission { verdict: AdmissionVerdict::Go, need_mb: 6_500, ceiling_mb: 9_750, reason: None, tight: None }
         );
         assert_eq!(admit(&snapshot(5_712), 2_212, 3_500, None).verdict, AdmissionVerdict::Go);
     }
@@ -259,6 +265,8 @@ mod tests {
     fn only_warns_when_room_is_tight_in_numbers_the_owner_may_start_anyway_06_11_a_4_gb_limit_kept_the_voice_off() {
         let tight = admit(&snapshot(5_120), 2_212, 3_500, None);
         assert_eq!((tight.verdict, tight.need_mb, tight.ceiling_mb), (AdmissionVerdict::Tight, 3_500, 5_250));
+        // The numbers go with the words: a pending voice keeps them and writes the words again for each reader.
+        assert_eq!(tight.tight, Some(Tight::Reserve { free_mb: 5_120, need_mb: 3_500, reserve_mb: 2_212 }));
         assert_eq!(
             tight.reason.as_deref(),
             Some("ОЗУ впритык: свободно 5,0 ГБ, нужно около 3,4 ГБ, а 2,2 ГБ держу для колонки — она может подтормаживать.")
@@ -286,6 +294,7 @@ mod tests {
             admit(&MemorySnapshot { vram_free_mb: Some(1_000.0), ..snapshot(20_000) }, 2_212, 3_500, Some(3_000));
         assert_eq!(video.verdict, AdmissionVerdict::Tight);
         assert!(video.reason.unwrap().contains("Видеопамяти"));
+        assert_eq!(video.tight, Some(Tight::Video { free_mb: 1_000, need_mb: 3_000 }));
         let calm = admit(&MemorySnapshot { swap_in_mbps: Some(1.0), ..snapshot(20_000) }, 2_212, 3_500, None);
         assert_eq!(calm.verdict, AdmissionVerdict::Go);
     }

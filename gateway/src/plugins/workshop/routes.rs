@@ -279,7 +279,7 @@ async fn activity_log(
 /// «Остановить»: the agent's work on the draft ends now, by voice or from the panel alike.
 async fn stop(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
     admin(&caller)?;
-    Ok(ok(json!({ "stopped": app.workshop.activity().stop(&id) })))
+    Ok(ok(json!({ "stopped": app.workshop.stop(&id) })))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -922,7 +922,11 @@ mod tests {
         .unwrap()
         .1;
         assert_eq!(again.draft, "widget-1");
-        assert_eq!(app.workshop.card("widget-1").asked, "Переделай: крупнее");
+        // The wish the draft was made for rides with it: «переделай» alone does not say what the thing is (19.11).
+        assert_eq!(
+            app.workshop.card("widget-1").asked,
+            "Переделай: крупнее\n\nРаньше об этой вещи просили: «Сделай виджет: мои дела на сегодня из Тудуиста»"
+        );
     }
 
     #[tokio::test]

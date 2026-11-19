@@ -82,17 +82,19 @@ export function announceReady(
     seconds = 0,
     line?: string,
     head?: string,
+    work?: string,
 ): void {
     const face = draft.meta.kind;
     showStrip({
         kind: 'ready',
+        work,
         head: head ?? tr.voice.readyHead,
         text: line ?? readyWithNote(draft),
         chip: seconds ? { text: tr.voice.listenMore(seconds), tone: 'own' } : undefined,
         wait: seconds || undefined,
         chips: [
             { label: tr.voice.chipFit, act: acts.fit },
-            { label: face === 'widget' ? tr.voice.chipDesk : tr.voice.chipEnable, act: acts.desk },
+            { label: face === 'widget' ? tr.voice.chipDesk : face === 'theme' ? tr.voice.chipApply : tr.voice.chipEnable, act: acts.desk },
             { label: tr.voice.chipRedo, act: acts.redo },
             { label: tr.voice.chipPark, act: acts.park },
             { label: tr.voice.chipDrop, act: acts.drop },

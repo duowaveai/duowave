@@ -255,6 +255,7 @@ impl Executor for WorkshopExecutor {
         Box::pin(async move {
             let Some(draft) = work.target.as_deref() else { return Facts::default() };
             let unchanged = self.workshop.card(draft).unchanged;
+            let failure = self.workshop.activity().failure(draft);
             let host = self.workshop.host();
             let installed = host.installed(draft).is_some();
             // What is filled in already: the installed app's settings (a key shows as «••••••»).
@@ -293,9 +294,18 @@ impl Executor for WorkshopExecutor {
                         .collect();
                     let dangerous = self.dangers.get().is_some_and(|dangers| dangers(&added));
                     let rights = plan.added;
-                    Facts { needs, hosts: plan.hosts_added, rights, dangerous, installed, ready: true, unchanged }
+                    Facts {
+                        needs,
+                        hosts: plan.hosts_added,
+                        rights,
+                        dangerous,
+                        installed,
+                        ready: true,
+                        unchanged,
+                        failure,
+                    }
                 }
-                Err(_) => Facts { needs, installed, unchanged, ..Facts::default() },
+                Err(_) => Facts { needs, installed, unchanged, failure, ..Facts::default() },
             }
         })
     }
@@ -379,6 +389,10 @@ impl Executor for WorkshopExecutor {
     }
 
     fn stop(&self, work: &Work) -> bool {
-        work.target.as_deref().is_some_and(|draft| self.workshop.activity().stop(draft))
+        work.target.as_deref().is_some_and(|draft| self.workshop.stop(draft))
+    }
+
+    fn running(&self, work: &Work) -> Option<bool> {
+        work.target.as_deref().map(|draft| self.workshop.working(draft))
     }
 }

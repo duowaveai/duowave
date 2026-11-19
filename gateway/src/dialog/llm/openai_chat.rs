@@ -353,6 +353,7 @@ async fn run(
         tool_calls: calls,
         native: (!native.is_empty()).then_some(Value::Object(native)),
         usage,
+        out_of_tokens: finish_reason.as_deref() == Some("length"),
     };
     y.send(Ok(LlmEvent::Turn(turn))).await;
     Ok(())

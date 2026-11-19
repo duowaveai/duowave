@@ -18,6 +18,16 @@ export function viewsOf(device: HomeDevice, mine: boolean): DeviceView[] {
 }
 
 /**
+ * Какая капсула строки дома светлая (shell/home-bar.tsx): устройство, чья страница открыта
+ * (`#/settings/devices/<id>`), если оно в доме, иначе — то, на котором открыт пульт. Строка и страница выбирают одно и
+ * то же в обе стороны: нажатие на капсулу открывает страницу, а переход на странице переводит свет строки.
+ */
+export function chosenDevice(link: { section: string; tab?: string; item?: string }, ids: string[], mine: string | undefined): string | undefined {
+    const opened = link.section === 'settings' && link.tab === 'devices' ? link.item : undefined;
+    return opened && ids.includes(opened) ? opened : mine;
+}
+
+/**
  * Устройство, на котором открыт пульт. В окне дома на компьютере (`?via=`) — компьютер, по id его шлюза (`own` — его
  * /health мимо прохода; пока не прочитан — никакое). Пульт, открытый на самом центре (адрес 127.0.0.1 — окно
  * приложения у компьютера-центра), — центр. В браузере телефона или другого компьютера «этого» устройства нет.

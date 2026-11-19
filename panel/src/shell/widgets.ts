@@ -23,7 +23,10 @@ export interface DeskWidget extends PlacedContribution {
     initial: boolean;
 }
 
-/** Место виджета на свободном столе: от колонки в середине, в точках стола; ширина и высота — если растягивали. */
+/**
+ * Место виджета на свободном столе: от колонки в середине, в точках стола; ширина — если растягивали. Высота — с какой
+ * место заняли: спрятанный, пока пуст, виджет держит столько, и новый на его место не встаёт.
+ */
 export interface WidgetPlace {
     x: number;
     y: number;
@@ -37,7 +40,10 @@ export interface DeskLayout {
     hidden: string[];
     /** Поставленные из «+». */
     added: string[];
-    /** Места на свободном столе: переставленные руками. */
+    /**
+     * Места на свободном столе: переставленные руками и те, что стол дал сам, когда виджет появился (первое свободное,
+     * screens/desk-places.ts), — дальше виджет держит своё. Убрали со стола — место освобождается.
+     */
     places: Record<string, WidgetPlace>;
     /** Порядок в ленте телефона и в столбце боковой панели: переставленные руками. */
     order: string[];
@@ -504,6 +510,8 @@ export interface DeskActions {
     add: (id: string) => void;
     /** Место на свободном столе. */
     place: (id: string, place: WidgetPlace) => void;
+    /** Места сразу у нескольких: стол дал новым места или отодвинул выросшим соседей. */
+    places: (places: Record<string, WidgetPlace>) => void;
     /** Порядок в ленте: на шаг раньше (-1) или позже (+1) среди этих. */
     move: (id: string, step: -1 | 1, visible: string[]) => void;
     view: (zoom: number, pan: { x: number; y: number }) => void;
@@ -537,6 +545,7 @@ export function deskActions(role: Role): DeskActions {
                 ...layout,
                 hidden: [...layout.hidden.filter((entry) => entry !== id), id],
                 added: layout.added.filter((entry) => entry !== id),
+                places: Object.fromEntries(Object.entries(layout.places).filter(([key]) => key !== id)),
             })),
         add: (id) =>
             change((layout) => ({
@@ -545,6 +554,7 @@ export function deskActions(role: Role): DeskActions {
                 added: [...layout.added.filter((entry) => entry !== id), id],
             })),
         place: (id, place) => change((layout) => ({ ...layout, places: { ...layout.places, [id]: place } })),
+        places: (places) => change((layout) => ({ ...layout, places: { ...layout.places, ...places } })),
         move: (id, step, visible) =>
             change((layout) => {
                 const order = [...visible];

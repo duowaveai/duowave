@@ -203,8 +203,8 @@ const en: Translation<typeof ru> = {
     storeTitle: 'Everything you can add to DuoWave',
     storeAbout: 'MagicPlace is the store inside DuoWave: characters, voices, manners and apps. One tap to add, one to remove.',
     storeKinds: [
-        { title: 'Apps', items: 'VPN · AirPlay · Feed · YouTube Music, soon' },
-        { title: 'Characters', items: 'Jarvis · GLaDOS · Rick and more' },
+        { title: 'Apps', items: 'for the speaker and the computer, from the catalog' },
+        { title: 'Characters', items: 'with their own voice and word, from the catalog and by invitation' },
         { title: 'Voices', items: 'own and cloud ones, with a preview' },
         { title: 'Manners', items: 'how any character answers' },
     ],
@@ -216,6 +216,7 @@ const en: Translation<typeof ru> = {
     againTitle: 'First steps',
     againAbout: 'Go through again: where DuoWave lives, who thinks, the character and what to try saying.',
     againButton: 'Go through first steps',
+    againLead: 'The home is set up already — the steps go over it: what is done is ticked ✓, change it or just press “Next”. Nothing is reset.',
 };
 
 export default en;

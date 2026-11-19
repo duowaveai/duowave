@@ -30,6 +30,7 @@ import { IconChevronDown, IconHome } from '../icons';
 import { ModelsScreen } from './models';
 import { PlacementCard } from './placement';
 import { seconds } from './trip';
+import { VoiceHearingBrief } from './voice-brief';
 import { WorkshopScreen } from './workshop';
 
 /**
@@ -43,8 +44,21 @@ export function OwnPage({ page }: { page: string }) {
         document.documentElement.classList.add('own-page');
         return () => document.documentElement.classList.remove('own-page');
     }, []);
+    // «voice», «hearing» — модели компьютера в пунктах «Настроек» «Голос» и «Слух» (screens/voice-home.tsx).
     const body =
-        page === 'workshop' ? <WorkshopScreen /> : page === 'homes' ? <HelperSide gives={false} /> : page === 'computer' ? <ThisComputer /> : <HelperComputer />;
+        page === 'workshop' ? (
+            <WorkshopScreen />
+        ) : page === 'homes' ? (
+            <HelperSide gives={false} />
+        ) : page === 'computer' ? (
+            <ThisComputer />
+        ) : page === 'voice' ? (
+            <ModelsScreen tab="voice" onTab={() => undefined} bare page />
+        ) : page === 'hearing' ? (
+            <ModelsScreen tab="recognition" onTab={() => undefined} bare page />
+        ) : (
+            <HelperComputer />
+        );
     return <div class="own-page-body">{body}</div>;
 }
 
@@ -132,14 +146,18 @@ export function HelperComputer({ home = false, side = true }: { home?: boolean; 
             {side && <HelperSide gives={!home} />}
             {!first && watch}
             {!home && <Updates />}
-            {/* Слух и голос — по одному разделу (холст «Окна DuoWave», 17.11): без строк-ссылок «… на этом компьютере»,
-                которые раскрывали те же разделы второй раз. */}
-            {can('models.manage') && (
-                <>
-                    <ModelsScreen tab="recognition" onTab={() => undefined} bare />
-                    <ModelsScreen tab="voice" onTab={() => undefined} bare />
-                </>
-            )}
+            {/* Слух и голос: на странице устройства — кратко, со ссылками в свои пункты «Настроек» (проверка начисто
+                19.11: выбор моделей был спрятан здесь); глубже, у самого компьютера, — по одному разделу (холст «Окна
+                DuoWave», 17.11). */}
+            {can('models.manage') &&
+                (home ? (
+                    <VoiceHearingBrief />
+                ) : (
+                    <>
+                        <ModelsScreen tab="recognition" onTab={() => undefined} bare />
+                        <ModelsScreen tab="voice" onTab={() => undefined} bare />
+                    </>
+                ))}
         </>
     );
 }
@@ -871,7 +889,7 @@ export function KeySheet({ onClose }: { onClose: () => void }) {
 }
 
 /** Фрейм страницы компьютера в пульте колонки: без рамки, высотой с окно, прокрутка — внутри; `sheet` — что открыть сразу. */
-export function OwnFrame({ page, title, sheet }: { page: 'helper' | 'workshop' | 'computer' | 'homes'; title: string; sheet?: string }) {
+export function OwnFrame({ page, title, sheet }: { page: 'helper' | 'workshop' | 'computer' | 'homes' | 'voice' | 'hearing'; title: string; sheet?: string }) {
     // Окно внутри страницы компьютера («Свой голос», мастерская) — во весь пульт: пока оно открыто, фрейм растягивается
     // на всё окно, а не жмёт окно в свои рамки (проверка начисто 18.11, п. 35). Источник тот же — смотрим прямо в него.
     const frame = useRef<HTMLIFrameElement>(null);

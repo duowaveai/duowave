@@ -231,6 +231,8 @@ async fn run(
     let mut usage = None;
     let mut ended = false;
     let mut done = false;
+    // The limit ended the answer before it called anything (`AssistantTurn::out_of_tokens`).
+    let mut out_of_tokens = false;
     while !done && !ended {
         let chunk = tokio::select! {
             _ = cancel.cancelled() => return Err(aborted()),
@@ -295,6 +297,7 @@ async fn run(
                     if let (Some("max_output_tokens"), Some((_, name, arguments))) = (reason, begun.last()) {
                         return Err(anyhow::Error::new(ToolCallCut::new("the model", name, arguments)));
                     }
+                    out_of_tokens = reason == Some("max_output_tokens");
                     done = true;
                 }
                 "response.failed" => {
@@ -321,7 +324,8 @@ async fn run(
     for call in &calls {
         y.send(Ok(LlmEvent::Tool(call.clone()))).await;
     }
-    y.send(Ok(LlmEvent::Turn(AssistantTurn { content: text, tool_calls: calls, native: None, usage }))).await;
+    y.send(Ok(LlmEvent::Turn(AssistantTurn { content: text, tool_calls: calls, native: None, usage, out_of_tokens })))
+        .await;
     Ok(())
 }
 
@@ -460,6 +464,7 @@ mod tests {
             }],
             native: None,
             usage: None,
+            out_of_tokens: false,
         };
         let request = LlmRequest {
             system: "Ты Алиса.".into(),

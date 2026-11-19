@@ -286,6 +286,20 @@ impl CharactersService {
         self.known().into_iter().filter_map(Result::ok).find(|character| character.id == id)
     }
 
+    /// The character an own voice's model id speaks for (`own:c-<package>-<character>-<engine>`), if it is installed.
+    pub fn of_voice(&self, model_id: &str) -> Option<Character> {
+        let voice = model_id.strip_prefix("own:c-")?;
+        self.known()
+            .into_iter()
+            .filter_map(Result::ok)
+            .find(|character| voice.starts_with(&format!("{}-{}-", character.package, character.local)))
+    }
+
+    /// Who answers here now (the persona's card id), if anyone was chosen.
+    pub fn active_id(&self) -> Option<String> {
+        self.personas.view().ok()?.active_preset
+    }
+
     /// The first character of an installed package, checked.
     pub fn of_package(&self, package: &str) -> Option<Character> {
         self.known().into_iter().filter_map(Result::ok).find(|character| character.package == package)

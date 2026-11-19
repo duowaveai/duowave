@@ -23,6 +23,7 @@ const en: Translation<typeof ru> = {
     kindApps: 'Apps',
     kindThemes: 'Themes',
     kindAgents: 'Agents',
+    kindWords: 'Words',
     // An agent's card (docs/plans/router-and-works.md, 7б)
     agentCardOnly: "Installing puts in only the card: you install the agent's program yourself; DuoWave neither downloads nor runs it.",
     agentInstall: (name: string) => `Install the program ${name} with this command in a terminal:`,

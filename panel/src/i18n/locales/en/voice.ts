@@ -21,6 +21,7 @@ const en: Translation<typeof ru> = {
     chipFit: 'try it on',
     chipDesk: 'to the desk',
     chipEnable: 'turn on',
+    chipApply: 'apply',
     chipRedo: 'redo…',
     chipPark: 'to drafts',
     chipDrop: 'no thanks',

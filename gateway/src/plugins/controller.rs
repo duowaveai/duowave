@@ -78,6 +78,31 @@ pub trait HomeLink: Send + Sync {
     fn offered(&self) -> bool {
         self.up().is_some()
     }
+    /// The name of the helper that gives it now, as people see it («Mac»).
+    fn name(&self) -> Option<String> {
+        None
+    }
+    /// Why no helper gives it now, for people («Mac не на связи — спит, выключен или без сети»); None — one gives it,
+    /// or nothing is known.
+    fn why_not(&self) -> Option<String> {
+        None
+    }
+}
+
+/// A face whose code the Турбо refused is asked for again no sooner than this after the refusal.
+const TURBO_ASK_AGAIN_MS: u64 = 5 * 60_000;
+
+/// A call to the Турбо that failed: its HTTP status when it answered, and why in words.
+#[derive(Debug, Clone, PartialEq)]
+struct HomeFailed {
+    status: Option<u16>,
+    message: String,
+}
+
+impl std::fmt::Display for HomeFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
 }
 
 /// A call to the home server's copy of a plugin: `POST <url>/home/v1/plugins/<id>/call`.
@@ -88,7 +113,7 @@ async fn call_home(
     function: &str,
     input: &Value,
     kind: CallKind,
-) -> Result<Value, String> {
+) -> Result<Value, HomeFailed> {
     let kind_name = match kind {
         CallKind::Voice => "voice",
         CallKind::Tool => "tool",
@@ -102,14 +127,20 @@ async fn call_home(
         .json(&json!({ "function": function, "input": input, "kind": kind_name }))
         .send()
         .await
-        .map_err(|error| crate::tr!("компьютер не ответил: {error}", error = error.without_url()))?;
+        .map_err(|error| HomeFailed {
+            status: None,
+            message: crate::tr!("компьютер не ответил: {error}", error = error.without_url()),
+        })?;
     let status = response.status();
-    let body: Value =
-        response.json().await.map_err(|_| crate::tr!("компьютер ответил не JSON (HTTP {status})", status = status))?;
+    let failed = |message: String| HomeFailed { status: Some(status.as_u16()), message };
+    let body: Value = response
+        .json()
+        .await
+        .map_err(|_| failed(crate::tr!("компьютер ответил не JSON (HTTP {status})", status = status)))?;
     if !status.is_success() {
         let message =
             body.get("message").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| crate::tr!("отказ"));
-        return Err(crate::tr!("компьютер: {message}", message = message));
+        return Err(failed(crate::tr!("компьютер: {message}", message = message)));
     }
     Ok(body.pointer("/message/result").cloned().or_else(|| body.get("result").cloned()).unwrap_or(Value::Null))
 }
@@ -304,6 +335,20 @@ struct Offered {
     outside: bool,
 }
 
+/// «Мозг»'s tool that reads an app's cards (`card_tool`).
+pub const CARD_TOOL: &str = "app_card";
+/// The cards of one app read at most in one call.
+const MAX_CARDS_READ: usize = 3;
+
+/// An app that is on and shows cards: its id and title, its cards' titles and functions, whether it reads from
+/// outside the house.
+struct CardApp {
+    id: String,
+    title: String,
+    cards: Vec<(String, String)>,
+    outside: bool,
+}
+
 /// A rule's name for the journal, made once per plugin: the router's rule names live as long as the program.
 fn rule_name(plugin: &str) -> &'static str {
     static NAMES: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
@@ -388,6 +433,9 @@ pub struct PluginHost {
     /// Whether the model of «Мозг» is in the cloud: its calls of the apps' tools carry that in their chain, and a
     /// folder without «Модель может читать» gives such a chain nothing (docs/plans/shared-folders.md).
     cloud_model: std::sync::OnceLock<Arc<dyn Fn() -> bool + Send + Sync>>,
+    /// The faces whose code the Турбо did not install (home/apps.rs): why in its words, and when (ms) — said when
+    /// the face is called, and the install not asked again for a while.
+    turbo_notes: Mutex<HashMap<String, (String, u64)>>,
 }
 
 /// May the app `app` reach `to`'s `handle` now (src/bus): its links, the owner's «да» — the reason in words when not.
@@ -440,6 +488,7 @@ impl PluginHost {
         let host = Arc::new_cyclic(|me| PluginHost {
             gate: std::sync::OnceLock::new(),
             cloud_model: std::sync::OnceLock::new(),
+            turbo_notes: Mutex::new(HashMap::new()),
             config,
             db,
             settings,
@@ -1212,6 +1261,7 @@ impl PluginHost {
             here.on_station() && plugin.active().is_some_and(|package| package.manifest.prefer_home || face)
         });
         let away = home.is_some_and(|home| home.offered());
+        let mut failed_there = None;
         if let Some(home) = home {
             if let Some((url, key)) = home.up() {
                 match call_home(&url, &key, id, function, &input, kind).await {
@@ -1233,19 +1283,22 @@ impl PluginHost {
                         // the computer's /media.
                         return Ok(super::media::from_home(answer, &url, id, &self.play_rights(id)));
                     }
-                    Err(why) => self.note_line(
-                        id,
-                        "warn",
-                        &crate::tr!("{function}: {why} — работает на колонке", function = function, why = why),
-                    ),
+                    Err(why) => {
+                        let line = match face {
+                            true => crate::tr!("{function}: {why}", function = function, why = why),
+                            false => {
+                                crate::tr!("{function}: {why} — работает на колонке", function = function, why = why)
+                            }
+                        };
+                        self.note_line(id, "warn", &line);
+                        failed_there = Some(why);
+                    }
                 }
             }
         }
         if face {
-            return Err(PluginError::Unavailable(crate::tr!(
-                "«{id}» работает на Турбо дома, а его сейчас нет на связи",
-                id = plugin.active().map(|package| package.manifest.title.clone()).unwrap_or_else(|| id.to_string())
-            )));
+            let title = plugin.active().map(|package| package.manifest.title.clone()).unwrap_or_else(|| id.to_string());
+            return Err(PluginError::Unavailable(self.face_trouble(id, &title, home, failed_there)));
         }
         let result = match self.instance(&plugin).await {
             Ok(instance) => instance.call(function, input, kind).await,
@@ -1288,6 +1341,71 @@ impl PluginHost {
             }
         }
         result
+    }
+
+    /// Why a face's call got no answer, in words the person hears through «Мозг» (clean-path check 19.11: the Mac was
+    /// on the line, the app's code was not on it, and the model said the Турбо was off). Three cases, each honest:
+    /// no Турбо to ask now — which and why (asleep, off, kept out, none); the Турбо on the line without the app's code —
+    /// what it said when asked to install it, else that it is being installed now; the Турбо refused or the app there
+    /// failed — its own words.
+    fn face_trouble(
+        &self,
+        id: &str,
+        title: &str,
+        home: Option<&Arc<dyn HomeLink>>,
+        failed: Option<HomeFailed>,
+    ) -> String {
+        let Some(failed) = failed else {
+            let why = home
+                .and_then(|home| home.why_not())
+                .unwrap_or_else(|| crate::tr!("в доме нет Турбо, который это даёт"));
+            return crate::tr!(
+                "«{title}» работает на Турбо (компьютере дома), а его сейчас не позвать: {why}.",
+                title = title,
+                why = why
+            );
+        };
+        let name = home.and_then(|home| home.name()).unwrap_or_else(|| crate::tr!("Турбо"));
+        // 409 — the Турбо has no such app switched on: its code is not there (home_server/serve.rs, `plugin_call`).
+        if failed.status == Some(409) {
+            let note = self.turbo_note(id);
+            if note.as_ref().is_none_or(|(_, at)| self.now_ms().saturating_sub(*at) > TURBO_ASK_AGAIN_MS) {
+                // Asked again: the home's watch installs the faces' code (home/apps.rs, `watch`).
+                self.changed(id, "turbo", None, Some(failed.message.clone()), None);
+            }
+            return match note {
+                Some((why, _)) => crate::tr!(
+                    "«{title}» не стоит на Турбо «{name}» (он на связи): {why}",
+                    title = title,
+                    name = name,
+                    why = why
+                ),
+                None => crate::tr!(
+                    "«{title}» ещё не стоит на Турбо «{name}» (он на связи): ставлю его туда — попробуйте через минуту.",
+                    title = title,
+                    name = name
+                ),
+            };
+        }
+        crate::tr!(
+            "Турбо «{name}» на связи, но «{title}» там не ответило: {why}",
+            name = name,
+            title = title,
+            why = failed.message
+        )
+    }
+
+    /// What the Турбо said when asked to install a face's code: why it did not (None — it did, the note goes).
+    pub fn note_turbo(&self, id: &str, refused: Option<String>) {
+        let mut notes = self.turbo_notes.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        match refused {
+            Some(why) => notes.insert(id.to_string(), (why, self.now_ms())),
+            None => notes.remove(id),
+        };
+    }
+
+    fn turbo_note(&self, id: &str) -> Option<(String, u64)> {
+        self.turbo_notes.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(id).cloned()
     }
 
     fn note_error(&self, plugin: &Plugin, message: &str) {
@@ -2390,12 +2508,135 @@ impl PluginHost {
         tools.iter().find(|offered| offered.spec.name == name).map(|offered| offered.plugin.clone())
     }
 
-    /// The plugins' tools for «Мозг», in MCP's form, with the right each needs (`use:<capability>`).
+    /// The plugins' tools for «Мозг», in MCP's form, with the right each needs (`use:<capability>`); and the card
+    /// reader (`app_card`) while an app that is on shows cards.
     pub fn tool_contributions(&self) -> Vec<ToolContribution> {
         if self.config.disabled {
             return Vec::new();
         }
         let tools = self.tools.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        let mut contributions = self.app_tool_contributions(&tools);
+        if !tools.iter().any(|offered| offered.spec.name == CARD_TOOL) {
+            contributions.extend(self.card_tool());
+        }
+        contributions
+    }
+
+    /// The tool that reads an app's cards (docs/plugins/cards.md: one card on the desk, a phone, a chat and by voice):
+    /// «Мозг» answers a question about an app's data with the data (clean-path check 19.11: «какие новинки?» about an
+    /// app with a card was answered «виджет у вас на столе», and nobody saw it there). None while no app that is on
+    /// shows a card.
+    fn card_tool(&self) -> Option<ToolContribution> {
+        let apps = self.card_apps();
+        if apps.is_empty() {
+            return None;
+        }
+        let ids: Vec<&str> = apps.iter().map(|app| app.id.as_str()).collect();
+        // The titles beside the ids: a question names the app («Fresh Hip-Hop & Rap»), and an id may say nothing
+        // (`p-…`, a random id); «Сейчас» is empty while nothing goes on.
+        let named: Vec<String> = apps.iter().map(|app| format!("{} [{}]", app.title, app.id)).collect();
+        let mut which = format!("The app's id. The apps with cards: {}.", named.join(", "));
+        if which.chars().count() > 900 {
+            which = which.chars().take(899).collect::<String>() + "…";
+        }
+        let me = self.me.clone();
+        Some(ToolContribution {
+            app: None,
+            tool: LlmTool {
+                name: CARD_TOOL.into(),
+                description: "Read an app's card — the data its widget shows on the panel's desk: numbers, lists, \
+                              news, prices, what is new. Use it whenever the person asks about what an app knows or \
+                              shows («какие новинки», «что там в …», «сколько …»), then answer with that data in \
+                              your own words. Whether its widget is placed or visible on their screen you do not \
+                              know: never send them to look at the desk instead of answering."
+                    .into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "app": { "type": "string", "enum": ids, "description": which }
+                    },
+                    "required": ["app"],
+                    "additionalProperties": false
+                }),
+            },
+            permission: use_of(CapabilityName::Plugins),
+            run: Arc::new(move |input: Map<String, Value>, context: ToolContext| {
+                let me = me.clone();
+                Box::pin(async move {
+                    let host = me.upgrade().ok_or_else(|| anyhow::anyhow!("plugins are gone"))?;
+                    let app = input.get("app").and_then(Value::as_str).unwrap_or_default().to_string();
+                    let trail = crate::bus::Trail::principal(&context.principal).through_model(host.model_in_cloud());
+                    Ok(trail.scope(host.read_cards(&app)).await?)
+                })
+            }),
+            read_only: true,
+            // Cards fill from the internet or the household's folders as the apps' tools do.
+            outside: apps.iter().any(|app| app.outside),
+            spoken: false,
+            kept: None,
+        })
+    }
+
+    /// The apps that are on and show cards (`contributes.panel.cards`), with their cards' titles and functions.
+    fn card_apps(&self) -> Vec<CardApp> {
+        self.list()
+            .iter()
+            .filter_map(|plugin| {
+                let package = plugin.active()?;
+                let manifest = &package.manifest;
+                let cards: Vec<(String, String)> = manifest
+                    .contributes
+                    .panel
+                    .as_ref()
+                    .and_then(|panel| panel.get("cards"))
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|card| {
+                        let function = card.get("function").and_then(Value::as_str)?.to_string();
+                        let title = card.get("title").and_then(Value::as_str).unwrap_or(&manifest.title).to_string();
+                        Some((title, function))
+                    })
+                    .collect();
+                (!cards.is_empty()).then(|| CardApp {
+                    id: plugin.id.clone(),
+                    title: manifest.title.clone(),
+                    cards,
+                    outside: !manifest.hosts().is_empty() || manifest.reads_household(),
+                })
+            })
+            .collect()
+    }
+
+    /// An app's cards for «Мозг»: each card's function called as the desk calls it (`{}`), its answer in words
+    /// (`cards::for_model`). A face's go to its Турбо; a card that fails says why, and when all fail the first failure
+    /// is the answer.
+    pub async fn read_cards(&self, id: &str) -> Result<String, PluginError> {
+        let app = self.card_apps().into_iter().find(|app| app.id == id).ok_or_else(|| {
+            PluginError::Unavailable(crate::tr!("нет включённого приложения с карточкой «{id}»", id = id))
+        })?;
+        let (mut read, mut answered, mut failed) = (Vec::new(), 0, None);
+        for (title, function) in app.cards.iter().take(MAX_CARDS_READ) {
+            match self.call(id, function, json!({}), CallKind::Tool).await {
+                Ok(answer) => {
+                    let title = if *title == app.title { title.clone() } else { format!("{}: {title}", app.title) };
+                    read.push(crate::bus::cards::for_model(&title, &crate::bus::cards::unwrap(answer)));
+                    answered += 1;
+                }
+                Err(error) => {
+                    read.push(format!("{title}: {error}"));
+                    failed.get_or_insert(error);
+                }
+            }
+        }
+        match failed {
+            Some(error) if answered == 0 => Err(error),
+            _ => Ok(read.join("\n")),
+        }
+    }
+
+    /// The plugins' own tools as contributions.
+    fn app_tool_contributions(&self, tools: &Arc<Vec<Offered>>) -> Vec<ToolContribution> {
         tools
             .iter()
             .map(|offered| {
@@ -2494,7 +2735,7 @@ impl PluginHost {
                 };
             }
             let directives = player.play(&station.device, items, 0, 0);
-            if !(station.add)(directives) {
+            if !(station.add)(directives) && !self.push_play(&station.device) {
                 return "error: the answer went out already; ask the user to say it again".into();
             }
             return format!("Nothing played, so «{}» plays now. Tell the user briefly what is on.", first.title);
@@ -2509,7 +2750,7 @@ impl PluginHost {
         };
         let index = object.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
         let directives = player.play(&station.device, items, index, 0);
-        if !(station.add)(directives) {
+        if !(station.add)(directives) && !self.push_play(&station.device) {
             return "error: the answer went out already; ask the user to say it again".into();
         }
         tracing::info!(target: "plugins", "{plugin}: its tool plays «{}»", first.title);
@@ -2517,6 +2758,20 @@ impl PluginHost {
             Some(say) => format!("Playing «{}» now. Tell the user: {say}", first.title),
             None => format!("Playing «{}» now. Tell the user briefly what is on.", first.title),
         }
+    }
+
+    /// The answer went out before the tool was done (a search on the Турбо took longer than the station waits, and it
+    /// said «Сейчас посмотрю»): the play is the player's already, so it is pushed — the station calls back for it as
+    /// for a retry (stage 5а). Without this the tool told the model «ask the user to say it again», and the model did,
+    /// while the music started anyway on the silence retry (test 19.11, remark 9). False when no station can be asked.
+    fn push_play(&self, device: &str) -> bool {
+        let (Some(player), Some(watch)) = (self.player.as_ref(), self.watch.as_ref()) else { return false };
+        let Some((item, state)) = player.current(device) else { return false };
+        let pushed = watch.retry(device, &state.play_id);
+        if pushed {
+            tracing::info!(target: "plugins", "{device}: the answer went out already — «{}» is pushed", item.title);
+        }
+        pushed
     }
 
     // For the panel.
@@ -3978,6 +4233,15 @@ mod tests {
         }
         assert_eq!(pushed.0.lock().unwrap().as_slice(), ["vgw_media_retry"]);
         assert_eq!(player.current("kitchen").unwrap().0.title, "Станция Б");
+
+        // The answer went out while the tool worked (the station said «Сейчас посмотрю»): the play is pushed, and the
+        // model is told it plays — not «ask the user to say it again» (test 19.11, remark 9).
+        let late = StationAct { device: "kitchen".into(), media_base_url: None, add: Arc::new(|_| false) };
+        let context =
+            ToolContext { principal: system(), cancel: CancellationToken::new(), station: Some(late), origin: None };
+        let said = (tool.run)(Map::new(), context).await.unwrap();
+        assert!(said.starts_with("Playing «Станция А» now"), "{said}");
+        assert_eq!(pushed.0.lock().unwrap().as_slice(), ["vgw_media_retry", "vgw_media_retry"]);
     }
 
     #[tokio::test]
@@ -4076,6 +4340,167 @@ mod tests {
             assert_eq!(host.view_one("echo").await.unwrap().runs_at, Some(runs_at), "{placement:?}");
         }
         HOME.with(|cell| *cell.borrow_mut() = None);
+    }
+
+    /// An app for a computer, a face on the station (stage 5б): YouTube's shape.
+    fn tube() -> Value {
+        json!({
+            "schema": 1, "kind": "app", "id": "tube", "version": "1.0.0", "title": "YouTube", "api": "^2",
+            "runtime": "node", "node": { "entry": "backend.js" },
+            "runs": ["pc"], "budget": { "memoryMb": 4 }, "permissions": [],
+            "contributes": {
+                "tools": [{
+                    "name": "tube_play", "description": "Включает музыку с YouTube", "handler": "play",
+                    "input": { "type": "object", "properties": { "query": { "type": "string" } } }
+                }]
+            }
+        })
+    }
+
+    /// The clean-path check of 19.11: the Mac was on the line, YouTube's code was not on it, and the station said «its
+    /// Турбо is off» — the model told the person so. A face's call says what is so: the Турбо on the line without the
+    /// app's code (and that it is being installed, or what the Турбо said when asked to), the Турбо refusing or the
+    /// app there failing in their own words, the Турбо asleep — by its name. Only the first asks for the code again.
+    #[tokio::test]
+    async fn a_face_says_honestly_why_its_turbo_did_not_answer() {
+        use axum::routing::post;
+
+        struct Turbo(Mutex<Option<(String, String)>>);
+        impl HomeLink for Turbo {
+            fn up(&self) -> Option<(String, String)> {
+                self.0.lock().unwrap().clone()
+            }
+
+            fn offered(&self) -> bool {
+                true
+            }
+
+            fn name(&self) -> Option<String> {
+                self.up().map(|_| "Mac".into())
+            }
+
+            fn why_not(&self) -> Option<String> {
+                self.up().is_none().then(|| "Mac не на связи — спит, выключен или без сети".into())
+            }
+        }
+
+        // The Mac: no code of «tube» there; «echo» there fails in its own words.
+        let computer = axum::Router::new().route(
+            "/home/v1/plugins/{id}/call",
+            post(|axum::extract::Path(id): axum::extract::Path<String>| async move {
+                match id.as_str() {
+                    "tube" => (
+                        axum::http::StatusCode::CONFLICT,
+                        axum::Json(json!({ "code": 409, "message": "Приложение tube здесь не включено." })),
+                    ),
+                    _ => (
+                        axum::http::StatusCode::BAD_GATEWAY,
+                        axum::Json(json!({ "code": 502, "message": "Приложение не ответило: нет сети." })),
+                    ),
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, computer).await.unwrap() });
+
+        let dir = tempfile::tempdir().unwrap();
+        write_package(dir.path(), &tube(), Some(CODE));
+        let mut other = tube();
+        (other["id"], other["title"]) = (json!("echo"), json!("Эхо"));
+        other["contributes"]["tools"][0]["name"] = json!("echo_play");
+        write_package(dir.path(), &other, Some(CODE));
+        let turbo = Arc::new(Turbo(Mutex::new(Some((url, "key".into())))));
+        HOME.with(|cell| *cell.borrow_mut() = Some(turbo.clone() as Arc<dyn HomeLink>));
+        let fixture = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::StationServer);
+        HOME.with(|cell| *cell.borrow_mut() = None);
+        let host = fixture.host.clone();
+        host.enable("tube", None).await.unwrap();
+        host.enable("echo", None).await.unwrap();
+        let mut events = fixture.events.subscribe();
+        let call = |id: &'static str| {
+            let host = host.clone();
+            async move {
+                host.call(id, "play", json!({ "query": "Кино" }), CallKind::Tool).await.unwrap_err().to_string()
+            }
+        };
+
+        // On the line, its code not there: said so, and its code asked for.
+        let missing = call("tube").await;
+        assert_eq!(
+            missing,
+            "«YouTube» ещё не стоит на Турбо «Mac» (он на связи): ставлю его туда — попробуйте через минуту."
+        );
+        assert!(!missing.contains("нет на связи"));
+        assert_eq!(changes(&mut events), ["turbo"], "the home's watch installs the faces' code on «turbo»");
+
+        // The Турбо said why it did not install it: that is the answer, and it is not asked again at once.
+        let why = "Не поставлено: каталог этого компьютера не проверял «tube» из ленты центра — код из неё здесь не ставится.";
+        host.note_turbo("tube", Some(why.into()));
+        assert_eq!(call("tube").await, format!("«YouTube» не стоит на Турбо «Mac» (он на связи): {why}"));
+        assert!(changes(&mut events).is_empty(), "a refusal is not asked again within minutes");
+
+        // The app there fails: its own words, the Турбо named on the line.
+        assert_eq!(
+            call("echo").await,
+            "Турбо «Mac» на связи, но «Эхо» там не ответило: компьютер: Приложение не ответило: нет сети."
+        );
+
+        // The Турбо asleep: by its name, and why.
+        *turbo.0.lock().unwrap() = None;
+        assert_eq!(
+            call("tube").await,
+            "«YouTube» работает на Турбо (компьютере дома), а его сейчас не позвать: Mac не на связи — спит, выключен \
+             или без сети."
+        );
+    }
+
+    /// The clean-path check of 19.11: «какие новинки?» about an app with a card was answered «виджет у вас на столе» —
+    /// and nobody saw it there. «Мозг» reads the card as the desk does, by its function, and gets its data in words;
+    /// the tool names the apps by title beside the id, and is not offered while no app that is on shows a card.
+    #[tokio::test]
+    async fn the_brain_reads_an_apps_card_as_the_desk_shows_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = json!({
+            "schema": 1, "id": "fresh-rap", "version": "1.0.0", "title": "Fresh Hip-Hop & Rap", "api": "^2",
+            "runs": ["pc", "station", "stationServer"], "budget": { "memoryMb": 2 }, "permissions": [],
+            "contributes": {
+                "panel": {
+                    "calls": ["latest"],
+                    "cards": [{ "id": "latest", "title": "Fresh Hip-Hop & Rap", "function": "latest", "initial": true }]
+                }
+            }
+        });
+        let code = r#"
+            export function latest() {
+                return {
+                    big: "2", cap: "новых треков",
+                    rows: [{ text: "Kendrick Lamar — Luther", time: "2026-11-18" }, { text: "Doechii — Anxiety" }],
+                };
+            }
+        "#;
+        write_package(dir.path(), &fresh, Some(code));
+        let host = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Pc).host;
+        assert!(host.tool_contributions().iter().all(|tool| tool.tool.name != CARD_TOOL), "nothing is on: no tool");
+        host.enable("fresh-rap", None).await.unwrap();
+        let tool = host.tool_contributions().into_iter().find(|tool| tool.tool.name == CARD_TOOL).unwrap();
+        assert!(tool.read_only);
+        let app = &tool.tool.parameters["properties"]["app"];
+        assert_eq!(app["enum"], json!(["fresh-rap"]));
+        assert!(app["description"].as_str().unwrap().contains("Fresh Hip-Hop & Rap [fresh-rap]"), "{app}");
+        assert!(tool.tool.description.contains("never send them to look at the desk"));
+
+        let context = ToolContext {
+            principal: crate::core::identity::principal::system(),
+            cancel: CancellationToken::new(),
+            station: None,
+            origin: None,
+        };
+        let input = Map::from_iter([("app".to_string(), json!("fresh-rap"))]);
+        let read = (tool.run)(input, context.clone()).await.unwrap();
+        assert_eq!(read, "Fresh Hip-Hop & Rap: 2. новых треков. 2026-11-18 Kendrick Lamar — Luther; Doechii — Anxiety");
+        let unknown = Map::from_iter([("app".to_string(), json!("weather"))]);
+        assert!((tool.run)(unknown, context).await.unwrap_err().to_string().contains("с карточкой «weather»"));
     }
 
     /// A theme of three colors and a drawn backdrop (THEMES.md, «Три цвета», «Фон»): what reads passes, what does not

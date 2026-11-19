@@ -371,7 +371,8 @@ function TurboOverview({ device, mine }: { device: HomeDevice; mine: boolean }) 
                             <span class="w-strong">{abilityTitle('voice')}</span> <span class="w-cap">— {tr.devices.voiceMissing}</span>
                         </span>
                         {mine ? (
-                            <button class="w-btn" onClick={() => panel.go('settings', 'devices', device.id, { view: 'computer' })}>
+                            // Голоса компьютера — в «Настройки» → «Голос» (проверка начисто 19.11).
+                            <button class="w-btn" onClick={() => panel.go('settings', 'voice')}>
                                 {tr.devices.voiceInstall}
                             </button>
                         ) : (

@@ -319,8 +319,9 @@ export function MagicPlaceSection() {
 
     const view = catalog.view;
     const open = catalogOpen(view);
-    // Слова-активаторы — не отдельные приложения (п. 65): их ставит мастер вместе с персонажем.
-    const all = (view?.packages ?? []).filter((entry) => (open || isInstalled(entry)) && shownAlone(entry));
+    // Слова-активаторы — не отдельные приложения (п. 65): их ставит мастер вместе с персонажем. По фильтру «Слова» — видны
+    // (замечание 11 теста 19.11: «Найти слово» в «Слухе» и у персонажа без слова ведёт сюда).
+    const all = (view?.packages ?? []).filter((entry) => (open || isInstalled(entry)) && (shownAlone(entry) || filters.kind === 'word'));
     const wordOf = (entry: CatalogEntry): string | null => (entry.kind === 'character' ? wordOfEntry(entry, view?.packages ?? []) : null);
     const searched = all.filter((entry) => matchesQuery(entry, query, filterWords(entry)));
     const found = searched.filter((entry) => passes(entry, filters));
