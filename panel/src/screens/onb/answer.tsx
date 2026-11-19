@@ -39,7 +39,7 @@ interface Gate {
     addProvider: (input: ProviderInput) => Promise<ProviderView>;
     updateProvider: (id: string, input: ProviderInput) => Promise<ProviderView>;
     removeProvider: (id: string) => Promise<void>;
-    checkProvider: (id: string) => Promise<ProviderCheck>;
+    checkProvider: (id: string, model?: string) => Promise<ProviderCheck>;
     signInProvider: (id: string) => Promise<SignInStart>;
     signInStatus: (id: string) => Promise<SignInStatus>;
     completeSignIn: (id: string, text: string) => Promise<{ title: string }>;
@@ -53,7 +53,7 @@ const direct: Gate = {
     addProvider: (input) => api.addProvider(input),
     updateProvider: (id, input) => api.updateProvider(id, input),
     removeProvider: (id) => api.removeProvider(id),
-    checkProvider: (id) => api.checkProvider(id),
+    checkProvider: (id, model) => api.checkProvider(id, model),
     signInProvider: (id) => api.signInProvider(id),
     signInStatus: (id) => api.signInStatus(id),
     completeSignIn: (id, text) => api.completeSignIn(id, text),
@@ -69,7 +69,8 @@ function viaStation(key: string): Gate {
         addProvider: (input) => stationCall<ProviderView>(key, 'POST', '/api/v1/brain/providers', input),
         updateProvider: (id, input) => stationCall<ProviderView>(key, 'PATCH', `/api/v1/brain/providers/${enc(id)}`, input),
         removeProvider: (id) => stationCall<void>(key, 'DELETE', `/api/v1/brain/providers/${enc(id)}`),
-        checkProvider: (id) => stationCall<ProviderCheck>(key, 'POST', `/api/v1/brain/providers/${enc(id)}/check`, {}),
+        checkProvider: (id, model) =>
+            stationCall<ProviderCheck>(key, 'POST', `/api/v1/brain/providers/${enc(id)}/check`, model ? { model } : {}),
         signInProvider: (id) => stationCall<SignInStart>(key, 'POST', `/api/v1/brain/providers/${enc(id)}/signin`),
         signInStatus: (id) => stationCall<SignInStatus>(key, 'GET', `/api/v1/oauth/${enc(id)}`),
         completeSignIn: (id, text) => stationCall<{ title: string }>(key, 'POST', '/api/v1/oauth/complete', { id, text }),
@@ -136,6 +137,11 @@ export function AnswerStep() {
     const [keyOpen, setKeyOpen] = useState(false);
     const [key, setKey] = useState('');
     const [service, setService] = useState('');
+    /** Адрес своего сервиса и поля, что просит провайдер (ID каталога у YandexGPT): как в окне «Добавить провайдера». */
+    const [url, setUrl] = useState('');
+    const [extra, setExtra] = useState<Record<string, string>>({});
+    /** Модель своего сервиса — если он сам моделей не называет (Anthropic-совместимый адрес часто так). */
+    const [model, setModel] = useState('');
     const [signin, setSignin] = useState<{ start: SignInStart; provider: string } | null>(null);
     const [pasted, setPasted] = useState('');
     const [restoring, setRestoring] = useState(false);
@@ -171,10 +177,10 @@ export function AnswerStep() {
     const presetOf = (id: string): ProviderPreset | undefined => view?.presets.find((preset) => preset.id === id);
 
     /** Провайдер готов: проверить, выбрать его модель быстрой и сказать, кто отвечает. */
-    const settle = async (provider: ProviderView) => {
-        const check = await modelGate.checkProvider(provider.id);
+    const settle = async (provider: ProviderView, wanted?: string) => {
+        const check = await modelGate.checkProvider(provider.id, wanted || undefined);
         if (!check.ok) throw new Error(check.problem ?? tr.connect.problemOther);
-        const model = check.model ?? presetOf(provider.preset)?.suggested?.fast ?? provider.models[0];
+        const model = check.model ?? (wanted || undefined) ?? presetOf(provider.preset)?.suggested?.fast ?? provider.models[0];
         if (!model) throw new Error(tr.connect.problemOther);
         setView(await modelGate.chooseBrain({ fast: { provider: provider.id, model } }));
         setNote({ text: t.modelWorks(model) });
@@ -250,15 +256,35 @@ export function AnswerStep() {
     const guessed = keyService(key);
     const keyTarget = service || (guessed && (guessed === 'openrouter' || keyPresets.some((preset) => preset.id === guessed)) ? guessed : '');
 
+    // Что ещё просит выбранный провайдер (замечание 15 теста 19.11: «Свой, Anthropic-совместимый» без поля адреса
+    // отвечал «Укажите адрес сервиса.»): те же поля описания провайдера, что в «Персонаж» → «Мозг» → «Добавить».
+    const target = keyTarget ? presetOf(keyTarget) : undefined;
+    const needsUrl = !!target?.editableUrl;
+    const targetFields = target?.fields ?? [];
+    const complete = (!needsUrl || !!url.trim()) && targetFields.every((field) => !!extra[field.id]?.trim());
+    const asked = (): { baseUrl?: string; options?: Record<string, string> } => ({
+        ...(needsUrl ? { baseUrl: url.trim() } : {}),
+        ...(targetFields.length
+            ? { options: Object.fromEntries(targetFields.map((field) => [field.id, (extra[field.id] ?? '').trim()])) }
+            : {}),
+    });
+
     const saveKey = () =>
         void work(async () => {
             if (!keyTarget) throw new Error(t.keyUnknown);
-            const existing = view?.providers.find((provider) => provider.preset === keyTarget);
+            // Свой адрес — свой сервис: тот же провайдер с другим адресом — новый, а не перезапись прежнего.
+            const bare = (address: string | null): string => (address ?? '').trim().replace(/\/+$/, '');
+            const existing = view?.providers.find(
+                (provider) => provider.preset === keyTarget && (!needsUrl || bare(provider.baseUrl) === bare(url)),
+            );
             const provider = existing
-                ? await modelGate.updateProvider(existing.id, { key: key.trim() })
-                : await modelGate.addProvider({ preset: keyTarget, key: key.trim() });
-            await settle(provider);
+                ? await modelGate.updateProvider(existing.id, { key: key.trim(), ...asked() })
+                : await modelGate.addProvider({ preset: keyTarget, key: key.trim(), ...asked() });
+            await settle(provider, needsUrl ? model.trim() : undefined);
             setKey('');
+            setUrl('');
+            setExtra({});
+            setModel('');
             setKeyOpen(false);
         });
 
@@ -476,7 +502,7 @@ export function AnswerStep() {
                             class="onb-cx-form"
                             onSubmit={(e) => {
                                 e.preventDefault();
-                                if (key.trim()) saveKey();
+                                if (key.trim() && complete) saveKey();
                             }}
                         >
                             <input
@@ -498,7 +524,40 @@ export function AnswerStep() {
                                     ))}
                                 </select>
                             )}
-                            <button type="submit" class="dw-btn dw-btn-light" disabled={!key.trim() || !keyTarget || busy}>
+                            {needsUrl && (
+                                <input
+                                    class="input"
+                                    type="url"
+                                    inputMode="url"
+                                    autocomplete="off"
+                                    aria-label={t.keyAddress}
+                                    placeholder={target?.baseUrl || t.keyAddressPlaceholder}
+                                    value={url}
+                                    onInput={(e) => setUrl((e.target as HTMLInputElement).value)}
+                                />
+                            )}
+                            {needsUrl && (
+                                <input
+                                    class="input"
+                                    autocomplete="off"
+                                    aria-label={t.keyModel}
+                                    placeholder={t.keyModelPlaceholder}
+                                    value={model}
+                                    onInput={(e) => setModel((e.target as HTMLInputElement).value)}
+                                />
+                            )}
+                            {targetFields.map((field) => (
+                                <input
+                                    key={field.id}
+                                    class="input"
+                                    autocomplete="off"
+                                    aria-label={field.title}
+                                    placeholder={field.placeholder ?? field.title}
+                                    value={extra[field.id] ?? ''}
+                                    onInput={(e) => setExtra((all) => ({ ...all, [field.id]: (e.target as HTMLInputElement).value }))}
+                                />
+                            ))}
+                            <button type="submit" class="dw-btn dw-btn-light" disabled={!key.trim() || !keyTarget || !complete || busy}>
                                 {busy ? t.checkingModel : t.save}
                             </button>
                         </form>
