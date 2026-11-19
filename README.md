@@ -20,7 +20,8 @@
   <a href="#поставить">Поставить</a> ·
   <a href="#первые-шаги">Первые шаги</a> ·
   <a href="docs/plugins/AUTHORING.md">Написать приложение</a> ·
-  <a href="#чем-рискуете-и-как-вернуть">Как вернуть как было</a>
+  <a href="#чем-рискуете-и-как-вернуть">Как вернуть как было</a> ·
+  <a href="https://t.me/+NhXi1k_GYH00YWE1">Telegram</a>
 </p>
 
 <p align="center">
@@ -336,6 +337,9 @@ DuoWave сам узнаёт о новой версии и показывает �
 
 ## Сообщество
 
+Новости DuoWave — канал [@DuoWaveAi](https://t.me/+NhXi1k_GYH00YWE1), вопросы и разговоры — [чат](https://t.me/+3HQjqPeBP0xkZThl).
 Вики и чат по колонкам — [hackalice.me](https://hackalice.me) и [@hackalice](https://t.me/hackalice). Ошибки и новые
 модели колонок — в [issues](https://github.com/duowaveai/duowave/issues). Уязвимости — по [SECURITY.md](SECURITY.md), не
 в issues.
+
+<sub>DuoWave в Telegram: [t.me/DuoWaveAi](https://t.me/DuoWaveAi)</sub>
