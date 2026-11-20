@@ -16,6 +16,8 @@ export default {
     stateOffline: 'offline',
     stateOff: 'switched off',
     stateUnknown: 'checking',
+    voiceAway: 'voice offline',
+    voiceReconnecting: 'voice reconnecting',
     groupHome: 'Home',
     pageTitle: 'Devices',
     pageSub: 'Hub, speakers and Turbo',

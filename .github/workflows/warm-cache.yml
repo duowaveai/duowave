@@ -92,6 +92,9 @@ jobs:
           - { os: ubuntu-24.04-arm, name: ubuntu-24.04-arm }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    env:
+      # As release.yml's desktop job: the same engine floor, or the cache holds an engine release.yml builds again.
+      TRANSCRIBE_CMAKE_ARGS: ${{ (matrix.os == 'windows-latest' || matrix.os == 'ubuntu-22.04') && '-DGGML_NATIVE=OFF -DGGML_SSE42=ON -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON -DGGML_AVX512=OFF' || matrix.os == 'ubuntu-24.04-arm' && '-DGGML_NATIVE=OFF' || '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

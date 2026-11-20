@@ -1339,8 +1339,12 @@ mod tests {
     struct Opener(Arc<Station>);
 
     impl ShellOpener for Opener {
-        fn banner<'a>(&'a self, _address: &'a str, _port: u16) -> BoxFuture<'a, Option<String>> {
-            Box::pin(async { Some("SSH-2.0-dropbear".into()) })
+        fn banner<'a>(
+            &'a self,
+            _address: &'a str,
+            _port: u16,
+        ) -> BoxFuture<'a, Result<String, crate::stations::connect::discovery::NoBanner>> {
+            Box::pin(async { Ok("SSH-2.0-dropbear".into()) })
         }
         fn open<'a>(
             &'a self,

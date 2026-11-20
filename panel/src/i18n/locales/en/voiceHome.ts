@@ -31,6 +31,7 @@ const voiceHome: Translation<typeof ru> = {
     nowAlice: 'Alice’s voice — the speaker speaks itself.',
     nowCloud: 'A cloud voice.',
     nowNone: 'No voice of its own — Alice’s voice answers.',
+    nowNoVoice: 'No voice yet — answers come as text only. The computer’s voice is chosen below.',
     nowVoice: (voice: string, where: string) => `“${voice}” — ${where}`,
     nowWhere: (computer: string) => `on “${computer}”`,
     nowHere: 'on this computer',

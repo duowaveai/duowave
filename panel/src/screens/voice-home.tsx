@@ -15,7 +15,7 @@ import { tr } from '../i18n';
 import { usePanel } from '../shell/context';
 import { defaultEngine, engineStatus, EnginePicker, usableEngines } from '../ui/voice-plan';
 import { VIA } from '../via';
-import { onComputer } from '../voice-input';
+import { onComputer, useOnComputer } from '../voice-input';
 import { ask } from '../ui/confirm';
 import { WaitingCard } from '../voice/pending-voice';
 import { aliceOnly, chooseWord, removeWords, useCallWords } from './call-words';
@@ -60,6 +60,9 @@ function NowSpeaking() {
     const panel = usePanel();
     const [home, setHome] = useState<HomeVoice | null>(null);
     const { row, details } = useWhere('voice');
+    // Без колонки (режим «Микрофон» — «только компьютер», или колонок ещё нет) голоса Алисы нет: его давала колонка
+    // (тест на Windows 21.11 — «говорит сама колонка» в доме без колонки).
+    const stationless = useOnComputer() || panel.noStation;
     useEffect(() => {
         let alive = true;
         api.homeVoice()
@@ -74,13 +77,14 @@ function NowSpeaking() {
     const chosen = home && (home.offered || home.cloud) ? home.chosen : null;
     let line: string;
     let sub: string | null = null;
-    if (chosen === 'alice') line = t.nowAlice;
+    if (chosen === 'alice' && !stationless) line = t.nowAlice;
     else if (chosen === 'cloud' || row?.by === 'cloud') line = t.nowCloud;
     else if (row?.by === 'helper' || row?.by === 'here') {
         const voice = details?.voice ?? (chosen === 'computer' ? home?.voice : undefined);
         line = voice ? t.nowVoice(voice, whereWords(row)) : t.nowComputer(row.name ?? row.helper ?? '');
         sub = details?.model ? t.nowModel(details.model) : null;
-    } else if (row?.by === 'yandex') line = t.nowAlice;
+    } else if (stationless) line = t.nowNoVoice;
+    else if (row?.by === 'yandex') line = t.nowAlice;
     else line = t.nowNone;
     return (
         <Card id="now" title={t.nowTitle}>

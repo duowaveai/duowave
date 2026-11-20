@@ -182,22 +182,35 @@ async fn ask(to: &[SocketAddr], shared: bool, window: Duration) -> Vec<FoundStat
     let query = mdns_query(YANDEX_SERVICE);
     let mut sockets = Vec::new();
     // Unicast answers to a random port.
-    if let Ok(unicast) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await {
-        for target in to {
-            let _ = unicast.send_to(&query, target).await;
+    match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await {
+        Ok(unicast) => {
+            for target in to {
+                if let Err(error) = unicast.send_to(&query, target).await {
+                    tracing::warn!("station search: the mDNS query to {target} was not sent: {error}");
+                }
+            }
+            sockets.push(unicast);
         }
-        sockets.push(unicast);
+        Err(error) => tracing::warn!("station search: no UDP socket for the mDNS query: {error}"),
     }
     // Multicast ones on 5353, beside the OS's own responder where it allows; nothing lost if it does not.
     if shared {
-        if let Some(socket) = shared_socket() {
-            // No multicast here (a container's bridge): the unicast answers are all there is.
-            if socket.join_multicast_v4(MDNS_GROUP, Ipv4Addr::UNSPECIFIED).is_ok() {
-                for target in to {
-                    let _ = socket.send_to(&query, target).await;
+        match shared_socket() {
+            Some(socket) => {
+                // No multicast here (a container's bridge): the unicast answers are all there is.
+                match socket.join_multicast_v4(MDNS_GROUP, Ipv4Addr::UNSPECIFIED) {
+                    Ok(()) => {
+                        for target in to {
+                            let _ = socket.send_to(&query, target).await;
+                        }
+                    }
+                    Err(error) => {
+                        tracing::info!("station search: no multicast on this computer ({error}); unicast answers only")
+                    }
                 }
+                sockets.push(socket);
             }
-            sockets.push(socket);
+            None => tracing::info!("station search: UDP {MDNS_PORT} is the system's own; unicast answers only"),
         }
     }
     let found: Arc<Mutex<Vec<FoundStation>>> = Arc::default();
@@ -279,17 +292,8 @@ pub enum Unreached {
     Other,
 }
 
-/// What the connect to address:port says, or None when it connects.
-pub async fn why_unreached(address: &str, port: u16, ms: u64) -> Option<Unreached> {
-    match timeout(Duration::from_millis(ms), TcpStream::connect((address, port))).await {
-        Err(_) => Some(Unreached::Timeout),
-        Ok(Ok(_)) => None,
-        Ok(Err(error)) => Some(unreached_of(&error)),
-    }
-}
-
 /// The kind of a connect's error. The raw codes are macOS's and Linux's for the same: EPERM 1, EACCES 13, and
-/// EHOSTUNREACH / ENETUNREACH (65 / 51 on macOS, 113 / 101 on Linux).
+/// EHOSTUNREACH / ENETUNREACH (65 / 51 on macOS, 113 / 101 on Linux); Windows' WSAE* codes come as the kinds.
 fn unreached_of(error: &std::io::Error) -> Unreached {
     use std::io::ErrorKind;
     match error.kind() {
@@ -301,25 +305,59 @@ fn unreached_of(error: &std::io::Error) -> Unreached {
     }
 }
 
-/// The SSH banner's software (`dropbear_2022.83`) at address:port, or None when nothing SSH answers in `ms`.
-pub async fn ssh_banner(address: &str, port: u16, ms: u64) -> Option<String> {
-    let idle = Duration::from_millis(ms);
-    let mut stream = timeout(idle, TcpStream::connect((address, port))).await.ok()?.ok()?;
+/// Why no SSH banner came (test 21.11 on Windows: the wizard said «SSH нет» while `Test-NetConnection` reached port
+/// 2222 — one answer for every failure, and nothing in the log said which).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoBanner {
+    /// The connect itself failed — with the system's own words.
+    Unreached(Unreached, String),
+    /// Connected, but no SSH line came in time.
+    Silent,
+    /// Connected, but the other side closed, or said something that is not SSH — what it said, if anything.
+    NotSsh(String),
+}
+
+impl std::fmt::Display for NoBanner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NoBanner::Unreached(kind, said) => write!(f, "the connect failed ({kind:?}): {said}"),
+            NoBanner::Silent => write!(f, "the port is open, but no SSH line came in time"),
+            NoBanner::NotSsh(said) if said.is_empty() => write!(f, "the port is open, but it closed without a word"),
+            NoBanner::NotSsh(said) => write!(f, "the port is open, but it answered not SSH: {said:?}"),
+        }
+    }
+}
+
+/// The SSH banner's software (`dropbear_2022.83`) at address:port, or why there is none: the connect may take
+/// `connect_ms`, the banner `banner_ms` more — a busy station's dropbear answers after its fork.
+pub async fn probe_ssh(address: &str, port: u16, connect_ms: u64, banner_ms: u64) -> Result<String, NoBanner> {
+    let mut stream = match timeout(Duration::from_millis(connect_ms), TcpStream::connect((address, port))).await {
+        Err(_) => return Err(NoBanner::Unreached(Unreached::Timeout, format!("no answer in {connect_ms} ms"))),
+        Ok(Err(error)) => return Err(NoBanner::Unreached(unreached_of(&error), error.to_string())),
+        Ok(Ok(stream)) => stream,
+    };
     // Latin-1: every byte is one character, as Node's 'latin1' read it.
     let mut text = String::new();
     let mut buffer = [0u8; 256];
+    let deadline = Instant::now() + Duration::from_millis(banner_ms);
+    let said = |text: &str| text.chars().take(80).collect::<String>();
     loop {
-        let size = timeout(idle, stream.read(&mut buffer)).await.ok()?.ok()?;
+        let size = match timeout_at(deadline, stream.read(&mut buffer)).await {
+            Err(_) if text.is_empty() => return Err(NoBanner::Silent),
+            Err(_) => return Err(NoBanner::NotSsh(said(&text))),
+            Ok(Err(error)) => return Err(NoBanner::NotSsh(format!("{}{error}", said(&text)))),
+            Ok(Ok(size)) => size,
+        };
         if size == 0 {
-            return banner_software(&text, true);
+            return banner_software(&text, true).ok_or_else(|| NoBanner::NotSsh(said(&text)));
         }
         text.extend(buffer[..size].iter().map(|byte| char::from(*byte)));
         let complete = text.contains('\n') || text.chars().count() > 255;
         if let Some(software) = banner_software(&text, complete) {
-            return Some(software);
+            return Ok(software);
         }
         if complete {
-            return None;
+            return Err(NoBanner::NotSsh(said(&text)));
         }
     }
 }
@@ -339,17 +377,6 @@ mod tests {
         assert_eq!(unreached_of(&Error::from_raw_os_error(65)), Unreached::NoRoute);
         assert_eq!(unreached_of(&Error::from(ErrorKind::PermissionDenied)), Unreached::NoRoute);
         assert_eq!(unreached_of(&Error::other("odd")), Unreached::Other);
-    }
-
-    #[tokio::test]
-    async fn a_closed_port_is_refused_and_an_open_one_connects() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let open = listener.local_addr().unwrap().port();
-        drop(listener);
-        assert_eq!(why_unreached("127.0.0.1", open, 2000).await, Some(Unreached::Refused));
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        assert_eq!(why_unreached("127.0.0.1", port, 2000).await, None);
     }
 
     /// A DNS name in wire format, without compression.
@@ -476,17 +503,40 @@ mod tests {
     #[tokio::test]
     async fn names_the_ssh_software_that_answers() {
         let (port, server) = serve_once("SSH-2.0-dropbear_2022.83\r\n").await;
-        assert_eq!(ssh_banner("127.0.0.1", port, 1500).await.as_deref(), Some("dropbear_2022.83"));
+        assert_eq!(probe_ssh("127.0.0.1", port, 1500, 1500).await.as_deref(), Ok("dropbear_2022.83"));
         server.abort();
     }
 
     #[tokio::test]
-    async fn is_null_where_nothing_ssh_answers() {
+    async fn says_why_nothing_ssh_answers() {
         let (port, server) = serve_once("HTTP/1.1 400 Bad Request\r\n\r\n").await;
-        assert_eq!(ssh_banner("127.0.0.1", port, 1500).await, None);
+        let answer = probe_ssh("127.0.0.1", port, 1500, 1500).await;
+        assert!(matches!(&answer, Err(NoBanner::NotSsh(said)) if said.starts_with("HTTP/1.1 400")), "{answer:?}");
         server.abort();
         let _ = server.await;
-        assert_eq!(ssh_banner("127.0.0.1", port, 500).await, None);
+        let Err(NoBanner::Unreached(kind, _)) = probe_ssh("127.0.0.1", port, 500, 500).await else {
+            panic!("a closed port is unreached");
+        };
+        assert_eq!(kind, Unreached::Refused);
+    }
+
+    #[tokio::test]
+    async fn a_port_that_closes_at_once_is_not_ssh() {
+        let (port, server) = serve_once("").await;
+        assert_eq!(probe_ssh("127.0.0.1", port, 1500, 1500).await, Err(NoBanner::NotSsh(String::new())));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_port_that_says_nothing_is_silent() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let held = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        assert_eq!(probe_ssh("127.0.0.1", port, 1500, 300).await, Err(NoBanner::Silent));
+        held.abort();
     }
 
     #[test]

@@ -63,7 +63,10 @@ export function DeviceMarks({ device }: { device: HomeDevice }) {
 function stateLine(device: HomeDevice): string {
     const state = deviceStateWords(device);
     const at = device.state === 'online' ? undefined : (device.since ?? device.lastSeen);
-    const words = at ? tr.devices.stateLine(state, since(at)) : state;
+    let words = at ? tr.devices.stateLine(state, since(at)) : state;
+    // Колонка-центр: шлюз на ней отвечает, а её голос ушёл (к Яндексу) — одной строкой, не второй «колонкой».
+    if (device.voice === 'offline') words = `${words} · ${tr.devices.voiceAway}`;
+    else if (device.voice === 'reconnecting') words = `${words} · ${tr.devices.voiceReconnecting}`;
     return device.copy ? `${words} · ${tr.devices.copy}` : words;
 }
 
@@ -163,8 +166,16 @@ function OtherStations({ view, onJoined }: { view: HomeDevices; onJoined: (devic
     const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
     const inHome = new Set(view.devices.map((device) => device.device).filter(Boolean));
     const centreDevice = view.devices.find((device) => device.id === view.centre)?.device;
-    const others = (own?.placement?.stations ?? []).filter(
-        (station) => station.placement !== 'pc' && station.device !== centreDevice && !inHome.has(station.device),
+    // Колонка-центр не «ещё не в доме», под каким бы ключом компьютер её ни помнил: окно колонки (`?via=`) открыто на её
+    // ключе, у неё устройство центра, или тот же адрес (тест на Windows 21.11: центр предлагал подключить к дому сам себя).
+    const listed = own?.placement?.stations ?? [];
+    const centreHere = listed.find((station) => station.key === VIA || (!!centreDevice && station.device === centreDevice));
+    const others = listed.filter(
+        (station) =>
+            station.placement !== 'pc' &&
+            station !== centreHere &&
+            station.address !== centreHere?.address &&
+            !(station.device && (station.device === centreDevice || inHome.has(station.device))),
     );
     if (!can('stations.manage') || others.length === 0) return null;
     const join = async (key: string, device?: string): Promise<void> => {

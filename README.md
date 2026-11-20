@@ -73,6 +73,9 @@ irm https://github.com/duowaveai/duowave/releases/latest/download/install.ps1 | 
 Команда найдёт колонку, покажет, что изменит, и после вашего «да» поставит DuoWave. В конце она покажет адрес пульта
 и код первой настройки. Компьютер после этого можно выключить.
 
+Если колонка не находится сама, команда спросит её адрес. На Windows его можно дать заранее:
+`$env:DUOWAVE_STATION = '192.168.1.23'; irm https://github.com/duowaveai/duowave/releases/latest/download/install.ps1 | iex`.
+
 ### Приложение для компьютера
 
 Установщики для macOS, Windows и Linux лежат в

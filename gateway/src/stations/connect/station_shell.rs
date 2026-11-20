@@ -14,7 +14,7 @@ use russh::{ChannelMsg, Disconnect, MethodKind};
 use sha2::{Digest, Sha256};
 use tokio::time::timeout;
 
-use super::discovery::ssh_banner;
+use super::discovery::{probe_ssh, NoBanner};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellResult {
@@ -72,8 +72,8 @@ pub enum ShellError {
 
 /// What reaches a station: its SSH banner (reading only) and its shell. TCP and russh here, a pretend one in tests.
 pub trait ShellOpener: Send + Sync {
-    /// The SSH software that answers at address:port, or None.
-    fn banner<'a>(&'a self, address: &'a str, port: u16) -> BoxFuture<'a, Option<String>>;
+    /// The SSH software that answers at address:port, or why none does.
+    fn banner<'a>(&'a self, address: &'a str, port: u16) -> BoxFuture<'a, Result<String, NoBanner>>;
     fn open<'a>(
         &'a self,
         address: &'a str,
@@ -89,12 +89,20 @@ pub fn fingerprint_of(key: &[u8]) -> String {
 /// How long a command may take.
 const RUN_MS: u64 = 20_000;
 
+/// How long the TCP connect to a station's SSH may take: a station that is on answers in milliseconds, and an
+/// address nobody holds would keep Windows waiting 21 s.
+const CONNECT_MS: u64 = 3_000;
+
+/// How long its SSH may take to say its banner once connected: the Lite 2's dropbear forks per connection on a few
+/// megabytes of free memory (1.5 s was the whole wait before the Windows test of 21.11).
+const BANNER_MS: u64 = 5_000;
+
 /// The real one: TCP for the banner, russh for the shell.
 pub struct RusshOpener;
 
 impl ShellOpener for RusshOpener {
-    fn banner<'a>(&'a self, address: &'a str, port: u16) -> BoxFuture<'a, Option<String>> {
-        Box::pin(ssh_banner(address, port, 1500))
+    fn banner<'a>(&'a self, address: &'a str, port: u16) -> BoxFuture<'a, Result<String, NoBanner>> {
+        Box::pin(probe_ssh(address, port, CONNECT_MS, BANNER_MS))
     }
 
     fn open<'a>(

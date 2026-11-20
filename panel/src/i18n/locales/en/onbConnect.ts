@@ -37,6 +37,8 @@ const en: Translation<typeof ru> = {
     rowNoSsh: 'No SSH login',
     rowNoConfig: "DuoWave doesn't know this model yet",
     rowUnreachable: "The speaker doesn't answer",
+    rowNoRoute: 'No way to the speaker',
+    rowSshSlow: "The speaker's SSH didn't answer",
     rowHostKey: "It's a different speaker",
     rowProblem: "Couldn't check",
     notFoundTitle: "Couldn't find the speaker on the network",

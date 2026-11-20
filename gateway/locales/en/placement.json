@@ -455,5 +455,9 @@
  "Колонка видит версию {wanted}, а этот компьютер её не видит: лента выпусков не ответила ({error}).": "The speaker sees version {wanted}, and this computer does not: the release feed did not answer ({error}).",
  "Колонка видит версию {wanted}, а лента этого компьютера её пока не предлагает (на нём DuoWave {computer}): попробуйте через несколько минут.": "The speaker sees version {wanted}, and this computer's feed does not offer it yet (it runs DuoWave {computer}): try again in a few minutes.",
  "Колонка видит версию {wanted}, а этот компьютер выпусков не проверяет: обновите DuoWave на нём вручную (сейчас {computer}).": "The speaker sees version {wanted}, and this computer does not check for releases: update DuoWave on it by hand (it runs {computer}).",
- "Без компьютера ставит новую версию только DuoWave на колонке, который обычно обновляет компьютер.": "Only DuoWave on a speaker that its computer usually updates installs a new version without the computer."
+ "Без компьютера ставит новую версию только DuoWave на колонке, который обычно обновляет компьютер.": "Only DuoWave on a speaker that its computer usually updates installs a new version without the computer.",
+ "Порт SSH на колонке открыт, но SSH не ответил за 5 секунд: колонка занята. Подождите минуту и попробуйте снова; не помогает — перезагрузите её.": "The speaker's SSH port is open, but SSH did not answer within 5 seconds: the speaker is busy. Wait a minute and try again; if that does not help, restart it.",
+ "Порт SSH на колонке открыт, но связь сразу закрылась. Подождите пару минут и попробуйте снова; не помогает — перезагрузите колонку.": "The speaker's SSH port is open, but the connection closed at once. Wait a couple of minutes and try again; if that does not help, restart the speaker.",
+ "Колонка не пустила root без пароля. Пароль root колонки (его не видно при вводе; пусто — выйти): ": "The speaker did not let root in without a password. The speaker's root password (hidden as you type; empty to quit): ",
+ "Пароль не подошёл. Ещё раз (пусто — выйти): ": "Wrong password. Once more (empty to quit): "
 }

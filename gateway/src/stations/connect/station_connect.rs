@@ -12,7 +12,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 use tokio::time::{timeout_at, Instant};
 
-use super::discovery::{discover_stations, FoundStation};
+use super::discovery::{discover_stations, FoundStation, NoBanner, Unreached};
 use super::neighbours::{self, Neighbour};
 use super::quasar_config::{
     gateway_addresses, parse_gateway_host, points_to, read_config, with_addresses, yandex, GatewayHost, PointsTo,
@@ -280,10 +280,22 @@ impl StationConnectService {
     /// Each station's SSH banner, all asked at once as the TS Promise.all did: a silent port costs its timeout once,
     /// not once per station.
     async fn with_banners(&self, found: Vec<FoundStation>) -> Vec<FoundStation> {
+        let port = self.ssh.port;
+        if found.is_empty() {
+            tracing::info!("station search: no station answered mDNS");
+        }
         let banners =
-            futures::future::join_all(found.iter().map(|station| self.opener.banner(&station.address, self.ssh.port)))
-                .await;
-        found.into_iter().zip(banners).map(|(station, ssh)| FoundStation { ssh, ..station }).collect()
+            futures::future::join_all(found.iter().map(|station| self.opener.banner(&station.address, port))).await;
+        found
+            .into_iter()
+            .zip(banners)
+            .map(|(station, banner)| {
+                let ssh = banner
+                    .inspect_err(|why| tracing::warn!("station search: {}:{port} has no SSH: {why}", station.address))
+                    .ok();
+                FoundStation { ssh, ..station }
+            })
+            .collect()
     }
 
     /// The port a station dials for this gateway: a typed address without one means this.
@@ -344,14 +356,39 @@ impl StationConnectService {
     /// of the links is the server's error, as the TS check rejected: taken for «no link» it would skip the key check.
     pub async fn check(&self, address: &str, gateway: Option<&GatewayHost>) -> Result<StationCheck, ApiError> {
         let device = self.stations.device_for_address(address);
-        let Some(ssh) = self.opener.banner(address, self.ssh.port).await else {
-            return Ok(StationCheck { problem: Some("no-ssh".into()), ..base(address, None, device) });
+        let port = self.ssh.port;
+        // Why there is no banner, said in the log and to the panel (Windows test 21.11: «SSH нет» for every reason).
+        // A port that is open but gave no banner still gets the real SSH client: the banner is a courtesy read, and
+        // where it fails but SSH works the wizard should go on.
+        let (ssh, missed) = match self.opener.banner(address, port).await {
+            Ok(software) => (software, None),
+            Err(why) => {
+                tracing::warn!("station check: {address}:{port} gave no SSH banner: {why}");
+                match why {
+                    NoBanner::Unreached(kind, _) => {
+                        return Ok(StationCheck {
+                            problem: Some(unreached_problem(kind).into()),
+                            ..base(address, None, device)
+                        })
+                    }
+                    NoBanner::Silent => ("SSH".to_string(), Some("ssh-slow")),
+                    NoBanner::NotSsh(_) => ("SSH".to_string(), Some("ssh-closed")),
+                }
+            }
         };
         let link = self.link(address)?;
         let shell = match self.opener.open(address, self.options(link.as_ref().map(|l| l.fingerprint.clone()))).await {
             Ok(shell) => shell,
             Err(error) => {
-                return Ok(StationCheck { problem: Some(problem_of(&error)), ..base(address, Some(ssh), device) })
+                tracing::warn!("station check: SSH to {address}:{port} did not open: {error:#}");
+                let problem = match missed {
+                    Some(missed) if !matches!(problem_of(&error).as_str(), "auth-failed" | "host-key-changed") => {
+                        missed.to_string()
+                    }
+                    _ => problem_of(&error),
+                };
+                let ssh = if missed.is_some() { None } else { Some(ssh) };
+                return Ok(StationCheck { problem: Some(problem), ..base(address, ssh, device) });
             }
         };
         let result = self.look(address, &ssh, device.clone(), gateway, link.as_ref(), shell.as_ref()).await;
@@ -954,6 +991,17 @@ fn parse_ms(iso: &str) -> u64 {
 }
 
 /// What went wrong, in words the panel knows: the key, the login, the network — or the message.
+/// The panel's problem for a station whose SSH port did not connect: off or elsewhere, SSH not started, no way there
+/// from this computer, or the system's own odd answer (its words are in the log).
+fn unreached_problem(kind: Unreached) -> &'static str {
+    match kind {
+        Unreached::Timeout => "station-off",
+        Unreached::Refused => "no-ssh",
+        Unreached::NoRoute => "no-route",
+        Unreached::Other => "no-connect",
+    }
+}
+
 pub fn problem_of(error: &anyhow::Error) -> String {
     if error.downcast_ref::<HostKeyChanged>().is_some() {
         return "host-key-changed".into();
@@ -1089,6 +1137,10 @@ mod tests {
         left: String,
         /// What the look for neighbours prints.
         around: String,
+        /// What its SSH port says first.
+        banner: Result<String, NoBanner>,
+        /// Its SSH never opens.
+        no_shell: bool,
     }
 
     #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1119,6 +1171,8 @@ mod tests {
                     key: "SHA256:fake-key".into(),
                     left: String::new(),
                     around: "maind on\nmemavail 61440\n".into(),
+                    banner: Ok("dropbear_test".into()),
+                    no_shell: false,
                 })),
             }
         }
@@ -1140,8 +1194,9 @@ mod tests {
     }
 
     impl ShellOpener for FakeStation {
-        fn banner<'a>(&'a self, _address: &'a str, _port: u16) -> BoxFuture<'a, Option<String>> {
-            Box::pin(async { Some("dropbear_test".into()) })
+        fn banner<'a>(&'a self, _address: &'a str, _port: u16) -> BoxFuture<'a, Result<String, NoBanner>> {
+            let banner = self.state().banner.clone();
+            Box::pin(async move { banner })
         }
 
         fn open<'a>(
@@ -1151,6 +1206,9 @@ mod tests {
         ) -> BoxFuture<'a, anyhow::Result<Box<dyn StationShell>>> {
             let state = self.state.clone();
             Box::pin(async move {
+                if state.lock().unwrap().no_shell {
+                    return Err(ShellError::Unreachable("Timed out while waiting for handshake".into()).into());
+                }
                 let key = state.lock().unwrap().key.clone();
                 if let Some(trust) = &options.trust {
                     if *trust != key {
@@ -1468,6 +1526,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn says_why_the_station_s_ssh_did_not_answer() {
+        let cases = [
+            (NoBanner::Unreached(Unreached::Timeout, "no answer".into()), "station-off"),
+            (NoBanner::Unreached(Unreached::Refused, "refused".into()), "no-ssh"),
+            (NoBanner::Unreached(Unreached::NoRoute, "no route".into()), "no-route"),
+            (NoBanner::Unreached(Unreached::Other, "odd".into()), "no-connect"),
+        ];
+        for (banner, problem) in cases {
+            let setup = Setup::new(fast());
+            setup.station.state().banner = Err(banner);
+            let check = setup.service.check(ADDRESS, None).await.unwrap();
+            assert_eq!(check.problem.as_deref(), Some(problem));
+            assert!(check.ssh.is_none());
+            assert!(setup.station.state().commands.is_empty(), "nothing tried on {problem}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_open_port_without_a_banner_still_gets_the_real_ssh() {
+        // The banner read failed but SSH opens: the look goes on (the Windows test of 21.11).
+        let setup = Setup::new(fast());
+        setup.station.state().banner = Err(NoBanner::Silent);
+        let check = setup.service.check(ADDRESS, None).await.unwrap();
+        assert_eq!(check.problem, None);
+        assert_eq!(check.ssh.as_deref(), Some("SSH"));
+        // Neither opens: the banner's reason is the problem.
+        for (banner, problem) in [(NoBanner::Silent, "ssh-slow"), (NoBanner::NotSsh(String::new()), "ssh-closed")] {
+            let setup = Setup::new(fast());
+            setup.station.state().banner = Err(banner);
+            setup.station.state().no_shell = true;
+            assert_eq!(setup.service.check(ADDRESS, None).await.unwrap().problem.as_deref(), Some(problem));
+        }
+    }
+
+    #[tokio::test]
     async fn stops_at_a_station_whose_key_is_not_the_one_it_learned() {
         let setup = Setup::new(fast());
         setup.service.check(ADDRESS, None).await.unwrap();
@@ -1707,10 +1800,10 @@ mod tests {
     struct SlowBanners;
 
     impl ShellOpener for SlowBanners {
-        fn banner<'a>(&'a self, address: &'a str, _port: u16) -> BoxFuture<'a, Option<String>> {
+        fn banner<'a>(&'a self, address: &'a str, _port: u16) -> BoxFuture<'a, Result<String, NoBanner>> {
             Box::pin(async move {
                 tokio::time::sleep(Duration::from_millis(1500)).await;
-                Some(format!("dropbear at {address}"))
+                Ok(format!("dropbear at {address}"))
             })
         }
 

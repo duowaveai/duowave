@@ -74,6 +74,16 @@ export function problemText(problem: string | undefined): string {
             return tr.connect.problemAuthFailed;
         case 'unreachable':
             return tr.connect.problemUnreachable;
+        case 'station-off':
+            return tr.connect.problemStationOff;
+        case 'no-route':
+            return tr.connect.problemNoRoute;
+        case 'ssh-slow':
+            return tr.connect.problemSshSlow;
+        case 'ssh-closed':
+            return tr.connect.problemSshClosed;
+        case 'no-connect':
+            return tr.connect.problemNoConnect;
         case 'no-arrival':
             return tr.connect.problemNoArrival;
         default:

@@ -18,7 +18,7 @@ use super::moves::{NEEDED_KB, NEEDED_MEMORY_KB};
 use super::payload;
 use super::station_fs::{BIN, DATA, DEFAULT_PORT, DIR, SERVICE_COMMAND};
 use crate::config::Config;
-use crate::stations::connect::discovery::{discover_stations, why_unreached, Unreached};
+use crate::stations::connect::discovery::{discover_stations, NoBanner, Unreached};
 use crate::stations::connect::neighbours::{self, Neighbour, Severity};
 use crate::stations::connect::quasar_config::{read_config, PointsTo};
 use crate::stations::connect::station_connect::problem_of;
@@ -88,17 +88,20 @@ async fn run(args: &[String]) -> Result<(), Stop> {
 
     let ssh = &config.gateway.station_ssh;
     let opener = RusshOpener;
-    if opener.banner(&address, ssh.port).await.is_none() {
+    if let Err(missed) = opener.banner(&address, ssh.port).await {
         // Why: the connect's own answer (test 19.11, remark 18) — on macOS a program kept off the home network looks
         // like a speaker without SSH, and the way out is not the wiki but a switch in the system settings.
-        let why = match why_unreached(&address, ssh.port, 3000).await {
-            Some(Unreached::NoRoute) if cfg!(target_os = "macos") => crate::tr!(
+        tracing::warn!("setup: {address}:{} gave no SSH banner: {missed}", ssh.port);
+        let why = match missed {
+            NoBanner::Unreached(Unreached::NoRoute, _) if cfg!(target_os = "macos") => crate::tr!(
                 "Колонка не отвечает: она выключена, в другой сети — или macOS не дала этой программе доступ к домашней сети. Проверьте: «Системные настройки» → «Конфиденциальность и безопасность» → «Локальная сеть» — включите Терминал (или приложение, из которого запускали), либо запустите команду в приложении «Терминал»."
             ),
-            Some(Unreached::NoRoute) => crate::tr!("До колонки нет пути из этой сети: она включена и в той же сети, что этот компьютер?"),
-            Some(Unreached::Timeout) => crate::tr!("Колонка не ответила за 3 секунды: она включена и в той же сети?"),
-            Some(Unreached::Refused) => crate::tr!("Колонка на связи, но SSH на ней не запущен."),
-            Some(Unreached::Other) | None => String::new(),
+            NoBanner::Unreached(Unreached::NoRoute, _) => crate::tr!("До колонки нет пути из этой сети: она включена и в той же сети, что этот компьютер?"),
+            NoBanner::Unreached(Unreached::Timeout, _) => crate::tr!("Колонка не ответила за 3 секунды: она включена и в той же сети?"),
+            NoBanner::Unreached(Unreached::Refused, _) => crate::tr!("Колонка на связи, но SSH на ней не запущен."),
+            NoBanner::Unreached(Unreached::Other, said) => said,
+            NoBanner::Silent => crate::tr!("Порт SSH на колонке открыт, но SSH не ответил за 5 секунд: колонка занята. Подождите минуту и попробуйте снова; не помогает — перезагрузите её."),
+            NoBanner::NotSsh(_) => crate::tr!("Порт SSH на колонке открыт, но связь сразу закрылась. Подождите пару минут и попробуйте снова; не помогает — перезагрузите колонку."),
         };
         let head = crate::tr!(
             "На {address} не отвечает SSH (порт {port}). Нужна колонка с root и SSH — как их получить: {wiki}",
@@ -109,14 +112,15 @@ async fn run(args: &[String]) -> Result<(), Stop> {
         return Err(Stop(if why.is_empty() { head } else { format!("{why}\n{head}") }));
     }
     println!("{}", crate::tr!("Вхожу на колонку {address} по SSH…", address = address));
-    let options = ShellOptions {
+    let mut options = ShellOptions {
         port: ssh.port,
         user: ssh.user.clone(),
         password: ssh.password.clone(),
         trust: None,
         timeout_ms: None,
     };
-    let shell = opener.open(&address, options.clone()).await.map_err(|error| Stop(said_of(&problem_of(&error))))?;
+    let shell =
+        open_asking(&opener, &address, &mut options, &mut |question| rpassword::prompt_password(question).ok()).await?;
     let result = setup(&config, &address, shell.as_ref(), yes).await;
     shell.close().await;
     let port = result?;
@@ -448,6 +452,44 @@ fn name_of(neighbour: &Neighbour) -> String {
 }
 
 /// What problem_of's words mean to the person in the terminal.
+/// How many passwords are asked before the setup gives up.
+const PASSWORD_TRIES: usize = 3;
+
+/// The station's shell; root's password asked when the station refuses the one it has (the empty one by default).
+/// Test 21.11: a station with a root password of its own, and «Свой пароль — в STATION_SSH_PASSWORD» left the tester
+/// guessing where to type it. `ask` reads the terminal itself, with no echo (rpassword: /dev/tty, the Windows console —
+/// `curl | sh` holds stdin); None — no terminal, or no answer: the hint as before. An empty answer stops.
+async fn open_asking(
+    opener: &dyn ShellOpener,
+    address: &str,
+    options: &mut ShellOptions,
+    ask: &mut dyn FnMut(&str) -> Option<String>,
+) -> Result<Box<dyn StationShell>, Stop> {
+    let mut tries = 0;
+    loop {
+        let error = match opener.open(address, options.clone()).await {
+            Ok(shell) => return Ok(shell),
+            Err(error) => error,
+        };
+        let problem = problem_of(&error);
+        if problem != "auth-failed" || tries == PASSWORD_TRIES {
+            return Err(Stop(said_of(&problem)));
+        }
+        let question = if tries == 0 {
+            crate::tr!(
+                "Колонка не пустила root без пароля. Пароль root колонки (его не видно при вводе; пусто — выйти): "
+            )
+        } else {
+            crate::tr!("Пароль не подошёл. Ещё раз (пусто — выйти): ")
+        };
+        match ask(&question).map(|answer| answer.trim_end_matches(['\r', '\n']).to_string()) {
+            Some(password) if !password.is_empty() => options.password = password,
+            _ => return Err(Stop(said_of(&problem))),
+        }
+        tries += 1;
+    }
+}
+
 fn said_of(problem: &str) -> String {
     match problem {
         "auth-failed" => crate::tr!(
@@ -531,6 +573,89 @@ fn is_yes(answer: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stations::connect::discovery::NoBanner;
+    use crate::stations::connect::station_shell::{ShellError, ShellResult};
+    use futures::future::BoxFuture;
+
+    /// A station whose root takes only «secret»; the passwords it was offered.
+    struct Locked(std::sync::Mutex<Vec<String>>);
+    struct Opened;
+
+    impl StationShell for Opened {
+        fn run<'a>(&'a self, _command: &'a str, _input: Option<&'a str>) -> BoxFuture<'a, anyhow::Result<ShellResult>> {
+            Box::pin(async { anyhow::bail!("not here") })
+        }
+        fn fingerprint(&self) -> &str {
+            "SHA256:test"
+        }
+        fn close(&self) -> BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+    }
+
+    impl ShellOpener for Locked {
+        fn banner<'a>(&'a self, _address: &'a str, _port: u16) -> BoxFuture<'a, Result<String, NoBanner>> {
+            Box::pin(async { Ok("dropbear".into()) })
+        }
+        fn open<'a>(
+            &'a self,
+            _address: &'a str,
+            options: ShellOptions,
+        ) -> BoxFuture<'a, anyhow::Result<Box<dyn StationShell>>> {
+            self.0.lock().unwrap().push(options.password.clone());
+            Box::pin(async move {
+                if options.password == "secret" {
+                    Ok(Box::new(Opened) as Box<dyn StationShell>)
+                } else {
+                    Err(ShellError::AuthFailed.into())
+                }
+            })
+        }
+    }
+
+    fn options() -> ShellOptions {
+        ShellOptions { port: 2222, user: "root".into(), password: String::new(), trust: None, timeout_ms: None }
+    }
+
+    #[tokio::test]
+    async fn asks_root_s_password_when_the_empty_one_is_refused() {
+        let station = Locked(Default::default());
+        let mut options = options();
+        let mut answers = vec!["wrong".to_string(), "secret\n".to_string()].into_iter();
+        let mut asked = Vec::new();
+        let shell = open_asking(&station, "192.0.2.1", &mut options, &mut |question| {
+            asked.push(question.to_string());
+            answers.next()
+        })
+        .await;
+        assert!(shell.is_ok());
+        assert_eq!(*station.0.lock().unwrap(), ["", "wrong", "secret"]);
+        assert_eq!(asked.len(), 2);
+        assert!(asked[1].starts_with("Пароль не подошёл"), "{asked:?}");
+        // The password goes on to the setup code's SSH.
+        assert_eq!(options.password, "secret");
+    }
+
+    #[tokio::test]
+    async fn without_a_terminal_or_an_answer_it_gives_the_hint() {
+        for answer in [None, Some(String::new())] {
+            let station = Locked(Default::default());
+            let Err(Stop(said)) = open_asking(&station, "192.0.2.1", &mut options(), &mut |_| answer.clone()).await
+            else {
+                panic!("no password, no shell");
+            };
+            assert!(said.contains("STATION_SSH_PASSWORD"), "{said}");
+            assert_eq!(station.0.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn gives_up_after_three_wrong_passwords() {
+        let station = Locked(Default::default());
+        let result = open_asking(&station, "192.0.2.1", &mut options(), &mut |_| Some("nope".into())).await;
+        assert!(result.is_err());
+        assert_eq!(station.0.lock().unwrap().len(), 1 + PASSWORD_TRIES);
+    }
 
     #[test]
     fn only_a_clear_yes_is_a_yes() {

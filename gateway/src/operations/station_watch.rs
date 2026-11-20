@@ -1,6 +1,7 @@
 //! Tells when the station has been away too long (STATION_OFFLINE_ALERT_MIN): in the log, as a macOS notification,
 //! to a webhook and to the owner's Telegram, once per absence, and again when it is back. The station reaches only
-//! this Mac: an absence means no voice at all until it is back or returned to Yandex (scripts/station-voice.sh).
+//! this Mac: an absence means no voice at all until it is back or returned to Yandex (the panel's «Колонки» →
+//! «Вернуть к Яндексу»). Only a station that was here before is missed: a fresh install has none (test 21.11).
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -46,10 +47,16 @@ const SANE_CLOCK_MS: u64 = 1_577_836_800_000;
 /// on the station itself (src/placement/watch.rs, `none_here`).
 pub type Elsewhere = Arc<dyn Fn() -> bool + Send + Sync>;
 
+/// Whether a station was ever let in here (approved): one that never was is missed by nobody. Windows test 21.11: a
+/// fresh install with no station at all told «Колонка не подключена к центру 5 мин» five minutes after the first start.
+pub type Known = Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// When a station was last there, and whether its absence is told.
 struct Seen {
     last_seen: u64,
     alerted: bool,
+    /// A station was connected since the start.
+    ever: bool,
 }
 
 pub struct StationWatch {
@@ -61,6 +68,7 @@ pub struct StationWatch {
     send_timeout: Duration,
     cancel: CancellationToken,
     elsewhere: std::sync::OnceLock<Elsewhere>,
+    known: std::sync::OnceLock<Known>,
 }
 
 impl StationWatch {
@@ -75,11 +83,17 @@ impl StationWatch {
             telegram,
             config,
             events,
-            seen: Mutex::new(Seen { last_seen: now_ms(), alerted: false }),
+            seen: Mutex::new(Seen { last_seen: now_ms(), alerted: false, ever: false }),
             send_timeout: SEND_TIMEOUT,
             cancel: CancellationToken::new(),
             elsewhere: std::sync::OnceLock::new(),
+            known: std::sync::OnceLock::new(),
         }
+    }
+
+    /// What says a station was ever approved here. Not set (tests): every absence counts, as before.
+    pub fn set_known(&self, known: Known) {
+        let _ = self.known.set(known);
     }
 
     /// The computer: what says no station is to come here now (every station's gateway runs on it). The watch is
@@ -157,8 +171,10 @@ impl StationWatch {
     fn news(&self, now: u64) -> Option<String> {
         let connected = self.registry.active_count() > 0;
         let elsewhere = !connected && self.none_expected();
+        let approved = connected || self.known.get().is_none_or(|known| known());
         let mut seen = self.seen();
         if connected {
+            seen.ever = true;
             seen.last_seen = now;
             return std::mem::take(&mut seen.alerted).then(|| crate::tr!("Колонка снова на связи с центром."));
         }
@@ -169,7 +185,10 @@ impl StationWatch {
         }
         // On the computer, every station's gateway runs on the station: none is missing here. The count starts again
         // when one is to come back.
-        if elsewhere || seen.last_seen < SANE_CLOCK_MS {
+        // Never a station here (a fresh install, or every station removed): none is missing. The count starts at the
+        // first one approved.
+        let known = approved || seen.ever;
+        if elsewhere || !known || seen.last_seen < SANE_CLOCK_MS {
             seen.last_seen = now;
             return None;
         }
@@ -179,7 +198,7 @@ impl StationWatch {
         seen.alerted = true;
         let minutes = (now.saturating_sub(seen.last_seen) as f64 / 60_000.0).round() as u64;
         Some(crate::tr!(
-            "Колонка не подключена к центру {minutes} мин. Голоса у неё нет; вернуть к Яндексу: scripts/station-voice.sh yandex.",
+            "Колонка не подключена к центру {minutes} мин: Алиса на ней сейчас молчит. Вернуть обычную Алису — в пульте: «Колонки» → «Вернуть к Яндексу».",
             minutes = minutes
         ))
     }
@@ -428,6 +447,46 @@ mod tests {
         watch.check(start + 630_000).await;
         assert!(sent.lock().unwrap().is_empty());
         watch.check(start + 661_000).await;
+        assert_eq!(sent.lock().unwrap().len(), 1, "{:?}", sent.lock().unwrap());
+    }
+
+    /// Windows test 21.11: a fresh install told «не подключена к центру 5 мин» with no station ever connected. Only a
+    /// station approved before is missed; the count starts when the first one is.
+    #[tokio::test]
+    async fn a_fresh_install_with_no_station_misses_none() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let sessions = Arc::new(Sessions(Mutex::new(0)));
+        let watch =
+            StationWatch::new(sessions.clone(), Some(Arc::new(Telegram(sent.clone()))), operations(), EventBus::new());
+        let approved = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let says = approved.clone();
+        watch.set_known(Arc::new(move || says.load(std::sync::atomic::Ordering::Relaxed)));
+        let start = now_ms();
+        watch.check(start + 61_000).await;
+        watch.check(start + 600_000).await;
+        assert!(sent.lock().unwrap().is_empty(), "no station was ever here");
+        // The first station approved: its absence counts from now.
+        approved.store(true, std::sync::atomic::Ordering::Relaxed);
+        watch.check(start + 630_000).await;
+        assert!(sent.lock().unwrap().is_empty());
+        watch.check(start + 691_000).await;
+        assert_eq!(sent.lock().unwrap().len(), 1, "{:?}", sent.lock().unwrap());
+        assert!(sent.lock().unwrap()[0].contains("«Вернуть к Яндексу»"), "{:?}", sent.lock().unwrap());
+        assert!(!sent.lock().unwrap()[0].contains("scripts/"), "no repo script for a person");
+    }
+
+    /// A station connected in this run is missed even if its record is gone since.
+    #[tokio::test]
+    async fn a_station_seen_in_this_run_is_missed() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let sessions = Arc::new(Sessions(Mutex::new(1)));
+        let watch =
+            StationWatch::new(sessions.clone(), Some(Arc::new(Telegram(sent.clone()))), operations(), EventBus::new());
+        watch.set_known(Arc::new(|| false));
+        let start = now_ms();
+        watch.check(start).await;
+        *sessions.0.lock().unwrap() = 0;
+        watch.check(start + 61_000).await;
         assert_eq!(sent.lock().unwrap().len(), 1, "{:?}", sent.lock().unwrap());
     }
 

@@ -330,6 +330,11 @@ impl StationsService {
             .map(|station| station.device.clone())
     }
 
+    /// Whether any station is let in here: one approved is missed when away (src/operations/station_watch.rs).
+    pub fn any_approved(&self) -> bool {
+        self.records().values().any(|station| station.status == StationStatus::Approved)
+    }
+
     pub fn list(&self) -> Vec<StationEntry> {
         let mut records: Vec<StationView> = self.records().values().cloned().collect();
         records.sort_by(|a, b| a.first_seen.cmp(&b.first_seen));

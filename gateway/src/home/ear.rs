@@ -412,11 +412,17 @@ async fn join(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Valu
         .record()
         .ok_or_else(|| ApiError::conflict(crate::tr!("Центр дома не на колонке: подключать ухом не к чему.")))?;
     let key = centre.pair_key().ok_or_else(|| ApiError::conflict(crate::tr!("Нет ключа пары центра.")))?;
-    let station = app
+    let found = app
         .station_gateway
         .find(&wanted.station)
-        .and_then(|station| station.client())
         .ok_or_else(|| ApiError::not_found(crate::tr!("Такой колонки у этого компьютера нет.")))?;
+    // The same station under a second record (by its device and «at:<address>»): still the centre itself — an ear of
+    // itself would send its voice in a circle (Windows test 21.11 offered the centre among «not in the home»).
+    if found.record().is_some_and(|other| other.address == record.address) {
+        return Err(ApiError::conflict(crate::tr!("Это и есть центр дома.")));
+    }
+    let station =
+        found.client().ok_or_else(|| ApiError::not_found(crate::tr!("Такой колонки у этого компьютера нет.")))?;
     let body = json!({ "address": record.address, "port": record.port, "key": key, "name": centre.name() });
     station.put("/api/v1/home/ear", body).await.map_err(ApiError::unavailable)?;
     app.events.emit(GatewayEvent::HomeDevicesChanged { reason: "join".into() });

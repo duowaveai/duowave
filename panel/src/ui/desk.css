@@ -1226,10 +1226,16 @@ html[data-look] .code-editor:focus-within { border-color: var(--text); }
 .app-icon.is-logo svg { position: relative; display: block; }
 .app-icon-letter { font-family: 'Inter Tight', Inter, sans-serif; font-weight: 400; font-size: 1.1em; line-height: 1; }
 
-/* Страница компьютера в пульте колонки (screens/helper-pc.tsx, этап 4): фрейм без рамки, а внутри — прозрачно. */
-.own-frame { display: block; width: 100%; height: min(72dvh, 760px); min-height: 420px; border: 0; background: transparent; color-scheme: normal; }
-/* Окно внутри страницы компьютера открыто — фрейм во весь пульт, над его окнами (слой шитов, DESIGN.md: 40). */
-.own-frame.is-covering { position: fixed; inset: 0; width: 100vw; height: 100dvh; min-height: 0; z-index: 40; }
+/* Страница компьютера в пульте колонки (screens/helper-pc.tsx, этап 4): фрейм без рамки, а внутри — прозрачно.
+   color-scheme — как у пульта: страница внутри объявляет тему (`color-scheme: dark`), и Chromium (WebView2 на Windows)
+   при несовпадении со схемой самого фрейма рисует под ним непрозрачную подложку — чёрный прямоугольник вместо
+   страницы (тест на Windows 21.11). WebKit на Mac так не делает. */
+.own-frame { display: block; width: 100%; height: min(72dvh, 760px); min-height: 420px; border: 0; background: transparent; color-scheme: inherit; }
+/* Окно внутри страницы компьютера открыто — фрейм во весь пульт, над его окнами (слой шитов, DESIGN.md: 40). Без
+   max-width и полей: прямой ребёнок тела окна раздела берёт `max-width: 760px; margin: auto`, и растянутый фрейм
+   оставался столбцом 760 точек посередине во всю высоту — окно внутри вставало «телефонным» листом снизу, а страница,
+   что держится на прежнем месте, уезжала вправо и обрезалась (тест на Windows 21.11). */
+.own-frame.is-covering { position: fixed; inset: 0; width: 100vw; height: 100dvh; min-height: 0; max-width: none; max-height: none; margin: 0; z-index: 40; }
 html.own-covering .desk-window { z-index: 40; animation: none; transform: none; }
 html.own-page,
 html.own-page body { background: transparent !important; }

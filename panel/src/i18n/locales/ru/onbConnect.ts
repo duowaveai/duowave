@@ -37,6 +37,8 @@ export default {
     rowNoSsh: 'Нет входа по SSH',
     rowNoConfig: 'Эту модель DuoWave пока не знает',
     rowUnreachable: 'Колонка не отвечает',
+    rowNoRoute: 'Нет пути до колонки',
+    rowSshSlow: 'SSH на колонке не ответил',
     rowHostKey: 'Это другая колонка',
     rowProblem: 'Проверить не вышло',
     // «Если что-то пошло не так»

@@ -1459,6 +1459,12 @@ impl App {
         #[cfg(not(feature = "pc"))]
         let telegram: Option<Arc<dyn TelegramSender>> = None;
         let station_watch = Arc::new(StationWatch::new(sessions, telegram, config.operations.clone(), events.clone()));
+        // Only a station let in before is missed: a fresh install has none to miss (Windows test 21.11). Weak, as the
+        // other closures the watch holds.
+        {
+            let known = Arc::downgrade(&stations);
+            station_watch.set_known(Arc::new(move || known.upgrade().is_some_and(|stations| stations.any_approved())));
+        }
         // The plugins' messages to the owner go the station watch's ways: the chat «Оповещения», the webhook, the Mac.
         schedules.set_notice(Arc::new(links::plugins::OwnerAlerts(station_watch.clone())));
         // So does a delayed command that came too late to run.

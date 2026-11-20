@@ -994,6 +994,8 @@ export interface HomeDevice {
     kept?: boolean;
     /** Турбо говорит более старым договором, чем центр: новое (установка по связи, голос персонажа) ждёт обновления. */
     older?: boolean;
+    /** Центр на колонке: как её собственный голос (клиент колонки у своего шлюза) — «голос не на связи» на той же строке. */
+    voice?: HomeDeviceState;
 }
 
 /** Комната дома (этап 2): что в ней своё — режим Алисы, громкость, кто отвечает; нет — как во всём доме. */
@@ -3432,7 +3434,10 @@ export interface StationCheck {
     device?: string;
     target?: VoiceAddresses;
     connected?: boolean;
-    /** no-ssh, no-config, host-key-changed, auth-failed, unreachable — или текст ошибки. */
+    /**
+     * no-ssh (порт закрыт), station-off (нет ответа), no-route (нет пути), ssh-slow / ssh-closed (порт открыт, но SSH
+     * молчит или закрыл связь), no-connect, no-config, host-key-changed, auth-failed, unreachable — или текст ошибки.
+     */
     problem?: string;
 }
 

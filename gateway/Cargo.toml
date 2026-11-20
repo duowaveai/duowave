@@ -23,7 +23,7 @@ path = "src/bin/echo_app.rs"
 default = ["pc", "wasm"]
 # Everything that builds from source: the station connect over SSH, local model servers, the voice lab, calls.
 # MCP servers as programs on this computer (npx, uvx) too.
-pc = ["rmcp/transport-async-rw", "dep:libc", "dep:russh", "dep:if-addrs", "dep:socket2", "dep:ring"]
+pc = ["rmcp/transport-async-rw", "dep:libc", "dep:russh", "dep:if-addrs", "dep:socket2", "dep:ring", "dep:rpassword"]
 # The build for the station itself: none of the PC parts; mimalloc in place of musl's allocator (src/main.rs).
 station = ["dep:mimalloc", "dep:libmimalloc-sys"]
 # Recognition on this computer itself (src/speech/asr/local): GigaAM, Parakeet and Whisper as GGUF through
@@ -94,6 +94,9 @@ rmcp = { version = "3.9.0", default-features = false, features = ["client", "tra
 rtc = { version = "0.21.1", default-features = false, optional = true }
 rusqlite = { version = "0.41.1", features = ["bundled", "serde_json"] }
 russh = { version = "0.65.1", default-features = false, features = ["ring", "rsa"], optional = true }
+# The station's root password asked with no echo by `duowave station setup` (src/placement/setup.rs): from the
+# terminal itself — /dev/tty, the Windows console — as `curl | sh` holds stdin. Already in the lock through minisign.
+rpassword = { version = "7.5.4", optional = true }
 rust-embed = { version = "8.13.0", features = ["mime-guess"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 scrypt = "0.12.0"

@@ -737,7 +737,7 @@
   "role: member или guest — голос дома не администратор": "role: member or guest — the home's voice is not an administrator",
   "Новая колонка с адреса {address} просит подключиться к центру. Разрешить — в пульте, раздел «Колонки».": "A new speaker from {address} asks to connect to the hub. Allow it in the panel, in the “Speakers” section.",
   "Колонка снова на связи с центром.": "The speaker is back in touch with the hub.",
-  "Колонка не подключена к центру {minutes} мин. Голоса у неё нет; вернуть к Яндексу: scripts/station-voice.sh yandex.": "The speaker has not been connected to the hub for {minutes} min. It has no voice; to return it to Yandex: scripts/station-voice.sh yandex.",
+  "Колонка не подключена к центру {minutes} мин: Алиса на ней сейчас молчит. Вернуть обычную Алису — в пульте: «Колонки» → «Вернуть к Яндексу».": "The speaker has not been connected to the hub for {minutes} min: Alice on it is silent now. To bring back plain Alice, in the panel: “Speakers” → “Return to Yandex”.",
   "Стол бывает у центра (gateway) и у Турбо (helper).": "A desk exists for the hub (gateway) and for Turbo (helper).",
   "Стол бывает у людей дома, у ключа его нет.": "A desk exists for people of the home, a key has none.",
   "Стол — объект JSON.": "The desk is a JSON object.",
@@ -1055,5 +1055,6 @@
   "Сервис {with} сейчас занят. Нажмите ещё раз через минуту.": "The {with} service is busy right now. Press again in a minute.",
   "нет файла {name}": "no file {name}",
   "запись {name} больше 2 МБ": "the recording {name} is over 2 MB",
-  "запись {name} — не Ogg/Opus": "the recording {name} is not Ogg/Opus"
+  "запись {name} — не Ogg/Opus": "the recording {name} is not Ogg/Opus",
+  "Распознавание на этом компьютере не запустится: процессору не хватает команд {features}. Выберите другое распознавание в настройках голоса.": "Recognition on this computer will not start: the processor lacks the instructions {features}. Choose another recognition in the voice settings."
 }

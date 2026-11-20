@@ -1414,7 +1414,7 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "duowave"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1450,6 +1450,7 @@ dependencies = [
  "ring",
  "rlsf",
  "rmcp",
+ "rpassword",
  "rquickjs",
  "rusqlite",
  "russh",
@@ -1488,7 +1489,7 @@ dependencies = [
 
 [[package]]
 name = "duowave-desktop"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "dirs 7.0.0",
  "duowave",
@@ -4847,6 +4848,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpassword"
+version = "7.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2da316a15f47e3d053de9cb2c439650bd8fa4aaeb9365f2e5f27f492ff73c196"
+dependencies = [
+ "libc",
+ "rtoolbox",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "rquickjs"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4902,6 +4914,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "353b74f9810d5b085b6c42c9d86a5f0fdb795553235cdd48753b32e3809d18a7"
 dependencies = [
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "rtoolbox"
+version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a1efe12a1469752d0e6ff5ebec0b6ef4924cc5c4c71046b0ec730040535819d"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

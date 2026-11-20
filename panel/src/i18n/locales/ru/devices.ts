@@ -18,6 +18,8 @@ export default {
     stateOffline: 'не на связи',
     stateOff: 'выключен',
     stateUnknown: 'проверяю',
+    voiceAway: 'голос не на связи',
+    voiceReconnecting: 'голос переподключается',
     groupHome: 'Дом',
     pageTitle: 'Устройства',
     pageSub: 'Центр, колонки и Турбо',

@@ -53,6 +53,8 @@ pub struct Conn {
     pub reader: Box<dyn AsyncRead + Send + Unpin>,
     pub writer: Box<dyn AsyncWrite + Send + Unpin>,
     pub child: Option<tokio::process::Child>,
+    /// The worker's log and where this worker's stderr starts in it: what it said before it died is read from there.
+    pub log_from: Option<(PathBuf, u64)>,
 }
 
 impl Conn {
@@ -68,6 +70,35 @@ impl Conn {
         }
     }
 
+    /// Why a worker that broke off is gone, for the reason it fails with: its exit — waited for a moment, as its
+    /// pipe closes just before the process ends — and the last line it wrote. All it wrote goes to gateway.log too:
+    /// the Windows test of 21.11 had only «early eof» there, and nothing said why.
+    async fn post_mortem(&mut self) -> String {
+        let exit = match &mut self.child {
+            Some(child) => match tokio::time::timeout(EXIT_WAIT, child.wait()).await {
+                Ok(Ok(status)) => Some(exit_words(&status)),
+                Ok(Err(error)) => Some(format!("код выхода не узнать: {error}")),
+                Err(_) => None,
+            },
+            None => None,
+        };
+        let said = self.log_from.as_ref().map(|(log, from)| said_since(log, *from)).unwrap_or_default();
+        tracing::warn!(
+            target: "speech",
+            "local recognition: the worker broke off — {}; it wrote: {}",
+            exit.as_deref().unwrap_or("still running"),
+            if said.is_empty() { "nothing".to_string() } else { said.join(" | ") }
+        );
+        let mut words = String::new();
+        if let Some(exit) = exit {
+            words.push_str(&format!("; {exit}"));
+        }
+        if let Some(last) = said.last() {
+            words.push_str(&format!(": {}", last.chars().take(200).collect::<String>()));
+        }
+        words
+    }
+
     /// Whether the process is still there (a test's worker always is: its end shows on the next call).
     fn alive(&mut self) -> bool {
         match &mut self.child {
@@ -75,6 +106,109 @@ impl Conn {
             None => true,
         }
     }
+}
+
+/// How long a worker whose pipe closed is given to end, for its exit code.
+const EXIT_WAIT: Duration = Duration::from_secs(3);
+
+/// A worker's end in words: the exit code (Windows' crash statuses named), or the signal that ended it.
+fn exit_words(status: &std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return match signal_words(signal) {
+                Some(words) => format!("сигнал {signal} — {words}"),
+                None => format!("сигнал {signal}"),
+            };
+        }
+    }
+    match status.code() {
+        Some(code) if cfg!(windows) => {
+            let status = code as u32;
+            match crash_words(status) {
+                Some(words) => format!("код выхода 0x{status:08X} — {words}"),
+                None => format!("код выхода {code} (0x{status:08X})"),
+            }
+        }
+        Some(code) => format!("код выхода {code}"),
+        None => "без кода выхода".to_string(),
+    }
+}
+
+/// Windows' statuses for a process that crashed, as an exit code.
+fn crash_words(status: u32) -> Option<&'static str> {
+    Some(match status {
+        0xC000_001D => "процессор не знает команду из этой сборки (нет AVX2 или AVX-512?)",
+        0xC000_0005 => "обращение к чужой памяти",
+        0xC000_0017 | 0xC000_009A => "не хватило памяти",
+        0xC000_00FD => "переполнение стека",
+        0xC000_0135 => "нет нужной DLL",
+        0xC000_0139 => "в DLL нет нужной функции",
+        0xC000_0142 => "DLL не запустилась",
+        0xC000_0409 => "аварийная остановка (abort)",
+        3 => "аварийная остановка (abort)",
+        _ => return None,
+    })
+}
+
+/// The signals a crashed worker ends with.
+#[cfg(unix)]
+fn signal_words(signal: i32) -> Option<&'static str> {
+    Some(match signal {
+        4 => "процессор не знает команду из этой сборки",
+        6 => "аварийная остановка (abort)",
+        7 | 11 => "обращение к чужой памяти",
+        9 => "убит системой (нехватка памяти?)",
+        _ => return None,
+    })
+}
+
+/// What a worker wrote to its log from `from` on: its last lines, the empty ones left out.
+fn said_since(log: &Path, from: u64) -> Vec<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(log) else { return Vec::new() };
+    let length = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+    // A log rotated or cut since: what is there now.
+    let from = if from > length { 0 } else { from.max(length.saturating_sub(16 * 1024)) };
+    let mut bytes = Vec::new();
+    if file.seek(SeekFrom::Start(from)).is_err() || file.read_to_end(&mut bytes).is_err() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<String> = text.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect();
+    lines[lines.len().saturating_sub(20)..].to_vec()
+}
+
+/// What this processor lacks of the instructions the build's engine is made with. The releases for x86-64 Windows
+/// and Linux pin AVX2 with FMA, F16C and BMI2 (release.yml, TRANSCRIBE_CMAKE_ARGS); a worker on a processor without
+/// them dies at its first instruction (STATUS_ILLEGAL_INSTRUCTION / SIGILL — «early eof», with nothing in its log).
+/// Until 0.17 the Windows build was tuned to the CI's own processor instead (the Windows test of 21.11).
+#[cfg(all(target_arch = "x86_64", not(target_os = "macos")))]
+pub fn missing_cpu_features() -> Vec<&'static str> {
+    let mut missing = Vec::new();
+    if !std::arch::is_x86_feature_detected!("avx") {
+        missing.push("AVX");
+    }
+    if !std::arch::is_x86_feature_detected!("avx2") {
+        missing.push("AVX2");
+    }
+    if !std::arch::is_x86_feature_detected!("fma") {
+        missing.push("FMA");
+    }
+    if !std::arch::is_x86_feature_detected!("f16c") {
+        missing.push("F16C");
+    }
+    if !std::arch::is_x86_feature_detected!("bmi2") {
+        missing.push("BMI2");
+    }
+    missing
+}
+
+/// Elsewhere the build's floor is the platform's own (a Mac's, an ARM board's).
+#[cfg(not(all(target_arch = "x86_64", not(target_os = "macos"))))]
+pub fn missing_cpu_features() -> Vec<&'static str> {
+    Vec::new()
 }
 
 /// How a worker went wrong in a call.
@@ -111,6 +245,7 @@ impl Launch for ProcessLaunch {
             std::fs::create_dir_all(dir)?;
         }
         let log = std::fs::OpenOptions::new().create(true).append(true).open(&self.log)?;
+        let from = log.metadata().map(|meta| meta.len()).unwrap_or(0);
         let mut command = tokio::process::Command::new(&self.exe);
         command.arg(WORKER_FLAG);
         if cpu_only {
@@ -122,7 +257,13 @@ impl Launch for ProcessLaunch {
         let mut child = command.spawn()?;
         let reader = child.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?;
         let writer = child.stdin.take().ok_or_else(|| std::io::Error::other("no stdin"))?;
-        Ok(Conn { reader: Box::new(reader), writer: Box::new(writer), child: Some(child) })
+        tracing::info!(target: "speech", "local recognition: worker {} started{}", child.id().unwrap_or(0), if cpu_only { " (processor only)" } else { "" });
+        Ok(Conn {
+            reader: Box::new(reader),
+            writer: Box::new(writer),
+            child: Some(child),
+            log_from: Some((self.log.clone(), from)),
+        })
     }
 }
 
@@ -535,6 +676,22 @@ impl LocalAsr {
         if self.lock().paused {
             return;
         }
+        // A processor the engine cannot run on: said once, plainly, instead of workers that die one after another.
+        let missing = missing_cpu_features();
+        if !missing.is_empty() {
+            let why = crate::tr!(
+                "Распознавание на этом компьютере не запустится: процессору не хватает команд {features}. Выберите другое распознавание в настройках голоса.",
+                features = missing.join(", ")
+            );
+            let mut state = self.lock();
+            if state.error.as_deref() != Some(why.as_str()) {
+                tracing::warn!(target: "speech", "local recognition: this processor lacks {}", missing.join(", "));
+            }
+            state.phase = Some(Phase::Failed);
+            state.error = Some(why);
+            state.paused = true;
+            return;
+        }
         let Some(entry) = catalog::find(&model) else {
             self.fail(crate::tr!(
                 "Модели «{model}» нет для распознавания на этом компьютере — выберите другую.",
@@ -697,6 +854,7 @@ impl LocalAsr {
             }
             Ok(Response::Error { message, backend }) => Err((message, backend && !cpu_only)),
             Ok(other) => Err((format!("исполнитель ответил не то: {other:?}"), false)),
+            Err(broken @ Broken::Died(_)) => Err((format!("{broken}{}", conn.post_mortem().await), !cpu_only)),
             Err(broken) => Err((self.with_log_tail(broken.to_string()), !cpu_only)),
         }
     }
@@ -795,6 +953,7 @@ impl LocalAsr {
                 Ok(Response::Error { message, backend: false }) => bail!(message),
                 Ok(Response::Error { message, backend: true }) => message,
                 Ok(other) => format!("исполнитель ответил не то: {other:?}"),
+                Err(broken @ Broken::Died(_)) => format!("{broken}{}", worker.conn.post_mortem().await),
                 Err(broken) => self.with_log_tail(broken.to_string()),
             };
             // The worker is unusable: it ends here, another one comes.
@@ -1009,7 +1168,7 @@ mod tests {
                     }
                 });
             });
-            Ok(Conn { reader: Box::new(gateway_read), writer: Box::new(gateway_write), child: None })
+            Ok(Conn { reader: Box::new(gateway_read), writer: Box::new(gateway_write), child: None, log_from: None })
         }
     }
 
@@ -1275,5 +1434,40 @@ mod tests {
         assert_eq!(to_f32_16k(&[16384, -16384], 16_000), vec![0.5, -0.5]);
         assert_eq!(to_f32_16k(&[0; 48_000], 48_000).len(), 16_000);
         assert_eq!(to_f32_16k(&[0; 8_000], 8_000).len(), 16_000);
+    }
+
+    /// Windows' «illegal instruction» is what a build tuned to another processor dies with (the test of 21.11).
+    #[test]
+    fn names_the_crash_statuses_a_worker_ends_with() {
+        assert!(crash_words(0xC000_001D).unwrap().contains("процессор не знает команду"));
+        assert_eq!(crash_words(0xC000_0135), Some("нет нужной DLL"));
+        assert_eq!(crash_words(1), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_worker_that_dies_says_how_and_what_it_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("asr-worker.log");
+        std::fs::write(&log, "an earlier worker's words\n").unwrap();
+        let from = std::fs::metadata(&log).unwrap().len();
+        let stderr = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        let child = tokio::process::Command::new("sh")
+            .args(["-c", "echo 'ggml: cannot run here' >&2; kill -ILL $$"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::from(stderr))
+            .spawn()
+            .unwrap();
+        let mut conn = Conn {
+            reader: Box::new(tokio::io::empty()),
+            writer: Box::new(tokio::io::sink()),
+            child: Some(child),
+            log_from: Some((log.clone(), from)),
+        };
+        let words = conn.post_mortem().await;
+        assert!(words.contains("сигнал 4 — процессор не знает команду"), "{words}");
+        assert!(words.ends_with(": ggml: cannot run here"), "{words}");
+        assert_eq!(said_since(&log, 0).first().map(String::as_str), Some("an earlier worker's words"));
+        assert_eq!(said_since(&log, 10_000), said_since(&log, 0), "a log cut since: all of it");
     }
 }

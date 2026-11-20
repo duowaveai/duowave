@@ -92,10 +92,12 @@ impl AuthService {
         })
     }
 
-    /// Whether the first-run code is right (from this computer none is needed).
+    /// Whether the first-run code is right (from this computer none is needed). Written with or without its dash and
+    /// spaces: `79188906` is `7918-8906` (Windows test 21.11 — the code typed without the dash was refused). Only the
+    /// letters and digits are compared, still in constant time.
     pub fn setup_code_matches(&self, code: Option<&Value>) -> bool {
-        let expected = self.setup_code.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
-        let Some(given) = code.and_then(Value::as_str).map(str::trim) else { return false };
+        let expected = code_chars(&self.setup_code.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+        let Some(given) = code.and_then(Value::as_str).map(code_chars) else { return false };
         !expected.is_empty() && given.len() == expected.len() && bool::from(given.as_bytes().ct_eq(expected.as_bytes()))
     }
 
@@ -279,6 +281,11 @@ impl AuthService {
     }
 }
 
+/// A setup code's letters and digits, lower case: what a person may type of it, the dash and spaces left out.
+fn code_chars(code: &str) -> String {
+    code.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect()
+}
+
 /// The secret the panel's tokens are signed with, sealed among the secrets and made at the first start. When it does
 /// not open (the key file was lost), a new one is made and everyone signs in again.
 fn signing_secret(secrets: &SecretsService) -> Result<String, ApiError> {
@@ -366,6 +373,32 @@ mod tests {
         assert!(!built.auth.setup_code_matches(None));
         built.auth.setup("admin-password-1", "admin", "setup").await.unwrap();
         assert!(!built.auth.setup_code_matches(Some(&Value::String(code))), "used up");
+    }
+
+    /// Windows test 21.11: `79188906` for `7918-8906` was refused. The dash and spaces are not part of the code; the
+    /// count of wrong tries stays.
+    #[tokio::test]
+    async fn the_setup_code_counts_with_or_without_its_dash() {
+        let built = build();
+        let code = built.auth.setup_code();
+        let plain = code.replace('-', "");
+        let spaced = format!("{} {}", &plain[..4], &plain[4..]);
+        for typed in [plain.as_str(), spaced.as_str(), code.as_str()] {
+            assert!(built.auth.setup_code_matches(Some(&Value::String(typed.into()))), "{typed}");
+        }
+        assert!(!built.auth.setup_code_matches(Some(&Value::String(plain[..7].into()))), "a digit short");
+        assert!(!built.auth.setup_code_matches(Some(&Value::String(format!("{plain}0")))), "a digit more");
+        assert!(!built.auth.setup_code_matches(Some(&Value::String("----".into()))));
+        let wrong = Some(Value::String("0000 0000".into()));
+        let source = "192.0.2.9";
+        let mut throttled = false;
+        for _ in 0..20 {
+            if matches!(built.auth.check_setup_code(wrong.as_ref(), source), Err(SetupRefused::Throttled { .. })) {
+                throttled = true;
+                break;
+            }
+        }
+        assert!(throttled, "wrong codes are still counted");
     }
 
     #[tokio::test]

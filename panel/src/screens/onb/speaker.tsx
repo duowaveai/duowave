@@ -546,11 +546,15 @@ function checkRows(check: StationCheck, model: string): Row[] {
                 ? t.rowNoSsh
                 : check.problem === 'no-config'
                   ? t.rowNoConfig
-                  : check.problem === 'unreachable'
+                  : check.problem === 'unreachable' || check.problem === 'station-off'
                     ? t.rowUnreachable
-                    : check.problem === 'host-key-changed'
-                      ? t.rowHostKey
-                      : t.rowProblem;
+                    : check.problem === 'no-route'
+                      ? t.rowNoRoute
+                      : check.problem === 'ssh-slow' || check.problem === 'ssh-closed'
+                        ? t.rowSshSlow
+                        : check.problem === 'host-key-changed'
+                          ? t.rowHostKey
+                          : t.rowProblem;
         return [{ title, sub: problemText(check.problem), tone: 'bad' }];
     }
     const rows: Row[] = [];
@@ -785,7 +789,8 @@ export function SpeakerStep() {
 
     // «Проверим колонку» и ошибки доски Problems слева, под карточкой колонки.
     const problem = check?.problem;
-    const notFound = (found !== null && !found.length && !address) || problem === 'unreachable';
+    const notFound =
+        (found !== null && !found.length && !address) || problem === 'unreachable' || problem === 'station-off' || problem === 'no-route';
     return (
         <div class="onb-cx onb-cx-check">
             <section class="onb-cx-col onb-cx-l">

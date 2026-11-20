@@ -282,6 +282,12 @@ jobs:
     env:
       # Where Tauri puts the bundles: under the target's own folder when one is named.
       BUNDLE: desktop/src-tauri/target/${{ matrix.target && format('{0}/', matrix.target) || '' }}release/bundle
+      # The recognition engine's processor floor (transcribe.cpp's ggml, gateway/src/speech/asr/local). Left alone,
+      # ggml tunes itself to the build machine: on Windows MSVC took the CI's own instructions (AVX-512 there), and
+      # the worker died at its first one on a tester's laptop (21.11, «early eof» on every start). x86-64 pins AVX2 +
+      # FMA + F16C + BMI2 — the gateway checks the same before it starts a worker (supervisor.rs,
+      # missing_cpu_features) — and ARM Linux the plain ARMv8 floor. The Macs' floor is the crate's build script's.
+      TRANSCRIBE_CMAKE_ARGS: ${{ (matrix.os == 'windows-latest' || matrix.os == 'ubuntu-22.04') && '-DGGML_NATIVE=OFF -DGGML_SSE42=ON -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON -DGGML_AVX512=OFF' || matrix.os == 'ubuntu-24.04-arm' && '-DGGML_NATIVE=OFF' || '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

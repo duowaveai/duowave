@@ -84,7 +84,7 @@ const en: Translation<typeof ru> = {
     gatewayNameDefault: 'Leave it empty for the default name.',
     nameField: 'What to call it',
     addTitle: 'Add a Turbo',
-    addAbout: 'The address and the connection key are on the Turbo itself: in its panel, Settings → Home → Show the key and QR.',
+    addAbout: 'The address and the connection key are on the Turbo itself: in its panel, Connection key → Connect a home, with the text and the QR code.',
     addAddress: 'Turbo’s address',
     addKey: 'Connection key',
     addName: 'Name (optional)',

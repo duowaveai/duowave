@@ -96,6 +96,10 @@ pub struct HomeDevice {
     /// A Turbo that speaks an older contract than this centre (src/helpers/contract.rs): «обновите оба».
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub older: bool,
+    /// A centre on a station: how its own voice client is (the station's voice to its own gateway) — one device, one
+    /// row, «голос не на связи» on it when its voice went back to Yandex.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice: Option<DeviceState>,
 }
 
 impl HomeDevice {
@@ -118,6 +122,7 @@ impl HomeDevice {
             enabled: None,
             kept: None,
             older: false,
+            voice: None,
         }
     }
 }
@@ -164,6 +169,16 @@ pub struct StationIn {
     pub elsewhere: bool,
     /// Its own gateway holds a copy of the home (an ear, stage 4).
     pub copy: bool,
+    /// Its voice came over loopback: on a station's gateway, the station's own voice client.
+    pub local: bool,
+}
+
+fn presence_state(presence: Option<PresenceState>) -> DeviceState {
+    match presence {
+        Some(PresenceState::Voice | PresenceState::Alive) => DeviceState::Online,
+        Some(PresenceState::Reconnecting) => DeviceState::Reconnecting,
+        Some(PresenceState::Offline) | None => DeviceState::Offline,
+    }
 }
 
 /// The list, from what the gateway keeps. Pure: the route and the tests feed it.
@@ -174,6 +189,21 @@ pub fn gather(
     helpers: &[HelperView],
     copies: &HashSet<String>,
 ) -> HomeDevices {
+    let mut centre = centre;
+    // A centre on a station that does not know its own device (put there by the one-command install, which names
+    // none): its station's voice client is the one that comes over loopback. Without this it was a second row — «Колонка ·
+    // слышит · не на связи» beside «Колонка Мини 2 · Центр» (Windows test 21.11), one station read as two.
+    let own = centre.on_station.then(|| match &centre.device {
+        Some(device) => stations.iter().find(|station| &station.device == device),
+        None => stations.iter().find(|station| station.local && station.status == StationStatus::Approved),
+    });
+    let own = own.flatten();
+    if centre.device.is_none() {
+        if let Some(own) = own {
+            centre.device = Some(own.device.clone());
+            centre.model = centre.model.or_else(|| own.model.clone());
+        }
+    }
     let centre_id = match (&centre.device, centre.on_station) {
         (Some(device), true) => format!("station:{device}"),
         _ => format!("gateway:{}", centre.gateway_id.clone().unwrap_or_default()),
@@ -192,6 +222,7 @@ pub fn gather(
     me.device = centre.device.clone();
     me.model = centre.model.clone();
     me.gateway_id = centre.gateway_id.clone();
+    me.voice = own.map(|own| presence_state(own.presence));
     // The computer's own built-in Turbo is the centre itself: one device, two roles.
     if !centre.on_station && helpers.iter().any(|helper| helper.builtin && helper.enabled) {
         me.roles.push(DeviceRole::Turbo);
@@ -211,11 +242,7 @@ pub fn gather(
         }
         let mut ear = HomeDevice::new(format!("station:{}", station.device), DeviceKind::Station, station.name.clone());
         ear.hears = true;
-        ear.state = match station.presence {
-            Some(PresenceState::Voice | PresenceState::Alive) => DeviceState::Online,
-            Some(PresenceState::Reconnecting) => DeviceState::Reconnecting,
-            Some(PresenceState::Offline) | None => DeviceState::Offline,
-        };
+        ear.state = presence_state(station.presence);
         ear.since = station.since.clone();
         ear.copy = station.copy;
         ear.last_seen = station.last_seen.clone();
@@ -412,6 +439,7 @@ pub fn of_app(app: &App) -> HomeDevices {
                 model: view.model.or(view.device_model),
                 since: presence.as_ref().map(|presence| presence.since.clone()),
                 last_seen: presence.as_ref().and_then(|presence| presence.last_seen.clone()).or(Some(view.last_seen)),
+                local: view.last_address.as_deref().is_some_and(is_loopback),
                 presence: presence.map(|presence| presence.state),
             }
         })
@@ -424,6 +452,11 @@ pub fn of_app(app: &App) -> HomeDevices {
         .filter(|id| super::copy::holds(&app.settings, id))
         .collect();
     gather(home, centre, &stations, &app.helpers.views(), &copies)
+}
+
+/// 127.0.0.1, ::1 or localhost: a voice that came from the gateway's own machine.
+fn is_loopback(address: &str) -> bool {
+    address == "localhost" || address.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 /// The stations whose voice goes to a gateway of their own (a computer's records): they are not this centre's ears.
@@ -514,6 +547,7 @@ mod tests {
             last_seen: None,
             elsewhere: false,
             copy: false,
+            local: false,
         }
     }
 
@@ -596,5 +630,41 @@ mod tests {
         let ids: Vec<&str> = list.devices.iter().map(|device| device.id.as_str()).collect();
         assert_eq!(ids, ["gateway:g", "station:d-ear"]);
         assert_eq!(list.devices[1].state, DeviceState::Offline);
+    }
+
+    /// Windows test 21.11: a station put there by the one-command install knows no device of its own, and its own voice
+    /// client was a second row. It is the centre's row, with how its voice is.
+    #[test]
+    fn a_station_centre_is_one_row_with_its_own_voice() {
+        let centre = Centre { device: None, model: None, ..station_centre() };
+        let mut voice = station("h:957d99e28d", "Колонка", Some(PresenceState::Offline));
+        voice.local = true;
+        voice.model = Some("yandexmini_2".into());
+        let list = gather(home(), centre, &[voice, station("d-bed", "Спальня", None)], &[], &HashSet::new());
+        let ids: Vec<&str> = list.devices.iter().map(|device| device.id.as_str()).collect();
+        assert_eq!(ids, ["station:h:957d99e28d", "station:d-bed"], "the centre once");
+        assert_eq!(list.devices[0].state, DeviceState::Online, "its gateway answers");
+        assert_eq!(list.devices[0].voice, Some(DeviceState::Offline), "its voice is away");
+        assert_eq!(list.devices[0].model.as_deref(), Some("yandexmini_2"));
+        assert_eq!(list.devices[1].voice, None);
+        // Known by its device: the same, and a computer centre has no voice of its own here.
+        let list = gather(
+            home(),
+            station_centre(),
+            &[station("d-kitchen", "Кухня", Some(PresenceState::Voice))],
+            &[],
+            &HashSet::new(),
+        );
+        assert_eq!((list.devices.len(), list.devices[0].voice), (1, Some(DeviceState::Online)));
+        let pc = Centre { on_station: false, device: None, ..station_centre() };
+        let mut local = station("d-x", "Колонка", None);
+        local.local = true;
+        assert_eq!(gather(home(), pc, &[local], &[], &HashSet::new()).devices[0].voice, None);
+    }
+
+    #[test]
+    fn loopback_is_the_machine_itself() {
+        assert!(is_loopback("127.0.0.1") && is_loopback("::1") && is_loopback("localhost"));
+        assert!(!is_loopback("192.168.50.58"));
     }
 }
