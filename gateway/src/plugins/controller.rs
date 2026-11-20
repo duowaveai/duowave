@@ -247,8 +247,9 @@ struct Plugin {
     taken_mb: AtomicU64,
     /// What a context of it that is loading now took of the budget until it is in its slot (`Loading`).
     loading_mb: AtomicU64,
-    /// What its engine held at the last look, MB: kept so a load's count asks no engine (a busy one answers late).
-    held_mb: AtomicU64,
+    /// What its engine held at the last look, KB: kept so a load's count asks no engine (a busy one answers late). An
+    /// idle context is charged by it (`budget::charge_mb`), widgets hold a fraction of a megabyte.
+    held_kb: AtomicU64,
 }
 
 impl Plugin {
@@ -269,14 +270,14 @@ impl Plugin {
     /// Its context into the slot: its share of the budget is taken while it is there. The one it replaces, if any.
     fn hold(&self, slot: &mut Option<Loaded>, loaded: Loaded) -> Option<Loaded> {
         self.taken_mb.store(loaded.share_mb, Ordering::Relaxed);
-        self.held_mb.store(0, Ordering::Relaxed);
+        self.held_kb.store(0, Ordering::Relaxed);
         slot.replace(loaded)
     }
 
     /// Its context out of the slot (to stop it): its share of the budget is free again.
     fn release(&self, slot: &mut Option<Loaded>) -> Option<Loaded> {
         self.taken_mb.store(0, Ordering::Relaxed);
-        self.held_mb.store(0, Ordering::Relaxed);
+        self.held_kb.store(0, Ordering::Relaxed);
         slot.take()
     }
 }
@@ -406,6 +407,9 @@ pub struct PluginHost {
     gauge: Arc<MemoryGauge>,
     /// Held while a load's room is counted and taken: two loads at once do not count on the same megabytes.
     admitting: Mutex<()>,
+    /// Whether loaded contexts are measured and the idle ones charged by what they hold (`budget::charge_mb`); tests of
+    /// the declared count turn it off.
+    measure: AtomicBool,
     /// Under pressure: the plugins' work in the background waits (`deferred`) until it eases.
     deferring: AtomicBool,
     /// The apps' programs held off while the gateway is updated on the station (src/updates/trial.rs): switched off
@@ -501,7 +505,7 @@ impl PluginHost {
                 config.own_node.clone(),
                 config.node_mirror.clone(),
             );
-            Arc::new(crate::apps::ProcessRuntime::new(
+            let engine = crate::apps::ProcessRuntime::new(
                 gateway_url,
                 app_tokens.clone(),
                 Arc::new(move |id: &str, why: &str| {
@@ -510,7 +514,10 @@ impl PluginHost {
                     }
                 }),
                 Arc::new(node),
-            ))
+            );
+            // A program that says it uses something heavier (budget.memoryMbFor) is given more within what is free.
+            engine.set_room(gauge.clone());
+            Arc::new(engine)
         };
         bundled::lay_out(&config.packages_dir, &db, &bundled);
         // A built-in of an earlier build this one has not (dropped, or renamed to a random id) goes whole: no twin
@@ -549,6 +556,7 @@ impl PluginHost {
             memory,
             gauge,
             admitting: Mutex::new(()),
+            measure: AtomicBool::new(true),
             deferring: AtomicBool::new(false),
             apps_held: AtomicBool::new(false),
             closing: AtomicBool::new(false),
@@ -746,7 +754,7 @@ impl PluginHost {
                         busy: AtomicUsize::new(0),
                         taken_mb: AtomicU64::new(0),
                         loading_mb: AtomicU64::new(0),
-                        held_mb: AtomicU64::new(0),
+                        held_kb: AtomicU64::new(0),
                     })
                 });
                 let choice = choices.get(&id).cloned().unwrap_or_default();
@@ -1085,6 +1093,12 @@ impl PluginHost {
     /// What is free of the plugins' memory, as the last look counted it (on the station).
     pub fn free_memory_mb(&self) -> Option<u64> {
         self.gauge.get()
+    }
+
+    /// The memory kept for the system and Alice: PLUGINS_RESERVE_MB, else a sixth of this machine's memory between 24
+    /// and 40 MB (budget.rs, `reserve_mb`).
+    fn reserve_mb(&self, memory: Option<MemoryNow>) -> u64 {
+        budget::reserve_mb(memory.map(|memory| memory.total_mb).unwrap_or(0), self.config.reserve_mb)
     }
 
     /// Where the gateway runs now.
@@ -1768,38 +1782,61 @@ impl PluginHost {
         };
         let manifest = manifest.filter(|manifest| manifest.kind == PackageKind::Plugin)?;
         let loading_mb = plugin.loading_mb.load(Ordering::Relaxed);
-        let taken_mb = plugin.taken_mb.load(Ordering::Relaxed) + loading_mb;
-        let held_mb = plugin.held_mb.load(Ordering::Relaxed);
+        let declared_mb = plugin.taken_mb.load(Ordering::Relaxed);
+        let busy = loading_mb > 0 || plugin.busy.load(Ordering::Relaxed) > 0;
+        // Measured only when the host measures (tests that keep the declared count turn it off).
+        let held_kb = if self.measure.load(Ordering::Relaxed) { plugin.held_kb.load(Ordering::Relaxed) } else { 0 };
+        // A loaded context takes what it holds with a margin while idle, all it declared while busy (budget.rs).
+        let taken_mb = budget::charge_mb(declared_mb, held_kb, busy) + loading_mb;
         Some(PluginShare {
             id: plugin.id.clone(),
             title: manifest.title_in(&crate::locale::preferences(&self.settings)),
             enabled: enabled && !self.config.disabled,
-            loaded: taken_mb > 0,
-            busy: loading_mb > 0 || plugin.busy.load(Ordering::Relaxed) > 0,
+            loaded: declared_mb + loading_mb > 0,
+            busy,
             budget_mb: manifest.budget.memory_mb,
             taken_mb,
-            actual_mb: (taken_mb > 0 && held_mb > 0).then_some(held_mb),
+            actual_mb: (declared_mb > 0 && held_kb > 0).then(|| held_kb.div_ceil(1024)),
         })
     }
 
     /// Each plugin's share, its engine asked first what it holds now (for the panel and the memory watch).
     async fn shares(&self) -> Vec<PluginShare> {
-        let plugins = self.list();
-        for plugin in &plugins {
-            let instance = plugin.slot.lock().await.as_ref().map(|loaded| loaded.instance.clone());
-            let Some(instance) = instance else { continue };
-            if let Some(memory) = instance.memory().await {
-                plugin.held_mb.store(memory.allocated.div_ceil(1_048_576), Ordering::Relaxed);
-            }
+        self.measure_loaded(false).await;
+        self.list().iter().filter_map(|plugin| self.share_now(plugin)).collect()
+    }
+
+    /// What each loaded context's engine holds now, asked of all at once. `idle_only`: before a load's count — a context
+    /// in a call answers only after it, and is charged all it declared anyway; each answer within a moment.
+    async fn measure_loaded(&self, idle_only: bool) {
+        if !self.measure.load(Ordering::Relaxed) {
+            return;
         }
-        plugins.iter().filter_map(|plugin| self.share_now(plugin)).collect()
+        let plugins = self.list();
+        let mut asks = Vec::new();
+        for plugin in &plugins {
+            if idle_only && plugin.busy.load(Ordering::Relaxed) > 0 {
+                continue;
+            }
+            let Ok(slot) = plugin.slot.try_lock() else { continue };
+            let Some(instance) = slot.as_ref().map(|loaded| loaded.instance.clone()) else { continue };
+            drop(slot);
+            let plugin = plugin.clone();
+            asks.push(async move {
+                let wait = if idle_only { Duration::from_millis(300) } else { Duration::from_secs(2) };
+                if let Ok(Some(memory)) = tokio::time::timeout(wait, instance.memory()).await {
+                    plugin.held_kb.store(memory.allocated.div_ceil(1024).max(1), Ordering::Relaxed);
+                }
+            });
+        }
+        futures::future::join_all(asks).await;
     }
 
     /// The plugins' memory and room, for the panel.
     pub async fn resources(&self) -> ResourcesView {
         let memory = self.memory_now().await;
         let plugins = self.shares().await;
-        let count = budget::count(memory, self.config.reserve_mb, &plugins);
+        let count = budget::count(memory, self.reserve_mb(memory), &plugins);
         let placement = (self.placement)();
         let pressure = memory.map(|memory| memory.pressure).unwrap_or(Pressure::Normal);
         self.gauge.set(memory.map(|_| count.room_mb));
@@ -1816,7 +1853,7 @@ impl PluginHost {
             measured: memory.is_some(),
             total_mb: memory.map(|memory| memory.total_mb).unwrap_or(0),
             available_mb: memory.map(|memory| memory.available_mb).unwrap_or(0),
-            reserve_mb: self.config.reserve_mb,
+            reserve_mb: self.reserve_mb(memory),
             gateway_mb: memory.and_then(|memory| memory.gateway_mb),
             plugins_mb: count.plugins_mb,
             budget_mb: count.budget_mb,
@@ -1840,10 +1877,30 @@ impl PluginHost {
     /// share, if an older version of it is loaded, is left out — the new one takes its place.
     async fn admit<'a>(&self, plugin: &'a Plugin, manifest: &Manifest) -> Result<Loading<'a>, PluginError> {
         let memory = if (self.placement)().on_station() { self.memory_now().await } else { None };
+        // The idle contexts are charged by what they hold: asked now, so the count is fresh.
+        if memory.is_some() {
+            self.measure_loaded(true).await;
+        }
         // Counted and taken at once, nothing awaited meanwhile.
         let _admitting = self.admitting.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(memory) = memory {
-            self.make_room(plugin, manifest.budget.memory_mb, memory)?;
+            // An app's program: the budget for what it said it uses last time (the VPN's protocols, budget.memoryMbFor);
+            // its supervisor starts it with that cap.
+            let (need, what) = if manifest.kind == PackageKind::App && is_program(manifest) {
+                let file = self.config.packages_dir.join(&plugin.id).join(crate::apps::supervisor::USES_FILE);
+                manifest.budget.memory_for_uses(&crate::apps::supervisor::read_uses(&file))
+            } else {
+                (manifest.budget.memory_mb, None)
+            };
+            self.make_room(plugin, need, memory).map_err(|error| match (error, what) {
+                (PluginError::NoRoom(why), Some(what)) => PluginError::NoRoom(crate::tr!(
+                    "{why} Столько нужно для {what} — выберите в приложении другое, и ему хватит {base} МБ.",
+                    why = why,
+                    what = what,
+                    base = manifest.budget.memory_mb
+                )),
+                (error, _) => error,
+            })?;
         }
         Ok(Loading::take(plugin, share_of(manifest)))
     }
@@ -1857,7 +1914,8 @@ impl PluginHost {
         if let Some(own) = self.share_now(plugin) {
             shares.push(PluginShare { taken_mb: 0, busy: false, ..own });
         }
-        let count = budget::count(Some(memory), self.config.reserve_mb, &shares);
+        let reserve_mb = self.reserve_mb(Some(memory));
+        let count = budget::count(Some(memory), reserve_mb, &shares);
         let now = self.now_ms();
         let idle: Vec<Idle> = others
             .iter()
@@ -1870,8 +1928,13 @@ impl PluginHost {
                 })
             })
             .collect();
+        let taking: Vec<(String, u64)> = shares
+            .iter()
+            .filter(|share| share.taken_mb > 0)
+            .map(|share| (share.title.clone(), share.taken_mb))
+            .collect();
         let refused = |free_mb: u64| {
-            let why = budget::does_not_fit(need_mb, free_mb).unwrap_or_default();
+            let why = budget::does_not_fit(need_mb, free_mb, &count, reserve_mb, &taking).unwrap_or_default();
             tracing::warn!(target: "plugins", "{}: not loaded, no room — {need_mb} MB needed, {free_mb} MB free (the budget {} MB, {} MB taken by the loaded)", plugin.id, count.budget_mb, count.committed_mb);
             PluginError::NoRoom(why)
         };
@@ -1974,7 +2037,8 @@ impl PluginHost {
             self.gauge.set(None);
             return;
         };
-        let low = memory.available_mb < self.config.reserve_mb || memory.pressure >= Pressure::Warn;
+        let reserve_mb = self.reserve_mb(Some(memory));
+        let low = memory.available_mb < reserve_mb || memory.pressure >= Pressure::Warn;
         if low {
             self.unload_idle_for(budget::PRESSED_IDLE_MS);
         }
@@ -1989,16 +2053,16 @@ impl PluginHost {
                 self.background(&id, &handler, payload);
             }
         } else if low && !was {
-            tracing::warn!(target: "plugins", "memory is short ({} MB available, the reserve {} MB, pressure {}): idle plugins unload, background work waits", memory.available_mb, self.config.reserve_mb, memory.pressure.as_str());
+            tracing::warn!(target: "plugins", "memory is short ({} MB available, the reserve {} MB, pressure {}): idle plugins unload, background work waits", memory.available_mb, reserve_mb, memory.pressure.as_str());
         }
-        let critical = memory.pressure == Pressure::Critical || memory.available_mb < self.config.reserve_mb / 2;
+        let critical = memory.pressure == Pressure::Critical || memory.available_mb < reserve_mb / 2;
         if critical && (self.placement)().on_station() && !self.config.disabled {
             self.relieve(memory).await;
         } else if !low {
             self.wake_one(memory);
         }
         let plugins = self.shares().await;
-        let count = budget::count(Some(memory), self.config.reserve_mb, &plugins);
+        let count = budget::count(Some(memory), self.reserve_mb(Some(memory)), &plugins);
         // What a plugin could get, the idle contexts unloaded: what «would it go here» is asked against.
         self.gauge.set(Some(count.room_mb));
         let now = (count.free_mb, memory.pressure);
@@ -2041,7 +2105,7 @@ impl PluginHost {
         let why = crate::tr!(
             "колонке не хватало ОЗУ: свободно {available_mb} МБ при запасе {reserve_mb} МБ, давление {pressure}",
             available_mb = memory.available_mb,
-            reserve_mb = self.config.reserve_mb,
+            reserve_mb = self.reserve_mb(Some(memory)),
             pressure = memory.pressure.as_str()
         );
         match self.config.pressure_action {
@@ -2086,7 +2150,7 @@ impl PluginHost {
         let woken = {
             let mut asleep = self.lock_asleep();
             let Some((_, need)) = asleep.first() else { return };
-            if memory.available_mb < self.config.reserve_mb + need + budget::WAKE_MARGIN_MB {
+            if memory.available_mb < self.reserve_mb(Some(memory)) + need + budget::WAKE_MARGIN_MB {
                 return;
             }
             asleep.remove(0).0
@@ -2969,7 +3033,7 @@ impl PluginHost {
             state,
             loaded: loaded.is_some(),
             problem,
-            budget: manifest.as_ref().map(|manifest| manifest.budget),
+            budget: manifest.as_ref().map(|manifest| manifest.budget.clone()),
             memory,
             storage_used: storage_used(&self.db, &plugin.id),
             permissions: manifest
@@ -3555,7 +3619,7 @@ mod tests {
                 catalog_dir: dir.join(".catalog"),
                 dev_dir: dir.join(".dev"),
                 catalog_key: None,
-                reserve_mb: 40,
+                reserve_mb: Some(40),
                 storage_reserve_mb: Some(15),
                 pressure_action: crate::plugins::budget::PressureAction::Sleep,
                 bundled: false,
@@ -3963,6 +4027,8 @@ mod tests {
         memory.set(station(60));
         let fixture = host_with(dir.path(), Arc::new(Db::memory()), false, Placement::Station, memory.clone());
         let host = fixture.host.clone();
+        // The declared count: what each loaded context declared (the measured one — below).
+        host.measure.store(false, Ordering::Relaxed);
         // 38 MB declared in all, more than the 20, and none refused.
         assert!(host.enable("alpha", None).await.unwrap().loaded);
         assert!(host.enable("beta", None).await.unwrap().loaded);
@@ -3989,7 +4055,10 @@ mod tests {
 
         // Its load: 30 MB do not fit even with the idle contexts unloaded, so none of them is unloaded for nothing.
         let refused = host.call("big", "say", json!({"word": "а"}), CallKind::Voice).await.unwrap_err();
-        assert!(matches!(&refused, PluginError::NoRoom(why) if why.contains("нужно 30 МБ, свободно")), "{refused}");
+        assert!(
+            matches!(&refused, PluginError::NoRoom(why) if why.contains("нужно 30 МБ, а приложениям всего 20 МБ")),
+            "the apps' whole budget is short, not what the loaded take: {refused}"
+        );
         assert!(is_loaded(&host, "alpha").await && is_loaded(&host, "beta").await);
         assert!(host.view_one("big").await.unwrap().last_error.unwrap().message.contains("не хватает ОЗУ"));
 
@@ -3997,6 +4066,40 @@ mod tests {
         memory.set(station(80));
         assert_eq!(said(host.call("big", "say", json!({"word": "б"}), CallKind::Voice).await), "б (1)");
         assert_eq!(host.resources().await.committed_mb, 38);
+    }
+
+    /// Windows test 21.11, a Station Mini 2: widgets «нужно 2 МБ, свободно 0» while each held a fraction of what it
+    /// declared. Measured, an idle context takes what it holds with a margin: a fourth context of 4 MB loads in a
+    /// budget of 12 beside three idle ones, none unloaded; one in a call is charged all it declared.
+    #[tokio::test]
+    async fn idle_contexts_are_charged_what_they_hold_and_one_in_a_call_all_it_declared() {
+        let dir = tempfile::tempdir().unwrap();
+        for id in ["alpha", "beta", "gamma", "delta"] {
+            write_package(dir.path(), &small(id, 4), Some(CODE));
+        }
+        // 12 MB for the plugins: by the declared count, three contexts of 4.
+        let memory = crate::plugins::budget::fake::plenty();
+        memory.set(station(52));
+        let fixture = host_with(dir.path(), Arc::new(Db::memory()), false, Placement::Station, memory);
+        let host = fixture.host.clone();
+        for id in ["alpha", "beta", "gamma"] {
+            assert!(host.enable(id, None).await.unwrap().loaded);
+        }
+        assert!(host.enable("delta", None).await.unwrap().loaded, "it fits beside the idle ones");
+        for id in ["alpha", "beta", "gamma", "delta"] {
+            assert!(is_loaded(&host, id).await, "{id} stays loaded: nothing had to go");
+        }
+        let resources = host.resources().await;
+        assert!(resources.committed_mb < 16, "less than four times 4: {resources:?}");
+        let share = |resources: &crate::plugins::budget::ResourcesView, id: &str| {
+            resources.plugins.iter().find(|share| share.id == id).cloned().unwrap()
+        };
+        let alpha = share(&resources, "alpha");
+        assert!(alpha.taken_mb < 4 && alpha.actual_mb.is_some(), "{alpha:?}");
+        // In a call it may grow to its limit: charged all of it.
+        let gamma = host.plugin("gamma").unwrap();
+        let _in_call = Busy::new(&gamma);
+        assert_eq!(share(&host.resources().await, "gamma").taken_mb, 4);
     }
 
     #[tokio::test]
@@ -4010,6 +4113,8 @@ mod tests {
         memory.set(station(52));
         let fixture = host_with(dir.path(), Arc::new(Db::memory()), false, Placement::Station, memory);
         let (host, mut events) = (fixture.host.clone(), fixture.events.subscribe());
+        // The declared count: each loaded context takes its 4 (the measured one — below).
+        host.measure.store(false, Ordering::Relaxed);
         for id in ["alpha", "beta", "gamma"] {
             assert!(host.enable(id, None).await.unwrap().loaded);
         }
@@ -4045,7 +4150,9 @@ mod tests {
         let refused = host.call("beta", "say", json!({"word": "б"}), CallKind::Voice).await.unwrap_err();
         assert_eq!(
             refused,
-            PluginError::NoRoom("колонке не хватает ОЗУ, чтобы загрузить приложение: нужно 4 МБ, свободно 0 МБ".into())
+            PluginError::NoRoom(
+                "колонке не хватает ОЗУ, чтобы загрузить приложение: нужно 4 МБ, свободно 0 из 12 МБ для приложений; сейчас заняли (МБ): «alpha» 4, «delta» 4, «gamma» 4.".into()
+            )
         );
         assert!(is_loaded(&host, "alpha").await && is_loaded(&host, "gamma").await && is_loaded(&host, "delta").await);
         let view = host.view_one("beta").await.unwrap();

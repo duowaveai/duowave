@@ -1502,6 +1502,9 @@ html[data-theme='dark'] .voice-strip { box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4
 .waiting-pill.is-attention { display: inline-flex; align-items: center; gap: 8px; border-color: var(--dot-offline); }
 .dock-talk.is-listening::after { content: ''; position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--bar-own); animation: talk-ping 1.3s ease-out infinite; pointer-events: none; }
 html[data-look='minimal'] .talk-btn.is-held:disabled { background: var(--chip-bg); color: var(--sub); box-shadow: none; opacity: 1; }
+/* Пульт по сети без микрофона (телефон, http://колонка): кнопка приглушена, но нажимается — полоса скажет, где говорить. */
+html[data-look] .talk-btn.is-unavailable,
+html[data-look] .side-talk.is-unavailable { background: var(--chip-bg); color: var(--sub); box-shadow: none; }
 
 @keyframes draft-draw { from { stroke-dashoffset: 1000; } to { stroke-dashoffset: 0; } }
 @keyframes draft-run { from { stroke-dashoffset: 30; } to { stroke-dashoffset: -970; } }

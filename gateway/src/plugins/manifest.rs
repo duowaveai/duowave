@@ -222,11 +222,17 @@ pub fn host_allowed(patterns: &[String], host: &str) -> bool {
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Budget {
-    /// The runtime's memory limit: the plugin's calls fail above it, the gateway stays.
+    /// The runtime's memory limit: the plugin's calls fail above it, the gateway stays. For an app's program: what it
+    /// holds at the least — raised by `memory_for` when it says it uses something heavier.
     pub memory_mb: u64,
+    /// `budget.memoryMbFor`: an app's program that names what it uses in its health answer (`uses`, e.g. the VPN's
+    /// protocols) is given this much for the heaviest of them (Windows test 21.11: a Station Mini 2 with 23 MB free
+    /// could not take the VPN's one 24 MB, which only WireGuard and AnyTLS need). Names compared without case.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub memory_for: std::collections::BTreeMap<String, u64>,
     /// Its `kv` store at most this big.
     pub storage_mb: u64,
     /// Its own folder on the bus (`files/app/<id>`) at most this big on a computer; the station keeps all files within
@@ -234,6 +240,28 @@ pub struct Budget {
     pub files_mb: u64,
     /// Long tasks an app runs at once (src/tasks): one unless it asks for more, four at most.
     pub tasks: u32,
+}
+
+impl Budget {
+    /// The memory for what an app's program says it uses: its base, raised to the heaviest declared use among them —
+    /// and which use that is. Nothing declared or nothing named: the base.
+    pub fn memory_for_uses(&self, uses: &[String]) -> (u64, Option<String>) {
+        let mut need = (self.memory_mb, None);
+        for used in uses {
+            let declared = self.memory_for.iter().find(|(name, _)| name.eq_ignore_ascii_case(used.trim()));
+            if let Some((name, mb)) = declared {
+                if *mb > need.0 {
+                    need = (*mb, Some(name.clone()));
+                }
+            }
+        }
+        need
+    }
+
+    /// The most it may ask for: the base or its heaviest declared use.
+    pub fn memory_most(&self) -> u64 {
+        self.memory_for.values().copied().fold(self.memory_mb, u64::max)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1194,13 +1222,30 @@ pub fn check(value: &Value) -> Result<Manifest, ManifestError> {
             }
         },
     };
+    let most_memory = if runtime == Runtime::Node { MAX_NODE_MEMORY_MB } else { MAX_MEMORY_MB };
+    let mut memory_for = std::collections::BTreeMap::new();
+    match budget.and_then(|b| b.get("memoryMbFor")) {
+        None => {}
+        Some(Value::Object(uses)) => {
+            for (name, value) in uses {
+                match value.as_u64().filter(|n| (1..=most_memory).contains(n)) {
+                    Some(n) if !name.trim().is_empty() => {
+                        memory_for.insert(name.trim().to_string(), n);
+                    }
+                    _ => problems.push(crate::tr!(
+                        "budget.memoryMbFor.{name}: целое от 1 до {max}",
+                        name = name,
+                        max = most_memory
+                    )),
+                }
+            }
+        }
+        Some(_) => problems
+            .push(crate::tr!("budget.memoryMbFor: объект «что использует → МБ», например {{\"WireGuard\": 24}}")),
+    }
     let budget = Budget {
-        memory_mb: limit(
-            "memoryMb",
-            DEFAULT_MEMORY_MB,
-            if runtime == Runtime::Node { MAX_NODE_MEMORY_MB } else { MAX_MEMORY_MB },
-            &mut problems,
-        ),
+        memory_mb: limit("memoryMb", DEFAULT_MEMORY_MB, most_memory, &mut problems),
+        memory_for,
         storage_mb: limit("storageMb", DEFAULT_STORAGE_MB, MAX_STORAGE_MB, &mut problems),
         files_mb: limit("filesMb", crate::bus::providers::files::APP_FOLDER_MB, 4096, &mut problems),
         tasks: limit(
@@ -2060,7 +2105,13 @@ mod tests {
         assert_eq!(manifest.runs, [Placement::Pc, Placement::Station, Placement::StationServer]);
         assert_eq!(
             manifest.budget,
-            Budget { memory_mb: 4, storage_mb: 2, files_mb: crate::bus::providers::files::APP_FOLDER_MB, tasks: 1 }
+            Budget {
+                memory_mb: 4,
+                memory_for: Default::default(),
+                storage_mb: 2,
+                files_mb: crate::bus::providers::files::APP_FOLDER_MB,
+                tasks: 1
+            }
         );
         assert_eq!(manifest.hosts(), ["*.api.radio-browser.info"]);
         let intent = &manifest.contributes.intents[0];
@@ -2277,6 +2328,23 @@ mod tests {
         let mut process = radio();
         process["runtime"] = json!("process");
         assert!(problems(process)[0].starts_with("runtime «process» не подходит"), "a plugin's code is not a program");
+    }
+
+    /// The VPN on a Station Mini 2 (test 21.11): 24 MB for everything did not fit 23 free, while only WireGuard and
+    /// AnyTLS need that much. The base is for the rest; what the program says it uses raises it.
+    #[test]
+    fn an_app_declares_more_memory_for_what_it_uses() {
+        let mut app = radio();
+        app["budget"] = json!({ "memoryMb": 22, "memoryMbFor": { "WireGuard": 24, "AnyTLS": 24 } });
+        let budget = check(&app).unwrap().budget;
+        assert_eq!(budget.memory_most(), 24);
+        assert_eq!(budget.memory_for_uses(&[]), (22, None));
+        assert_eq!(budget.memory_for_uses(&["VLESS".into(), "Trojan".into()]), (22, None));
+        assert_eq!(budget.memory_for_uses(&["VLESS".into(), "wireguard".into()]), (24, Some("WireGuard".into())));
+        app["budget"] = json!({ "memoryMb": 22, "memoryMbFor": { "WireGuard": 0 } });
+        assert!(problems(app.clone())[0].starts_with("budget.memoryMbFor.WireGuard"), "{:?}", problems(app.clone()));
+        app["budget"] = json!({ "memoryMb": 22, "memoryMbFor": [24] });
+        assert!(problems(app)[0].starts_with("budget.memoryMbFor:"));
     }
 
     #[test]

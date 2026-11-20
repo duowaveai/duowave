@@ -61,6 +61,57 @@ export function suggestedGateway(): string {
     return home && host !== 'localhost' ? location.host : '';
 }
 
+/**
+ * Свой пароль root колонки — когда вход без пароля не прошёл (тест на Windows 21.11: колонку с паролем подключить можно
+ * было только строкой в .env). Шлюз хранит его зашифрованным и входит с ним дальше; не подошёл — не хранит. Берут и
+ * первые шаги (screens/onb/speaker.tsx).
+ */
+export function RootPassword({ address, gateway, onChecked }: { address: string; gateway?: string; onChecked: (check: StationCheck) => void }) {
+    const [password, setPassword] = useState('');
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const submit = async (event: Event): Promise<void> => {
+        event.preventDefault();
+        if (!password || busy) return;
+        setBusy(true);
+        setError(null);
+        try {
+            const result = await api.checkStation(address, gateway, password);
+            setPassword('');
+            if (result.problem === 'auth-failed') setError(tr.connect.rootPasswordWrong);
+            onChecked(result);
+        } catch (e) {
+            setError(problemOf(e));
+        } finally {
+            setBusy(false);
+        }
+    };
+    return (
+        <form class="flex flex-col gap-6" onSubmit={(event) => void submit(event)}>
+            <label class="flex flex-col gap-6">
+                <span class="win-label">{tr.connect.rootPasswordLabel}</span>
+                <input
+                    class="field"
+                    type="password"
+                    autoComplete="off"
+                    value={password}
+                    aria-label={tr.connect.rootPasswordLabel}
+                    onInput={(event) => setPassword((event.target as HTMLInputElement).value)}
+                />
+                <span class="win-hint">{tr.connect.rootPasswordAbout}</span>
+            </label>
+            <button type="submit" class="dw-btn dw-btn-light" style={{ alignSelf: 'flex-start' }} disabled={!password || busy} aria-busy={busy || undefined}>
+                {tr.connect.rootPasswordCheck}
+            </button>
+            {error && (
+                <p class="win-callout m-0" role="alert">
+                    {error}
+                </p>
+            )}
+        </form>
+    );
+}
+
 /** Что пошло не так — словами, с тем, что делать. Берут и первые шаги (screens/onb/speaker.tsx). */
 export function problemText(problem: string | undefined): string {
     switch (problem) {
@@ -241,6 +292,8 @@ export function ConnectSheet({
 }) {
     const [step, setStep] = useState<Step>('find');
     const [found, setFound] = useState<FoundStation[] | null>(null);
+    // Поиск на Windows ничего не нашёл: что на компьютере может его закрывать (брандмауэр, общедоступная сеть).
+    const [whyNone, setWhyNone] = useState<string | null>(null);
     const [address, setAddress] = useState(initial?.address ?? '');
     const [gateway, setGateway] = useState(initial?.gateway ?? suggestedGateway());
     /** Порт самого шлюза: на него колонка пойдёт, если адрес введён без порта. */
@@ -269,6 +322,7 @@ export function ConnectSheet({
             .then((result) => {
                 if (!live) return;
                 setFound(result.stations);
+                setWhyNone(result.whyNone ?? null);
                 if (result.port) setOwnPort(result.port);
                 // Пульт открыт с этого компьютера (127.0.0.1): адрес для колонки подскажет сам шлюз.
                 if (result.gateway?.length) setGateway((current) => current || result.gateway![0]);
@@ -375,7 +429,10 @@ export function ConnectSheet({
                         </div>
                     </WinSection>
                 ) : (
-                    <p class="win-callout is-calm m-0">{tr.connect.noneFound}</p>
+                    <p class="win-callout is-calm m-0">
+                        {tr.connect.noneFound}
+                        {whyNone && ` ${whyNone}`}
+                    </p>
                 )}
                 <label class="flex flex-col gap-6">
                     <span class="win-label">{tr.connect.addressLabel}</span>
@@ -502,16 +559,21 @@ export function ConnectSheet({
                     />
                 )}
                 {check.problem ? (
-                    <p class="win-callout m-0">
-                        <span>
-                            {problemText(check.problem)}{' '}
-                            {(check.problem === 'no-ssh' || check.problem === 'auth-failed') && (
-                                <a href={WIKI_SSH} target="_blank" rel="noreferrer">
-                                    {tr.connect.sshWiki}
-                                </a>
-                            )}
-                        </span>
-                    </p>
+                    <>
+                        <p class="win-callout m-0">
+                            <span>
+                                {problemText(check.problem)}{' '}
+                                {(check.problem === 'no-ssh' || check.problem === 'auth-failed') && (
+                                    <a href={WIKI_SSH} target="_blank" rel="noreferrer">
+                                        {tr.connect.sshWiki}
+                                    </a>
+                                )}
+                            </span>
+                        </p>
+                        {check.problem === 'auth-failed' && (
+                            <RootPassword address={check.address} gateway={gateway.trim() || undefined} onChecked={setCheck} />
+                        )}
+                    </>
                 ) : check.connected ? (
                     <p class="win-lead">{tr.connect.alreadyOnGateway}</p>
                 ) : (

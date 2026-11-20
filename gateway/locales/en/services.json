@@ -1056,5 +1056,16 @@
   "нет файла {name}": "no file {name}",
   "запись {name} больше 2 МБ": "the recording {name} is over 2 MB",
   "запись {name} — не Ogg/Opus": "the recording {name} is not Ogg/Opus",
-  "Распознавание на этом компьютере не запустится: процессору не хватает команд {features}. Выберите другое распознавание в настройках голоса.": "Recognition on this computer will not start: the processor lacks the instructions {features}. Choose another recognition in the voice settings."
+  "Распознавание на этом компьютере не запустится: процессору не хватает команд {features}. Выберите другое распознавание в настройках голоса.": "Recognition on this computer will not start: the processor lacks the instructions {features}. Choose another recognition in the voice settings.",
+  "Сеть «{names}» в Windows — «Общедоступная»: в ней Windows не пускает к компьютеру никого. Сделайте её частной: «Параметры» → «Сеть и Интернет» → сеть → «Частная».": "The network “{names}” is “Public” in Windows: on it Windows lets nobody reach the computer. Make it private: Settings → Network & Internet → the network → “Private”.",
+  "Брандмауэр Windows запрещает DuoWave входящие подключения (так бывает, если в его окне нажали «Отмена»). Нажмите «Разрешить в брандмауэре».": "Windows Firewall blocks incoming connections to DuoWave (this happens when “Cancel” was pressed in its window). Press “Allow in the firewall”.",
+  "В брандмауэре Windows нет разрешения для DuoWave в частной сети. Нажмите «Разрешить в брандмауэре».": "Windows Firewall has no allowance for DuoWave on private networks. Press “Allow in the firewall”.",
+  "Это нужно только на Windows.": "This is needed on Windows only.",
+  "Windows не дал прав: разрешение отменено.": "Windows gave no rights: the allowance was canceled.",
+  "Не вышло добавить разрешение в брандмауэр: {error}": "The allowance was not added to the firewall: {error}",
+  "Колонка не достучалась до этого компьютера ({url}): голос, слух и модели с него ей не идут.": "The speaker could not reach this computer ({url}): it gets no voice, hearing or models from it.",
+  " Колонка говорит: {why}.": " The speaker says: {why}.",
+  "Разрешите DuoWave в брандмауэре Windows для частной сети и проверьте, что сеть в Windows — «Частная».": "Allow DuoWave in Windows Firewall for private networks, and check that the network is “Private” in Windows.",
+  " Компьютер включён и в той же сети? Не закрывает ли его брандмауэр или VPN?": " Is the computer on and in the same network? Is a firewall or a VPN keeping it closed?",
+  "На Windows поиск колонок может закрывать брандмауэр: введите адрес колонки сами.": "On Windows the firewall may keep the speaker search closed: enter the speaker’s address yourself."
 }

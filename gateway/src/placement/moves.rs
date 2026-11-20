@@ -372,7 +372,7 @@ impl MovesService {
         let options = ShellOptions {
             port: self.deps.ssh.port,
             user: self.deps.ssh.user.clone(),
-            password: self.deps.ssh.password.clone(),
+            password: self.deps.ssh.password_for(address),
             trust: trust.clone(),
             timeout_ms: None,
         };
@@ -962,6 +962,8 @@ impl MovesService {
         );
         let found = shell.run(&marks, None).await;
         let log = shell.run(&format!("tail -n 40 {}/gateway.log 2>/dev/null", super::station_fs::DATA), None).await;
+        // Who moved the voice and when (voice.sh's own lines, test 21.11: the copy went and nothing said who took it).
+        let voice = shell.run(&format!("tail -n 15 {DIR}/voice/changes.log 2>/dev/null"), None).await;
         let status = shell.run(&format!("{BIN} station status --json 2>/dev/null"), None).await;
         shell.close().await;
         let found = found.map_err(|error| problem_of(&error))?.stdout;
@@ -984,6 +986,7 @@ impl MovesService {
             "fired": fired,
             "status": status.ok().filter(|status| status.code == 0).and_then(|status| serde_json::from_str::<Value>(&status.stdout).ok()),
             "log": log.map(|log| log.stdout).unwrap_or_default(),
+            "voiceChanges": voice.map(|voice| voice.stdout).unwrap_or_default(),
         }))
     }
 
@@ -1510,7 +1513,12 @@ mod tests {
             events: events.clone(),
             access,
             opener: Arc::new(Opener(station.clone())),
-            ssh: ShellConfig { port: 2222, user: "root".into(), password: String::new() },
+            ssh: ShellConfig {
+                port: 2222,
+                user: "root".into(),
+                password: String::new(),
+                passwords: Default::default(),
+            },
             station: gateways,
             stations: Arc::new(Records),
             restarter: Arc::new(move || {

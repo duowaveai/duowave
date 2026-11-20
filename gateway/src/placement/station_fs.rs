@@ -358,6 +358,8 @@ impl StationFs {
     /// the copy away. Then a reboot when asked. Pointing at this station's gateway keeps where the voice went before
     /// (voice.sh's previous.cfg) — the safety net's way back.
     pub fn point(&self, target: &Target, reboot: bool, system: &dyn System) -> Result<Pointed, String> {
+        // Who moves the voice, in the gateway's log too (voice.sh keeps its own lines in voice/changes.log).
+        tracing::info!("station voice: pointing to {target:?}{}", if reboot { ", then a reboot" } else { "" });
         let from = self.voice()?;
         let to = match target {
             Target::Local => self.local_addresses(),

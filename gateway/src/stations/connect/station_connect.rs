@@ -196,15 +196,88 @@ pub struct StationConnectService {
 pub struct ShellConfig {
     pub port: u16,
     pub user: String,
+    /// STATION_SSH_PASSWORD: every station's, unless the wizard was given one of its own.
     pub password: String,
+    pub passwords: StationPasswords,
+}
+
+impl ShellConfig {
+    /// The root password for the station at `address`: the one typed in the wizard for it, else the common one.
+    pub fn password_for(&self, address: &str) -> String {
+        self.passwords.get(address).unwrap_or_else(|| self.password.clone())
+    }
+}
+
+/// The secrets' id of a station's root password typed in the wizard: `station-ssh:<address>`.
+pub const STATION_SSH_SECRET: &str = "station-ssh:";
+
+/// Stations' own root passwords, typed in the wizard when the empty one was refused (Windows test 21.11: a station
+/// with a root password could be connected only through STATION_SSH_PASSWORD in `.env`). Sealed among the gateway's
+/// secrets by the station's address; never in a log, an event or an answer. None without secrets (tests).
+#[derive(Clone, Default)]
+pub struct StationPasswords(Option<Arc<crate::secrets::service::SecretsService>>);
+
+impl StationPasswords {
+    pub fn new(secrets: Arc<crate::secrets::service::SecretsService>) -> StationPasswords {
+        StationPasswords(Some(secrets))
+    }
+
+    pub fn get(&self, address: &str) -> Option<String> {
+        self.0.as_ref()?.get(&format!("{STATION_SSH_SECRET}{address}")).filter(|password| !password.is_empty())
+    }
+
+    /// Keeps it; None or empty forgets it.
+    pub fn set(&self, address: &str, password: Option<&str>) -> Result<(), ApiError> {
+        let Some(secrets) = &self.0 else {
+            return Err(ApiError::conflict(crate::tr!("Пароль колонки здесь негде сохранить.")));
+        };
+        secrets.set(&format!("{STATION_SSH_SECRET}{address}"), password)
+    }
+}
+
+impl std::fmt::Debug for StationPasswords {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StationPasswords")
+    }
 }
 
 /// An interface for homeAddresses, as a station would read it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Iface {
     pub ipv4: bool,
     pub internal: bool,
     pub address: String,
+    /// The adapter's name as the system calls it: «Wi-Fi», «Ethernet», «vEthernet (WSL)».
+    pub name: String,
+}
+
+/// An adapter that is not the home network itself: WSL and Hyper-V's switches, Docker's, VirtualBox and VMware's
+/// host-only ones, a VPN's tunnel (Windows test 21.11: a PC with WSL — the station must be given the Wi-Fi's address).
+pub fn virtual_adapter(name: &str) -> bool {
+    let name = name.to_lowercase();
+    [
+        "vethernet",
+        "wsl",
+        "hyper-v",
+        "docker",
+        "virtualbox",
+        "vboxnet",
+        "vmware",
+        "vmnet",
+        "tap",
+        "tun",
+        "wintun",
+        "wireguard",
+        "openvpn",
+        "zerotier",
+        "tailscale",
+        "utun",
+        "bridge",
+        "loopback",
+        "npcap",
+    ]
+    .iter()
+    .any(|word| name.contains(word))
 }
 
 /// A station that still dials this computer's old port: its address, the station, what it dials and where this
@@ -228,6 +301,7 @@ pub fn host_interfaces() -> Vec<Iface> {
             ipv4: matches!(iface.addr, if_addrs::IfAddr::V4(_)),
             internal: iface.is_loopback(),
             address: iface.ip().to_string(),
+            name: iface.name.clone(),
         })
         .collect()
 }
@@ -262,11 +336,11 @@ impl StationConnectService {
         }
     }
 
-    fn options(&self, trust: Option<String>) -> ShellOptions {
+    fn options(&self, address: &str, trust: Option<String>) -> ShellOptions {
         ShellOptions {
             port: self.ssh.port,
             user: self.ssh.user.clone(),
-            password: self.ssh.password.clone(),
+            password: self.ssh.password_for(address),
             trust,
             timeout_ms: None,
         }
@@ -311,11 +385,24 @@ impl StationConnectService {
         }
         let port = if self.port == 80 { String::new() } else { format!(":{}", self.port) };
         let home = ["10.0.0.0/8".to_string(), "192.168.0.0/16".to_string(), "172.16.0.0/12".to_string()];
-        interfaces
+        let mut found: Vec<&Iface> = interfaces
             .iter()
             .filter(|entry| entry.ipv4 && !entry.internal && in_networks(&entry.address, &home))
-            .map(|entry| format!("{}{port}", entry.address))
-            .collect()
+            .collect();
+        // The home network first: a real adapter before a virtual one, then 192.168.x before 10.x before 172.16–31.x
+        // — WSL, Hyper-V and Docker take 172.x by default, VPNs often 10.x. The first is what the wizard offers.
+        let rank = |entry: &Iface| {
+            let range = if entry.address.starts_with("192.168.") {
+                0
+            } else if entry.address.starts_with("10.") {
+                1
+            } else {
+                2
+            };
+            (virtual_adapter(&entry.name), range)
+        };
+        found.sort_by_key(|entry| rank(entry));
+        found.iter().map(|entry| format!("{}{port}", entry.address)).collect()
     }
 
     /// Stations this gateway connected whose voice address names this computer on a port it no longer listens on: PORT
@@ -352,6 +439,30 @@ impl StationConnectService {
             .collect()
     }
 
+    /// The look with the station's own root password, typed in the wizard after «не пустила по SSH»: kept sealed
+    /// for every later step only when the station takes it; a refused one is forgotten at once.
+    pub async fn check_with_password(
+        &self,
+        address: &str,
+        gateway: Option<&GatewayHost>,
+        password: Option<&str>,
+    ) -> Result<StationCheck, ApiError> {
+        let Some(password) = password.filter(|password| !password.is_empty()) else {
+            return self.check(address, gateway).await;
+        };
+        let before = self.ssh.passwords.get(address);
+        self.ssh.passwords.set(address, Some(password))?;
+        let check = self.check(address, gateway).await;
+        let refused = check.as_ref().map_or(true, |check| check.problem.as_deref() == Some("auth-failed"));
+        if refused {
+            self.ssh.passwords.set(address, before.as_deref())?;
+            tracing::warn!("station check: {address} refused the root password typed in the panel");
+        } else {
+            tracing::info!("station check: {address} took the root password typed in the panel; kept sealed");
+        }
+        check
+    }
+
     /// The first look: SSH, the config, the free space — reading only, nothing on the station changes. A failed read
     /// of the links is the server's error, as the TS check rejected: taken for «no link» it would skip the key check.
     pub async fn check(&self, address: &str, gateway: Option<&GatewayHost>) -> Result<StationCheck, ApiError> {
@@ -377,7 +488,11 @@ impl StationConnectService {
             }
         };
         let link = self.link(address)?;
-        let shell = match self.opener.open(address, self.options(link.as_ref().map(|l| l.fingerprint.clone()))).await {
+        let shell = match self
+            .opener
+            .open(address, self.options(address, link.as_ref().map(|l| l.fingerprint.clone())))
+            .await
+        {
             Ok(shell) => shell,
             Err(error) => {
                 tracing::warn!("station check: SSH to {address}:{port} did not open: {error:#}");
@@ -470,7 +585,7 @@ impl StationConnectService {
         };
         let shell = self
             .opener
-            .open(address, self.options(Some(link.fingerprint.clone())))
+            .open(address, self.options(address, Some(link.fingerprint.clone())))
             .await
             .map_err(|error| ApiError::bad_gateway(problem_of(&error)))?;
         let result = shell.run(&command, None).await;
@@ -577,6 +692,10 @@ impl StationConnectService {
             if let Some(entry) = job.steps.iter_mut().find(|entry| entry.id == step) {
                 entry.state = state;
             }
+            // Every step's outcome in gateway.log: a stranger's log is all we see of their wizard (Windows test 21.11).
+            if state != StepState::Running {
+                tracing::info!("station {}: {:?} {step:?} — {state:?}", job.address, job.kind);
+            }
         }
     }
 
@@ -612,7 +731,8 @@ impl StationConnectService {
         shell: &mut Option<Box<dyn StationShell>>,
     ) -> anyhow::Result<()> {
         let link = self.link(address)?;
-        *shell = Some(self.opener.open(address, self.options(link.as_ref().map(|l| l.fingerprint.clone()))).await?);
+        *shell =
+            Some(self.opener.open(address, self.options(address, link.as_ref().map(|l| l.fingerprint.clone()))).await?);
         let fingerprint = shell.as_deref().unwrap().fingerprint().to_string();
         let text = shell.as_deref().unwrap().run(&STEPS.read, None).await?.stdout;
         let facts = read_config(&text)?;
@@ -745,7 +865,7 @@ impl StationConnectService {
         actor: Option<Actor>,
         shell: &mut Option<Box<dyn StationShell>>,
     ) -> anyhow::Result<()> {
-        *shell = Some(self.opener.open(address, self.options(link.map(|l| l.fingerprint.clone()))).await?);
+        *shell = Some(self.opener.open(address, self.options(address, link.map(|l| l.fingerprint.clone()))).await?);
         self.step(id, StepId::Write, StepState::Running);
         let text = shell.as_deref().unwrap().run(&STEPS.read, None).await?.stdout;
         let facts = read_config(&text)?;
@@ -815,7 +935,7 @@ impl StationConnectService {
     ) -> anyhow::Result<()> {
         // The station's key as it was learned: a station that answers with another one is not opened.
         let link = self.link(address)?;
-        *shell = Some(self.opener.open(address, self.options(link.map(|l| l.fingerprint))).await?);
+        *shell = Some(self.opener.open(address, self.options(address, link.map(|l| l.fingerprint))).await?);
         let shell = shell.as_deref().unwrap();
         self.step(id, StepId::Remove, StepState::Running);
         // The script as this gateway has it, whatever the station kept (or did not: connected by an older build).
@@ -1141,6 +1261,8 @@ mod tests {
         banner: Result<String, NoBanner>,
         /// Its SSH never opens.
         no_shell: bool,
+        /// Its root's own password; None — the empty one, as the wiki sets it up.
+        root_password: Option<String>,
     }
 
     #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1173,6 +1295,7 @@ mod tests {
                     around: "maind on\nmemavail 61440\n".into(),
                     banner: Ok("dropbear_test".into()),
                     no_shell: false,
+                    root_password: None,
                 })),
             }
         }
@@ -1208,6 +1331,10 @@ mod tests {
             Box::pin(async move {
                 if state.lock().unwrap().no_shell {
                     return Err(ShellError::Unreachable("Timed out while waiting for handshake".into()).into());
+                }
+                let wanted = state.lock().unwrap().root_password.clone().unwrap_or_default();
+                if options.password != wanted {
+                    return Err(ShellError::AuthFailed.into());
                 }
                 let key = state.lock().unwrap().key.clone();
                 if let Some(trust) = &options.trust {
@@ -1390,7 +1517,14 @@ mod tests {
                 stations.clone(),
                 events.clone(),
                 opener.unwrap_or_else(|| Arc::new(station.clone())),
-                ShellConfig { port: 2222, user: "root".into(), password: String::new() },
+                ShellConfig {
+                    port: 2222,
+                    user: "root".into(),
+                    password: String::new(),
+                    passwords: StationPasswords::new(Arc::new(
+                        crate::secrets::service::SecretsService::new(db.clone(), None).unwrap(),
+                    )),
+                },
                 "/uni.ws".into(),
                 80,
                 timing,
@@ -1558,6 +1692,26 @@ mod tests {
             setup.station.state().no_shell = true;
             assert_eq!(setup.service.check(ADDRESS, None).await.unwrap().problem.as_deref(), Some(problem));
         }
+    }
+
+    /// Windows test 21.11: a station whose root has a password of its own. Typed in the wizard, it is kept sealed only
+    /// when the station takes it, and every later step (connect) uses it; a wrong one is forgotten.
+    #[tokio::test]
+    async fn a_root_password_typed_in_the_wizard_is_kept_only_when_the_station_takes_it() {
+        let setup = Setup::new(fast());
+        setup.station.state().root_password = Some("s3cret-root".into());
+        assert_eq!(setup.service.check(ADDRESS, None).await.unwrap().problem.as_deref(), Some("auth-failed"));
+        let wrong = setup.service.check_with_password(ADDRESS, None, Some("nope")).await.unwrap();
+        assert_eq!(wrong.problem.as_deref(), Some("auth-failed"));
+        assert_eq!(setup.service.ssh.passwords.get(ADDRESS), None, "a refused one is not kept");
+        let right = setup.service.check_with_password(ADDRESS, None, Some("s3cret-root")).await.unwrap();
+        assert_eq!(right.problem, None);
+        assert_eq!(setup.service.ssh.passwords.get(ADDRESS).as_deref(), Some("s3cret-root"));
+        assert!(!serde_json::to_string(&right).unwrap().contains("s3cret-root"), "never in an answer");
+        // The next look needs no password typed again.
+        assert_eq!(setup.service.check(ADDRESS, None).await.unwrap().problem, None);
+        // Another station's is its own.
+        assert_eq!(setup.service.ssh.password_for("192.0.2.99"), "");
     }
 
     #[tokio::test]
@@ -1834,13 +1988,38 @@ mod tests {
     async fn offers_its_home_addresses_and_none_inside_a_container() {
         let setup = Setup::new(fast());
         let interfaces = vec![
-            Iface { ipv4: true, internal: true, address: "127.0.0.1".into() },
-            Iface { ipv4: true, internal: false, address: "192.0.2.10".into() },
-            Iface { ipv4: true, internal: false, address: "192.168.7.20".into() },
-            Iface { ipv4: false, internal: false, address: "fe80::1".into() },
+            Iface { ipv4: true, internal: true, address: "127.0.0.1".into(), ..Default::default() },
+            Iface { ipv4: true, internal: false, address: "192.0.2.10".into(), ..Default::default() },
+            Iface { ipv4: true, internal: false, address: "192.168.7.20".into(), ..Default::default() },
+            Iface { ipv4: false, internal: false, address: "fe80::1".into(), ..Default::default() },
         ];
         assert_eq!(setup.service.home_addresses(&interfaces, false), vec!["192.168.7.20".to_string()]);
         assert_eq!(setup.service.home_addresses(&interfaces, true), Vec::<String>::new());
+    }
+
+    /// Windows test 21.11: a PC with WSL, Hyper-V and a VPN. The Wi-Fi's address comes first — the wizard offers it to
+    /// the station — whatever order the system lists the adapters in.
+    #[tokio::test]
+    async fn offers_the_home_adapter_before_wsl_hyper_v_and_a_vpn() {
+        let setup = Setup::new(fast());
+        let iface = |name: &str, address: &str| Iface {
+            ipv4: true,
+            internal: false,
+            address: address.into(),
+            name: name.into(),
+        };
+        let interfaces = vec![
+            iface("vEthernet (WSL (Hyper-V firewall))", "172.27.240.1"),
+            iface("OpenVPN TAP-Windows6", "10.8.0.6"),
+            iface("Ethernet 2", "172.20.1.15"),
+            iface("Wi-Fi", "192.168.50.70"),
+            iface("vEthernet (Default Switch)", "192.168.80.1"),
+        ];
+        assert_eq!(
+            setup.service.home_addresses(&interfaces, false),
+            ["192.168.50.70", "172.20.1.15", "192.168.80.1", "10.8.0.6", "172.27.240.1"]
+        );
+        assert!(virtual_adapter("vEthernet (WSL)") && virtual_adapter("utun3") && !virtual_adapter("Wi-Fi"));
     }
 
     #[tokio::test]
@@ -1861,7 +2040,8 @@ mod tests {
             ("192.168.7.33".to_string(), link("ws://192.168.7.33:8790/uni.ws")),
         ]);
         setup.settings.set(&STATION_LINKS, &links, None).unwrap();
-        let interfaces = vec![Iface { ipv4: true, internal: false, address: "192.168.7.20".into() }];
+        let interfaces =
+            vec![Iface { ipv4: true, internal: false, address: "192.168.7.20".into(), ..Default::default() }];
         assert_eq!(
             setup.service.moved(&interfaces, false),
             vec![MovedGateway {

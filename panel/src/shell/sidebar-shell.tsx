@@ -17,6 +17,7 @@ import { useDialogFocus } from '../ui/sheet';
 import { AgentPlaque } from './agent-plaque';
 import type { Nav, NavEntry, ShellProps } from './shell';
 import { tr } from '../i18n';
+import { recordingSupport } from '../recorder';
 
 /** С этой ширины панель стоит сбоку постоянно. */
 const WIDE = '(min-width: 900px)';
@@ -75,7 +76,9 @@ export function SidebarShell({ nav, active, onNav, top, station, actions, talk, 
     const [listening, setListening] = useState(micOn);
     useEffect(() => onMic(setListening), []);
     const held = useMicHeld();
-    const talkLabel = held ? tr.shell.micHeld : listening ? tr.shell.endPhrase : tr.shell.say;
+    // Пульт по сети (телефон, http://колонка): браузер не даст микрофона — кнопка так и выглядит (тест 21.11).
+    const noMic = !recordingSupport().ok;
+    const talkLabel = held ? tr.shell.micHeld : noMic ? `${tr.shell.say} — ${tr.voice.noMic}` : listening ? tr.shell.endPhrase : tr.shell.say;
     // Выбрали раздел — панель на телефоне больше не нужна.
     const go = (entry: NavEntry) => {
         setOpen(false);
@@ -105,8 +108,14 @@ export function SidebarShell({ nav, active, onNav, top, station, actions, talk, 
                     {role}
                     <div class="side-station">{station}</div>
                     <AgentPlaque place="side" />
-                    <button class={`side-talk${listening ? ' is-listening' : ''}`} aria-pressed={listening} disabled={talk.disabled || held} onClick={talk.onTalk}>
-                        {held ? <IconMicOff size={18} /> : <IconMic size={18} />}
+                    <button
+                        class={`side-talk${listening ? ' is-listening' : ''}${noMic ? ' is-unavailable' : ''}`}
+                        title={noMic ? tr.voice.micOnlyOnComputer : undefined}
+                        aria-pressed={listening}
+                        disabled={talk.disabled || held}
+                        onClick={talk.onTalk}
+                    >
+                        {held || noMic ? <IconMicOff size={18} /> : <IconMic size={18} />}
                         {listening ? tr.shell.listening : tr.shell.say}
                     </button>
                     <WaitingPill place="side" />
@@ -134,11 +143,12 @@ export function SidebarShell({ nav, active, onNav, top, station, actions, talk, 
                 <button
                     aria-label={talkLabel}
                     aria-pressed={listening}
-                    class={`talk-btn side-talk-round${listening ? ' is-listening' : ''}`}
+                    title={noMic ? tr.voice.micOnlyOnComputer : undefined}
+                    class={`talk-btn side-talk-round${listening ? ' is-listening' : ''}${noMic ? ' is-unavailable' : ''}`}
                     disabled={talk.disabled || held}
                     onClick={talk.onTalk}
                 >
-                    {held ? <IconMicOff size={20} /> : <IconMic size={20} />}
+                    {held || noMic ? <IconMicOff size={20} /> : <IconMic size={20} />}
                 </button>
             </header>
             <main class="side-main">

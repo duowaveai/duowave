@@ -11,6 +11,7 @@
 #   voice.sh drop                             the firmware's own config back: our copy unmounted and gone
 #   voice.sh boot                             at boot (S95duowave): our copy mounted, if it is still valid
 #   voice.sh status                           where the voice goes now, and why
+#   voice.sh history                          every change of the voice: when, what, and who ran voice.sh
 #
 # busybox sh and its applets only: sed, grep, cmp, cp, mv, mount, umount, sync. Paths move for tests: DUOWAVE_CFG,
 # DUOWAVE_DIR, DUOWAVE_INITD, DUOWAVE_MOUNTS.
@@ -33,8 +34,33 @@ REFUSED=$VOICE/refused
 SHIM=$INITD/S95duowave
 SHIM_SOURCE=$DIR/S95duowave
 LOCK=$DIR/.switching
+# Every change of the voice and who asked (test 21.11: the copy vanished ten minutes after an install, and nothing
+# said who took it): the time, what, the command that ran this script and the one that ran that, and DUOWAVE_WHY when
+# the caller gives a reason. The last 200 lines; `voice.sh history` prints them.
+CHANGES=$VOICE/changes.log
 
 say() { echo "$*"; }
+
+# One line in the changes' log; never fails what it notes.
+note() {
+    caller=$(tr '\000' ' ' <"/proc/$PPID/cmdline" 2>/dev/null | cut -c1-160)
+    grand=$(sed -n 's/^PPid:[[:space:]]*//p' "/proc/$PPID/status" 2>/dev/null)
+    above=
+    [ -n "$grand" ] && above=$(tr '\000' ' ' <"/proc/$grand/cmdline" 2>/dev/null | cut -c1-120)
+    why=${DUOWAVE_WHY:-}
+    mkdir -p "$VOICE" 2>/dev/null
+    {
+        printf '%s %s — by: %s (pid %s)' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$*" "${caller:-?}" "$PPID"
+        [ -n "$above" ] && printf ' < %s' "$above"
+        [ -n "$why" ] && printf ' — why: %s' "$why"
+        printf '\n'
+    } >>"$CHANGES" 2>/dev/null || return 0
+    lines=$(($(wc -l <"$CHANGES" 2>/dev/null || echo 0)))
+    if [ "$lines" -gt 300 ]; then
+        tail -n 200 "$CHANGES" >"$CHANGES.new" 2>/dev/null && mv -f "$CHANGES.new" "$CHANGES"
+    fi
+    return 0
+}
 fail() {
     echo "$*" >&2
     exit 1
@@ -127,6 +153,7 @@ point() {
     if cmp -s "$new" "$base"; then
         # The firmware's own addresses: no copy is needed.
         rm -f "$new"
+        note "point $url: the firmware's own addresses — our copy goes"
         drop_copy
         rm -f "$REFUSED"
         say "voice: $url (the firmware's own config)"
@@ -181,6 +208,7 @@ point() {
     echo "$url $quic" >"$OURS"
     rm -f "$REFUSED"
     sync
+    note "point $url"
     say "copy: $COPY"
     say "voice: $url"
 }
@@ -206,6 +234,7 @@ changed_copy() {
 refuse() {
     mkdir -p "$VOICE" 2>/dev/null
     printf '%s %s %s\n' "$1" "$(date +%s)" "$2" >"$REFUSED" 2>/dev/null
+    note "boot: $1 — $2"
     say "duowave: $2"
 }
 
@@ -277,12 +306,16 @@ case "${1:-}" in
         ;;
     drop)
         lock
+        note "drop: the firmware's own config back"
         drop_copy
         rm -f "$REFUSED"
         say "voice: $(url_of "$CFG") (the firmware's own config)"
         ;;
     boot) boot ;;
     status) status ;;
+    history)
+        [ -f "$CHANGES" ] && cat "$CHANGES"
+        ;;
     *)
         sed -n '9,15p' "$0" | sed 's/^# \{0,1\}//'
         exit 2

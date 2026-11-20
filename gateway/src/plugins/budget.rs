@@ -1,14 +1,14 @@
 //! The plugins' memory and room (docs/plans/plugins.md, «Память и место на колонке»). On a computer there is plenty of
-//! both; on the station (Lite 2: 238 MB of memory, about 115–125 available, no swap, about 60 MB free in /data) a lack
-//! of memory brings the OOM killer, which may take Alice's `quasar` along with the gateway. So the budget is counted
-//! before a plugin's context loads, not after a fall:
+//! both; on the station (Lite 2: 238 MB of memory, no swap, about 60 MB free in /data; 21.11 with the wake word and the
+//! VPN on, MemAvailable 88.7 MB, the gateway 51.6 MB resident) a lack of memory brings the OOM killer, which may take
+//! Alice's `quasar` along with the gateway. So the budget is counted before a plugin's context loads, not after a fall:
 //!
 //! ```text
-//! available to the station (MemAvailable, now)   ≈ 120 MB  — the gateway's own memory is already out of it
+//! available to the station (MemAvailable, now)   ≈  89 MB  — the gateway's and the apps' own memory already out of it
 //! + what the plugins' engines hold now           (they give it back when unloaded)
-//! − the reserve for the system and Alice           40 MB   (PLUGINS_RESERVE_MB)
-//! = the plugins' budget                          ≈  80 MB
-//! − what the contexts loaded now declared
+//! − the reserve for the system and Alice           40 MB   (a sixth of the memory, 24–40; PLUGINS_RESERVE_MB)
+//! = the plugins' budget                          ≈  49 MB
+//! − what the loaded contexts take                          (idle: what they hold with a margin; in a call: declared)
 //! = free: what one more context may take
 //! ```
 //!
@@ -40,6 +40,47 @@ use serde::Serialize;
 
 use crate::core::availability::Placement;
 use crate::operations::system_memory::{self, Pressure};
+
+/// The reserve for the system and Alice at most and at least, when PLUGINS_RESERVE_MB does not set it: a sixth of the
+/// station's memory between these (`reserve_mb`).
+pub const RESERVE_MAX_MB: u64 = 40;
+pub const RESERVE_MIN_MB: u64 = 24;
+
+/// The memory kept for the system and Alice out of the plugins' budget: PLUGINS_RESERVE_MB when it is set, else a sixth
+/// of the machine's memory, between 24 and 40 MB. 40 MB was chosen on a Lite 2 (237 MB in all) and has held there — a
+/// sixth of 237 is that, so the Lite 2 keeps it. A station with less memory runs a firmware made for less, its own
+/// processes smaller: its reserve shrinks with it, so its apps are not left with nothing (Windows test 21.11: a Station
+/// Mini 2's widgets «нужно 2 МБ, свободно 0»), but never below 24 MB — three fifths of the reserve that has held, for the
+/// kernel's own watermarks and Alice's peaks. More memory needs no more: 40 has held. Unknown memory (0): 40.
+pub fn reserve_mb(total_mb: u64, override_mb: Option<u64>) -> u64 {
+    if let Some(mb) = override_mb {
+        return mb;
+    }
+    if total_mb == 0 {
+        return RESERVE_MAX_MB;
+    }
+    total_mb.div_ceil(6).clamp(RESERVE_MIN_MB, RESERVE_MAX_MB)
+}
+
+/// The least an idle context is charged over what its engine holds: its own room to breathe between two looks.
+pub const IDLE_MARGIN_KB: u64 = 512;
+
+/// What a loaded context takes of the plugins' budget (Windows test 21.11: widgets of 2–4 MB declared took all of it
+/// while they held a fraction — «нужно 2 МБ, свободно 0»). Busy — in a call or loading, when a context grows — or not
+/// measured yet: all it declared, its engine's hard limit. Idle: what its engine holds, with a margin of a quarter of
+/// its declared budget (at least `IDLE_MARGIN_KB`), never more than declared. An idle context runs no code: it grows
+/// only in a call, and charged its whole budget then.
+pub fn charge_mb(declared_mb: u64, held_kb: u64, busy: bool) -> u64 {
+    if declared_mb == 0 {
+        return 0;
+    }
+    if busy || held_kb == 0 {
+        return declared_mb;
+    }
+    let declared_kb = declared_mb * 1024;
+    let margin_kb = (declared_kb / 4).max(IDLE_MARGIN_KB);
+    (held_kb + margin_kb).min(declared_kb).div_ceil(1024)
+}
 
 /// An app asleep for want of memory wakes when this much is free over the reserve and its own budget: not into the
 /// same want again.
@@ -139,9 +180,10 @@ pub struct PluginShare {
     pub loaded: bool,
     /// In a call now, or loading: its context is not unloaded to make room.
     pub busy: bool,
-    /// What it declared: what its context takes of the budget while loaded.
+    /// What it declared: its engine's hard limit, and what its context needs free to load.
     pub budget_mb: u64,
-    /// What it takes of the budget now: its declared budget while its context is loaded, nothing otherwise.
+    /// What it takes of the budget now (`charge_mb`): busy or not measured yet — what it declared; idle — what it
+    /// holds with a margin; nothing while not loaded.
     pub taken_mb: u64,
     /// What its engine holds now, while loaded.
     pub actual_mb: Option<u64>,
@@ -173,7 +215,7 @@ pub struct ResourcesView {
     pub plugins_mb: u64,
     /// The plugins' budget: what their loaded contexts may take at most, together.
     pub budget_mb: u64,
-    /// In use now: what the contexts loaded now declared.
+    /// In use now: what the loaded contexts take (`charge_mb`).
     pub committed_mb: u64,
     /// What one more context may take now, nothing unloaded.
     pub free_mb: u64,
@@ -195,7 +237,7 @@ pub struct ResourcesView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Count {
     pub budget_mb: u64,
-    /// What the loaded contexts declared.
+    /// What the loaded contexts take (`charge_mb`).
     pub committed_mb: u64,
     /// What one more context may take now.
     pub free_mb: u64,
@@ -252,15 +294,42 @@ pub fn note(count: &Count, measured: bool, pressure: Pressure) -> String {
     }
 }
 
-/// Why a plugin's context does not load, or nothing when it fits.
-pub fn does_not_fit(need_mb: u64, free_mb: u64) -> Option<String> {
-    (need_mb > free_mb).then(|| {
-        crate::tr!(
-            "колонке не хватает ОЗУ, чтобы загрузить приложение: нужно {need_mb} МБ, свободно {free_mb} МБ",
+/// Why a plugin's context does not load, or nothing when it fits: which side is short — the apps' whole budget (the
+/// station's own memory below the reserve for the system and Alice) or what the loaded apps take, and which of them —
+/// so a person sees what to switch off (Windows test 21.11: «нужно 2 МБ, свободно 0» read as «a widget ate it all»).
+pub fn does_not_fit(
+    need_mb: u64,
+    free_mb: u64,
+    count: &Count,
+    reserve_mb: u64,
+    taking: &[(String, u64)],
+) -> Option<String> {
+    if need_mb <= free_mb {
+        return None;
+    }
+    if count.budget_mb < need_mb {
+        return Some(crate::tr!(
+            "колонке не хватает ОЗУ, чтобы загрузить приложение: нужно {need_mb} МБ, а приложениям всего {budget_mb} МБ — остальное занято системой и Алисой (запас {reserve_mb} МБ). Помогут меньше приложений на колонке или перезагрузка колонки.",
             need_mb = need_mb,
-            free_mb = free_mb
-        )
-    })
+            budget_mb = count.budget_mb,
+            reserve_mb = reserve_mb
+        ));
+    }
+    let mut taking: Vec<&(String, u64)> = taking.iter().filter(|(_, mb)| *mb > 0).collect();
+    taking.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let named: Vec<String> = taking.iter().take(4).map(|(title, mb)| format!("«{title}» {mb}")).collect();
+    let more = taking.len().saturating_sub(4);
+    let mut list = named.join(", ");
+    if more > 0 {
+        list.push_str(&crate::tr!(" и ещё {more}", more = more));
+    }
+    Some(crate::tr!(
+        "колонке не хватает ОЗУ, чтобы загрузить приложение: нужно {need_mb} МБ, свободно {free_mb} из {budget_mb} МБ для приложений; сейчас заняли (МБ): {list}.",
+        need_mb = need_mb,
+        free_mb = free_mb,
+        budget_mb = count.budget_mb,
+        list = list
+    ))
 }
 
 /// A loaded context that may be unloaded to make room: none of its calls is running.
@@ -379,10 +448,17 @@ mod tests {
 
     #[test]
     fn says_how_much_is_needed_and_how_much_is_free() {
-        assert_eq!(does_not_fit(4, 7), None);
-        let why = does_not_fit(12, 7).unwrap();
-        assert!(why.contains("нужно 12 МБ, свободно 7 МБ"), "{why}");
+        let count = Count { budget_mb: 20, committed_mb: 13, free_mb: 7, room_mb: 20, plugins_mb: 3, loaded: 2 };
+        let taking = [("Погода".to_string(), 2), ("Радио".to_string(), 11), ("Пусто".to_string(), 0)];
+        assert_eq!(does_not_fit(4, 7, &count, 40, &taking), None);
+        let why = does_not_fit(12, 7, &count, 40, &taking).unwrap();
+        assert!(why.contains("нужно 12 МБ, свободно 7 из 20 МБ для приложений"), "{why}");
+        assert!(why.contains("«Радио» 11, «Погода» 2."), "the biggest first, none that takes nothing: {why}");
         assert!(!why.contains("Выключите"), "switching others off is no longer the way: {why}");
+        // The apps' whole budget is short: the system and Alice hold the rest — no list of apps then.
+        let none = Count { budget_mb: 1, committed_mb: 0, free_mb: 1, room_mb: 1, plugins_mb: 0, loaded: 0 };
+        let why = does_not_fit(2, 1, &none, 40, &[]).unwrap();
+        assert!(why.contains("приложениям всего 1 МБ") && why.contains("запас 40 МБ"), "{why}");
         assert_eq!(no_room(2, Some(60), 15), None);
         assert!(no_room(50, Some(60), 15).unwrap().contains("свободно 60"));
         assert_eq!(no_room(50, None, 15), None, "a disk that does not tell is not refused");
@@ -429,5 +505,32 @@ pub mod fake {
     pub fn plenty() -> Arc<FixedMemory> {
         let now = MemoryNow { total_mb: 16_384, available_mb: 8_192, pressure: Pressure::Normal, gateway_mb: Some(40) };
         Arc::new(FixedMemory { now: Mutex::new(Some(now)), disk_mb: Some(100_000) })
+    }
+
+    /// Windows test 21.11: a Station Mini 2's widgets — «нужно 2 МБ, свободно 0» — while widgets of 2–4 MB hold a
+    /// fraction of that. An idle context is charged what it holds with a margin; a busy or unmeasured one all it declared.
+    #[test]
+    fn an_idle_context_is_charged_what_it_holds_and_a_busy_one_all_it_declared() {
+        assert_eq!(charge_mb(0, 300, false), 0, "not loaded: nothing");
+        assert_eq!(charge_mb(4, 0, false), 4, "not measured yet: all it declared");
+        assert_eq!(charge_mb(4, 300, true), 4, "in a call it may grow to its limit");
+        assert_eq!(charge_mb(4, 300, false), 2, "300 KB and a quarter of 4 MB: 1.3 MB, counted 2");
+        assert_eq!(charge_mb(2, 300, false), 1, "300 KB and the least margin of 512 KB");
+        assert_eq!(charge_mb(4, 4000, false), 4, "never more than declared");
+        // Ten idle widgets of 4 MB holding 300 KB each take 20 MB, not 40.
+        assert_eq!((0..10).map(|_| charge_mb(4, 300, false)).sum::<u64>(), 20);
+    }
+
+    /// The reserve for the system and Alice follows the station's memory: the Lite 2 keeps its 40 MB, a smaller one
+    /// keeps less but never under 24; PLUGINS_RESERVE_MB still sets it.
+    #[test]
+    fn the_reserve_follows_the_stations_memory() {
+        assert_eq!(reserve_mb(237, None), 40, "the Lite 2: as before");
+        assert_eq!(reserve_mb(238, None), 40);
+        assert_eq!(reserve_mb(512, None), 40, "more memory needs no more");
+        assert_eq!(reserve_mb(180, None), 30);
+        assert_eq!(reserve_mb(120, None), 24, "never below 24");
+        assert_eq!(reserve_mb(0, None), 40, "memory unknown");
+        assert_eq!(reserve_mb(120, Some(50)), 50, "PLUGINS_RESERVE_MB wins");
     }
 }

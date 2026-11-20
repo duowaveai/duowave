@@ -26,8 +26,11 @@ const en: Translation<typeof ru> = {
         'This computer could not open a connection to the speaker: is a firewall or antivirus keeping DuoWave out? What the system said is in the gateway log (gateway.log).',
     problemNoConfig: 'The speaker has no quasar.cfg where DuoWave expects it: it does not know this model yet.',
     problemHostKeyChanged: 'The speaker’s SSH key is not the one seen before: it is another speaker at the same address, or it was reflashed. DuoWave stopped without changing anything.',
-    problemAuthFailed:
-        'The speaker refused SSH: DuoWave signs in as root without a password, as the wiki sets it up. If root on the speaker has its own password, put the line STATION_SSH_PASSWORD=<password> into the .env file in DuoWave’s data folder (on Windows %APPDATA%\\app.duowave.desktop, on a Mac ~/Library/Application Support/app.duowave.desktop), then restart DuoWave.',
+    problemAuthFailed: 'The speaker refused SSH: DuoWave signs in as root without a password, as the wiki sets it up. If root on the speaker has its own password, enter it.',
+    rootPasswordLabel: 'The speaker’s root password',
+    rootPasswordAbout: 'DuoWave keeps it encrypted on this computer and signs in with it from now on. A wrong one is not kept.',
+    rootPasswordCheck: 'Check with the password',
+    rootPasswordWrong: 'Wrong password.',
     problemUnreachable: 'The speaker does not respond at this address: same network? Not a guest one? No client isolation in the router?',
     problemNoArrival: 'The speaker did not reach the hub within 3 minutes.',
     problemOther: 'Something went wrong.',

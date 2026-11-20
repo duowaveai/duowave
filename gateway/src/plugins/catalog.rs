@@ -3097,7 +3097,7 @@ pub mod tests {
             catalog_dir: dir.path().join("packages-catalog"),
             dev_dir: dir.path().join("packages-dev"),
             catalog_key: key,
-            reserve_mb: 40,
+            reserve_mb: Some(40),
             storage_reserve_mb: Some(15),
             pressure_action: crate::plugins::budget::PressureAction::Sleep,
             bundled: false,

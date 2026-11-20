@@ -459,5 +459,6 @@
  "Порт SSH на колонке открыт, но SSH не ответил за 5 секунд: колонка занята. Подождите минуту и попробуйте снова; не помогает — перезагрузите её.": "The speaker's SSH port is open, but SSH did not answer within 5 seconds: the speaker is busy. Wait a minute and try again; if that does not help, restart it.",
  "Порт SSH на колонке открыт, но связь сразу закрылась. Подождите пару минут и попробуйте снова; не помогает — перезагрузите колонку.": "The speaker's SSH port is open, but the connection closed at once. Wait a couple of minutes and try again; if that does not help, restart the speaker.",
  "Колонка не пустила root без пароля. Пароль root колонки (его не видно при вводе; пусто — выйти): ": "The speaker did not let root in without a password. The speaker's root password (hidden as you type; empty to quit): ",
- "Пароль не подошёл. Ещё раз (пусто — выйти): ": "Wrong password. Once more (empty to quit): "
+ "Пароль не подошёл. Ещё раз (пусто — выйти): ": "Wrong password. Once more (empty to quit): ",
+ "Пароль колонки здесь негде сохранить.": "There is nowhere here to keep the speaker's password."
 }

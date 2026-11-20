@@ -62,8 +62,8 @@ pub struct PluginsConfig {
     /// without code do.
     pub catalog_key: Option<String>,
     /// PLUGINS_RESERVE_MB: the memory kept for the system and Alice, out of the plugins' budget (docs/plans/plugins.md,
-    /// «Бюджет»; 40 MB until it is measured under load — the owner's open decision 2).
-    pub reserve_mb: u64,
+    /// «Бюджет»). Not set — a sixth of the station's memory between 24 and 40 MB (`plugins::budget::reserve_mb`).
+    pub reserve_mb: Option<u64>,
     /// PLUGINS_STORAGE_RESERVE_MB: the room on the disk kept for the gateway's own update. Not set — counted from the
     /// gateway's program (`PluginHost::storage_reserve_mb`: its growth and a floor, some 8 MB; the new version is tried
     /// from memory and takes the old one's place, docs/plans/station-update-space.md).
@@ -946,7 +946,7 @@ fn build(env: &Env) -> Config {
                 .filter(|keys| !keys.trim().is_empty())
                 .or_else(|| Some(crate::plugins::catalog::BUILT_IN_KEYS.to_string()))
                 .filter(|keys| !keys.trim().is_empty()),
-            reserve_mb: env.integer("PLUGINS_RESERVE_MB", 40),
+            reserve_mb: env.get("PLUGINS_RESERVE_MB").and_then(|value| value.trim().parse::<u64>().ok()),
             storage_reserve_mb: env
                 .get("PLUGINS_STORAGE_RESERVE_MB")
                 .and_then(|value| value.trim().parse::<u64>().ok()),

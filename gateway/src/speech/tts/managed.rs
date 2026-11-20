@@ -315,7 +315,16 @@ impl ManagedTts {
         if let Some(running) = child.as_mut() {
             match running.try_wait() {
                 Ok(None) => return,
-                _ => {
+                ended => {
+                    // How it ended, for the log: a Windows crash status or a signal says more than its log's tail.
+                    match &ended {
+                        Ok(Some(status)) => tracing::warn!(
+                            "own voice server: ended by itself — {}",
+                            crate::speech::asr::local::supervisor::exit_words(status)
+                        ),
+                        Err(error) => tracing::warn!("own voice server: its state is not read: {error}"),
+                        Ok(None) => {}
+                    }
                     child.take();
                     self.lock().running = false;
                     let tail = self.log_tail();
@@ -396,7 +405,17 @@ impl ManagedTts {
             let exited = {
                 let mut child = self.child.lock().await;
                 match child.as_mut() {
-                    Some(child) => !matches!(child.try_wait(), Ok(None)),
+                    Some(child) => match child.try_wait() {
+                        Ok(None) => false,
+                        Ok(Some(status)) => {
+                            tracing::warn!(
+                                "own voice server: ended while starting — {}",
+                                crate::speech::asr::local::supervisor::exit_words(&status)
+                            );
+                            true
+                        }
+                        Err(_) => true,
+                    },
                     None => true,
                 }
             };

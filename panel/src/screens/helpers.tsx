@@ -488,6 +488,9 @@ function HelperRow({
         { id: 'link', text: helper.link && [t.viaLink, pin.startsWith('public:') ? t.linkPublic(pin.slice(7)) : t.linkPinned].join(' · '), warn: false },
         { id: 'link-down', text: linkDown, warn: true },
         { id: 'error', text: failed && helper.error !== linkDown && helper.error, warn: true },
+        // Компьютер дома не отвечает: чаще всего его закрывает брандмауэр (тест на Windows 21.11 — «Турбо нет», а сам
+        // компьютер считал, что всё хорошо). Что проверить — здесь, кнопка — на самом компьютере.
+        { id: 'unreached', text: helper.state === 'down' && helper.kind === 'home' && t.homeUnreached, warn: false },
     ].filter((line): line is { id: string; text: string; warn: boolean } => !!line.text);
     // Read-only speaker: only its own «Компьютер дома» may be set up here; «Проверить сейчас» works for every row.
     const own = !readOnly || helper.id === 'home-computer';

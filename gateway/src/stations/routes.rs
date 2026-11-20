@@ -115,14 +115,37 @@ mod connect {
         gateway: Vec<String>,
         /// The port a station dials when the typed address has none: the gateway's own (the published one in Docker).
         port: u16,
+        /// None found on Windows: what on this computer may keep the answers out (its firewall, a public network).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        why_none: Option<String>,
     }
 
     /// Stations that answer mDNS on the home network (none inside a container's bridge: type the address).
     pub(super) async fn discover(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Discovered> {
         caller.permitted(STATIONS_MANAGE)?;
         let stations = app.station_connect.discover().await;
-        let gateway = app.station_connect.home_addresses(&host_interfaces(), in_container());
-        Ok(ok(Discovered { stations, gateway, port: app.station_connect.port() }))
+        let interfaces = host_interfaces();
+        let gateway = app.station_connect.home_addresses(&interfaces, in_container());
+        tracing::info!(
+            "station search: {} found; this computer's adapters: {}",
+            stations.len(),
+            interfaces
+                .iter()
+                .filter(|entry| entry.ipv4 && !entry.internal)
+                .map(|entry| format!("{} {}", entry.name, entry.address))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        // Windows: the answers come in as UDP — its firewall or a «Общедоступная» network keeps them out (test 21.11).
+        let why_none = if stations.is_empty() && cfg!(windows) {
+            let network = crate::platform::windows_net::refresh().await;
+            Some(network.as_ref().and_then(crate::platform::windows_net::advice).unwrap_or_else(|| {
+                crate::tr!("На Windows поиск колонок может закрывать брандмауэр: введите адрес колонки сами.")
+            }))
+        } else {
+            None
+        };
+        Ok(ok(Discovered { stations, gateway, port: app.station_connect.port(), why_none }))
     }
 
     /// Connected stations that still dial this computer's old port (PORT changed since): the panel's banner.
@@ -143,7 +166,9 @@ mod connect {
             None => None,
             Some(_) => Some(gateway_host(&body, "gateway", app.station_connect.port())?),
         };
-        Ok(ok(app.station_connect.check(&address, gateway.as_ref()).await?))
+        // The station's own root password, when the empty one was refused: kept sealed, never logged or answered.
+        let password = body.get("password").and_then(Value::as_str);
+        Ok(ok(app.station_connect.check_with_password(&address, gateway.as_ref(), password).await?))
     }
 
     /// «Подключить»: a job the panel follows at jobs/:id.

@@ -120,7 +120,11 @@ impl ModelFiles {
             return false;
         }
         match self.path(id, file) {
-            Ok(path) => path.exists() && (!file.ends_with(".onnx") || with_suffix(&path, ".json").exists()),
+            Ok(path) => {
+                path.exists()
+                    && !with_suffix(&path, REMOVE_MARK).exists()
+                    && (!file.ends_with(".onnx") || with_suffix(&path, ".json").exists())
+            }
             Err(_) => false,
         }
     }
@@ -151,20 +155,31 @@ impl ModelFiles {
             whole.push((json_part.clone(), with_suffix(&target, ".json")));
         }
         pull(url, &part, Some(progress), cancel).await?;
+        // Taken again after it was given up while busy: it stays now.
+        let _ = std::fs::remove_file(with_suffix(&target, REMOVE_MARK));
         whole.push((part, target));
         for (part, whole) in &whole {
             std::fs::rename(part, whole).map_err(|error| format!("{}: {error}", whole.display()))?;
         }
+        tracing::info!("models: {id}/{file} downloaded");
         Ok(())
     }
 
-    /// A model's files gone, and its folder when nothing else is in it.
-    pub fn remove(&self, id: &str, file: &str) -> Result<(), String> {
+    /// A model's files gone, and its folder when nothing else is in it. On Windows a file the voice server still
+    /// has open cannot go (os error 32 — Silero v4 while v5 replaced it, test 21.11); it is marked instead
+    /// (`<file>.remove`): not installed from now on, skipped by the voice server's next read of the folder, and
+    /// removed once free — by `remove` again or by `cleanup` at the next start. `Later` says so.
+    pub fn remove(&self, id: &str, file: &str) -> Result<Removed, String> {
         let target = self.path(id, file)?;
-        remove_quietly(&target).map_err(|error| format!("{}: {error}", target.display()))?;
-        remove_quietly(&with_suffix(&target, ".json")).map_err(|error| format!("{}: {error}", target.display()))?;
-        remove_if_empty(&self.folder(id)?);
-        Ok(())
+        let removed = remove_or_mark(&target, |path| std::fs::remove_file(path), is_busy)?;
+        if removed == Removed::Gone {
+            remove_if_empty(&self.folder(id)?);
+        }
+        tracing::info!(
+            "models: {id}/{file} {}",
+            if removed == Removed::Gone { "removed" } else { "busy; marked for removal" }
+        );
+        Ok(removed)
     }
 
     /// A Silero file sent by hand, into the card's folder: streamed to `.part`, at most MAX_UPLOAD_BYTES, within
@@ -216,9 +231,77 @@ impl ModelFiles {
                     removed.push(format!("{name}/{half}"));
                 }
             }
+            // What was given up while the voice server held it (Windows): it is free at a start.
+            let Ok(files) = std::fs::read_dir(&folder) else {
+                continue;
+            };
+            let mut marked: Vec<String> = files
+                .filter_map(Result::ok)
+                .filter_map(|entry| entry.file_name().to_string_lossy().strip_suffix(REMOVE_MARK).map(str::to_string))
+                .collect();
+            marked.sort();
+            for file in marked {
+                match remove_or_mark(&folder.join(&file), |path| std::fs::remove_file(path), is_busy) {
+                    Ok(Removed::Gone) => removed.push(format!("{name}/{file}")),
+                    Ok(Removed::Later) => {
+                        tracing::warn!("models: {name}/{file} is still busy; removed at a later start")
+                    }
+                    Err(error) => tracing::warn!("models: {name}/{file} not removed: {error}"),
+                }
+            }
             remove_if_empty(&folder);
         }
         removed
+    }
+}
+
+/// The mark beside a model file that could not go while it was open: `v4_ru.pt.remove`.
+pub const REMOVE_MARK: &str = ".remove";
+
+/// How a removal went: gone, or marked to go once the file is free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Removed {
+    Gone,
+    Later,
+}
+
+/// Windows' «the file is used by another process» (ERROR_SHARING_VIOLATION 32, ERROR_LOCK_VIOLATION 33): Unix lets an
+/// open file go, Windows does not.
+fn is_busy(error: &std::io::Error) -> bool {
+    cfg!(windows) && busy_code(error.raw_os_error())
+}
+
+fn busy_code(code: Option<i32>) -> bool {
+    matches!(code, Some(32 | 33))
+}
+
+/// The model file and its config gone, or — when the model file is busy — marked to go later. The config goes
+/// either way; a Piper voice without it is not a voice to the server. The mark goes with the file.
+fn remove_or_mark(
+    target: &Path,
+    remove: impl Fn(&Path) -> std::io::Result<()>,
+    busy: impl Fn(&std::io::Error) -> bool,
+) -> Result<Removed, String> {
+    let mark = with_suffix(target, REMOVE_MARK);
+    let config = with_suffix(target, ".json");
+    let quietly = |path: &Path| match remove(path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    };
+    let result = match quietly(target) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&mark);
+            Removed::Gone
+        }
+        Err(error) if busy(&error) => {
+            std::fs::write(&mark, b"").map_err(|error| format!("{}: {error}", mark.display()))?;
+            Removed::Later
+        }
+        Err(error) => return Err(format!("{}: {error}", target.display())),
+    };
+    match quietly(&config) {
+        Err(error) if !busy(&error) => Err(format!("{}: {error}", config.display())),
+        _ => Ok(result),
     }
 }
 
@@ -433,8 +516,39 @@ mod tests {
         std::fs::write(root.path().join("silero/v4_ru.pt"), "x").unwrap();
         let files = ModelFiles::new(root.path());
         assert!(files.installed("silero", Some("v4_ru.pt")));
-        files.remove("silero", "v4_ru.pt").unwrap();
+        assert_eq!(files.remove("silero", "v4_ru.pt").unwrap(), Removed::Gone);
         assert!(!root.path().join("silero").exists());
+    }
+
+    /// Windows, test 21.11: «v4_ru.pt: … занят другим процессом (os error 32)» when v5 replaced it. A busy file is
+    /// marked, counts as gone, and goes at the next start.
+    #[test]
+    fn a_busy_model_file_is_marked_and_goes_at_the_next_start() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("silero")).unwrap();
+        let model = root.path().join("silero/v4_ru.pt");
+        std::fs::write(&model, "x").unwrap();
+        let busy_remove = |path: &Path| {
+            if path.extension().is_some_and(|ext| ext == "pt") {
+                Err(std::io::Error::from_raw_os_error(32))
+            } else {
+                std::fs::remove_file(path)
+            }
+        };
+        let any_busy = |error: &std::io::Error| busy_code(error.raw_os_error());
+        assert_eq!(remove_or_mark(&model, busy_remove, any_busy).unwrap(), Removed::Later);
+        let files = ModelFiles::new(root.path());
+        assert!(model.exists(), "still there, held");
+        assert!(!files.installed("silero", Some("v4_ru.pt")), "but not a model any more");
+        // The next start: free now.
+        assert_eq!(files.cleanup(), vec!["silero/v4_ru.pt"]);
+        assert!(!root.path().join("silero").exists());
+        // Another error is said as it is.
+        std::fs::create_dir_all(root.path().join("silero")).unwrap();
+        std::fs::write(&model, "x").unwrap();
+        let denied = |_: &Path| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert!(remove_or_mark(&model, denied, any_busy).is_err());
+        assert!(!busy_code(Some(2)) && busy_code(Some(33)));
     }
 
     #[tokio::test]

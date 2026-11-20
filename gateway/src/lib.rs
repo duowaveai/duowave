@@ -61,7 +61,18 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The gateway's log: to stderr (a terminal, a service manager's journal) or, for the desktop app, to a file.
 /// `RUST_LOG` filters it (default `info`, ONNX Runtime at `warn`). Once per process; later calls do nothing.
+/// The gateway's log file, when it writes one (the desktop app): the developer's report reads its end.
+static LOG_FILE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Where the gateway's log goes, when it is a file.
+pub fn log_file() -> Option<&'static std::path::Path> {
+    LOG_FILE.get().map(std::path::PathBuf::as_path)
+}
+
 pub fn init_logging(file: Option<&std::path::Path>) {
+    if let Some(path) = file {
+        let _ = LOG_FILE.set(path.to_path_buf());
+    }
     use tracing_subscriber::EnvFilter;
     // ONNX Runtime narrates every graph optimisation at info: only its warnings reach our log.
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,ort=warn"));

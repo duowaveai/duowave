@@ -24,8 +24,11 @@ export default {
         'Этот компьютер не смог открыть связь с колонкой: брандмауэр или антивирус не пускает DuoWave? Что ответила система — в журнале шлюза (gateway.log).',
     problemNoConfig: 'На колонке нет quasar.cfg там, где его ждёт DuoWave: эту модель он пока не знает.',
     problemHostKeyChanged: 'Ключ SSH у колонки не тот, что был: это другая колонка по тому же адресу или её перепрошили. DuoWave остановился, ничего не меняя.',
-    problemAuthFailed:
-        'Колонка не пустила по SSH: DuoWave входит как root без пароля, как открывает вики. Если у root на колонке свой пароль — строка STATION_SSH_PASSWORD=<пароль> в файле .env в папке данных DuoWave (на Windows — %APPDATA%\\app.duowave.desktop, на Mac — ~/Library/Application Support/app.duowave.desktop), потом перезапустите DuoWave.',
+    problemAuthFailed: 'Колонка не пустила по SSH: DuoWave входит как root без пароля, как открывает вики. Если у root на колонке свой пароль — введите его.',
+    rootPasswordLabel: 'Пароль root колонки',
+    rootPasswordAbout: 'DuoWave хранит его зашифрованным на этом компьютере и входит с ним дальше. Не подошёл — не сохраняется.',
+    rootPasswordCheck: 'Проверить с паролем',
+    rootPasswordWrong: 'Пароль не подошёл.',
     problemUnreachable: 'Колонка не отвечает по этому адресу: та же сеть? Не гостевая? Нет изоляции клиентов в роутере?',
     problemNoArrival: 'Колонка не вышла на связь с центром за 3 минуты.',
     problemOther: 'Что-то пошло не так.',

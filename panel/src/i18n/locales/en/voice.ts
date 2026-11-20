@@ -49,6 +49,8 @@ const en: Translation<typeof ru> = {
     micOff: 'Microphone off',
     micOffText: 'While a key field is open, the panel does not listen: personal things are typed by hand.',
     noMic: 'No microphone',
+    micOnlyOnComputer:
+        'On a phone, talk to the speaker itself: the panel’s microphone works on the computer with DuoWave (a browser gives it only there or over HTTPS).',
     listening: 'Listening',
     heardHere: 'heard by this computer',
     heardCloud: 'heard by the cloud',

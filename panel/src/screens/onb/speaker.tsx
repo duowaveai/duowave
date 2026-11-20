@@ -14,7 +14,7 @@ import { ApiError, ConnectJob, FoundStation, MoveJob, MoveTo, StationCheck, Stat
 import { tr } from '../../i18n';
 import { drawingOf } from '../../stations';
 import { encodeQr } from '../../ui/qr';
-import { WIKI_SSH, problemText, suggestedGateway } from '../connect';
+import { RootPassword, WIKI_SSH, problemText, suggestedGateway } from '../connect';
 import { useOnboarding, useStepNav } from './nav';
 import '../../ui/onboarding-canvas.css';
 import '../../ui/onb-connect.css';
@@ -612,6 +612,8 @@ export function SpeakerStep() {
     const [typed, setTyped] = useState('');
     const [gateway, setGateway] = useState(suggestedGateway());
     const [check, setCheck] = useState<StationCheck | null>(null);
+    // Поиск на Windows ничего не нашёл: что на компьютере может его закрывать (брандмауэр, общедоступная сеть).
+    const [whyNone, setWhyNone] = useState<string | null>(null);
     const [checking, setChecking] = useState(false);
     const [shown, setShown] = useState(0);
     const [error, setError] = useState<string | null>(null);
@@ -675,6 +677,7 @@ export function SpeakerStep() {
                 const gw = gateway || result.gateway?.[0] || '';
                 setGateway(gw);
                 setFound(result.stations);
+                setWhyNone(result.whyNone ?? null);
                 const first = result.stations.find((station) => station.ssh) ?? result.stations[0];
                 if (first) void read(first.address, gw);
             } catch {
@@ -831,6 +834,7 @@ export function SpeakerStep() {
                 {notFound && mayManage && (
                     <Problem tone="warn" icon={<IconSearch />} title={t.notFoundTitle}>
                         <p class="small onb-cx-p">{t.notFoundText}</p>
+                        {whyNone && <p class="small onb-cx-p">{whyNone}</p>}
                         <form
                             class="onb-cx-addr"
                             onSubmit={(e) => {
@@ -863,6 +867,9 @@ export function SpeakerStep() {
                         <a class="small" href={WIKI_SSH} target="_blank" rel="noreferrer">
                             {t.sshWiki}
                         </a>
+                        {problem === 'auth-failed' && address && mayManage && (
+                            <RootPassword address={address} gateway={gateway.trim() || undefined} onChecked={setCheck} />
+                        )}
                     </Problem>
                 )}
 

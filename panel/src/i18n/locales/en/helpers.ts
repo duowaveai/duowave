@@ -19,6 +19,8 @@ const en: Translation<typeof ru> = {
     listAboutComputer: 'For each ability the hub takes the first Turbo in order that is online and has it. None — the clouds on your keys.',
     empty: 'No Turbo: hearing, the model and voice come from the clouds on your keys and from the hub itself.',
     noneShort: 'no Turbo',
+    homeUnreached:
+        'The speaker could not reach the computer. Is it on and in the same network? On Windows, allow DuoWave in the firewall for private networks and make the network “Private” — the speaker’s card on the computer itself has an “Allow in the firewall” button.',
     add: 'Add a Turbo',
     placeHome: 'at home',
     placeOwn: 'my server',

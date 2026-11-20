@@ -142,7 +142,10 @@ async function listen(answer: boolean, wait: number, why?: WindowWhy): Promise<v
     if (!answer) stopAnswer();
     const support = recordingSupport();
     if (!support.ok) {
-        showStrip({ kind: 'note', head: tr.voice.noMic, text: support.reason }, 8000);
+        // Пульт открыт по сети (телефон, http://колонка): микрофона браузер не даст — сказать, где говорить, и подольше
+        // (было «не работает» — тест 21.11).
+        const text = window.isSecureContext ? support.reason : tr.voice.micOnlyOnComputer;
+        showStrip({ kind: 'note', head: tr.voice.noMic, text }, window.isSecureContext ? 8000 : 15000);
         return;
     }
     const now = Date.now();

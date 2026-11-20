@@ -234,7 +234,9 @@ impl UpdatesService {
             events,
             state: Mutex::new(Progress::default()),
             installer: OnceLock::new(),
-            memory_reserve_kb: config.plugins.reserve_mb * 1024,
+            // The trial of a new version from memory keeps the full reserve the Lite 2 proved (40 MB) unless
+            // PLUGINS_RESERVE_MB says otherwise: the apps' smaller reserve on a smaller station is not for it.
+            memory_reserve_kb: config.plugins.reserve_mb.unwrap_or(crate::plugins::budget::RESERVE_MAX_MB) * 1024,
             hooks: OnceLock::new(),
             at_start: Mutex::new(None),
             station_env: OnceLock::new(),

@@ -21,7 +21,7 @@ use serde_json::{json, Map, Value};
 use tokio_util::sync::CancellationToken;
 
 use super::catalog_db::{AsrModelRecord, CatalogDb, VoiceEntry, VoiceModelRecord};
-use super::model_files::{safe_name, ModelFiles, Progress};
+use super::model_files::{safe_name, ModelFiles, Progress, Removed};
 use super::model_servers::{ModelServers, ModelServersOptions, ServerName, TtsLoaded, HEALTH};
 use crate::config::{Config, TtsProvider, UniproxyMode};
 use crate::core::events::{Actor, EventBus, GatewayEvent};
@@ -1299,7 +1299,11 @@ impl ModelsService {
         if self.speaks(&record) {
             return Err(ApiError::conflict(crate::tr!("Этот голос говорит сейчас — сначала выберите другой.")));
         }
-        self.files.remove(&record.id, &file).map_err(ApiError::internal)?;
+        if self.files.remove(&record.id, &file).map_err(ApiError::internal)? == Removed::Later {
+            // Windows: still open in the voice server — it lets go once it reads the folder (below), then it goes.
+            self.reread_voices().await;
+            let _ = self.files.remove(&record.id, &file);
+        }
         lock(&self.downloads).retain(|download| download.id != id);
         self.events.emit(GatewayEvent::ModelRemoved { kind: "tts".into(), id: record.id.clone(), actor });
         let forgotten = self.reread_voices().await.is_some();
@@ -2053,7 +2057,18 @@ impl ModelsService {
                 continue;
             };
             if self.files.installed(&other.id, Some(file)) {
-                self.files.remove(&other.id, file)?;
+                // Windows: the voice server still has the old generation open. Marked, it is out of the server's
+                // next read of the folder; read, the server lets it go, and it goes now — else at the next start.
+                if self.files.remove(&other.id, file)? == Removed::Later {
+                    self.reread_voices().await;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    if self.files.remove(&other.id, file)? == Removed::Later {
+                        tracing::info!(
+                            "tts: {}/{file} is still open in the voice server; it goes at the next start",
+                            other.id
+                        );
+                    }
+                }
             }
         }
         let current = lock(&self.choice).clone();

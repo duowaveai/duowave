@@ -27,7 +27,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -56,6 +56,72 @@ const STOP_GRACE: Duration = Duration::from_secs(3);
 /// An app's program is the kernel's first choice when it must kill for memory: −1000…1000, Alice and the gateway at 0.
 #[cfg(target_os = "linux")]
 const OOM_SCORE_ADJ: &str = "500";
+
+/// What an app's program last said it uses (its health answer's `uses`), beside its versions: the start check and the
+/// first cap of its next start follow it (`budget.memoryMbFor`).
+pub const USES_FILE: &str = ".memory-uses.json";
+
+/// What a program said it uses, as kept in `file`; none when nothing is kept.
+pub fn read_uses(file: &Path) -> Vec<String> {
+    std::fs::read(file).ok().and_then(|bytes| serde_json::from_slice::<Vec<String>>(&bytes).ok()).unwrap_or_default()
+}
+
+fn write_uses(file: &Path, uses: &[String]) {
+    if let Ok(bytes) = serde_json::to_vec(uses) {
+        if let Err(error) = std::fs::write(file, bytes) {
+            tracing::warn!("apps: {} not written: {error}", file.display());
+        }
+    }
+}
+
+/// The `uses` of a health answer: the names the program gives of what it uses now (the VPN: its protocols).
+fn uses_of(body: &Value) -> Option<Vec<String>> {
+    let mut uses: Vec<String> =
+        body.get("uses")?.as_array()?.iter().filter_map(Value::as_str).map(|name| name.trim().to_string()).collect();
+    uses.retain(|name| !name.is_empty());
+    uses.sort();
+    uses.dedup();
+    Some(uses)
+}
+
+/// What a program's cap does when it names what it uses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Follow {
+    Stay,
+    /// Down to the budget for what it uses now.
+    Lower(u64),
+    /// Up for this use: the station has the room.
+    Raise(u64, String),
+    /// Up for this use, but the station has no room: it stays, and `free` is all it could have.
+    Short {
+        what: String,
+        need: u64,
+        free: u64,
+    },
+}
+
+/// The cap for what a program uses now (`budget.memoryMbFor`): lower at once; higher only when what it holds and the
+/// room left on the station (`room`, None — not counted: a computer) cover the need.
+fn follow(
+    budget: &crate::plugins::manifest::Budget,
+    named: &[String],
+    cap: u64,
+    rss: u64,
+    room: Option<u64>,
+) -> Follow {
+    let (need, what) = budget.memory_for_uses(named);
+    if need == cap {
+        return Follow::Stay;
+    }
+    if need < cap {
+        return Follow::Lower(need);
+    }
+    let what = what.unwrap_or_default();
+    match room {
+        Some(room) if need.saturating_sub(rss) > room => Follow::Short { what, need, free: rss + room },
+        _ => Follow::Raise(need, what),
+    }
+}
 
 /// Looks over its memory budget in a row that make a fall.
 const OVER_BUDGET_LOOKS: u32 = 3;
@@ -121,6 +187,8 @@ pub struct ProcessRuntime {
     /// Its programs that run now: none outlives the gateway (on the station on 20.11.2026 the wake word's program did,
     /// after a stop that hung).
     running: Running,
+    /// What is free of the plugins' memory, as the host last counted it: a program's raised cap must fit it.
+    room: OnceLock<Arc<crate::plugins::budget::MemoryGauge>>,
 }
 
 impl ProcessRuntime {
@@ -134,7 +202,13 @@ impl ProcessRuntime {
             files_root: Mutex::new(None),
             station_name: OnceLock::new(),
             running: Running::default(),
+            room: OnceLock::new(),
         }
+    }
+
+    /// The host's count of what is free: a program that says it uses something heavier is given more only within it.
+    pub fn set_room(&self, gauge: Arc<crate::plugins::budget::MemoryGauge>) {
+        let _ = self.room.set(gauge);
     }
 
     /// The pids of the apps' programs that run now.
@@ -231,7 +305,12 @@ struct Launch {
     port: u16,
     token: String,
     gateway_url: String,
-    memory_mb: u64,
+    /// The most it may be given: the soft and hard limits of its process are set for it.
+    memory_most_mb: u64,
+    /// Its budget: the base and what it gives for which use.
+    budget: crate::plugins::manifest::Budget,
+    /// Where what it uses is kept between starts.
+    uses_file: PathBuf,
     health: String,
     /// The station's name, on a station.
     station_name: Option<String>,
@@ -285,14 +364,14 @@ fn spawn(launch: &Launch, host: &Arc<dyn HostApi>) -> Result<tokio::process::Chi
     }
     if launch.path.is_none() {
         // Go's collector keeps the heap within the budget itself; any other program ignores it.
-        command.env("GOMEMLIMIT", format!("{}MiB", launch.memory_mb.max(4)));
+        command.env("GOMEMLIMIT", format!("{}MiB", launch.memory_most_mb.max(4)));
     }
     // Not for Node (`launch.path` is set only for it): V8 reserves gigabytes of address space at start, far over eight
     // budgets, and under RLIMIT_AS it never says it is healthy (CI on Linux, 14.11). Its heap is held by
     // --max-old-space-size and its real memory (RSS) is counted against its budget like any app's.
     #[cfg(target_os = "linux")]
     if launch.path.is_none() {
-        let limit = (launch.memory_mb.max(32) * 8 * 1024 * 1024).max(ADDRESS_SPACE_FLOOR) as libc::rlim_t;
+        let limit = (launch.memory_most_mb.max(32) * 8 * 1024 * 1024).max(ADDRESS_SPACE_FLOOR) as libc::rlim_t;
         // SAFETY: setrlimit is async-signal-safe and only touches the child before exec.
         unsafe {
             command.pre_exec(move || {
@@ -358,9 +437,67 @@ struct Shared {
     give_up: GiveUp,
     gone: Arc<OnceLock<Gone>>,
     handlers: Vec<String>,
+    /// Its memory cap now: the budget for what it says it uses (`follow_uses`).
+    cap_mb: AtomicU64,
+    /// What it said it uses, and a raise the station had no room for.
+    uses: Mutex<Uses>,
+    /// What is free of the plugins' memory on the station, as last counted: a raise must fit it.
+    room: Option<Arc<crate::plugins::budget::MemoryGauge>>,
+}
+
+/// What a program said it uses, and a raise of its cap that did not fit: (what, needed, free).
+#[derive(Default)]
+struct Uses {
+    named: Vec<String>,
+    short: Option<(String, u64, u64)>,
 }
 
 impl Shared {
+    /// What the program said it uses: its cap follows (`budget.memoryMbFor`, `follow`) — and the household hears of a
+    /// raise the station had no room for, once.
+    fn follow_uses(&self, named: Vec<String>) {
+        let mut uses = self.uses.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if uses.named != named {
+            write_uses(&self.launch.uses_file, &named);
+            uses.named = named.clone();
+        }
+        let cap = self.cap_mb.load(Ordering::SeqCst);
+        let pid = *self.pid.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let rss = pid.and_then(crate::operations::system_memory::program_rss_mb).unwrap_or(0);
+        let room = self.room.as_ref().and_then(|room| room.get());
+        match follow(&self.launch.budget, &named, cap, rss, room) {
+            Follow::Stay => uses.short = None,
+            Follow::Lower(need) => {
+                uses.short = None;
+                self.cap_mb.store(need, Ordering::SeqCst);
+                self.note("info", &crate::tr!("бюджет ОЗУ приложения теперь {need} МБ", need = need));
+            }
+            Follow::Raise(need, what) => {
+                uses.short = None;
+                self.cap_mb.store(need, Ordering::SeqCst);
+                self.note(
+                    "info",
+                    &crate::tr!("{what}: бюджет ОЗУ приложения теперь {need} МБ", what = what, need = need),
+                );
+            }
+            Follow::Short { what, need, free } => {
+                if uses.short.as_ref() != Some(&(what.clone(), need, free)) {
+                    self.note(
+                        "warn",
+                        &crate::tr!(
+                            "{what}: нужно {need} МБ ОЗУ, свободно {free} — приложение остаётся в своих {cap} МБ. На этой колонке выберите другое вместо {what} или освободите память.",
+                            what = what,
+                            need = need,
+                            free = free,
+                            cap = cap
+                        ),
+                    );
+                    uses.short = Some((what, need, free));
+                }
+            }
+        }
+    }
+
     /// Its program's pid now, kept in RUNNING too.
     fn set_pid(&self, pid: Option<u32>) {
         let mut own = self.pid.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -437,26 +574,38 @@ impl Shared {
             if fell.is_none() && last_health.elapsed() >= health_every {
                 last_health = Instant::now();
                 let url = format!("http://127.0.0.1:{}{}", self.launch.port, self.launch.health);
-                let ok = self
-                    .client
-                    .get(&url)
-                    .timeout(Duration::from_secs(3))
-                    .send()
-                    .await
-                    .is_ok_and(|answer| answer.status().is_success());
+                let ok = match self.client.get(&url).timeout(Duration::from_secs(3)).send().await {
+                    Ok(answer) if answer.status().is_success() => {
+                        // What it uses now, when it says (the VPN: its protocols) — its cap follows.
+                        let body = answer.json::<Value>().await.ok();
+                        if let Some(named) = body.as_ref().and_then(uses_of) {
+                            self.follow_uses(named);
+                        }
+                        true
+                    }
+                    _ => false,
+                };
                 sick = if ok { 0 } else { sick + 1 };
                 if sick >= 3 {
                     fell = Some(crate::tr!("три раза подряд не ответило, здорово ли"));
                 }
                 let pid = *self.pid.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 if let Some(rss) = pid.and_then(crate::operations::system_memory::program_rss_mb) {
-                    over_budget = if rss > self.launch.memory_mb { over_budget + 1 } else { 0 };
+                    let cap = self.cap_mb.load(Ordering::SeqCst);
+                    over_budget = if rss > cap { over_budget + 1 } else { 0 };
                     if over_budget >= OVER_BUDGET_LOOKS {
-                        fell = Some(crate::tr!(
-                            "держит {rss} МБ ОЗУ при бюджете {budget} МБ",
-                            rss = rss,
-                            budget = self.launch.memory_mb
-                        ));
+                        let short = self.uses.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).short.clone();
+                        let mut why =
+                            crate::tr!("держит {rss} МБ ОЗУ при бюджете {budget} МБ", rss = rss, budget = cap);
+                        if let Some((what, need, free)) = short {
+                            why.push_str(&crate::tr!(
+                                " ({what}: нужно {need} МБ, свободно {free})",
+                                what = what,
+                                need = need,
+                                free = free
+                            ));
+                        }
+                        fell = Some(why);
                     }
                 }
             }
@@ -575,7 +724,11 @@ impl PluginInstance for Instance {
                 .ok()
                 .flatten()?;
             let bytes = rss * 1024 * 1024;
-            Some(MemoryStats { allocated: bytes, used: bytes, limit: shared.launch.memory_mb * 1024 * 1024 })
+            Some(MemoryStats {
+                allocated: bytes,
+                used: bytes,
+                limit: shared.cap_mb.load(Ordering::SeqCst) * 1024 * 1024,
+            })
         })
     }
 
@@ -615,6 +768,7 @@ impl PluginRuntime for ProcessRuntime {
         let files_root = self.files_root.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         let station_name = self.station_name.get().and_then(|name| name());
         let running = self.running.clone();
+        let room = self.room.get().cloned();
         Box::pin(async move {
             let manifest =
                 code.manifest.clone().ok_or_else(|| PluginError::Load(crate::tr!("нет манифеста приложения")))?;
@@ -642,6 +796,11 @@ impl PluginRuntime for ProcessRuntime {
             };
             // Its own data outlives a version: `<id>/.data` beside the versions (a dot folder is no version).
             let data = dir.parent().map(|parent| parent.join(".data")).unwrap_or_else(|| dir.join(".data"));
+            // What it said it uses last time sets its first cap (the start check counted the same).
+            let uses_file = dir.parent().map(|parent| parent.join(USES_FILE)).unwrap_or_else(|| dir.join(USES_FILE));
+            let named = read_uses(&uses_file);
+            // Its cap at the start: the budget for what it said it uses last time, else the base.
+            let (memory_mb, _) = manifest.budget.memory_for_uses(&named);
             let token = uuid::Uuid::new_v4().simple().to_string();
             let proxy = crate::egress::entry_for(&code.id, &token, &manifest);
             let launch = Launch {
@@ -654,7 +813,9 @@ impl PluginRuntime for ProcessRuntime {
                 port: free_port().map_err(PluginError::Load)?,
                 token,
                 gateway_url,
-                memory_mb: manifest.budget.memory_mb,
+                memory_most_mb: manifest.budget.memory_most(),
+                budget: manifest.budget.clone(),
+                uses_file,
                 health: manifest.health.path.clone(),
                 station_name,
                 proxy,
@@ -683,6 +844,9 @@ impl PluginRuntime for ProcessRuntime {
                 give_up,
                 gone,
                 handlers,
+                cap_mb: AtomicU64::new(memory_mb),
+                uses: Mutex::new(Uses { named, short: None }),
+                room,
             });
             tokens.insert(&launch.token, &launch.id, host.clone());
             if let Err(error) = shared.launch().await {
@@ -693,5 +857,58 @@ impl PluginRuntime for ProcessRuntime {
             tokio::spawn(shared.clone().watch());
             Ok(Arc::new(Instance { shared, tokens }) as Arc<dyn PluginInstance>)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The VPN as the catalog declares it from 0.1.5: 22 MB for the light protocols, 24 for WireGuard and AnyTLS.
+    fn vpn() -> crate::plugins::manifest::Budget {
+        crate::plugins::manifest::Budget {
+            memory_mb: 22,
+            memory_for: [("WireGuard".to_string(), 24), ("AnyTLS".to_string(), 24)].into_iter().collect(),
+            storage_mb: 1,
+            files_mb: 5,
+            tasks: 1,
+        }
+    }
+
+    fn named(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    /// Windows test 21.11: a Station Mini 2 with 23 MB free could not take the VPN's 24 MB for everything. Light
+    /// protocols keep the base; WireGuard raises it when the station has the room, and else stays and says why.
+    #[test]
+    fn the_cap_follows_what_the_program_uses_within_the_room() {
+        let budget = vpn();
+        assert_eq!(follow(&budget, &named(&["VLESS", "Trojan"]), 22, 15, Some(8)), Follow::Stay);
+        assert_eq!(
+            follow(&budget, &named(&["VLESS", "WireGuard"]), 22, 15, Some(9)),
+            Follow::Raise(24, "WireGuard".into())
+        );
+        // A Mini 2: it holds 15, room for 1 more — 24 does not fit; all it could have is 16.
+        assert_eq!(
+            follow(&budget, &named(&["WireGuard"]), 22, 15, Some(1)),
+            Follow::Short { what: "WireGuard".into(), need: 24, free: 16 }
+        );
+        // Not counted (a computer): it goes.
+        assert_eq!(follow(&budget, &named(&["AnyTLS"]), 22, 15, None), Follow::Raise(24, "AnyTLS".into()));
+        // WireGuard gone from its servers: down at once.
+        assert_eq!(follow(&budget, &named(&["Shadowsocks"]), 24, 15, Some(0)), Follow::Lower(22));
+    }
+
+    #[test]
+    fn reads_what_a_health_answer_says_it_uses_and_keeps_it() {
+        let body = serde_json::json!({ "ok": true, "uses": ["WireGuard", " VLESS ", "", "VLESS"] });
+        assert_eq!(uses_of(&body), Some(named(&["VLESS", "WireGuard"])));
+        assert_eq!(uses_of(&serde_json::json!({ "ok": true })), None, "an app that does not say keeps its cap");
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(USES_FILE);
+        assert!(read_uses(&file).is_empty());
+        write_uses(&file, &named(&["WireGuard"]));
+        assert_eq!(read_uses(&file), named(&["WireGuard"]));
     }
 }

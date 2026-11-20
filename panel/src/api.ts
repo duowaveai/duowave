@@ -744,6 +744,18 @@ export interface HomeVoice {
     provider: 'own' | 'mixed' | 'yandex' | 'none';
 }
 
+/** `GET /api/v1/system/windows-network`: на Windows — что закрывает компьютер для колонки; иначе `windows: false`. */
+export interface WindowsNetworkView {
+    windows: boolean;
+    network?: {
+        networks: Array<{ alias: string; category: string }>;
+        firewall: Array<{ name: string; enabled: boolean }>;
+        rules: Array<{ name: string; action: string; profile: string }>;
+    };
+    likelyClosed: boolean;
+    advice?: string;
+}
+
 /** Облачный слух и голос колонки (`/api/v1/speech/cloud`, docs/plans/speaker-alone.md). */
 export type CloudService = 'openai' | 'groq' | 'custom' | 'off';
 export type CloudPart = 'hearing' | 'voice';
@@ -831,7 +843,8 @@ export interface StationGatewayView {
     payload: { source: 'builtIn' | 'file' | 'feed' | 'none'; version: string; note: string };
     /** Когда этот компьютер последний раз взял копию дома у центра (docs/plans/home-and-devices.md, этап 3). */
     copiedAt?: string;
-    warnings: Array<{ kind: 'silent' | 'voiceAway' | 'safety'; text: string }>;
+    /** unreached — колонка сама говорит, что не достучалась до этого компьютера (брандмауэр Windows, сеть). */
+    warnings: Array<{ kind: 'silent' | 'voiceAway' | 'safety' | 'unreached'; text: string }>;
     copyStale: boolean;
 }
 
@@ -3826,6 +3839,8 @@ export const api = {
             fired?: string | null;
             status?: Record<string, unknown> | null;
             log?: string;
+            /** Кто и когда переключал голос колонки (voice.sh, voice/changes.log). */
+            voiceChanges?: string;
         }>(forStation('/api/v1/placement/inspect', station)),
     retryStation: (station?: string) => post<unknown>(forStation('/api/v1/placement/retry', station)),
     stationVoice: (to: 'local' | 'yandex', station?: string) =>
@@ -3921,10 +3936,19 @@ export const api = {
     // Подключение колонки из пульта (gateway/src/stations/connect)
     /** gateway — адреса этого шлюза в домашней сети, как их наберёт колонка (пусто в Docker). */
     /** port — на какой порт колонка пойдёт, если адрес шлюза введён без порта: порт самого шлюза. */
-    discoverStations: () => get<{ stations: FoundStation[]; gateway?: string[]; port?: number }>('/api/v1/stations/connect/discover'),
+    /** `whyNone` — ничего не нашлось на Windows: что на этом компьютере может закрывать поиск (брандмауэр, общедоступная сеть). */
+    discoverStations: () => get<{ stations: FoundStation[]; gateway?: string[]; port?: number; whyNone?: string }>('/api/v1/stations/connect/discover'),
     /** Подключённые колонки, которые всё ещё ходят на прежний порт этого компьютера: шлюз с тех пор сменил порт. */
     movedGateway: () => get<MovedGateway[]>('/api/v1/stations/connect/moved'),
-    checkStation: (address: string, gateway?: string) => post<StationCheck>('/api/v1/stations/connect/check', { address, gateway }),
+    /** Windows: профиль сети, брандмауэр и правила для DuoWave — что мешает колонке и другим достучаться до компьютера. */
+    windowsNetwork: () => get<WindowsNetworkView>('/api/v1/system/windows-network'),
+    /** «Отчёт для разработчика»: версия, система, сеть Windows и конец журнала шлюза — без секретов и личных путей. */
+    developerReport: () => get<{ text: string }>('/api/v1/system/report'),
+    /** Windows: одно разрешение DuoWave в брандмауэре для частной сети — Windows спросит права на экране компьютера. */
+    allowWindowsFirewall: () => post<WindowsNetworkView>('/api/v1/system/windows-network/allow'),
+    /** `password` — свой пароль root колонки, когда пустой не подошёл: шлюз хранит его зашифрованным, только если подошёл. */
+    checkStation: (address: string, gateway?: string, password?: string) =>
+        post<StationCheck>('/api/v1/stations/connect/check', { address, gateway, password }),
     connectStation: (address: string, gateway: string) => post<ConnectJob>('/api/v1/stations/connect', { address, gateway }),
     /** previous — «как было» перед последним подключением; yandex — без шлюза, как до любого. */
     restoreStation: (address: string, to: 'previous' | 'yandex' = 'yandex') => post<ConnectJob>('/api/v1/stations/connect/restore', { address, to }),

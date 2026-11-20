@@ -54,6 +54,8 @@ struct Watch {
     failures: u32,
     up_since: Option<Instant>,
     error: Option<String>,
+    /// The last cause told to the log: a look that fails the same way every 30 s is told once.
+    told: Option<String>,
 }
 
 /// This gateway and its home as they name themselves to a helper: the headers of every request, the pairing (stage 7).
@@ -340,8 +342,35 @@ impl RemoteHelper {
                 Err(crate::tr!("Турбо не принимает ключ: сделайте новый на нём в «Доступ» → «Ключи»"))
             }
             Ok(response) => Err(crate::tr!("Турбо ответило {status}", status = response.status().as_u16())),
-            Err(error) if error.is_timeout() => Err(crate::tr!("Турбо не ответило вовремя")),
-            Err(_) => Err(AWAY.to_string()),
+            Err(error) if error.is_timeout() => {
+                self.tell_cause(&format!("no answer in {} s", LOOK_WAIT.as_secs()));
+                Err(crate::tr!("Турбо не ответило вовремя"))
+            }
+            Err(error) => {
+                // The real cause — refused, no route, reset — for the log only: the panel keeps its words (Windows
+                // test 21.11: «Турбо не на связи», and gateway.log said nothing of why).
+                self.tell_cause(&cause_of(&error));
+                Err(AWAY.to_string())
+            }
+        }
+    }
+
+    /// The cause of a failed look to the log, once per new cause, with the address dialed.
+    fn tell_cause(&self, cause: &str) {
+        let mut watch = locked(&self.watch);
+        if watch.told.as_deref() == Some(cause) {
+            return;
+        }
+        watch.told = Some(cause.to_string());
+        drop(watch);
+        tracing::warn!("helpers: {} ({}) does not answer at {}: {cause}", self.id, self.kind_word(), self.base());
+    }
+
+    fn kind_word(&self) -> &'static str {
+        match self.kind {
+            HelperKind::Home => "a computer at home",
+            HelperKind::Own => "an own server",
+            HelperKind::Cloud => "the cloud",
         }
     }
 
@@ -360,6 +389,9 @@ impl RemoteHelper {
         let mut watch = locked(&self.watch);
         match outcome {
             Ok(_) => {
+                if watch.told.take().is_some() {
+                    tracing::info!("helpers: {} answers again", self.id);
+                }
                 watch.failures = 0;
                 watch.error = None;
                 let changed = watch.up != Some(true);
@@ -552,4 +584,19 @@ impl RemoteHelper {
     pub fn itself(&self) -> bool {
         self.itself.load(Ordering::Relaxed)
     }
+}
+
+/// A request's failure in the system's words: «connection refused», «no route to host», «timed out» — what reqwest
+/// keeps in its chain of sources, joined.
+pub fn cause_of(error: &reqwest::Error) -> String {
+    let mut words = vec![error.to_string()];
+    let mut source = std::error::Error::source(error);
+    while let Some(inner) = source {
+        let text = inner.to_string();
+        if !words.iter().any(|word| word.contains(&text)) {
+            words.push(text);
+        }
+        source = inner.source();
+    }
+    words.join(": ")
 }

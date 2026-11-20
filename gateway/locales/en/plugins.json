@@ -223,7 +223,6 @@
  "Можно загрузить ещё {mb} МБ.": "{mb} MB more can be loaded.",
  "{room} ОЗУ мало: простаивающие приложения выгружаются, фоновая работа ждёт.": "{room} Memory is low: idle apps are being unloaded, background work waits.",
  "{room} ОЗУ очень мало: приложения выгружаются.": "{room} Memory is very low: apps are being unloaded.",
- "колонке не хватает ОЗУ, чтобы загрузить приложение: нужно {need_mb} МБ, свободно {free_mb} МБ": "the speaker lacks memory to load the app: {need_mb} MB needed, {free_mb} MB free",
  "не хватит памяти: нужно {need_mb} МБ и ещё {reserve_mb} МБ про запас на обновление DuoWave, свободно {free}": "not enough room: {need_mb} MB needed plus {reserve_mb} MB in reserve for a DuoWave update, {free} free",
  "Приложения": "Apps",
  "Навыки, инструменты для «Мозга» и источники музыки и радио — из установленных приложений": "Skills, tools for the “Brain” and sources of music and radio — from the installed apps",
@@ -920,5 +919,15 @@
  "В ленте центра нет {id} {version}.": "The centre’s feed has no {id} {version}.",
  "В ленте центра нет «{id}».": "The centre’s feed has no “{id}”.",
  "Турбо не поставил его код (HTTP {status})": "The Turbo did not install its code (HTTP {status})",
- "Турбо не поставил код этой версии: {why}": "The Turbo did not install this version's code: {why}"
+ "Турбо не поставил код этой версии: {why}": "The Turbo did not install this version's code: {why}",
+ "бюджет ОЗУ приложения теперь {need} МБ": "the app's memory budget is now {need} MB",
+ "{what}: бюджет ОЗУ приложения теперь {need} МБ": "{what}: the app's memory budget is now {need} MB",
+ "{what}: нужно {need} МБ ОЗУ, свободно {free} — приложение остаётся в своих {cap} МБ. На этой колонке выберите другое вместо {what} или освободите память.": "{what}: {need} MB of memory needed, {free} free — the app stays within its {cap} MB. On this speaker choose something else instead of {what}, or free some memory.",
+ " ({what}: нужно {need} МБ, свободно {free})": " ({what}: {need} MB needed, {free} free)",
+ "{why} Столько нужно для {what} — выберите в приложении другое, и ему хватит {base} МБ.": "{why} That much is needed for {what} — choose something else in the app, and {base} MB will do.",
+ "budget.memoryMbFor.{name}: целое от 1 до {max}": "budget.memoryMbFor.{name}: a whole number from 1 to {max}",
+ "budget.memoryMbFor: объект «что использует → МБ», например {{\"WireGuard\": 24}}": "budget.memoryMbFor: an object “what it uses → MB”, for example {{\"WireGuard\": 24}}",
+ "колонке не хватает ОЗУ, чтобы загрузить приложение: нужно {need_mb} МБ, а приложениям всего {budget_mb} МБ — остальное занято системой и Алисой (запас {reserve_mb} МБ). Помогут меньше приложений на колонке или перезагрузка колонки.": "the speaker lacks the memory to load the app: {need_mb} MB needed, and the apps have only {budget_mb} MB in all — the rest is held by the system and Alice (reserve {reserve_mb} MB). Fewer apps on the speaker or a restart of the speaker will help.",
+ " и ещё {more}": " and {more} more",
+ "колонке не хватает ОЗУ, чтобы загрузить приложение: нужно {need_mb} МБ, свободно {free_mb} из {budget_mb} МБ для приложений; сейчас заняли (МБ): {list}.": "the speaker lacks the memory to load the app: {need_mb} MB needed, {free_mb} of {budget_mb} MB for apps free; taken now (MB): {list}."
 }

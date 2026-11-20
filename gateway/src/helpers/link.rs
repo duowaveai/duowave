@@ -613,6 +613,25 @@ fn ws_config(frames: usize) -> WebSocketConfig {
 /// carries one copy of the WebSocket's code for both.
 pub type LinkSocket = WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>;
 
+/// The last failure of a dial to each address told to the log: a link retried every minute the same way is told once.
+static DIALS_TOLD: std::sync::LazyLock<Mutex<HashMap<String, String>>> = std::sync::LazyLock::new(Default::default);
+
+fn tell_dial(target: &Target, cause: &str) {
+    let mut told = DIALS_TOLD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if told.get(&target.authority()).map(String::as_str) == Some(cause) {
+        return;
+    }
+    told.insert(target.authority(), cause.to_string());
+    tracing::warn!("link: dialing {} failed: {cause}", target.authority());
+}
+
+fn forget_dial(target: &Target) {
+    let removed = DIALS_TOLD.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&target.authority());
+    if removed.is_some() {
+        tracing::info!("link: {} answers again", target.authority());
+    }
+}
+
 /// Dials `wss://host:port/home/v1/link` over TLS it makes itself: the upgrade — and whatever it carries — is written
 /// only once the handshake finished with the verifier's consent.
 async fn dial(
@@ -625,14 +644,29 @@ async fn dial(
 ) -> Result<LinkSocket, DialError> {
     let tcp = tokio::time::timeout(timing.connect, TcpStream::connect((target.host.as_str(), target.port)))
         .await
-        .map_err(|_| DialError::Timeout)?
-        .map_err(|_| DialError::Unreachable)?;
+        .map_err(|_| {
+            tell_dial(target, &format!("no TCP answer in {} ms", timing.connect.as_millis()));
+            DialError::Timeout
+        })?
+        .map_err(|error| {
+            // Refused, no route, reset: the system's words in the log (Windows test 21.11 — the Turbo's computer
+            // behind its firewall, and nothing said why).
+            tell_dial(target, &format!("TCP: {error}"));
+            DialError::Unreachable
+        })?;
     let _ = tcp.set_nodelay(true);
     let name = target.server_name().ok_or(DialError::Unreachable)?;
     let tls = tokio::time::timeout(timing.handshake, tokio_rustls::TlsConnector::from(config).connect(name, tcp))
         .await
-        .map_err(|_| DialError::Timeout)?
-        .map_err(|_| DialError::Tls { foreign: pinned.is_some_and(Pinned::foreign) })?;
+        .map_err(|_| {
+            tell_dial(target, "no TLS handshake in time");
+            DialError::Timeout
+        })?
+        .map_err(|error| {
+            tell_dial(target, &format!("TLS: {error}"));
+            DialError::Tls { foreign: pinned.is_some_and(Pinned::foreign) }
+        })?;
+    forget_dial(target);
     let mut request =
         format!("wss://{}{PATH}", target.authority()).into_client_request().map_err(|_| DialError::NoLink)?;
     for (name, value) in headers {
@@ -835,6 +869,7 @@ pub enum PairError {
 impl PairError {
     /// The answer of `POST /api/v1/helpers`.
     pub fn into_api(self, url: &str) -> ApiError {
+        tracing::warn!("helpers: pairing with {url} failed: {self:?}");
         match self {
             PairError::BadAddress => {
                 ApiError::bad_request(crate::tr!("Адрес Турбо: http://адрес:порт или https://…"))

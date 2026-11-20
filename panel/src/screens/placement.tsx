@@ -203,6 +203,33 @@ type Act = (name: string, work: () => Promise<unknown>, done?: string) => Promis
 /** «Что случилось»: колонка о своём шлюзе — по её оболочке, даже когда сломана сама программа. */
 type Inspected = Awaited<ReturnType<typeof api.inspectStation>>;
 
+/**
+ * «Разрешить в брандмауэре»: колонка не достучалась до этого компьютера, а он — Windows (тест 21.11: брандмауэр
+ * закрыл компьютер, «Турбо нет» видела только колонка). Одно разрешение для частной сети; Windows спросит права.
+ */
+function AllowFirewall({ act, busy }: { act: Act; busy: string | null }) {
+    const [windows, setWindows] = useState(false);
+    useEffect(() => {
+        let alive = true;
+        api.windowsNetwork()
+            .then((view) => alive && setWindows(view.windows))
+            .catch(() => undefined);
+        return () => {
+            alive = false;
+        };
+    }, []);
+    if (!windows) return null;
+    return (
+        <Row>
+            <Action
+                label={tr.placement.allowFirewall}
+                busy={busy === 'firewall'}
+                onClick={() => void act('firewall', () => api.allowWindowsFirewall(), tr.placement.allowFirewallDone)}
+            />
+        </Row>
+    );
+}
+
 /** Пульт компьютера: шлюз на колонке, каким его видит компьютер. */
 function ComputerSide({
     view,
@@ -293,6 +320,7 @@ function ComputerSide({
                             />
                         </Row>
                     )}
+                    {mayManage && warning.kind === 'unreached' && <AllowFirewall act={act} busy={busy} />}
                     {mayManage && warning.kind === 'voiceAway' && (
                         <Row>
                             <Action
@@ -1206,6 +1234,12 @@ function InspectSheet({ inspected, onClose }: { inspected: Inspected; onClose: (
                 <p class="win-callout m-0" role="status">
                     {tr.placement.fired(inspected.fired)}
                 </p>
+            )}
+            {inspected.voiceChanges && (
+                <>
+                    <p class="t-meta m-0">{tr.placement.voiceChanges}</p>
+                    <pre class="t-meta pre-wrap max-h-40vh overflow-auto m-0">{inspected.voiceChanges}</pre>
+                </>
             )}
             {inspected.log && (
                 <pre class="t-meta pre-wrap max-h-40vh overflow-auto m-0">

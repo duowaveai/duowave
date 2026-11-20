@@ -147,7 +147,11 @@ pub async fn connect_upstream(url: &str, headers: &[(String, String)]) -> Result
     // «Выход в интернет» (src/egress): Alice's row says directly, through a connection's entry, or not at all.
     let connected = match crate::egress::alice() {
         crate::egress::app_entry::Hop::Direct => {
-            tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(ws_connector())).await
+            let uri = request.uri();
+            let host = uri.host().unwrap_or_default().trim_matches(['[', ']']).to_string();
+            let port = uri.port_u16().unwrap_or(if uri.scheme_str() == Some("ws") { 80 } else { 443 });
+            let stream = connect_ipv4_first(&host, port, Duration::from_secs(5)).await.map_err(ConnectError::Failed)?;
+            tokio_tungstenite::client_async_tls_with_config(request, stream, None, Some(ws_connector())).await
         }
         crate::egress::app_entry::Hop::Refuse(words) => return Err(ConnectError::Failed(words)),
         crate::egress::app_entry::Hop::Via(entry) => {
@@ -161,9 +165,52 @@ pub async fn connect_upstream(url: &str, headers: &[(String, String)]) -> Result
     };
     match connected {
         Ok((socket, _)) => Ok(socket),
-        Err(WsError::Http(response)) => Err(ConnectError::Rejected(response.status().as_u16())),
-        Err(error) => Err(ConnectError::Failed(error.to_string())),
+        Err(WsError::Http(response)) => {
+            tracing::warn!("yandex: {url} answered the upgrade with {}", response.status());
+            Err(ConnectError::Rejected(response.status().as_u16()))
+        }
+        Err(error) => {
+            tracing::warn!("yandex: {url} did not open: {error}");
+            Err(ConnectError::Failed(error.to_string()))
+        }
     }
+}
+
+/// A TCP connection to `host:port` over its addresses, IPv4 first, each given `wait`. The station's log of 21.11: the
+/// session mode got «Network unreachable (os error 101)» right after a mode switch while the relay had reached Yandex
+/// minutes before — an IPv6 address tried where the station has no IPv6 route; answers came «через раз». What was
+/// tried, by family, goes to the log when nothing answers.
+pub async fn connect_ipv4_first(host: &str, port: u16, wait: Duration) -> std::result::Result<TcpStream, String> {
+    let mut addresses: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|error| {
+            tracing::warn!("yandex: {host} not resolved: {error}");
+            format!("{host}: {error}")
+        })?
+        .collect();
+    // Stable: the resolver's order within each family stays.
+    addresses.sort_by_key(std::net::SocketAddr::is_ipv6);
+    let family = |address: &std::net::SocketAddr| if address.is_ipv6() { "IPv6" } else { "IPv4" };
+    let mut tried = Vec::new();
+    for address in &addresses {
+        match tokio::time::timeout(wait, TcpStream::connect(address)).await {
+            Ok(Ok(stream)) => {
+                if !tried.is_empty() {
+                    tracing::info!(
+                        "yandex: {host} reached at {address} ({}) after: {}",
+                        family(address),
+                        tried.join("; ")
+                    );
+                }
+                return Ok(stream);
+            }
+            Ok(Err(error)) => tried.push(format!("{address} ({}): {error}", family(address))),
+            Err(_) => tried.push(format!("{address} ({}): no answer in {} s", family(address), wait.as_secs())),
+        }
+    }
+    let said = if tried.is_empty() { format!("{host}: no addresses") } else { tried.join("; ") };
+    tracing::warn!("yandex: {host}:{port} not reached: {said}");
+    Err(said)
 }
 
 /// An id's first eight characters, `-` for none.
@@ -1107,6 +1154,19 @@ impl YandexSession {
 
 #[cfg(test)]
 mod tests {
+
+    /// The station's log of 21.11: «Network unreachable (os error 101)» — IPv6 tried without a route. IPv4 goes first,
+    /// and a name that resolves to both reaches the IPv4 one.
+    #[tokio::test]
+    async fn reaches_a_host_by_ipv4_first() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stream = connect_ipv4_first("localhost", port, Duration::from_secs(2)).await.unwrap();
+        assert!(stream.peer_addr().unwrap().is_ipv4());
+        drop(listener);
+        let error = connect_ipv4_first("127.0.0.1", port, Duration::from_secs(2)).await.unwrap_err();
+        assert!(error.contains("127.0.0.1") && error.contains("IPv4"), "{error}");
+    }
     use super::*;
 
     #[test]

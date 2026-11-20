@@ -62,6 +62,8 @@ import numpy as np
 
 log = logging.getLogger("tts")
 HERE = os.path.dirname(os.path.abspath(__file__))
+# The gateway's mark beside a model file it could not remove while it was open (gateway/src/models/model_files.rs).
+REMOVE_MARK = ".remove"
 # Piper's command line is Python: its stdin and its log stay UTF-8 whatever the locale (a Russian Windows says cp1251).
 UTF8 = {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
 PHRASE_TIMEOUT = 60
@@ -104,6 +106,14 @@ class SileroEngine:
         self.sample_rate = sample_rate
         self.voices = [voice for voice in getattr(self.model, "speakers", ["aidar", "baya", "kseniya", "xenia", "eugene"]) if voice != "random"]
         self.lock = threading.Lock()
+
+    def close(self) -> None:
+        """Lets the model file go: on Windows a file a process holds cannot be removed (os error 32)."""
+        with self.lock:
+            self.model = None
+        import gc
+
+        gc.collect()
 
     def synthesize(self, text: str, voice: str) -> tuple[np.ndarray, int]:
         speaker = voice if voice in self.voices else "xenia"
@@ -380,6 +390,8 @@ def scanner(folder: str, piper: str | None, pool: PiperPool, device: str, sample
         engines: list = []
         errors: list[str] = []
         for path in sorted(glob.glob(os.path.join(folder, "**", "*.pt"), recursive=True)):
+            if os.path.exists(f"{path}{REMOVE_MARK}"):
+                continue  # given up while open (Windows): the gateway removes it once it is free
             try:
                 now = stamp(path)
             except OSError:
@@ -399,7 +411,7 @@ def scanner(folder: str, piper: str | None, pool: PiperPool, device: str, sample
             break  # one Silero model is all the voices it has
         binary = find_piper(piper)
         for path in sorted(glob.glob(os.path.join(folder, "**", "*.onnx"), recursive=True)):
-            if not os.path.exists(f"{path}.json"):
+            if not os.path.exists(f"{path}.json") or os.path.exists(f"{path}{REMOVE_MARK}"):
                 continue
             if binary is None:
                 errors.append(f"{path}: no Piper command line here (piper-tts): --piper or PIPER_BIN")

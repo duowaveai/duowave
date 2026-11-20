@@ -61,7 +61,7 @@ pub struct Live {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Warning {
-    /// silent, voiceAway, safety.
+    /// silent, voiceAway, safety, unreached.
     pub kind: &'static str,
     pub text: String,
 }
@@ -419,6 +419,14 @@ impl StationGateway {
                     _ => crate::tr!("Голос колонки идёт не в её центр."),
                 };
                 warnings.push(Warning { kind: "voiceAway", text });
+            }
+            // The station leans on this computer but does not reach it (Windows test 21.11: the firewall kept it out,
+            // and only the station's panel said «Турбо нет»). The station's own words, and what to do on this computer.
+            let leans = health.pointer("/placement/homeServer/enabled").and_then(Value::as_bool) == Some(true);
+            if leans && health.pointer("/placement/homeServer/state").and_then(Value::as_str) == Some("down") {
+                let url = health.pointer("/placement/homeServer/url").and_then(Value::as_str).unwrap_or_default();
+                let why = health.pointer("/placement/homeServer/error").and_then(Value::as_str).unwrap_or_default();
+                warnings.push(Warning { kind: "unreached", text: unreached_words(url, why, cfg!(windows)) });
             }
             if let Some(case) = health.pointer("/placement/safetyLast") {
                 let at = case.get("at").and_then(Value::as_str).map(local_time).unwrap_or_default();
@@ -1248,6 +1256,30 @@ pub fn pick_home(addresses: &[String], station: &str) -> Option<String> {
     addresses.iter().find(|address| station_net.is_some() && net(address) == station_net).or(addresses.first()).cloned()
 }
 
+/// «Колонка не достучалась до этого компьютера»: where it dialed, what it got, and what to do here — on Windows the
+/// firewall's or the network's own words when the last look of them says what closes the computer.
+fn unreached_words(url: &str, why: &str, windows: bool) -> String {
+    let mut text = crate::tr!(
+        "Колонка не достучалась до этого компьютера ({url}): голос, слух и модели с него ей не идут.",
+        url = url
+    );
+    if !why.is_empty() {
+        text.push_str(&crate::tr!(" Колонка говорит: {why}.", why = why.trim_end_matches('.')));
+    }
+    if windows {
+        let advice = crate::platform::windows_net::last().as_ref().and_then(crate::platform::windows_net::advice);
+        text.push(' ');
+        text.push_str(&advice.unwrap_or_else(|| {
+            crate::tr!(
+                "Разрешите DuoWave в брандмауэре Windows для частной сети и проверьте, что сеть в Windows — «Частная»."
+            )
+        }));
+    } else {
+        text.push_str(&crate::tr!(" Компьютер включён и в той же сети? Не закрывает ли его брандмауэр или VPN?"));
+    }
+    text
+}
+
 /// «14:02» today, else with the date: as the household reads it.
 fn local_time(at: &str) -> String {
     match at.parse::<chrono::DateTime<chrono::Utc>>() {
@@ -1579,6 +1611,17 @@ mod tests {
         watch.poll().await;
         assert_eq!(watch.warnings().iter().map(|warning| warning.kind).collect::<Vec<_>>(), vec!["silent"]);
         assert_eq!(told.lock().unwrap().len(), 1);
+    }
+
+    /// Windows test 21.11: the station leaned on the computer but the firewall kept it out; only the station's panel
+    /// said «Турбо нет». The computer says it too: where the station dialed, what it got, what to do here.
+    #[test]
+    fn says_when_the_station_does_not_reach_this_computer_and_what_to_do() {
+        let text = unreached_words("http://192.0.2.70:7780", "error sending request: connection refused.", true);
+        assert!(text.contains("192.0.2.70:7780") && text.contains("connection refused"), "{text}");
+        assert!(text.contains("брандмауэре Windows"), "{text}");
+        let mac = unreached_words("http://192.0.2.71:7780", "", false);
+        assert!(!mac.contains("Windows") && mac.contains("VPN"), "{mac}");
     }
 
     /// Live, 10.11: the computer's station watch told «не подключена» while the station talked to its own gateway.

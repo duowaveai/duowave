@@ -103,7 +103,55 @@ export function ThisComputer() {
             <TurboPowers />
             <KeepAwake />
             <HelperComputer home side={false} />
+            {isAdmin() && <DeveloperReport />}
         </>
+    );
+}
+
+/**
+ * «Отчёт для разработчика»: что-то не так на этом компьютере — отчёт копируется и уходит нам (мы чиним чужие
+ * компьютеры по присланным журналам: тест на Windows 21.11). Секреты, домашняя папка, имя и почта из него убраны.
+ */
+function DeveloperReport() {
+    const t = tr.helperPc;
+    const [text, setText] = useState<string | null>(null);
+    const [busy, setBusy] = useState(false);
+    const [note, setNote] = useState<string | null>(null);
+    const collect = async (): Promise<void> => {
+        setBusy(true);
+        setNote(null);
+        try {
+            const report = await api.developerReport();
+            setText(report.text);
+            try {
+                await navigator.clipboard.writeText(report.text);
+                setNote(t.reportCopied);
+            } catch {
+                setNote(t.reportSelect);
+            }
+        } catch (e) {
+            setNote(problemOf(e));
+        } finally {
+            setBusy(false);
+        }
+    };
+    return (
+        <Card id="report" title={t.reportTitle}>
+            <p class="w-cap m-0">{t.reportAbout}</p>
+            <div>
+                <button class="w-btn" disabled={busy} aria-busy={busy || undefined} onClick={() => void collect()}>
+                    {t.reportCollect}
+                </button>
+            </div>
+            {note && (
+                <p class="w-cap m-0" role="status">
+                    {note}
+                </p>
+            )}
+            {text !== null && (
+                <textarea class="field" readOnly rows={8} aria-label={t.reportTitle} value={text} onFocus={(event) => (event.target as HTMLTextAreaElement).select()} />
+            )}
+        </Card>
     );
 }
 

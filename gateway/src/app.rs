@@ -217,6 +217,9 @@ impl App {
         self.placement.start();
         // The settings revision counted anew after a change: the home's copy follows within seconds.
         self.placement.watch_revision();
+        // Windows: whether others can reach this computer (the network's category, the firewall's rules), to the log.
+        #[cfg(feature = "pc")]
+        crate::platform::windows_net::start();
         // The built-in helper follows what it declares; the helpers' tick looks at its model servers.
         #[cfg(feature = "pc")]
         self.builtin.start();
@@ -697,6 +700,7 @@ impl App {
                 port: config.gateway.station_ssh.port,
                 user: config.gateway.station_ssh.user.clone(),
                 password: config.gateway.station_ssh.password.clone(),
+                passwords: crate::stations::connect::station_connect::StationPasswords::new(secrets.clone()),
             };
             Arc::new(StationConnectService::new(
                 settings.clone(),
@@ -740,6 +744,7 @@ impl App {
                     port: config.gateway.station_ssh.port,
                     user: config.gateway.station_ssh.user.clone(),
                     password: config.gateway.station_ssh.password.clone(),
+                    passwords: crate::stations::connect::station_connect::StationPasswords::new(secrets.clone()),
                 },
                 station: station_gateway.clone(),
                 stations: stations.clone(),
@@ -1773,6 +1778,9 @@ pub fn router(app: Arc<App>) -> Router {
     // Our calls are a PC's part: the station's build has no /calls.
     #[cfg(feature = "pc")]
     let routes = routes.merge(crate::calls::router());
+    // Windows: what keeps others from reaching this computer, and the firewall's allowance.
+    #[cfg(feature = "pc")]
+    let routes = routes.merge(crate::platform::windows_net::routes()).merge(crate::platform::report::routes());
     // The works in folders: folders, agents, runs and their journals (src/works) — a computer's part.
     #[cfg(feature = "pc")]
     let routes = routes.merge(crate::works::routes::routes());

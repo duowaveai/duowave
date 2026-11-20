@@ -17,6 +17,7 @@ import { AgentPlaque } from './agent-plaque';
 import type { NavEntry, ShellProps } from './shell';
 import { DeskWindow } from './window';
 import { tr } from '../i18n';
+import { recordingSupport } from '../recorder';
 
 /** Часы верхней строки: «07:42», раз в полминуты. */
 export function useClock(): string {
@@ -58,6 +59,9 @@ export function DeskShell({ nav, active, onNav, top, actions, talk, notice, desk
     const clock = useClock();
     const listening = useListening();
     const held = useMicHeld();
+    // Пульт по сети (телефон, http://колонка): браузер не даст микрофона — кнопка так и выглядит, нажатие говорит, где
+    // говорить (тест 21.11: «не работает» молча).
+    const noMic = !recordingSupport().ok;
     // Док шире экрана (телефон, слой разработчика) прокручивается: открытый пункт — в видимой части.
     useEffect(() => {
         dock.current?.querySelector<HTMLElement>('[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
@@ -98,13 +102,14 @@ export function DeskShell({ nav, active, onNav, top, actions, talk, notice, desk
                     {/* Микрофон посередине дока во всех ролях (владелец, 20.11): с 0.16 микрофон Турбо говорит с центром
                         дома — прежнее «у пульта Турбо разговора нет» (16.11) отменено. */}
                     <button
-                        aria-label={held ? tr.shell.micHeld : listening ? tr.shell.endPhrase : tr.shell.say}
+                        aria-label={held ? tr.shell.micHeld : noMic ? `${tr.shell.say} — ${tr.voice.noMic}` : listening ? tr.shell.endPhrase : tr.shell.say}
+                        title={noMic ? tr.voice.micOnlyOnComputer : undefined}
                         aria-pressed={listening}
-                        class={`talk-btn dock-talk${listening ? ' is-listening' : ''}${held ? ' is-held' : ''}`}
+                        class={`talk-btn dock-talk${listening ? ' is-listening' : ''}${held ? ' is-held' : ''}${noMic ? ' is-unavailable' : ''}`}
                         disabled={talk.disabled || held}
                         onClick={talk.onTalk}
                     >
-                        {held ? <IconMicOff size={22} /> : <IconMic size={22} />}
+                        {held || noMic ? <IconMicOff size={22} /> : <IconMic size={22} />}
                     </button>
                     {nav.right.map((entry) => (
                         <Cell key={entry.key} entry={entry} active={active === entry.key} onNav={onNav} />

@@ -112,7 +112,7 @@ impl Conn {
 const EXIT_WAIT: Duration = Duration::from_secs(3);
 
 /// A worker's end in words: the exit code (Windows' crash statuses named), or the signal that ended it.
-fn exit_words(status: &std::process::ExitStatus) -> String {
+pub(crate) fn exit_words(status: &std::process::ExitStatus) -> String {
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
