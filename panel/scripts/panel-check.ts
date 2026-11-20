@@ -583,6 +583,19 @@ check('the_pairs_of_an_app_are_looked_up_in_the_catalog_of_the_device_it_went_to
     expect(/offerPairs\(entry, install, say, api\)/.test(catalog) && /tr\.catalog\.removedNote\), api\)/.test(catalog), 'both pass the actions’ api');
 });
 
+check('an_app_for_both_is_placed_where_its_gateway_is', () => {
+    // DuoGram runs on a station and on a computer: on a station's gateway the gateway says `station` (catalog.rs,
+    // place_of) — the card shows that station, not «нужен компьютер-Турбо» of a home without a Турбо.
+    const station = { id: 's', kind: 'station', roles: [] } as unknown as HomeDevice;
+    const view = { centre: 's', devices: [station] } as unknown as HomeDevices;
+    expect(placeDevice('station', view).device === station, 'the station that is the centre');
+    expect(placeDevice('computer', view).missing === 'computer', 'an app for a computer still asks for one');
+    for (const file of ['src/magicplace/section.tsx', 'src/magicplace/wizard.tsx']) {
+        expect(source(file).includes('entry.runs, entry.place)'), `${file} passes the gateway’s place to its word`);
+    }
+    expect(source('src/screens/plugins.tsx').includes('view.runs, view.place)'), 'the installed app’s word too');
+});
+
 let failed = 0;
 for (const [name, run] of checks) {
     try {

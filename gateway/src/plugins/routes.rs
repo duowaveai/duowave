@@ -269,6 +269,9 @@ async fn remove(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<Stri
     }
     app.catalog.remove(&id, actor).await?;
     app.characters.sync();
+    // The models chosen for its characters' voices go too (the centre's choice, a Турбо's named one): installed again,
+    // it starts afresh.
+    crate::home::character::forget_package(&app, &id);
     // Its pictures go with it (plugins/files.rs), and its pages «смотри и выбирай»; the keys to its files that the
     // media engine gave it close (gateway/media).
     app.files.forget(&id);

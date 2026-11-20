@@ -485,7 +485,7 @@ export function InstalledPackageSheet({
         <>
             {state}
             <span class="win-chip">{ORIGIN_TITLES[origin]}</span>
-            <span class="win-chip">{placeOf(kind, view.runtime, view.runs)}</span>
+            <span class="win-chip">{placeOf(kind, view.runtime, view.runs, view.place)}</span>
             {view.version && <span class="win-chip">{view.version}</span>}
         </>
     );

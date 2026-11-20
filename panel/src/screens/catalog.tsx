@@ -7,7 +7,7 @@
 import { OtherDevicesApps } from './home-apps';
 import { useEffect, useState } from 'preact/hooks';
 
-import { ApiError, CatalogEntry, CatalogSource, CatalogView, HomeVoicePlan, PackageKind, PackageOrigin, PackageView, PackagesView, VoiceLabEngine, api, can, installApi, problemOf, sessionStore } from '../api';
+import { ApiError, CatalogEntry, CatalogPlace, CatalogSource, CatalogView, HomeVoicePlan, PackageKind, PackageOrigin, PackageView, PackagesView, VoiceLabEngine, api, can, installApi, problemOf, sessionStore } from '../api';
 import { IconPackage } from '../icons';
 import { busChanged } from '../bus/state';
 import { openInstallWizard, unfinishedInstall } from '../magicplace/wizard-state';
@@ -54,11 +54,18 @@ export function onStationOnly(runs?: string[] | null): boolean {
 
 /**
  * Где работает приложение — словами для людей: «в шлюзе», «на компьютере», «на колонке» (приложение только для
- * колонки, AirPlay), «в сети» (MCP); персонаж и тема — как есть.
+ * колонки, AirPlay, или и для колонки, и для компьютера на шлюзе колонки — `place` от шлюза), «в сети» (MCP);
+ * персонаж и тема — как есть.
  */
-export function placeOf(kind: PackageKind | null | undefined, runtime?: string | null, runs?: string[] | null): string {
+export function placeOf(
+    kind: PackageKind | null | undefined,
+    runtime?: string | null,
+    runs?: string[] | null,
+    place?: CatalogPlace | null,
+): string {
     if (runtime === 'mcp') return tr.catalog.placeNetwork;
-    if ((runtime === 'process' || kind === 'app') && onStationOnly(runs)) return tr.catalog.kindAppStation;
+    const station = place ? place === 'station' : onStationOnly(runs);
+    if ((runtime === 'process' || kind === 'app') && station) return tr.catalog.kindAppStation;
     if (runtime === 'process' || kind === 'app') return tr.catalog.kindApp;
     return KIND_TITLES[kind ?? 'plugin'] ?? tr.catalog.kindPlugin;
 }

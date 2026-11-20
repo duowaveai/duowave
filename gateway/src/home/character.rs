@@ -11,6 +11,7 @@
 //! (`POST /home/v1/character/plan`); `PUT /api/v1/home/voice` keeps the owner's choice here (`home_voice_engines`, by
 //! the character, or by its package before it is installed) and names it to the Турбо — now, and each time it comes
 //! back.
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -52,10 +53,47 @@ pub fn watch(app: &Arc<App>) {
 }
 
 /// The model the owner chose for a character's voice: by the character, else by its package (chosen before it was
-/// installed).
+/// installed). Only one of them is kept at a time (`keep_choice`): the owner's last word.
 pub fn chosen_engine(app: &App, character: &str, package: &str) -> Option<String> {
     let chosen = app.settings.get(&HOME_VOICE_ENGINES, None)?;
     chosen.get(character).or_else(|| chosen.get(package)).cloned()
+}
+
+/// The owner's last choice wins (21.11): the one by the character went first, so a later choice by its package (the
+/// wizard's) was lost. A choice by a package drops its characters' (`<package>:*`), one by a character drops its
+/// package's.
+fn keep_choice(chosen: &mut BTreeMap<String, String>, key: &str, by_character: bool, engine: &str) {
+    if by_character {
+        if let Some((package, _)) = key.split_once(':') {
+            chosen.remove(package);
+        }
+    } else {
+        let theirs = format!("{key}:");
+        chosen.retain(|kept, _| !kept.starts_with(&theirs));
+    }
+    chosen.insert(key.to_string(), engine.to_string());
+}
+
+/// A package's models for its characters' voices dropped — by the package and by each of its characters
+/// (`<package>:*`), in the centre's choices or a Турбо's named ones; whether any was there.
+pub fn drop_package(chosen: &mut BTreeMap<String, String>, package: &str) -> bool {
+    let theirs = format!("{package}:");
+    let before = chosen.len();
+    chosen.retain(|kept, _| kept != package && !kept.starts_with(&theirs));
+    chosen.len() != before
+}
+
+/// A package removed: the models chosen for its characters' voices go with it — here (the centre's choices) and in what
+/// a Турбо's centre named to it, so a package installed again starts afresh.
+pub fn forget_package(app: &App, package: &str) {
+    if let Some(mut chosen) = app.settings.get(&HOME_VOICE_ENGINES, None) {
+        if drop_package(&mut chosen, package) {
+            if let Err(error) = app.settings.set(&HOME_VOICE_ENGINES, &chosen, None) {
+                tracing::warn!(target: "home", "{package}: its voice models not forgotten: {}", error.message);
+            }
+        }
+    }
+    app.characters.forget_engines(package);
 }
 
 /// The character as the Турбо should hear it: its id and package, and the model chosen for its voice; none — a
@@ -378,7 +416,7 @@ async fn choose(State(app): State<Arc<App>>, caller: Caller, Body(choice): Body<
         }
     }
     let mut chosen = app.settings.get(&HOME_VOICE_ENGINES, None).unwrap_or_default();
-    chosen.insert(key, choice.engine.clone());
+    keep_choice(&mut chosen, &key, choice.character.is_some(), &choice.engine);
     app.settings.set(&HOME_VOICE_ENGINES, &chosen, caller.actor())?;
     let told = app.clone();
     tokio::spawn(async move {
@@ -655,6 +693,44 @@ mod tests {
         chosen.insert("arthur:arthur".into(), "voxcpm".into());
         app.settings.set(&HOME_VOICE_ENGINES, &chosen, None).unwrap();
         assert_eq!(of_home(&app).unwrap()["engine"], "voxcpm");
+
+        // The owner's last word wins (21.11): chosen again by the package (the wizard's), it is that one, not the
+        // character's older one.
+        let again = json!({ "package": "arthur", "engine": "omnivoice" });
+        let (status, view) = send(&app, "PUT", "/api/v1/home/voice", &owner, again).await;
+        assert_eq!(status, StatusCode::OK, "{view}");
+        assert_eq!(of_home(&app).unwrap()["engine"], "omnivoice");
+        assert_eq!(told(&turbo, 2).await["engine"], "omnivoice");
+        let kept = app.settings.get(&HOME_VOICE_ENGINES, None).unwrap();
+        assert_eq!(kept, BTreeMap::from([("arthur".to_string(), "omnivoice".to_string())]));
+        // Removed, the package's choices go with it.
+        forget_package(&app, "arthur");
+        assert!(app.settings.get(&HOME_VOICE_ENGINES, None).unwrap().is_empty());
+        assert!(of_home(&app).unwrap().get("engine").is_none());
+    }
+
+    /// One choice for a character's voice at a time: by its package or by itself, whichever came last; a package's
+    /// removal drops both, and nothing of another package.
+    #[test]
+    fn the_last_choice_of_a_voice_model_is_the_one_kept() {
+        let mut chosen = BTreeMap::from([
+            ("rick:rick".to_string(), "voxcpm".to_string()),
+            ("rick:summer".to_string(), "voxcpm".to_string()),
+            ("arthur:arthur".to_string(), "omnivoice".to_string()),
+        ]);
+        keep_choice(&mut chosen, "rick", false, "cosyvoice3");
+        let expected = |pairs: &[(&str, &str)]| {
+            pairs.iter().map(|(key, engine)| (key.to_string(), engine.to_string())).collect::<BTreeMap<_, _>>()
+        };
+        assert_eq!(chosen, expected(&[("rick", "cosyvoice3"), ("arthur:arthur", "omnivoice")]));
+        keep_choice(&mut chosen, "rick:rick", true, "omnivoice");
+        assert_eq!(chosen, expected(&[("rick:rick", "omnivoice"), ("arthur:arthur", "omnivoice")]));
+        // A package whose id starts like another's is not that one.
+        keep_choice(&mut chosen, "ric", false, "voxcpm");
+        assert_eq!(chosen.len(), 3);
+        assert!(drop_package(&mut chosen, "rick"));
+        assert_eq!(chosen, expected(&[("arthur:arthur", "omnivoice"), ("ric", "voxcpm")]));
+        assert!(!drop_package(&mut chosen, "morty"));
     }
 
     /// Clean-path check 19.11: «Голос ждёт» lived only on the computer's own page. The centre shows any panel of the

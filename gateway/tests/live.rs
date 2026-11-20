@@ -370,3 +370,38 @@ async fn the_computer_relays_the_stations_channel_to_its_panels_sockets() {
     viewer.reader.abort();
     older.reader.abort();
 }
+
+/// A stream relayed to the station (`/media/stream`) is endless: the gateway's stop ends it and does not wait for it.
+/// On the station on 20.11.2026 the stop waited for one for good, and the process never ended.
+#[tokio::test]
+async fn a_stream_relayed_to_the_station_ends_with_the_gateway_and_does_not_hold_its_stop() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // An endless radio: a little sound every 50 ms.
+    let radio = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = radio.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = radio.accept().await {
+            tokio::spawn(async move {
+                let mut request = [0u8; 1024];
+                let _ = socket.read(&mut request).await;
+                let head = b"HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nConnection: close\r\n\r\n";
+                if socket.write_all(head).await.is_err() {
+                    return;
+                }
+                while socket.write_all(&[0u8; 512]).await.is_ok() {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            });
+        }
+    });
+    let gateway = Gateway::start(&[]).await;
+    let token = gateway.app.streams.register(&format!("http://{address}/live.mp3"));
+    let mut response = gateway.get(&format!("/media/stream/{token}")).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.chunk().await.unwrap().is_some(), "it plays");
+    let listening = tokio::spawn(async move { while let Ok(Some(_)) = response.chunk().await {} });
+    let began = std::time::Instant::now();
+    tokio::time::timeout(std::time::Duration::from_secs(3), gateway.stop()).await.expect("the stop does not wait");
+    assert!(began.elapsed() < duowave::app::DRAIN_LIMIT, "the stream was cut, not waited out: {:?}", began.elapsed());
+    tokio::time::timeout(std::time::Duration::from_secs(2), listening).await.expect("the stream ended").unwrap();
+}

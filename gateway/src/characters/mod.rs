@@ -254,6 +254,16 @@ impl CharactersService {
         }
     }
 
+    /// A package removed: the models its centre named for its characters' voices here go with it (a Турбо's, the PC's
+    /// build; nothing on the station).
+    pub fn forget_engines(&self, package: &str) {
+        #[cfg(feature = "pc")]
+        if let Some(voices) = self.voices() {
+            voices.forget_engines(package);
+        }
+        let _ = package;
+    }
+
     /// The packages followed: their characters synced whenever one comes, goes or is updated.
     pub fn start(self: &Arc<Self>) {
         self.sync();

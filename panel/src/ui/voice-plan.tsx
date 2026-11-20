@@ -31,14 +31,19 @@ export const noRoom = (plan: HomeVoicePlan | null | undefined): boolean => {
 const needMb = (engine: VoicePlanEngine): number => engine.totalMb ?? engine.diskMb;
 
 /**
- * Модель по умолчанию: выбор владельца у центра, та, что уже стоит, выбор Турбо, советуемая, первая — из тех, что
- * помещаются на диск. Не помещается ни одна — null: выбрать нечего, кнопка установки модели не запускает.
+ * Модель по умолчанию: та, что ставится сейчас, выбор владельца у центра, та, что уже стоит, выбор Турбо, советуемая,
+ * первая — из тех, что помещаются на диск. Не помещается ни одна — null: выбрать нечего, кнопка установки модели не
+ * запускает.
  */
 export function defaultEngine(plan: HomeVoicePlan | null | undefined): string | null {
     const list = usableEngines(plan).filter(fitsDisk);
-    // Выбор владельца (центр помнит) — первым; дальше уже стоящая (владелец 18.11: «поставить на готовый»), и только
-    // потом то, что выбрал бы сам Турбо, и советуемая.
+    const installing = list.filter((engine) => engine.state === 'installing');
+    // Что уже ставится — первым (21.11: «Сейчас» говорил желание, а качалась другая): для голоса этого персонажа Турбо
+    // называет её в `plan.chosen`. Дальше выбор владельца (центр помнит), уже стоящая (владелец 18.11: «поставить на
+    // готовый»), и только потом то, что выбрал бы сам Турбо, и советуемая.
     return (
+        installing.find((engine) => engine.id === plan?.plan?.chosen)?.id ??
+        installing[0]?.id ??
         list.find((engine) => engine.id === plan?.chosen)?.id ??
         list.find((engine) => engine.state === 'ready')?.id ??
         list.find((engine) => engine.id === plan?.plan?.chosen)?.id ??

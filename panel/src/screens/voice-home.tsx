@@ -137,6 +137,7 @@ function CharacterVoiceModel() {
     const t = tr.voiceHome;
     const choices = usableEngines(plan);
     const computer = plan.plan?.computer ?? plan.turbo?.name ?? '';
+    // «Сейчас»: что правда ставится для голоса персонажа — Турбо называет её в `plan.chosen` (21.11), не желание.
     const current = plan.plan?.chosen ?? plan.chosen ?? null;
     const engine = picked ?? current ?? defaultEngine(plan);
     const currentRow = choices.find((choice) => choice.id === current);

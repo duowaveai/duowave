@@ -103,7 +103,12 @@ pub struct Progress {
 #[serde(rename_all = "camelCase")]
 pub struct VoicePlan {
     pub engines: Vec<EnginePlan>,
+    /// The model the voice goes with: the one installing for this character's waiting voice when there is one (what
+    /// really comes, not the wish — «Сейчас: …» says it), else `wanted`.
     pub chosen: Option<String>,
+    /// The model the voice would go with by the wish: the centre's word, the one it named before, else this computer's
+    /// pick.
+    pub wanted: Option<String>,
     pub fallback: Option<FallbackPlan>,
     pub progress: Option<Progress>,
     pub voice_on: bool,
@@ -149,10 +154,27 @@ fn progress(job: Option<&JobState>, downloads: &BTreeMap<String, u64>) -> Option
     })
 }
 
+/// The model of the voice waiting here when that voice is this character's (`own:c-<package>-<local>-<engine>`): what
+/// installs for it now, whatever was wished.
+fn pending_engine(card: Option<&str>, character: &Character) -> Option<String> {
+    let engine = card?.strip_prefix(&format!("{OWN_PREFIX}c-{}-{}-", character.package, character.local))?;
+    EngineId::parse(engine).map(|_| engine.to_string())
+}
+
+/// Asked by a package's id (the centre has not got its character yet): `{id: <package>, package: {id: <package>}}`.
+fn by_package(request: &PlanRequest) -> bool {
+    !request.id.contains(':') && request.package.as_ref().is_none_or(|package| package.id == request.id)
+}
+
 /// The character as the plan sees it: the one installed here when it is that version, else made of the centre's words.
+/// Asked by its package, the package's character installed here is the one — its voice and the model named for it.
 fn character_of(app: &App, request: &PlanRequest) -> Character {
     let version = request.package.as_ref().and_then(|package| package.version.clone());
-    if let Some(here) = app.characters.character(&request.id) {
+    let here = app
+        .characters
+        .character(&request.id)
+        .or_else(|| by_package(request).then(|| app.characters.of_package(&request.id)).flatten());
+    if let Some(here) = here {
         if version.is_none() || version.as_deref() == Some(here.version.as_str()) {
             return here;
         }
@@ -251,7 +273,9 @@ pub async fn plan(app: &App, request: &PlanRequest) -> VoicePlan {
         });
     }
     let wanted = request.engine.as_deref().filter(|engine| EngineId::parse(engine).is_some());
-    let (chosen, fallback) = app.characters.turbo_choice(&character, wanted).await;
+    let (wanted, fallback) = app.characters.turbo_choice(&character, wanted).await;
+    // The voice waiting here is this character's: its model is the one coming, whatever the wish says now.
+    let chosen = pending_engine(app.models.pending_card().as_deref(), &character).or_else(|| wanted.clone());
     let fallback = fallback.map(|fallback| FallbackPlan {
         size_mb: app.models.voice_card_mb(&fallback.card_id),
         card_id: fallback.card_id,
@@ -269,6 +293,7 @@ pub async fn plan(app: &App, request: &PlanRequest) -> VoicePlan {
     VoicePlan {
         engines,
         chosen,
+        wanted,
         fallback,
         progress: progress(job.as_ref(), &downloads),
         voice_on,
@@ -291,6 +316,10 @@ pub fn waiting(app: &App) -> Option<serde_json::Value> {
         .unwrap_or_else(|| pending.model_id.clone());
     let mut view = serde_json::to_value(&pending).ok()?;
     view["title"] = serde_json::json!(title);
+    // The model it waits for by its name for people («CosyVoice 3»), not by its id: the panel's pill names it.
+    if let Some(engine) = EngineId::parse(&pending.wait_for.id) {
+        view["waitFor"]["title"] = serde_json::json!(crate::voice_lab::clone_engines::spec(engine).title);
+    }
     if let Some(character) = character {
         view["character"] = serde_json::json!(character.id);
         view["package"] = serde_json::json!(character.package);
@@ -349,6 +378,66 @@ mod tests {
             started_at: "2026-11-18T10:00:00Z".into(),
             finished_at: None,
             result: None,
+        }
+    }
+
+    /// «Сейчас: <модель>» said the wish while another model was installing for the voice (21.11): the voice waiting
+    /// here is the character's — its model is the plan's; another character's, a stock voice or nothing — the wish.
+    #[test]
+    fn the_model_coming_for_the_characters_waiting_voice_is_the_chosen_one() {
+        let request = PlanRequest {
+            id: "rick:rick".into(),
+            package: Some(PackageRef { id: "rick".into(), version: Some("1.0.0".into()) }),
+            ..PlanRequest::default()
+        };
+        let mut rick = Character { local: "rick".into(), package: "rick".into(), ..character_of_request(&request) };
+        assert_eq!(pending_engine(Some("own:c-rick-rick-cosyvoice3"), &rick).as_deref(), Some("cosyvoice3"));
+        assert_eq!(pending_engine(Some("own:c-morty-morty-cosyvoice3"), &rick), None);
+        assert_eq!(pending_engine(Some("own:c-rick-rick-f5tts"), &rick), None);
+        assert_eq!(pending_engine(Some("piper-denis"), &rick), None);
+        assert_eq!(pending_engine(None, &rick), None);
+        // A package of two characters: only this one's voice.
+        rick.local = "summer".into();
+        assert_eq!(pending_engine(Some("own:c-rick-rick-omnivoice"), &rick), None);
+        assert_eq!(pending_engine(Some("own:c-rick-summer-omnivoice"), &rick).as_deref(), Some("omnivoice"));
+    }
+
+    /// The wizard asks by the package before the centre has its character: the package's character here is looked up.
+    #[test]
+    fn a_plan_asked_by_the_package_is_told_from_a_characters() {
+        let package = |id: &str| Some(PackageRef { id: id.into(), version: None });
+        assert!(by_package(&PlanRequest { id: "rick".into(), package: package("rick"), ..PlanRequest::default() }));
+        assert!(by_package(&PlanRequest { id: "rick".into(), ..PlanRequest::default() }));
+        assert!(!by_package(&PlanRequest {
+            id: "rick:rick".into(),
+            package: package("rick"),
+            ..PlanRequest::default()
+        }));
+        assert!(!by_package(&PlanRequest { id: "rick".into(), package: package("morty"), ..PlanRequest::default() }));
+    }
+
+    /// A character made of the centre's words only, as `character_of` makes one without the app.
+    fn character_of_request(request: &PlanRequest) -> Character {
+        Character {
+            id: request.id.clone(),
+            local: String::new(),
+            package: String::new(),
+            version: String::new(),
+            license: None,
+            title: request.id.clone(),
+            description: None,
+            gender: None,
+            color: None,
+            avatar: None,
+            prompt: String::new(),
+            tones: Vec::new(),
+            samples: Vec::new(),
+            fallback_voice: None,
+            voices: Default::default(),
+            skipped: Vec::new(),
+            reference: None,
+            voice_origin: None,
+            assets: PathBuf::new(),
         }
     }
 

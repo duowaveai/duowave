@@ -66,11 +66,32 @@ pub struct StreamRelays {
     /// On a computer, or on the station by the owner's flag; read when a stream is asked for (the placement may
     /// change).
     transcode_here: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// Cancelled when the gateway stops: every relayed stream ends. Endless, one held the server's graceful close for
+    /// good on the station on 20.11.2026.
+    closed: tokio_util::sync::CancellationToken,
 }
 
 impl StreamRelays {
     pub fn new(transcoder: Option<PathBuf>, transcode_here: Arc<dyn Fn() -> bool + Send + Sync>) -> Arc<StreamRelays> {
-        Arc::new(StreamRelays { tokens: Mutex::new(HashMap::new()), transcoder, transcode_here })
+        Arc::new(StreamRelays {
+            tokens: Mutex::new(HashMap::new()),
+            transcoder,
+            transcode_here,
+            closed: tokio_util::sync::CancellationToken::new(),
+        })
+    }
+
+    /// The gateway stops: the streams relayed now end, and none is given from now on.
+    pub fn close(&self) {
+        self.closed.cancel();
+    }
+
+    /// A body that ends when the gateway stops.
+    fn until_closed<S>(&self, stream: S) -> Body
+    where
+        S: futures::Stream<Item = std::io::Result<bytes::Bytes>> + Send + 'static,
+    {
+        Body::from_stream(stream.take_until(self.closed.clone().cancelled_owned()))
     }
 
     /// Whether an AAC stream can be transcoded here now.
@@ -106,6 +127,9 @@ impl StreamRelays {
     /// The stream for the station: passed through, or transcoded from AAC where that is allowed.
     pub async fn serve(&self, token: &str) -> Result<Response, ApiError> {
         let url = self.url_of(token).ok_or_else(|| ApiError::not_found("Not Found"))?;
+        if self.closed.is_cancelled() {
+            return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, crate::tr!("DuoWave останавливается")));
+        }
         let upstream = open(&url, false).await?;
         let kind = content_type(&upstream);
         if is_aac(kind.as_deref(), &url) {
@@ -113,7 +137,7 @@ impl StreamRelays {
             return self.transcoded(&url);
         }
         tracing::info!(target: "media", "relaying a stream for the station ({})", kind.as_deref().unwrap_or("no type"));
-        Ok(passed(upstream, kind))
+        Ok(passed(self.until_closed(upstream.bytes_stream().map(|chunk| chunk.map_err(std::io::Error::other))), kind))
     }
 
     /// AAC into MP3 by ffmpeg, as it comes; the process goes when the station stops listening.
@@ -126,7 +150,7 @@ impl StreamRelays {
         };
         let child = transcoder(ffmpeg, url).map_err(|error| ApiError::internal(format!("ffmpeg: {error}")))?;
         tracing::info!(target: "media", "transcoding an AAC stream into MP3 for the station");
-        let body = Body::from_stream(TranscodedStream::new(child));
+        let body = self.until_closed(TranscodedStream::new(child));
         let mut response = body.into_response();
         let headers = response.headers_mut();
         headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("audio/mpeg"));
@@ -165,7 +189,8 @@ pub async fn app_sound(url: &str, range: Option<HeaderValue>) -> Result<Response
             .filter_map(|name| upstream.headers().get(&name).cloned().map(|value| (name, value)))
             .collect();
     let kind = content_type(&upstream);
-    let mut response = passed(upstream, kind);
+    let body = Body::from_stream(upstream.bytes_stream().map(|chunk| chunk.map_err(std::io::Error::other)));
+    let mut response = passed(body, kind);
     *response.status_mut() = if status == StatusCode::PARTIAL_CONTENT { status } else { StatusCode::OK };
     response.headers_mut().extend(kept);
     Ok(response)
@@ -192,8 +217,7 @@ fn content_type(upstream: &reqwest::Response) -> Option<String> {
 }
 
 /// The stream as it comes, with a type the station's player knows (audio, an HLS list, Ogg).
-fn passed(upstream: reqwest::Response, kind: Option<String>) -> Response {
-    let body = Body::from_stream(upstream.bytes_stream().map(|chunk| chunk.map_err(std::io::Error::other)));
+fn passed(body: Body, kind: Option<String>) -> Response {
     let mut response = body.into_response();
     let headers = response.headers_mut();
     let kind = kind

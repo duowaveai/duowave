@@ -155,7 +155,7 @@ function placePill(entry: CatalogEntry): string {
 function Pills({ entry, engines }: { entry: CatalogEntry; engines: Engines }) {
     return (
         <>
-            <span class={`pill ${placePill(entry)}`}>{placeOf(entry.kind, entry.runtime, entry.runs)}</span>
+            <span class={`pill ${placePill(entry)}`}>{placeOf(entry.kind, entry.runtime, entry.runs, entry.place)}</span>
             <PlacePill entry={entry} />
             {recommendedHere(entry) && !isInstalled(entry) && <span class="pill pill-own">{tr.magicplace.recommendedPill}</span>}
             {isNew(entry) && !isInstalled(entry) && <span class="pill pill-agent">{tr.magicplace.newPill}</span>}
@@ -224,7 +224,7 @@ function Shelf({ id, title, entries, actions, onOpen }: { id: string; title: str
                             <PackageThumb url={entry.preview?.image} />
                             <span class="mp-tile-title">{entry.title}</span>
                             {/* Где работает — наверху, меткой (замечание 17 теста 19.11), а не строкой под описанием. */}
-                            <span class={`pill ${placePill(entry)} self-start`}>{placeOf(entry.kind, entry.runtime, entry.runs)}</span>
+                            <span class={`pill ${placePill(entry)} self-start`}>{placeOf(entry.kind, entry.runtime, entry.runs, entry.place)}</span>
                             {entry.description && <span class="mp-tile-line">{entry.description}</span>}
                         </button>
                         <div class="mp-tile-actions">

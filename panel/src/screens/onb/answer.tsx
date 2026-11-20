@@ -26,6 +26,7 @@ import {
 } from '../../api';
 import { tr } from '../../i18n';
 import { usePanel } from '../../shell/context';
+import { useDuowaveShown } from '../../shell/dev';
 import { NoArrival, linkActive, restoreLink, useSpeakerLink } from './speaker';
 import { useOnboarding, useStepNav } from './nav';
 import '../../ui/onboarding-canvas.css';
@@ -137,6 +138,7 @@ export function AnswerStep() {
     const [keyOpen, setKeyOpen] = useState(false);
     const [key, setKey] = useState('');
     const [service, setService] = useState('');
+    const duowave = useDuowaveShown();
     /** Адрес своего сервиса и поля, что просит провайдер (ID каталога у YandexGPT): как в окне «Добавить провайдера». */
     const [url, setUrl] = useState('');
     const [extra, setExtra] = useState<Record<string, string>>({});
@@ -252,7 +254,11 @@ export function AnswerStep() {
             if (provider) await settle(provider);
         });
 
-    const keyPresets = (view?.presets ?? []).filter((preset) => preset.needsKey && !preset.local && !preset.signIn?.keyless && preset.id !== 'openrouter');
+    // DuoWave пока спрятан (shell/dev.ts `duowaveShown`): в списке сервисов его нет, пока его не показали.
+    const keyPresets = (view?.presets ?? []).filter(
+        (preset) =>
+            preset.needsKey && !preset.local && !preset.signIn?.keyless && preset.id !== 'openrouter' && (preset.id !== 'duowave' || duowave),
+    );
     const guessed = keyService(key);
     const keyTarget = service || (guessed && (guessed === 'openrouter' || keyPresets.some((preset) => preset.id === guessed)) ? guessed : '');
 

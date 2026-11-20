@@ -1379,6 +1379,64 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn its_stop_ends_every_gateway_of_ours_kills_one_that_hangs_and_its_apps_programs() {
+        use std::os::unix::process::ExitStatusExt;
+        // 20.11.2026 on the station: TERM sent, the pid files removed, the gateway hung on its way out with the wake
+        // word's program beside it. Here a gateway that ignores TERM and no pid file names it.
+        let service = Service::new("ws://127.0.0.1:8790/uni.ws");
+        let mut hung = std::process::Command::new("sh").args(["-c", "trap '' TERM; exec sleep 30"]).spawn().unwrap();
+        service.process(hung.id(), &format!("{} serve", service.file("bin/duowave").display()));
+        let mut word = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let program = service.file("gateway/packages/p-1/0.1.0/bin/word");
+        service.process(word.id(), &program.display().to_string());
+        // Not ours: another program's serve, and our program asked something else.
+        let mut stranger = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        service.process(stranger.id(), "/usr/bin/other serve");
+        let mut asked = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        service.process(asked.id(), &format!("{} version", service.file("bin/duowave").display()));
+        std::fs::create_dir_all(service.file("gateway")).unwrap();
+        // The TERM is ignored for sure once the shell has become `sleep`.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let began = std::time::Instant::now();
+        let output = service.command("stop", &[("DUOWAVE_STOP_WAIT_SECS", "1")]).output().unwrap();
+        assert!(output.status.success());
+        assert!(began.elapsed() < std::time::Duration::from_secs(8), "{:?}", began.elapsed());
+        assert_eq!(hung.wait().unwrap().signal(), Some(libc::SIGKILL), "TERM went unheard: killed");
+        assert_eq!(word.wait().unwrap().signal(), Some(libc::SIGTERM), "its app's program ends with it");
+        assert!(stranger.try_wait().unwrap().is_none(), "another program's serve is not ours");
+        assert!(asked.try_wait().unwrap().is_none(), "only a gateway that serves");
+        let _ = stranger.kill();
+        let _ = asked.kill();
+        let log = std::fs::read_to_string(service.file("gateway/gateway.log")).unwrap_or_default();
+        assert!(log.contains("did not end within 1 s of TERM: killed"), "{log}");
+    }
+
+    #[test]
+    fn its_stop_is_over_once_the_gateway_is() {
+        use std::os::unix::process::ExitStatusExt;
+        // A gateway that takes two seconds to close: the stop waits for it, a restart does not start a second one
+        // beside it.
+        let service = Service::new("ws://127.0.0.1:8790/uni.ws");
+        let mut closing = std::process::Command::new("sh")
+            .args(["-c", "trap 'sleep 2; exit 0' TERM; while :; do sleep 0.1; done"])
+            .spawn()
+            .unwrap();
+        service.process(closing.id(), "duowave serve");
+        std::fs::write(service.file("gateway.pid"), format!("{} this-boot\n", closing.id())).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let began = std::time::Instant::now();
+        let output = service.command("stop", &[("DUOWAVE_STOP_WAIT_SECS", "10")]).output().unwrap();
+        assert!(output.status.success());
+        let took = began.elapsed();
+        let status = closing.try_wait().unwrap().expect("ended before the stop was over");
+        assert_eq!((status.code(), status.signal()), (Some(0), None), "it ended by itself, not killed");
+        assert!(took >= std::time::Duration::from_millis(1500), "{took:?}");
+        assert!(!service.file("gateway.pid").exists());
+        let log = std::fs::read_to_string(service.file("gateway/gateway.log")).unwrap_or_default();
+        assert!(!log.contains("killed"), "{log}");
+    }
+
+    #[test]
     fn its_start_gives_the_callers_output_back_while_the_loop_runs_on() {
         // An install over SSH runs the service's start with Command::output(), which waits for that output to close.
         // The loop and the watch must not keep it: on the station on 11.11.2026 they did, for good.

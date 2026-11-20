@@ -13,6 +13,12 @@ export default {
     waitTitle: 'Голос ждёт',
     waitPill: (name: string) => `${name} ждёт вашего решения`,
     waitPillFailed: (name: string) => `${name}: голос не встал`,
+    // Голос просто ставится — спокойная пилюля, без точки: «Рик: ставлю CosyVoice 3 · 37 %».
+    waitPillModel: (name: string, model: string) => `${name}: ставлю ${model}`,
+    waitPillAnyModel: (name: string) => `${name}: ставлю модель голоса`,
+    waitPillFile: (name: string) => `${name}: скачиваю голос`,
+    waitPillImprint: (name: string) => `${name}: снимаю голос`,
+    waitPillPercent: (line: string, percent: number) => `${line} · ${percent} %`,
     waitDot: 'Голос ждёт вашего решения',
     waitOn: (computer: string) => `на «${computer}»`,
     waitMeanwhile: 'Пока вы не ответите, говорит прежний голос.',

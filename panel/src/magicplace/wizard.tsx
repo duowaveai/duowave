@@ -28,7 +28,7 @@ import {
 } from './wizard-state';
 import { usePendingInstall } from './pending-install';
 import { settleVoice, settlingLine, showSettling, useSettling } from './settling';
-import { VoiceWaitingPill, useVoiceAttention } from '../voice/pending-voice';
+import { VoiceWaitingPill, useVoiceAttention, useVoiceGoing } from '../voice/pending-voice';
 import { isCallWord } from './filters';
 
 /**
@@ -85,7 +85,7 @@ const plainName = (title: string): string => title.replace(/\s*\([^)]*\)\s*$/, '
 const runsCode = (entry: CatalogEntry): boolean => entry.kind === 'app' || entry.kind === 'plugin';
 
 function sizeOf(entry: CatalogEntry): string {
-    const place = placeOf(entry.kind, entry.runtime, entry.runs);
+    const place = placeOf(entry.kind, entry.runtime, entry.runs, entry.place);
     return entry.sizeMb ? `${place} · ${tr.wizard.sizeMb(entry.sizeMb)}` : place;
 }
 
@@ -156,6 +156,20 @@ function plan(
             return { state: 'done', note: t.donePackage };
         },
     }));
+    // Выбор модели — центру до всех шагов, и дождаться (21.11): без этого персонаж вставал и центр говорил его Турбо
+    // раньше, чем выбор сохранился, — Турбо ставил другую модель. Центр помнит выбор по пакету и передаст его Турбо,
+    // когда персонаж встанет. Не сохранился — первый шаг падает со словами центра, «Повторить» сохраняет снова.
+    const keep = entry.kind === 'character' && voice?.plan.plan ? voice.engine : null;
+    if (keep && steps[0]) {
+        const first = steps[0].run;
+        steps[0] = {
+            ...steps[0],
+            run: async (show) => {
+                await api.setHomeVoiceEngine({ package: entry.id }, keep);
+                return first(show);
+            },
+        };
+    }
     if (entry.kind === 'character') {
         const name = plainName(entry.title);
         // Модель не помещается на диск компьютера (п. 40): голос не ставим вовсе — персонаж говорит запасным.
@@ -203,15 +217,22 @@ function plan(
                     key: 'model',
                     title: t.stepModel(chosen.title, computer),
                     run: async (show) => {
+                        // Модель, что правда ставится для голоса этого персонажа: Турбо называет её в `plan.chosen` (21.11 —
+                        // встала другая, а шаг ждал выбранную и через STILL_MS падал в «догонит»); старый Турбо — выбранная.
+                        const coming = (fresh: HomeVoicePlan) =>
+                            fresh.plan?.engines.find((engine) => engine.id === (fresh.plan?.chosen ?? chosen.id)) ?? fresh.plan?.engines.find((engine) => engine.id === chosen.id);
                         const outcome = await follow(
                             show,
-                            (fresh) => fresh.plan?.engines.find((engine) => engine.id === chosen.id)?.state === 'ready',
+                            (fresh) => coming(fresh)?.state === 'ready',
                             (fresh) => {
                                 const going = fresh.plan?.progress;
-                                if (going?.stage !== 'model' || going.engine !== chosen.id) return null;
+                                const row = coming(fresh);
+                                if (going?.stage !== 'model' || !row || going.engine !== row.id) return null;
+                                // Не та, что в заголовке шага, — назвать её.
+                                const named = row.id === chosen.id ? '' : `${row.title} · `;
                                 // Слова шлюза — мегабайты, скорость, «стояло — повторяю» (п. 66); старый шлюз — по процентам.
-                                if (going.detail) return `${t.modelPercent(going.percent ?? 0)} · ${going.detail}`;
-                                return going.totalMb ? t.modelProgress(going.percent ?? 0, gb(going.doneMb), gb(going.totalMb)) : t.modelPercent(going.percent ?? 0);
+                                if (going.detail) return `${named}${t.modelPercent(going.percent ?? 0)} · ${going.detail}`;
+                                return named + (going.totalMb ? t.modelProgress(going.percent ?? 0, gb(going.doneMb), gb(going.totalMb)) : t.modelPercent(going.percent ?? 0));
                             },
                         );
                         return outcome.state === 'done' ? { state: 'done', note: t.engineReady } : outcome;
@@ -414,8 +435,7 @@ function Wizard({ opening, onClose }: { opening: WizardOpening; onClose: () => v
     };
 
     const start = (): void => {
-        // Выбор модели — центру сразу: он помнит его по пакету и передаст Турбо, когда персонаж встанет.
-        if (voicePlan?.plan && engine) void api.setHomeVoiceEngine({ package: entry.id }, engine).catch(() => undefined);
+        // Выбор модели центру уходит первым шагом и дожидается ответа (plan, 21.11) — не вдогонку шагам.
         plans.current = plan(api, entry, parts, opening.onChanged, voicePlan ? { plan: voicePlan, engine } : undefined);
         // Голос персонажа ставится на Турбо (модель — гигабайты): пилюля «донастраивается» живёт, пока он не включится, —
         // и когда мастер кончился, и после перезагрузки окна (уход в окно колонки после первых шагов, п. 69).
@@ -624,6 +644,7 @@ export function InstallPill({ place }: { place: 'top' | 'side' | 'onb' }) {
     const waiting = usePendingInstall();
     const settling = useSettling();
     const voiceAsks = useVoiceAttention();
+    const voiceGoes = useVoiceGoing();
     const t = tr.wizard;
     // Голос ждёт ответа владельца (проверка начисто 19.11): вопрос важнее хода — «… ждёт вашего решения».
     if (voiceAsks && (!progress || progress.hidden)) return <VoiceWaitingPill place={place} />;
@@ -641,6 +662,9 @@ export function InstallPill({ place }: { place: 'top' | 'side' | 'onb' }) {
                 {waiting.step ? t.pillPreparing(t.quote(waiting.title)) : t.pillWaits(t.quote(waiting.title))}
             </span>
         );
+    // Голос просто ставится (выбран в «Персонаже», не мастером): спокойная пилюля с моделью и процентом — скачивание в
+    // гигабайты не прячется (21.11). Мастер идёт — его ход важнее.
+    if (voiceGoes && (!progress || (progress.hidden && progress.finished))) return <VoiceWaitingPill place={place} />;
     if (!progress?.hidden) return null;
     return (
         <button type="button" class={`waiting-pill waiting-pill-${place}`} onClick={showInstallWizard}>

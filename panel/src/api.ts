@@ -688,7 +688,10 @@ export interface VoicePlanEngine {
 /** План голоса персонажа от Турбо: модели, выбранная, запасной голос, ход. */
 export interface VoicePlan {
     engines: VoicePlanEngine[];
+    /** Модель, с которой голос идёт: та, что ставится для ждущего голоса этого персонажа, иначе `wanted`. */
     chosen?: string | null;
+    /** Модель по желанию: слово центра, названная им раньше или выбор самого Турбо (шлюз постарше не присылает). */
+    wanted?: string | null;
     fallback?: { cardId: string; title: string; installed: boolean; sizeMb?: number | null } | null;
     progress?: {
         stage: 'model' | 'voice';
@@ -1915,7 +1918,8 @@ export interface TtsPending {
     /** waiting — ждёт модель, файл или снимок; tight — памяти впритык; failed — не вышло. */
     state: 'waiting' | 'installing' | 'tight' | 'failed' | string;
     /** Чего ждёт: модели (engine), файла голоса (file) или снимка голоса (imprint). */
-    waitFor?: { kind: 'engine' | 'file' | 'imprint' | string; id: string } | null;
+    /** `title` — имя модели для людей («CosyVoice 3»), когда шлюз его знает. */
+    waitFor?: { kind: 'engine' | 'file' | 'imprint' | string; id: string; title?: string | null } | null;
     progress?: number;
     /** Что идёт сейчас словами: «Скачиваю веса модели · 603 из ~2 300 МБ · 1,2 МБ/с» (п. 66). */
     detail?: string | null;
@@ -2100,6 +2104,8 @@ export interface PackageView {
     problem?: string | null;
     permissions: string[];
     runs: string[];
+    /** Где работает для этого шлюза: приложение и для колонки, и для компьютера на шлюзе колонки — `station`. */
+    place?: CatalogPlace | null;
     calls: number;
     errors: number;
     lastError?: { at: string; message: string } | null;

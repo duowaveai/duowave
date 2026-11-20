@@ -29,6 +29,18 @@ pub fn voice_id(character: &Character, engine: &str) -> String {
     format!("c-{}-{}-{}", character.package, character.local, engine)
 }
 
+/// The model named for a character (`<package>:<local>`); by a package's id — the one named for a character of it.
+fn named_in(mut named: std::collections::BTreeMap<String, String>, character: &str) -> Option<String> {
+    if let Some(engine) = named.remove(character) {
+        return Some(engine);
+    }
+    if character.contains(':') {
+        return None;
+    }
+    let theirs = format!("{character}:");
+    named.into_iter().find(|(id, _)| id.starts_with(&theirs)).map(|(_, engine)| engine)
+}
+
 /// The built-in Piper voices, any of which may stand in for a hidden character's voice.
 const ANY_PIPER: [&str; 4] = ["piper-denis", "piper-dmitri", "piper-ruslan", "piper-irina"];
 
@@ -52,8 +64,19 @@ impl CharacterVoices {
     }
 
     /// The model the centre named for this character's voice here (clean-path check 18.11, item 40), if any.
+    /// Asked by a package's id (a plan before its character is here), the one named for a character of it.
     pub fn named_engine(&self, character: &str) -> Option<String> {
-        self.settings.get(&TURBO_VOICE_ENGINES, None)?.remove(character)
+        named_in(self.settings.get(&TURBO_VOICE_ENGINES, None)?, character)
+    }
+
+    /// A package removed: the models its centre named for its characters' voices go with it.
+    pub fn forget_engines(&self, package: &str) {
+        let Some(mut named) = self.settings.get(&TURBO_VOICE_ENGINES, None) else { return };
+        if crate::home::character::drop_package(&mut named, package) {
+            if let Err(error) = self.settings.set(&TURBO_VOICE_ENGINES, &named, None) {
+                tracing::warn!(target: "characters", "{package}: the models named for it not forgotten: {}", error.message);
+            }
+        }
     }
 
     /// Keeps the model the centre named for a character's voice: its voice goes with it from now on.
@@ -448,6 +471,35 @@ mod tests {
     #[test]
     fn knows_the_engines_the_voice_lab_knows() {
         assert_eq!(KNOWN_ENGINES, engines().iter().map(String::as_str).collect::<Vec<_>>().as_slice());
+    }
+
+    /// A plan asked by the package (the wizard's, before the character is here) finds the model named for a character
+    /// of it; a character's own id only its own.
+    #[test]
+    fn the_model_named_for_a_character_is_found_by_its_package_too() {
+        let named = std::collections::BTreeMap::from([
+            ("rick:rick".to_string(), "cosyvoice3".to_string()),
+            ("arthur:arthur".to_string(), "omnivoice".to_string()),
+        ]);
+        assert_eq!(named_in(named.clone(), "rick:rick").as_deref(), Some("cosyvoice3"));
+        assert_eq!(named_in(named.clone(), "rick").as_deref(), Some("cosyvoice3"));
+        assert_eq!(named_in(named.clone(), "rick:summer"), None);
+        assert_eq!(named_in(named.clone(), "ric"), None);
+        assert_eq!(named_in(named, "morty"), None);
+    }
+
+    /// A package removed takes the models its centre named for its characters with it; others' stay.
+    #[tokio::test]
+    async fn the_models_named_for_a_removed_package_go_with_it() {
+        let lab = lab().await;
+        let app = &lab.app;
+        app.characters.name_engine("rick:rick", "cosyvoice3").unwrap();
+        app.characters.name_engine("arthur:arthur", "omnivoice").unwrap();
+        app.characters.forget_engines("rick");
+        let named = app.settings.get(&TURBO_VOICE_ENGINES, None).unwrap();
+        assert_eq!(named, std::collections::BTreeMap::from([("arthur:arthur".to_string(), "omnivoice".to_string())]));
+        app.characters.forget_engines("nobody");
+        assert_eq!(app.settings.get(&TURBO_VOICE_ENGINES, None).unwrap().len(), 1);
     }
 
     #[tokio::test]

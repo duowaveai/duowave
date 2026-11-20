@@ -274,17 +274,15 @@ impl Entry {
         download.title.clone()
     }
 
-    /// Where it works, in MagicPlace's words: `gateway` (a plugin: QuickJS, WASM), `computer` (an app, its own
-    /// program beside the gateway on a computer), `station` (an app that runs on the station only: AirPlay),
-    /// `network` (a plugin on MCP: a service out there). None for data.
+    /// Where it works, in MagicPlace's words, whatever gateway asks — [`place_of`] without a gateway.
     pub fn place(&self) -> Option<&'static str> {
-        match (self.kind, self.runtime.as_deref()) {
-            (PackageKind::Plugin, Some("mcp")) => Some("network"),
-            (PackageKind::Plugin, _) => Some("gateway"),
-            (PackageKind::App, _) if !self.runs.is_empty() && !self.runs.contains(&Placement::Pc) => Some("station"),
-            (PackageKind::App, _) => Some("computer"),
-            _ => None,
-        }
+        place_of(self.kind, self.runtime.as_deref() == Some("mcp"), &self.runs, None)
+    }
+
+    /// Where it works for the gateway at `placement`: an app for both a station and a computer works where it is
+    /// installed — `station` on a station's gateway (DuoGram), `computer` on a computer's.
+    pub fn place_at(&self, placement: Placement) -> Option<&'static str> {
+        place_of(self.kind, self.runtime.as_deref() == Some("mcp"), &self.runs, Some(placement))
     }
 
     /// The archive for this machine: its platform's, else the one archive.
@@ -1024,6 +1022,23 @@ pub fn entry_state_at(
         Some(installed) if *installed < entry.version => (EntryState::Update, None),
         Some(_) => (EntryState::Installed, None),
         None => (EntryState::Available, None),
+    }
+}
+
+/// Where a package works, in MagicPlace's words: `gateway` (a plugin: QuickJS, WASM), `computer` (an app, its own
+/// program beside the gateway on a computer), `station` (an app that runs on the station only: AirPlay; or an app
+/// for both installed on a station's gateway — it runs there, not on the Турбо), `network` (a plugin on MCP: a
+/// service out there). None for data. `here` — the gateway's placement, when known.
+pub fn place_of(kind: PackageKind, mcp: bool, runs: &[Placement], here: Option<Placement>) -> Option<&'static str> {
+    match kind {
+        PackageKind::Plugin if mcp => Some("network"),
+        PackageKind::Plugin => Some("gateway"),
+        PackageKind::App if !runs.is_empty() && !runs.contains(&Placement::Pc) => Some("station"),
+        PackageKind::App if here.is_some_and(|here| here.on_station() && super::manifest::fits(runs, here)) => {
+            Some("station")
+        }
+        PackageKind::App => Some("computer"),
+        _ => None,
     }
 }
 
@@ -2127,7 +2142,7 @@ impl PackageCatalog {
                             signed: code_allowed(entry, signed)
                                 && matches!(entry.kind, PackageKind::Plugin | PackageKind::App),
                             faces: entry.faces.clone(),
-                            place: entry.place(),
+                            place: entry.place_at(placement),
                             prefer_home: entry.prefer_home,
                             recommended: entry.recommended,
                             added_at: entry.added_at.clone(),
@@ -3652,6 +3667,13 @@ pub mod tests {
         assert_eq!(feed.place(), Some("computer"));
         let station = Entry { runs: vec![Placement::Station, Placement::StationServer], ..feed.clone() };
         assert_eq!(station.place(), Some("station"), "an app for the station only works there, not on a computer");
+        // An app for both works where it is installed: on a station's gateway it is the station's, not the Турбо's.
+        let both = Entry { runs: vec![Placement::Station, Placement::Pc], ..feed.clone() };
+        assert_eq!(both.place(), Some("computer"));
+        assert_eq!(both.place_at(Placement::Pc), Some("computer"));
+        assert_eq!(both.place_at(Placement::Station), Some("station"));
+        assert_eq!(both.place_at(Placement::StationServer), Some("station"), "a station with a Турбо runs it itself");
+        assert_eq!(feed.place_at(Placement::StationServer), Some("computer"), "an app for a computer stays one");
         let texts: Vec<(String, String)> = feed.all_texts().into_iter().map(|(lang, title, _)| (lang, title)).collect();
         assert_eq!(texts, [("ru".to_string(), "Лента".to_string()), ("en".to_string(), "Feed".to_string())]);
 

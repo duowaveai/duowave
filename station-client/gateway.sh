@@ -36,6 +36,9 @@ GRACE=${DUOWAVE_GRACE_SECS:-60}
 MISSES=${DUOWAVE_MISSES:-4}
 HANG_WINDOW=${DUOWAVE_HANG_WINDOW_SECS:-1800}
 START_WAIT=${DUOWAVE_START_WAIT_SECS:-15}
+# A stop waits STOP_WAIT s for the gateway to end on TERM (it ends within 12 s by itself), then kills it: the whole stop
+# stays under the 20 s the computer gives a command over SSH.
+STOP_WAIT=${DUOWAVE_STOP_WAIT_SECS:-14}
 BOOT=$(cat "$PROC/sys/kernel/random/boot_id" 2>/dev/null)
 
 port() {
@@ -64,6 +67,40 @@ alive() {
 }
 
 pid_of() { cut -d' ' -f1 "$1" 2>/dev/null; }
+
+# Every gateway of ours that runs, by its command line, not only the one its pid file names: `<program> serve` of the
+# program gateway-bin names, of any program in this folder, of an update tried from memory (/tmp/duowave-updates). A
+# pid file can be gone or stale; a gateway left running holds the port, and the next start falls on it.
+serving() {
+    child=
+    if alive "$CHILD" serve; then
+        child=$(pid_of "$CHILD")
+        kill -0 "$child" 2>/dev/null && echo "$child"
+    fi
+    for entry in "$PROC"/[0-9]*; do
+        pid=${entry##*/}
+        [ "$pid" = "$child" ] && continue
+        # shellcheck disable=SC2046 # its words, split on purpose
+        set -- $(tr '\0' ' ' <"$entry/cmdline" 2>/dev/null)
+        [ "${2:-}" = serve ] || continue
+        case "${1:-}" in
+            "$BIN" | "$DIR"/* | /tmp/duowave-updates/*) kill -0 "$pid" 2>/dev/null && echo "$pid" ;;
+        esac
+    done
+}
+
+# The programs the gateway started from its data (the apps' builds, its Node): they end with it. Left behind, the wake
+# word's program stayed after a gateway that hung on 20.11.2026.
+apps_left() {
+    for entry in "$PROC"/[0-9]*; do
+        pid=${entry##*/}
+        # shellcheck disable=SC2046 # its words, split on purpose
+        set -- $(tr '\0' ' ' <"$entry/cmdline" 2>/dev/null)
+        case "${1:-}" in "$DATA"/*) kill -0 "$pid" 2>/dev/null && echo "$pid" ;; esac
+    done
+}
+
+note() { [ -d "$DATA" ] && echo "$1" >>"$LOG"; }
 
 # Times kept in `file`, the newest `now` added; prints how many fall within `window` s.
 count() {
@@ -202,12 +239,37 @@ start() {
 }
 
 # TERM: the gateway closes its sessions and the database and exits; the loop and the watch go first, so neither starts
-# it again.
+# it again. The stop is over only once the gateway is: it is waited for, killed after STOP_WAIT s, and so are its apps'
+# programs. On 20.11.2026 a stop sent TERM and went, the gateway hung on its way out, and the next start would have
+# fallen on its port.
 stop() {
     alive "$WATCH" gateway.sh && kill "$(pid_of "$WATCH")"
     alive "$LOOP" gateway.sh && kill "$(pid_of "$LOOP")"
-    alive "$CHILD" serve && kill "$(pid_of "$CHILD")"
-    rm -f "$WATCH" "$LOOP" "$CHILD"
+    rm -f "$WATCH" "$LOOP"
+    pids=$(serving)
+    # shellcheck disable=SC2086 # one pid a word
+    [ -n "$pids" ] && kill $pids 2>/dev/null
+    waited=0
+    while [ -n "$pids" ] && [ "$waited" -lt "$STOP_WAIT" ]; do
+        sleep 1
+        waited=$((waited + 1))
+        pids=$(serving)
+    done
+    if [ -n "$pids" ]; then
+        note "the gateway did not end within $STOP_WAIT s of TERM: killed"
+        # shellcheck disable=SC2086
+        kill -9 $pids 2>/dev/null
+    fi
+    pids=$(apps_left)
+    if [ -n "$pids" ]; then
+        # shellcheck disable=SC2086
+        kill $pids 2>/dev/null
+        sleep 1
+        pids=$(apps_left)
+        # shellcheck disable=SC2086
+        [ -n "$pids" ] && kill -9 $pids 2>/dev/null
+    fi
+    rm -f "$CHILD"
 }
 
 case "${1:-}" in

@@ -411,6 +411,8 @@ pub struct PluginHost {
     /// The apps' programs held off while the gateway is updated on the station (src/updates/trial.rs): switched off
     /// for the trial's memory, not as the owner's choice.
     apps_held: AtomicBool,
+    /// The gateway stops (`close`): no code is loaded any more.
+    closing: AtomicBool,
     deferred: Mutex<VecDeque<(String, String, Value)>>,
     /// The last count told on the bus: free MB and the pressure.
     told: Mutex<Option<(u64, Pressure)>>,
@@ -549,6 +551,7 @@ impl PluginHost {
             admitting: Mutex::new(()),
             deferring: AtomicBool::new(false),
             apps_held: AtomicBool::new(false),
+            closing: AtomicBool::new(false),
             deferred: Mutex::new(VecDeque::new()),
             told: Mutex::new(None),
             asleep: Mutex::new(Vec::new()),
@@ -603,8 +606,16 @@ impl PluginHost {
         }));
     }
 
+    /// The gateway begins to stop: no plugin's code and no app's program is started from now on, whatever asks for it
+    /// — an event of the stop itself (a station offline) loaded the radio on the station on 20.11.2026, in the middle
+    /// of a stop that then never ended. What is loaded answers on until `shutdown`.
+    pub fn close(&self) {
+        self.closing.store(true, Ordering::SeqCst);
+    }
+
     /// Every plugin's code unloaded, the tasks stopped: at shutdown.
     pub fn shutdown(&self) {
+        self.close();
         for task in self.tasks.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).drain(..) {
             task.abort();
         }
@@ -615,6 +626,16 @@ impl PluginHost {
                 }
             }
         }
+    }
+
+    /// The apps' programs, asked to stop by `shutdown`: waited for up to `within`, then those left are killed.
+    pub async fn programs_ended(&self, within: Duration) {
+        self.apps_engine.programs_ended(within).await;
+    }
+
+    /// Every app's program still running, killed at once: the gateway ends now.
+    pub fn kill_programs_now(&self) {
+        self.apps_engine.kill_all_now();
     }
 
     pub fn safe_mode(&self) -> bool {
@@ -1511,6 +1532,9 @@ impl PluginHost {
             if loaded.version == version {
                 return Ok(loaded.instance.clone());
             }
+        }
+        if self.closing.load(Ordering::SeqCst) {
+            return Err(PluginError::Unavailable(crate::tr!("DuoWave останавливается")));
         }
         if let Some(loaded) = plugin.release(&mut slot) {
             loaded.instance.stop();
@@ -2956,6 +2980,10 @@ impl PluginHost {
                 .as_ref()
                 .map(|manifest| manifest.runs.iter().map(|runs| runs.as_str()).collect())
                 .unwrap_or_default(),
+            place: manifest.as_ref().and_then(|manifest| {
+                let mcp = manifest.runtime == super::manifest::Runtime::Mcp;
+                super::catalog::place_of(manifest.kind, mcp, &manifest.runs, Some((self.placement)()))
+            }),
             calls: stats.calls,
             errors: stats.errors,
             last_error: stats.last_error,
@@ -3435,6 +3463,10 @@ pub struct PackageView {
     pub storage_used: u64,
     pub permissions: Vec<String>,
     pub runs: Vec<&'static str>,
+    /// Where it works for this gateway, in MagicPlace's words (`catalog::place_of`): an app for both a station and a
+    /// computer is `station` on a station's gateway.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub place: Option<&'static str>,
     pub calls: u64,
     pub errors: u64,
     pub last_error: Option<LastError>,
@@ -3687,6 +3719,23 @@ mod tests {
         assert_eq!((view.enabled, view.state, view.loaded), (true, "ready", false));
         assert!(again.host.matched("скажи эхо привет").is_some());
         assert_eq!(said(again.host.call("echo", "say", json!({"word": "в"}), CallKind::Voice).await), "в (1)");
+    }
+
+    #[tokio::test]
+    async fn loads_nothing_once_the_gateway_stops_and_what_is_loaded_answers_on() {
+        // 20.11.2026 on the station: an event of the stop itself loaded the radio in the middle of a stop.
+        let dir = tempfile::tempdir().unwrap();
+        write_package(dir.path(), &echo("1.0.0"), Some(CODE));
+        let fixture = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Pc);
+        let host = fixture.host.clone();
+        host.enable("echo", None).await.unwrap();
+        assert_eq!(said(host.call("echo", "say", json!({"word": "а"}), CallKind::Voice).await), "а (1)");
+        host.close();
+        assert_eq!(said(host.call("echo", "say", json!({"word": "б"}), CallKind::Voice).await), "б (2)");
+        host.unload_now("echo").await;
+        let refused = host.call("echo", "say", json!({"word": "в"}), CallKind::Voice).await.unwrap_err();
+        assert!(refused.to_string().contains("DuoWave останавливается"), "{refused}");
+        assert!(!host.view_one("echo").await.unwrap().loaded);
     }
 
     #[tokio::test]

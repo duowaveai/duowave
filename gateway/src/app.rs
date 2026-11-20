@@ -6,7 +6,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::Router;
 use tokio::net::TcpListener;
@@ -1671,6 +1671,8 @@ impl App {
         // Before the apps stop: what they ran was cut short by the gateway, not by them.
         self.tasks.shutdown();
         self.plugins.shutdown();
+        // Their programs end with the gateway: asked to stop above, the ones left after their grace are killed.
+        self.plugins.programs_ended(APPS_STOP_LIMIT).await;
         self.schedules.stop();
         self.sleep.stop();
         // Every page's notes let go: no note sounds on after the gateway.
@@ -1709,6 +1711,8 @@ impl App {
         self.helpers.stop_links();
         // The stations' sockets are cut: they reconnect to the next gateway.
         self.sessions.stop();
+        // The streams relayed to the stations end: endless, they would hold the close.
+        self.streams.close();
     }
 }
 
@@ -1793,9 +1797,23 @@ pub fn router(app: Arc<App>) -> Router {
     routes
 }
 
+/// How long the server's graceful close waits for the requests still open once the stop began: past it they are cut.
+/// On the station on 20.11.2026 a radio stream relayed to the station (`/media/stream`, endless) held the close for
+/// good, and nothing after it ran — the apps' programs were never stopped, the process never ended.
+pub const DRAIN_LIMIT: Duration = Duration::from_secs(4);
+/// How long the services beside the server have to stop (`App::shutdown`): past it the gateway goes on to its end.
+pub const SERVICES_LIMIT: Duration = Duration::from_secs(6);
+/// The longest a stop of the program takes from its signal (`run`): past it the process ends anyway, the apps'
+/// programs killed first. Under the station's service's own wait (gateway.sh, 14 s), which kills a gateway that
+/// outlives it, and that under the 20 s a command over SSH has (stations/connect/station_shell.rs, `RUN_MS`).
+pub const EXIT_LIMIT: Duration = Duration::from_secs(12);
+/// How long the apps' programs have to end once asked (each has three seconds before it is killed by its supervisor).
+const APPS_STOP_LIMIT: Duration = Duration::from_secs(4);
+
 /// Serves the router on a listener until `shutdown` resolves, then stops the services that run beside it. A computer
 /// that helps serves the link's own TLS port beside it, on the same address (src/helpers/link_serve.rs): both end
-/// together, and both ports are free when this returns.
+/// together, and both ports are free when this returns. Neither waits for good: the open requests get `DRAIN_LIMIT`
+/// once `shutdown` resolved, the services `SERVICES_LIMIT`.
 pub async fn serve(
     app: Arc<App>,
     listener: TcpListener,
@@ -1816,33 +1834,60 @@ pub async fn serve(
     let link = crate::helpers::link_serve::bind(&app, &listener).await;
     let link_stop = tokio_util::sync::CancellationToken::new();
     let stop_link = link_stop.clone();
+    // Cancelled once the stop began: from then on the open requests have DRAIN_LIMIT.
+    let draining = tokio_util::sync::CancellationToken::new();
+    let drain_began = draining.clone();
     let main = axum::serve(listener, router(app.clone()).into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(async move {
             shutdown.await;
+            // No app's code is loaded from now on: an event of the stop itself (a station offline) loaded the radio
+            // on the station on 20.11.2026.
+            stopping.plugins.close();
             // What would hold the graceful close ends now: the panel's live streams, the station clients' polls and
             // streams, the calls' sockets, the links.
             stopping.live.shutdown();
             stopping.before_shutdown();
             stop_link.cancel();
+            drain_began.cancel();
         });
     #[cfg(feature = "pc")]
-    let served = match link {
-        Some(link) => {
-            let link = crate::helpers::link_serve::serve(app.clone(), link, link_stop.cancelled_owned());
-            let (served, linked) = tokio::join!(std::future::IntoFuture::into_future(main), link);
-            if let Err(error) = linked {
-                tracing::warn!("link: the port stopped: {error}");
+    let linked = app.clone();
+    let serving = async move {
+        #[cfg(feature = "pc")]
+        let served = match link {
+            Some(link) => {
+                let link = crate::helpers::link_serve::serve(linked, link, link_stop.cancelled_owned());
+                let (served, linked) = tokio::join!(std::future::IntoFuture::into_future(main), link);
+                if let Err(error) = linked {
+                    tracing::warn!("link: the port stopped: {error}");
+                }
+                served
             }
-            served
+            None => main.await,
+        };
+        #[cfg(not(feature = "pc"))]
+        let served = {
+            drop(link_stop);
+            main.await
+        };
+        served
+    };
+    let served = tokio::select! {
+        served = serving => served,
+        () = async {
+            draining.cancelled().await;
+            tokio::time::sleep(DRAIN_LIMIT).await;
+        } => {
+            tracing::warn!("requests still open {} s after the stop began: cut", DRAIN_LIMIT.as_secs());
+            Ok(())
         }
-        None => main.await,
     };
-    #[cfg(not(feature = "pc"))]
-    let served = {
-        drop(link_stop);
-        main.await
-    };
-    app.shutdown().await;
+    if tokio::time::timeout(SERVICES_LIMIT, app.shutdown()).await.is_err() {
+        tracing::warn!(
+            "the services did not stop within {} s: the gateway ends without them",
+            SERVICES_LIMIT.as_secs()
+        );
+    }
     served
 }
 
@@ -1853,30 +1898,79 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     app.start().await?;
     let listener = TcpListener::bind(("0.0.0.0", port)).await?;
     tracing::info!("HTTP server running on port {port}");
-    serve(app.clone(), listener, shutdown_signal()).await?;
+    let plugins = app.plugins.clone();
+    let stop = async move {
+        let again = shutdown_signal().await;
+        // The program's stop has an end: past EXIT_LIMIT, or at a second signal, the process ends anyway.
+        exit_deadline(EXIT_LIMIT, again, plugins);
+    };
+    serve(app.clone(), listener, stop).await?;
     // What is still going is journaled as cancelled before the database closes.
     app.requests.shutdown();
+    // No app's program outlives the gateway, whatever stopped it.
+    app.plugins.kill_programs_now();
     Ok(())
 }
 
-/// Ctrl+C, or SIGTERM from a service manager.
-pub async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
+/// The stop of the program has an end: a thread of its own (the runtime may be what holds it) ends the process
+/// `limit` after the signal, and a second signal ends it at once — the apps' programs killed first. On the station on
+/// 20.11.2026 the stop hung and a second TERM went unheard: the process stayed until the station rebooted.
+fn exit_deadline(limit: Duration, again: futures::future::BoxFuture<'static, ()>, plugins: Arc<PluginHost>) {
+    let late = plugins.clone();
+    let spawned = std::thread::Builder::new().name("exit-deadline".into()).spawn(move || {
+        std::thread::sleep(limit);
+        exit_now(&format!("the stop took longer than {} s", limit.as_secs()), &late);
+    });
+    if let Err(error) = spawned {
+        tracing::warn!("the stop's deadline did not start: {error}");
+    }
+    tokio::spawn(async move {
+        again.await;
+        exit_now("a second signal during the stop", &plugins);
+    });
+}
+
+fn exit_now(why: &str, plugins: &PluginHost) -> ! {
+    tracing::warn!("{why}: the gateway ends now");
+    plugins.kill_programs_now();
+    std::process::exit(1)
+}
+
+/// Ctrl+C, or SIGTERM from a service manager. Resolves with the next one: once tokio listens for a signal it no longer
+/// ends the process by itself, so a second TERM is heard only through this.
+pub async fn shutdown_signal() -> futures::future::BoxFuture<'static, ()> {
     #[cfg(unix)]
-    let terminate = async {
-        if let Ok(mut signal) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+    let first = async {
+        #[cfg(unix)]
+        if let Some(signal) = terminate.as_mut() {
             signal.recv().await;
+            return;
         }
+        std::future::pending::<()>().await
     };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
     tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
+        _ = tokio::signal::ctrl_c() => {},
+        () = first => {},
     }
     tracing::info!("shutting down");
+    Box::pin(async move {
+        #[cfg(unix)]
+        let next = async {
+            match terminate.as_mut() {
+                Some(signal) => {
+                    signal.recv().await;
+                }
+                None => std::future::pending::<()>().await,
+            }
+        };
+        #[cfg(not(unix))]
+        let next = std::future::pending::<()>();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            () = next => {},
+        }
+    })
 }
 
 /// What an update on the station asks of the rest of the gateway (src/updates/trial.rs).

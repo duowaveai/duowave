@@ -110,7 +110,11 @@ fn serve(memory_was: MemoryWas) -> anyhow::Result<()> {
     let env = duowave::config::Env::from_process();
     duowave::config::data_dir::prepare_data_dir(&env)?;
     let config = duowave::config::Config::load(&env)?;
-    tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(duowave::app::run(config))
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let served = runtime.block_on(duowave::app::run(config));
+    // A blocking task still at work (a file, a disk's sweep) does not hold the end: a runtime dropped waits for them all.
+    runtime.shutdown_timeout(std::time::Duration::from_secs(2));
+    served
 }
 
 fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {

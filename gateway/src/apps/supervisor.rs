@@ -61,6 +61,13 @@ const OOM_SCORE_ADJ: &str = "500";
 const OVER_BUDGET_LOOKS: u32 = 3;
 const MEMORY_EVERY: Duration = Duration::from_secs(10);
 
+/// The pids of an engine's programs that run now: the gateway's end waits for them and kills those left.
+type Running = Arc<Mutex<std::collections::BTreeSet<u32>>>;
+
+fn held(running: &Running) -> std::sync::MutexGuard<'_, std::collections::BTreeSet<u32>> {
+    running.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Who is told an app gave up (five falls): the plugin host switches it off with the reason.
 pub type GiveUp = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
@@ -111,6 +118,9 @@ pub struct ProcessRuntime {
     files_root: Mutex<Option<PathBuf>>,
     /// The station's name, once the placement stands.
     station_name: OnceLock<StationName>,
+    /// Its programs that run now: none outlives the gateway (on the station on 20.11.2026 the wake word's program did,
+    /// after a stop that hung).
+    running: Running,
 }
 
 impl ProcessRuntime {
@@ -123,7 +133,36 @@ impl ProcessRuntime {
             node,
             files_root: Mutex::new(None),
             station_name: OnceLock::new(),
+            running: Running::default(),
         }
+    }
+
+    /// The pids of the apps' programs that run now.
+    pub fn running_programs(&self) -> Vec<u32> {
+        held(&self.running).iter().copied().collect()
+    }
+
+    /// Waits up to `within` for the apps' programs to end — asked to stop, each has `STOP_GRACE` — then kills those
+    /// left.
+    pub async fn programs_ended(&self, within: Duration) {
+        let deadline = Instant::now() + within;
+        while !held(&self.running).is_empty() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        self.kill_all_now();
+    }
+
+    /// Every app's program still running, killed at once: the gateway ends now.
+    pub fn kill_all_now(&self) {
+        let left = std::mem::take(&mut *held(&self.running));
+        #[cfg(unix)]
+        for pid in left {
+            let Ok(pid) = i32::try_from(pid) else { continue };
+            // SAFETY: a signal to a program this engine started and has not reaped (it is in `running` until then).
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        #[cfg(not(unix))]
+        drop(left);
     }
 
     /// Where the station's name comes from: a receiver shows itself to phones by it.
@@ -312,6 +351,8 @@ struct Shared {
     stopping: AtomicBool,
     falls: AtomicU32,
     pid: Mutex<Option<u32>>,
+    /// The engine's programs that run now, this one's pid among them while it runs.
+    running: Running,
     child: tokio::sync::Mutex<Option<tokio::process::Child>>,
     client: reqwest::Client,
     give_up: GiveUp,
@@ -320,6 +361,18 @@ struct Shared {
 }
 
 impl Shared {
+    /// Its program's pid now, kept in RUNNING too.
+    fn set_pid(&self, pid: Option<u32>) {
+        let mut own = self.pid.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(was) = own.take() {
+            held(&self.running).remove(&was);
+        }
+        if let Some(pid) = pid {
+            held(&self.running).insert(pid);
+        }
+        *own = pid;
+    }
+
     fn note(&self, level: &str, message: &str) {
         self.host.log(level, message);
     }
@@ -339,19 +392,19 @@ impl Shared {
                 // SAFETY: a signal to our own child, whose pid is held (not reaped) while `child` lives.
                 unsafe { libc::kill(pid, libc::SIGTERM) };
                 if tokio::time::timeout(STOP_GRACE, child.wait()).await.is_ok() {
-                    *self.pid.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+                    self.set_pid(None);
                     return;
                 }
             }
             let _ = child.start_kill();
             let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
         }
-        *self.pid.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        self.set_pid(None);
     }
 
     async fn launch(&self) -> Result<(), String> {
         let child = spawn(&self.launch, &self.host)?;
-        *self.pid.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = child.id();
+        self.set_pid(child.id());
         *self.child.lock().await = Some(child);
         if well(&self.client, &self.launch, START_LIMIT).await {
             Ok(())
@@ -561,6 +614,7 @@ impl PluginRuntime for ProcessRuntime {
         let node_home = self.node.clone();
         let files_root = self.files_root.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         let station_name = self.station_name.get().and_then(|name| name());
+        let running = self.running.clone();
         Box::pin(async move {
             let manifest =
                 code.manifest.clone().ok_or_else(|| PluginError::Load(crate::tr!("нет манифеста приложения")))?;
@@ -623,6 +677,7 @@ impl PluginRuntime for ProcessRuntime {
                 stopping: AtomicBool::new(false),
                 falls: AtomicU32::new(0),
                 pid: Mutex::new(None),
+                running,
                 child: tokio::sync::Mutex::new(None),
                 client: crate::utils::http::client(),
                 give_up,

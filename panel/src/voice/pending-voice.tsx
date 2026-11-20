@@ -3,7 +3,8 @@
 // Mac → «Этот компьютер»): пока персонаж донастраивался, человек этого вопроса не видел, и голос висел. Теперь ждущий
 // голос дома читается у центра (`/api/v1/home/voice/pending`: свой или Турбо, что даёт голос), и его видно везде:
 // пилюля у дока «… ждёт вашего решения», точка на «Настройках» и на «Голосе», карточка вверху «Голоса», а окно с
-// вопросом открывается само — один раз на каждое ожидание.
+// вопросом открывается само — один раз на каждое ожидание. Голос, что просто ставится (ответа не ждёт), тоже виден
+// (21.11): спокойная пилюля у дока с моделью и процентом — без точки и без окна, что открывается само.
 
 import { useEffect, useState } from 'preact/hooks';
 
@@ -70,10 +71,26 @@ export const asksOwner = (pending: TtsPending | null | undefined): boolean => pe
 /** Имя без пометки: «Паша Техник (демо)» → «Паша Техник». */
 export const plainName = (title: string): string => title.replace(/\s*\([^)]*\)\s*$/, '').trim() || title;
 
+/** Ставится или качается, ответа не ждёт: спокойная пилюля у дока, без точки и без окна, что открывается само. */
+export const goesOn = (pending: TtsPending | null | undefined): boolean => !!pending && !asksOwner(pending);
+
+/** Имя модели, которую ждёт голос, для людей («CosyVoice 3»); шлюз постарше его не присылает — null. */
+const modelTitle = (pending: TtsPending): string | null => (pending.waitFor?.kind === 'engine' ? (pending.waitFor.title ?? pending.needs?.title ?? null) : null);
+
 /** Что с голосом, словами — те же, что у карточки «Голос ждёт» на странице компьютера (screens/models.tsx). */
 export function pendingWords(pending: TtsPending, title: string): string {
     const kind = pending.waitFor?.kind ?? pending.needs?.kind ?? 'engine';
-    const what = pending.needs ? needsWhat(pending.needs) : kind === 'file' ? tr.models.whatVoice : kind === 'imprint' ? tr.models.whatImprint : tr.models.whatModel;
+    const model = modelTitle(pending);
+    // Модель — по имени: «Ставлю модель CosyVoice 3 — …», а не безымянную «модель».
+    const what = pending.needs
+        ? needsWhat(pending.needs)
+        : kind === 'file'
+          ? tr.models.whatVoice
+          : kind === 'imprint'
+            ? tr.models.whatImprint
+            : model
+              ? tr.ui.needsModel(model)
+              : tr.models.whatModel;
     if (pending.state === 'tight') return tr.models.pendingTight(title, pending.reason ?? '');
     if (pending.state === 'failed')
         return tr.models.pendingFailed(kind === 'file' ? tr.models.verbDownload : kind === 'imprint' ? tr.models.verbImprint : tr.models.verbInstall, what, pending.reason ?? '');
@@ -125,6 +142,11 @@ export function useVoiceWaiting(): HomeVoiceWaiting | null {
 /** Голос ждёт ответа владельца — точка на «Настройках» и на «Голосе». */
 export function useVoiceAttention(): boolean {
     return asksOwner(useWaitingState().now?.pending);
+}
+
+/** Голос ставится или качается и ответа не ждёт — спокойная пилюля у дока (без точки). */
+export function useVoiceGoing(): boolean {
+    return goesOn(useWaitingState().now?.pending);
 }
 
 export function showVoiceWaiting(): void {
@@ -299,12 +321,30 @@ export function WaitingCard() {
     );
 }
 
-/** Пилюля у дока: голос ждёт ответа — «Паша Техник ждёт вашего решения»; нажатие — окно с вопросом. */
+/** Спокойная строка пилюли, пока голос ставится: «Рик: ставлю CosyVoice 3 · 37 %». */
+function goingLine(pending: Waiting, name: string): string {
+    const t = tr.voiceHome;
+    const kind = pending.waitFor?.kind ?? 'engine';
+    const model = modelTitle(pending);
+    const line = kind === 'file' ? t.waitPillFile(name) : kind === 'imprint' ? t.waitPillImprint(name) : model ? t.waitPillModel(name, model) : t.waitPillAnyModel(name);
+    return pending.progress !== undefined && pending.progress !== null ? t.waitPillPercent(line, Math.round(pending.progress)) : line;
+}
+
+/**
+ * Пилюля у дока: голос ждёт ответа — «Паша Техник ждёт вашего решения», с точкой; голос просто ставится — спокойно,
+ * «Рик: ставлю CosyVoice 3 · 37 %» (скачивание голоса не пряталось бы — 21.11). Нажатие — окно голоса.
+ */
 export function VoiceWaitingPill({ place }: { place: 'top' | 'side' | 'onb' }) {
     const waiting = useVoiceWaiting();
     const pending = waiting?.pending;
-    if (!pending || !asksOwner(pending)) return null;
+    if (!pending) return null;
     const name = tr.wizard.quote(plainName(pending.title));
+    if (!asksOwner(pending))
+        return (
+            <button type="button" class={`waiting-pill waiting-pill-${place}`} onClick={showVoiceWaiting}>
+                {goingLine(pending, name)}
+            </button>
+        );
     return (
         <button type="button" class={`waiting-pill waiting-pill-${place} is-attention`} onClick={showVoiceWaiting}>
             <span class="badge-dot" aria-hidden="true" />
