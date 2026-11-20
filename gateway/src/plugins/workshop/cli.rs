@@ -1,8 +1,9 @@
 //! `duowave plugin …`: the workshop without the panel (docs/plans/plugins.md, stage 6) — for a person or Claude Code in
 //! a terminal, no gateway needed.
 //!
-//!   duowave plugin new <id> [--theme | --quiz | --midi] [--title «…»] [--from-openapi <api.json>] [--dir <folder>]
-//!       a draft folder from the template (a plugin, or a theme), or from an API's OpenAPI description in JSON
+//!   duowave plugin new <name> [--theme | --quiz | --midi] [--title «…»] [--from-openapi <api.json>] [--dir <folder>]
+//!       a draft folder `<name>` from the template (a plugin, or a theme), or from an API's OpenAPI description in JSON;
+//!       the package's id is random (`p-` and 12 hex digits, owner 20.11.2026), the name is its folder and title
 //!   duowave plugin test <folder> [--phrase «…»]… [--run <function> [--input '<json>']] [--example]
 //!       the workshop's check in the sandbox; phrases as the router hears them; a function with its input
 //!   duowave plugin install <folder> [--packages-dir <dir>]
@@ -18,7 +19,7 @@ use super::{openapi, sandbox, templates};
 use crate::plugins::manifest;
 
 const USAGE: &str =
-    "duowave plugin new <id> [--theme | --quiz | --midi] [--title «…»] [--from-openapi <api.json>] [--dir <folder>]
+    "duowave plugin new <имя> [--theme | --quiz | --midi] [--title «…»] [--from-openapi <api.json>] [--dir <folder>]
 duowave plugin test <folder> [--phrase «…»]… [--run <function> [--input '<json>']] [--example]
 duowave plugin install <folder> [--packages-dir <dir>]";
 
@@ -48,16 +49,19 @@ pub fn command(args: &[String]) -> i32 {
     }
 }
 
+/// A draft in the folder `<name>`: the name is the folder's and the title's (unless `--title`), the id a random one —
+/// it says nothing of the package.
 fn new(args: &[String]) -> Result<(), String> {
-    let id = args.first().filter(|id| !id.starts_with("--")).ok_or(USAGE)?;
-    if !manifest::valid_id(id) {
-        return Err(format!("«{id}»: строчные латинские буквы, цифры и «-», с буквы, до 32 знаков"));
+    let name = args.first().filter(|name| !name.starts_with("--")).ok_or(USAGE)?;
+    if !manifest::valid_id(name) {
+        return Err(format!("«{name}»: имя папки — строчные латинские буквы, цифры и «-», с буквы, до 32 знаков"));
     }
-    let title = flag(args, "--title").unwrap_or(id);
-    let folder = PathBuf::from(flag(args, "--dir").unwrap_or(".")).join(id);
+    let title = flag(args, "--title").unwrap_or(name);
+    let folder = PathBuf::from(flag(args, "--dir").unwrap_or(".")).join(name);
     if folder.exists() {
         return Err(format!("{} уже есть", folder.display()));
     }
+    let id = &manifest::new_package_id();
     let files = match flag(args, "--from-openapi") {
         Some(spec) => {
             let text = std::fs::read_to_string(spec).map_err(|error| format!("{spec}: {error}"))?;
@@ -76,7 +80,11 @@ fn new(args: &[String]) -> Result<(), String> {
         }
         std::fs::write(&file, text).map_err(|error| format!("{}: {error}", file.display()))?;
     }
-    println!("{}: черновик готов. Проверить: duowave plugin test {}", folder.display(), folder.display());
+    println!(
+        "{}: черновик готов, id {id} — случайный, имя в title. Проверить: duowave plugin test {}",
+        folder.display(),
+        folder.display()
+    );
     Ok(())
 }
 
@@ -176,11 +184,16 @@ mod tests {
         let args = |list: &[&str]| list.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
         assert_eq!(command(&args(&["new", "greeter", "--dir", &at("drafts")])), 0);
         assert_eq!(command(&args(&["new", "greeter", "--dir", &at("drafts")])), 1, "it is there already");
+        // The folder and the title bear the name; the id is a random one.
+        let id = id_of(&dir.path().join("drafts/greeter")).unwrap();
+        assert!(manifest::random_id(&id), "{id}");
+        let made = std::fs::read_to_string(dir.path().join("drafts/greeter/manifest.json")).unwrap();
+        assert!(made.contains("\"title\": \"greeter\""), "{made}");
         assert_eq!(command(&args(&["test", &at("drafts/greeter"), "--phrase", "скажи привет Саша"])), 0);
         assert_eq!(command(&args(&["install", &at("drafts/greeter"), "--packages-dir", &at("packages")])), 0);
         assert_eq!(command(&args(&["install", &at("drafts/greeter"), "--packages-dir", &at("packages")])), 0);
-        assert!(dir.path().join("packages/greeter/0.1.0/backend.js").is_file());
-        let again = std::fs::read_to_string(dir.path().join("packages/greeter/0.1.1/manifest.json")).unwrap();
+        assert!(dir.path().join(format!("packages/{id}/0.1.0/backend.js")).is_file());
+        let again = std::fs::read_to_string(dir.path().join(format!("packages/{id}/0.1.1/manifest.json"))).unwrap();
         assert!(again.contains("\"0.1.1\""));
         assert_eq!(command(&args(&["dance"])), 1);
     }

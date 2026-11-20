@@ -747,6 +747,7 @@ mod tests {
             tokens_field: Default::default(),
             access: None,
             api: Default::default(),
+            duowave: None,
         }
     }
 

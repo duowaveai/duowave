@@ -28,7 +28,6 @@ const en: Translation<typeof ru> = {
     fromApiTitle: 'Plugin from an API description',
     quizTitle: 'Timed quiz: 10 seconds per answer, “Time’s up!”',
     newPlugin: 'New plugin',
-    idLabel: 'id — Latin letters, digits, “-”',
     nameLabel: 'Name',
     openapiLabel: 'API description (OpenAPI) as JSON',
     create: 'Create',

@@ -276,7 +276,9 @@ function DeviceView({ device, view, shown, mine }: { device: HomeDevice; view: H
                     {VIA ? <OwnFrame page="homes" title={tr.devices.tabOtherHomes} /> : <HelperSide gives={false} />}
                 </>
             );
-        if (shown === 'device') return mine || centre ? <Updates /> : <TurboDevice device={device} />;
+        // Обновления самого этого компьютера: в окне дома (`?via=`) — у его шлюза мимо прохода, а не версия колонки
+        // под видом компьютера (owner 20.11).
+        if (shown === 'device') return mine && VIA && !centre ? <Updates own /> : mine || centre ? <Updates /> : <TurboDevice device={device} />;
         return centre ? (
             <>
                 <p class="w-cap m-0">{tr.devices.centreComputerLead}</p>

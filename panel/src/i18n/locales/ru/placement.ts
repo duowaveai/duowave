@@ -55,6 +55,11 @@ export default {
     updating: 'обновляется…',
     updateTo: (version: string) => `Обновить колонку до ${version}`,
     latestGateway: 'На колонке последняя версия DuoWave.',
+    updateBoth: (version: string) => `Обновить компьютер и колонку до ${version}`,
+    newerRelease: (version: string) => `Вышла версия ${version}: сначала обновится DuoWave на этом компьютере, потом он сам поставит её колонке.`,
+    stationAhead: (station: string, computer: string) =>
+        `На колонке DuoWave ${station} — новее, чем на этом компьютере (${computer}). Обновите DuoWave на компьютере.`,
+    followsComputer: (version: string) => `Колонка обновится до ${version} следом за компьютером — сама, когда он запустит новую версию.`,
     updateFailed: (error: string) => `Колонка не обновилась: ${error}`,
     trialOnStation: (version: string, until: string) =>
         `Колонка пробует версию ${version} из ОЗУ до ${until}; не выйдет — вернётся прежняя.`,

@@ -1,16 +1,21 @@
-// Выбор ИИ одной логикой (docs/plans/start-desk.md): четыре пути — OpenRouter, подписка ChatGPT, свой ключ, модель на
-// компьютере — те же вызовы шлюза, что у «Мозга» (screens/brain.tsx): добавить провайдера, войти, проверить, выбрать
+// Выбор ИИ одной логикой (docs/plans/start-desk.md): пять путей — DuoWave (наши модели, docs/plans/duowave-connect.md),
+// OpenRouter, подписка ChatGPT, свой ключ, модель на компьютере — те же вызовы шлюза, что у «Мозга» (screens/brain.tsx): добавить провайдера, войти, проверить, выбрать
 // модели «за человека». Им пользуются шаг «Кто думает» первых шагов (onb/brain.tsx) и витрина стола (showcase.tsx).
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { BrainPick, BrainView, ProviderCheck, ProviderPreset, ProviderView, api, problemOf } from '../api';
-import { tr } from '../i18n';
+import { BrainPick, BrainView, ProviderAccess, ProviderCheck, ProviderPreset, ProviderView, api, problemOf } from '../api';
+import { formatDate, tr } from '../i18n';
+import { duowaveShown, useDuowaveShown } from '../shell/dev';
 import { useSignIn } from '../ui/sign-in';
 
 /** Пути доски по порядку карточек. */
-export type Path = 'openrouter' | 'chatgpt' | 'key' | 'local';
-export const PATHS: Path[] = ['openrouter', 'chatgpt', 'key', 'local'];
+export type Path = 'duowave' | 'openrouter' | 'chatgpt' | 'key' | 'local';
+export const PATHS: Path[] = ['duowave', 'openrouter', 'chatgpt', 'key', 'local'];
+/** Пути без DuoWave: пока он спрятан (shell/dev.ts `duowaveShown`), доска — прежние четыре. */
+export const PATHS_PLAIN: Path[] = PATHS.filter((path) => path !== 'duowave');
+/** Пути со входом через сервис. */
+export type SignInPath = 'duowave' | 'openrouter' | 'chatgpt';
 
 /** Сервисы «Своего ключа» (пресеты шлюза) и модели на компьютере. */
 export const KEY_PRESETS = ['claude', 'openai', 'deepseek', 'gemini', 'groq', 'mistral', 'yandexgpt'];
@@ -18,12 +23,13 @@ export const LOCAL_PRESETS = ['ollama', 'lmstudio'];
 
 
 /**
- * Сервис по виду ключа: sk-ant- — Anthropic, sk-or- — OpenRouter, sk- и 32 шестнадцатеричных знака — DeepSeek,
+ * Сервис по виду ключа: dw- — DuoWave, sk-ant- — Anthropic, sk-or- — OpenRouter, sk- и 32 шестнадцатеричных знака — DeepSeek,
  * прочие sk- — OpenAI, AIza — Gemini, gsk_ — Groq, AQVN — Yandex Cloud, 32 буквы и цифры — Mistral. Не узнали — null:
  * ключ не уходит наугад в чужой сервис.
  */
 function keyService(raw: string): string | null {
     const key = raw.trim();
+    if (/^dw-/.test(key)) return 'duowave';
     if (/^sk-ant-/.test(key)) return 'claude';
     if (/^sk-or-/.test(key)) return 'openrouter';
     if (/^sk-[0-9a-f]{32}$/.test(key)) return 'deepseek';
@@ -35,9 +41,35 @@ function keyService(raw: string): string | null {
     return null;
 }
 
-/** Работает ли провайдер: вошли (подписка), есть ключ, на компьютере назвал модели — и проверка не упала. */
+/** Доступ DuoWave строкой карточки: «Пробная неделя до 27 ноября», «доступа пока нет». */
+export function accessLine(access: ProviderAccess): string {
+    if (!access.active) return tr.brain.accessNone;
+    const date = access.endsAt ? formatDate(access.endsAt, { day: 'numeric', month: 'long' }) : null;
+    return date ? tr.brain.accessUntil(access.plan ?? '', date) : tr.brain.accessPlan(access.plan ?? '');
+}
+
+/** Что просит последний отказ DuoWave или его доступ: предупреждение карточки; нет — всё в порядке. */
+export function accessWarning(access: ProviderAccess): string | undefined {
+    switch (access.problem) {
+        case 'revoked':
+            return tr.brain.accessRevoked;
+        case 'model':
+            return tr.brain.accessModel;
+        case 'ended':
+            return tr.brain.accessEnded;
+        case 'quota':
+            return tr.brain.accessQuota;
+        case 'busy':
+            return tr.brain.accessBusy;
+    }
+    return access.active ? undefined : tr.brain.accessNoneNote;
+}
+
+/** Работает ли провайдер: вошли (подписка), есть ключ, на компьютере назвал модели — и проверка не упала, а сервис не
+ * сказал, что доступа нет (DuoWave). */
 function ready(provider: ProviderView): boolean {
     if (provider.check && !provider.check.ok) return false;
+    if (provider.access && (!provider.access.active || provider.access.problem === 'revoked')) return false;
     if (provider.account) return provider.account.signedIn;
     if (provider.local) return !!provider.check?.ok || provider.models.length > 0;
     return provider.key.set || (!provider.needsKey && !!provider.check?.ok);
@@ -78,7 +110,8 @@ function picksFor(provider: ProviderView, preset: ProviderPreset | undefined, ch
 /** Выбор ИИ: что подключено, какой путь отмечен, вход, ключ, поиск модели на компьютере. */
 export function useBrainConnect() {
     const [view, setView] = useState<BrainView | null>(null);
-    const [path, setPath] = useState<Path>('openrouter');
+    const shown = useDuowaveShown();
+    const [path, setPath] = useState<Path>(() => (duowaveShown() ? 'duowave' : 'openrouter'));
     /** Какой путь сейчас проверяет провайдера (после входа или ключа). */
     const [checking, setChecking] = useState<{ path: Path; title: string } | null>(null);
     const [problem, setProblem] = useState<{ path: Path; text: string } | null>(null);
@@ -112,7 +145,7 @@ export function useBrainConnect() {
         }
     };
 
-    // Первый взгляд: какой путь уже отвечает — тот и отмечен (вернулись на шаг), иначе OpenRouter, как на доске.
+    // Первый взгляд: какой путь уже отвечает — тот и отмечен (вернулись на шаг), иначе DuoWave — первый на доске.
     useEffect(() => {
         void load().then((fresh) => {
             if (!fresh) return;
@@ -168,7 +201,8 @@ export function useBrainConnect() {
                 setProblem({ path: which, text: check.problem ?? tr.brain.notWorking });
                 return false;
             }
-            await answerWith(provider, fresh, check.model);
+            // DuoWave шлюз уже поставил сам — модели назвал сервис (`defaults`); выбирать «за человека» поверх не надо.
+            if (provider.preset !== 'duowave' || fresh.choice.fast?.provider !== id) await answerWith(provider, fresh, check.model);
             return true;
         } catch (e) {
             if (alive.current) setProblem({ path: which, text: problemOf(e) });
@@ -178,12 +212,19 @@ export function useBrainConnect() {
         }
     };
 
-    /** «Войти через …» (OpenRouter, ChatGPT): как у «Добавить провайдера» — провайдер без ключа, потом страница сервиса. */
-    const signIn = useSignIn(() => {
+    /**
+     * «Войти через …» (DuoWave, OpenRouter, ChatGPT): как у «Добавить провайдера» — провайдер без ключа, потом страница
+     * сервиса. После входа DuoWave может сказать, что доступа пока нет: тогда проверять нечем — это и показываем.
+     */
+    const signIn = useSignIn((_target, _title, note) => {
         const done = signing.current;
-        if (done) void settle(done.provider, done.path);
+        if (!done) return;
+        if (note) {
+            setProblem({ path: done.path, text: note });
+            void load();
+        } else void settle(done.provider, done.path);
     });
-    const beginSignIn = (which: 'openrouter' | 'chatgpt') => {
+    const beginSignIn = (which: SignInPath) => {
         const preset = presetOf(which);
         if (!preset || signIn.starting) return;
         setProblem(null);
@@ -194,6 +235,26 @@ export function useBrainConnect() {
             if (!existing) void load();
             return api.signInProvider(provider.id);
         });
+    };
+
+    /**
+     * Код приглашения DuoWave: шлюз запоминает его и сам прикладывает к входам DuoWave, пока один не пройдёт (подарок
+     * даётся только при самом первом входе на сайте). Пустой — забыть.
+     */
+    const [inviteBusy, setInviteBusy] = useState(false);
+    const saveInvite = async (code: string): Promise<boolean> => {
+        setProblem(null);
+        setInviteBusy(true);
+        try {
+            const fresh = await api.setInvite(code.trim() || null);
+            if (alive.current) setView(fresh);
+            return true;
+        } catch (e) {
+            if (alive.current) setProblem({ path: 'duowave', text: problemOf(e) });
+            return false;
+        } finally {
+            if (alive.current) setInviteBusy(false);
+        }
     };
 
     /** «Проверить» у своего ключа: сервис по ключу, провайдер (или новый ключ прежнему), проверка, выбор. */
@@ -314,6 +375,20 @@ export function useBrainConnect() {
         }
     };
 
+    /** DuoWave на доске: показан или уже отвечает (тогда его путь — правда о том, кто думает). */
+    const duowave = shown || (!!view && view.providers.some((provider) => provider.preset === 'duowave' && provider.id === view.choice.fast?.provider));
+    const paths = duowave ? PATHS : PATHS_PLAIN;
+
+    // Показали DuoWave — он и отмечен, если ничего ещё не отвечает; спрятали — назад к OpenRouter.
+    const wasShown = useRef(shown);
+    useEffect(() => {
+        if (wasShown.current === shown) return;
+        wasShown.current = shown;
+        setProblem(null);
+        if (shown && !(view && (view.choice.fast || view.env.usable))) setPath('duowave');
+        if (!duowave && path === 'duowave') setPath('openrouter');
+    }, [shown, duowave]);
+
     /** Отметить путь. Его провайдер уже работает — отвечать им (радио доски = кто думает). */
     const choosePath = (which: Path) => {
         setPath(which);
@@ -345,6 +420,11 @@ export function useBrainConnect() {
         findLocal,
         signIn,
         beginSignIn,
+        paths,
+        duowave,
+        invite: !!view?.invite,
+        inviteBusy,
+        saveInvite,
         workingOn,
         answering,
         noBackup,
@@ -355,6 +435,7 @@ export type BrainConnect = ReturnType<typeof useBrainConnect>;
 
 export /** Путь карточки, которому принадлежит провайдер. */
 function pathOf(provider: ProviderView): Path {
+    if (provider.preset === 'duowave') return 'duowave';
     if (provider.preset === 'openrouter') return 'openrouter';
     if (provider.preset === 'chatgpt') return 'chatgpt';
     if (LOCAL_PRESETS.includes(provider.preset) || provider.local) return 'local';

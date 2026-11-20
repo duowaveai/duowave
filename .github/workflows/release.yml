@@ -508,6 +508,25 @@ jobs:
         with:
           name: station
           path: release
+      # The installers once more under names without the version, so .../releases/latest/download/<name> always gives
+      # the newest one: the links pinned in the Telegram channel and on the site never change (the owner, 20.11.2026).
+      # Before SHA256SUMS, so the copies are in it too.
+      - name: Installers under names that stay
+        shell: bash
+        run: |
+          set -euo pipefail
+          stay() {
+            local found
+            found=$(find release -type f -name "$1")
+            [ "$(printf '%s\n' "$found" | grep -c .)" = 1 ] || { echo "::error::$1: expected one file, found: ${found:-none}"; exit 1; }
+            cp "$found" "release/$2"
+            echo "$2 <- $(basename "$found")"
+          }
+          stay 'DuoWave_*_aarch64.dmg' DuoWave-macos-apple-silicon.dmg
+          stay 'DuoWave_*_x64.dmg' DuoWave-macos-intel.dmg
+          stay 'DuoWave_*_x64-setup.exe' DuoWave-windows.exe
+          stay 'DuoWave_*_amd64.AppImage' DuoWave-linux-x86_64.AppImage
+          stay 'DuoWave_*_aarch64.AppImage' DuoWave-linux-arm.AppImage
       # The one-line install (scripts/install): its scripts go out with the release, and SHA256SUMS lets them check
       # the gateway they download before running it (the station's build inside it is checked by its signature).
       - name: The one-line install and SHA256SUMS

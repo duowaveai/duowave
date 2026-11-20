@@ -1083,6 +1083,9 @@ mod tests {
     use regex::Regex;
 
     use super::*;
+
+    /// The built-in «Список покупок»: its id is random (packages/bundled.json).
+    const SHOPPING: &str = "p-d31a99a7e5b1";
     use crate::config::Env;
     use crate::placement::station_fs::{InstallOptions, StationFs, StationStatus, System, Target};
     use crate::stations::connect::quasar_config::{YANDEX_QUIC_URL, YANDEX_URL};
@@ -1711,12 +1714,12 @@ mod tests {
     }
 
     fn shopping_list(db: &Db, list: &str) {
-        crate::plugins::registry::set_enabled(db, "shopping", true, None, None).unwrap();
+        crate::plugins::registry::set_enabled(db, SHOPPING, true, None, None).unwrap();
         db.with(|c| {
             c.execute(
-                "INSERT INTO plugin_kv (plugin_id, key, value, updated_at) VALUES ('shopping', 'list', ?1, 'then')
+                "INSERT INTO plugin_kv (plugin_id, key, value, updated_at) VALUES (?2, 'list', ?1, 'then')
                  ON CONFLICT (plugin_id, key) DO UPDATE SET value = excluded.value",
-                rusqlite::params![list],
+                rusqlite::params![list, SHOPPING],
             )
         })
         .unwrap();
@@ -1725,7 +1728,7 @@ mod tests {
     fn list_of(db: &Db) -> Option<String> {
         use rusqlite::OptionalExtension;
         db.with(|c| {
-            c.query_row("SELECT value FROM plugin_kv WHERE plugin_id = 'shopping' AND key = 'list'", [], |row| {
+            c.query_row("SELECT value FROM plugin_kv WHERE plugin_id = ?1 AND key = 'list'", [SHOPPING], |row| {
                 row.get(0)
             })
             .optional()
@@ -1795,7 +1798,7 @@ mod tests {
             serde_json::from_str(&station.received.lock().unwrap().clone().unwrap()).unwrap();
         assert_eq!(received.settings["tts_provider"], json!("mixed"), "the computer's voice, in «Шлюз» too");
         assert_eq!(received.settings["station_self"], json!({ "device": "dev1", "name": "Детская" }));
-        let shopping = &received.plugins.as_ref().expect("the plugins' state")["shopping"];
+        let shopping = &received.plugins.as_ref().expect("the plugins' state")[SHOPPING];
         assert!(shopping.enabled);
         assert_eq!(shopping.kv.iter().map(|entry| entry.value.as_str()).collect::<Vec<_>>(), vec![r#"["молоко"]"#]);
 

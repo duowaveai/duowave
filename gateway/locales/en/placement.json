@@ -449,5 +449,11 @@
  "Код первой настройки панели: {code} — панель спросит его вместе с паролем.": "The panel's first-setup code: {code} — the panel asks for it with the password.",
  "Панель спросит код первой настройки — он в журнале колонки: ssh -p 2222 root@{address} \"grep 'первая настройка' {log} | tail -n 1\"": "The panel will ask for the first-setup code — it is in the speaker's log: ssh -p 2222 root@{address} \"grep 'первая настройка' {log} | tail -n 1\"",
  "Своего голоса сейчас нет: включите его в «Голосе» — или скажите голосом Алисы.": "There is no voice of your own right now: turn it on in “Voice”, or say it in Alice’s voice.",
- "Голос Алисы пока недоступен: колонка ещё не передала ключи речи. Скажите ей «Алиса» и попробуйте снова.": "Alice’s voice is not available yet: the speaker has not passed on its speech keys. Say “Alice” to it and try again."
+ "Голос Алисы пока недоступен: колонка ещё не передала ключи речи. Скажите ей «Алиса» и попробуйте снова.": "Alice’s voice is not available yet: the speaker has not passed on its speech keys. Say “Alice” to it and try again.",
+ "На этом компьютере DuoWave {computer}, а колонке он ставит только свою версию. Сначала обновите DuoWave на компьютере до {version}: {hint}": "This computer runs DuoWave {computer}, and it gives the speaker only its own version. Update DuoWave on the computer to {version} first: {hint}",
+ "На колонке DuoWave {station} — новее, чем на этом компьютере ({computer}): обновите DuoWave на компьютере.": "The speaker runs DuoWave {station}, newer than this computer ({computer}): update DuoWave on the computer.",
+ "Колонка видит версию {wanted}, а этот компьютер её не видит: лента выпусков не ответила ({error}).": "The speaker sees version {wanted}, and this computer does not: the release feed did not answer ({error}).",
+ "Колонка видит версию {wanted}, а лента этого компьютера её пока не предлагает (на нём DuoWave {computer}): попробуйте через несколько минут.": "The speaker sees version {wanted}, and this computer's feed does not offer it yet (it runs DuoWave {computer}): try again in a few minutes.",
+ "Колонка видит версию {wanted}, а этот компьютер выпусков не проверяет: обновите DuoWave на нём вручную (сейчас {computer}).": "The speaker sees version {wanted}, and this computer does not check for releases: update DuoWave on it by hand (it runs {computer}).",
+ "Без компьютера ставит новую версию только DuoWave на колонке, который обычно обновляет компьютер.": "Only DuoWave on a speaker that its computer usually updates installs a new version without the computer."
 }

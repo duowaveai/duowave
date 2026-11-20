@@ -57,6 +57,8 @@ const BUILT_IN_FEED: Option<&str> = option_env!("DUOWAVE_PACKAGES_FEED");
 pub const FEED_FORMAT: u64 = 1;
 /// The feed is read again after this long.
 const FRESH: Duration = Duration::from_secs(6 * 3600);
+/// A copy through the home server that came older than `FRESH` is asked again this often.
+const HOME_AGAIN: Duration = Duration::from_secs(15 * 60);
 const FEED_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_FEED: u64 = 1024 * 1024;
 /// A preview: the picture and up to three phrases.
@@ -1187,6 +1189,9 @@ struct Status {
     announced: HashSet<String>,
     /// The extra feeds' by their address: each one named since the gateway started, read or not.
     extras: BTreeMap<String, FeedStatus>,
+    /// When the copy last came through the home server (`through_home`): a copy that came old (the computer could not
+    /// read its feed either) is asked again after `HOME_AGAIN`, not at every look.
+    through_home: Option<std::time::Instant>,
 }
 
 /// How an extra feed's last read went.
@@ -1470,13 +1475,18 @@ impl PackageCatalog {
                     chrono::Utc::now().signed_duration_since(at).to_std().is_ok_and(|age| age > FRESH)
                 }),
             };
-            let due =
-                || refresh || stale(self.fetched()) || !self.dir.join("catalog.json").exists() || self.untried(&url);
+            let rested = || lock(&self.status).through_home.is_some_and(|at| at.elapsed() < HOME_AGAIN);
+            let due = || {
+                refresh
+                    || (stale(self.fetched()) && !rested())
+                    || !self.dir.join("catalog.json").exists()
+                    || self.untried(&url)
+            };
             if due() {
                 let _turn = self.reading.lock().await;
                 // Another reader may have read it while this one waited.
                 if due() {
-                    let read = self.read(&url).await;
+                    let read = self.read(&url, refresh).await;
                     if read == Read::New || !self.dir.join(REACH).exists() {
                         self.read_reach(&url).await;
                     }
@@ -1514,8 +1524,9 @@ impl PackageCatalog {
         }
     }
 
-    /// Reads the main feed: a new copy with its previews, or the copy before and why.
-    async fn read(&self, url: &url::Url) -> Read {
+    /// Reads the main feed: a new copy with its previews, or the copy before and why. `refresh` — a person asked to
+    /// check now: through the home server too, its copy is read again first.
+    async fn read(&self, url: &url::Url, refresh: bool) -> Read {
         let known = self.fetched().filter(|fetched| fetched.url == url.as_str());
         let etag =
             known.as_ref().and_then(|fetched| fetched.etag.clone()).filter(|_| self.dir.join("catalog.json").exists());
@@ -1545,11 +1556,11 @@ impl PackageCatalog {
             }
             // No internet of its own: the computer at home may have it.
             Answer::Unreachable(error) => {
-                return if self.through_home(url).await { Read::Home } else { offline(error) };
+                return if self.through_home(url, refresh).await { Read::Home } else { offline(error) };
             }
             Answer::Broken(error) => return offline(error),
             Answer::Status(code) => {
-                if code.is_server_error() && self.through_home(url).await {
+                if code.is_server_error() && self.through_home(url, refresh).await {
                     return Read::Home;
                 }
                 return failed(crate::tr!("Каталог ответил HTTP {code}", code = code));
@@ -1794,13 +1805,16 @@ impl PackageCatalog {
 
     /// The feed through the home server (`/home/v1/catalog`): its copy of the same feed and its signature, written here
     /// as if read; the signature is checked here with this gateway's own key. The extra feeds' copies come with it
-    /// (`feeds`: none from a computer older than them — the main feed alone then). Whether it came.
-    async fn through_home(&self, url: &url::Url) -> bool {
+    /// (`feeds`: none from a computer older than them — the main feed alone then). Whether it came. The copy is as old
+    /// as the computer says it is (`fetchedAt`), not as old as this moment: a copy six hours old is read again soon,
+    /// and the computer reads its feed again when it is that old (`fresh` — at once, a person here asked to check now).
+    async fn through_home(&self, url: &url::Url, fresh: bool) -> bool {
         let Some((home, key)) = self.home.as_ref().and_then(|home| home.up()) else { return false };
         let answer = crate::utils::http::client_without_redirects()
-            .get(format!("{}/home/v1/catalog", home.trim_end_matches('/')))
+            .get(format!("{}/home/v1/catalog{}", home.trim_end_matches('/'), if fresh { "?fresh=1" } else { "" }))
             .bearer_auth(key)
-            .timeout(FEED_TIMEOUT)
+            // The computer may read its feed and the feeds it names before it answers.
+            .timeout(FEED_TIMEOUT * 3)
             .send()
             .await;
         let Ok(answer) = answer else { return false };
@@ -1811,7 +1825,17 @@ impl PackageCatalog {
         }
         let Some(text) = body.get("feed").and_then(Value::as_str) else { return false };
         let Ok(feed) = parse_feed(text, url) else { return false };
-        let fetched = Fetched { url: url.to_string(), etag: None, fetched_at: now_iso(), closed: false };
+        // When the computer read it (a computer before 20.11 does not say: now, as before).
+        let fetched_at = body
+            .get("fetchedAt")
+            .and_then(Value::as_str)
+            .filter(|at| {
+                chrono::DateTime::parse_from_rfc3339(at)
+                    .is_ok_and(|at| at.with_timezone(&chrono::Utc) <= chrono::Utc::now())
+            })
+            .map(str::to_string)
+            .unwrap_or_else(now_iso);
+        let fetched = Fetched { url: url.to_string(), etag: None, fetched_at: fetched_at.clone(), closed: false };
         let signature_file = self.dir.join(format!("catalog.json{SIGNATURE_SUFFIX}"));
         let written = write_whole(&self.dir.join("catalog.json"), text.as_bytes())
             .and_then(|()| match body.get("signature").and_then(Value::as_str) {
@@ -1833,7 +1857,8 @@ impl PackageCatalog {
                 continue;
             }
             let dir = self.extra_dir(&extra.url);
-            let fetched = Fetched { url: extra.url.to_string(), etag: None, fetched_at: now_iso(), closed: false };
+            let fetched =
+                Fetched { url: extra.url.to_string(), etag: None, fetched_at: fetched_at.clone(), closed: false };
             let written = write_whole(&dir.join("catalog.json"), text.as_bytes())
                 .and_then(|()| write_whole(&dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default()));
             if written.is_ok() {
@@ -1844,6 +1869,7 @@ impl PackageCatalog {
             let mut status = lock(&self.status);
             status.offline = false;
             status.problem = None;
+            status.through_home = Some(std::time::Instant::now());
         }
         tracing::info!(target: "plugins", "packages catalog: {} package(s) through the home server", feed.packages.len());
         true
@@ -1909,7 +1935,11 @@ impl PackageCatalog {
                 Some(serde_json::json!({ "url": extra.url.as_str(), "feed": copy }))
             })
             .collect();
-        Some(serde_json::json!({ "url": url.as_str(), "feed": feed, "signature": signature, "feeds": feeds }))
+        // When this computer read it: the station keeps the copy as old as it is.
+        let fetched_at = self.fetched().filter(|fetched| fetched.url == url.as_str()).map(|fetched| fetched.fetched_at);
+        Some(serde_json::json!({
+            "url": url.as_str(), "feed": feed, "signature": signature, "feeds": feeds, "fetchedAt": fetched_at
+        }))
     }
 
     /// A file for the station: only from the origin of a feed this computer reads — the main one, or an extra one it
@@ -2254,6 +2284,14 @@ impl PackageCatalog {
         self.apps.as_ref().and_then(|apps| apps.up())
     }
 
+    /// The feed a package was installed from when it is not the main one — an own source, a store (the registry keeps
+    /// where each came from): the Турбо is told it for a face's code (home/apps.rs).
+    pub fn extra_feed_of(&self, id: &str) -> Option<String> {
+        let from = registry::choices(&self.db).remove(id)?.feed?;
+        let main = self.url().and_then(Result::ok);
+        (main.as_ref().map(url::Url::as_str) != Some(from.as_str())).then_some(from)
+    }
+
     /// The package from the feed: downloaded, checked against its size and hash, installed. `update` takes the newest
     /// version over the installed one and removes the older ones once the new one is in place.
     pub async fn install(
@@ -2277,10 +2315,13 @@ impl PackageCatalog {
             return Err(ApiError::not_found(crate::tr!("«{id}» не установлено — обновлять нечего.", id = id)));
         }
         let _turn = self.installing.lock().await;
-        // By the copy of the feed; read again, once, when the file it names is not on the site.
+        // By the copy of the feed; read again, once, when the file it names is not on the site — or when the version
+        // asked for is not in the copy: the home's centre read its feed since and asks the Турбо for its face's newer
+        // version (before 20.11 «В каталоге нет …» until the copy here was six hours old).
         let mut again = false;
+        let mut reread = false;
         let (feed, entry, bytes) = loop {
-            let feed = self.feed(again).await.ok_or_else(|| {
+            let feed = self.feed(again || reread).await.ok_or_else(|| {
                 ApiError::unavailable(
                     lock(&self.status).problem.clone().unwrap_or_else(|| crate::tr!("Каталог недоступен.")),
                 )
@@ -2295,6 +2336,10 @@ impl PackageCatalog {
             let entry = match feed.find(id, version) {
                 Some(entry) => entry.clone(),
                 None if again => feed.find(id, None).cloned().ok_or_else(not_found)?,
+                None if version.is_some() && !reread => {
+                    reread = true;
+                    continue;
+                }
                 None => return Err(not_found()),
             };
             let (state, reason) = entry_state_at(
@@ -2510,22 +2555,35 @@ impl PackageCatalog {
             )));
         }
         let url = feed_url(feed.trim()).map_err(ApiError::bad_request)?;
-        let main = self.feed(false).await.ok_or_else(|| {
-            ApiError::unavailable(
-                lock(&self.status).problem.clone().unwrap_or_else(|| crate::tr!("Каталог недоступен.")),
-            )
-        })?;
+        let main_feed = |refresh: bool| async move {
+            self.feed(refresh).await.ok_or_else(|| {
+                ApiError::unavailable(
+                    lock(&self.status).problem.clone().unwrap_or_else(|| crate::tr!("Каталог недоступен.")),
+                )
+            })
+        };
+        let mut main = main_feed(false).await?;
+        let mut reread = false;
         let not_pinned = || {
             ApiError::forbidden(crate::tr!(
                 "Не поставлено: каталог этого компьютера не проверял «{id}» из ленты центра — код из неё здесь не ставится.",
                 id = id
             ))
         };
-        let pins: Vec<&Pin> = main
-            .recommends
-            .iter()
-            .filter(|pin| pin.id == id && pin.feed.as_ref().is_none_or(|pinned| *pinned == url))
-            .collect();
+        let pins_in = |main: &Feed| -> Vec<Pin> {
+            main.recommends
+                .iter()
+                .filter(|pin| pin.id == id && pin.feed.as_ref().is_none_or(|pinned| *pinned == url))
+                .cloned()
+                .collect()
+        };
+        // The copy of the main feed may be older than the pin of the version the centre asks for: read it again, once
+        // (before 20.11 «не проверял» until the copy was six hours old).
+        if !main.signed || pins_in(&main).is_empty() {
+            main = main_feed(true).await?;
+            reread = true;
+        }
+        let mut pins = pins_in(&main);
         if !main.signed || pins.is_empty() {
             return Err(not_pinned());
         }
@@ -2548,7 +2606,11 @@ impl PackageCatalog {
         })?;
         // As an extra feed's package the main one pinned (`Feed::take`): that very archive — this machine's — or none.
         let archive = entry.archive();
-        if !pins.iter().any(|pin| pin.is(&url, &entry.id, &archive.sha256)) {
+        if !pins.iter().any(|pin| pin.is(&url, &entry.id, &archive.sha256)) && !reread {
+            main = main_feed(true).await?;
+            pins = pins_in(&main);
+        }
+        if !main.signed || !pins.iter().any(|pin| pin.is(&url, &entry.id, &archive.sha256)) {
             return Err(not_pinned());
         }
         let publisher = entry.publisher.clone().unwrap_or_else(|| "home".into());
@@ -3986,6 +4048,51 @@ pub mod tests {
         assert!(unsigned.host.installed("tube").is_none());
     }
 
+    /// The centre updated a face whose code comes from another feed, and the catalog pinned the new archive after this
+    /// computer read its copy (20.11): the Турбо reads its main feed again, once, and installs the new version —
+    /// before, «не проверял» until its copy was six hours old.
+    #[cfg(feature = "pc")]
+    #[tokio::test]
+    async fn the_turbo_reads_its_catalog_again_for_a_pin_newer_than_its_copy() {
+        let keys = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let (main, demo) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        let app = |version: &str| {
+            let manifest = json!({
+                "schema": 1, "kind": "plugin", "id": "tube", "version": version, "title": "tube", "api": "^2",
+                "runs": ["pc"], "permissions": [],
+                "contributes": { "intents": [{ "phrases": ["скажи tube"], "handler": "say" }] }
+            });
+            let mut entry = arthur(version);
+            (entry["id"], entry["kind"], entry["runs"]) = (json!("tube"), json!("plugin"), json!(["pc"]));
+            entry["budget"] = json!({ "memoryMb": 4 });
+            (entry, plugin_vgp(&manifest, "export function say() { return 'да'; }"))
+        };
+        let pin_demo = || {
+            let demo_feed: Value = serde_json::from_str(&lock(&demo.feed)).unwrap();
+            let mut feed: Value = serde_json::from_str(&lock(&main.feed)).unwrap();
+            feed["recommends"] = json!([{ "id": "tube", "sha256": demo_feed["packages"][0]["sha256"] }]);
+            let text = feed.to_string();
+            let signature = minisign::sign(Some(&keys.pk), &keys.sk, std::io::Cursor::new(text.as_bytes()), None, None)
+                .unwrap()
+                .to_string();
+            *lock(&main.feed) = text;
+            lock(&main.files).insert("catalog.json.minisig".into(), signature.into_bytes());
+        };
+        demo.publish(&[app("1.0.0")]);
+        pin_demo();
+        let turbo = fixture_keyed(FeedSource::Url(main.url.clone()), Placement::Pc, Some(keys.pk.to_base64()));
+        turbo.catalog.install_pinned_from("tube", Some("1.0.0"), &demo.url, None).await.unwrap();
+
+        // The demo feed moves on, and the catalog pins its new archive.
+        demo.publish(&[app("1.1.0")]);
+        pin_demo();
+        let reads = main.reads.load(Ordering::SeqCst);
+        let updated = turbo.catalog.install_pinned_from("tube", Some("1.1.0"), &demo.url, None).await.unwrap();
+        assert_eq!(updated.version.as_deref(), Some("1.1.0"));
+        assert_eq!(main.reads.load(Ordering::SeqCst), reads + 1, "its main feed read again once");
+    }
+
     #[tokio::test]
     async fn a_plugin_from_the_store_is_installed_switched_on_and_one_off_is_told_apart() {
         let keys = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
@@ -4153,6 +4260,74 @@ pub mod tests {
         *lock(&site.files) = BTreeMap::new();
         let installed = fixture.catalog.install("arthur", None, false, None).await.unwrap();
         assert_eq!(installed.version.as_deref(), Some("1.0.0"));
+    }
+
+    /// A station without internet of its own (20.11): the copy through the computer is as old as the computer says —
+    /// not «read just now», which hid an update for hours — «Проверить сейчас» asks the computer to read its feed first
+    /// (`fresh`), and an old copy is not asked for again at every look.
+    #[tokio::test]
+    async fn a_copy_through_the_computer_keeps_its_age_and_a_check_now_asks_the_computer_to_read_again() {
+        struct Computer(String);
+        impl crate::plugins::controller::HomeLink for Computer {
+            fn up(&self) -> Option<(String, String)> {
+                Some((self.0.clone(), "pair-key".into()))
+            }
+        }
+        let site = site().await;
+        site.publish(&[(arthur("1.0.0"), vgp(&character_manifest("arthur", "1.0.0")))]);
+        let feed = lock(&site.feed).clone();
+        let read_at =
+            (chrono::Utc::now() - chrono::Duration::hours(7)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let asked: Arc<Mutex<Vec<Option<String>>>> = Arc::default();
+        let (catalog_url, answer_at, noted) = (site.url.clone(), read_at.clone(), asked.clone());
+        let computer = Router::new().route(
+            "/home/v1/catalog",
+            get(move |axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>| {
+                lock(&noted).push(query.get("fresh").cloned());
+                let (url, feed, at) = (catalog_url.clone(), feed.clone(), answer_at.clone());
+                async move { axum::Json(json!({ "url": url, "feed": feed, "signature": null, "fetchedAt": at })) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let home = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, computer).await.unwrap() });
+        let fixture = fixture_with(
+            FeedSource::Url(site.url.clone()),
+            Placement::StationServer,
+            None,
+            Some(Arc::new(Computer(home))),
+        );
+        site.down.store(true, Ordering::SeqCst);
+
+        let view = fixture.catalog.view(true).await;
+        assert_eq!(view.packages.len(), 1, "{view:?}");
+        assert_eq!(lock(&asked).clone(), [Some("1".to_string())], "«check now»: the computer reads its feed first");
+        assert_eq!(view.fetched_at.as_deref(), Some(read_at.as_str()), "the copy as old as the computer read it");
+        // Seven hours old: older than six, yet not asked for again at every look — the computer just said it is all
+        // it has.
+        fixture.catalog.view(false).await;
+        assert_eq!(lock(&asked).len(), 1);
+    }
+
+    /// The Турбо is asked for a face's version its copy of the feed does not name yet — the centre read the feed since
+    /// (20.11): it reads the feed again, once, and installs that version. Before, «В каталоге нет …» until its copy was
+    /// six hours old. A version the feed does not have even now: «нет», read again only once.
+    #[tokio::test]
+    async fn a_version_newer_than_the_copy_reads_the_catalog_again_once() {
+        let site = site().await;
+        site.publish(&[character("arthur", "1.0.0")]);
+        let fixture = fixture(FeedSource::Url(site.url.clone()), Placement::Pc);
+        assert_eq!(fixture.catalog.view(true).await.packages[0].version, "1.0.0");
+        site.publish(&[character("arthur", "1.0.0"), character("arthur", "1.1.0")]);
+        let reads = site.reads.load(Ordering::SeqCst);
+        let installed = fixture.catalog.install("arthur", Some("1.1.0"), false, None).await.unwrap();
+        assert_eq!(installed.version.as_deref(), Some("1.1.0"));
+        assert_eq!(site.reads.load(Ordering::SeqCst), reads + 1, "read again once");
+
+        let reads = site.reads.load(Ordering::SeqCst);
+        let missing = fixture.catalog.install("arthur", Some("9.9.9"), true, None).await.unwrap_err();
+        assert_eq!(missing.status, StatusCode::NOT_FOUND, "{}", missing.message);
+        assert_eq!(site.reads.load(Ordering::SeqCst), reads + 1, "and only once");
     }
 
     #[test]

@@ -7,7 +7,7 @@ import { h } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { definePlugin, icons, t as translate, useApi, usePanelState, useT } from "@duowave/panel-sdk";
 
-const ID = "neon-snake";
+const ID = "p-6d9f10977863";
 
 // Тексты для людей: язык пульта выбирает окошко (useT), подписи definePlugin — translate(T, key).
 const T = {

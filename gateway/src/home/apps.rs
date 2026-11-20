@@ -180,6 +180,7 @@ pub async fn sync_faces(app: &App) -> Result<usize, String> {
     let feed = app.catalog.feed(false).await;
     let mut sent = 0;
     for (id, version) in faces {
+        let installed_from = app.catalog.extra_feed_of(&id);
         let current = there.iter().find(|(there, _, _)| *there == id);
         if current.is_some_and(|(_, theirs, on)| *on && newer_or_same(theirs, &version)) {
             app.plugins.note_turbo(&id, None);
@@ -188,7 +189,7 @@ pub async fn sync_faces(app: &App) -> Result<usize, String> {
         let answer = crate::utils::http::client()
             .post(format!("{base}/home/v1/plugins/install"))
             .bearer_auth(&key)
-            .json(&install_body(&id, &version, feed.as_ref()))
+            .json(&install_body(&id, &version, feed.as_ref(), installed_from.as_deref()))
             .timeout(Duration::from_secs(300))
             .send()
             .await
@@ -209,12 +210,21 @@ pub async fn sync_faces(app: &App) -> Result<usize, String> {
 
 /// What the Турбо is asked to install: the face's id and version, and — when the centre has it from a feed other than
 /// its main one (an own source the admin added, the demo feed) — that feed's address: the Турбо's catalog may not read
-/// it, and installs from it only what its own signed main feed pinned (clean-path check 19.11, YouTube).
-fn install_body(id: &str, version: &str, feed: Option<&crate::plugins::catalog::Feed>) -> Value {
+/// it, and installs from it only what its own signed main feed pinned (clean-path check 19.11, YouTube). The feed comes
+/// from the copy of the feeds, else from where the face was installed from (`installed_from`, the registry's): the copy
+/// may have moved on and no longer name the face's version — before 20.11 the Турбо was then asked by id alone and
+/// found nothing.
+fn install_body(
+    id: &str,
+    version: &str,
+    feed: Option<&crate::plugins::catalog::Feed>,
+    installed_from: Option<&str>,
+) -> Value {
     let mut body = json!({ "id": id, "version": version });
     let entry = feed.and_then(|feed| feed.find(id, Some(version)));
-    if let Some(extra) = entry.and_then(|entry| entry.extra.as_ref()) {
-        body["feed"] = json!(extra.url.as_str());
+    let named = entry.and_then(|entry| entry.extra.as_ref()).map(|extra| extra.url.to_string());
+    if let Some(feed) = named.or_else(|| installed_from.map(str::to_string)) {
+        body["feed"] = json!(feed);
     }
     body
 }
@@ -228,7 +238,7 @@ fn refusal(status: u16, text: &str) -> String {
         .unwrap_or_else(|| crate::tr!("Турбо не поставил его код (HTTP {status})", status = status))
 }
 
-fn newer_or_same(theirs: &str, ours: &str) -> bool {
+pub(crate) fn newer_or_same(theirs: &str, ours: &str) -> bool {
     match (semver::Version::parse(theirs), semver::Version::parse(ours)) {
         (Ok(theirs), Ok(ours)) => theirs >= ours,
         _ => theirs == ours,
@@ -238,7 +248,7 @@ fn newer_or_same(theirs: &str, ours: &str) -> bool {
 /// The faces' code follows: after a package changed here, and when a Турбо comes back.
 pub fn watch(app: &Arc<App>) {
     let weak = Arc::downgrade(app);
-    let busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let runner = OneAtATime::default();
     app.events.on("home.apps", move |event| {
         let name = event.name();
         let moves = match &*event {
@@ -247,22 +257,59 @@ pub fn watch(app: &Arc<App>) {
             }
             _ => matches!(name, "helpers.up" | "helpers.changed"),
         };
-        if !moves || busy.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        if !moves {
             return;
         }
-        let Some(app) = weak.upgrade() else {
-            busy.store(false, std::sync::atomic::Ordering::SeqCst);
-            return;
-        };
-        let busy = busy.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            if let Err(error) = sync_faces(&app).await {
-                tracing::info!(target: "home", "the apps' code on the Турбо: {error}");
+        let weak = weak.clone();
+        runner.poke(move || {
+            let weak = weak.clone();
+            async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let Some(app) = weak.upgrade() else { return };
+                if let Err(error) = sync_faces(&app).await {
+                    tracing::info!(target: "home", "the apps' code on the Турбо: {error}");
+                }
             }
-            busy.store(false, std::sync::atomic::Ordering::SeqCst);
         });
     });
+}
+
+/// Runs the work for every poke, one run at a time: a poke while it runs makes it run once more after it — never
+/// dropped, never piled up. Before 20.11 a poke during a run was dropped: a face updated while the Турбо installed
+/// another (up to five minutes for a program's download) kept its old code there until something else changed.
+#[derive(Clone, Default)]
+struct OneAtATime {
+    busy: Arc<std::sync::atomic::AtomicBool>,
+    again: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl OneAtATime {
+    fn poke<F, Fut>(&self, work: F)
+    where
+        F: Fn() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.again.store(true, SeqCst);
+        if self.busy.swap(true, SeqCst) {
+            return;
+        }
+        let me = self.clone();
+        tokio::spawn(async move {
+            loop {
+                me.again.store(false, SeqCst);
+                work().await;
+                if me.again.load(SeqCst) {
+                    continue;
+                }
+                me.busy.store(false, SeqCst);
+                // A poke between the look above and the line before found it still busy: its run is this one's.
+                if !me.again.load(SeqCst) || me.busy.swap(true, SeqCst) {
+                    break;
+                }
+            }
+        });
+    }
 }
 
 #[cfg(test)]
@@ -292,12 +339,59 @@ mod tests {
             own: true,
         });
         assert_eq!(
-            install_body("youtube", "0.1.0", Some(&feed)),
+            install_body("youtube", "0.1.0", Some(&feed), None),
             json!({ "id": "youtube", "version": "0.1.0", "feed": "https://demo.example/catalog.json" })
         );
-        assert_eq!(install_body("feed", "0.1.0", Some(&feed)), json!({ "id": "feed", "version": "0.1.0" }));
-        assert_eq!(install_body("youtube", "0.2.0", Some(&feed)), json!({ "id": "youtube", "version": "0.2.0" }));
-        assert_eq!(install_body("youtube", "0.1.0", None), json!({ "id": "youtube", "version": "0.1.0" }));
+        assert_eq!(install_body("feed", "0.1.0", Some(&feed), None), json!({ "id": "feed", "version": "0.1.0" }));
+        assert_eq!(install_body("youtube", "0.1.0", None, None), json!({ "id": "youtube", "version": "0.1.0" }));
+        // The copy of the feeds moved on (0.2.0 is no longer in it) — the face was installed from the demo feed all
+        // the same, and the Турбо is told so (before 20.11: asked by id alone, it answered «нет в каталоге»).
+        assert_eq!(
+            install_body("youtube", "0.2.0", Some(&feed), Some("https://demo.example/catalog.json")),
+            json!({ "id": "youtube", "version": "0.2.0", "feed": "https://demo.example/catalog.json" })
+        );
+        assert_eq!(install_body("youtube", "0.2.0", Some(&feed), None), json!({ "id": "youtube", "version": "0.2.0" }));
+    }
+
+    /// A change while the faces' code is synced to the Турбо is synced after that run — not dropped (20.11: a face
+    /// updated while the Турбо installed another kept its old code there) — and many changes during one run make one
+    /// more run, not many.
+    #[tokio::test]
+    async fn a_change_during_a_sync_is_synced_after_it_not_dropped() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        let runner = OneAtATime::default();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let work = {
+            let runs = runs.clone();
+            move || {
+                let runs = runs.clone();
+                async move {
+                    runs.fetch_add(1, SeqCst);
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                }
+            }
+        };
+        let settled = |want: usize| {
+            let runs = runs.clone();
+            async move {
+                for _ in 0..200 {
+                    if runs.load(SeqCst) >= want {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                runs.load(SeqCst)
+            }
+        };
+        runner.poke(work.clone());
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        for _ in 0..3 {
+            runner.poke(work.clone());
+        }
+        assert_eq!(settled(2).await, 2, "the changes during the first run: one more run");
+        runner.poke(work.clone());
+        assert_eq!(settled(3).await, 3, "a change when nothing runs: a run of its own");
     }
 
     /// What the Турбо said when it did not install a face's code is kept in its words: the face says it when called.

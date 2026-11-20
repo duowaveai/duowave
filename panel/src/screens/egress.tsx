@@ -26,6 +26,8 @@ import './egress.css';
 
 type Tab = 'home' | 'places' | 'settings' | 'subs';
 
+/** Приложение «VPN» каталога (пакет `own-server` до случайных id): к нему идут вызовы, пока шлюз не назвал своё. */
+const VPN_APP = 'p-2a4594f148e9';
 /** Как часто экран перечитывает VPN, пока открыт; чаще — пока подписка читается или подключение запускается. */
 const REFRESH_MS = 5_000;
 const BUSY_MS = 1_500;
@@ -321,7 +323,7 @@ function useVpn(): { vpn: Vpn | null; problem: string | null; setProblem: (text:
         [reload],
     );
     const app = view?.app ?? null;
-    const call = useCallback(<T,>(fn: string, input: unknown = {}) => api.callPackage<T>(app ?? 'own-server', fn, input), [app]);
+    const call = useCallback(<T,>(fn: string, input: unknown = {}) => api.callPackage<T>(app ?? VPN_APP, fn, input), [app]);
     if (!view) return { vpn: null, problem, setProblem };
     return { vpn: { view, status, statusProblem, busy, change, call, reload, mayEdit: can('settings.edit'), appOff }, problem, setProblem };
 }
@@ -379,7 +381,7 @@ function HomeTab({ vpn, go }: { vpn: Vpn; go: (tab: Tab) => void }) {
             {!view.app && (
                 <div class="vpn-notice">
                     <p class="m-0">{tr.egress.noApp}</p>
-                    <Action label={tr.egress.openMagicPlace} onClick={() => panel.go('magicplace', 'store', 'own-server')} />
+                    <Action label={tr.egress.openMagicPlace} onClick={() => panel.go('magicplace', 'store', VPN_APP)} />
                 </div>
             )}
             {view.app && !view.anyReported && connections.length > 0 && (
@@ -745,7 +747,7 @@ function HomeCountry({ vpn }: { vpn: Vpn }) {
     const home = vpn.view.home;
     const save = (code: string) =>
         vpn.change(async () => {
-            await api.setPackageSettings(vpn.view.app ?? 'own-server', { homeCountry: code });
+            await api.setPackageSettings(vpn.view.app ?? VPN_APP, { homeCountry: code });
             setPicking(false);
             setQuery('');
         });
@@ -1044,7 +1046,7 @@ function SubsTab({ vpn }: { vpn: Vpn }) {
         return (
             <div class="vpn-notice">
                 <p class="m-0">{tr.egress.noApp}</p>
-                <Action label={tr.egress.openMagicPlace} onClick={() => panel.go('magicplace', 'store', 'own-server')} />
+                <Action label={tr.egress.openMagicPlace} onClick={() => panel.go('magicplace', 'store', VPN_APP)} />
             </div>
         );
     return (

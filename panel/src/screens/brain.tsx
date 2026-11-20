@@ -15,6 +15,9 @@ import { backupIdle, backupOf, backupPlace, backupShown, blankBackups, parsePick
 import { ask } from '../ui/confirm';
 import { byMode } from '../words';
 import { formatNumber, tr } from '../i18n';
+import { accessLine, accessWarning } from './brain-connect';
+import { useDuowaveShown } from '../shell/dev';
+import { DuoWaveMark } from '../ui/duowave';
 
 /**
  * «Что сейчас знает Мозг» (docs/plans/audio-interface.md, «Блок «Сейчас»»): тот же текст, что модель получает в каждом
@@ -67,14 +70,21 @@ const efforts = (): Array<{ id: LlmEffort; name: string; sub: string }> => [
     { id: 'high', name: tr.brain.effortHighName, sub: tr.brain.effortHighSub },
 ];
 
-/** Значок провайдера в круге строки (как у маршрутов): знак сервиса или ключ у своего. */
+/** Значок провайдера в круге строки (как у маршрутов): знак сервиса, ДиВи у моделей DuoWave или ключ у своего. */
 export function ProviderIcon({ brand, size = 38 }: { brand?: string; size?: number }) {
     return (
         <span class="route-icon" aria-hidden="true" style={{ width: size, height: size, flex: 'none' }}>
-            {brand && brand in BRANDS ? <BrandMark id={brand as BrandId} size={Math.round(size / 2)} /> : <IconKey size={Math.round(size / 2)} />}
+            {brand === 'duowave' ? (
+                <DuoWaveMark size={Math.round(size * 0.66)} />
+            ) : brand && brand in BRANDS ? (
+                <BrandMark id={brand as BrandId} size={Math.round(size / 2)} />
+            ) : (
+                <IconKey size={Math.round(size / 2)} />
+            )}
         </span>
     );
 }
+
 
 /** Итог проверки словами для карточки. */
 export function checkWords(check: ProviderCheck | null): { text: string; ok: boolean | null } {
@@ -129,6 +139,7 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
     const [asking, setAsking] = useState(false);
     const mayManage = can('connectors.manage');
     const mayChoose = can('models.manage');
+    const duowaveShown = useDuowaveShown();
 
     const load = () =>
         api
@@ -197,7 +208,13 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
     };
 
     /** «Войти через …» на карточке: ключ придёт входом, потом провайдер сам проверится. */
-    const signIn = useSignIn((id, title) => void check(id, tr.brain.signedIn(title)));
+    const signIn = useSignIn((id, title, note) => {
+        // Ключ пришёл, но доступа пока нет (DuoWave): проверять нечем — сказать, что дальше, и перечитать карточку.
+        if (note) {
+            say(id, { warning: note });
+            void load();
+        } else void check(id, tr.brain.signedIn(title));
+    });
 
     const saveKey = async (provider: ProviderView, key: string) => {
         mark(provider.id, true);
@@ -408,28 +425,35 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
                     const preset = presets.find((entry) => entry.id === provider.preset);
                     const via = preset?.signIn;
                     const account = provider.account;
-                    const keyLine = account
-                        ? account.signedIn
-                            ? tr.brain.keyPlan(via?.with ?? '', account.who ?? '')
-                            : tr.brain.needLogin
-                        : provider.key.set
-                          ? tr.brain.keyHint(provider.key.hint ?? '')
-                          : provider.needsKey
-                            ? tr.brain.noKey
-                            : tr.brain.keyless;
+                    const access = provider.access;
+                    // DuoWave: its access in words («Пробная неделя до 27 ноября») in place of the key's tail.
+                    const keyLine = access
+                        ? accessLine(access)
+                        : account
+                          ? account.signedIn
+                              ? tr.brain.keyPlan(via?.with ?? '', account.who ?? '')
+                              : tr.brain.needLogin
+                          : provider.key.set
+                            ? tr.brain.keyHint(provider.key.hint ?? '')
+                            : provider.needsKey
+                              ? tr.brain.noKey
+                              : tr.brain.keyless;
                     const noKey = via ? tr.brain.noKeyVia(via.with) : tr.brain.noKeyPlain;
                     // A helper's model: the gateway keeps its row (address and key live in «Помощники»); this computer's
                     // own model server keeps its card, with whether it answers.
                     const mark = provider.helper;
                     const managed = !!mark && !mark.builtin && provider.preset === 'helper';
                     const MarkIcon = mark && managed ? placeIcon(mark) : null;
-                    const accountNote: CardNote | undefined = !account
-                        ? undefined
-                        : !account.signedIn
-                          ? { warning: tr.brain.noLogin(via?.with ?? tr.brain.noLoginService) }
-                          : account.problem === 'limit'
-                            ? { warning: tr.brain.planLimit(via?.with ?? '') }
-                            : undefined;
+                    const accessNote = access && accessWarning(access);
+                    const accountNote: CardNote | undefined = accessNote
+                        ? { warning: accessNote }
+                        : !account
+                          ? undefined
+                          : !account.signedIn
+                            ? { warning: tr.brain.noLogin(via?.with ?? tr.brain.noLoginService) }
+                            : account.problem === 'limit'
+                              ? { warning: tr.brain.planLimit(via?.with ?? '') }
+                              : undefined;
                     return (
                         <Card
                             key={provider.id}
@@ -473,7 +497,7 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
                                     <Action label={tr.brain.check} tone="on" busy={busy[provider.id]} onClick={() => void check(provider.id)} />
                                     {via && (
                                         <Action
-                                            label={account?.signedIn ? tr.brain.signInAgain : tr.brain.signInAction}
+                                            label={(account ? account.signedIn : provider.key.set) ? tr.brain.signInAgain : tr.brain.signInAction}
                                             tone={(account ? account.signedIn : provider.key.set) ? 'off' : 'on'}
                                             busy={signIn.starting && signIn.target === provider.id}
                                             disabled={busy[provider.id]}
@@ -497,7 +521,7 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
                                             target="_blank"
                                             rel="noopener noreferrer"
                                         >
-                                            {tr.brain.limitsLower}
+                                            {provider.brand === 'duowave' ? tr.brain.cabinetLower : tr.brain.limitsLower}
                                         </a>
                                     )}
                                     <Action label={tr.brain.remove} disabled={busy[provider.id]} onClick={() => void remove(provider)} />
@@ -573,7 +597,8 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
             {asking && <AskSheet onClose={() => setAsking(false)} />}
             {adding && (
                 <AddProvider
-                    presets={presets}
+                    // DuoWave спрятан, пока его не показали (shell/dev.ts); уже добавленный виден в списке провайдеров.
+                    presets={duowaveShown ? presets : presets.filter((preset) => preset.id !== 'duowave')}
                     firstOne={!choice.fast}
                     onClose={() => setAdding(false)}
                     onDone={(fresh) => {

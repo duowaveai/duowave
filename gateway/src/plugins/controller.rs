@@ -438,6 +438,34 @@ pub struct PluginHost {
     turbo_notes: Mutex<HashMap<String, (String, u64)>>,
 }
 
+/// The gateway's own packages of an earlier build that are not among `kept` go whole (`bundled::retire`): folder, row,
+/// `kv`, rules, long tasks — and here their keys and settings too. The ids gone.
+fn retire_built_ins(
+    root: &std::path::Path,
+    db: &crate::storage::Db,
+    settings: &SettingsService,
+    secrets: &SecretsService,
+    kept: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    let gone = bundled::retire(root, db, kept);
+    for id in &gone {
+        if let Err(error) = secrets.delete_all(&crate::secrets::plugin_secrets(id)) {
+            tracing::warn!(target: "plugins", "built-in package {id} of an earlier build: its keys stay: {}", error.message);
+        }
+    }
+    if !gone.is_empty() {
+        let mut stored = settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default();
+        let before = stored.len();
+        stored.retain(|id, _| !gone.contains(id));
+        if stored.len() != before {
+            if let Err(error) = settings.set(&PACKAGE_SETTINGS, &stored, None) {
+                tracing::warn!(target: "plugins", "built-ins of an earlier build: their settings stay: {}", error.message);
+            }
+        }
+    }
+    gone
+}
+
 /// May the app `app` reach `to`'s `handle` now (src/bus): its links, the owner's «да» — the reason in words when not.
 pub type Gate = Arc<dyn Fn(&str, &str, &str) -> Result<(), String> + Send + Sync>;
 
@@ -483,6 +511,12 @@ impl PluginHost {
             ))
         };
         bundled::lay_out(&config.packages_dir, &db, &bundled);
+        // A built-in of an earlier build this one has not (dropped, or renamed to a random id) goes whole: no twin
+        // stays that the panel cannot remove. Only when this build brings its own: none — nobody's goes.
+        if !bundled.is_empty() {
+            let kept = bundled.iter().map(|package| package.id.clone()).chain(bundled::named()).collect();
+            retire_built_ins(&config.packages_dir, &db, &settings, &secrets, &kept);
+        }
         let handle = tokio::runtime::Handle::try_current().ok();
         let data_news = DataNews::new(events.clone(), handle.clone());
         let host = Arc::new_cyclic(|me| PluginHost {
@@ -1397,11 +1431,31 @@ impl PluginHost {
 
     /// What the Турбо said when asked to install a face's code: why it did not (None — it did, the note goes).
     pub fn note_turbo(&self, id: &str, refused: Option<String>) {
-        let mut notes = self.turbo_notes.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        match refused {
-            Some(why) => notes.insert(id.to_string(), (why, self.now_ms())),
-            None => notes.remove(id),
+        let news = {
+            let mut notes = self.turbo_notes.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            match refused {
+                Some(why) => {
+                    let again = notes.get(id).is_some_and(|(before, _)| *before == why);
+                    notes.insert(id.to_string(), (why.clone(), self.now_ms()));
+                    (!again).then_some(why)
+                }
+                None => {
+                    notes.remove(id);
+                    None
+                }
+            }
         };
+        // The card and the journal hear it at once (before 20.11 only a call that failed said it): «failed» moves
+        // nothing — the home's watch does not sync the faces on it (home/apps.rs).
+        if let Some(why) = news {
+            self.changed(
+                id,
+                "failed",
+                None,
+                Some(crate::tr!("Турбо не поставил код этой версии: {why}", why = why)),
+                None,
+            );
+        }
     }
 
     fn turbo_note(&self, id: &str) -> Option<(String, u64)> {
@@ -2280,6 +2334,26 @@ impl PluginHost {
             return Err(ApiError::conflict(crate::tr!("Новая версия не включена: {taken}.", taken = taken)));
         }
         let version = package.version();
+        // A face (docs/plans/home-and-devices.md, stage 5б), or a plugin that prefers home while the computer is up: its
+        // code never starts here — as `enable` has it. The new version is in force at once (its phrases, tools,
+        // window), and the Турбо installs its code (home/apps.rs, `sync_faces`). Before 20.11 an update of a face
+        // started the Mac's code on the station: its memory asked of the station, its apps unloaded for room.
+        if self.runs_at_home(&package) {
+            if let Some(old) = plugin.release(&mut *plugin.slot.lock().await) {
+                old.instance.stop();
+            }
+            let _ = registry::set_good(&self.db, id, &version);
+            {
+                let mut state = plugin.state();
+                state.good = Some(version.clone());
+                state.active = Some(package);
+                state.problem = problem;
+            }
+            self.rebuild();
+            tracing::info!(target: "plugins", "{id}: {version} in force, its code runs at home");
+            self.changed(id, "reloaded", Some(version), None, actor);
+            return Ok(self.view_of(&plugin).await);
+        }
         let running = running.unwrap_or_else(|| "—".into());
         let loading = self.admit(&plugin, &package.manifest).await.map_err(|why| {
             ApiError::conflict(crate::tr!(
@@ -2922,6 +2996,11 @@ impl PluginHost {
                         .collect()
                 })
                 .unwrap_or_default(),
+            turbo: package
+                .as_ref()
+                .filter(|package| package.manifest.face_at((self.placement)()))
+                .and_then(|_| self.turbo_note(&plugin.id))
+                .map(|(why, _)| why),
             settings: manifest
                 .as_ref()
                 .map(|manifest| {
@@ -3366,6 +3445,10 @@ pub struct PackageView {
     /// works without them only in part: the panel marks it «ждёт ключ» (docs/plans/audio-interface.md).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub waits: Vec<String>,
+    /// A face whose code the Турбо did not install, in the Турбо's words (home/apps.rs, `sync_faces`): the version
+    /// here is in force, and the Турбо runs another or none — the card says so, not only a call that fails.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turbo: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4067,6 +4150,32 @@ mod tests {
         assert!(host.secrets().has("plugin:echo:token"), "the original's stays");
     }
 
+    /// A built-in of an earlier build goes with its keys and its settings; a copy of one's own keeps its.
+    #[test]
+    fn a_built_in_of_an_earlier_build_goes_with_its_keys_and_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::memory());
+        let settings = SettingsService::new(db.clone(), EventBus::new());
+        let secrets = SecretsService::new(Arc::new(Db::memory()), None).unwrap();
+        for (id, source) in [("radio", registry::SOURCE_BUNDLED), ("my-radio", registry::SOURCE_LOCAL)] {
+            std::fs::create_dir_all(dir.path().join(id).join("1.0.0")).unwrap();
+            registry::set_installed(&db, id, source, true, None).unwrap();
+            secrets.set(&crate::secrets::plugin_secret(id, "token"), Some("td-0123")).unwrap();
+        }
+        let stored: BTreeMap<String, Map<String, Value>> = BTreeMap::from([
+            ("radio".to_string(), json!({ "country": "RU" }).as_object().unwrap().clone()),
+            ("my-radio".to_string(), json!({ "country": "DE" }).as_object().unwrap().clone()),
+        ]);
+        settings.set(&PACKAGE_SETTINGS, &stored, None).unwrap();
+
+        let kept = std::collections::BTreeSet::from(["p-a2fd1d7eb8a4".to_string()]);
+        assert_eq!(retire_built_ins(dir.path(), &db, &settings, &secrets, &kept), ["radio"]);
+        assert!(!secrets.has("plugin:radio:token") && secrets.has("plugin:my-radio:token"));
+        let left = settings.get(&PACKAGE_SETTINGS, None).unwrap();
+        assert_eq!(left.keys().collect::<Vec<_>>(), ["my-radio"]);
+        assert!(!dir.path().join("radio").exists() && dir.path().join("my-radio").is_dir());
+    }
+
     #[tokio::test]
     async fn keeps_each_kinds_rules_copies_a_built_in_and_lists_the_packages_themes() {
         let dir = tempfile::tempdir().unwrap();
@@ -4434,9 +4543,14 @@ mod tests {
         assert!(!missing.contains("нет на связи"));
         assert_eq!(changes(&mut events), ["turbo"], "the home's watch installs the faces' code on «turbo»");
 
-        // The Турбо said why it did not install it: that is the answer, and it is not asked again at once.
+        // The Турбо said why it did not install it: the card hears it at once (20.11 — before, only a call that
+        // failed said it), the call answers with it, and it is not asked again at once.
         let why = "Не поставлено: каталог этого компьютера не проверял «tube» из ленты центра — код из неё здесь не ставится.";
         host.note_turbo("tube", Some(why.into()));
+        assert_eq!(changes(&mut events), ["failed"], "the card and the journal hear the refusal, once");
+        assert_eq!(host.view_one("tube").await.unwrap().turbo.as_deref(), Some(why), "the card says it");
+        host.note_turbo("tube", Some(why.into()));
+        assert!(changes(&mut events).is_empty(), "the same refusal again is not news");
         assert_eq!(call("tube").await, format!("«YouTube» не стоит на Турбо «Mac» (он на связи): {why}"));
         assert!(changes(&mut events).is_empty(), "a refusal is not asked again within minutes");
 
@@ -4453,6 +4567,45 @@ mod tests {
             "«YouTube» работает на Турбо (компьютере дома), а его сейчас не позвать: Mac не на связи — спит, выключен \
              или без сети."
         );
+    }
+
+    /// An update of a face (stage 5б) on the station whose Турбо gives the apps (20.11): the new version is in force at
+    /// once — its tools, its version — and its code is never started on the station: the Турбо installs it (the home's
+    /// watch syncs on «reloaded»). Before, the update started the Mac's program on the station: Node fetched there, the
+    /// station's memory asked, and «версия не поднялась» kept the old face.
+    #[tokio::test]
+    async fn an_update_of_a_face_is_in_force_at_once_and_its_code_never_starts_on_the_station() {
+        struct Turbo;
+        impl HomeLink for Turbo {
+            fn up(&self) -> Option<(String, String)> {
+                Some(("http://127.0.0.1:9".into(), "key".into()))
+            }
+
+            fn offered(&self) -> bool {
+                true
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        write_package(dir.path(), &tube(), Some(CODE));
+        HOME.with(|cell| *cell.borrow_mut() = Some(Arc::new(Turbo) as Arc<dyn HomeLink>));
+        let fixture = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::StationServer);
+        HOME.with(|cell| *cell.borrow_mut() = None);
+        let host = fixture.host.clone();
+        host.enable("tube", None).await.unwrap();
+        let mut events = fixture.events.subscribe();
+
+        // Version 1.1.0 put beside 1.0.0, as the catalog's update does, with a tool of its own.
+        let mut newer = tube();
+        newer["version"] = json!("1.1.0");
+        newer["contributes"]["tools"][0]["name"] = json!("tube_search");
+        write_package(dir.path(), &newer, Some(CODE));
+        let view = host.reload("tube", None).await.expect("the new face takes over");
+        assert_eq!(view.version.as_deref(), Some("1.1.0"), "in force at once");
+        assert_eq!(view.runs_at, Some("home"), "its code is the Турбо's");
+        assert!(!view.loaded, "nothing of it started on the station");
+        assert_eq!(changes(&mut events), ["reloaded"], "the home's watch hears it and syncs the code to the Турбо");
+        assert_eq!(view.contributes.tools, ["tube_search"], "the new version's tools, not the old one's");
     }
 
     /// The clean-path check of 19.11: «какие новинки?» about an app with a card was answered «виджет у вас на столе» —

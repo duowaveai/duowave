@@ -59,7 +59,7 @@ const spin = (on: boolean) => on && <span class="spinner spinner-sm" aria-hidden
 
 type Pill = { text: string; cls: string };
 
-/** Персонаж по id из адреса: свой id (`arthur:arthur`, `standard`) или id его пакета (`arthur` — так ведёт сайт). */
+/** Персонаж по id из адреса: свой id (`p-6dbdfc39330b:arthur`, `standard`) или id его пакета (`p-6dbdfc39330b` — так ведёт сайт). */
 function findCharacter(list: CharacterView[], item: string): CharacterView | undefined {
     return list.find((entry) => entry.id === item) ?? list.find((entry) => entry.package?.id === item);
 }

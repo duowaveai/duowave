@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::config::DialogProvider;
-use crate::dialog::llm::LlmApi;
+use crate::dialog::llm::{ErrorWords, LlmApi};
 use crate::oauth::{Flow, SignIn, TokenFlow};
 
 /// OpenRouter's sign-in: a key of the owner's, created in their account by OpenRouter's PKCE
@@ -19,8 +19,26 @@ const OPENROUTER_SIGN_IN: SignIn = SignIn {
     flow: Flow::KeyExchange {
         authorize: "https://openrouter.ai/auth",
         exchange: "https://openrouter.ai/api/v1/auth/keys",
+        extras: false,
     },
 };
+
+/// DuoWave's own access to models: OpenRouter's PKCE one to one, and the exchange answers more than the key — the
+/// address, the plan's models, the models for the profiles, the access (src/oauth `KeyGrant`). The page takes an
+/// invitation's code (`start`) and this device's name (`client`). The interface —
+/// docs/plans/duowave-connect.md.
+const DUOWAVE_SIGN_IN: SignIn = SignIn {
+    with: "DuoWave",
+    label: None,
+    flow: Flow::KeyExchange {
+        authorize: "https://my.duowave.app/connect",
+        exchange: "https://api.duowave.dev/v1/auth/keys",
+        extras: true,
+    },
+};
+
+/// The preset of DuoWave's own models.
+pub const DUOWAVE_PRESET: &str = "duowave";
 
 /// ChatGPT's plan through «Sign in with ChatGPT» for open-source and locally hosted apps
 /// (https://developers.openai.com/siwc/token-sharing-open-source): a client registered on the fly at the first sign-in,
@@ -125,6 +143,9 @@ pub struct ProviderPreset {
     /// /chat/completions, or /responses for the ChatGPT plan.
     #[serde(skip)]
     pub api: LlmApi,
+    /// How the service's refusals are said: DuoWave's own codes in words, the rest as they come.
+    #[serde(skip)]
+    pub errors: ErrorWords,
     /// Where the owner sees and sets how much of a plan DuoWave may spend (ChatGPT's «Usage»).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_url: Option<&'static str>,
@@ -158,6 +179,7 @@ const BLANK: ProviderPreset = ProviderPreset {
     key_url: None,
     sign_in: None,
     api: LlmApi::Chat,
+    errors: ErrorWords::Plain,
     usage_url: None,
     fields: &[],
     suggested: None,
@@ -185,6 +207,20 @@ pub fn no_address(url: &str) -> bool {
 }
 
 pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
+    // Ours, first: the names of the models come from the service, never from here.
+    ProviderPreset {
+        id: DUOWAVE_PRESET,
+        title: "DuoWave",
+        description: "Модели DuoWave. Неделя бесплатно по приглашению, всё настраивается само.",
+        base_url: Some("https://api.duowave.dev/v1"),
+        key_url: Some("https://my.duowave.app"),
+        sign_in: Some(DUOWAVE_SIGN_IN),
+        usage_url: Some("https://my.duowave.app"),
+        errors: ErrorWords::DuoWave,
+        brand: Some("duowave"),
+        order: 0,
+        ..BLANK
+    },
     ProviderPreset {
         id: "claude",
         title: "Claude",
@@ -388,7 +424,7 @@ mod tests {
     #[test]
     fn describes_the_presets_as_the_panel_reads_them() {
         let ids: Vec<&str> = PROVIDER_PRESETS.iter().map(|preset| preset.id).collect();
-        assert_eq!(&ids[..4], &["claude", "openai", "chatgpt", "openrouter"]);
+        assert_eq!(&ids[..5], &["duowave", "claude", "openai", "chatgpt", "openrouter"]);
         assert!(PROVIDER_PRESETS.windows(2).all(|pair| pair[0].order < pair[1].order));
         assert_eq!(
             serde_json::to_value(preset_of("yandexgpt").unwrap()).unwrap(),
@@ -420,7 +456,14 @@ mod tests {
         assert_eq!(preset_of("chatgpt").unwrap().api, LlmApi::Responses);
         let signing_in: Vec<&str> =
             PROVIDER_PRESETS.iter().filter(|preset| preset.sign_in.is_some()).map(|preset| preset.id).collect();
-        assert_eq!(signing_in, ["chatgpt", "openrouter"]);
+        assert_eq!(signing_in, ["duowave", "chatgpt", "openrouter"]);
+        let duowave = serde_json::to_value(preset_of("duowave").unwrap()).unwrap();
+        assert_eq!(duowave["signIn"], json!({"with": "DuoWave"}));
+        assert_eq!((duowave["order"].clone(), duowave["needsKey"].clone()), (json!(0), json!(true)));
+        assert_eq!(duowave["baseUrl"], json!("https://api.duowave.dev/v1"));
+        assert!(duowave.get("suggested").is_none() && duowave.get("errors").is_none(), "no model names here");
+        assert_eq!(preset_of("duowave").unwrap().errors, ErrorWords::DuoWave);
+        assert_eq!(preset_of("openrouter").unwrap().errors, ErrorWords::Plain);
         assert!(serde_json::to_value(preset_of("custom-anthropic").unwrap()).unwrap().get("baseUrl").is_none());
         assert_eq!(
             suggested_of(preset_of("claude").unwrap()),
@@ -446,7 +489,7 @@ mod tests {
             PROVIDER_PRESETS.iter().filter(|preset| preset.fast.is_empty()).map(|p| p.id).collect();
         assert_eq!(
             without,
-            ["chatgpt", "openrouter", "ollama", "lmstudio", "custom-openai", "custom-anthropic", "helper"]
+            ["duowave", "chatgpt", "openrouter", "ollama", "lmstudio", "custom-openai", "custom-anthropic", "helper"]
         );
         assert!(serde_json::to_value(preset_of("openai").unwrap()).unwrap().get("fast").is_none(), "not the panel's");
     }

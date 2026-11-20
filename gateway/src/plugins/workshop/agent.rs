@@ -126,7 +126,7 @@ pub fn tools(with_draft: bool) -> Vec<LlmTool> {
         let mut required: Vec<&str> = required.to_vec();
         if with_draft {
             properties["draft"] =
-                json!({ "type": "string", "description": "id черновика (строчные латиница, цифры, «-»)" });
+                json!({ "type": "string", "description": "id черновика — из list_drafts или ответа new_draft" });
             required.insert(0, "draft");
         }
         schema(properties, &required)
@@ -273,15 +273,15 @@ pub fn tools(with_draft: bool) -> Vec<LlmTool> {
         });
         tools.push(LlmTool {
             name: "new_draft".into(),
-            description: "Новый черновик: из заготовки (kind plugin, quiz — викторина с таймером хода «Время вышло!», midi — учитель на MIDI-клавиатуре, — или theme), из описания API (openapi — JSON документа OpenAPI) или из своего поставленного пакета с тем же id.".into(),
+            description: "Новый черновик: из заготовки (kind plugin, quiz — викторина с таймером хода «Время вышло!», midi — учитель на MIDI-клавиатуре, — или theme), из описания API (openapi — JSON документа OpenAPI) или из своего поставленного пакета (draft — его id). id нового черновика выдаёт мастерская — случайный «p-» и 12 знаков 0–9 a–f, он в ответе (поле id); дальше зовите инструменты с ним. Имя — в title.".into(),
             parameters: schema(
                 json!({
-                    "draft": { "type": "string" },
+                    "draft": { "type": "string", "description": "Только чтобы открыть свой поставленный пакет; для нового — не называть" },
                     "kind": { "type": "string", "enum": ["plugin", "quiz", "midi", "folders", "theme"] },
                     "title": { "type": "string" },
                     "openapi": { "type": "string", "description": "Документ OpenAPI в JSON" }
                 }),
-                &["draft"],
+                &[],
             ),
         });
     }
@@ -409,7 +409,12 @@ pub async fn run_tool(workshop: &Workshop, draft: &str, name: &str, input: &Map<
             let kind = input.get("kind").and_then(Value::as_str);
             let title = input.get("title").and_then(Value::as_str);
             let openapi = input.get("openapi").and_then(Value::as_str);
-            workshop.create(draft, kind, title, openapi).map(|view| text_of(&view)).map_err(|error| error.message)
+            // A package of one's own opens under its id; a new draft gets a random one.
+            let own = kind.is_none() && openapi.is_none() && workshop.host().installed(draft).is_some();
+            let id = if own { Ok(draft.to_string()) } else { workshop.new_draft_id(Some(draft)) };
+            id.and_then(|id| workshop.create(&id, kind, title, openapi))
+                .map(|view| text_of(&view))
+                .map_err(|error| error.message)
         }
         other => Err(format!("нет инструмента {other}")),
     };

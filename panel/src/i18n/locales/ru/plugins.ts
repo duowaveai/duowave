@@ -69,6 +69,7 @@ export default {
     network: (hosts: string) => `Ходит в сеть: ${hosts}`,
     runsAtHome: 'Тяжёлое — на компьютере: пока он на связи, приложение работает там.',
     runsAtHere: 'Компьютер не на связи — приложение работает на колонке, если хватает ОЗУ.',
+    turboRefused: (why: string) => `Турбо не поставил код этой версии: ${why}`,
     runsList: (list: string) => `Работает: ${list}`,
     runsPc: 'на компьютере',
     runsStation: 'на колонке',

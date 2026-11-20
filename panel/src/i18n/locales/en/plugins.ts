@@ -71,6 +71,7 @@ const en: Translation<typeof ru> = {
     network: (hosts: string) => `Uses the network: ${hosts}`,
     runsAtHome: 'Heavy work runs on the computer: while it is online, the app runs there.',
     runsAtHere: 'The computer is offline: the app runs on the speaker, if memory allows.',
+    turboRefused: (why) => `The Turbo did not install this version’s code: ${why}`,
     runsList: (list: string) => `Runs: ${list}`,
     runsPc: 'on the computer',
     runsStation: 'on the speaker',

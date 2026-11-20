@@ -16,6 +16,9 @@ use support::{bearer, message, send, status, Gateway};
 
 const STATION_HEADERS: &[(&str, &str)] = &[("user-agent", "WebSocket++/0.8.2"), ("x-uprx-oauth-token", "y0_test")];
 
+/// The built-in «Радио»'s id: random, like every package's (packages/bundled.json; its folder is packages/radio).
+const RADIO: &str = "p-a2fd1d7eb8a4";
+
 /// The built-in «Радио»'s version: the repository's manifest.
 fn radio_version() -> String {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages/radio/manifest.json");
@@ -120,7 +123,7 @@ async fn plays_the_pilots_radio_when_the_station_says_vklyuchi_radio_and_leaves_
     // Built in: laid out at the start and on, its code not loaded until it is called; never removed.
     let listed = env.get("/api/v1/packages").await;
     assert_eq!(listed["safeMode"], false);
-    let radio = listed["packages"].as_array().unwrap().iter().find(|p| p["id"] == "radio").expect("radio is built in");
+    let radio = listed["packages"].as_array().unwrap().iter().find(|p| p["id"] == RADIO).expect("radio is built in");
     assert_eq!(
         (&radio["enabled"], &radio["state"], &radio["origin"]),
         (&json!(true), &json!("ready"), &json!("bundled"))
@@ -136,12 +139,14 @@ async fn plays_the_pilots_radio_when_the_station_says_vklyuchi_radio_and_leaves_
     assert!(radio["panelModule"].is_null(), "{radio}");
     let parts = env.get("/api/v1/packages/panel").await;
     let part =
-        parts["parts"].as_array().unwrap().iter().find(|part| part["id"] == "radio").cloned().expect("radio's card");
+        parts["parts"].as_array().unwrap().iter().find(|part| part["id"] == RADIO).cloned().expect("radio's card");
     // One path: panel code of any app runs only in its window, so a part no longer says «frame».
     assert!(part.get("frame").is_none(), "{part}");
     assert_eq!(part["cards"][0]["function"], json!("radioCard"));
-    let (code, refused) =
-        send(env.gateway.delete("/api/v1/packages/radio").header(bearer(&env.admin).0, bearer(&env.admin).1)).await;
+    let (code, refused) = send(
+        env.gateway.delete(&format!("/api/v1/packages/{RADIO}")).header(bearer(&env.admin).0, bearer(&env.admin).1),
+    )
+    .await;
     assert_eq!(code, StatusCode::CONFLICT, "a built-in is not removed: {refused}");
 
     let station = env.station("sync-radio").await;
@@ -151,12 +156,12 @@ async fn plays_the_pilots_radio_when_the_station_says_vklyuchi_radio_and_leaves_
     let payload = plain(&play["payload"]);
     assert_eq!(payload["stream"]["url"], "https://main.hostingradio.ru/jazz-128.mp3");
     assert_eq!(payload["stream"]["type"], "FmRadio");
-    assert_eq!(payload["stream"]["id"], "radio/jazz");
+    assert_eq!(payload["stream"]["id"], format!("{RADIO}/jazz"));
     assert_eq!(payload["callbacks"]["on_started"]["name"], "vgw_media_on_started", "our player's callbacks");
     let route = env.route("Включи радио джаз").await;
     assert_eq!(
         (&route["capability"], &route["executor"], &route["source"], &route["detail"]),
-        (&json!("radio"), &json!("own"), &json!("quick"), &json!("plugin:radio"))
+        (&json!("radio"), &json!("own"), &json!("quick"), &json!(format!("plugin:{RADIO}")))
     );
 
     // «Стоп» stays the built-in player's rule, whatever plays.
@@ -165,29 +170,29 @@ async fn plays_the_pilots_radio_when_the_station_says_vklyuchi_radio_and_leaves_
     let stop = env.route("Стоп").await;
     assert_eq!((&stop["capability"], &stop["detail"]), (&json!("playback"), &json!("stop")));
 
-    let view = env.get("/api/v1/packages/radio").await;
+    let view = env.get(&format!("/api/v1/packages/{RADIO}")).await;
     assert_eq!((&view["errors"], &view["loaded"]), (&json!(0), &json!(true)));
     assert!(view["calls"].as_u64().unwrap() >= 1, "{view}");
     assert!(view["memory"]["used"].as_u64().unwrap() > 0, "{view}");
     // One phrase reached the plugin, «включи радио джаз»; «стоп» did not. (The events it follows — a station that
     // connected — are its calls too, in the background.)
-    let journal = env.gateway.app.plugins.journal("radio");
+    let journal = env.gateway.app.plugins.journal(RADIO);
     let phrases = journal.iter().filter(|line| line.level == "call" && line.message.contains("(фраза)")).count();
     assert_eq!(phrases, 1, "{journal:?}");
     station.close();
 
     // A file of the package's assets/ is our /media's, only inside that folder and only while the plugin is on.
-    let assets = env.gateway.dir.path().join(format!("packages/radio/{version}/assets"));
+    let assets = env.gateway.dir.path().join(format!("packages/{RADIO}/{version}/assets"));
     std::fs::create_dir_all(&assets).unwrap();
     std::fs::write(assets.join("jingle.mp3"), b"ID3 jingle").unwrap();
     let media = |path: &str| env.gateway.get(path);
-    let jingle = media("/media/packages/radio/jingle.mp3").send().await.unwrap();
+    let jingle = media(&format!("/media/packages/{RADIO}/jingle.mp3")).send().await.unwrap();
     assert_eq!(jingle.status(), StatusCode::OK);
     assert_eq!(&jingle.bytes().await.unwrap()[..], b"ID3 jingle");
-    assert_eq!(status(media("/media/packages/radio/..%2Fmanifest.json")).await, StatusCode::NOT_FOUND);
-    assert_eq!(status(media("/media/packages/radio/backend.js")).await, StatusCode::NOT_FOUND);
-    assert_eq!(env.post("/api/v1/packages/radio/disable", &env.admin).await.0, StatusCode::OK);
-    assert_eq!(status(media("/media/packages/radio/jingle.mp3")).await, StatusCode::NOT_FOUND);
+    assert_eq!(status(media(&format!("/media/packages/{RADIO}/..%2Fmanifest.json"))).await, StatusCode::NOT_FOUND);
+    assert_eq!(status(media(&format!("/media/packages/{RADIO}/backend.js"))).await, StatusCode::NOT_FOUND);
+    assert_eq!(env.post(&format!("/api/v1/packages/{RADIO}/disable"), &env.admin).await.0, StatusCode::OK);
+    assert_eq!(status(media(&format!("/media/packages/{RADIO}/jingle.mp3"))).await, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -207,15 +212,15 @@ async fn lets_only_the_admin_switch_plugins_and_shows_them_to_whoever_sees_the_c
     let member = login["token"].as_str().unwrap().to_string();
     let (name, value) = bearer(&member);
     assert_eq!(status(env.gateway.get("/api/v1/packages").header(name, value)).await, StatusCode::OK);
-    assert_eq!(env.post("/api/v1/packages/radio/enable", &member).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(env.post(&format!("/api/v1/packages/{RADIO}/enable"), &member).await.0, StatusCode::FORBIDDEN);
     assert_eq!(status(env.gateway.get("/api/v1/packages")).await, StatusCode::UNAUTHORIZED);
     assert_eq!(env.post("/api/v1/packages/nothing/enable", &env.admin).await.0, StatusCode::NOT_FOUND);
     // The tool, tried as «Мозг» would call it: offline, from its own list.
-    assert_eq!(env.post("/api/v1/packages/radio/enable", &env.admin).await.0, StatusCode::OK);
+    assert_eq!(env.post(&format!("/api/v1/packages/{RADIO}/enable"), &env.admin).await.0, StatusCode::OK);
     let (name, value) = bearer(&env.admin);
     let tried = message(
         env.gateway
-            .post("/api/v1/packages/radio/tools/radio_search/try")
+            .post(&format!("/api/v1/packages/{RADIO}/tools/radio_search/try"))
             .header(name, value)
             .json(&json!({"arguments": {"query": "классика"}})),
         StatusCode::OK,
@@ -239,7 +244,7 @@ async fn runs_no_plugin_in_the_safe_mode() {
     let listed = env.get("/api/v1/packages").await;
     assert_eq!(listed["safeMode"], true);
     assert_eq!(listed["packages"][0]["state"], "safeMode");
-    assert_eq!(env.post("/api/v1/packages/radio/enable", &env.admin).await.0, StatusCode::CONFLICT);
+    assert_eq!(env.post(&format!("/api/v1/packages/{RADIO}/enable"), &env.admin).await.0, StatusCode::CONFLICT);
     // The phrase is the built-in radio's again.
     let station = env.station("sync-safe").await;
     station.text_input("text-safe", "req-safe", json!({ "type": "text_input", "text": "Включи радио джаз" }));

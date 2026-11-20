@@ -6,6 +6,7 @@ import { locale, tr } from '../i18n';
 import { IconLinks } from '../icons';
 import { usePanel } from '../shell/context';
 import { helperOf } from '../shell/role';
+import { stationUpdateStep } from '../station-update';
 import { timeAgo } from '../time';
 import { Host, Solved, solve } from '../truth';
 import { DashData, ourBrain, scenarioOf } from './dash-model';
@@ -244,7 +245,7 @@ function ComputerSide({
     const live = station.live;
     const health = live.health?.placement;
     const memory = health?.memory;
-    const update = station.update;
+    const step = stationUpdateStep(station);
     const homeServer = health?.homeServer;
     return (
         <>
@@ -313,18 +314,32 @@ function ComputerSide({
             </Row>
             <SettingsLine view={view} />
             <div class="flex flex-col gap-6">
-                {update ? (
+                {/* Что сделает «Обновить колонку»: компьютер ставит ей только свою версию, выпуск новее него — сначала на
+                    него (owner 20.11). «Последняя версия» — только когда нового нет нигде. */}
+                {step?.kind === 'send' || step?.kind === 'computerFirst' ? (
                     <Row>
-                        <Line>{tr.placement.newerGateway(update)}</Line>
+                        <Line>{step.kind === 'send' ? tr.placement.newerGateway(step.version) : tr.placement.newerRelease(step.version)}</Line>
                         {can('system.update') && (
                             <Action
                                 tone="on"
-                                label={live.updating ? tr.placement.updating : tr.placement.updateTo(update)}
+                                label={
+                                    live.updating
+                                        ? tr.placement.updating
+                                        : step.kind === 'send'
+                                          ? tr.placement.updateTo(step.version)
+                                          : tr.placement.updateBoth(step.version)
+                                }
                                 busy={live.updating || busy === 'update'}
-                                onClick={() => void act('update', () => api.updateStationGateway())}
+                                onClick={() => void act('update', () => api.updateStationGateway(station.key))}
                             />
                         )}
                     </Row>
+                ) : step?.kind === 'blocked' ? (
+                    <Line>{step.why}</Line>
+                ) : step?.kind === 'stationAhead' ? (
+                    <Line>{tr.placement.stationAhead(step.station, step.computer)}</Line>
+                ) : step?.kind === 'follows' ? (
+                    <Line>{tr.placement.followsComputer(step.version)}</Line>
                 ) : (
                     live.reachable && <Line>{tr.placement.latestGateway}</Line>
                 )}

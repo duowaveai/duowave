@@ -353,11 +353,26 @@ export interface ProviderAccount {
     problem?: 'limit' | 'signin';
 }
 
-/** Где вход: ждёт человека, обменивает код, выполнен (кто получил ключ) или не вышел (почему). */
+/**
+ * Доступ провайдера, как его назвал сервис (DuoWave): есть ли, тариф, до когда, и что просит последний отказ:
+ * revoked — ключ отозван, model — модели нет в тарифе (оба: подключить заново); ended — доступ закончился, quota —
+ * лимит недели (оба: кабинет); busy — слишком много запросов, подождать.
+ */
+export interface ProviderAccess {
+    active: boolean;
+    plan?: string;
+    endsAt?: string;
+    problem?: 'revoked' | 'ended' | 'quota' | 'busy' | 'model';
+}
+
+/**
+ * Где вход: ждёт человека, обменивает код, выполнен (кто получил ключ; `note` — что осталось сделать, например
+ * «доступа пока нет») или не вышел (почему).
+ */
 export type SignInStatus =
     | { state: 'waiting' }
     | { state: 'working' }
-    | { state: 'done'; title: string }
+    | { state: 'done'; title: string; note?: string }
     | { state: 'failed'; message: string };
 
 /** Последняя «Проверка» провайдера. */
@@ -387,6 +402,8 @@ export interface ProviderView {
     local: boolean;
     brand?: string;
     account?: ProviderAccount;
+    /** Доступ, как его назвал сервис (DuoWave); нет — сервис о доступе ничего не говорил. */
+    access?: ProviderAccess;
     /** Модель помощника: строку ведёт шлюз (адрес и ключ — в «Помощниках»); `builtin` — сервер моделей этого компьютера. */
     helper?: { id: string; name: string; kind: HelperKind; state: HelperState; builtin?: boolean };
 }
@@ -595,6 +612,8 @@ export interface BrainView {
     env: { provider: BrainStatus['provider']; title: string; models: { fast: string; smart: string }; usable: boolean; cloud: boolean };
     /** Строка шлюза о запасной: выбрал сам (и что это может стоить денег), нужна, закрыта регулятором. */
     note?: { kind: 'backupAuto' | 'backupNeeded' | 'backupClosed'; text: string };
+    /** Код приглашения DuoWave ждёт следующего входа: показать «Получить неделю бесплатно». Сам код шлюз не отдаёт. */
+    invite?: boolean;
 }
 
 export interface ProviderInput {
@@ -801,11 +820,31 @@ export interface StationGatewayView {
     version?: string;
     compatible: boolean;
     update?: string;
+    /** Что сделает «Обновить колонку» (gateway/src/placement/watch.rs, `plan_update`): отправит сборку компьютера, сначала
+     *  обновит компьютер, или почему нельзя. */
+    plan?: StationUpdatePlan;
+    /** «Обновить компьютер и колонку»: версия, которую колонка получит, когда компьютер её запустит. */
+    afterComputer?: string;
     payload: { source: 'builtIn' | 'file' | 'feed' | 'none'; version: string; note: string };
     /** Когда этот компьютер последний раз взял копию дома у центра (docs/plans/home-and-devices.md, этап 3). */
     copiedAt?: string;
     warnings: Array<{ kind: 'silent' | 'voiceAway' | 'safety'; text: string }>;
     copyStale: boolean;
+}
+
+/** Что сделает «Обновить колонку»: `send` — сборка компьютера сейчас; `computerFirst` — сначала компьютер, колонка
+ *  следом; `blocked` — отсюда не поставить (`why`); `stationAhead` — колонка новее компьютера. */
+export type StationUpdatePlan =
+    | { way: 'send'; version: string }
+    | { way: 'computerFirst'; version: string }
+    | { way: 'blocked'; version: string; why: string }
+    | { way: 'stationAhead'; station: string; computer: string };
+
+/** Что начала кнопка «Обновить колонку»: `send` — архив уходит на колонку; `computerFirst` — обновляется компьютер. */
+export interface StationUpdateStarted {
+    updating: boolean;
+    way: 'send' | 'computerFirst';
+    version: string;
 }
 
 export type MoveTo = 'station' | 'stationServer' | 'pc' | 'yandex';
@@ -2074,6 +2113,8 @@ export interface PackageView {
     origin?: PackageOrigin;
     /** Плагин с prefer: home на колонке с сервером: где он работает сейчас. */
     runsAt?: 'home' | 'here' | null;
+    /** «Лицо» приложения, чей код Турбо не поставил, — его словами: версия здесь в силе, а на Турбо другая или никакой. */
+    turbo?: string;
     removable?: boolean;
     canDisable?: boolean;
     editable?: boolean;
@@ -3111,7 +3152,7 @@ export interface ActiveCharacter {
     update?: boolean | string | { text?: string; version?: string } | null;
     /** Положения регуляторов: id тона → номер положения. */
     tones?: Record<string, number> | null;
-    /** Карточку, выбранную раньше, заменил персонаж каталога (Мажордом → `arthur`): какой пакет предложить. */
+    /** Карточку, выбранную раньше, заменил персонаж каталога (Мажордом → «Артур», `p-6dbdfc39330b`): какой пакет предложить. */
     replacedBy?: string | null;
 }
 
@@ -3424,6 +3465,8 @@ export interface UpdateStatus {
     hint?: string;
     /** На колонке: новая версия пробуется из памяти (gateway/src/updates/trial.rs). */
     trial?: UpdateTrial;
+    /** На колонке, которую обновляет компьютер: «Поставить без компьютера» — только по кнопке (owner 20.11). */
+    canInstallAlone?: boolean;
 }
 
 /**
@@ -3754,10 +3797,13 @@ export const api = {
     setStationAutoUpdate: (on: boolean, station?: string) =>
         post<unknown>(forStation('/api/v1/placement/auto-update', station), { on }),
     updateStationGateway: (station?: string) =>
-        post<{ updating: boolean }>(forStation('/api/v1/placement/update-station', station)),
-    /** Из окна колонки (`?via=`): попросить компьютер, который её ведёт, обновить её шлюз — мимо прохода. */
-    updateStationFromComputer: (station: string) =>
-        ownCall<{ updating: boolean }>('POST', forStation('/api/v1/placement/update-station', station), {}),
+        post<StationUpdateStarted>(forStation('/api/v1/placement/update-station', station)),
+    /** Из окна колонки (`?via=`): попросить компьютер, который её ведёт, обновить её шлюз — мимо прохода. `version` —
+     *  что колонка увидела в ленте сама: компьютер не знает ничего новее — посмотрит в ленту снова. */
+    updateStationFromComputer: (station: string, version?: string) =>
+        ownCall<StationUpdateStarted>('POST', forStation('/api/v1/placement/update-station', station), version ? { version } : {}),
+    /** Из окна колонки: что компьютер, который её ведёт, знает о ней (его размещение) — мимо прохода. */
+    stationFromComputer: (station: string) => ownCall<PlacementView>('GET', forStation('/api/v1/placement', station)),
     inspectStation: (station?: string) =>
         post<{
             installed: boolean;
@@ -3911,6 +3957,12 @@ export const api = {
     updates: () => get<UpdateStatus>('/api/v1/updates'),
     checkUpdates: () => post<UpdateStatus>('/api/v1/updates/check'),
     installUpdate: () => post<UpdateStatus>('/api/v1/updates/install'),
+    /** «Поставить без компьютера» на колонке, которую обычно обновляет компьютер (owner 20.11). */
+    installUpdateAlone: () => post<UpdateStatus>('/api/v1/updates/install-alone'),
+    /** Обновления самого этого компьютера из окна колонки (`?via=`): мимо прохода, у своего шлюза. */
+    ownUpdates: () => ownCall<UpdateStatus>('GET', '/api/v1/updates'),
+    ownCheckUpdates: () => ownCall<UpdateStatus>('POST', '/api/v1/updates/check', {}),
+    ownInstallUpdate: () => ownCall<UpdateStatus>('POST', '/api/v1/updates/install', {}),
     // Магазин моделей: каталог с реальностью, скачивание, активация, рестарты серверов.
     models: () => get<ModelsView>('/api/v1/models'),
     installVoice: (id: string) => post<DownloadState>(`/api/v1/models/tts/${encodeURIComponent(id)}/install`),
@@ -4005,10 +4057,17 @@ export const api = {
     removeProvider: (id: string) => del<void>(`/api/v1/brain/providers/${encodeURIComponent(id)}`),
     checkProvider: (id: string, model?: string) => post<ProviderCheck>(`/api/v1/brain/providers/${encodeURIComponent(id)}/check`, model ? { model } : {}),
     providerModels: (id: string) => post<{ models: string[] }>(`/api/v1/brain/providers/${encodeURIComponent(id)}/models`),
-    signInProvider: (id: string) => post<SignInStart>(`/api/v1/brain/providers/${encodeURIComponent(id)}/signin`),
+    /**
+     * Вход провайдера. DuoWave берёт ещё `invite` — код приглашения (шлюз запомнит его до удачного входа) и `client` —
+     * имя устройства для ключа; без них шлюз возьмёт запомненный код и имя компьютера.
+     */
+    signInProvider: (id: string, extra?: { invite?: string; client?: string }) =>
+        post<SignInStart>(`/api/v1/brain/providers/${encodeURIComponent(id)}/signin`, extra ?? {}),
+    /** Код приглашения DuoWave для следующего входа; null — забыть. */
+    setInvite: (code: string | null) => put<BrainView>('/api/v1/brain/invite', { code }),
     signInStatus: (id: string) => get<SignInStatus>(`/api/v1/oauth/${encodeURIComponent(id)}`),
     /** Код со страницы сервиса или адрес страницы после входа — с другого устройства. */
-    completeSignIn: (id: string, text: string) => post<{ title: string }>('/api/v1/oauth/complete', { id, text }),
+    completeSignIn: (id: string, text: string) => post<{ title: string; note?: string }>('/api/v1/oauth/complete', { id, text }),
     /** `backup`: null — «не нужна» (шлюз сам больше не ставит); 'auto' — «пусть выберет шлюз» (только при `autoBackup`). */
     chooseBrain: (choice: { fast?: BrainPick | null; smart?: BrainPick | null; backup?: BrainPick | null | 'auto'; effort?: LlmEffort }) =>
         put<BrainView>('/api/v1/brain/choice', choice),
@@ -4207,7 +4266,7 @@ export const api = {
     /** Дописать ключи; `null` — забыть ключ. */
     rememberPanel: (changes: Record<string, unknown>, keepalive = false) =>
         call<{ state: Record<string, unknown>; at: string }>('PATCH', '/api/v1/panel/state', changes, undefined, keepalive),
-    createDraft: (body: { id: string; kind?: 'plugin' | 'quiz' | 'theme' | 'widget'; title?: string; openapi?: string }) => post<DraftView>('/api/v1/workshop/drafts', body),
+    createDraft: (body: { id?: string; kind?: 'plugin' | 'quiz' | 'theme' | 'widget'; title?: string; openapi?: string }) => post<DraftView>('/api/v1/workshop/drafts', body),
     /** Адрес части пульта черновика — показать виджет до установки (docs/plans/desk.md, этап 5). */
     draftPreview: (id: string) => post<{ module: string; styles?: string | null }>(`/api/v1/workshop/drafts/${encodeURIComponent(id)}/preview`),
     /** «Открыть в мастерской»: черновик, а нет его — из своего поставленного пакета. */

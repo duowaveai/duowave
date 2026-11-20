@@ -185,10 +185,10 @@ impl PersonaService {
                 Some(Legacy::Alice(tones)) if !body.contains_key("text") => {
                     return self.save(alice(Some(&tones)), actor);
                 }
-                Some(Legacy::Replaced(package)) => {
+                // The one card replaced: the butler, by «Артур» of the catalog (its id says nothing to people).
+                Some(Legacy::Replaced(_)) => {
                     return Err(ApiError::bad_request(crate::tr!(
-                        "Мажордома заменил персонаж из каталога ({package}): он в «Персонаже».",
-                        package = package
+                        "Мажордома заменил персонаж каталога «Артур»: он в «Персонаже»."
                     )));
                 }
                 _ => {}
@@ -560,7 +560,7 @@ mod tests {
         let missing = personas.set(&body(json!({"presetId": "pirate"})), None).unwrap_err();
         assert_eq!(missing.message, "нет такой карточки характера: pirate");
         let butler = personas.set(&body(json!({"presetId": "butler"})), None).unwrap_err();
-        assert!(butler.message.starts_with("Мажордома заменил персонаж из каталога (arthur)"));
+        assert!(butler.message.starts_with("Мажордома заменил персонаж каталога «Артур»"), "{}", butler.message);
         assert_eq!(
             personas.set(&body(json!({"text": "Коротко"})), None).unwrap_err().message,
             "Опишите характер хотя бы в паре слов."
@@ -616,7 +616,7 @@ mod tests {
         keep(Some("butler"), &butler);
         let chosen = personas.chosen().unwrap();
         assert_eq!((chosen.preset_id, chosen.text.as_str()), (None, butler.as_str()), "the butler's text speaks on");
-        assert_eq!(personas.replaced_by(), Some("arthur"));
+        assert_eq!(personas.replaced_by(), Some("p-6dbdfc39330b"), "«Артур» of the catalog");
         assert!(personas.system_prompt(None).text.starts_with("Ты — Артур, мажордом"));
     }
 

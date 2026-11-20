@@ -20,7 +20,7 @@ import { useWidgetEmpty } from '../ui/widget';
 import { onComputer } from '../voice-input';
 import { useDeskDrafts } from '../voice/drafts';
 import { answerTo } from '../voice/speak';
-import { PATHS, Path, useBrainConnect } from './brain-connect';
+import { Path, SignInPath, useBrainConnect } from './brain-connect';
 import { appSectionOf } from './plugins';
 import { useCallWord } from './call-word';
 import { installProgress, onInstallProgress } from '../magicplace/wizard-state';
@@ -43,7 +43,7 @@ interface Memo {
 
 const KEY = 'showcase';
 /** Змейка — встроенное приложение; её плитку «Оставить на столе» ставит на стол. */
-const SNAKE = 'neon-snake';
+const SNAKE = 'p-6d9f10977863'; // packages/neon-snake
 const SNAKE_TILE = `package.${SNAKE}.tile`;
 const SHOWCASE = 'core.showcase';
 
@@ -302,14 +302,16 @@ export function ShowcaseWidget() {
         phase === 'brain' ? (computer ? t.headComputer : t.headStation) : phase === 'switch' ? t.headSwitch : done ? t.headDone(done, cards.length) : t.headTry;
 
     const pathTitle: Record<Path, [string, string]> = {
-        openrouter: [t.pathOr, t.pathOrNote],
+        duowave: [t.pathDw, t.pathDwNote],
+        // С DuoWave «проще всего» — у него (пока он спрятан, shell/dev.ts `duowaveShown`).
+        openrouter: [t.pathOr, brain.duowave ? t.pathOrNoteMany : t.pathOrNote],
         chatgpt: [t.pathGpt, t.pathGptNote],
         key: [t.pathKey, t.pathKeyNote],
         local: [t.pathLocal, t.pathLocalNote],
     };
     const checking = brain.checking?.path === brain.path ? brain.checking : null;
     const said = brain.problem?.path === brain.path ? brain.problem.text : null;
-    const signInRow = (which: 'openrouter' | 'chatgpt', label: string, note: string) => (
+    const signInRow = (which: SignInPath, label: string, note: string) => (
         <>
             <div class="sc-acts">
                 <button
@@ -331,6 +333,9 @@ export function ShowcaseWidget() {
         <span class="sc-note" role="status">
             {t.checking(checking.title)}
         </span>
+    ) : brain.path === 'duowave' ? (
+        // С кодом приглашения у шлюза — «Получить неделю бесплатно»; вписать код можно в первых шагах.
+        signInRow('duowave', brain.invite ? t.giftDw : t.signInDw, t.payDw)
     ) : brain.path === 'openrouter' ? (
         signInRow('openrouter', t.signInOr, t.payOr)
     ) : brain.path === 'chatgpt' ? (
@@ -386,7 +391,7 @@ export function ShowcaseWidget() {
             <section class="sc-card is-wide" aria-label={computer ? t.stepComputer : t.stepStation}>
                 <span class="sc-card-h is-strong">{computer ? t.stepComputer : t.stepStation}</span>
                 <div class="sc-art is-list" role="radiogroup" aria-label={t.pathsLabel}>
-                    {PATHS.map((path) => (
+                    {brain.paths.map((path) => (
                         <label key={path} class={`sc-opt${brain.path === path ? ' is-on' : ''}`}>
                             <input type="radio" name="sc-brain" checked={brain.path === path} disabled={!mayChoose} onChange={() => brain.choosePath(path)} />
                             <span class="sc-opt-title">{pathTitle[path][0]}</span>

@@ -13,6 +13,8 @@
 
 pub mod feed;
 pub mod install;
+#[cfg(test)]
+pub mod testing;
 pub mod trial;
 pub mod verify;
 use std::path::{Path, PathBuf};
@@ -112,6 +114,44 @@ pub struct UpdateStatus {
     /// On the station: the new version tried from memory now (src/updates/trial.rs).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trial: Option<trial::TrialView>,
+    /// On the station that its computer updates (`pc`): «Поставить без компьютера» may install the offered version
+    /// from the feed here, by that button only (owner 20.11: the computer away for a week).
+    pub can_install_alone: bool,
+}
+
+/// What this gateway knows of releases for itself. The computer that updates a station's gateway decides by it what
+/// «Обновить колонку» does (src/placement/watch.rs): it gives the station only its own build, so a newer release goes
+/// to this computer first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnRelease {
+    /// The version installed here (the app's, in the desktop app).
+    pub current: String,
+    /// A newer version the feed offers here.
+    pub offer: Option<String>,
+    /// The feed's urgent floor (`critical_below`) as last read: a version below it should not wait for a click.
+    pub critical_below: Option<String>,
+    /// Ok — «Обновить» installs here (the app's updater, or this gateway itself); Err — what to do instead.
+    pub installs_itself: Result<(), String>,
+    /// Whether there is a feed to check at all.
+    pub feed: bool,
+    pub checked_at: Option<String>,
+    /// Why the feed did not answer last time.
+    pub error: Option<String>,
+    /// An install of this gateway's own update is under way.
+    pub installing: bool,
+    /// UPDATE_AUTO_CRITICAL: an urgent release installs without a click — here, and on the station this computer updates.
+    pub auto_critical: bool,
+}
+
+/// Where an update on the station finds its files, which program runs, and how the gateway becomes the new one: the
+/// station's own (`StationFs::real`, the running program, exec). A test gives its own folder, program and «restart»,
+/// so an update on the station runs whole there without the test's own program being replaced or exec'd.
+#[derive(Clone, Default)]
+pub struct StationEnv {
+    pub root: Option<PathBuf>,
+    pub running: Option<PathBuf>,
+    #[allow(clippy::type_complexity)]
+    pub restart: Option<Arc<dyn Fn(&Path) -> std::io::Error + Send + Sync>>,
 }
 
 #[derive(Default)]
@@ -128,6 +168,8 @@ struct Progress {
     announced: Option<String>,
     /// On the station: the new version tried from memory now.
     trial: Option<trial::TrialView>,
+    /// The feed's urgent floor as the last check read it (`OwnRelease`).
+    critical_below: Option<String>,
 }
 
 pub struct UpdatesService {
@@ -153,6 +195,8 @@ pub struct UpdatesService {
     hooks: OnceLock<Arc<dyn StationHooks>>,
     /// What this start found of a trial on the station (`set_station`), acted on at `start_on_station`.
     at_start: Mutex<Option<trial::AtStart>>,
+    /// The station's files, the running program and the restart: the real ones unless a test set its own.
+    station_env: OnceLock<StationEnv>,
 }
 
 impl UpdatesService {
@@ -193,6 +237,35 @@ impl UpdatesService {
             memory_reserve_kb: config.plugins.reserve_mb * 1024,
             hooks: OnceLock::new(),
             at_start: Mutex::new(None),
+            station_env: OnceLock::new(),
+        }
+    }
+
+    /// A test's own station: its folder, the program said to run, and a «restart» that does not exec.
+    #[cfg(test)]
+    pub fn set_station_env(&self, env: StationEnv) {
+        let _ = self.station_env.set(env);
+    }
+
+    fn fs(&self) -> StationFs {
+        match self.station_env.get().and_then(|env| env.root.as_deref()) {
+            Some(root) => StationFs::at(root),
+            None => StationFs::real(),
+        }
+    }
+
+    fn running(&self) -> std::io::Result<PathBuf> {
+        match self.station_env.get().and_then(|env| env.running.clone()) {
+            Some(program) => Ok(program),
+            None => std::env::current_exe(),
+        }
+    }
+
+    /// Becomes `program` (exec): returns only when that failed.
+    fn restart(&self, program: &Path) -> std::io::Error {
+        match self.station_env.get().and_then(|env| env.restart.clone()) {
+            Some(restart) => restart(program),
+            None => install::restart(program),
         }
     }
 
@@ -214,8 +287,8 @@ impl UpdatesService {
         if managed_by.is_some() {
             *self.managed_by.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = managed_by;
         }
-        let fs = StationFs::real();
-        let found = std::env::current_exe().ok().map(|running| {
+        let fs = self.fs();
+        let found = self.running().ok().map(|running| {
             trial::at_start(fs.trial(), &running, &fs.program_on_disk(), &self.current, fs.boot_id().as_deref())
         });
         *self.at_start.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = found;
@@ -264,6 +337,37 @@ impl UpdatesService {
             auto_critical: self.auto_critical && can_install,
             hint,
             trial: state.trial.clone(),
+            can_install_alone: self.alone_allowed()
+                && state.available.as_ref().is_some_and(|offer| offer.asset.is_some())
+                && !state.installing
+                && state.trial.is_none(),
+        }
+    }
+
+    /// The gateway on the station that its computer updates (`pc`), with the key to check a release: it may install
+    /// the offered version from the feed itself — by «Поставить без компьютера» only, never by itself (owner 20.11).
+    fn alone_allowed(&self) -> bool {
+        self.on_station() && self.managed().as_deref() == Some("pc") && self.keys.is_ok()
+    }
+
+    /// What this gateway knows of releases for itself (`OwnRelease`).
+    pub fn own_release(&self) -> OwnRelease {
+        let state = self.state.lock().unwrap();
+        let (installs, hint) = self.how_to_install();
+        OwnRelease {
+            current: self.current(),
+            offer: state.available.as_ref().map(|offer| offer.version.clone()),
+            critical_below: state.critical_below.clone(),
+            installs_itself: if installs {
+                Ok(())
+            } else {
+                Err(hint.unwrap_or_else(|| crate::tr!("Здесь обновление не ставится.")))
+            },
+            feed: self.feed_url.is_some(),
+            checked_at: state.checked_at.clone(),
+            error: state.error.clone(),
+            installing: state.installing,
+            auto_critical: self.auto_critical,
         }
     }
 
@@ -307,6 +411,7 @@ impl UpdatesService {
             match outcome {
                 Ok(feed) => {
                     state.error = None;
+                    state.critical_below = feed.critical_below.clone();
                     state.available = feed::is_newer(&feed.version, &current).then(|| Offer {
                         version: feed.version.trim_start_matches('v').to_string(),
                         notes: feed.notes.clone(),
@@ -347,6 +452,31 @@ impl UpdatesService {
         if !can_install {
             return Err(ApiError::conflict(hint.unwrap_or_else(|| crate::tr!("Здесь обновление не ставится."))));
         }
+        self.start_install(self.installer.get().cloned())
+    }
+
+    /// «Поставить без компьютера» on the station that its computer updates (owner 20.11): the offered version from the
+    /// feed, checked as every update is (the signature, the release's own version and platform) and tried from memory
+    /// the station's way — what the computer would send it, fetched by the station itself. Only by this button: the
+    /// station never installs alone by itself. Answers at once; the status says how it goes.
+    pub fn install_alone(self: &Arc<Self>) -> Result<UpdateStatus, ApiError> {
+        if !self.alone_allowed() {
+            return Err(ApiError::conflict(crate::tr!(
+                "Без компьютера ставит новую версию только DuoWave на колонке, который обычно обновляет компьютер."
+            )));
+        }
+        if let Some(offer) = self.state.lock().unwrap().available.as_ref().filter(|offer| offer.asset.is_none()) {
+            return Err(ApiError::conflict(crate::tr!(
+                "В выпуске {version} нет сборки для {platform}.",
+                version = offer.version,
+                platform = self.platform
+            )));
+        }
+        self.start_install(None)
+    }
+
+    /// The offered version installed by `installer` (the app's updater), else here; the status follows it.
+    fn start_install(self: &Arc<Self>, installer: Option<Arc<dyn Installer>>) -> Result<UpdateStatus, ApiError> {
         let offer = {
             let mut state = self.state.lock().unwrap();
             if state.installing {
@@ -362,7 +492,7 @@ impl UpdatesService {
         };
         let service = self.clone();
         tokio::spawn(async move {
-            let result = match service.installer.get().cloned() {
+            let result = match installer {
                 Some(installer) => installer.install(offer.version.clone()).await,
                 None => service.install_here(&offer, true).await,
             };
@@ -391,8 +521,10 @@ impl UpdatesService {
         verify::verify_any(keys, &archive, &asset.signature)?;
         install::check_release(&archive, &self.platform, &offer.version, &self.current())?;
         if self.on_station() && restart {
+            // `start_install` marked the install begun already: the station's way goes on from there (before 20.11 it
+            // was begun twice, and every update of the station from the feed ended «Обновление уже ставится»).
             let (service, version) = (self.clone(), offer.version.clone());
-            return tokio::task::spawn_blocking(move || service.install_on_station(&version, &archive))
+            return tokio::task::spawn_blocking(move || service.station_install(&version, &archive, false))
                 .await
                 .map_err(|error| error.to_string())?
                 .map(|_| ())
@@ -404,7 +536,7 @@ impl UpdatesService {
                 .map_err(|error| format!("{}: {error}", self.downloads.display()))?;
             let _ = std::fs::write(self.downloads.join(format!("duowave-{}.tar.gz", offer.version)), &archive);
         }
-        let current = std::env::current_exe().map_err(|error| format!("the running program: {error}"))?;
+        let current = self.running().map_err(|error| format!("the running program: {error}"))?;
         if self.on_station() {
             install::remove_leftovers(&current);
             let room = self.room_on_station(&archive, &current, &current)?;
@@ -415,7 +547,7 @@ impl UpdatesService {
         let previous = install::replace_from_archive(&current, &archive, install::program_name())?;
         if self.on_station() {
             // The service's safety net may bring the one before back if this one does not come up.
-            StationFs::real().mark_updated(&offer.version);
+            self.fs().mark_updated(&offer.version);
         }
         tracing::info!(
             "update {} installed; the one before is {} — starting the new one",
@@ -427,7 +559,7 @@ impl UpdatesService {
         }
         // Give the answer to the panel a moment to leave, then become the new program.
         tokio::time::sleep(Duration::from_millis(500)).await;
-        Err(format!("restart: {}", install::restart(&current)))
+        Err(format!("restart: {}", self.restart(&current)))
     }
 
     /// The room an update has on the station: the new program's size from the archive, the one on the disk, the
@@ -435,7 +567,7 @@ impl UpdatesService {
     fn room_on_station(&self, archive: &[u8], program: &Path, running: &Path) -> Result<trial::Room, String> {
         let kb = |path: &Path| std::fs::metadata(path).map(|meta| meta.len().div_ceil(1024)).unwrap_or(0);
         let kept_kb = kb(&install::previous_of(running));
-        let fs = StationFs::real();
+        let fs = self.fs();
         Ok(trial::Room {
             new_kb: install::program_size(archive, "duowave")?.div_ceil(1024),
             old_kb: kb(program),
@@ -476,7 +608,7 @@ impl UpdatesService {
         if self.on_station() {
             return self.install_on_station(version, archive);
         }
-        let current = std::env::current_exe().map_err(ApiError::internal)?;
+        let current = self.running().map_err(ApiError::internal)?;
         let version = version.trim_start_matches('v').to_string();
         self.begin_install()?;
         let previous = match install::replace_from_archive(&current, archive, "duowave") {
@@ -493,14 +625,23 @@ impl UpdatesService {
     /// once the station's apps give their memory back; else refused with what to free. Nothing of an update that does
     /// not go on is left: the program on the disk and the apps stay as they were. Blocking: run off the async threads.
     pub fn install_on_station(self: &Arc<Self>, version: &str, archive: &[u8]) -> Result<UpdateStatus, ApiError> {
+        self.station_install(version, archive, true)
+    }
+
+    /// `install_on_station`; `begin` — mark the install begun here (the computer's archive), or it is begun already
+    /// (`start_install`: «Поставить без компьютера», an update from the feed).
+    fn station_install(self: &Arc<Self>, version: &str, archive: &[u8], begin: bool) -> Result<UpdateStatus, ApiError> {
         let version = version.trim_start_matches('v').to_string();
-        let fs = StationFs::real();
-        let running = std::env::current_exe().map_err(ApiError::internal)?;
+        let fs = self.fs();
+        let running = self.running().map_err(ApiError::internal)?;
         let program = fs.program_on_disk();
         if self.state.lock().unwrap().trial.is_some() || !install::same_file(&running, &program) {
-            return Err(ApiError::conflict(crate::tr!("Идёт проба новой версии: следующее обновление — после неё.")));
+            let error = crate::tr!("Идёт проба новой версии: следующее обновление — после неё.");
+            return Err(if begin { ApiError::conflict(error) } else { self.install_failed(&version, error) });
         }
-        self.begin_install()?;
+        if begin {
+            self.begin_install()?;
+        }
         match self.station_way(&fs, &version, archive, &running, &program) {
             Ok(()) => Ok(self.status()),
             Err(error) => Err(self.install_failed(&version, error)),
@@ -602,7 +743,7 @@ impl UpdatesService {
                 // Programs are not run from memory here: the update goes beside the old program, if the disk allows.
                 install::NotAnswered::NotRun(why) if room.free_kb.unwrap_or(u64::MAX) >= room.disk_beside() => {
                     tracing::warn!("update {version}: no trial from memory ({why}) — beside the one before");
-                    self.beside(fs, version, archive, &std::env::current_exe().map_err(|error| error.to_string())?)
+                    self.beside(fs, version, archive, &self.running().map_err(|error| error.to_string())?)
                 }
                 problem => Err(crate::tr!("Новая версия не прошла проверку: {why}.", why = problem.message())),
             };
@@ -638,9 +779,9 @@ impl UpdatesService {
         let service = self.clone();
         tokio::runtime::Handle::current().spawn(async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            let error = install::restart(&program);
+            let error = service.restart(&program);
             if let Some(trying) = trying {
-                let fs = StationFs::real();
+                let fs = service.fs();
                 fs.clear_trial();
                 let _ = std::fs::remove_file(&trying.program);
                 if trying.apps_paused {
@@ -662,7 +803,7 @@ impl UpdatesService {
         if !self.on_station() {
             return;
         }
-        let fs = StationFs::real();
+        let fs = self.fs();
         let found = self.at_start.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
         if !matches!(found, Some(trial::AtStart::Trying(_))) {
             let freed = install::remove_leftovers(&fs.program_on_disk()) + self.remove_downloads();
@@ -704,7 +845,7 @@ impl UpdatesService {
                 tokio::time::sleep(Duration::from_secs(wait as u64)).await;
             }
             loop {
-                let program = StationFs::real().program_on_disk();
+                let program = service.fs().program_on_disk();
                 let free =
                     station_fs::space_of(program.parent().unwrap_or(Path::new("/data"))).map(|space| space.free_kb);
                 let (source, sha256, target) = (mark.program.clone(), mark.sha256.clone(), program.clone());
@@ -728,7 +869,7 @@ impl UpdatesService {
                     }
                 }
             }
-            let fs = StationFs::real();
+            let fs = service.fs();
             fs.clear_trial();
             fs.clear_trial_failed();
             // The program runs on from memory; its file there goes, and the memory with it at the restart.
@@ -742,7 +883,7 @@ impl UpdatesService {
             }
             let program = fs.program_on_disk();
             tracing::info!("update {}: a quiet minute — the gateway starts from the disk", mark.version);
-            let error = install::restart(&program);
+            let error = service.restart(&program);
             tracing::warn!("update {}: the start from the disk failed: {error}", mark.version);
             service.trial_phase("stuck", Some(format!("restart: {error}")));
         });
@@ -859,6 +1000,7 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/v1/updates", get(status))
         .route("/api/v1/updates/check", post(check))
         .route("/api/v1/updates/install", post(install_now))
+        .route("/api/v1/updates/install-alone", post(install_alone))
         .route("/api/v1/updates/archive", post(archive).layer(axum::extract::DefaultBodyLimit::max(48 * 1024 * 1024)))
 }
 
@@ -902,6 +1044,12 @@ async fn check(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<UpdateS
 async fn install_now(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<UpdateStatus> {
     caller.permitted(SYSTEM_UPDATE)?;
     Ok(ok(app.updates.install()?))
+}
+
+/// «Поставить без компьютера»: the station's gateway that its computer updates installs the offered version itself.
+async fn install_alone(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<UpdateStatus> {
+    caller.permitted(SYSTEM_UPDATE)?;
+    Ok(ok(app.updates.install_alone()?))
 }
 
 #[cfg(test)]
@@ -1119,6 +1267,119 @@ mod tests {
         let status = service("http://updates.example.com/latest.json").check().await.unwrap();
         assert!(status.error.unwrap().contains("https"), "not even asked");
         assert_eq!(status.available, None);
+    }
+
+    /// The station's gateway as a test runs it: on a station of the test's own (`testing::Station`), trusting the
+    /// test's key, updated by `managed_by` (the station's mark: «pc» — the computer that put it there).
+    fn station_gateway(
+        station: &testing::Station,
+        signer: &testing::Signer,
+        feed: Option<&str>,
+        managed_by: Option<&str>,
+    ) -> Arc<UpdatesService> {
+        let data = station.root.path().join("data/opt/duowave/gateway");
+        let mut pairs = vec![
+            ("UPDATE_PUBKEY".to_string(), signer.public()),
+            ("DATA_DIR".to_string(), data.to_string_lossy().into_owned()),
+        ];
+        if let Some(feed) = feed {
+            pairs.push(("UPDATE_FEED_URL".to_string(), feed.to_string()));
+        }
+        let updates = Arc::new(UpdatesService::new(&Config::for_tests(&Env::from_pairs(pairs)), EventBus::new()));
+        updates.set_station_env(station.env());
+        updates.set_station(managed_by.map(str::to_string));
+        updates
+    }
+
+    /// The way the owner's station is updated (20.11): the computer sends the archive of the new version, the
+    /// station checks it with its own key, tries it from memory and becomes it — the program on the disk untouched
+    /// until the trial is over.
+    #[tokio::test]
+    async fn the_station_takes_the_computers_archive_tries_it_from_memory_and_keeps_the_old_program() {
+        let station = testing::Station::new(400_000);
+        let signer = testing::Signer::new();
+        let updates = station_gateway(&station, &signer, None, Some("pc"));
+        let before = std::fs::read(station.program()).unwrap();
+        let archive = testing::release_archive("99.0.0", &feed::platform_key(), &testing::program_answering("99.0.0"));
+
+        let status = updates.install_upload("99.0.0", &archive, &signer.sign(&archive)).expect("taken");
+        assert!(status.installing, "it says it is updating");
+        let became = station.wait_became().await.expect("the gateway becomes the new version");
+        let memory = std::fs::canonicalize(station.root.path().join("tmp")).unwrap();
+        assert!(became.program.starts_with(&memory), "from memory: {:?}", became.program);
+        assert_eq!(became.answers, "duowave 99.0.0", "the program it becomes is the version sent");
+        assert_eq!(became.trying.as_deref(), Some("99.0.0"), "the trial's mark stands while it runs");
+        assert_eq!(became.on_disk, before, "the program on the disk stays the way back");
+    }
+
+    /// The station never takes what its key did not sign, nor a version not newer than its own — whoever sends it.
+    #[tokio::test]
+    async fn the_station_refuses_an_archive_signed_by_another_key_or_not_newer_than_itself() {
+        let station = testing::Station::new(400_000);
+        let (signer, stranger) = (testing::Signer::new(), testing::Signer::new());
+        let updates = station_gateway(&station, &signer, None, Some("pc"));
+        let program = testing::program_answering("99.0.0");
+        let archive = testing::release_archive("99.0.0", &feed::platform_key(), &program);
+
+        let foreign = updates.install_upload("99.0.0", &archive, &stranger.sign(&archive)).unwrap_err();
+        assert!(foreign.message.contains("Подпись не сходится"), "{}", foreign.message);
+        let old = testing::release_archive("0.0.1", &feed::platform_key(), &testing::program_answering("0.0.1"));
+        let back = updates.install_upload("0.0.1", &old, &signer.sign(&old)).unwrap_err();
+        assert!(back.message.contains("не новее"), "no way back to an older release: {}", back.message);
+        let renamed = updates.install_upload("99.0.1", &archive, &signer.sign(&archive)).unwrap_err();
+        assert!(renamed.message.contains("99.0.0"), "a release sent as another version: {}", renamed.message);
+
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(station.became.lock().unwrap().is_empty(), "the gateway stays what it is");
+        assert!(!updates.status().installing);
+        assert_eq!(std::fs::read_dir(station.root.path().join("tmp")).unwrap().count(), 0, "nothing in memory");
+    }
+
+    /// «Колонка без компьютера» (owner 20.11): the station that its computer updates installs the feed's version
+    /// itself only by «Поставить без компьютера» — not by «Обновить», not by itself even when it is urgent — and then
+    /// the station's way as any update: checked, tried from memory, the old program kept.
+    #[tokio::test]
+    async fn a_station_its_computer_updates_installs_from_the_feed_alone_only_by_the_button() {
+        let site = testing::Site::start().await;
+        let station = testing::Station::new(400_000);
+        let signer = testing::Signer::new();
+        let archive = testing::release_archive("99.0.0", &feed::platform_key(), &testing::program_answering("99.0.0"));
+        let url = site.put("duowave-station.tar.gz", archive.clone());
+        site.release("99.0.0", Some("99.0.0"), &[(&feed::platform_key(), &url, &signer.sign(&archive))]);
+        let updates = station_gateway(&station, &signer, Some(&site.feed_url()), Some("pc"));
+
+        let status = updates.check().await.unwrap();
+        assert_eq!(status.available.as_ref().map(|offer| offer.version.as_str()), Some("99.0.0"));
+        assert!(status.available.unwrap().critical, "urgent for this version");
+        assert!(!status.can_install, "«Обновить» is the computer's");
+        assert!(status.hint.unwrap().contains("компьютер"), "the panel says who updates it");
+        assert!(status.can_install_alone, "«Поставить без компьютера» is offered");
+        assert!(updates.install().is_err(), "«Обновить» does not install it here");
+        assert!(!updates.install_if_critical(), "urgent or not, never by itself");
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(station.became.lock().unwrap().is_empty());
+
+        assert!(updates.install_alone().expect("by the button").installing);
+        let became = station.wait_became().await.expect("the gateway becomes the new version");
+        assert_eq!(became.answers, "duowave 99.0.0");
+        assert_eq!(became.trying.as_deref(), Some("99.0.0"), "tried from memory first");
+        assert_eq!(became.on_disk, testing::program_answering("0.0.1"), "the old program stays the way back");
+    }
+
+    /// The button is the station's that its computer updates: elsewhere — a computer, a station installed through
+    /// YAM — «без компьютера» means nothing and installs nothing.
+    #[tokio::test]
+    async fn only_a_station_its_computer_updates_has_the_button() {
+        let site = testing::Site::start().await;
+        let signer = testing::Signer::new();
+        site.release("99.0.0", None, &[(&feed::platform_key(), &site.put("a.tar.gz", vec![1]), "x")]);
+        let station = testing::Station::new(400_000);
+        let yam = station_gateway(&station, &signer, Some(&site.feed_url()), Some("yam"));
+        assert!(!yam.check().await.unwrap().can_install_alone);
+        assert!(yam.install_alone().is_err());
+        let computer = service(&site.feed_url());
+        assert!(!computer.check().await.unwrap().can_install_alone);
+        assert!(computer.install_alone().is_err());
     }
 
     #[test]

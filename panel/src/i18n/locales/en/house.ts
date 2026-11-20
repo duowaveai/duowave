@@ -46,6 +46,20 @@ const en: Translation<typeof ru> = {
     check: 'check',
     installingShort: 'installing…',
     update: 'update',
+    updateBoth: (version) => `Update the computer and the speaker to ${version}`,
+    installTextComputerFirst:
+        'The computer gives the speaker only its own version, and that one is older. First DuoWave on this computer updates — it restarts and the window opens again. Then the computer installs the new version on the speaker by itself: it takes a copy of the settings, tries it from RAM and restarts DuoWave. Nothing more to press.',
+    computerFirstStarted: (version) => `DuoWave on this computer is updating. Once it runs ${version}, the speaker follows by itself.`,
+    followsComputer: (version) => `The speaker updates to ${version} after the computer — by itself, once the computer runs the new version.`,
+    stationAhead: (station, computer) =>
+        `The speaker runs DuoWave ${station}, newer than this computer (${computer}). Update DuoWave on the computer.`,
+    computerFailed: (error) => `The computer did not update the speaker: ${error}`,
+    installTextOwn: 'DuoWave on this computer restarts, and the window opens again.',
+    urgentByComputer: 'The computer that runs the speaker installs it by itself while it is online; you can do it now too.',
+    installAlone: 'install without the computer',
+    installAloneTitle: (version) => `Install ${version} without the computer?`,
+    installAloneText:
+        'Usually the computer that runs the speaker updates it: it takes a copy of the settings and installs its own version. Without it, the speaker downloads the new version from the release itself, checks its signature and tries it from RAM — if it fails, the speaker goes back to the one before. Once the computer is back, update DuoWave on it too.',
 };
 
 export default en;

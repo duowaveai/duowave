@@ -24,6 +24,8 @@ import { NO_BACKUP, backupIdle, backupOf, backupShown, blankBackups, pickValue }
 import { fallLine, fallOf, turboOf } from '../src/screens/turbo-model.ts';
 import type { HelperView, HelpersView, HomeDevice, HomeDevices } from '../src/api.ts';
 import { type Laid, type Rect, arrange, overlaps, pushApart, underTop } from '../src/screens/desk-places.ts';
+import { stationOfferOf, stationUpdatePressable, stationUpdateStep } from '../src/station-update.ts';
+import type { StationUpdatePlan } from '../src/api.ts';
 
 const checks: Array<[string, () => void]> = [];
 const check = (name: string, run: () => void): void => void checks.push([name, run]);
@@ -518,6 +520,67 @@ check('an_applied_theme_is_the_theme_the_panel_keeps', () => {
     expect(/currentTheme\(\)\.id\.startsWith\('preview-'\)\) setTheme\(previewing\)/.test(workshop), 'the workshop gives back only a try-on still shown');
     const works = source('src/screens/works.tsx');
     expect(/takeThemeWhenInstalled\(work\.target\)/.test(works), '«Применить» in «Работы» takes the theme once installed');
+});
+
+// ─── «Обновить колонку» (owner 20.11): «Доступна 0.16.3» — и «У колонки последняя версия» ───────────────────────────
+
+check('the_station_window_asks_the_computer_to_update_itself_first_when_it_is_behind', () => {
+    // 20.11: the station saw 0.16.3 in the feed, the computer ran 0.16.2 — and gives the station only its own build.
+    const behind = stationUpdateStep({ plan: { way: 'computerFirst', version: '0.16.3' } }, '0.16.3');
+    expect(behind?.kind === 'computerFirst' && behind.version === '0.16.3', 'the button updates the computer and then the station');
+    expect(stationUpdatePressable(behind), 'there is a button');
+    expect(stationOfferOf(behind) === '0.16.3', 'the dot says there is a version for the station');
+    // The computer is ahead: its own build goes now.
+    const ahead = stationUpdateStep({ plan: { way: 'send', version: '0.16.3' } }, '0.16.3');
+    expect(ahead?.kind === 'send' && ahead.version === '0.16.3', 'the computer sends its build');
+});
+
+check('the_station_follows_the_computer_with_nothing_to_press', () => {
+    const plan: StationUpdatePlan = { way: 'computerFirst', version: '0.16.3' };
+    const follows = stationUpdateStep({ plan, afterComputer: '0.16.3' }, '0.16.3');
+    expect(follows?.kind === 'follows' && follows.version === '0.16.3', 'the computer is updating, the station follows');
+    expect(!stationUpdatePressable(follows), 'no second button that would start it again');
+});
+
+check('a_version_the_computer_cannot_give_says_why_and_offers_no_button', () => {
+    const why = 'На этом компьютере DuoWave 0.16.2, а колонке он ставит только свою версию.';
+    const blocked = stationUpdateStep({ plan: { way: 'blocked', version: '0.16.3', why } }, '0.16.3');
+    expect(blocked?.kind === 'blocked' && blocked.why === why, 'the computer’s words');
+    expect(!stationUpdatePressable(blocked), 'no button that would answer «последняя версия»');
+    const ahead = stationUpdateStep({ plan: { way: 'stationAhead', station: '0.16.4', computer: '0.16.3' } }, null);
+    expect(ahead?.kind === 'stationAhead' && !stationUpdatePressable(ahead), 'the station newer than the computer: the computer is to update');
+    expect(stationOfferOf(ahead) === null, 'nothing new for the station');
+});
+
+check('latest_only_when_nothing_newer_is_known_anywhere', () => {
+    // The station saw a version, and the computer has not said anything yet: the button asks it, it decides.
+    const asked = stationUpdateStep({}, '0.16.3');
+    expect(asked?.kind === 'ask' && stationUpdatePressable(asked), 'asked of the computer');
+    expect(stationUpdateStep({}, null) === null, 'nothing anywhere: latest');
+    expect(stationUpdateStep(null, undefined) === null, 'no view, nothing seen: latest');
+});
+
+check('the_panel_shows_the_computers_way_not_only_its_own_build', () => {
+    const house = source('src/screens/house.tsx');
+    expect(/stationUpdateStep\(computer, offer\?\.version\)/.test(house), 'the station window decides by the computer’s view');
+    expect(/api\.updateStationFromComputer\(VIA, offer\?\.version\)/.test(house), 'it says the computer which version the station saw');
+    expect(/!VIA && status\.canInstallAlone/.test(house), '«Поставить без компьютера» — only in the station’s own panel');
+    const places = source('src/screens/places.tsx');
+    expect(/\{VIA && <Updates own title=\{tr\.core\.tabThisComputer\} \/>\}/.test(places), 'the window of the home shows the computer’s own updates');
+    const devices = source('src/screens/devices.tsx');
+    expect(/mine && VIA && !centre \? <Updates own \/>/.test(devices), 'the computer’s tab shows its own version, not the station’s');
+    for (const screen of ['src/screens/placement.tsx', 'src/screens/desk-widgets.tsx']) {
+        expect(/stationUpdateStep\(station\)/.test(source(screen)), `${screen}: the computer’s plan, not only its own build`);
+    }
+});
+
+check('the_pairs_of_an_app_are_looked_up_in_the_catalog_of_the_device_it_went_to', () => {
+    // 20.11: installing at the home's centre through the computer, the pair was offered (and removed) by the computer's
+    // own catalog. The pairs look where the app went: the actions' `installApi(station)`.
+    const catalog = source('src/screens/catalog.tsx');
+    expect(/async function catalogNow\(at: CatalogApi\)/.test(catalog), 'the catalog is the one given');
+    expect(!/catalogNow\(\)/.test(catalog), 'never this panel’s own by default');
+    expect(/offerPairs\(entry, install, say, api\)/.test(catalog) && /tr\.catalog\.removedNote\), api\)/.test(catalog), 'both pass the actions’ api');
 });
 
 let failed = 0;

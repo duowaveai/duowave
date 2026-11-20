@@ -819,9 +819,12 @@ mod tests {
         let unsigned = install(State(app.clone()), admin(), Path("clock".into()), body()).await;
         assert_eq!(status(unsigned), StatusCode::CONFLICT);
         assert!(!dir.path().join("packages/clock").exists());
-        // The built-in «Радио» is there from the build, and it is not removed.
-        assert!(dir.path().join("packages/radio").is_dir());
-        assert_eq!(status(remove(State(app.clone()), admin(), Path("radio".into())).await), StatusCode::CONFLICT);
+        // The built-in «Радио» is there from the build (under its random id), and it is not removed.
+        assert!(dir.path().join("packages/p-a2fd1d7eb8a4").is_dir());
+        assert_eq!(
+            status(remove(State(app.clone()), admin(), Path("p-a2fd1d7eb8a4".into())).await),
+            StatusCode::CONFLICT
+        );
 
         // The owner's switch: off, nothing installs.
         let off = catalog_switch(

@@ -56,6 +56,11 @@ const en: Translation<typeof ru> = {
     updating: 'updating…',
     updateTo: (version: string) => `Update the speaker to ${version}`,
     latestGateway: 'DuoWave on the speaker is up to date.',
+    updateBoth: (version) => `Update the computer and the speaker to ${version}`,
+    newerRelease: (version) => `Version ${version} is out: DuoWave on this computer updates first, then it installs it on the speaker itself.`,
+    stationAhead: (station, computer) =>
+        `The speaker runs DuoWave ${station}, newer than this computer (${computer}). Update DuoWave on the computer.`,
+    followsComputer: (version) => `The speaker updates to ${version} after the computer — by itself, once the computer runs the new version.`,
     updateFailed: (error: string) => `The speaker didn’t update: ${error}`,
     trialOnStation: (version, until) =>
         `The speaker is trying version ${version} from memory until ${until}; if it fails, the previous one comes back.`,

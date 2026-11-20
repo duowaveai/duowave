@@ -117,6 +117,8 @@ pub const LOCAL_SETTINGS: &[&str] = &[
     "gateway_state",
     "station_placement",
     "station_placements",
+    // The stations this computer updates after itself (src/placement/watch.rs): the computer's own.
+    "station_updates_after",
     "station_links",
     "connector_home_server",
     // The voice and the recognition are chosen from each side's own catalog; so is the voice that waits for its model
@@ -1418,6 +1420,9 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// The built-in «Список покупок»: its id is random (packages/bundled.json).
+    const SHOPPING: &str = "p-d31a99a7e5b1";
     use crate::core::events::EventBus;
     use crate::core::identity::home::HOME_KEY;
     use crate::settings::definitions::{
@@ -2186,11 +2191,11 @@ mod tests {
     #[test]
     fn a_move_carries_the_plugins_switches_and_data_both_ways_for_the_packages_both_sides_have() {
         let (pc, pc_secrets, _) = gateway();
-        plugin(&pc, "shopping", true, &[("list", r#"["молоко"]"#)]);
+        plugin(&pc, SHOPPING, true, &[("list", r#"["молоко"]"#)]);
         plugin(&pc, "weather", true, &[]);
         plugin(&pc, "pc-only", true, &[("x", "1")]);
         let (station, station_secrets, _) = gateway();
-        plugin(&station, "shopping", false, &[("list", r#"["старое"]"#)]);
+        plugin(&station, SHOPPING, false, &[("list", r#"["старое"]"#)]);
         plugin(&station, "weather", false, &[("city", r#""Казань""#)]);
         plugin(&station, "station-only", true, &[("y", "2")]);
 
@@ -2198,33 +2203,33 @@ mod tests {
         let routine_package = routine(export(&pc, &pc_secrets, "pc").unwrap());
         assert!(routine_package.plugins.is_none());
         import(&station, &station_secrets, &routine_package, true).unwrap();
-        assert_eq!(state_of(&station, "shopping").0, Some(false));
+        assert_eq!(state_of(&station, SHOPPING).0, Some(false));
 
         // To the station: the computer's switches and data for what both have.
         let mut moved = export(&pc, &pc_secrets, "pc").unwrap();
         moved.plugins = Some(plugins(&pc).unwrap());
         let imported = import(&station, &station_secrets, &moved, true).unwrap();
         assert_eq!(imported.plugins, 2, "shopping and weather");
-        assert_eq!(state_of(&station, "shopping"), (Some(true), vec![("list".into(), r#"["молоко"]"#.into())]));
+        assert_eq!(state_of(&station, SHOPPING), (Some(true), vec![("list".into(), r#"["молоко"]"#.into())]));
         assert_eq!(state_of(&station, "weather"), (Some(true), vec![]), "the computer's data, none");
         assert_eq!(state_of(&station, "pc-only"), (None, vec![]), "not on the station: passed by");
         assert_eq!(state_of(&station, "station-only"), (Some(true), vec![("y".into(), "2".into())]), "untouched");
 
         // The list grows on the station; back to the computer, the station's.
-        plugin(&station, "shopping", true, &[("list", r#"["молоко","хлеб"]"#)]);
+        plugin(&station, SHOPPING, true, &[("list", r#"["молоко","хлеб"]"#)]);
         let mut back = export(&station, &station_secrets, "station").unwrap();
         back.plugins = Some(plugins(&station).unwrap());
         import(&pc, &pc_secrets, &back, false).unwrap();
-        assert_eq!(state_of(&pc, "shopping"), (Some(true), vec![("list".into(), r#"["молоко","хлеб"]"#.into())]));
+        assert_eq!(state_of(&pc, SHOPPING), (Some(true), vec![("list".into(), r#"["молоко","хлеб"]"#.into())]));
         assert_eq!(state_of(&pc, "station-only"), (None, vec![]));
         assert_eq!(state_of(&pc, "pc-only"), (Some(true), vec![("x".into(), "1".into())]), "untouched");
 
         // A station's first start: no rows yet — a package built into it counts as there, and keeps its kind.
         let (fresh, fresh_secrets, _) = gateway();
         import(&fresh, &fresh_secrets, &moved, true).unwrap();
-        assert_eq!(state_of(&fresh, "shopping"), (Some(true), vec![("list".into(), r#"["молоко"]"#.into())]));
+        assert_eq!(state_of(&fresh, SHOPPING), (Some(true), vec![("list".into(), r#"["молоко"]"#.into())]));
         let source: String = fresh
-            .with(|c| c.query_row("SELECT source FROM packages WHERE id = 'shopping'", [], |row| row.get(0)))
+            .with(|c| c.query_row("SELECT source FROM packages WHERE id = ?1", [SHOPPING], |row| row.get(0)))
             .unwrap();
         assert_eq!(source, crate::plugins::registry::SOURCE_BUNDLED);
         assert_eq!(state_of(&fresh, "pc-only").0, None);
@@ -2667,9 +2672,9 @@ mod tests {
     fn the_plugins_state_a_move_back_left_is_applied_at_the_start_once() {
         let dir = tempfile::tempdir().unwrap();
         let (pc, pc_secrets, _) = gateway();
-        plugin(&pc, "shopping", false, &[]);
+        plugin(&pc, SHOPPING, false, &[]);
         let (station, _, _) = gateway();
-        plugin(&station, "shopping", true, &[("list", r#"["хлеб"]"#)]);
+        plugin(&station, SHOPPING, true, &[("list", r#"["хлеб"]"#)]);
         let package = PluginsPackage {
             from: "station".into(),
             at: now_iso(),
@@ -2678,7 +2683,7 @@ mod tests {
         };
         std::fs::write(incoming_plugins_file(dir.path()), serde_json::to_vec(&package).unwrap()).unwrap();
         assert!(apply_incoming(dir.path(), &pc, &pc_secrets, false, None).is_none(), "no settings came");
-        assert_eq!(state_of(&pc, "shopping"), (Some(true), vec![("list".into(), r#"["хлеб"]"#.into())]));
+        assert_eq!(state_of(&pc, SHOPPING), (Some(true), vec![("list".into(), r#"["хлеб"]"#.into())]));
         assert!(!incoming_plugins_file(dir.path()).exists());
     }
 

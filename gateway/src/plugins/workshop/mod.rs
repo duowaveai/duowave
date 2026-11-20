@@ -404,8 +404,8 @@ impl Workshop {
         let read =
             || std::fs::read_to_string(folder.join("manifest.json")).ok().and_then(|text| manifest::parse(&text).ok());
         match manifest {
-            Some(manifest) => DraftMeta::known(id, Some(manifest), job.as_ref(), updated),
-            None => DraftMeta::known(id, read().as_ref(), job.as_ref(), updated),
+            Some(manifest) => DraftMeta::known(Some(manifest), job.as_ref(), updated),
+            None => DraftMeta::known(read().as_ref(), job.as_ref(), updated),
         }
     }
 
@@ -656,8 +656,25 @@ impl Workshop {
         Ok(self.view_of(id, &folder))
     }
 
+    /// The id of a new draft from a template or an API: the workshop gives a random one (`new_id`); one given must be
+    /// random too. A new package's id says nothing of it — its name is the title (owner 20.11.2026).
+    pub fn new_draft_id(&self, given: Option<&str>) -> Result<String, ApiError> {
+        match given.map(str::trim).filter(|id| !id.is_empty()) {
+            None => Ok(self.new_id()),
+            Some(id) if manifest::random_id(id) => Ok(id.to_string()),
+            Some(id) => Err(ApiError::field(
+                "id",
+                crate::tr!(
+                    "«{id}»: id нового черновика случайный — «p-» и 12 знаков 0–9 a–f, его выдаёт мастерская. Не называйте id, имя — в названии.",
+                    id = id
+                ),
+            )),
+        }
+    }
+
     /// A new draft: from a template (`plugin` or `theme`), from an OpenAPI description, or from an installed package
-    /// of one's own (its newest version) — a built-in's or a catalog's is copied under an id of one's own instead.
+    /// of one's own (its newest version) — a built-in's or a catalog's is copied under an id of one's own instead. A
+    /// new one's id comes from `new_draft_id`.
     pub fn create(
         &self,
         id: &str,

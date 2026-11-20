@@ -1,4 +1,4 @@
-// Логотипы встроенных приложений (packages/*, bundled.json) — нарисованы кодом, в одном стиле: плитка со своим
+// Логотипы встроенных приложений (packages/*, bundled.json; ключ — случайный id пакета, рядом — его папка) — нарисованы кодом, в одном стиле: плитка со своим
 // градиентом и белый знак с одним-двумя цветными акцентами. Без картинок и без букв-заглушек (владелец, 16.11:
 // «скучные»). Сетка знака — 64×64; плитку скругляет и подсвечивает `.app-icon.is-logo` (desk.css).
 // Знаки без <defs> и id: на странице их много, а ссылка на градиент в скрытом элементе в WebKit пропадает.
@@ -11,7 +11,7 @@ const W = '#FFFFFF';
 const SOFT = 'rgba(255,255,255,0.62)';
 
 const LOGOS: Record<string, Logo> = {
-    calendar: {
+    'p-8c4a0cef4bae': { // calendar
         bg: 'linear-gradient(150deg, #ff9a8b 0%, #f2546a 52%, #c0243f 100%)',
         glyph: () => (
             <>
@@ -29,7 +29,7 @@ const LOGOS: Record<string, Logo> = {
             </>
         ),
     },
-    currency: {
+    'p-e28975f15f73': { // currency
         bg: 'linear-gradient(150deg, #ffe08a 0%, #f5b23d 50%, #d27a12 100%)',
         glyph: () => (
             <>
@@ -46,7 +46,7 @@ const LOGOS: Record<string, Logo> = {
             </>
         ),
     },
-    folders: {
+    'p-e99d4491bc27': { // folders
         bg: 'linear-gradient(150deg, #8cc8ff 0%, #4a8ff5 50%, #2453d6 100%)',
         glyph: () => (
             <>
@@ -58,7 +58,7 @@ const LOGOS: Record<string, Logo> = {
             </>
         ),
     },
-    games: {
+    'p-1d5783476a25': { // games
         bg: 'linear-gradient(150deg, #ff9ad5 0%, #e046b5 50%, #8a1fb8 100%)',
         glyph: () => (
             <>
@@ -72,7 +72,7 @@ const LOGOS: Record<string, Logo> = {
             </>
         ),
     },
-    morning: {
+    'p-53cd409ecea7': { // morning
         bg: 'linear-gradient(165deg, #ffd27a 0%, #ff8a5b 48%, #ea4c89 100%)',
         glyph: () => (
             <>
@@ -89,7 +89,7 @@ const LOGOS: Record<string, Logo> = {
             </>
         ),
     },
-    music: {
+    'p-19a3d37a21ff': { // music
         bg: 'linear-gradient(150deg, #c3b2ff 0%, #8b6cf6 50%, #5532d1 100%)',
         glyph: () => (
             <>
@@ -102,7 +102,7 @@ const LOGOS: Record<string, Logo> = {
             </>
         ),
     },
-    'neon-snake': {
+    'p-6d9f10977863': { // neon-snake
         bg: 'radial-gradient(120% 100% at 30% 15%, #263a6b 0%, #121a36 55%, #090d1f 100%)',
         glyph: () => (
             <>
@@ -116,7 +116,7 @@ const LOGOS: Record<string, Logo> = {
             </>
         ),
     },
-    news: {
+    'p-d530e4cef817': { // news
         bg: 'linear-gradient(150deg, #b7c3d4 0%, #74849c 50%, #3f4b60 100%)',
         glyph: () => (
             <>
@@ -131,7 +131,7 @@ const LOGOS: Record<string, Logo> = {
             </>
         ),
     },
-    radio: {
+    'p-a2fd1d7eb8a4': { // radio
         bg: 'linear-gradient(150deg, #7ff0dc 0%, #22b8b0 50%, #0b6f86 100%)',
         glyph: () => (
             <>
@@ -146,7 +146,7 @@ const LOGOS: Record<string, Logo> = {
             </>
         ),
     },
-    shopping: {
+    'p-d31a99a7e5b1': { // shopping
         bg: 'linear-gradient(150deg, #a6f3a0 0%, #3fcf6d 50%, #148a4b 100%)',
         glyph: () => (
             <>
@@ -163,7 +163,7 @@ const LOGOS: Record<string, Logo> = {
             </>
         ),
     },
-    'smart-home': {
+    'p-7334b3fd20b1': { // smart-home
         bg: 'linear-gradient(150deg, #ffc58a 0%, #ff8540 50%, #d9461c 100%)',
         glyph: () => (
             <>
@@ -173,7 +173,7 @@ const LOGOS: Record<string, Logo> = {
             </>
         ),
     },
-    tales: {
+    'p-f6139e89b6b5': { // tales
         bg: 'linear-gradient(160deg, #8e83ff 0%, #5a45d8 48%, #2a1f7a 100%)',
         glyph: () => (
             <>
@@ -186,7 +186,7 @@ const LOGOS: Record<string, Logo> = {
             </>
         ),
     },
-    weather: {
+    'p-ad07a08e06e1': { // weather
         bg: 'linear-gradient(150deg, #9be3ff 0%, #44a8f0 50%, #1f68cf 100%)',
         glyph: () => (
             <>

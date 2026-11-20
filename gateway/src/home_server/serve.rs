@@ -163,11 +163,25 @@ fn served(caller: &Caller, which: usize, ability: Ability, started: Instant) {
     caller.app().clients.served(caller, ability, started);
 }
 
+#[derive(serde::Deserialize)]
+struct CatalogQuery {
+    /// The station's person asked to check now: this computer reads its feed again first.
+    fresh: Option<String>,
+}
+
 /// The packages' catalog for the station without internet of its own (docs/plans/plugins.md, stage 9, «через Mac»):
 /// this computer's copy of the feed and its signature — the station checks them with its own key — and the copies of
-/// the extra feeds it names (`feeds: [{url, feed}]`, docs/plans/catalog-feeds.md).
-async fn catalog(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
+/// the extra feeds it names (`feeds: [{url, feed}]`, docs/plans/catalog-feeds.md), with when it was read
+/// (`fetchedAt`). The copy is kept as fresh as this computer keeps its own: read again when it is older than its six
+/// hours, at once with `fresh`. Before 20.11 it went as it was, and the station took it for read that moment: a
+/// station without internet of its own never saw an update while the Mac's panel was the station's.
+async fn catalog(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    axum::extract::Query(query): axum::extract::Query<CatalogQuery>,
+) -> Result<Response, ApiError> {
     allowed(&caller, Needs::Ability(Ability::Catalog))?;
+    let _ = app.catalog.feed(query.fresh.is_some()).await;
     let copy =
         app.catalog.export_for_station().ok_or_else(|| ApiError::not_found(crate::tr!("Копии каталога здесь нет.")))?;
     Ok(axum::Json(copy).into_response())
@@ -368,7 +382,10 @@ async fn plugin_install(State(app): State<Arc<App>>, caller: Caller, body: Bytes
         return Err(ApiError::bad_request("id".to_string()));
     }
     let here = app.plugins.installed(id).map(|installed| installed.manifest.version.to_string());
-    if here.as_deref() != version || here.is_none() {
+    // Here already at that version or newer — switched off, say: switched on as it is. Asking the catalog for an older
+    // one answered «Новее X в каталоге нет» and left it off (before 20.11).
+    let newer_here = matches!((here.as_deref(), version), (Some(here), Some(wanted)) if crate::home::apps::newer_or_same(here, wanted));
+    if !newer_here {
         match app.catalog.install(id, version, here.is_some(), None).await {
             Ok(_) => {}
             // Not in this computer's catalog: the feed the centre has it from (clean-path check 19.11, YouTube from a
@@ -1054,6 +1071,8 @@ mod tests {
             (status, &copy["url"], &copy["feed"]),
             (StatusCode::OK, &json!(FEED), &json!(r#"{"format":1,"packages":[]}"#))
         );
+        // When it was read goes with it: the station keeps the copy as old as it is (20.11).
+        assert_eq!(copy["fetchedAt"], json!("2026-11-15T10:00:00.000Z"));
     }
 
     #[tokio::test]
@@ -1576,6 +1595,16 @@ mod tests {
             over_link(&app, "POST", "/home/v1/plugins/install", &own, true, install("moon", Some(&demo.url))).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
         assert!(app.plugins.installed("moon").is_none());
+
+        // The code here already at that version or newer, switched off (20.11): switched on as it is — before, the
+        // catalog was asked for the older one, answered «Новее 1.0.0 в каталоге нет», and it stayed off.
+        app.plugins.disable("tube", None).await.unwrap();
+        let mut older = install("tube", Some(&demo.url));
+        older["version"] = json!("0.9.0");
+        let (status, body) = over_link(&app, "POST", "/home/v1/plugins/install", &own, true, older).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(app.plugins.is_active("tube"), "{body}");
+        assert_eq!(body["version"], json!("1.0.0"), "its own code, switched on");
     }
 
     #[tokio::test]

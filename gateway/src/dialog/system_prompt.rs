@@ -237,7 +237,8 @@ pub fn legacy(preset_id: Option<&str>, text: &str) -> Option<Legacy> {
         "irony" => Legacy::Alice(at("irony", 2)),
         "warm" => Legacy::Alice(at("warmth", 2)),
         "business" => Legacy::Alice(at("detail", 0)),
-        _ => Legacy::Replaced("arthur"),
+        // «Артур» of the catalog (its package id is random: docs/plans/random-package-ids.md).
+        _ => Legacy::Replaced("p-6dbdfc39330b"),
     })
 }
 
@@ -414,7 +415,7 @@ pub mod tests {
         assert_eq!(legacy(Some("irony"), ""), at("irony", 2));
         assert_eq!(legacy(Some("warm"), ""), at("warmth", 2));
         assert_eq!(legacy(Some("business"), ""), at("detail", 0));
-        assert_eq!(legacy(Some("butler"), ""), Some(Legacy::Replaced("arthur")));
+        assert_eq!(legacy(Some("butler"), ""), Some(Legacy::Replaced("p-6dbdfc39330b")), "«Артур»");
         let (_, warm) = LEGACY[2];
         assert_eq!(legacy(None, warm), at("warmth", 2), "a choice kept without its id, by its text");
         assert!(is_legacy_text(warm) && !is_legacy_text("Ты — Алиса, пиратка."));

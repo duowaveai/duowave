@@ -726,6 +726,8 @@ impl App {
                 events.clone(),
             );
             placement.set_station(station_gateway.clone());
+            // What «Обновить колонку» does depends on this computer's own updates (src/placement/watch.rs).
+            station_gateway.set_updates(updates.clone());
             let moves = MovesService::new(MovesDeps {
                 config: config.clone(),
                 db: db.clone(),

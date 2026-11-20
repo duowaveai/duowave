@@ -978,6 +978,20 @@ pub fn valid_id(id: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
+/// A new package's id: `p-` and 12 random hex digits (owner 20.11.2026). The id says nothing of the package — its name
+/// is the manifest's `title` — so it neither tells what a closed feed holds nor clashes with a look-alike package. The
+/// catalog's check refuses a readable id (`isRandomPackageId` in duowave-packages/tools/check.mjs); the built-ins and
+/// the catalog's older packages were renamed on 20.11.2026 (docs/plans/random-package-ids.md). The gateway itself still
+/// reads a readable id: a feed of others', a folder put in by hand.
+pub fn new_package_id() -> String {
+    format!("p-{}", crate::utils::ids::random_hex(6))
+}
+
+/// Whether an id is a random one, as `new_package_id` makes: `p-` and 12 hex digits in lower case.
+pub fn random_id(id: &str) -> bool {
+    id.len() == 14 && id.starts_with("p-") && id[2..].chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
+}
+
 /// A tool's name as the model sees it: a letter first, then letters, digits and `_`.
 fn tool_name(name: &str) -> bool {
     let mut chars = name.chars();
@@ -2345,5 +2359,15 @@ mod tests {
         card["resume"] = Value::Null;
         card["contributes"] = json!({ "tools": [{ "name": "x" }] });
         assert!(check(&card).is_err(), "no code in a card");
+    }
+
+    #[test]
+    fn a_new_package_gets_a_random_id() {
+        let (one, two) = (new_package_id(), new_package_id());
+        assert!(random_id(&one) && valid_id(&one), "{one}");
+        assert_ne!(one, two);
+        for not in ["radio", "p-0123456789a", "p-0123456789abc", "p-0123456789AB", "p-0123456789ag", "q-0123456789ab"] {
+            assert!(!random_id(not), "{not}");
+        }
     }
 }

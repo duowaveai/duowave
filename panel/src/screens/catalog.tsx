@@ -282,7 +282,7 @@ export function usePackageActions(onChanged: () => void, station?: string): Pack
         );
         if (done) {
             soonAsked();
-            await offerPairs(entry, install, say);
+            await offerPairs(entry, install, say, api);
         }
         return done;
     };
@@ -303,20 +303,25 @@ export function usePackageActions(onChanged: () => void, station?: string): Pack
                 return false;
             // Карточка агента: шлюз говорит, из каких рабочих папок агент ушёл.
             const done = await run(id, 'remove', () => api.removePackage(id), (result) => result?.said ?? tr.catalog.removedNote);
-            if (done) await removePairs(id, (other) => run(other.id, 'remove', () => api.removePackage(other.id), tr.catalog.removedNote));
+            if (done) await removePairs(id, (other) => run(other.id, 'remove', () => api.removePackage(other.id), tr.catalog.removedNote), api);
             return done;
         },
     };
 }
 
-/** Каталог сейчас: что стоит и что можно поставить — пары смотрят в него после установки и удаления. */
-async function catalogNow(): Promise<CatalogEntry[]> {
+/** Каталог сейчас: что стоит и что можно поставить — пары смотрят в него после установки и удаления. Каталог того, у
+ *  кого ставили (`at` — у центра дома через проход, п. 46), а не этого пульта: иначе пару предлагали и удаляли по чужому
+ *  каталогу (20.11). */
+async function catalogNow(at: CatalogApi): Promise<CatalogEntry[]> {
     try {
-        return (await api.packagesCatalog()).packages;
+        return (await at.packagesCatalog()).packages;
     } catch {
         return [];
     }
 }
+
+/** Чей каталог смотрят пары: `installApi(station)`. */
+type CatalogApi = Pick<ReturnType<typeof installApi>, 'packagesCatalog'>;
 
 /**
  * Поставили один из пары (`companions`: персонаж и его слово) — бесшовно предложить другой: зачем, сколько займёт
@@ -327,9 +332,10 @@ async function offerPairs(
     entry: CatalogEntry,
     install: (entry: CatalogEntry, approved?: boolean) => Promise<boolean>,
     say: (id: string, note: CardNote) => void,
+    at: CatalogApi,
 ) {
     if (!entry.companions?.length) return;
-    const all = await catalogNow();
+    const all = await catalogNow(at);
     for (const pair of entry.companions) {
         const other = all.find((item) => item.id === pair.id);
         if (!other || isInstalled(other) || !canManage(other.kind)) continue;
@@ -344,8 +350,8 @@ async function offerPairs(
 }
 
 /** Удалили один из пары — спросить про другой, если он стоит: сам по себе он может быть и не нужен. */
-async function removePairs(id: string, remove: (other: CatalogEntry) => Promise<boolean>) {
-    const all = await catalogNow();
+async function removePairs(id: string, remove: (other: CatalogEntry) => Promise<boolean>, at: CatalogApi) {
+    const all = await catalogNow(at);
     const removed = all.find((item) => item.id === id);
     for (const pair of removed?.companions ?? []) {
         const other = all.find((item) => item.id === pair.id);

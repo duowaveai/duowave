@@ -639,6 +639,14 @@ export function InstalledPackageSheet({
                                 title={where ?? ''}
                                 sub={view.runsAt === 'home' ? tr.plugins.runsAtHome : view.runsAt === 'here' ? tr.plugins.runsAtHere : undefined}
                             />
+                            {/* Турбо не поставил код этой версии (20.11): виден сразу, не только когда вызов не прошёл. */}
+                            {view.turbo && (
+                                <div class="win-row">
+                                    <span class="win-row-s c-dot-offline" role="alert">
+                                        {tr.plugins.turboRefused(view.turbo)}
+                                    </span>
+                                </div>
+                            )}
                         </WinSection>
                     )}
                     {(canDisable || removable) && (

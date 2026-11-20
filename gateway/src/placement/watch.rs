@@ -13,7 +13,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::backup::Backups;
-use super::payload::{self, PayloadInfo};
+use super::payload::{self, PayloadInfo, PayloadSource};
 use super::peer::{self, station_secret, PeerClient, PEER_SECRET};
 use crate::config::Config;
 use crate::core::availability::Placement;
@@ -21,9 +21,13 @@ use crate::core::build::PEER_API;
 use crate::core::events::{Actor, EventBus, GatewayEvent};
 use crate::platform::http::ApiError;
 use crate::secrets::SecretsService;
-use crate::settings::definitions::{StationPlacement, GATEWAY_SELF, STATION_PLACEMENT, STATION_PLACEMENTS};
+use crate::settings::definitions::{
+    StationPlacement, StationUpdateAfter, GATEWAY_SELF, STATION_PLACEMENT, STATION_PLACEMENTS, STATION_UPDATES_AFTER,
+};
 use crate::settings::SettingsService;
 use crate::storage::Db;
+use crate::updates::feed::is_newer;
+use crate::updates::{OwnRelease, UpdatesService};
 use crate::utils::time::now_iso;
 
 /// How often the station's gateway is asked.
@@ -76,6 +80,78 @@ pub const SEARCH_AFTER: u32 = 3;
 /// And not more often than this.
 pub const SEARCH_EVERY: Duration = Duration::from_secs(300);
 
+/// How long «Обновить компьютер и колонку» waits for this computer to run the new version: the app's update takes
+/// minutes; a request a day old is dropped, not acted on when nobody expects it.
+pub const AFTER_COMPUTER_FOR: Duration = Duration::from_secs(24 * 3600);
+
+/// This computer's own release knowledge counts as fresh this long before «Обновить колонку» decides by it.
+const OWN_FRESH: Duration = Duration::from_secs(600);
+
+/// What «Обновить колонку» does now (owner 20.11: «Доступна 0.16.3», and the button said «У колонки последняя
+/// версия»). The computer gives the station only the station's build of its own version (src/placement/payload.rs), so
+/// a release newer than the computer goes to the computer first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "way", rename_all = "camelCase")]
+pub enum StationUpdate {
+    /// This computer's own build, newer than the station's: sent now.
+    Send { version: String },
+    /// A release newer than this computer: it updates itself, then sends the station that version.
+    ComputerFirst { version: String },
+    /// A newer version for the station that this computer cannot give from here: why, and what to do.
+    Blocked { version: String, why: String },
+    /// The station runs a newer version than this computer: the computer is the one to update.
+    StationAhead { station: String, computer: String },
+}
+
+/// What «Обновить колонку» started: `send` — the archive goes to the station now; `computerFirst` — this computer
+/// updates itself and the station follows (`follow_up`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateStarted {
+    pub way: &'static str,
+    pub version: String,
+}
+
+/// The way for a station whose gateway is at `station`, from this computer at `computer` — `sends`: it carries the
+/// station's build of its version, else why not — that knows `own` of the releases for itself (None: it does not
+/// check releases here).
+pub fn plan_update(
+    station: &str,
+    computer: &str,
+    sends: Result<(), String>,
+    own: Option<&OwnRelease>,
+) -> Option<StationUpdate> {
+    let computer_newer = is_newer(computer, station);
+    let offer =
+        own.and_then(|own| own.offer.clone().filter(|offer| is_newer(offer, station)).map(|offer| (offer, own)));
+    if let Some((offer, own)) = offer {
+        return Some(match &own.installs_itself {
+            Ok(()) => StationUpdate::ComputerFirst { version: offer },
+            // What this computer has is still newer than the station's: better that now than nothing.
+            Err(_) if computer_newer && sends.is_ok() => StationUpdate::Send { version: computer.to_string() },
+            Err(hint) => StationUpdate::Blocked {
+                why: crate::tr!(
+                    "На этом компьютере DuoWave {computer}, а колонке он ставит только свою версию. Сначала обновите DuoWave на компьютере до {version}: {hint}",
+                    computer = computer,
+                    version = offer,
+                    hint = hint
+                ),
+                version: offer,
+            },
+        });
+    }
+    if computer_newer {
+        return Some(match sends {
+            Ok(()) => StationUpdate::Send { version: computer.to_string() },
+            Err(why) => StationUpdate::Blocked { version: computer.to_string(), why },
+        });
+    }
+    if is_newer(station, computer) {
+        return Some(StationUpdate::StationAhead { station: station.to_string(), computer: computer.to_string() });
+    }
+    None
+}
+
 /// The station's gateway as the computer's panel shows it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -92,6 +168,12 @@ pub struct StationGatewayView {
     /// A newer build of the station's gateway inside this computer's: «Обновить колонку до X».
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update: Option<String>,
+    /// What «Обновить колонку» does now: send this computer's build, update this computer first, or why it cannot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<StationUpdate>,
+    /// «Обновить компьютер и колонку»: the version the station gets once this computer runs it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_computer: Option<String>,
     pub payload: PayloadInfo,
     /// When this computer last took the home's copy from the centre on the station (docs/plans/home-and-devices.md,
     /// stage 3).
@@ -121,6 +203,8 @@ pub struct StationGateway {
     home_addresses: std::sync::OnceLock<HomeAddresses>,
     /// Looks without an answer in a row, and when the station was last looked for on the network.
     misses: Mutex<(u32, Option<std::time::Instant>)>,
+    /// This computer's own updates: what it knows of releases, and its own install for «Обновить компьютер и колонку».
+    updates: OnceLock<Arc<UpdatesService>>,
 }
 
 impl StationGateway {
@@ -147,11 +231,17 @@ impl StationGateway {
             told: Mutex::new(Vec::new()),
             home_addresses: std::sync::OnceLock::new(),
             misses: Mutex::new((0, None)),
+            updates: OnceLock::new(),
         })
     }
 
     pub fn set_home_addresses(&self, addresses: HomeAddresses) {
         let _ = self.home_addresses.set(addresses);
+    }
+
+    /// This computer's own updates (app.rs): the watch decides by them what «Обновить колонку» does.
+    pub fn set_updates(&self, updates: Arc<UpdatesService>) {
+        let _ = self.updates.set(updates);
     }
 
     /// This computer as the station's home server: of its addresses on the home network, the one in the station's
@@ -531,10 +621,36 @@ impl StationGateway {
     pub fn update_offer(&self) -> Option<String> {
         let station = self.station_version()?;
         let info = payload::info(&self.config);
-        if info.source == payload::PayloadSource::None {
+        if info.source == PayloadSource::None {
             return None;
         }
-        crate::updates::feed::is_newer(info.version, &station).then(|| info.version.to_string())
+        is_newer(info.version, &station).then(|| info.version.to_string())
+    }
+
+    /// What «Обновить колонку» does now (`plan_update`), by the station's version as it said last.
+    pub fn plan(&self) -> Option<StationUpdate> {
+        let station = self.station_version()?;
+        let info = payload::info(&self.config);
+        let sends = if info.source == PayloadSource::None { Err(info.note.clone()) } else { Ok(()) };
+        let own = self.updates.get().map(|updates| updates.own_release());
+        plan_update(&station, info.version, sends, own.as_ref())
+    }
+
+    /// «Обновить компьютер и колонку»: the version the station is to get once this computer runs it.
+    fn after_computer(&self) -> Option<StationUpdateAfter> {
+        self.settings.get(&STATION_UPDATES_AFTER, None).and_then(|all| all.get(&self.key).cloned())
+    }
+
+    fn set_after_computer(&self, version: Option<&str>) -> Result<(), ApiError> {
+        let mut all = self.settings.get(&STATION_UPDATES_AFTER, None).unwrap_or_default();
+        match version {
+            Some(version) => {
+                all.insert(self.key.clone(), StationUpdateAfter { version: version.to_string(), at: now_iso() });
+            }
+            None if all.remove(&self.key).is_none() => return Ok(()),
+            None => {}
+        }
+        self.settings.set(&STATION_UPDATES_AFTER, &all, None)
     }
 
     pub fn view(&self) -> StationGatewayView {
@@ -549,6 +665,8 @@ impl StationGateway {
             version: self.station_version(),
             compatible: self.station_peer_api().is_none_or(|api| api == PEER_API as u64),
             update: self.update_offer(),
+            plan: self.plan(),
+            after_computer: self.after_computer().map(|after| after.version),
             payload: payload::info(&self.config),
             copied_at: crate::home::copy::copied_at(&self.db),
             record,
@@ -584,7 +702,10 @@ impl StationGateway {
                 self.lock().sync_error = Some(error);
             }
         }
-        self.auto_update().await;
+        // The home's copy is taken above, before anything goes to the station.
+        if !self.follow_up().await {
+            self.auto_update().await;
+        }
     }
 
     /// The watched station became an ear of another centre: the record moves to the centre with its key. True when it
@@ -680,33 +801,181 @@ impl StationGateway {
         Ok(())
     }
 
-    /// «Обновить колонку»: in the background, the panel follows it in the view.
-    pub fn start_update(self: &Arc<Self>, actor: Option<Actor>) -> Result<(), ApiError> {
-        if self.update_offer().is_none() {
-            return Err(ApiError::conflict(crate::tr!("У колонки последняя версия.")));
+    /// «Обновить колонку» (owner 20.11): what this computer can give the station now — its own newer build, sent in the
+    /// background (the panel follows it in the view); or a release newer than this computer, which goes to the computer
+    /// first and to the station once the computer runs it (`follow_up`); or, honestly, why not. `wanted` — the version
+    /// the station's own panel saw offered (the station reads the feed itself): this computer looks at the feed again
+    /// when it knows of nothing that new.
+    pub async fn start_update(
+        self: &Arc<Self>,
+        wanted: Option<&str>,
+        actor: Option<Actor>,
+    ) -> Result<UpdateStarted, ApiError> {
+        if self.client().is_none() {
+            return Err(ApiError::conflict(crate::tr!("Центр не на колонке.")));
         }
         if self.too_old_for_archive() {
             return Err(ApiError::conflict(peer::old_station()));
         }
+        if self.lock().updating {
+            return Err(ApiError::conflict(crate::tr!("Колонка уже обновляется.")));
+        }
+        self.refresh_own(wanted).await;
+        match self.plan() {
+            Some(StationUpdate::Send { version }) => {
+                {
+                    let mut live = self.lock();
+                    if live.updating {
+                        return Err(ApiError::conflict(crate::tr!("Колонка уже обновляется.")));
+                    }
+                    live.updating = true;
+                    live.update_error = None;
+                }
+                let me = self.clone();
+                tokio::spawn(async move {
+                    let _ = me.send_update(actor).await;
+                });
+                Ok(UpdateStarted { way: "send", version })
+            }
+            Some(StationUpdate::ComputerFirst { version }) => self.computer_first(&version, actor),
+            Some(StationUpdate::Blocked { why, .. }) => Err(ApiError::conflict(why)),
+            Some(StationUpdate::StationAhead { station, computer }) => Err(ApiError::conflict(crate::tr!(
+                "На колонке DuoWave {station} — новее, чем на этом компьютере ({computer}): обновите DuoWave на компьютере.",
+                station = station,
+                computer = computer
+            ))),
+            None => Err(ApiError::conflict(self.nothing_newer(wanted))),
+        }
+    }
+
+    /// This computer's own knowledge of releases made fresh before «Обновить колонку» decides by it: asked now when it
+    /// never was, is older than ten minutes, or the station's panel saw a version newer than any this computer knows.
+    async fn refresh_own(&self, wanted: Option<&str>) {
+        let Some(updates) = self.updates.get() else { return };
+        let own = updates.own_release();
+        if !own.feed {
+            return;
+        }
+        let known = own.offer.clone().unwrap_or_else(|| own.current.clone());
+        let stale = own.checked_at.as_deref().is_none_or(|at| older_than(at, OWN_FRESH));
+        if stale || wanted.is_some_and(|wanted| is_newer(wanted, &known)) {
+            let _ = updates.check().await;
+        }
+    }
+
+    /// Nothing to give the station: true «последняя версия» only when nothing newer is known — else why this computer
+    /// does not see what the station's panel saw.
+    fn nothing_newer(&self, wanted: Option<&str>) -> String {
+        let station = self.station_version();
+        let Some(wanted) = wanted.filter(|wanted| station.as_deref().is_some_and(|station| is_newer(wanted, station)))
+        else {
+            return crate::tr!("У колонки последняя версия.");
+        };
+        let computer = payload::info(&self.config).version;
+        match self.updates.get().map(|updates| updates.own_release()) {
+            Some(own) if own.feed => match own.error {
+                Some(error) => crate::tr!(
+                    "Колонка видит версию {wanted}, а этот компьютер её не видит: лента выпусков не ответила ({error}).",
+                    wanted = wanted,
+                    error = error
+                ),
+                None => crate::tr!(
+                    "Колонка видит версию {wanted}, а лента этого компьютера её пока не предлагает (на нём DuoWave {computer}): попробуйте через несколько минут.",
+                    wanted = wanted,
+                    computer = computer
+                ),
+            },
+            _ => crate::tr!(
+                "Колонка видит версию {wanted}, а этот компьютер выпусков не проверяет: обновите DuoWave на нём вручную (сейчас {computer}).",
+                wanted = wanted,
+                computer = computer
+            ),
+        }
+    }
+
+    /// «Обновить компьютер и колонку до X»: this computer installs its own update (the app's updater, or itself) and
+    /// keeps the station's turn through its restart (`STATION_UPDATES_AFTER`); the station follows (`follow_up`).
+    fn computer_first(&self, version: &str, actor: Option<Actor>) -> Result<UpdateStarted, ApiError> {
+        let Some(updates) = self.updates.get() else {
+            return Err(ApiError::conflict(crate::tr!("Здесь обновление не ставится.")));
+        };
+        self.set_after_computer(Some(version))?;
+        // Its own update already under way (the tray's, an urgent one): the station follows it all the same.
+        if !updates.own_release().installing {
+            if let Err(error) = updates.install() {
+                let _ = self.set_after_computer(None);
+                return Err(error);
+            }
+        }
+        tracing::info!(
+            "placement: the station {} gets {version} after this computer{}: the computer updates itself first",
+            self.key,
+            actor.map(|actor| format!(" (asked by {})", actor.name)).unwrap_or_default()
+        );
+        self.events.emit(GatewayEvent::PlacementChanged { what: "update".into() });
+        Ok(UpdateStarted { way: "computerFirst", version: version.to_string() })
+    }
+
+    /// This computer's build sent to the station, with the panel told it is under way and how it ended.
+    async fn send_update(&self, actor: Option<Actor>) -> Result<String, String> {
         {
             let mut live = self.lock();
-            if live.updating {
-                return Err(ApiError::conflict(crate::tr!("Колонка уже обновляется.")));
-            }
             live.updating = true;
             live.update_error = None;
         }
-        let me = self.clone();
-        tokio::spawn(async move {
-            let outcome = me.update_station(actor).await;
-            {
-                let mut live = me.lock();
-                live.updating = false;
-                live.update_error = outcome.err();
-            }
-            me.events.emit(GatewayEvent::PlacementChanged { what: "update".into() });
-        });
-        Ok(())
+        self.events.emit(GatewayEvent::PlacementChanged { what: "update".into() });
+        let outcome = self.update_station(actor).await;
+        {
+            let mut live = self.lock();
+            live.updating = false;
+            live.update_error = outcome.clone().err();
+        }
+        self.events.emit(GatewayEvent::PlacementChanged { what: "update".into() });
+        outcome
+    }
+
+    /// «Обновить компьютер и колонку»: this computer runs the version asked for now (it restarted as it) — the station
+    /// gets it, once. Asked a day ago or more, or the station has it already: forgotten. True when it went now.
+    async fn follow_up(&self) -> bool {
+        let Some(after) = self.after_computer() else { return false };
+        let Some(station) = self.station_version() else { return false };
+        if !is_newer(&after.version, &station) {
+            let _ = self.set_after_computer(None);
+            return false;
+        }
+        if older_than(&after.at, AFTER_COMPUTER_FOR) {
+            tracing::info!(
+                "placement: the station {} was to get {} after this computer — asked {}, too long ago: dropped",
+                self.key,
+                after.version,
+                after.at
+            );
+            let _ = self.set_after_computer(None);
+            return false;
+        }
+        // This computer is not the version asked for yet (its update still downloads, or did not go): it waits.
+        let Some(sending) = self.update_offer().filter(|sending| !is_newer(&after.version, sending)) else {
+            return false;
+        };
+        if self.lock().updating || self.too_old_for_archive() {
+            return false;
+        }
+        let _ = self.set_after_computer(None);
+        tracing::info!("placement: this computer runs {sending} now — the station {} gets it", self.key);
+        match self.send_update(None).await {
+            Ok(version) => tracing::info!("placement: the station's gateway updated to {version} after this computer"),
+            Err(error) => tracing::warn!("placement: the station's gateway not updated after this computer: {error}"),
+        }
+        true
+    }
+
+    /// The station's version is below the feed's urgent floor (scripts/release/critical.txt) and `sending` is not: a
+    /// fix it should not wait a click for — this computer sends it by itself, «Обновлять колонку автоматически» or
+    /// not (owner 20.11), unless UPDATE_AUTO_CRITICAL turned urgent installs off.
+    fn urgent(&self, sending: &str) -> bool {
+        let Some(own) = self.updates.get().map(|updates| updates.own_release()) else { return false };
+        let (Some(floor), Some(station)) = (own.critical_below, self.station_version()) else { return false };
+        own.auto_critical && is_newer(&floor, &station) && !is_newer(&floor, sending)
     }
 
     /// The station's gateway updated from this computer (the home's copy is here already, src/home/copy.rs): the signed
@@ -732,14 +1001,23 @@ impl StationGateway {
         outcome.map(|_| version)
     }
 
+    /// «Обновлять колонку автоматически», and an urgent fix whatever that switch says (`urgent`): this computer's own
+    /// newer build goes to the station by itself, each version once.
     async fn auto_update(&self) {
         let Some(record) = self.on_station() else { return };
-        if !record.auto_update || !record.managed {
+        if !record.managed {
             return;
         }
         let Some(version) = self.update_offer() else { return };
+        let urgent = self.urgent(&version);
+        if !record.auto_update && !urgent {
+            return;
+        }
         // It did not make it through its trial on the station: «Обновить» by hand still may, not this.
-        if self.failed_on_trial().is_some_and(|failed| !crate::updates::feed::is_newer(&version, &failed)) {
+        if self.failed_on_trial().is_some_and(|failed| !is_newer(&version, &failed)) {
+            return;
+        }
+        if self.lock().updating {
             return;
         }
         {
@@ -749,7 +1027,10 @@ impl StationGateway {
             }
             *tried = Some(version.clone());
         }
-        match self.update_station(None).await {
+        if urgent && !record.auto_update {
+            tracing::warn!("placement: {version} is an urgent fix for the station {} — sent without a click", self.key);
+        }
+        match self.send_update(None).await {
             Ok(version) => tracing::info!("placement: the station's gateway updated to {version} by itself"),
             Err(error) => tracing::warn!("placement: the station's gateway not updated: {error}"),
         }
@@ -781,6 +1062,7 @@ pub struct StationGateways {
     watches: Mutex<BTreeMap<String, Arc<StationGateway>>>,
     teller: OnceLock<Teller>,
     home_addresses: OnceLock<HomeAddresses>,
+    updates: OnceLock<Arc<UpdatesService>>,
 }
 
 impl StationGateways {
@@ -800,6 +1082,7 @@ impl StationGateways {
             watches: Mutex::new(BTreeMap::new()),
             teller: OnceLock::new(),
             home_addresses: OnceLock::new(),
+            updates: OnceLock::new(),
         });
         gateways.adopt_the_one_before();
         for key in gateways.settings.get(&STATION_PLACEMENTS, None).unwrap_or_default().into_keys() {
@@ -845,6 +1128,9 @@ impl StationGateways {
         }
         if let Some(addresses) = self.home_addresses.get() {
             watch.set_home_addresses(addresses.clone());
+        }
+        if let Some(updates) = self.updates.get() {
+            watch.set_updates(updates.clone());
         }
         watches.insert(key.to_string(), watch.clone());
         watch
@@ -916,6 +1202,14 @@ impl StationGateways {
         let _ = self.home_addresses.set(addresses.clone());
         for watch in self.lock().values() {
             watch.set_home_addresses(addresses.clone());
+        }
+    }
+
+    /// This computer's own updates, for every station's watch (`StationGateway::set_updates`).
+    pub fn set_updates(&self, updates: Arc<UpdatesService>) {
+        let _ = self.updates.set(updates.clone());
+        for watch in self.lock().values() {
+            watch.set_updates(updates.clone());
         }
     }
 
@@ -1009,6 +1303,11 @@ mod tests {
         own: Mutex<BTreeMap<String, Value>>,
         /// «GET transfer», «POST transfer», «refused», «home station»: what the computer asked of it, in order.
         calls: Mutex<Vec<String>>,
+        /// The key it checks an update's signature with, as a station checks it with its own (UPDATE_PUBKEY there);
+        /// None — it takes no update.
+        update_key: Mutex<Option<String>>,
+        /// The versions of the updates it took: it restarted as each.
+        updates: Mutex<Vec<String>>,
     }
 
     impl Pretend {
@@ -1022,7 +1321,13 @@ mod tests {
                 says: Mutex::new(Some(transfer::SCHEMA)),
                 own: Mutex::new(BTreeMap::new()),
                 calls: Mutex::new(Vec::new()),
+                update_key: Mutex::new(None),
+                updates: Mutex::new(Vec::new()),
             })
+        }
+
+        fn updates(&self) -> Vec<String> {
+            self.updates.lock().unwrap().clone()
         }
 
         fn fresh() -> Arc<Pretend> {
@@ -1042,7 +1347,8 @@ mod tests {
         let db = Arc::new(Db::memory());
         let secrets = Arc::new(SecretsService::new(db.clone(), None).unwrap());
         let (key_out, key_in) = (key.to_string(), key.to_string());
-        let (seen, read, sent, told) = (station.clone(), station.clone(), station.clone(), station);
+        let (seen, read, sent, told, updated) =
+            (station.clone(), station.clone(), station.clone(), station.clone(), station);
         // The home's copy beside the package (src/home/copy.rs): its memory both ways and who holds a copy.
         let router = Router::new()
             .route(
@@ -1051,6 +1357,42 @@ mod tests {
                     .post(|| async { axum::Json(serde_json::json!({"message": {"merged": 0}})) }),
             )
             .route("/api/v1/home/held", post(|| async { axum::Json(serde_json::json!({"message": {"ok": true}})) }))
+            // An update from the computer (PEER_API 2), taken as a station takes it: its signature by the station's
+            // key, its release.json — the station's platform, the version sent, newer than its own — then it
+            // restarts as that version.
+            .route(
+                "/api/v1/updates/archive",
+                post(move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+                    let header = |name: &str| {
+                        headers.get(name).and_then(|value| value.to_str().ok()).unwrap_or_default().to_string()
+                    };
+                    let (version, signature) =
+                        (header(crate::updates::VERSION_HEADER), header(crate::updates::SIGNATURE_HEADER));
+                    let key = updated.update_key.lock().unwrap().clone();
+                    let current = updated.version.lock().unwrap().clone();
+                    let checked = key.ok_or_else(|| "no key".to_string()).and_then(|key| {
+                        let keys = crate::updates::verify::public_keys(&key)?;
+                        crate::updates::verify::verify_any(&keys, &body, &signature)?;
+                        crate::updates::install::check_release(&body, payload::STATION_PLATFORM, &version, &current)
+                            .map(|_| ())
+                    });
+                    if checked.is_ok() {
+                        updated.updates.lock().unwrap().push(version.clone());
+                        *updated.version.lock().unwrap() = version;
+                    }
+                    async move {
+                        match checked {
+                            Ok(()) => (
+                                axum::http::StatusCode::CREATED,
+                                axum::Json(serde_json::json!({"message": {"installing": true}})),
+                            ),
+                            Err(why) => {
+                                (axum::http::StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({ "message": why })))
+                            }
+                        }
+                    }
+                }),
+            )
             .route(
                 "/health",
                 get(move || {
@@ -1556,5 +1898,372 @@ mod tests {
         stranger.set_record(Some(&record), None).unwrap();
         assert_eq!(stranger.find_among(vec!["127.0.0.1".into()]).await, None, "another pair's station");
         assert_eq!(stranger.record().unwrap().address, "192.0.2.113");
+    }
+
+    // ─── «Обновить колонку» (owner 20.11): the station saw 0.16.3, the computer was 0.16.2 ────────────────────────────
+
+    use crate::updates::testing::{program_answering, release_archive, Signer, Site};
+
+    /// The app's updater, as the desktop app sets it: the app's version, and what it was asked to install (it would
+    /// download the app and restart as it).
+    struct AppUpdater {
+        version: String,
+        asked: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl crate::updates::Installer for AppUpdater {
+        fn install(&self, version: String) -> futures::future::BoxFuture<'static, Result<(), String>> {
+            self.asked.lock().unwrap().push(version);
+            Box::pin(async { Ok(()) })
+        }
+
+        fn version(&self) -> Option<String> {
+            Some(self.version.clone())
+        }
+    }
+
+    /// This computer in an updates test: the desktop app at `app` (its updater counts what it is asked; None — a
+    /// gateway without the app, `DUOWAVE_MANAGED` says who updates it), its own
+    /// updates reading `site`'s feed, the station's build of its own version inside it — signed as a release's, by
+    /// `signer` — and a station at `station` that checks what it is sent with the same key.
+    struct Releasing {
+        watch: Arc<StationGateway>,
+        settings: Arc<SettingsService>,
+        db: Arc<Db>,
+        secrets: Arc<SecretsService>,
+        config: Arc<Config>,
+        updates: Arc<UpdatesService>,
+        asked: Arc<Mutex<Vec<String>>>,
+        station: Arc<Pretend>,
+    }
+
+    const THIS: &str = env!("CARGO_PKG_VERSION");
+
+    async fn releasing(
+        dir: &std::path::Path,
+        site: &Site,
+        signer: &Signer,
+        app: Option<&str>,
+        station_at: &str,
+        env: &[(&str, &str)],
+    ) -> Releasing {
+        let build = dir.join("duowave-station-aarch64.tar.gz");
+        let archive = release_archive(THIS, payload::STATION_PLATFORM, &program_answering(THIS));
+        std::fs::write(&build, &archive).unwrap();
+        std::fs::write(dir.join("duowave-station-aarch64.tar.gz.sig"), signer.sign(&archive)).unwrap();
+        let mut pairs: Vec<(String, String)> = vec![
+            ("STATE_DIR".into(), dir.to_string_lossy().into_owned()),
+            ("UPDATE_FEED_URL".into(), site.feed_url()),
+            ("UPDATE_PUBKEY".into(), signer.public()),
+            ("STATION_PAYLOAD_FILE".into(), build.to_string_lossy().into_owned()),
+        ];
+        pairs.extend(env.iter().map(|(name, value)| (name.to_string(), value.to_string())));
+        let config = Arc::new(Config::for_tests(&Env::from_pairs(pairs)));
+        let db = Arc::new(Db::memory());
+        let secrets = Arc::new(SecretsService::new(db.clone(), None).unwrap());
+        let settings = Arc::new(SettingsService::new(db.clone(), EventBus::new()));
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let updates = Arc::new(UpdatesService::new(&config, EventBus::new()));
+        if let Some(app) = app {
+            updates.set_installer(Arc::new(AppUpdater { version: app.into(), asked: asked.clone() }));
+        }
+        let watch =
+            StationGateway::new(config.clone(), db.clone(), settings.clone(), secrets.clone(), EventBus::new(), "dev1");
+        watch.set_updates(updates.clone());
+        let station = Pretend::fresh();
+        *station.version.lock().unwrap() = station_at.into();
+        *station.update_key.lock().unwrap() = Some(signer.public());
+        let port = pretend(&watch.peer_key().unwrap(), station.clone()).await;
+        watch.set_record(Some(&on_station(port, Placement::StationServer, None)), None).unwrap();
+        Releasing { watch, settings, db, secrets, config, updates, asked, station }
+    }
+
+    impl Releasing {
+        /// The same computer after its app restarted as `app`: the same database and keys, a new process.
+        fn restarted_as(&self, app: &str) -> Releasing {
+            let asked = Arc::new(Mutex::new(Vec::new()));
+            let updates = Arc::new(UpdatesService::new(&self.config, EventBus::new()));
+            updates.set_installer(Arc::new(AppUpdater { version: app.into(), asked: asked.clone() }));
+            let watch = StationGateway::new(
+                self.config.clone(),
+                self.db.clone(),
+                self.settings.clone(),
+                self.secrets.clone(),
+                EventBus::new(),
+                "dev1",
+            );
+            watch.set_updates(updates.clone());
+            Releasing {
+                watch,
+                settings: self.settings.clone(),
+                db: self.db.clone(),
+                secrets: self.secrets.clone(),
+                config: self.config.clone(),
+                updates,
+                asked,
+                station: self.station.clone(),
+            }
+        }
+
+        /// What the app's updater was asked, once the install it was given has run.
+        async fn asked(&self) -> Vec<String> {
+            for _ in 0..100 {
+                if !self.asked.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            self.asked.lock().unwrap().clone()
+        }
+
+        /// The update sent in the background, ended.
+        async fn sent(&self) {
+            for _ in 0..500 {
+                if !self.watch.live().updating {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("the update to the station did not end");
+        }
+    }
+
+    fn version(started: Result<UpdateStarted, ApiError>) -> (String, String) {
+        let started = started.unwrap_or_else(|error| panic!("refused: {}", error.message));
+        (started.way.to_string(), started.version)
+    }
+
+    fn refusal(started: Result<UpdateStarted, ApiError>) -> String {
+        match started {
+            Ok(started) => panic!("not refused: {started:?}"),
+            Err(error) => error.message,
+        }
+    }
+
+    /// The owner's case of 20.11: the station said «Доступна 0.16.3», the computer ran 0.16.2 and gives the station
+    /// only its own build — «Обновить» answered «У колонки последняя версия». Now the computer updates itself first,
+    /// and once it runs the new version the station gets it — once — with nothing more to press.
+    #[tokio::test]
+    async fn a_release_newer_than_the_computer_goes_to_the_computer_first_and_the_station_follows() {
+        if payload::built_in().is_some() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (site, signer) = (Site::start().await, Signer::new());
+        site.release(THIS, None, &[]);
+        // The computer and the station both at 0.1.0; the release is this build's version.
+        let before = releasing(dir.path(), &site, &signer, Some("0.1.0"), "0.1.0", &[]).await;
+        before.watch.poll().await;
+
+        let (way, to) = version(before.watch.start_update(Some(THIS), None).await);
+        assert_eq!((way.as_str(), to.as_str()), ("computerFirst", THIS));
+        assert_eq!(before.asked().await, vec![THIS.to_string()], "the app's updater installs the new version");
+        assert!(before.station.updates().is_empty(), "nothing goes to the station before the computer runs it");
+        assert_eq!(before.watch.view().after_computer.as_deref(), Some(THIS), "the panel says the station follows");
+
+        // The app restarted as the new version: a new process on the same database.
+        let after = before.restarted_as(THIS);
+        after.watch.poll().await;
+        after.sent().await;
+        assert_eq!(after.station.updates(), vec![THIS.to_string()], "the station gets it once the computer runs it");
+        assert_eq!(after.watch.view().after_computer, None);
+        assert_eq!(after.watch.live().update_error, None);
+        after.watch.poll().await;
+        assert_eq!(after.station.updates().len(), 1, "once");
+        assert_eq!(after.watch.view().version.as_deref(), Some(THIS));
+        assert!(after.asked.lock().unwrap().is_empty(), "the computer is not updated again");
+    }
+
+    /// The computer newer than the station: «Обновить» sends its own build now, as before 20.11.
+    #[tokio::test]
+    async fn a_computer_newer_than_its_station_sends_its_own_build_now() {
+        if payload::built_in().is_some() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (site, signer) = (Site::start().await, Signer::new());
+        site.release(THIS, None, &[]);
+        let computer = releasing(dir.path(), &site, &signer, Some(THIS), "0.1.0", &[]).await;
+        computer.watch.poll().await;
+        assert_eq!(computer.watch.view().plan, Some(StationUpdate::Send { version: THIS.into() }));
+
+        let (way, to) = version(computer.watch.start_update(None, None).await);
+        assert_eq!((way.as_str(), to.as_str()), ("send", THIS));
+        computer.sent().await;
+        assert_eq!(computer.station.updates(), vec![THIS.to_string()]);
+        assert_eq!(computer.watch.live().update_error, None);
+        assert!(computer.asked.lock().unwrap().is_empty(), "the computer itself is not touched");
+    }
+
+    /// «У колонки последняя версия» only when it is so; otherwise the button says what is in the way and what to do.
+    #[tokio::test]
+    async fn the_answer_says_why_not_and_latest_only_when_it_is_so() {
+        if payload::built_in().is_some() {
+            return;
+        }
+        let (site, signer) = (Site::start().await, Signer::new());
+
+        // Everything at the same version: that is the latest.
+        let dir = tempfile::tempdir().unwrap();
+        site.release(THIS, None, &[]);
+        let same = releasing(dir.path(), &site, &signer, Some(THIS), THIS, &[]).await;
+        same.watch.poll().await;
+        assert_eq!(refusal(same.watch.start_update(None, None).await), "У колонки последняя версия.");
+
+        // A newer release, and a computer that does not install its own updates (a Docker image).
+        let dir = tempfile::tempdir().unwrap();
+        site.release("99.0.0", None, &[]);
+        let docker = releasing(dir.path(), &site, &signer, None, THIS, &[("DUOWAVE_MANAGED", "docker")]).await;
+        docker.watch.poll().await;
+        let why = refusal(docker.watch.start_update(Some("99.0.0"), None).await);
+        assert!(why.contains("99.0.0") && why.contains("docker compose pull"), "{why}");
+        assert!(!why.contains("последняя"), "{why}");
+
+        // The station newer than the computer: the computer is the one to update.
+        let dir = tempfile::tempdir().unwrap();
+        site.release(THIS, None, &[]);
+        let ahead = releasing(dir.path(), &site, &signer, Some(THIS), "99.0.0", &[]).await;
+        ahead.watch.poll().await;
+        let why = refusal(ahead.watch.start_update(None, None).await);
+        assert!(why.contains("99.0.0") && why.contains(THIS) && why.contains("новее"), "{why}");
+        assert!(ahead.station.updates().is_empty());
+
+        // The station's panel saw a newer version, and this computer's feed does not answer.
+        let dir = tempfile::tempdir().unwrap();
+        let nowhere = [("UPDATE_FEED_URL", "http://127.0.0.1:9/latest.json")];
+        let unreachable = releasing(dir.path(), &site, &signer, Some(THIS), THIS, &nowhere).await;
+        unreachable.watch.poll().await;
+        let why = refusal(unreachable.watch.start_update(Some("99.0.0"), None).await);
+        assert!(why.contains("99.0.0") && why.contains("не ответила"), "{why}");
+    }
+
+    /// An urgent fix (scripts/release/critical.txt) reaches the station without anybody pressing «Обновить», even with
+    /// «Обновлять колонку автоматически» off (owner 20.11); an ordinary release waits for the button, as before.
+    #[tokio::test]
+    async fn an_urgent_fix_reaches_the_station_by_itself_an_ordinary_one_waits_for_the_button() {
+        if payload::built_in().is_some() {
+            return;
+        }
+        let (site, signer) = (Site::start().await, Signer::new());
+
+        let dir = tempfile::tempdir().unwrap();
+        site.release(THIS, None, &[]);
+        let ordinary = releasing(dir.path(), &site, &signer, Some(THIS), "0.1.0", &[]).await;
+        ordinary.updates.check().await.unwrap();
+        ordinary.watch.poll().await;
+        ordinary.watch.poll().await;
+        assert!(ordinary.station.updates().is_empty(), "an ordinary release waits for «Обновить»");
+
+        let dir = tempfile::tempdir().unwrap();
+        site.release(THIS, Some(THIS), &[]);
+        let urgent = releasing(dir.path(), &site, &signer, Some(THIS), "0.1.0", &[]).await;
+        urgent.updates.check().await.unwrap();
+        urgent.watch.poll().await;
+        urgent.sent().await;
+        assert_eq!(urgent.station.updates(), vec![THIS.to_string()], "the urgent fix is sent by itself");
+        urgent.watch.poll().await;
+        assert_eq!(urgent.station.updates().len(), 1, "once");
+
+        // UPDATE_AUTO_CRITICAL=false: the household turned urgent installs off — for the station too.
+        let dir = tempfile::tempdir().unwrap();
+        let off =
+            releasing(dir.path(), &site, &signer, Some(THIS), "0.1.0", &[("UPDATE_AUTO_CRITICAL", "false")]).await;
+        off.updates.check().await.unwrap();
+        off.watch.poll().await;
+        assert!(off.station.updates().is_empty());
+
+        // «Обновлять колонку автоматически» on: any newer build of the computer's goes, as before.
+        let dir = tempfile::tempdir().unwrap();
+        site.release(THIS, None, &[]);
+        let auto = releasing(dir.path(), &site, &signer, Some(THIS), "0.1.0", &[]).await;
+        auto.watch.set_auto_update(true, None).unwrap();
+        auto.watch.poll().await;
+        auto.sent().await;
+        assert_eq!(auto.station.updates(), vec![THIS.to_string()]);
+    }
+
+    /// «Обновить компьютер и колонку» waits for the computer a day at most, and a station that got the version some
+    /// other way is not sent it again.
+    #[tokio::test]
+    async fn the_station_follows_the_computer_within_a_day_and_only_when_it_still_needs_it() {
+        if payload::built_in().is_some() {
+            return;
+        }
+        let (site, signer) = (Site::start().await, Signer::new());
+        site.release(THIS, None, &[]);
+        let asked_at = |settings: &SettingsService, at: &str| {
+            let mut all = BTreeMap::new();
+            all.insert("dev1".to_string(), StationUpdateAfter { version: THIS.into(), at: at.into() });
+            settings.set(&STATION_UPDATES_AFTER, &all, None).unwrap();
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let late = releasing(dir.path(), &site, &signer, Some(THIS), "0.1.0", &[]).await;
+        asked_at(&late.settings, "2026-11-01T10:00:00Z");
+        late.watch.poll().await;
+        assert!(late.station.updates().is_empty(), "asked weeks ago: not acted on now");
+        assert_eq!(late.watch.view().after_computer, None, "and forgotten");
+
+        let dir = tempfile::tempdir().unwrap();
+        let there = releasing(dir.path(), &site, &signer, Some(THIS), THIS, &[]).await;
+        asked_at(&there.settings, &now_iso());
+        there.watch.poll().await;
+        assert!(there.station.updates().is_empty(), "the station has it already");
+        assert_eq!(there.watch.view().after_computer, None);
+    }
+
+    /// What «Обновить колонку» does, by what the computer and the station run and what the computer knows of releases.
+    #[test]
+    fn the_way_to_update_the_station_follows_what_the_computer_can_give() {
+        let own = |offer: Option<&str>, installs: Result<(), String>| OwnRelease {
+            current: "0.16.2".into(),
+            offer: offer.map(str::to_string),
+            critical_below: None,
+            installs_itself: installs,
+            feed: true,
+            checked_at: Some(now_iso()),
+            error: None,
+            installing: false,
+            auto_critical: true,
+        };
+        let tray = || Err("Обновите приложение из меню в трее.".to_string());
+        // 20.11: both at 0.16.2, 0.16.3 out, the app installs its own updates.
+        assert_eq!(
+            plan_update("0.16.2", "0.16.2", Ok(()), Some(&own(Some("0.16.3"), Ok(())))),
+            Some(StationUpdate::ComputerFirst { version: "0.16.3".into() })
+        );
+        // The computer ahead and nothing newer out: its own build, now.
+        assert_eq!(
+            plan_update("0.16.2", "0.16.3", Ok(()), Some(&own(None, Ok(())))),
+            Some(StationUpdate::Send { version: "0.16.3".into() })
+        );
+        // The computer ahead, a newer release out that it cannot install itself: what it has is better than nothing.
+        assert_eq!(
+            plan_update("0.16.2", "0.16.3", Ok(()), Some(&own(Some("0.16.4"), tray()))),
+            Some(StationUpdate::Send { version: "0.16.3".into() })
+        );
+        // Both at 0.16.2, and the computer cannot install its own update: what to do, in words.
+        match plan_update("0.16.2", "0.16.2", Ok(()), Some(&own(Some("0.16.3"), tray()))) {
+            Some(StationUpdate::Blocked { version, why }) => {
+                assert_eq!(version, "0.16.3");
+                assert!(why.contains("0.16.3") && why.contains("трее"), "{why}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // A computer without the station's build in it (built from source, no feed): why.
+        assert_eq!(
+            plan_update("0.16.2", "0.16.3", Err("нет сборки для колонки".into()), None),
+            Some(StationUpdate::Blocked {
+                version: "0.16.3".into(), why: "нет сборки для колонки".into()
+            })
+        );
+        // The station ahead of the computer.
+        assert_eq!(
+            plan_update("0.16.4", "0.16.3", Ok(()), Some(&own(None, Ok(())))),
+            Some(StationUpdate::StationAhead { station: "0.16.4".into(), computer: "0.16.3".into() })
+        );
+        // Everything at one version: nothing to do — «последняя версия» is true.
+        assert_eq!(plan_update("0.16.3", "0.16.3", Ok(()), Some(&own(None, Ok(())))), None);
+        assert_eq!(plan_update("0.16.3", "0.16.3", Ok(()), None), None);
     }
 }

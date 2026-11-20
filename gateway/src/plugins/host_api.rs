@@ -390,9 +390,16 @@ pub trait HostServices: Send + Sync {
         })
     }
     /// Said aloud by a station without a request, for the plugin `caller` (`system/voice`): whether it was said —
-    /// no station on the line, nothing is.
-    fn say(&self, caller: &str, text: String, device: Option<String>) -> BoxFuture<'static, Result<bool, String>> {
-        let _ = (caller, text, device);
+    /// no station on the line, nothing is. `file`: an Ogg/Opus recording in the app's own folder, played after the
+    /// words (a voice message).
+    fn say(
+        &self,
+        caller: &str,
+        text: String,
+        device: Option<String>,
+        file: Option<String>,
+    ) -> BoxFuture<'static, Result<bool, String>> {
+        let _ = (caller, text, device, file);
         Box::pin(async { Ok(false) })
     }
     /// The app `caller` plays by itself on a station, stands paused or stopped (`system/player` → `playing`): the

@@ -796,19 +796,46 @@ impl HostServices for PluginServices {
         })
     }
 
-    fn say(&self, caller: &str, text: String, device: Option<String>) -> BoxFuture<'static, Result<bool, String>> {
+    fn say(
+        &self,
+        caller: &str,
+        text: String,
+        device: Option<String>,
+        file: Option<String>,
+    ) -> BoxFuture<'static, Result<bool, String>> {
         let speaker = self.skills.upgrade().and_then(|skills| skills.speaker());
+        // A recording from the app's own folder (`files/app/<id>`, DUOWAVE_APP_FILES): only an Ogg/Opus file, as
+        // a station plays a voice message — a Telegram voice message is one as it is.
+        let clip = match file.as_deref().map(str::trim).filter(|file| !file.is_empty()) {
+            None => None,
+            Some(file) => {
+                let Some(files) = self.files.get() else { return Box::pin(async { Ok(false) }) };
+                match files.inside(caller, file) {
+                    Ok(path) => Some((file.to_string(), path)),
+                    Err(why) => return Box::pin(async move { Err(why) }),
+                }
+            }
+        };
         let caller = caller.to_string();
         Box::pin(async move {
             let text: String = text.trim().chars().take(500).collect();
             if text.is_empty() {
                 return Err(crate::tr!("нечего сказать"));
             }
+            // «Не беспокоить» set by voice: an app's own speech waits for another time (do_not_disturb_skill.rs).
+            if crate::skills::own::do_not_disturb_skill::is_on() {
+                tracing::info!(target: "plugins", "{caller}: «{text}» not said: «Не беспокоить» is on");
+                return Ok(false);
+            }
+            let clip = match clip {
+                None => None,
+                Some((name, path)) => Some(voice_clip(&name, &path).await?),
+            };
             // No station on the line, or no station link at all: nothing is said, and the plugin is told so.
             let Some(speaker) = speaker else { return Ok(false) };
-            tracing::info!(target: "plugins", "{caller}: says «{text}»");
+            tracing::info!(target: "plugins", "{caller}: says «{text}»{}", if clip.is_some() { " + a recording" } else { "" });
             let device = device.filter(|device| !device.is_empty()).unwrap_or_else(|| "*".into());
-            Ok(speaker.say(device, text, None).await)
+            Ok(speaker.say(device, text, clip).await)
         })
     }
 
@@ -1025,9 +1052,47 @@ fn model_choice(
     }
 }
 
+/// A recording an app gives with its words: at most this big — a voice message of a few minutes.
+const CLIP_MAX: u64 = 2 * 1024 * 1024;
+
+/// An app's recording for a station to play after its words: an Ogg/Opus file, as Telegram keeps a voice message and
+/// as a station plays one (the bot's voice messages go the same way, skills/own/calls_skill.rs).
+async fn voice_clip(
+    name: &str,
+    path: &std::path::Path,
+) -> Result<crate::skills::own::reminders_skill::AudioClip, String> {
+    let missing = || crate::tr!("нет файла {name}", name = name);
+    let size = tokio::fs::metadata(path).await.map_err(|_| missing())?.len();
+    if size > CLIP_MAX {
+        return Err(crate::tr!("запись {name} больше 2 МБ", name = name));
+    }
+    let audio = tokio::fs::read(path).await.map_err(|_| missing())?;
+    if !is_ogg_opus(&audio) {
+        return Err(crate::tr!("запись {name} — не Ogg/Opus", name = name));
+    }
+    Ok(crate::skills::own::reminders_skill::AudioClip { audio: audio.into(), label: format!("recording {name}") })
+}
+
+/// An Ogg stream whose first page holds Opus's header.
+fn is_ogg_opus(audio: &[u8]) -> bool {
+    audio.starts_with(b"OggS") && audio.len() > 36 && audio[28..36] == *b"OpusHead"
+}
+
 #[cfg(test)]
 mod model_and_voice_tests {
     use super::*;
+
+    #[test]
+    fn a_recording_is_ogg_opus_only() {
+        let mut page = b"OggS".to_vec();
+        page.resize(28, 0);
+        page.extend_from_slice(b"OpusHead");
+        page.extend_from_slice(&[1, 2, 3]);
+        assert!(is_ogg_opus(&page));
+        assert!(!is_ogg_opus(b"ID3\x04 an mp3"));
+        page[28..36].copy_from_slice(b"OpusTags");
+        assert!(!is_ogg_opus(&page));
+    }
 
     #[test]
     fn finds_the_json_in_a_models_answer_and_says_which_voices_may_be_published() {

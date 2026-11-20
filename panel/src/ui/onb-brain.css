@@ -8,6 +8,8 @@
 .onb .ob-brain-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 40px; }
 .onb .ob-brain-head .lead { flex: 0 1 520px; min-width: 0; font-size: 15px; line-height: 1.55; }
 .onb .ob-brain-opts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+/* DuoWave — первым и во всю ширину. */
+.onb .ob-brain-opts .opt-wide { grid-column: 1 / -1; }
 
 /* Карточка под выбором: вход, ключ, поиск модели на компьютере. */
 .onb .ob-brain-card { min-height: 84px; display: flex; align-items: center; flex-wrap: wrap; gap: 18px; }
@@ -16,6 +18,10 @@
 .onb .ob-brain-text { flex: 1; min-width: 0; }
 .onb .ob-brain-full { flex: 1 0 100%; min-width: 0; }
 .onb .ob-brain-problem { margin: 0; color: var(--bad); }
+/* «Есть код приглашения?» — тихая ссылка под кнопкой; раскрывается в поле кода. */
+.onb .ob-brain-link { align-self: flex-start; padding: 0; border: 0; background: none; color: inherit; opacity: .72; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; text-align: left; }
+.onb .ob-brain-link:hover { opacity: 1; }
+.onb .ob-brain-invite { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; }
 .onb .ob-brain-key { flex: 1; min-width: 200px; }
 .onb .ob-brain-key-btn { align-self: flex-end; }
 .onb .ob-brain-key-note { width: 260px; align-self: flex-end; }

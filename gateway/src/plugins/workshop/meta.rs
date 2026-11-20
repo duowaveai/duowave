@@ -1,9 +1,9 @@
 //! A draft's card (docs/plans/voice-creation.md, «Черновик: кто просил и где он сейчас»): who asked and what, the face
 //! people see it with, and where it is — `working → ready → installed | parked`, or `failed`, `stopped`. The gateway
 //! keeps it beside the drafts, `packages-dev/.meta/<id>.json`: a name with a dot is out of reach of a draft's file API,
-//! so neither the agent nor a person edits it as a draft's file. A draft without one (made before it, by hand, by
-//! Claude Code) gets one read from what is known: `golos-…` is the station's, the rest the panel's; the stage from the
-//! agent's work.
+//! so neither the agent nor a person edits it as a draft's file. A draft without one (made by hand, by Claude Code)
+//! gets one read from what is known: the panel's, the stage from the agent's work. Its id says nothing of who asked: a
+//! new draft's id is random (`manifest::new_package_id`).
 //!
 //! What the draft needs (`needs`: its manifest's settings, plain and private, never their values) and the line that
 //! says it is ready (`ready_line`) are the gateway's, read from the manifest, not the agent's words: the station says
@@ -170,17 +170,16 @@ fn kept() -> bool {
 }
 
 impl DraftMeta {
-    /// The card of a draft that has none: whose by its id, the face from its manifest, the stage from the agent's work
-    /// (none — it waits in the workshop).
-    pub fn known(id: &str, manifest: Option<&Manifest>, job: Option<&Job>, updated: u64) -> DraftMeta {
-        let by = if id.starts_with("golos") { By::Voice } else { By::Panel };
+    /// The card of a draft that has none: the panel's unless the agent's work says whose, the face from its manifest,
+    /// the stage from the agent's work (none — it waits in the workshop).
+    pub fn known(manifest: Option<&Manifest>, job: Option<&Job>, updated: u64) -> DraftMeta {
         let stage = match job {
             Some(job) if job.busy => Stage::Working,
             Some(job) => job.last.as_ref().map(|step| Stage::after(step.kind)).unwrap_or(Stage::Parked),
             None => Stage::Parked,
         };
         DraftMeta {
-            by: job.map(|job| job.by).unwrap_or(by),
+            by: job.map(|job| job.by).unwrap_or(By::Panel),
             who: None,
             asked: job.map(|job| job.asked.clone()).unwrap_or_default(),
             kind: manifest.map(Face::of).unwrap_or(Face::Skill),
@@ -338,10 +337,10 @@ mod tests {
 
     #[test]
     fn reads_a_card_for_a_draft_made_before_cards() {
-        let card = DraftMeta::known("golos-2", None, None, 7);
+        let card = DraftMeta::known(None, None, 7);
         assert_eq!(
             (card.by, card.stage, card.kind, card.kept, card.updated),
-            (By::Voice, Stage::Parked, Face::Skill, false, 7)
+            (By::Panel, Stage::Parked, Face::Skill, false, 7)
         );
         let job = Job {
             draft: "radio".into(),
@@ -353,7 +352,7 @@ mod tests {
             last: None,
             notes: Vec::new(),
         };
-        let card = DraftMeta::known("radio", None, Some(&job), 7);
+        let card = DraftMeta::known(None, Some(&job), 7);
         assert_eq!(
             (card.by, card.stage, card.asked.as_str(), card.updated),
             (By::Panel, Stage::Working, "добавь станцию", 10)

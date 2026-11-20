@@ -30,6 +30,94 @@ pub enum LlmApi {
     Responses,
 }
 
+/// How a provider's refusals are said (`ProviderPreset.errors`): as they come, or DuoWave's own codes in words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ErrorWords {
+    #[default]
+    Plain,
+    DuoWave,
+}
+
+/// What DuoWave's last refusal asks of the owner: connect again (`revoked`, `model` — the model is not in the plan,
+/// the profiles come back to the service's defaults), the account (`ended`, `quota`), or wait (`busy`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AccessProblem {
+    Revoked,
+    Ended,
+    Quota,
+    Busy,
+    Model,
+}
+
+/// A provider's last refusal of DuoWave's kind, shared by its clients and its card: set by a refusal, cleared by an
+/// answer or a new sign-in. Memory only: a restart starts clean, the next request tells again.
+#[derive(Debug, Clone, Default)]
+pub struct ProblemCell(Arc<std::sync::Mutex<Option<AccessProblem>>>);
+
+impl ProblemCell {
+    pub fn get(&self) -> Option<AccessProblem> {
+        *self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn set(&self, problem: Option<AccessProblem>) {
+        *self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = problem;
+    }
+}
+
+/// «Через минуту» or «через N мин.»: how long `Retry-After` asks to wait, rounded up to minutes.
+fn wait_words(after: Option<std::time::Duration>) -> String {
+    match after.map(|after| after.as_secs().div_ceil(60)) {
+        None | Some(0) => crate::tr!("позже"),
+        Some(1) => crate::tr!("через минуту"),
+        Some(minutes) => crate::tr!("через {minutes} мин", minutes = minutes),
+    }
+}
+
+/// A DuoWave refusal in words (docs/plans/duowave-connect.md, step 5): our code is in `error.code` (Chat Completions,
+/// Responses); Messages has Anthropic's `error.type` only, so there the status decides. The cell learns what the
+/// owner should do. None — not one of ours: the plain error stays.
+pub fn duowave_refusal(
+    status: u16,
+    body: &str,
+    after: Option<std::time::Duration>,
+    cell: &ProblemCell,
+) -> Option<anyhow::Error> {
+    let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
+    let code = parsed.pointer("/error/code").and_then(serde_json::Value::as_str).unwrap_or_default().to_lowercase();
+    let (problem, phrase) = match (status, code.as_str()) {
+        (401, _) => (AccessProblem::Revoked, crate::tr!("Подключение DuoWave отключено. Подключите DuoWave заново.")),
+        (402, "quota_exhausted") => (AccessProblem::Quota, crate::tr!("Лимит DuoWave на эту неделю исчерпан.")),
+        (402, _) => (AccessProblem::Ended, crate::tr!("Доступ к DuoWave закончился. Загляните в кабинет DuoWave.")),
+        (429, _) => (
+            AccessProblem::Busy,
+            crate::tr!("Слишком много запросов к DuoWave. Попробуйте {when}.", when = wait_words(after)),
+        ),
+        (403, "model_not_in_plan") => {
+            (AccessProblem::Model, crate::tr!("Этой модели нет в вашем тарифе DuoWave. Подключите DuoWave заново."))
+        }
+        _ => return None,
+    };
+    cell.set(Some(problem));
+    let code = if code.is_empty() { String::new() } else { format!(": {code}") };
+    Some(anyhow::Error::new(SpokenFailure {
+        phrase: phrase.to_string(),
+        detail: format!("DuoWave: HTTP {status}{code}"),
+    }))
+}
+
+/// `Retry-After` in seconds (the form our services send; a date is not read).
+pub fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<std::time::Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(std::time::Duration::from_secs)
+}
+
 /// Where a client takes its bearer before each request when a sign-in keeps it (src/oauth).
 pub trait AccessSource: Send + Sync {
     /// The bearer for the next request: renewed first when it is about to run out.
@@ -293,6 +381,8 @@ pub struct LlmSettings {
     pub access: Option<Access>,
     /// /chat/completions or /responses, for an OpenAI-kind provider.
     pub api: LlmApi,
+    /// DuoWave's: its refusals said in words (`duowave_refusal`), the last one kept here for the card.
+    pub duowave: Option<ProblemCell>,
 }
 
 /// "model" or, when the profiles differ, "fast model-a, smart model-b".
@@ -332,6 +422,7 @@ impl LlmSettings {
             headers: BTreeMap::new(),
             access: None,
             api: LlmApi::Chat,
+            duowave: None,
         }
     }
 }

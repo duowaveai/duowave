@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "kind": "plugin",
-  "id": "morning",
+  "id": "p-53cd409ecea7",
   "version": "2.0.1",
   "title": "Утреннее шоу",
   "description": "Утреннее шоу из приложений: погода, пара главных новостей и музыка — своя из папки, а без неё радио. «Алиса, доброе утро» или «включи утреннее шоу».",
@@ -16,9 +16,9 @@
     "storageMb": 1
   },
   "permissions": [
-    "call:app/weather",
-    "call:app/news",
-    "call:app/radio",
+    "call:app/p-ad07a08e06e1",
+    "call:app/p-d530e4cef817",
+    "call:app/p-a2fd1d7eb8a4",
     "call:system/content"
   ],
   "settings": [

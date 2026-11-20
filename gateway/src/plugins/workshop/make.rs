@@ -15,6 +15,7 @@ use super::activity::By;
 use super::meta::{DraftMeta, Face, Stage};
 use super::{agent, Workshop};
 use crate::platform::http::ApiError;
+use crate::plugins::manifest;
 use crate::skills::text::normalize;
 
 /// «Сделай виджет: мои дела на сегодня», «давай сделаем игру на время», «нарисуй тему потемнее». «Гиджет» is how the
@@ -139,20 +140,6 @@ pub struct Made {
     pub noted: bool,
 }
 
-/// A draft's id starts so: the panel's by its face, the station's as the voice workshop's always were.
-fn prefix(by: By, face: Face) -> &'static str {
-    match (by, face) {
-        (By::Panel, Face::Widget) => "widget",
-        (By::Panel, Face::Skill) => "skill",
-        (By::Panel, Face::Game) => "game",
-        (By::Panel, Face::Theme) => "theme",
-        (By::Voice, Face::Widget) => "golos-vidzhet",
-        (By::Voice, Face::Skill) => "golos",
-        (By::Voice, Face::Game) => "golos-igra",
-        (By::Voice, Face::Theme) => "golos-tema",
-    }
-}
-
 /// The title until the agent gives its own: what was asked, from a capital, up to some 40 letters.
 fn title_of(face: Face, ask: &str) -> String {
     let ask = ask.trim().trim_start_matches(|c: char| !c.is_alphanumeric());
@@ -211,12 +198,15 @@ impl Workshop {
         let _ = self.dialog.set(dialog);
     }
 
-    /// A free id for a new draft: `widget-1`, `golos-2`, …
-    pub fn free_id(&self, prefix: &str) -> String {
-        (1..)
-            .map(|n| format!("{prefix}-{n}"))
-            .find(|id| !self.dir().join(id).exists() && self.host().installed(id).is_none())
-            .unwrap_or_else(|| prefix.to_string())
+    /// A free id for a new draft: a random one (`manifest::new_package_id`) no draft and no package has. Who asked and
+    /// the face are the draft's card, not its id.
+    pub fn new_id(&self) -> String {
+        loop {
+            let id = manifest::new_package_id();
+            if !self.dir().join(&id).exists() && self.host().installed(&id).is_none() {
+                return id;
+            }
+        }
     }
 
     /// «Сделай…»: a new draft of the request's face — or, with `draft`, new work on that one — its card written, the
@@ -277,7 +267,7 @@ impl Workshop {
                 if template == "midi" && !self.midi.load(std::sync::atomic::Ordering::Relaxed) {
                     return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, MIDI_ELSEWHERE));
                 }
-                let id = self.free_id(prefix(by, request.face));
+                let id = self.new_id();
                 let title = if template == "midi" {
                     "Учитель на MIDI-клавиатуре".to_string()
                 } else if template == "folders" && !self.folders_here() {
@@ -321,7 +311,7 @@ impl Workshop {
         if template == "folders" && !self.folders_here() {
             return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, FOLDERS_ELSEWHERE));
         }
-        let id = self.free_id(prefix(by, face));
+        let id = self.new_id();
         let title = match title.map(str::trim).filter(|title| !title.is_empty()) {
             _ if template == "midi" => "Учитель на MIDI-клавиатуре".to_string(),
             Some(title) => title.chars().take(60).collect(),
@@ -434,9 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn names_a_new_draft_by_who_asked_and_what() {
-        assert_eq!(prefix(By::Panel, Face::Widget), "widget");
-        assert_eq!(prefix(By::Voice, Face::Widget), "golos-vidzhet");
+    fn titles_a_new_draft_by_what_was_asked() {
         assert_eq!(title_of(Face::Widget, "мои дела на сегодня из тудуиста"), "Мои дела на сегодня из тудуиста");
         assert_eq!(title_of(Face::Game, ""), "Игра");
         let long = title_of(Face::Skill, "напоминай мне каждое утро про таблетки и воду и прогулку с собакой в парке");

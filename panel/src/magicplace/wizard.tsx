@@ -37,9 +37,10 @@ import { isCallWord } from './filters';
  * tools.rs); AirPlay — не голосом, а выбором колонки на телефоне. Своего поля в манифесте для этого пока нет — когда
  * появится (`usage`, `examples`), брать оттуда.
  */
+// Ключи — id пакетов каталога: AirPlay, VPN.
 const USAGE: Record<string, (place: { station: string | null; word: string }) => string> = {
-    airplay: ({ station }) => (station ? tr.wizard.useAirplay(station) : tr.wizard.useAirplayAny),
-    'own-server': ({ word }) => tr.wizard.sayPhrase(word, tr.wizard.vpnPhrase),
+    'p-4db294c19645': ({ station }) => (station ? tr.wizard.useAirplay(station) : tr.wizard.useAirplayAny),
+    'p-2a4594f148e9': ({ word }) => tr.wizard.sayPhrase(word, tr.wizard.vpnPhrase),
 };
 import './magicplace.css';
 

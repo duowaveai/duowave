@@ -1,6 +1,7 @@
 //! Packages built into the gateway (docs/plans/plugins.md, «Экран «Плагины» и три вида пакетов»), like the panel: the
 //! folders of `packages/` that `packages/bundled.json` names, embedded at build time and laid out into PACKAGES_DIR at
-//! every start, each marked with its kind:
+//! every start, each marked with its kind. `bundled.json` is keyed by the package's id — a random one, like every
+//! package's (docs/plans/random-package-ids.md) — and names its `folder` in `packages/`, which may stay readable:
 //!
 //! - **system** — without it the station does not work as it should: never switched off, never removed;
 //! - **bundled** — «Радио» and the built-ins as they move into plugins (stage 10): switched off at will, never
@@ -9,12 +10,15 @@
 //! The kind is the gateway's to set, by where a package came from, never the manifest's: a plugin cannot declare
 //! itself a system one. A new version of the gateway brings a new version beside the old one (which stays, the one
 //! to fall back on); older ones go. A package seen for the first time is switched on or off as `bundled.json` says;
-//! after that the owner's choice stays.
+//! after that the owner's choice stays. A built-in an earlier build laid out and this one no longer has — dropped from
+//! the build, or renamed (`radio` → `p-a2fd1d7eb8a4`, 20.11.2026) — goes whole (`retire`): no twin of a built-in stays
+//! that the panel cannot remove.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use rusqlite::params;
 use serde_json::Value;
 
 use super::manifest;
@@ -74,8 +78,10 @@ pub fn packages() -> Vec<BundledPackage> {
                 continue;
             }
         };
-        let Some(package_files) = files.remove(id) else {
-            tracing::warn!(target: "plugins", "packages/bundled.json: {id}: no such folder in packages/");
+        // The folder in packages/: readable (`radio`), while the id is random; without one, the id itself.
+        let folder = entry.get("folder").and_then(Value::as_str).unwrap_or(id);
+        let Some(package_files) = files.remove(folder) else {
+            tracing::warn!(target: "plugins", "packages/bundled.json: {id}: no folder {folder} in packages/");
             continue;
         };
         match read(id, source, entry.get("enabled").and_then(Value::as_bool).unwrap_or(false), package_files) {
@@ -100,6 +106,61 @@ pub fn read(
         return Err(format!("its manifest says id «{}»", manifest.id));
     }
     Ok(BundledPackage { id: id.to_string(), version: manifest.version.to_string(), source, enabled, files })
+}
+
+/// The ids `bundled.json` names, read or not: what `retire` never takes away. Empty when it does not read.
+pub fn named() -> Vec<String> {
+    let Some(index) = Embedded::get("bundled.json") else { return Vec::new() };
+    let Ok(index) = serde_json::from_slice::<Value>(&index.data) else { return Vec::new() };
+    index.as_object().into_iter().flatten().map(|(id, _)| id).filter(|id| !id.starts_with('_')).cloned().collect()
+}
+
+/// The gateway's own packages (`bundled`, `system`) an earlier build laid out that are not among `kept` — a built-in
+/// dropped from the build, or one renamed (the random ids of 20.11.2026, docs/plans/random-package-ids.md): each goes
+/// whole — its folder in `root`, its row, its `kv`, its rules and its long tasks — and its id is returned for the
+/// rest (keys, settings) to go too. A copy of one's own (`local`), the catalog's and what was put in by hand stay.
+/// Nothing goes while `kept` is empty: a build without its packages (`PLUGINS_BUNDLED=0`, a `bundled.json` that does
+/// not read) takes nobody's away.
+pub fn retire(root: &Path, db: &Db, kept: &BTreeSet<String>) -> Vec<String> {
+    if kept.is_empty() {
+        return Vec::new();
+    }
+    let mut stale: Vec<String> = registry::choices(db)
+        .into_iter()
+        .filter(|(id, choice)| {
+            (choice.source == SOURCE_BUNDLED || choice.source == SOURCE_SYSTEM)
+                && !kept.contains(id)
+                && manifest::valid_id(id)
+        })
+        .map(|(id, _)| id)
+        .collect();
+    stale.sort();
+    let mut gone = Vec::new();
+    for id in stale {
+        let dir = root.join(&id);
+        if dir.exists() {
+            if let Err(error) = std::fs::remove_dir_all(&dir) {
+                tracing::warn!(target: "plugins", "built-in package {id} of an earlier build: its folder stays: {error}");
+                continue;
+            }
+        }
+        let forgotten = db.with(|c| {
+            c.execute("DELETE FROM plugin_kv WHERE plugin_id = ?1", params![id])?;
+            c.execute("DELETE FROM app_settings WHERE app_id = ?1", params![id])?;
+            c.execute("DELETE FROM app_tasks WHERE app = ?1", params![id])?;
+            c.execute("DELETE FROM packages WHERE id = ?1", params![id]).map(|_| ())
+        });
+        match forgotten {
+            Ok(()) => {
+                tracing::info!(target: "plugins", "built-in package {id} of an earlier build removed: this build has none such");
+                gone.push(id);
+            }
+            Err(error) => {
+                tracing::warn!(target: "plugins", "built-in package {id} of an earlier build: not forgotten: {error}")
+            }
+        }
+    }
+    gone
 }
 
 /// Lays the built-in packages out in `root`: a version not there yet is written (beside, then renamed into place),
@@ -197,7 +258,10 @@ mod tests {
     #[test]
     fn the_builds_own_packages_read_and_radio_is_among_them() {
         let built = packages();
-        let radio = built.iter().find(|package| package.id == "radio").expect("radio is built in");
+        // Every id is a random one (docs/plans/random-package-ids.md); «Радио» lies in packages/radio.
+        let ids: Vec<&str> = built.iter().map(|package| package.id.as_str()).collect();
+        assert!(ids.iter().all(|id| manifest::random_id(id)), "{ids:?}");
+        let radio = built.iter().find(|package| package.id == "p-a2fd1d7eb8a4").expect("radio is built in");
         assert_eq!((radio.source, radio.enabled), (SOURCE_BUNDLED, true));
         assert!(radio.files.iter().any(|(path, _)| path == "backend.js"));
     }
@@ -233,12 +297,85 @@ mod tests {
         assert_eq!(registry::choices(&db)["radio"].source, SOURCE_BUNDLED);
     }
 
+    /// A built-in of an earlier build this one has not — renamed (`radio` → a random id) or dropped — goes whole; a
+    /// copy of one's own, the catalog's and the new built-in stay; a build without its packages takes nothing away.
+    #[test]
+    fn retires_the_built_ins_an_earlier_build_laid_out_and_keeps_everyone_elses() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::memory();
+        // 0.16: «Радио» as `radio`, a system one, and a dropped built-in; a copy of one's own and a catalog's beside.
+        lay_out(
+            dir.path(),
+            &db,
+            &[
+                package("radio", "1.0.0", SOURCE_BUNDLED, true),
+                package("core", "1.0.0", SOURCE_SYSTEM, true),
+                package("dropped", "1.0.0", SOURCE_BUNDLED, false),
+            ],
+        );
+        for (id, source) in [("my-radio", registry::SOURCE_LOCAL), ("arthur", registry::SOURCE_CATALOG)] {
+            std::fs::create_dir_all(dir.path().join(id).join("1.0.0")).unwrap();
+            registry::set_installed(&db, id, source, false, None).unwrap();
+        }
+        db.with(|c| {
+            for id in ["radio", "my-radio"] {
+                c.execute(
+                    "INSERT INTO plugin_kv (plugin_id, key, value, updated_at) VALUES (?1, 'count', '3', 'now')",
+                    params![id],
+                )?;
+                c.execute(
+                    "INSERT INTO app_settings (app_id, key, value, updated_at) VALUES (?1, 'rule', '1', 'now')",
+                    params![id],
+                )?;
+            }
+            c.execute(
+                "INSERT INTO app_tasks (id, app, title, state, started_ms, updated_ms) VALUES ('t1', 'radio', 'x', 'done', 1, 1)",
+                [],
+            )
+            .map(|_| ())
+        })
+        .unwrap();
+        let rows = |table: &str, column: &str, id: &str| -> i64 {
+            db.with(|c| {
+                c.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE {column} = ?1"), params![id], |row| row.get(0))
+            })
+            .unwrap()
+        };
+
+        // A build without its packages takes nobody's away.
+        assert!(retire(dir.path(), &db, &BTreeSet::new()).is_empty());
+        assert!(dir.path().join("radio").is_dir());
+
+        // 0.17: «Радио» is `p-a2fd1d7eb8a4`, the system one stays in the build, `dropped` is gone from it.
+        let new = package("p-a2fd1d7eb8a4", "1.0.0", SOURCE_BUNDLED, true);
+        lay_out(dir.path(), &db, &[new, package("core", "1.0.0", SOURCE_SYSTEM, true)]);
+        let kept: BTreeSet<String> = ["p-a2fd1d7eb8a4", "core"].map(String::from).into();
+        assert_eq!(retire(dir.path(), &db, &kept), ["dropped", "radio"]);
+        let choices = registry::choices(&db);
+        for id in ["radio", "dropped"] {
+            assert!(!dir.path().join(id).exists() && !choices.contains_key(id), "{id} goes whole");
+        }
+        assert_eq!(
+            (
+                rows("plugin_kv", "plugin_id", "radio"),
+                rows("app_settings", "app_id", "radio"),
+                rows("app_tasks", "app", "radio")
+            ),
+            (0, 0, 0)
+        );
+        for id in ["p-a2fd1d7eb8a4", "core", "my-radio", "arthur"] {
+            assert!(dir.path().join(id).is_dir() && choices.contains_key(id), "{id} stays");
+        }
+        assert_eq!((rows("plugin_kv", "plugin_id", "my-radio"), rows("app_settings", "app_id", "my-radio")), (1, 1));
+        assert!(retire(dir.path(), &db, &kept).is_empty(), "once");
+    }
+
     /// Host API 2: the built-in apps' widgets are cards the panel draws — no code of theirs runs in the panel — and
     /// each card's function is among their panel's calls (docs/plans/bus.md, «Один способ»). A game is the one
     /// exception: its own drawing, keys and sound are a window's, in its frame like any app's («Неоновая змейка»).
     #[test]
     fn every_built_in_widget_is_a_card_and_no_built_in_brings_panel_code() {
-        const WINDOWS: &[&str] = &["neon-snake"];
+        const WINDOWS: &[&str] = &["p-6d9f10977863"]; // «Неоновая змейка»
         let mut cards = 0;
         for package in packages() {
             assert_eq!(

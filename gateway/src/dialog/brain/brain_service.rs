@@ -38,16 +38,17 @@ use crate::dialog::llm::brain::{
 use crate::dialog::llm::openai_chat::{tokens_field_for, OPENAI_BASE_URL};
 use crate::dialog::llm::unreachable::Unreachable;
 use crate::dialog::llm::{
-    bearer_of, create_llm, describe_http_error as describe, Access, LlmClient, LlmEvent, LlmMessage, LlmRequest,
-    LlmSettings, LlmStream, LlmTool, SpokenFailure,
+    bearer_of, create_llm, describe_http_error as describe, Access, AccessProblem, ErrorWords, LlmClient, LlmEvent,
+    LlmMessage, LlmRequest, LlmSettings, LlmStream, LlmTool, ProblemCell, SpokenFailure,
 };
 use crate::oauth::{
-    record_id, tokens, AccountView, Credential, Flow, OAuthService, SignInStart, Target, TokenAccess, TokenRecord,
+    client_name, record_id, tokens, AccountView, Credential, Delivered, Extra, Flow, KeyGrant, OAuthService,
+    SignInStart, Target, TokenAccess, TokenRecord,
 };
 use crate::operations::networks::is_local_url;
 use crate::platform::http::ApiError;
 use crate::secrets::{SecretMask, SecretsService};
-use crate::settings::definitions::{BackupBy, Brain, BrainPick, BRAIN};
+use crate::settings::definitions::{BackupBy, Brain, BrainPick, BRAIN, DUOWAVE_INVITE};
 use crate::settings::SettingsService;
 use crate::storage::Db;
 use crate::utils::http::client;
@@ -63,6 +64,47 @@ static NOT_CHAT: LazyLock<Regex> = LazyLock::new(|| {
 
 fn key_of(id: &str) -> String {
     format!("llm:{id}:key")
+}
+
+/// What a key's service said of its access, kept in the row's `options` beside the preset's fields: the service's,
+/// never the panel's to change (`update` keeps them).
+const ACCESS_PREFIX: &str = "access.";
+const ACCESS_ACTIVE: &str = "access.active";
+const ACCESS_PLAN: &str = "access.plan";
+const ACCESS_ENDS: &str = "access.endsAt";
+
+/// A provider's access as its service told it (DuoWave's): active or not, the plan, until when, and what its last
+/// refusal asks of the owner. The panel: «Бесплатно до 27 ноября», «Доступа пока нет · Кабинет», «Подключить заново».
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceAccess {
+    pub active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ends_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub problem: Option<AccessProblem>,
+}
+
+/// This device's name for a service that names its key after it: the host's name without `.local`; none when the
+/// host has no name of its own.
+#[cfg(unix)]
+fn device_name() -> Option<String> {
+    let mut buffer = [0u8; 256];
+    // SAFETY: the buffer is ours and its length is given; the name ends with a NUL or fills the buffer.
+    if unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) } != 0 {
+        return None;
+    }
+    let end = buffer.iter().position(|byte| *byte == 0).unwrap_or(buffer.len());
+    let name = String::from_utf8_lossy(&buffer[..end]).to_string();
+    let name = name.strip_suffix(".local").unwrap_or(&name).replace('-', " ");
+    client_name(&name).filter(|name| !name.eq_ignore_ascii_case("localhost"))
+}
+
+#[cfg(not(unix))]
+fn device_name() -> Option<String> {
+    std::env::var("COMPUTERNAME").ok().and_then(|name| client_name(&name))
 }
 
 /// A helper's row's stored title before the helper's name: «Модель: Компьютер дома» (the source language, what an
@@ -151,6 +193,9 @@ pub struct ProviderView {
     /// A provider whose access is an account's (ChatGPT's plan): signed in or not, whose, what stands in the way.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account: Option<AccountView>,
+    /// A provider whose service tells its access (DuoWave): what it said, and what its last refusal asks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access: Option<ServiceAccess>,
     /// The helper whose model this is: a helper's row, or a model server of this computer (stage 6).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub helper: Option<ProviderHelper>,
@@ -212,6 +257,9 @@ pub struct BrainView {
     /// One line about the backup while the main model is a helper's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<BrainNote>,
+    /// An invitation's code waits for DuoWave's next sign-in (the code itself stays here).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub invite: bool,
 }
 
 /// «Мозг»'s line about the backup: `backupAuto` (the gateway chose it, and it may cost money), `backupNeeded` (none
@@ -270,6 +318,9 @@ pub struct BrainService {
     /// The access of each provider signed in with tokens, by id with its `created_at`: one per provider, so its
     /// clients and checks share one renewal at a time.
     accesses: Mutex<HashMap<String, (String, Arc<TokenAccess>)>>,
+    /// The last refusal of each provider whose service says them in words (DuoWave), by id with its `created_at`: its
+    /// clients set it, its card shows it.
+    problems: Mutex<HashMap<String, (String, ProblemCell)>>,
     /// The helpers that give a model (helper_models.rs). Unset — no helper is known and every road is open: the rows
     /// are asked as they are stored, as before the helpers.
     helpers: OnceLock<Arc<dyn ModelHelpers>>,
@@ -419,6 +470,7 @@ impl BrainService {
             mutation: Mutex::new(()),
             clients: Mutex::new(HashMap::new()),
             accesses: Mutex::new(HashMap::new()),
+            problems: Mutex::new(HashMap::new()),
             helpers: OnceLock::new(),
             owner: OnceLock::new(),
             refusals: OnceLock::new(),
@@ -483,6 +535,7 @@ impl BrainService {
                 auto_backup: true,
             },
             note: self.note(&rows, &choice, &seen),
+            invite: self.has_invite(),
             status: self.status_of(&rows, &choice),
             env: EnvView {
                 provider: self.config.provider,
@@ -559,7 +612,17 @@ impl BrainService {
                 _ => None,
             };
             let options = match (preset, input.get("options")) {
-                (Some(preset), Some(value)) => Some(json!(fields(preset, Some(value))).to_string()),
+                (Some(preset), Some(value)) => {
+                    // The service's word on the access is not the panel's to change.
+                    let mut given = fields(preset, Some(value));
+                    given.extend(
+                        row.options
+                            .iter()
+                            .filter(|(name, _)| name.starts_with(ACCESS_PREFIX))
+                            .map(|(name, value)| (name.clone(), value.clone())),
+                    );
+                    Some(json!(given).to_string())
+                }
                 _ => None,
             };
             let changed = self.db.with(|c| {
@@ -653,7 +716,10 @@ impl BrainService {
     /// «Войти через …»: the sign-in of a provider whose service has one (src/oauth). What it brings lands on this
     /// provider as it is now — not on a later one that takes its id meanwhile. `here`: the panel is open on this
     /// computer, so the browser's return reaches the gateway.
-    pub fn sign_in(&self, id: &str, engine: &OAuthService, here: bool) -> Result<SignInStart, ApiError> {
+    ///
+    /// A service of ours (`extras`) also gets the invitation's code — the one given now is kept, else the kept one
+    /// goes, until a sign-in brings a key — and this device's name, the given one or the host's.
+    pub fn sign_in(&self, id: &str, engine: &OAuthService, here: bool, extra: Extra) -> Result<SignInStart, ApiError> {
         let row = {
             let _mutation = self.lock();
             self.stored_row(id)?.ok_or_else(missing)?
@@ -661,7 +727,32 @@ impl BrainService {
         let sign_in = preset_of(&row.preset)
             .and_then(|preset| preset.sign_in.as_ref())
             .ok_or_else(|| ApiError::bad_request(crate::tr!("Этот провайдер подключается только ключом.")))?;
-        engine.start(sign_in, target_of(&row), here)
+        let extra = match sign_in.flow {
+            Flow::KeyExchange { extras: true, .. } => {
+                if let Some(code) = &extra.invite {
+                    self.settings.set(&DUOWAVE_INVITE, code, None)?;
+                }
+                Extra {
+                    invite: extra.invite.or_else(|| self.settings.get(&DUOWAVE_INVITE, None)),
+                    client: extra.client.or_else(device_name),
+                }
+            }
+            _ => Extra::default(),
+        };
+        engine.start(sign_in, target_of(&row), here, &extra)
+    }
+
+    /// The invitation's code DuoWave's next sign-in takes: kept until a sign-in brings a key; None forgets it.
+    pub fn set_invite(&self, code: Option<&str>, actor: Option<Actor>) -> Result<(), ApiError> {
+        match code {
+            Some(code) => self.settings.set(&DUOWAVE_INVITE, &code.to_string(), actor),
+            None => self.settings.forget(&DUOWAVE_INVITE),
+        }
+    }
+
+    /// Whether an invitation's code waits for DuoWave's next sign-in: the panel shows its big button.
+    pub fn has_invite(&self) -> bool {
+        self.settings.get(&DUOWAVE_INVITE, None).is_some()
     }
 
     /// What a sign-in brought, on the provider that began it — still there and not replaced by another under its id:
@@ -672,12 +763,18 @@ impl BrainService {
         created_at: &str,
         credential: Credential,
         actor: Option<Actor>,
-    ) -> Result<String, ApiError> {
-        let title = {
+    ) -> Result<Delivered, ApiError> {
+        let mut grant = None;
+        let (title, first, preset) = {
             let _mutation = self.lock();
             let row = self.stored_row(id)?.filter(|row| row.created_at == created_at).ok_or_else(missing)?;
+            let first = !self.secrets.has(&key_of(id));
             match credential {
-                Credential::Key(key) => self.secrets.set(&key_of(id), Some(&key))?,
+                Credential::Key(given) => {
+                    self.secrets.set(&key_of(id), Some(&given.key))?;
+                    self.apply_grant(&row, &given)?;
+                    grant = Some(given);
+                }
                 Credential::Tokens(record) => {
                     let text = serde_json::to_string(&record).map_err(ApiError::internal)?;
                     self.secrets.set(&record_id(id), Some(&text))?;
@@ -693,14 +790,85 @@ impl BrainService {
                 )
             })?;
             self.reload()?;
-            row.title
+            (row.title, first, row.preset)
         };
         self.events.emit(GatewayEvent::BrainChanged {
             change: "provider.login".into(),
             provider_id: Some(id.to_string()),
-            actor,
+            actor: actor.clone(),
         });
-        Ok(title)
+        let Some(grant) = grant else { return Ok(Delivered { title, note: None }) };
+        // The invitation went with a sign-in that brought a key: spent.
+        let ours = preset_of(&preset).and_then(|preset| preset.sign_in.as_ref()).map(|sign_in| sign_in.flow);
+        if matches!(ours, Some(Flow::KeyExchange { extras: true, .. })) {
+            self.settings.forget(&DUOWAVE_INVITE)?;
+        }
+        let open = grant.access.as_ref().is_none_or(|access| access.active || !grant.models.is_empty());
+        if !open {
+            let note = crate::tr!(
+                "{with} подключён, но доступа к моделям пока нет. Загляните в кабинет {with}.",
+                with = title
+            );
+            return Ok(Delivered { title, note: Some(note.to_string()) });
+        }
+        self.choose_granted(id, &grant, first, actor)?;
+        Ok(Delivered { title, note: None })
+    }
+
+    /// What a key's service gave beyond the key, on its row: the address, the plan's models, its word on the access;
+    /// the last refusal is let go. The caller holds `mutation`.
+    fn apply_grant(&self, row: &ProviderRow, grant: &KeyGrant) -> Result<(), ApiError> {
+        let mut options: BTreeMap<String, String> = row
+            .options
+            .iter()
+            .filter(|(name, _)| !name.starts_with(ACCESS_PREFIX))
+            .map(|(n, v)| (n.clone(), v.clone()))
+            .collect();
+        if let Some(access) = &grant.access {
+            options.insert(ACCESS_ACTIVE.into(), access.active.to_string());
+            if let Some(plan) = &access.plan {
+                options.insert(ACCESS_PLAN.into(), plan.clone());
+            }
+            if let Some(ends_at) = &access.ends_at {
+                options.insert(ACCESS_ENDS.into(), ends_at.clone());
+            }
+        }
+        let models = (!grant.models.is_empty()).then(|| json!(grant.models).to_string());
+        self.db.with(|c| {
+            c.execute(
+                "UPDATE llm_providers SET base_url = COALESCE(?3, base_url), models = COALESCE(?4, models),
+                 options = ?5 WHERE id = ?1 AND created_at = ?2",
+                params![row.id, row.created_at, grant.base_url, models, json!(options).to_string()],
+            )
+        })?;
+        if let Some(cell) = self.problem_cell(row) {
+            cell.set(None);
+        }
+        Ok(())
+    }
+
+    /// The profiles a key's service names (`defaults`), softly: at the first sign-in «быстрый» and «сильный» go to it;
+    /// at a later one (the key was there: revoked, a model left the plan) only the profiles already on this provider
+    /// change — a model the person chose elsewhere stays. A profile the service does not name stays as it is.
+    fn choose_granted(&self, id: &str, grant: &KeyGrant, first: bool, actor: Option<Actor>) -> Result<(), ApiError> {
+        let choice = self.settings.peek(&BRAIN)?.unwrap_or_default();
+        let ours = |pick: &Option<BrainPick>| pick.as_ref().is_some_and(|pick| pick.provider == id);
+        let mut input = Map::new();
+        for (profile, model, chosen) in [("fast", &grant.fast, &choice.fast), ("smart", &grant.smart, &choice.smart)] {
+            if let Some(model) = model.as_ref().filter(|_| first || ours(chosen)) {
+                input.insert(profile.into(), json!({ "provider": id, "model": model }));
+            }
+        }
+        if input.is_empty() {
+            return Ok(());
+        }
+        // A smart left out follows the fast one (`choose`): kept as it was when the service names only «быстрый».
+        if !input.contains_key("smart") {
+            if let Some(smart) = &choice.smart {
+                input.insert("smart".into(), json!({ "provider": smart.provider, "model": smart.model }));
+            }
+        }
+        self.choose(&input, actor).map(|_| ())
     }
 
     /// Who gets what a provider's sign-in brings: for tests that sign in with a service of their own.
@@ -1084,8 +1252,38 @@ impl BrainService {
             local: !cloud,
             brand: preset.and_then(|preset| preset.brand),
             account: self.access_of(row).map(|access| access.account()),
+            access: self.service_access(row),
             helper,
         }
+    }
+
+    /// The refusals' cell of a provider whose service says them in words (DuoWave's): one per provider.
+    fn problem_cell(&self, row: &ProviderRow) -> Option<ProblemCell> {
+        if preset_of(&row.preset)?.errors != ErrorWords::DuoWave {
+            return None;
+        }
+        let mut problems = self.problems.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((_, cell)) = problems.get(&row.id).filter(|(created_at, _)| *created_at == row.created_at) {
+            return Some(cell.clone());
+        }
+        let cell = ProblemCell::default();
+        problems.insert(row.id.clone(), (row.created_at.clone(), cell.clone()));
+        Some(cell)
+    }
+
+    /// The access its service told, with its last refusal; None while it told nothing and refused nothing.
+    fn service_access(&self, row: &ProviderRow) -> Option<ServiceAccess> {
+        let problem = self.problem_cell(row).and_then(|cell| cell.get());
+        let active = row.options.get(ACCESS_ACTIVE).map(|active| active == "true");
+        if active.is_none() && problem.is_none() {
+            return None;
+        }
+        Some(ServiceAccess {
+            active: active.unwrap_or(true),
+            plan: row.options.get(ACCESS_PLAN).cloned(),
+            ends_at: row.options.get(ACCESS_ENDS).cloned(),
+            problem,
+        })
     }
 
     /// The access of a provider signed in with tokens (ChatGPT's plan): one per provider, made when first needed.
@@ -1132,6 +1330,7 @@ impl BrainService {
             headers: headers_for(&row.preset, &row.options),
             access: self.access_of(row).map(|access| Access(access)),
             api: preset.map(|preset| preset.api).unwrap_or_default(),
+            duowave: self.problem_cell(row),
         }
     }
 

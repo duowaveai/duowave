@@ -1,12 +1,17 @@
 // Первые шаги, шаг «Кто думает» (только компьютер) — доска Brain холста «Онбординг» 1:1: четыре пути (OpenRouter,
 // подписка ChatGPT, свой ключ, модель на этом компьютере), под ними карточка пути, ниже «Готовлю слух» и серая строка.
+// DuoWave (наши модели, docs/plans/duowave-connect.md) пока спрятан: нажатие на заголовок «Кто будет думать над
+// ответами?» показывает его пятым путём — первым и во всю ширину; ещё одно нажатие прячет (shell/dev.ts).
 // Шапку и кнопки рисует рамка (onb/nav.tsx). Всё настоящее: те же вызовы шлюза, что у «Мозга» (screens/brain.tsx) —
 // добавить провайдера, войти, проверить, выбрать модели (логика — общий хук screens/brain-connect.ts, тот же у витрины
 // стола); слух — useLocalAsr (screens/local-asr.tsx).
 
+import { useState } from 'preact/hooks';
+
 import type { ProviderView } from '../../api';
 import { tr } from '../../i18n';
-import { PATHS, useBrainConnect } from '../brain-connect';
+import { Path, SignInPath, accessLine, useBrainConnect } from '../brain-connect';
+import { duowaveShown, setDuowaveShown } from '../../shell/dev';
 import { localAsrNeedsCard, localAsrPercent, useLocalAsr } from '../local-asr';
 import { awayBackup, awayBehind } from './brain-home';
 import { useOnboarding, useStepNav } from './nav';
@@ -51,26 +56,31 @@ export function BrainStep() {
     const t = tr.onbBrain;
     const { next } = useOnboarding();
     const [ear] = useLocalAsr();
-    const { view, path, choosePath, checking, problem, key, setKey, fields, setFields, keyPreset, keyFields, keyReady, saveKey, local, findLocal, signIn, beginSignIn, workingOn, answering, noBackup } =
+    const { view, path, choosePath, checking, problem, key, setKey, fields, setFields, keyPreset, keyFields, keyReady, saveKey, local, findLocal, signIn, beginSignIn, paths, duowave, invite, inviteBusy, saveInvite, workingOn, answering, noBackup } =
         useBrainConnect();
+    /** Поле «Есть код приглашения?» открыто и что в нём. */
+    const [inviteOpen, setInviteOpen] = useState(false);
+    const [inviteDraft, setInviteDraft] = useState('');
     useStepNav(answering ? {} : { secondary: { label: t.later, onClick: next } }, [answering]);
 
     // Облачная «Запасная» остаётся и за моделью на компьютере: тогда «вопросы не уходят из дома» неправда — и пометка
     // «без интернета» тоже.
     const backupAway = view ? awayBackup(view) : null;
-    const cards: Array<{ title: string; chip?: { text: string; lime?: boolean }; sub: string }> = [
-        { title: t.orTitle, chip: { text: t.orChip, lime: true }, sub: t.orSub },
-        { title: t.gptTitle, sub: t.gptSub },
-        { title: t.keyTitle, sub: t.keySub },
-        { title: t.localTitle, chip: backupAway ? undefined : { text: t.localChip }, sub: backupAway ? t.localSubAway : t.localSub },
-    ];
+    // С DuoWave «Проще всего» — у него, у OpenRouter — «Много моделей»; без него доска прежняя.
+    const card: Record<Path, { title: string; chip?: { text: string; lime?: boolean }; sub: string; wide?: boolean }> = {
+        duowave: { title: t.dwTitle, chip: { text: t.dwChip, lime: true }, sub: t.dwSub, wide: true },
+        openrouter: { title: t.orTitle, chip: duowave ? { text: t.orChipMany } : { text: t.orChip, lime: true }, sub: t.orSub },
+        chatgpt: { title: t.gptTitle, sub: t.gptSub },
+        key: { title: t.keyTitle, sub: t.keySub },
+        local: { title: t.localTitle, chip: backupAway ? undefined : { text: t.localChip }, sub: backupAway ? t.localSubAway : t.localSub },
+    };
 
     const working = workingOn(path);
     const busy = checking?.path === path ? checking : null;
     const said = problem?.path === path ? problem.text : null;
 
     /** Вход через сервис: кнопка и строка доски, под ними шаги входа (ссылка, код с другого устройства). */
-    const signInBody = (which: 'openrouter' | 'chatgpt', label: string, note: string) => (
+    const signInBody = (which: SignInPath, label: string, note: string) => (
         <>
             <button
                 type="button"
@@ -120,8 +130,58 @@ export function BrainStep() {
         );
     };
 
+    /**
+     * DuoWave: «Подключить DuoWave» или, когда код приглашения уже у шлюза, «Получить неделю бесплатно». Код можно
+     * вписать здесь: шлюз запомнит его и приложит к входу (подарок даётся только при самом первом входе на сайте).
+     */
+    const duowaveBody = (
+        <>
+            {signInBody('duowave', invite ? t.dwGift : t.dwSignIn, invite ? t.dwGiftNote : t.dwSignInNote)}
+            {!invite &&
+                (inviteOpen ? (
+                    <form
+                        class="ob-brain-full ob-brain-invite"
+                        onSubmit={(e) => {
+                            e.preventDefault();
+                            if (inviteDraft.trim()) void saveInvite(inviteDraft).then((saved) => saved && setInviteDraft(''));
+                        }}
+                    >
+                        <div class="field ob-brain-key">
+                            <label for="dw-invite">{t.dwInviteLabel}</label>
+                            <input
+                                id="dw-invite"
+                                class="input"
+                                autocomplete="off"
+                                spellcheck={false}
+                                placeholder={t.dwInvitePlaceholder}
+                                value={inviteDraft}
+                                onInput={(e) => setInviteDraft((e.target as HTMLInputElement).value)}
+                            />
+                        </div>
+                        <button
+                            type="submit"
+                            class="dw-btn dw-btn-sm dw-btn-light"
+                            aria-disabled={!inviteDraft.trim() || inviteBusy ? 'true' : undefined}
+                        >
+                            {t.dwInviteSave}
+                        </button>
+                    </form>
+                ) : (
+                    <button type="button" class="ob-brain-link small ob-brain-full" onClick={() => setInviteOpen(true)}>
+                        {t.dwInviteAsk}
+                    </button>
+                ))}
+        </>
+    );
+
     const body = busy ? (
         <Said mark="busy" title={t.checking(busy.title)} note={t.checkingNote} />
+    ) : path === 'duowave' ? (
+        working ? (
+            <Said mark="ok" title={t.dwDone} note={working.access ? t.dwDoneNote(accessLine(working.access)) : t.chosenNote} />
+        ) : (
+            duowaveBody
+        )
     ) : path === 'openrouter' ? (
         working ? <Said mark="ok" title={t.orDone} note={t.chosenNote} /> : signInBody('openrouter', t.orSignIn, t.orSignInNote)
     ) : path === 'chatgpt' ? (
@@ -184,7 +244,8 @@ export function BrainStep() {
     return (
         <div class="ob-brain">
             <div class="ob-brain-head">
-                <h1 class="h2" id="onb-brain-h">
+                {/* Нажатие на заголовок показывает или прячет DuoWave: спрятанный путь, не кнопка для всех. */}
+                <h1 class="h2" id="onb-brain-h" onClick={() => setDuowaveShown(!duowaveShown())}>
                     {t.title1}
                     <br />
                     {t.title2}
@@ -193,21 +254,21 @@ export function BrainStep() {
             </div>
 
             <div class="ob-brain-opts" role="group" aria-labelledby="onb-brain-h">
-                {cards.map((card, at) => (
+                {paths.map((which) => (
                     <button
-                        key={PATHS[at]}
+                        key={which}
                         type="button"
-                        class={`opt${path === PATHS[at] ? ' on' : ''}`}
-                        aria-pressed={path === PATHS[at] ? 'true' : 'false'}
-                        onClick={() => choosePath(PATHS[at])}
+                        class={`opt${card[which].wide ? ' opt-wide' : ''}${path === which ? ' on' : ''}`}
+                        aria-pressed={path === which ? 'true' : 'false'}
+                        onClick={() => choosePath(which)}
                     >
                         <span class="radio" />
                         <span class="opt-body">
                             <span class="opt-title">
-                                {card.title}
-                                {card.chip && <span class={`chip${card.chip.lime ? ' chip-lime' : ''}`}>{card.chip.text}</span>}
+                                {card[which].title}
+                                {card[which].chip && <span class={`chip${card[which].chip.lime ? ' chip-lime' : ''}`}>{card[which].chip.text}</span>}
                             </span>
-                            <span class="opt-sub">{card.sub}</span>
+                            <span class="opt-sub">{card[which].sub}</span>
                         </span>
                     </button>
                 ))}

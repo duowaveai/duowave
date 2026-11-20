@@ -410,6 +410,7 @@ mod tests {
             tokens_field: Default::default(),
             access: Some(Access(access)),
             api: LlmApi::Responses,
+            duowave: None,
         }
     }
 

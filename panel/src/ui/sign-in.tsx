@@ -26,7 +26,7 @@ export interface SignInFlow {
  * браузер — ошибку адреса 127.0.0.1 (ChatGPT): код или этот адрес вставляют сюда. Пока вход не закончен, пульт раз в
  * две секунды спрашивает шлюз, как дела.
  */
-export function useSignIn(onDone: (target: string, title: string) => void): SignInFlow {
+export function useSignIn(onDone: (target: string, title: string, note?: string) => void): SignInFlow {
     const [target, setTarget] = useState<string | null>(null);
     const [service, setService] = useState('');
     const [started, setStarted] = useState<SignInStart | null>(null);
@@ -46,9 +46,10 @@ export function useSignIn(onDone: (target: string, title: string) => void): Sign
         setError(null);
     };
 
-    const succeed = (who: string, title: string) => {
+    /** `note` — что осталось сделать после входа («доступа пока нет»): его показывает тот, кто начал вход. */
+    const succeed = (who: string, title: string, note?: string) => {
         close();
-        done.current(who, title);
+        done.current(who, title, note);
     };
 
     useEffect(() => {
@@ -58,7 +59,7 @@ export function useSignIn(onDone: (target: string, title: string) => void): Sign
             try {
                 const status = await api.signInStatus(started.id);
                 if (!live) return;
-                if (status.state === 'done') succeed(target, status.title);
+                if (status.state === 'done') succeed(target, status.title, status.note);
                 else if (status.state === 'failed') {
                     setStarted(null);
                     setError(status.message);
@@ -114,7 +115,7 @@ export function useSignIn(onDone: (target: string, title: string) => void): Sign
         setError(null);
         try {
             const result = await api.completeSignIn(started.id, text.trim());
-            succeed(target, result.title);
+            succeed(target, result.title, result.note);
         } catch (e) {
             setError(problemOf(e));
             // Сервис не принял код — этот вход закончен, нужен новый; пустое поле или опечатка в адресе — можно ещё раз.

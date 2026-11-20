@@ -49,6 +49,8 @@ const en: Translation<typeof ru> = {
     showHiddenPackagesAbout: 'packages the feeds keep hidden, in MagicPlace, the characters catalog and by voice; from every source',
     hiddenPackagesNow: (titles: string) => `Hidden ones shown now: ${titles}.`,
     hiddenPackagesNone: 'The feeds keep no packages hidden right now.',
+    showDuowave: 'Show DuoWave',
+    showDuowaveAbout: 'our models: first in “Brain” → “Add” and in the first steps “Who thinks”; sign-in at my.duowave.app',
     hiddenClose: 'Hide the hidden options',
 
     pageMic: 'Microphone',

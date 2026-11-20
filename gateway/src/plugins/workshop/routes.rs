@@ -71,7 +71,9 @@ async fn list(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Workshop
 
 #[derive(Debug, Default, Deserialize)]
 pub struct CreateBody {
-    id: String,
+    /// None: the workshop gives a random one.
+    #[serde(default)]
+    id: Option<String>,
     #[serde(default)]
     kind: Option<String>,
     #[serde(default)]
@@ -84,7 +86,8 @@ pub struct CreateBody {
 async fn create(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<CreateBody>) -> ApiResult<DraftView> {
     admin(&caller)?;
     let kind = body.kind.as_deref().or(Some("plugin")).filter(|_| body.openapi.is_none());
-    Ok(created(app.workshop.create(body.id.trim(), kind, body.title.as_deref(), body.openapi.as_deref())?))
+    let id = app.workshop.new_draft_id(body.id.as_deref())?;
+    Ok(created(app.workshop.create(&id, kind, body.title.as_deref(), body.openapi.as_deref())?))
 }
 
 /// «Открыть в мастерской»: the draft, or one from the installed package of one's own.
@@ -895,42 +898,43 @@ mod tests {
         assert_eq!(not.status, StatusCode::UNPROCESSABLE_ENTITY);
         let made =
             make(State(app.clone()), admin(), words("Сделай виджет: мои дела на сегодня из Тудуиста")).await.unwrap().1;
-        assert_eq!(
-            (made.draft.as_str(), made.kind, made.title.as_str()),
-            ("widget-1", Face::Widget, "Мои дела на сегодня из тудуиста")
-        );
-        let card = app.workshop.card("widget-1");
+        // The draft's id is random: who asked and what is its card's, not its id's.
+        assert!(crate::plugins::manifest::random_id(&made.draft), "{}", made.draft);
+        assert_eq!((made.kind, made.title.as_str()), (Face::Widget, "Мои дела на сегодня из тудуиста"));
+        let id = made.draft.as_str();
+        let card = app.workshop.card(id);
         assert_eq!(
             (card.by, card.who.as_deref(), card.asked.as_str()),
             (By::Panel, Some("Админ"), "Сделай виджет: мои дела на сегодня из Тудуиста")
         );
         // The agent finishes in the background.
         for _ in 0..200 {
-            if app.workshop.card("widget-1").stage == Stage::Ready {
+            if app.workshop.card(id).stage == Stage::Ready {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
-        assert_eq!(app.workshop.card("widget-1").stage, Stage::Ready);
+        assert_eq!(app.workshop.card(id).stage, Stage::Ready);
         // «Переделай» on the same draft.
         let again = make(
             State(app.clone()),
             admin(),
-            Body(MakeBody { words: "Переделай: крупнее".into(), draft: Some("widget-1".into()) }),
+            Body(MakeBody { words: "Переделай: крупнее".into(), draft: Some(id.into()) }),
         )
         .await
         .unwrap()
         .1;
-        assert_eq!(again.draft, "widget-1");
+        assert_eq!(again.draft, id);
         // The wish the draft was made for rides with it: «переделай» alone does not say what the thing is (19.11).
         assert_eq!(
-            app.workshop.card("widget-1").asked,
+            app.workshop.card(id).asked,
             "Переделай: крупнее\n\nРаньше об этой вещи просили: «Сделай виджет: мои дела на сегодня из Тудуиста»"
         );
     }
 
     #[tokio::test]
     async fn writes_checks_and_installs_a_draft_the_admins_approval_first_and_serves_its_tools_over_mcp() {
+        const HELLO: &str = "p-00000000e110";
         let dir = tempfile::tempdir().unwrap();
         let text = |sub: &str| dir.path().join(sub).to_string_lossy().into_owned();
         let env = Env::from_pairs([
@@ -944,21 +948,30 @@ mod tests {
         let admin = || Caller::local(app.clone(), Some(user_principal("u1", "Админ", Role::Admin, None)));
         let member = || Caller::local(app.clone(), Some(user_principal("u2", "Аня", Role::Member, None)));
 
-        let body =
-            CreateBody {
-                id: "hello".into(), kind: Some("plugin".into()), title: Some("Привет".into()), openapi: None
-            };
-        assert!(create(State(app.clone()), member(), Body(CreateBody { id: "x".into(), ..CreateBody::default() }))
-            .await
-            .is_err());
-        let made = create(State(app.clone()), admin(), Body(body)).await.unwrap().1;
+        let body = |id: Option<&str>| CreateBody {
+            id: id.map(str::to_string),
+            kind: Some("plugin".into()),
+            title: Some("Привет".into()),
+            openapi: None,
+        };
+        assert!(create(State(app.clone()), member(), Body(CreateBody::default())).await.is_err());
+        // A new draft's id is random: the workshop gives one, a readable one is refused.
+        let Err(readable) = create(State(app.clone()), admin(), Body(body(Some("greeter")))).await else {
+            panic!("a readable id is refused")
+        };
+        assert!(readable.errors.as_ref().is_some_and(|errors| errors.get("id").is_some()), "{}", readable.message);
+        let given = create(State(app.clone()), admin(), Body(body(None))).await.unwrap().1;
+        assert!(crate::plugins::manifest::random_id(&given.id), "{}", given.id);
+        app.workshop.delete(&given.id).unwrap();
+        let made = create(State(app.clone()), admin(), Body(body(Some(HELLO)))).await.unwrap().1;
+        assert_eq!(made.id, HELLO);
         assert!(made.files.iter().any(|file| file.path == "backend.js"));
-        let checked = check(State(app.clone()), admin(), Path("hello".into())).await.unwrap().1;
+        let checked = check(State(app.clone()), admin(), Path(HELLO.into())).await.unwrap().1;
         assert!(checked.ok, "{checked:?}");
         let tried = phrase(
             State(app.clone()),
             admin(),
-            Path("hello".into()),
+            Path(HELLO.into()),
             Body(PhraseBody { text: "Скажи привет Маша".into(), example: false, settings: Map::new() }),
         )
         .await
@@ -970,7 +983,7 @@ mod tests {
         let asked = install(
             State(app.clone()),
             admin(),
-            Path("hello".into()),
+            Path(HELLO.into()),
             Body(InstallBody { approve: false, ..InstallBody::default() }),
         )
         .await
@@ -980,7 +993,7 @@ mod tests {
         let done = install(
             State(app.clone()),
             admin(),
-            Path("hello".into()),
+            Path(HELLO.into()),
             Body(InstallBody { approve: true, ..InstallBody::default() }),
         )
         .await
@@ -988,28 +1001,29 @@ mod tests {
         .1;
         assert!(done.installed, "{}", done.message);
         assert_eq!(done.version.as_deref(), Some("0.1.0"));
-        assert!(app.plugins.is_active("hello"));
+        assert!(app.plugins.is_active(HELLO));
         // The same version again is the next patch; nothing new asked of the admin.
         let again = install(
             State(app.clone()),
             admin(),
-            Path("hello".into()),
+            Path(HELLO.into()),
             Body(InstallBody { approve: false, ..InstallBody::default() }),
         )
         .await
         .unwrap()
         .1;
         assert_eq!((again.installed, again.version.as_deref()), (true, Some("0.1.1")));
-        assert!(app.workshop.journal("hello").iter().any(|line| line.message.contains("0.1.1")));
+        assert!(app.workshop.journal(HELLO).iter().any(|line| line.message.contains("0.1.1")));
         // A new draft under the installed plugin's id would be its next version: refused with the way out.
-        app.workshop.delete("hello").unwrap();
-        let taken = app.workshop.create("hello", Some("plugin"), None, None).unwrap_err();
+        app.workshop.delete(HELLO).unwrap();
+        let taken = app.workshop.create(HELLO, Some("plugin"), None, None).unwrap_err();
         assert!(
-            taken.message.contains("id «hello» уже занят") && taken.message.contains("Открыть в мастерской"),
+            taken.message.contains(&format!("id «{HELLO}» уже занят"))
+                && taken.message.contains("Открыть в мастерской"),
             "{}",
             taken.message
         );
-        assert!(app.workshop.create("hello", None, None, None).is_ok(), "opening the own plugin itself still works");
+        assert!(app.workshop.create(HELLO, None, None, None).is_ok(), "opening the own plugin itself still works");
 
         // The workshop as an MCP server.
         let listed = mcp(State(app.clone()), admin(), Body(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})))
@@ -1017,7 +1031,7 @@ mod tests {
             .unwrap();
         let listed: Value = serde_json::from_slice(&listed.into_body().collect().await.unwrap().to_bytes()).unwrap();
         assert!(listed["result"]["tools"].as_array().unwrap().iter().any(|tool| tool["name"] == "try_phrase"));
-        let call = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "read_file", "arguments": {"draft": "hello", "path": "manifest.json"}}});
+        let call = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "read_file", "arguments": {"draft": HELLO, "path": "manifest.json"}}});
         let answer = mcp(State(app.clone()), admin(), Body(call)).await.unwrap();
         let answer: Value = serde_json::from_slice(&answer.into_body().collect().await.unwrap().to_bytes()).unwrap();
         assert!(answer["result"]["content"][0]["text"].as_str().unwrap().contains("\"0.1.1\""), "{answer}");

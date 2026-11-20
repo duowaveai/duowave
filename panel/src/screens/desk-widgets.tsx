@@ -11,6 +11,7 @@ import { CAPABILITY_TITLES } from '../capabilities';
 import { SETTLE_MS, usePoll } from '../poll';
 import { useSettledVersion } from '../shell/agent-plaque';
 import { usePanel } from '../shell/context';
+import { stationOfferOf, stationUpdateStep } from '../station-update';
 import { timeAgo } from '../time';
 import { useWidgetEmpty } from '../ui/widget';
 import { VIA } from '../via';
@@ -231,7 +232,8 @@ export function useStationOffer(on: boolean): string | null {
     }, [on]);
     if (!on || !can('system.update')) return null;
     const station = stationOf(placement, panel.current?.device);
-    return station?.update && !station.live.updating ? station.update : null;
+    // Выпуск новее компьютера — тоже новая версия для колонки: её получат через компьютер (owner 20.11).
+    return station && !station.live.updating ? stationOfferOf(stationUpdateStep(station)) : null;
 }
 
 /** Какая-нибудь колонка сейчас обновляется с этого компьютера. */
@@ -281,6 +283,7 @@ export function Watch({ onOpen, opened = false }: { onOpen?: () => void; opened?
     const memory = health?.memory;
     const mayManage = can('stations.manage');
     const updating = station.live.updating;
+    const step = stationUpdateStep(station);
     const act = (what: string, run: () => Promise<unknown>, done?: string) => {
         setBusy(what);
         setNote(null);
@@ -301,7 +304,15 @@ export function Watch({ onOpen, opened = false }: { onOpen?: () => void; opened?
                 </div>
                 <div class="w-row">
                     <span class="w-text">{tr.desk.updates}</span>
-                    <span class="w-cap">{station.update ? tr.desk.updateAvailable(station.update) : tr.desk.latest(station.version ?? '—')}</span>
+                    <span class="w-cap">
+                        {step?.kind === 'stationAhead'
+                            ? tr.desk.newerThanComputer(step.station)
+                            : stationOfferOf(step)
+                              ? tr.desk.updateAvailable(stationOfferOf(step) ?? '')
+                              : step?.kind === 'follows'
+                                ? tr.desk.updateAvailable(step.version)
+                                : tr.desk.latest(station.version ?? '—')}
+                    </span>
                 </div>
                 <div class="w-row">
                     <span class="w-text">{tr.desk.safety}</span>
@@ -319,14 +330,24 @@ export function Watch({ onOpen, opened = false }: { onOpen?: () => void; opened?
                     {warning.text}
                 </p>
             ))}
+            {step?.kind === 'blocked' && <p class="w-cap m-0">{step.why}</p>}
+            {step?.kind === 'follows' && !updating && (
+                <p class="w-cap m-0" role="status">
+                    {tr.desk.stationFollows(step.version)}
+                </p>
+            )}
             <div class="w-actions">
-                {mayManage && station.update && (
+                {mayManage && (step?.kind === 'send' || step?.kind === 'computerFirst') && (
                     <button
                         class="w-btn w-btn-ink"
                         disabled={busy !== null || updating}
                         onClick={() => act('update', () => api.updateStationGateway(station.key))}
                     >
-                        {busy === 'update' || updating ? tr.desk.updating : tr.desk.updateTo(station.update)}
+                        {busy === 'update' || updating
+                            ? tr.desk.updating
+                            : step.kind === 'send'
+                              ? tr.desk.updateTo(step.version)
+                              : tr.desk.updateBoth(step.version)}
                     </button>
                 )}
                 <button class="w-btn" aria-expanded={onOpen ? opened : undefined} onClick={() => (onOpen ? onOpen() : panel.go('settings', 'station'))}>

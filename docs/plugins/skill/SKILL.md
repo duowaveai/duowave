@@ -25,6 +25,10 @@ description: Пишет и чинит плагины и темы шлюза DuoW
    новые права одобряет администратор в пульте — скажи ему об этом, сам не обходи.
 6. Владелец пробует голосом; ты читаешь `plugin_journal` (вызовы, ошибки, что сказала колонка) и правишь.
 
+**id пакета не меняй.** Он случайный — `p-` и 12 знаков 0–9 a–f, его выдала мастерская; имя пакета — в `title`
+(переводы — `locales`). Новый черновик через MCP — `new_draft` без `draft`: id придёт в ответе, дальше зови
+инструменты с ним. Инструмент заготовки зовётся `<id>_hello` — дай ему имя по делу.
+
 ## Пример вместо своих данных
 
 До «да» человека черновик в сеть не ходит: плитка на столе и «Примерка» запускают его в песочнице **на примере** —
@@ -102,8 +106,8 @@ Host API 1 шлюз не ставит.
 - Вызовы шлюза — `host.bus.*`, `host.files.*`, `host.http.fetch` — отвечают обещанием: всегда `await`, функция —
   `async`. Без `await` функция вернётся раньше: картинка не скачается, файл не запишется, ошибка пропадёт молча.
 - `host.bus.call(to, handle, input)` — позвать умение: `host.bus.call("system/voice", "say", { text })`,
-  `host.bus.call("system/smart-home", "act", { device, action })`, `host.bus.call("app/weather", "weather_now", {})`
-  (инструмент другого приложения — по его имени);
+  `host.bus.call("system/smart-home", "act", { device, action })`, `host.bus.call("app/p-ad07a08e06e1", "weather_now", {})`
+  (инструмент другого приложения — по его имени; адрес — `app/<id пакета>`, у встроенной «Погоды» id `p-ad07a08e06e1`);
   `host.bus.ask(to, text)` — спросить словами; `host.bus.tell(event, payload)` — рассказать новость
   (`contributes.bus.emits`); `host.bus.list()` — кого видишь и что они умеют.
 - Слушать новости — `contributes.bus.on: [{from, event, handler}]` и право `listen:` на того, кого слушаешь.
@@ -267,9 +271,10 @@ DuoWave многоязычный (справка: инструмент `docs`, �
 `host.http.fetch` (хосты из `net:`), `host.kv` (своё хранилище), `host.settings`, `host.log` / `console`,
 `host.bus` (`call`, `ask`, `tell`, `list`), `host.files` (своя папка и папки дома по связям, `download`),
 `host.i18n` (`locale`, `languages`, `t`, `pick`, `plural` — языки, выше). Больше у
-`host` ничего нет: всё вне приложения — письмо шины, и шина решает его по связям. Встроенные пакеты (`radio`,
-`weather`, `news`, `music`, `tales`, `games`, `morning`, `smart-home`, `currency`, `shopping`, `calendar`, `folders`) — живые
-примеры на Host API 2; их не правят, а делают свою копию.
+`host` ничего нет: всё вне приложения — письмо шины, и шина решает его по связям. Встроенные пакеты (`packages/`:
+`radio`, `weather`, `news`, `music`, `tales`, `games`, `morning`, `smart-home`, `currency`, `shopping`, `calendar`,
+`folders` — папки, id у них случайные, `packages/bundled.json`) — живые примеры на Host API 2; их не правят, а делают
+свою копию.
 
 ## Темы
 

@@ -17,7 +17,7 @@ use super::brain_service::{BrainView, ProviderCheck, ProviderInput, ProviderView
 use crate::app::App;
 use crate::core::identity::permissions::{CONNECTORS_MANAGE, CONNECTORS_VIEW, MODELS_MANAGE};
 use crate::core::identity::{Principal, PrincipalKind};
-use crate::oauth::SignInStart;
+use crate::oauth::{client_name, invite_code, Extra, SignInStart};
 use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Zone};
 
 pub fn routes() -> Router<Arc<App>> {
@@ -29,6 +29,7 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/api/v1/brain/providers/{id}/models", post(models))
         .route("/api/v1/brain/providers/{id}/signin", post(sign_in))
         .route("/api/v1/brain/choice", put(choose))
+        .route("/api/v1/brain/invite", put(invite))
 }
 
 /// Keys are entered by people, never by a script's key.
@@ -102,9 +103,49 @@ async fn models(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<Stri
 
 /// «Войти через …»: the service's page for the owner. The panel open on the gateway's own computer gets the browser
 /// back by itself; from another device the page shows a code to paste — a return to localhost would not reach here.
-async fn sign_in(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<SignInStart> {
+///
+/// DuoWave's takes more, all optional (an empty body is as before): `invite` — the invitation's code, kept for the
+/// sign-ins that follow until one brings a key; `client` — this device's name for the key in the account.
+async fn sign_in(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    Path(id): Path<String>,
+    Body(body): Body<SignInBody>,
+) -> ApiResult<SignInStart> {
     person(caller.permitted(CONNECTORS_MANAGE)?)?;
-    Ok(ok(app.brain.sign_in(&id, &app.oauth, caller.zone == Zone::Local)?))
+    let extra =
+        Extra { invite: invite_of(body.invite.as_deref())?, client: body.client.as_deref().and_then(client_name) };
+    Ok(ok(app.brain.sign_in(&id, &app.oauth, caller.zone == Zone::Local, extra)?))
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct SignInBody {
+    #[serde(default)]
+    invite: Option<String>,
+    #[serde(default)]
+    client: Option<String>,
+}
+
+/// An invitation's code as given: trimmed, empty as none, one that is not a code refused in words.
+fn invite_of(given: Option<&str>) -> Result<Option<String>, ApiError> {
+    match given.map(str::trim).filter(|code| !code.is_empty()) {
+        None => Ok(None),
+        Some(code) if invite_code(code) => Ok(Some(code.to_string())),
+        Some(_) => Err(ApiError::bad_request(crate::tr!("Код приглашения не похож на настоящий. Проверьте его."))),
+    }
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct InviteBody {
+    #[serde(default)]
+    code: Option<String>,
+}
+
+/// The invitation's code for DuoWave's next sign-in (`{code}`; null or empty forgets it). «Мозг» then says `invite`.
+async fn invite(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<InviteBody>) -> ApiResult<BrainView> {
+    person(caller.permitted(CONNECTORS_MANAGE)?)?;
+    app.brain.set_invite(invite_of(body.code.as_deref())?.as_deref(), caller.actor())?;
+    Ok(ok(app.brain.view()))
 }
 
 async fn choose(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<BrainView> {
@@ -153,7 +194,7 @@ mod tests {
         let (status, start) = body(view(State(app.clone()), admin(&app)).await);
         assert_eq!(status, StatusCode::OK);
         let ids: Vec<&str> = start["presets"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
-        assert_eq!(&ids[..4], &["claude", "openai", "chatgpt", "openrouter"]);
+        assert_eq!(&ids[..5], &["duowave", "claude", "openai", "chatgpt", "openrouter"]);
         assert_eq!(start["providers"], json!([]));
         assert_eq!(start["choice"], json!({"fast": null, "smart": null, "effort": "low", "autoBackup": true}));
         assert_eq!(start["status"]["source"], json!("env"));
@@ -245,7 +286,9 @@ mod tests {
     async fn signs_in_to_openrouter_back_to_this_computer_or_with_a_code_from_another_device() {
         let app = app();
         body(add(State(app.clone()), admin(&app), Body(json!({"preset": "openrouter"}))).await);
-        let (status, here) = body(sign_in(State(app.clone()), admin(&app), Path("openrouter".into())).await);
+        let (status, here) = body(
+            sign_in(State(app.clone()), admin(&app), Path("openrouter".into()), Body(SignInBody::default())).await,
+        );
         assert_eq!(status, StatusCode::OK, "{here}");
         assert_eq!(here["mode"], json!("here"));
         let url = here["url"].as_str().unwrap();
@@ -258,11 +301,63 @@ mod tests {
         // The panel on a phone: localhost there is not this computer, so the page shows a code.
         let mut phone = admin(&app);
         phone.zone = Zone::Home;
-        let (_, code) = body(sign_in(State(app.clone()), phone, Path("openrouter".into())).await);
+        let (_, code) =
+            body(sign_in(State(app.clone()), phone, Path("openrouter".into()), Body(SignInBody::default())).await);
         assert_eq!(code["mode"], json!("code"));
         let url = code["url"].as_str().unwrap();
         assert_eq!((param(url, "callback_url"), param(url, "state")), (None, None));
         assert!(param(url, "code_challenge").is_some());
+    }
+
+    #[tokio::test]
+    async fn duowaves_sign_in_carries_the_kept_invitation_and_the_device_name() {
+        let app = app();
+        body(add(State(app.clone()), admin(&app), Body(json!({"preset": "duowave"}))).await);
+        let start = |text: Value| {
+            let app = app.clone();
+            async move {
+                sign_in(
+                    State(app.clone()),
+                    admin(&app),
+                    Path("duowave".into()),
+                    Body(serde_json::from_value(text).unwrap()),
+                )
+                .await
+            }
+        };
+        let refused = start(json!({"invite": "s_<b>"})).await.err().unwrap();
+        assert_eq!(refused.message, "Код приглашения не похож на настоящий. Проверьте его.");
+
+        let started = start(json!({"invite": " s_OfxFjzLq ", "client": "Кабинет"})).await.unwrap().1;
+        assert!(started.url.starts_with("https://my.duowave.app/connect?"), "{}", started.url);
+        let param = |url: &str, name: &str| crate::oauth::tests::param(url, name);
+        assert_eq!(param(&started.url, "start").as_deref(), Some("s_OfxFjzLq"));
+        assert_eq!(param(&started.url, "client").as_deref(), Some("Кабинет"));
+        assert!(app.brain.view().invite, "kept for the sign-ins that follow");
+
+        // An empty body, as an older panel sends: the kept code still goes.
+        let again = start(json!({})).await.unwrap().1;
+        assert_eq!(param(&again.url, "start").as_deref(), Some("s_OfxFjzLq"));
+
+        // Forgotten through its own route; OpenRouter never gets it.
+        let view =
+            invite(State(app.clone()), admin(&app), Body(serde_json::from_value(json!({"code": null})).unwrap()))
+                .await
+                .unwrap();
+        assert!(!view.1.invite);
+        assert_eq!(param(&start(json!({})).await.unwrap().1.url, "start"), None);
+        app.brain.set_invite(Some("s_OfxFjzLq"), None).unwrap();
+        body(add(State(app.clone()), admin(&app), Body(json!({"preset": "openrouter"}))).await);
+        let theirs = sign_in(
+            State(app.clone()),
+            admin(&app),
+            Path("openrouter".into()),
+            Body(serde_json::from_value(json!({"invite": "s_OfxFjzLq"})).unwrap()),
+        )
+        .await
+        .unwrap()
+        .1;
+        assert_eq!((param(&theirs.url, "start"), param(&theirs.url, "client")), (None, None));
     }
 
     #[tokio::test]
@@ -271,19 +366,29 @@ mod tests {
         let app = app();
         let added = json!({"preset": "custom-openai", "baseUrl": url});
         body(add(State(app.clone()), admin(&app), Body(added)).await);
-        let (status, refused) = body(sign_in(State(app.clone()), admin(&app), Path("custom-openai".into())).await);
+        let (status, refused) = body(
+            sign_in(State(app.clone()), admin(&app), Path("custom-openai".into()), Body(SignInBody::default())).await,
+        );
         assert_eq!(
             (status, refused["message"].as_str()),
             (StatusCode::BAD_REQUEST, Some("Этот провайдер подключается только ключом."))
         );
-        let (status, _) = body(sign_in(State(app.clone()), admin(&app), Path("nobody".into())).await);
+        let (status, _) =
+            body(sign_in(State(app.clone()), admin(&app), Path("nobody".into()), Body(SignInBody::default())).await);
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(
-            body(sign_in(State(app.clone()), member(&app), Path("custom-openai".into())).await).0,
+            body(
+                sign_in(State(app.clone()), member(&app), Path("custom-openai".into()), Body(SignInBody::default()))
+                    .await
+            )
+            .0,
             StatusCode::FORBIDDEN
         );
         let key = Caller::local(app.clone(), Some(api_key_principal("k1", "script", &["*".to_string()])));
-        assert_eq!(body(sign_in(State(app.clone()), key, Path("custom-openai".into())).await).0, StatusCode::FORBIDDEN);
+        assert_eq!(
+            body(sign_in(State(app.clone()), key, Path("custom-openai".into()), Body(SignInBody::default())).await).0,
+            StatusCode::FORBIDDEN
+        );
     }
 
     #[tokio::test]

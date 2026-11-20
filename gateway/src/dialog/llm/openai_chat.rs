@@ -229,11 +229,21 @@ async fn run(
     };
     if !response.status().is_success() {
         let status = response.status().as_u16();
+        let after = super::llm_client::retry_after_secs(response.headers());
         let text = tokio::select! {
             _ = cancel.cancelled() => return Err(aborted()),
             text = response.text() => text.unwrap_or_default(),
         };
+        // DuoWave's refusals: words the owner can act on, kept for the card.
+        if let Some(cell) = &settings.duowave {
+            if let Some(refused) = super::llm_client::duowave_refusal(status, &text, after, cell) {
+                return Err(refused);
+            }
+        }
         bail!("HTTP {status}: {}", head(&text, 300));
+    }
+    if let Some(cell) = &settings.duowave {
+        cell.set(None);
     }
 
     // Server-sent events: `data: {json}` lines, then `data: [DONE]`.
@@ -410,6 +420,7 @@ pub(crate) mod tests {
             tokens_field: TokensField::MaxTokens,
             access: None,
             api: crate::dialog::llm::LlmApi::Chat,
+            duowave: None,
         }
     }
 
@@ -606,5 +617,75 @@ pub(crate) mod tests {
             .unwrap_err()
             .to_string()
             .starts_with("cannot reach http://127.0.0.1:9/v1/chat/completions"));
+    }
+
+    /// A service that refuses as DuoWave's does, by the request's model: `401`, `402/quota`, `429` with `Retry-After`,
+    /// `403/model_not_in_plan`, `500`; any other model gets an answer.
+    async fn duowave_like() -> String {
+        let refusing = axum::Router::new().route(
+            "/v1/chat/completions",
+            post(|body: String| async move {
+                let model =
+                    serde_json::from_str::<Value>(&body).unwrap()["model"].as_str().unwrap_or_default().to_string();
+                let refusal = |status: u16, code: &str| {
+                    let error = format!(r#"{{"error":{{"code":"{code}","message":"x"}}}}"#);
+                    (axum::http::StatusCode::from_u16(status).unwrap(), error).into_response()
+                };
+                match model.as_str() {
+                    "revoked" => refusal(401, "unauthorized"),
+                    "ended" => refusal(402, "no_access"),
+                    "quota" => refusal(402, "quota_exhausted"),
+                    "busy" => {
+                        let error = r#"{"error":{"code":"rate_limited","message":"x"}}"#;
+                        (axum::http::StatusCode::TOO_MANY_REQUESTS, [("retry-after", "90")], error).into_response()
+                    }
+                    "model" => refusal(403, "model_not_in_plan"),
+                    "broken" => refusal(500, "internal"),
+                    _ => {
+                        let chunk = json!({"choices": [{"delta": {"content": "Да."}, "finish_reason": "stop"}]});
+                        ([(CONTENT_TYPE, "text/event-stream")], format!("data: {chunk}\n\ndata: [DONE]\n\n"))
+                            .into_response()
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, refusing).await });
+        url
+    }
+
+    #[tokio::test]
+    async fn says_duowaves_refusals_in_words_and_keeps_what_to_do_until_an_answer() {
+        use crate::dialog::llm::{AccessProblem, ProblemCell, SpokenFailure};
+        let url = duowave_like().await;
+        let cell = ProblemCell::default();
+        let llm = OpenAiChatLlm::new(LlmSettings { duowave: Some(cell.clone()), ..settings(&url) });
+        let ask = |model: &str| LlmRequest { messages: question(), model: Some(model.into()), ..LlmRequest::default() };
+        for (model, problem, words) in [
+            ("revoked", AccessProblem::Revoked, "Подключение DuoWave отключено. Подключите DuoWave заново."),
+            ("ended", AccessProblem::Ended, "Доступ к DuoWave закончился. Загляните в кабинет DuoWave."),
+            ("quota", AccessProblem::Quota, "Лимит DuoWave на эту неделю исчерпан."),
+            ("busy", AccessProblem::Busy, "Слишком много запросов к DuoWave. Попробуйте через 2 мин."),
+            ("model", AccessProblem::Model, "Этой модели нет в вашем тарифе DuoWave. Подключите DuoWave заново."),
+        ] {
+            let out: Vec<_> = llm.stream(ask(model), CancellationToken::new()).collect().await;
+            let error = out[0].as_ref().unwrap_err();
+            let spoken = error.downcast_ref::<SpokenFailure>().unwrap_or_else(|| panic!("{model}: {error}"));
+            assert_eq!(spoken.phrase, words, "{model}");
+            assert!(!error.to_string().contains("message"), "the service's own text stays out: {error}");
+            assert_eq!(cell.get(), Some(problem), "{model}");
+        }
+        // Not one of ours: the plain error, the cell as it was; an answer clears it.
+        let out: Vec<_> = llm.stream(ask("broken"), CancellationToken::new()).collect().await;
+        assert!(out[0].as_ref().unwrap_err().downcast_ref::<SpokenFailure>().is_none());
+        assert_eq!(cell.get(), Some(AccessProblem::Model));
+        let out: Vec<_> = llm.stream(ask("duowave-fast"), CancellationToken::new()).collect().await;
+        assert!(out.iter().all(Result::is_ok));
+        assert_eq!(cell.get(), None);
+        // Another provider's 401 stays as it was.
+        let plain = OpenAiChatLlm::new(settings(&url));
+        let out: Vec<_> = plain.stream(ask("revoked"), CancellationToken::new()).collect().await;
+        assert!(out[0].as_ref().unwrap_err().to_string().starts_with("HTTP 401"));
     }
 }

@@ -426,6 +426,17 @@ pub const VOICE_PENDING: SettingDefinition<VoicePending> = SettingDefinition {
     parse: |value| serde_json::from_value(value.clone()).ok(),
 };
 
+/// DuoWave's invitation code (`s_…`): sent with every DuoWave sign-in until one brings a key — the gift comes only with
+/// the person's very first sign-in at my.duowave.app, so the code must ride with it. Set by the panel; a sign-in that
+/// brought a key clears it.
+pub const DUOWAVE_INVITE: SettingDefinition<String> = SettingDefinition {
+    key: "duowave_invite",
+    scope: SettingScope::Global,
+    description: "Код приглашения DuoWave",
+    sensitive: false,
+    parse: |value| value.as_str().filter(|code| crate::oauth::invite_code(code)).map(str::to_string),
+};
+
 /// The secret the panel's tokens are signed with: made at the first start, never shown.
 pub const AUTH_SECRET: SettingDefinition<String> = SettingDefinition {
     key: "panel_secret",
@@ -1050,6 +1061,28 @@ pub const STATION_PLACEMENTS: SettingDefinition<BTreeMap<String, StationPlacemen
     key: "station_placements",
     scope: SettingScope::Global,
     description: "Где работает шлюз каждой колонки",
+    sensitive: false,
+    parse: as_serde,
+};
+
+/// «Обновить компьютер и колонку до X» (owner 20.11): the computer gives a station only its own build, so a newer
+/// release goes to the computer first and the station follows once the computer runs it. Kept through the computer's
+/// restart into the new version (src/placement/watch.rs, `follow_up`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StationUpdateAfter {
+    /// The version the station is to get.
+    pub version: String,
+    /// When it was asked: an old request is dropped, not acted on days later.
+    pub at: String,
+}
+
+/// The stations to update once this computer runs the version asked for, by the station (its key, as in
+/// STATION_PLACEMENTS).
+pub const STATION_UPDATES_AFTER: SettingDefinition<BTreeMap<String, StationUpdateAfter>> = SettingDefinition {
+    key: "station_updates_after",
+    scope: SettingScope::Global,
+    description: "Колонки, которые обновятся следом за компьютером",
     sensitive: false,
     parse: as_serde,
 };

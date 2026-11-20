@@ -781,6 +781,7 @@
  "«{path}»: вне assets/ папок нет": "“{path}”: no folders outside assets/",
  "Черновика {id} нет.": "There is no draft {id}.",
  "Черновик {id} уже есть.": "The draft {id} already exists.",
+ "«{id}»: id нового черновика случайный — «p-» и 12 знаков 0–9 a–f, его выдаёт мастерская. Не называйте id, имя — в названии.": "“{id}”: a new draft's id is random — “p-” and 12 characters 0–9 a–f, and the workshop gives it. Don't name an id; the name goes in the title.",
  "id «{id}» уже занят: так зовётся {origin} пакет «{manifest}». Выберите другой id.{way}": "The id “{id}” is taken: that is the name of the {origin} package “{manifest}”. Choose another id.{way}",
  "«{id}» — {origin} пакет: его не правят, а делают свою копию («Сделать свою копию»).": "“{id}” is a {origin} package: it is not edited, you make your own copy of it (“Make your own copy”).",
  "черновик из поставленной версии {version}": "a draft from the installed version {version}",
@@ -918,5 +919,6 @@
  "Лента центра не прочиталась: {problem}": "The centre’s feed did not read: {problem}",
  "В ленте центра нет {id} {version}.": "The centre’s feed has no {id} {version}.",
  "В ленте центра нет «{id}».": "The centre’s feed has no “{id}”.",
- "Турбо не поставил его код (HTTP {status})": "The Turbo did not install its code (HTTP {status})"
+ "Турбо не поставил его код (HTTP {status})": "The Turbo did not install its code (HTTP {status})",
+ "Турбо не поставил код этой версии: {why}": "The Turbo did not install this version's code: {why}"
 }

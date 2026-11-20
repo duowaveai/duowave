@@ -2,6 +2,11 @@
 // музыку — свою из папки (system/content) или радио плагина «Радио» (его инструмент radio_play отдаёт, что играть).
 // Части идут одновременно: голосовой вызов ограничен 2 с, и не ответившая часть просто пропускается.
 
+// Адреса встроенных приложений: id у пакетов случайные (docs/plans/random-package-ids.md), имя — в их title.
+const WEATHER = "app/p-ad07a08e06e1"; // «Погода»
+const NEWS = "app/p-d530e4cef817"; // «Новости»
+const RADIO = "app/p-a2fd1d7eb8a4"; // «Радио»
+
 function greeting(timezone) {
   let hour = new Date().getUTCHours() + 3;
   try {
@@ -24,8 +29,8 @@ export async function show({ request }) {
   const wantNews = host.settings.get("news") !== false;
   const music = host.settings.get("music") ?? "своя музыка";
   const [weather, news, tracks] = await Promise.all([
-    host.bus.call("app/weather", "weather_now", { timezone: request?.timezone }).catch(() => null),
-    wantNews ? host.bus.call("app/news", "news_headlines", { limit: 2 }).catch(() => null) : null,
+    host.bus.call(WEATHER, "weather_now", { timezone: request?.timezone }).catch(() => null),
+    wantNews ? host.bus.call(NEWS, "news_headlines", { limit: 2 }).catch(() => null) : null,
     music === "своя музыка" ? host.bus.call("system/content", "music", { query: "", limit: 30 }).catch(() => []) : [],
   ]);
   const parts = [`${greeting(request?.timezone)}!`];
@@ -36,7 +41,7 @@ export async function show({ request }) {
     return { say: parts.join(" "), play: tracks };
   }
   // Без своей музыки — радио: radio_play отвечает {say, play}, и шоу включает его станции.
-  const radio = await host.bus.call("app/radio", "radio_play", { station: "хиты" }).catch(() => null);
+  const radio = await host.bus.call(RADIO, "radio_play", { station: "хиты" }).catch(() => null);
   if (Array.isArray(radio?.play) && radio.play.length > 0) {
     parts.push(`А теперь — ${radio.play[0].title}.`);
     return { say: parts.join(" "), play: radio.play };

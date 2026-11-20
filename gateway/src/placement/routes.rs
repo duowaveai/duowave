@@ -415,14 +415,17 @@ mod pc {
         Ok(created(json!({ "on": on })))
     }
 
+    /// «Обновить колонку»: `{version}` — what the station's own panel saw offered, when it asks through this computer.
     pub async fn update_station(
         State(app): State<Arc<App>>,
         caller: Caller,
         Query(pick): Query<Pick>,
+        Body(body): Body<Value>,
     ) -> ApiResult<Value> {
         caller.permitted(SYSTEM_UPDATE)?;
-        chosen(&app, &pick)?.start_update(caller.actor())?;
-        Ok(created(json!({ "updating": true })))
+        let wanted = body.get("version").and_then(Value::as_str).map(str::trim).filter(|version| !version.is_empty());
+        let started = chosen(&app, &pick)?.start_update(wanted, caller.actor()).await?;
+        Ok(created(json!({ "updating": true, "way": started.way, "version": started.version })))
     }
 
     fn station_address(app: &App, pick: &Pick) -> Result<String, ApiError> {

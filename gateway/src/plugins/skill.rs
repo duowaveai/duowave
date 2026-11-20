@@ -838,27 +838,28 @@ mod tests {
     }
 
     /// The repository's built-in package, as the build lays it out.
-    fn built_in(root: &std::path::Path, id: &str) {
-        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages").join(id);
+    /// The built-in in `packages/<folder>` laid out under its id (a random one); its id.
+    fn built_in(root: &std::path::Path, folder: &str) -> String {
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages").join(folder);
         let manifest: Value =
             serde_json::from_str(&std::fs::read_to_string(source.join("manifest.json")).unwrap()).unwrap();
-        let target = root.join(id).join(manifest["version"].as_str().unwrap());
+        let id = manifest["id"].as_str().unwrap().to_string();
+        let target = root.join(&id).join(manifest["version"].as_str().unwrap());
         std::fs::create_dir_all(&target).unwrap();
         for file in ["manifest.json", "backend.js"] {
             std::fs::copy(source.join(file), target.join(file)).unwrap();
         }
+        id
     }
 
-    /// A host with the repository's built-in packages `ids`, on, over these services.
+    /// A host with the repository's built-in packages of `folders`, on, over these services.
     async fn built_in_host(
         dir: &std::path::Path,
-        ids: &[&str],
+        folders: &[&str],
         services: Arc<dyn crate::plugins::host_api::HostServices>,
     ) -> Arc<PluginHost> {
         let packages = dir.join("packages");
-        for id in ids {
-            built_in(&packages, id);
-        }
+        let ids: Vec<String> = folders.iter().map(|folder| built_in(&packages, folder)).collect();
         let db = Arc::new(Db::memory());
         let events = EventBus::new();
         let host = PluginHost::new(PluginsDeps {
@@ -897,7 +898,7 @@ mod tests {
                 crate::secrets::SecretsService::new(Arc::new(crate::storage::Db::memory()), None).unwrap(),
             ),
         });
-        for id in ids {
+        for id in &ids {
             host.enable(id, None).await.unwrap();
         }
         host
@@ -971,7 +972,8 @@ mod tests {
         );
     }
 
-    /// The other plugins' tools for the morning show: the weather, the news, and the radio that answers what to play.
+    /// The other plugins' tools for the morning show: the weather, the news, and the radio that answers what to play —
+    /// the built-ins by their random ids (packages/bundled.json).
     struct Morning;
 
     impl crate::plugins::host_api::HostServices for Morning {
@@ -986,13 +988,15 @@ mod tests {
             input: Value,
             _: Option<crate::bus::Trail>,
         ) -> Option<futures::future::BoxFuture<'static, Result<Value, String>>> {
-            assert_eq!((caller, name), ("morning", "bus.call"));
+            assert_eq!((caller, name), ("p-53cd409ecea7", "bus.call"), "the built-in «Утреннее шоу»");
             let to = input["to"].as_str().unwrap_or_default().to_string();
             let handle = input["handle"].as_str().unwrap_or_default().to_string();
             let answer = match (to.as_str(), handle.as_str()) {
-                ("app/weather", "weather_now") => Ok(json!("Сейчас +5, облачно. Ветер слабый. Завтра теплее.")),
-                ("app/news", "news_headlines") => Ok(json!("Открыли новый мост. Завтра концерт. Ещё новость.")),
-                ("app/radio", "radio_play") => Ok(
+                ("app/p-ad07a08e06e1", "weather_now") => Ok(json!("Сейчас +5, облачно. Ветер слабый. Завтра теплее.")),
+                ("app/p-d530e4cef817", "news_headlines") => {
+                    Ok(json!("Открыли новый мост. Завтра концерт. Ещё новость."))
+                }
+                ("app/p-a2fd1d7eb8a4", "radio_play") => Ok(
                     json!({ "say": "Включаю Хит FM", "play": [{ "id": "hitfm", "title": "Хит FM", "url": "https://hitfm.hostingradio.ru/hitfm128.mp3" }] }),
                 ),
                 _ => Err(format!("нет такого: {to}")),

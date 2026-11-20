@@ -52,7 +52,7 @@ pub const STATION_ALL_MAX: u64 = 5 * 1024 * 1024;
 /// An app's own folder on a computer when its manifest names no other.
 pub const APP_FOLDER_MB: u64 = 64;
 /// The built-in app that walks the home folder by voice (packages/folders): it asks about a drive plugged in.
-pub const FOLDERS_APP: &str = "folders";
+pub const FOLDERS_APP: &str = "p-e99d4491bc27";
 /// A folder's list: a page of this many entries, and at most.
 pub const PAGE: usize = 200;
 pub const PAGE_MOST: usize = 500;

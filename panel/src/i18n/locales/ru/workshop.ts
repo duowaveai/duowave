@@ -26,7 +26,6 @@ export default {
     fromApiTitle: 'Плагин из описания API',
     quizTitle: 'Викторина на время: 10 секунд на ответ, «Время вышло!»',
     newPlugin: 'Новый плагин',
-    idLabel: 'id — латиница, цифры, «-»',
     nameLabel: 'Название',
     openapiLabel: 'Описание API (OpenAPI) в JSON',
     create: 'Создать',

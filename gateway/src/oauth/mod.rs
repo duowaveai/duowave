@@ -86,8 +86,11 @@ pub enum Flow {
     /// A code exchanged for a long-lived key of the owner's, as OpenRouter's PKCE does it
     /// (https://openrouter.ai/docs/use-cases/oauth-pkce): `authorize` takes `callback_url` and `state` — or neither,
     /// and the page shows the code — with `code_challenge`; `exchange` takes the code with the verifier and answers
-    /// `{"key": …}`. Nothing to renew: the key lives until the owner deletes it in the account.
-    KeyExchange { authorize: &'static str, exchange: &'static str },
+    /// `{"key": …}`. Nothing to renew: the key lives until the owner deletes it in the account. A service may answer
+    /// more than the key (`KeyGrant`: its address, models, the profiles to set, the access): DuoWave's own does.
+    /// `extras`: the page also takes `start` (an invitation's code) and `client` (this device's name) — only a service
+    /// of ours gets them, never another's.
+    KeyExchange { authorize: &'static str, exchange: &'static str, extras: bool },
     /// OAuth 2.0 with PKCE and tokens kept and renewed (tokens.rs): ChatGPT's plan.
     Tokens(&'static TokenFlow),
 }
@@ -128,10 +131,157 @@ pub fn record_id(provider: &str) -> String {
 
 /// What a sign-in brought, for whoever began it to keep among its secrets. No Debug: it would print the value.
 pub enum Credential {
-    /// A key, kept as a pasted one would be.
-    Key(String),
+    /// A key, kept as a pasted one would be, with what else the service gave.
+    Key(KeyGrant),
     /// Tokens, kept on this gateway and renewed (tokens.rs).
     Tokens(TokenRecord),
+}
+
+/// A key's exchange answered: the key, and — from a service that gives them (DuoWave's) — its address, the models of
+/// the plan, the models for the profiles and the access. Absent or null fields are None: «leave what is chosen».
+/// No Debug: it holds the key.
+#[derive(Clone, Default)]
+pub struct KeyGrant {
+    pub key: String,
+    /// Replaces the preset's address: only `https`, and only in the exchange's own domain (`trusted_base`).
+    pub base_url: Option<String>,
+    /// The plan's models by their ids; empty — none given (or no access now).
+    pub models: Vec<String>,
+    pub fast: Option<String>,
+    pub smart: Option<String>,
+    pub access: Option<GrantAccess>,
+}
+
+/// The access a service says the key has: active or not, the plan's name, until when.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GrantAccess {
+    pub active: bool,
+    pub plan: Option<String>,
+    /// ISO 8601, as the service wrote it.
+    pub ends_at: Option<String>,
+}
+
+/// What a sign-in's page takes beyond the flow's own: an invitation's code and this device's name. Sent only to a
+/// service whose flow says it takes them (`extras`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Extra {
+    pub invite: Option<String>,
+    pub client: Option<String>,
+}
+
+/// The longest device name the page takes.
+pub const CLIENT_MAX: usize = 40;
+
+/// An invitation's code as the page takes it: letters, digits, `_` and `-`, up to 64.
+pub fn invite_code(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= 64
+        && text.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
+/// A device's name for the page: no control characters, the spaces trimmed, at most `CLIENT_MAX` characters.
+pub fn client_name(text: &str) -> Option<String> {
+    let clean: String = text.chars().filter(|c| !c.is_control()).collect();
+    let name: String = clean.trim().chars().take(CLIENT_MAX).collect();
+    Some(name.trim().to_string()).filter(|name| !name.is_empty())
+}
+
+/// An address a key's service gives for its models: `https` only, in the exchange's own domain (the exchange at
+/// `api.duowave.dev` → `*.duowave.dev`), without a login or a fragment. A forged answer does not send the key to
+/// another host.
+fn trusted_base(exchange: &str, given: &str) -> Option<String> {
+    let exchange = url::Url::parse(exchange).ok()?;
+    let given = url::Url::parse(given.trim()).ok()?;
+    if given.scheme() != "https"
+        || !given.username().is_empty()
+        || given.password().is_some()
+        || given.fragment().is_some()
+    {
+        return None;
+    }
+    let host = exchange.host_str()?.to_ascii_lowercase();
+    let labels: Vec<&str> = host.split('.').collect();
+    let domain = if labels.len() > 2 { labels[1..].join(".") } else { host.clone() };
+    let theirs = given.host_str()?.to_ascii_lowercase();
+    (theirs == domain || theirs.ends_with(&format!(".{domain}")))
+        .then(|| given.as_str().trim_end_matches('/').to_string())
+}
+
+/// A text field of an answer: trimmed, not empty, at most `max` characters.
+fn short(value: Option<&Value>, max: usize) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| text.chars().take(max).collect())
+}
+
+/// A model's id from an answer: what may go to the service as it is.
+fn model_id(value: Option<&Value>) -> Option<String> {
+    value.and_then(Value::as_str).map(str::trim).filter(|id| plain_token(id, 200)).map(str::to_string)
+}
+
+impl KeyGrant {
+    /// The answer of a key's exchange; None without a key fit to send.
+    fn of(answer: &Value, exchange: &str, with: &str) -> Option<KeyGrant> {
+        let key = answer.get("key").and_then(Value::as_str).map(str::trim).filter(|key| plain_token(key, 512))?;
+        let base_url = match answer.get("base_url").and_then(Value::as_str) {
+            Some(given) => {
+                let trusted = trusted_base(exchange, given);
+                if trusted.is_none() {
+                    tracing::warn!(target: "oauth", "{with}: the exchange gave an address outside its domain; the preset's stays");
+                }
+                trusted
+            }
+            None => None,
+        };
+        let models = answer
+            .get("models")
+            .and_then(Value::as_array)
+            .map(|models| {
+                let mut ids: Vec<String> = Vec::new();
+                for model in models.iter().take(200) {
+                    if let Some(id) = model_id(model.get("name")).filter(|id| !ids.contains(id)) {
+                        ids.push(id);
+                    }
+                }
+                ids
+            })
+            .unwrap_or_default();
+        let defaults = answer.get("defaults");
+        let access = answer.get("access").filter(|access| access.is_object()).map(|access| GrantAccess {
+            active: access.get("active").and_then(Value::as_bool).unwrap_or(false),
+            plan: short(access.get("plan_title"), 80),
+            ends_at: short(access.get("ends_at"), 40).filter(|at| chrono::DateTime::parse_from_rfc3339(at).is_ok()),
+        });
+        Some(KeyGrant {
+            key: key.to_string(),
+            base_url,
+            models,
+            fast: model_id(defaults.and_then(|defaults| defaults.get("fast_model"))),
+            smart: model_id(defaults.and_then(|defaults| defaults.get("smart_model"))),
+            access,
+        })
+    }
+}
+
+/// A key's exchange the service refused, in our words: its code expired or used (`INVALID_CODE`), too many keys
+/// (`KEY_LIMIT`), the service busy for a moment (`SERVICE_BUSY`, 503: it keeps the code two more minutes, a new
+/// press in a minute goes through); anything else — it did not confirm. «Нажмите ещё раз» names no button: the panel
+/// has several («Подключить DuoWave», «Получить неделю бесплатно», «войти заново»).
+fn exchange_refused(with: &str, error: &CallError) -> ApiError {
+    match error.code.as_deref() {
+        Some("INVALID_CODE") => ApiError::bad_request(crate::tr!("Ссылка устарела. Нажмите ещё раз.")),
+        Some("SERVICE_BUSY") => ApiError::new(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            crate::tr!("Сервис {with} сейчас занят. Нажмите ещё раз через минуту.", with = with),
+        ),
+        Some("KEY_LIMIT") => ApiError::conflict(crate::tr!(
+            "У вас слишком много ключей. Удалите лишний в кабинете {with} и подключите снова.",
+            with = with
+        )),
+        _ => refused(with),
+    }
 }
 
 /// What a return brought: the code, and the client a service names when it registered one on the fly.
@@ -159,10 +309,22 @@ pub enum SignInStatus {
     Waiting,
     /// The code is being exchanged.
     Working,
-    /// Signed in: the title of who began it («OpenRouter»).
-    Done { title: String },
+    /// Signed in: the title of who began it («OpenRouter»), and a line when something is left to do.
+    Done {
+        title: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
     /// It did not work: why, in words.
     Failed { message: String },
+}
+
+/// How a sign-in ended for who began it: its title, and a line when something is left to do («доступа пока нет»).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Delivered {
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 struct Entry {
@@ -337,12 +499,12 @@ impl OAuthService {
 
     /// Begins a sign-in: the service's page for the owner, and the id the return finds it by. `here`: the panel is
     /// open on this computer, so the browser's return reaches the gateway.
-    pub fn start(&self, sign_in: &SignIn, target: Target, here: bool) -> Result<SignInStart, ApiError> {
+    pub fn start(&self, sign_in: &SignIn, target: Target, here: bool, extra: &Extra) -> Result<SignInStart, ApiError> {
         let id = random_hex(16);
         let verifier = verifier();
         let nonce = random_hex(16);
         let (url, mode, redirect, client) = match sign_in.flow {
-            Flow::KeyExchange { authorize, .. } => {
+            Flow::KeyExchange { authorize, extras, .. } => {
                 let mut url = url::Url::parse(authorize).expect("a flow's address is a URL");
                 {
                     let mut query = url.query_pairs_mut();
@@ -353,6 +515,14 @@ impl OAuthService {
                     query.append_pair("code_challenge", &challenge(&verifier));
                     query.append_pair("code_challenge_method", "S256");
                     query.append_pair("key_label", APP_NAME);
+                    if extras {
+                        if let Some(invite) = extra.invite.as_deref().filter(|code| invite_code(code)) {
+                            query.append_pair("start", invite);
+                        }
+                        if let Some(client) = extra.client.as_deref().and_then(client_name) {
+                            query.append_pair("client", &client);
+                        }
+                    }
                 }
                 (url.to_string(), if here { Return::Here } else { Return::Code }, String::new(), String::new())
             }
@@ -454,10 +624,10 @@ impl OAuthService {
     }
 
     /// How a taken sign-in ended: the title of who got it, or why not.
-    pub fn settle(&self, id: &str, outcome: &Result<String, ApiError>) {
+    pub fn settle(&self, id: &str, outcome: &Result<Delivered, ApiError>) {
         if let Some(entry) = self.lock().get_mut(id) {
             entry.status = match outcome {
-                Ok(title) => SignInStatus::Done { title: title.clone() },
+                Ok(done) => SignInStatus::Done { title: done.title.clone(), note: done.note.clone() },
                 Err(error) => SignInStatus::Failed { message: error.message.clone() },
             };
         }
@@ -473,10 +643,10 @@ impl OAuthService {
                 let client = http_client().map_err(|_| refused(taken.with))?;
                 let answer = call(client.post(exchange).json(&body)).await.map_err(|error| {
                     tracing::warn!(target: "oauth", "{}: the exchange did not go through: {error}", taken.with);
-                    refused(taken.with)
+                    exchange_refused(taken.with, &error)
                 })?;
-                match answer.get("key").and_then(Value::as_str).map(str::trim).filter(|key| plain_token(key, 512)) {
-                    Some(key) => Ok(Credential::Key(key.to_string())),
+                match KeyGrant::of(&answer, exchange, taken.with) {
+                    Some(grant) => Ok(Credential::Key(grant)),
                     None => {
                         tracing::warn!(target: "oauth", "{}: the exchange gave no key", taken.with);
                         Err(refused(taken.with))
@@ -541,6 +711,8 @@ pub(crate) mod tests {
     pub(crate) struct Service {
         pub challenge: Arc<Mutex<Option<String>>>,
         pub exchanges: Arc<Mutex<Vec<Value>>>,
+        /// The answer to a good code in place of OpenRouter's (DuoWave's, with more than the key).
+        pub answer: Arc<Mutex<Option<Value>>>,
     }
 
     pub(crate) const SERVICE_KEY: &str = "sk-or-v1-signed-in-key-5678";
@@ -549,10 +721,22 @@ pub(crate) mod tests {
         service.exchanges.lock().unwrap().push(body.clone());
         let verifier = body["code_verifier"].as_str().unwrap_or_default();
         let expected = service.challenge.lock().unwrap().clone();
+        if body["code"] == json!("old-code") {
+            return (StatusCode::BAD_REQUEST, r#"{"error":{"code":"INVALID_CODE","message":"expired"}}"#)
+                .into_response();
+        }
+        if body["code"] == json!("busy-code") {
+            return (StatusCode::SERVICE_UNAVAILABLE, r#"{"error":{"code":"SERVICE_BUSY","message":"busy"}}"#)
+                .into_response();
+        }
+        if body["code"] == json!("many-keys") {
+            return (StatusCode::CONFLICT, r#"{"error":{"code":"KEY_LIMIT","message":"five keys"}}"#).into_response();
+        }
         if body["code"] != json!("good-code") || Some(challenge(verifier)) != expected {
             return (StatusCode::FORBIDDEN, r#"{"error":{"message":"Invalid code or code_verifier"}}"#).into_response();
         }
-        Json(json!({ "key": SERVICE_KEY, "user_id": "user_1" })).into_response()
+        let answer = service.answer.lock().unwrap().clone();
+        Json(answer.unwrap_or_else(|| json!({ "key": SERVICE_KEY, "user_id": "user_1" }))).into_response()
     }
 
     /// The service on a free port, and its sign-in as a preset would name it.
@@ -566,6 +750,7 @@ pub(crate) mod tests {
         let flow = Flow::KeyExchange {
             authorize: Box::leak(format!("{base}/auth").into_boxed_str()),
             exchange: Box::leak(format!("{base}/api/v1/auth/keys").into_boxed_str()),
+            extras: true,
         };
         (service, SignIn { with: "Fake", label: None, flow })
     }
@@ -616,9 +801,10 @@ pub(crate) mod tests {
             flow: Flow::KeyExchange {
                 authorize: "https://openrouter.ai/auth",
                 exchange: "https://openrouter.ai/api/v1/auth/keys",
+                extras: false,
             },
         };
-        let here = engine.start(&sign_in, provider(), true).unwrap();
+        let here = engine.start(&sign_in, provider(), true, &Extra::default()).unwrap();
         assert!(here.url.starts_with("https://openrouter.ai/auth?"), "{}", here.url);
         assert_eq!(param(&here.url, "callback_url").as_deref(), Some("http://localhost:7780/api/v1/oauth/callback"));
         assert_eq!(param(&here.url, "state"), Some(here.id.clone()));
@@ -627,7 +813,7 @@ pub(crate) mod tests {
         assert_eq!(param(&here.url, "key_label").as_deref(), Some("DuoWave"));
         assert_eq!((here.id.len(), here.mode), (32, Return::Here));
 
-        let code = engine.start(&sign_in, provider(), false).unwrap();
+        let code = engine.start(&sign_in, provider(), false, &Extra::default()).unwrap();
         assert_eq!((param(&code.url, "callback_url"), param(&code.url, "state")), (None, None));
         assert!(param(&code.url, "code_challenge").is_some());
         assert_ne!(code.id, here.id);
@@ -640,19 +826,21 @@ pub(crate) mod tests {
     async fn exchanges_the_code_once_with_the_verifier_of_its_challenge() {
         let (service, sign_in) = service().await;
         let (engine, _) = engine();
-        let started = engine.start(&sign_in, provider(), false).unwrap();
+        let started = engine.start(&sign_in, provider(), false, &Extra::default()).unwrap();
         shown(&service, &started.url);
 
         let taken = engine.take(&started.id).unwrap();
         assert_eq!(engine.status(&started.id), Some(SignInStatus::Working));
         assert_eq!(engine.take(&started.id).err().unwrap().message, "Вход уже завершается — подождите.");
         let given = Given { code: "good-code".into(), client_id: None };
-        let Ok(Credential::Key(key)) = engine.exchange(&taken, &given).await else { panic!("a key") };
-        assert_eq!(key, SERVICE_KEY);
+        let Ok(Credential::Key(grant)) = engine.exchange(&taken, &given).await else { panic!("a key") };
+        assert_eq!(grant.key, SERVICE_KEY);
+        // OpenRouter answers the key only: nothing else to apply.
+        assert!(grant.base_url.is_none() && grant.models.is_empty() && grant.fast.is_none() && grant.access.is_none());
         let sent = service.exchanges.lock().unwrap()[0].clone();
         assert_eq!(sent["code_challenge_method"], json!("S256"));
-        engine.settle(&started.id, &Ok("OpenRouter".into()));
-        assert_eq!(engine.status(&started.id), Some(SignInStatus::Done { title: "OpenRouter".into() }));
+        engine.settle(&started.id, &Ok(Delivered { title: "OpenRouter".into(), note: None }));
+        assert_eq!(engine.status(&started.id), Some(SignInStatus::Done { title: "OpenRouter".into(), note: None }));
         assert_eq!(engine.take(&started.id).err().unwrap().message, "Вход уже выполнен.");
         assert!(engine.take("forged").err().unwrap().message.contains("устарел"));
     }
@@ -661,7 +849,7 @@ pub(crate) mod tests {
     async fn a_code_the_service_refuses_brings_nothing_and_the_owner_reads_why_in_our_words() {
         let (service, sign_in) = service().await;
         let (engine, _) = engine();
-        let started = engine.start(&sign_in, provider(), true).unwrap();
+        let started = engine.start(&sign_in, provider(), true, &Extra::default()).unwrap();
         shown(&service, &started.url);
         let taken = engine.take(&started.id).unwrap();
         let given = Given { code: "stolen-code".into(), client_id: None };
@@ -683,6 +871,130 @@ pub(crate) mod tests {
         assert!(!plain_token(&"x".repeat(513), 512));
     }
 
+    /// DuoWave's answer to a good code (app-connect.md).
+    pub(crate) fn duowave_answer() -> Value {
+        json!({
+            "key": "dw-test-key-1234",
+            "key_id": "6b1c",
+            "base_url": "https://api.duowave.dev/v1",
+            "anthropic_base_url": "https://api.duowave.dev",
+            "models": [
+                { "name": "duowave-smart", "title": "DuoWave Smart", "context_window": 200000,
+                  "capabilities": { "tools": true, "vision": false, "reasoning": true } },
+                { "name": "duowave-fast", "title": "DuoWave Fast" },
+                { "name": "two words" },
+                { "title": "no name" }
+            ],
+            "defaults": { "fast_model": "duowave-fast", "smart_model": "duowave-smart" },
+            "access": { "active": true, "tier": "trial", "plan_title": "Пробная неделя", "ends_at": "2026-11-27T01:15:00.000Z" }
+        })
+    }
+
+    #[test]
+    fn the_invitation_and_the_device_go_only_to_a_service_that_takes_them() {
+        let (engine, _) = engine();
+        let ours = SignIn {
+            with: "DuoWave",
+            label: None,
+            flow: Flow::KeyExchange {
+                authorize: "https://my.duowave.app/connect",
+                exchange: "https://api.duowave.dev/v1/auth/keys",
+                extras: true,
+            },
+        };
+        let extra = Extra { invite: Some("s_OfxFjzLq".into()), client: Some("  Mac\u{7}Book Pro  ".into()) };
+        let started = engine.start(&ours, provider(), true, &extra).unwrap();
+        assert_eq!(param(&started.url, "start").as_deref(), Some("s_OfxFjzLq"));
+        assert_eq!(param(&started.url, "client").as_deref(), Some("MacBook Pro"));
+        assert!(param(&started.url, "callback_url").is_some());
+
+        // A code that is not one, a name too long: the code stays out, the name is cut.
+        let odd = Extra { invite: Some("s_<script>".into()), client: Some("x".repeat(60)) };
+        let started = engine.start(&ours, provider(), false, &odd).unwrap();
+        assert_eq!(param(&started.url, "start"), None);
+        assert_eq!(param(&started.url, "client").map(|name| name.len()), Some(CLIENT_MAX));
+
+        // Another's service never learns the invitation.
+        let theirs = SignIn {
+            with: "OpenRouter",
+            label: None,
+            flow: Flow::KeyExchange {
+                authorize: "https://openrouter.ai/auth",
+                exchange: "https://openrouter.ai/api/v1/auth/keys",
+                extras: false,
+            },
+        };
+        let started = engine.start(&theirs, provider(), true, &extra).unwrap();
+        assert_eq!((param(&started.url, "start"), param(&started.url, "client")), (None, None));
+    }
+
+    #[test]
+    fn takes_an_address_only_in_the_exchanges_domain_and_over_https() {
+        let exchange = "https://api.duowave.dev/v1/auth/keys";
+        assert_eq!(
+            trusted_base(exchange, "https://api.duowave.dev/v1/").as_deref(),
+            Some("https://api.duowave.dev/v1")
+        );
+        assert_eq!(
+            trusted_base(exchange, "https://eu.api.duowave.dev/v1").as_deref(),
+            Some("https://eu.api.duowave.dev/v1")
+        );
+        assert_eq!(trusted_base(exchange, "https://duowave.dev/v1").as_deref(), Some("https://duowave.dev/v1"));
+        assert_eq!(trusted_base(exchange, "http://api.duowave.dev/v1"), None);
+        assert_eq!(trusted_base(exchange, "https://evil.example/v1"), None);
+        assert_eq!(trusted_base(exchange, "https://duowave.dev.evil.example/v1"), None);
+        assert_eq!(trusted_base(exchange, "https://user:pw@api.duowave.dev/v1"), None);
+        assert_eq!(trusted_base(exchange, "not an address"), None);
+        assert!(invite_code("s_OfxFjzLq") && invite_code("a-b_9") && !invite_code("") && !invite_code("s x"));
+        assert!(!invite_code(&"a".repeat(65)));
+    }
+
+    #[test]
+    fn reads_duowaves_answer_and_leaves_what_it_does_not_name() {
+        let exchange = "https://api.duowave.dev/v1/auth/keys";
+        let grant = KeyGrant::of(&duowave_answer(), exchange, "DuoWave").unwrap();
+        assert_eq!(grant.key, "dw-test-key-1234");
+        assert_eq!(grant.base_url.as_deref(), Some("https://api.duowave.dev/v1"));
+        assert_eq!(grant.models, ["duowave-smart", "duowave-fast"]);
+        assert_eq!((grant.fast.as_deref(), grant.smart.as_deref()), (Some("duowave-fast"), Some("duowave-smart")));
+        assert_eq!(
+            grant.access,
+            Some(GrantAccess {
+                active: true,
+                plan: Some("Пробная неделя".into()),
+                ends_at: Some("2026-11-27T01:15:00.000Z".into())
+            })
+        );
+
+        let mut answer = duowave_answer();
+        answer["defaults"] = json!({ "fast_model": null });
+        answer["models"] = json!([]);
+        answer["access"] = json!({ "active": false, "ends_at": "soon" });
+        answer["base_url"] = json!("https://elsewhere.example/v1");
+        let grant = KeyGrant::of(&answer, exchange, "DuoWave").unwrap();
+        assert_eq!((grant.fast, grant.smart), (None, None));
+        assert!(grant.models.is_empty() && grant.base_url.is_none());
+        assert_eq!(grant.access, Some(GrantAccess { active: false, plan: None, ends_at: None }));
+        assert!(KeyGrant::of(&json!({ "key": "two words" }), exchange, "DuoWave").is_none());
+    }
+
+    #[tokio::test]
+    async fn an_old_code_or_too_many_keys_is_said_in_our_words() {
+        let (service, sign_in) = service().await;
+        let (engine, _) = engine();
+        for (code, words) in [
+            ("old-code", "Ссылка устарела. Нажмите ещё раз."),
+            ("busy-code", "Сервис Fake сейчас занят. Нажмите ещё раз через минуту."),
+            ("many-keys", "У вас слишком много ключей. Удалите лишний в кабинете Fake и подключите снова."),
+        ] {
+            let started = engine.start(&sign_in, provider(), false, &Extra::default()).unwrap();
+            shown(&service, &started.url);
+            let taken = engine.take(&started.id).unwrap();
+            let refused = engine.exchange(&taken, &Given { code: code.into(), client_id: None }).await.err().unwrap();
+            assert_eq!(refused.message, words);
+        }
+    }
+
     /// ChatGPT's way, against a service of our own: tokens.rs's issuer answers the code too.
     fn token_sign_in(base: &str) -> SignIn {
         SignIn { with: "ChatGPT", label: Some("Continue with ChatGPT"), flow: Flow::Tokens(tokens::tests::flow(base)) }
@@ -696,7 +1008,7 @@ pub(crate) mod tests {
     fn registers_at_the_first_sign_in_and_signs_in_again_with_the_issued_client() {
         let (engine, secrets) = engine();
         let sign_in = token_sign_in("https://auth.example");
-        let first = engine.start(&sign_in, chatgpt(), true).unwrap();
+        let first = engine.start(&sign_in, chatgpt(), true, &Extra::default()).unwrap();
         let get = |name: &str| param(&first.url, name);
         assert!(first.url.starts_with("https://auth.example/authorize?"), "{}", first.url);
         assert_eq!(get("client_id").as_deref(), Some("dynamic_agent_client"));
@@ -711,7 +1023,7 @@ pub(crate) mod tests {
         let host = get("ext_agent_host_id").unwrap();
         assert!(host.starts_with("urn:uuid:"), "{host}");
         assert_eq!(first.mode, Return::Here);
-        assert_eq!(engine.start(&sign_in, chatgpt(), false).unwrap().mode, Return::Address);
+        assert_eq!(engine.start(&sign_in, chatgpt(), false, &Extra::default()).unwrap().mode, Return::Address);
         assert_eq!(
             serde_json::to_value(sign_in).unwrap(),
             json!({"with": "ChatGPT", "label": "Continue with ChatGPT", "keyless": true})
@@ -725,7 +1037,7 @@ pub(crate) mod tests {
             ..TokenRecord::default()
         };
         secrets.set("oauth:llm:chatgpt", Some(&serde_json::to_string(&earlier).unwrap())).unwrap();
-        let again = engine.start(&sign_in, chatgpt(), true).unwrap();
+        let again = engine.start(&sign_in, chatgpt(), true, &Extra::default()).unwrap();
         let get = |name: &str| param(&again.url, name);
         assert_eq!(get("client_id").as_deref(), Some("oaiapp_1"));
         assert_eq!(get("agent_name_hint"), None);
@@ -740,7 +1052,7 @@ pub(crate) mod tests {
         let (issuer, base) = tokens::tests::issuer().await;
         let (engine, _) = engine();
         let sign_in = token_sign_in(&base);
-        let started = engine.start(&sign_in, chatgpt(), true).unwrap();
+        let started = engine.start(&sign_in, chatgpt(), true, &Extra::default()).unwrap();
         *issuer.nonce.lock().unwrap() = param(&started.url, "nonce");
 
         // A registration that names no client is not one.
@@ -748,7 +1060,7 @@ pub(crate) mod tests {
         let nameless = engine.exchange(&taken, &Given { code: "good-code".into(), client_id: None }).await;
         assert!(nameless.err().unwrap().message.contains("не подтвердил вход"));
 
-        let started = engine.start(&sign_in, chatgpt(), true).unwrap();
+        let started = engine.start(&sign_in, chatgpt(), true, &Extra::default()).unwrap();
         *issuer.nonce.lock().unwrap() = param(&started.url, "nonce");
         let taken = engine.take(&started.id).unwrap();
         let given = Given { code: "good-code".into(), client_id: Some("oaiapp_9".into()) };
@@ -768,7 +1080,7 @@ pub(crate) mod tests {
 
         // The plan not granted: no tokens, and the owner reads what to do.
         *issuer.scope.lock().unwrap() = Some("openid email offline_access".into());
-        let started = engine.start(&sign_in, chatgpt(), true).unwrap();
+        let started = engine.start(&sign_in, chatgpt(), true, &Extra::default()).unwrap();
         *issuer.nonce.lock().unwrap() = param(&started.url, "nonce");
         let taken = engine.take(&started.id).unwrap();
         let given = Given { code: "good-code".into(), client_id: Some("oaiapp_9".into()) };

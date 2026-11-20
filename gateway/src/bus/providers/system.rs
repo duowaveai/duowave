@@ -184,7 +184,7 @@ impl Provider for System {
             let failed = BusError::Failed;
             match (letter.to.as_str(), letter.handle.as_str()) {
                 (VOICE, "say") => services
-                    .say(&id, text("text").unwrap_or_default(), text("device"))
+                    .say(&id, text("text").unwrap_or_default(), text("device"), text("file"))
                     .await
                     .map(Value::Bool)
                     .map_err(failed),

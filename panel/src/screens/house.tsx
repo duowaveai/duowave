@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'preact/hooks';
 
-import { Station, UpdateStatus, api, can, problemOf } from '../api';
+import { Station, StationGatewayView, UpdateStatus, api, can, problemOf } from '../api';
 import { locale, tr } from '../i18n';
 import { clock, timeAgo } from '../time';
+import { stationUpdatePressable, stationUpdateStep } from '../station-update';
 import { checkIsStale, setUpdateStatus } from '../updates';
 import { ask } from '../ui/confirm';
 import { byMode } from '../words';
@@ -117,22 +118,41 @@ export function Stations() {
  * право (system.update), и только по своему согласию; шлюз в приложении, Docker или Home Assistant обновляет тот,
  * кто им управляет, — тогда здесь подсказка вместо кнопки. Шлюз на Node этого раздела не знает: раздел молчит.
  */
-/** `title` — своё имя карточки: в пульте Турбо это «Этот компьютер», рядом с карточкой колонки. */
-export function Updates({ title }: { title?: string } = {}) {
+/**
+ * `title` — своё имя карточки: в пульте Турбо это «Этот компьютер», рядом с карточкой колонки. `own` — в окне колонки
+ * (`?via=`) обновления самого этого компьютера, у его шлюза мимо прохода (owner 20.11: в окне дома не было видно, что
+ * отстал сам Mac, — вкладка Mac показывала версию колонки).
+ */
+export function Updates({ title, own = false }: { title?: string; own?: boolean } = {}) {
     const [status, setShown] = useState<UpdateStatus | null>(null);
     const [checking, setChecking] = useState(false);
     const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
     const [busy, setBusy] = useState(false);
-    // Всё, что раздел узнал, видят и точка на «Дом», и строка на главном экране.
+    // Окно колонки (`?via=`): что о ней знает компьютер, который её ведёт, — что сделает «Обновить» и как идёт.
+    const viaStation = !!VIA && !own;
+    const [computer, setComputer] = useState<StationGatewayView | null>(null);
+    const updates = own
+        ? { read: api.ownUpdates, check: api.ownCheckUpdates, install: api.ownInstallUpdate }
+        : { read: api.updates, check: api.checkUpdates, install: api.installUpdate };
+    // Всё, что раздел узнал, видят и точка на «Дом», и строка на главном экране — о шлюзе этого пульта, не о компьютере
+    // в окне колонки.
     const setStatus = (answer: UpdateStatus | null): void => {
         setShown(answer);
-        if (answer) setUpdateStatus(answer);
+        if (answer && !own) setUpdateStatus(answer);
+    };
+    const readComputer = async (): Promise<void> => {
+        if (!viaStation || !VIA) return;
+        try {
+            setComputer((await api.stationFromComputer(VIA)).station ?? null);
+        } catch {
+            setComputer(null);
+        }
     };
     useEffect(() => {
         let stopped = false;
         const read = () =>
-            api
-                .updates()
+            updates
+                .read()
                 .then((answer) => {
                     if (stopped) return;
                     setStatus(answer);
@@ -140,7 +160,8 @@ export function Updates({ title }: { title?: string } = {}) {
                     // её сейчас, если с прошлой проверки прошло больше 10 минут.
                     if (can('system.update') && !answer.installing && checkIsStale(answer)) {
                         setChecking(true);
-                        api.checkUpdates()
+                        updates
+                            .check()
                             .then((fresh) => !stopped && setStatus(fresh))
                             .catch(() => {})
                             .finally(() => !stopped && setChecking(false));
@@ -148,7 +169,11 @@ export function Updates({ title }: { title?: string } = {}) {
                 })
                 .catch(() => !stopped && setStatus(null));
         void read();
-        const timer = window.setInterval(() => void read(), 60_000);
+        void readComputer();
+        const timer = window.setInterval(() => {
+            void read();
+            void readComputer();
+        }, 60_000);
         return () => {
             stopped = true;
             window.clearInterval(timer);
@@ -158,19 +183,30 @@ export function Updates({ title }: { title?: string } = {}) {
         if (!status?.installing) return;
         // Пока ставится, шлюз перезапускается: спрашиваем чаще и ждём, когда ответит новая версия.
         const timer = window.setInterval(() => {
-            api.updates()
+            updates
+                .read()
                 .then(setStatus)
                 .catch(() => undefined);
         }, 3000);
         return () => window.clearInterval(timer);
     }, [status?.installing]);
+    // Компьютер обновляет колонку или ждёт себя, чтобы обновить её следом: его вид — чаще, итог виден сразу.
+    const computerBusy = !!(computer?.live.updating || computer?.afterComputer);
+    useEffect(() => {
+        if (!computerBusy) return;
+        const timer = window.setInterval(() => void readComputer(), 3000);
+        return () => window.clearInterval(timer);
+    }, [computerBusy]);
     if (!status) return null;
     const check = async () => {
         setBusy(true);
         setMessage(null);
         try {
-            const answer = await api.checkUpdates();
+            // В окне колонки — и компьютер: что он может дать колонке, решает его лента.
+            if (viaStation) await api.ownCheckUpdates().catch(() => undefined);
+            const answer = await updates.check();
             setStatus(answer);
+            await readComputer();
             if (!answer.available)
                 setMessage({ ok: true, text: answer.error ? tr.house.feedNoAnswer(answer.error) : tr.house.latestInstalled });
         } catch (e) {
@@ -183,14 +219,14 @@ export function Updates({ title }: { title?: string } = {}) {
         if (!status.available) return;
         const yes = await ask({
             title: tr.house.installTitle(status.available.version),
-            text: byMode(tr.house.installTextStation, tr.house.installTextDevice),
+            text: own ? tr.house.installTextOwn : byMode(tr.house.installTextStation, tr.house.installTextDevice),
             ok: tr.house.installOk,
         });
         if (!yes) return;
         setBusy(true);
         setMessage(null);
         try {
-            setStatus(await api.installUpdate());
+            setStatus(await updates.install());
         } catch (e) {
             setMessage({ ok: false, text: problemOf(e) });
         } finally {
@@ -199,31 +235,54 @@ export function Updates({ title }: { title?: string } = {}) {
     };
     const offer = status.available;
     // Шлюз колонки обновляет компьютер, который её ведёт (owner 17.11: «обновление есть, а кнопки нет»). В окне колонки
-    // через компьютер (`?via=`) кнопка просит компьютер прямо отсюда; без прохода — подсказка шлюза, где это сделать.
-    const fromComputer = !!(VIA && offer && !status.canInstall && !status.installing && !status.trial);
+    // через компьютер (`?via=`) кнопка просит компьютер прямо отсюда — и говорит, что он сделает: компьютер ставит колонке
+    // только свою версию, выпуск новее него идёт сначала на него (owner 20.11). Без прохода — подсказка шлюза.
+    const quiet = !status.canInstall && !status.installing && !status.trial;
+    const step = viaStation && quiet ? stationUpdateStep(computer, offer?.version) : null;
+    const fromComputer = viaStation && quiet && !!step;
     const installFromComputer = async () => {
-        if (!offer || !VIA) return;
+        if (!VIA || !stationUpdatePressable(step)) return;
         const yes = await ask({
-            title: tr.house.installTitle(offer.version),
-            text: tr.house.installTextFromComputer,
+            title: tr.house.installTitle(step.version),
+            text: step.kind === 'computerFirst' ? tr.house.installTextComputerFirst : tr.house.installTextFromComputer,
             ok: tr.house.installOk,
         });
         if (!yes) return;
         setBusy(true);
         setMessage(null);
         try {
-            await api.updateStationFromComputer(VIA);
-            setMessage({ ok: true, text: tr.house.fromComputerStarted });
+            const started = await api.updateStationFromComputer(VIA, offer?.version);
+            setMessage({
+                ok: true,
+                text: started.way === 'computerFirst' ? tr.house.computerFirstStarted(started.version) : tr.house.fromComputerStarted,
+            });
+        } catch (e) {
+            setMessage({ ok: false, text: problemOf(e) });
+        } finally {
+            setBusy(false);
+            await readComputer();
+        }
+    };
+    // «Колонка без компьютера» (owner 20.11): пульт самой колонки, её обновляет компьютер, а его нет рядом.
+    const installAlone = async () => {
+        if (!offer) return;
+        const yes = await ask({ title: tr.house.installAloneTitle(offer.version), text: tr.house.installAloneText, ok: tr.house.installOk });
+        if (!yes) return;
+        setBusy(true);
+        setMessage(null);
+        try {
+            setStatus(await api.installUpdateAlone());
         } catch (e) {
             setMessage({ ok: false, text: problemOf(e) });
         } finally {
             setBusy(false);
         }
     };
+    const heading = own ? 'updates-own-h' : 'updates-h';
     return (
-        <section class="card glass card-list" aria-labelledby="updates-h">
+        <section class="card glass card-list" aria-labelledby={heading}>
             <div class="section-head">
-                <h2 id="updates-h" class="t-title-xs m-0">
+                <h2 id={heading} class="t-title-xs m-0">
                     {title ?? tr.house.updates}
                 </h2>
                 <span class="t-meta">{tr.house.version(status.current)}</span>
@@ -233,7 +292,12 @@ export function Updates({ title }: { title?: string } = {}) {
                     {offer.critical && (
                         <p class="t-caption m-0 mb-4 c-dot-offline" role="alert">
                             <b>{tr.house.urgent}</b>
-                            {tr.house.urgentText} {status.autoCritical ? tr.house.urgentAuto : tr.house.urgentManual}
+                            {tr.house.urgentText}{' '}
+                            {status.autoCritical
+                                ? tr.house.urgentAuto
+                                : status.managedBy === 'pc'
+                                  ? tr.house.urgentByComputer
+                                  : tr.house.urgentManual}
                         </p>
                     )}
                     <p class="t-body m-0 mb-4">
@@ -261,6 +325,24 @@ export function Updates({ title }: { title?: string } = {}) {
             {status.hint && offer && !fromComputer && (
                 <p class="t-caption m-0 mb-8">
                     {status.hint}
+                </p>
+            )}
+            {/* Что компьютер сделает или почему не может — его словами (gateway/src/placement/watch.rs). */}
+            {step?.kind === 'blocked' && <p class="t-caption m-0 mb-8">{step.why}</p>}
+            {step?.kind === 'stationAhead' && <p class="t-caption m-0 mb-8">{tr.house.stationAhead(step.station, step.computer)}</p>}
+            {step?.kind === 'follows' && (
+                <p class="t-caption m-0 mb-8 c-accent-text" role="status">
+                    {tr.house.followsComputer(step.version)}
+                </p>
+            )}
+            {viaStation && computer?.live.updating && (
+                <p class="t-caption m-0 mb-8 c-accent-text" role="status">
+                    {tr.house.fromComputerStarted}
+                </p>
+            )}
+            {viaStation && !computer?.live.updating && computer?.live.updateError && (
+                <p class="t-caption m-0 mb-8 c-dot-offline" role="alert">
+                    {tr.house.computerFailed(computer.live.updateError)}
                 </p>
             )}
             {/* Пока ставится — об этом; не поставилось — почему, словами шлюза. На колонке новая версия сначала
@@ -312,9 +394,22 @@ export function Updates({ title }: { title?: string } = {}) {
                             {status.installing ? tr.house.installingShort : tr.house.update}
                         </button>
                     )}
-                    {fromComputer && offer && (
-                        <button class="pill pill-own pill-btn" disabled={busy} onClick={() => void installFromComputer()}>
-                            {busy ? tr.house.installingShort : tr.desk.updateTo(offer.version)}
+                    {stationUpdatePressable(step) && (
+                        <button
+                            class="pill pill-own pill-btn"
+                            disabled={busy || !!computer?.live.updating}
+                            onClick={() => void installFromComputer()}
+                        >
+                            {busy || computer?.live.updating
+                                ? tr.house.installingShort
+                                : step.kind === 'computerFirst'
+                                  ? tr.house.updateBoth(step.version)
+                                  : tr.desk.updateTo(step.version)}
+                        </button>
+                    )}
+                    {!VIA && status.canInstallAlone && (
+                        <button class="pill pill-off pill-btn" disabled={busy} onClick={() => void installAlone()}>
+                            {tr.house.installAlone}
                         </button>
                     )}
                 </div>

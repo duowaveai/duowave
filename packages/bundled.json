@@ -1,54 +1,67 @@
 {
-  "_": "Пакеты, вшитые в сборку шлюза (gateway/src/plugins/bundled.rs): вид и включён ли пакет при первом запуске. system — нельзя ни выключить, ни удалить; bundled — можно выключить, удалить нельзя: обновляется вместе со шлюзом. Пакета нет в этом списке — он в сборку не входит.",
-  "radio": {
+  "_": "Пакеты, вшитые в сборку шлюза (gateway/src/plugins/bundled.rs): вид и включён ли пакет при первом запуске. system — нельзя ни выключить, ни удалить; bundled — можно выключить, удалить нельзя: обновляется вместе со шлюзом. Ключ — id пакета (случайный, docs/plans/random-package-ids.md), `folder` — его папка в packages/. Пакета нет в этом списке — он в сборку не входит.",
+  "p-a2fd1d7eb8a4": {
+    "folder": "radio",
     "origin": "bundled",
     "enabled": true
   },
-  "weather": {
+  "p-ad07a08e06e1": {
+    "folder": "weather",
     "origin": "bundled",
     "enabled": true
   },
-  "news": {
+  "p-d530e4cef817": {
+    "folder": "news",
     "origin": "bundled",
     "enabled": true
   },
-  "music": {
+  "p-19a3d37a21ff": {
+    "folder": "music",
     "origin": "bundled",
     "enabled": true
   },
-  "tales": {
+  "p-f6139e89b6b5": {
+    "folder": "tales",
     "origin": "bundled",
     "enabled": true
   },
-  "games": {
+  "p-1d5783476a25": {
+    "folder": "games",
     "origin": "bundled",
     "enabled": true
   },
-  "morning": {
+  "p-53cd409ecea7": {
+    "folder": "morning",
     "origin": "bundled",
     "enabled": true
   },
-  "smart-home": {
+  "p-7334b3fd20b1": {
+    "folder": "smart-home",
     "origin": "bundled",
     "enabled": true
   },
-  "currency": {
+  "p-e28975f15f73": {
+    "folder": "currency",
     "origin": "bundled",
     "enabled": true
   },
-  "shopping": {
+  "p-d31a99a7e5b1": {
+    "folder": "shopping",
     "origin": "bundled",
     "enabled": false
   },
-  "calendar": {
+  "p-8c4a0cef4bae": {
+    "folder": "calendar",
     "origin": "bundled",
     "enabled": true
   },
-  "folders": {
+  "p-e99d4491bc27": {
+    "folder": "folders",
     "origin": "bundled",
     "enabled": true
   },
-  "neon-snake": {
+  "p-6d9f10977863": {
+    "folder": "neon-snake",
     "origin": "bundled",
     "enabled": true
   }

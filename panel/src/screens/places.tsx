@@ -25,7 +25,7 @@ import {
     IconVoice,
 } from '../icons';
 import { usePanel, useSectionTab } from '../shell/context';
-import { setDevMode, setHiddenDevOptions, tapDev, useDevMode, useHiddenDevOptions } from '../shell/dev';
+import { setDevMode, setDuowaveShown, setHiddenDevOptions, tapDev, useDevMode, useDuowaveShown, useHiddenDevOptions } from '../shell/dev';
 import { Switch } from '../ui/switch';
 import { useOfferedVersion } from '../updates';
 import { ModeWidget, WatchWidget, useStationOffer } from './desk-widgets';
@@ -34,7 +34,7 @@ import { DevicesPage } from './devices';
 import { RoomCard } from './room-card';
 import { Stations, Updates } from './house';
 import { SetupSheet } from './stations';
-import { TOP_VIA } from '../via';
+import { TOP_VIA, VIA } from '../via';
 import { useHomeStationName } from '../station-name';
 import { JournalScreen } from './journal';
 import { StationMemoryCard } from './memory';
@@ -232,6 +232,8 @@ function LookPage() {
 /**
  * «Обновления и копии». В пульте Турбо колонка — первой (owner 17.11): её шлюз обновляет этот компьютер, и новая версия
  * для неё — именно здесь; ниже — версия самого компьютера, под своим именем, чтобы «Новых версий нет» не спорило с ней.
+ * В окне дома на компьютере (`?via=`) — так же: сверху шлюз колонки, ниже сам компьютер (owner 20.11: колонке он ставит
+ * только свою версию, и отставший компьютер должен быть виден там, где колонка просит новую).
  */
 function UpdatesPage() {
     const panel = usePanel();
@@ -246,7 +248,8 @@ function UpdatesPage() {
                     <WatchWidget />
                 </Card>
             )}
-            <Updates title={turbo ? tr.core.tabThisComputer : undefined} />
+            <Updates title={turbo ? tr.core.tabThisComputer : VIA && name ? tr.core.tabStation(name) : undefined} />
+            {VIA && <Updates own title={tr.core.tabThisComputer} />}
         </>
     );
 }
@@ -283,9 +286,11 @@ function DevPage() {
 /**
  * Скрытые возможности разработчика (восемь нажатий на «Для разработчиков»). «Показывать скрытые пакеты» — настройка
  * шлюза packages.show_hidden: пакеты, которые ленты держат скрытыми (`unlisted`), видны в MagicPlace, в каталоге
- * персонажей и голосом — из главного каталога, магазинов и своих источников. Меняет администратор.
+ * персонажей и голосом — из главного каталога, магазинов и своих источников. Меняет администратор. «Показывать
+ * DuoWave» — вид пульта у этого человека (shell/dev.ts): наши модели в «Мозге» и в первых шагах.
  */
 function HiddenDevOptions() {
+    const duowave = useDuowaveShown();
     const [view, setView] = useState<CatalogView | null>(null);
     const [busy, setBusy] = useState(false);
     const [problem, setProblem] = useState<string | null>(null);
@@ -332,6 +337,13 @@ function HiddenDevOptions() {
                     {problem}
                 </p>
             )}
+            <label class="w-toggle">
+                <span class="flex-1 min-w-0 flex flex-col">
+                    <span class="w-strong">{tr.places.showDuowave}</span>
+                    <span class="w-cap">{tr.places.showDuowaveAbout}</span>
+                </span>
+                <Switch on={duowave} label={tr.places.showDuowave} onChange={setDuowaveShown} />
+            </label>
             <button class="w-btn" onClick={() => setHiddenDevOptions(false)}>
                 {tr.places.hiddenClose}
             </button>

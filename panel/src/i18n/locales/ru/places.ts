@@ -51,6 +51,8 @@ export default {
     showHiddenPackagesAbout: 'пакеты, которые ленты держат скрытыми, — в MagicPlace, в каталоге персонажей и голосом; из всех источников',
     hiddenPackagesNow: (titles: string) => `Сейчас видны скрытые: ${titles}.`,
     hiddenPackagesNone: 'Скрытых пакетов в лентах сейчас нет.',
+    showDuowave: 'Показывать DuoWave',
+    showDuowaveAbout: 'наши модели: первым в «Мозге» → «Добавить» и в первых шагах «Кто думает»; вход на my.duowave.app',
     hiddenClose: 'Спрятать скрытые возможности',
 
     // Список страниц

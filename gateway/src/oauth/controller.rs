@@ -13,7 +13,7 @@ use axum::Router;
 use serde::{Deserialize, Serialize};
 
 use super::page::page;
-use super::{plain_token, stale, Credential, Given, SignInStatus, Target};
+use super::{plain_token, stale, Credential, Delivered, Given, SignInStatus, Target};
 use crate::app::App;
 use crate::core::events::Actor;
 use crate::core::identity::permissions::CONNECTORS_MANAGE;
@@ -43,6 +43,9 @@ fn given_of(get: impl Fn(&str) -> Option<String>, code: String) -> Given {
 pub struct SignInDone {
     /// Who got what the sign-in brought: the provider's title.
     pub title: String,
+    /// What is left to do, when something is («доступа пока нет»).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 fn cancelled() -> ApiError {
@@ -72,7 +75,14 @@ async fn callback(
     };
     Ok(match outcome {
         Ok(done) => {
-            page(StatusCode::OK, &crate::tr!("Вход в «{title}» выполнен. Это окно можно закрыть.", title = done.title))
+            let said = crate::tr!("Вход в «{title}» выполнен. Это окно можно закрыть.", title = done.title);
+            page(
+                StatusCode::OK,
+                &match done.note {
+                    Some(note) => format!("{said} {note}"),
+                    None => said.to_string(),
+                },
+            )
         }
         Err(error) => page(error.status, &error.message),
     })
@@ -148,13 +158,13 @@ async fn finish(app: Arc<App>, id: String, given: Given, actor: Option<Actor>) -
             Err(error) => Err(error),
         };
         app.oauth.settle(&id, &outcome);
-        outcome.map(|title| SignInDone { title })
+        outcome.map(|done| SignInDone { title: done.title, note: done.note })
     })
     .await
     .map_err(ApiError::internal)?
 }
 
-fn deliver(app: &App, target: &Target, credential: Credential, actor: Option<Actor>) -> Result<String, ApiError> {
+fn deliver(app: &App, target: &Target, credential: Credential, actor: Option<Actor>) -> Result<Delivered, ApiError> {
     match target {
         Target::Provider { id, created_at } => app.brain.signed_in(id, created_at, credential, actor),
     }
@@ -174,7 +184,7 @@ mod tests {
     use crate::core::identity::principal::{api_key_principal, user_principal};
     use crate::core::identity::Role;
     use crate::dialog::brain::brain_service::ProviderInput;
-    use crate::oauth::tests::{param, service, shown, SERVICE_KEY};
+    use crate::oauth::tests::{duowave_answer, param, service, shown, SERVICE_KEY};
     use crate::oauth::{tokens, Flow, SignIn, TokenRecord};
 
     fn app() -> Arc<App> {
@@ -212,7 +222,7 @@ mod tests {
         let (service, sign_in) = service().await;
         let app = app();
         let target = provider(&app);
-        let started = app.oauth.start(&sign_in, target, true).unwrap();
+        let started = app.oauth.start(&sign_in, target, true, &Default::default()).unwrap();
         shown(&service, &started.url);
 
         let (status, page) = request(
@@ -256,16 +266,16 @@ mod tests {
         let app = app();
         let target = provider(&app);
 
-        let started = app.oauth.start(&sign_in, target.clone(), false).unwrap();
+        let started = app.oauth.start(&sign_in, target.clone(), false, &Default::default()).unwrap();
         shown(&service, &started.url);
         let done = complete(State(app.clone()), admin(&app), body(json!({"id": started.id, "text": " good-code \n"})))
             .await
             .unwrap();
-        assert_eq!(done.1, SignInDone { title: "OpenRouter".into() });
+        assert_eq!(done.1, SignInDone { title: "OpenRouter".into(), note: None });
         assert_eq!(app.secrets.get("llm:openrouter:key").as_deref(), Some(SERVICE_KEY));
 
         app.brain.update("openrouter", &ProviderInput::from_value(json!({"key": ""})), None).unwrap();
-        let again = app.oauth.start(&sign_in, target, true).unwrap();
+        let again = app.oauth.start(&sign_in, target, true, &Default::default()).unwrap();
         shown(&service, &again.url);
         let address = format!("http://localhost:7780/api/v1/oauth/callback?code=good-code&state={}", again.id);
         let done = complete(State(app.clone()), admin(&app), body(json!({"text": address}))).await.unwrap();
@@ -278,7 +288,7 @@ mod tests {
         let (service, sign_in) = service().await;
         let app = app();
         let target = provider(&app);
-        let started = app.oauth.start(&sign_in, target.clone(), true).unwrap();
+        let started = app.oauth.start(&sign_in, target.clone(), true, &Default::default()).unwrap();
         shown(&service, &started.url);
 
         let (status, page) =
@@ -294,7 +304,7 @@ mod tests {
         assert!(!app.secrets.has("llm:openrouter:key"));
         assert_eq!(status_of(&app, &started.id).await.1["state"], json!("failed"));
 
-        let declined = app.oauth.start(&sign_in, target, true).unwrap();
+        let declined = app.oauth.start(&sign_in, target, true, &Default::default()).unwrap();
         let (status, page) = request(
             &app,
             "GET",
@@ -318,7 +328,7 @@ mod tests {
         let (service, sign_in) = service().await;
         let app = app();
         let target = provider(&app);
-        let started = app.oauth.start(&sign_in, target, false).unwrap();
+        let started = app.oauth.start(&sign_in, target, false, &Default::default()).unwrap();
         shown(&service, &started.url);
         app.brain.remove("openrouter", None).unwrap();
         // Another provider takes the id meanwhile: it is not the one who signed in.
@@ -340,7 +350,7 @@ mod tests {
         let added = app.brain.add(&ProviderInput::from_value(json!({"preset": "chatgpt"})), None).unwrap();
         let target = app.brain.sign_in_target(&added.id).unwrap();
         let sign_in = SignIn { with: "ChatGPT", label: None, flow: Flow::Tokens(tokens::tests::flow(&base)) };
-        let started = app.oauth.start(&sign_in, target, true).unwrap();
+        let started = app.oauth.start(&sign_in, target, true, &Default::default()).unwrap();
         *issuer.nonce.lock().unwrap() = param(&started.url, "nonce");
 
         let uri = format!("/auth/callback?code=good-code&state={}&client_id=oaiapp_9&scope=openid", started.id);
@@ -355,6 +365,97 @@ mod tests {
         assert_eq!(card["account"], json!({"signedIn": true, "who": "o…@example.com"}));
         let seen = view.to_string();
         assert!(!seen.contains("access-code") && !seen.contains("refresh-code") && !seen.contains("oaiapp_9"));
+    }
+
+    /// DuoWave's sign-in against the fake service: its answer is `answer`; the return lands here.
+    async fn duowave_sign_in(app: &Arc<App>, answer: Value) -> (StatusCode, String) {
+        let (service, sign_in) = service().await;
+        *service.answer.lock().unwrap() = Some(answer);
+        let target = app.brain.sign_in_target("duowave").unwrap();
+        let started = app.oauth.start(&sign_in, target, true, &Default::default()).unwrap();
+        shown(&service, &started.url);
+        let uri = format!("/api/v1/oauth/callback?code=good-code&state={}", started.id);
+        request(app, "GET", &uri, [127, 0, 0, 1]).await
+    }
+
+    fn choice(app: &Arc<App>) -> Value {
+        let view = serde_json::to_value(app.brain.view()).unwrap();
+        json!([view["choice"]["fast"], view["choice"]["smart"]])
+    }
+
+    fn card(app: &Arc<App>, id: &str) -> Value {
+        let view = serde_json::to_value(app.brain.view()).unwrap();
+        view["providers"].as_array().unwrap().iter().find(|card| card["id"] == id).unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn duowaves_sign_in_brings_the_key_the_models_the_profiles_and_the_access() {
+        let app = app();
+        app.brain.add(&ProviderInput::from_value(json!({"preset": "duowave"})), None).unwrap();
+        app.brain.set_invite(Some("s_OfxFjzLq"), None).unwrap();
+        assert!(app.brain.view().invite);
+
+        let (status, page) = duowave_sign_in(&app, duowave_answer()).await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert!(page.contains("Вход в «DuoWave» выполнен"), "{page}");
+        assert_eq!(app.secrets.get("llm:duowave:key").as_deref(), Some("dw-test-key-1234"));
+        let shown_card = card(&app, "duowave");
+        assert_eq!(shown_card["models"], json!(["duowave-smart", "duowave-fast"]));
+        assert_eq!(
+            shown_card["access"],
+            json!({"active": true, "plan": "Пробная неделя", "endsAt": "2026-11-27T01:15:00.000Z"})
+        );
+        // The fake exchange is not in api.duowave.dev's domain: its address is not taken, the preset's stays.
+        assert_eq!(shown_card["baseUrl"], json!("https://api.duowave.dev/v1"));
+        assert_eq!(
+            choice(&app),
+            json!([
+                {"provider": "duowave", "model": "duowave-fast"},
+                {"provider": "duowave", "model": "duowave-smart"}
+            ])
+        );
+        assert!(!app.brain.view().invite, "the invitation went with a sign-in that brought a key");
+        assert!(!serde_json::to_string(&app.brain.view()).unwrap().contains("dw-test-key-1234"));
+
+        // The panel saves the card: the service's word on the access stays.
+        app.brain.update("duowave", &ProviderInput::from_value(json!({"title": "Наш", "options": {}})), None).unwrap();
+        assert_eq!(card(&app, "duowave")["access"]["active"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn a_later_sign_in_changes_only_the_profiles_already_on_duowave_and_null_changes_none() {
+        let app = app();
+        app.brain.add(&ProviderInput::from_value(json!({"preset": "duowave"})), None).unwrap();
+        app.brain.add(&ProviderInput::from_value(json!({"preset": "openrouter", "key": "sk-or-1"})), None).unwrap();
+        duowave_sign_in(&app, duowave_answer()).await;
+        // The person takes «сильный» elsewhere; the key is revoked, they connect again.
+        let smart = json!({"provider": "openrouter", "model": "anthropic/claude-sonnet"});
+        app.brain.choose(&serde_json::Map::from_iter([("smart".to_string(), smart.clone())]), None).unwrap();
+        let mut again = duowave_answer();
+        again["defaults"] = json!({"fast_model": "duowave-turbo", "smart_model": "duowave-smart"});
+        duowave_sign_in(&app, again).await;
+        assert_eq!(choice(&app), json!([{"provider": "duowave", "model": "duowave-turbo"}, smart]));
+
+        // Null in the defaults: nothing changes.
+        let mut quiet = duowave_answer();
+        quiet["defaults"] = json!({"fast_model": null, "smart_model": null});
+        duowave_sign_in(&app, quiet).await;
+        assert_eq!(choice(&app), json!([{"provider": "duowave", "model": "duowave-turbo"}, smart]));
+    }
+
+    #[tokio::test]
+    async fn without_access_the_key_is_kept_the_profiles_stay_and_the_owner_is_told() {
+        let app = app();
+        app.brain.add(&ProviderInput::from_value(json!({"preset": "duowave"})), None).unwrap();
+        let mut closed = duowave_answer();
+        closed["models"] = json!([]);
+        closed["access"] = json!({"active": false, "tier": null, "plan_title": null, "ends_at": null});
+        let (status, page) = duowave_sign_in(&app, closed).await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert!(page.contains("доступа к моделям пока нет"), "{page}");
+        assert_eq!(app.secrets.get("llm:duowave:key").as_deref(), Some("dw-test-key-1234"));
+        assert_eq!(choice(&app), json!([null, null]));
+        assert_eq!(card(&app, "duowave")["access"], json!({"active": false}));
     }
 
     #[tokio::test]

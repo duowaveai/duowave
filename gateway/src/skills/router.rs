@@ -273,7 +273,19 @@ impl Router {
         self.skills.read().unwrap().values().cloned().collect()
     }
 
+    /// What serves the words. A «не беспокоить» on or off is remembered on the way, whoever serves it: apps keep quiet
+    /// in the mode (skills/own/do_not_disturb_skill.rs).
     pub fn decide(&self, input: &RouteInput) -> Decision {
+        let decision = self.decide_words(input);
+        if let Decision::Intent { intent, .. } = &decision {
+            if intent.capability == CapabilityName::DoNotDisturb && matches!(intent.action.as_str(), "on" | "off") {
+                crate::skills::own::do_not_disturb_skill::note(intent.action == "on");
+            }
+        }
+        decision
+    }
+
+    fn decide_words(&self, input: &RouteInput) -> Decision {
         if let Some(continuation) = input.continuation.filter(|continuation| continuation.until > input.now) {
             // Yandex's question takes the answer, not a new request with the wake word (live 02.11: after «Что
             // сказать папе?» «Алиса, передай папе…» went to Yandex for two minutes); its skills and games keep

@@ -58,16 +58,6 @@ const PREVIEW = 'workshop.preview';
 const isAdmin = (): boolean => can('plugins.manage') && sessionStore.get()?.role === 'admin';
 const TRIAL_MINUTES = [5, 10, 30];
 
-/** id черновика из чего угодно: строчная латиница, цифры и «-», с буквы, до 32 знаков. */
-const idOf = (text: string): string =>
-    text
-        .toLowerCase()
-        .replace(/[^a-z0-9-]+/g, '-')
-        .replace(/^[^a-z]+/, '')
-        .replace(/-+/g, '-')
-        .replace(/-$/, '')
-        .slice(0, 32);
-
 /** Тема пульта как данные манифеста: всё, что normalizeTheme прочтёт обратно. */
 function themeData(id: string, title: string, base: Theme) {
     return {
@@ -105,7 +95,6 @@ function DraftList({ drafts, onOpen, onMade }: { drafts: DraftView[]; onOpen: (i
     // «Навыки» → «Пока не умеем» → «Научить»: форма навыка сразу, с фразой в имени; задание — агенту.
     const teach = linked.query.new === 'plugin' ? linked.query.teach?.trim() || null : null;
     const [making, setMaking] = useState<'plugin' | 'quiz' | 'theme' | 'openapi' | null>(base ? 'theme' : teach ? 'plugin' : null);
-    const [id, setId] = useState(base ? idOf(`my-${base.id}`) : teach ? `skill-${Date.now().toString(36).slice(-5)}` : '');
     const [title, setTitle] = useState(base ? tr.workshop.myTheme(base.title) : teach ? tr.workshop.teachTitle(teach) : '');
     const [openapi, setOpenapi] = useState('');
     const [busy, setBusy] = useState(false);
@@ -114,7 +103,8 @@ function DraftList({ drafts, onOpen, onMade }: { drafts: DraftView[]; onOpen: (i
         setBusy(true);
         setError(null);
         try {
-            const body = making === 'openapi' ? { id: id.trim(), title: title.trim() || undefined, openapi } : { id: id.trim(), kind: making ?? 'plugin', title: title.trim() || undefined };
+            // id выдаёт шлюз — случайный «p-…»: он ничего о черновике не говорит, имя — в названии.
+            const body = making === 'openapi' ? { title: title.trim() || undefined, openapi } : { kind: making ?? 'plugin', title: title.trim() };
             let draft = await api.createDraft(body as Parameters<typeof api.createDraft>[0]);
             if (making === 'theme' && base) {
                 // Своя тема начинается с выбранной: её палитры обоих режимов, раскладка, плотность и скругления.
@@ -129,7 +119,6 @@ function DraftList({ drafts, onOpen, onMade }: { drafts: DraftView[]; onOpen: (i
                 );
             onMade(draft);
             setMaking(null);
-            setId('');
             setTitle('');
             setOpenapi('');
         } catch (e) {
@@ -179,10 +168,6 @@ function DraftList({ drafts, onOpen, onMade }: { drafts: DraftView[]; onOpen: (i
                                 : tr.workshop.newPlugin}
                     </h3>
                     <label class="ws-label">
-                        <span class="t-caption">{tr.workshop.idLabel}</span>
-                        <input class="field" value={id} onInput={(e) => setId((e.target as HTMLInputElement).value)} />
-                    </label>
-                    <label class="ws-label">
                         <span class="t-caption">{tr.workshop.nameLabel}</span>
                         <input class="field" value={title} onInput={(e) => setTitle((e.target as HTMLInputElement).value)} />
                     </label>
@@ -193,7 +178,7 @@ function DraftList({ drafts, onOpen, onMade }: { drafts: DraftView[]; onOpen: (i
                         </label>
                     )}
                     <div class="flex flex-wrap gap-8">
-                        <Action tone="on" label={tr.workshop.create} busy={busy} disabled={!id.trim()} onClick={() => void make()} />
+                        <Action tone="on" label={tr.workshop.create} busy={busy} disabled={making === 'openapi' ? !openapi.trim() : !title.trim()} onClick={() => void make()} />
                         <Action label={tr.workshop.cancel} disabled={busy} onClick={() => (setMaking(null), base && linked.close())} />
                     </div>
                 </div>
